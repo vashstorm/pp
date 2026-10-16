@@ -2,6 +2,7 @@ mod menu;
 mod scrollback;
 mod statusline;
 mod transcript;
+mod welcome;
 
 use crate::{
     agent::Agent,
@@ -119,6 +120,7 @@ enum MenuAction {
 
 struct App {
     conversation: Transcript,
+    show_welcome: bool,
     input: TextArea<'static>,
     input_history: Vec<String>,
     history_index: Option<usize>,
@@ -148,6 +150,7 @@ impl App {
     fn new(agent: Result<Agent>) -> Result<Self> {
         let mut app = Self {
             conversation: Transcript::new(),
+            show_welcome: true,
             input: editor(),
             input_history: Vec::new(),
             history_index: None,
@@ -165,8 +168,6 @@ impl App {
             menu_dismissed: false,
             secondary_status: None,
         };
-        app.append("Note", WARNING);
-        app.append("Tips", SHORTCUTS);
         match agent {
             Ok(mut agent) => {
                 app.choices = agent.model_choices();
@@ -226,11 +227,13 @@ impl App {
     }
 
     fn append(&mut self, label: &str, text: &str) {
+        self.show_welcome = false;
         self.conversation.append(label, text);
     }
 
     fn fail_worker(&mut self) {
         let message = "Execution unavailable: agent worker channel closed; restart pp.";
+        self.show_welcome = false;
         self.state = State::Unavailable;
         self.commands = None;
         self.events = None;
@@ -262,9 +265,8 @@ impl App {
                 Ok(WorkerEvent::Reset) => {
                     self.conversation = Transcript::new();
                     self.clear_input();
-                    self.append("Note", WARNING);
-                    self.append("Tips", SHORTCUTS);
                     self.append("Note", "Session reset.");
+                    self.show_welcome = true;
                     self.state = State::Ready;
                     self.busy_notice = false;
                     changed = true;
@@ -479,6 +481,8 @@ impl App {
             Some(Command::Quit) => return true,
             Some(Command::Help) => {
                 self.append("Note", &commands::help());
+                self.append("Tips", SHORTCUTS);
+                self.append("Note", WARNING);
                 self.remember_input();
                 self.clear_input();
                 return false;
@@ -688,6 +692,11 @@ impl App {
             area.width,
             status_height,
         );
+        let conversation = if self.show_welcome {
+            welcome::draw(frame, conversation)
+        } else {
+            conversation
+        };
         self.conversation.draw(frame, conversation);
         let editor_area = if bordered {
             let block = Block::default()
@@ -1184,8 +1193,7 @@ mod tests {
         assert!(compact.contains("Deepthinking(current)"));
         assert!(screen.contains("❯ high"));
         assert!(
-            compact.find("❯/effort").unwrap()
-                < compact.find("Usetheserverdefaultlevel").unwrap()
+            compact.find("❯/effort").unwrap() < compact.find("Usetheserverdefaultlevel").unwrap()
         );
         assert!(compact.contains("Highestlevelthemodelsupports"));
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));

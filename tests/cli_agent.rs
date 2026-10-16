@@ -2575,6 +2575,68 @@ mod tui {
     }
 
     #[test]
+    fn tui_startup_centers_brand_and_keeps_footer_colors() {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let mut pty = Pty::start(&server, dir.path());
+        pty.ready();
+        pty.text("Tip:");
+        let screen = pty.parser.screen();
+        let text = screen.contents();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines[2].trim(), "█▀▀█  █▀▀█");
+        assert_eq!(lines[2].find('█'), Some(45));
+        assert_eq!(lines[7].trim(), concat!("v", env!("CARGO_PKG_VERSION")));
+        assert_eq!(lines[26], "─".repeat(100));
+        assert!(lines[27].starts_with('❯'));
+        assert_eq!(lines[28], "─".repeat(100));
+        assert!(lines[29].contains("fixture-model"));
+        assert!(!text.contains("│ Note"));
+        for (row, col, color) in [
+            (2, 45, vt100::Color::Rgb(127, 166, 106)),
+            (26, 0, vt100::Color::Rgb(127, 166, 106)),
+            (29, 2, vt100::Color::Rgb(190, 133, 169)),
+        ] {
+            assert_eq!(screen.cell(row, col).unwrap().fgcolor(), color);
+            assert_eq!(
+                screen.cell(row, col).unwrap().bgcolor(),
+                vt100::Color::Default
+            );
+        }
+
+        pty.input("startup draft");
+        pty.draft("startup draft");
+        pty.resize(12, 40);
+        pty.wait_for("小窗口显示紧凑欢迎页并保留草稿", |screen| {
+            let text = screen.contents();
+            text.lines().next().is_some_and(|line| line.trim() == "pp")
+                && text.contains("startup draft")
+                && text
+                    .lines()
+                    .last()
+                    .is_some_and(|line| line.contains("fixture-m"))
+        });
+        pty.resize(30, 100);
+        pty.text("█▀▀█  █▀▀█");
+        pty.draft("startup draft");
+        pty.input("\r");
+        let (request, body) = pty.request(&server);
+        assert_eq!(body["messages"][1]["content"], "startup draft");
+        final_reply(request, "startup answer");
+        pty.text("startup answer");
+        assert!(!pty.parser.screen().contents().contains("█▀▀█"));
+        pty.input("/new\r");
+        pty.text("Session reset.");
+        pty.text("█▀▀█  █▀▀█");
+        pty.input("/help\r");
+        pty.text("bash has no directory isolation");
+        assert!(!pty.parser.screen().contents().contains("█▀▀█"));
+        pty.input("/quit\r");
+        pty.finish();
+        no_more(&server);
+    }
+
+    #[test]
     fn tui_exit_keeps_conversation_on_normal_screen() {
         for exit in ["\x03", "/quit\r"] {
             let server = server();

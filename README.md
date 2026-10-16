@@ -92,7 +92,7 @@ A provider's `base_url` is the API root. The existing path prefix is preserved; 
 
 ## Terminal Interaction
 
-未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：上方为流式结构化对话记录，下方为 omp 风格的多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏依次显示实际模型、思考级别、启动工作目录和 Git 信息。`default` 表示请求未显式指定思考级别，使用服务端默认值。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；右半区预留为第二状态栏，目前保持空白。快捷键显示在对话记录的启动 Tips 中，执行 `/new` 后也会恢复。模型文本及 bash 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏或 Markdown 渲染。
+未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页采用 omp 风格的居中像素字标、版本号和简短操作提示；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏依次显示实际模型、思考级别、启动工作目录和 Git 信息。`default` 表示请求未显式指定思考级别，使用服务端默认值。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；右半区预留为第二状态栏，目前保持空白。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏或 Markdown 渲染。
 
 Entries use a left rail and bold label: blue `You`, yellow `bash · $ command`, and terminal-default `Assistant`/read/write data. Tool bodies are dimmed, with separate stdout/stderr labels, running/ok/failed status, exit codes, and truncation notices. Cyan `grep` and magenta `skill` are reserved display categories only: no new tools, skill discovery, or command/path-based classification. Notes are gray and errors red; the terminal background is unchanged. ANSI color output respects `NO_COLOR`.
 
