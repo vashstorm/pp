@@ -36,13 +36,13 @@ use std::{
 };
 use transcript::Transcript;
 
-const WARNING: &str = "write/edit 仅修改启动目录内文件；bash 无目录隔离，请在可信或临时目录中运行。\nbash 超时终止进程组；Ctrl-C 立即退出 pp，不保证清理子进程，也不撤销文件修改。";
-const SHORTCUTS: &str = "Enter 发送 · ↑↓ 历史/菜单 · Tab 补全 · Esc 取消 · Ctrl-A/E 行首/行尾 · Ctrl-K 删除到行尾 · Ctrl-J 换行 · Wheel/PgUp/PgDn 滚动 · Ctrl-C 退出";
+const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
+const SHORTCUTS: &str = "Enter send · ↑↓ history/menu · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
 const MOUSE_SCROLL_LINES: usize = 3;
 
 pub(crate) fn run(agent: Result<Agent>, cwd: &Path) -> Result<()> {
     // Construct before try_init so partially initialized terminals are restored too.
-    let _guard = TerminalGuard;
+    let guard = TerminalGuard;
     let mut terminal = ratatui::try_init().context("initializing terminal")?;
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)
         .context("enabling terminal input modes")?;
@@ -286,7 +286,7 @@ impl App {
                 }
                 Ok(WorkerEvent::ThinkLevelSet(level)) => {
                     self.think_level = level;
-                    self.append("Note", &format!("思考级别：{}", level.as_str()));
+                    self.append("Note", &format!("Thinking level: {}", level.as_str()));
                     self.state = State::Ready;
                     self.busy_notice = false;
                     changed = true;
@@ -328,12 +328,12 @@ impl App {
                         value: MenuAction::Effort(level),
                         label: level.as_str().into(),
                         description: match level {
-                            ThinkLevel::Default => "使用服务端默认级别",
-                            ThinkLevel::Low => "轻量思考",
-                            ThinkLevel::Medium => "中等程度思考",
-                            ThinkLevel::High => "深入思考",
-                            ThinkLevel::Xhigh => "更充分的深入思考",
-                            ThinkLevel::Max => "模型支持的最高思考级别",
+                            ThinkLevel::Default => "Use the server default level",
+                            ThinkLevel::Low => "Light thinking",
+                            ThinkLevel::Medium => "Moderate thinking",
+                            ThinkLevel::High => "Deep thinking",
+                            ThinkLevel::Xhigh => "Extra-deep thinking",
+                            ThinkLevel::Max => "Highest level the model supports",
                         }
                         .into(),
                         icon: None,
@@ -749,7 +749,7 @@ impl App {
             State::Running => ("running", Color::Yellow),
             State::Resetting => ("resetting", Color::Yellow),
             State::SwitchingModel => ("switching model", Color::Yellow),
-            State::SettingThinkLevel => ("正在设置思考级别", Color::Yellow),
+            State::SettingThinkLevel => ("setting thinking level", Color::Yellow),
             State::Unavailable if self.worker_failed => ("execution unavailable", Color::Red),
             State::Unavailable => ("config unavailable", Color::Red),
         };
@@ -1000,7 +1000,7 @@ mod tests {
         assert!(
             screen
                 .replace(' ', "")
-                .contains("vendor-2[response]（当前）")
+                .contains("vendor-2[response](current)")
         );
         assert!(!screen.contains('┌'));
         app.handle(key(KeyCode::PageDown), &mut dirty);
@@ -1181,10 +1181,13 @@ mod tests {
                 .iter()
                 .all(|action| matches!(action, MenuAction::Effort(_)))
         );
-        assert!(compact.contains("深入思考（当前）"));
+        assert!(compact.contains("Deepthinking(current)"));
         assert!(screen.contains("❯ high"));
-        assert!(compact.find("❯/effort").unwrap() < compact.find("使用服务端默认级别").unwrap());
-        assert!(compact.contains("模型支持的最高思考级别"));
+        assert!(
+            compact.find("❯/effort").unwrap()
+                < compact.find("Usetheserverdefaultlevel").unwrap()
+        );
+        assert!(compact.contains("Highestlevelthemodelsupports"));
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
         app.handle(key(KeyCode::Down), &mut dirty);
         app.handle(key(KeyCode::Down), &mut dirty);

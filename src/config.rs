@@ -94,7 +94,7 @@ impl std::str::FromStr for ThinkLevel {
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::Xhigh),
             "max" => Ok(Self::Max),
-            _ => anyhow::bail!("思考级别必须为：{}", Self::OPTIONS),
+            _ => anyhow::bail!("thinking level must be one of: {}", Self::OPTIONS),
         }
     }
 }

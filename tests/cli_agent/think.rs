@@ -96,7 +96,7 @@ fn think_commands_preserve_history_and_level_across_model_switch_and_new() {
         output.stdout,
         b"first answer\nsecond answer\nthird answer\nfourth answer\n"
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("思考级别必须为"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("thinking level must be one of"));
     assert_eq!(
         std::fs::read_to_string(dir.path().join("settings.jsonc")).unwrap(),
         settings

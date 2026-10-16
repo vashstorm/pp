@@ -56,11 +56,11 @@ fn run(args: Args) -> Result<()> {
     let mut stdout = io::stdout().lock();
     writeln!(
         stderr,
-        "write/edit 仅修改启动目录内的文件；bash 无目录隔离，请在可信或临时目录中运行。"
+        "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory."
     )?;
     writeln!(
         stderr,
-        "bash 有执行超时，超时终止进程组；Ctrl-C 退出整个程序。"
+        "bash runs with an execution timeout that kills the process group; Ctrl-C exits the whole program."
     )?;
     if let Some(prompt) = args.prompt {
         run_cli_task(&mut agent?, &prompt, &mut stdout, &mut stderr)?;
@@ -116,7 +116,7 @@ fn run(args: Args) -> Result<()> {
                 }
                 writeln!(
                     stderr,
-                    "思考级别：{}（可选：{}）",
+                    "Thinking level: {} (options: {})",
                     agent.think_level().as_str(),
                     config::ThinkLevel::OPTIONS
                 )?;

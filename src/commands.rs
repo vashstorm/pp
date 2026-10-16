@@ -31,7 +31,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/effort",
         icon: "\u{f0eb}",
         usage: "/effort [default|low|medium|high|xhigh|max]",
-        description: "查看或设置思考级别，保留会话历史",
+        description: "View or set the thinking effort level, keeping session history",
     },
     CommandSpec {
         name: "/quit",

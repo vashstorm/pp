@@ -2720,7 +2720,7 @@ mod tui {
         let mut pty = Pty::start(&server, dir.path());
         pty.ready();
         pty.input("/effort ");
-        pty.text("模型支持的最高思考级别");
+        pty.text("Highest level the model supports");
         pty.draft("/effort");
         assert!(server.try_recv().unwrap().is_none());
         pty.input("\u{1b}[B\u{1b}[B\u{1b}[B\u{1b}[B\r");
@@ -3146,7 +3146,7 @@ mod tui {
                 && text.contains("vendor-b")
                 && text.contains("completion")
                 && text.find("❯ /model").unwrap() < text.find("a/primary").unwrap()
-                && text.contains("（当前）")
+                && text.contains("(current)")
                 && screen.hide_cursor()
         });
         // 确认前检查首尾导航、翻页以及窗口缩放。

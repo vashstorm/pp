@@ -113,7 +113,7 @@ impl<T: Copy> SelectionMenu<T> {
                 label.push(Span::styled(format!("{icon} "), detail_style));
             }
             label.push(Span::styled(item.label.as_str(), label_style));
-            let current = if item.current { "（当前）" } else { "" };
+            let current = if item.current { " (current)" } else { "" };
             Row::new([
                 Cell::from(Line::from(label)),
                 Cell::from(format!("{}{current}", item.description)).style(detail_style),
@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(buffer[(47, 1)].fg, Color::Yellow);
         assert_eq!(buffer[(47, 0)].fg, Color::DarkGray);
         let row: String = (0..100).map(|x| buffer[(x, 1)].symbol()).collect();
-        assert!(row.replace(' ', "").contains("detail-1（当前）"));
+        assert!(row.replace(' ', "").contains("detail-1(current)"));
         assert_eq!(menu.height(30), 8);
         assert_eq!(menu.height(2), 2);
         menu.handle_key(press(KeyCode::End));
