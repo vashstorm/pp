@@ -12,10 +12,15 @@ fn assert_level(body: &Value, protocol: &str, level: &str) {
         "reasoning"
     };
     assert!(body.get(other).is_none());
-    if level == "default" {
+    if protocol == "response" {
+        assert_eq!(body[field]["summary"], "auto");
+        if level == "default" {
+            assert!(body[field].get("effort").is_none());
+        } else {
+            assert_eq!(body[field]["effort"], level);
+        }
+    } else if level == "default" {
         assert!(body.get(field).is_none());
-    } else if protocol == "response" {
-        assert_eq!(body[field], json!({"effort":level}));
     } else {
         assert_eq!(body[field], level);
     }

@@ -22,7 +22,7 @@ use tokio::runtime::Runtime;
 
 mod streaming;
 
-use streaming::{ChatStream, ResponsesStream};
+use streaming::{ChatChunk, ChatStream, ResponsesStream};
 
 pub(crate) struct OpenAiClient {
     client: Client<OpenAIConfig>,
@@ -92,9 +92,7 @@ impl OpenAiClient {
             let mut stream = self
                 .client
                 .chat()
-                .create_stream_byot::<_, async_openai::types::chat::CreateChatCompletionStreamResponse>(
-                    request,
-                )
+                .create_stream_byot::<_, ChatChunk>(request)
                 .await
                 .map_err(|error| redacted_error(error, "Chat Completions"))?;
             let mut output = ChatStream::default();

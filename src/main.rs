@@ -195,71 +195,87 @@ fn run_cli_task(
     let (mut out_broken, mut err_broken) = (false, false);
     let (mut visible, mut content, mut newline) = (false, false, true);
     let mut current_tool = None;
-    let result = agent.run(prompt, &mut |event| match event {
-        AgentEvent::AssistantStarted => {
-            visible = false;
-            content = false;
-            newline = true;
+    let mut thinking_newline = true;
+    let result = agent.run(prompt, &mut |event| {
+        if !matches!(&event, AgentEvent::ThinkingDelta { .. }) && !thinking_newline {
+            cli_write(stderr, "\n", &mut err_broken, &mut first_error);
+            thinking_newline = true;
         }
-        AgentEvent::AssistantDelta {
-            text,
-            refusal: false,
-        } => {
-            if !text.is_empty() {
-                cli_write(stdout, &text, &mut out_broken, &mut first_error);
-                visible = true;
-                content |= !text.trim().is_empty();
-                newline = text.ends_with('\n');
+        match event {
+            AgentEvent::AssistantStarted => {
+                visible = false;
+                content = false;
+                newline = true;
             }
-        }
-        AgentEvent::AssistantDelta { refusal: true, .. } => {}
-        AgentEvent::AssistantFinished { text } => {
-            if !content && !text.is_empty() {
-                cli_write(stdout, &text, &mut out_broken, &mut first_error);
-                visible = true;
-                newline = text.ends_with('\n');
+            AgentEvent::ThinkingDelta { text } => {
+                if !text.is_empty() {
+                    thinking_newline = text.ends_with('\n');
+                }
+                cli_write(stderr, &text, &mut err_broken, &mut first_error);
             }
-            if visible && !newline {
-                cli_write(stdout, "\n", &mut out_broken, &mut first_error);
+            AgentEvent::AssistantDelta {
+                text,
+                refusal: false,
+            } => {
+                if !text.is_empty() {
+                    cli_write(stdout, &text, &mut out_broken, &mut first_error);
+                    visible = true;
+                    content |= !text.trim().is_empty();
+                    newline = text.ends_with('\n');
+                }
             }
-            visible = false;
-            newline = true;
-        }
-        AgentEvent::ToolStarted { id, name, .. } => {
-            cli_write(
-                stderr,
-                &format!("tool {name}: running\n"),
-                &mut err_broken,
-                &mut first_error,
-            );
-            current_tool = Some((id, name));
-        }
-        AgentEvent::ToolOutput { stream, text, .. } => {
-            let label = match stream {
-                OutputStream::Stdout => "stdout",
-                OutputStream::Stderr => "stderr",
-            };
-            cli_write(
-                stderr,
-                &format!("[bash {label}] {text}"),
-                &mut err_broken,
-                &mut first_error,
-            );
-        }
-        AgentEvent::ToolFinished { id, result } => {
-            if let Some((current_id, name)) = current_tool.take()
-                && current_id == id
-            {
-                let status = if result["ok"] == true { "ok" } else { "failed" };
+            AgentEvent::AssistantDelta { refusal: true, .. } => {}
+            AgentEvent::AssistantFinished { text } => {
+                if !content && !text.is_empty() {
+                    cli_write(stdout, &text, &mut out_broken, &mut first_error);
+                    visible = true;
+                    newline = text.ends_with('\n');
+                }
+                if visible && !newline {
+                    cli_write(stdout, "\n", &mut out_broken, &mut first_error);
+                }
+                visible = false;
+                newline = true;
+            }
+            AgentEvent::ToolStarted { id, name, .. } => {
                 cli_write(
                     stderr,
-                    &format!("\ntool {name}: {status}\n"),
+                    &format!("tool {name}: running\n"),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+                current_tool = Some((id, name));
+            }
+            AgentEvent::ToolOutput { stream, text, .. } => {
+                let label = match stream {
+                    OutputStream::Stdout => "stdout",
+                    OutputStream::Stderr => "stderr",
+                };
+                cli_write(
+                    stderr,
+                    &format!("[bash {label}] {text}"),
                     &mut err_broken,
                     &mut first_error,
                 );
             }
+            AgentEvent::ToolFinished { id, result } => {
+                if let Some((current_id, name)) = current_tool.take()
+                    && current_id == id
+                {
+                    let status = if result["ok"] == true { "ok" } else { "failed" };
+                    cli_write(
+                        stderr,
+                        &format!("\ntool {name}: {status}\n"),
+                        &mut err_broken,
+                        &mut first_error,
+                    );
+                }
+            }
         }
     });
+    if !thinking_newline {
+        cli_write(stderr, "\n", &mut err_broken, &mut first_error);
+    }
     if visible && !newline {
         cli_write(stdout, "\n", &mut out_broken, &mut first_error);
     }

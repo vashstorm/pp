@@ -7,9 +7,38 @@ use async_openai::types::{
         ChatCompletionResponseMessage, CreateChatCompletionResponse,
         CreateChatCompletionStreamResponse, FinishReason, Role,
     },
-    responses::{OutputContent, OutputItem, OutputMessageContent, ResponseStreamEvent},
+    responses::{
+        OutputContent, OutputItem, OutputMessageContent, ReasoningItem, ReasoningItemContent,
+        ResponseStreamEvent, SummaryPart,
+    },
 };
+use serde::{Deserialize, Deserializer, de::Error};
 use std::collections::BTreeMap;
+
+// 保留 SDK 的完整分片校验，同时读取兼容供应商的可读思考扩展。
+pub(super) struct ChatChunk {
+    native: CreateChatCompletionStreamResponse,
+    thinking: String,
+}
+
+impl<'de> Deserialize<'de> for ChatChunk {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let thinking = value["choices"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|choice| choice["index"] == 0)
+            .filter_map(|choice| {
+                choice["delta"]["reasoning_content"]
+                    .as_str()
+                    .or_else(|| choice["delta"]["reasoning"].as_str())
+            })
+            .collect::<String>();
+        let native = serde_json::from_value(value).map_err(D::Error::custom)?;
+        Ok(Self { native, thinking })
+    }
+}
 
 #[derive(Default)]
 pub(super) struct ChatStream {
@@ -24,10 +53,24 @@ impl ChatStream {
     #[allow(deprecated)] // Reject legacy function_call rather than silently dropping it.
     pub(super) fn push(
         &mut self,
-        chunk: CreateChatCompletionStreamResponse,
+        chunk: ChatChunk,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<()> {
-        for choice in chunk.choices.into_iter().filter(|choice| choice.index == 0) {
+        if !chunk.thinking.is_empty() {
+            ensure!(
+                self.finish_reason.is_none(),
+                "Chat Completions protocol: choice continued after finish_reason"
+            );
+            emit(AgentEvent::ThinkingDelta {
+                text: chunk.thinking,
+            });
+        }
+        for choice in chunk
+            .native
+            .choices
+            .into_iter()
+            .filter(|choice| choice.index == 0)
+        {
             ensure!(
                 self.finish_reason.is_none(),
                 "Chat Completions protocol: choice continued after finish_reason"
@@ -144,6 +187,8 @@ pub(super) struct ResponsesStream {
     content_index: usize,
     content: String,
     refusal: String,
+    thinking: BTreeMap<(u32, bool, u32), String>,
+    last_thinking: Option<(u32, bool, u32)>,
 }
 
 impl ResponsesStream {
@@ -155,6 +200,11 @@ impl ResponsesStream {
         match event {
             ResponseStreamEvent::ResponseCompleted(event) => {
                 let turn = into_response_turn(event.response)?;
+                for (index, item) in turn.output.iter().enumerate() {
+                    if let OutputItem::Reasoning(reasoning) = item {
+                        self.reasoning_done(index as u32, reasoning, emit);
+                    }
+                }
                 let refusal = !turn.output.iter().any(|item| match item {
                     OutputItem::Message(message) => message.content.iter().any(|part| {
                         matches!(part, OutputMessageContent::OutputText(text) if !text.text.trim().is_empty())
@@ -209,6 +259,47 @@ impl ResponsesStream {
                     emit,
                 )?;
             }
+            ResponseStreamEvent::ResponseReasoningSummaryTextDelta(event) => {
+                self.thinking_text(
+                    (event.output_index, true, event.summary_index),
+                    &event.delta,
+                    false,
+                    emit,
+                );
+            }
+            ResponseStreamEvent::ResponseReasoningSummaryTextDone(event) => {
+                self.thinking_text(
+                    (event.output_index, true, event.summary_index),
+                    &event.text,
+                    true,
+                    emit,
+                );
+            }
+            ResponseStreamEvent::ResponseReasoningSummaryPartDone(event) => {
+                let SummaryPart::SummaryText(part) = event.part;
+                self.thinking_text(
+                    (event.output_index, true, event.summary_index),
+                    &part.text,
+                    true,
+                    emit,
+                );
+            }
+            ResponseStreamEvent::ResponseReasoningTextDelta(event) => {
+                self.thinking_text(
+                    (event.output_index, false, event.content_index),
+                    &event.delta,
+                    false,
+                    emit,
+                );
+            }
+            ResponseStreamEvent::ResponseReasoningTextDone(event) => {
+                self.thinking_text(
+                    (event.output_index, false, event.content_index),
+                    &event.text,
+                    true,
+                    emit,
+                );
+            }
             ResponseStreamEvent::ResponseContentPartDone(event) => {
                 let done = match event.part {
                     OutputContent::OutputText(text) => Some((text.text, false)),
@@ -230,6 +321,9 @@ impl ResponsesStream {
                 );
             }
             ResponseStreamEvent::ResponseOutputItemDone(event) => {
+                if let OutputItem::Reasoning(reasoning) = &event.item {
+                    self.reasoning_done(event.output_index, reasoning, emit);
+                }
                 let index = event.output_index as usize;
                 if index >= self.output_index {
                     let item = self.items.entry(index).or_default();
@@ -257,12 +351,56 @@ impl ResponsesStream {
                     });
                 }
             }
-            // Added events, reasoning, annotations and argument deltas do not
-            // contain authoritative output and cannot trigger tool execution.
+            // 新增项、注释和参数分片不能触发工具执行。
             _ => {}
         }
         self.flush(emit);
         Ok(None)
+    }
+
+    fn reasoning_done(
+        &mut self,
+        output: u32,
+        item: &ReasoningItem,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) {
+        for (index, part) in item.summary.iter().enumerate() {
+            let SummaryPart::SummaryText(part) = part;
+            self.thinking_text((output, true, index as u32), &part.text, true, emit);
+        }
+        for (index, part) in item.content.iter().flatten().enumerate() {
+            let ReasoningItemContent::ReasoningText(part) = part;
+            self.thinking_text((output, false, index as u32), &part.text, true, emit);
+        }
+    }
+
+    fn thinking_text(
+        &mut self,
+        key: (u32, bool, u32),
+        text: &str,
+        done: bool,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) {
+        let sent = self.thinking.entry(key).or_default();
+        // done 与 completed 可能重复同一段，只显示尚未输出的后缀。
+        let tail = if done {
+            text.strip_prefix(sent.as_str()).unwrap_or_default()
+        } else {
+            text
+        };
+        if tail.is_empty() {
+            return;
+        }
+        let separator = if self.last_thinking.is_some_and(|last| last != key) {
+            "\n\n"
+        } else {
+            ""
+        };
+        emit(AgentEvent::ThinkingDelta {
+            text: format!("{separator}{tail}"),
+        });
+        sent.push_str(tail);
+        self.last_thinking = Some(key);
     }
 
     fn delta(
@@ -361,7 +499,7 @@ mod tests {
     use async_openai::types::chat::ChatCompletionRequestAssistantMessageContent;
     use serde_json::{Value, json};
 
-    fn chat(delta: Value, finish: Option<&str>) -> CreateChatCompletionStreamResponse {
+    fn chat(delta: Value, finish: Option<&str>) -> ChatChunk {
         serde_json::from_value(json!({
             "id":"fixture", "object":"chat.completion.chunk", "created":0, "model":"fixture",
             "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
@@ -407,6 +545,81 @@ mod tests {
         |event| match event {
             AgentEvent::AssistantDelta { text, refusal } => target.push((text, refusal)),
             _ => panic!("model client must only emit deltas"),
+        }
+    }
+
+    #[test]
+    fn thinking_chat_extensions_are_visible_and_separate_from_answer() {
+        for field in ["reasoning_content", "reasoning"] {
+            let mut stream = ChatStream::default();
+            let mut thinking = String::new();
+            let mut answer = String::new();
+            let mut emit = |event| match event {
+                AgentEvent::ThinkingDelta { text } => thinking.push_str(&text),
+                AgentEvent::AssistantDelta { text, .. } => answer.push_str(&text),
+                _ => panic!(),
+            };
+            stream
+                .push(
+                    chat(json!({"role":"assistant",field:"inspect 中"}), None),
+                    &mut emit,
+                )
+                .unwrap();
+            stream
+                .push(
+                    chat(json!({field:" then answer","content":"done"}), Some("stop")),
+                    &mut emit,
+                )
+                .unwrap();
+            let message = into_message(stream.finish().unwrap()).unwrap();
+            assert_eq!(thinking, "inspect 中 then answer");
+            assert_eq!(answer, "done");
+            assert_eq!(
+                message.content,
+                Some(ChatCompletionRequestAssistantMessageContent::Text(
+                    "done".into()
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn thinking_responses_deduplicate_deltas_done_and_completed() {
+        for summary in [true, false] {
+            let mut stream = ResponsesStream::default();
+            let mut thinking = String::new();
+            let mut emit = |event| {
+                if let AgentEvent::ThinkingDelta { text } = event {
+                    thinking.push_str(&text);
+                }
+            };
+            let kind = if summary {
+                "response.reasoning_summary_text"
+            } else {
+                "response.reasoning_text"
+            };
+            let index = if summary {
+                "summary_index"
+            } else {
+                "content_index"
+            };
+            stream.push(event(json!({"type":format!("{kind}.delta"),"sequence_number":1,"item_id":"r","output_index":0,index:0,"delta":"inspect"})), &mut emit).unwrap();
+            stream.push(event(json!({"type":format!("{kind}.done"),"sequence_number":2,"item_id":"r","output_index":0,index:0,"text":"inspect 中"})), &mut emit).unwrap();
+            let reasoning = if summary {
+                json!({"type":"reasoning","id":"r","status":"completed","summary":[{"type":"summary_text","text":"inspect 中"}],"encrypted_content":"opaque-never-display"})
+            } else {
+                json!({"type":"reasoning","id":"r","status":"completed","summary":[],"content":[{"type":"reasoning_text","text":"inspect 中"}],"encrypted_content":"opaque-never-display"})
+            };
+            stream.push(event(json!({"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":reasoning})), &mut emit).unwrap();
+            let turn = stream
+                .push(
+                    completed(json!([reasoning, message("m", json!([text("answer")]))])),
+                    &mut emit,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(thinking, "inspect 中");
+            assert_eq!(turn.text, "answer");
         }
     }
 
@@ -501,7 +714,7 @@ mod tests {
             )
             .unwrap();
         let mut usage = chat(json!({}), None);
-        usage.choices.clear();
+        usage.native.choices.clear();
         stream.push(usage, &mut capture(&mut visible)).unwrap();
         let message = into_message(stream.finish().unwrap()).unwrap();
         assert_eq!(

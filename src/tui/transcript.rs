@@ -11,12 +11,22 @@ use serde_json::Value;
 use std::{
     io::{self, Write},
     ops::Range,
+    time::Instant,
 };
+
+const BASH_BACKGROUND: Color = Color::Rgb(22, 27, 33);
+const BASH_BORDER: Color = Color::Rgb(76, 85, 98);
+const MUTED_TEXT: Color = Color::Rgb(110, 117, 129);
+const USER_BACKGROUND: Color = Color::Rgb(48, 42, 63);
+const ASSISTANT_BACKGROUND: Color = Color::Rgb(35, 39, 50);
+const BASH_PREVIEW_LINES: usize = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EntryKind {
     User,
+    Assistant,
     Bash,
+    Think,
     // Reserved display categories; no production tool is classified heuristically.
     #[allow(dead_code)]
     Grep,
@@ -31,13 +41,27 @@ impl EntryKind {
     fn color(self) -> Color {
         match self {
             Self::User => Color::Blue,
+            Self::Assistant => Color::Reset,
             Self::Bash => Color::Yellow,
+            Self::Think => MUTED_TEXT,
             Self::Grep => Color::Cyan,
             Self::Skill => Color::Magenta,
             Self::Data => Color::Reset,
             Self::Note => Color::DarkGray,
             Self::Error => Color::Red,
         }
+    }
+
+    fn conversation_background(self) -> Option<Color> {
+        match self {
+            Self::User => Some(USER_BACKGROUND),
+            Self::Assistant | Self::Think => Some(ASSISTANT_BACKGROUND),
+            _ => None,
+        }
+    }
+
+    fn hides_title(self) -> bool {
+        matches!(self, Self::User | Self::Assistant | Self::Think)
     }
 }
 
@@ -50,6 +74,12 @@ pub(super) enum EntryStatus {
 
 #[derive(Clone, Copy)]
 enum Source {
+    Top,
+    Divider,
+    Bottom,
+    Padding,
+    Elision,
+    Footer,
     Title,
     Text,
     StdoutLabel,
@@ -81,6 +111,10 @@ struct TranscriptEntry {
     stderr: String,
     tool: Option<String>,
     layout: Option<EntryLayout>,
+    expanded: bool,
+    elision: String,
+    footer: String,
+    started: Instant,
 }
 
 impl TranscriptEntry {
@@ -95,6 +129,10 @@ impl TranscriptEntry {
             stderr: String::new(),
             tool,
             layout: None,
+            expanded: false,
+            elision: String::new(),
+            footer: String::new(),
+            started: Instant::now(),
         }
     }
 
@@ -108,9 +146,15 @@ impl TranscriptEntry {
 
     fn source(&self, source: Source) -> &str {
         match source {
+            Source::Top | Source::Divider | Source::Bottom | Source::Padding => "",
+            Source::Elision => &self.elision,
+            Source::Footer => &self.footer,
             Source::Title => &self.title,
             Source::Text => self.visible_text(),
             Source::StdoutLabel => "[stdout]",
+            Source::Stdout if self.kind == EntryKind::Bash => {
+                self.stdout.strip_suffix('\n').unwrap_or(&self.stdout)
+            }
             Source::Stdout => &self.stdout,
             Source::StderrLabel => "[stderr]",
             Source::Stderr => &self.stderr,
@@ -119,6 +163,22 @@ impl TranscriptEntry {
 
     fn line(&self, line: &LayoutLine) -> Line<'_> {
         let text = &self.source(line.source)[line.range.clone()];
+        if self.kind == EntryKind::Bash {
+            let color = if matches!(line.source, Source::Title) {
+                Color::Rgb(190, 188, 139)
+            } else if matches!(line.source, Source::Footer) && self.status == EntryStatus::Failed {
+                Color::Red
+            } else {
+                MUTED_TEXT
+            };
+            return Line::styled(text, Style::default().fg(color).bg(BASH_BACKGROUND));
+        }
+        if self.kind == EntryKind::Think {
+            return Line::styled(
+                text,
+                Style::default().fg(MUTED_TEXT).bg(ASSISTANT_BACKGROUND),
+            );
+        }
         if matches!(line.source, Source::Title) {
             let mut spans = vec![Span::styled(
                 text,
@@ -154,17 +214,66 @@ impl TranscriptEntry {
             return;
         }
         let mut lines = Vec::new();
-        self.add_lines(Source::Title, &mut lines);
+        let bash = self.kind == EntryKind::Bash;
+        let user = self.kind == EntryKind::User;
+        let border = |source| LayoutLine {
+            source,
+            range: 0..0,
+            height: 1,
+            title_end: false,
+        };
+        if bash {
+            lines.push(border(Source::Top));
+        }
+        if user {
+            lines.push(border(Source::Padding));
+        }
+        if !self.kind.hides_title() {
+            self.add_lines(Source::Title, &mut lines);
+        }
+        if bash {
+            lines.push(border(Source::Divider));
+        }
+        let output_start = lines.len();
         if !self.visible_text().is_empty() {
             self.add_lines(Source::Text, &mut lines);
         }
         if !self.stdout.is_empty() {
-            self.add_lines(Source::StdoutLabel, &mut lines);
+            if !bash {
+                self.add_lines(Source::StdoutLabel, &mut lines);
+            }
             self.add_lines(Source::Stdout, &mut lines);
         }
         if !self.stderr.is_empty() {
             self.add_lines(Source::StderrLabel, &mut lines);
             self.add_lines(Source::Stderr, &mut lines);
+        }
+        let count = lines.len() - output_start;
+        if bash && !self.expanded && count > BASH_PREVIEW_LINES {
+            let omitted = count - BASH_PREVIEW_LINES;
+            lines.drain(output_start..output_start + omitted);
+            self.elision = format!(
+                "… ({omitted} earlier lines, showing {BASH_PREVIEW_LINES} of {count}) (Ctrl+O: Expand)"
+            );
+            lines.insert(
+                output_start,
+                LayoutLine {
+                    source: Source::Elision,
+                    range: 0..self.elision.len(),
+                    height: 0,
+                    title_end: false,
+                },
+            );
+        }
+        if bash {
+            if self.footer.is_empty() {
+                self.footer = "⟨running⟩".into();
+            }
+            self.add_lines(Source::Footer, &mut lines);
+            lines.push(border(Source::Bottom));
+        }
+        if user {
+            lines.push(border(Source::Padding));
         }
         let mut height = 0;
         for line in &mut lines {
@@ -222,6 +331,7 @@ impl TranscriptEntry {
 pub(super) struct Transcript {
     entries: Vec<TranscriptEntry>,
     assistant: Option<usize>,
+    thinking: Option<usize>,
     running_tools: Vec<(String, usize)>,
     offset: usize,
     total: usize,
@@ -238,14 +348,15 @@ impl Transcript {
     }
 
     pub(super) fn append(&mut self, label: &str, text: &str) {
-        let kind = match label {
-            "You" => EntryKind::User,
-            "Note" => EntryKind::Note,
-            "Error" => EntryKind::Error,
-            _ => EntryKind::Data,
+        let (kind, title) = match label {
+            "You" => (EntryKind::User, String::new()),
+            "Assistant" => (EntryKind::Assistant, String::new()),
+            "Note" => (EntryKind::Note, label.into()),
+            "Error" => (EntryKind::Error, label.into()),
+            _ => (EntryKind::Data, label.into()),
         };
         self.entries
-            .push(TranscriptEntry::new(kind, label.into(), text.into(), None));
+            .push(TranscriptEntry::new(kind, title, text.into(), None));
     }
 
     pub(super) fn write_scrollback(
@@ -254,6 +365,13 @@ impl Transcript {
         snapshot: &Buffer,
     ) -> io::Result<()> {
         let footer_y = snapshot.area.y + self.viewport_height as u16;
+        // 退出时回放完整输出，不把折叠预览当作终端历史。
+        for entry in &mut self.entries {
+            if entry.kind == EntryKind::Bash && !entry.expanded {
+                entry.expanded = true;
+                entry.layout = None;
+            }
+        }
         self.prepare_layout(snapshot.area.width);
         // 分块回放全部历史，避免把整个会话分配成一个巨大的屏幕缓冲区。
         for offset in (0..self.total).step_by(64) {
@@ -277,6 +395,28 @@ impl Transcript {
         match event {
             AgentEvent::AssistantStarted => {
                 self.assistant = None;
+                self.thinking = None;
+            }
+            AgentEvent::ThinkingDelta { text } => {
+                if text.is_empty() {
+                    return;
+                }
+                if let Some(index) = self
+                    .thinking
+                    .filter(|index| *index + 1 == self.entries.len())
+                {
+                    let entry = &mut self.entries[index];
+                    entry.text.push_str(&text);
+                    entry.layout = None;
+                } else {
+                    self.thinking = Some(self.entries.len());
+                    self.entries.push(TranscriptEntry::new(
+                        EntryKind::Think,
+                        String::new(),
+                        text,
+                        None,
+                    ));
+                }
             }
             AgentEvent::AssistantDelta { text, refusal } => {
                 if text.is_empty() {
@@ -305,6 +445,7 @@ impl Transcript {
                     entry.layout = None;
                 }
                 self.assistant = None;
+                self.thinking = None;
             }
             AgentEvent::ToolStarted {
                 id,
@@ -322,7 +463,7 @@ impl Transcript {
                     EntryKind::Data
                 };
                 let title = match detail {
-                    Some(command) if name == "bash" => format!("bash · $ {command}"),
+                    Some(command) if name == "bash" => format!("$ {command}"),
                     Some(path) => format!("{name} · {path}"),
                     None => name.clone(),
                 };
@@ -358,6 +499,22 @@ impl Transcript {
                         entry.tool.as_deref().unwrap_or_default(),
                         &result,
                     );
+                    if entry.kind == EntryKind::Bash {
+                        let status = result.get("exit_code").map_or_else(
+                            || {
+                                if entry.status == EntryStatus::Failed {
+                                    "failed".into()
+                                } else {
+                                    "ok".into()
+                                }
+                            },
+                            |code| format!("Exit code: {code}"),
+                        );
+                        entry.footer = format!(
+                            "⟨Wall: {:.2}s | {status}⟩",
+                            entry.started.elapsed().as_secs_f64()
+                        );
+                    }
                     entry.layout = None;
                 }
             }
@@ -370,7 +527,7 @@ impl Transcript {
         }
         let index = self.entries.len();
         let mut entry =
-            TranscriptEntry::new(EntryKind::Data, "Assistant".into(), String::new(), None);
+            TranscriptEntry::new(EntryKind::Assistant, String::new(), String::new(), None);
         entry.status = EntryStatus::Running;
         self.entries.push(entry);
         self.assistant = Some(index);
@@ -391,6 +548,9 @@ impl Transcript {
         }
         for (_, index) in self.running_tools.drain(..) {
             self.entries[index].status = EntryStatus::Failed;
+            if self.entries[index].kind == EntryKind::Bash {
+                self.entries[index].footer = "⟨failed⟩".into();
+            }
             self.entries[index].layout = None;
         }
         self.append("Error", message);
@@ -398,6 +558,18 @@ impl Transcript {
 
     pub(super) fn page_up(&mut self) {
         self.scroll_up(self.viewport_height.max(1));
+    }
+
+    pub(super) fn toggle_bash_output(&mut self) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.kind == EntryKind::Bash)
+        {
+            entry.expanded = !entry.expanded;
+            entry.layout = None;
+        }
     }
 
     pub(super) fn page_down(&mut self) {
@@ -431,10 +603,10 @@ impl Transcript {
     }
 
     fn prepare_layout(&mut self, width: u16) {
-        let width = width.saturating_sub(2).max(1);
         self.total = 0;
         for entry in &mut self.entries {
-            entry.ensure_layout(width);
+            let padding = if entry.kind == EntryKind::Bash { 4 } else { 2 };
+            entry.ensure_layout(width.saturating_sub(padding).max(1));
             self.total += entry.layout.as_ref().expect("layout initialized").height + 1;
         }
         self.total = self.total.saturating_sub(1);
@@ -459,16 +631,60 @@ impl Transcript {
                     return;
                 }
                 let height = (line.height - skip).min(usize::from(end - y)) as u16;
+                let bash = entry.kind == EntryKind::Bash;
+                let think = entry.kind == EntryKind::Think;
+                let background = if bash {
+                    Some(BASH_BACKGROUND)
+                } else {
+                    entry.kind.conversation_background()
+                };
                 for row in y..y + height {
-                    Span::styled("│", Style::default().fg(entry.kind.color()))
-                        .render(Rect::new(area.x, row, 1, 1), buffer);
+                    if let Some(background) = background {
+                        buffer.set_style(
+                            Rect::new(area.x, row, area.width, 1),
+                            Style::default().bg(background),
+                        );
+                    }
+                    if bash {
+                        let (left, right, label) = match line.source {
+                            Source::Top => ("╭", "╮", ""),
+                            Source::Divider => ("├", "┤", " Output "),
+                            Source::Bottom => ("╰", "╯", ""),
+                            _ => ("│", "│", ""),
+                        };
+                        let style = Style::default().fg(BASH_BORDER).bg(BASH_BACKGROUND);
+                        let horizontal =
+                            matches!(line.source, Source::Top | Source::Divider | Source::Bottom);
+                        if horizontal {
+                            Span::styled("─".repeat(usize::from(area.width)), style)
+                                .render(Rect::new(area.x, row, area.width, 1), buffer);
+                        }
+                        Span::styled(left, style).render(Rect::new(area.x, row, 1, 1), buffer);
+                        if area.width > 1 {
+                            Span::styled(right, style)
+                                .render(Rect::new(area.right() - 1, row, 1, 1), buffer);
+                        }
+                        if !label.is_empty() && area.width > 4 {
+                            Span::styled(
+                                label,
+                                Style::default().fg(Color::Gray).bg(BASH_BACKGROUND),
+                            )
+                            .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
+                        }
+                    } else if !think && background.is_none() {
+                        Span::styled("│", Style::default().fg(entry.kind.color()))
+                            .render(Rect::new(area.x, row, 1, 1), buffer);
+                    }
                 }
-                if area.width > inset {
+                let padding = if bash { 4 } else { inset };
+                if area.width > padding
+                    && !matches!(line.source, Source::Top | Source::Divider | Source::Bottom)
+                {
                     Paragraph::new(entry.line(line))
                         .wrap(Wrap { trim: false })
                         .scroll((u16::try_from(skip).expect("bounded logical window"), 0))
                         .render(
-                            Rect::new(area.x + inset, y, area.width - inset, height),
+                            Rect::new(area.x + inset, y, area.width - padding, height),
                             buffer,
                         );
                 }
@@ -493,7 +709,11 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
             {
-                lines.push(format!("[{label}]\n{text}"));
+                lines.push(if field == "stdout" {
+                    text.strip_suffix('\n').unwrap_or(text).to_owned()
+                } else {
+                    format!("[{label}]\n{}", text.strip_suffix('\n').unwrap_or(text))
+                });
             }
             if result
                 .get(format!("{field}_truncated"))
@@ -503,9 +723,6 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
                 lines.push(format!("[{label} truncated at 65536 bytes]"));
             }
         }
-        if let Some(code) = result.get("exit_code") {
-            lines.push(format!("Exit code: {code}"));
-        }
         if let Some(error) = result.get("error") {
             lines.push(
                 error
@@ -513,9 +730,7 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
                     .map_or_else(|| error.to_string(), str::to_owned),
             );
         }
-        if !lines.is_empty() {
-            return lines.join("\n");
-        }
+        return lines.join("\n");
     }
     if result.get("ok").and_then(Value::as_bool) == Some(false) {
         if let Some(error) = result.get("error") {
@@ -610,78 +825,182 @@ mod tests {
         let mut parser = vt100::Parser::new(100, 100, 0);
         parser.process(&output);
         let text = parser.screen().contents();
-        assert!(
-            text.starts_with("│ You\n│ 保留记录 中😀\n\n│ Assistant\n"),
-            "{text}"
-        );
+        assert!(text.lines().next().unwrap().trim().is_empty());
+        assert_eq!(text.lines().nth(1).unwrap().trim(), "保留记录 中😀");
         for line in history.lines() {
-            assert!(text.contains(&format!("│ {line}")), "{text}");
+            assert!(text.lines().any(|row| row.trim() == line), "{text}");
         }
-        assert!(text.contains("│ Assistant\n│ partial-answer"), "{text}");
-        assert!(
-            text.contains(
-                "│ bash · $ echo live · running\n│ [stdout]\n│ out-中\n│\n│ [stderr]\n│ err[2J"
-            ),
-            "{text}"
-        );
+        assert!(text.lines().any(|row| row.trim() == "partial-answer"));
+        assert!(!text.contains("You\n"));
+        assert!(!text.contains("Assistant\n"));
+        for expected in [
+            "╭─",
+            "│ $ echo live",
+            "├─ Output ─",
+            "│ out-中",
+            "│ [stderr]",
+            "│ err[2J",
+            "│ ⟨running⟩",
+            "╰─",
+        ] {
+            assert!(text.contains(expected), "{text}");
+        }
         assert!(!text.contains("hidden-refusal"));
-        assert!(parser.screen().cell(0, 2).unwrap().bold());
         assert!(!parser.screen().alternate_screen());
     }
 
     #[test]
     fn streaming_category_colors_and_statuses_preserve_default_body() {
-        let mut transcript = Transcript::new();
-        for (kind, title) in [
-            (EntryKind::User, "You"),
-            (EntryKind::Bash, "bash · $ echo"),
-            (EntryKind::Grep, "grep"),
-            (EntryKind::Skill, "skill"),
-            (EntryKind::Data, "Assistant"),
-        ] {
-            let tool = matches!(kind, EntryKind::Bash | EntryKind::Grep | EntryKind::Skill);
+        for kind in [EntryKind::Grep, EntryKind::Skill, EntryKind::Data] {
+            let mut transcript = Transcript::new();
+            let tool = matches!(kind, EntryKind::Grep | EntryKind::Skill);
             let mut entry = TranscriptEntry::new(
                 kind,
-                title.into(),
+                "title".into(),
                 "  body 中😀\n\n    code".into(),
-                tool.then(|| title.into()),
+                tool.then(|| "tool".into()),
             );
-            entry.status = if kind == EntryKind::Grep {
-                EntryStatus::Failed
-            } else {
-                EntryStatus::Running
-            };
+            entry.status = EntryStatus::Failed;
             transcript.entries.push(entry);
-        }
-        let buffer = render(&mut transcript, 60, 30);
-        let colors = [
-            Color::Blue,
-            Color::Yellow,
-            Color::Cyan,
-            Color::Magenta,
-            Color::Reset,
-        ];
-        for (index, color) in colors.into_iter().enumerate() {
-            let y = (index * 5) as u16;
-            assert_eq!(buffer[(0, y)].symbol(), "│");
-            assert_eq!(buffer[(0, y)].fg, color);
-            assert_eq!(buffer[(2, y)].fg, color);
-            assert!(buffer[(2, y)].modifier.contains(Modifier::BOLD));
-            assert_eq!(buffer[(4, y + 1)].fg, Color::Reset);
-            if (1..=3).contains(&index) {
-                assert!(buffer[(4, y + 1)].modifier.contains(Modifier::DIM));
+            let buffer = render(&mut transcript, 60, 8);
+            assert_eq!(buffer[(0, 0)].symbol(), "│");
+            assert_eq!(buffer[(0, 0)].fg, kind.color());
+            assert_eq!(buffer[(2, 0)].fg, kind.color());
+            assert!(buffer[(2, 0)].modifier.contains(Modifier::BOLD));
+            assert_eq!(buffer[(4, 1)].fg, Color::Reset);
+            if tool {
+                assert!(buffer[(4, 1)].modifier.contains(Modifier::DIM));
             }
+            assert!(screen(&buffer).contains("  body 中"));
+            assert!(screen(&buffer).contains("    code"));
         }
-        for (index, color) in colors.into_iter().enumerate() {
-            assert!(!colors[index + 1..].contains(&color));
-        }
+    }
+
+    #[test]
+    fn conversation_entries_use_backgrounds_without_role_labels() {
+        let mut transcript = Transcript::new();
+        transcript.append("You", "user input");
+        transcript.append("Assistant", "assistant output");
+
+        let buffer = render(&mut transcript, 60, 8);
         let text = screen(&buffer);
-        assert!(text.contains("bash · $ echo · running"));
-        assert!(text.contains("grep · failed"));
-        assert!(text.contains("  body 中"));
-        assert!(text.contains("    code"));
-        assert!((0..60).any(|x| buffer[(x, 10)].fg == Color::Red));
-        assert!((0..60).any(|x| buffer[(x, 5)].fg == Color::Yellow));
+        assert_eq!(transcript.entries[0].kind, EntryKind::User);
+        assert_eq!(transcript.entries[1].kind, EntryKind::Assistant);
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
+        assert_eq!(buffer[(0, 0)].bg, USER_BACKGROUND);
+        assert_eq!(buffer[(2, 0)].bg, USER_BACKGROUND);
+        assert_eq!(buffer[(2, 1)].symbol(), "u");
+        assert_eq!(buffer[(2, 1)].bg, USER_BACKGROUND);
+        assert_eq!(buffer[(0, 2)].symbol(), " ");
+        assert_eq!(buffer[(0, 2)].bg, USER_BACKGROUND);
+        assert_eq!(buffer[(0, 4)].bg, ASSISTANT_BACKGROUND);
+        assert_eq!(buffer[(2, 4)].bg, ASSISTANT_BACKGROUND);
+        assert_ne!(USER_BACKGROUND, ASSISTANT_BACKGROUND);
+        assert!(text.contains("user input"));
+        assert!(text.contains("assistant output"));
+        assert!(!text.contains("You"));
+        assert!(!text.contains("Assistant"));
+    }
+
+    #[test]
+    fn thinking_and_assistant_share_background_but_not_foreground() {
+        let mut transcript = Transcript::new();
+        transcript.append("Assistant", "answer");
+        transcript.progress(AgentEvent::ThinkingDelta {
+            text: "reasoning".into(),
+        });
+
+        let buffer = render(&mut transcript, 60, 4);
+        assert_eq!(buffer[(2, 0)].fg, Color::Reset);
+        assert_eq!(buffer[(2, 0)].bg, ASSISTANT_BACKGROUND);
+        assert_eq!(buffer[(2, 2)].fg, MUTED_TEXT);
+        assert_eq!(buffer[(2, 2)].bg, ASSISTANT_BACKGROUND);
+    }
+
+    #[test]
+    fn bash_card_and_thinking_match_reference_and_keep_full_output() {
+        let mut transcript = Transcript::new();
+        tool(&mut transcript, "b", "bash", json!({"command":"git diff"}));
+        let output: String = (0..24).map(|i| format!("line-{i:02}\n")).collect();
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "b".into(),
+            result: json!({"ok":true,"stdout":output,"exit_code":0}),
+        });
+        transcript.progress(AgentEvent::ThinkingDelta {
+            text: "Check the diff 中😀".into(),
+        });
+        let buffer = render(&mut transcript, 100, 30);
+        let text = screen(&buffer);
+        for expected in [
+            "╭─",
+            "$ git diff",
+            "├─ Output ─",
+            "14 earlier lines, showing 10 of 24",
+            "Ctrl+O: Expand",
+            "line-14",
+            "line-23",
+            "Wall:",
+            "Exit code: 0",
+            "╰─",
+            "Check the diff 中",
+        ] {
+            assert!(text.contains(expected), "{text}");
+        }
+        assert!(!text.contains("line-00"));
+        assert_eq!(buffer[(0, 0)].fg, BASH_BORDER);
+        assert_eq!(buffer[(2, 1)].fg, Color::Rgb(190, 188, 139));
+        assert_eq!(buffer[(2, 1)].bg, BASH_BACKGROUND);
+        let think_row = text
+            .lines()
+            .position(|line| line.contains("Check the diff"))
+            .unwrap() as u16;
+        assert_eq!(buffer[(0, think_row)].symbol(), " ");
+        assert_eq!(buffer[(2, think_row)].fg, MUTED_TEXT);
+        assert_eq!(buffer[(2, think_row)].bg, ASSISTANT_BACKGROUND);
+        transcript.toggle_bash_output();
+        let expanded = screen(&render(&mut transcript, 100, 40));
+        assert!(expanded.contains("line-00"));
+        assert!(!expanded.contains("earlier lines"));
+        transcript.toggle_bash_output();
+        render(&mut transcript, 5, 2);
+        let snapshot = render(&mut transcript, 100, 30);
+        let mut replay = Vec::new();
+        transcript.write_scrollback(&mut replay, &snapshot).unwrap();
+        let mut parser = vt100::Parser::new(80, 100, 0);
+        parser.process(&replay);
+        assert!(parser.screen().contents().contains("line-00"));
+        for width in [1, 2, 3, 4, 10] {
+            render(&mut transcript, width, 8);
+        }
+    }
+
+    #[test]
+    fn thinking_turns_stay_separate_from_answers_and_each_other() {
+        let mut transcript = Transcript::new();
+        for _ in 0..2 {
+            transcript.progress(AgentEvent::AssistantStarted);
+            transcript.progress(AgentEvent::ThinkingDelta {
+                text: "think".into(),
+            });
+            transcript.progress(AgentEvent::ThinkingDelta {
+                text: " more".into(),
+            });
+            transcript.progress(AgentEvent::AssistantFinished {
+                text: String::new(),
+            });
+        }
+        assert_eq!(transcript.entries.len(), 2);
+        assert_eq!(transcript.entries[0].text, "think more");
+        transcript.progress(AgentEvent::AssistantStarted);
+        transcript.progress(AgentEvent::ThinkingDelta {
+            text: "partial thinking".into(),
+        });
+        delta(&mut transcript, "answer", false);
+        transcript.fail("stream failed");
+        let text = screen(&render(&mut transcript, 80, 20));
+        assert!(text.contains("partial thinking"));
+        assert!(text.contains("answer"));
+        assert!(text.contains("stream failed"));
     }
 
     #[test]
@@ -731,7 +1050,7 @@ mod tests {
 
         transcript.scroll_up(usize::MAX);
         let top = screen(&render(&mut transcript, 12, 8));
-        assert!(top.starts_with("│ Assistant"));
+        assert!(top.starts_with("  line-00"));
         assert!(top.contains("line-00"));
         transcript.scroll_up(3);
         assert_eq!(screen(&render(&mut transcript, 12, 8)), top);
@@ -854,7 +1173,8 @@ mod tests {
             });
         }
         let live = screen(&render(&mut transcript, 70, 15));
-        assert!(live.contains("[stdout]"));
+        assert!(live.contains(" Output "));
+        assert!(!live.contains("[stdout]"));
         assert!(live.contains("[stderr]"));
         assert!(live.contains("out-first"));
         assert!(live.contains("err-first"));
@@ -878,7 +1198,8 @@ mod tests {
         });
         assert_eq!(transcript.entries[0].status, EntryStatus::Failed);
         assert_eq!(transcript.entries[1].status, EntryStatus::Complete);
-        assert_eq!(transcript.entries[1].text, "Exit code: 0");
+        assert_eq!(transcript.entries[1].text, "");
+        assert!(transcript.entries[1].footer.contains("Exit code: 0"));
         tool(&mut transcript, "read", "read", json!({"path": "SKILL.md"}));
         transcript.progress(AgentEvent::ToolFinished {
             id: "read".into(),

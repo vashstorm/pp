@@ -44,13 +44,11 @@ impl Session {
         match self {
             Self::Completion(request) => request.reasoning_effort = level.effort(),
             Self::Response(request) => {
-                request.reasoning =
-                    level
-                        .effort()
-                        .map(|effort| async_openai::types::responses::Reasoning {
-                            effort: Some(effort),
-                            ..Default::default()
-                        });
+                request.reasoning = Some(async_openai::types::responses::Reasoning {
+                    effort: level.effort(),
+                    summary: Some(async_openai::types::responses::ReasoningSummary::Auto),
+                    ..Default::default()
+                });
             }
         }
     }

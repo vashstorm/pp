@@ -6,6 +6,9 @@ pub(crate) enum OutputStream {
 
 pub(crate) enum AgentEvent {
     AssistantStarted,
+    ThinkingDelta {
+        text: String,
+    },
     AssistantDelta {
         text: String,
         refusal: bool,

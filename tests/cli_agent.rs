@@ -2574,6 +2574,22 @@ mod tui {
         panic!("missing label {label}: {}", screen.contents());
     }
 
+    const USER_BACKGROUND: vt100::Color = vt100::Color::Rgb(48, 42, 63);
+    const ASSISTANT_BACKGROUND: vt100::Color = vt100::Color::Rgb(35, 39, 50);
+
+    fn background_color(screen: &vt100::Screen, text: &str) -> vt100::Color {
+        for row in 0..100 {
+            let line: String = (0..150)
+                .filter_map(|col| screen.cell(row, col))
+                .map(|cell| cell.contents())
+                .collect();
+            if line.contains(text) {
+                return screen.cell(row, 0).unwrap().bgcolor();
+            }
+        }
+        panic!("missing text {text}: {}", screen.contents());
+    }
+
     #[test]
     fn tui_startup_centers_brand_and_keeps_footer_colors() {
         let server = server();
@@ -2656,19 +2672,28 @@ mod tui {
             pty.wait_for("退出后普通屏幕保留完整对话", |screen| {
                 let text = screen.contents();
                 !screen.alternate_screen()
-                    && text.contains("│ You\n│ 保留提问")
-                    && text.contains("│ Assistant\n│ retained-answer 中😀\n│     indented code")
+                    && text.contains("保留提问")
+                    && text.contains("retained-answer 中😀")
+                    && text.contains("indented code")
                     && text.contains("fixture-model")
                     && text.contains('❯')
+                    && background_color(screen, "保留提问") == USER_BACKGROUND
+                    && background_color(screen, "retained-answer") == ASSISTANT_BACKGROUND
             });
             let text = pty.parser.screen().contents();
             if exit == "\x03" {
                 assert!(text.contains("unsubmitted-draft"), "{text}");
             }
             assert_eq!(
-                label_color(pty.parser.screen(), "You"),
-                vt100::Color::Idx(4)
+                background_color(pty.parser.screen(), "保留提问"),
+                USER_BACKGROUND
             );
+            assert_eq!(
+                background_color(pty.parser.screen(), "retained-answer"),
+                ASSISTANT_BACKGROUND
+            );
+            assert!(!text.contains("You"), "{text}");
+            assert!(!text.contains("Assistant"), "{text}");
             assert!(text.lines().any(|line| line.starts_with('─')), "{text}");
             assert_eq!(text.matches("retained-answer").count(), 1, "{text}");
             pty.finish();
@@ -2715,14 +2740,18 @@ mod tui {
         for line in answer.lines() {
             assert_eq!(text.matches(line).count(), 1, "{line}\n{text}");
         }
-        assert!(text.contains("│ You\n│ long-history"), "{text}");
+        assert!(text.contains("long-history"), "{text}");
         assert!(text.contains("❯ draft-中"), "{text}");
         let border_row = text.lines().position(|line| line.starts_with('─')).unwrap() as u16;
         assert_eq!(
             screen.cell(border_row, 0).unwrap().fgcolor(),
             vt100::Color::Rgb(127, 166, 106)
         );
-        assert_eq!(label_color(screen, "You"), vt100::Color::Idx(4));
+        assert_eq!(background_color(screen, "long-history"), USER_BACKGROUND);
+        assert_eq!(
+            background_color(screen, "retained-000"),
+            ASSISTANT_BACKGROUND
+        );
         let footer_row = text
             .lines()
             .position(|line| line.contains("fixture-model"))
@@ -2765,9 +2794,9 @@ mod tui {
             pty.input("\x03");
             pty.wait_for("退出后保留未完成的流式输出", |screen| {
                 !screen.alternate_screen()
-                    && screen
-                        .contents()
-                        .contains("│ Assistant\n│ partial-retained 中😀")
+                    && screen.contents().contains("partial-retained 中😀")
+                    && background_color(screen, "pending-task") == USER_BACKGROUND
+                    && background_color(screen, "partial-retained") == ASSISTANT_BACKGROUND
             });
             pty.finish();
             stream.finish();
@@ -2953,6 +2982,113 @@ mod tui {
     }
 
     #[test]
+    fn thinking_and_bash_cards_stream_with_default_style_and_expand_without_editing_draft() {
+        for protocol in ["completion", "response"] {
+            let server = server();
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("settings.jsonc"), fixture_settings()).unwrap();
+            std::fs::write(
+                dir.path().join("models.jsonc"),
+                response_models(&server, Some(protocol)),
+            )
+            .unwrap();
+            let mut pty = Pty::start_with_existing_files(dir.path());
+            pty.ready();
+            pty.input("inspect\r");
+            let path = if protocol == "completion" {
+                "/v1/chat/completions"
+            } else {
+                "/v1/responses"
+            };
+            let (request, body) = receive_at(&server, path);
+            let mut stream = SseReply::new(request);
+            if protocol == "completion" {
+                stream.event(chat_chunk(
+                    json!({"role":"assistant","reasoning_content":"Check the diff 中"}),
+                    None,
+                ));
+            } else {
+                assert_eq!(body["reasoning"]["summary"], "auto");
+                stream.event(json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"r","output_index":0,"summary_index":0,"delta":"Check the diff 中"}));
+            }
+            pty.text("Check the diff 中");
+            let row = (0..30)
+                .find(|row| {
+                    (0..100)
+                        .filter_map(|col| pty.parser.screen().cell(*row, col))
+                        .map(|cell| cell.contents())
+                        .collect::<String>()
+                        .contains("Check the diff")
+                })
+                .unwrap();
+            assert_eq!(pty.parser.screen().cell(row, 0).unwrap().contents(), " ");
+            assert_eq!(
+                pty.parser.screen().cell(row, 2).unwrap().fgcolor(),
+                vt100::Color::Rgb(110, 117, 129)
+            );
+            assert_eq!(
+                pty.parser.screen().cell(row, 2).unwrap().bgcolor(),
+                vt100::Color::Rgb(35, 39, 50)
+            );
+            if protocol == "completion" {
+                streaming_delta(&mut stream, protocol, "inspected");
+                streaming_complete(&mut stream, protocol, "inspected");
+            } else {
+                stream.event(json!({"type":"response.completed","sequence_number":2,"response":response_body(json!([
+                    {"type":"reasoning","id":"r","status":"completed","summary":[{"type":"summary_text","text":"Check the diff 中"}]},
+                    response_message("m",json!([response_text("inspected")]))
+                ]))}));
+            }
+            stream.finish();
+            pty.ready();
+            pty.input("run bash\r");
+            let (request, _) = receive_at(&server, path);
+            let command = "for i in {0..13}; do printf 'output-%02d\\n' \"$i\"; done";
+            if protocol == "completion" {
+                calls_reply(
+                    request,
+                    json!([call("b", "bash", json!({"command":command}))]),
+                );
+            } else {
+                response_reply(
+                    request,
+                    json!([response_call("b", "bash", json!({"command":command}))]),
+                );
+            }
+            let (request, _) = receive_at(&server, path);
+            pty.text("Exit code: 0");
+            pty.text("4 earlier lines");
+            pty.text("Output");
+            assert!(!pty.parser.screen().contents().contains("output-00"));
+            assert_eq!(
+                label_color(pty.parser.screen(), "$ for"),
+                vt100::Color::Rgb(190, 188, 139)
+            );
+            pty.input("draft-中");
+            pty.draft("draft-中");
+            pty.input("\x0f");
+            pty.text("output-00");
+            pty.draft("draft-中");
+            pty.input("\x0f");
+            pty.text("4 earlier lines");
+            pty.draft("draft-中");
+            pty.resize(4, 20);
+            pty.resize(30, 100);
+            pty.text("output-13");
+            pty.draft("draft-中");
+            if protocol == "completion" {
+                final_reply(request, "done");
+            } else {
+                response_final(request, "done");
+            }
+            pty.text("done");
+            pty.input("\x03");
+            pty.finish();
+            no_more(&server);
+        }
+    }
+
+    #[test]
     fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         for protocol in ["completion", "response"] {
             let server = server();
@@ -2979,9 +3115,13 @@ mod tui {
             pty.drain();
             assert!(pty.parser.screen().contents().contains("running"));
             assert!(!pty.parser.screen().contents().contains("-last"));
-            assert_ne!(
-                label_color(pty.parser.screen(), "You"),
-                label_color(pty.parser.screen(), "Assistant")
+            assert_eq!(
+                background_color(pty.parser.screen(), "live task"),
+                USER_BACKGROUND
+            );
+            assert_eq!(
+                background_color(pty.parser.screen(), "first-中"),
+                ASSISTANT_BACKGROUND
             );
             let mut full = "first-中".to_owned();
             let lines: String = (0..60).map(|i| format!("\nline-{i:02}")).collect();
@@ -3049,10 +3189,8 @@ mod tui {
             pty.drain();
             assert!(pty.parser.screen().contents().contains("running"));
             assert!(!pty.parser.screen().contents().contains("out-firstout-last"));
-            let bash_color = label_color(pty.parser.screen(), "bash");
-            let user_color = label_color(pty.parser.screen(), "You");
-            assert_ne!(bash_color, user_color);
-            assert_ne!(bash_color, vt100::Color::Default);
+            let bash_color = label_color(pty.parser.screen(), "$ printf");
+            assert_eq!(bash_color, vt100::Color::Rgb(190, 188, 139));
             no_more(&server);
             std::fs::write(dir.path().join("release"), "").unwrap();
             let (request, body) = receive_at(&server, path);
@@ -3513,8 +3651,7 @@ mod tui {
         final_reply(request, "tui-ok");
         pty.wait_for("answer and preserved busy draft", |screen| {
             let text = screen.contents();
-            text.contains("Assistant")
-                && text.contains("tui-ok")
+            text.contains("tui-ok")
                 && text.contains("next draft")
                 && text.contains("pasted line")
                 && input_is_ready(screen)

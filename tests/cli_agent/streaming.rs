@@ -352,6 +352,50 @@ fn assert_edit_schema(tool: &Value, replace: bool) {
 }
 
 #[test]
+fn thinking_is_streamed_by_default_without_polluting_stdout() {
+    for protocol in PROTOCOLS {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let mut cli = protocol.start(&server, dir.path(), Some("inspect"));
+        let (request, body) = protocol.receive(&server);
+        let mut stream = SseReply::new(request);
+        let reasoning = json!({"type":"reasoning","id":"r","status":"completed","summary":[{"type":"summary_text","text":"inspect 中"}],"encrypted_content":"opaque-hidden"});
+        match protocol {
+            Protocol::Chat => stream.event(chat_chunk(
+                json!({"role":"assistant","reasoning_content":"inspect 中"}),
+                None,
+            )),
+            Protocol::Responses => {
+                assert_eq!(body["reasoning"], json!({"summary":"auto"}));
+                stream.event(json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"r","output_index":0,"summary_index":0,"delta":"inspect 中"}));
+            }
+        }
+        cli.wait_for(Pipe::Stderr, "inspect 中");
+        cli.assert_running();
+        assert!(cli.text(Pipe::Stdout).is_empty());
+        match protocol {
+            Protocol::Chat => {
+                protocol.text(&mut stream, "answer");
+                protocol.complete(&mut stream, text_output("answer"), false);
+            }
+            Protocol::Responses => {
+                stream.event(json!({"type":"response.reasoning_summary_text.done","sequence_number":2,"item_id":"r","output_index":0,"summary_index":0,"text":"inspect 中"}));
+                stream.event(json!({"type":"response.completed","sequence_number":3,"response":response_body(json!([reasoning,response_message("m",json!([response_text("answer")]))]))}));
+            }
+        }
+        stream.finish();
+        let output = cli.finish();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"answer\n");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.matches("inspect 中").count(), 1);
+        assert!(stderr.contains("inspect 中\n"));
+        assert!(!stderr.contains("opaque-hidden"));
+        assert!(!stderr.contains('\x1b'));
+    }
+}
+
+#[test]
 fn streaming_first_chunk_is_visible_before_finish_and_repl_history_is_complete() {
     for protocol in PROTOCOLS {
         for repl in [false, true] {

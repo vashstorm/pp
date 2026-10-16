@@ -38,7 +38,7 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
-const SHORTCUTS: &str = "Enter send · ↑↓ history/menu · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+const SHORTCUTS: &str = "Enter send · ↑↓ history/menu · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
 const MOUSE_SCROLL_LINES: usize = 3;
 
 pub(crate) fn run(agent: Result<Agent>, cwd: &Path) -> Result<()> {
@@ -587,6 +587,10 @@ impl App {
                 if control && !key.modifiers.contains(KeyModifiers::ALT) {
                     let ratatui_textarea::DataCursor(row, column) = self.input.cursor();
                     match key.code {
+                        KeyCode::Char('o') => {
+                            self.conversation.toggle_bash_output();
+                            return false;
+                        }
                         KeyCode::Char('a') => {
                             if column > 0 {
                                 self.input.move_cursor(CursorMove::Head);
@@ -1313,7 +1317,7 @@ mod tests {
             assert!(!app.handle(mouse(MouseEventKind::ScrollUp), &mut dirty));
             assert!(dirty);
             let older = draw(&mut app, 100, 30);
-            assert!(older.contains("history-58"));
+            assert!(older.contains("history-57"));
             assert!(!older.contains("history-59"));
             assert_eq!(app.input.lines(), &["draft-中"]);
             assert_eq!(app.input.cursor(), cursor);
