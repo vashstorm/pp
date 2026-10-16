@@ -1,0 +1,9 @@
+/target/
+/models.jsonc
+
+# 工具运行时生成的项目内缓存与临时文件
+/.pp-cache/
+/.pp-tmp-*/
+
+# agent 指南文件，本地维护
+/AGENTS.md

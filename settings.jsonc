@@ -1,0 +1,17 @@
+{
+  // Optional; the first provider's first model is used when omitted or unmatched
+  "default_model": "glm/glm-5.3-flash",
+  // Editing mode: "replace" (default) or "hashline"
+  "edit": "replace",
+  // 思考级别：default（服务端默认）、low、medium、high、xhigh、max
+  "think_level": "default",
+  // Maximum model requests per user task
+  "max_model_requests": 20,
+  // Model request timeout in seconds, for either API
+  "request_timeout_seconds": 120,
+  // read 单次返回的源字节数与完整行数上限
+  "read_max_bytes": 65536,
+  "read_max_lines": 2000,
+  // bash 超时秒数；超时终止进程组，不撤销已经产生的文件修改
+  "bash_timeout_seconds": 120,
+}
