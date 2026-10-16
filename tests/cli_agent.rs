@@ -2575,6 +2575,145 @@ mod tui {
     }
 
     #[test]
+    fn tui_exit_keeps_conversation_on_normal_screen() {
+        for exit in ["\x03", "/quit\r"] {
+            let server = server();
+            let dir = tempfile::tempdir().unwrap();
+            let mut pty = Pty::start(&server, dir.path());
+            pty.ready();
+            pty.input("保留提问\r");
+            let (request, _) = pty.request(&server);
+            final_reply(request, "retained-answer 中😀\n    indented code");
+            pty.text("retained-answer");
+            pty.ready();
+            if exit == "\x03" {
+                pty.input("unsubmitted-draft");
+                pty.draft("unsubmitted-draft");
+            }
+            pty.input(exit);
+            pty.wait_for("退出后普通屏幕保留完整对话", |screen| {
+                let text = screen.contents();
+                !screen.alternate_screen()
+                    && text.contains("│ You\n│ 保留提问")
+                    && text.contains("│ Assistant\n│ retained-answer 中😀\n│     indented code")
+                    && text.contains("fixture-model")
+                    && text.contains('❯')
+            });
+            let text = pty.parser.screen().contents();
+            if exit == "\x03" {
+                assert!(text.contains("unsubmitted-draft"), "{text}");
+            }
+            assert_eq!(
+                label_color(pty.parser.screen(), "You"),
+                vt100::Color::Idx(4)
+            );
+            assert!(text.lines().any(|line| line.starts_with('─')), "{text}");
+            assert_eq!(text.matches("retained-answer").count(), 1, "{text}");
+            pty.finish();
+            no_more(&server);
+        }
+    }
+
+    #[test]
+    fn tui_exit_keeps_scrolled_history_and_footer_styles() {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let mut pty = Pty::start(&server, dir.path());
+        pty.ready();
+        pty.input("long-history\r");
+        let (request, _) = pty.request(&server);
+        let answer = (0..90)
+            .map(|index| format!("    retained-{index:03} 中😀"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        final_reply(request, &answer);
+        pty.text("retained-089");
+        pty.ready();
+        pty.input("draft-中\x1b[5~");
+        pty.draft("draft-中");
+        pty.wait_for("退出前已向上翻页", |screen| {
+            !screen.contents().contains("retained-089")
+        });
+        pty.input("\x03");
+        pty.wait_for("退出后保留输入框和状态栏", |screen| {
+            !screen.alternate_screen()
+                && screen.contents().contains("❯ draft-中")
+                && screen.contents().contains("fixture-model")
+        });
+        let marker = b"\x1b[?1049l";
+        let start = pty
+            .raw
+            .windows(marker.len())
+            .rposition(|bytes| bytes == marker)
+            .unwrap();
+        let mut parser = vt100::Parser::new(150, 100, 0);
+        parser.process(&pty.raw[start + marker.len()..]);
+        let screen = parser.screen();
+        let text = screen.contents();
+        for line in answer.lines() {
+            assert_eq!(text.matches(line).count(), 1, "{line}\n{text}");
+        }
+        assert!(text.contains("│ You\n│ long-history"), "{text}");
+        assert!(text.contains("❯ draft-中"), "{text}");
+        let border_row = text.lines().position(|line| line.starts_with('─')).unwrap() as u16;
+        assert_eq!(
+            screen.cell(border_row, 0).unwrap().fgcolor(),
+            vt100::Color::Rgb(127, 166, 106)
+        );
+        assert_eq!(label_color(screen, "You"), vt100::Color::Idx(4));
+        let footer_row = text
+            .lines()
+            .position(|line| line.contains("fixture-model"))
+            .unwrap() as u16;
+        assert_eq!(
+            screen.cell(footer_row, 2).unwrap().fgcolor(),
+            vt100::Color::Rgb(190, 133, 169)
+        );
+        parser.process(b"shell> ");
+        assert!(parser.screen().contents().contains("\nshell> "));
+        assert_eq!(parser.screen().fgcolor(), vt100::Color::Default);
+        assert!(!parser.screen().hide_cursor());
+        pty.finish();
+        no_more(&server);
+    }
+
+    #[test]
+    fn tui_ctrl_c_keeps_partial_output_without_waiting_for_response() {
+        for protocol in ["completion", "response"] {
+            let server = server();
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("settings.jsonc"), fixture_settings()).unwrap();
+            std::fs::write(
+                dir.path().join("models.jsonc"),
+                response_models(&server, Some(protocol)),
+            )
+            .unwrap();
+            let mut pty = Pty::start_with_existing_files(dir.path());
+            pty.ready();
+            pty.input("pending-task\r");
+            let path = if protocol == "completion" {
+                "/v1/chat/completions"
+            } else {
+                "/v1/responses"
+            };
+            let (request, _) = receive_at(&server, path);
+            let mut stream = SseReply::new(request);
+            streaming_delta(&mut stream, protocol, "partial-retained 中😀");
+            pty.text("partial-retained");
+            pty.input("\x03");
+            pty.wait_for("退出后保留未完成的流式输出", |screen| {
+                !screen.alternate_screen()
+                    && screen
+                        .contents()
+                        .contains("│ Assistant\n│ partial-retained 中😀")
+            });
+            pty.finish();
+            stream.finish();
+            no_more(&server);
+        }
+    }
+
+    #[test]
     fn tui_think_level_updates_status_and_rejects_changes_while_busy() {
         let server = server();
         let dir = tempfile::tempdir().unwrap();

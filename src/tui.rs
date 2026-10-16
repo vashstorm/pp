@@ -1,4 +1,5 @@
 mod menu;
+mod scrollback;
 mod statusline;
 mod transcript;
 
@@ -60,7 +61,17 @@ pub(crate) fn run(agent: Result<Agent>, cwd: &Path) -> Result<()> {
         if event::poll(Duration::from_millis(50)).context("polling terminal input")? {
             let event = event::read().context("reading terminal input")?;
             if app.handle(event, &mut dirty) {
-                return Ok(());
+                let snapshot = terminal
+                    .draw(|frame| app.draw(frame, &workspace.context))
+                    .context("drawing final terminal screen")?
+                    .buffer
+                    .clone();
+                drop(terminal);
+                drop(guard);
+                return app
+                    .conversation
+                    .write_scrollback(&mut io::stdout().lock(), &snapshot)
+                    .context("writing terminal transcript");
             }
         }
     }
@@ -677,9 +688,7 @@ impl App {
             area.width,
             status_height,
         );
-        if conversation.height > 0 {
-            self.conversation.draw(frame, conversation);
-        }
+        self.conversation.draw(frame, conversation);
         let editor_area = if bordered {
             let block = Block::default()
                 .borders(Borders::TOP | Borders::BOTTOM)

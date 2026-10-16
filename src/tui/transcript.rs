@@ -1,13 +1,17 @@
 use crate::events::{AgentEvent, OutputStream};
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::{Paragraph, Widget, Wrap},
 };
 use serde_json::Value;
-use std::ops::Range;
+use std::{
+    io::{self, Write},
+    ops::Range,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EntryKind {
@@ -244,6 +248,31 @@ impl Transcript {
             .push(TranscriptEntry::new(kind, label.into(), text.into(), None));
     }
 
+    pub(super) fn write_scrollback(
+        &mut self,
+        writer: &mut impl Write,
+        snapshot: &Buffer,
+    ) -> io::Result<()> {
+        let footer_y = snapshot.area.y + self.viewport_height as u16;
+        self.prepare_layout(snapshot.area.width);
+        // 分块回放全部历史，避免把整个会话分配成一个巨大的屏幕缓冲区。
+        for offset in (0..self.total).step_by(64) {
+            let height = (self.total - offset).min(64) as u16;
+            let area = Rect::new(0, 0, snapshot.area.width, height);
+            let mut buffer = Buffer::empty(area);
+            self.render(&mut buffer, area, offset);
+            super::scrollback::write_rows(writer, &buffer, area)?;
+        }
+        let footer = Rect::new(
+            snapshot.area.x,
+            footer_y,
+            snapshot.area.width,
+            snapshot.area.bottom().saturating_sub(footer_y),
+        );
+        super::scrollback::write_rows(writer, snapshot, footer)?;
+        writer.flush()
+    }
+
     pub(super) fn progress(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::AssistantStarted => {
@@ -387,25 +416,32 @@ impl Transcript {
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        self.viewport_height = usize::from(area.height);
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let inset = area.width.min(2);
-        let width = area.width.saturating_sub(inset).max(1);
-        self.total = 0;
-        for entry in &mut self.entries {
-            entry.ensure_layout(width);
-            self.total += entry.layout.as_ref().expect("layout initialized").height + 1;
-        }
-        self.total = self.total.saturating_sub(1);
-        self.viewport_height = usize::from(area.height);
+        self.prepare_layout(area.width);
         let bottom = self.total.saturating_sub(self.viewport_height);
         self.offset = if self.follow_bottom {
             bottom
         } else {
             self.offset.min(bottom)
         };
-        let mut skip = self.offset;
+        self.render(frame.buffer_mut(), area, self.offset);
+    }
+
+    fn prepare_layout(&mut self, width: u16) {
+        let width = width.saturating_sub(2).max(1);
+        self.total = 0;
+        for entry in &mut self.entries {
+            entry.ensure_layout(width);
+            self.total += entry.layout.as_ref().expect("layout initialized").height + 1;
+        }
+        self.total = self.total.saturating_sub(1);
+    }
+
+    fn render(&self, buffer: &mut Buffer, area: Rect, mut skip: usize) {
+        let inset = area.width.min(2);
         let mut y = area.y;
         let end = area.bottom();
         for entry in &self.entries {
@@ -424,18 +460,17 @@ impl Transcript {
                 }
                 let height = (line.height - skip).min(usize::from(end - y)) as u16;
                 for row in y..y + height {
-                    frame.render_widget(
-                        Span::styled("│", Style::default().fg(entry.kind.color())),
-                        Rect::new(area.x, row, 1, 1),
-                    );
+                    Span::styled("│", Style::default().fg(entry.kind.color()))
+                        .render(Rect::new(area.x, row, 1, 1), buffer);
                 }
                 if area.width > inset {
-                    frame.render_widget(
-                        Paragraph::new(entry.line(line))
-                            .wrap(Wrap { trim: false })
-                            .scroll((u16::try_from(skip).expect("bounded logical window"), 0)),
-                        Rect::new(area.x + inset, y, area.width - inset, height),
-                    );
+                    Paragraph::new(entry.line(line))
+                        .wrap(Wrap { trim: false })
+                        .scroll((u16::try_from(skip).expect("bounded logical window"), 0))
+                        .render(
+                            Rect::new(area.x + inset, y, area.width - inset, height),
+                            buffer,
+                        );
                 }
                 y += height;
                 skip = 0;
@@ -538,6 +573,60 @@ mod tests {
             name: name.into(),
             arguments: arguments.to_string(),
         });
+    }
+
+    #[test]
+    fn styled_scrollback_keeps_full_history_and_live_tool_output() {
+        let mut transcript = Transcript::new();
+        transcript.append("You", "保留记录 中😀");
+        let history = (0..60)
+            .map(|line| format!("line-{line:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        transcript.append("Assistant", &history);
+        transcript.progress(AgentEvent::AssistantStarted);
+        delta(&mut transcript, "hidden-refusal", true);
+        delta(&mut transcript, "partial-answer", false);
+        tool(
+            &mut transcript,
+            "live",
+            "bash",
+            json!({"command":"echo live"}),
+        );
+        for (stream, text) in [
+            (OutputStream::Stdout, "out-中\n"),
+            (OutputStream::Stderr, "err\u{1b}[2J\r\u{7}"),
+        ] {
+            transcript.progress(AgentEvent::ToolOutput {
+                id: "live".into(),
+                stream,
+                text: text.into(),
+            });
+        }
+        let snapshot = render(&mut transcript, 100, 4);
+        transcript.page_up();
+        let mut output = Vec::new();
+        transcript.write_scrollback(&mut output, &snapshot).unwrap();
+        let mut parser = vt100::Parser::new(100, 100, 0);
+        parser.process(&output);
+        let text = parser.screen().contents();
+        assert!(
+            text.starts_with("│ You\n│ 保留记录 中😀\n\n│ Assistant\n"),
+            "{text}"
+        );
+        for line in history.lines() {
+            assert!(text.contains(&format!("│ {line}")), "{text}");
+        }
+        assert!(text.contains("│ Assistant\n│ partial-answer"), "{text}");
+        assert!(
+            text.contains(
+                "│ bash · $ echo live · running\n│ [stdout]\n│ out-中\n│\n│ [stderr]\n│ err[2J"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("hidden-refusal"));
+        assert!(parser.screen().cell(0, 2).unwrap().bold());
+        assert!(!parser.screen().alternate_screen());
     }
 
     #[test]
