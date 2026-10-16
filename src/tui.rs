@@ -22,7 +22,7 @@ use menu::{MenuEvent, MenuItem, SelectionMenu};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::Line,
     widgets::{Block, Borders},
 };
@@ -38,7 +38,7 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
-const SHORTCUTS: &str = "Enter send · ↑↓ history/menu · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
 const MOUSE_SCROLL_LINES: usize = 3;
 
 pub(crate) fn run(agent: Result<Agent>, cwd: &Path) -> Result<()> {
@@ -143,6 +143,7 @@ fn editor() -> TextArea<'static> {
     let mut editor = TextArea::default();
     editor.set_wrap_mode(WrapMode::WordOrGlyph);
     editor.set_cursor_line_style(Style::default());
+    editor.set_cursor_style(Style::default());
     editor
 }
 
@@ -638,8 +639,14 @@ impl App {
                     }
                     KeyCode::PageUp => self.conversation.page_up(),
                     KeyCode::PageDown => self.conversation.page_down(),
-                    KeyCode::Up if key.modifiers.is_empty() => self.navigate_history(true),
-                    KeyCode::Down if key.modifiers.is_empty() => self.navigate_history(false),
+                    KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => {
+                        let cursor = self.input.cursor();
+                        self.input.input(key);
+                        // 先在显示行之间移动，越过首末显示行时才浏览历史。
+                        if self.input.cursor() == cursor {
+                            self.navigate_history(key.code == KeyCode::Up);
+                        }
+                    }
                     _ => {
                         let edited = self.input.input(key);
                         self.refresh_candidates(edited);
@@ -730,10 +737,22 @@ impl App {
             editor_area.width - prompt_width,
             editor_area.height,
         );
-        self.input
-            .set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
-        if editor_area.height > 0 {
+        if editor_area.width > 0 && editor_area.height > 0 {
             frame.render_widget(&self.input, editor_area);
+            // 渲染后获取折行和滚动偏移，让输入法与终端原生光标共享插入位置。
+            let cursor = self.input.screen_cursor();
+            let (top, left) = self.input.scroll_offset();
+            if let (Some(row), Some(column)) = (
+                cursor.row.checked_sub(usize::from(top)),
+                cursor.col.checked_sub(usize::from(left)),
+            ) && row < usize::from(editor_area.height)
+                && column < usize::from(editor_area.width)
+            {
+                frame.set_cursor_position((
+                    editor_area.x + column as u16,
+                    editor_area.y + row as u16,
+                ));
+            }
         }
         if menu_height > 0
             && let Some(menu) = &mut self.menu
@@ -802,7 +821,7 @@ impl App {
 mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, MouseButton, MouseEvent};
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, style::Modifier};
 
     fn app() -> App {
         App::new(Err(anyhow::anyhow!("fixture configuration unavailable"))).unwrap()
@@ -867,8 +886,15 @@ mod tests {
         app.handle(key(KeyCode::Down), &mut dirty);
         assert_eq!(app.input.cursor(), cursor);
         app.handle(key(KeyCode::Up), &mut dirty);
+        assert_eq!(app.input.lines(), &["草稿", "未发送🙂"]);
+        assert_eq!(app.input.cursor(), (0, 2));
+        assert!(app.history_index.is_none());
+        let cursor = app.input.cursor();
+        app.handle(key(KeyCode::Up), &mut dirty);
         assert_eq!(app.input.lines(), &["second", "🙂末行"]);
         app.handle(key(KeyCode::Char('!')), &mut dirty);
+        app.handle(key(KeyCode::Up), &mut dirty);
+        assert_eq!(app.input.lines(), &["second", "🙂末行!"]);
         app.handle(key(KeyCode::Up), &mut dirty);
         assert_eq!(app.input.lines(), &["first-中"]);
         app.handle(key(KeyCode::Up), &mut dirty);
@@ -936,6 +962,67 @@ mod tests {
         app.handle(key(KeyCode::Down), &mut dirty);
         app.handle(key(KeyCode::Down), &mut dirty);
         assert_eq!(app.input.lines(), &[""]);
+    }
+
+    #[test]
+    fn input_arrows_move_between_wrapped_lines_before_history() {
+        let mut app = app();
+        app.input_history.push("history".into());
+        let text = "abcdefghijklmnopqrstuvwxyz0123456789!";
+        let mut dirty = false;
+        app.handle(Event::Paste(text.into()), &mut dirty);
+        draw(&mut app, 14, 12);
+        let cursor = app.input.cursor();
+        let row = app.input.screen_cursor().row;
+        assert!(row > 0);
+
+        app.handle(key(KeyCode::Up), &mut dirty);
+        draw(&mut app, 14, 12);
+        assert_eq!(app.input.screen_cursor().row, row - 1);
+        assert!(app.history_index.is_none());
+        app.handle(key(KeyCode::Down), &mut dirty);
+        draw(&mut app, 14, 12);
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(app.input.lines(), &[text]);
+        assert!(app.history_index.is_none());
+    }
+
+    #[test]
+    fn input_native_cursor_follows_unicode_wrapping_scrolling_and_resize() {
+        for (text, width, height, expected) in [
+            ("", 100, 30, (2, 27)),
+            ("中🙂h", 100, 30, (7, 27)),
+            ("first\n中🙂h", 100, 30, (7, 27)),
+            ("0\n1\n2\n3\n4\n5\n中🙂h", 100, 30, (7, 27)),
+        ] {
+            let mut app = app();
+            app.input.insert_str(text);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| app.draw(frame, &StatusContext::default()))
+                .unwrap();
+            assert!(terminal.backend().cursor_visible());
+            assert_eq!(terminal.backend().cursor_position(), expected.into());
+            assert!(
+                terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .all(|cell| !cell.modifier.contains(Modifier::REVERSED))
+            );
+        }
+
+        let mut app = app();
+        app.input.insert_str("abcdefghijklmnopqrstuvwxyz");
+        for (width, column, top) in [(14, 4, 2), (40, 28, 0), (9, 7, 3)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+            terminal
+                .draw(|frame| app.draw(frame, &StatusContext::default()))
+                .unwrap();
+            assert_eq!(terminal.backend().cursor_position(), (column, 9).into());
+            assert_eq!(app.input.scroll_offset(), (top, 0));
+        }
     }
 
     #[test]
@@ -1123,7 +1210,8 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(0, 22)].symbol(), "❯");
         assert_eq!(buffer[(2, 22)].symbol(), "/");
-        assert!(buffer[(3, 22)].modifier.contains(Modifier::REVERSED));
+        assert!(!buffer[(3, 22)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(terminal.backend().cursor_position(), (3, 22).into());
         for x in 0..100 {
             assert_eq!(buffer[(x, 23)].symbol(), "─");
             assert_eq!(buffer[(x, 23)].fg, Color::Rgb(190, 133, 222));

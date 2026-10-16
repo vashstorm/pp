@@ -3328,7 +3328,8 @@ mod tui {
                         .nth(24 + index)
                         .is_some_and(|line| line.contains(command))
                 })
-                && screen.hide_cursor()
+                && !screen.hide_cursor()
+                && screen.cursor_position() == (22, 3)
         });
         pty.input("\x1b[B");
         pty.resize(4, 20);
@@ -3347,7 +3348,8 @@ mod tui {
                 && text.contains("completion")
                 && text.find("❯ /model").unwrap() < text.find("a/primary").unwrap()
                 && text.contains("(current)")
-                && screen.hide_cursor()
+                && !screen.hide_cursor()
+                && screen.cursor_position() == (25, 9)
         });
         // 确认前检查首尾导航、翻页以及窗口缩放。
         pty.input("\x1b[H\x1b[5~\x1b[A\x1b[F\x1b[6~\x1b[B");
@@ -3582,6 +3584,14 @@ mod tui {
         pty.input("draft-中\x1b[D\x1b[A");
         pty.draft("中🙂-kept");
         pty.input("\x1b[A");
+        pty.wait_for("历史输入中的上一行光标", |screen| {
+            let (row, column) = screen.cursor_position();
+            screen
+                .cell(row, 2)
+                .is_some_and(|cell| cell.contents() == "a")
+                && column == 7
+        });
+        pty.input("\x1b[A");
         pty.draft("old-中");
         pty.input("\x1b[B");
         pty.draft("中🙂-kept");
@@ -3599,6 +3609,63 @@ mod tui {
         assert_eq!(messages[3]["content"], "alpha\n中🙂-kept");
         final_reply(request, "history-edited-ok");
         pty.text("history-edited-ok");
+        pty.ready();
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
+
+    #[test]
+    fn tui_native_cursor_and_multiline_arrows_edit_the_submitted_buffer() {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let mut pty = Pty::start(&server, dir.path());
+        pty.ready();
+        pty.wait_for("空输入框的原生光标", |screen| {
+            !screen.hide_cursor() && screen.cursor_position() == (27, 2)
+        });
+
+        pty.input("h");
+        pty.wait_for("字母后的原生光标", |screen| {
+            !screen.hide_cursor()
+                && screen.cursor_position() == (27, 3)
+                && screen
+                    .cell(27, 2)
+                    .is_some_and(|cell| cell.contents() == "h")
+                && screen.cell(27, 3).is_some_and(|cell| !cell.inverse())
+        });
+        pty.input("\x01\x0b中🙂h\x0alast");
+        pty.wait_for("多行输入末尾的原生光标", |screen| {
+            !screen.hide_cursor()
+                && screen.cursor_position() == (27, 6)
+                && screen
+                    .cell(26, 2)
+                    .is_some_and(|cell| cell.contents() == "中")
+                && screen
+                    .cell(26, 4)
+                    .is_some_and(|cell| cell.contents() == "🙂")
+        });
+        pty.input("\x1b[A!");
+        pty.wait_for("向上移动后在首行插入", |screen| {
+            !screen.hide_cursor()
+                && screen.cursor_position() == (26, 7)
+                && screen
+                    .cell(26, 6)
+                    .is_some_and(|cell| cell.contents() == "!")
+        });
+        pty.input("\x1b[B\x01>");
+        pty.wait_for("向下移动后在末行插入", |screen| {
+            !screen.hide_cursor()
+                && screen.cursor_position() == (27, 3)
+                && screen
+                    .cell(27, 2)
+                    .is_some_and(|cell| cell.contents() == ">")
+        });
+        pty.input("\r");
+        let (request, body) = pty.request(&server);
+        assert_eq!(body["messages"][1]["content"], "中🙂!h\n>last");
+        final_reply(request, "cursor-edit-ok");
+        pty.text("cursor-edit-ok");
         pty.ready();
         pty.input("\x03");
         pty.finish();
