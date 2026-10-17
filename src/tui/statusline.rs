@@ -18,7 +18,7 @@ const DIRECTORY: Color = Color::Rgb(36, 174, 181);
 const GIT: Color = Color::Rgb(204, 167, 72);
 // 与 omp 的 Nerd Font 图标一致；图标后保留一列空白，容纳字形右侧伸展。
 const MODEL_ICON: &str = "\u{ec19}";
-const THINK_ICON: &str = "\u{f0aa3}";
+const THINK_ICON: &str = "○";
 const DIRECTORY_ICON: &str = "\u{f07c}";
 const GIT_ICON: &str = "\u{f126}";
 const ICON_WIDTH: usize = 2;
@@ -206,6 +206,14 @@ pub(super) fn primary(
         .as_ref()
         .map(|git| compact(&git.label(), (width / 4).saturating_sub(ICON_WIDTH), false));
     let think = think_level.label();
+    let think_icon = match think_level {
+        ThinkLevel::None => THINK_ICON,
+        ThinkLevel::Low => "◔",
+        ThinkLevel::Medium => "◑",
+        ThinkLevel::High => "◕",
+        ThinkLevel::Xhigh => "●",
+        ThinkLevel::Max => "\u{f06d}",
+    };
     let reserved = Line::from(model.as_str()).width()
         + Line::from(think).width()
         + git
@@ -226,7 +234,7 @@ pub(super) fn primary(
         Span::styled(model, Style::default().fg(MODEL)),
         separator(),
         // no think 表示显式发送 none，请求关闭思考。
-        icon(THINK_ICON, MODEL),
+        icon(think_icon, MODEL),
         Span::styled(think, Style::default().fg(MODEL)),
         separator(),
         icon(DIRECTORY_ICON, DIRECTORY),
@@ -246,16 +254,20 @@ mod tests {
 
     #[test]
     fn primary_displays_selected_think_level() {
-        for level in [
-            ThinkLevel::None,
-            ThinkLevel::Low,
-            ThinkLevel::Medium,
-            ThinkLevel::High,
-            ThinkLevel::Xhigh,
-            ThinkLevel::Max,
+        for (level, glyph) in [
+            (ThinkLevel::None, THINK_ICON),
+            (ThinkLevel::Low, "◔"),
+            (ThinkLevel::Medium, "◑"),
+            (ThinkLevel::High, "◕"),
+            (ThinkLevel::Xhigh, "●"),
+            (ThinkLevel::Max, "\u{f06d}"),
         ] {
-            let line = primary(None, level, &StatusContext::default(), 100).to_string();
-            assert!(line.contains(&format!("{THINK_ICON} {} ·", level.label())));
+            let line = primary(None, level, &StatusContext::default(), 100);
+            assert!(
+                line.to_string()
+                    .contains(&format!("{glyph} {} ·", level.label()))
+            );
+            assert_eq!(line.spans[4].width(), ICON_WIDTH);
         }
     }
 
@@ -274,7 +286,7 @@ mod tests {
             let line = primary(Some(&model), ThinkLevel::None, &context, width);
             assert!(line.width() <= usize::from(width));
             let text = line.to_string();
-            assert!(text.starts_with(" \u{ec19} fixture-model · \u{f0aa3} no think · \u{f07c} …"));
+            assert!(text.starts_with(" \u{ec19} fixture-model · ○ no think · \u{f07c} …"));
             assert!(text.ends_with("project · \u{f126} main ?1"));
             for glyph in [MODEL_ICON, THINK_ICON, DIRECTORY_ICON, GIT_ICON] {
                 let icon = line

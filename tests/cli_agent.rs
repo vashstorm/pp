@@ -2489,13 +2489,22 @@ mod tui {
         }
 
         fn ready_effort(&mut self, expected: &str) {
+            let glyph = match expected {
+                "no think" => "○",
+                "low" => "◔",
+                "medium" => "◑",
+                "high" => "◕",
+                "xhigh" => "●",
+                "max" => "\u{f06d}",
+                _ => panic!("未知的思考级别：{expected}"),
+            };
             self.wait_for("空闲输入框和思考级别", |screen| {
                 input_is_ready(screen)
                     && screen
                         .contents()
                         .lines()
                         .last()
-                        .is_some_and(|line| line.contains(&format!("\u{f0aa3} {expected} ·")))
+                        .is_some_and(|line| line.contains(&format!("{glyph} {expected} ·")))
             });
         }
 
@@ -3009,6 +3018,10 @@ mod tui {
         assert_eq!(body["reasoning_effort"], "low");
         final_reply(request, "second answer");
         pty.ready();
+        for level in ["low", "medium", "high", "xhigh", "max"] {
+            pty.input(&format!("/effort {level}\r"));
+            pty.ready_effort(level);
+        }
         pty.input("\u{3}");
         pty.finish();
     }
@@ -3039,7 +3052,7 @@ mod tui {
             "ordered model, thinking, directory and Git footer",
             |screen| {
                 screen.contents().lines().last().is_some_and(|line| {
-                    line.starts_with(" \u{ec19} fixture-model · \u{f0aa3} no think · \u{f07c} ")
+                    line.starts_with(" \u{ec19} fixture-model · ○ no think · \u{f07c} ")
                         && line.ends_with("\u{f126} fixture *1")
                 })
             },
