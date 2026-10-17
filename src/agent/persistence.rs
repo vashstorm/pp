@@ -1,3 +1,5 @@
+mod format;
+
 use super::Session;
 use crate::{
     config::{EditMode, ThinkLevel, ToolLimits},
@@ -6,11 +8,16 @@ use crate::{
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::{
     chat::{ChatCompletionRequestMessage, CreateChatCompletionRequest},
-    responses::{CreateResponse, InputItem, InputParam},
+    responses::{CreateResponse, InputParam},
 };
-use chrono::{DateTime, Datelike, Local, NaiveDateTime};
+use chrono::{DateTime, Datelike, Local, NaiveDateTime, SecondsFormat};
+use format::{
+    Custom, CustomRef, Entry, EntryRef, Header, HeaderRef, Message, NativeAppend, NativeAppendRef,
+    Payload, PayloadRef, SavedMessage, StateRef,
+};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs::{self, DirBuilder, File, OpenOptions},
     io::{BufRead, BufReader, Seek, SeekFrom, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
@@ -39,7 +46,6 @@ impl RestoredSession {
     }
 }
 
-#[derive(Deserialize)]
 pub(super) struct Checkpoint {
     version: u32,
     id: String,
@@ -90,75 +96,14 @@ pub(super) struct Metadata<'a> {
     pub(super) base_system: &'a str,
 }
 
-#[derive(Serialize)]
-struct CheckpointRef<'a> {
-    version: u32,
-    id: &'a str,
-    created_at_ms: u64,
-    #[serde(flatten)]
-    metadata: &'a Metadata<'a>,
-    session: SessionRef<'a>,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum RecordRef<'a> {
-    Checkpoint(CheckpointRef<'a>),
-    Instructions {
-        system: &'a str,
-    },
-    ThinkLevel {
-        level: ThinkLevel,
-    },
-    AppendCompletion {
-        messages: &'a [ChatCompletionRequestMessage],
-    },
-    AppendResponse {
-        items: &'a [InputItem],
-    },
-    User {
-        text: &'a str,
-    },
-    Event {
-        event: &'a AgentEvent,
-    },
-    Error {
-        message: &'a str,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Record {
-    Checkpoint(Box<Checkpoint>),
-    Instructions {
-        system: String,
-    },
-    ThinkLevel {
-        level: ThinkLevel,
-    },
-    AppendCompletion {
-        messages: Vec<ChatCompletionRequestMessage>,
-    },
-    AppendResponse {
-        items: Vec<InputItem>,
-    },
-    User {
-        text: String,
-    },
-    Event {
-        event: AgentEvent,
-    },
-    Error {
-        message: String,
-    },
-}
-
 struct Active {
     id: String,
     created_at_ms: u64,
     file: File,
     truncate_to: Option<u64>,
+    header_written: bool,
+    tail: Option<String>,
+    used_ids: HashSet<String>,
 }
 
 pub(super) struct SessionJournal {
@@ -168,6 +113,9 @@ pub(super) struct SessionJournal {
     buffer: Vec<u8>,
     first_error: Option<String>,
     notice: Option<String>,
+    model_reference: String,
+    thinking: String,
+    capture_thinking: bool,
 }
 
 impl SessionJournal {
@@ -179,6 +127,9 @@ impl SessionJournal {
             buffer: Vec::new(),
             first_error: None,
             notice: None,
+            model_reference: String::new(),
+            thinking: String::new(),
+            capture_thinking: false,
         }
     }
     pub(super) fn id(&self) -> Option<&str> {
@@ -196,14 +147,57 @@ impl SessionJournal {
         }
         Ok(())
     }
-    fn record(&mut self, record: &RecordRef<'_>, sync: bool) -> Result<()> {
+    fn record(&mut self, payload: PayloadRef<'_>, sync: bool) -> Result<()> {
         self.check()?;
         if self.active.is_none() {
             return Ok(());
         }
-        self.buffer.clear();
-        let serialized = serde_json::to_writer(&mut self.buffer, record);
-        self.append_serialized(serialized, sync)
+        let result = (|| -> Result<()> {
+            let timestamp = timestamp(now_ms()?)?;
+            let active = self.active.as_ref().expect("active journal checked");
+            let id = loop {
+                let mut bytes = [0; 4];
+                getrandom::fill(&mut bytes)
+                    .map_err(|_| anyhow::anyhow!("session OS random source failed"))?;
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                let mut id = String::with_capacity(8);
+                for byte in bytes {
+                    id.push(char::from(HEX[usize::from(byte >> 4)]));
+                    id.push(char::from(HEX[usize::from(byte & 15)]));
+                }
+                if !active.used_ids.contains(&id) {
+                    break id;
+                }
+            };
+            self.buffer.clear();
+            let serialized = serde_json::to_writer(
+                &mut self.buffer,
+                &EntryRef {
+                    id: &id,
+                    parent_id: active.tail.as_deref(),
+                    timestamp: &timestamp,
+                    payload,
+                },
+            );
+            self.append_serialized(serialized, sync)?;
+            let active = self.active.as_mut().expect("active journal checked");
+            active.used_ids.insert(id.clone());
+            active.tail = Some(id);
+            Ok(())
+        })();
+        self.latch(result)
+    }
+    fn latch(&mut self, result: Result<()>) -> Result<()> {
+        if let Err(error) = result {
+            if self.first_error.is_none() {
+                self.first_error = Some(format!("persisting session: {error:#}"));
+            }
+            bail!("{}", self.first_error.as_ref().expect("error latched"));
+        }
+        Ok(())
+    }
+    fn custom(&mut self, custom: CustomRef<'_>, sync: bool) -> Result<()> {
+        self.record(PayloadRef::Custom { custom }, sync)
     }
     fn append_serialized(&mut self, serialized: serde_json::Result<()>, sync: bool) -> Result<()> {
         let active = self
@@ -241,19 +235,55 @@ impl SessionJournal {
         let Some(active) = &self.active else {
             return Ok(());
         };
-        self.buffer.clear();
-        let serialized = serde_json::to_writer(
-            &mut self.buffer,
-            &RecordRef::Checkpoint(CheckpointRef {
-                version: 1,
-                id: &active.id,
-                created_at_ms: active.created_at_ms,
-                metadata,
-                session,
-            }),
-        );
-        self.append_serialized(serialized, true)?;
+        let first = !active.header_written;
+        if first {
+            let result = (|| -> Result<()> {
+                let active = self.active.as_ref().expect("active journal checked");
+                let timestamp = timestamp(active.created_at_ms)?;
+                self.buffer.clear();
+                let serialized = serde_json::to_writer(
+                    &mut self.buffer,
+                    &HeaderRef {
+                        kind: "session",
+                        version: 3,
+                        id: &active.id,
+                        timestamp: &timestamp,
+                        cwd: metadata.cwd,
+                    },
+                );
+                self.append_serialized(serialized, false)?;
+                self.active
+                    .as_mut()
+                    .expect("active journal checked")
+                    .header_written = true;
+                Ok(())
+            })();
+            self.latch(result)?;
+        } else {
+            self.record(
+                PayloadRef::ModelChange {
+                    model: metadata.model_reference,
+                    role: "default",
+                },
+                false,
+            )?;
+        }
+        self.custom(CustomRef::State(StateRef::new(metadata, session)), true)?;
         self.committed = session.len();
+        self.model_reference.clear();
+        self.model_reference.push_str(metadata.model_reference);
+        self.capture_thinking = matches!(session, SessionRef::Completion(_));
+        self.thinking.clear();
+        if first {
+            self.record(
+                PayloadRef::ModelChange {
+                    model: metadata.model_reference,
+                    role: "default",
+                },
+                false,
+            )?;
+            self.think(metadata.think_level)?;
+        }
         Ok(())
     }
     pub(super) fn sent(
@@ -291,12 +321,23 @@ impl SessionJournal {
             self.checkpoint(metadata, session)?;
         } else {
             if let Some(system) = instructions {
-                self.record(&RecordRef::Instructions { system }, false)?;
+                self.custom(CustomRef::Instructions { system }, false)?;
             }
             self.commit(session)?;
         }
         if let Some(text) = user {
-            self.record(&RecordRef::User { text }, true)?;
+            let result = now_ms().and_then(|timestamp| {
+                self.record(
+                    PayloadRef::Message {
+                        message: &Message::User {
+                            content: text,
+                            timestamp,
+                        },
+                    },
+                    true,
+                )
+            });
+            self.latch(result)?;
         }
         Ok(())
     }
@@ -311,37 +352,78 @@ impl SessionJournal {
             "persisting session: invalid history cursor"
         );
         if end > self.committed {
-            match session {
-                SessionRef::Completion(request) => self.record(
-                    &RecordRef::AppendCompletion {
-                        messages: &request.messages[self.committed..],
-                    },
-                    true,
-                )?,
-                SessionRef::Response(request) => {
-                    let InputParam::Items(items) = &request.input else {
-                        unreachable!()
-                    };
-                    self.record(
-                        &RecordRef::AppendResponse {
-                            items: &items[self.committed..],
-                        },
-                        true,
-                    )?;
+            // Move only these small display buffers, never the native request/history.
+            let model_reference = std::mem::take(&mut self.model_reference);
+            let thinking = std::mem::take(&mut self.thinking);
+            let result = (|| -> Result<()> {
+                let timestamp = now_ms()?;
+                let provider = model_reference
+                    .split_once('/')
+                    .map_or(model_reference.as_str(), |(provider, _)| provider);
+                let (messages, append) = match session {
+                    SessionRef::Completion(request) => {
+                        let slice = &request.messages[self.committed..];
+                        (
+                            format::completion(
+                                slice,
+                                provider,
+                                &request.model,
+                                &thinking,
+                                timestamp,
+                            ),
+                            NativeAppendRef::Completion { messages: slice },
+                        )
+                    }
+                    SessionRef::Response(request) => {
+                        let InputParam::Items(items) = &request.input else {
+                            unreachable!()
+                        };
+                        let slice = &items[self.committed..];
+                        (
+                            format::response(
+                                slice,
+                                provider,
+                                request.model.as_deref().unwrap_or_default(),
+                                timestamp,
+                            ),
+                            NativeAppendRef::Response { items: slice },
+                        )
+                    }
+                };
+                for message in &messages {
+                    self.record(PayloadRef::Message { message }, false)?;
                 }
-            }
-            self.committed = end;
+                self.custom(CustomRef::NativeAppend(append), true)?;
+                self.committed = end;
+                Ok(())
+            })();
+            self.model_reference = model_reference;
+            self.thinking = thinking;
+            self.thinking.clear();
+            self.latch(result)?;
         }
         Ok(())
     }
     pub(super) fn event(&mut self, event: &AgentEvent) {
-        let _ = self.record(&RecordRef::Event { event }, false);
+        if self.capture_thinking && self.active.is_some() && self.first_error.is_none() {
+            match event {
+                AgentEvent::AssistantStarted => self.thinking.clear(),
+                AgentEvent::ThinkingDelta { text } => self.thinking.push_str(text),
+                _ => {}
+            }
+        }
+        let _ = self.custom(CustomRef::Event { event }, false);
     }
     pub(super) fn error(&mut self, message: &str) {
-        let _ = self.record(&RecordRef::Error { message }, true);
+        let _ = self.custom(CustomRef::Error { message }, true);
     }
     pub(super) fn think(&mut self, level: ThinkLevel) -> Result<()> {
-        self.record(&RecordRef::ThinkLevel { level }, true)
+        self.record(
+            PayloadRef::ThinkingLevelChange {
+                thinking_level: level,
+            },
+            true,
+        )
     }
 }
 
@@ -352,6 +434,21 @@ fn now_ms() -> Result<u64> {
         .as_millis()
         .try_into()
         .context("session clock overflow")
+}
+
+fn timestamp(milliseconds: u64) -> Result<String> {
+    let datetime = i64::try_from(milliseconds)
+        .ok()
+        .and_then(DateTime::from_timestamp_millis)
+        .context("session clock overflow")?;
+    Ok(datetime.to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
+fn parse_timestamp(timestamp: &str) -> Result<u64> {
+    DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .and_then(|time| u64::try_from(time.timestamp_millis()).ok())
+        .context("invalid session record: invalid timestamp")
 }
 
 const ID_TIME_FORMAT: &str = "%Y-%m-%dT%H-%M-%S";
@@ -423,6 +520,9 @@ fn create(
                     created_at_ms,
                     file,
                     truncate_to: None,
+                    header_written: false,
+                    tail: None,
+                    used_ids: HashSet::new(),
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -488,7 +588,10 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
     let mut line_number = 0;
     let mut offset = 0;
     let mut truncated = false;
+    let mut header: Option<Header> = None;
     let mut checkpoint: Option<Checkpoint> = None;
+    let mut tail: Option<String> = None;
+    let mut used_ids = HashSet::new();
     let mut replay = Vec::new();
     loop {
         line.clear();
@@ -508,28 +611,72 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
             break;
         }
         let result = (|| -> Result<()> {
-            let record: Record = serde_json::from_slice(&line)
-                .map_err(|_| anyhow::anyhow!("invalid session record"))?;
-            if checkpoint.is_none() {
-                ensure!(
-                    matches!(record, Record::Checkpoint(_)),
-                    "first record must be a checkpoint"
-                );
-            }
-            match record {
-                Record::Checkpoint(saved) => {
-                    validate_checkpoint(&saved, &id)?;
-                    if let Some(previous) = &checkpoint {
-                        ensure!(
-                            saved.created_at_ms == previous.created_at_ms
-                                && saved.cwd == previous.cwd,
-                            "checkpoint identity changed"
-                        );
-                    }
-                    checkpoint = Some(*saved);
+            if header.is_none() {
+                #[derive(Deserialize)]
+                struct Kind<'a> {
+                    #[serde(borrow, rename = "type")]
+                    kind: &'a str,
                 }
-                Record::Instructions { system } => {
-                    match &mut checkpoint.as_mut().expect("checkpoint checked").session {
+                let kind: Kind<'_> = serde_json::from_slice(&line)
+                    .map_err(|_| anyhow::anyhow!("first record must be a session header"))?;
+                ensure!(
+                    kind.kind != "checkpoint",
+                    "unsupported legacy session format"
+                );
+                ensure!(
+                    kind.kind == "session",
+                    "first record must be a session header"
+                );
+                let saved: Header = serde_json::from_slice(&line)
+                    .map_err(|_| anyhow::anyhow!("invalid session record"))?;
+                ensure!(
+                    saved.kind == "session",
+                    "first record must be a session header"
+                );
+                ensure!(saved.version == 3, "unsupported session version");
+                ensure!(saved.id == id, "session ID does not match filename");
+                ensure!(
+                    saved.cwd.is_absolute(),
+                    "session working directory must be absolute"
+                );
+                parse_timestamp(&saved.timestamp)?;
+                header = Some(saved);
+                return Ok(());
+            }
+            let entry: Entry = serde_json::from_slice(&line)
+                .map_err(|_| anyhow::anyhow!("invalid session record"))?;
+            ensure!(
+                !entry.id.is_empty() && !used_ids.contains(&entry.id) && entry.parent_id == tail,
+                "invalid session entry chain"
+            );
+            parse_timestamp(&entry.timestamp)?;
+            match entry.payload {
+                Payload::Custom {
+                    custom: Custom::State(state),
+                } => {
+                    let header = header.as_ref().expect("header checked");
+                    let saved = Checkpoint {
+                        version: state.version,
+                        id: header.id.clone(),
+                        created_at_ms: parse_timestamp(&header.timestamp)?,
+                        cwd: header.cwd.clone(),
+                        model_reference: state.model_reference,
+                        think_level: state.think_level,
+                        edit_mode: state.edit_mode,
+                        tool_limits: state.tool_limits,
+                        base_system: state.base_system,
+                        session: state.session,
+                    };
+                    validate_checkpoint(&saved, &id)?;
+                    checkpoint = Some(saved);
+                }
+                Payload::Custom {
+                    custom: Custom::Instructions { system },
+                } => {
+                    let saved = checkpoint
+                        .as_mut()
+                        .context("state change before pp session state")?;
+                    match &mut saved.session {
                         Session::Completion(request) => {
                             let Some(ChatCompletionRequestMessage::System(message)) =
                                 request.messages.first_mut()
@@ -541,54 +688,82 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
                         Session::Response(request) => request.instructions = Some(system),
                     }
                 }
-                Record::ThinkLevel { level } => {
-                    let saved = checkpoint.as_mut().expect("checkpoint checked");
-                    saved.think_level = level;
-                    saved.session.set_think_level(level);
+                Payload::ThinkingLevelChange { thinking_level } => {
+                    let saved = checkpoint
+                        .as_mut()
+                        .context("state change before pp session state")?;
+                    saved.think_level = thinking_level;
+                    saved.session.set_think_level(thinking_level);
                 }
-                Record::AppendCompletion { messages } => {
-                    let Session::Completion(request) =
-                        &mut checkpoint.as_mut().expect("checkpoint checked").session
-                    else {
-                        bail!("append protocol mismatch");
-                    };
-                    request.messages.extend(messages);
-                }
-                Record::AppendResponse { items } => {
-                    let Session::Response(request) =
-                        &mut checkpoint.as_mut().expect("checkpoint checked").session
-                    else {
-                        bail!("append protocol mismatch");
-                    };
-                    let InputParam::Items(input) = &mut request.input else {
-                        bail!("Responses input must be items");
-                    };
-                    input.extend(items);
-                }
-                Record::User { text } => {
-                    if include_replay {
-                        replay.push(ReplayRecord::User(text));
+                Payload::Custom {
+                    custom: Custom::NativeAppend(append),
+                } => {
+                    let saved = checkpoint
+                        .as_mut()
+                        .context("state change before pp session state")?;
+                    match (&mut saved.session, append) {
+                        (Session::Completion(request), NativeAppend::Completion { messages }) => {
+                            request.messages.extend(messages)
+                        }
+                        (Session::Response(request), NativeAppend::Response { items }) => {
+                            let InputParam::Items(input) = &mut request.input else {
+                                bail!("Responses input must be items");
+                            };
+                            input.extend(items);
+                        }
+                        _ => bail!("append protocol mismatch"),
                     }
                 }
-                Record::Event { event } => {
+                Payload::ModelChange { model, role } => {
+                    let format::DefaultRole::Default = role;
+                    ensure!(
+                        model.split_once('/').is_some_and(
+                            |(provider, model)| !provider.is_empty() && !model.is_empty()
+                        ),
+                        "invalid saved model reference"
+                    );
+                    // Auditing only: a subsequent native state is the model switch commit point.
+                }
+                Payload::Message {
+                    message: SavedMessage::User { content, .. },
+                } => {
+                    if include_replay {
+                        replay.push(ReplayRecord::User(content));
+                    }
+                }
+                Payload::Message {
+                    message: SavedMessage::Assistant { .. } | SavedMessage::ToolResult { .. },
+                } => {}
+                Payload::Custom {
+                    custom: Custom::Event { event },
+                } => {
                     if include_replay {
                         replay.push(ReplayRecord::Event(event));
                     }
                 }
-                Record::Error { message } => {
+                Payload::Custom {
+                    custom: Custom::Error { message },
+                } => {
                     if include_replay {
                         replay.push(ReplayRecord::Error(message));
                     }
                 }
             }
+            used_ids.insert(entry.id.clone());
+            tail = Some(entry.id);
             Ok(())
         })();
         result.with_context(|| format!("loading session {} line {line_number}", path.display()))?;
         offset += count as u64;
     }
+    ensure!(
+        header.is_some(),
+        "loading session {} line 1: missing session header",
+        path.display()
+    );
     let checkpoint = checkpoint.with_context(|| {
         format!(
-            "loading session {} line 1: missing checkpoint",
+            "loading session {} line {line_number}: missing pp session state",
             path.display()
         )
     })?;
@@ -597,6 +772,8 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
     }
     let committed = SessionRef::from(&checkpoint.session).len();
     let created_at_ms = checkpoint.created_at_ms;
+    let model_reference = checkpoint.model_reference.clone();
+    let capture_thinking = matches!(checkpoint.session, Session::Completion(_));
     Ok(RestoredSession {
         checkpoint,
         journal: SessionJournal {
@@ -606,18 +783,24 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
                 created_at_ms,
                 file,
                 truncate_to: truncated.then_some(offset),
+                header_written: true,
+                tail,
+                used_ids,
             }),
             committed,
             buffer: Vec::new(),
             first_error: None,
             notice: None,
+            model_reference,
+            thinking: String::new(),
+            capture_thinking,
         },
         replay,
     })
 }
 
 fn validate_checkpoint(saved: &Checkpoint, id: &str) -> Result<()> {
-    ensure!(saved.version == 1, "unsupported session version");
+    ensure!(saved.version == 1, "unsupported pp session version");
     ensure!(saved.id == id, "session ID does not match filename");
     ensure!(
         saved.cwd.is_absolute(),
@@ -721,12 +904,13 @@ mod tests {
     fn replay_native_history_and_repair_only_on_append() {
         for protocol in [Protocol::Completion, Protocol::Response] {
             let dir = tempfile::tempdir().unwrap();
-            let session = Session::new(
+            let mut session = Session::new(
                 "fixture".into(),
                 protocol,
                 "system".into(),
                 EditMode::Replace,
             );
+            session.set_think_level(ThinkLevel::None);
             let metadata = Metadata {
                 cwd: dir.path(),
                 model_reference: "fixture/primary",
@@ -763,6 +947,103 @@ mod tests {
             let restored = load(dir.path(), Some(&id), false).unwrap();
             assert_eq!(restored.checkpoint.think_level, ThinkLevel::High);
             assert!(restored.replay.is_empty());
+        }
+    }
+
+    #[test]
+    fn incomplete_native_commit_never_restores_projections_or_model_audit() {
+        for protocol in [Protocol::Completion, Protocol::Response] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut session = Session::new(
+                "fixture".into(),
+                protocol,
+                "system".into(),
+                EditMode::Replace,
+            );
+            session.set_think_level(ThinkLevel::None);
+            let metadata = Metadata {
+                cwd: dir.path(),
+                model_reference: "fixture/primary",
+                think_level: ThinkLevel::None,
+                edit_mode: EditMode::Replace,
+                tool_limits: ToolLimits::default(),
+                base_system: "system",
+            };
+            let mut journal = SessionJournal::new(dir.path().to_owned());
+            journal
+                .sent(&metadata, (&session).into(), Some("user"), None)
+                .unwrap();
+            journal
+                .record(
+                    PayloadRef::Message {
+                        message: &Message::Assistant {
+                            api: "openai-completions",
+                            provider: "fixture",
+                            model: "fixture",
+                            content: vec![format::Content::Text {
+                                text: "not native committed".into(),
+                            }],
+                            stop_reason: "stop",
+                            timestamp: 42,
+                        },
+                    },
+                    false,
+                )
+                .unwrap();
+            journal
+                .record(
+                    PayloadRef::ModelChange {
+                        model: "fixture/not-committed",
+                        role: "default",
+                    },
+                    false,
+                )
+                .unwrap();
+            let previous_tail = journal.active.as_ref().unwrap().tail.clone();
+            let id = journal.id().unwrap().to_owned();
+            let path = dir.path().join(format!("{id}.jsonl"));
+            drop(journal);
+            OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap()
+                .write_all(b"{\"type\":\"custom\",\"customType\":\"pp.native_append\"")
+                .unwrap();
+            let mut restored = load(dir.path(), Some(&id), true).unwrap();
+            assert_eq!(restored.checkpoint.model_reference, "fixture/primary");
+            assert_eq!(
+                serde_json::to_value(&restored.checkpoint.session).unwrap(),
+                serde_json::to_value(&session).unwrap()
+            );
+            assert!(
+                matches!(restored.replay.as_slice(), [ReplayRecord::User(text)] if text == "user")
+            );
+            assert_eq!(
+                restored.journal.active.as_ref().unwrap().tail,
+                previous_tail
+            );
+            restored.journal.think(ThinkLevel::High).unwrap();
+            drop(restored);
+            let records: Vec<serde_json::Value> = fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(records.last().unwrap()["parentId"], previous_tail.unwrap());
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| record["type"] == "session")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                load(dir.path(), Some(&id), false)
+                    .unwrap()
+                    .checkpoint
+                    .think_level,
+                ThinkLevel::High
+            );
         }
     }
 
@@ -905,6 +1186,12 @@ mod tests {
         );
         drop(journal);
         let path = dir.path().join(format!("{id}.jsonl"));
+        let next_line = fs::read(&path)
+            .unwrap()
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count()
+            + 1;
         OpenOptions::new()
             .append(true)
             .open(&path)
@@ -912,6 +1199,6 @@ mod tests {
             .write_all(b"invalid\n")
             .unwrap();
         let error = load(dir.path(), Some(&id), false).err().unwrap();
-        assert!(format!("{error:#}").contains("line 2"));
+        assert!(format!("{error:#}").contains(&format!("line {next_line}")));
     }
 }

@@ -4286,6 +4286,64 @@ mod tui {
             )
             .unwrap();
             assert!(journal.contains("what did I say"));
+
+            // A separately isolated crash keeps streamed display text, but no
+            // partial assistant turn may become native request history.
+            let interrupted_home = tempfile::tempdir().unwrap();
+            std::fs::write(
+                config_path(interrupted_home.path(), "settings.jsonc"),
+                fixture_settings(),
+            )
+            .unwrap();
+            std::fs::write(
+                config_path(interrupted_home.path(), "models.jsonc"),
+                response_models(&server, Some(protocol)),
+            )
+            .unwrap();
+            let mut interrupted = Pty::start_with_existing_files(interrupted_home.path());
+            interrupted.ready();
+            interrupted.input("interrupted input\r");
+            let (request, _) = receive_at(&server, path);
+            let mut stream = SseReply::new(request);
+            streaming_delta(&mut stream, protocol, "partial-session-marker");
+            // Observed terminal output fences event persistence; do not finish
+            // the stream before killing the process.
+            interrupted.text("partial-session-marker");
+            drop(interrupted);
+            drop(stream);
+            let interrupted_id = saved_session_id(interrupted_home.path());
+            let interrupted_path = interrupted_home
+                .path()
+                .join(".pp/agent/sessions")
+                .join(format!("{interrupted_id}.jsonl"));
+            let before = std::fs::read(&interrupted_path).unwrap();
+            let saved: Vec<Value> = String::from_utf8(before.clone())
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert!(!saved.iter().any(|entry| {
+                entry["type"] == "message" && entry["message"]["role"] == "assistant"
+            }));
+            assert!(!saved.iter().any(|entry| {
+                entry["type"] == "custom" && entry["customType"] == "pp.native_append"
+            }));
+            let mut resumed = Pty::start_with_args(
+                interrupted_home.path(),
+                interrupted_home.path(),
+                &["-r", &interrupted_id],
+            );
+            resumed.text("partial-session-marker");
+            resumed.text("Previous request was interrupted.");
+            resumed.ready();
+            let screen = resumed.parser.screen().contents();
+            assert_eq!(screen.matches("interrupted input").count(), 1);
+            assert_eq!(screen.matches("partial-session-marker").count(), 1);
+            no_more(&server);
+            resumed.input("/quit\r");
+            resumed.finish();
+            assert_eq!(std::fs::read(&interrupted_path).unwrap(), before);
+            no_more(&server);
         }
     }
 
@@ -4363,16 +4421,23 @@ mod tui {
             .join(format!("{id}.jsonl"));
         // 用一条展示记录把日志补齐到恰好等于 RLIMIT_FSIZE，使首次 /effort 追加得到 EFBIG。
         let len = std::fs::metadata(&path).unwrap().len();
-        let limit = (len + 64).div_ceil(1024) * 1024;
-        let overhead = r#"{"type":"user","text":""}"#.len() as u64 + 1;
-        let padding = "p".repeat((limit - len - overhead) as usize);
+        let limit = (len + 512).div_ceil(1024) * 1024;
+        let journal = std::fs::read_to_string(&path).unwrap();
+        let last: Value = serde_json::from_str(journal.lines().last().unwrap()).unwrap();
+        let mut padding_entry = json!({
+            "type":"message", "id":"padding-entry", "parentId":last["id"],
+            "timestamp":last["timestamp"],
+            "message":{"role":"user", "content":"", "timestamp":1}
+        });
+        let overhead = serde_json::to_vec(&padding_entry).unwrap().len() as u64 + 1;
+        padding_entry["message"]["content"] = json!("p".repeat((limit - len - overhead) as usize));
         {
             use std::io::Write as _;
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
                 .open(&path)
                 .unwrap();
-            writeln!(file, r#"{{"type":"user","text":"{padding}"}}"#).unwrap();
+            writeln!(file, "{padding_entry}").unwrap();
         }
         assert_eq!(std::fs::metadata(&path).unwrap().len(), limit);
 

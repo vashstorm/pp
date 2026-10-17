@@ -134,7 +134,11 @@ TUI 恢复可见消息、工具结果、错误和用户输入历史，输入框�
 
 “最新”按文件修改时间选择，时间相同按 ID 字典序降序；只查看恢复不会提高排序，不按项目过滤。session 文件必须是普通文件，不跟随符号链接；进程持有排他锁，另一进程恢复同一 ID 会报 `session is already in use`。最新文件损坏或已锁时直接报错，不换另一个文件。
 
-首个 checkpoint、用户原生输入、每个完整模型/工具批次及设置更改均同步落盘；流式展示事件不逐 token fsync。原生历史与展示日志分离，Responses item ID、encrypted reasoning、call_id 及工具原始结果均保留。完整工具批次在下一次请求前提交；网络错误不撤销已执行工具。写入失败锁存首次 `persisting session` 错误，当前已接受工具批次仍执行完毕，停止后续 HTTP；`/new` 或重启后才可重新发送。模型/思考级别设置写入失败保留旧内存选择。
+JSONL 使用 oh-my-pi 风格容器：首行是 `type:"session"`、`version:3` 的 header，保存现有完整 session ID、原工作目录和 UTC RFC3339 毫秒创建时间；其余条目都有 `id`、`parentId`、`timestamp`，形成线性链。正文 ID 是当前日志内唯一的 8 位小写随机 hex，首条 parent 为 null。支持的正文类型只有 `message`、`model_change`、`thinking_level_change`、`custom`；普通消息提供 `user`、`assistant`、`toolResult` 及 text/thinking/toolCall 内容，供通用阅读，不虚构 usage/cost。
+
+pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版本 1）、`pp.native_append`、`pp.instructions` 保存协议原生请求及增量；`pp.event`、`pp.error` 保存展示事件与错误。普通 assistant/toolResult 消息不反推模型上下文，也不重复渲染；TUI 仍从独立展示事件恢复。`model_change` 仅作审计，后续完整 native state 才提交模型切换。这是结构对齐，不支持直接互读上游会话文件。旧 `checkpoint` 格式明确报 `unsupported legacy session format`，不迁移、不改写；最新文件为旧格式时也直接失败，不跳过。
+
+首个 `pp.session_state`、用户原生输入、每个完整模型/工具批次及设置更改均同步落盘；流式展示事件不逐 token fsync。原生历史与展示日志分离，Responses item ID、encrypted reasoning、call_id 及工具原始结果均保留。完整工具批次在下一次请求前提交；网络错误不撤销已执行工具。写入失败锁存首次 `persisting session` 错误，当前已接受工具批次仍执行完毕，停止后续 HTTP；`/new` 或重启后才可重新发送。模型/思考级别设置写入失败保留旧内存选择。
 
 仅允许忽略末尾未换行的残缺记录；恢复时提示，首次真正追加前持锁截去残尾。完整坏行、未知版本/记录、ID 不符或协议不符均报错，不覆盖旧日志。正常退出和完整批次可恢复；强杀期间的未完成回答不提交到模型历史，工具副作用不提供事务、回滚或 exactly-once 保证。
 
@@ -255,7 +259,9 @@ Slash/model regressions exercise local commands without HTTP, alias routing and 
 
 A standalone Python standard-library fixture also exercised the actual binary through Completion A → Responses B → Completion A. All three requests carried the expected model/authorization and complete prior dialogue; slash commands made no requests. Stdout was exactly `alpha`, `alpha via b`, and `alpha via a`, one per line, exit code 0; both configuration files were byte-identical afterward. No external service or personal configuration was used.
 
-Session 自动化验证已在 macOS arm64 通过：13 项 session 行为测试、3 项专用 session PTY 测试，全套 228 项测试，以及构建、全目标 Clippy（`-D warnings`）和格式检查。覆盖原工作目录、保存的 edit/read/bash 限制优先级、完整原生上下文、损坏/残尾/锁/符号链接边界，以及真实文件大小限制注入的持久化失败。Linux 尚未实机验证。
+Session 新格式已在 macOS arm64 验证：13 项 session 行为测试、3 项专用真实 PTY 测试、9 项 persistence 单测通过；`cargo test --locked -- --test-threads=1` 全套 236 项通过，`cargo build --locked` 通过。默认并发全套曾有 1 项 session 惰性创建用例在 5 秒内未收到 CLI 请求；串行全套通过，未放宽 deadline 或断言。覆盖原工作目录、保存的 edit/read/bash 限制优先级、完整原生上下文、链/版本/旧格式拒绝、残尾/锁/符号链接边界，以及真实文件大小限制注入的持久化失败。PTY 还覆盖未结束 SSE 文本 delta 后强杀并 `-r`：保留部分文本、显示中断提示、无恢复 HTTP、无部分原生 assistant 提交。Linux 尚未实机验证。
+
+新格式另经一次性 Python 标准库 SSE 服务与构建后的 CLI 独立冒烟：Completion/Responses 分别使用隔离 HOME、项目 A 与启动目录 B，验证 HTTP 打开前不创建 session、stdout 只有回答、header/version 3 与线性链正确、普通消息内容正确；`-r` 无 HTTP 且日志字节不变，`-c` 精确发送保存的原生请求、不加用户消息、保留首次 assistant，并以原 cwd 连接旧链追加同一个文件。每个协议共 2 次 HTTP。此验证不代表真实供应商兼容性。
 
 日期时间格式 ID 已通过独立 CLI 冒烟：临时 HOME 与本地 SSE 服务下分别设置 `TZ=UTC`、`TZ=Asia/Shanghai`，确认 ID 时间与 checkpoint 创建时间一致、文件名与记录 ID 一致，并可用完整 ID 执行 `-r`（无 HTTP）和 `-c`（继续原会话）。
 

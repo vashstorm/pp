@@ -328,29 +328,31 @@ fn records(path: &Path) -> Vec<Value> {
         .collect()
 }
 
-// Replay of the native history exactly the way the loader rebuilds it:
-// checkpoints (including model switches), instructions refreshes, think
-// changes, and appended history slices. Display-only user/event/error
-// records intentionally never contribute.
+// Only native custom records and effort changes may rebuild model context;
+// canonical messages and display events deliberately never contribute.
 fn rebuild_request(records: &[Value]) -> Value {
     let mut request = Value::Null;
     let mut completion = false;
     for record in records {
-        match record["type"].as_str().unwrap() {
-            "checkpoint" => {
-                completion = record["session"]["protocol"] == "completion";
-                request = record["session"]["request"].clone();
+        let data = &record["data"];
+        match (
+            record["type"].as_str().unwrap(),
+            record["customType"].as_str(),
+        ) {
+            ("custom", Some("pp.session_state")) => {
+                completion = data["session"]["protocol"] == "completion";
+                request = data["session"]["request"].clone();
             }
-            "instructions" => {
-                let system = record["system"].clone();
+            ("custom", Some("pp.instructions")) => {
+                let system = data["system"].clone();
                 if completion {
                     request["messages"][0]["content"] = system;
                 } else {
                     request["instructions"] = system;
                 }
             }
-            "think_level" => {
-                let level = record["level"].as_str().unwrap();
+            ("thinking_level_change", _) => {
+                let level = record["thinkingLevel"].as_str().unwrap();
                 if completion {
                     request["reasoning_effort"] = json!(level);
                 } else {
@@ -366,23 +368,136 @@ fn rebuild_request(records: &[Value]) -> Value {
                     }
                 }
             }
-            "append_completion" => {
-                request["messages"]
+            ("custom", Some("pp.native_append")) => {
+                let (history, appended) = if completion {
+                    assert_eq!(data["protocol"], "completion");
+                    ("messages", "messages")
+                } else {
+                    assert_eq!(data["protocol"], "response");
+                    ("input", "items")
+                };
+                request[history]
                     .as_array_mut()
                     .unwrap()
-                    .extend(record["messages"].as_array().unwrap().iter().cloned());
-            }
-            "append_response" => {
-                request["input"]
-                    .as_array_mut()
-                    .unwrap()
-                    .extend(record["items"].as_array().unwrap().iter().cloned());
+                    .extend(data[appended].as_array().unwrap().iter().cloned());
             }
             _ => {}
         }
     }
-    assert!(!request.is_null(), "no checkpoint in records");
+    assert!(!request.is_null(), "no pp.session_state in records");
     request
+}
+
+fn session_state_mut(records: &mut [Value]) -> &mut Value {
+    &mut records
+        .iter_mut()
+        .find(|record| record["customType"] == "pp.session_state")
+        .expect("missing native state")["data"]
+}
+
+fn canonical_messages(records: &[Value]) -> Vec<Value> {
+    records
+        .iter()
+        .filter(|record| record["type"] == "message")
+        .map(|record| record["message"].clone())
+        .collect()
+}
+
+fn assert_session_contract(records: &[Value], id: &str, cwd: &Path) {
+    let header = &records[0];
+    assert_eq!(header["type"], "session");
+    assert_eq!(header["version"], 3);
+    assert_eq!(header["id"], id);
+    assert_eq!(
+        header["cwd"],
+        cwd.canonicalize().unwrap().display().to_string()
+    );
+    assert_eq!(header.as_object().unwrap().len(), 5);
+    let mut ids = std::collections::HashSet::new();
+    let mut parent = Value::Null;
+    for (index, record) in records.iter().enumerate() {
+        let timestamp = record["timestamp"].as_str().unwrap();
+        let parsed = chrono::DateTime::parse_from_rfc3339(timestamp).unwrap();
+        assert!(parsed.timestamp_millis() >= 0);
+        assert_eq!(
+            timestamp,
+            parsed
+                .to_utc()
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        );
+        if index == 0 {
+            continue;
+        }
+        let entry_id = record["id"].as_str().unwrap();
+        assert_eq!(entry_id.len(), 8);
+        assert!(
+            entry_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+        assert!(ids.insert(entry_id), "duplicate entry id");
+        assert!(record.get("parentId").is_some());
+        assert_eq!(record["parentId"], parent);
+        parent = record["id"].clone();
+        match record["type"].as_str().unwrap() {
+            "message" => {
+                let message = &record["message"];
+                assert!(message["timestamp"].as_i64().is_some_and(|time| time >= 0));
+                assert!(matches!(
+                    message["role"].as_str(),
+                    Some("user" | "assistant" | "toolResult")
+                ));
+                assert!(message.get("usage").is_none());
+                assert!(message.get("cost").is_none());
+            }
+            "model_change" => assert_eq!(record["role"], "default"),
+            "thinking_level_change" => assert!(record["thinkingLevel"].is_string()),
+            "custom" => {
+                assert!(matches!(
+                    record["customType"].as_str(),
+                    Some(
+                        "pp.session_state"
+                            | "pp.native_append"
+                            | "pp.instructions"
+                            | "pp.event"
+                            | "pp.error"
+                    )
+                ));
+                let text = record.to_string();
+                for secret in ["fixture-key", "api_key", "headers", "\"Config\""] {
+                    assert!(!text.contains(secret), "custom payload leaked {secret}");
+                }
+            }
+            other => panic!("unsupported top-level record: {other}"),
+        }
+    }
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["type"] == "session")
+            .count(),
+        1
+    );
+}
+
+// Mutated semantic-error records still need valid entry envelopes, otherwise
+// chain validation can hide the loader boundary the test means to exercise.
+fn push_entry(records: &mut Vec<Value>, mut entry: Value) {
+    entry["id"] = json!(format!("fixture-entry-{}", records.len()));
+    entry["parentId"] = records
+        .last()
+        .filter(|record| record["type"] != "session")
+        .map_or(Value::Null, |record| record["id"].clone());
+    entry["timestamp"] = records[0]["timestamp"].clone();
+    records.push(entry);
+}
+
+fn relink_entries(records: &mut [Value]) {
+    let mut parent = Value::Null;
+    for record in records.iter_mut().skip(1) {
+        record["parentId"] = parent;
+        parent = record["id"].clone();
+    }
 }
 
 fn make_saved_session(
@@ -560,29 +675,39 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
                 0o600
             );
             let saved = records(&path);
-            let checkpoint = &saved[0];
-            assert_eq!(checkpoint["type"], "checkpoint");
-            assert_eq!(checkpoint["version"], 1);
-            assert_eq!(checkpoint["id"], id);
+            assert_session_contract(&saved, &id, cwd.path());
+            let state = &saved
+                .iter()
+                .find(|record| record["customType"] == "pp.session_state")
+                .unwrap()["data"];
+            assert_eq!(state["version"], 1);
+            assert_eq!(state["modelReference"], "fixture/primary");
+            assert!(state["thinkLevel"].is_string());
+            assert!(state["editMode"].is_string());
+            assert!(state["toolLimits"].is_object());
+            assert!(state["baseSystem"].is_string());
+            assert_eq!(state.as_object().unwrap().len(), 7);
             assert_eq!(
-                checkpoint["cwd"],
-                cwd.path().canonicalize().unwrap().display().to_string()
-            );
-            assert_eq!(checkpoint["model_reference"], "fixture/primary");
-            assert_eq!(
-                checkpoint["session"]["protocol"],
+                state["session"]["protocol"],
                 if api == Api::Chat {
                     "completion"
                 } else {
                     "response"
                 }
             );
+            let messages = canonical_messages(&saved);
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0]["role"], "user");
+            assert_eq!(messages[0]["content"], "remember alpha");
+            assert_eq!(saved[1]["customType"], "pp.session_state");
+            assert_eq!(saved[2]["type"], "model_change");
+            assert_eq!(saved[2]["model"], "fixture/primary");
+            assert_eq!(saved[3]["type"], "thinking_level_change");
             assert!(
                 saved
                     .iter()
-                    .any(|record| record["type"] == "user" && record["text"] == "remember alpha")
+                    .any(|record| record["customType"] == "pp.event")
             );
-            assert!(saved.iter().any(|record| record["type"] == "event"));
             // Complete the stream and finish the task.
             match api {
                 Api::Chat => {
@@ -616,6 +741,27 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
             assert_eq!(output.stdout, b"alpha noted\n");
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert_eq!(stderr.matches(&format!("Session: {id}")).count(), 1);
+            let saved = records(&path);
+            assert_session_contract(&saved, &id, cwd.path());
+            let messages = canonical_messages(&saved);
+            assert_eq!(messages.len(), 2);
+            let assistant_message = &messages[1];
+            assert_eq!(assistant_message["role"], "assistant");
+            assert_eq!(assistant_message["provider"], "fixture");
+            assert_eq!(assistant_message["model"], "fixture-model");
+            assert_eq!(
+                assistant_message["api"],
+                if api == Api::Chat {
+                    "openai-completions"
+                } else {
+                    "openai-responses"
+                }
+            );
+            assert_eq!(assistant_message["stopReason"], "stop");
+            assert_eq!(
+                assistant_message["content"],
+                json!([{"type":"text","text":"alpha noted"}])
+            );
             // The completed answer is loadable native history.
             let (user, assistant) = match api {
                 Api::Chat => {
@@ -706,9 +852,8 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
                 );
             }
             for (id, text) in ids.iter().zip(&texts) {
-                let checkpoint =
-                    &records(&sessions_dir(home.path()).join(format!("{id}.jsonl")))[0];
-                assert_eq!(checkpoint["id"], *id);
+                let header = &records(&sessions_dir(home.path()).join(format!("{id}.jsonl")))[0];
+                assert_eq!(header["id"], *id);
                 assert!(text.contains(&format!("\"id\":\"{id}\"")));
             }
         }
@@ -793,10 +938,30 @@ fn session_resume_sends_no_request_and_appends_in_place() {
             "session file must be appended, not rewritten"
         );
         let saved = records(&path);
-        assert!(
-            saved
+        assert_session_contract(&saved, &id, project.path());
+        let messages = canonical_messages(&saved);
+        assert_eq!(
+            messages
                 .iter()
-                .any(|record| record["type"] == "user" && record["text"] == "what did I say")
+                .filter(|message| message["role"] == "user")
+                .count(),
+            2
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(
+                    |message| message["role"] == "user" && message["content"] == "what did I say"
+                )
+                .count(),
+            1
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message["role"] == "assistant")
+                .count(),
+            2
         );
         let (users, assistants) = api.turns(&rebuild_request(&saved));
         assert_eq!(users, ["remember alpha", "what did I say"]);
@@ -843,7 +1008,16 @@ fn session_continue_sends_exactly_the_saved_native_request() {
                 write_call, read_call
             ]),
         };
-        api.calls_reply(request, batch);
+        match api {
+            Api::Chat => reply(
+                request,
+                json!({
+                    "role":"assistant", "content":null,
+                    "reasoning_content":"plan the writes", "tool_calls":batch
+                }),
+            ),
+            Api::Responses => api.calls_reply(request, batch),
+        }
         let (request, body) = api.receive(&server);
         assert_eq!(api.tool_result(&body, "w")["bytes_written"], 13);
         assert_eq!(api.tool_result(&body, "r")["content"], "tool evidence");
@@ -861,7 +1035,101 @@ fn session_continue_sends_exactly_the_saved_native_request() {
         );
         let id = only_session_id(home.path());
         let path = sessions_dir(home.path()).join(format!("{id}.jsonl"));
-        let rebuilt = rebuild_request(&records(&path));
+        let saved = records(&path);
+        assert_session_contract(&saved, &id, project.path());
+        let original_messages = canonical_messages(&saved);
+        assert_eq!(
+            original_messages
+                .iter()
+                .map(|message| message["role"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["user", "assistant", "toolResult", "toolResult", "assistant"]
+        );
+        let assistant = &original_messages[1];
+        assert_eq!(
+            assistant["api"],
+            if api == Api::Chat {
+                "openai-completions"
+            } else {
+                "openai-responses"
+            }
+        );
+        assert_eq!(assistant["provider"], "fixture");
+        assert_eq!(assistant["model"], "fixture-model");
+        assert_eq!(assistant["stopReason"], "toolUse");
+        let content = assistant["content"].as_array().unwrap();
+        let thinking: Vec<_> = content
+            .iter()
+            .filter(|part| part["type"] == "thinking")
+            .collect();
+        if api == Api::Chat {
+            assert_eq!(thinking.len(), 1);
+            assert_eq!(thinking[0]["thinking"], "plan the writes");
+            assert!(thinking[0].get("summary").is_none());
+        } else {
+            assert_eq!(thinking.len(), 2);
+            assert_eq!(thinking[0]["thinking"], "plan the writes");
+            assert_eq!(thinking[0]["summary"], true);
+            assert_eq!(thinking[1]["thinking"], "plan");
+            assert_eq!(thinking[1]["summary"], false);
+        }
+        let calls: Vec<_> = content
+            .iter()
+            .filter(|part| part["type"] == "toolCall")
+            .collect();
+        assert_eq!(calls.len(), 2);
+        for (index, (id, name, arguments)) in [
+            (
+                "w",
+                "write",
+                json!({"path":"marker.txt","content":"tool evidence"}),
+            ),
+            ("r", "read", json!({"path":"marker.txt"})),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                *calls[index],
+                json!({"type":"toolCall","id":id,"name":name,"arguments":arguments})
+            );
+            let tool = &original_messages[index + 2];
+            assert_eq!(tool["toolCallId"], id);
+            assert_eq!(tool["toolName"], name);
+            assert_eq!(tool["isError"], false);
+            let raw = tool["content"][0]["text"].as_str().unwrap();
+            assert_eq!(tool["content"][0]["type"], "text");
+            let details: Value = serde_json::from_str(raw).unwrap();
+            assert_eq!(tool["details"], details);
+            assert_eq!(details["ok"], true);
+            if index == 0 {
+                assert_eq!(details["bytes_written"], 13);
+            } else {
+                assert_eq!(details["content"], "tool evidence");
+            }
+        }
+        assert_eq!(
+            original_messages[4]["content"],
+            json!([{"type":"text","text":"file done"}])
+        );
+        assert!(
+            !serde_json::to_string(&original_messages)
+                .unwrap()
+                .contains("opaque-session-reasoning")
+        );
+        if api == Api::Responses {
+            let opaque: Vec<_> = saved
+                .iter()
+                .filter(|record| record.to_string().contains("opaque-session-reasoning"))
+                .collect();
+            assert!(!opaque.is_empty());
+            assert!(
+                opaque
+                    .iter()
+                    .all(|record| record["customType"] == "pp.native_append")
+            );
+        }
+        let rebuilt = rebuild_request(&saved);
 
         // Remove the tool's file: if restoring replayed old tool calls the
         // file would reappear before any new model answer.
@@ -931,6 +1199,28 @@ fn session_continue_sends_exactly_the_saved_native_request() {
         );
         assert!(!launch.path().join("second.txt").exists());
         assert!(!launch.path().join("marker.txt").exists());
+        // Continue adds no user projection and never reprojects old native history.
+        let continued = records(&path);
+        assert_session_contract(&continued, &id, project.path());
+        assert_eq!(&continued[..saved.len()], saved.as_slice());
+        let messages = canonical_messages(&continued);
+        assert_eq!(
+            &messages[..original_messages.len()],
+            original_messages.as_slice()
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message["role"] == "user")
+                .count(),
+            1
+        );
+        assert!(
+            messages[original_messages.len()..]
+                .iter()
+                .all(|message| { !message["content"].to_string().contains("plan the writes") }),
+            "thinking buffers must not leak into subsequent turns"
+        );
         // Still the same session file: continuing never forks.
         assert_eq!(only_session_id(home.path()), id);
         no_more(&server);
@@ -1280,19 +1570,26 @@ fn session_failures_keep_executed_tool_results_and_display_only_fragments() {
         // The partial fragment is display log only: present as an event
         // record, absent from the rebuilt native history.
         assert!(file_text.contains("partial fragment"));
+        let saved = records(&path);
+        assert_session_contract(&saved, &id, project.path());
         assert!(
-            records(&path)
-                .iter()
-                .any(|record| record["type"] == "event")
+            !serde_json::to_string(&canonical_messages(&saved))
+                .unwrap()
+                .contains("partial fragment")
         );
         assert!(
             records(&path)
                 .iter()
-                .any(|record| record["type"] == "error")
+                .any(|record| record["customType"] == "pp.event")
+        );
+        assert!(
+            records(&path)
+                .iter()
+                .any(|record| record["customType"] == "pp.error")
         );
         assert!(!records(&path).iter().any(|record| {
-            record["type"] == "error"
-                && record["message"]
+            record["customType"] == "pp.error"
+                && record["data"]["message"]
                     .to_string()
                     .contains("private-provider-body")
         }));
@@ -1306,7 +1603,31 @@ fn session_failures_keep_executed_tool_results_and_display_only_fragments() {
                 .is_ok_and(|content| content == "kept")
         );
 
-        // After restart the executed tool result is native history.
+        // A fully written readable projection followed by a killed native
+        // commit must still not become model context. Long nonempty entry
+        // IDs are accepted on load even though pp generates eight hex digits.
+        with_mutated_records(&path, |records| {
+            push_entry(
+                records,
+                json!({
+                    "type":"message",
+                    "message":{
+                        "role":"assistant", "api":if api == Api::Chat { "openai-completions" } else { "openai-responses" },
+                        "provider":"fixture", "model":"fixture-model",
+                        "content":[{"type":"text","text":"uncommitted projection"}],
+                        "stopReason":"stop", "timestamp":1792224000000_i64
+                    }
+                }),
+            );
+        });
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"type\":\"custom\",\"customType\":\"pp.native_append\",\"data\":")
+            .unwrap();
+        // After restart the executed tool result, but neither the streamed
+        // fragment nor the uncommitted canonical answer, is native history.
         let cli = start_configured(
             api,
             &server,
@@ -1319,6 +1640,7 @@ fn session_failures_keep_executed_tool_results_and_display_only_fragments() {
         let (users, _) = api.turns(&body);
         assert_eq!(users, ["use the tools", "what happened"]);
         assert!(!body.to_string().contains("partial fragment"));
+        assert!(!body.to_string().contains("uncommitted projection"));
         api.final_reply(request, "tools ran");
         let output = cli.finish();
         assert!(
@@ -1473,7 +1795,7 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
         );
     }
 
-    // Empty file, and a first record that is not a checkpoint.
+    // Empty, non-header, and explicitly unsupported legacy files.
     {
         let home = tempfile::tempdir().unwrap();
         configure(home.path(), fixture_settings(), &fixture_models(&server));
@@ -1485,12 +1807,12 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
             home.path(),
             cwd.path(),
             &["-r", id, "-p", "hi"],
-            &["missing checkpoint"],
+            &["missing session header"],
             &["fixture-key"],
         );
         fs::write(
             sessions_dir(home.path()).join(format!("{id}.jsonl")),
-            "{\"type\":\"user\",\"text\":\"x\"}\n",
+            "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"x\",\"timestamp\":0}}\n",
         )
         .unwrap();
         expect_restore_failure(
@@ -1498,9 +1820,24 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
             home.path(),
             cwd.path(),
             &["-r", id, "-p", "hi"],
-            &["first record must be a checkpoint"],
+            &["first record must be a session header"],
             &["fixture-key"],
         );
+        fs::write(
+            sessions_dir(home.path()).join(format!("{id}.jsonl")),
+            "{\"type\":\"checkpoint\",\"version\":1,\"secret\":\"fixture-key\"}\n",
+        )
+        .unwrap();
+        for args in [vec!["-r", id, "-p", "hi"], vec!["-c"]] {
+            expect_restore_failure(
+                &server,
+                home.path(),
+                cwd.path(),
+                &args,
+                &["unsupported legacy session format"],
+                &["fixture-key"],
+            );
+        }
     }
 
     // Structural corruption of otherwise valid session logs: every case is a
@@ -1533,7 +1870,7 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
     }
     {
         let (home, id) = corrupted_base(&server, cwd.path(), |records| {
-            records[0]["tool_limits"]["read_max_bytes"] = json!(0);
+            session_state_mut(records)["toolLimits"]["read_max_bytes"] = json!(0);
         });
         expect_restore_failure(
             &server,
@@ -1546,7 +1883,10 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
     }
     {
         let (home, id) = corrupted_base(&server, cwd.path(), |records| {
-            records.push(json!({"type":"append_response","items":[]}));
+            push_entry(
+                records,
+                json!({"type":"custom","customType":"pp.native_append","data":{"protocol":"response","items":[]}}),
+            );
         });
         expect_restore_failure(
             &server,
@@ -1559,7 +1899,7 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
     }
     {
         let (home, id) = corrupted_base(&server, cwd.path(), |records| {
-            records[0]["session"]["request"]["messages"]
+            session_state_mut(records)["session"]["request"]["messages"]
                 .as_array_mut()
                 .unwrap()
                 .remove(0);
@@ -1589,7 +1929,10 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
     // Unknown record type: rejected without echoing the record body.
     {
         let (home, id) = corrupted_base(&server, cwd.path(), |records| {
-            records.push(json!({"type":"mystery","secret-record-body":"fixture-key"}));
+            push_entry(
+                records,
+                json!({"type":"mystery","secret-record-body":"fixture-key"}),
+            );
         });
         expect_restore_failure(
             &server,
@@ -1598,6 +1941,93 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
             &["-r", &id, "-p", "hi"],
             &["invalid session record"],
             &["secret-record-body", "fixture-key"],
+        );
+    }
+    // Every semantic mutation starts with a valid generated file. Added rows
+    // get real chain envelopes, and intentional reordering is relinked.
+    let cases: &[(&str, fn(&mut Vec<Value>))] = &[
+        ("unsupported pp session version", |records| {
+            session_state_mut(records)["version"] = json!(2);
+        }),
+        ("missing pp session state", |records| {
+            records.truncate(1);
+        }),
+        ("invalid session entry chain", |records| {
+            records[1]["parentId"] = json!("not-the-parent");
+        }),
+        ("invalid session entry chain", |records| {
+            records[2]["parentId"] = Value::Null;
+        }),
+        ("invalid session entry chain", |records| {
+            records[2]["id"] = records[1]["id"].clone();
+        }),
+        ("invalid session entry chain", |records| {
+            records[1]["id"] = json!("");
+        }),
+        ("invalid session record", |records| {
+            records[1].as_object_mut().unwrap().remove("id");
+        }),
+        ("invalid session", |records| {
+            records[1].as_object_mut().unwrap().remove("parentId");
+        }),
+        ("invalid session", |records| {
+            records[2].as_object_mut().unwrap().remove("parentId");
+        }),
+        ("invalid session record", |records| {
+            push_entry(
+                records,
+                json!({"type":"custom","customType":"pp.future","data":{"secret-record-body":"fixture-key"}}),
+            );
+        }),
+        ("invalid session record", |records| {
+            push_entry(
+                records,
+                json!({"type":"session","version":3,"cwd":"/","secret-record-body":"fixture-key"}),
+            );
+        }),
+        ("invalid session record", |records| {
+            records[1].as_object_mut().unwrap().remove("timestamp");
+        }),
+        ("invalid session record", |records| {
+            records[1]["timestamp"] = json!("not-a-timestamp fixture-key");
+        }),
+        ("invalid session record", |records| {
+            records[0]["timestamp"] = json!("not-a-timestamp fixture-key");
+        }),
+        ("invalid session record", |records| {
+            records[0]["timestamp"] = json!("1969-12-31T23:59:59.999Z");
+        }),
+    ];
+    for &(expected, mutate) in cases {
+        let (home, id) = corrupted_base(&server, cwd.path(), mutate);
+        expect_restore_failure(
+            &server,
+            home.path(),
+            cwd.path(),
+            &["-r", &id, "-p", "hi"],
+            &[expected],
+            &["secret-record-body", "fixture-key"],
+        );
+    }
+    // State-dependent records must not precede the first native snapshot.
+    for entry in [
+        json!({"type":"thinking_level_change","thinkingLevel":"high"}),
+        json!({"type":"custom","customType":"pp.instructions","data":{"system":"x"}}),
+        json!({"type":"custom","customType":"pp.native_append","data":{"protocol":"completion","messages":[]}}),
+    ] {
+        let (home, id) = corrupted_base(&server, cwd.path(), |records| {
+            push_entry(records, entry);
+            let entry = records.pop().unwrap();
+            records.insert(1, entry);
+            relink_entries(records);
+        });
+        expect_restore_failure(
+            &server,
+            home.path(),
+            cwd.path(),
+            &["-r", &id, "-p", "hi"],
+            &["before"],
+            &["fixture-key"],
         );
     }
     // A complete (newline-terminated) invalid JSON line in the middle names
@@ -1635,7 +2065,7 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
             "base noted",
         );
         with_mutated_records(&path, |records| {
-            records[0]["session"]["request"]["input"] = json!("plain text");
+            session_state_mut(records)["session"]["request"]["input"] = json!("plain text");
         });
         expect_restore_failure(
             &server,
@@ -1760,7 +2190,7 @@ fn session_truncated_tail_is_ignored_and_repaired_on_first_append() {
         "tail noted",
     );
     let complete = fs::read(&path).unwrap();
-    let partial = b"{\"type\":\"user\",\"text\":\"unfin";
+    let partial = b"{\"type\":\"message\",\"id\":\"unfin";
     fs::OpenOptions::new()
         .append(true)
         .open(&path)
@@ -1801,6 +2231,7 @@ fn session_truncated_tail_is_ignored_and_repaired_on_first_append() {
     );
     assert!(!String::from_utf8_lossy(&after).contains("unfin"));
     assert!(after.ends_with(b"\n"));
+    assert_session_contract(&records(&path), &id, project.path());
 
     // The repaired file loads again without any incomplete-tail notice.
     let cli = start_configured(
@@ -1858,6 +2289,26 @@ fn session_settings_persist_across_model_switch_and_restore() {
     assert_eq!(users, ["first", "second"]);
     assert_eq!(assistants, ["first answer"]);
     final_reply(request, "second answer");
+    cli.input("/quit\n");
+    let first_output = cli.finish();
+    assert!(
+        first_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first_output.stderr)
+    );
+    let id = only_session_id(home.path());
+    let path = sessions_dir(home.path()).join(format!("{id}.jsonl"));
+    let same_protocol = records(&path);
+    assert_session_contract(&same_protocol, &id, project.path());
+    let saved_request = rebuild_request(&same_protocol);
+    assert_eq!(saved_request["model"], "a-two");
+    Api::Chat.assert_level(&saved_request, "max");
+    let same_protocol_messages = canonical_messages(&same_protocol);
+    assert_eq!(same_protocol_messages.len(), 4);
+    let mut cli = start(home.path(), launch.path(), &["-r", &id]);
+    cli.wait_for(Pipe::Err, &format!("Resumed session: {id}"));
+    no_more(&server);
+    assert_eq!(records(&path), same_protocol);
     cli.input("/model b/primary\n");
     cli.wait_for(Pipe::Err, "Current model: b/primary (b-one)");
     cli.input("third\n");
@@ -1882,13 +2333,54 @@ fn session_settings_persist_across_model_switch_and_restore() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        output.stdout,
+        [first_output.stdout, output.stdout].concat(),
         b"first answer\nsecond answer\nthird answer\n"
     );
 
-    let id = only_session_id(home.path());
-    let path = sessions_dir(home.path()).join(format!("{id}.jsonl"));
-    let rebuilt = rebuild_request(&records(&path));
+    let saved = records(&path);
+    assert_session_contract(&saved, &id, project.path());
+    assert_eq!(&saved[..same_protocol.len()], same_protocol.as_slice());
+    let messages = canonical_messages(&saved);
+    assert_eq!(messages.len(), 6);
+    assert_eq!(
+        &messages[..same_protocol_messages.len()],
+        same_protocol_messages.as_slice()
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["role"] == "user")
+            .map(|message| message["content"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["first", "second", "third"]
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["role"] == "assistant")
+            .map(|message| message["model"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["a-one", "a-two", "b-one"]
+    );
+    assert_eq!(
+        saved
+            .iter()
+            .filter(|record| record["type"] == "model_change")
+            .map(|record| record["model"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["a/primary", "a/secondary", "b/primary"]
+    );
+    assert!(saved.iter().any(
+        |record| record["type"] == "thinking_level_change" && record["thinkingLevel"] == "max"
+    ));
+    assert_eq!(
+        saved
+            .iter()
+            .filter(|record| record["customType"] == "pp.session_state")
+            .count(),
+        3
+    );
+    let rebuilt = rebuild_request(&saved);
 
     // After restart the next request carries the saved model, think level
     // and converted history (replayed from the JSONL, including the
@@ -1921,6 +2413,14 @@ fn session_settings_persist_across_model_switch_and_restore() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stdout, b"restored answer\n");
+    let restored = records(&path);
+    assert_session_contract(&restored, &id, project.path());
+    assert_eq!(&restored[..saved.len()], saved.as_slice());
+    let restored_messages = canonical_messages(&restored);
+    assert_eq!(&restored_messages[..messages.len()], messages.as_slice());
+    assert_eq!(restored_messages.len(), 8);
+    assert_eq!(restored_messages[6]["role"], "user");
+    assert_eq!(restored_messages[6]["content"], "after restore");
 
     // Switching settings without an active session writes nothing.
     let idle = tempfile::tempdir().unwrap();
@@ -2008,6 +2508,29 @@ fn session_restore_keeps_saved_edit_mode_and_execution_limits() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(output.stdout, b"saved policy enforced\n");
+        let records = records(&path);
+        assert_session_contract(&records, &id, project.path());
+        let messages = canonical_messages(&records);
+        let tools: Vec<_> = messages
+            .iter()
+            .filter(|message| message["role"] == "toolResult")
+            .collect();
+        assert_eq!(tools.len(), 3);
+        for (index, (call_id, tool_name, is_error)) in [
+            ("read-policy", "read", false),
+            ("byte-policy", "read", true),
+            ("timeout-policy", "bash", true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(tools[index]["toolCallId"], call_id);
+            assert_eq!(tools[index]["toolName"], tool_name);
+            assert_eq!(tools[index]["isError"], is_error);
+            let raw: Value =
+                serde_json::from_str(tools[index]["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(tools[index]["details"], raw);
+        }
         no_more(&server);
     }
 }
@@ -2104,5 +2627,6 @@ fn session_file_size_limit_latches_after_executing_whole_tool_batch() {
     let bytes = fs::read(sessions_dir(home.path()).join(format!("{id}.jsonl"))).unwrap();
     // The latched write left an unterminated partial record.
     assert!(!bytes.ends_with(b"\n"));
-    assert!(String::from_utf8_lossy(&bytes).contains("\"type\":\"checkpoint\""));
+    assert!(String::from_utf8_lossy(&bytes).contains("\"type\":\"session\""));
+    assert!(String::from_utf8_lossy(&bytes).contains("\"customType\":\"pp.session_state\""));
 }
