@@ -10,7 +10,7 @@ cargo build --locked
 ./target/debug/pp --version
 ```
 
-Prepare JSONC configuration in the startup directory; both files support `//`, `/* ... */` comments and trailing commas. `models.jsonc` is required: providers share credentials, base URL, and protocol, with multiple models under each provider. `settings.jsonc` is optional and controls app behavior itself. The default model is the first model of the first provider in the file:
+配置统一保存在 `~/.pp/agent/settings.jsonc` 和 `~/.pp/agent/models.jsonc`，支持 `//`、`/* ... */` 注释及末尾逗号。启动目录中的同名文件不再读取。 `models.jsonc` is required: providers share credentials, base URL, and protocol, with multiple models under each provider. `settings.jsonc` is optional and controls app behavior itself. The default model is the first model of the first provider in the file:
 
 ```jsonc
 // settings.jsonc
@@ -21,6 +21,10 @@ Prepare JSONC configuration in the startup directory; both files support `//`, `
   "edit": "replace",
   // 思考级别：default（服务端默认）、low、medium、high、xhigh、max
   "think_level": "default",
+  // skill 根目录；相对路径以 ~/.pp/agent 为基准，空数组关闭扫描
+  "skill_dirs": ["~/.pp/agent/skills"],
+  // 全局禁用的 skill 名称；新发现的 skill 默认启用
+  "disabled_skills": [],
   // Optional, default 20: maximum model requests per user task
   "max_model_requests": 20,
   // Optional, default 120: model request timeout in seconds, for either API
@@ -64,15 +68,15 @@ Prepare JSONC configuration in the startup directory; both files support `//`, `
 }
 ```
 
-File names are fixed: `settings.jsonc` and `models.jsonc` are always read from the startup directory (the former may be absent; a missing latter fails at startup). Custom paths or renames are not supported. The tools' working directory is the startup cwd:
+配置文件名和目录固定；`settings.jsonc` 可以缺省，缺少 `models.jsonc` 时模型不可用。通过 HOME 定位用户目录，不读取项目配置。工具仍以启动目录为工作目录。旧版本用户需手动将配置迁移到 `~/.pp/agent/`；程序不会自动复制含密钥的文件。
 
 ```sh
-chmod 600 models.jsonc
+chmod 600 ~/.pp/agent/models.jsonc
 ./target/debug/pp -p 'Read the current project and explain its structure; do not modify files.'
 ./target/debug/pp
 ```
 
-**API keys are stored in plaintext in models.jsonc.** The repository root `models.jsonc` is already in `.gitignore` to prevent a leftover personal key file on disk from accidentally entering version control. The tools have no sandbox and can still read configuration files; do not let the model read or output files containing keys. `settings.jsonc` holds no credentials and needs no ignore entry.
+**API 密钥以明文保存在 `~/.pp/agent/models.jsonc`。** The repository root `models.jsonc` is already in `.gitignore` to prevent a leftover personal key file on disk from accidentally entering version control. The tools have no sandbox and can still read configuration files; do not let the model read or output files containing keys. `settings.jsonc` holds no credentials and needs no ignore entry.
 
 Validation and model-selection rules:
 
@@ -86,7 +90,7 @@ Validation and model-selection rules:
 - Provider-level `protocol` selects the API: `"response"` uses `POST /responses` and is the default when omitted; `"completion"` uses `POST /chat/completions` (not the legacy `/completions` API). Only these exact lowercase strings are accepted. Null, wrong types, old `"openai"`, and `"anthropic"` invalidate the entire configuration, including on an unselected provider. To migrate an existing Chat Completions provider, replace `"openai"` with `"completion"`; omitting the field now selects Responses.
 - Provider configuration is read only from these two JSONC files: no provider environment variables, no environment substitution or fallback, and no `.env` or OAuth loading. Errors name the offending file and never dump config values, URLs, or keys. Choose the API supported by the configured service and model; there is no automatic protocol fallback.
 
-When running `pp` directly, an unusable configuration (`models.jsonc` missing, unreadable, encoding/JSONC/field/validation errors, or initialization errors such as an API key unusable in an HTTP header) never blocks entering interactive mode: the error is shown in the conversation area or the line terminal, and input remains editable. A missing `settings.jsonc` is not an error; defaults apply. With unusable configuration, submitting a task, `/new`, or `/model` shows the startup error without sending requests or running tools; `/help` remains available and `/quit` exits cleanly (exit code 0). Line mode also supports EOF. Restart after fixing configuration — there is no reload. `pp -p 'task'` instead exits non-zero on unusable configuration.
+When running `pp` directly, an unusable configuration (`models.jsonc` missing, unreadable, encoding/JSONC/field/validation errors, or initialization errors such as an API key unusable in an HTTP header) never blocks entering interactive mode: the error is shown in the conversation area or the line terminal, and input remains editable. A missing `settings.jsonc` is not an error; defaults apply. With unusable configuration, submitting a task, `/new`, or `/model` shows the startup error without sending requests or running tools; `/help` remains available and `/quit` exits cleanly (exit code 0). Line mode also supports EOF. 模型及其他运行参数修复后需重启；skill 目录配置可以在 `/skills` 面板按 r 重扫。 `pp -p 'task'` instead exits non-zero on unusable configuration.
 
 A provider's `base_url` is the API root. The existing path prefix is preserved; trailing `/` characters are stripped and the SDK appends `/responses` or `/chat/completions` according to `protocol`, with no automatic `/v1`. When omitted, `https://api.openai.com/v1` is used. Every explicit URL (including unselected providers) must be http/https with a host; userinfo, query, fragment, all-blank, and null are rejected. An explicit HTTP URL transmits credentials and sessions in plaintext — use it only with trusted compatible services. Only the selected key goes through HTTP header validation; unselected keys are merely checked for non-blankness.
 
@@ -94,7 +98,7 @@ A provider's `base_url` is the API root. The existing path prefix is preserved; 
 
 未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页采用 omp 风格的居中像素字标、版本号和简短操作提示；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏依次显示实际模型、思考级别、启动工作目录和 Git 信息。`default` 表示请求未显式指定思考级别，使用服务端默认值。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；右半区预留为第二状态栏，目前保持空白。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏或 Markdown 渲染。
 
-用户输入继续使用蓝色左竖线和加粗标签，助手回答与 read/write 数据使用终端默认文字色。bash 与 think 使用下述独立样式；其他工具保留淡色正文与运行／完成／失败状态。青色 grep 和品红色 skill 仍仅为保留显示类别，不新增工具或按命令、路径猜测类别。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
+用户输入继续使用蓝色左竖线和加粗标签，助手回答与 read/write 数据使用终端默认文字色。bash 与 think 使用下述独立样式；其他工具保留淡色正文与运行／完成／失败状态。青色 grep 仍为保留显示类别。真实 `load_skill` 调用使用品红色 skill 卡片，不按文件路径或 bash 命令猜测类别。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
 
 - Enter 发送非空草稿，Ctrl-J 插入换行；粘贴保留多行且不会自动发送。菜单关闭时，↑/↓ 将本次进程中已提交的历史输入复制到输入框，支持继续编辑；↓ 越过最新一条会恢复浏览前的草稿和光标，历史两端不循环。运行中也可浏览输入历史，忙碌时被拒绝的提交不计入历史；`/new` 重置模型会话后仍保留输入历史，退出后不保存。菜单展开时，↑/↓ 仍用于选择菜单项。
 - Ctrl+A / Ctrl+E 分别跳到当前行首 / 行尾；Ctrl+K 删除光标到当前行尾的内容，在行尾或空行按下不删除换行。左右键、Home/End、Backspace/Delete 继续支持中文和 Unicode 文本编辑。
@@ -108,11 +112,31 @@ A provider's `base_url` is the API root. The existing path prefix is preserved; 
 - `/quit` 或 Ctrl-C 立即退出整个 pp，正常退出码为 0。恢复终端后，全部对话记录按退出时的终端宽度写入普通终端的滚动历史，保留原有颜色、缩进、分隔线、流式片段、工具输出及错误，末尾保留输入框、未提交的草稿、菜单和状态栏；可以向上滚动查看超出一屏的历史。保留长度受终端自身的滚动历史容量限制。退出不等待阻塞中的模型请求或工具，不提供任务级取消，也不保证终止工具子进程，文件修改不会回滚。
 - `-p/--prompt` always takes precedence and never parses slash commands: `pp -p '/model'` sends `/model` as a task. If either stdin or stdout is not a terminal, line mode supports the same commands without raw mode or an alternate screen. `/model` lists configured models and marks the current one; use `/model provider/model` to switch. Stdout streams **all readable assistant text**, including text before tools, with one terminating newline per nonempty turn and no replay at completion. Refusal is printed only if no non-blank content wins. Help, command responses, errors, and `tool <name>: running/ok/failed` go to stderr; live bash data uses `[bash stdout]` / `[bash stderr]` on pp's stderr. Non-TUI output adds no ANSI control sequences. A display write failure is returned only after the Agent finishes recording the task's history/tool results.
 
+## Skill 支持
+
+配置中的多个 `skill_dirs` 按顺序递归扫描，每个 skill 是包含 `SKILL.md` 的目录；发现该文件后不再扫描其附属目录。支持符号链接，并按规范路径去重、防止循环；同名定义按目录顺序及路径排序取首个，其他定义显示冲突提示。缺失目录、无效文件和元数据错误会显示诊断并跳过，不影响其他 skill。
+
+```markdown
+---
+name: rust
+description: Rust 开发与审查指导
+---
+在修改前阅读相关实现，并运行与修改范围匹配的检查。
+```
+
+`name` 和 `description` 必须为非空字符串，支持 YAML 多行说明和其他元数据。名称作为全局启停标识，需要唯一。默认根目录为 `~/.pp/agent/skills`；`~/` 展开为用户目录，普通相对路径以 `~/.pp/agent` 为基准。
+
+TUI 输入 `/skills` 打开全局管理面板：↑/↓ 选择、Space 勾选、Enter 保存、Esc 放弃本次选择，r 重读目录配置并扫描（会重置未保存选择），PgUp/PgDn 滚动详情及诊断。面板显示名称、说明、来源和启用状态；配置中的目录通过编辑 settings 修改。保存仅更新 `disabled_skills`，保留其他字段和 JSONC 注释，使用临时文件原子提交；失败保留原运行状态与面板选择。运行任务时拒绝管理并保留草稿；缺少或无效模型配置时仍可管理 skill。行模式支持 `/skills` 查看列表，以及 `/skills enable 名称`、`/skills disable 名称`。
+
+模型只收到已启用 skill 的名称与说明；通过 `load_skill({"name":"rust"})` 按需读取全文，结果包含 `content`、`path` 和资源基准 `base_dir`。加载工具只接受已发现且启用的名称，不会执行 skill 内的脚本。TUI 用品红色完整边框显示加载过程，左上角加粗标题为 `skill · 名称`，并显示来源及成功／失败状态。正文默认预览前 10 行，Ctrl-O 展开／收起最近的 bash 或 skill 卡片；模型接收全文，退出回放也保留全文。
+
+启停和重扫对后续请求生效，跨模型及协议切换保留。已加载的内容仍在当前会话历史中，`/new` 清除会话历史并保留全局启用选择。配置不会被其他运行实例自动刷新，需要重扫或重启。skill 加载日志写入 stderr，行模式 stdout 仍只有助手输出。
+
 ## Execution and Permissions
 
 **write/edit 仅修改启动目录内文件，按单次调用原子提交。macOS/Linux 的 bash 均无文件权限隔离，仍可修改当前用户有权限访问的目录外文件；没有逐次确认。请在可信或临时目录中运行。**
 
-- 启动时固定规范化工作目录。`read` 允许目录外读取及符号链接；`write/edit` 接受目录内的相对或绝对路径，拒绝越界路径以及写入路径上的符号链接（包括指向项目内的链接）。父目录通过目录句柄逐级打开，保存不重新按完整路径追踪链接。允许不越出工作目录的 `..`，不扫描项目规则或技能文件。
+- 启动时固定规范化工作目录。`read` 允许目录外读取及符号链接；`write/edit` 接受目录内的相对或绝对路径，拒绝越界路径以及写入路径上的符号链接（包括指向项目内的链接）。父目录通过目录句柄逐级打开，保存不重新按完整路径追踪链接。允许不越出工作目录的 `..`，不自动扫描项目规则文件；skill 仅扫描全局配置指定的目录。
 - `read(path, offset?, limit?)`：`offset` 是从 1 开始的起始行，默认 1；`limit` 默认 `read_max_lines`，必须为正整数且不超过该配置。读取普通文件，使用有界缓冲跳过前面的行；每页同时受 `read_max_bytes` 和行数限制。返回 `ok`、`content`、`truncated`、`lines_read`、`next_offset`；有后续内容时使用 `next_offset` 继续，文件结尾为 null。超出文件末尾返回空页。两种模式均只返回完整行，超长单行无法放入空页时返回错误；增大配置或使用 bash 检查有界片段。默认 replace 返回保留原始换行、无前缀的 lossy UTF-8；字节上限计算源文件内容，不包括 hashline 前缀及 JSON 编码。不会解析图片或二进制格式。
 - Default `edit({path, edits:[{oldText,newText}]})`: changes an existing UTF-8 file. Every item matches the same original snapshot, not earlier replacements. Nonempty `oldText` must be unique even after loose normalization; overlapping or duplicate targets are rejected, adjacent targets are allowed. Use minimal unique context; insert by repeating neighboring context in `newText`, or delete with `newText:""`. Empty arrays, missing matches, and whole-batch no-ops fail without writing; mixed no-op and changing items are allowed. On failure, read again.
 - Replace matching tries exact LF-normalized text first, then NFKC → per-line ECMAScript `trimEnd` → smart quote/dash/Unicode-space normalization. It does not ignore case, indentation, or repeated inline spaces. If loose matching is needed, touched line blocks use normalized text while untouched line bodies retain their original content by line number. A leading UTF-8 BOM is preserved; CRLF and bare CR are normalized internally, then all output newlines use the source's first LF style (CRLF if preceded by CR, otherwise LF; LF when absent). No final newline is forced.
@@ -172,7 +196,7 @@ cargo fmt --check
 
 本次工具加固已在 macOS arm64 验证：104 项单元测试、55 项集成测试（含双协议与 PTY）、构建、Clippy 和格式检查通过。Linux 尚未实机运行；本地夹具测试不代表真实服务商兼容性。
 
-Regressions use loopback HTTP fixtures and real subprocesses with independent JSONC configs and temporary working directories; they do not modify the test process environment or access external model services. Both APIs cover ordered tool dependencies, cross-turn history, tool-error correction, invalid batches without partial writes, request limits, timeouts, error redaction, and no automatic retries. Responses-specific cases cover omitted/explicit protocol selection, text aggregation/refusal, encrypted reasoning and complete output replay, optional function-call status, reset preserving instructions, rejected response/item statuses, and recovery without invalid output entering history. Configuration cases cover composite provider/model routing, default ordering, model aliases containing `/`, scoped uniqueness, strict protocol/URL/field types, full validation of unselected providers, removed protocol rejection, and no environment fallback. HTTP regressions include non-JSON 302/401/429/500 errors without redirects or exposed bodies.
+回归测试使用回环 HTTP、真实子进程、独立临时 HOME 下的全局 JSONC 配置及临时工作目录； they do not modify the test process environment or access external model services. Both APIs cover ordered tool dependencies, cross-turn history, tool-error correction, invalid batches without partial writes, request limits, timeouts, error redaction, and no automatic retries. Responses-specific cases cover omitted/explicit protocol selection, text aggregation/refusal, encrypted reasoning and complete output replay, optional function-call status, reset preserving instructions, rejected response/item statuses, and recovery without invalid output entering history. Configuration cases cover composite provider/model routing, default ordering, model aliases containing `/`, scoped uniqueness, strict protocol/URL/field types, full validation of unselected providers, removed protocol rejection, and no environment fallback. HTTP regressions include non-JSON 302/401/429/500 errors without redirects or exposed bodies.
 
 Unix regressions additionally drive the TUI through a real PTY (100×30, `TERM=xterm-256color`), restoring the visible screen via vt100: multi-line input, drafts while waiting, paste without sending, real write/read, session history, protocol-error recovery, confirmed reset, unavailable configuration, and Ctrl-C while busy. After exit, termios flags, alternate screen, bracketed paste, mouse protocol mode/encoding, and cursor restoration are checked; the original pipe regressions remain. An SGR mouse-wheel scenario verifies scrolling through a 60-line streamed answer, stable history and CJK draft during incoming output, bottom clamping, and restored following on the next response. Physical mouse wheels and touchpads in specific terminal emulators have not been manually verified. Run alone: `cargo test --locked --test cli_agent tui:: -- --nocapture`.
 
@@ -194,14 +218,16 @@ Slash/model regressions exercise local commands without HTTP, alias routing and 
 
 A standalone Python standard-library fixture also exercised the actual binary through Completion A → Responses B → Completion A. All three requests carried the expected model/authorization and complete prior dialogue; slash commands made no requests. Stdout was exactly `alpha`, `alpha via b`, and `alpha via a`, one per line, exit code 0; both configuration files were byte-identical afterward. No external service or personal configuration was used.
 
-**Real vendor calls are unverified.** After filling in a real vendor configuration supporting function tools and selecting its API via `protocol`, copy both configs to a temporary directory and run (file names are fixed and only read from the startup directory):
+**Real vendor calls are unverified.** After filling in a real vendor configuration supporting function tools and selecting its API via `protocol`, 将全局配置复制到临时 HOME 中运行（配置文件仅从 HOME 下的 `.pp/agent/` 读取）：
 
 ```sh
 BIN="$PWD/target/debug/pp"
 WORK="$(mktemp -d)"
-cp settings.jsonc models.jsonc "$WORK"/
+mkdir -p "$WORK/home/.pp/agent"
+cp ~/.pp/agent/settings.jsonc ~/.pp/agent/models.jsonc "$WORK/home/.pp/agent/"
 (
   cd "$WORK" || exit 1
+  export HOME="$WORK/home"
   "$BIN" -p 'Create hello.txt containing "hello from rust agent" plus a newline; read it, verify the line count with wc -l via bash, then report the file content and line count.'
   cat hello.txt
   wc -l < hello.txt

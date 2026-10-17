@@ -103,11 +103,11 @@ fn think_commands_preserve_history_and_level_across_model_switch_and_new() {
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("thinking level must be one of"));
     assert_eq!(
-        std::fs::read_to_string(dir.path().join("settings.jsonc")).unwrap(),
+        std::fs::read_to_string(config_path(dir.path(), "settings.jsonc")).unwrap(),
         settings
     );
     assert_eq!(
-        std::fs::read_to_string(dir.path().join("models.jsonc")).unwrap(),
+        std::fs::read_to_string(config_path(dir.path(), "models.jsonc")).unwrap(),
         models
     );
 }

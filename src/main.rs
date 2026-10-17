@@ -5,6 +5,7 @@ mod events;
 mod jsonc;
 mod llm;
 mod models;
+mod skills;
 mod tools;
 mod tui;
 
@@ -43,14 +44,26 @@ fn run(args: Args) -> Result<()> {
     }
     let use_tui = args.prompt.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal();
     let cwd = std::env::current_dir().context("capturing startup working directory")?;
-    let mut agent =
-        config::ModelCatalog::from_files(&cwd.join("settings.jsonc"), &cwd.join("models.jsonc"))
+    let global_dir = config::global_dir();
+    let skills = match &global_dir {
+        Ok(dir) => skills::Skills::from_dir(dir),
+        Err(error) => {
+            let mut skills = skills::Skills::default();
+            skills.diagnostics.push(format!("{error:#}"));
+            skills
+        }
+    }
+    .shared();
+    let mut agent = global_dir.and_then(|dir| {
+        config::ModelCatalog::from_files(&dir.join("settings.jsonc"), &dir.join("models.jsonc"))
             .and_then(|catalog| {
-                let edit_mode = catalog.edit_mode();
-                agent::Agent::new(catalog, tools::Tools::new(cwd.clone(), edit_mode)?)
-            });
+                let mut tools = tools::Tools::new(cwd.clone(), catalog.edit_mode())?;
+                tools.skills = skills.clone();
+                agent::Agent::new(catalog, tools)
+            })
+    });
     if use_tui {
-        return tui::run(agent, &cwd);
+        return tui::run(agent, &cwd, skills);
     }
     let mut stderr = io::stderr();
     let mut stdout = io::stdout().lock();
@@ -62,6 +75,13 @@ fn run(args: Args) -> Result<()> {
         stderr,
         "bash runs with an execution timeout that kills the process group; Ctrl-C exits the whole program."
     )?;
+    for diagnostic in &skills
+        .lock()
+        .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
+        .diagnostics
+    {
+        writeln!(stderr, "skill: {diagnostic}")?;
+    }
     if let Some(prompt) = args.prompt {
         run_cli_task(&mut agent?, &prompt, &mut stdout, &mut stderr)?;
         return Ok(());
@@ -96,6 +116,34 @@ fn run(args: Args) -> Result<()> {
         };
         match command {
             Some(commands::Command::Quit) => break,
+            Some(commands::Command::Skills(selection)) => {
+                let result = (|| -> Result<()> {
+                    let mut skills = skills
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?;
+                    if let Some((name, enabled)) = selection {
+                        skills.save_selection(&[(name.to_owned(), enabled)])?;
+                    }
+                    for skill in &skills.entries {
+                        writeln!(
+                            stderr,
+                            "[{}] {} — {} ({})",
+                            if skill.enabled { "x" } else { " " },
+                            skill.name,
+                            skill.description,
+                            skill.path.display()
+                        )?;
+                    }
+                    for diagnostic in &skills.diagnostics {
+                        writeln!(stderr, "skill: {diagnostic}")?;
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    writeln!(stderr, "error: {error:#}")?;
+                }
+                continue;
+            }
             Some(commands::Command::Help) => {
                 writeln!(stderr, "{}", commands::help())?;
                 continue;
@@ -153,7 +201,9 @@ fn run(args: Args) -> Result<()> {
                     Err(error) => writeln!(stderr, "error: {error:#}")?,
                 }
             }
-            Some(commands::Command::Help | commands::Command::Quit) => unreachable!(),
+            Some(
+                commands::Command::Help | commands::Command::Quit | commands::Command::Skills(_),
+            ) => unreachable!(),
             None => match run_cli_task(agent, prompt, &mut stdout, &mut stderr) {
                 Ok(()) => {}
                 Err(error) => writeln!(stderr, "error: {error:#}")?,

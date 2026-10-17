@@ -316,6 +316,8 @@ mod tests {
                 protocol: crate::models::Protocol::Completion,
                 base_url: base_url.parse().unwrap(),
                 settings: crate::config::Settings {
+                    skill_dirs: Vec::new(),
+                    disabled_skills: Vec::new(),
                     think_level: crate::config::ThinkLevel::Default,
                     edit: crate::config::EditMode::Replace,
                     default_model: None,

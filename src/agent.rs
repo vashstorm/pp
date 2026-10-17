@@ -37,6 +37,7 @@ pub(crate) struct Agent {
     catalog: ModelCatalog,
     current_model: ModelChoice,
     think_level: ThinkLevel,
+    base_system: String,
 }
 
 impl Session {
@@ -136,7 +137,15 @@ impl Agent {
             ),
         };
         let think_level = config.settings.think_level;
-        let mut session = Session::new(config.model, config.protocol, system, edit_mode);
+        let initial_system = format!(
+            "{system}{}",
+            tools
+                .skills
+                .lock()
+                .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
+                .summary()
+        );
+        let mut session = Session::new(config.model, config.protocol, initial_system, edit_mode);
         session.set_think_level(think_level);
         Ok(Self {
             client,
@@ -146,7 +155,36 @@ impl Agent {
             catalog,
             current_model,
             think_level,
+            base_system: system,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn skills(&self) -> crate::skills::SharedSkills {
+        self.tools.skills.clone()
+    }
+
+    fn refresh_skills(&mut self) -> Result<()> {
+        let system = format!(
+            "{}{}",
+            self.base_system,
+            self.tools
+                .skills
+                .lock()
+                .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
+                .summary()
+        );
+        match &mut self.session {
+            Session::Completion(request) => {
+                if let Some(ChatCompletionRequestMessage::System(message)) =
+                    request.messages.first_mut()
+                {
+                    message.content = system.into();
+                }
+            }
+            Session::Response(request) => request.instructions = Some(system),
+        }
+        Ok(())
     }
 
     pub(crate) fn model_choices(&self) -> Vec<ModelChoice> {
@@ -218,6 +256,7 @@ impl Agent {
 
     pub(crate) fn run(&mut self, prompt: &str, emit: &mut dyn FnMut(AgentEvent)) -> Result<()> {
         ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
+        self.refresh_skills()?;
         match &mut self.session {
             Session::Completion(request) => request.messages.push(
                 ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {

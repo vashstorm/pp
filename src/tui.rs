@@ -1,5 +1,6 @@
 mod menu;
 mod scrollback;
+mod skills;
 mod statusline;
 mod transcript;
 mod welcome;
@@ -38,16 +39,20 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
-const SHORTCUTS: &str = "Enter send · ↑↓ history/menu · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+const SHORTCUTS: &str = "Enter send · ↑↓ history/menu · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
 const MOUSE_SCROLL_LINES: usize = 3;
 
-pub(crate) fn run(agent: Result<Agent>, cwd: &Path) -> Result<()> {
+pub(crate) fn run(
+    agent: Result<Agent>,
+    cwd: &Path,
+    skills: crate::skills::SharedSkills,
+) -> Result<()> {
     // Construct before try_init so partially initialized terminals are restored too.
     let guard = TerminalGuard;
     let mut terminal = ratatui::try_init().context("initializing terminal")?;
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)
         .context("enabling terminal input modes")?;
-    let mut app = App::new(agent)?;
+    let mut app = App::new_with_skills(agent, skills)?;
     let mut workspace = WorkspaceStatus::new(cwd)?;
     let mut dirty = true;
     loop {
@@ -137,6 +142,9 @@ struct App {
     menu: Option<SelectionMenu<MenuAction>>,
     menu_dismissed: bool,
     secondary_status: Option<String>,
+    skill_worker: skills::Worker,
+    skill_panel: Option<skills::Panel>,
+    skills_pending: bool,
 }
 
 fn editor() -> TextArea<'static> {
@@ -147,7 +155,21 @@ fn editor() -> TextArea<'static> {
 }
 
 impl App {
+    #[cfg(test)]
     fn new(agent: Result<Agent>) -> Result<Self> {
+        let skills = agent
+            .as_ref()
+            .map(|agent| agent.skills())
+            .unwrap_or_else(|_| crate::skills::Skills::default().shared());
+        Self::new_with_skills(agent, skills)
+    }
+
+    fn new_with_skills(agent: Result<Agent>, skills: crate::skills::SharedSkills) -> Result<Self> {
+        let diagnostics = skills
+            .lock()
+            .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
+            .diagnostics
+            .clone();
         let mut app = Self {
             conversation: Transcript::new(),
             show_welcome: true,
@@ -167,6 +189,9 @@ impl App {
             menu: None,
             menu_dismissed: false,
             secondary_status: None,
+            skill_worker: skills::Worker::new(skills)?,
+            skill_panel: None,
+            skills_pending: false,
         };
         match agent {
             Ok(mut agent) => {
@@ -223,6 +248,10 @@ impl App {
                 app.unavailable = Some(error);
             }
         }
+        for diagnostic in diagnostics {
+            app.conversation
+                .append("Error", &format!("skill: {diagnostic}"));
+        }
         Ok(app)
     }
 
@@ -245,6 +274,28 @@ impl App {
 
     fn receive(&mut self) -> bool {
         let mut changed = false;
+        while let Ok(reply) = self.skill_worker.replies.try_recv() {
+            self.skills_pending = false;
+            match reply.result {
+                Ok(snapshot) if !reply.saved => {
+                    self.skill_panel = Some(skills::Panel::new(snapshot))
+                }
+                Ok(_) => {
+                    self.skill_panel = None;
+                    self.menu = None;
+                    self.menu_dismissed = true;
+                }
+                Err(error) => {
+                    if let Some(panel) = &mut self.skill_panel {
+                        panel.busy = false;
+                        panel.error = Some(format!("{error:#}"));
+                    } else {
+                        self.append("Error", &format!("{error:#}"));
+                    }
+                }
+            }
+            changed = true;
+        }
         for _ in 0..256 {
             let Some(events) = &self.events else {
                 break;
@@ -310,7 +361,9 @@ impl App {
         if edited {
             self.menu_dismissed = false;
         }
-        if self.menu_dismissed
+        if self.skill_panel.is_some()
+            || self.skills_pending
+            || self.menu_dismissed
             || !matches!(self.state, State::Ready | State::Unavailable)
             || self.input.lines().len() != 1
         {
@@ -466,6 +519,9 @@ impl App {
     }
 
     fn submit(&mut self) -> bool {
+        if self.skills_pending || self.skill_panel.is_some() {
+            return false;
+        }
         let prompt = self.input.lines().join("\n");
         if prompt.trim().is_empty() {
             return false;
@@ -488,6 +544,18 @@ impl App {
                 return false;
             }
             _ => {}
+        }
+        if let Some(Command::Skills(selection)) = command {
+            if !matches!(self.state, State::Ready | State::Unavailable) {
+                self.busy_notice = true;
+                return false;
+            }
+            let request = match selection {
+                None => skills::Request::Open,
+                Some((name, enabled)) => skills::Request::Save(vec![(name.to_owned(), enabled)]),
+            };
+            self.request_skills(request);
+            return false;
         }
         match self.state {
             State::Running
@@ -524,10 +592,23 @@ impl App {
                         self.clear_input();
                     }
                 }
-                Some(Command::Help | Command::Quit) => unreachable!(),
+                Some(Command::Help | Command::Quit | Command::Skills(_)) => unreachable!(),
             },
         }
         false
+    }
+
+    fn request_skills(&mut self, request: skills::Request) {
+        match self.skill_worker.requests.send(request) {
+            Ok(()) => {
+                self.skills_pending = true;
+                self.menu = None;
+                if let Some(panel) = &mut self.skill_panel {
+                    panel.busy = true;
+                }
+            }
+            Err(_) => self.append("Error", "skill 管理线程不可用"),
+        }
     }
 
     fn apply_menu_action(&mut self, action: MenuAction, confirm: bool) -> bool {
@@ -579,6 +660,20 @@ impl App {
                     return key.kind == KeyEventKind::Press;
                 }
                 *dirty = true;
+                if let Some(panel) = &mut self.skill_panel {
+                    match panel.key(key) {
+                        skills::Action::None => {}
+                        skills::Action::Cancel => {
+                            self.skill_panel = None;
+                            self.menu_dismissed = true;
+                        }
+                        skills::Action::Save(selection) => {
+                            self.request_skills(skills::Request::Save(selection))
+                        }
+                        skills::Action::Reload => self.request_skills(skills::Request::Reload),
+                    }
+                    return false;
+                }
                 if control && key.code == KeyCode::Char('j') {
                     self.input.insert_newline();
                     self.refresh_candidates(true);
@@ -588,7 +683,7 @@ impl App {
                     let ratatui_textarea::DataCursor(row, column) = self.input.cursor();
                     match key.code {
                         KeyCode::Char('o') => {
-                            self.conversation.toggle_bash_output();
+                            self.conversation.toggle_tool_output();
                             return false;
                         }
                         KeyCode::Char('a') => {
@@ -646,6 +741,8 @@ impl App {
                     }
                 }
             }
+            Event::Paste(_) if self.skill_panel.is_some() => {}
+            Event::Mouse(_) if self.skill_panel.is_some() => {}
             Event::Paste(text) => {
                 self.input
                     .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
@@ -672,6 +769,10 @@ impl App {
     fn draw(&mut self, frame: &mut Frame, context: &StatusContext) {
         let area = frame.area();
         if area.width == 0 || area.height == 0 {
+            return;
+        }
+        if let Some(panel) = &mut self.skill_panel {
+            panel.draw(frame, area);
             return;
         }
         let status_height = u16::from(area.height >= 2);
@@ -1121,15 +1222,15 @@ mod tests {
             .draw(|frame| app.draw(frame, &StatusContext::default()))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 22)].symbol(), "❯");
-        assert_eq!(buffer[(2, 22)].symbol(), "/");
-        assert!(buffer[(3, 22)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(buffer[(0, 21)].symbol(), "❯");
+        assert_eq!(buffer[(2, 21)].symbol(), "/");
+        assert!(buffer[(3, 21)].modifier.contains(Modifier::REVERSED));
         for x in 0..100 {
-            assert_eq!(buffer[(x, 23)].symbol(), "─");
-            assert_eq!(buffer[(x, 23)].fg, Color::Rgb(190, 133, 222));
+            assert_eq!(buffer[(x, 22)].symbol(), "─");
+            assert_eq!(buffer[(x, 22)].fg, Color::Rgb(190, 133, 222));
         }
         for (index, spec) in COMMANDS.iter().enumerate() {
-            let y = 24 + index as u16;
+            let y = 23 + index as u16;
             let active = index == 1;
             assert_eq!(buffer[(0, y)].symbol(), if active { "❯" } else { " " });
             assert_eq!(buffer[(2, y)].symbol(), spec.icon);
@@ -1466,5 +1567,34 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             &mut dirty,
         ));
+    }
+    #[test]
+    fn skills_panel_cancels_edits_preserves_draft_and_rejects_busy_management() {
+        let mut app = app();
+        let mut snapshot = crate::skills::Skills::default();
+        snapshot.entries.push(crate::skills::Skill {
+            name: "rust".into(),
+            description: "Rust 指导".into(),
+            path: "/skills/rust/SKILL.md".into(),
+            enabled: true,
+        });
+        app.skill_panel = Some(skills::Panel::new(snapshot));
+        app.input.insert_str("保留草稿");
+        let mut dirty = false;
+        app.handle(key(KeyCode::Char(' ')), &mut dirty);
+        assert!(!app.skill_panel.as_ref().unwrap().entries[0].enabled);
+        for (width, height) in [(100, 30), (20, 4), (1, 1), (100, 30)] {
+            draw(&mut app, width, height);
+        }
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.skill_panel.is_none());
+        assert_eq!(app.input.lines(), &["保留草稿"]);
+        app.input = editor();
+        app.input.insert_str("/skills");
+        app.state = State::Running;
+        assert!(!app.submit());
+        assert!(app.busy_notice);
+        assert!(!app.skills_pending);
+        assert_eq!(app.input.lines(), &["/skills"]);
     }
 }
