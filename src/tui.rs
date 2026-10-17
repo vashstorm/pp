@@ -39,7 +39,7 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
-const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-P choose model · F1 help · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
 const MOUSE_SCROLL_LINES: usize = 3;
 
 pub(crate) fn run(
@@ -123,6 +123,14 @@ enum MenuAction {
     Effort(ThinkLevel),
 }
 
+struct ModelPickerDraft {
+    input: TextArea<'static>,
+    history_index: Option<usize>,
+    history_draft: Option<TextArea<'static>>,
+    menu: Option<SelectionMenu<MenuAction>>,
+    menu_dismissed: bool,
+}
+
 struct App {
     conversation: Transcript,
     show_welcome: bool,
@@ -141,6 +149,7 @@ struct App {
     think_level: ThinkLevel,
     menu: Option<SelectionMenu<MenuAction>>,
     menu_dismissed: bool,
+    model_picker_draft: Option<ModelPickerDraft>,
     secondary_status: Option<String>,
     skill_worker: skills::Worker,
     skill_panel: Option<skills::Panel>,
@@ -189,6 +198,7 @@ impl App {
             think_level: ThinkLevel::None,
             menu: None,
             menu_dismissed: false,
+            model_picker_draft: None,
             secondary_status: None,
             skill_worker: skills::Worker::new(skills)?,
             skill_panel: None,
@@ -374,6 +384,10 @@ impl App {
         // 保留末尾空格：输入命令后的第一个空格即展开参数菜单。
         let input = self.input.lines()[0].trim_start();
         let argument = input.split_once(char::is_whitespace);
+        if self.model_picker_draft.is_some() && !matches!(argument, Some(("/model", _))) {
+            self.menu = None;
+            return;
+        }
         let mut preferred = 0;
         let items = match argument {
             Some(("/effort", argument)) if matches!(self.state, State::Ready) => {
@@ -493,7 +507,6 @@ impl App {
             .as_ref()
             .is_some_and(|sender| sender.send(command).is_ok())
         {
-            self.remember_input();
             self.state = state;
             self.busy_notice = false;
             self.refresh_candidates(false);
@@ -504,14 +517,79 @@ impl App {
         }
     }
 
+    fn send_submission(&mut self, command: WorkerCommand, state: State) -> bool {
+        if self.send(command, state) {
+            self.remember_input();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn show_help(&mut self) {
+        self.append("Note", &commands::help());
+        self.append("Tips", SHORTCUTS);
+        self.append("Note", WARNING);
+    }
+
+    fn shortcut_ready(&mut self) -> bool {
+        if self.skills_pending {
+            self.busy_notice = true;
+            return false;
+        }
+        match self.state {
+            State::Ready => true,
+            State::Unavailable => {
+                if let Some(error) = self.unavailable.clone() {
+                    self.append("Error", &error);
+                }
+                false
+            }
+            _ => {
+                self.busy_notice = true;
+                false
+            }
+        }
+    }
+
+    fn open_model_picker(&mut self) {
+        if self.model_picker_draft.is_some() || !self.shortcut_ready() {
+            return;
+        }
+        self.model_picker_draft = Some(ModelPickerDraft {
+            input: std::mem::replace(&mut self.input, editor()),
+            history_index: self.history_index.take(),
+            history_draft: self.history_draft.take(),
+            menu: self.menu.take(),
+            menu_dismissed: self.menu_dismissed,
+        });
+        self.input.insert_str("/model ");
+        self.refresh_candidates(true);
+    }
+
+    fn restore_model_picker_draft(&mut self) {
+        if let Some(draft) = self.model_picker_draft.take() {
+            self.input = draft.input;
+            self.history_index = draft.history_index;
+            self.history_draft = draft.history_draft;
+            self.menu = draft.menu;
+            self.menu_dismissed = draft.menu_dismissed;
+            self.refresh_candidates(false);
+        }
+    }
+
     fn switch_model(&mut self, reference: String) {
-        if self.send(WorkerCommand::SwitchModel(reference), State::SwitchingModel) {
+        if self.model_picker_draft.is_some() {
+            self.send(WorkerCommand::SwitchModel(reference), State::SwitchingModel);
+            self.restore_model_picker_draft();
+        } else if self.send_submission(WorkerCommand::SwitchModel(reference), State::SwitchingModel)
+        {
             self.clear_input();
         }
     }
 
     fn set_think_level(&mut self, level: ThinkLevel) {
-        if self.send(
+        if self.send_submission(
             WorkerCommand::SetThinkLevel(level),
             State::SettingThinkLevel,
         ) {
@@ -534,12 +612,14 @@ impl App {
                 return false;
             }
         };
+        if self.model_picker_draft.is_some() && !matches!(command, Some(Command::Model(_))) {
+            self.append("Error", "模型选择器仅接受 /model 命令；按 Esc 返回草稿。");
+            return false;
+        }
         match command {
             Some(Command::Quit) => return true,
             Some(Command::Help) => {
-                self.append("Note", &commands::help());
-                self.append("Tips", SHORTCUTS);
-                self.append("Note", WARNING);
+                self.show_help();
                 self.remember_input();
                 self.clear_input();
                 return false;
@@ -579,7 +659,7 @@ impl App {
                     self.refresh_candidates(true);
                 }
                 Some(Command::New) => {
-                    self.send(WorkerCommand::Reset, State::Resetting);
+                    self.send_submission(WorkerCommand::Reset, State::Resetting);
                 }
                 Some(Command::Model(Some(reference))) => self.switch_model(reference.to_owned()),
                 Some(Command::Model(None)) => {
@@ -588,7 +668,7 @@ impl App {
                     self.refresh_candidates(true);
                 }
                 None => {
-                    if self.send(WorkerCommand::Run(prompt.clone()), State::Running) {
+                    if self.send_submission(WorkerCommand::Run(prompt.clone()), State::Running) {
                         self.append("You", &prompt);
                         self.clear_input();
                     }
@@ -631,8 +711,12 @@ impl App {
                         "Note",
                         &format!("Current model: {} ({})", choice.reference, choice.model),
                     );
-                    self.remember_input();
-                    self.clear_input();
+                    if self.model_picker_draft.is_some() {
+                        self.restore_model_picker_draft();
+                    } else {
+                        self.remember_input();
+                        self.clear_input();
+                    }
                 } else {
                     self.switch_model(choice.reference.clone());
                 }
@@ -673,6 +757,38 @@ impl App {
                         }
                         skills::Action::Reload => self.request_skills(skills::Request::Reload),
                     }
+                    return false;
+                }
+                let shift_tab = (key.code == KeyCode::BackTab
+                    && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT))
+                    || (key.code == KeyCode::Tab && key.modifiers == KeyModifiers::SHIFT);
+                if shift_tab {
+                    if key.kind == KeyEventKind::Press
+                        && self.menu.is_none()
+                        && self.model_picker_draft.is_none()
+                        && self.shortcut_ready()
+                    {
+                        self.send(
+                            WorkerCommand::SetThinkLevel(self.think_level.next()),
+                            State::SettingThinkLevel,
+                        );
+                    }
+                    return false;
+                }
+                if key.code == KeyCode::Char('p') && key.modifiers == KeyModifiers::CONTROL {
+                    if key.kind == KeyEventKind::Press {
+                        self.open_model_picker();
+                    }
+                    return false;
+                }
+                if key.code == KeyCode::F(1) && key.modifiers.is_empty() {
+                    if key.kind == KeyEventKind::Press {
+                        self.show_help();
+                    }
+                    return false;
+                }
+                if key.code == KeyCode::Esc && self.model_picker_draft.is_some() {
+                    self.restore_model_picker_draft();
                     return false;
                 }
                 if control && key.code == KeyCode::Char('j') {
@@ -738,7 +854,7 @@ impl App {
                         let cursor = self.input.cursor();
                         self.input.input(key);
                         // 先在显示行之间移动，越过首末显示行时才浏览历史。
-                        if self.input.cursor() == cursor {
+                        if self.input.cursor() == cursor && self.model_picker_draft.is_none() {
                             self.navigate_history(key.code == KeyCode::Up);
                         }
                     }
@@ -1355,6 +1471,208 @@ mod tests {
         assert!(app.menu.is_none());
         app.refresh_candidates(false);
         assert!(app.menu.is_none());
+    }
+
+    #[test]
+    fn shortcuts_cycle_all_levels_after_ack_without_recording_or_moving_draft() {
+        let mut app = app();
+        app.state = State::Ready;
+        let (sender, requests) = mpsc::channel();
+        app.commands = Some(sender);
+        let (events, receiver) = mpsc::channel();
+        app.events = Some(receiver);
+        app.input.insert_str("草稿\n未发送🙂");
+        app.input_history.push("已提交".into());
+        app.navigate_history(true);
+        let cursor = app.input.cursor();
+        let mut dirty = false;
+        let encodings = [
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+        ];
+        for (index, level) in [
+            ThinkLevel::Low,
+            ThinkLevel::Medium,
+            ThinkLevel::High,
+            ThinkLevel::Xhigh,
+            ThinkLevel::Max,
+            ThinkLevel::None,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let key = encodings[index % encodings.len()];
+            let previous = app.think_level;
+            app.handle(Event::Key(key), &mut dirty);
+            assert!(
+                matches!(requests.try_recv(), Ok(WorkerCommand::SetThinkLevel(value)) if value == level)
+            );
+            assert_eq!(app.think_level, previous);
+            let mut repeat = key;
+            repeat.kind = KeyEventKind::Repeat;
+            app.handle(Event::Key(repeat), &mut dirty);
+            app.handle(Event::Key(key), &mut dirty);
+            assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+            events.send(WorkerEvent::ThinkLevelSet(level)).unwrap();
+            app.receive();
+            assert_eq!(app.think_level, level);
+            assert!(draw(&mut app, 100, 30).contains(level.label()));
+            assert_eq!(app.input.lines(), &["已提交"]);
+            assert_eq!(app.input.cursor(), cursor);
+            assert_eq!(app.history_index, Some(0));
+            assert_eq!(app.input_history, ["已提交"]);
+        }
+        app.navigate_history(false);
+        assert_eq!(app.input.lines(), &["草稿", "未发送🙂"]);
+    }
+
+    #[test]
+    fn shortcuts_model_picker_restores_history_draft_on_cancel_failure_and_success() {
+        let mut app = app();
+        app.state = State::Ready;
+        app.choices = ["first", "second"]
+            .map(|id| ModelChoice {
+                reference: format!("fixture/{id}"),
+                model: id.into(),
+                protocol: crate::models::Protocol::Completion,
+            })
+            .to_vec();
+        app.current_model = Some(app.choices[0].clone());
+        let (sender, requests) = mpsc::channel();
+        app.commands = Some(sender);
+        let (events, receiver) = mpsc::channel();
+        app.events = Some(receiver);
+        app.input.insert_str("草稿\n🙂结尾");
+        app.input.move_cursor(CursorMove::Back);
+        let cursor = app.input.cursor();
+        app.input_history.push("旧任务".into());
+        app.navigate_history(true);
+        let mut dirty = false;
+        app.handle(control('p'), &mut dirty);
+        assert_eq!(app.input.lines(), &["/model "]);
+        app.handle(control('p'), &mut dirty);
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(app.input.lines(), &["/model fixture/first"]);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert_eq!(app.input.lines(), &["旧任务"]);
+        assert_eq!(app.history_index, Some(0));
+        app.navigate_history(false);
+        assert_eq!(app.input.lines(), &["草稿", "🙂结尾"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+
+        app.handle(control('p'), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert_eq!(app.input.lines(), &["草稿", "🙂结尾"]);
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+        for succeeds in [false, true] {
+            app.handle(control('p'), &mut dirty);
+            app.handle(key(KeyCode::Down), &mut dirty);
+            app.handle(key(KeyCode::Enter), &mut dirty);
+            assert!(
+                matches!(requests.try_recv(), Ok(WorkerCommand::SwitchModel(reference)) if reference == "fixture/second")
+            );
+            assert_eq!(app.input.lines(), &["草稿", "🙂结尾"]);
+            assert_eq!(app.input.cursor(), cursor);
+            assert!(app.model_picker_draft.is_none());
+            let result = if succeeds {
+                Ok(app.choices[1].clone())
+            } else {
+                Err(anyhow::anyhow!("fixture switch failure"))
+            };
+            events.send(WorkerEvent::ModelSwitched(result)).unwrap();
+            app.receive();
+            assert_eq!(
+                app.current_model.as_ref().unwrap().model,
+                if succeeds { "second" } else { "first" }
+            );
+            assert_eq!(app.input.lines(), &["草稿", "🙂结尾"]);
+            assert_eq!(app.input_history, ["旧任务"]);
+        }
+    }
+
+    #[test]
+    fn shortcuts_reject_busy_actions_and_ignore_repeats_and_shift_tab_in_menus() {
+        let mut app = app();
+        let (sender, requests) = mpsc::channel();
+        app.commands = Some(sender);
+        app.input.insert_str("草稿🙂");
+        let mut dirty = false;
+        for state in [
+            State::Running,
+            State::Resetting,
+            State::SwitchingModel,
+            State::SettingThinkLevel,
+            State::Unavailable,
+        ] {
+            app.state = state;
+            app.handle(key(KeyCode::BackTab), &mut dirty);
+            app.handle(control('p'), &mut dirty);
+            assert_eq!(app.input.lines(), &["草稿🙂"]);
+            assert!(app.model_picker_draft.is_none());
+        }
+        app.state = State::Ready;
+        app.skills_pending = true;
+        app.handle(key(KeyCode::BackTab), &mut dirty);
+        app.handle(control('p'), &mut dirty);
+        app.skills_pending = false;
+        for mut key in [
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE),
+        ] {
+            key.kind = KeyEventKind::Repeat;
+            app.handle(Event::Key(key), &mut dirty);
+            key.kind = KeyEventKind::Release;
+            app.handle(Event::Key(key), &mut dirty);
+        }
+        assert_eq!(app.input.lines(), &["草稿🙂"]);
+        assert!(app.model_picker_draft.is_none());
+        app.clear_input();
+        app.handle(Event::Paste("/effort ".into()), &mut dirty);
+        app.handle(
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT)),
+            &mut dirty,
+        );
+        assert_eq!(app.input.lines(), &["/effort "]);
+        assert!(app.menu.is_some());
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+        assert!(app.input_history.is_empty());
+    }
+
+    #[test]
+    fn shortcuts_help_and_empty_model_search_keep_drafts_and_never_submit_tasks() {
+        let mut app = app();
+        app.state = State::Ready;
+        let (sender, requests) = mpsc::channel();
+        app.commands = Some(sender);
+        app.input.insert_str("未发送🙂");
+        let cursor = app.input.cursor();
+        let mut dirty = false;
+        app.state = State::Running;
+        app.handle(key(KeyCode::F(1)), &mut dirty);
+        let screen = draw(&mut app, 180, 40);
+        assert!(screen.contains("Shift-Tab"));
+        assert!(screen.contains("Ctrl-P"));
+        assert_eq!(app.input.lines(), &["未发送🙂"]);
+        assert_eq!(app.input.cursor(), cursor);
+        app.state = State::Ready;
+        app.handle(control('p'), &mut dirty);
+        app.handle(Event::Paste("missing".into()), &mut dirty);
+        assert!(app.menu.is_none());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert_eq!(app.input.lines(), &["未发送🙂"]);
+        app.handle(control('p'), &mut dirty);
+        app.input = editor();
+        app.handle(Event::Paste("/effort high".into()), &mut dirty);
+        assert!(app.menu.is_none());
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(app.model_picker_draft.is_some());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert_eq!(app.input.lines(), &["未发送🙂"]);
+        assert!(app.input_history.is_empty());
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
     }
 
     #[test]

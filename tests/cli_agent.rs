@@ -2458,6 +2458,17 @@ mod tui {
             self.wait_for("空闲输入框", input_is_ready);
         }
 
+        fn ready_effort(&mut self, expected: &str) {
+            self.wait_for("空闲输入框和思考级别", |screen| {
+                input_is_ready(screen)
+                    && screen
+                        .contents()
+                        .lines()
+                        .last()
+                        .is_some_and(|line| line.contains(&format!("\u{f0aa3} {expected} ·")))
+            });
+        }
+
         fn drain(&mut self) {
             while let Ok(bytes) = self.output.try_recv() {
                 self.parser.process(&bytes);
@@ -2826,6 +2837,88 @@ mod tui {
     }
 
     #[test]
+    fn tui_shortcuts_preserve_drafts_and_send_selected_effort_to_both_apis() {
+        for protocol in ["completion", "response"] {
+            let server = server();
+            let dir = tempfile::tempdir().unwrap();
+            let settings = r#"{"think_level":"high"}"#;
+            let models = json!({"providers":[slash_provider(&server, "fixture", protocol, json!([
+                {"id":"primary","model":"first-model"},
+                {"id":"secondary","model":"second-model"}
+            ]))]})
+            .to_string();
+            std::fs::write(config_path(dir.path(), "settings.jsonc"), settings).unwrap();
+            std::fs::write(config_path(dir.path(), "models.jsonc"), &models).unwrap();
+            let mut pty = Pty::start_with_existing_files(dir.path());
+            pty.ready_effort("high");
+            pty.input("草稿🙂\x1b[Z");
+            pty.ready_effort("xhigh");
+            pty.draft("草稿🙂");
+
+            pty.input("\x10");
+            pty.text("fixture/secondary");
+            pty.draft("/model");
+            pty.input("\x1b[B\t");
+            pty.draft("/model fixture/secondary");
+            pty.input("\r");
+            pty.ready_model("second-model");
+            pty.draft("草稿🙂");
+            pty.input("\x1bOP");
+            pty.text("Shift-Tab");
+            pty.draft("草稿🙂");
+            assert!(server.try_recv().unwrap().is_none());
+
+            let path = if protocol == "response" {
+                "/v1/responses"
+            } else {
+                "/v1/chat/completions"
+            };
+            pty.input("\r");
+            let (request, body) = receive_at(&server, path);
+            super::think::assert_level(&body, protocol, "xhigh");
+            assert_eq!(body["model"], "second-model");
+            let messages = if protocol == "response" {
+                &body["input"]
+            } else {
+                &body["messages"]
+            };
+            slash_assert_message(
+                messages.as_array().unwrap().last().unwrap(),
+                "user",
+                "草稿🙂",
+            );
+            pty.input("busy-中\x1b[Z\x10");
+            pty.wait_for("快捷键在忙碌时拒绝执行", |screen| {
+                screen.contents().contains("cannot send now")
+                    && screen
+                        .contents()
+                        .lines()
+                        .last()
+                        .is_some_and(|line| line.contains("xhigh"))
+            });
+            pty.draft("busy-中");
+            super::think::finish_request(request, protocol);
+            pty.ready_effort("xhigh");
+            pty.input("\x01\x0b\x1b[Z");
+            pty.ready_effort("max");
+            pty.input("\x1b[Z");
+            pty.ready_effort("no think");
+            pty.input("none request\r");
+            let (request, body) = receive_at(&server, path);
+            super::think::assert_level(&body, protocol, "none");
+            super::think::finish_request(request, protocol);
+            pty.ready_effort("no think");
+            pty.input("\x03");
+            pty.finish();
+            assert_eq!(
+                std::fs::read_to_string(config_path(dir.path(), "settings.jsonc")).unwrap(),
+                settings
+            );
+            no_more(&server);
+        }
+    }
+
+    #[test]
     fn tui_think_level_updates_status_and_rejects_changes_while_busy() {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
@@ -3009,7 +3102,7 @@ mod tui {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(
                 config_path(dir.path(), "settings.jsonc"),
-                fixture_settings(),
+                r#"{"think_level":"high"}"#,
             )
             .unwrap();
             std::fs::write(
@@ -3120,7 +3213,7 @@ mod tui {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(
                 config_path(dir.path(), "settings.jsonc"),
-                r#"{"think_level":"high"}"#,
+                fixture_settings(),
             )
             .unwrap();
             std::fs::write(
