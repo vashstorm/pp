@@ -153,7 +153,11 @@ impl Skills {
 
     fn scan(&mut self, path: &Path, visited: &mut HashSet<PathBuf>, files: &mut Vec<PathBuf>) {
         let result = (|| -> Result<()> {
-            let canonical = fs::canonicalize(path).context("无法访问 skill 目录")?;
+            let canonical = match fs::canonicalize(path) {
+                Ok(canonical) => canonical,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error).context("无法访问 skill 目录"),
+            };
             if !visited.insert(canonical) {
                 return Ok(());
             }
@@ -337,6 +341,33 @@ mod tests {
         assert!(skills.load("../rust").is_err());
     }
     #[test]
+    fn missing_default_root_is_silent_and_reload_discovers_new_skills() {
+        let (_home, dir) = fixture();
+        let mut skills = Skills::from_dir(&dir);
+        assert!(skills.entries.is_empty());
+        assert!(skills.diagnostics.is_empty());
+        assert!(!dir.join("skills").exists());
+
+        skill(&dir.join("skills"), "rust", "rust", "body");
+        skills.reload().unwrap();
+        assert_eq!(skills.entries.len(), 1);
+        assert!(skills.diagnostics.is_empty());
+
+        fs::remove_dir_all(dir.join("skills")).unwrap();
+        skills.reload().unwrap();
+        assert!(skills.entries.is_empty());
+        assert!(skills.diagnostics.is_empty());
+    }
+    #[test]
+    fn non_directory_root_still_reports_a_diagnostic() {
+        let (_home, dir) = fixture();
+        fs::write(dir.join("skills"), "not a directory").unwrap();
+        let skills = Skills::from_dir(&dir);
+        assert!(skills.entries.is_empty());
+        assert_eq!(skills.diagnostics.len(), 1);
+        assert!(skills.diagnostics[0].contains("skill 根路径必须是目录"));
+    }
+    #[test]
     fn configurable_roots_order_relative_absolute_tilde_and_disabled() {
         let (home, dir) = fixture();
         skill(&dir.join("relative"), "z", "same", "first");
@@ -354,7 +385,7 @@ mod tests {
         assert!(skills.load("same").is_err());
         assert!(!skills.summary().contains("same"));
         assert!(skills.summary().contains("other"));
-        assert_eq!(skills.diagnostics.len(), 2);
+        assert_eq!(skills.diagnostics.len(), 1);
         fs::write(dir.join("settings.jsonc"), r#"{"skill_dirs":[]}"#).unwrap();
         let mut skills = skills;
         skills.reload().unwrap();

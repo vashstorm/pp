@@ -62,6 +62,38 @@ fn system(body: &Value, protocol: &str) -> String {
     }
 }
 #[test]
+fn skills_missing_roots_are_silent_and_existing_roots_still_load() {
+    for settings in [
+        "{}",
+        r#"{"skill_dirs":["missing", "skills", "also-missing"]}"#,
+    ] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let has_skill = settings != "{}";
+        if has_skill {
+            install(home.path(), "rust", "rust");
+        }
+        let mut cli = Cli::start_with(home.path(), None, settings, &fixture_models(&server));
+        cli.input("/skills\ncheck\n");
+        let (request, body) = receive(&server);
+        assert_eq!(
+            system(&body, "completion").contains("Rust 测试指导"),
+            has_skill
+        );
+        final_reply(request, "ok");
+        cli.input("/quit\n");
+        let output = cli.finish();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(output.stdout, b"ok\n");
+        assert!(!stderr.contains("skill:"), "{stderr}");
+        assert!(!stderr.contains("无法访问 skill 目录"), "{stderr}");
+        if !has_skill {
+            assert!(!config_path(home.path(), "skills").exists());
+        }
+    }
+}
+#[test]
 fn skills_load_on_demand_disable_persist_and_reset_in_both_protocols() {
     for protocol in ["completion", "response"] {
         let server = server();
