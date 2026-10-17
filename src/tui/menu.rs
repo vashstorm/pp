@@ -23,6 +23,7 @@ pub(super) struct SelectionMenu<T> {
     items: Vec<MenuItem<T>>,
     selection: TableState,
     page_size: usize,
+    hint: Option<&'static str>,
 }
 
 pub(super) enum MenuEvent<T> {
@@ -40,7 +41,13 @@ impl<T: Copy> SelectionMenu<T> {
             items,
             selection: TableState::default().with_selected(selected),
             page_size: 1,
+            hint: None,
         }
+    }
+
+    pub(super) fn with_hint(mut self, hint: &'static str) -> Self {
+        self.hint = Some(hint);
+        self
     }
 
     pub(super) fn items(&self) -> &[MenuItem<T>] {
@@ -52,7 +59,7 @@ impl<T: Copy> SelectionMenu<T> {
     }
 
     pub(super) fn height(&self, available: u16) -> u16 {
-        (self.items.len().min(MAX_ROWS) as u16).min(available)
+        (self.items.len().min(MAX_ROWS) as u16 + u16::from(self.hint.is_some())).min(available)
     }
 
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> MenuEvent<T> {
@@ -94,7 +101,19 @@ impl<T: Copy> SelectionMenu<T> {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        self.page_size = usize::from(area.height).max(1);
+        frame.render_widget(Clear, area);
+        let hint_height = u16::from(self.hint.is_some() && area.height > 1);
+        let rows_area = Rect::new(area.x, area.y, area.width, area.height - hint_height);
+        if hint_height > 0 {
+            frame.render_widget(
+                Line::styled(
+                    self.hint.unwrap_or_default(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Rect::new(area.x, rows_area.bottom(), area.width, hint_height),
+            );
+        }
+        self.page_size = usize::from(rows_area.height).max(1);
         let selected = self.selected_index();
         let rows = self.items.iter().enumerate().map(|(index, item)| {
             let active = selected == Some(index);
@@ -124,8 +143,7 @@ impl<T: Copy> SelectionMenu<T> {
             [Constraint::Percentage(46), Constraint::Percentage(54)],
         )
         .column_spacing(1);
-        frame.render_widget(Clear, area);
-        frame.render_stateful_widget(table, area, &mut self.selection);
+        frame.render_stateful_widget(table, rows_area, &mut self.selection);
     }
 }
 

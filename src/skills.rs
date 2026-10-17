@@ -1,12 +1,11 @@
-use crate::{config, jsonc};
+use crate::config;
 use anyhow::{Context, Result, ensure};
-use jsonc_parser::cst::{CstInputValue, CstRootNode};
+use jsonc_parser::cst::CstInputValue;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeSet, HashSet},
     fs,
-    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -227,63 +226,30 @@ impl Skills {
     }
 
     pub(crate) fn save_selection(&mut self, selection: &[(String, bool)]) -> Result<()> {
-        let original = match fs::read_to_string(&self.settings_path) {
-            Ok(text) => Some(text),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error).context("读取 settings.jsonc 失败"),
-        };
-        let settings: config::Settings =
-            jsonc::parse(original.as_deref().unwrap_or("{}"), "settings")?;
-        settings.validate()?;
-        let mut disabled: BTreeSet<_> = settings.disabled_skills.into_iter().collect();
-        for (name, enabled) in selection {
-            ensure!(
-                self.entries.iter().any(|entry| &entry.name == name),
-                "未知 skill: {name}"
-            );
-            if *enabled {
-                disabled.remove(name);
-            } else {
-                disabled.insert(name.clone());
+        let mut disabled = BTreeSet::new();
+        config::update_settings(&self.settings_path, |settings| {
+            disabled = settings.disabled_skills.into_iter().collect();
+            for (name, enabled) in selection {
+                ensure!(
+                    self.entries.iter().any(|entry| &entry.name == name),
+                    "未知 skill: {name}"
+                );
+                if *enabled {
+                    disabled.remove(name);
+                } else {
+                    disabled.insert(name.clone());
+                }
             }
-        }
-        let root = CstRootNode::parse(original.as_deref().unwrap_or("{}\n"), &jsonc::options())
-            .map_err(|_| anyhow::anyhow!("无法更新无效的 settings.jsonc"))?;
-        let object = root.object_value().context("settings.jsonc 必须是对象")?;
-        let value = CstInputValue::Array(
-            disabled
-                .iter()
-                .map(|name| CstInputValue::String(name.clone()))
-                .collect(),
-        );
-        if let Some(property) = object.get("disabled_skills") {
-            property.set_value(value);
-        } else {
-            object.append("disabled_skills", value);
-        }
-        let updated = root.to_string();
-        let _: config::Settings = jsonc::parse(&updated, "settings")?;
-        let parent = self.settings_path.parent().context("缺少全局配置目录")?;
-        fs::create_dir_all(parent).context("创建全局配置目录失败")?;
-        let mut temporary =
-            tempfile::NamedTempFile::new_in(parent).context("创建配置临时文件失败")?;
-        if let Ok(meta) = fs::metadata(&self.settings_path) {
-            temporary.as_file().set_permissions(meta.permissions())?;
-        }
-        temporary
-            .write_all(updated.as_bytes())
-            .context("写入配置失败")?;
-        temporary.as_file().sync_all().context("同步配置失败")?;
-        let latest = match fs::read_to_string(&self.settings_path) {
-            Ok(text) => Some(text),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
-        ensure!(latest == original, "配置已被其他进程修改，请重试");
-        temporary
-            .persist(&self.settings_path)
-            .map_err(|error| error.error)
-            .context("提交配置失败")?;
+            Ok((
+                "disabled_skills",
+                CstInputValue::Array(
+                    disabled
+                        .iter()
+                        .map(|name| CstInputValue::String(name.clone()))
+                        .collect(),
+                ),
+            ))
+        })?;
         for skill in &mut self.entries {
             skill.enabled = !disabled.contains(&skill.name);
         }

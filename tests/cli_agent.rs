@@ -2287,6 +2287,7 @@ fn missing_or_malformed_config_fails_without_environment_fallback_or_secret_leak
 #[cfg(unix)]
 mod tui {
     use super::*;
+    include!("cli_agent/effort_defaults.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
     use std::{
         io::Read,

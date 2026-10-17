@@ -275,6 +275,14 @@ impl Agent {
         self.think_level
     }
 
+    pub(crate) fn default_think_level(&self) -> ThinkLevel {
+        self.catalog.default_think_level()
+    }
+
+    pub(crate) fn save_default_think_level(&self, level: ThinkLevel) -> Result<()> {
+        self.catalog.save_default_think_level(level)
+    }
+
     pub(crate) fn set_think_level(&mut self, level: ThinkLevel) -> Result<()> {
         self.journal.think(level)?;
         self.session.set_think_level(level);

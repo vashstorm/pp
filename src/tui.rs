@@ -39,7 +39,8 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
-const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-P choose model · F1 help · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S 在 /effort 菜单中将选中等级设为默认 · Ctrl-P choose model · F1 help · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+const EFFORT_HINT: &str = "Enter 选择 · Ctrl-S 将选中等级设为默认 · Esc 取消";
 const MOUSE_SCROLL_LINES: usize = 3;
 
 pub(crate) fn run(
@@ -103,6 +104,7 @@ enum WorkerCommand {
     Reset,
     SwitchModel(String),
     SetThinkLevel(ThinkLevel),
+    SaveDefaultThinkLevel(ThinkLevel),
 }
 enum WorkerEvent {
     Progress(AgentEvent),
@@ -111,6 +113,7 @@ enum WorkerEvent {
     Reset,
     ModelSwitched(Result<ModelChoice>),
     ThinkLevelSet(Result<ThinkLevel>),
+    DefaultThinkLevelSaved(Result<ThinkLevel>),
 }
 
 #[derive(Clone, Copy)]
@@ -154,6 +157,7 @@ struct App {
     choices: Vec<ModelChoice>,
     current_model: Option<ModelChoice>,
     think_level: ThinkLevel,
+    default_think_level: ThinkLevel,
     menu: Option<SelectionMenu<MenuAction>>,
     menu_dismissed: bool,
     model_picker_draft: Option<ModelPickerDraft>,
@@ -203,6 +207,7 @@ impl App {
             choices: Vec::new(),
             current_model: None,
             think_level: ThinkLevel::None,
+            default_think_level: ThinkLevel::default(),
             menu: None,
             menu_dismissed: false,
             model_picker_draft: None,
@@ -219,6 +224,7 @@ impl App {
                 app.choices = agent.model_choices();
                 app.current_model = Some(agent.current_model().clone());
                 app.think_level = agent.think_level();
+                app.default_think_level = agent.default_think_level();
                 let (commands, receiver) = mpsc::channel();
                 let (sender, events) = mpsc::sync_channel(256);
                 // Deliberately detached: quitting must not wait for HTTP or foreground tools.
@@ -243,6 +249,11 @@ impl App {
                                 WorkerCommand::SetThinkLevel(level) => WorkerEvent::ThinkLevelSet(
                                     agent.set_think_level(level).map(|()| agent.think_level()),
                                 ),
+                                WorkerCommand::SaveDefaultThinkLevel(level) => {
+                                    WorkerEvent::DefaultThinkLevelSaved(
+                                        agent.save_default_think_level(level).map(|()| level),
+                                    )
+                                }
                                 WorkerCommand::SwitchModel(reference) => {
                                     WorkerEvent::ModelSwitched(
                                         agent
@@ -387,6 +398,23 @@ impl App {
                     self.busy_notice = false;
                     changed = true;
                 }
+                Ok(WorkerEvent::DefaultThinkLevelSaved(result)) => {
+                    match result {
+                        Ok(level) => {
+                            self.default_think_level = level;
+                            self.append(
+                                "Note",
+                                &format!("默认思考等级已保存：{}（下次启动生效）", level.label()),
+                            );
+                        }
+                        Err(error) => {
+                            self.append("Error", &format!("保存默认思考等级失败：{error:#}"))
+                        }
+                    }
+                    self.state = State::Ready;
+                    self.busy_notice = false;
+                    changed = true;
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.fail_worker();
@@ -428,7 +456,11 @@ impl App {
                     .filter(|level| level.as_str().starts_with(argument.trim()))
                     .map(|level| MenuItem {
                         value: MenuAction::Effort(level),
-                        label: level.label().into(),
+                        label: if level == self.default_think_level {
+                            format!("{}（默认）", level.label())
+                        } else {
+                            level.label().into()
+                        },
                         description: match level {
                             ThinkLevel::None => "Disable thinking",
                             ThinkLevel::Low => "Light thinking",
@@ -489,7 +521,16 @@ impl App {
         if items.is_empty() {
             self.menu = None;
         } else if edited || self.menu.as_ref().is_none_or(|menu| menu.items() != items) {
-            self.menu = Some(SelectionMenu::new(items, preferred));
+            let effort = matches!(
+                items.first().map(|item| item.value),
+                Some(MenuAction::Effort(_))
+            );
+            let menu = SelectionMenu::new(items, preferred);
+            self.menu = Some(if effort {
+                menu.with_hint(EFFORT_HINT)
+            } else {
+                menu
+            });
         }
     }
 
@@ -788,6 +829,22 @@ impl App {
                             self.request_skills(skills::Request::Save(selection))
                         }
                         skills::Action::Reload => self.request_skills(skills::Request::Reload),
+                    }
+                    return false;
+                }
+                if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::CONTROL {
+                    if key.kind == KeyEventKind::Press
+                        && let Some(MenuAction::Effort(level)) =
+                            self.menu.as_ref().and_then(|menu| {
+                                menu.selected_index().map(|index| menu.items()[index].value)
+                            })
+                        && self.shortcut_ready()
+                        && self.send(
+                            WorkerCommand::SaveDefaultThinkLevel(level),
+                            State::SettingThinkLevel,
+                        )
+                    {
+                        self.clear_input();
                     }
                     return false;
                 }
@@ -1704,6 +1761,48 @@ mod tests {
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert_eq!(app.input.lines(), &["未发送🙂"]);
         assert!(app.input_history.is_empty());
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn effort_ctrl_s_saves_highlighted_level_without_changing_current_level() {
+        let mut app = app();
+        app.state = State::Ready;
+        app.think_level = ThinkLevel::High;
+        let (sender, requests) = mpsc::channel();
+        app.commands = Some(sender);
+        let (events, receiver) = mpsc::channel();
+        app.events = Some(receiver);
+        let mut dirty = false;
+        app.handle(Event::Paste("/effort ".into()), &mut dirty);
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.replace(' ', "").contains("Ctrl-S将选中等级设为默认"));
+        app.handle(key(KeyCode::Down), &mut dirty);
+        let mut repeat = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        repeat.kind = KeyEventKind::Repeat;
+        app.handle(Event::Key(repeat), &mut dirty);
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+        app.handle(control('s'), &mut dirty);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::SaveDefaultThinkLevel(ThinkLevel::Xhigh))
+        ));
+        assert_eq!(app.think_level, ThinkLevel::High);
+        app.handle(control('s'), &mut dirty);
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+        app.handle(Event::Paste("新草稿".into()), &mut dirty);
+        events
+            .send(WorkerEvent::DefaultThinkLevelSaved(Ok(ThinkLevel::Xhigh)))
+            .unwrap();
+        app.receive();
+        assert_eq!(app.input.lines(), &["新草稿"]);
+        assert_eq!(app.think_level, ThinkLevel::High);
+        assert!(
+            draw(&mut app, 100, 30)
+                .replace(' ', "")
+                .contains("默认思考等级已保存：xhigh")
+        );
+        app.handle(control('s'), &mut dirty);
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
     }
 

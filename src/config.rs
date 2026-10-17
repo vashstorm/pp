@@ -1,8 +1,10 @@
 use anyhow::{Context, Result, ensure};
+use jsonc_parser::cst::{CstInputValue, CstRootNode};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -20,6 +22,7 @@ pub(crate) struct Config {
 // Deliberately not Debug: the catalog owns all startup credentials.
 pub(crate) struct ModelCatalog {
     settings: Settings,
+    settings_path: PathBuf,
     providers: Vec<models::ValidatedProvider>,
     default_reference: String,
 }
@@ -309,6 +312,7 @@ impl ModelCatalog {
         };
         Ok(Self {
             settings,
+            settings_path: settings_path.to_path_buf(),
             providers,
             default_reference,
         })
@@ -316,6 +320,16 @@ impl ModelCatalog {
 
     pub(crate) fn edit_mode(&self) -> EditMode {
         self.settings.edit
+    }
+
+    pub(crate) fn default_think_level(&self) -> ThinkLevel {
+        self.settings.think_level
+    }
+
+    pub(crate) fn save_default_think_level(&self, level: ThinkLevel) -> Result<()> {
+        update_settings(&self.settings_path, |_| {
+            Ok(("think_level", CstInputValue::String(level.as_str().into())))
+        })
     }
 
     pub(crate) fn default_reference(&self) -> &str {
@@ -363,6 +377,51 @@ impl ModelCatalog {
             settings: self.settings.clone(),
         })
     }
+}
+
+pub(crate) fn update_settings(
+    path: &Path,
+    update: impl FnOnce(Settings) -> Result<(&'static str, CstInputValue)>,
+) -> Result<()> {
+    let read = || match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).context("读取 settings.jsonc 失败"),
+    };
+    let original = read()?;
+    let settings: Settings = jsonc::parse(original.as_deref().unwrap_or("{}"), "settings")?;
+    settings.validate()?;
+    let (name, value) = update(settings)?;
+    let root = CstRootNode::parse(original.as_deref().unwrap_or("{}\n"), &jsonc::options())
+        .map_err(|_| anyhow::anyhow!("无法更新无效的 settings.jsonc"))?;
+    let object = root.object_value().context("settings.jsonc 必须是对象")?;
+    if let Some(property) = object.get(name) {
+        property.set_value(value);
+    } else {
+        object.append(name, value);
+    }
+    let updated = root.to_string();
+    let settings: Settings = jsonc::parse(&updated, "settings")?;
+    settings.validate()?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent).context("创建全局配置目录失败")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).context("创建配置临时文件失败")?;
+    if let Ok(meta) = fs::metadata(path) {
+        temporary.as_file().set_permissions(meta.permissions())?;
+    }
+    temporary
+        .write_all(updated.as_bytes())
+        .context("写入配置失败")?;
+    temporary.as_file().sync_all().context("同步配置失败")?;
+    ensure!(read()? == original, "配置已被其他进程修改，请重试");
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .context("提交配置失败")?;
+    Ok(())
 }
 
 pub(crate) fn read_settings(path: &Path) -> Result<Settings> {
