@@ -1,5 +1,5 @@
 use crate::config::ThinkLevel;
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 
 pub(crate) struct CommandSpec {
     pub(crate) name: &'static str,
@@ -34,6 +34,12 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "View or set the thinking effort level, keeping session history",
     },
     CommandSpec {
+        name: "/skills",
+        icon: "◆",
+        usage: "/skills [enable 名称|disable 名称]",
+        description: "管理全局 skill 启用状态",
+    },
+    CommandSpec {
         name: "/quit",
         icon: "\u{f08b}",
         usage: "/quit",
@@ -48,6 +54,7 @@ pub(crate) enum Command<'a> {
     Quit,
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
+    Skills(Option<(&'a str, bool)>),
 }
 
 pub(crate) fn parse(input: &str) -> Result<Option<Command<'_>>> {
@@ -66,6 +73,23 @@ pub(crate) fn parse(input: &str) -> Result<Option<Command<'_>>> {
             return Ok(Some(Command::Model(
                 (!argument.is_empty()).then_some(argument),
             )));
+        }
+        "/skills" => {
+            if argument.is_empty() {
+                return Ok(Some(Command::Skills(None)));
+            }
+            let (action, name) = argument
+                .split_once(char::is_whitespace)
+                .context("用法：/skills [enable 名称|disable 名称]")?;
+            ensure!(!name.trim().is_empty(), "skill 名称不能为空");
+            ensure!(
+                matches!(action, "enable" | "disable"),
+                "用法：/skills [enable 名称|disable 名称]"
+            );
+            return Ok(Some(Command::Skills(Some((
+                name.trim(),
+                action == "enable",
+            )))));
         }
         "/effort" | "/think" => {
             return Ok(Some(Command::Think(

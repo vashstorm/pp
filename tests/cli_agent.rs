@@ -7,6 +7,12 @@ use std::{
 };
 use tiny_http::{Request, Response, Server};
 
+fn config_path(home: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let dir = home.join(".pp/agent");
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join(name)
+}
+
 struct Cli(Option<Child>);
 impl Cli {
     fn start_with(
@@ -15,14 +21,15 @@ impl Cli {
         settings: &str,
         models: &str,
     ) -> Self {
-        std::fs::write(cwd.join("settings.jsonc"), settings).unwrap();
-        std::fs::write(cwd.join("models.jsonc"), models).unwrap();
+        std::fs::write(config_path(cwd, "settings.jsonc"), settings).unwrap();
+        std::fs::write(config_path(cwd, "models.jsonc"), models).unwrap();
         Self::start_with_existing_files(cwd, prompt)
     }
     fn start_with_existing_files(cwd: &std::path::Path, prompt: Option<&str>) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_pp"));
         command
             .current_dir(cwd)
+            .env("HOME", cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -38,6 +45,7 @@ impl Cli {
         let mut command = Command::new(env!("CARGO_BIN_EXE_pp"));
         command
             .current_dir(cwd)
+            .env("HOME", cwd)
             .args(args)
             .envs(envs.iter().copied())
             .stdin(Stdio::null())
@@ -1022,11 +1030,11 @@ fn model_switch_failure_is_atomic_and_catalog_is_a_read_only_startup_snapshot() 
     let system = body["messages"][0].clone();
     // The first request proves startup loading finished before files change.
     assert_eq!(
-        std::fs::read(dir.path().join("models.jsonc")).unwrap(),
+        std::fs::read(config_path(dir.path(), "models.jsonc")).unwrap(),
         models.as_bytes()
     );
     assert_eq!(
-        std::fs::read(dir.path().join("settings.jsonc")).unwrap(),
+        std::fs::read(config_path(dir.path(), "settings.jsonc")).unwrap(),
         settings.as_bytes()
     );
     let replacement_settings = r#"{"default_model":"replacement/new"}"#;
@@ -1036,8 +1044,12 @@ fn model_switch_failure_is_atomic_and_catalog_is_a_read_only_startup_snapshot() 
         ]))
     ]})
     .to_string();
-    std::fs::write(dir.path().join("settings.jsonc"), replacement_settings).unwrap();
-    std::fs::write(dir.path().join("models.jsonc"), &replacement_models).unwrap();
+    std::fs::write(
+        config_path(dir.path(), "settings.jsonc"),
+        replacement_settings,
+    )
+    .unwrap();
+    std::fs::write(config_path(dir.path(), "models.jsonc"), &replacement_models).unwrap();
     let calls = json!([
         call(
             "atomic-write",
@@ -1112,11 +1124,11 @@ fn model_switch_failure_is_atomic_and_catalog_is_a_read_only_startup_snapshot() 
         assert!(!stderr.contains(secret), "leaked {secret}: {stderr}");
     }
     assert_eq!(
-        std::fs::read(dir.path().join("models.jsonc")).unwrap(),
+        std::fs::read(config_path(dir.path(), "models.jsonc")).unwrap(),
         replacement_models.as_bytes()
     );
     assert_eq!(
-        std::fs::read(dir.path().join("settings.jsonc")).unwrap(),
+        std::fs::read(config_path(dir.path(), "settings.jsonc")).unwrap(),
         replacement_settings.as_bytes()
     );
     assert_eq!(
@@ -1809,11 +1821,11 @@ fn file_configs_override_provider_environment() {
     let server = server();
     let work = tempfile::tempdir().unwrap();
     std::fs::write(
-        work.path().join("settings.jsonc"),
+        config_path(work.path(), "settings.jsonc"),
         "{ /* app settings with a comment */ \"default_model\": \"chosen/primary\", }",
     )
     .unwrap();
-    std::fs::write(work.path().join("models.jsonc"), format!(
+    std::fs::write(config_path(work.path(), "models.jsonc"), format!(
         "{{ /* loopback provider */ \"providers\":[{{ \"id\": \"chosen\", \"protocol\": \"completion\", \"api_key\": \"file-key\", \"base_url\": \"http://{}/v1\", \"models\":[{{ \"id\": \"primary\", \"model\": \"file-model\", }}], }}], }}",
         server.server_addr()
     ))
@@ -1879,7 +1891,7 @@ fn missing_settings_uses_first_provider_first_model_and_defaults() {
     .to_string();
     let dir = tempfile::tempdir().unwrap();
     // No settings.jsonc: defaults select the first provider's first model.
-    std::fs::write(dir.path().join("models.jsonc"), models).unwrap();
+    std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
     let cli = Cli::start_with_existing_files(dir.path(), Some("hello"));
     // finish() waits for exit, so the loopback reply must come first.
     let (request, body) = receive(&server);
@@ -1917,9 +1929,9 @@ fn unmatched_default_model_falls_back_to_first_provider_first_model() {
     })
     .to_string();
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("models.jsonc"), models).unwrap();
+    std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
     std::fs::write(
-        dir.path().join("settings.jsonc"),
+        config_path(dir.path(), "settings.jsonc"),
         r#"{"default_model": "missing/nope"}"#,
     )
     .unwrap();
@@ -2012,9 +2024,9 @@ fn selected_anthropic_refuses_both_cli_modes_without_requests_or_tools() {
     for settings in [None, Some(r#"{"default_model":"anthropic/primary"}"#)] {
         for interactive in [false, true] {
             let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("models.jsonc"), &models).unwrap();
+            std::fs::write(config_path(dir.path(), "models.jsonc"), &models).unwrap();
             if let Some(settings) = settings {
-                std::fs::write(dir.path().join("settings.jsonc"), settings).unwrap();
+                std::fs::write(config_path(dir.path(), "settings.jsonc"), settings).unwrap();
             }
             let mut cli = Cli::start_with_existing_files(
                 dir.path(),
@@ -2178,10 +2190,10 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
     for (settings, models, failing) in cases {
         let dir = tempfile::tempdir().unwrap();
         if let Some(settings) = settings {
-            std::fs::write(dir.path().join("settings.jsonc"), settings).unwrap();
+            std::fs::write(config_path(dir.path(), "settings.jsonc"), settings).unwrap();
         }
         if let Some(models) = models {
-            std::fs::write(dir.path().join("models.jsonc"), models).unwrap();
+            std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
         }
         let mut cli = Cli::start_with_existing_files(dir.path(), None);
         cli.input("\n/new\ncreate must-not-exist file\n/quit\n");
@@ -2200,12 +2212,16 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
 fn interactive_unreadable_configs_do_not_prevent_quit() {
     for failing in ["settings.jsonc", "models.jsonc"] {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("settings.jsonc"), fixture_settings()).unwrap();
+        std::fs::write(
+            config_path(dir.path(), "settings.jsonc"),
+            fixture_settings(),
+        )
+        .unwrap();
         if failing == "settings.jsonc" {
-            std::fs::remove_file(dir.path().join(failing)).unwrap();
-            std::fs::create_dir(dir.path().join(failing)).unwrap();
+            std::fs::remove_file(config_path(dir.path(), failing)).unwrap();
+            std::fs::create_dir(config_path(dir.path(), failing)).unwrap();
         } else {
-            std::fs::write(dir.path().join(failing), [0xff, 0xfe]).unwrap();
+            std::fs::write(config_path(dir.path(), failing), [0xff, 0xfe]).unwrap();
         }
         let mut cli = Cli::start_with_existing_files(dir.path(), None);
         cli.input("/quit\n");
@@ -2245,10 +2261,10 @@ fn missing_or_malformed_config_fails_without_environment_fallback_or_secret_leak
         )
         .unwrap();
         if let Some(settings) = settings {
-            std::fs::write(dir.path().join("settings.jsonc"), settings).unwrap();
+            std::fs::write(config_path(dir.path(), "settings.jsonc"), settings).unwrap();
         }
         if let Some(models) = models {
-            std::fs::write(dir.path().join("models.jsonc"), models).unwrap();
+            std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
         }
         let cli = Cli::spawn(
             dir.path(),
@@ -2314,8 +2330,8 @@ mod tui {
 
     impl Pty {
         fn start(server: &Server, cwd: &Path) -> Self {
-            std::fs::write(cwd.join("settings.jsonc"), fixture_settings()).unwrap();
-            std::fs::write(cwd.join("models.jsonc"), fixture_models(server)).unwrap();
+            std::fs::write(config_path(cwd, "settings.jsonc"), fixture_settings()).unwrap();
+            std::fs::write(config_path(cwd, "models.jsonc"), fixture_models(server)).unwrap();
             Self::start_with_existing_files(cwd)
         }
 
@@ -2331,6 +2347,7 @@ mod tui {
             let original_flags = terminal_flags(pair.master.as_ref());
             let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
             command.cwd(cwd);
+            command.env("HOME", cwd);
             command.env("TERM", "xterm-256color");
             // Exercise ANSI colors even when the test runner opts out of colors.
             command.env_remove("NO_COLOR");
@@ -2773,9 +2790,13 @@ mod tui {
         for protocol in ["completion", "response"] {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("settings.jsonc"), fixture_settings()).unwrap();
             std::fs::write(
-                dir.path().join("models.jsonc"),
+                config_path(dir.path(), "settings.jsonc"),
+                fixture_settings(),
+            )
+            .unwrap();
+            std::fs::write(
+                config_path(dir.path(), "models.jsonc"),
                 response_models(&server, Some(protocol)),
             )
             .unwrap();
@@ -2869,11 +2890,7 @@ mod tui {
                 .unwrap()
                 .success()
         );
-        std::fs::write(
-            dir.path().join(".gitignore"),
-            "settings.jsonc\nmodels.jsonc\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join(".gitignore"), ".pp/\n").unwrap();
         assert!(
             Command::new("git")
                 .args(["add", ".gitignore"])
@@ -2916,9 +2933,13 @@ mod tui {
     fn tui_mouse_wheel_scrolls_history_and_resumes_following() {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("settings.jsonc"), fixture_settings()).unwrap();
         std::fs::write(
-            dir.path().join("models.jsonc"),
+            config_path(dir.path(), "settings.jsonc"),
+            fixture_settings(),
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(dir.path(), "models.jsonc"),
             response_models(&server, Some("completion")),
         )
         .unwrap();
@@ -2986,9 +3007,13 @@ mod tui {
         for protocol in ["completion", "response"] {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("settings.jsonc"), fixture_settings()).unwrap();
             std::fs::write(
-                dir.path().join("models.jsonc"),
+                config_path(dir.path(), "settings.jsonc"),
+                fixture_settings(),
+            )
+            .unwrap();
+            std::fs::write(
+                config_path(dir.path(), "models.jsonc"),
                 response_models(&server, Some(protocol)),
             )
             .unwrap();
@@ -3093,9 +3118,13 @@ mod tui {
         for protocol in ["completion", "response"] {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("settings.jsonc"), fixture_settings()).unwrap();
             std::fs::write(
-                dir.path().join("models.jsonc"),
+                config_path(dir.path(), "settings.jsonc"),
+                fixture_settings(),
+            )
+            .unwrap();
+            std::fs::write(
+                config_path(dir.path(), "models.jsonc"),
                 response_models(&server, Some(protocol)),
             )
             .unwrap();
@@ -3223,9 +3252,13 @@ mod tui {
             for ending in ["eof", "json", "failed"] {
                 let server = server();
                 let dir = tempfile::tempdir().unwrap();
-                std::fs::write(dir.path().join("settings.jsonc"), fixture_settings()).unwrap();
                 std::fs::write(
-                    dir.path().join("models.jsonc"),
+                    config_path(dir.path(), "settings.jsonc"),
+                    fixture_settings(),
+                )
+                .unwrap();
+                std::fs::write(
+                    config_path(dir.path(), "models.jsonc"),
                     response_models(&server, Some(protocol)),
                 )
                 .unwrap();
@@ -3302,11 +3335,11 @@ mod tui {
         ]})
         .to_string();
         std::fs::write(
-            dir.path().join("settings.jsonc"),
+            config_path(dir.path(), "settings.jsonc"),
             r#"{"default_model":"a/primary"}"#,
         )
         .unwrap();
-        std::fs::write(dir.path().join("models.jsonc"), models).unwrap();
+        std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
         let mut pty = Pty::start_with_existing_files(dir.path());
         pty.ready_model("vendor-a");
         pty.input("remember picker alpha\r");
@@ -3320,16 +3353,16 @@ mod tui {
         pty.input("/");
         pty.wait_for("visible slash command menu", |screen| {
             let text = screen.contents();
-            ["help", "model", "new", "effort", "quit"]
+            ["help", "model", "new", "effort", "skills", "quit"]
                 .iter()
                 .enumerate()
                 .all(|(index, command)| {
                     text.lines()
-                        .nth(24 + index)
+                        .nth(23 + index)
                         .is_some_and(|line| line.contains(command))
                 })
                 && !screen.hide_cursor()
-                && screen.cursor_position() == (22, 3)
+                && screen.cursor_position() == (21, 3)
         });
         pty.input("\x1b[B");
         pty.resize(4, 20);
@@ -3473,11 +3506,11 @@ mod tui {
         ]})
         .to_string();
         std::fs::write(
-            dir.path().join("settings.jsonc"),
+            config_path(dir.path(), "settings.jsonc"),
             r#"{"default_model":"a/primary"}"#,
         )
         .unwrap();
-        std::fs::write(dir.path().join("models.jsonc"), models).unwrap();
+        std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
         let mut pty = Pty::start_with_existing_files(dir.path());
         pty.ready_model("vendor-a");
         pty.input("hold busy history\r");
@@ -3795,7 +3828,7 @@ mod tui {
         let server = server();
         let unavailable = tempfile::tempdir().unwrap();
         std::fs::write(
-            unavailable.path().join("settings.jsonc"),
+            config_path(unavailable.path(), "settings.jsonc"),
             fixture_settings(),
         )
         .unwrap();
@@ -3831,6 +3864,125 @@ mod tui {
         drop(pending);
         no_more(&server);
     }
+    #[test]
+    fn tui_skills_manage_cancel_save_reload_restart_and_unavailable_models() {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        super::skills::install(home.path(), "rust", "rust");
+        let mut pty = Pty::start(&server, home.path());
+        pty.ready();
+        pty.input("/skills\r");
+        pty.text("[x] rust");
+        pty.input(" ");
+        pty.text("[ ] rust");
+        pty.input("\x1b");
+        pty.ready();
+        assert!(
+            !std::fs::read_to_string(config_path(home.path(), "settings.jsonc"))
+                .unwrap()
+                .contains("disabled_skills")
+        );
+        pty.input("\r");
+        pty.text("[x] rust");
+        pty.input(" \r");
+        pty.ready();
+        let settings = std::fs::read_to_string(config_path(home.path(), "settings.jsonc")).unwrap();
+        assert!(settings.contains("disabled_skills"));
+        assert!(settings.contains("rust"));
+        pty.input("\x03");
+        pty.finish();
+        let mut pty = Pty::start_with_existing_files(home.path());
+        pty.ready();
+        pty.input("/skills\r");
+        pty.text("[ ] rust");
+        super::skills::install(home.path(), "second", "second");
+        pty.input("r");
+        pty.text("[x] second");
+        std::fs::write(config_path(home.path(), "settings.jsonc"), "invalid jsonc").unwrap();
+        pty.input("\r");
+        pty.text("invalid JSONC");
+        pty.text("Skills");
+        assert_eq!(
+            std::fs::read_to_string(config_path(home.path(), "settings.jsonc")).unwrap(),
+            "invalid jsonc"
+        );
+        std::fs::write(
+            config_path(home.path(), "settings.jsonc"),
+            "{\"skill_dirs\":[]}",
+        )
+        .unwrap();
+        pty.input("r");
+        pty.text("未发现 skill");
+        pty.resize(4, 20);
+        pty.resize(30, 100);
+        pty.text("Skills");
+        pty.input("\x03");
+        pty.finish();
+        std::fs::write(config_path(home.path(), "settings.jsonc"), "{}").unwrap();
+        std::fs::remove_file(config_path(home.path(), "models.jsonc")).unwrap();
+        let mut pty = Pty::start_with_existing_files(home.path());
+        pty.text("models.jsonc");
+        pty.input("/skills\r");
+        pty.text("[x] rust");
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
+
+    #[test]
+    fn tui_skill_named_card_preview_expansion_busy_rejection_and_resize_for_both_apis() {
+        for protocol in ["completion", "response"] {
+            let server = server();
+            let home = tempfile::tempdir().unwrap();
+            super::skills::install(home.path(), "rust", "中文技能");
+            std::fs::write(config_path(home.path(), "settings.jsonc"), "{}").unwrap();
+            std::fs::write(
+                config_path(home.path(), "models.jsonc"),
+                response_models(&server, Some(protocol)),
+            )
+            .unwrap();
+            let mut pty = Pty::start_with_existing_files(home.path());
+            pty.ready();
+            pty.input("load skill\r");
+            let path = if protocol == "response" {
+                "/v1/responses"
+            } else {
+                "/v1/chat/completions"
+            };
+            let (request, _) = receive_at(&server, path);
+            pty.input("/skills\r");
+            pty.text("cannot send now");
+            pty.draft("/skills");
+            super::skills::send_load(request, protocol, "中文技能");
+            let (request, body) = receive_at(&server, path);
+            assert!(body.to_string().contains("secret-skill-line-19"));
+            pty.text("skill · 中文技能");
+            pty.text("加载成功");
+            pty.drain();
+            let screen = pty.parser.screen();
+            let row = screen
+                .contents()
+                .lines()
+                .position(|line| line.contains("skill · 中文技能"))
+                .unwrap() as u16;
+            assert_eq!(screen.cell(row, 0).unwrap().contents(), "╭");
+            assert_eq!(screen.cell(row, 0).unwrap().fgcolor(), vt100::Color::Idx(5));
+            assert!(!screen.contents().contains("secret-skill-line-19"));
+            pty.input("\x0f");
+            pty.text("secret-skill-line-19");
+            pty.resize(4, 20);
+            pty.resize(30, 100);
+            pty.draft("/skills");
+            if protocol == "response" {
+                response_final(request, "skill loaded");
+            } else {
+                final_reply(request, "skill loaded");
+            }
+            pty.text("skill loaded");
+            pty.input("\x03");
+            pty.finish();
+        }
+    }
 }
 
 #[test]
@@ -3864,3 +4016,6 @@ fn streaming_broken_stdout_still_records_executed_tool_results() {
 mod streaming;
 #[path = "cli_agent/think.rs"]
 mod think;
+
+#[path = "cli_agent/skills.rs"]
+mod skills;

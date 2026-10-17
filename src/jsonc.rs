@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use jsonc_parser::{ParseOptions, parse_to_serde_value};
 
-fn options() -> ParseOptions {
+pub(crate) fn options() -> ParseOptions {
     ParseOptions {
         allow_comments: true,
         allow_trailing_commas: true,

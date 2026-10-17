@@ -30,7 +30,6 @@ pub(super) enum EntryKind {
     // Reserved display categories; no production tool is classified heuristically.
     #[allow(dead_code)]
     Grep,
-    #[allow(dead_code)]
     Skill,
     Data,
     Note,
@@ -173,6 +172,18 @@ impl TranscriptEntry {
             };
             return Line::styled(text, Style::default().fg(color).bg(BASH_BACKGROUND));
         }
+        if self.kind == EntryKind::Skill {
+            return Line::styled(
+                text,
+                Style::default().fg(
+                    if matches!(line.source, Source::Footer) && self.status == EntryStatus::Failed {
+                        Color::Red
+                    } else {
+                        Color::Reset
+                    },
+                ),
+            );
+        }
         if self.kind == EntryKind::Think {
             return Line::styled(
                 text,
@@ -215,6 +226,7 @@ impl TranscriptEntry {
         }
         let mut lines = Vec::new();
         let bash = self.kind == EntryKind::Bash;
+        let skill = self.kind == EntryKind::Skill;
         let user = self.kind == EntryKind::User;
         let border = |source| LayoutLine {
             source,
@@ -222,13 +234,13 @@ impl TranscriptEntry {
             height: 1,
             title_end: false,
         };
-        if bash {
+        if bash || skill {
             lines.push(border(Source::Top));
         }
         if user {
             lines.push(border(Source::Padding));
         }
-        if !self.kind.hides_title() {
+        if !self.kind.hides_title() && !skill {
             self.add_lines(Source::Title, &mut lines);
         }
         if bash {
@@ -264,6 +276,27 @@ impl TranscriptEntry {
                     title_end: false,
                 },
             );
+        }
+        if skill && !self.expanded && count > BASH_PREVIEW_LINES {
+            let omitted = count - BASH_PREVIEW_LINES;
+            lines.truncate(output_start + BASH_PREVIEW_LINES);
+            self.elision = format!("… 还有 {omitted} 行（Ctrl-O 展开）");
+            lines.push(LayoutLine {
+                source: Source::Elision,
+                range: 0..self.elision.len(),
+                height: 0,
+                title_end: false,
+            });
+        }
+        if skill {
+            self.footer = match self.status {
+                EntryStatus::Running => "加载中",
+                EntryStatus::Complete => "加载成功",
+                EntryStatus::Failed => "加载失败",
+            }
+            .into();
+            self.add_lines(Source::Footer, &mut lines);
+            lines.push(border(Source::Bottom));
         }
         if bash {
             if self.footer.is_empty() {
@@ -367,7 +400,7 @@ impl Transcript {
         let footer_y = snapshot.area.y + self.viewport_height as u16;
         // 退出时回放完整输出，不把折叠预览当作终端历史。
         for entry in &mut self.entries {
-            if entry.kind == EntryKind::Bash && !entry.expanded {
+            if matches!(entry.kind, EntryKind::Bash | EntryKind::Skill) && !entry.expanded {
                 entry.expanded = true;
                 entry.layout = None;
             }
@@ -454,15 +487,25 @@ impl Transcript {
             } => {
                 let arguments = serde_json::from_str::<Value>(&arguments).ok();
                 let detail = arguments.as_ref().and_then(|args| {
-                    args.get(if name == "bash" { "command" } else { "path" })?
-                        .as_str()
+                    args.get(match name.as_str() {
+                        "bash" => "command",
+                        "load_skill" => "name",
+                        _ => "path",
+                    })?
+                    .as_str()
                 });
                 let kind = if name == "bash" {
                     EntryKind::Bash
+                } else if name == "load_skill" {
+                    EntryKind::Skill
                 } else {
                     EntryKind::Data
                 };
                 let title = match detail {
+                    Some(name) if kind == EntryKind::Skill => {
+                        format!("skill · {}", name.replace(char::is_control, " "))
+                    }
+                    None if kind == EntryKind::Skill => "skill · 未知".into(),
                     Some(command) if name == "bash" => format!("$ {command}"),
                     Some(path) => format!("{name} · {path}"),
                     None => name.clone(),
@@ -560,12 +603,12 @@ impl Transcript {
         self.scroll_up(self.viewport_height.max(1));
     }
 
-    pub(super) fn toggle_bash_output(&mut self) {
+    pub(super) fn toggle_tool_output(&mut self) {
         if let Some(entry) = self
             .entries
             .iter_mut()
             .rev()
-            .find(|entry| entry.kind == EntryKind::Bash)
+            .find(|entry| matches!(entry.kind, EntryKind::Bash | EntryKind::Skill))
         {
             entry.expanded = !entry.expanded;
             entry.layout = None;
@@ -605,7 +648,11 @@ impl Transcript {
     fn prepare_layout(&mut self, width: u16) {
         self.total = 0;
         for entry in &mut self.entries {
-            let padding = if entry.kind == EntryKind::Bash { 4 } else { 2 };
+            let padding = if matches!(entry.kind, EntryKind::Bash | EntryKind::Skill) {
+                4
+            } else {
+                2
+            };
             entry.ensure_layout(width.saturating_sub(padding).max(1));
             self.total += entry.layout.as_ref().expect("layout initialized").height + 1;
         }
@@ -632,6 +679,7 @@ impl Transcript {
                 }
                 let height = (line.height - skip).min(usize::from(end - y)) as u16;
                 let bash = entry.kind == EntryKind::Bash;
+                let skill = entry.kind == EntryKind::Skill;
                 let think = entry.kind == EntryKind::Think;
                 let background = if bash {
                     Some(BASH_BACKGROUND)
@@ -645,14 +693,21 @@ impl Transcript {
                             Style::default().bg(background),
                         );
                     }
-                    if bash {
+                    if bash || skill {
+                        let skill_title = format!(" {} ", entry.title);
                         let (left, right, label) = match line.source {
-                            Source::Top => ("╭", "╮", ""),
+                            Source::Top => {
+                                ("╭", "╮", if skill { skill_title.as_str() } else { "" })
+                            }
                             Source::Divider => ("├", "┤", " Output "),
                             Source::Bottom => ("╰", "╯", ""),
                             _ => ("│", "│", ""),
                         };
-                        let style = Style::default().fg(BASH_BORDER).bg(BASH_BACKGROUND);
+                        let style = if skill {
+                            Style::default().fg(Color::Magenta)
+                        } else {
+                            Style::default().fg(BASH_BORDER).bg(BASH_BACKGROUND)
+                        };
                         let horizontal =
                             matches!(line.source, Source::Top | Source::Divider | Source::Bottom);
                         if horizontal {
@@ -667,7 +722,13 @@ impl Transcript {
                         if !label.is_empty() && area.width > 4 {
                             Span::styled(
                                 label,
-                                Style::default().fg(Color::Gray).bg(BASH_BACKGROUND),
+                                if skill {
+                                    Style::default()
+                                        .fg(Color::Magenta)
+                                        .add_modifier(Modifier::BOLD)
+                                } else {
+                                    Style::default().fg(Color::Gray).bg(BASH_BACKGROUND)
+                                },
                             )
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
@@ -676,7 +737,7 @@ impl Transcript {
                             .render(Rect::new(area.x, row, 1, 1), buffer);
                     }
                 }
-                let padding = if bash { 4 } else { inset };
+                let padding = if bash || skill { 4 } else { inset };
                 if area.width > padding
                     && !matches!(line.source, Source::Top | Source::Divider | Source::Bottom)
                 {
@@ -738,6 +799,18 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
                 .as_str()
                 .map_or_else(|| error.to_string(), str::to_owned);
         }
+    } else if name == "load_skill" {
+        return format!(
+            "来源：{}\n{}",
+            result
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            result
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        );
     } else if name == "read" {
         if let Some(content) = result.get("content").and_then(Value::as_str) {
             return content.into();
@@ -851,7 +924,7 @@ mod tests {
 
     #[test]
     fn streaming_category_colors_and_statuses_preserve_default_body() {
-        for kind in [EntryKind::Grep, EntryKind::Skill, EntryKind::Data] {
+        for kind in [EntryKind::Grep, EntryKind::Data] {
             let mut transcript = Transcript::new();
             let tool = matches!(kind, EntryKind::Grep | EntryKind::Skill);
             let mut entry = TranscriptEntry::new(
@@ -957,11 +1030,11 @@ mod tests {
         assert_eq!(buffer[(0, think_row)].symbol(), " ");
         assert_eq!(buffer[(2, think_row)].fg, MUTED_TEXT);
         assert_eq!(buffer[(2, think_row)].bg, ASSISTANT_BACKGROUND);
-        transcript.toggle_bash_output();
+        transcript.toggle_tool_output();
         let expanded = screen(&render(&mut transcript, 100, 40));
         assert!(expanded.contains("line-00"));
         assert!(!expanded.contains("earlier lines"));
-        transcript.toggle_bash_output();
+        transcript.toggle_tool_output();
         render(&mut transcript, 5, 2);
         let snapshot = render(&mut transcript, 100, 30);
         let mut replay = Vec::new();
@@ -1296,5 +1369,64 @@ mod tests {
         );
         // CJK and emoji need two cells; show the same tail at a useful width.
         assert!(screen(&render(&mut transcript, 30, 5)).contains("tail中"));
+    }
+    #[test]
+    fn skill_card_has_named_magenta_border_preview_status_and_full_expansion() {
+        let mut transcript = Transcript::new();
+        tool(
+            &mut transcript,
+            "skill-call",
+            "load_skill",
+            serde_json::json!({"name":"中文技能"}),
+        );
+        let running = render(&mut transcript, 70, 40);
+        assert!(
+            screen(&running)
+                .replace(' ', "")
+                .contains("╭─skill·中文技能")
+        );
+        assert!(screen(&running).replace(' ', "").contains("加载中"));
+        assert_eq!(running[(0, 0)].fg, Color::Magenta);
+        assert!(running[(2, 0)].modifier.contains(Modifier::BOLD));
+        let content = (0..20)
+            .map(|index| format!("skill-body-{index:02}\n"))
+            .collect::<String>();
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "skill-call".into(),
+            result: serde_json::json!({"ok":true,"path":"/skills/test/SKILL.md","content":content}),
+        });
+        let collapsed = screen(&render(&mut transcript, 70, 40));
+        assert!(collapsed.contains("skill-body-00"));
+        assert!(!collapsed.contains("skill-body-19"));
+        assert!(collapsed.contains("Ctrl-O"));
+        assert!(collapsed.replace(' ', "").contains("加载成功"));
+        transcript.toggle_tool_output();
+        assert!(screen(&render(&mut transcript, 70, 40)).contains("skill-body-19"));
+        for width in [1, 2, 4, 20, 70] {
+            render(&mut transcript, width, 5);
+        }
+        transcript.toggle_tool_output();
+        tool(
+            &mut transcript,
+            "failed",
+            "load_skill",
+            serde_json::json!({"name":"disabled"}),
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "failed".into(),
+            result: serde_json::json!({"ok":false,"error":"skill 未启用"}),
+        });
+        assert!(
+            screen(&render(&mut transcript, 70, 40))
+                .replace(' ', "")
+                .contains("加载失败")
+        );
+        tool(
+            &mut transcript,
+            "read",
+            "read",
+            serde_json::json!({"path":"/skills/test/SKILL.md"}),
+        );
+        assert_eq!(transcript.entries.last().unwrap().kind, EntryKind::Data);
     }
 }

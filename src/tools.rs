@@ -23,6 +23,7 @@ use std::{fs, sync::mpsc::sync_channel};
 const OUTPUT_LIMIT: usize = 65_536;
 
 pub(crate) struct Tools {
+    pub(crate) skills: crate::skills::SharedSkills,
     cwd: PathBuf,
     edit_mode: EditMode,
     workspace: save::Workspace,
@@ -78,6 +79,7 @@ impl Tools {
     pub(crate) fn new(cwd: PathBuf, edit_mode: EditMode) -> Result<Self> {
         let workspace = save::Workspace::open(&cwd)?;
         Ok(Self {
+            skills: crate::skills::Skills::default().shared(),
             cwd: workspace.path.clone(),
             edit_mode,
             workspace,
@@ -145,6 +147,12 @@ impl Tools {
         };
         vec![
             FunctionObject {
+                name: "load_skill".into(),
+                description: Some("Load the full instructions of an enabled skill by its exact name from the available skills list. Resolve relative resource paths against the returned base_dir.".into()),
+                parameters: Some(json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false})),
+                ..Default::default()
+            },
+            FunctionObject {
                 name: "read".into(),
                 description: Some(read_description),
                 parameters: Some(json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false})),
@@ -198,6 +206,19 @@ impl Tools {
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<Value> {
         match name {
+            "load_skill" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args {
+                    name: String,
+                }
+                let args: Args =
+                    serde_json::from_str(arguments).context("invalid load_skill arguments")?;
+                self.skills
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
+                    .load(&args.name)
+            }
             "read" => {
                 let args: ReadArgs =
                     serde_json::from_str(arguments).context("invalid read arguments")?;

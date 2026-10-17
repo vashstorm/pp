@@ -1,7 +1,10 @@
 use anyhow::{Context, Result, ensure};
 use reqwest::Url;
 use serde::Deserialize;
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::{jsonc, models};
 
@@ -129,6 +132,10 @@ fn default_bash_timeout_seconds() -> u64 {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
+    #[serde(default = "default_skill_dirs")]
+    pub(crate) skill_dirs: Vec<String>,
+    #[serde(default)]
+    pub(crate) disabled_skills: Vec<String>,
     #[serde(default)]
     pub(crate) think_level: ThinkLevel,
     #[serde(default)]
@@ -157,7 +164,17 @@ impl Settings {
         }
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.skill_dirs.iter().all(|path| !path.trim().is_empty()),
+            "skill_dirs must contain non-blank paths"
+        );
+        ensure!(
+            self.disabled_skills
+                .iter()
+                .all(|name| !name.trim().is_empty()),
+            "disabled_skills must contain non-blank names"
+        );
         if let Some(default_model) = &self.default_model {
             ensure!(
                 !default_model.trim().is_empty(),
@@ -202,8 +219,23 @@ impl Settings {
     }
 }
 
+fn default_skill_dirs() -> Vec<String> {
+    vec!["~/.pp/agent/skills".into()]
+}
+
+pub(crate) fn global_dir() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .context("HOME is required to locate ~/.pp/agent")?;
+    let home = PathBuf::from(home);
+    ensure!(home.is_absolute(), "HOME must be an absolute path");
+    Ok(home.join(".pp/agent"))
+}
+
 fn default_settings() -> Settings {
     Settings {
+        skill_dirs: default_skill_dirs(),
+        disabled_skills: Vec::new(),
         think_level: ThinkLevel::Default,
         edit: EditMode::Replace,
         default_model: None,
@@ -306,7 +338,7 @@ impl ModelCatalog {
     }
 }
 
-fn read_settings(path: &Path) -> Result<Settings> {
+pub(crate) fn read_settings(path: &Path) -> Result<Settings> {
     match fs::read_to_string(path) {
         // A missing settings.jsonc is not fatal: defaults apply. Other read
         // errors (e.g. a directory or invalid UTF-8) still fail startup.
@@ -315,6 +347,10 @@ fn read_settings(path: &Path) -> Result<Settings> {
             let text = result
                 .with_context(|| format!("reading JSONC settings config {}", path.display()))?;
             jsonc::parse::<Settings>(&text, "settings")
+                .and_then(|settings| {
+                    settings.validate()?;
+                    Ok(settings)
+                })
                 .with_context(|| format!("loading JSONC settings config {}", path.display()))
         }
     }
@@ -927,6 +963,35 @@ mod tests {
         for models in ["{", "{\"providers\": \"secret-marker\"", ""] {
             let chain = rejection(Some(VALID_SETTINGS), Some(models), &["models.jsonc"]);
             assert!(chain.contains("invalid JSONC models config"), "{chain}");
+        }
+    }
+    #[test]
+    fn skill_settings_default_empty_lists_and_strict_field_types() {
+        let defaults = load(None, Some(VALID_MODELS)).unwrap().settings;
+        assert_eq!(defaults.skill_dirs, ["~/.pp/agent/skills"]);
+        assert!(defaults.disabled_skills.is_empty());
+        let settings = load(
+            Some(r#"{"skill_dirs":[],"disabled_skills":[]}"#),
+            Some(VALID_MODELS),
+        )
+        .unwrap()
+        .settings;
+        assert!(settings.skill_dirs.is_empty());
+        for field in ["skill_dirs", "disabled_skills"] {
+            for value in [
+                json!(null),
+                json!("secret-marker"),
+                json!([null]),
+                json!([5]),
+                json!([""]),
+                json!(["  "]),
+            ] {
+                rejection(
+                    Some(&json!({field:value}).to_string()),
+                    Some(VALID_MODELS),
+                    &["settings.jsonc"],
+                );
+            }
         }
     }
 }

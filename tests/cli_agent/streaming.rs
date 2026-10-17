@@ -1460,7 +1460,7 @@ fn tool_limits_remain_startup_snapshots_across_model_switch_and_new() {
         let (request, _) = protocol.receive(server);
         // 启动后改配置，切换模型和新建会话均不得放宽工具限制。
         std::fs::write(
-            dir.path().join("settings.jsonc"),
+            config_path(dir.path(), "settings.jsonc"),
             r#"{"read_max_bytes":65536,"read_max_lines":2000,"bash_timeout_seconds":120}"#,
         )
         .unwrap();
