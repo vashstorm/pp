@@ -43,11 +43,12 @@ pub(crate) struct Agent {
 impl Session {
     fn set_think_level(&mut self, level: ThinkLevel) {
         match self {
-            Self::Completion(request) => request.reasoning_effort = level.effort(),
+            Self::Completion(request) => request.reasoning_effort = Some(level.effort()),
             Self::Response(request) => {
                 request.reasoning = Some(async_openai::types::responses::Reasoning {
-                    effort: level.effort(),
-                    summary: Some(async_openai::types::responses::ReasoningSummary::Auto),
+                    effort: Some(level.effort()),
+                    summary: (level != ThinkLevel::None)
+                        .then_some(async_openai::types::responses::ReasoningSummary::Auto),
                     ..Default::default()
                 });
             }

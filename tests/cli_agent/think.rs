@@ -1,6 +1,6 @@
 use super::*;
 
-fn assert_level(body: &Value, protocol: &str, level: &str) {
+pub(super) fn assert_level(body: &Value, protocol: &str, level: &str) {
     let field = if protocol == "response" {
         "reasoning"
     } else {
@@ -12,21 +12,20 @@ fn assert_level(body: &Value, protocol: &str, level: &str) {
         "reasoning"
     };
     assert!(body.get(other).is_none());
+    let level = if level == "default" { "none" } else { level };
     if protocol == "response" {
-        assert_eq!(body[field]["summary"], "auto");
-        if level == "default" {
-            assert!(body[field].get("effort").is_none());
+        assert_eq!(body[field]["effort"], level);
+        if level == "none" {
+            assert!(body[field].get("summary").is_none());
         } else {
-            assert_eq!(body[field]["effort"], level);
+            assert_eq!(body[field]["summary"], "auto");
         }
-    } else if level == "default" {
-        assert!(body.get(field).is_none());
     } else {
         assert_eq!(body[field], level);
     }
 }
 
-fn finish_request(request: Request, protocol: &str) {
+pub(super) fn finish_request(request: Request, protocol: &str) {
     if protocol == "response" {
         response_final(request, "ok");
     } else {
@@ -35,9 +34,9 @@ fn finish_request(request: Request, protocol: &str) {
 }
 
 #[test]
-fn think_level_settings_reach_both_apis_including_default_omission() {
+fn think_level_settings_reach_both_apis_including_none_and_default_alias() {
     for protocol in ["completion", "response"] {
-        for level in ["default", "low", "medium", "high", "xhigh", "max"] {
+        for level in ["none", "default", "low", "medium", "high", "xhigh", "max"] {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
             let settings = json!({"think_level":level}).to_string();
@@ -110,4 +109,73 @@ fn think_commands_preserve_history_and_level_across_model_switch_and_new() {
         std::fs::read_to_string(config_path(dir.path(), "models.jsonc")).unwrap(),
         models
     );
+}
+
+#[test]
+fn think_level_runtime_changes_do_not_override_startup_settings_after_restart() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let settings = r#"{"think_level":"high"}"#;
+        let models = response_models(&server, Some(protocol));
+        let path = if protocol == "response" {
+            "/v1/responses"
+        } else {
+            "/v1/chat/completions"
+        };
+        let mut cli = Cli::start_with(dir.path(), None, settings, &models);
+        cli.input("first\n");
+        let (request, body) = receive_at(&server, path);
+        assert_level(&body, protocol, "high");
+        finish_request(request, protocol);
+        cli.input("/effort none\nsecond\n");
+        let (request, body) = receive_at(&server, path);
+        assert_level(&body, protocol, "none");
+        finish_request(request, protocol);
+        cli.input("/new\nthird\n");
+        let (request, body) = receive_at(&server, path);
+        assert_level(&body, protocol, "none");
+        finish_request(request, protocol);
+        cli.input("/quit\n");
+        assert!(cli.finish().status.success());
+        assert_eq!(
+            std::fs::read_to_string(config_path(dir.path(), "settings.jsonc")).unwrap(),
+            settings
+        );
+
+        let cli = Cli::start_with_existing_files(dir.path(), Some("after restart"));
+        let (request, body) = receive_at(&server, path);
+        assert_level(&body, protocol, "high");
+        finish_request(request, protocol);
+        assert!(cli.finish().status.success());
+        no_more(&server);
+    }
+}
+
+#[test]
+fn think_level_missing_settings_or_field_explicitly_sends_none_to_both_apis() {
+    for protocol in ["completion", "response"] {
+        for settings in [None, Some("{}")] {
+            let server = server();
+            let dir = tempfile::tempdir().unwrap();
+            if let Some(settings) = settings {
+                std::fs::write(config_path(dir.path(), "settings.jsonc"), settings).unwrap();
+            }
+            std::fs::write(
+                config_path(dir.path(), "models.jsonc"),
+                response_models(&server, Some(protocol)),
+            )
+            .unwrap();
+            let cli = Cli::start_with_existing_files(dir.path(), Some("test"));
+            let path = if protocol == "response" {
+                "/v1/responses"
+            } else {
+                "/v1/chat/completions"
+            };
+            let (request, body) = receive_at(&server, path);
+            assert_level(&body, protocol, "none");
+            finish_request(request, protocol);
+            assert!(cli.finish().status.success());
+        }
+    }
 }

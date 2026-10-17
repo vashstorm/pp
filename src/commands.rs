@@ -30,7 +30,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/effort",
         icon: "\u{f0eb}",
-        usage: "/effort [default|low|medium|high|xhigh|max]",
+        usage: "/effort [none|low|medium|high|xhigh|max]",
         description: "View or set the thinking effort level, keeping session history",
     },
     CommandSpec {
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(parse("/think").unwrap(), Some(Command::Think(None)));
         assert_eq!(parse("/effort ").unwrap(), Some(Command::Think(None)));
         for name in ["/effort", "/think"] {
-            for level in ["default", "low", "medium", "high", "xhigh", "max"] {
+            for level in ["none", "default", "low", "medium", "high", "xhigh", "max"] {
                 assert_eq!(
                     parse(&format!(" {name} {level} ")).unwrap(),
                     Some(Command::Think(Some(level.parse().unwrap())))

@@ -19,8 +19,8 @@ cargo build --locked
   "default_model": "gateway/secondary",
   // Optional, default "replace"; use "hashline" for anchored line edits
   "edit": "replace",
-  // 思考级别：default（服务端默认）、low、medium、high、xhigh、max
-  "think_level": "default",
+  // 启动默认思考级别：none（关闭思考）、low、medium、high、xhigh、max；省略时为 none
+  "think_level": "high",
   // skill 根目录；相对路径以 ~/.pp/agent 为基准，空数组关闭扫描
   "skill_dirs": ["~/.pp/agent/skills"],
   // 全局禁用的 skill 名称；新发现的 skill 默认启用
@@ -80,8 +80,8 @@ chmod 600 ~/.pp/agent/models.jsonc
 
 Validation and model-selection rules:
 
-- `think_level` 可设置为 `low`、`medium`、`high`、`xhigh` 或 `max`；省略时为 `default`，也可显式设为 `"default"`。仅接受这些小写字符串，拒绝 null 和其他值。Responses 请求使用 `reasoning.effort`，Chat Completions 请求使用 `reasoning_effort`；`default` 会省略 effort 参数；Responses 仍默认发送 `reasoning.summary: "auto"`，请求可读思考摘要。档位原样传给服务端，具体模型的支持范围由服务端决定，不自动降档或重试。参见 [OpenAI 官方思考级别说明](https://developers.openai.com/api/docs/guides/reasoning)。
-- TUI 输入 `/effort `（命令后加空格）即在输入框下方展开档位菜单，左侧显示档位，右侧显示说明和“当前”标记，黄色突出选中项。↑/↓ 选择，Enter 确认，Esc 取消并保留输入；继续输入档位前缀会筛选候选，Tab 补全但不执行。菜单包含 `default` 和上述五档，不显示固定 token 预算。输入 `/effort` 后按 Enter 也可展开。行模式用 `/effort` 查看当前级别及可选值；两种模式均可用 `/effort high` 直接切换、`/effort default` 恢复服务端默认，兼容旧命令 `/think`。切换保留历史，对后续请求生效；`/model` 和 `/new` 均保留当前级别。TUI 底部状态栏显示实际选择，运行中拒绝切换并保留输入草稿。命令仅改变本次进程，不改写配置文件；重启后使用配置值。
+- `think_level` 设置启动时的默认思考级别，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；省略字段或缺少配置文件时使用 `none`。界面将 `none` 显示为 `no think`。旧值 `default` 仍可读取，但作为 `none` 的兼容别名，含义变为显式关闭思考。仅接受这些小写字符串，拒绝 null 和其他值。Responses 请求显式发送 `reasoning.effort`，Chat Completions 请求显式发送 `reasoning_effort`；`none` 均传为字符串 `"none"`，Responses 同时省略 `reasoning.summary`，其他档位仍使用 `reasoning.summary: "auto"` 请求可读思考摘要。档位原样传给服务端，具体模型的支持范围由服务端决定，不自动降档或重试。参见 [OpenAI 官方思考级别说明](https://developers.openai.com/api/docs/guides/reasoning)。
+- TUI 输入 `/effort `（命令后加空格）即在输入框下方展开档位菜单，左侧显示档位，右侧显示说明和“当前”标记，黄色突出选中项。↑/↓ 选择，Enter 确认，Esc 取消并保留输入；继续输入档位前缀会筛选候选，Tab 补全但不执行。菜单包含 `no think` 和上述五档，关闭思考的补全值为 `none`，不显示固定 token 预算。输入 `/effort` 后按 Enter 也可展开。行模式用 `/effort` 查看当前级别及可选值；两种模式均可用 `/effort high` 直接切换、`/effort none` 关闭思考，兼容旧命令 `/think` 和旧值 `default`。切换保留历史，对后续请求生效；`/model` 和 `/new` 均保留当前级别。TUI 底部状态栏显示实际选择，运行中拒绝切换并保留输入草稿。命令及 Shift+Tab 仅改变本次进程，不改写配置文件；重启后重新读取 `think_level`。
 - 缺少 `settings.jsonc`、省略 `default_model` 或没有匹配的 provider/model 时，使用首个 provider 的首个模型。模型请求次数默认 20，模型请求超时和 bash 超时分别默认 120 秒；read 默认最多返回 65,536 源字节且不超过 2000 个完整行。限制值必须为正整数，拒绝 null、负数、小数、字符串和数值溢出。
 - `edit` defaults to `"replace"` when settings or the field are absent. Only exact lowercase `"replace"` and `"hashline"` strings are accepted; null, other types, case variants, and surrounding whitespace are rejected. It is fixed at startup and survives `/model` (including cross-protocol switches) and `/new`. Existing anchored-edit users must explicitly select `"hashline"`.
 - An explicit `default_model` must be `provider/model`, split at the first `/`; neither part may be blank, matching is case-sensitive and exact with no trimming. The provider id cannot contain `/`, but the model id can: `gateway/team/model` selects the model with id `team/model` under gateway. Bare model ids are not accepted, and there is no environment-variable fallback.
@@ -96,7 +96,7 @@ A provider's `base_url` is the API root. The existing path prefix is preserved; 
 
 ## Terminal Interaction
 
-未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页采用 omp 风格的居中像素字标、版本号和简短操作提示；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏依次显示实际模型、思考级别、启动工作目录和 Git 信息。`default` 表示请求未显式指定思考级别，使用服务端默认值。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；右半区预留为第二状态栏，目前保持空白。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏或 Markdown 渲染。
+未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页采用 omp 风格的居中像素字标、版本号和简短操作提示；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏依次显示实际模型、思考级别、启动工作目录和 Git 信息。`no think` 表示显式请求关闭思考。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；右半区预留为第二状态栏，目前保持空白。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏或 Markdown 渲染。
 
 用户输入继续使用蓝色左竖线和加粗标签，助手回答与 read/write 数据使用终端默认文字色。bash 与 think 使用下述独立样式；其他工具保留淡色正文与运行／完成／失败状态。青色 grep 仍为保留显示类别。真实 `load_skill` 调用使用品红色 skill 卡片，不按文件路径或 bash 命令猜测类别。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
 

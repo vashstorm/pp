@@ -2904,7 +2904,7 @@ mod tui {
             "ordered model, thinking, directory and Git footer",
             |screen| {
                 screen.contents().lines().last().is_some_and(|line| {
-                    line.starts_with(" \u{ec19} fixture-model · \u{f0aa3} default · \u{f07c} ")
+                    line.starts_with(" \u{ec19} fixture-model · \u{f0aa3} no think · \u{f07c} ")
                         && line.ends_with("\u{f126} fixture *1")
                 })
             },
@@ -3120,7 +3120,7 @@ mod tui {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(
                 config_path(dir.path(), "settings.jsonc"),
-                fixture_settings(),
+                r#"{"think_level":"high"}"#,
             )
             .unwrap();
             std::fs::write(

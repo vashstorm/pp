@@ -186,7 +186,7 @@ impl App {
             worker_failed: false,
             choices: Vec::new(),
             current_model: None,
-            think_level: ThinkLevel::Default,
+            think_level: ThinkLevel::None,
             menu: None,
             menu_dismissed: false,
             secondary_status: None,
@@ -340,7 +340,7 @@ impl App {
                 }
                 Ok(WorkerEvent::ThinkLevelSet(level)) => {
                     self.think_level = level;
-                    self.append("Note", &format!("Thinking level: {}", level.as_str()));
+                    self.append("Note", &format!("Thinking level: {}", level.label()));
                     self.state = State::Ready;
                     self.busy_notice = false;
                     changed = true;
@@ -382,9 +382,9 @@ impl App {
                     .filter(|level| level.as_str().starts_with(argument.trim()))
                     .map(|level| MenuItem {
                         value: MenuAction::Effort(level),
-                        label: level.as_str().into(),
+                        label: level.label().into(),
                         description: match level {
-                            ThinkLevel::Default => "Use the server default level",
+                            ThinkLevel::None => "Disable thinking",
                             ThinkLevel::Low => "Light thinking",
                             ThinkLevel::Medium => "Moderate thinking",
                             ThinkLevel::High => "Deep thinking",
@@ -1385,9 +1385,7 @@ mod tests {
         );
         assert!(compact.contains("Deepthinking(current)"));
         assert!(screen.contains("❯ high"));
-        assert!(
-            compact.find("❯/effort").unwrap() < compact.find("Usetheserverdefaultlevel").unwrap()
-        );
+        assert!(compact.find("❯/effort").unwrap() < compact.find("Disablethinking").unwrap());
         assert!(compact.contains("Highestlevelthemodelsupports"));
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
         app.handle(key(KeyCode::Down), &mut dirty);
@@ -1432,7 +1430,7 @@ mod tests {
         );
         app.handle(key(KeyCode::Tab), &mut dirty);
         assert_eq!(app.input.lines(), &["/effort xhigh"]);
-        assert_eq!(app.think_level, ThinkLevel::Default);
+        assert_eq!(app.think_level, ThinkLevel::None);
         app.handle(key(KeyCode::Backspace), &mut dirty);
         app.handle(Event::Paste("\nother".into()), &mut dirty);
         assert!(app.menu.is_none());
@@ -1456,7 +1454,7 @@ mod tests {
         assert!(lines[26].starts_with("❯ draft-中"));
         assert!(lines[27].starts_with("  second line"));
         assert_eq!(lines[28], "─".repeat(100));
-        assert!(lines[29].starts_with(" \u{ec19} — · \u{f0aa3} default · \u{f07c} fixture-cwd"));
+        assert!(lines[29].starts_with(" \u{ec19} — · \u{f0aa3} no think · \u{f07c} fixture-cwd"));
 
         app.secondary_status = Some("extra info".into());
         let screen = draw(&mut app, 100, 30);

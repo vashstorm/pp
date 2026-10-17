@@ -318,7 +318,7 @@ mod tests {
                 settings: crate::config::Settings {
                     skill_dirs: Vec::new(),
                     disabled_skills: Vec::new(),
-                    think_level: crate::config::ThinkLevel::Default,
+                    think_level: crate::config::ThinkLevel::None,
                     edit: crate::config::EditMode::Replace,
                     default_model: None,
                     max_model_requests: 20,

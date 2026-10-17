@@ -205,7 +205,7 @@ pub(super) fn primary(
         .git
         .as_ref()
         .map(|git| compact(&git.label(), (width / 4).saturating_sub(ICON_WIDTH), false));
-    let think = think_level.as_str();
+    let think = think_level.label();
     let reserved = Line::from(model.as_str()).width()
         + Line::from(think).width()
         + git
@@ -225,7 +225,7 @@ pub(super) fn primary(
         icon(MODEL_ICON, MODEL),
         Span::styled(model, Style::default().fg(MODEL)),
         separator(),
-        // default 表示省略请求参数，使用服务端默认值。
+        // no think 表示显式发送 none，请求关闭思考。
         icon(THINK_ICON, MODEL),
         Span::styled(think, Style::default().fg(MODEL)),
         separator(),
@@ -247,6 +247,7 @@ mod tests {
     #[test]
     fn primary_displays_selected_think_level() {
         for level in [
+            ThinkLevel::None,
             ThinkLevel::Low,
             ThinkLevel::Medium,
             ThinkLevel::High,
@@ -254,7 +255,7 @@ mod tests {
             ThinkLevel::Max,
         ] {
             let line = primary(None, level, &StatusContext::default(), 100).to_string();
-            assert!(line.contains(&format!("{THINK_ICON} {} ·", level.as_str())));
+            assert!(line.contains(&format!("{THINK_ICON} {} ·", level.label())));
         }
     }
 
@@ -270,10 +271,10 @@ mod tests {
             git: Some(GitInfo::parse(b"# branch.head main\0? file\0")),
         };
         for width in [60, 80, 100, 200] {
-            let line = primary(Some(&model), ThinkLevel::Default, &context, width);
+            let line = primary(Some(&model), ThinkLevel::None, &context, width);
             assert!(line.width() <= usize::from(width));
             let text = line.to_string();
-            assert!(text.starts_with(" \u{ec19} fixture-model · \u{f0aa3} default · \u{f07c} …"));
+            assert!(text.starts_with(" \u{ec19} fixture-model · \u{f0aa3} no think · \u{f07c} …"));
             assert!(text.ends_with("project · \u{f126} main ?1"));
             for glyph in [MODEL_ICON, THINK_ICON, DIRECTORY_ICON, GIT_ICON] {
                 let icon = line
@@ -285,7 +286,7 @@ mod tests {
                 assert!(icon.content.ends_with(' '));
             }
         }
-        let no_git = primary(None, ThinkLevel::Default, &StatusContext::default(), 100).to_string();
+        let no_git = primary(None, ThinkLevel::None, &StatusContext::default(), 100).to_string();
         assert!(!no_git.contains(GIT_ICON));
     }
 

@@ -43,7 +43,8 @@ pub(crate) enum EditMode {
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ThinkLevel {
     #[default]
-    Default,
+    #[serde(alias = "default")]
+    None,
     Low,
     Medium,
     High,
@@ -53,18 +54,18 @@ pub(crate) enum ThinkLevel {
 
 impl ThinkLevel {
     pub(crate) const ALL: [Self; 6] = [
-        Self::Default,
+        Self::None,
         Self::Low,
         Self::Medium,
         Self::High,
         Self::Xhigh,
         Self::Max,
     ];
-    pub(crate) const OPTIONS: &str = "default, low, medium, high, xhigh, max";
+    pub(crate) const OPTIONS: &str = "none, low, medium, high, xhigh, max";
 
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Default => "default",
+            Self::None => "none",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
@@ -73,15 +74,34 @@ impl ThinkLevel {
         }
     }
 
-    pub(crate) fn effort(self) -> Option<async_openai::types::responses::ReasoningEffort> {
+    pub(crate) fn label(self) -> &'static str {
+        if self == Self::None {
+            "no think"
+        } else {
+            self.as_str()
+        }
+    }
+
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::None => Self::Low,
+            Self::Low => Self::Medium,
+            Self::Medium => Self::High,
+            Self::High => Self::Xhigh,
+            Self::Xhigh => Self::Max,
+            Self::Max => Self::None,
+        }
+    }
+
+    pub(crate) fn effort(self) -> async_openai::types::responses::ReasoningEffort {
         use async_openai::types::responses::ReasoningEffort;
         match self {
-            Self::Default => None,
-            Self::Low => Some(ReasoningEffort::Low),
-            Self::Medium => Some(ReasoningEffort::Medium),
-            Self::High => Some(ReasoningEffort::High),
-            Self::Xhigh => Some(ReasoningEffort::Xhigh),
-            Self::Max => Some(ReasoningEffort::Max),
+            Self::None => ReasoningEffort::None,
+            Self::Low => ReasoningEffort::Low,
+            Self::Medium => ReasoningEffort::Medium,
+            Self::High => ReasoningEffort::High,
+            Self::Xhigh => ReasoningEffort::Xhigh,
+            Self::Max => ReasoningEffort::Max,
         }
     }
 }
@@ -91,7 +111,7 @@ impl std::str::FromStr for ThinkLevel {
 
     fn from_str(value: &str) -> Result<Self> {
         match value {
-            "default" => Ok(Self::Default),
+            "none" | "default" => Ok(Self::None),
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
@@ -236,7 +256,7 @@ fn default_settings() -> Settings {
     Settings {
         skill_dirs: default_skill_dirs(),
         disabled_skills: Vec::new(),
-        think_level: ThinkLevel::Default,
+        think_level: ThinkLevel::None,
         edit: EditMode::Replace,
         default_model: None,
         max_model_requests: default_max_model_requests(),
@@ -439,10 +459,13 @@ mod tests {
 
     #[test]
     fn think_level_config_accepts_exact_levels_and_rejects_invalid_values() {
-        for level in ["default", "low", "medium", "high", "xhigh", "max"] {
+        for level in ["none", "default", "low", "medium", "high", "xhigh", "max"] {
             let settings = json!({"think_level": level}).to_string();
             let config = load(Some(&settings), Some(VALID_MODELS)).unwrap();
-            assert_eq!(config.settings.think_level.as_str(), level);
+            assert_eq!(
+                config.settings.think_level.as_str(),
+                if level == "default" { "none" } else { level }
+            );
         }
         for value in [
             json!(null),
@@ -451,6 +474,8 @@ mod tests {
             json!("HIGH"),
             json!(" high"),
             json!("ultra"),
+            json!("no think"),
+            json!("NONE"),
         ] {
             rejection(
                 Some(&json!({"think_level":value}).to_string()),
@@ -460,14 +485,14 @@ mod tests {
         }
         assert_eq!(
             load(None, Some(VALID_MODELS)).unwrap().settings.think_level,
-            ThinkLevel::Default
+            ThinkLevel::None
         );
         assert_eq!(
             load(Some("{}"), Some(VALID_MODELS))
                 .unwrap()
                 .settings
                 .think_level,
-            ThinkLevel::Default
+            ThinkLevel::None
         );
     }
 

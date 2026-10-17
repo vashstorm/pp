@@ -165,7 +165,7 @@ fn run(args: Args) -> Result<()> {
                 writeln!(
                     stderr,
                     "Thinking level: {} (options: {})",
-                    agent.think_level().as_str(),
+                    agent.think_level().label(),
                     config::ThinkLevel::OPTIONS
                 )?;
             }

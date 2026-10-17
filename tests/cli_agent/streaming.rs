@@ -352,11 +352,16 @@ fn assert_edit_schema(tool: &Value, replace: bool) {
 }
 
 #[test]
-fn thinking_is_streamed_by_default_without_polluting_stdout() {
+fn thinking_is_streamed_when_enabled_without_polluting_stdout() {
     for protocol in PROTOCOLS {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
-        let mut cli = protocol.start(&server, dir.path(), Some("inspect"));
+        let mut cli = protocol.start_with_settings(
+            &server,
+            dir.path(),
+            Some("inspect"),
+            r#"{"think_level":"high"}"#,
+        );
         let (request, body) = protocol.receive(&server);
         let mut stream = SseReply::new(request);
         let reasoning = json!({"type":"reasoning","id":"r","status":"completed","summary":[{"type":"summary_text","text":"inspect 中"}],"encrypted_content":"opaque-hidden"});
@@ -366,7 +371,7 @@ fn thinking_is_streamed_by_default_without_polluting_stdout() {
                 None,
             )),
             Protocol::Responses => {
-                assert_eq!(body["reasoning"], json!({"summary":"auto"}));
+                assert_eq!(body["reasoning"], json!({"effort":"high","summary":"auto"}));
                 stream.event(json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"r","output_index":0,"summary_index":0,"delta":"inspect 中"}));
             }
         }
