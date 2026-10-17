@@ -7,3 +7,6 @@
 
 # agent 指南文件，本地维护
 /AGENTS.md
+
+# git worktree 目录
+/.worktree/
