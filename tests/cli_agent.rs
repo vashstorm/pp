@@ -2295,6 +2295,8 @@ mod tui {
     };
 
     const DEADLINE: Duration = Duration::from_secs(5);
+    // portable-pty sets CLOEXEC after openpty; do not spawn another child in that window.
+    static PTY_SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn input_is_ready(screen: &vt100::Screen) -> bool {
         screen
@@ -2336,6 +2338,36 @@ mod tui {
         }
 
         fn start_with_existing_files(cwd: &Path) -> Self {
+            Self::start_with_args(cwd, cwd, &[])
+        }
+
+        fn start_with_args(cwd: &Path, home: &Path, args: &[&str]) -> Self {
+            let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
+            command.cwd(cwd);
+            command.env("HOME", home);
+            for arg in args {
+                command.arg(arg);
+            }
+            Self::spawn(command)
+        }
+
+        // 持久化写失败：bash 的 ulimit -f 以 1024 字节为单位，忽略 SIGXFSZ 后写入返回 EFBIG。
+        fn start_with_file_limit(cwd: &Path, home: &Path, blocks: u64, args: &[&str]) -> Self {
+            let mut command = CommandBuilder::new("bash");
+            command.cwd(cwd);
+            command.env("HOME", home);
+            command.arg("-c");
+            command.arg(format!("trap '' XFSZ; ulimit -f {blocks}; exec \"$@\""));
+            command.arg("--");
+            command.arg(env!("CARGO_BIN_EXE_pp"));
+            for arg in args {
+                command.arg(arg);
+            }
+            Self::spawn(command)
+        }
+
+        fn spawn(mut command: CommandBuilder) -> Self {
+            let spawn_guard = PTY_SPAWN.lock().unwrap_or_else(|error| error.into_inner());
             let pair = native_pty_system()
                 .openpty(PtySize {
                     rows: 30,
@@ -2345,15 +2377,13 @@ mod tui {
                 })
                 .unwrap();
             let original_flags = terminal_flags(pair.master.as_ref());
-            let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
-            command.cwd(cwd);
-            command.env("HOME", cwd);
             command.env("TERM", "xterm-256color");
             // Exercise ANSI colors even when the test runner opts out of colors.
             command.env_remove("NO_COLOR");
             let writer = pair.master.take_writer().unwrap();
             let mut reader = pair.master.try_clone_reader().unwrap();
             let child = pair.slave.spawn_command(command).unwrap();
+            drop(spawn_guard);
             let (sender, output) = mpsc::channel();
             let reader = thread::spawn(move || {
                 let mut buffer = [0; 8192];
@@ -2511,6 +2541,18 @@ mod tui {
                 Err(_) => {
                     self.drain();
                     panic!("model request failed\n{}", self.diagnostics());
+                }
+            }
+        }
+
+        fn request_at(&mut self, server: &Server, path: &str) -> (Request, Value) {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                receive_at(server, path)
+            })) {
+                Ok(request) => request,
+                Err(_) => {
+                    self.drain();
+                    panic!("model request failed at {path}\n{}", self.diagnostics());
                 }
             }
         }
@@ -3282,6 +3324,10 @@ mod tui {
             pty.draft("draft-中");
             pty.input("\x1b[6~");
             pty.text("line-59-last");
+            // The completed first task now adds a session notice after the answer.
+            // Reach that actual bottom before expecting the next task to follow output.
+            pty.input("\x1b[6~");
+            pty.text("Session:");
             pty.resize(4, 20);
             pty.resize(30, 100);
             pty.draft("draft-中");
@@ -4076,6 +4122,274 @@ mod tui {
             pty.finish();
         }
     }
+
+    fn api_path(protocol: &str) -> &'static str {
+        if protocol == "completion" {
+            "/v1/chat/completions"
+        } else {
+            "/v1/responses"
+        }
+    }
+
+    fn saved_session_id(home: &Path) -> String {
+        let dir = home.join(".pp/agent/sessions");
+        let mut ids: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.ends_with(".jsonl"))
+            .map(|name| name.trim_end_matches(".jsonl").to_owned())
+            .collect();
+        ids.sort();
+        assert_eq!(
+            ids.len(),
+            1,
+            "expected exactly one saved session in {dir:?}"
+        );
+        ids.pop().unwrap()
+    }
+
+    // 驱动一个带 bash+read 工具批次与会话，退出后返回保存的 session ID。
+    fn create_tool_session(server: &Server, home: &Path, protocol: &str) -> String {
+        std::fs::write(config_path(home, "settings.jsonc"), fixture_settings()).unwrap();
+        std::fs::write(
+            config_path(home, "models.jsonc"),
+            response_models(server, Some(protocol)),
+        )
+        .unwrap();
+        let path = api_path(protocol);
+        let mut pty = Pty::start_with_existing_files(home);
+        pty.ready();
+        pty.input("remember tui-marker\r");
+        let (request, _) = receive_at(server, path);
+        let command = "printf 'tool-out' > tui-read.txt";
+        if protocol == "completion" {
+            calls_reply(
+                request,
+                json!([
+                    call("b1", "bash", json!({"command":command})),
+                    call("r1", "read", json!({"path":"tui-read.txt"})),
+                ]),
+            );
+        } else {
+            response_reply(
+                request,
+                json!([
+                    response_call("b1", "bash", json!({"command":command})),
+                    response_call("r1", "read", json!({"path":"tui-read.txt"})),
+                ]),
+            );
+        }
+        let (request, _) = receive_at(server, path);
+        if protocol == "completion" {
+            final_reply(request, "tui-remembered");
+        } else {
+            response_final(request, "tui-remembered");
+        }
+        pty.text("tui-remembered");
+        pty.ready();
+        // 新 session 首次创建后 UI 提示一次 Session ID。
+        pty.text("Session:");
+        pty.input("/quit\r");
+        pty.finish();
+        no_more(server);
+        saved_session_id(home)
+    }
+
+    #[test]
+    fn tui_session_resume_replays_history_without_request() {
+        for protocol in ["completion", "response"] {
+            let server = server();
+            let home = tempfile::tempdir().unwrap();
+            let id = create_tool_session(&server, home.path(), protocol);
+            let path = api_path(protocol);
+
+            let mut pty = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
+            pty.wait_for("恢复的对话与 Resumed 提示", |screen| {
+                let text = screen.contents();
+                text.contains("remember tui-marker")
+                    && text.contains("tui-remembered")
+                    && text.contains(&format!("Resumed session: {id}"))
+            });
+            // 无欢迎页；工具卡片重放保存的退出状态，不伪造 wall duration。
+            let text = pty.parser.screen().contents();
+            assert!(!text.contains("█▀▀█"));
+            assert!(text.contains("$ printf"));
+            assert!(text.contains("read · tui-read.txt"));
+            assert!(text.contains("tool-out"));
+            assert!(text.contains("Exit code: 0"));
+            assert!(!text.contains("Wall:"));
+            // 输入框为空且未处于历史浏览状态。
+            pty.ready();
+            let prompt_line = pty
+                .parser
+                .screen()
+                .contents()
+                .lines()
+                .find(|line| line.starts_with('❯'))
+                .unwrap()
+                .trim()
+                .to_owned();
+            assert_eq!(prompt_line, "❯");
+            // 恢复不发送任何请求。
+            no_more(&server);
+            // input history 已恢复：↑ 直接回填旧输入。
+            pty.input("\x1b[A");
+            pty.draft("remember tui-marker");
+            pty.input("\x1b[B");
+            pty.draft("");
+
+            // 新输入沿用原上下文，追加到原文件且 ID 不变。
+            pty.input("what did I say\r");
+            let (request, body) = pty.request_at(&server, path);
+            if protocol == "completion" {
+                let messages = body["messages"].as_array().unwrap();
+                assert_eq!(messages.len(), 7);
+                assert_eq!(messages[1]["content"], "remember tui-marker");
+                assert_eq!(messages[2]["tool_calls"][0]["function"]["name"], "bash");
+                assert_eq!(messages[2]["tool_calls"][1]["function"]["name"], "read");
+                assert_eq!(messages[3]["role"], "tool");
+                assert_eq!(messages[4]["role"], "tool");
+                assert_eq!(messages[5]["content"], "tui-remembered");
+                assert_eq!(messages[6]["content"], "what did I say");
+            } else {
+                let input = body["input"].as_array().unwrap();
+                assert_eq!(input.len(), 7);
+                response_user(&input[0], "remember tui-marker");
+                assert_eq!(input[1]["type"], "function_call");
+                assert_eq!(input[1]["call_id"], "b1");
+                assert_eq!(input[2]["type"], "function_call");
+                assert_eq!(input[2]["call_id"], "r1");
+                assert_eq!(input[3]["type"], "function_call_output");
+                assert_eq!(input[4]["type"], "function_call_output");
+                slash_assert_message(&input[5], "assistant", "tui-remembered");
+                response_user(&input[6], "what did I say");
+            }
+            if protocol == "completion" {
+                final_reply(request, "you said tui-marker");
+            } else {
+                response_final(request, "you said tui-marker");
+            }
+            pty.text("you said tui-marker");
+            pty.ready();
+            // 已恢复的 session 不再重复提示新建 Session ID。
+            assert!(!pty.parser.screen().contents().contains("Session:"));
+            pty.input("/quit\r");
+            pty.finish();
+            no_more(&server);
+            assert_eq!(saved_session_id(home.path()), id);
+            let journal = std::fs::read_to_string(
+                home.path()
+                    .join(".pp/agent/sessions")
+                    .join(format!("{id}.jsonl")),
+            )
+            .unwrap();
+            assert!(journal.contains("what did I say"));
+        }
+    }
+
+    #[test]
+    fn tui_session_continue_sends_saved_request_without_keypress() {
+        for protocol in ["completion", "response"] {
+            let server = server();
+            let home = tempfile::tempdir().unwrap();
+            let id = create_tool_session(&server, home.path(), protocol);
+            let path = api_path(protocol);
+
+            let mut pty = Pty::start_with_args(home.path(), home.path(), &["-c", &id]);
+            // 不按任何键即发出请求；先看到恢复的对话再断言请求体。
+            pty.wait_for("恢复的对话", |screen| {
+                screen.contents().contains("remember tui-marker")
+            });
+            let (request, body) = pty.request_at(&server, path);
+            if protocol == "completion" {
+                let messages = body["messages"].as_array().unwrap();
+                assert_eq!(messages.len(), 6);
+                assert_eq!(messages.iter().filter(|m| m["role"] == "user").count(), 1);
+                assert_eq!(messages[2]["tool_calls"].as_array().unwrap().len(), 2);
+                assert_eq!(messages.last().unwrap()["role"], "assistant");
+                assert_eq!(messages.last().unwrap()["content"], "tui-remembered");
+            } else {
+                let input = body["input"].as_array().unwrap();
+                assert_eq!(input.len(), 6);
+                assert_eq!(
+                    input.iter().filter(|item| item["role"] == "user").count(),
+                    1
+                );
+                assert_eq!(
+                    input
+                        .iter()
+                        .filter(|item| item["type"] == "function_call")
+                        .count(),
+                    2
+                );
+                slash_assert_message(input.last().unwrap(), "assistant", "tui-remembered");
+            }
+            let body = serde_json::to_string(&body).unwrap();
+            assert!(!body.contains("please continue"));
+            assert!(!body.contains("请继续"));
+            // You 卡片不增加：旧输入只出现一次。
+            assert_eq!(
+                pty.parser
+                    .screen()
+                    .contents()
+                    .matches("remember tui-marker")
+                    .count(),
+                1
+            );
+            if protocol == "completion" {
+                final_reply(request, "continued-answer");
+            } else {
+                response_final(request, "continued-answer");
+            }
+            pty.text("continued-answer");
+            pty.ready();
+            pty.input("\x03");
+            pty.finish();
+            no_more(&server);
+            assert_eq!(saved_session_id(home.path()), id);
+        }
+    }
+
+    #[test]
+    fn tui_session_effort_write_failure_keeps_status_and_shows_error() {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let id = create_tool_session(&server, home.path(), "completion");
+        let path = home
+            .path()
+            .join(".pp/agent/sessions")
+            .join(format!("{id}.jsonl"));
+        // 用一条展示记录把日志补齐到恰好等于 RLIMIT_FSIZE，使首次 /effort 追加得到 EFBIG。
+        let len = std::fs::metadata(&path).unwrap().len();
+        let limit = (len + 64).div_ceil(1024) * 1024;
+        let overhead = r#"{"type":"user","text":""}"#.len() as u64 + 1;
+        let padding = "p".repeat((limit - len - overhead) as usize);
+        {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(file, r#"{{"type":"user","text":"{padding}"}}"#).unwrap();
+        }
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), limit);
+
+        let mut pty =
+            Pty::start_with_file_limit(home.path(), home.path(), limit / 1024, &["-r", &id]);
+        pty.ready();
+        pty.ready_effort("no think");
+        pty.input("/effort high\r");
+        pty.text("persisting session");
+        pty.ready();
+        pty.ready_effort("no think");
+        assert!(pty.parser.screen().contents().contains("no think"));
+        // 设置写失败不触发任何模型请求。
+        no_more(&server);
+        pty.input("/quit\r");
+        pty.finish();
+    }
 }
 
 #[test]
@@ -4112,3 +4426,6 @@ mod think;
 
 #[path = "cli_agent/skills.rs"]
 mod skills;
+
+#[path = "cli_agent/session.rs"]
+mod session;

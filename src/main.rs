@@ -25,6 +25,25 @@ struct Args {
     /// Run one complete task and exit; omit for an interactive session
     #[arg(short, long)]
     prompt: Option<String>,
+
+    /// Resume a saved session by exact ID and wait for input
+    #[arg(
+        short = 'r',
+        long = "resume",
+        value_name = "SESSION_ID",
+        conflicts_with = "continue_session"
+    )]
+    resume: Option<String>,
+
+    /// Continue a saved session by exact ID, or the most recently modified one
+    #[arg(
+        short = 'c',
+        long = "continue",
+        value_name = "SESSION_ID",
+        num_args = 0..=1,
+        conflicts_with_all = ["resume", "prompt"]
+    )]
+    continue_session: Option<Option<String>>,
 }
 
 fn main() -> ExitCode {
@@ -43,8 +62,38 @@ fn run(args: Args) -> Result<()> {
         ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
     }
     let use_tui = args.prompt.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal();
-    let cwd = std::env::current_dir().context("capturing startup working directory")?;
+    let continue_requested = args.continue_session.is_some();
+    let resume_id = args
+        .resume
+        .as_deref()
+        .or_else(|| args.continue_session.as_ref().and_then(|id| id.as_deref()));
+    if let Some(id) = resume_id {
+        agent::persistence::validate_id(id)?;
+    }
+    // Restore failures are fatal even in interactive mode, unlike unavailable
+    // configuration for a fresh `pp`. Load the journal before tools, skills, and
+    // the TUI workspace so everything runs from the saved working directory.
     let global_dir = config::global_dir();
+    let restored = if args.resume.is_some() || continue_requested {
+        let dir = global_dir
+            .as_ref()
+            .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+        Some(agent::persistence::load(
+            &dir.join("sessions"),
+            resume_id,
+            use_tui,
+        )?)
+    } else {
+        None
+    };
+    let cwd = match &restored {
+        Some(session) => {
+            std::env::set_current_dir(session.cwd())
+                .context("restoring session working directory")?;
+            std::env::current_dir().context("restoring session working directory")?
+        }
+        None => std::env::current_dir().context("capturing startup working directory")?,
+    };
     let skills = match &global_dir {
         Ok(dir) => skills::Skills::from_dir(dir),
         Err(error) => {
@@ -54,17 +103,35 @@ fn run(args: Args) -> Result<()> {
         }
     }
     .shared();
-    let mut agent = global_dir.and_then(|dir| {
-        config::ModelCatalog::from_files(&dir.join("settings.jsonc"), &dir.join("models.jsonc"))
-            .and_then(|catalog| {
-                let mut tools = tools::Tools::new(cwd.clone(), catalog.edit_mode())?;
-                tools.skills = skills.clone();
-                agent::Agent::new(catalog, tools)
-            })
-    });
+    let mut agent = match restored {
+        Some(session) => {
+            let global_dir = global_dir?;
+            let catalog = config::ModelCatalog::from_files(
+                &global_dir.join("settings.jsonc"),
+                &global_dir.join("models.jsonc"),
+            )
+            .context("loading configuration for saved session")?;
+            let mut tools = tools::Tools::new(cwd.clone(), session.edit_mode())?;
+            tools.skills = skills.clone();
+            Ok(agent::Agent::restore(catalog, tools, session)?)
+        }
+        None => global_dir.and_then(|dir| {
+            config::ModelCatalog::from_files(&dir.join("settings.jsonc"), &dir.join("models.jsonc"))
+                .and_then(|catalog| {
+                    let mut tools = tools::Tools::new(cwd.clone(), catalog.edit_mode())?;
+                    tools.skills = skills.clone();
+                    agent::Agent::new(catalog, tools, dir.join("sessions"))
+                })
+        }),
+    };
     if use_tui {
-        return tui::run(agent, &cwd, skills);
+        return tui::run(agent, &cwd, skills, continue_requested);
     }
+    let resumed_id = if args.resume.is_some() || continue_requested {
+        agent.as_ref().ok().and_then(|agent| agent.session_id())
+    } else {
+        None
+    };
     let mut stderr = io::stderr();
     let mut stdout = io::stdout().lock();
     writeln!(
@@ -82,9 +149,18 @@ fn run(args: Args) -> Result<()> {
     {
         writeln!(stderr, "skill: {diagnostic}")?;
     }
+    if let Some(id) = &resumed_id {
+        writeln!(stderr, "Resumed session: {id}")?;
+    }
     if let Some(prompt) = args.prompt {
-        run_cli_task(&mut agent?, &prompt, &mut stdout, &mut stderr)?;
+        run_cli_task(&mut agent?, Some(&prompt), &mut stdout, &mut stderr)?;
         return Ok(());
+    }
+    if continue_requested {
+        let active = agent
+            .as_mut()
+            .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+        run_cli_task(active, None, &mut stdout, &mut stderr)?;
     }
     writeln!(stderr, "pp — use /help for commands")?;
     if let Err(error) = &agent {
@@ -159,8 +235,11 @@ fn run(args: Args) -> Result<()> {
         };
         match command {
             Some(commands::Command::Think(level)) => {
-                if let Some(level) = level {
-                    agent.set_think_level(level);
+                if let Some(level) = level
+                    && let Err(error) = agent.set_think_level(level)
+                {
+                    writeln!(stderr, "error: {error:#}")?;
+                    continue;
                 }
                 writeln!(
                     stderr,
@@ -204,7 +283,7 @@ fn run(args: Args) -> Result<()> {
             Some(
                 commands::Command::Help | commands::Command::Quit | commands::Command::Skills(_),
             ) => unreachable!(),
-            None => match run_cli_task(agent, prompt, &mut stdout, &mut stderr) {
+            None => match run_cli_task(agent, Some(prompt), &mut stdout, &mut stderr) {
                 Ok(()) => {}
                 Err(error) => writeln!(stderr, "error: {error:#}")?,
             },
@@ -236,7 +315,7 @@ fn cli_write(
 
 fn run_cli_task(
     agent: &mut agent::Agent,
-    prompt: &str,
+    prompt: Option<&str>,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> Result<()> {
@@ -246,7 +325,7 @@ fn run_cli_task(
     let (mut visible, mut content, mut newline) = (false, false, true);
     let mut current_tool = None;
     let mut thinking_newline = true;
-    let result = agent.run(prompt, &mut |event| {
+    let mut emit = |event: AgentEvent| {
         if !matches!(&event, AgentEvent::ThinkingDelta { .. }) && !thinking_newline {
             cli_write(stderr, "\n", &mut err_broken, &mut first_error);
             thinking_newline = true;
@@ -322,12 +401,26 @@ fn run_cli_task(
                 }
             }
         }
-    });
+    };
+    let result = match prompt {
+        Some(prompt) => agent.run(prompt, &mut emit),
+        None => agent.continue_session(&mut emit),
+    };
     if !thinking_newline {
         cli_write(stderr, "\n", &mut err_broken, &mut first_error);
     }
     if visible && !newline {
         cli_write(stdout, "\n", &mut out_broken, &mut first_error);
+    }
+    // Report a newly created session even when the task itself failed; stdout
+    // stays reserved for model answers.
+    if let Some(id) = agent.take_session_notice() {
+        cli_write(
+            stderr,
+            &format!("Session: {id}\n"),
+            &mut err_broken,
+            &mut first_error,
+        );
     }
     if let Some(error) = first_error {
         return Err(error).context("writing task output");

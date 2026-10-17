@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use reqwest::Url;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -31,7 +31,7 @@ pub(crate) struct ModelChoice {
     pub(crate) protocol: models::Protocol,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum EditMode {
     #[default]
@@ -39,7 +39,7 @@ pub(crate) enum EditMode {
     Hashline,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ThinkLevel {
     #[default]
@@ -122,11 +122,35 @@ impl std::str::FromStr for ThinkLevel {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct ToolLimits {
     pub(crate) read_max_bytes: usize,
     pub(crate) read_max_lines: usize,
     pub(crate) bash_timeout_seconds: u64,
+}
+
+impl ToolLimits {
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.read_max_bytes > 0,
+            "read_max_bytes must be greater than zero"
+        );
+        ensure!(
+            self.read_max_lines > 0,
+            "read_max_lines must be greater than zero"
+        );
+        ensure!(
+            self.bash_timeout_seconds > 0,
+            "bash_timeout_seconds must be greater than zero"
+        );
+        ensure!(
+            std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(self.bash_timeout_seconds))
+                .is_some(),
+            "bash_timeout_seconds is too large"
+        );
+        Ok(())
+    }
 }
 
 impl Default for ToolLimits {
@@ -217,24 +241,7 @@ impl Settings {
             self.request_timeout_seconds > 0,
             "request_timeout_seconds must be greater than zero"
         );
-        ensure!(
-            self.read_max_bytes > 0,
-            "read_max_bytes must be greater than zero"
-        );
-        ensure!(
-            self.read_max_lines > 0,
-            "read_max_lines must be greater than zero"
-        );
-        ensure!(
-            self.bash_timeout_seconds > 0,
-            "bash_timeout_seconds must be greater than zero"
-        );
-        ensure!(
-            std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(self.bash_timeout_seconds))
-                .is_some(),
-            "bash_timeout_seconds is too large"
-        );
+        self.tool_limits().validate()?;
         Ok(())
     }
 }

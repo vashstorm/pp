@@ -1,3 +1,4 @@
+use crate::agent::persistence::ReplayRecord;
 use crate::events::{AgentEvent, OutputStream};
 use ratatui::{
     Frame,
@@ -370,6 +371,8 @@ pub(super) struct Transcript {
     total: usize,
     viewport_height: usize,
     follow_bottom: bool,
+    // 重放恢复时不伪造 bash 卡片的 wall duration。
+    replaying: bool,
 }
 
 impl Transcript {
@@ -390,6 +393,36 @@ impl Transcript {
         };
         self.entries
             .push(TranscriptEntry::new(kind, title, text.into(), None));
+    }
+
+    /// 按日志顺序恢复可见对话；原生 LLM 历史不在此处参与。
+    pub(super) fn replay(&mut self, records: Vec<ReplayRecord>, input_history: &mut Vec<String>) {
+        self.replaying = true;
+        let mut assistant_running = false;
+        for record in records {
+            match record {
+                ReplayRecord::User(text) => {
+                    self.append("You", &text);
+                    input_history.push(text);
+                }
+                ReplayRecord::Event(event) => {
+                    match &event {
+                        AgentEvent::AssistantStarted => assistant_running = true,
+                        AgentEvent::AssistantFinished { .. } => assistant_running = false,
+                        _ => {}
+                    }
+                    self.progress(event);
+                }
+                ReplayRecord::Error(message) => {
+                    assistant_running = false;
+                    self.fail(&message);
+                }
+            }
+        }
+        self.replaying = false;
+        if assistant_running || self.assistant.is_some() || !self.running_tools.is_empty() {
+            self.fail("Previous request was interrupted.");
+        }
     }
 
     pub(super) fn write_scrollback(
@@ -553,10 +586,14 @@ impl Transcript {
                             },
                             |code| format!("Exit code: {code}"),
                         );
-                        entry.footer = format!(
-                            "⟨Wall: {:.2}s | {status}⟩",
-                            entry.started.elapsed().as_secs_f64()
-                        );
+                        entry.footer = if self.replaying {
+                            format!("⟨{status}⟩")
+                        } else {
+                            format!(
+                                "⟨Wall: {:.2}s | {status}⟩",
+                                entry.started.elapsed().as_secs_f64()
+                            )
+                        };
                     }
                     entry.layout = None;
                 }
@@ -853,6 +890,76 @@ mod tests {
             text: text.into(),
             refusal,
         });
+    }
+
+    #[test]
+    fn replay_restores_visible_history_and_marks_interruption() {
+        let mut transcript = Transcript::new();
+        let mut input_history = Vec::new();
+        transcript.replay(
+            vec![
+                ReplayRecord::User("remember replay".into()),
+                ReplayRecord::Event(AgentEvent::AssistantStarted),
+                ReplayRecord::Event(AgentEvent::ToolStarted {
+                    id: "b1".into(),
+                    name: "bash".into(),
+                    arguments: r#"{"command":"printf replay"}"#.into(),
+                }),
+                ReplayRecord::Event(AgentEvent::ToolFinished {
+                    id: "b1".into(),
+                    result: json!({"ok":true,"stdout":"replay\n","exit_code":0}),
+                }),
+                ReplayRecord::Event(AgentEvent::AssistantDelta {
+                    text: "partial".into(),
+                    refusal: false,
+                }),
+            ],
+            &mut input_history,
+        );
+        assert_eq!(input_history, ["remember replay"]);
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(text.contains("remember replay"));
+        assert!(text.contains("replay"));
+        assert!(text.contains("Exit code: 0"));
+        assert!(!text.contains("Wall:"));
+        assert!(text.contains("Previous request was interrupted."));
+
+        // 完整结束的记录不会误报中断。
+        let mut transcript = Transcript::new();
+        let mut input_history = Vec::new();
+        transcript.replay(
+            vec![
+                ReplayRecord::User("done task".into()),
+                ReplayRecord::Event(AgentEvent::AssistantStarted),
+                ReplayRecord::Event(AgentEvent::AssistantFinished {
+                    text: "final answer".into(),
+                }),
+                ReplayRecord::Error("task failed".into()),
+            ],
+            &mut input_history,
+        );
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(text.contains("final answer"));
+        assert!(text.contains("task failed"));
+        assert!(!text.contains("Previous request was interrupted."));
+    }
+
+    #[test]
+    fn replay_marks_interruption_before_first_answer_text() {
+        for thinking in [false, true] {
+            let mut transcript = Transcript::new();
+            let mut records = vec![ReplayRecord::Event(AgentEvent::AssistantStarted)];
+            if thinking {
+                records.push(ReplayRecord::Event(AgentEvent::ThinkingDelta {
+                    text: "unfinished thought".into(),
+                }));
+            }
+            transcript.replay(records, &mut Vec::new());
+            assert!(
+                screen(&render(&mut transcript, 100, 30))
+                    .contains("Previous request was interrupted.")
+            );
+        }
     }
 
     fn tool(transcript: &mut Transcript, id: &str, name: &str, arguments: Value) {

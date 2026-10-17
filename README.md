@@ -68,7 +68,7 @@ cargo build --locked
 }
 ```
 
-配置文件名和目录固定；`settings.jsonc` 可以缺省，缺少 `models.jsonc` 时模型不可用。通过 HOME 定位用户目录，不读取项目配置。工具仍以启动目录为工作目录。旧版本用户需手动将配置迁移到 `~/.pp/agent/`；程序不会自动复制含密钥的文件。
+配置文件名和目录固定；`settings.jsonc` 可以缺省，缺少 `models.jsonc` 时模型不可用。通过 HOME 定位用户目录，不读取项目配置。新会话的工具以启动目录为工作目录；恢复会话使用日志保存的原工作目录。旧版本用户需手动将配置迁移到 `~/.pp/agent/`；程序不会自动复制含密钥的文件。
 
 ```sh
 chmod 600 ~/.pp/agent/models.jsonc
@@ -81,7 +81,7 @@ chmod 600 ~/.pp/agent/models.jsonc
 Validation and model-selection rules:
 
 - `think_level` 设置启动时的默认思考级别，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；省略字段或缺少配置文件时使用 `none`。界面将 `none` 显示为 `no think`。旧值 `default` 仍可读取，但作为 `none` 的兼容别名，含义变为显式关闭思考。仅接受这些小写字符串，拒绝 null 和其他值。Responses 请求显式发送 `reasoning.effort`，Chat Completions 请求显式发送 `reasoning_effort`；`none` 均传为字符串 `"none"`，Responses 同时省略 `reasoning.summary`，其他档位仍使用 `reasoning.summary: "auto"` 请求可读思考摘要。档位原样传给服务端，具体模型的支持范围由服务端决定，不自动降档或重试。参见 [OpenAI 官方思考级别说明](https://developers.openai.com/api/docs/guides/reasoning)。
-- TUI 输入 `/effort `（命令后加空格）即在输入框下方展开档位菜单，左侧显示档位，右侧显示说明和“当前”标记，黄色突出选中项。↑/↓ 选择，Enter 确认，Esc 取消并保留输入；继续输入档位前缀会筛选候选，Tab 补全但不执行。菜单包含 `no think` 和上述五档，关闭思考的补全值为 `none`，不显示固定 token 预算。输入 `/effort` 后按 Enter 也可展开。行模式用 `/effort` 查看当前级别及可选值；两种模式均可用 `/effort high` 直接切换、`/effort none` 关闭思考，兼容旧命令 `/think` 和旧值 `default`。切换保留历史，对后续请求生效；`/model` 和 `/new` 均保留当前级别。TUI 底部状态栏显示实际选择，运行中拒绝切换并保留输入草稿。命令及 Shift+Tab 仅改变本次进程，不改写配置文件；重启后重新读取 `think_level`。
+- TUI 输入 `/effort `（命令后加空格）即在输入框下方展开档位菜单，左侧显示档位，右侧显示说明和“当前”标记，黄色突出选中项。↑/↓ 选择，Enter 确认，Esc 取消并保留输入；继续输入档位前缀会筛选候选，Tab 补全但不执行。菜单包含 `no think` 和上述五档，关闭思考的补全值为 `none`，不显示固定 token 预算。输入 `/effort` 后按 Enter 也可展开。行模式用 `/effort` 查看当前级别及可选值；两种模式均可用 `/effort high` 直接切换、`/effort none` 关闭思考，兼容旧命令 `/think` 和旧值 `default`。切换保留历史，对后续请求生效；`/model` 和 `/new` 均保留当前级别。TUI 底部状态栏显示实际选择，运行中拒绝切换并保留输入草稿。命令及 Shift+Tab 不改写配置文件；已有活动 session 时会持久化选择，写入失败则保留原档位。普通新启动读取配置的 `think_level`，恢复 session 使用保存的档位。
 - 缺少 `settings.jsonc`、省略 `default_model` 或没有匹配的 provider/model 时，使用首个 provider 的首个模型。模型请求次数默认 20，模型请求超时和 bash 超时分别默认 120 秒；read 默认最多返回 65,536 源字节且不超过 2000 个完整行。限制值必须为正整数，拒绝 null、负数、小数、字符串和数值溢出。
 - `edit` defaults to `"replace"` when settings or the field are absent. Only exact lowercase `"replace"` and `"hashline"` strings are accepted; null, other types, case variants, and surrounding whitespace are rejected. It is fixed at startup and survives `/model` (including cross-protocol switches) and `/new`. Existing anchored-edit users must explicitly select `"hashline"`.
 - An explicit `default_model` must be `provider/model`, split at the first `/`; neither part may be blank, matching is case-sensitive and exact with no trimming. The provider id cannot contain `/`, but the model id can: `gateway/team/model` selects the model with id `team/model` under gateway. Bare model ids are not accepted, and there is no environment-variable fallback.
@@ -100,7 +100,7 @@ A provider's `base_url` is the API root. The existing path prefix is preserved; 
 
 用户输入继续使用蓝色左竖线和加粗标签，助手回答与 read/write 数据使用终端默认文字色。bash 与 think 使用下述独立样式；其他工具保留淡色正文与运行／完成／失败状态。青色 grep 仍为保留显示类别。真实 `load_skill` 调用使用品红色 skill 卡片，不按文件路径或 bash 命令猜测类别。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
 
-- Enter 发送非空草稿，Ctrl-J 插入换行；粘贴保留多行且不会自动发送。输入框使用终端原生光标，为拼音等输入法提供插入位置。菜单关闭时，↑/↓ 优先在输入框的显示行间移动（包括自动折行）；到达首行后再按 ↑、到达末行后再按 ↓，才浏览本次进程中已提交的历史输入，支持继续编辑；↓ 越过最新一条会恢复浏览前的草稿和光标，历史两端不循环。运行中也可浏览输入历史，忙碌时被拒绝的提交不计入历史；`/new` 重置模型会话后仍保留输入历史，退出后不保存。菜单展开时，↑/↓ 仍用于选择菜单项。
+- Enter 发送非空草稿，Ctrl-J 插入换行；粘贴保留多行且不会自动发送。输入框使用终端原生光标，为拼音等输入法提供插入位置。菜单关闭时，↑/↓ 优先在输入框的显示行间移动（包括自动折行）；到达首行后再按 ↑、到达末行后再按 ↓，才浏览本次进程中已提交的历史输入，支持继续编辑；↓ 越过最新一条会恢复浏览前的草稿和光标，历史两端不循环。运行中也可浏览输入历史，忙碌时被拒绝的提交不计入历史；`/new` 重置模型会话后仍保留本次进程的输入历史；恢复 session 时从已保存用户消息恢复输入历史，不恢复草稿或历史浏览位置。菜单展开时，↑/↓ 仍用于选择菜单项。
 - Shift+Tab 按 `no think → low → medium → high → xhigh → max → no think` 循环切换思考级别，后台确认后更新状态栏，保留草稿、光标和输入历史浏览位置。选择菜单展开时不切档。Ctrl+P 打开模型菜单，临时输入 `/model ` 供筛选和 Tab 补全；Esc 取消或 Enter 确认后恢复原草稿和光标，切换失败也保留。忙碌时拒绝切档和打开模型菜单，不排队。F1 显示与 `/help` 相同的帮助，忙碌时也可使用且保留草稿。三个快捷操作均忽略长按重复事件；skill 面板优先处理自身按键。Ctrl+N、Ctrl+U、Ctrl+W 沿用编辑器既有行为。
 - Ctrl+A / Ctrl+E 分别跳到当前行首 / 行尾；Ctrl+K 删除光标到当前行尾的内容，在行尾或空行按下不删除换行。左右键、Home/End、Backspace/Delete 继续支持中文和 Unicode 文本编辑。
 - The input box grows with explicit lines, up to six; long lines soft-wrap, and the editing viewport scrolls past its height. Narrow screens crop the bottom bar; short screens keep the input and status first; restoring size never loses the draft.
@@ -111,7 +111,34 @@ A provider's `base_url` is the API root. The existing path prefix is preserved; 
 - 所有选择菜单（`/` 命令补全、`/model `、`/effort `）统一使用 `src/tui/menu.rs` 中的 `SelectionMenu` 组件，业务层只提供选项数据和确认动作。统一在输入框下方显示无外框的两列列表，左列占 46%、右列占 54%；选中行以黄色文字和箭头突出，其余说明与图标为灰色，当前值显示“（当前）”，输入框使用紫色分隔线。最多显示八行，窄屏截断说明，短屏随选择滚动。↑/↓、Home/End、PgUp/PgDn 导航且不循环，Tab 补全但不执行，Enter 确认一次；Esc 收起列表并保留草稿，下次编辑时重新显示。输入 `/` 展开命令菜单，继续输入会按命令前缀筛选，左列保留命令图标。
 - 输入 `/model `（命令后加空格）会在输入框下方展开与 `/effort ` 一致的两列菜单：左侧为 `provider/model`，右侧为实际模型名、`completion`/`response` 及“当前”标记，黄色文字和箭头突出选中项。`/model` 后按 Enter 也能展开，默认选中当前模型。按启动配置顺序排列，最多显示八行，长列表随选择滚动；↑/↓、Home/End、PgUp/PgDn 导航，Enter 确认，Esc 收起并保留输入。继续输入按引用或实际模型名的前缀筛选，Tab 补全引用但不切换；多行粘贴仍作为普通任务。后台完成切换后才更新状态栏，历史和确认后新编辑的草稿均保留；忙碌时拒绝切换、不排队、不清空草稿。`/new` 仍在后台确认后清空历史和草稿。
 - `/quit` 或 Ctrl-C 立即退出整个 pp，正常退出码为 0。恢复终端后，全部对话记录按退出时的终端宽度写入普通终端的滚动历史，保留原有颜色、缩进、分隔线、流式片段、工具输出及错误，末尾保留输入框、未提交的草稿、菜单和状态栏；可以向上滚动查看超出一屏的历史。保留长度受终端自身的滚动历史容量限制。退出不等待阻塞中的模型请求或工具，不提供任务级取消，也不保证终止工具子进程，文件修改不会回滚。
-- `-p/--prompt` always takes precedence and never parses slash commands: `pp -p '/model'` sends `/model` as a task. If either stdin or stdout is not a terminal, line mode supports the same commands without raw mode or an alternate screen. `/model` lists configured models and marks the current one; use `/model provider/model` to switch. Stdout streams **all readable assistant text**, including text before tools, with one terminating newline per nonempty turn and no replay at completion. Refusal is printed only if no non-blank content wins. Help, command responses, errors, and `tool <name>: running/ok/failed` go to stderr; live bash data uses `[bash stdout]` / `[bash stderr]` on pp's stderr. Non-TUI output adds no ANSI control sequences. A display write failure is returned only after the Agent finishes recording the task's history/tool results.
+- `-p/--prompt` runs one task and never parses slash commands: `pp -p '/model'` sends `/model` as a task. It can follow `-r ID` to append one task to saved history; combining it with `-c` is rejected. If either stdin or stdout is not a terminal, line mode supports the same commands without raw mode or an alternate screen. `/model` lists configured models and marks the current one; use `/model provider/model` to switch. Stdout streams **all readable assistant text**, including text before tools, with one terminating newline per nonempty turn and no replay at completion. Refusal is printed only if no non-blank content wins. Help, command responses, errors, and `tool <name>: running/ok/failed` go to stderr; live bash data uses `[bash stdout]` / `[bash stderr]` on pp's stderr. Non-TUI output adds no ANSI control sequences. A display write failure is returned only after the Agent finishes recording the task's history/tool results.
+
+## Session 持久化与恢复
+
+| 命令 | 启动行为 | 任务后行为 |
+|---|---|---|
+| `pp` | 新的惰性 session，不请求模型 | 原有 TUI / 行模式 |
+| `pp -p TEXT` | 发送一次新任务 | 退出 |
+| `pp -r ID` | 精确恢复，不发送 HTTP | 等待输入；行模式可 EOF 退出 |
+| `pp -r ID -p TEXT` | 恢复后追加一次 TEXT | 退出 |
+| `pp -c` | 选择全局最近修改的 session，立即发送完整已保存请求 | 继续交互；行模式 stdin EOF 退出 |
+| `pp -c ID` | 精确恢复并立即发送完整已保存请求 | 同上 |
+
+`-c` 不附加“请继续”、不重复最后一条用户消息、不回滚助手回答，也不重放旧工具调用。只能使用完整 ID：`YYYY-MM-DDTHH-MM-SS-<32位小写hex>`，例如 `2026-10-17T01-02-03-0123456789abcdef0123456789abcdef`；日期时间使用创建时的本机时区，精确到秒，随机后缀避免同秒冲突。不支持前缀或文件路径，旧的 Unix 毫秒格式 ID 不再接受。`-r` 缺 ID、`-r` 与 `-c` 同用、`-c` 与 `-p` 同用均报错。
+
+日志唯一位置为 `~/.pp/agent/sessions/<ID>.jsonl`。启动、草稿和本地命令不创建目录或文件；只有真实 HTTP stream 打开调用返回（收到 headers 或请求失败）后才创建。因此请求仍在等待首次 headers 时被强杀，不保证已有日志。ID 使用 16 字节 OS 随机数；新目录权限 0700，新文件 0600，不改已有目录权限。日志是敏感明文，包含完整对话和工具结果，不保存 Config、API key 或 HTTP headers；不要提交或随意共享。
+
+恢复使用原工作目录、edit 模式、工具限制、模型引用、思考级别、原生 system/instructions 和完整历史，并继续追加原文件，不分叉。原目录缺失或不可进入时报错，不回退到启动目录。模型必须仍存在于当前 catalog 且实际 model/protocol 未改变；凭据、base URL、HTTP 超时和每任务请求上限使用当前配置。恢复失败是非零退出，不进入禁用模型的交互兜底。
+
+TUI 恢复可见消息、工具结果、错误和用户输入历史，输入框为空；不恢复草稿、菜单、滚动位置或布局缓存。恢复的 bash 卡片仅显示保存的退出状态，不伪造耗时。未完成展示事件显示 `Previous request was interrupted.`，不加入模型上下文。行模式不重印旧回答。恢复 ID 与首次创建 ID 分别通过 stderr / TUI Note 提示 `Resumed session: <ID>`、`Session: <ID>`；stdout 仍只有模型回答。
+
+“最新”按文件修改时间选择，时间相同按 ID 字典序降序；只查看恢复不会提高排序，不按项目过滤。session 文件必须是普通文件，不跟随符号链接；进程持有排他锁，另一进程恢复同一 ID 会报 `session is already in use`。最新文件损坏或已锁时直接报错，不换另一个文件。
+
+首个 checkpoint、用户原生输入、每个完整模型/工具批次及设置更改均同步落盘；流式展示事件不逐 token fsync。原生历史与展示日志分离，Responses item ID、encrypted reasoning、call_id 及工具原始结果均保留。完整工具批次在下一次请求前提交；网络错误不撤销已执行工具。写入失败锁存首次 `persisting session` 错误，当前已接受工具批次仍执行完毕，停止后续 HTTP；`/new` 或重启后才可重新发送。模型/思考级别设置写入失败保留旧内存选择。
+
+仅允许忽略末尾未换行的残缺记录；恢复时提示，首次真正追加前持锁截去残尾。完整坏行、未知版本/记录、ID 不符或协议不符均报错，不覆盖旧日志。正常退出和完整批次可恢复；强杀期间的未完成回答不提交到模型历史，工具副作用不提供事务、回滚或 exactly-once 保证。
+
+`/new` 保持当前模型和思考级别，清空原生历史并释放旧日志锁，旧文件保留；下次真实模型请求才创建新 ID。
 
 ## Skill 支持
 
@@ -151,7 +178,7 @@ TUI 输入 `/skills` 打开全局管理面板：↑/↓ 选择、Space 勾选、
 - Tools execute serially; dependencies within a batch such as write → read become visible in order. The complete model output is saved first, then tool results are appended one by one with matching call IDs; a tool failure never skips the remaining calls in the batch.
 - `read_max_bytes`、`read_max_lines`、`bash_timeout_seconds` 均要求正整数，启动时读取并固定；`/model`、`/new` 不重新读取或放宽这些限制。
 - Each user task allows at most `max_model_requests` (default 20) model requests. The final batch at the limit still executes and returns into in-memory history before the limit error is raised; no next request is sent and no completion is claimed. Each new task restarts the count.
-- The full in-memory session is kept, with no persistence or context trimming. Network/protocol errors do not roll back real file changes and never retry automatically; previously completed history is kept.
+- The full native session is kept without context trimming and persisted as JSONL after an actual model request attempt. Network/protocol errors do not roll back real file changes and never retry automatically; previously completed history and tool results remain recoverable. See session recovery below.
 - `/model` selects only from the fully validated startup catalog; it neither reloads nor writes configuration. Selecting the current reference is a no-op with confirmation. Failed resolution/client initialization/history conversion preserves the current model and history. Switching does not probe HTTP, execute tools, retry, or fall back; service compatibility is checked by the next actual request.
 - Switching preserves user/assistant text, system instructions, tool-call IDs/arguments, and tool results. Completion-to-Completion keeps native messages; Responses within the same configured provider keeps native output, including encrypted reasoning. Cross-protocol or cross-provider Responses switching converts readable history and strips provider item IDs, replay metadata, and opaque encrypted reasoning. Readable reasoning summaries/content become assistant text; interleaved Responses assistant messages/calls are batched for Completion. Unsupported non-text or unknown history aborts the switch rather than losing records. Encrypted vendor state is not portable.
 
@@ -163,6 +190,11 @@ TUI 输入 `/skills` 打开全局管理面板：↑/↓ 选择、Space 勾选、
 - **`completion`:** sends `model`, `messages`, function `tools`, `tool_choice: auto`, and `stream: true`. Chunks use the SDK schema (`id`, `object`, `created`, `model`, indexed choices); only choice index 0 is consumed, with usage-only empty choices ignored. An actual assistant role and a `stop` or `tool_calls` finish reason are required. Tool fragments are accumulated by index and validated only after the stream ends without error. Truncation, filtering, and EOF before finish are failures. The SDK consumes `[DONE]` internally; a legal finish plus clean stream termination is accepted even if the server omitted `[DONE]`. `/new` keeps only the system message.
 
 Both APIs validate the entire batch before saving assistant output or executing tools: only function calls with non-blank IDs and names are accepted, and call IDs cannot repeat within a batch. A bad batch never executes even valid writes from that response. Neither readable text nor calls is a protocol error. All text parts are concatenated even in tool turns; content takes priority over refusal. Final Responses text may add a missing suffix, but conflicting streamed non-blank content fails the turn before tool execution. A broken stream retains visible partial text, marks the TUI entry failed, and reports a redacted error without committing incomplete assistant/tool history; the submitted user message and earlier completed tools remain. Tool arguments decode at execution time per tool type. Legacy Chat `function_call` 和托管工具仍不支持；Chat 额外读取 choice 0 的 `delta.reasoning_content` 或 `delta.reasoning` 字符串，仅用于显示，不写入回答正文。 Errors never dump provider messages, response bodies, or keys.
+
+### Responses 故障排查
+
+- 部分模型始终启用思考，不接受 `reasoning.effort: "none"`。旧配置 `"think_level": "default"` 在当前版本是 `none` 的别名，**不是服务端默认值**。若服务端因此拒绝请求，在交互模式执行 `/effort low` 后重新提交任务；启动默认值在 `~/.pp/agent/settings.jsonc` 中改为 `"think_level": "low"`，或选择服务端支持的其他档位。已恢复的 session 保留其保存的档位，需要执行 `/effort low`；仅修改启动设置不会覆盖已恢复的档位。
+- 流式终止错误区分 `response.failed`、`response.incomplete` 与 `error`，仅展示白名单内的错误码／未完成原因；服务端原始 message、param、未知 code/reason 均不回显。`invalid_request` 提示检查模型支持的思考档位和请求参数；`max_output_tokens` 表示输出截断，`content_filter` 表示内容过滤。失败不自动重试、不降级协议、不提交未完成的回答，也不执行该批次工具。
 
 ## Verification
 
@@ -179,8 +211,12 @@ With `"edit":"hashline"`, after reading `1:a430d84680aabd0b|hello`:
 ```
 
 ```sh
+cargo test --locked --test cli_agent session:: -- --nocapture
+cargo test --locked --test cli_agent tui_session_ -- --nocapture
 cargo test --locked slash_
 cargo test --locked model_switch
+cargo test --locked llm::
+cargo test --locked --test cli_agent default_reasoning_rejection_allows_manual_effort_recovery_without_committing_failure
 cargo test --locked streaming_ -- --nocapture
 cargo test --locked replace_ -- --nocapture
 cargo test --locked --test cli_agent edit_mode_survives_model_switch -- --nocapture
@@ -219,7 +255,13 @@ Slash/model regressions exercise local commands without HTTP, alias routing and 
 
 A standalone Python standard-library fixture also exercised the actual binary through Completion A → Responses B → Completion A. All three requests carried the expected model/authorization and complete prior dialogue; slash commands made no requests. Stdout was exactly `alpha`, `alpha via b`, and `alpha via a`, one per line, exit code 0; both configuration files were byte-identical afterward. No external service or personal configuration was used.
 
-**Real vendor calls are unverified.** After filling in a real vendor configuration supporting function tools and selecting its API via `protocol`, 将全局配置复制到临时 HOME 中运行（配置文件仅从 HOME 下的 `.pp/agent/` 读取）：
+Session 自动化验证已在 macOS arm64 通过：13 项 session 行为测试、3 项专用 session PTY 测试，全套 228 项测试，以及构建、全目标 Clippy（`-D warnings`）和格式检查。覆盖原工作目录、保存的 edit/read/bash 限制优先级、完整原生上下文、损坏/残尾/锁/符号链接边界，以及真实文件大小限制注入的持久化失败。Linux 尚未实机验证。
+
+日期时间格式 ID 已通过独立 CLI 冒烟：临时 HOME 与本地 SSE 服务下分别设置 `TZ=UTC`、`TZ=Asia/Shanghai`，确认 ID 时间与 checkpoint 创建时间一致、文件名与记录 ID 一致，并可用完整 ID 执行 `-r`（无 HTTP）和 `-c`（继续原会话）。
+
+Session recovery was independently smoke-tested against a disposable Python standard-library SSE fixture and the built `target/debug/pp`, using isolated HOME, project A, and launch directory B. For both protocols: empty startup left no sessions directory; `-p` returned `ack smoke-marker` and an ID; `-r` in a real 100×30 PTY showed saved dialogue without HTTP, then retained it on new input; `-c` sent the exact fully reconstructed native request without a keypress or extra user item. A new write tool created its proof file only in A, not B. JSONL first/final records parsed successfully, all successful process exits were 0, and termios/alternate-screen/paste/cursor restoration was observed. Responses preserved the opaque reasoning field and item ID. A separate restored start-only event rendered `Previous request was interrupted.` with zero HTTP. Temporary fixture files were removed; no real HOME or provider was accessed.
+
+当前配置的 `glm-5.3-flash` 已通过真实 Responses CLI 冒烟：`think_level: low`、临时 HOME 和工作目录、无工具调用，回答 `OK`、退出码 0；同一服务端明确拒绝 `none`。这不代表其他模型、档位或真实工具调用已验证。After filling in a real vendor configuration supporting function tools and selecting its API via `protocol`, 将全局配置复制到临时 HOME 中运行（配置文件仅从 HOME 下的 `.pp/agent/` 读取）：
 
 ```sh
 BIN="$PWD/target/debug/pp"

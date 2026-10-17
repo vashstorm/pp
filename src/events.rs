@@ -1,9 +1,14 @@
-#[derive(Clone, Copy, Debug)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum OutputStream {
     Stdout,
     Stderr,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum AgentEvent {
     AssistantStarted,
     ThinkingDelta {

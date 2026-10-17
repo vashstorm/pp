@@ -46,6 +46,7 @@ pub(crate) fn run(
     agent: Result<Agent>,
     cwd: &Path,
     skills: crate::skills::SharedSkills,
+    auto_continue: bool,
 ) -> Result<()> {
     // Construct before try_init so partially initialized terminals are restored too.
     let guard = TerminalGuard;
@@ -53,6 +54,10 @@ pub(crate) fn run(
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)
         .context("enabling terminal input modes")?;
     let mut app = App::new_with_skills(agent, skills)?;
+    if auto_continue && matches!(app.state, State::Ready) {
+        // -c: replay is already loaded; resend the saved request without touching the editor.
+        app.send(WorkerCommand::Continue, State::Running);
+    }
     let mut workspace = WorkspaceStatus::new(cwd)?;
     let mut dirty = true;
     loop {
@@ -94,6 +99,7 @@ impl Drop for TerminalGuard {
 
 enum WorkerCommand {
     Run(String),
+    Continue,
     Reset,
     SwitchModel(String),
     SetThinkLevel(ThinkLevel),
@@ -101,9 +107,10 @@ enum WorkerCommand {
 enum WorkerEvent {
     Progress(AgentEvent),
     Completed(Result<()>),
+    SessionStarted(String),
     Reset,
     ModelSwitched(Result<ModelChoice>),
-    ThinkLevelSet(ThinkLevel),
+    ThinkLevelSet(Result<ThinkLevel>),
 }
 
 #[derive(Clone, Copy)]
@@ -206,6 +213,9 @@ impl App {
         };
         match agent {
             Ok(mut agent) => {
+                // 取 replay 与 session ID 必须发生在 agent move 进 worker 之前。
+                let session_id = agent.session_id().map(str::to_owned);
+                let replay = agent.take_replay();
                 app.choices = agent.model_choices();
                 app.current_model = Some(agent.current_model().clone());
                 app.think_level = agent.think_level();
@@ -216,21 +226,23 @@ impl App {
                     .name("pp-agent".into())
                     .spawn(move || {
                         while let Ok(command) = receiver.recv() {
+                            let mut emit = |event| {
+                                let _ = sender.send(WorkerEvent::Progress(event));
+                            };
                             let event = match command {
                                 WorkerCommand::Run(prompt) => {
-                                    let mut emit = |event| {
-                                        let _ = sender.send(WorkerEvent::Progress(event));
-                                    };
                                     WorkerEvent::Completed(agent.run(&prompt, &mut emit))
+                                }
+                                WorkerCommand::Continue => {
+                                    WorkerEvent::Completed(agent.continue_session(&mut emit))
                                 }
                                 WorkerCommand::Reset => {
                                     agent.reset();
                                     WorkerEvent::Reset
                                 }
-                                WorkerCommand::SetThinkLevel(level) => {
-                                    agent.set_think_level(level);
-                                    WorkerEvent::ThinkLevelSet(agent.think_level())
-                                }
+                                WorkerCommand::SetThinkLevel(level) => WorkerEvent::ThinkLevelSet(
+                                    agent.set_think_level(level).map(|()| agent.think_level()),
+                                ),
                                 WorkerCommand::SwitchModel(reference) => {
                                     WorkerEvent::ModelSwitched(
                                         agent
@@ -239,6 +251,12 @@ impl App {
                                     )
                                 }
                             };
+                            // Report new IDs even on task failure, before Completed.
+                            if let Some(id) = agent.take_session_notice()
+                                && sender.send(WorkerEvent::SessionStarted(id)).is_err()
+                            {
+                                break;
+                            }
                             if sender.send(event).is_err() {
                                 break;
                             }
@@ -248,6 +266,11 @@ impl App {
                 app.commands = Some(commands);
                 app.events = Some(events);
                 app.state = State::Ready;
+                if let Some(id) = session_id {
+                    app.conversation.replay(replay, &mut app.input_history);
+                    app.show_welcome = false;
+                    app.append("Note", &format!("Resumed session: {id}"));
+                }
             }
             Err(error) => {
                 let error = format!("{error:#}");
@@ -316,6 +339,10 @@ impl App {
                     self.conversation.progress(event);
                     changed = true;
                 }
+                Ok(WorkerEvent::SessionStarted(id)) => {
+                    self.append("Note", &format!("Session: {id}"));
+                    changed = true;
+                }
                 Ok(WorkerEvent::Completed(result)) => {
                     if let Err(error) = result {
                         self.conversation.fail(&format!("{error:#}"));
@@ -348,9 +375,14 @@ impl App {
                     self.busy_notice = false;
                     changed = true;
                 }
-                Ok(WorkerEvent::ThinkLevelSet(level)) => {
-                    self.think_level = level;
-                    self.append("Note", &format!("Thinking level: {}", level.label()));
+                Ok(WorkerEvent::ThinkLevelSet(result)) => {
+                    match result {
+                        Ok(level) => {
+                            self.think_level = level;
+                            self.append("Note", &format!("Thinking level: {}", level.label()));
+                        }
+                        Err(error) => self.append("Error", &format!("{error:#}")),
+                    }
                     self.state = State::Ready;
                     self.busy_notice = false;
                     changed = true;
@@ -1514,7 +1546,7 @@ mod tests {
             app.handle(Event::Key(repeat), &mut dirty);
             app.handle(Event::Key(key), &mut dirty);
             assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
-            events.send(WorkerEvent::ThinkLevelSet(level)).unwrap();
+            events.send(WorkerEvent::ThinkLevelSet(Ok(level))).unwrap();
             app.receive();
             assert_eq!(app.think_level, level);
             assert!(draw(&mut app, 100, 30).contains(level.label()));
@@ -1722,7 +1754,7 @@ mod tests {
         assert!(app.menu.is_none());
         app.input.insert_str("新草稿");
         events
-            .send(WorkerEvent::ThinkLevelSet(ThinkLevel::Max))
+            .send(WorkerEvent::ThinkLevelSet(Ok(ThinkLevel::Max)))
             .unwrap();
         app.receive();
         assert_eq!(app.think_level, ThinkLevel::Max);

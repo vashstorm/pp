@@ -1,4 +1,5 @@
 mod history;
+pub(crate) mod persistence;
 
 use crate::{
     config::{EditMode, ModelCatalog, ModelChoice, ThinkLevel},
@@ -22,8 +23,12 @@ use async_openai::types::{
         ToolChoiceParam,
     },
 };
+use persistence::{Metadata, SessionJournal, SessionRef};
+use std::{cell::RefCell, path::PathBuf};
 
 // Keep each API's native history, including reasoning items required by Responses.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "protocol", content = "request", rename_all = "lowercase")]
 enum Session {
     Completion(Box<CreateChatCompletionRequest>),
     Response(Box<CreateResponse>),
@@ -38,6 +43,8 @@ pub(crate) struct Agent {
     current_model: ModelChoice,
     think_level: ThinkLevel,
     base_system: String,
+    journal: persistence::SessionJournal,
+    replay: Vec<persistence::ReplayRecord>,
 }
 
 impl Session {
@@ -109,7 +116,11 @@ impl Session {
 }
 
 impl Agent {
-    pub(crate) fn new(catalog: ModelCatalog, mut tools: Tools) -> Result<Self> {
+    pub(crate) fn new(
+        catalog: ModelCatalog,
+        mut tools: Tools,
+        sessions_dir: PathBuf,
+    ) -> Result<Self> {
         let config = catalog.resolve(catalog.default_reference())?;
         tools.limits = config.settings.tool_limits();
         let client = OpenAiClient::new(&config)?;
@@ -157,7 +168,62 @@ impl Agent {
             current_model,
             think_level,
             base_system: system,
+            journal: SessionJournal::new(sessions_dir),
+            replay: Vec::new(),
         })
+    }
+
+    pub(crate) fn restore(
+        catalog: ModelCatalog,
+        mut tools: Tools,
+        restored: persistence::RestoredSession,
+    ) -> Result<Self> {
+        let persistence::RestoredSession {
+            checkpoint,
+            journal,
+            replay,
+        } = restored;
+        let config = catalog
+            .resolve(&checkpoint.model_reference)
+            .map_err(|_| anyhow::anyhow!("saved session model is unavailable or has changed"))?;
+        let matches = match &checkpoint.session {
+            Session::Completion(request) => {
+                config.protocol == Protocol::Completion && config.model == request.model
+            }
+            Session::Response(request) => {
+                config.protocol == Protocol::Response
+                    && request.model.as_deref() == Some(config.model.as_str())
+            }
+        };
+        ensure!(matches, "saved session model is unavailable or has changed");
+        let client = OpenAiClient::new(&config)?;
+        tools.limits = checkpoint.tool_limits;
+        Ok(Self {
+            client,
+            tools,
+            session: checkpoint.session,
+            max_model_requests: config.settings.max_model_requests,
+            current_model: ModelChoice {
+                reference: checkpoint.model_reference,
+                model: config.model,
+                protocol: config.protocol,
+            },
+            catalog,
+            think_level: checkpoint.think_level,
+            base_system: checkpoint.base_system,
+            journal,
+            replay,
+        })
+    }
+
+    pub(crate) fn session_id(&self) -> Option<&str> {
+        self.journal.id()
+    }
+    pub(crate) fn take_session_notice(&mut self) -> Option<String> {
+        self.journal.take_notice()
+    }
+    pub(crate) fn take_replay(&mut self) -> Vec<persistence::ReplayRecord> {
+        std::mem::take(&mut self.replay)
     }
 
     #[cfg(test)]
@@ -165,7 +231,7 @@ impl Agent {
         self.tools.skills.clone()
     }
 
-    fn refresh_skills(&mut self) -> Result<()> {
+    fn refresh_skills(&mut self) -> Result<Option<String>> {
         let system = format!(
             "{}{}",
             self.base_system,
@@ -175,17 +241,26 @@ impl Agent {
                 .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
                 .summary()
         );
+        let unchanged = match &self.session {
+            Session::Completion(request) => {
+                matches!(request.messages.first(), Some(ChatCompletionRequestMessage::System(message)) if matches!(&message.content, async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(text) if text == &system))
+            }
+            Session::Response(request) => request.instructions.as_deref() == Some(system.as_str()),
+        };
+        if unchanged {
+            return Ok(None);
+        }
         match &mut self.session {
             Session::Completion(request) => {
                 if let Some(ChatCompletionRequestMessage::System(message)) =
                     request.messages.first_mut()
                 {
-                    message.content = system.into();
+                    message.content = system.clone().into();
                 }
             }
-            Session::Response(request) => request.instructions = Some(system),
+            Session::Response(request) => request.instructions = Some(system.clone()),
         }
-        Ok(())
+        Ok(Some(system))
     }
 
     pub(crate) fn model_choices(&self) -> Vec<ModelChoice> {
@@ -200,9 +275,11 @@ impl Agent {
         self.think_level
     }
 
-    pub(crate) fn set_think_level(&mut self, level: ThinkLevel) {
+    pub(crate) fn set_think_level(&mut self, level: ThinkLevel) -> Result<()> {
+        self.journal.think(level)?;
         self.session.set_think_level(level);
         self.think_level = level;
+        Ok(())
     }
 
     pub(crate) fn switch_model(&mut self, reference: &str) -> Result<()> {
@@ -234,21 +311,50 @@ impl Agent {
             model: config.model.clone(),
             protocol: config.protocol,
         };
-        if let Some(session) = converted {
+        let metadata = Metadata {
+            cwd: self.tools.cwd(),
+            model_reference: &choice.reference,
+            think_level: self.think_level,
+            edit_mode: self.tools.edit_mode(),
+            tool_limits: self.tools.limits,
+            base_system: &self.base_system,
+        };
+        if let Some(mut session) = converted {
+            session.set_think_level(self.think_level);
+            self.journal.checkpoint(&metadata, (&session).into())?;
             self.session = session;
         } else {
             match &mut self.session {
-                Session::Completion(request) => request.model = config.model,
-                Session::Response(request) => request.model = Some(config.model),
+                Session::Completion(request) => {
+                    let old = std::mem::replace(&mut request.model, config.model);
+                    if let Err(error) = self
+                        .journal
+                        .checkpoint(&metadata, SessionRef::Completion(request))
+                    {
+                        request.model = old;
+                        return Err(error);
+                    }
+                }
+                Session::Response(request) => {
+                    let old = request.model.replace(config.model);
+                    if let Err(error) = self
+                        .journal
+                        .checkpoint(&metadata, SessionRef::Response(request))
+                    {
+                        request.model = old;
+                        return Err(error);
+                    }
+                }
             }
         }
         self.client = client;
         self.current_model = choice;
-        self.session.set_think_level(self.think_level);
         Ok(())
     }
 
     pub(crate) fn reset(&mut self) {
+        self.journal.reset();
+        self.replay.clear();
         match &mut self.session {
             Session::Completion(request) => request.messages.truncate(1),
             Session::Response(request) => response_input(request).clear(),
@@ -257,7 +363,7 @@ impl Agent {
 
     pub(crate) fn run(&mut self, prompt: &str, emit: &mut dyn FnMut(AgentEvent)) -> Result<()> {
         ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
-        self.refresh_skills()?;
+        let instructions = self.refresh_skills()?;
         match &mut self.session {
             Session::Completion(request) => request.messages.push(
                 ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
@@ -273,16 +379,65 @@ impl Agent {
                 }))
             }
         }
+        let result = self.run_loop(Some(prompt), instructions.as_deref(), emit);
+        self.finish_run(result)
+    }
+
+    pub(crate) fn continue_session(&mut self, emit: &mut dyn FnMut(AgentEvent)) -> Result<()> {
+        let result = self.run_loop(None, None, emit);
+        self.finish_run(result)
+    }
+
+    fn finish_run(&mut self, result: Result<()>) -> Result<()> {
+        if let Err(error) = &result {
+            self.journal.error(&format!("{error:#}"));
+        }
+        self.journal.check()?;
+        result
+    }
+
+    fn run_loop(
+        &mut self,
+        mut user: Option<&str>,
+        mut instructions: Option<&str>,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<()> {
+        let metadata = Metadata {
+            cwd: self.tools.cwd(),
+            model_reference: &self.current_model.reference,
+            think_level: self.think_level,
+            edit_mode: self.tools.edit_mode(),
+            tool_limits: self.tools.limits,
+            base_system: &self.base_system,
+        };
         for _ in 0..self.max_model_requests {
+            self.journal.check()?;
             emit(AgentEvent::AssistantStarted);
-            let finished = match &mut self.session {
-                Session::Completion(request) => {
-                    completion_turn(&self.client, &self.tools, request, emit)?
-                }
-                Session::Response(request) => {
-                    response_turn(&self.client, &self.tools, request, emit)?
-                }
+            let update = RequestUpdate {
+                user: user.take(),
+                instructions: instructions.take(),
             };
+            let finished = match &mut self.session {
+                Session::Completion(request) => completion_turn(
+                    &self.client,
+                    &self.tools,
+                    request,
+                    &mut self.journal,
+                    &metadata,
+                    update,
+                    emit,
+                )?,
+                Session::Response(request) => response_turn(
+                    &self.client,
+                    &self.tools,
+                    request,
+                    &mut self.journal,
+                    &metadata,
+                    update,
+                    emit,
+                )?,
+            };
+            self.journal.commit((&self.session).into())?;
             if finished {
                 return Ok(());
             }
@@ -291,13 +446,44 @@ impl Agent {
     }
 }
 
+struct RequestUpdate<'a> {
+    user: Option<&'a str>,
+    instructions: Option<&'a str>,
+}
+
 fn completion_turn(
     client: &OpenAiClient,
     tools: &Tools,
     request: &mut CreateChatCompletionRequest,
+    journal: &mut SessionJournal,
+    metadata: &Metadata<'_>,
+    update: RequestUpdate<'_>,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<bool> {
-    let response = client.complete(request, emit)?;
+    let response = {
+        let journal = RefCell::new(&mut *journal);
+        let mut sent = || {
+            let mut journal = journal.borrow_mut();
+            journal.sent(
+                metadata,
+                SessionRef::Completion(request),
+                update.user,
+                update.instructions,
+            )?;
+            journal.event(&AgentEvent::AssistantStarted);
+            journal.check()
+        };
+        let mut progress = |event| {
+            journal.borrow_mut().event(&event);
+            emit(event);
+        };
+        client.complete(request, &mut sent, &mut progress)?
+    };
+    let mut progress = |event| {
+        journal.event(&event);
+        emit(event);
+    };
+    let emit: &mut dyn FnMut(AgentEvent) = &mut progress;
     let text = match &response.content {
         Some(ChatCompletionRequestAssistantMessageContent::Text(text)) => text.clone(),
         _ => String::new(),
@@ -348,9 +534,35 @@ fn response_turn(
     client: &OpenAiClient,
     tools: &Tools,
     request: &mut CreateResponse,
+    journal: &mut SessionJournal,
+    metadata: &Metadata<'_>,
+    update: RequestUpdate<'_>,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<bool> {
-    let turn = client.respond(request, emit)?;
+    let turn = {
+        let journal = RefCell::new(&mut *journal);
+        let mut sent = || {
+            let mut journal = journal.borrow_mut();
+            journal.sent(
+                metadata,
+                SessionRef::Response(request),
+                update.user,
+                update.instructions,
+            )?;
+            journal.event(&AgentEvent::AssistantStarted);
+            journal.check()
+        };
+        let mut progress = |event| {
+            journal.borrow_mut().event(&event);
+            emit(event);
+        };
+        client.respond(request, &mut sent, &mut progress)?
+    };
+    let mut progress = |event| {
+        journal.event(&event);
+        emit(event);
+    };
+    let emit: &mut dyn FnMut(AgentEvent) = &mut progress;
     emit(AgentEvent::AssistantFinished { text: turn.text });
     let input = response_input(request);
     let start = input.len();
@@ -414,6 +626,7 @@ mod tests {
         let mut agent = Agent::new(
             catalog,
             Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
+            dir.path().join("sessions"),
         )
         .unwrap();
         let Session::Response(request) = &mut agent.session else {

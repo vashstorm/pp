@@ -9,7 +9,7 @@ use async_openai::types::{
     },
     responses::{
         OutputContent, OutputItem, OutputMessageContent, ReasoningItem, ReasoningItemContent,
-        ResponseStreamEvent, SummaryPart,
+        ResponseErrorCode, ResponseStreamEvent, SummaryPart,
     },
 };
 use serde::{Deserialize, Deserializer, de::Error};
@@ -164,6 +164,33 @@ impl ChatStream {
     }
 }
 
+// Only static allowlisted descriptions cross the provider-to-user trust boundary.
+// Never format provider messages, parameters, or unrecognized codes.
+fn response_error_description(code: &str) -> &'static str {
+    match code {
+        "invalid_request" => {
+            "invalid_request: check the model's reasoning.effort (try /effort low) and other request options"
+        }
+        "invalid_request_error" => {
+            "invalid_request_error: check the model's reasoning.effort (try /effort low) and other request options"
+        }
+        "server_error" => "server_error: provider could not complete the response",
+        "rate_limit_exceeded" => "rate_limit_exceeded: provider rate limit reached",
+        "invalid_prompt" => "invalid_prompt: provider rejected the prompt",
+        _ => "unrecognized error code",
+    }
+}
+
+fn response_failure_description(code: &ResponseErrorCode) -> &'static str {
+    match code {
+        ResponseErrorCode::ServerError => response_error_description("server_error"),
+        ResponseErrorCode::RateLimitExceeded => response_error_description("rate_limit_exceeded"),
+        ResponseErrorCode::InvalidPrompt => response_error_description("invalid_prompt"),
+        ResponseErrorCode::Other(code) => response_error_description(code),
+        _ => "unrecognized error code",
+    }
+}
+
 #[derive(Default)]
 struct Part {
     text: String,
@@ -236,10 +263,33 @@ impl ResponsesStream {
                 }
                 return Ok(Some(turn));
             }
-            ResponseStreamEvent::ResponseFailed(_)
-            | ResponseStreamEvent::ResponseIncomplete(_)
-            | ResponseStreamEvent::ResponseError(_) => {
-                bail!("Responses protocol: stream failed");
+            ResponseStreamEvent::ResponseFailed(event) => {
+                let detail = event
+                    .response
+                    .error
+                    .as_ref()
+                    .map(|error| response_failure_description(&error.code))
+                    .unwrap_or("no error details");
+                bail!("Responses protocol: response.failed ({detail})");
+            }
+            ResponseStreamEvent::ResponseIncomplete(event) => {
+                let detail = match event.response.incomplete_details.as_ref() {
+                    Some(details) => match details.reason.as_str() {
+                        "max_output_tokens" => "max_output_tokens: output token limit reached",
+                        "content_filter" => "content_filter: output blocked by content filtering",
+                        _ => "unrecognized incomplete reason",
+                    },
+                    None => "no incomplete details",
+                };
+                bail!("Responses protocol: response.incomplete ({detail})");
+            }
+            ResponseStreamEvent::ResponseError(event) => {
+                let detail = event
+                    .code
+                    .as_deref()
+                    .map(response_error_description)
+                    .unwrap_or("no error code");
+                bail!("Responses protocol: error event ({detail})");
             }
             ResponseStreamEvent::ResponseOutputTextDelta(event) => {
                 self.delta(
@@ -525,6 +575,18 @@ mod tests {
             "response":{"id":"fixture","object":"response","created_at":0,
                 "model":"fixture","status":"completed","output":output}
         }))
+    }
+
+    fn terminal_response(kind: &str, details: Value) -> ResponseStreamEvent {
+        let mut response = json!({
+            "id":"fixture", "object":"response", "created_at":0, "model":"fixture",
+            "status":kind.strip_prefix("response.").unwrap(), "output":[]
+        });
+        let Value::Object(details) = details else {
+            panic!("terminal response details must be an object");
+        };
+        response.as_object_mut().unwrap().extend(details);
+        event(json!({"type":kind,"sequence_number":100,"response":response}))
     }
 
     fn delta(output: u32, content: u32, value: &str) -> ResponseStreamEvent {
@@ -879,11 +941,202 @@ mod tests {
     }
 
     #[test]
-    fn streaming_responses_stream_errors_hide_provider_details() {
-        let mut stream = ResponsesStream::default();
-        let error = stream.push(event(json!({"type":"error","sequence_number":1,
-            "code":"private-provider-code","message":"private-provider-body fixture-key","param":null})),
-            &mut |_| {}).err().unwrap().to_string();
-        assert_eq!(error, "Responses protocol: stream failed");
+    fn streaming_responses_failure_codes_are_allowlisted_and_actionable() {
+        let private = "private-provider-body fixture-key https://private.invalid/\u{1b}[31m";
+        for kind in ["response.failed", "error"] {
+            for code in [
+                "invalid_request",
+                "invalid_request_error",
+                "server_error",
+                "rate_limit_exceeded",
+                "invalid_prompt",
+            ] {
+                let failure = if kind == "error" {
+                    event(json!({"type":kind,"sequence_number":1,
+                        "code":code,"message":private,"param":private}))
+                } else {
+                    terminal_response(
+                        kind,
+                        json!({"error":{
+                            "code":code,"message":private,"param":private
+                        }}),
+                    )
+                };
+                let error = ResponsesStream::default()
+                    .push(failure, &mut |_| panic!("failure must not emit output"))
+                    .err()
+                    .unwrap();
+                let diagnostic = format!("{error:#}\n{error:?}");
+                assert!(diagnostic.contains(if kind == "error" { "error event" } else { kind }));
+                assert!(diagnostic.contains(code));
+                if code.starts_with("invalid_request") {
+                    assert!(diagnostic.contains("reasoning.effort"));
+                    assert!(diagnostic.contains("/effort low"));
+                    assert!(diagnostic.contains("request options"));
+                }
+                for secret in ["private-provider-body", "fixture-key", "https://", "\u{1b}"] {
+                    assert!(!diagnostic.contains(secret));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_responses_unknown_and_missing_error_codes_still_fail_safely() {
+        for kind in ["response.failed", "error"] {
+            for code in [
+                Some("private-code fixture-key https://private.invalid/"),
+                Some("invalid_request\nprivate-suffix"),
+                Some("server_error-private-suffix"),
+                Some(""),
+                None,
+            ] {
+                let private = "private-message fixture-key https://private.invalid/";
+                let failure = if kind == "error" {
+                    event(json!({"type":kind,"sequence_number":1,
+                        "code":code,"message":private,"param":"private-param"}))
+                } else {
+                    let error = code.map(|code| json!({"code":code,"message":private}));
+                    terminal_response(kind, json!({"error":error}))
+                };
+                let error = ResponsesStream::default()
+                    .push(failure, &mut |_| panic!("failure must not emit output"))
+                    .err()
+                    .unwrap();
+                let diagnostic = format!("{error:#}\n{error:?}");
+                assert!(diagnostic.contains(if kind == "error" { "error event" } else { kind }));
+                for secret in [
+                    "private-code",
+                    "private-suffix",
+                    "private-message",
+                    "private-param",
+                    "fixture-key",
+                    "https://",
+                    "invalid_request",
+                    "server_error",
+                ] {
+                    assert!(!diagnostic.contains(secret));
+                }
+            }
+        }
+        for failure in [
+            terminal_response("response.failed", json!({})),
+            event(json!({"type":"error","sequence_number":1,"message":"private-message"})),
+        ] {
+            assert!(
+                ResponsesStream::default()
+                    .push(failure, &mut |_| {})
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_responses_incomplete_reasons_are_allowlisted() {
+        for reason in [
+            "max_output_tokens",
+            "content_filter",
+            "private-reason fixture-key https://private.invalid/",
+            "max_output_tokens\nprivate-suffix",
+            "content_filter-private-suffix",
+            "",
+        ] {
+            let error = ResponsesStream::default()
+                .push(
+                    terminal_response(
+                        "response.incomplete",
+                        json!({
+                            "incomplete_details":{"reason":reason},
+                            "error":{"code":"private-code","message":"private-message"}
+                        }),
+                    ),
+                    &mut |_| panic!("incomplete response must not emit output"),
+                )
+                .err()
+                .unwrap();
+            let diagnostic = format!("{error:#}\n{error:?}");
+            assert!(diagnostic.contains("response.incomplete"));
+            if matches!(reason, "max_output_tokens" | "content_filter") {
+                assert!(diagnostic.contains(reason));
+            } else {
+                assert!(!diagnostic.contains("max_output_tokens"));
+                assert!(!diagnostic.contains("content_filter"));
+                if !reason.is_empty() {
+                    assert!(!diagnostic.contains(reason));
+                }
+            }
+            for secret in ["private-", "fixture-key", "https://"] {
+                assert!(!diagnostic.contains(secret));
+            }
+        }
+        for details in [json!({}), json!({"incomplete_details":null})] {
+            let error = ResponsesStream::default()
+                .push(
+                    terminal_response("response.incomplete", details),
+                    &mut |_| {},
+                )
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("response.incomplete"));
+        }
+    }
+
+    #[test]
+    fn streaming_responses_terminal_failures_keep_partial_display_without_committing_output() {
+        let output = json!([
+            message("m", json!([text("partial-uncommitted-tail")])),
+            {"type":"function_call","id":"fc","call_id":"call","name":"write","arguments":"{}"}
+        ]);
+        for (failure, label) in [
+            (
+                terminal_response("response.failed", json!({"output":output})),
+                "response.failed",
+            ),
+            (
+                terminal_response("response.incomplete", json!({"output":output})),
+                "response.incomplete",
+            ),
+            (
+                event(json!({"type":"error","sequence_number":3,"message":"private-message"})),
+                "error event",
+            ),
+        ] {
+            let mut stream = ResponsesStream::default();
+            let mut visible = Vec::new();
+            assert!(
+                stream
+                    .push(delta(0, 0, "partial"), &mut capture(&mut visible))
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                stream
+                    .push(
+                        event(json!({
+                            "type":"response.output_item.done","sequence_number":2,"output_index":1,
+                            "item":{"type":"function_call","id":"fc","call_id":"call",
+                                "name":"write","arguments":"{}"}
+                        })),
+                        &mut capture(&mut visible)
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+            // No ResponseTurn is returned, so neither history nor tools can consume
+            // the terminal payload or the previously streamed function call.
+            let error = stream
+                .push(failure, &mut capture(&mut visible))
+                .err()
+                .unwrap();
+            let diagnostic = error.to_string();
+            assert!(diagnostic.contains(label));
+            for other in ["response.failed", "response.incomplete", "error event"] {
+                if other != label {
+                    assert!(!diagnostic.contains(other));
+                }
+            }
+            assert!(!diagnostic.contains("private-message"));
+            assert_eq!(visible, [("partial".into(), false)]);
+        }
     }
 }

@@ -285,7 +285,14 @@ fn text_output(text: &str) -> Value {
 fn assert_clean_pipes(output: &Output) {
     assert!(!output.stdout.contains(&0x1b), "ANSI on stdout");
     assert!(!output.stderr.contains(&0x1b), "ANSI on stderr");
-    for secret in ["private-provider-body", "fixture-key"] {
+    for secret in [
+        "private-provider-body",
+        "fixture-key",
+        "private-provider-code",
+        "private-provider-reason",
+        "private-provider-param",
+        "https://private-provider.invalid",
+    ] {
         assert!(!String::from_utf8_lossy(&output.stdout).contains(secret));
         assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
     }
@@ -697,35 +704,45 @@ fn streaming_invalid_later_call_rejects_entire_batch_and_repl_history() {
 enum Broken {
     Eof,
     Malformed,
-    Error,
-    Failed,
-    Incomplete,
+    Error(&'static str),
+    Failed(&'static str),
+    Incomplete(&'static str),
 }
 
 fn break_stream(protocol: Protocol, stream: &mut SseReply, broken: Broken) {
     match (protocol, broken) {
         (_, Broken::Eof) => {}
         (_, Broken::Malformed) => stream.frame("{private-provider-body fixture-key invalid-json"),
-        (Protocol::Chat, Broken::Error) => stream.event(json!({"error":{
-            "message":"private-provider-body fixture-key","type":"server_error","code":"private-provider-body"
+        (Protocol::Chat, Broken::Error(code)) => stream.event(json!({"error":{
+            "message":"private-provider-body fixture-key","type":"server_error","code":code
         }})),
-        (Protocol::Chat, Broken::Failed) => stream.event(chat_chunk(json!({}), Some("content_filter"))),
-        (Protocol::Chat, Broken::Incomplete) => stream.event(chat_chunk(json!({}), Some("length"))),
-        (Protocol::Responses, Broken::Error) => stream.event(json!({
-            "type":"error","sequence_number":90,"code":"private-provider-body",
-            "message":"private-provider-body fixture-key","param":null
+        (Protocol::Chat, Broken::Failed(reason) | Broken::Incomplete(reason)) => {
+            stream.event(chat_chunk(json!({}), Some(reason)));
+        }
+        (Protocol::Responses, Broken::Error(code)) => stream.event(json!({
+            "type":"error","sequence_number":90,"code":code,
+            "message":"private-provider-body fixture-key https://private-provider.invalid",
+            "param":"private-provider-param"
         })),
-        (Protocol::Responses, Broken::Failed | Broken::Incomplete) => {
-            let failed = matches!(broken, Broken::Failed);
+        (Protocol::Responses, Broken::Failed(code)) => {
             let mut response = response_body(json!([]));
-            response["status"] = json!(if failed { "failed" } else { "incomplete" });
-            if failed {
-                response["error"] = json!({"code":"server_error","message":"private-provider-body fixture-key"});
-            } else {
-                response["incomplete_details"] = json!({"reason":"max_output_tokens"});
-            }
-            stream.event(json!({"type":if failed { "response.failed" } else { "response.incomplete" },
-                "sequence_number":90,"response":response}));
+            response["status"] = json!("failed");
+            response["error"] = json!({
+                "code":code,
+                "message":"private-provider-body fixture-key https://private-provider.invalid",
+                "param":"private-provider-param"
+            });
+            stream.event(json!({
+                "type":"response.failed","sequence_number":90,"response":response
+            }));
+        }
+        (Protocol::Responses, Broken::Incomplete(reason)) => {
+            let mut response = response_body(json!([]));
+            response["status"] = json!("incomplete");
+            response["incomplete_details"] = json!({"reason":reason});
+            stream.event(json!({
+                "type":"response.incomplete","sequence_number":90,"response":response
+            }));
         }
     }
 }
@@ -748,13 +765,35 @@ fn pending_write(protocol: Protocol, stream: &mut SseReply) {
 #[test]
 fn streaming_failures_keep_partial_redact_secrets_and_never_commit_or_retry() {
     for protocol in PROTOCOLS {
-        for broken in [
-            Broken::Eof,
-            Broken::Malformed,
-            Broken::Error,
-            Broken::Failed,
-            Broken::Incomplete,
-        ] {
+        let failures: &[Broken] = match protocol {
+            Protocol::Chat => &[
+                Broken::Eof,
+                Broken::Malformed,
+                Broken::Error("private-provider-code"),
+                Broken::Failed("content_filter"),
+                Broken::Incomplete("length"),
+            ],
+            Protocol::Responses => &[
+                Broken::Eof,
+                Broken::Malformed,
+                Broken::Error("invalid_request"),
+                Broken::Error("invalid_request_error"),
+                Broken::Error("server_error"),
+                Broken::Error("rate_limit_exceeded"),
+                Broken::Error("invalid_prompt"),
+                Broken::Error("private-provider-code"),
+                Broken::Failed("invalid_request"),
+                Broken::Failed("invalid_request_error"),
+                Broken::Failed("server_error"),
+                Broken::Failed("rate_limit_exceeded"),
+                Broken::Failed("invalid_prompt"),
+                Broken::Failed("private-provider-code"),
+                Broken::Incomplete("max_output_tokens"),
+                Broken::Incomplete("content_filter"),
+                Broken::Incomplete("private-provider-reason"),
+            ],
+        };
+        for &broken in failures {
             for repl in [false, true] {
                 let server = server();
                 let dir = tempfile::tempdir().unwrap();
@@ -792,6 +831,25 @@ fn streaming_failures_keep_partial_redact_secrets_and_never_commit_or_retry() {
                     }
                 );
                 assert!(!output.stderr.is_empty(), "missing failure description");
+                if matches!(protocol, Protocol::Responses) {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let diagnostic = match broken {
+                        Broken::Error(code) => Some(("error", code)),
+                        Broken::Failed(code) => Some(("response.failed", code)),
+                        Broken::Incomplete(reason) => Some(("response.incomplete", reason)),
+                        Broken::Eof | Broken::Malformed => None,
+                    };
+                    if let Some((event, detail)) = diagnostic {
+                        assert!(stderr.contains(event), "{broken:?}: {stderr}");
+                        match detail {
+                            "private-provider-code" | "private-provider-reason" => {}
+                            _ => assert!(stderr.contains(detail), "{broken:?}: {stderr}"),
+                        }
+                        if matches!(detail, "invalid_request" | "invalid_request_error") {
+                            assert!(stderr.contains("/effort low"), "{broken:?}: {stderr}");
+                        }
+                    }
+                }
                 assert!(!dir.path().join("must-not-exist").exists());
                 assert!(!String::from_utf8_lossy(&output.stderr).contains("tool write: running"));
                 assert_clean_pipes(&output);
@@ -799,6 +857,59 @@ fn streaming_failures_keep_partial_redact_secrets_and_never_commit_or_retry() {
             }
         }
     }
+}
+
+#[test]
+fn default_reasoning_rejection_allows_manual_effort_recovery_without_committing_failure() {
+    let protocol = Protocol::Responses;
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let settings = r#"{"think_level":"default"}"#;
+    let mut cli = protocol.start_with_settings(&server, dir.path(), None, settings);
+    cli.input("original task\n");
+    let (request, body) = protocol.receive(&server);
+    super::think::assert_level(&body, "response", "default");
+    protocol.assert_only_users(&body, &["original task"]);
+    let mut stream = SseReply::new(request);
+    protocol.text(&mut stream, "failed-visible");
+    cli.wait_for(Pipe::Stdout, "failed-visible");
+    pending_write(protocol, &mut stream);
+    break_stream(protocol, &mut stream, Broken::Failed("invalid_request"));
+    stream.finish();
+
+    // The failed turn stays in this REPL, but neither an automatic retry nor
+    // the queued write may run while the user decides how to recover.
+    cli.wait_for(Pipe::Stderr, "invalid_request");
+    cli.wait_for(Pipe::Stderr, "/effort low");
+    cli.assert_running();
+    assert!(!dir.path().join("must-not-exist").exists());
+    assert!(!cli.text(Pipe::Stderr).contains("tool write: running"));
+    no_more(&server);
+
+    cli.input("/effort low\nrecover task\n");
+    let (request, body) = protocol.receive(&server);
+    super::think::assert_level(&body, "response", "low");
+    protocol.assert_only_users(&body, &["original task", "recover task"]);
+    assert!(!dir.path().join("must-not-exist").exists());
+    protocol.final_reply(request, "recovered");
+    cli.input("/quit\n");
+    let output = cli.finish();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"failed-visible\nrecovered\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("response.failed"));
+    assert!(stderr.contains("invalid_request"));
+    assert!(stderr.contains("reasoning.effort"));
+    assert!(stderr.contains("/effort low"));
+    assert!(!stderr.contains("tool write: running"));
+    assert!(!stderr.contains(&server.server_addr().to_string()));
+    assert!(!dir.path().join("must-not-exist").exists());
+    assert_eq!(
+        std::fs::read_to_string(config_path(dir.path(), "settings.jsonc")).unwrap(),
+        settings
+    );
+    assert_clean_pipes(&output);
+    no_more(&server);
 }
 
 #[test]

@@ -85,16 +85,18 @@ impl OpenAiClient {
     pub(crate) fn complete(
         &self,
         request: &CreateChatCompletionRequest,
+        on_request_sent: &mut dyn FnMut() -> Result<()>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<ChatCompletionRequestAssistantMessage> {
         self.runtime.block_on(async {
             // BYOT serializes a borrowed request before returning the stream.
-            let mut stream = self
+            let opened = self
                 .client
                 .chat()
                 .create_stream_byot::<_, ChatChunk>(request)
-                .await
-                .map_err(|error| redacted_error(error, "Chat Completions"))?;
+                .await;
+            on_request_sent()?;
+            let mut stream = opened.map_err(|error| redacted_error(error, "Chat Completions"))?;
             let mut output = ChatStream::default();
             while let Some(chunk) = stream.next().await {
                 output.push(
@@ -109,17 +111,19 @@ impl OpenAiClient {
     pub(crate) fn respond(
         &self,
         request: &CreateResponse,
+        on_request_sent: &mut dyn FnMut() -> Result<()>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<ResponseTurn> {
         self.runtime.block_on(async {
-            let mut stream = self
+            let opened = self
                 .client
                 .responses()
                 .create_stream_byot::<_, async_openai::types::responses::ResponseStreamEvent>(
                     request,
                 )
-                .await
-                .map_err(|error| redacted_error(error, "Responses"))?;
+                .await;
+            on_request_sent()?;
+            let mut stream = opened.map_err(|error| redacted_error(error, "Responses"))?;
             let mut output = ResponsesStream::default();
             while let Some(event) = stream.next().await {
                 if let Some(turn) = output.push(
@@ -347,7 +351,11 @@ mod tests {
                         .unwrap();
                 });
                 let error = client
-                    .complete(&CreateChatCompletionRequest::default(), &mut |_| {})
+                    .complete(
+                        &CreateChatCompletionRequest::default(),
+                        &mut || Ok(()),
+                        &mut |_| {},
+                    )
                     .err()
                     .unwrap()
                     .to_string();
