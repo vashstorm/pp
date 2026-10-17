@@ -152,11 +152,10 @@ struct App {
     commands: Option<Sender<WorkerCommand>>,
     events: Option<Receiver<WorkerEvent>>,
     unavailable: Option<String>,
-    busy_notice: bool,
-    worker_failed: bool,
     choices: Vec<ModelChoice>,
     current_model: Option<ModelChoice>,
     think_level: ThinkLevel,
+    quiet_think_level_change: bool,
     default_think_level: ThinkLevel,
     menu: Option<SelectionMenu<MenuAction>>,
     menu_dismissed: bool,
@@ -202,11 +201,10 @@ impl App {
             commands: None,
             events: None,
             unavailable: None,
-            busy_notice: false,
-            worker_failed: false,
             choices: Vec::new(),
             current_model: None,
             think_level: ThinkLevel::None,
+            quiet_think_level_change: false,
             default_think_level: ThinkLevel::default(),
             menu: None,
             menu_dismissed: false,
@@ -311,9 +309,7 @@ impl App {
         self.state = State::Unavailable;
         self.commands = None;
         self.events = None;
-        self.busy_notice = false;
         self.unavailable = Some(message.into());
-        self.worker_failed = true;
         self.conversation.fail(message);
     }
 
@@ -359,7 +355,6 @@ impl App {
                         self.conversation.fail(&format!("{error:#}"));
                     }
                     self.state = State::Ready;
-                    self.busy_notice = false;
                     changed = true;
                 }
                 Ok(WorkerEvent::Reset) => {
@@ -368,7 +363,6 @@ impl App {
                     self.append("Note", "Session reset.");
                     self.show_welcome = true;
                     self.state = State::Ready;
-                    self.busy_notice = false;
                     changed = true;
                 }
                 Ok(WorkerEvent::ModelSwitched(result)) => {
@@ -383,19 +377,20 @@ impl App {
                         Err(error) => self.append("Error", &format!("{error:#}")),
                     }
                     self.state = State::Ready;
-                    self.busy_notice = false;
                     changed = true;
                 }
                 Ok(WorkerEvent::ThinkLevelSet(result)) => {
+                    let quiet = std::mem::take(&mut self.quiet_think_level_change);
                     match result {
                         Ok(level) => {
                             self.think_level = level;
-                            self.append("Note", &format!("Thinking level: {}", level.label()));
+                            if !quiet {
+                                self.append("Note", &format!("Thinking level: {}", level.label()));
+                            }
                         }
                         Err(error) => self.append("Error", &format!("{error:#}")),
                     }
                     self.state = State::Ready;
-                    self.busy_notice = false;
                     changed = true;
                 }
                 Ok(WorkerEvent::DefaultThinkLevelSaved(result)) => {
@@ -412,7 +407,6 @@ impl App {
                         }
                     }
                     self.state = State::Ready;
-                    self.busy_notice = false;
                     changed = true;
                 }
                 Err(TryRecvError::Empty) => break,
@@ -581,7 +575,6 @@ impl App {
             .is_some_and(|sender| sender.send(command).is_ok())
         {
             self.state = state;
-            self.busy_notice = false;
             self.refresh_candidates(false);
             true
         } else {
@@ -607,7 +600,6 @@ impl App {
 
     fn shortcut_ready(&mut self) -> bool {
         if self.skills_pending {
-            self.busy_notice = true;
             return false;
         }
         match self.state {
@@ -618,10 +610,7 @@ impl App {
                 }
                 false
             }
-            _ => {
-                self.busy_notice = true;
-                false
-            }
+            _ => false,
         }
     }
 
@@ -701,7 +690,6 @@ impl App {
         }
         if let Some(Command::Skills(selection)) = command {
             if !matches!(self.state, State::Ready | State::Unavailable) {
-                self.busy_notice = true;
                 return false;
             }
             let request = match selection {
@@ -715,7 +703,7 @@ impl App {
             State::Running
             | State::Resetting
             | State::SwitchingModel
-            | State::SettingThinkLevel => self.busy_notice = true,
+            | State::SettingThinkLevel => {}
             State::Unavailable => {
                 if let Some(error) = self.unavailable.take() {
                     self.append("Error", &error);
@@ -856,11 +844,12 @@ impl App {
                         && self.menu.is_none()
                         && self.model_picker_draft.is_none()
                         && self.shortcut_ready()
-                    {
-                        self.send(
+                        && self.send(
                             WorkerCommand::SetThinkLevel(self.think_level.next()),
                             State::SettingThinkLevel,
-                        );
+                        )
+                    {
+                        self.quiet_think_level_change = true;
                     }
                     return false;
                 }
@@ -1082,29 +1071,8 @@ impl App {
     }
 
     fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
-        let (state, color) = match self.state {
-            State::Ready => ("", Color::DarkGray),
-            State::Running => ("running", Color::Yellow),
-            State::Resetting => ("resetting", Color::Yellow),
-            State::SwitchingModel => ("switching model", Color::Yellow),
-            State::SettingThinkLevel => ("setting thinking level", Color::Yellow),
-            State::Unavailable if self.worker_failed => ("execution unavailable", Color::Red),
-            State::Unavailable => ("config unavailable", Color::Red),
-        };
-        let notice = if self.busy_notice {
-            ", cannot send now"
-        } else {
-            ""
-        };
         // 上沿右半区为第二状态栏预留；未设置内容时保持横线。
         let left_width = area.width / 2;
-        if !state.is_empty() {
-            let state = Line::styled(format!(" {state}{notice} "), Style::default().fg(color));
-            let state_width = u16::try_from(state.width())
-                .unwrap_or(u16::MAX)
-                .min(left_width);
-            frame.render_widget(state, Rect::new(area.x, area.y, state_width, 1));
-        }
         if let Some(extra) = self
             .secondary_status
             .as_deref()
@@ -1580,13 +1548,13 @@ mod tests {
             KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
             KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
         ];
-        for (index, level) in [
-            ThinkLevel::Low,
-            ThinkLevel::Medium,
-            ThinkLevel::High,
-            ThinkLevel::Xhigh,
-            ThinkLevel::Max,
-            ThinkLevel::None,
+        for (index, (level, label)) in [
+            (ThinkLevel::Low, "low"),
+            (ThinkLevel::Medium, "med"),
+            (ThinkLevel::High, "hig"),
+            (ThinkLevel::Xhigh, "xhi"),
+            (ThinkLevel::Max, "max"),
+            (ThinkLevel::None, "off"),
         ]
         .into_iter()
         .enumerate()
@@ -1606,7 +1574,15 @@ mod tests {
             events.send(WorkerEvent::ThinkLevelSet(Ok(level))).unwrap();
             app.receive();
             assert_eq!(app.think_level, level);
-            assert!(draw(&mut app, 100, 30).contains(level.label()));
+            let screen = draw(&mut app, 100, 30);
+            assert!(
+                screen
+                    .lines()
+                    .last()
+                    .unwrap()
+                    .contains(&format!(" {label} ·"))
+            );
+            assert!(!screen.contains("Thinking level:"));
             assert_eq!(app.input.lines(), &["已提交"]);
             assert_eq!(app.input.cursor(), cursor);
             assert_eq!(app.history_index, Some(0));
@@ -1897,13 +1873,24 @@ mod tests {
         let mut app = app();
         app.state = State::Ready;
         app.input.insert_str("draft-中\nsecond line");
+        for state in [
+            State::Ready,
+            State::Running,
+            State::Resetting,
+            State::SwitchingModel,
+            State::SettingThinkLevel,
+            State::Unavailable,
+        ] {
+            app.state = state;
+            let screen = draw(&mut app, 100, 30);
+            assert_eq!(screen.lines().nth(25).unwrap(), "─".repeat(100));
+        }
         let screen = draw(&mut app, 100, 30);
         let lines: Vec<_> = screen.lines().collect();
-        assert_eq!(lines[25], "─".repeat(100));
         assert!(lines[26].starts_with("❯ draft-中"));
         assert!(lines[27].starts_with("  second line"));
         assert_eq!(lines[28], "─".repeat(100));
-        assert!(lines[29].starts_with(" \u{ec19} — · \u{f0aa3} no think · \u{f07c} fixture-cwd"));
+        assert!(lines[29].starts_with(" \u{ec19} — · \u{f0766} off · \u{f07c} fixture-cwd"));
 
         app.secondary_status = Some("extra info".into());
         let screen = draw(&mut app, 100, 30);
@@ -2128,7 +2115,6 @@ mod tests {
         app.input.insert_str("/skills");
         app.state = State::Running;
         assert!(!app.submit());
-        assert!(app.busy_notice);
         assert!(!app.skills_pending);
         assert_eq!(app.input.lines(), &["/skills"]);
     }

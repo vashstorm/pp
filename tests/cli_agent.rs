@@ -2490,13 +2490,13 @@ mod tui {
         }
 
         fn ready_effort(&mut self, expected: &str) {
-            let glyph = match expected {
-                "no think" => "○",
-                "low" => "◔",
-                "medium" => "◑",
-                "high" => "◕",
-                "xhigh" => "●",
-                "max" => "\u{f06d}",
+            let (glyph, label) = match expected {
+                "no think" => ("\u{f0766}", "off"),
+                "low" => ("\u{f0a9f}", "low"),
+                "medium" => ("\u{f0aa1}", "med"),
+                "high" => ("\u{f0aa3}", "hig"),
+                "xhigh" => ("\u{f0aa5}", "xhi"),
+                "max" => ("\u{f0238}", "max"),
                 _ => panic!("未知的思考级别：{expected}"),
             };
             self.wait_for("空闲输入框和思考级别", |screen| {
@@ -2505,7 +2505,7 @@ mod tui {
                         .contents()
                         .lines()
                         .last()
-                        .is_some_and(|line| line.contains(&format!("{glyph} {expected} ·")))
+                        .is_some_and(|line| line.contains(&format!("{glyph} {label} ·")))
             });
         }
 
@@ -2906,6 +2906,7 @@ mod tui {
             pty.input("草稿🙂\x1b[Z");
             pty.ready_effort("xhigh");
             pty.draft("草稿🙂");
+            assert!(!pty.parser.screen().contents().contains("Thinking level:"));
 
             pty.input("\x10");
             pty.text("fixture/secondary");
@@ -2939,17 +2940,20 @@ mod tui {
                 "user",
                 "草稿🙂",
             );
-            pty.input("busy-中\x1b[Z\x10");
+            pty.input("busy-中\x1b[Z\x10!");
+            pty.draft("busy-中!");
             pty.wait_for("快捷键在忙碌时拒绝执行", |screen| {
-                screen.contents().contains("cannot send now")
+                input_is_ready(screen)
                     && screen
                         .contents()
                         .lines()
                         .last()
-                        .is_some_and(|line| line.contains("xhigh"))
+                        .is_some_and(|line| line.contains(" xhi ·"))
             });
+            pty.input("\x7f");
             pty.draft("busy-中");
             super::think::finish_request(request, protocol);
+            pty.text("Session:");
             pty.ready_effort("xhigh");
             pty.input("\x01\x0b\x1b[Z");
             pty.ready_effort("max");
@@ -2987,22 +2991,25 @@ mod tui {
                     .contents()
                     .lines()
                     .last()
-                    .is_some_and(|line| line.contains("xhigh"))
+                    .is_some_and(|line| line.contains(" xhi ·"))
         });
         pty.input("first\r");
         let (request, body) = pty.request(&server);
         assert_eq!(body["reasoning_effort"], "xhigh");
-        pty.input("/effort low\r");
+        pty.input("/effort low\r!");
+        pty.draft("/effort low!");
+        pty.input("\x7f");
         pty.draft("/effort low");
         pty.wait_for("忙碌时保留原级别", |screen| {
-            screen.contents().contains("cannot send now")
+            input_is_ready(screen)
                 && screen
                     .contents()
                     .lines()
                     .last()
-                    .is_some_and(|line| line.contains("xhigh"))
+                    .is_some_and(|line| line.contains(" xhi ·"))
         });
         final_reply(request, "first answer");
+        pty.text("first answer");
         pty.ready();
         pty.draft("/effort low");
         pty.input("\r");
@@ -3018,6 +3025,7 @@ mod tui {
         let (request, body) = pty.request(&server);
         assert_eq!(body["reasoning_effort"], "low");
         final_reply(request, "second answer");
+        pty.text("second answer");
         pty.ready();
         for level in ["low", "medium", "high", "xhigh", "max"] {
             pty.input(&format!("/effort {level}\r"));
@@ -3053,7 +3061,7 @@ mod tui {
             "ordered model, thinking, directory and Git footer",
             |screen| {
                 screen.contents().lines().last().is_some_and(|line| {
-                    line.starts_with(" \u{ec19} fixture-model · ○ no think · \u{f07c} ")
+                    line.starts_with(" \u{ec19} fixture-model · \u{f0766} off · \u{f07c} ")
                         && line.ends_with("\u{f126} fixture *1")
                 })
             },
@@ -3214,6 +3222,7 @@ mod tui {
                 ]))}));
             }
             stream.finish();
+            pty.text("inspected");
             pty.ready();
             pty.input("run bash\r");
             let (request, _) = receive_at(&server, path);
@@ -3291,7 +3300,7 @@ mod tui {
             streaming_delta(&mut stream, protocol, "first-中");
             pty.text("first-中");
             pty.drain();
-            assert!(pty.parser.screen().contents().contains("running"));
+            assert!(input_is_ready(pty.parser.screen()));
             assert!(!pty.parser.screen().contents().contains("-last"));
             assert_eq!(
                 background_color(pty.parser.screen(), "live task"),
@@ -3369,7 +3378,7 @@ mod tui {
                 body("out-first") && body("err-first")
             });
             pty.drain();
-            assert!(pty.parser.screen().contents().contains("running"));
+            assert!(input_is_ready(pty.parser.screen()));
             assert!(!pty.parser.screen().contents().contains("out-firstout-last"));
             let bash_color = label_color(pty.parser.screen(), "$ printf");
             assert_eq!(bash_color, vt100::Color::Rgb(190, 188, 139));
@@ -3668,10 +3677,11 @@ mod tui {
         pty.ready_model("vendor-a");
         pty.input("hold busy history\r");
         let (pending, first) = pty.request(&a);
-        pty.text("running");
-        pty.input("/model gateway/team/secondary\r");
-        pty.text("cannot send now");
+        pty.input("/model gateway/team/secondary\r!");
+        pty.draft("/model gateway/team/secondary!");
+        pty.input("\x7f");
         pty.draft("/model gateway/team/secondary");
+        assert!(input_is_ready(pty.parser.screen()));
         no_more(&a);
         no_more(&b);
         no_more(&bad);
@@ -3743,7 +3753,6 @@ mod tui {
             "user",
             "exit with model request pending",
         );
-        pty.text("running");
         pty.input("/quit\r");
         pty.finish();
         drop(pending);
@@ -3870,10 +3879,11 @@ mod tui {
         assert_eq!(body["model"], "fixture-model");
         assert_eq!(body["messages"][1]["content"], "line one\nline two");
 
-        pty.text("running");
-        pty.input("next draft\r");
-        pty.text("next draft");
-        pty.text("cannot send now");
+        pty.input("next draft\r!");
+        pty.draft("next draft!");
+        pty.input("\x7f");
+        pty.draft("next draft");
+        assert!(input_is_ready(pty.parser.screen()));
         no_more(&server);
         pty.input("\x1b[200~\r\npasted line\x1b[201~");
         pty.text("pasted line");
@@ -4010,7 +4020,6 @@ mod tui {
         pty.input("wait-for-reply\r");
         let (pending, body) = pty.request(&server);
         assert_eq!(body["messages"][1]["content"], "wait-for-reply");
-        pty.text("running");
         // Hold the actual HTTP request open: Ctrl-C must not join its worker.
         pty.input("\x03");
         pty.finish();
@@ -4103,9 +4112,11 @@ mod tui {
                 "/v1/chat/completions"
             };
             let (request, _) = receive_at(&server, path);
-            pty.input("/skills\r");
-            pty.text("cannot send now");
+            pty.input("/skills\r!");
+            pty.draft("/skills!");
+            pty.input("\x7f");
             pty.draft("/skills");
+            assert!(input_is_ready(pty.parser.screen()));
             super::skills::send_load(request, protocol, "中文技能");
             let (request, body) = receive_at(&server, path);
             assert!(body.to_string().contains("secret-skill-line-19"));
@@ -4463,7 +4474,7 @@ mod tui {
         pty.text("persisting session");
         pty.ready();
         pty.ready_effort("no think");
-        assert!(pty.parser.screen().contents().contains("no think"));
+        assert!(pty.parser.screen().contents().contains(" off ·"));
         // 设置写失败不触发任何模型请求。
         no_more(&server);
         pty.input("/quit\r");

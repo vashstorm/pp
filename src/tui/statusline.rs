@@ -18,7 +18,7 @@ const DIRECTORY: Color = Color::Rgb(36, 174, 181);
 const GIT: Color = Color::Rgb(204, 167, 72);
 // 与 omp 的 Nerd Font 图标一致；图标后保留一列空白，容纳字形右侧伸展。
 const MODEL_ICON: &str = "\u{ec19}";
-const THINK_ICON: &str = "○";
+const THINK_ICON: &str = "\u{f0766}";
 const DIRECTORY_ICON: &str = "\u{f07c}";
 const GIT_ICON: &str = "\u{f126}";
 const ICON_WIDTH: usize = 2;
@@ -205,14 +205,22 @@ pub(super) fn primary(
         .git
         .as_ref()
         .map(|git| compact(&git.label(), (width / 4).saturating_sub(ICON_WIDTH), false));
-    let think = think_level.label();
+    let think = match think_level {
+        ThinkLevel::None => "off",
+        ThinkLevel::Low => "low",
+        ThinkLevel::Medium => "med",
+        ThinkLevel::High => "hig",
+        ThinkLevel::Xhigh => "xhi",
+        ThinkLevel::Max => "max",
+    };
+    // 思考级别统一使用 Nerd Font Material Design 图标，避免混用普通圆形字形导致宽度不一。
     let think_icon = match think_level {
         ThinkLevel::None => THINK_ICON,
-        ThinkLevel::Low => "◔",
-        ThinkLevel::Medium => "◑",
-        ThinkLevel::High => "◕",
-        ThinkLevel::Xhigh => "●",
-        ThinkLevel::Max => "\u{f06d}",
+        ThinkLevel::Low => "\u{f0a9f}",
+        ThinkLevel::Medium => "\u{f0aa1}",
+        ThinkLevel::High => "\u{f0aa3}",
+        ThinkLevel::Xhigh => "\u{f0aa5}",
+        ThinkLevel::Max => "\u{f0238}",
     };
     let reserved = Line::from(model.as_str()).width()
         + Line::from(think).width()
@@ -233,7 +241,7 @@ pub(super) fn primary(
         icon(MODEL_ICON, MODEL),
         Span::styled(model, Style::default().fg(MODEL)),
         separator(),
-        // no think 表示显式发送 none，请求关闭思考。
+        // off 表示显式发送 none，请求关闭思考。
         icon(think_icon, MODEL),
         Span::styled(think, Style::default().fg(MODEL)),
         separator(),
@@ -254,20 +262,18 @@ mod tests {
 
     #[test]
     fn primary_displays_selected_think_level() {
-        for (level, glyph) in [
-            (ThinkLevel::None, THINK_ICON),
-            (ThinkLevel::Low, "◔"),
-            (ThinkLevel::Medium, "◑"),
-            (ThinkLevel::High, "◕"),
-            (ThinkLevel::Xhigh, "●"),
-            (ThinkLevel::Max, "\u{f06d}"),
+        for (level, glyph, label) in [
+            (ThinkLevel::None, THINK_ICON, "off"),
+            (ThinkLevel::Low, "\u{f0a9f}", "low"),
+            (ThinkLevel::Medium, "\u{f0aa1}", "med"),
+            (ThinkLevel::High, "\u{f0aa3}", "hig"),
+            (ThinkLevel::Xhigh, "\u{f0aa5}", "xhi"),
+            (ThinkLevel::Max, "\u{f0238}", "max"),
         ] {
             let line = primary(None, level, &StatusContext::default(), 100);
-            assert!(
-                line.to_string()
-                    .contains(&format!("{glyph} {} ·", level.label()))
-            );
+            assert!(line.to_string().contains(&format!("{glyph} {label} ·")));
             assert_eq!(line.spans[4].width(), ICON_WIDTH);
+            assert_eq!(line.spans[5].width(), 3);
         }
     }
 
@@ -286,7 +292,7 @@ mod tests {
             let line = primary(Some(&model), ThinkLevel::None, &context, width);
             assert!(line.width() <= usize::from(width));
             let text = line.to_string();
-            assert!(text.starts_with(" \u{ec19} fixture-model · ○ no think · \u{f07c} …"));
+            assert!(text.starts_with(" \u{ec19} fixture-model · \u{f0766} off · \u{f07c} …"));
             assert!(text.ends_with("project · \u{f126} main ?1"));
             for glyph in [MODEL_ICON, THINK_ICON, DIRECTORY_ICON, GIT_ICON] {
                 let icon = line
