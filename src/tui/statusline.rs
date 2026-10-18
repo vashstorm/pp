@@ -1,7 +1,7 @@
 use crate::config::{ModelChoice, ThinkLevel};
 use anyhow::{Context, Result};
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 use std::{
@@ -13,7 +13,7 @@ use std::{
 };
 
 pub(super) const ACCENT: Color = Color::Rgb(127, 166, 106);
-const MODEL: Color = Color::Rgb(190, 133, 169);
+const MODEL: Color = Color::Rgb(223, 167, 209);
 const DIRECTORY: Color = Color::Rgb(36, 174, 181);
 const GIT: Color = Color::Rgb(204, 167, 72);
 // 与 omp 的 Nerd Font 图标一致；图标后保留一列空白，容纳字形右侧伸展。
@@ -236,14 +236,15 @@ pub(super) fn primary(
     let workdir = compact(&context.workdir, width.saturating_sub(reserved), true);
     let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
     let icon = |glyph, color| Span::styled(format!("{glyph} "), Style::default().fg(color));
+    let model_text_style = Style::default().fg(MODEL).add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::raw(" "),
         icon(MODEL_ICON, MODEL),
-        Span::styled(model, Style::default().fg(MODEL)),
+        Span::styled(model, model_text_style),
         separator(),
         // off 表示显式发送 none，请求关闭思考。
         icon(think_icon, MODEL),
-        Span::styled(think, Style::default().fg(MODEL)),
+        Span::styled(think, model_text_style),
         separator(),
         icon(DIRECTORY_ICON, DIRECTORY),
         Span::styled(workdir, Style::default().fg(DIRECTORY)),
