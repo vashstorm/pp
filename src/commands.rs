@@ -1,5 +1,8 @@
+mod templates;
+pub(crate) use templates::{FileCommand, FileCommands};
+
 use crate::config::ThinkLevel;
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 
 pub(crate) struct CommandSpec {
     pub(crate) name: &'static str,
@@ -55,9 +58,10 @@ pub(crate) enum Command<'a> {
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
     Skills(Option<(&'a str, bool)>),
+    Prompt(String),
 }
 
-pub(crate) fn parse(input: &str) -> Result<Option<Command<'_>>> {
+pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<Command<'a>>> {
     let input = input.trim();
     if !input.starts_with('/') || input.contains(['\n', '\r']) {
         return Ok(None);
@@ -98,7 +102,19 @@ pub(crate) fn parse(input: &str) -> Result<Option<Command<'_>>> {
                     .transpose()?,
             )));
         }
-        _ => bail!("unknown command; use /help"),
+        _ => {
+            let file: &FileCommand = files
+                .entries
+                .iter()
+                .find(|file| file.name == name)
+                .context("unknown command; use /help")?;
+            let prompt = file.expand(argument);
+            ensure!(
+                !prompt.trim().is_empty(),
+                "command expands to an empty prompt"
+            );
+            return Ok(Some(Command::Prompt(prompt)));
+        }
     };
     let spec = COMMANDS
         .iter()
@@ -108,10 +124,16 @@ pub(crate) fn parse(input: &str) -> Result<Option<Command<'_>>> {
     Ok(Some(command))
 }
 
-pub(crate) fn help() -> String {
+pub(crate) fn help(files: &FileCommands) -> String {
     COMMANDS
         .iter()
         .map(|spec| format!("{} — {}", spec.usage, spec.description))
+        .chain(
+            files
+                .entries
+                .iter()
+                .map(|file| format!("{} [arguments] — {}", file.name, file.description)),
+        )
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -132,7 +154,10 @@ mod tests {
                 Command::Model(Some("gateway/team/model with spaces")),
             ),
         ] {
-            assert_eq!(parse(input).unwrap(), Some(expected));
+            assert_eq!(
+                parse(input, &FileCommands::default()).unwrap(),
+                Some(expected)
+            );
         }
     }
 
@@ -140,13 +165,17 @@ mod tests {
     fn slash_unknown_and_extra_arguments_are_local_errors() {
         for input in ["/", "/bogus", "/Help", "/modelx"] {
             assert_eq!(
-                parse(input).unwrap_err().to_string(),
+                parse(input, &FileCommands::default())
+                    .unwrap_err()
+                    .to_string(),
                 "unknown command; use /help"
             );
         }
         for command in ["/help", "/new", "/quit"] {
             assert_eq!(
-                parse(&format!("{command} extra")).unwrap_err().to_string(),
+                parse(&format!("{command} extra"), &FileCommands::default())
+                    .unwrap_err()
+                    .to_string(),
                 format!("usage: {command}")
             );
         }
@@ -162,18 +191,24 @@ mod tests {
             "/help\r\ncode",
             "text /quit",
         ] {
-            assert_eq!(parse(input).unwrap(), None);
+            assert_eq!(parse(input, &FileCommands::default()).unwrap(), None);
         }
     }
 
     #[test]
     fn think_commands_validate_levels_locally() {
-        assert_eq!(parse("/think").unwrap(), Some(Command::Think(None)));
-        assert_eq!(parse("/effort ").unwrap(), Some(Command::Think(None)));
+        assert_eq!(
+            parse("/think", &FileCommands::default()).unwrap(),
+            Some(Command::Think(None))
+        );
+        assert_eq!(
+            parse("/effort ", &FileCommands::default()).unwrap(),
+            Some(Command::Think(None))
+        );
         for name in ["/effort", "/think"] {
             for level in ["none", "default", "low", "medium", "high", "xhigh", "max"] {
                 assert_eq!(
-                    parse(&format!(" {name} {level} ")).unwrap(),
+                    parse(&format!(" {name} {level} "), &FileCommands::default()).unwrap(),
                     Some(Command::Think(Some(level.parse().unwrap())))
                 );
             }
@@ -186,7 +221,7 @@ mod tests {
             "/effort HIGH",
             "/effort high extra",
         ] {
-            assert!(parse(input).is_err());
+            assert!(parse(input, &FileCommands::default()).is_err());
         }
     }
 }

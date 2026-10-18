@@ -49,6 +49,7 @@ pub(crate) fn run(
     agent: Result<Agent>,
     cwd: &Path,
     skills: crate::skills::SharedSkills,
+    file_commands: commands::FileCommands,
     auto_continue: bool,
 ) -> Result<()> {
     // Construct before try_init so partially initialized terminals are restored too.
@@ -56,7 +57,7 @@ pub(crate) fn run(
     let mut terminal = ratatui::try_init().context("initializing terminal")?;
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)
         .context("enabling terminal input modes")?;
-    let mut app = App::new_with_skills(agent, skills)?;
+    let mut app = App::new_with_skills(agent, skills, file_commands)?;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c: replay is already loaded; resend the saved request without touching the editor.
         app.send(WorkerCommand::Continue, State::Running);
@@ -133,6 +134,7 @@ enum State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MenuAction {
     Command(usize),
+    FileCommand(usize),
     Model(usize),
     Effort(ThinkLevel),
 }
@@ -168,6 +170,16 @@ struct App {
     skill_worker: skills::Worker,
     skill_panel: Option<skills::Panel>,
     skills_pending: bool,
+    file_commands: commands::FileCommands,
+}
+
+// 合并启动弹窗摘要：保留最高严重程度，摘要始终显示在既有提示之前。
+fn merge_startup_notice(startup_notice: &mut Option<(Level, String)>, summary: String) {
+    *startup_notice = Some(match startup_notice.take() {
+        None => (Level::Important, summary),
+        Some((Level::Error, message)) => (Level::Error, format!("{summary}\n{message}")),
+        Some((_, message)) => (Level::Important, format!("{summary}\n{message}")),
+    });
 }
 
 fn editor() -> TextArea<'static> {
@@ -185,10 +197,14 @@ impl App {
             .as_ref()
             .map(|agent| agent.skills())
             .unwrap_or_else(|_| crate::skills::Skills::default().shared());
-        Self::new_with_skills(agent, skills)
+        Self::new_with_skills(agent, skills, commands::FileCommands::default())
     }
 
-    fn new_with_skills(agent: Result<Agent>, skills: crate::skills::SharedSkills) -> Result<Self> {
+    fn new_with_skills(
+        agent: Result<Agent>,
+        skills: crate::skills::SharedSkills,
+        file_commands: commands::FileCommands,
+    ) -> Result<Self> {
         let diagnostics = skills
             .lock()
             .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
@@ -217,6 +233,7 @@ impl App {
             skill_worker: skills::Worker::new(skills)?,
             skill_panel: None,
             skills_pending: false,
+            file_commands,
         };
         let mut startup_notice = None;
         match agent {
@@ -299,21 +316,22 @@ impl App {
             }
         }
         if !diagnostics.is_empty() {
-            let summary = format!(
-                "Skill scan issues: {}. Use /skills for details.",
-                diagnostics.len()
-            );
-            startup_notice = Some(match startup_notice {
-                Some((level, message)) => (
-                    if level == Level::Error {
-                        level
-                    } else {
-                        Level::Important
-                    },
-                    format!("{summary}\n{message}"),
+            merge_startup_notice(
+                &mut startup_notice,
+                format!(
+                    "Skill scan issues: {}. Use /skills for details.",
+                    diagnostics.len()
                 ),
-                None => (Level::Important, summary),
-            });
+            );
+        }
+        if !app.file_commands.diagnostics.is_empty() {
+            merge_startup_notice(
+                &mut startup_notice,
+                format!(
+                    "Command scan issues: {}. Use /help for details.",
+                    app.file_commands.diagnostics.len()
+                ),
+            );
         }
         if let Some((level, message)) = startup_notice {
             app.notify(level, message);
@@ -539,6 +557,20 @@ impl App {
                     icon: Some(spec.icon),
                     current: false,
                 })
+                .chain(
+                    self.file_commands
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, command)| command.name.starts_with(input.trim()))
+                        .map(|(index, command)| MenuItem {
+                            value: MenuAction::FileCommand(index),
+                            label: command.name.trim_start_matches('/').into(),
+                            description: command.description.clone(),
+                            icon: None,
+                            current: false,
+                        }),
+                )
                 .collect(),
             _ => Vec::new(),
         };
@@ -623,7 +655,16 @@ impl App {
     }
 
     fn show_help(&mut self) {
-        self.append("Help", &commands::help());
+        self.append("Help", &commands::help(&self.file_commands));
+        if !self.file_commands.diagnostics.is_empty() {
+            self.append(
+                "Help",
+                &format!(
+                    "Command load issues:\n{}",
+                    self.file_commands.diagnostics.join("\n")
+                ),
+            );
+        }
         self.append("Tips", SHORTCUTS);
         self.append("Help", WARNING);
     }
@@ -697,7 +738,7 @@ impl App {
         if prompt.trim().is_empty() {
             return false;
         }
-        let command = match commands::parse(&prompt) {
+        let command = match commands::parse(&prompt, &self.file_commands) {
             Ok(command) => command,
             Err(error) => {
                 self.notify(Level::Error, format!("{error:#}"));
@@ -767,6 +808,13 @@ impl App {
                         self.clear_input();
                     }
                 }
+                Some(Command::Prompt(expanded)) => {
+                    // 历史记录保存原始 slash 输入；回显与实际发送的都是展开后的正文。
+                    if self.send_submission(WorkerCommand::Run(expanded.clone()), State::Running) {
+                        self.append("You", &expanded);
+                        self.clear_input();
+                    }
+                }
                 Some(Command::Help | Command::Quit | Command::Skills(_)) => unreachable!(),
             },
         }
@@ -791,6 +839,13 @@ impl App {
             MenuAction::Command(index) => {
                 self.input = editor();
                 self.input.insert_str(COMMANDS[index].name);
+                self.refresh_candidates(true);
+                return confirm && self.submit();
+            }
+            MenuAction::FileCommand(index) => {
+                self.input = editor();
+                self.input
+                    .insert_str(self.file_commands.entries[index].name.as_str());
                 self.refresh_candidates(true);
                 return confirm && self.submit();
             }
@@ -2071,9 +2126,12 @@ mod tests {
             "second diagnostic".into(),
         ];
         let shared = registry.shared();
-        let mut app =
-            App::new_with_skills(Err(anyhow::anyhow!("fixture unavailable")), shared.clone())
-                .unwrap();
+        let mut app = App::new_with_skills(
+            Err(anyhow::anyhow!("fixture unavailable")),
+            shared.clone(),
+            commands::FileCommands::default(),
+        )
+        .unwrap();
         // 配置错误与 skill 诊断合并到同一个启动弹窗。
         app.show_welcome = true;
         assert_notification(&mut app, Color::Rgb(224, 108, 117));
@@ -2091,6 +2149,109 @@ mod tests {
             .tick(Instant::now() + Duration::from_millis(10000));
         app.skill_panel = None;
         assert!(!draw(&mut app, 100, 30).contains("Skill scan issues"));
+    }
+
+    fn file_commands_app(files: commands::FileCommands) -> (App, mpsc::Receiver<WorkerCommand>) {
+        let shared = crate::skills::Skills::default().shared();
+        let mut app =
+            App::new_with_skills(Err(anyhow::anyhow!("fixture unavailable")), shared, files)
+                .unwrap();
+        app.notifications = Notifications::default();
+        let (sender, requests) = mpsc::channel();
+        app.commands = Some(sender);
+        app.state = State::Ready;
+        (app, requests)
+    }
+
+    fn review_files() -> commands::FileCommands {
+        commands::FileCommands {
+            entries: vec![commands::FileCommand {
+                name: "/review".into(),
+                description: "Review source".into(),
+                content: "Review $1 now.".into(),
+            }],
+            diagnostics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn file_command_menu_completes_name_and_submits_expanded_prompt() {
+        let (mut app, requests) = file_commands_app(review_files());
+        let mut dirty = false;
+        // 斜杠菜单在内置命令后链接用户命令，且显示加载的 description。
+        app.handle(Event::Paste("/rev".into()), &mut dirty);
+        assert_eq!(menu_values(&app), vec![MenuAction::FileCommand(0)]);
+        assert!(draw(&mut app, 100, 30).contains("Review source"));
+        // Tab 只补全名字，不展开也不发送。
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(app.input.lines(), &["/review"]);
+        assert!(requests.try_recv().is_err());
+        // 参数不打开第二种菜单。
+        app.handle(Event::Paste(" auth".into()), &mut dirty);
+        assert!(app.menu.is_none());
+        // Enter 发送展开后的正文并回显；历史保存原始 slash 输入。
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::Run(text)) if text == "Review auth now."
+        ));
+        assert!(app.input.is_empty());
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("Review auth now."));
+        assert!(!screen.contains("/review auth"));
+        app.handle(key(KeyCode::Up), &mut dirty);
+        assert_eq!(app.input.lines(), &["/review auth"]);
+        app.input = editor();
+        app.refresh_candidates(true);
+        // 忙碌与配置不可用时不发送、不回显、不清草稿。
+        for state in [State::Running, State::Unavailable] {
+            app.state = state;
+            app.handle(Event::Paste("/review later".into()), &mut dirty);
+            app.handle(key(KeyCode::Enter), &mut dirty);
+            assert!(requests.try_recv().is_err());
+            assert_eq!(app.input.lines(), &["/review later"]);
+            app.input = editor();
+            app.refresh_candidates(true);
+        }
+    }
+
+    #[test]
+    fn file_command_esc_keeps_draft_and_startup_notice_keeps_error_level() {
+        let (mut app, _requests) = file_commands_app(review_files());
+        let mut dirty = false;
+        app.handle(Event::Paste("/rev".into()), &mut dirty);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.menu.is_none());
+        assert_eq!(app.input.lines(), &["/rev"]);
+
+        // 命令诊断与配置错误合并进同一个启动弹窗，并保留 Error 严重级别。
+        let mut files = review_files();
+        files.diagnostics = vec![
+            "commands/broken.md: Invalid command metadata".into(),
+            "commands/dup.md: duplicate command name: /dup".into(),
+        ];
+        let shared = crate::skills::Skills::default().shared();
+        let mut app =
+            App::new_with_skills(Err(anyhow::anyhow!("fixture unavailable")), shared, files)
+                .unwrap();
+        app.show_welcome = true;
+        assert_notification(&mut app, Color::Rgb(224, 108, 117));
+        let screen = draw(&mut app, 100, 30).replace(' ', "");
+        assert!(screen.contains("Commandscanissues:2.Use/helpfordetails."));
+        // /help 附加用户命令说明与完整命令诊断。
+        app.notifications = Notifications::default();
+        app.state = State::Ready;
+        app.show_help();
+        let buffer = draw_buffer(&mut app, 100, 30);
+        let mut scrollback = Vec::new();
+        app.conversation
+            .write_scrollback(&mut scrollback, &buffer)
+            .unwrap();
+        let text = String::from_utf8_lossy(&scrollback);
+        assert!(text.contains("Review source"));
+        assert!(text.contains("Command load issues:"));
+        assert!(text.contains("commands/broken.md: Invalid command metadata"));
+        assert!(text.contains("commands/dup.md: duplicate command name: /dup"));
     }
 
     #[test]

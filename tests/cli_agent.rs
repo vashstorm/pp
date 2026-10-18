@@ -16,6 +16,15 @@ fn config_path(home: &std::path::Path, name: &str) -> std::path::PathBuf {
     dir.join(name)
 }
 
+// A user Markdown command under the isolated HOME's commands directory.
+fn install_command(home: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+    let dir = config_path(home, "commands");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
 struct Cli(Option<Child>);
 impl Cli {
     fn start_with(
@@ -1156,6 +1165,125 @@ fn slash_single_prompt_is_an_ordinary_model_task() {
     assert!(output.status.success());
     assert_eq!(output.stdout, b"ordinary slash prompt answer\n");
     assert!(!String::from_utf8_lossy(&output.stderr).contains("Current model:"));
+    no_more(&server);
+}
+
+#[test]
+fn slash_file_command_expands_prompt() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    install_command(
+        dir.path(),
+        "review.md",
+        "---\ndescription: Review source\n---\nReview $1. Focus: $@[2:].\n",
+    );
+    let mut cli = Cli::start(&server, dir.path(), None);
+    cli.input("/review auth \"error handling\" tests\n");
+    let (request, body) = receive(&server);
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    // The model receives the expanded template, exactly, including the
+    // trailing newline: not the slash text and not the frontmatter.
+    slash_assert_message(
+        &messages[1],
+        "user",
+        "Review auth. Focus: error handling tests.\n",
+    );
+    assert_ne!(messages[1]["content"], "/review auth");
+    final_reply(request, "review noted");
+    let output = cli.finish();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"review noted\n");
+    no_more(&server);
+}
+
+#[test]
+fn slash_file_command_help_and_errors_stay_local() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    install_command(
+        dir.path(),
+        "review.md",
+        "---\ndescription: Review source\n---\nReview $1. Focus: $@[2:].\n",
+    );
+    // A blank body and a built-in name conflict are excluded from the menu
+    // and dispatch, but only produce local diagnostics.
+    install_command(
+        dir.path(),
+        "blank.md",
+        "---\ndescription: Nothing here\n---\n\n",
+    );
+    install_command(
+        dir.path(),
+        "model.md",
+        "---\ndescription: Shadows a built-in\n---\nNever loaded.\n",
+    );
+    let mut cli = Cli::start(&server, dir.path(), None);
+    cli.input("/help\n/bogus\n/help extra\n/blank\n");
+    // Help and local errors never reach the model.
+    no_more(&server);
+    cli.input("/review auth\n");
+    let (request, body) = receive(&server);
+    let messages = body["messages"].as_array().unwrap();
+    // The earlier errors leave no residue in the request history.
+    assert_eq!(messages.len(), 2);
+    slash_assert_message(&messages[1], "user", "Review auth. Focus: .\n");
+    final_reply(request, "review ok");
+    cli.input("/quit\n");
+    let output = cli.finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"review ok\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("/review [arguments] — Review source"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("/blank [arguments]"), "{stderr}");
+    assert!(stderr.contains("unknown command; use /help"), "{stderr}");
+    assert!(stderr.contains("usage: /help"), "{stderr}");
+    assert!(
+        stderr.contains("command body must not be blank"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("command name conflicts with a built-in: /model"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("command: "), "{stderr}");
+    no_more(&server);
+}
+
+#[test]
+fn slash_single_prompt_with_file_commands_stays_literal() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    install_command(
+        dir.path(),
+        "review.md",
+        "---\ndescription: Review source\n---\nReview $1. Focus: $@[2:].\n",
+    );
+    // Even a broken template stays silent: -p never scans the directory.
+    install_command(
+        dir.path(),
+        "blank.md",
+        "---\ndescription: Nothing here\n---\n\n",
+    );
+    let cli = Cli::start(&server, dir.path(), Some("/review auth"));
+    let (request, body) = receive(&server);
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    slash_assert_message(&messages[1], "user", "/review auth");
+    final_reply(request, "literal prompt answer");
+    let output = cli.finish();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"literal prompt answer\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("command:"), "{stderr}");
+    assert!(!stderr.contains("Review source"), "{stderr}");
     no_more(&server);
 }
 
@@ -3926,6 +4054,115 @@ mod tui {
         pty.finish();
         no_more(&a);
         no_more(&b);
+    }
+
+    #[test]
+    fn tui_slash_file_command_menu_and_submission() {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        install_command(
+            dir.path(),
+            "review.md",
+            "---\ndescription: Review source\n---\nReview $1. Focus: $@[2:].\n",
+        );
+        install_command(
+            dir.path(),
+            "deploy.md",
+            "---\ndescription: Deploy checklist\n---\nDeploy with care.\n",
+        );
+        let mut pty = Pty::start(&server, dir.path());
+        pty.ready();
+
+        // Typing a prefix lists the file command with its description.
+        pty.input("/rev");
+        pty.wait_for("file command candidate with description", |screen| {
+            let text = screen.contents();
+            text.contains("review") && text.contains("Review source")
+        });
+        // Tab completes the name only; nothing is sent.
+        pty.input("\t");
+        pty.draft("/review");
+        no_more(&server);
+        // Adding an argument dismisses the menu; no parameter menu appears.
+        pty.input(" auth \"error handling\" tests");
+        pty.wait_for("argument dismisses the file command menu", |screen| {
+            !screen.contents().contains("Review source")
+        });
+        pty.input("\r");
+        let (request, body) = pty.request(&server);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        slash_assert_message(
+            &messages[1],
+            "user",
+            "Review auth. Focus: error handling tests.\n",
+        );
+        // The transcript echoes the expanded prompt, not the slash input.
+        pty.text("Review auth. Focus: error handling tests.");
+
+        // While the reply is pending a second command is neither sent nor
+        // echoed, and the draft survives.
+        pty.input("/review pending\r");
+        pty.draft("/review pending");
+        no_more(&server);
+        final_reply(request, "review done");
+        pty.text("review done");
+        pty.ready();
+        // Once idle the preserved draft submits normally.
+        pty.input("\r");
+        let (request, body) = pty.request(&server);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 4);
+        slash_assert_message(
+            &messages[1],
+            "user",
+            "Review auth. Focus: error handling tests.\n",
+        );
+        slash_assert_message(&messages[2], "assistant", "review done");
+        slash_assert_message(&messages[3], "user", "Review pending. Focus: .\n");
+        final_reply(request, "pending done");
+        pty.text("pending done");
+        pty.ready();
+
+        // Input history recalls the original slash text, not the expansion.
+        pty.input("\x1b[A");
+        pty.draft("/review pending");
+        pty.input("\x1b[A");
+        pty.draft("/review auth \"error handling\" tests");
+        pty.input("\x01\x0b");
+        pty.draft("");
+
+        // Enter on the menu of an argument-less template submits directly.
+        pty.input("/dep");
+        pty.wait_for("second file command candidate", |screen| {
+            let text = screen.contents();
+            text.contains("deploy") && text.contains("Deploy checklist")
+        });
+        pty.input("\r");
+        let (request, body) = pty.request(&server);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 6);
+        slash_assert_message(&messages[5], "user", "Deploy with care.\n");
+        final_reply(request, "deploy done");
+        pty.text("deploy done");
+        pty.ready();
+
+        // Esc cancels the menu and keeps the draft, without sending.
+        pty.input("/rev");
+        pty.wait_for("file command menu reopened", |screen| {
+            screen.contents().contains("Review source")
+        });
+        pty.input("\x1b");
+        pty.wait_for("Esc dismisses the file command menu", |screen| {
+            !screen.contents().contains("Review source")
+        });
+        pty.draft("/rev");
+        no_more(&server);
+        pty.input("\x7f\x7f\x7f\x7f");
+        pty.draft("");
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
     }
 
     #[test]

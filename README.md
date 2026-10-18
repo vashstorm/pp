@@ -154,11 +154,33 @@ cargo test --locked --test cli_agent mcp_ -- --test-threads=1
 - bash 使用暗色圆角边框卡片：顶部为 `$ command`，`Output` 横线分隔命令和灰色输出，底部显示耗时与退出码；运行中显示 running，失败保留错误和退出信息。超过 10 行时默认显示末尾 10 行及省略提示，Ctrl+O 展开或收起最近一次 bash 的完整输出，不改变输入草稿；退出时完整输出写入终端滚动历史。think 默认以无标题、无边框的灰色文本显示在独立暗色背景上，与最终回答分开。是否返回可读思考取决于服务端和模型；`/effort` 仍只控制思考级别。行模式和单次任务将思考文本写入 stderr，stdout 保持为回答正文，均不添加 ANSI 控制序列。Responses 摘要使用 [官方流式事件](https://developers.openai.com/api/reference/resources/responses/streaming-events)。
 - Mouse wheel scrolls the transcript by three visual lines per event; PgUp/PgDn scroll by a page. Both work without moving the input cursor or changing the draft, even with the pointer over the input box. Output follows the bottom by default; scrolling up leaves follow mode, so incoming chunks do not steal the viewport. Scrolling down to the bottom restores following. Drafts stay editable and scrollable while running, but Enter does not queue or clear the draft; submission resumes after completion or an error.
 - 命令、模型和思考级别菜单展开时，滚轮仍滚动历史，不改变菜单选择。Clicks, drags, pointer movement, and horizontal wheel events are ignored. The TUI captures the mouse; any modifier needed to bypass capture for native terminal selection or scrollback depends on the terminal emulator.
-- Single-line slash commands share one registry with line mode: `/help` lists commands; `/model` opens a model picker; `/model provider/model` switches directly; `/new` resets history while keeping the selected model; `/quit` exits. Unknown names and extra arguments are local errors, never model tasks. Names are case-sensitive; leading/trailing whitespace is ignored, but the entire remaining `/model` argument preserves internal spaces and `/`. Multi-line slash drafts remain ordinary tasks.
+- Single-line slash commands share one registry with line mode: `/help` lists commands; `/model` opens a model picker; `/model provider/model` switches directly; `/new` resets history while keeping the selected model; `/quit` exits. Unknown names and invalid built-in arguments are local errors, never model tasks. Names are case-sensitive; leading/trailing whitespace is ignored, but the entire remaining `/model` argument preserves internal spaces and `/`. Multi-line slash drafts remain ordinary tasks.
 - 所有选择菜单（`/` 命令补全、`/model `、`/effort `）统一使用 `src/tui/menu.rs` 中的 `SelectionMenu` 组件，业务层只提供选项数据和确认动作。统一在输入框下方显示无外框的两列列表，左列占 46%、右列占 54%；选中行以黄色文字和箭头突出，其余说明与图标为灰色，当前值显示“（当前）”，输入框使用紫色分隔线。最多显示八行，窄屏截断说明，短屏随选择滚动。↑/↓、Home/End、PgUp/PgDn 导航且不循环，Tab 补全但不执行，Enter 确认一次；Esc 收起列表并保留草稿，下次编辑时重新显示。输入 `/` 展开命令菜单，继续输入会按命令前缀筛选，左列保留命令图标。
 - 输入 `/model `（命令后加空格）会在输入框下方展开与 `/effort ` 一致的两列菜单：左侧为 `provider/model`，右侧为实际模型名、`completion`/`response` 及“当前”标记，黄色文字和箭头突出选中项。`/model` 后按 Enter 也能展开，默认选中当前模型。按启动配置顺序排列，最多显示八行，长列表随选择滚动；↑/↓、Home/End、PgUp/PgDn 导航，Enter 确认，Esc 收起并保留输入。继续输入按引用或实际模型名的前缀筛选，Tab 补全引用但不切换；多行粘贴仍作为普通任务。后台完成切换后才更新状态栏，历史和确认后新编辑的草稿均保留；忙碌时拒绝切换、不排队、不清空草稿。`/new` 仍在后台确认后清空历史和草稿。
 - `/quit` 或 Ctrl-C 立即退出整个 pp，正常退出码为 0。恢复终端后，全部对话记录按退出时的终端宽度写入普通终端的滚动历史，保留原有颜色、缩进、分隔线、流式片段、工具输出及错误，末尾保留输入框、未提交的草稿、菜单和状态栏；可以向上滚动查看超出一屏的历史。保留长度受终端自身的滚动历史容量限制。退出不等待阻塞中的模型请求或工具，不提供任务级取消，也不保证终止工具子进程，文件修改不会回滚。
 - `-p/--prompt` runs one task and never parses slash commands: `pp -p '/model'` sends `/model` as a task. It can follow `-r ID` to append one task to saved history; combining it with `-c` is rejected. If either stdin or stdout is not a terminal, line mode supports the same commands without raw mode or an alternate screen. `/model` lists configured models and marks the current one; use `/model provider/model` to switch. Stdout streams **all readable assistant text**, including text before tools, with one terminating newline per nonempty turn and no replay at completion. Refusal is printed only if no non-blank content wins. Help, command responses, errors, and `tool <name>: running/ok/failed` go to stderr; live bash data uses `[bash stdout]` / `[bash stderr]` on pp's stderr. Non-TUI output adds no ANSI control sequences. A display write failure is returned only after the Agent finishes recording the task's history/tool results.
+
+## Markdown 提示词命令
+
+将 UTF-8 Markdown 文件放在 `~/.pp/agent/commands/`，重启 pp 后即可在 TUI 和行模式使用 `/文件名 参数`。例如 `commands/review.md`：
+
+```markdown
+---
+description: Review source
+---
+Review $1. Focus: $@[2:].
+```
+
+输入 `/review auth "error handling" tests`，实际发送正文为 `Review auth. Focus: error handling tests.`，并保留文件正文末尾的换行。TUI 的 `/rev` 菜单显示 `review` 和说明；Tab 只补全名称，Enter 提交，Esc 收起并保留草稿。`/help` 列出成功加载的命令与说明，不展示模板正文。命令带参数后不提供额外参数菜单。
+
+- 仅扫描 `commands/` 的直接子项，不递归；只接受非隐藏、扩展名恰为 `.md` 的普通文件或指向普通文件的符号链接。目录自身也可为符号链接。名称取文件名去掉最后的 `.md`，大小写敏感，允许 Unicode 和标点，但不能含空白／控制字符。内置命令名（包括隐藏别名 `/think`）不能覆盖；重复名称保留按路径排序的首项，最终菜单／帮助按名称排序。
+- 目录缺失时不创建目录，不报错。不可读文件、无效 UTF-8、断链、非法名称、内置冲突、未闭合／非法 YAML 和空白正文会被跳过，其他命令继续可用。行模式诊断以 `command:` 写入 stderr；TUI 启动显示扫描问题摘要，`/help` 可查看完整诊断。
+- YAML frontmatter 可省略，支持文件开头 BOM 和 CRLF；只读取可选字符串 `description`，并从模型提示词中剥离整个 frontmatter。缺少、null 或空白说明时，使用正文第一条非空行的前 60 个 Unicode 字符，确有截断才追加 `...`；显式说明折叠连续空白。`name`、`argument-hint`、`model`、`allowed-tools` 等其他键均忽略，不改名、不切模型、不授权工具。
+- 参数仅以空格和 tab 分隔；单／双引号分组并去掉定界符，同一参数内的引号段可与普通文字拼接。另一种引号和反斜杠为普通字符，没有转义；未闭合引号接受到末尾，空引用参数丢弃。聚合参数以单空格拼接。
+- 支持 `$1`、`$2` 等任意连续数字的位置索引（从 1 开始），`$@`／`$ARGUMENTS` 表示聚合参数；`$@[start]` 和 `$@[start:]` 取从第 start 个到末尾，`$@[start:length]` 最多取 length 个。缺失参数、0 或越界索引、0 长度均为空；超大长度截到末尾。替换只扫描原正文一次，参数里的 `$1` 等不会再次展开。未知占位符原样保留；非法 slice 仍替换 `$@` 前缀，如 `$@[x]` 变成聚合参数加 `[x]`。`$ARGUMENTS` 不要求单词边界，`$` 没有转义语法。
+- 正文没有已识别占位符且参数非空时，去掉正文末尾空白后追加一个空行和聚合参数；无参数则保留原正文。展开为空白时报本地错误，不发送模型或修改历史。正文即使为 `/quit` 也只是模型提示词，不会递归执行命令。`{{…}}` 保持字面文本；没有 Handlebars、脚本、环境变量展开或项目级命令发现。
+- 每次交互启动只加载一次；修改、新增或删除模板需要重启，`/new` 不重载。运行中 Enter 不排队、不回显、不清草稿；配置不可用时仍可查看候选和帮助，但不能执行模板。未知命令仍是本地错误，多行输入仍作为普通任务；`-p` 不扫描命令目录，始终原样发送。
+- 本次进程的 ↑ 输入历史保留原始 slash 输入；对话记录和 session 保存实际发送的展开正文。`-r` 恢复后的新命令使用本次启动的模板，旧历史不随文件修改而改变；`-c` 原样重放保存的展开内容，不重新展开。
 
 ## Session 持久化与恢复
 
@@ -265,6 +287,9 @@ With `"edit":"hashline"`, after reading `1:a430d84680aabd0b|hello`:
 cargo test --locked --test cli_agent session:: -- --nocapture
 cargo test --locked --test cli_agent tui_session_ -- --nocapture
 cargo test --locked slash_
+cargo test --locked file_command_ -- --nocapture
+cargo test --locked --test cli_agent tui::tui_slash_file_command_menu_and_submission -- --nocapture
+cargo test --locked --test cli_agent session::session_file_command_expansion_survives_resume -- --nocapture
 cargo test --locked model_switch
 cargo test --locked model_thinking -- --nocapture
 cargo test --locked llm::

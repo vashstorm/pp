@@ -973,6 +973,102 @@ fn session_resume_sends_no_request_and_appends_in_place() {
 }
 
 #[test]
+fn session_file_command_expansion_survives_resume() {
+    for api in APIS {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let launch = tempfile::tempdir().unwrap();
+        let template = install_command(
+            home.path(),
+            "review.md",
+            "---\ndescription: Review source\n---\nReview $1 first.\n",
+        );
+
+        let mut cli = start_configured(api, &server, home.path(), project.path(), &[]);
+        // Scanning the directory and rendering help never creates a session.
+        cli.input("/help\n");
+        cli.wait_for(Pipe::Err, "/review [arguments] — Review source");
+        assert!(session_ids(home.path()).is_empty());
+        cli.input("/review auth\n");
+        let (request, body) = api.receive(&server);
+        let (users, _) = api.turns(&body);
+        assert_eq!(users, ["Review auth first.\n"]);
+        api.final_reply(request, "first noted");
+        cli.input("/quit\n");
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"first noted\n");
+        let id = only_session_id(home.path());
+        let path = sessions_dir(home.path()).join(format!("{id}.jsonl"));
+
+        // The template changes on disk after the session was saved.
+        fs::write(
+            &template,
+            "---\ndescription: Review source\n---\nReview $1 second.\n",
+        )
+        .unwrap();
+
+        // Resuming from another cwd restores without any HTTP traffic.
+        let mut cli = start_configured(api, &server, home.path(), launch.path(), &["-r", &id]);
+        cli.wait_for(Pipe::Err, &format!("Resumed session: {id}"));
+        no_more(&server);
+        assert_eq!(only_session_id(home.path()), id);
+
+        // A plain task keeps the previously expanded prompt in history.
+        cli.input("plain task\n");
+        let (request, body) = api.receive(&server);
+        let (users, assistants) = api.turns(&body);
+        assert_eq!(users, ["Review auth first.\n", "plain task"]);
+        assert_eq!(assistants, ["first noted"]);
+        api.final_reply(request, "plain noted");
+        cli.wait_for(Pipe::Out, "plain noted");
+
+        // A new invocation expands with the current template body.
+        cli.input("/review auth\n");
+        let (request, body) = api.receive(&server);
+        let (users, assistants) = api.turns(&body);
+        assert_eq!(
+            users,
+            [
+                "Review auth first.\n",
+                "plain task",
+                "Review auth second.\n"
+            ]
+        );
+        assert_eq!(assistants, ["first noted", "plain noted"]);
+        api.final_reply(request, "second noted");
+        cli.input("/quit\n");
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"plain noted\nsecond noted\n");
+
+        // The saved log rebuilds to exactly these user texts.
+        let saved = records(&path);
+        assert_session_contract(&saved, &id, project.path());
+        let (users, assistants) = api.turns(&rebuild_request(&saved));
+        assert_eq!(
+            users,
+            [
+                "Review auth first.\n",
+                "plain task",
+                "Review auth second.\n"
+            ]
+        );
+        assert_eq!(assistants, ["first noted", "plain noted", "second noted"]);
+        no_more(&server);
+    }
+}
+
+#[test]
 fn session_continue_sends_exactly_the_saved_native_request() {
     for api in APIS {
         let server = server();

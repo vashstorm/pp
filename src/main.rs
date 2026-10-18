@@ -75,6 +75,17 @@ fn run(args: Args) -> Result<()> {
     // configuration for a fresh `pp`. Load the journal before tools, skills, and
     // the TUI workspace so everything runs from the saved working directory.
     let global_dir = config::global_dir();
+    let file_commands = if args.prompt.is_none() {
+        match &global_dir {
+            Ok(dir) => commands::FileCommands::from_dir(dir),
+            Err(error) => commands::FileCommands {
+                diagnostics: vec![format!("{error:#}")],
+                ..commands::FileCommands::default()
+            },
+        }
+    } else {
+        commands::FileCommands::default()
+    };
     let restored = if args.resume.is_some() || continue_requested {
         let dir = global_dir
             .as_ref()
@@ -132,7 +143,7 @@ fn run(args: Args) -> Result<()> {
             .ok()
             .map(|agent| agent.mcp_cleanup())
             .transpose()?;
-        return tui::run(agent, &cwd, skills, continue_requested);
+        return tui::run(agent, &cwd, skills, file_commands, continue_requested);
     }
     let resumed_id = if args.resume.is_some() || continue_requested {
         agent.as_ref().ok().and_then(|agent| agent.session_id())
@@ -155,6 +166,9 @@ fn run(args: Args) -> Result<()> {
         .diagnostics
     {
         writeln!(stderr, "skill: {diagnostic}")?;
+    }
+    for diagnostic in &file_commands.diagnostics {
+        writeln!(stderr, "command: {diagnostic}")?;
     }
     if let Some(id) = &resumed_id {
         writeln!(stderr, "Resumed session: {id}")?;
@@ -190,7 +204,7 @@ fn run(args: Args) -> Result<()> {
         if prompt.is_empty() {
             continue;
         }
-        let command = match commands::parse(prompt) {
+        let command = match commands::parse(prompt, &file_commands) {
             Ok(command) => command,
             Err(error) => {
                 writeln!(stderr, "error: {error:#}")?;
@@ -228,7 +242,7 @@ fn run(args: Args) -> Result<()> {
                 continue;
             }
             Some(commands::Command::Help) => {
-                writeln!(stderr, "{}", commands::help())?;
+                writeln!(stderr, "{}", commands::help(&file_commands))?;
                 continue;
             }
             _ => {}
@@ -296,6 +310,11 @@ fn run(args: Args) -> Result<()> {
             Some(
                 commands::Command::Help | commands::Command::Quit | commands::Command::Skills(_),
             ) => unreachable!(),
+            Some(commands::Command::Prompt(prompt)) => {
+                if let Err(error) = run_cli_task(agent, Some(&prompt), &mut stdout, &mut stderr) {
+                    writeln!(stderr, "error: {error:#}")?;
+                }
+            }
             None => match run_cli_task(agent, Some(prompt), &mut stdout, &mut stderr) {
                 Ok(()) => {}
                 Err(error) => writeln!(stderr, "error: {error:#}")?,
