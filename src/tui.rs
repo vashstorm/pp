@@ -10,7 +10,7 @@ mod welcome;
 use crate::{
     agent::Agent,
     commands::{self, COMMANDS, Command},
-    config::{ModelChoice, ThinkLevel},
+    config::{ModelChoice, NotificationOptions, ThinkLevel},
     events::AgentEvent,
 };
 use anyhow::{Context, Result};
@@ -52,13 +52,14 @@ pub(crate) fn run(
     skills: crate::skills::SharedSkills,
     file_commands: commands::FileCommands,
     auto_continue: bool,
+    notification_options: NotificationOptions,
 ) -> Result<()> {
     // Construct before try_init so partially initialized terminals are restored too.
     let guard = TerminalGuard;
     let mut terminal = ratatui::try_init().context("initializing terminal")?;
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)
         .context("enabling terminal input modes")?;
-    let mut app = App::new_with_skills(agent, skills, file_commands, cwd)?;
+    let mut app = App::new_with_skills(agent, skills, file_commands, cwd, notification_options)?;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c: replay is already loaded; resend the saved request without touching the editor.
         app.send(WorkerCommand::Continue, State::Running);
@@ -211,6 +212,7 @@ impl App {
             skills,
             commands::FileCommands::default(),
             Path::new("."),
+            NotificationOptions::default(),
         )
     }
 
@@ -219,6 +221,7 @@ impl App {
         skills: crate::skills::SharedSkills,
         file_commands: commands::FileCommands,
         cwd: &Path,
+        notification_options: NotificationOptions,
     ) -> Result<Self> {
         let diagnostics = skills
             .lock()
@@ -227,7 +230,7 @@ impl App {
             .clone();
         let mut app = Self {
             conversation: Transcript::new(),
-            notifications: Notifications::default(),
+            notifications: Notifications::new(notification_options),
             show_welcome: true,
             input: editor(),
             input_history: Vec::new(),
@@ -1073,11 +1076,6 @@ impl App {
             let (changed, action) = self.notifications.mouse(mouse, Instant::now());
             *dirty |= changed;
             match action {
-                MouseAction::Copy => {
-                    self.notifications.copy_to_clipboard(&mut io::stdout());
-                    *dirty = true;
-                    return false;
-                }
                 MouseAction::Consumed => return false,
                 MouseAction::Ignored => {}
             }
@@ -1557,6 +1555,7 @@ mod tests {
             crate::skills::Skills::default().shared(),
             commands::FileCommands::default(),
             dir.path(),
+            NotificationOptions::default(),
         )
         .unwrap();
         let (requests, scans) = mpsc::channel();
@@ -1583,18 +1582,21 @@ mod tests {
         assert!(app.file_query.is_none());
     }
 
-    fn file_picker_fixture() -> (
+    type FilePickerFixture = (
         App,
         Receiver<()>,
         Sender<Result<Vec<String>>>,
         Receiver<WorkerCommand>,
-    ) {
+    );
+
+    fn file_picker_fixture() -> FilePickerFixture {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App::new_with_skills(
             Err(anyhow::anyhow!("fixture")),
             crate::skills::Skills::default().shared(),
             commands::FileCommands::default(),
             dir.path(),
+            NotificationOptions::default(),
         )
         .unwrap();
         let (requests, scans) = mpsc::channel();
@@ -2686,6 +2688,7 @@ mod tests {
             shared.clone(),
             commands::FileCommands::default(),
             Path::new("."),
+            NotificationOptions::default(),
         )
         .unwrap();
         // 配置错误与 skill 诊断合并到同一个启动弹窗。
@@ -2714,6 +2717,7 @@ mod tests {
             shared,
             files,
             Path::new("."),
+            NotificationOptions::default(),
         )
         .unwrap();
         app.notifications = Notifications::default();
@@ -2796,6 +2800,7 @@ mod tests {
             shared,
             files,
             Path::new("."),
+            NotificationOptions::default(),
         )
         .unwrap();
         app.show_welcome = true;

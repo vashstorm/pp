@@ -2862,7 +2862,17 @@ mod tui {
     fn tui_notification_fades_without_input_and_preserves_draft() {
         let server = server();
         let home = tempfile::tempdir().unwrap();
-        let mut pty = Pty::start(&server, home.path());
+        std::fs::write(
+            config_path(home.path(), "models.jsonc"),
+            fixture_models(&server),
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(home.path(), "settings.jsonc"),
+            r#"{"default_model":"fixture/primary","notification_timeout_seconds":2}"#,
+        )
+        .unwrap();
+        let mut pty = Pty::start_with_existing_files(home.path());
         pty.ready_effort("no think");
         pty.text("█▀▀█  █▀▀█");
         let background: Vec<_> = (0..26)
@@ -2915,7 +2925,7 @@ mod tui {
             },
         );
         let cursor = pty.parser.screen().cursor_position();
-        // 真实 SGR 鼠标事件触发复制，完整原文通过 OSC 52 发送。
+        // 真实 SGR 鼠标事件进入弹框，顶边点击也只保持悬停。
         pty.input(&format!("\x1b[<35;{};{}M", right, top + 2));
         pty.input(&format!(
             "\x1b[<0;{};{}M\x1b[<0;{};{}m",
@@ -2924,30 +2934,38 @@ mod tui {
             right - 1,
             top + 1
         ));
-        pty.text("[Sent]");
-        assert!(
-            pty.raw
-                .windows(b"\x1b]52;c;dW5rbm93biBjb21tYW5kOyB1c2UgL2hlbHA=\x1b\\".len())
-                .any(|bytes| bytes == b"\x1b]52;c;dW5rbm93biBjb21tYW5kOyB1c2UgL2hlbHA=\x1b\\")
+        pty.wait_for(
+            "悬停隐藏倒计时且不再显示复制按钮",
+            |screen| {
+                let text = screen.contents();
+                notification_bounds(screen, "Error", red).is_some()
+                    && !text.contains(" 2s ")
+                    && !text.contains(" 1s ")
+                    && !text.contains("[Copy]")
+                    && !text.contains("[Sent]")
+            },
         );
         pty.draft("草稿🙂");
         assert_eq!(pty.parser.screen().cursor_position(), cursor);
         let hovered_at = Instant::now();
         pty.wait_for_timeout(
-            "鼠标停留超过十秒后弹框仍然存在",
-            Duration::from_secs(12),
+            "鼠标停留超过配置时长后弹框仍然存在",
+            Duration::from_secs(4),
             |screen| {
-                hovered_at.elapsed() >= Duration::from_millis(10200)
-                    && screen.contents().contains("[Sent]")
+                hovered_at.elapsed() >= Duration::from_millis(2200)
+                    && !screen.contents().contains(" 2s ")
+                    && !screen.contents().contains(" 1s ")
                     && notification_bounds(screen, "Error", red).is_some()
             },
         );
         pty.input("\x1b[<35;1;1M");
-        // 移出后，无需后续输入即可在十秒后清除弹框并恢复背景。
+        // 移出后重新从两秒开始，无需后续输入即可更新倒计时并恢复背景。
         let left_at = Instant::now();
+        pty.text(" 2s ");
+        pty.text(" 1s ");
         pty.wait_for_timeout(
             "空闲错误弹框到期后恢复覆盖区域",
-            Duration::from_secs(12),
+            Duration::from_secs(4),
             |screen| {
                 !screen.contents().contains("Error")
                     && !screen.contents().contains("unknown command; use /help")
@@ -2962,7 +2980,7 @@ mod tui {
                     })
             },
         );
-        assert!(left_at.elapsed() >= Duration::from_millis(9900));
+        assert!(left_at.elapsed() >= Duration::from_millis(1900));
         pty.draft("草稿🙂");
         assert!(!pty.parser.screen().hide_cursor());
         assert_eq!(pty.parser.screen().cursor_position(), cursor);
@@ -2989,7 +3007,7 @@ mod tui {
         let cursor = pty.parser.screen().cursor_position();
         pty.wait_for_timeout(
             "保存默认档位弹框无需输入即可到期消失",
-            Duration::from_secs(12),
+            Duration::from_secs(4),
             |screen| {
                 let text = screen.contents();
                 !text.contains("Default thinking effort saved:")
@@ -3002,9 +3020,72 @@ mod tui {
         assert_eq!(pty.parser.screen().cursor_position(), cursor);
         assert!(!pty.parser.screen().hide_cursor());
         pty.ready_effort("no think");
+        // 新会话清空通知后仍使用启动时的自定义时长。
+        pty.input("\x01\x0b/new\r");
+        pty.draft("");
+        pty.input("/bogus\r");
+        pty.wait_for("新会话保留两秒通知配置", |screen| {
+            notification_bounds(screen, "Error", red).is_some()
+                && screen.contents().contains(" 2s ")
+        });
         pty.input("\x03");
+        assert!(
+            !pty.raw
+                .windows(b"\x1b]52;".len())
+                .any(|bytes| bytes == b"\x1b]52;")
+        );
         pty.finish();
         no_more(&server);
+    }
+
+    #[test]
+    fn tui_notification_settings_work_without_models_and_invalid_settings_use_defaults() {
+        let red = vt100::Color::Rgb(224, 108, 117);
+        for (settings, label) in [
+            (r#"{"notification_timeout_seconds":2}"#, Some(" 2s ")),
+            (
+                r#"{"notification_show_countdown":false,"notification_timeout_seconds":2}"#,
+                None,
+            ),
+            (
+                r#"{"notification_timeout_seconds":"private-invalid-value"}"#,
+                Some(" 10s "),
+            ),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(config_path(home.path(), "settings.jsonc"), settings).unwrap();
+            let mut pty = Pty::start_with_existing_files(home.path());
+            pty.wait_for(
+                "模型不可用时仍按通知设置显示启动错误",
+                |screen| {
+                    let text = screen.contents();
+                    notification_bounds(screen, "Error", red).is_some()
+                        && text.contains(if label == Some(" 10s ") {
+                            "invalid JSONC settings"
+                        } else {
+                            "Configuration unavailable"
+                        })
+                        && label.is_none_or(|label| text.contains(label))
+                },
+            );
+            let text = pty.parser.screen().contents();
+            assert!(!text.contains("[Copy]"));
+            assert!(!text.contains("private-invalid-value"));
+            if label.is_none() {
+                assert!(!text.contains(" 2s "));
+            }
+            pty.input("草稿🙂");
+            pty.draft("草稿🙂");
+            if label != Some(" 10s ") {
+                pty.wait_for("自定义时长无需输入即可到期", |screen| {
+                    !screen.contents().contains("Configuration unavailable")
+                });
+                pty.draft("草稿🙂");
+                assert!(!pty.parser.screen().hide_cursor());
+            }
+            pty.input("\x03");
+            pty.finish();
+        }
     }
 
     #[test]

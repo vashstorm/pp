@@ -75,6 +75,14 @@ fn run(args: Args) -> Result<()> {
     // configuration for a fresh `pp`. Load the journal before tools, skills, and
     // the TUI workspace so everything runs from the saved working directory.
     let global_dir = config::global_dir();
+    // 通知设置独立于模型初始化；无效设置的诊断仍由既有启动路径呈现。
+    let notification_options = global_dir
+        .as_ref()
+        .ok()
+        .filter(|_| use_tui)
+        .and_then(|dir| config::read_settings(&dir.join("settings.jsonc")).ok())
+        .map(|settings| settings.notification_options())
+        .unwrap_or_default();
     let file_commands = if args.prompt.is_none() {
         match &global_dir {
             Ok(dir) => commands::FileCommands::from_dir(dir),
@@ -143,7 +151,14 @@ fn run(args: Args) -> Result<()> {
             .ok()
             .map(|agent| agent.mcp_cleanup())
             .transpose()?;
-        return tui::run(agent, &cwd, skills, file_commands, continue_requested);
+        return tui::run(
+            agent,
+            &cwd,
+            skills,
+            file_commands,
+            continue_requested,
+            notification_options,
+        );
     }
     let resumed_id = if args.resume.is_some() || continue_requested {
         agent.as_ref().ok().and_then(|agent| agent.session_id())

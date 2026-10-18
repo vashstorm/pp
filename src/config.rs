@@ -167,9 +167,36 @@ fn default_bash_timeout_seconds() -> u64 {
     120
 }
 
+fn default_notification_show_countdown() -> bool {
+    true
+}
+
+fn default_notification_timeout_seconds() -> u64 {
+    10
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct NotificationOptions {
+    pub(crate) show_countdown: bool,
+    pub(crate) timeout_seconds: u64,
+}
+
+impl Default for NotificationOptions {
+    fn default() -> Self {
+        Self {
+            show_countdown: default_notification_show_countdown(),
+            timeout_seconds: default_notification_timeout_seconds(),
+        }
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
+    #[serde(default = "default_notification_show_countdown")]
+    pub(crate) notification_show_countdown: bool,
+    #[serde(default = "default_notification_timeout_seconds")]
+    pub(crate) notification_timeout_seconds: u64,
     #[serde(default)]
     pub(crate) mcp_servers: std::collections::BTreeMap<String, crate::mcp::ServerConfig>,
     #[serde(default = "default_skill_dirs")]
@@ -196,6 +223,13 @@ pub(crate) struct Settings {
 }
 
 impl Settings {
+    pub(crate) fn notification_options(&self) -> NotificationOptions {
+        NotificationOptions {
+            show_countdown: self.notification_show_countdown,
+            timeout_seconds: self.notification_timeout_seconds,
+        }
+    }
+
     pub(crate) fn tool_limits(&self) -> ToolLimits {
         ToolLimits {
             read_max_bytes: self.read_max_bytes,
@@ -205,6 +239,18 @@ impl Settings {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.notification_timeout_seconds > 0,
+            "notification_timeout_seconds must be greater than zero"
+        );
+        ensure!(
+            std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(
+                    self.notification_timeout_seconds
+                ))
+                .is_some(),
+            "notification_timeout_seconds is too large"
+        );
         crate::mcp::validate_config(&self.mcp_servers)?;
         ensure!(
             self.skill_dirs.iter().all(|path| !path.trim().is_empty()),
@@ -258,6 +304,8 @@ pub(crate) fn global_dir() -> Result<PathBuf> {
 
 fn default_settings() -> Settings {
     Settings {
+        notification_show_countdown: default_notification_show_countdown(),
+        notification_timeout_seconds: default_notification_timeout_seconds(),
         mcp_servers: Default::default(),
         skill_dirs: default_skill_dirs(),
         disabled_skills: Vec::new(),
@@ -452,6 +500,53 @@ pub(crate) fn read_settings(path: &Path) -> Result<Settings> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn notification_options_have_defaults_and_strict_overrides() {
+        for source in [None, Some("{}")] {
+            let options = load(source, Some(VALID_MODELS))
+                .unwrap()
+                .settings
+                .notification_options();
+            assert!(options.show_countdown);
+            assert_eq!(options.timeout_seconds, 10);
+        }
+        let settings = load(
+            Some(r#"{"notification_show_countdown":false,"notification_timeout_seconds":3}"#),
+            Some(VALID_MODELS),
+        )
+        .unwrap()
+        .settings;
+        assert!(!settings.notification_options().show_countdown);
+        assert_eq!(settings.notification_options().timeout_seconds, 3);
+        for value in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!(null),
+            json!(true),
+            json!("secret-marker"),
+            json!(u64::MAX),
+        ] {
+            rejection(
+                Some(&json!({"notification_timeout_seconds":value}).to_string()),
+                Some(VALID_MODELS),
+                &["settings.jsonc"],
+            );
+        }
+        rejection(
+            Some(r#"{"notification_timeout_seconds":18446744073709551616}"#),
+            Some(VALID_MODELS),
+            &["settings.jsonc"],
+        );
+        for value in [json!(0), json!(null), json!("secret-marker")] {
+            rejection(
+                Some(&json!({"notification_show_countdown":value}).to_string()),
+                Some(VALID_MODELS),
+                &["settings.jsonc"],
+            );
+        }
+    }
 
     #[test]
     fn tool_limits_have_defaults_and_strict_positive_overrides() {

@@ -463,13 +463,13 @@ mod tests {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let (dir, _) = load(&[("unreadable.md", b"private"), ("good.md", b"Good")]);
         let path = dir.path().join("commands/unreadable.md");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).unwrap();
         let commands = FileCommands::from_dir(dir.path());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(commands.entries.len(), 1);
         assert!(commands.diagnostics[0].contains("unreadable.md"));
         let root = dir.path().join("commands");
-        fs::set_permissions(&root, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o0)).unwrap();
         let inaccessible = FileCommands::from_dir(dir.path());
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(inaccessible.entries.is_empty());

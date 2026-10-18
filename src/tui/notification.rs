@@ -1,9 +1,6 @@
 use super::statusline;
-use crossterm::{
-    clipboard::CopyToClipboard,
-    event::{MouseButton, MouseEvent, MouseEventKind},
-    execute,
-};
+use crate::config::NotificationOptions;
+use crossterm::event::MouseEvent;
 use ratatui::{
     Frame,
     layout::{Alignment, Position, Rect},
@@ -11,12 +8,8 @@ use ratatui::{
     text::{Line, Text},
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
 };
-use std::{
-    io,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
-const LIFETIME: Duration = Duration::from_secs(10);
 const FADE_IN_MS: u128 = 200;
 const FADE_OUT_MS: u128 = 400;
 
@@ -37,22 +30,30 @@ struct Notification {
 pub(super) enum MouseAction {
     Ignored,
     Consumed,
-    Copy,
 }
 
 #[derive(Default)]
 pub(super) struct Notifications {
+    options: NotificationOptions,
     current: Option<Notification>,
     step: u8,
     area: Option<Rect>,
     pointer: Option<Position>,
     hovered: bool,
-    copy_status: Option<bool>,
+    countdown_seconds: Option<u64>,
 }
 
 impl Notifications {
+    pub(super) fn new(options: NotificationOptions) -> Self {
+        Self {
+            options,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn clear(&mut self) {
         *self = Self {
+            options: self.options,
             pointer: self.pointer,
             ..Self::default()
         };
@@ -70,7 +71,10 @@ impl Notifications {
         });
         self.step = 1;
         self.hovered = false;
-        self.copy_status = None;
+        self.countdown_seconds = self
+            .options
+            .show_countdown
+            .then_some(self.options.timeout_seconds);
     }
 
     pub(super) fn tick(&mut self, now: Instant) -> bool {
@@ -80,10 +84,12 @@ impl Notifications {
         let elapsed = notification
             .countdown_started_at
             .map(|started| now.saturating_duration_since(started).as_millis());
-        if elapsed.is_some_and(|elapsed| elapsed >= LIFETIME.as_millis()) {
+        let lifetime_ms = Duration::from_secs(self.options.timeout_seconds).as_millis();
+        if elapsed.is_some_and(|elapsed| elapsed >= lifetime_ms) {
             self.current = None;
             self.area = None;
             self.hovered = false;
+            self.countdown_seconds = None;
             return true;
         }
         let fade_in = now
@@ -94,14 +100,18 @@ impl Notifications {
         } else if fade_in < FADE_IN_MS {
             (fade_in * 20 / FADE_IN_MS).max(1)
         } else if let Some(elapsed) = elapsed
-            && elapsed >= LIFETIME.as_millis() - FADE_OUT_MS
+            && elapsed >= lifetime_ms - FADE_OUT_MS
         {
-            ((LIFETIME.as_millis() - elapsed) * 20 / FADE_OUT_MS).max(1)
+            ((lifetime_ms - elapsed) * 20 / FADE_OUT_MS).max(1)
         } else {
             20
         } as u8;
-        let changed = step != self.step;
+        let countdown_seconds = elapsed
+            .filter(|_| self.options.show_countdown)
+            .map(|elapsed| (lifetime_ms - elapsed).div_ceil(1000) as u64);
+        let changed = step != self.step || countdown_seconds != self.countdown_seconds;
         self.step = step;
+        self.countdown_seconds = countdown_seconds;
         changed
     }
 
@@ -119,6 +129,8 @@ impl Notifications {
             notification.countdown_started_at = if hovered { None } else { Some(now) };
         }
         self.step = 20;
+        self.countdown_seconds =
+            (!hovered && self.options.show_countdown).then_some(self.options.timeout_seconds);
         true
     }
 
@@ -129,43 +141,7 @@ impl Notifications {
         if !self.hovered {
             return (changed, MouseAction::Ignored);
         }
-        let copy = self
-            .area
-            .is_some_and(|area| area.width >= 24 && self.copy_area(area).contains(pointer))
-            && mouse.kind == MouseEventKind::Down(MouseButton::Left);
-        (
-            changed,
-            if copy {
-                MouseAction::Copy
-            } else {
-                MouseAction::Consumed
-            },
-        )
-    }
-
-    fn copy_label(&self) -> &'static str {
-        match self.copy_status {
-            None => "[Copy]",
-            Some(true) => "[Sent]",
-            Some(false) => "[Failed]",
-        }
-    }
-
-    fn copy_area(&self, area: Rect) -> Rect {
-        let width = (Line::raw(self.copy_label()).width() as u16).min(area.width.saturating_sub(2));
-        Rect::new(area.right().saturating_sub(width + 1), area.y, width, 1)
-    }
-
-    pub(super) fn copy_to_clipboard(&mut self, writer: &mut impl io::Write) {
-        if let Some(notification) = &self.current {
-            self.copy_status = Some(
-                execute!(
-                    writer,
-                    CopyToClipboard::to_clipboard_from(notification.message.as_bytes())
-                )
-                .is_ok(),
-            );
-        }
+        (changed, MouseAction::Consumed)
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, above_input: Rect) {
@@ -220,13 +196,16 @@ impl Notifications {
             .padding(Padding::horizontal(1));
         frame.render_widget(Clear, area);
         frame.render_widget(paragraph.block(block), area);
-        let copy_area = self.copy_area(area);
-        if area.width >= 24 {
+        if let Some(seconds) = self.countdown_seconds {
+            let label = format!(" {seconds}s ");
+            let label_width = label.len() as u16;
+            // 给标题、倒计时和两端边框保留独立空间。
+            if usize::from(area.width) < title.len() + label.len() + 3 {
+                return;
+            }
             frame.render_widget(
-                Line::raw(self.copy_label())
-                    .style(border)
-                    .alignment(Alignment::Right),
-                copy_area,
+                Line::raw(label).style(border).alignment(Alignment::Right),
+                Rect::new(area.right() - label_width - 1, area.y, label_width, 1),
             );
         }
     }
@@ -243,7 +222,7 @@ fn dim(color: Color, step: u8) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyModifiers;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
     use std::time::Duration;
 
@@ -321,7 +300,7 @@ mod tests {
         notifications.mouse(outside, leave);
         notifications.tick(leave + Duration::from_millis(9999));
         assert!(notifications.current.is_some());
-        assert!(notifications.tick(leave + LIFETIME));
+        assert!(notifications.tick(leave + Duration::from_secs(10)));
         assert!(notifications.current.is_none());
     }
 
@@ -345,58 +324,29 @@ mod tests {
         render(&mut notifications, 1, 1);
         assert!(!notifications.hovered);
         assert!(notifications.area.is_none());
-        assert!(notifications.tick(Instant::now() + LIFETIME));
+        assert!(notifications.tick(Instant::now() + Duration::from_secs(10)));
+    }
+
+    fn text(buffer: &Buffer) -> String {
+        buffer.content.iter().map(|cell| cell.symbol()).collect()
     }
 
     #[test]
-    fn copy_button_sends_full_unicode_message_including_truncated_content() {
+    fn countdown_updates_without_animation_and_hover_restarts_it() {
         let now = Instant::now();
         let mut notifications = Notifications::default();
-        notifications.show(
-            Level::Important,
-            format!("{}\n中文🙂", "abc".repeat(100)),
-            now,
-        );
+        notifications.show(Level::Error, "中文🙂 message".into(), now);
         let buffer = render(&mut notifications, 100, 30);
-        assert!(!buffer.content.iter().any(|cell| cell.symbol() == "中"));
-        let area = notifications.area.unwrap();
-        let (_, action) = notifications.mouse(
-            mouse(
-                area.x + 1,
-                area.y + 1,
-                MouseEventKind::Down(MouseButton::Left),
-            ),
-            now,
-        );
-        assert!(matches!(action, MouseAction::Consumed));
-        let copy = notifications.copy_area(area);
-        let (_, action) = notifications.mouse(
-            mouse(copy.x, copy.y, MouseEventKind::Down(MouseButton::Left)),
-            now,
-        );
-        assert!(matches!(action, MouseAction::Copy));
-        let mut output = Vec::new();
-        notifications.copy_to_clipboard(&mut output);
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            format!("\x1b]52;c;{}CuS4reaWh/CfmYI=\x1b\\", "YWJj".repeat(100))
-        );
-        assert_eq!(notifications.copy_status, Some(true));
-        // 写入错误保留原消息，并允许再次点击重试。
-        struct Broken;
-        impl io::Write for Broken {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        notifications.copy_to_clipboard(&mut Broken);
-        assert_eq!(notifications.copy_status, Some(false));
-        notifications.copy_to_clipboard(&mut io::sink());
-        assert_eq!(notifications.copy_status, Some(true));
-        render(&mut notifications, 20, 30);
+        assert!(text(&buffer).contains(" 10s "));
+        assert!(!text(&buffer).contains("[Copy]"));
+        notifications.tick(now + Duration::from_millis(200));
+        assert!(!notifications.tick(now + Duration::from_millis(999)));
+        assert!(notifications.tick(now + Duration::from_millis(1000)));
+        assert_eq!(notifications.step, 20);
+        assert!(text(&render(&mut notifications, 100, 30)).contains(" 9s "));
+        assert!(!notifications.tick(now + Duration::from_millis(1001)));
+        assert!(notifications.tick(now + Duration::from_secs(9)));
+        assert!(text(&render(&mut notifications, 100, 30)).contains(" 1s "));
         let area = notifications.area.unwrap();
         let (_, action) = notifications.mouse(
             mouse(
@@ -404,9 +354,68 @@ mod tests {
                 area.y,
                 MouseEventKind::Down(MouseButton::Left),
             ),
-            now,
+            now + Duration::from_secs(9),
         );
         assert!(matches!(action, MouseAction::Consumed));
+        assert_eq!(notifications.countdown_seconds, None);
+        assert!(!text(&render(&mut notifications, 100, 30)).contains("1s"));
+        assert!(!notifications.tick(now + Duration::from_secs(60)));
+        notifications.mouse(
+            mouse(0, 0, MouseEventKind::Moved),
+            now + Duration::from_secs(61),
+        );
+        assert!(text(&render(&mut notifications, 100, 30)).contains(" 10s "));
+        assert!(notifications.tick(now + Duration::from_secs(62)));
+        assert_eq!(notifications.countdown_seconds, Some(9));
+    }
+
+    #[test]
+    fn custom_timeout_and_hidden_countdown_survive_clear_and_replacement() {
+        let now = Instant::now();
+        for show_countdown in [false, true] {
+            let mut notifications = Notifications::new(NotificationOptions {
+                show_countdown,
+                timeout_seconds: 2,
+            });
+            notifications.show(Level::Normal, "first".into(), now);
+            assert_eq!(notifications.countdown_seconds, show_countdown.then_some(2));
+            assert_eq!(
+                text(&render(&mut notifications, 100, 30)).contains(" 2s "),
+                show_countdown
+            );
+            notifications.tick(now + Duration::from_millis(200));
+            assert_eq!(
+                notifications.tick(now + Duration::from_secs(1)),
+                show_countdown
+            );
+            notifications.tick(now + Duration::from_millis(1800));
+            assert_eq!(notifications.step, 10);
+            assert!(notifications.tick(now + Duration::from_secs(2)));
+            assert!(notifications.current.is_none());
+            notifications.clear();
+            notifications.show(Level::Error, "second".into(), now);
+            notifications.show(
+                Level::Error,
+                "replacement".into(),
+                now + Duration::from_secs(1),
+            );
+            assert_eq!(notifications.countdown_seconds, show_countdown.then_some(2));
+            notifications.tick(now + Duration::from_secs(2));
+            assert!(notifications.current.is_some());
+            assert!(notifications.tick(now + Duration::from_secs(3)));
+        }
+    }
+
+    #[test]
+    fn narrow_countdown_never_overlaps_the_title_or_border() {
+        let mut notifications = Notifications::default();
+        notifications.show(Level::Important, "hello".into(), Instant::now());
+        let buffer = render(&mut notifications, 18, 30);
+        assert!(text(&buffer).contains(" Important "));
+        assert!(!text(&buffer).contains("10s"));
+        let area = notifications.area.unwrap();
+        assert_eq!(buffer[(area.right() - 1, area.y)].symbol(), "╮");
+        assert!(text(&render(&mut notifications, 100, 30)).contains(" 10s "));
     }
 
     #[test]
@@ -419,7 +428,7 @@ mod tests {
             (0, 1, false),
             (100, 10, true),
             (200, 20, true),
-            (9600, 20, false),
+            (9600, 20, true),
             (9800, 10, true),
         ] {
             assert_eq!(notifications.tick(now + Duration::from_millis(ms)), changed);
@@ -507,7 +516,7 @@ mod tests {
         let buffer = render(&mut notifications, 100, 30);
         assert_eq!(border(&buffer).unwrap().2, Color::Rgb(224, 108, 117));
         assert_eq!(buffer[(77, 25)].symbol(), "s");
-        assert!(!notifications.tick(replacement + Duration::from_millis(9600)));
+        assert!(notifications.tick(replacement + Duration::from_millis(9600)));
         assert!(notifications.tick(replacement + Duration::from_millis(10000)));
         assert!(border(&render(&mut notifications, 100, 30)).is_none());
     }

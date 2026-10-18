@@ -321,6 +321,8 @@ mod tests {
                 thinking: crate::models::ModelThinking::default(),
                 base_url: base_url.parse().unwrap(),
                 settings: crate::config::Settings {
+                    notification_show_countdown: true,
+                    notification_timeout_seconds: 10,
                     mcp_servers: Default::default(),
                     skill_dirs: Vec::new(),
                     disabled_skills: Vec::new(),
