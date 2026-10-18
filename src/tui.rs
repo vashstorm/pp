@@ -115,7 +115,7 @@ enum WorkerEvent {
     Completed(Result<()>),
     SessionStarted(String),
     Reset,
-    ModelSwitched(Result<ModelChoice>),
+    ModelSwitched(Result<(ModelChoice, ThinkLevel)>),
     ThinkLevelSet(Result<ThinkLevel>),
     DefaultThinkLevelSaved(Result<ThinkLevel>),
 }
@@ -258,11 +258,9 @@ impl App {
                                     )
                                 }
                                 WorkerCommand::SwitchModel(reference) => {
-                                    WorkerEvent::ModelSwitched(
-                                        agent
-                                            .switch_model(&reference)
-                                            .map(|()| agent.current_model().clone()),
-                                    )
+                                    WorkerEvent::ModelSwitched(agent.switch_model(&reference).map(
+                                        |()| (agent.current_model().clone(), agent.think_level()),
+                                    ))
                                 }
                             };
                             // Report new IDs even on task failure, before Completed.
@@ -396,8 +394,9 @@ impl App {
                 }
                 Ok(WorkerEvent::ModelSwitched(result)) => {
                     match result {
-                        Ok(choice) => {
+                        Ok((choice, level)) => {
                             self.current_model = Some(choice);
+                            self.think_level = level;
                         }
                         Err(error) => self.notify(Level::Error, format!("{error:#}")),
                     }
@@ -466,12 +465,18 @@ impl App {
         let mut preferred = 0;
         let items = match argument {
             Some(("/effort", argument)) if matches!(self.state, State::Ready) => {
-                let items: Vec<_> = ThinkLevel::ALL
-                    .into_iter()
+                let thinking = self
+                    .current_model
+                    .as_ref()
+                    .map(|model| model.thinking)
+                    .unwrap_or_default();
+                let default_level = thinking.effective_default(self.default_think_level);
+                let items: Vec<_> = thinking
+                    .levels()
                     .filter(|level| level.as_str().starts_with(argument.trim()))
                     .map(|level| MenuItem {
                         value: MenuAction::Effort(level),
-                        label: if level == self.default_think_level {
+                        label: if level == default_level {
                             format!("{}（默认）", level.label())
                         } else {
                             level.label().into()
@@ -878,10 +883,15 @@ impl App {
                         && self.model_picker_draft.is_none()
                         && self.shortcut_ready()
                     {
-                        self.send(
-                            WorkerCommand::SetThinkLevel(self.think_level.next()),
-                            State::SettingThinkLevel,
-                        );
+                        let thinking = self
+                            .current_model
+                            .as_ref()
+                            .map(|model| model.thinking)
+                            .unwrap_or_default();
+                        let next = thinking.next(self.think_level);
+                        if next != self.think_level {
+                            self.send(WorkerCommand::SetThinkLevel(next), State::SettingThinkLevel);
+                        }
                     }
                     return false;
                 }
@@ -1512,6 +1522,7 @@ mod tests {
                 reference: format!("fixture/model-{index}"),
                 model: format!("vendor-{index}"),
                 protocol: crate::models::Protocol::Response,
+                thinking: crate::models::ModelThinking::default(),
             })
             .collect();
         app.current_model = Some(app.choices[2].clone());
@@ -1554,7 +1565,10 @@ mod tests {
         assert!(app.menu.is_none());
         app.input.insert_str("后续草稿");
         events
-            .send(WorkerEvent::ModelSwitched(Ok(app.choices[11].clone())))
+            .send(WorkerEvent::ModelSwitched(Ok((
+                app.choices[11].clone(),
+                app.think_level,
+            ))))
             .unwrap();
         app.receive();
         assert_eq!(
@@ -1572,6 +1586,7 @@ mod tests {
             reference: "gateway/team/model with spaces".into(),
             model: "vendor-one".into(),
             protocol: crate::models::Protocol::Completion,
+            thinking: crate::models::ModelThinking::default(),
         }];
         let mut dirty = false;
         app.handle(Event::Paste("/model vendor".into()), &mut dirty);
@@ -1612,6 +1627,7 @@ mod tests {
                 reference: format!("a/{id}"),
                 model: id.into(),
                 protocol: crate::models::Protocol::Completion,
+                thinking: crate::models::ModelThinking::default(),
             })
             .collect();
         app.current_model = Some(app.choices[1].clone());
@@ -1758,6 +1774,7 @@ mod tests {
                 reference: format!("fixture/{id}"),
                 model: id.into(),
                 protocol: crate::models::Protocol::Completion,
+                thinking: crate::models::ModelThinking::default(),
             })
             .to_vec();
         app.current_model = Some(app.choices[0].clone());
@@ -1799,7 +1816,7 @@ mod tests {
             assert_eq!(app.input.cursor(), cursor);
             assert!(app.model_picker_draft.is_none());
             let result = if succeeds {
-                Ok(app.choices[1].clone())
+                Ok((app.choices[1].clone(), app.think_level))
             } else {
                 Err(anyhow::anyhow!("fixture switch failure"))
             };

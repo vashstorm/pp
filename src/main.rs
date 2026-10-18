@@ -248,12 +248,18 @@ fn run(args: Args) -> Result<()> {
                     writeln!(stderr, "error: {error:#}")?;
                     continue;
                 }
-                writeln!(
+                write!(
                     stderr,
-                    "Thinking level: {} (options: {})",
-                    agent.think_level().label(),
-                    config::ThinkLevel::OPTIONS
+                    "Thinking level: {} (options: ",
+                    agent.think_level().label()
                 )?;
+                for (index, level) in agent.current_model().thinking.levels().enumerate() {
+                    if index != 0 {
+                        write!(stderr, ", ")?;
+                    }
+                    write!(stderr, "{}", level.as_str())?;
+                }
+                writeln!(stderr, ")")?;
             }
             Some(commands::Command::New) => {
                 agent.reset();

@@ -3264,7 +3264,9 @@ mod tui {
         });
         final_reply(request, "first answer");
         pty.text("first answer");
-        pty.ready();
+        // The draft's menu appears only after Completed, unlike the input
+        // border/status which also remain visible while the worker is busy.
+        pty.text("Light thinking");
         pty.draft("/effort low");
         pty.input("\r");
         pty.wait_for("完成后切换到 low", |screen| {
@@ -3280,8 +3282,13 @@ mod tui {
         assert_eq!(body["reasoning_effort"], "low");
         final_reply(request, "second answer");
         pty.text("second answer");
-        pty.ready();
-        for level in ["low", "medium", "high", "xhigh", "max"] {
+        pty.input("/effort ");
+        pty.text("Light thinking (current)");
+        pty.input("\x01\x0b");
+        pty.draft("");
+        // low was already exercised above; each transition now changes the
+        // displayed level, so readiness cannot match a stale status value.
+        for level in ["medium", "high", "xhigh", "max"] {
             pty.input(&format!("/effort {level}\r"));
             pty.ready_effort(level);
         }

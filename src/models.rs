@@ -3,7 +3,110 @@ use reqwest::Url;
 use serde::Deserialize;
 use std::{collections::HashSet, fs, path::Path};
 
-use crate::jsonc;
+use crate::{config::ThinkLevel, jsonc};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ModelThinking {
+    allowed: u8,
+    default_level: Option<ThinkLevel>,
+}
+
+impl Default for ModelThinking {
+    fn default() -> Self {
+        Self {
+            allowed: (1 << ThinkLevel::ALL.len()) - 1,
+            default_level: None,
+        }
+    }
+}
+
+impl ModelThinking {
+    pub(crate) fn supports(self, level: ThinkLevel) -> bool {
+        self.allowed & (1 << level as u8) != 0
+    }
+
+    pub(crate) fn levels(self) -> impl Iterator<Item = ThinkLevel> {
+        ThinkLevel::ALL
+            .into_iter()
+            .filter(move |&level| self.supports(level))
+    }
+
+    pub(crate) fn explicit_default(self) -> Option<ThinkLevel> {
+        self.default_level
+    }
+
+    pub(crate) fn effective_default(self, global: ThinkLevel) -> ThinkLevel {
+        self.default_level.unwrap_or_else(|| {
+            if self.supports(global) {
+                global
+            } else {
+                self.first()
+            }
+        })
+    }
+
+    fn first(self) -> ThinkLevel {
+        self.levels()
+            .next()
+            .expect("validated thinking set is nonempty")
+    }
+
+    pub(crate) fn next(self, current: ThinkLevel) -> ThinkLevel {
+        if !self.supports(current) {
+            return self.first();
+        }
+        self.levels()
+            .skip_while(|&level| level != current)
+            .nth(1)
+            .unwrap_or_else(|| self.first())
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThinkingEntry {
+    #[serde(default)]
+    efforts: Vec<ThinkLevel>,
+    #[serde(
+        rename = "defaultLevel",
+        default,
+        deserialize_with = "deserialize_optional_think_level"
+    )]
+    default_level: Option<ThinkLevel>,
+}
+
+fn deserialize_optional_think_level<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<ThinkLevel>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    ThinkLevel::deserialize(deserializer).map(Some)
+}
+
+impl ThinkingEntry {
+    fn validate(self) -> Result<ModelThinking> {
+        let mut policy = ModelThinking::default();
+        if !self.efforts.is_empty() {
+            policy.allowed = 0;
+            for level in self.efforts {
+                ensure!(
+                    level != ThinkLevel::None,
+                    "thinking.efforts must contain only low, medium, high, xhigh, max"
+                );
+                policy.allowed |= 1 << level as u8;
+            }
+        }
+        if let Some(level) = self.default_level {
+            ensure!(
+                policy.supports(level),
+                "thinking.defaultLevel must be included in thinking.efforts"
+            );
+        }
+        policy.default_level = self.default_level;
+        Ok(policy)
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,6 +187,8 @@ where
 struct ModelEntry {
     id: String,
     model: String,
+    #[serde(default)]
+    thinking: ThinkingEntry,
 }
 
 // Deliberately not Debug: this owns the API credential.
@@ -98,6 +203,7 @@ pub(crate) struct ValidatedProvider {
 pub(crate) struct ValidatedModel {
     pub(crate) id: String,
     pub(crate) model: String,
+    pub(crate) thinking: ModelThinking,
 }
 
 // Validate every provider and model before selecting anything.
@@ -153,11 +259,14 @@ fn validate_providers(providers: Vec<ProviderEntry>) -> Result<Vec<ValidatedProv
                 models: provider
                     .models
                     .into_iter()
-                    .map(|model| ValidatedModel {
-                        id: model.id,
-                        model: model.model,
+                    .map(|model| {
+                        Ok(ValidatedModel {
+                            id: model.id,
+                            model: model.model,
+                            thinking: model.thinking.validate()?,
+                        })
                     })
-                    .collect(),
+                    .collect::<Result<_>>()?,
             })
         })
         .collect()

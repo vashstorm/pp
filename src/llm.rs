@@ -318,6 +318,7 @@ mod tests {
                 api_key: "private-key".into(),
                 model: "fixture".into(),
                 protocol: crate::models::Protocol::Completion,
+                thinking: crate::models::ModelThinking::default(),
                 base_url: base_url.parse().unwrap(),
                 settings: crate::config::Settings {
                     mcp_servers: Default::default(),

@@ -283,6 +283,7 @@ mod tests {
             reference: "fixture/alias".into(),
             model: "fixture-model".into(),
             protocol: crate::models::Protocol::Response,
+            thinking: crate::models::ModelThinking::default(),
         };
         let context = StatusContext {
             workdir: format!("/{}project", "中文目录/".repeat(30)),

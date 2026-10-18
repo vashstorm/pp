@@ -164,6 +164,7 @@ impl Agent {
             reference: catalog.default_reference().to_owned(),
             model: config.model.clone(),
             protocol: config.protocol,
+            thinking: config.thinking,
         };
         let edit_mode = tools.edit_mode();
         let common = format!(
@@ -184,7 +185,9 @@ impl Agent {
                 "You are a coding assistant. Use read, edit, write, and bash to complete tasks. Before local changes, read relevant content and copy it into edit exactly as shown. Each edit entry replaces a unique oldText with newText, so include enough surrounding context to make oldText unique. All entries match the file as last read and must not overlap; put every discrete change to the same file into one edits array. If an edit fails, read again before retrying. {common}"
             ),
         };
-        let think_level = config.settings.think_level;
+        let think_level = config
+            .thinking
+            .effective_default(config.settings.think_level);
         let initial_system = format!(
             "{system}{}",
             tools
@@ -233,6 +236,10 @@ impl Agent {
             }
         };
         ensure!(matches, "saved session model is unavailable or has changed");
+        ensure!(
+            config.thinking.supports(checkpoint.think_level),
+            "saved session thinking level is not supported by the configured model"
+        );
         let client = OpenAiClient::new(&config)?;
         tools.limits = checkpoint.tool_limits;
         tools.mcp = crate::mcp::Registry::connect(&config.settings.mcp_servers, tools.cwd())?;
@@ -246,6 +253,7 @@ impl Agent {
                 reference: checkpoint.model_reference,
                 model: config.model,
                 protocol: config.protocol,
+                thinking: config.thinking,
             },
             catalog,
             think_level: checkpoint.think_level,
@@ -323,6 +331,17 @@ impl Agent {
     }
 
     pub(crate) fn set_think_level(&mut self, level: ThinkLevel) -> Result<()> {
+        if !self.current_model.thinking.supports(level) {
+            let mut message =
+                String::from("thinking level is not supported by the current model; options: ");
+            for (index, allowed) in self.current_model.thinking.levels().enumerate() {
+                if index != 0 {
+                    message.push_str(", ");
+                }
+                message.push_str(allowed.as_str());
+            }
+            bail!(message);
+        }
         self.journal.think(level)?;
         self.session.set_think_level(level);
         self.think_level = level;
@@ -334,6 +353,15 @@ impl Agent {
             return Ok(());
         }
         let config = self.catalog.resolve(reference)?;
+        let target_level = config.thinking.explicit_default().unwrap_or_else(|| {
+            if config.thinking.supports(self.think_level) {
+                self.think_level
+            } else {
+                config
+                    .thinking
+                    .effective_default(config.settings.think_level)
+            }
+        });
         let client = OpenAiClient::new(&config)?;
         let same_provider = reference.split_once('/').map(|(provider, _)| provider)
             == self
@@ -357,46 +385,54 @@ impl Agent {
             reference: reference.to_owned(),
             model: config.model.clone(),
             protocol: config.protocol,
+            thinking: config.thinking,
         };
         let metadata = Metadata {
             cwd: self.tools.cwd(),
             model_reference: &choice.reference,
-            think_level: self.think_level,
+            think_level: target_level,
             edit_mode: self.tools.edit_mode(),
             tool_limits: self.tools.limits,
             base_system: &self.base_system,
         };
         if let Some(mut session) = converted {
             session.set_tools(self.tools.all_definitions());
-            session.set_think_level(self.think_level);
+            session.set_think_level(target_level);
             self.journal.checkpoint(&metadata, (&session).into())?;
             self.session = session;
         } else {
-            match &mut self.session {
-                Session::Completion(request) => {
-                    let old = std::mem::replace(&mut request.model, config.model);
-                    if let Err(error) = self
-                        .journal
-                        .checkpoint(&metadata, SessionRef::Completion(request))
-                    {
-                        request.model = old;
-                        return Err(error);
+            // Move only the fields being changed; retain the full native reasoning
+            // object so a failed checkpoint restores even provider-specific state.
+            let (old_model, old_effort, old_reasoning) = match &mut self.session {
+                Session::Completion(request) => (
+                    Some(std::mem::replace(&mut request.model, config.model)),
+                    request.reasoning_effort.take(),
+                    None,
+                ),
+                Session::Response(request) => (
+                    request.model.replace(config.model),
+                    None,
+                    request.reasoning.take(),
+                ),
+            };
+            self.session.set_think_level(target_level);
+            if let Err(error) = self.journal.checkpoint(&metadata, (&self.session).into()) {
+                match &mut self.session {
+                    Session::Completion(request) => {
+                        request.model = old_model.expect("completion model is always present");
+                        request.reasoning_effort = old_effort;
+                    }
+                    Session::Response(request) => {
+                        request.model = old_model;
+                        request.reasoning = old_reasoning;
                     }
                 }
-                Session::Response(request) => {
-                    let old = request.model.replace(config.model);
-                    if let Err(error) = self
-                        .journal
-                        .checkpoint(&metadata, SessionRef::Response(request))
-                    {
-                        request.model = old;
-                        return Err(error);
-                    }
-                }
+                return Err(error);
             }
         }
         self.client = client;
         self.current_model = choice;
+        self.think_level = target_level;
         Ok(())
     }
 

@@ -2439,6 +2439,157 @@ fn session_settings_persist_across_model_switch_and_restore() {
 }
 
 #[test]
+fn model_thinking_session_restore_preserves_saved_level_across_config_changes() {
+    for api in APIS {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let launch = tempfile::tempdir().unwrap();
+        let protocol = match api {
+            Api::Chat => "completion",
+            Api::Responses => "response",
+        };
+        let configured_models = |default_level: &str, efforts: Value| {
+            json!({"providers":[
+                slash_provider(&server, "p", protocol, json!([
+                    {"id":"plain","model":"m-plain"},
+                    {"id":"cfg","model":"m-cfg","thinking":{
+                        "efforts":efforts,"defaultLevel":default_level
+                    }}
+                ]))
+            ]})
+            .to_string()
+        };
+        let settings = r#"{"default_model":"p/plain","think_level":"low"}"#;
+        configure(
+            home.path(),
+            settings,
+            &configured_models("high", json!(["low", "high"])),
+        );
+
+        // Startup on the unconfigured model keeps the global level.
+        let mut cli = start(home.path(), project.path(), &[]);
+        cli.input("first\n");
+        let (request, body) = api.receive(&server);
+        assert_eq!(body["model"], "m-plain");
+        api.assert_level(&body, "low");
+        api.final_reply(request, "first answer");
+
+        // An actual switch applies the target model's explicit default even
+        // though the current level is also supported there.
+        cli.input("/model p/cfg\n");
+        cli.wait_for(Pipe::Err, "Current model: p/cfg (m-cfg)");
+        let id = only_session_id(home.path());
+        let path = sessions_dir(home.path()).join(format!("{id}.jsonl"));
+        let switched_request = rebuild_request(&records(&path));
+        assert_eq!(switched_request["model"], "m-cfg");
+        api.assert_level(&switched_request, "high");
+        let before_rejected = fs::read(&path).unwrap();
+        cli.input("/effort max\n");
+        cli.wait_for(
+            Pipe::Err,
+            "error: thinking level is not supported by the current model; options: low, high",
+        );
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            before_rejected,
+            "rejected effort command must not touch the journal"
+        );
+        cli.input("second\n");
+        let (request, body) = api.receive(&server);
+        assert_eq!(body["model"], "m-cfg");
+        api.assert_level(&body, "high");
+        let (users, assistants) = api.turns(&body);
+        assert_eq!(users, ["first", "second"]);
+        assert_eq!(assistants, ["first answer"]);
+        api.final_reply(request, "second answer");
+        cli.input("/quit\n");
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // The saved native state rebuilds to exactly the model and effort of
+        // the real request.
+        let saved = records(&path);
+        assert_session_contract(&saved, &id, project.path());
+        let saved_request = rebuild_request(&saved);
+        assert_eq!(saved_request["model"], body["model"]);
+        match api {
+            Api::Chat => assert_eq!(saved_request["reasoning_effort"], body["reasoning_effort"]),
+            Api::Responses => assert_eq!(saved_request["reasoning"], body["reasoning"]),
+        }
+
+        // A later defaultLevel change never rewrites the saved level or the
+        // replayed native history.
+        configure(
+            home.path(),
+            settings,
+            &configured_models("low", json!(["low", "high"])),
+        );
+        let cli = start(
+            home.path(),
+            launch.path(),
+            &["-r", &id, "-p", "after restore"],
+        );
+        let (request, body) = api.receive(&server);
+        let field = match api {
+            Api::Chat => "messages",
+            Api::Responses => "input",
+        };
+        let mut expected = saved_request;
+        let mut new_user = expected[field]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["role"] == "user")
+            .expect("saved history must contain a user turn")
+            .clone();
+        match &mut new_user["content"] {
+            Value::String(text) => *text = "after restore".to_owned(),
+            Value::Array(parts) => parts[0]["text"] = json!("after restore"),
+            content => panic!("unexpected user content: {content}"),
+        }
+        expected[field].as_array_mut().unwrap().push(new_user);
+        assert_eq!(
+            body, expected,
+            "restored request must replay the saved native history and effort"
+        );
+        assert_eq!(body["model"], "m-cfg");
+        api.assert_level(&body, "high");
+        api.final_reply(request, "restored answer");
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"restored answer\n");
+        no_more(&server);
+
+        // Narrowing efforts below the saved level blocks restore before any
+        // request or journal write, byte for byte.
+        let before_failure = fs::read(&path).unwrap();
+        configure(
+            home.path(),
+            settings,
+            &configured_models("medium", json!(["medium", "max"])),
+        );
+        expect_restore_failure(
+            &server,
+            home.path(),
+            launch.path(),
+            &["-r", &id, "-p", "blocked"],
+            &["saved session thinking level is not supported by the configured model"],
+            &["p-key"],
+        );
+        assert_eq!(fs::read(&path).unwrap(), before_failure);
+    }
+}
+
+#[test]
 fn session_restore_keeps_saved_edit_mode_and_execution_limits() {
     for api in APIS {
         let server = server();

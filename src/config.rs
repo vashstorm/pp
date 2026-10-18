@@ -12,6 +12,7 @@ use crate::{jsonc, models};
 
 // Deliberately not Debug: this owns the API credential.
 pub(crate) struct Config {
+    pub(crate) thinking: models::ModelThinking,
     pub(crate) protocol: models::Protocol,
     pub(crate) api_key: String,
     pub(crate) model: String,
@@ -29,6 +30,7 @@ pub(crate) struct ModelCatalog {
 
 #[derive(Clone)]
 pub(crate) struct ModelChoice {
+    pub(crate) thinking: models::ModelThinking,
     pub(crate) reference: String,
     pub(crate) model: String,
     pub(crate) protocol: models::Protocol,
@@ -82,17 +84,6 @@ impl ThinkLevel {
             "no think"
         } else {
             self.as_str()
-        }
-    }
-
-    pub(crate) fn next(self) -> Self {
-        match self {
-            Self::None => Self::Low,
-            Self::Low => Self::Medium,
-            Self::Medium => Self::High,
-            Self::High => Self::Xhigh,
-            Self::Xhigh => Self::Max,
-            Self::Max => Self::None,
         }
     }
 
@@ -348,6 +339,7 @@ impl ModelCatalog {
                     reference: format!("{}/{}", provider.id, model.id),
                     model: model.model.clone(),
                     protocol: provider.protocol,
+                    thinking: model.thinking,
                 })
             })
             .collect()
@@ -375,6 +367,7 @@ impl ModelCatalog {
             .context("model not found; use /model to list configured models")?;
         Ok(Config {
             protocol: provider.protocol,
+            thinking: model.thinking,
             api_key: provider.api_key.clone(),
             model: model.model.clone(),
             base_url: models::openai_base_url(provider.base_url.clone()),
@@ -564,6 +557,117 @@ mod tests {
                 .think_level,
             ThinkLevel::None
         );
+    }
+
+    #[test]
+    fn model_thinking_validates_sets_defaults_and_unselected_models() {
+        let make = |thinking: serde_json::Value| {
+            let mut models: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
+            models["providers"][0]["models"][0]["thinking"] = thinking;
+            models
+        };
+        for thinking in [
+            json!({}),
+            json!({"efforts":[]}),
+            json!({"defaultLevel":"default"}),
+        ] {
+            let config = load(None, Some(&make(thinking).to_string())).unwrap();
+            assert!(config.thinking.supports(ThinkLevel::None));
+            assert_eq!(
+                config.thinking.levels().collect::<Vec<_>>(),
+                ThinkLevel::ALL
+            );
+        }
+        let config = load(
+            None,
+            Some(&make(json!({"efforts":["high","low","high"],"defaultLevel":"high"})).to_string()),
+        )
+        .unwrap();
+        let policy = config.thinking;
+        assert_eq!(
+            policy.levels().collect::<Vec<_>>(),
+            [ThinkLevel::Low, ThinkLevel::High]
+        );
+        assert_eq!(policy.effective_default(ThinkLevel::Max), ThinkLevel::High);
+        assert_eq!(policy.explicit_default(), Some(ThinkLevel::High));
+        assert_eq!(policy.next(ThinkLevel::High), ThinkLevel::Low);
+        assert_eq!(policy.next(ThinkLevel::Low), ThinkLevel::High);
+        assert_eq!(policy.next(ThinkLevel::Max), ThinkLevel::Low);
+        let config = load(
+            None,
+            Some(&make(json!({"efforts":["xhigh","medium"]})).to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            config.thinking.effective_default(ThinkLevel::Max),
+            ThinkLevel::Medium
+        );
+        assert_eq!(
+            config.thinking.effective_default(ThinkLevel::Xhigh),
+            ThinkLevel::Xhigh
+        );
+        let config = load(None, Some(&make(json!({"efforts":["low"]})).to_string())).unwrap();
+        assert_eq!(config.thinking.next(ThinkLevel::Low), ThinkLevel::Low);
+        let mut invalid = vec![
+            json!(null),
+            json!(true),
+            json!([]),
+            json!("secret-marker"),
+            json!({"unknown":"secret-marker"}),
+            json!({"efforts":["low"],"defaultLevel":"high"}),
+        ];
+        for value in [
+            json!(null),
+            json!(true),
+            json!(1),
+            json!(1.5),
+            json!("secret-marker"),
+            json!({}),
+        ] {
+            invalid.push(json!({"efforts":value}));
+            invalid.push(json!({"defaultLevel":value}));
+        }
+        for value in [
+            json!(null),
+            json!(true),
+            json!(1),
+            json!("none"),
+            json!("default"),
+            json!("HIGH"),
+            json!(" high"),
+            json!("high "),
+            json!("secret-marker"),
+            json!([]),
+        ] {
+            invalid.push(json!({"efforts":[value]}));
+        }
+        for value in ["HIGH", " high", "high ", "secret-marker"] {
+            invalid.push(json!({"defaultLevel":value}));
+        }
+        for thinking in invalid {
+            let models = make(thinking);
+            rejection(None, Some(&models.to_string()), &["models.jsonc"]);
+            let mut unselected: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
+            let mut model = models["providers"][0]["models"][0].clone();
+            model["id"] = json!("unselected");
+            unselected["providers"][0]["models"]
+                .as_array_mut()
+                .unwrap()
+                .push(model);
+            rejection(None, Some(&unselected.to_string()), &["models.jsonc"]);
+        }
+        let error = rejection(
+            None,
+            Some(&make(json!({"efforts":["none"]})).to_string()),
+            &["models.jsonc"],
+        );
+        assert!(error.contains("thinking.efforts must contain only low, medium, high, xhigh, max"));
+        let error = rejection(
+            None,
+            Some(&make(json!({"efforts":["low"],"defaultLevel":"high"})).to_string()),
+            &["models.jsonc"],
+        );
+        assert!(error.contains("thinking.defaultLevel must be included in thinking.efforts"));
     }
 
     #[test]

@@ -50,7 +50,15 @@ cargo build --locked
       "base_url": "https://api.openai.com/v1",
       "models": [
         // id is an alias within the provider; model is the raw model name sent to the vendor
-        {"id": "primary", "model": "vendor-model-one"},
+        {
+          "id": "primary",
+          "model": "vendor-model-one",
+          // Optional: restrict available efforts and choose this model's default
+          "thinking": {
+            "efforts": ["low", "high", "xhigh"],
+            "defaultLevel": "high",
+          },
+        },
         {"id": "secondary", "model": "vendor-model-two"},
       ],
     },
@@ -80,13 +88,17 @@ chmod 600 ~/.pp/agent/models.jsonc
 
 Validation and model-selection rules:
 
-- `think_level` 设置启动时的默认思考级别，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；省略字段或缺少配置文件时使用 `none`。界面将 `none` 显示为 `no think`。旧值 `default` 仍可读取，但作为 `none` 的兼容别名，含义变为显式关闭思考。仅接受这些小写字符串，拒绝 null 和其他值。Responses 请求显式发送 `reasoning.effort`，Chat Completions 请求显式发送 `reasoning_effort`；`none` 均传为字符串 `"none"`，Responses 同时省略 `reasoning.summary`，其他档位仍使用 `reasoning.summary: "auto"` 请求可读思考摘要。档位原样传给服务端，具体模型的支持范围由服务端决定，不自动降档或重试。参见 [OpenAI 官方思考级别说明](https://developers.openai.com/api/docs/guides/reasoning)。
-- TUI 输入 `/effort `（命令后加空格）即在输入框下方展开档位菜单，左侧显示档位，右侧显示说明和“当前”标记，黄色突出选中项。↑/↓ 选择，Enter 确认，Esc 取消并保留输入；Ctrl+S 将当前高亮选中的档位保存为全局默认值（写入 `~/.pp/agent/settings.jsonc`，下次普通新启动生效），不改变当前会话档位。菜单底部显示快捷键提示；继续输入档位前缀会筛选候选，Tab 补全但不执行。菜单包含 `no think` 和上述五档，关闭思考的补全值为 `none`，不显示固定 token 预算。输入 `/effort` 后按 Enter 也可展开。行模式用 `/effort` 查看当前级别及可选值；两种模式均可用 `/effort high` 直接切换、`/effort none` 关闭思考，兼容旧命令 `/think` 和旧值 `default`。切换保留历史，对后续请求生效；`/model` 和 `/new` 均保留当前级别。TUI 底部状态栏显示实际选择，运行中拒绝切换并保留输入草稿。命令及 Shift+Tab 不改写配置文件；已有活动 session 时会持久化选择，写入失败则保留原档位。普通新启动读取配置的 `think_level`，恢复 session 使用保存的档位。
+- 每模型 `thinking.efforts` 是严格白名单：非空时仅接受 `low`、`medium`、`high`、`xhigh`、`max`，不隐式附加 `none`，也不接受 `default`。重复值去重，菜单及循环始终按 `none → low → medium → high → xhigh → max` 的允许子集排序。省略 `thinking`、`thinking: {}`、省略 `efforts` 或 `efforts: []` 均不限制原有六档。`thinking.defaultLevel` 支持六档及 `default`→`none` 别名；有非空白名单时默认值必须在其中。拒绝显式 null、错误类型、大小写/空白变体及未知字段，包括未选中的模型。
+- 普通新启动优先使用模型 `defaultLevel`，否则使用允许的全局 `settings.think_level`，全局值不允许时使用规范顺序中最低允许档。实际切入其他模型时，显式模型默认值总是优先；没有显式默认则保留目标支持的当前档位，否则回退到目标有效默认。切到当前模型引用是无操作。`/new` 保留当前模型和档位。切换模型、原生请求参数与保存档位原子提交；持久化失败不部分改变状态。
+- 白名单贯穿 `/effort`（含 `/think` 和 `default` 别名）、TUI 菜单、Shift+Tab、会话恢复与 API 请求；不支持的输入在本地拒绝，不改变档位、请求或日志。Shift+Tab 仅循环允许档，单档时保持档位与草稿。恢复精确保留仍被允许的保存档位及原生请求，修改 `defaultLevel` 不覆盖它；收窄白名单排除保存档位时拒绝恢复，不改写日志或发送请求。Ctrl+S 仍只保存全局 `settings.think_level`，不写模型配置、不改变当前会话；显式模型默认值及菜单 `(default)` 标记仍优先于保存的全局值。
+
+- `think_level` 设置启动时的默认思考级别，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；省略字段或缺少配置文件时使用 `none`。界面将 `none` 显示为 `no think`。旧值 `default` 仍可读取，但作为 `none` 的兼容别名，含义变为显式关闭思考。仅接受这些小写字符串，拒绝 null 和其他值。Responses 请求显式发送 `reasoning.effort`，Chat Completions 请求显式发送 `reasoning_effort`；`none` 均传为字符串 `"none"`，Responses 同时省略 `reasoning.summary`，其他档位仍使用 `reasoning.summary: "auto"` 请求可读思考摘要。通过本地模型白名单校验的档位原样传给服务端；白名单不保证供应商实际支持，未配置白名单时仍由服务端决定，不自动降档或重试。参见 [OpenAI 官方思考级别说明](https://developers.openai.com/api/docs/guides/reasoning)。
+- TUI 输入 `/effort `（命令后加空格）即在输入框下方展开档位菜单，左侧显示档位，右侧显示说明和“当前”标记，黄色突出选中项。↑/↓ 选择，Enter 确认，Esc 取消并保留输入；Ctrl+S 将当前高亮选中的档位保存为全局默认值（写入 `~/.pp/agent/settings.jsonc`，下次普通新启动生效），不改变当前会话档位。菜单底部显示快捷键提示；继续输入档位前缀会筛选候选，Tab 补全但不执行。菜单只包含当前模型允许的档位；未配置限制时包含 `no think` 和上述五档，关闭思考的补全值为 `none`，不显示固定 token 预算。输入 `/effort` 后按 Enter 也可展开。行模式用 `/effort` 查看当前级别及可选值；两种模式均可用 `/effort high` 直接切换、`/effort none` 关闭思考，兼容旧命令 `/think` 和旧值 `default`。切换保留历史，对后续请求生效；`/new` 保留当前级别，`/model` 按目标模型策略选择档位；未配置策略的模型仍保留当前级别。TUI 底部状态栏显示实际选择，运行中拒绝切换并保留输入草稿。命令及 Shift+Tab 不改写配置文件；已有活动 session 时会持久化选择，写入失败则保留原档位。普通新启动按模型默认值与全局 `think_level` 优先级选择，恢复 session 使用仍被允许的保存档位。
 - 缺少 `settings.jsonc`、省略 `default_model` 或没有匹配的 provider/model 时，使用首个 provider 的首个模型。模型请求次数默认 20，模型请求超时和 bash 超时分别默认 120 秒；read 默认最多返回 65,536 源字节且不超过 2000 个完整行。限制值必须为正整数，拒绝 null、负数、小数、字符串和数值溢出。
 - `edit` defaults to `"replace"` when settings or the field are absent. Only exact lowercase `"replace"` and `"hashline"` strings are accepted; null, other types, case variants, and surrounding whitespace are rejected. It is fixed at startup and survives `/model` (including cross-protocol switches) and `/new`. Existing anchored-edit users must explicitly select `"hashline"`.
 - An explicit `default_model` must be `provider/model`, split at the first `/`; neither part may be blank, matching is case-sensitive and exact with no trimming. The provider id cannot contain `/`, but the model id can: `gateway/team/model` selects the model with id `team/model` under gateway. Bare model ids are not accepted, and there is no environment-variable fallback.
 - `providers` and every provider's `models` must be non-empty. Provider ids are unique across the file; model ids only need to be unique within their provider, and different providers may reuse the same model alias. id, `api_key`, and the vendor `model` must all be non-blank. All providers and models are fully validated at load, including unselected ones.
-- Unknown fields are rejected at the file top level, the provider level, and the model level. A model may contain only `id` and `model` and cannot override the provider's credentials, base URL, or protocol; the old top-level flat `models` format is no longer accepted.
+- Unknown fields are rejected at the file top level, the provider level, and the model level. A model may contain only `id`, `model`, and optional `thinking` and cannot override the provider's credentials, base URL, or protocol; the old top-level flat `models` format is no longer accepted.
 - Provider-level `protocol` selects the API: `"response"` uses `POST /responses` and is the default when omitted; `"completion"` uses `POST /chat/completions` (not the legacy `/completions` API). Only these exact lowercase strings are accepted. Null, wrong types, old `"openai"`, and `"anthropic"` invalidate the entire configuration, including on an unselected provider. To migrate an existing Chat Completions provider, replace `"openai"` with `"completion"`; omitting the field now selects Responses.
 - Provider configuration is read only from these two JSONC files: no provider environment variables, no environment substitution or fallback, and no `.env` or OAuth loading. Errors name the offending file and never dump config values, URLs, or keys. Choose the API supported by the configured service and model; there is no automatic protocol fallback.
 
@@ -230,7 +242,7 @@ Both APIs validate the entire batch before saving assistant output or executing 
 
 ### Responses 故障排查
 
-- 部分模型始终启用思考，不接受 `reasoning.effort: "none"`。旧配置 `"think_level": "default"` 在当前版本是 `none` 的别名，**不是服务端默认值**。若服务端因此拒绝请求，在交互模式执行 `/effort low` 后重新提交任务；启动默认值在 `~/.pp/agent/settings.jsonc` 中改为 `"think_level": "low"`，或选择服务端支持的其他档位。已恢复的 session 保留其保存的档位，需要执行 `/effort low`；仅修改启动设置不会覆盖已恢复的档位。
+- 部分模型始终启用思考，不接受 `reasoning.effort: "none"`。旧配置 `"think_level": "default"` 在当前版本是 `none` 的别名，**不是服务端默认值**。可在该模型配置 `thinking.efforts` 排除 `none`，并用 `thinking.defaultLevel` 指定支持的启动档位。若服务端仍拒绝请求，在交互模式执行允许的 `/effort low` 后重新提交任务；启动默认值在 `~/.pp/agent/settings.jsonc` 中改为 `"think_level": "low"`，或选择服务端支持的其他档位。已恢复的 session 保留其保存的档位，需要执行 `/effort low`；仅修改启动设置不会覆盖已恢复的档位。
 - 流式终止错误区分 `response.failed`、`response.incomplete` 与 `error`，仅展示白名单内的错误码／未完成原因；服务端原始 message、param、未知 code/reason 均不回显。`invalid_request` 提示检查模型支持的思考档位和请求参数；`max_output_tokens` 表示输出截断，`content_filter` 表示内容过滤。失败不自动重试、不降级协议、不提交未完成的回答，也不执行该批次工具。
 
 ## Verification
@@ -252,6 +264,7 @@ cargo test --locked --test cli_agent session:: -- --nocapture
 cargo test --locked --test cli_agent tui_session_ -- --nocapture
 cargo test --locked slash_
 cargo test --locked model_switch
+cargo test --locked model_thinking -- --nocapture
 cargo test --locked llm::
 cargo test --locked --test cli_agent default_reasoning_rejection_allows_manual_effort_recovery_without_committing_failure
 cargo test --locked streaming_ -- --nocapture

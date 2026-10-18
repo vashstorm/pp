@@ -1055,10 +1055,21 @@ mod tests {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         fs::write(&models, serde_json::json!({"providers":[
             {"id":"a","protocol":"completion","api_key":"fixture", "base_url":format!("http://{}/v1", server.server_addr()),
-             "models":[{"id":"one","model":"one"},{"id":"two","model":"two"}]},
-            {"id":"b","protocol":"response","api_key":"fixture", "models":[{"id":"one","model":"other"}]}
+             "models":[{"id":"one","model":"one"},{"id":"two","model":"two","thinking":{"defaultLevel":"max"}}]},
+            {"id":"b","protocol":"response","api_key":"fixture", "models":[{"id":"one","model":"other","thinking":{"defaultLevel":"high"}},{"id":"two","model":"two","thinking":{"defaultLevel":"max"}}]}
         ]}).to_string()).unwrap();
-        for target in ["a/two", "b/one", "effort"] {
+        for (source, target) in [
+            ("a/one", "a/two"),
+            ("a/one", "b/one"),
+            ("b/one", "b/two"),
+            ("b/one", "a/one"),
+            ("a/one", "effort"),
+        ] {
+            fs::write(
+                dir.path().join("settings.jsonc"),
+                serde_json::json!({"default_model":source}).to_string(),
+            )
+            .unwrap();
             let catalog =
                 ModelCatalog::from_files(&dir.path().join("settings.jsonc"), &models).unwrap();
             let mut agent = Agent::new(
@@ -1067,6 +1078,11 @@ mod tests {
                 dir.path().join("sessions"),
             )
             .unwrap();
+            let original_level = agent.think_level;
+            if let Session::Response(request) = &mut agent.session {
+                request.reasoning.as_mut().unwrap().summary =
+                    Some(async_openai::types::responses::ReasoningSummary::Detailed);
+            }
             let metadata = Metadata {
                 cwd: agent.tools.cwd(),
                 model_reference: &agent.current_model.reference,
@@ -1096,7 +1112,7 @@ mod tests {
                 agent.switch_model(target).unwrap_err().to_string()
             };
             assert!(error.contains("persisting session"));
-            assert_eq!(agent.current_model.reference, "a/one");
+            assert_eq!(agent.current_model.reference, source);
             assert_eq!(serde_json::to_value(&agent.session).unwrap(), native);
             assert_eq!(
                 agent
@@ -1105,7 +1121,7 @@ mod tests {
                     .to_string(),
                 error
             );
-            assert_eq!(agent.think_level, ThinkLevel::None);
+            assert_eq!(agent.think_level, original_level);
             assert_eq!(serde_json::to_value(&agent.session).unwrap(), native);
             assert_eq!(
                 agent.continue_session(&mut |_| {}).unwrap_err().to_string(),
