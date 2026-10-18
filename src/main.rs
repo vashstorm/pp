@@ -4,6 +4,7 @@ mod config;
 mod events;
 mod jsonc;
 mod llm;
+mod mcp;
 mod models;
 mod skills;
 mod tools;
@@ -125,6 +126,12 @@ fn run(args: Args) -> Result<()> {
         }),
     };
     if use_tui {
+        // TUI worker 可以在请求中退出；主线程独立持有 MCP 进程清理句柄。
+        let _mcp_cleanup = agent
+            .as_ref()
+            .ok()
+            .map(|agent| agent.mcp_cleanup())
+            .transpose()?;
         return tui::run(agent, &cwd, skills, continue_requested);
     }
     let resumed_id = if args.resume.is_some() || continue_requested {

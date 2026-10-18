@@ -1945,7 +1945,8 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
     }
     // Every semantic mutation starts with a valid generated file. Added rows
     // get real chain envelopes, and intentional reordering is relinked.
-    let cases: &[(&str, fn(&mut Vec<Value>))] = &[
+    type MutationCase = (&'static str, fn(&mut Vec<Value>));
+    let cases: &[MutationCase] = &[
         ("unsupported pp session version", |records| {
             session_state_mut(records)["version"] = json!(2);
         }),

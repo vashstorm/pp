@@ -164,7 +164,7 @@ enum Pipe {
 
 // Both pipes are drained from spawn onward: a test observing stdout must never
 // accidentally make the child block on a full stderr pipe (or vice versa).
-struct LiveCli {
+pub(super) struct LiveCli {
     cli: Cli,
     rx: Receiver<(Pipe, Vec<u8>)>,
     stdout: Vec<u8>,
@@ -173,7 +173,7 @@ struct LiveCli {
 }
 
 impl LiveCli {
-    fn new(mut cli: Cli) -> Self {
+    pub(super) fn new(mut cli: Cli) -> Self {
         let child = cli.0.as_mut().unwrap();
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
@@ -253,7 +253,7 @@ impl LiveCli {
         );
     }
 
-    fn finish(self) -> Output {
+    pub(super) fn finish(self) -> Output {
         let Self {
             cli,
             rx,

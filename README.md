@@ -76,7 +76,7 @@ chmod 600 ~/.pp/agent/models.jsonc
 ./target/debug/pp
 ```
 
-**API 密钥以明文保存在 `~/.pp/agent/models.jsonc`。** The repository root `models.jsonc` is already in `.gitignore` to prevent a leftover personal key file on disk from accidentally entering version control. The tools have no sandbox and can still read configuration files; do not let the model read or output files containing keys. `settings.jsonc` holds no credentials and needs no ignore entry.
+**API 密钥以明文保存在 `~/.pp/agent/models.jsonc`。** The repository root `models.jsonc` is already in `.gitignore` to prevent a leftover personal key file on disk from accidentally entering version control. The tools have no sandbox and can still read configuration files; do not let the model read or output files containing keys. 如果 MCP 的命令参数或环境变量含凭证，`settings.jsonc` 也属于敏感配置，应限制权限并避免提交。
 
 Validation and model-selection rules:
 
@@ -94,12 +94,45 @@ When running `pp` directly, an unusable configuration (`models.jsonc` missing, u
 
 A provider's `base_url` is the API root. The existing path prefix is preserved; trailing `/` characters are stripped and the SDK appends `/responses` or `/chat/completions` according to `protocol`, with no automatic `/v1`. When omitted, `https://api.openai.com/v1` is used. Every explicit URL (including unselected providers) must be http/https with a host; userinfo, query, fragment, all-blank, and null are rejected. An explicit HTTP URL transmits credentials and sessions in plaintext — use it only with trusted compatible services. Only the selected key goes through HTTP header validation; unselected keys are merely checked for non-blankness.
 
+## MCP 工具
+
+在 `~/.pp/agent/settings.jsonc` 中添加 `mcp_servers`，连接本地 stdio MCP 服务：
+
+```jsonc
+{
+  "mcp_servers": {
+    "local": {
+      "command": "python3",
+      "args": ["/absolute/path/to/mcp_server.py"],
+      "env": {"APP_MODE": "development"},
+      "timeout_seconds": 30,
+    },
+  },
+}
+```
+
+`command` 必填，按 PATH 查找程序；`args` 和 `env` 默认为空，超时默认 30 秒且必须为正整数。直接传递参数，不执行 shell 展开；需要 shell 时显式使用 `bash -c`。服务继承进程环境，`env` 覆盖指定变量，工作目录为当前会话的工作目录。省略 `mcp_servers` 或设为 `{}` 时不启动服务。所有配置层均拒绝未知字段；服务名只能包含 ASCII 字母、数字、下划线和连字符，最长 24 字节，不能含 `__`。
+
+连接时按照 [MCP 初始化流程](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) 完成版本协商和 `notifications/initialized`，再分页调用 `tools/list`。支持协议版本 `2025-11-25`、`2025-06-18`、`2025-03-26` 和 `2024-11-05`。本次实现仅支持 stdio 工具发现及 `tools/call`，不支持远程 HTTP、resources、prompts、sampling、elicitation 或运行中更新工具列表；服务端 ping 会正常响应，其他服务端请求返回不支持的方法错误。
+
+工具名通常为 `mcp__服务名__工具名`，例如 `mcp__local__search`；包含特殊字符或组合名超过 64 字节时，工具部分替换为确定性的 `tool_<hash>`，调用时仍发送原始名称。重名会拒绝启动。MCP 的输入 schema 原样传给模型（`strict: false`），两种模型协议均支持调用，CLI/TUI 使用现有工具事件显示状态。结果保留 `content` 和 `structuredContent` 等字段，包装为 `{"ok":true,"result":{...}}`；`isError:true` 转为 `ok:false`，同批工具仍按顺序继续执行。
+
+初始化或发现失败时，当前配置的模型任务不可用；不完整连接会清理。每次请求的读写共享同一截止时间，通知不会延长超时；传输故障后关闭连接，后续调用返回错误，不自动重连或重试。服务进程在会话中复用，`/model`、`/new` 不重启；恢复保存的会话时按当前全局配置重新连接和发现工具，不恢复旧凭证或过期工具定义。正常退出、TUI 的 Ctrl-C 退出及连接故障时清理服务进程组。最多连接 32 个服务、发现 256 个工具，单条协议消息最多 1 MiB。
+
+MCP 服务按当前用户权限执行，能够访问工作目录之外的资源。服务 stderr 被丢弃，协议错误不输出原始响应体、命令参数或环境变量；成功的工具结果按数据展示和回填模型，服务应自行避免在结果中返回凭证。
+
+```sh
+cargo test --locked --test cli_agent mcp_ -- --test-threads=1
+```
+
 ## Terminal Interaction
 
 未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页采用 omp 风格的居中像素字标、版本号和简短操作提示；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏依次显示实际模型、思考级别、启动工作目录和 Git 信息。`no think` 表示显式请求关闭思考。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；右半区预留为第二状态栏，目前保持空白。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏或 Markdown 渲染。
 
 用户输入继续使用蓝色左竖线和加粗标签，助手回答与 read/write 数据使用终端默认文字色。bash 与 think 使用下述独立样式；其他工具保留淡色正文与运行／完成／失败状态。青色 grep 仍为保留显示类别。真实 `load_skill` 调用使用品红色 skill 卡片，不按文件路径或 bash 命令猜测类别。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
 
+- 临时消息以非模态圆角弹框显示在输入框上方靠右，左右至少留一格，不挤占布局、不改变草稿、光标或历史滚动位置。普通消息为绿色，重要提示／警告为黄色，错误为红色；通过边框、标题和正文的颜色亮度实现 200ms 淡入与最后 400ms 淡出，默认总时长 10 秒，不是窗口透明度。鼠标停留在弹框内时保持显示，移出后重新开始完整的 10 秒计时，无需输入也会自动消失；新消息替换旧消息，不堆叠。弹框右上角提供“复制”按钮，复制完整原文（包含折行或截断后未显示的内容）；通过终端 OSC 52 写入剪贴板，需终端或 tmux 允许此功能。“已发送”表示复制请求已发给终端；发送失败可再次点击重试。窄屏不足 24 列的弹框隐藏复制按钮。中文、emoji 和多行正文自动折行，最多八行，过长内容只显示开头；空间不足时隐藏，恢复尺寸后仅显示尚未到期的消息。skill 全屏管理面板中的弹框同样支持悬停和复制。
+- 界面已体现的成功变化不重复通知：模型和当前思考档位切换只更新状态栏，`/new` 直接恢复欢迎页并清空旧通知，skill 面板保存成功直接关闭。Ctrl+S 保存下次启动的默认思考档位以绿色弹框确认，不改变当前档位；本地命令、切换和保存的临时错误使用红框。启动 skill 扫描的非致命诊断汇总为黄色提示，完整详情保留在 `/skills`。任务／工具失败和执行不可用仍保留原有持久错误位置；通知不进入对话记录、session 或退出滚动历史，CLI／管道输出不变。
 - Enter 发送非空草稿，Ctrl-J 插入换行；粘贴保留多行且不会自动发送。输入框使用终端原生光标，为拼音等输入法提供插入位置。菜单关闭时，↑/↓ 优先在输入框的显示行间移动（包括自动折行）；到达首行后再按 ↑、到达末行后再按 ↓，才浏览本次进程中已提交的历史输入，支持继续编辑；↓ 越过最新一条会恢复浏览前的草稿和光标，历史两端不循环。运行中也可浏览输入历史，忙碌时被拒绝的提交不计入历史；`/new` 重置模型会话后仍保留本次进程的输入历史；恢复 session 时从已保存用户消息恢复输入历史，不恢复草稿或历史浏览位置。菜单展开时，↑/↓ 仍用于选择菜单项。
 - Shift+Tab 按 `no think → low → medium → high → xhigh → max → no think` 循环切换思考级别，后台确认后更新状态栏，保留草稿、光标和输入历史浏览位置。选择菜单展开时不切档。Ctrl+P 打开模型菜单，临时输入 `/model ` 供筛选和 Tab 补全；Esc 取消或 Enter 确认后恢复原草稿和光标，切换失败也保留。忙碌时拒绝切档和打开模型菜单，不排队。F1 显示与 `/help` 相同的帮助，忙碌时也可使用且保留草稿。三个快捷操作均忽略长按重复事件；skill 面板优先处理自身按键。Ctrl+N、Ctrl+U、Ctrl+W 沿用编辑器既有行为。
 - Ctrl+A / Ctrl+E 分别跳到当前行首 / 行尾；Ctrl+K 删除光标到当前行尾的内容，在行尾或空行按下不删除换行。左右键、Home/End、Backspace/Delete 继续支持中文和 Unicode 文本编辑。

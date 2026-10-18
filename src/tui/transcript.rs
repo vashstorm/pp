@@ -33,8 +33,6 @@ pub(super) enum EntryKind {
     Grep,
     Skill,
     Data,
-    Note,
-    Error,
 }
 
 impl EntryKind {
@@ -47,8 +45,6 @@ impl EntryKind {
             Self::Grep => Color::Cyan,
             Self::Skill => Color::Magenta,
             Self::Data => Color::Reset,
-            Self::Note => Color::DarkGray,
-            Self::Error => Color::Red,
         }
     }
 
@@ -370,6 +366,7 @@ pub(super) struct Transcript {
     offset: usize,
     total: usize,
     viewport_height: usize,
+    viewport_bottom: u16,
     follow_bottom: bool,
     // 重放恢复时不伪造 bash 卡片的 wall duration。
     replaying: bool,
@@ -387,18 +384,21 @@ impl Transcript {
         let (kind, title) = match label {
             "You" => (EntryKind::User, String::new()),
             "Assistant" => (EntryKind::Assistant, String::new()),
-            "Note" => (EntryKind::Note, label.into()),
-            "Error" => (EntryKind::Error, label.into()),
             _ => (EntryKind::Data, label.into()),
         };
         self.entries
             .push(TranscriptEntry::new(kind, title, text.into(), None));
     }
 
-    /// 按日志顺序恢复可见对话；原生 LLM 历史不在此处参与。
-    pub(super) fn replay(&mut self, records: Vec<ReplayRecord>, input_history: &mut Vec<String>) {
+    /// 按日志顺序恢复可见对话，并返回最后一条错误供弹窗展示。
+    pub(super) fn replay(
+        &mut self,
+        records: Vec<ReplayRecord>,
+        input_history: &mut Vec<String>,
+    ) -> Option<String> {
         self.replaying = true;
         let mut assistant_running = false;
+        let mut last_error = None;
         for record in records {
             match record {
                 ReplayRecord::User(text) => {
@@ -415,14 +415,17 @@ impl Transcript {
                 }
                 ReplayRecord::Error(message) => {
                     assistant_running = false;
-                    self.fail(&message);
+                    self.fail();
+                    last_error = Some(message);
                 }
             }
         }
         self.replaying = false;
         if assistant_running || self.assistant.is_some() || !self.running_tools.is_empty() {
-            self.fail("Previous request was interrupted.");
+            self.fail();
+            last_error = Some("Previous request was interrupted.".into());
         }
+        last_error
     }
 
     pub(super) fn write_scrollback(
@@ -430,7 +433,7 @@ impl Transcript {
         writer: &mut impl Write,
         snapshot: &Buffer,
     ) -> io::Result<()> {
-        let footer_y = snapshot.area.y + self.viewport_height as u16;
+        let footer_y = self.viewport_bottom;
         // 退出时回放完整输出，不把折叠预览当作终端历史。
         for entry in &mut self.entries {
             if matches!(entry.kind, EntryKind::Bash | EntryKind::Skill) && !entry.expanded {
@@ -621,7 +624,7 @@ impl Transcript {
             .map(|(_, index)| *index)
     }
 
-    pub(super) fn fail(&mut self, message: &str) {
+    pub(super) fn fail(&mut self) {
         if let Some(index) = self.assistant.take() {
             self.entries[index].status = EntryStatus::Failed;
             self.entries[index].layout = None;
@@ -633,7 +636,6 @@ impl Transcript {
             }
             self.entries[index].layout = None;
         }
-        self.append("Error", message);
     }
 
     pub(super) fn page_up(&mut self) {
@@ -668,6 +670,7 @@ impl Transcript {
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        self.viewport_bottom = area.bottom();
         self.viewport_height = usize::from(area.height);
         if area.width == 0 || area.height == 0 {
             return;
@@ -896,7 +899,7 @@ mod tests {
     fn replay_restores_visible_history_and_marks_interruption() {
         let mut transcript = Transcript::new();
         let mut input_history = Vec::new();
-        transcript.replay(
+        let error = transcript.replay(
             vec![
                 ReplayRecord::User("remember replay".into()),
                 ReplayRecord::Event(AgentEvent::AssistantStarted),
@@ -922,12 +925,17 @@ mod tests {
         assert!(text.contains("replay"));
         assert!(text.contains("Exit code: 0"));
         assert!(!text.contains("Wall:"));
-        assert!(text.contains("Previous request was interrupted."));
+        assert_eq!(error.as_deref(), Some("Previous request was interrupted."));
+        assert!(!text.contains("Previous request was interrupted."));
+        assert_eq!(
+            transcript.entries.last().unwrap().status,
+            EntryStatus::Failed
+        );
 
         // 完整结束的记录不会误报中断。
         let mut transcript = Transcript::new();
         let mut input_history = Vec::new();
-        transcript.replay(
+        let error = transcript.replay(
             vec![
                 ReplayRecord::User("done task".into()),
                 ReplayRecord::Event(AgentEvent::AssistantStarted),
@@ -940,7 +948,8 @@ mod tests {
         );
         let text = screen(&render(&mut transcript, 100, 30));
         assert!(text.contains("final answer"));
-        assert!(text.contains("task failed"));
+        assert_eq!(error.as_deref(), Some("task failed"));
+        assert!(!text.contains("task failed"));
         assert!(!text.contains("Previous request was interrupted."));
     }
 
@@ -954,11 +963,9 @@ mod tests {
                     text: "unfinished thought".into(),
                 }));
             }
-            transcript.replay(records, &mut Vec::new());
-            assert!(
-                screen(&render(&mut transcript, 100, 30))
-                    .contains("Previous request was interrupted.")
-            );
+            let error = transcript.replay(records, &mut Vec::new());
+            assert_eq!(error.as_deref(), Some("Previous request was interrupted."));
+            assert!(!screen(&render(&mut transcript, 100, 30)).contains("interrupted"));
         }
     }
 
@@ -1176,11 +1183,11 @@ mod tests {
             text: "partial thinking".into(),
         });
         delta(&mut transcript, "answer", false);
-        transcript.fail("stream failed");
+        transcript.fail();
         let text = screen(&render(&mut transcript, 80, 20));
         assert!(text.contains("partial thinking"));
         assert!(text.contains("answer"));
-        assert!(text.contains("stream failed"));
+        assert!(!text.contains("stream failed"));
     }
 
     #[test]
@@ -1324,12 +1331,13 @@ mod tests {
         );
         transcript.progress(AgentEvent::AssistantStarted);
         delta(&mut transcript, "partial visible", false);
-        transcript.fail("stream failed");
+        transcript.fail();
         assert_eq!(transcript.entries[3].status, EntryStatus::Failed);
         let text = screen(&render(&mut transcript, 60, 20));
         assert!(text.contains("partial visible"));
-        assert!(text.contains("Error"));
-        assert!(text.contains("stream failed"));
+        assert!(!text.contains("Error"));
+        assert!(!text.contains("stream failed"));
+        assert_eq!(transcript.entries.len(), 4);
     }
 
     #[test]

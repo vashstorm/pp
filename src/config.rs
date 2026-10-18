@@ -179,6 +179,8 @@ fn default_bash_timeout_seconds() -> u64 {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
+    #[serde(default)]
+    pub(crate) mcp_servers: std::collections::BTreeMap<String, crate::mcp::ServerConfig>,
     #[serde(default = "default_skill_dirs")]
     pub(crate) skill_dirs: Vec<String>,
     #[serde(default)]
@@ -212,6 +214,7 @@ impl Settings {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        crate::mcp::validate_config(&self.mcp_servers)?;
         ensure!(
             self.skill_dirs.iter().all(|path| !path.trim().is_empty()),
             "skill_dirs must contain non-blank paths"
@@ -264,6 +267,7 @@ pub(crate) fn global_dir() -> Result<PathBuf> {
 
 fn default_settings() -> Settings {
     Settings {
+        mcp_servers: Default::default(),
         skill_dirs: default_skill_dirs(),
         disabled_skills: Vec::new(),
         think_level: ThinkLevel::None,

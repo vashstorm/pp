@@ -320,6 +320,7 @@ mod tests {
                 protocol: crate::models::Protocol::Completion,
                 base_url: base_url.parse().unwrap(),
                 settings: crate::config::Settings {
+                    mcp_servers: Default::default(),
                     skill_dirs: Vec::new(),
                     disabled_skills: Vec::new(),
                     think_level: crate::config::ThinkLevel::None,

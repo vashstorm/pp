@@ -7,6 +7,9 @@ use std::{
 };
 use tiny_http::{Request, Response, Server};
 
+#[path = "cli_agent/mcp.rs"]
+mod mcp;
+
 fn config_path(home: &std::path::Path, name: &str) -> std::path::PathBuf {
     let dir = home.join(".pp/agent");
     std::fs::create_dir_all(&dir).unwrap();
@@ -2288,6 +2291,7 @@ fn missing_or_malformed_config_fails_without_environment_fallback_or_secret_leak
 mod tui {
     use super::*;
     include!("cli_agent/effort_defaults.rs");
+    include!("cli_agent/mcp_tui.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
     use std::{
         io::Read,
@@ -2525,7 +2529,16 @@ mod tui {
         }
 
         fn wait_for(&mut self, description: &str, condition: impl Fn(&vt100::Screen) -> bool) {
-            let deadline = Instant::now() + DEADLINE;
+            self.wait_for_timeout(description, DEADLINE, condition);
+        }
+
+        fn wait_for_timeout(
+            &mut self,
+            description: &str,
+            timeout: Duration,
+            condition: impl Fn(&vt100::Screen) -> bool,
+        ) {
+            let deadline = Instant::now() + timeout;
             loop {
                 self.drain();
                 if condition(self.parser.screen()) {
@@ -2654,6 +2667,53 @@ mod tui {
         panic!("missing label {label}: {}", screen.contents());
     }
 
+    fn notification_bounds(
+        screen: &vt100::Screen,
+        title: &str,
+        color: vt100::Color,
+    ) -> Option<(u16, u16, u16, u16)> {
+        let (rows, cols) = screen.size();
+        let input_top = (1..rows)
+            .find(|&row| {
+                screen
+                    .cell(row, 0)
+                    .is_some_and(|cell| cell.contents() == "❯")
+            })?
+            .checked_sub(1)?;
+        let bottom = input_top.checked_sub(1)?;
+        let right = cols.checked_sub(2)?;
+        for top in 0..bottom {
+            for left in 1..right {
+                let corner_matches = |row, col, symbol| {
+                    screen
+                        .cell(row, col)
+                        .is_some_and(|cell| cell.contents() == symbol && cell.fgcolor() == color)
+                };
+                if !corner_matches(top, left, "╭")
+                    || !corner_matches(top, right, "╮")
+                    || !corner_matches(bottom, left, "╰")
+                    || !corner_matches(bottom, right, "╯")
+                {
+                    continue;
+                }
+                let heading: String = (left..=right)
+                    .filter_map(|col| screen.cell(top, col))
+                    .map(|cell| cell.contents())
+                    .collect();
+                let complete_border = (left..=right).all(|col| {
+                    let cell = screen.cell(top, col).unwrap();
+                    (cell.contents().trim().is_empty() || cell.fgcolor() == color)
+                        && screen.cell(bottom, col).unwrap().fgcolor() == color
+                }) && (top + 1..bottom)
+                    .all(|row| corner_matches(row, left, "│") && corner_matches(row, right, "│"));
+                if heading.replace(' ', "").contains(title) && complete_border {
+                    return Some((top, left, bottom, right));
+                }
+            }
+        }
+        None
+    }
+
     const USER_BACKGROUND: vt100::Color = vt100::Color::Rgb(48, 42, 63);
     const ASSISTANT_BACKGROUND: vt100::Color = vt100::Color::Rgb(35, 39, 50);
 
@@ -2668,6 +2728,200 @@ mod tui {
             }
         }
         panic!("missing text {text}: {}", screen.contents());
+    }
+
+    #[test]
+    fn tui_notification_fades_without_input_and_preserves_draft() {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let mut pty = Pty::start(&server, home.path());
+        pty.ready_effort("no think");
+        pty.text("█▀▀█  █▀▀█");
+        let background: Vec<_> = (0..26)
+            .map(|row| {
+                (0..100)
+                    .map(|col| {
+                        let cell = pty.parser.screen().cell(row, col).unwrap();
+                        (cell.contents().to_owned(), cell.fgcolor(), cell.bgcolor())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        pty.input("/bogus\r");
+        let red = vt100::Color::Rgb(224, 108, 117);
+        pty.wait_for(
+            "full red error border above the input at the right edge",
+            |screen| {
+                notification_bounds(screen, "Error", red).is_some()
+                    && screen.contents().contains("unknown command; use /help")
+            },
+        );
+        let (top, left, bottom, right) =
+            notification_bounds(pty.parser.screen(), "Error", red).unwrap();
+        assert_eq!(bottom, 25);
+        assert_eq!(right, 98);
+        pty.draft("/bogus");
+
+        pty.input("\x01\x0b草稿🙂");
+        pty.draft("草稿🙂");
+        pty.resize(4, 20);
+        pty.wait_for(
+            "tiny terminal preserves the draft without an overlapping popup",
+            |screen| {
+                input_is_ready(screen)
+                    && screen.contents().contains("草稿🙂")
+                    && !screen.contents().contains("Error")
+            },
+        );
+        pty.resize(30, 100);
+        pty.ready_model("fixture-model");
+        pty.ready_effort("no think");
+        pty.draft("草稿🙂");
+        pty.wait_for(
+            "active error notification survives restoring the terminal size",
+            |screen| {
+                notification_bounds(screen, "Error", red).is_some()
+                    && !screen.hide_cursor()
+                    && screen.cursor_position() == (27, 8)
+            },
+        );
+        let cursor = pty.parser.screen().cursor_position();
+        // 真实 SGR 鼠标事件触发复制，完整原文通过 OSC 52 发送。
+        pty.input(&format!("\x1b[<35;{};{}M", right, top + 2));
+        pty.input(&format!(
+            "\x1b[<0;{};{}M\x1b[<0;{};{}m",
+            right - 1,
+            top + 1,
+            right - 1,
+            top + 1
+        ));
+        pty.text("[已发送]");
+        assert!(
+            pty.raw
+                .windows(b"\x1b]52;c;dW5rbm93biBjb21tYW5kOyB1c2UgL2hlbHA=\x1b\\".len())
+                .any(|bytes| bytes == b"\x1b]52;c;dW5rbm93biBjb21tYW5kOyB1c2UgL2hlbHA=\x1b\\")
+        );
+        pty.draft("草稿🙂");
+        assert_eq!(pty.parser.screen().cursor_position(), cursor);
+        let hovered_at = Instant::now();
+        pty.wait_for_timeout(
+            "鼠标停留超过十秒后弹框仍然存在",
+            Duration::from_secs(12),
+            |screen| {
+                hovered_at.elapsed() >= Duration::from_millis(10200)
+                    && screen.contents().contains("[已发送]")
+                    && notification_bounds(screen, "Error", red).is_some()
+            },
+        );
+        pty.input("\x1b[<35;1;1M");
+        // 移出后，无需后续输入即可在十秒后清除弹框并恢复背景。
+        let left_at = Instant::now();
+        pty.wait_for_timeout(
+            "空闲错误弹框到期后恢复覆盖区域",
+            Duration::from_secs(12),
+            |screen| {
+                !screen.contents().contains("Error")
+                    && !screen.contents().contains("unknown command; use /help")
+                    && (top..=bottom).all(|row| {
+                        (left..=right).all(|col| {
+                            let cell = screen.cell(row, col).unwrap();
+                            let original = &background[usize::from(row)][usize::from(col)];
+                            cell.contents().trim_end() == original.0.trim_end()
+                                && (original.0.trim().is_empty() || cell.fgcolor() == original.1)
+                                && cell.bgcolor() == original.2
+                        })
+                    })
+            },
+        );
+        assert!(left_at.elapsed() >= Duration::from_millis(9900));
+        pty.draft("草稿🙂");
+        assert!(!pty.parser.screen().hide_cursor());
+        assert_eq!(pty.parser.screen().cursor_position(), cursor);
+        pty.ready_effort("no think");
+
+        pty.input("\x01\x0b/effort low");
+        pty.text("Ctrl-S");
+        pty.input("\x13");
+        let green = vt100::Color::Rgb(127, 166, 106);
+        pty.wait_for(
+            "full green save notification above the input at the right edge",
+            |screen| {
+                notification_bounds(screen, "提示", green).is_some()
+                    && screen.contents().contains("默认思考等级已保存：low")
+            },
+        );
+        pty.ready_effort("no think");
+        let saved = std::fs::read_to_string(config_path(home.path(), "settings.jsonc")).unwrap();
+        assert!(saved.contains("\"think_level\": \"low\""));
+        pty.input("草稿🙂");
+        pty.draft("草稿🙂");
+        let cursor = pty.parser.screen().cursor_position();
+        pty.wait_for_timeout(
+            "保存默认档位弹框无需输入即可到期消失",
+            Duration::from_secs(12),
+            |screen| {
+                let text = screen.contents();
+                !text.contains("默认思考等级已保存")
+                    && !text.contains("提示")
+                    && !text.contains("│ Note")
+                    && text.contains("█▀▀█  █▀▀█")
+            },
+        );
+        pty.draft("草稿🙂");
+        assert_eq!(pty.parser.screen().cursor_position(), cursor);
+        assert!(!pty.parser.screen().hide_cursor());
+        pty.ready_effort("no think");
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
+
+    #[test]
+    fn tui_notification_startup_skill_warning_keeps_welcome_and_full_diagnostics() {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.jsonc"),
+            fixture_models(&server),
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(home.path(), "settings.jsonc"),
+            r#"{"skill_dirs":["./bad-root"]}"#,
+        )
+        .unwrap();
+        std::fs::write(config_path(home.path(), "bad-root"), "not a directory").unwrap();
+        let mut pty = Pty::start_with_existing_files(home.path());
+        let yellow = vt100::Color::Rgb(229, 192, 92);
+        pty.wait_for(
+            "full yellow startup summary with welcome still visible",
+            |screen| {
+                let text = screen.contents();
+                notification_bounds(screen, "重要", yellow).is_some()
+                    && text.contains("skill 扫描发现 1 个问题，使用 /skills 查看详情。")
+                    && text.contains("█▀▀█  █▀▀█")
+                    && input_is_ready(screen)
+            },
+        );
+        assert!(
+            !pty.parser
+                .screen()
+                .contents()
+                .contains("skill 根路径必须是目录")
+        );
+        pty.input("警告时草稿🙂");
+        pty.draft("警告时草稿🙂");
+        assert!(!pty.parser.screen().hide_cursor());
+        assert!(pty.parser.screen().contents().contains("█▀▀█  █▀▀█"));
+        pty.input("\x01\x0b/skills\r");
+        pty.text("Skills");
+        pty.text("根路径必须是目录");
+        pty.text("bad-root: skill");
+        assert!(!pty.parser.screen().contents().contains("skill 扫描发现"));
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
     }
 
     #[test]
@@ -2722,8 +2976,8 @@ mod tui {
         pty.text("startup answer");
         assert!(!pty.parser.screen().contents().contains("█▀▀█"));
         pty.input("/new\r");
-        pty.text("Session reset.");
         pty.text("█▀▀█  █▀▀█");
+        assert!(!pty.parser.screen().contents().contains("Session reset."));
         pty.input("/help\r");
         pty.text("bash has no directory isolation");
         assert!(!pty.parser.screen().contents().contains("█▀▀█"));
@@ -3347,8 +3601,7 @@ mod tui {
             pty.draft("draft-中");
             pty.input("\x1b[6~");
             pty.text("line-59-last");
-            // The completed first task now adds a session notice after the answer.
-            // Reach that actual bottom before expecting the next task to follow output.
+            // 首轮任务完成后显示会话弹框，翻到底部后再验证下一任务跟随输出。
             pty.input("\x1b[6~");
             pty.text("Session:");
             pty.resize(4, 20);
@@ -3372,8 +3625,11 @@ mod tui {
             pty.wait_for("both live pipe bodies", |s| {
                 let text = s.contents();
                 let body = |expected: &str| {
-                    text.lines()
-                        .any(|line| line.trim_matches([' ', '│']) == expected)
+                    // 右侧通知可覆盖同一行，按左侧可见的管道正文断言。
+                    text.lines().any(|line| {
+                        line.trim_start_matches([' ', '│']).split([' ', '│']).next()
+                            == Some(expected)
+                    })
                 };
                 body("out-first") && body("err-first")
             });
@@ -3448,9 +3704,12 @@ mod tui {
                     _ => {}
                 }
                 stream.finish();
-                pty.wait_for("partial plus failure and ready", |s| {
+                pty.wait_for("部分输出保留且错误显示为红色弹窗", |s| {
                     let text = s.contents();
-                    text.contains("partial-visible") && text.contains("Error") && input_is_ready(s)
+                    text.contains("partial-visible")
+                        && notification_bounds(s, "Error", vt100::Color::Rgb(224, 108, 117))
+                            .is_some()
+                        && input_is_ready(s)
                 });
                 assert!(
                     !pty.parser
@@ -3552,7 +3811,6 @@ mod tui {
         pty.resize(30, 100);
         pty.text("gateway/team/secondary");
         pty.input("\r");
-        pty.text("Current model: gateway/team/secondary (vendor-b)");
         pty.ready_model("vendor-b");
         pty.text("picker alpha retained");
         no_more(&a);
@@ -3580,7 +3838,10 @@ mod tui {
         pty.wait_for("current model confirmation closes picker", |screen| {
             let text = screen.contents();
             input_is_ready(screen)
-                && text.contains("gateway/team/secondary (vendor-b)")
+                && text
+                    .lines()
+                    .last()
+                    .is_some_and(|line| line.contains("vendor-b"))
                 && !text.contains("vendor-a")
         });
         pty.draft("");
@@ -3596,7 +3857,6 @@ mod tui {
         no_more(&b);
         pty.input("\x7f\x7f\x7f\x7f\x7f\x7f\x7f");
         pty.input("/model a/primary\r");
-        pty.text("Current model: a/primary (vendor-a)");
         pty.ready_model("vendor-a");
         pty.input("direct model recall\r");
         let (request, body) = pty.request(&a);
@@ -3694,7 +3954,6 @@ mod tui {
 
         // Only a fresh Enter after the held request finishes may switch models.
         pty.input("\r");
-        pty.text("Current model: gateway/team/secondary (vendor-b)");
         pty.ready_model("vendor-b");
         no_more(&a);
         no_more(&b);
@@ -3713,9 +3972,9 @@ mod tui {
         pty.ready_model("vendor-b");
 
         pty.input("/model bad/broken\r");
-        pty.wait_for("failed switch is a local error", |screen| {
-            let text = screen.contents();
-            text.contains("Error") && text.to_lowercase().contains("header")
+        pty.wait_for("failed switch is a red local error popup", |screen| {
+            notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
+                && screen.contents().to_lowercase().contains("header")
         });
         pty.ready_model("vendor-b");
         no_more(&a);
@@ -3950,8 +4209,15 @@ mod tui {
         pty.input("first\r");
         let (request, _) = pty.request(&server);
         reply(request, json!({"role":"assistant","content":null}));
-        pty.text("neither text nor tool calls");
-        pty.text("Error");
+        pty.wait_for(
+            "请求错误显示为红色弹窗，允许正文换行",
+            |screen| {
+                let text = screen.contents();
+                notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
+                    && text.contains("neither text nor")
+                    && text.contains("tool calls")
+            },
+        );
         pty.ready();
 
         pty.input("second\r");
@@ -3965,8 +4231,9 @@ mod tui {
         pty.input("/new\r");
         pty.wait_for("acknowledged reset", |screen| {
             let text = screen.contents();
-            text.contains("Session reset")
+            text.contains("█▀▀█  █▀▀█")
                 && input_is_ready(screen)
+                && !text.contains("Session reset")
                 && !text.contains("recovered-answer")
                 && !text.contains("neither text nor tool calls")
         });
@@ -3996,8 +4263,14 @@ mod tui {
         )
         .unwrap();
         let mut pty = Pty::start_with_existing_files(unavailable.path());
-        pty.text("unavailable");
-        pty.text("models.jsonc");
+        pty.wait_for(
+            "配置错误显示为红色弹窗并保留欢迎页",
+            |screen| {
+                notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
+                    && screen.contents().contains("models.jsonc")
+                    && screen.contents().contains("█▀▀█  █▀▀█")
+            },
+        );
         let task = "create must-not-exist";
         pty.input(task);
         pty.input("\r");
@@ -4007,7 +4280,7 @@ mod tui {
         pty.input(&"\x7f".repeat(task.chars().count()));
         pty.input("/new\r");
         pty.text("/new");
-        pty.text("unavailable");
+        pty.text("models.jsonc");
         no_more(&server);
         assert!(!unavailable.path().join("must-not-exist").exists());
         pty.input("\x7f\x7f\x7f\x7f/quit\r");
@@ -4214,9 +4487,18 @@ mod tui {
         }
         pty.text("tui-remembered");
         pty.ready();
-        // 新 session 首次创建后 UI 提示一次 Session ID。
-        pty.text("Session:");
+        // 新 session 首次创建后，用绿色弹窗提示一次 Session ID。
+        pty.wait_for("新会话 ID 显示为绿色弹窗", |screen| {
+            notification_bounds(screen, "提示", vt100::Color::Rgb(127, 166, 106)).is_some()
+                && screen.contents().contains("Session:")
+                && !screen.contents().contains("│ Note")
+        });
         pty.input("/quit\r");
+        pty.wait_for("会话提示不进入退出后的终端历史", |screen| {
+            !screen.alternate_screen()
+                && screen.contents().contains("tui-remembered")
+                && !screen.contents().contains("Session:")
+        });
         pty.finish();
         no_more(server);
         saved_session_id(home)
@@ -4231,11 +4513,14 @@ mod tui {
             let path = api_path(protocol);
 
             let mut pty = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
-            pty.wait_for("恢复的对话与 Resumed 提示", |screen| {
+            pty.wait_for("恢复的对话与绿色恢复提示弹窗", |screen| {
                 let text = screen.contents();
                 text.contains("remember tui-marker")
                     && text.contains("tui-remembered")
-                    && text.contains(&format!("Resumed session: {id}"))
+                    && notification_bounds(screen, "提示", vt100::Color::Rgb(127, 166, 106))
+                        .is_some()
+                    && text.contains("Resumed session:")
+                    && text.split_whitespace().collect::<String>().contains(&id)
             });
             // 无欢迎页；工具卡片重放保存的退出状态，不伪造 wall duration。
             let text = pty.parser.screen().contents();
@@ -4359,7 +4644,12 @@ mod tui {
                 &["-r", &interrupted_id],
             );
             resumed.text("partial-session-marker");
-            resumed.text("Previous request was interrupted.");
+            resumed.wait_for("恢复中断会话显示红色弹窗", |screen| {
+                notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
+                    && screen
+                        .contents()
+                        .contains("Previous request was interrupted.")
+            });
             resumed.ready();
             let screen = resumed.parser.screen().contents();
             assert_eq!(screen.matches("interrupted input").count(), 1);

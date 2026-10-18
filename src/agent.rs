@@ -62,6 +62,37 @@ impl Session {
         }
     }
 
+    fn set_tools(&mut self, definitions: Vec<async_openai::types::chat::FunctionObject>) {
+        match self {
+            Self::Completion(request) => {
+                request.tools = Some(
+                    definitions
+                        .into_iter()
+                        .map(|function| {
+                            ChatCompletionTools::Function(ChatCompletionTool { function })
+                        })
+                        .collect(),
+                );
+            }
+            Self::Response(request) => {
+                request.tools = Some(
+                    definitions
+                        .into_iter()
+                        .map(|function| {
+                            Tool::Function(FunctionTool {
+                                name: function.name,
+                                description: function.description,
+                                parameters: function.parameters,
+                                strict: function.strict,
+                                ..Default::default()
+                            })
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+
     fn new(model: String, protocol: Protocol, system: String, edit_mode: EditMode) -> Self {
         let definitions = Tools::definitions(edit_mode);
         match protocol {
@@ -116,6 +147,10 @@ impl Session {
 }
 
 impl Agent {
+    pub(crate) fn mcp_cleanup(&self) -> Result<crate::mcp::Cleanup> {
+        self.tools.mcp.cleanup()
+    }
+
     pub(crate) fn new(
         catalog: ModelCatalog,
         mut tools: Tools,
@@ -124,6 +159,7 @@ impl Agent {
         let config = catalog.resolve(catalog.default_reference())?;
         tools.limits = config.settings.tool_limits();
         let client = OpenAiClient::new(&config)?;
+        tools.mcp = crate::mcp::Registry::connect(&config.settings.mcp_servers, tools.cwd())?;
         let current_model = ModelChoice {
             reference: catalog.default_reference().to_owned(),
             model: config.model.clone(),
@@ -158,6 +194,7 @@ impl Agent {
                 .summary()
         );
         let mut session = Session::new(config.model, config.protocol, initial_system, edit_mode);
+        session.set_tools(tools.all_definitions());
         session.set_think_level(think_level);
         Ok(Self {
             client,
@@ -179,7 +216,7 @@ impl Agent {
         restored: persistence::RestoredSession,
     ) -> Result<Self> {
         let persistence::RestoredSession {
-            checkpoint,
+            mut checkpoint,
             journal,
             replay,
         } = restored;
@@ -198,6 +235,8 @@ impl Agent {
         ensure!(matches, "saved session model is unavailable or has changed");
         let client = OpenAiClient::new(&config)?;
         tools.limits = checkpoint.tool_limits;
+        tools.mcp = crate::mcp::Registry::connect(&config.settings.mcp_servers, tools.cwd())?;
+        checkpoint.session.set_tools(tools.all_definitions());
         Ok(Self {
             client,
             tools,
@@ -328,6 +367,7 @@ impl Agent {
             base_system: &self.base_system,
         };
         if let Some(mut session) = converted {
+            session.set_tools(self.tools.all_definitions());
             session.set_think_level(self.think_level);
             self.journal.checkpoint(&metadata, (&session).into())?;
             self.session = session;

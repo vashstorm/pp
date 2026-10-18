@@ -1,4 +1,5 @@
 mod menu;
+mod notification;
 mod scrollback;
 mod skills;
 mod statusline;
@@ -20,6 +21,7 @@ use crossterm::{
     execute,
 };
 use menu::{MenuEvent, MenuItem, SelectionMenu};
+use notification::{Level, MouseAction, Notifications};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -34,7 +36,7 @@ use std::{
     path::Path,
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use transcript::Transcript;
 
@@ -64,6 +66,7 @@ pub(crate) fn run(
     loop {
         dirty |= app.receive();
         dirty |= workspace.receive();
+        dirty |= app.notifications.tick(Instant::now());
         if dirty {
             terminal
                 .draw(|frame| app.draw(frame, &workspace.context))
@@ -73,6 +76,7 @@ pub(crate) fn run(
         if event::poll(Duration::from_millis(50)).context("polling terminal input")? {
             let event = event::read().context("reading terminal input")?;
             if app.handle(event, &mut dirty) {
+                app.notifications.clear();
                 let snapshot = terminal
                     .draw(|frame| app.draw(frame, &workspace.context))
                     .context("drawing final terminal screen")?
@@ -143,6 +147,7 @@ struct ModelPickerDraft {
 
 struct App {
     conversation: Transcript,
+    notifications: Notifications,
     show_welcome: bool,
     input: TextArea<'static>,
     input_history: Vec<String>,
@@ -155,7 +160,6 @@ struct App {
     choices: Vec<ModelChoice>,
     current_model: Option<ModelChoice>,
     think_level: ThinkLevel,
-    quiet_think_level_change: bool,
     default_think_level: ThinkLevel,
     menu: Option<SelectionMenu<MenuAction>>,
     menu_dismissed: bool,
@@ -192,6 +196,7 @@ impl App {
             .clone();
         let mut app = Self {
             conversation: Transcript::new(),
+            notifications: Notifications::default(),
             show_welcome: true,
             input: editor(),
             input_history: Vec::new(),
@@ -204,7 +209,6 @@ impl App {
             choices: Vec::new(),
             current_model: None,
             think_level: ThinkLevel::None,
-            quiet_think_level_change: false,
             default_think_level: ThinkLevel::default(),
             menu: None,
             menu_dismissed: false,
@@ -214,6 +218,7 @@ impl App {
             skill_panel: None,
             skills_pending: false,
         };
+        let mut startup_notice = None;
         match agent {
             Ok(mut agent) => {
                 // 取 replay 与 session ID 必须发生在 agent move 进 worker 之前。
@@ -276,26 +281,50 @@ impl App {
                 app.events = Some(events);
                 app.state = State::Ready;
                 if let Some(id) = session_id {
-                    app.conversation.replay(replay, &mut app.input_history);
+                    let error = app.conversation.replay(replay, &mut app.input_history);
                     app.show_welcome = false;
-                    app.append("Note", &format!("Resumed session: {id}"));
+                    startup_notice = Some(match error {
+                        Some(error) => (Level::Error, format!("Resumed session: {id}\n{error}")),
+                        None => (Level::Normal, format!("Resumed session: {id}")),
+                    });
                 }
             }
             Err(error) => {
                 let error = format!("{error:#}");
-                app.append("Error", &error);
-                app.append(
-                    "Note",
-                    "Configuration unavailable; model tasks are disabled. Fix the config files and restart pp. /quit still exits cleanly.",
-                );
+                startup_notice = Some((
+                    Level::Error,
+                    format!(
+                        "{error}\nConfiguration unavailable; model tasks are disabled. Fix the config files and restart pp. /quit still exits cleanly."
+                    ),
+                ));
                 app.unavailable = Some(error);
             }
         }
-        for diagnostic in diagnostics {
-            app.conversation
-                .append("Error", &format!("skill: {diagnostic}"));
+        if !diagnostics.is_empty() {
+            let summary = format!(
+                "skill 扫描发现 {} 个问题，使用 /skills 查看详情。",
+                diagnostics.len()
+            );
+            startup_notice = Some(match startup_notice {
+                Some((level, message)) => (
+                    if level == Level::Error {
+                        level
+                    } else {
+                        Level::Important
+                    },
+                    format!("{summary}\n{message}"),
+                ),
+                None => (Level::Important, summary),
+            });
+        }
+        if let Some((level, message)) = startup_notice {
+            app.notify(level, message);
         }
         Ok(app)
+    }
+
+    fn notify(&mut self, level: Level, message: String) {
+        self.notifications.show(level, message, Instant::now());
     }
 
     fn append(&mut self, label: &str, text: &str) {
@@ -305,12 +334,12 @@ impl App {
 
     fn fail_worker(&mut self) {
         let message = "Execution unavailable: agent worker channel closed; restart pp.";
-        self.show_welcome = false;
         self.state = State::Unavailable;
         self.commands = None;
         self.events = None;
         self.unavailable = Some(message.into());
-        self.conversation.fail(message);
+        self.conversation.fail();
+        self.notify(Level::Error, message.into());
     }
 
     fn receive(&mut self) -> bool {
@@ -319,7 +348,8 @@ impl App {
             self.skills_pending = false;
             match reply.result {
                 Ok(snapshot) if !reply.saved => {
-                    self.skill_panel = Some(skills::Panel::new(snapshot))
+                    self.skill_panel = Some(skills::Panel::new(snapshot));
+                    self.notifications.clear();
                 }
                 Ok(_) => {
                     self.skill_panel = None;
@@ -329,10 +359,8 @@ impl App {
                 Err(error) => {
                     if let Some(panel) = &mut self.skill_panel {
                         panel.busy = false;
-                        panel.error = Some(format!("{error:#}"));
-                    } else {
-                        self.append("Error", &format!("{error:#}"));
                     }
+                    self.notify(Level::Error, format!("{error:#}"));
                 }
             }
             changed = true;
@@ -347,12 +375,13 @@ impl App {
                     changed = true;
                 }
                 Ok(WorkerEvent::SessionStarted(id)) => {
-                    self.append("Note", &format!("Session: {id}"));
+                    self.notify(Level::Normal, format!("Session: {id}"));
                     changed = true;
                 }
                 Ok(WorkerEvent::Completed(result)) => {
                     if let Err(error) = result {
-                        self.conversation.fail(&format!("{error:#}"));
+                        self.conversation.fail();
+                        self.notify(Level::Error, format!("{error:#}"));
                     }
                     self.state = State::Ready;
                     changed = true;
@@ -360,7 +389,7 @@ impl App {
                 Ok(WorkerEvent::Reset) => {
                     self.conversation = Transcript::new();
                     self.clear_input();
-                    self.append("Note", "Session reset.");
+                    self.notifications.clear();
                     self.show_welcome = true;
                     self.state = State::Ready;
                     changed = true;
@@ -368,27 +397,19 @@ impl App {
                 Ok(WorkerEvent::ModelSwitched(result)) => {
                     match result {
                         Ok(choice) => {
-                            self.append(
-                                "Note",
-                                &format!("Current model: {} ({})", choice.reference, choice.model),
-                            );
                             self.current_model = Some(choice);
                         }
-                        Err(error) => self.append("Error", &format!("{error:#}")),
+                        Err(error) => self.notify(Level::Error, format!("{error:#}")),
                     }
                     self.state = State::Ready;
                     changed = true;
                 }
                 Ok(WorkerEvent::ThinkLevelSet(result)) => {
-                    let quiet = std::mem::take(&mut self.quiet_think_level_change);
                     match result {
                         Ok(level) => {
                             self.think_level = level;
-                            if !quiet {
-                                self.append("Note", &format!("Thinking level: {}", level.label()));
-                            }
                         }
-                        Err(error) => self.append("Error", &format!("{error:#}")),
+                        Err(error) => self.notify(Level::Error, format!("{error:#}")),
                     }
                     self.state = State::Ready;
                     changed = true;
@@ -397,13 +418,13 @@ impl App {
                     match result {
                         Ok(level) => {
                             self.default_think_level = level;
-                            self.append(
-                                "Note",
-                                &format!("默认思考等级已保存：{}（下次启动生效）", level.label()),
+                            self.notify(
+                                Level::Normal,
+                                format!("默认思考等级已保存：{}（下次启动生效）", level.label()),
                             );
                         }
                         Err(error) => {
-                            self.append("Error", &format!("保存默认思考等级失败：{error:#}"))
+                            self.notify(Level::Error, format!("保存默认思考等级失败：{error:#}"))
                         }
                     }
                     self.state = State::Ready;
@@ -593,9 +614,9 @@ impl App {
     }
 
     fn show_help(&mut self) {
-        self.append("Note", &commands::help());
+        self.append("Help", &commands::help());
         self.append("Tips", SHORTCUTS);
-        self.append("Note", WARNING);
+        self.append("Help", WARNING);
     }
 
     fn shortcut_ready(&mut self) -> bool {
@@ -606,7 +627,7 @@ impl App {
             State::Ready => true,
             State::Unavailable => {
                 if let Some(error) = self.unavailable.clone() {
-                    self.append("Error", &error);
+                    self.notify(Level::Error, error);
                 }
                 false
             }
@@ -670,12 +691,15 @@ impl App {
         let command = match commands::parse(&prompt) {
             Ok(command) => command,
             Err(error) => {
-                self.append("Error", &format!("{error:#}"));
+                self.notify(Level::Error, format!("{error:#}"));
                 return false;
             }
         };
         if self.model_picker_draft.is_some() && !matches!(command, Some(Command::Model(_))) {
-            self.append("Error", "模型选择器仅接受 /model 命令；按 Esc 返回草稿。");
+            self.notify(
+                Level::Error,
+                "模型选择器仅接受 /model 命令；按 Esc 返回草稿。".into(),
+            );
             return false;
         }
         match command {
@@ -706,7 +730,7 @@ impl App {
             | State::SettingThinkLevel => {}
             State::Unavailable => {
                 if let Some(error) = self.unavailable.take() {
-                    self.append("Error", &error);
+                    self.notify(Level::Error, error.clone());
                     self.unavailable = Some(error);
                 }
             }
@@ -749,7 +773,7 @@ impl App {
                     panel.busy = true;
                 }
             }
-            Err(_) => self.append("Error", "skill 管理线程不可用"),
+            Err(_) => self.notify(Level::Error, "skill 管理线程不可用".into()),
         }
     }
 
@@ -768,10 +792,6 @@ impl App {
                     .as_ref()
                     .is_some_and(|current| current.reference == choice.reference)
                 {
-                    self.append(
-                        "Note",
-                        &format!("Current model: {} ({})", choice.reference, choice.model),
-                    );
                     if self.model_picker_draft.is_some() {
                         self.restore_model_picker_draft();
                     } else {
@@ -799,6 +819,19 @@ impl App {
     }
 
     fn handle(&mut self, event: Event, dirty: &mut bool) -> bool {
+        if let Event::Mouse(mouse) = event {
+            let (changed, action) = self.notifications.mouse(mouse, Instant::now());
+            *dirty |= changed;
+            match action {
+                MouseAction::Copy => {
+                    self.notifications.copy_to_clipboard(&mut io::stdout());
+                    *dirty = true;
+                    return false;
+                }
+                MouseAction::Consumed => return false,
+                MouseAction::Ignored => {}
+            }
+        }
         match event {
             Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
                 let control = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -844,12 +877,11 @@ impl App {
                         && self.menu.is_none()
                         && self.model_picker_draft.is_none()
                         && self.shortcut_ready()
-                        && self.send(
+                    {
+                        self.send(
                             WorkerCommand::SetThinkLevel(self.think_level.next()),
                             State::SettingThinkLevel,
-                        )
-                    {
-                        self.quiet_think_level_change = true;
+                        );
                     }
                     return false;
                 }
@@ -974,6 +1006,10 @@ impl App {
         }
         if let Some(panel) = &mut self.skill_panel {
             panel.draw(frame, area);
+            self.notifications.draw(
+                frame,
+                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
+            );
             return;
         }
         let status_height = u16::from(area.height >= 2);
@@ -1068,6 +1104,10 @@ impl App {
                 status,
             );
         }
+        self.notifications.draw(
+            frame,
+            Rect::new(area.x, area.y, area.width, input.y.saturating_sub(area.y)),
+        );
     }
 
     fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
@@ -1098,10 +1138,12 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend, style::Modifier};
 
     fn app() -> App {
-        App::new(Err(anyhow::anyhow!("fixture configuration unavailable"))).unwrap()
+        let mut app = App::new(Err(anyhow::anyhow!("fixture configuration unavailable"))).unwrap();
+        app.notifications = Notifications::default();
+        app
     }
 
-    fn draw(app: &mut App, width: u16, height: u16) -> String {
+    fn draw_buffer(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
@@ -1114,7 +1156,11 @@ mod tests {
                 )
             })
             .unwrap();
-        let buffer = terminal.backend().buffer();
+        terminal.backend().buffer().clone()
+    }
+
+    fn draw(app: &mut App, width: u16, height: u16) -> String {
+        let buffer = draw_buffer(app, width, height);
         (0..height)
             .map(|y| {
                 (0..width)
@@ -1123,6 +1169,107 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn notification_overlay_preserves_welcome_draft_and_cursor() {
+        let mut app = app();
+        app.show_welcome = true;
+        app.input.insert_str("草稿🙂");
+        let cursor = app.input.cursor();
+        let before = draw(&mut app, 100, 30);
+        let now = Instant::now();
+        app.notifications
+            .show(Level::Error, "temporary error".into(), now);
+        app.notifications.tick(now + Duration::from_millis(200));
+        let shown = draw(&mut app, 100, 30);
+        assert!(shown.contains("temporary error"));
+        assert!(app.show_welcome);
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(app.input.lines(), &["草稿🙂"]);
+        assert_eq!(shown.lines().last(), before.lines().last());
+        assert!(app.notifications.tick(now + Duration::from_millis(10000)));
+        assert_eq!(draw(&mut app, 100, 30), before);
+    }
+
+    fn assert_notification(app: &mut App, color: Color) {
+        app.notifications
+            .tick(Instant::now() + Duration::from_millis(200));
+        let buffer = draw_buffer(app, 100, 30);
+        assert!(
+            buffer
+                .content
+                .iter()
+                .any(|cell| cell.symbol() == "╭" && cell.fg == color)
+        );
+    }
+
+    #[test]
+    fn session_and_task_failure_notifications_never_enter_transcript() {
+        let mut app = app();
+        app.state = State::Running;
+        app.show_welcome = false;
+        app.input.insert_str("保留草稿🙂");
+        let cursor = app.input.cursor();
+        app.conversation.progress(AgentEvent::AssistantStarted);
+        app.conversation.progress(AgentEvent::AssistantDelta {
+            text: "partial answer".into(),
+            refusal: false,
+        });
+        let (sender, receiver) = mpsc::channel();
+        app.events = Some(receiver);
+        sender
+            .send(WorkerEvent::SessionStarted("fixture-session".into()))
+            .unwrap();
+        app.receive();
+        assert_notification(&mut app, statusline::ACCENT);
+        assert!(draw(&mut app, 100, 30).contains("Session: fixture-session"));
+        sender
+            .send(WorkerEvent::Completed(Err(anyhow::anyhow!(
+                "request failed"
+            ))))
+            .unwrap();
+        app.receive();
+        assert!(matches!(app.state, State::Ready));
+        assert_notification(&mut app, Color::Rgb(224, 108, 117));
+        assert!(draw(&mut app, 100, 30).contains("request failed"));
+        let snapshot = draw_buffer(&mut app, 100, 30);
+        let mut scrollback = Vec::new();
+        app.conversation
+            .write_scrollback(&mut scrollback, &snapshot)
+            .unwrap();
+        let history = String::from_utf8_lossy(&scrollback);
+        assert!(history.contains("partial answer"));
+        assert!(!history.contains("fixture-session"));
+        assert!(!history.contains("request failed"));
+        app.notifications
+            .tick(Instant::now() + Duration::from_millis(10000));
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("partial answer"));
+        assert!(!screen.contains("request failed"));
+        assert!(!screen.contains("Session:"));
+        assert_eq!(app.input.lines(), &["保留草稿🙂"]);
+        assert_eq!(app.input.cursor(), cursor);
+    }
+
+    #[test]
+    fn startup_and_worker_errors_are_popups_without_dismissing_welcome() {
+        let mut app = App::new(Err(anyhow::anyhow!("fixture configuration unavailable"))).unwrap();
+        assert_notification(&mut app, Color::Rgb(224, 108, 117));
+        assert!(draw(&mut app, 100, 30).contains("fixture configuration unavailable"));
+        assert!(app.show_welcome);
+        app.input.insert_str("草稿");
+        app.fail_worker();
+        assert_notification(&mut app, Color::Rgb(224, 108, 117));
+        assert!(draw(&mut app, 100, 30).contains("agent worker channel closed"));
+        assert!(matches!(app.state, State::Unavailable));
+        app.notifications
+            .tick(Instant::now() + Duration::from_millis(10000));
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("█▀▀█  █▀▀█"));
+        assert!(!screen.contains("configuration unavailable"));
+        assert!(!screen.contains("channel closed"));
+        assert_eq!(app.input.lines(), &["草稿"]);
     }
 
     fn menu_values(app: &App) -> Vec<MenuAction> {
@@ -1226,8 +1373,17 @@ mod tests {
         app.handle(key(KeyCode::Enter), &mut dirty);
         let (events, receiver) = mpsc::channel();
         app.events = Some(receiver);
+        app.notify(Level::Error, "stale session feedback".into());
         events.send(WorkerEvent::Reset).unwrap();
         app.receive();
+        assert!(app.show_welcome);
+        assert!(matches!(app.state, State::Ready));
+        assert_eq!(app.input.lines(), &[""]);
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("█▀▀█  █▀▀█"));
+        assert!(!screen.contains("Session reset."));
+        assert!(!screen.contains("stale session feedback"));
+        assert!(!screen.contains("╭"));
         app.handle(key(KeyCode::Up), &mut dirty);
         assert_eq!(app.input.lines(), &["/new"]);
         assert!(app.menu.is_none());
@@ -1583,6 +1739,7 @@ mod tests {
                     .contains(&format!(" {label} ·"))
             );
             assert!(!screen.contains("Thinking level:"));
+            assert!(!screen.contains("╭"));
             assert_eq!(app.input.lines(), &["已提交"]);
             assert_eq!(app.input.cursor(), cursor);
             assert_eq!(app.history_index, Some(0));
@@ -1654,6 +1811,22 @@ mod tests {
             );
             assert_eq!(app.input.lines(), &["草稿", "🙂结尾"]);
             assert_eq!(app.input_history, ["旧任务"]);
+            assert_eq!(app.input.cursor(), cursor);
+            if !succeeds {
+                assert_notification(&mut app, Color::Rgb(224, 108, 117));
+                assert!(draw(&mut app, 100, 30).contains("fixture switch failure"));
+                app.notifications
+                    .tick(Instant::now() + Duration::from_millis(10000));
+            }
+            let screen = draw(&mut app, 100, 30);
+            assert!(!screen.contains("Current model:"));
+            assert!(!screen.contains("fixture switch failure"));
+            assert!(!screen.contains("╭"));
+            assert!(screen.lines().last().unwrap().contains(if succeeds {
+                "second"
+            } else {
+                "first"
+            }));
         }
     }
 
@@ -1778,6 +1951,20 @@ mod tests {
                 .replace(' ', "")
                 .contains("默认思考等级已保存：xhigh")
         );
+        assert_notification(&mut app, statusline::ACCENT);
+        let snapshot = draw_buffer(&mut app, 100, 30);
+        let mut scrollback = Vec::new();
+        app.conversation
+            .write_scrollback(&mut scrollback, &snapshot)
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&scrollback).contains("默认思考等级已保存"));
+        assert!(
+            app.notifications
+                .tick(Instant::now() + Duration::from_millis(10000))
+        );
+        assert!(!draw(&mut app, 100, 30).contains("默认"));
+        assert_eq!(app.input.lines(), &["新草稿"]);
+        assert_eq!(app.think_level, ThinkLevel::High);
         app.handle(control('s'), &mut dirty);
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
     }
@@ -1834,6 +2021,56 @@ mod tests {
         app.receive();
         assert_eq!(app.think_level, ThinkLevel::Max);
         assert_eq!(app.input.lines(), &["新草稿"]);
+    }
+
+    #[test]
+    fn command_error_is_transient_and_preserves_editor_and_welcome() {
+        let mut app = app();
+        app.state = State::Ready;
+        app.show_welcome = true;
+        app.input.insert_str("/bogus");
+        let cursor = app.input.cursor();
+        app.submit();
+        assert_notification(&mut app, Color::Rgb(224, 108, 117));
+        assert_eq!(app.input.lines(), &["/bogus"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert!(app.show_welcome);
+        assert!(draw(&mut app, 100, 30).contains("Error"));
+        app.notifications
+            .tick(Instant::now() + Duration::from_millis(10000));
+        let screen = draw(&mut app, 100, 30);
+        assert!(!screen.contains("unknown command"));
+        assert!(!screen.contains("╭"));
+    }
+
+    #[test]
+    fn startup_skill_summary_keeps_complete_diagnostics_in_panel() {
+        let mut registry = crate::skills::Skills::default();
+        registry.diagnostics = vec![
+            "skill 根路径必须是目录：first".into(),
+            "second diagnostic".into(),
+        ];
+        let shared = registry.shared();
+        let mut app =
+            App::new_with_skills(Err(anyhow::anyhow!("fixture unavailable")), shared.clone())
+                .unwrap();
+        // 配置错误与 skill 诊断合并到同一个启动弹窗。
+        app.show_welcome = true;
+        assert_notification(&mut app, Color::Rgb(224, 108, 117));
+        let screen = draw(&mut app, 100, 30).replace(' ', "");
+        assert!(screen.contains("skill扫描发现2个问题，使用/skills查看详情。"));
+        assert!(app.show_welcome);
+        assert_eq!(shared.lock().unwrap().diagnostics.len(), 2);
+        app.skill_panel = Some(skills::Panel::new(shared.lock().unwrap().clone()));
+        app.notifications = Notifications::default();
+        let screen = draw(&mut app, 100, 30).replace(' ', "");
+        assert!(screen.contains("skill根路径必须是目录：first"));
+        assert!(screen.contains("seconddiagnostic"));
+        assert!(!screen.contains("扫描发现"));
+        app.notifications
+            .tick(Instant::now() + Duration::from_millis(10000));
+        app.skill_panel = None;
+        assert!(!draw(&mut app, 100, 30).contains("扫描"));
     }
 
     #[test]

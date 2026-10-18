@@ -23,6 +23,7 @@ use std::{fs, sync::mpsc::sync_channel};
 const OUTPUT_LIMIT: usize = 65_536;
 
 pub(crate) struct Tools {
+    pub(crate) mcp: crate::mcp::Registry,
     pub(crate) skills: crate::skills::SharedSkills,
     cwd: PathBuf,
     edit_mode: EditMode,
@@ -79,6 +80,7 @@ impl Tools {
     pub(crate) fn new(cwd: PathBuf, edit_mode: EditMode) -> Result<Self> {
         let workspace = save::Workspace::open(&cwd)?;
         Ok(Self {
+            mcp: Default::default(),
             skills: crate::skills::Skills::default().shared(),
             cwd: workspace.path.clone(),
             edit_mode,
@@ -91,6 +93,12 @@ impl Tools {
     }
     pub(crate) fn edit_mode(&self) -> EditMode {
         self.edit_mode
+    }
+
+    pub(crate) fn all_definitions(&self) -> Vec<FunctionObject> {
+        let mut definitions = Self::definitions(self.edit_mode);
+        definitions.extend(self.mcp.definitions());
+        definitions
     }
 
     pub(crate) fn definitions(edit_mode: EditMode) -> Vec<FunctionObject> {
@@ -294,7 +302,7 @@ impl Tools {
                     emit,
                 )
             }
-            _ => anyhow::bail!("unknown tool; expected read, edit, write, or bash"),
+            _ => self.mcp.call(name, arguments),
         }
     }
 

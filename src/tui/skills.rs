@@ -61,7 +61,6 @@ pub(super) struct Panel {
     selection: ListState,
     detail_scroll: u16,
     pub(super) busy: bool,
-    pub(super) error: Option<String>,
 }
 pub(super) enum Action {
     None,
@@ -78,7 +77,6 @@ impl Panel {
             entries: skills.entries,
             diagnostics: skills.diagnostics,
             busy: false,
-            error: None,
         }
     }
     pub(super) fn key(&mut self, key: KeyEvent) -> Action {
@@ -179,9 +177,6 @@ impl Panel {
         {
             details.push(Line::raw(format!("来源：{}", skill.path.display())));
             details.push(Line::raw(skill.description.clone()));
-        }
-        if let Some(error) = &self.error {
-            details.push(Line::styled(error, Style::default().fg(Color::Red)));
         }
         for diagnostic in &self.diagnostics {
             details.push(Line::styled(diagnostic, Style::default().fg(Color::Red)));
