@@ -1,3 +1,4 @@
+mod files;
 mod menu;
 mod notification;
 mod scrollback;
@@ -56,7 +57,7 @@ pub(crate) fn run(
     let mut terminal = ratatui::try_init().context("initializing terminal")?;
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)
         .context("enabling terminal input modes")?;
-    let mut app = App::new_with_skills(agent, skills)?;
+    let mut app = App::new_with_skills(agent, skills, cwd)?;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c: replay is already loaded; resend the saved request without touching the editor.
         app.send(WorkerCommand::Continue, State::Running);
@@ -135,6 +136,9 @@ enum MenuAction {
     Command(usize),
     Model(usize),
     Effort(ThinkLevel),
+    File(usize),
+    FileDirectory(usize),
+    FileParent,
 }
 
 struct ModelPickerDraft {
@@ -168,6 +172,11 @@ struct App {
     skill_worker: skills::Worker,
     skill_panel: Option<skills::Panel>,
     skills_pending: bool,
+    file_worker: files::Worker,
+    file_paths: Vec<String>,
+    file_directory: String,
+    file_query: Option<files::Query>,
+    files_pending: bool,
 }
 
 fn editor() -> TextArea<'static> {
@@ -185,10 +194,14 @@ impl App {
             .as_ref()
             .map(|agent| agent.skills())
             .unwrap_or_else(|_| crate::skills::Skills::default().shared());
-        Self::new_with_skills(agent, skills)
+        Self::new_with_skills(agent, skills, Path::new("."))
     }
 
-    fn new_with_skills(agent: Result<Agent>, skills: crate::skills::SharedSkills) -> Result<Self> {
+    fn new_with_skills(
+        agent: Result<Agent>,
+        skills: crate::skills::SharedSkills,
+        cwd: &Path,
+    ) -> Result<Self> {
         let diagnostics = skills
             .lock()
             .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
@@ -217,6 +230,11 @@ impl App {
             skill_worker: skills::Worker::new(skills)?,
             skill_panel: None,
             skills_pending: false,
+            file_worker: files::Worker::new(cwd)?,
+            file_paths: Vec::new(),
+            file_directory: String::new(),
+            file_query: None,
+            files_pending: false,
         };
         let mut startup_notice = None;
         match agent {
@@ -363,6 +381,34 @@ impl App {
             }
             changed = true;
         }
+        if self.files_pending {
+            match self.file_worker.replies.try_recv() {
+                Ok(result) => {
+                    self.files_pending = false;
+                    self.file_paths.clear();
+                    match result {
+                        Ok(paths) => self.file_paths = paths,
+                        Err(error) if self.file_query.is_some() => self.notify(
+                            Level::Error,
+                            format!("Failed to list project files: {error:#}"),
+                        ),
+                        Err(_) => {}
+                    }
+                    // File actions index this snapshot, never the previous list.
+                    if self.file_query.is_some() {
+                        self.menu = None;
+                    }
+                    changed = true;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.files_pending = false;
+                    self.file_paths.clear();
+                    self.notify(Level::Error, "File picker unavailable; restart pp.".into());
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
         for _ in 0..256 {
             let Some(events) = &self.events else {
                 break;
@@ -454,15 +500,20 @@ impl App {
             || self.skills_pending
             || self.menu_dismissed
             || !matches!(self.state, State::Ready | State::Unavailable)
-            || self.input.lines().len() != 1
         {
+            self.file_query = None;
             self.menu = None;
             return;
         }
-        // 保留末尾空格：输入命令后的第一个空格即展开参数菜单。
-        let input = self.input.lines()[0].trim_start();
+        // Only slash menus require a single-line draft.
+        let input = if self.input.lines().len() == 1 {
+            self.input.lines()[0].trim_start()
+        } else {
+            ""
+        };
         let argument = input.split_once(char::is_whitespace);
         if self.model_picker_draft.is_some() && !matches!(argument, Some(("/model", _))) {
+            self.file_query = None;
             self.menu = None;
             return;
         }
@@ -540,8 +591,42 @@ impl App {
                     current: false,
                 })
                 .collect(),
-            _ => Vec::new(),
+            _ => {
+                if self.model_picker_draft.is_some() {
+                    self.file_query = None;
+                    self.menu = None;
+                    return;
+                }
+                let query = files::query(&self.input);
+                if query.is_some() && self.file_query.is_none() {
+                    self.file_directory.clear();
+                    self.file_paths.clear();
+                    self.menu = None;
+                    if !self.files_pending {
+                        match self.file_worker.requests.send(()) {
+                            Ok(()) => self.files_pending = true,
+                            Err(_) => self.notify(
+                                Level::Error,
+                                "File picker unavailable; restart pp.".into(),
+                            ),
+                        }
+                    }
+                }
+                if self
+                    .file_query
+                    .as_ref()
+                    .zip(query.as_ref())
+                    .is_some_and(|(old, new)| old.row != new.row || old.start != new.start)
+                {
+                    self.file_directory.clear();
+                }
+                let changed = self.file_query != query;
+                self.file_query = query;
+                self.refresh_file_menu(changed);
+                return;
+            }
         };
+        self.file_query = None;
         if items.is_empty() {
             self.menu = None;
         } else if edited || self.menu.as_ref().is_none_or(|menu| menu.items() != items) {
@@ -556,6 +641,61 @@ impl App {
                 menu
             });
         }
+    }
+
+    fn refresh_file_menu(&mut self, changed: bool) {
+        let Some(query) = &self.file_query else {
+            self.menu = None;
+            return;
+        };
+        if !changed && self.menu.is_some() {
+            return;
+        }
+        let prefix = query
+            .prefix
+            .strip_prefix(&self.file_directory)
+            .unwrap_or(&query.prefix);
+        let entries = files::entries(&self.file_paths, &self.file_directory, prefix);
+        let mut items =
+            Vec::with_capacity(entries.len() + usize::from(!self.file_directory.is_empty()));
+        if !self.file_directory.is_empty() {
+            items.push(MenuItem {
+                value: MenuAction::FileParent,
+                label: "../".into(),
+                description: format!("Parent of {}", self.file_directory),
+                icon: None,
+                current: false,
+            });
+        }
+        items.extend(entries.into_iter().map(|entry| MenuItem {
+            value: if entry.directory {
+                MenuAction::FileDirectory(entry.index)
+            } else {
+                MenuAction::File(entry.index)
+            },
+            label: entry.path[self.file_directory.len()..].into(),
+            description: entry.path.into(),
+            icon: None,
+            current: false,
+        }));
+        if items.is_empty() {
+            self.menu = None;
+        } else if changed || self.menu.as_ref().is_none_or(|menu| menu.items() != items) {
+            self.menu = Some(
+                SelectionMenu::new(items, usize::from(!self.file_directory.is_empty()))
+                    .with_hint("Enter/Tab open/insert · ../ parent · Esc cancel"),
+            );
+        }
+    }
+
+    fn complete_file_directory(&mut self) {
+        files::insert(
+            &mut self.input,
+            self.file_query.as_ref().expect("checked current query"),
+            &self.file_directory,
+        );
+        self.file_query = files::query(&self.input);
+        self.refresh_file_menu(true);
     }
 
     fn clear_input(&mut self) {
@@ -586,10 +726,14 @@ impl App {
             (Some(_), false) => {
                 self.input = self.history_draft.take().unwrap_or_else(editor);
                 self.history_index = None;
+                self.file_query = None;
+                self.menu = None;
+                self.menu_dismissed = true;
                 return;
             }
             _ => return,
         };
+        self.file_query = None;
         self.input = editor();
         self.input.insert_str(&self.input_history[index]);
         self.history_index = Some(index);
@@ -777,6 +921,7 @@ impl App {
         match self.skill_worker.requests.send(request) {
             Ok(()) => {
                 self.skills_pending = true;
+                self.file_query = None;
                 self.menu = None;
                 if let Some(panel) = &mut self.skill_panel {
                     panel.busy = true;
@@ -787,7 +932,46 @@ impl App {
     }
 
     fn apply_menu_action(&mut self, action: MenuAction, confirm: bool) -> bool {
+        if matches!(
+            action,
+            MenuAction::File(_) | MenuAction::FileDirectory(_) | MenuAction::FileParent
+        ) && (self.file_query.is_none() || files::query(&self.input) != self.file_query)
+        {
+            self.refresh_candidates(false);
+            return false;
+        }
         match action {
+            MenuAction::FileDirectory(index) => {
+                if let Some(path) = self.file_paths.get(index)
+                    && let Some((directory, true)) = files::child(path, &self.file_directory)
+                {
+                    self.file_directory = directory.to_owned();
+                }
+                self.complete_file_directory();
+            }
+            MenuAction::FileParent => {
+                let parent_end = self
+                    .file_directory
+                    .trim_end_matches(std::path::MAIN_SEPARATOR)
+                    .rfind(std::path::MAIN_SEPARATOR)
+                    .map_or(0, |end| end + 1);
+                self.file_directory.truncate(parent_end);
+                self.complete_file_directory();
+            }
+            MenuAction::File(index) => {
+                let Some(path) = self.file_paths.get(index) else {
+                    self.refresh_file_menu(true);
+                    return false;
+                };
+                files::insert(
+                    &mut self.input,
+                    self.file_query.as_ref().expect("checked current query"),
+                    path,
+                );
+                self.menu = None;
+                self.file_query = None;
+                self.menu_dismissed = true;
+            }
             MenuAction::Command(index) => {
                 self.input = editor();
                 self.input.insert_str(COMMANDS[index].name);
@@ -911,6 +1095,18 @@ impl App {
                     }
                     return false;
                 }
+                if key.code == KeyCode::Esc && self.file_query.is_some() {
+                    self.file_query = None;
+                    self.menu = None;
+                    self.menu_dismissed = true;
+                    return false;
+                }
+                if self.files_pending
+                    && self.file_query.is_some()
+                    && matches!(key.code, KeyCode::Enter | KeyCode::Tab)
+                {
+                    return false;
+                }
                 if key.code == KeyCode::Esc && self.model_picker_draft.is_some() {
                     self.restore_model_picker_draft();
                     return false;
@@ -931,6 +1127,7 @@ impl App {
                             if column > 0 {
                                 self.input.move_cursor(CursorMove::Head);
                             }
+                            self.refresh_candidates(false);
                             return false;
                         }
                         KeyCode::Char('e') => {
@@ -938,6 +1135,7 @@ impl App {
                             if column < end {
                                 self.input.move_cursor(CursorMove::End);
                             }
+                            self.refresh_candidates(false);
                             return false;
                         }
                         KeyCode::Char('k') => {
@@ -980,6 +1178,8 @@ impl App {
                         // 先在显示行之间移动，越过首末显示行时才浏览历史。
                         if self.input.cursor() == cursor && self.model_picker_draft.is_none() {
                             self.navigate_history(key.code == KeyCode::Up);
+                        } else {
+                            self.refresh_candidates(false);
                         }
                     }
                     _ => {
@@ -1290,6 +1490,357 @@ mod tests {
         app.menu.as_ref().map_or_else(Vec::new, |menu| {
             menu.items().iter().map(|item| item.value).collect()
         })
+    }
+
+    #[test]
+    fn file_picker_activation_filters_without_rescanning() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new_with_skills(
+            Err(anyhow::anyhow!("fixture")),
+            crate::skills::Skills::default().shared(),
+            dir.path(),
+        )
+        .unwrap();
+        let (requests, scans) = mpsc::channel();
+        let (replies, receiver) = mpsc::channel();
+        app.file_worker = files::Worker {
+            requests,
+            replies: receiver,
+        };
+        let mut dirty = false;
+        app.handle(Event::Paste("分析\n查看 @".into()), &mut dirty);
+        scans.try_recv().unwrap();
+        assert!(app.files_pending);
+        app.handle(Event::Paste("main".into()), &mut dirty);
+        assert!(scans.try_recv().is_err());
+        replies
+            .send(Ok(vec!["src/main.rs".into(), "src/menu.rs".into()]))
+            .unwrap();
+        app.receive();
+        assert_eq!(menu_values(&app), [MenuAction::FileDirectory(0)]);
+        assert_eq!(app.file_query.as_ref().unwrap().prefix, "main");
+        app.state = State::Running;
+        app.refresh_candidates(false);
+        assert!(app.menu.is_none());
+        assert!(app.file_query.is_none());
+    }
+
+    fn file_picker_fixture() -> (
+        App,
+        Receiver<()>,
+        Sender<Result<Vec<String>>>,
+        Receiver<WorkerCommand>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new_with_skills(
+            Err(anyhow::anyhow!("fixture")),
+            crate::skills::Skills::default().shared(),
+            dir.path(),
+        )
+        .unwrap();
+        let (requests, scans) = mpsc::channel();
+        let (replies, receiver) = mpsc::channel();
+        app.file_worker = files::Worker {
+            requests,
+            replies: receiver,
+        };
+        let (sender, commands) = mpsc::channel();
+        app.commands = Some(sender);
+        app.state = State::Ready;
+        app.notifications.clear();
+        (app, scans, replies, commands)
+    }
+
+    #[test]
+    fn file_picker_enter_and_tab_replace_only_current_reference() {
+        for confirm in [KeyCode::Enter, KeyCode::Tab] {
+            let (mut app, scans, replies, commands) = file_picker_fixture();
+            let mut dirty = false;
+            app.handle(
+                Event::Paste("首行\n分析🙂 @src/old.rs 后续".into()),
+                &mut dirty,
+            );
+            for _ in 0..9 {
+                app.handle(key(KeyCode::Left), &mut dirty);
+            }
+            scans.try_recv().unwrap();
+            replies.send(Ok(vec!["src/main.rs".into()])).unwrap();
+            app.receive();
+            app.handle(key(confirm), &mut dirty);
+            assert_eq!(app.input.lines(), &["首行", "分析🙂 @src/ 后续"]);
+            assert_eq!(app.input.cursor(), (1, 9));
+            assert_eq!(app.file_directory, "src/");
+            assert!(commands.try_recv().is_err());
+            app.handle(key(confirm), &mut dirty);
+            assert_eq!(app.input.lines(), &["首行", "分析🙂 @src/main.rs 后续"]);
+            assert_eq!(app.input.cursor(), (1, 17));
+            assert!(app.menu.is_none() && app.file_query.is_none());
+            assert!(app.input_history.is_empty());
+            assert!(commands.try_recv().is_err());
+            assert!(matches!(app.state, State::Ready));
+        }
+    }
+
+    #[test]
+    fn file_picker_directory_navigation_completes_draft_without_submitting() {
+        let (mut app, scans, replies, commands) = file_picker_fixture();
+        let mut dirty = false;
+        app.handle(Event::Paste("查看 @".into()), &mut dirty);
+        scans.try_recv().unwrap();
+        replies
+            .send(Ok(vec![
+                "README.md".into(),
+                "docs/my folder/说明.md".into(),
+                "src/main.rs".into(),
+                "src/tui/menu.rs".into(),
+            ]))
+            .unwrap();
+        app.receive();
+        let labels = |app: &App| {
+            app.menu
+                .as_ref()
+                .unwrap()
+                .items()
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        assert_eq!(labels(&app), "docs/,src/,README.md");
+        let cursor = app.input.cursor();
+        app.handle(key(KeyCode::Down), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert_eq!(app.input.lines(), &["查看 @src/"]);
+        assert_eq!(app.input.cursor(), (0, 8));
+        assert_eq!(app.file_directory, "src/");
+        assert_eq!(labels(&app), "../,tui/,main.rs");
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(app.file_directory, "src/tui/");
+        assert_eq!(app.input.lines(), &["查看 @src/tui/"]);
+        assert_eq!(app.input.cursor(), (0, 12));
+        assert_eq!(labels(&app), "../,menu.rs");
+        app.handle(key(KeyCode::Home), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert_eq!(app.file_directory, "src/");
+        assert_eq!(app.input.lines(), &["查看 @src/"]);
+        app.handle(key(KeyCode::Home), &mut dirty);
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert!(app.file_directory.is_empty());
+        assert_eq!(labels(&app), "docs/,src/,README.md");
+        assert_eq!(app.input.lines(), &["查看 @"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert!(app.input_history.is_empty());
+        assert!(commands.try_recv().is_err());
+        assert!(scans.try_recv().is_err());
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(app.file_directory, "docs/");
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert_eq!(app.file_directory, "docs/my folder/");
+        assert_eq!(app.input.lines(), &["查看 @\"docs/my folder/\""]);
+        assert_eq!(app.input.cursor(), (0, 20));
+        app.handle(Event::Paste("说明".into()), &mut dirty);
+        assert_eq!(app.input.lines(), &["查看 @\"docs/my folder/说明\""]);
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(app.input.lines(), &["查看 @\"docs/my folder/说明.md\" "]);
+        assert!(app.menu.is_none());
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn file_picker_nested_filtering_and_reactivation_reset_directory() {
+        let (mut app, scans, replies, commands) = file_picker_fixture();
+        let mut dirty = false;
+        app.handle(Event::Paste("@".into()), &mut dirty);
+        scans.try_recv().unwrap();
+        replies
+            .send(Ok(vec!["src/main.rs".into(), "src/tui/menu.rs".into()]))
+            .unwrap();
+        app.receive();
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        app.handle(Event::Paste("menu".into()), &mut dirty);
+        assert_eq!(
+            menu_values(&app),
+            [MenuAction::FileParent, MenuAction::FileDirectory(1)]
+        );
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(app.file_directory, "src/tui/");
+        assert_eq!(
+            menu_values(&app),
+            [MenuAction::FileParent, MenuAction::File(1)]
+        );
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert_eq!(app.input.lines(), &["@src/tui/"]);
+        app.handle(key(KeyCode::Backspace), &mut dirty);
+        scans.try_recv().unwrap();
+        assert!(app.file_directory.is_empty());
+        replies.send(Ok(vec!["src/tui/menu.rs".into()])).unwrap();
+        app.receive();
+        assert_eq!(menu_values(&app), [MenuAction::FileDirectory(0)]);
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn file_picker_pending_blocks_confirmation_and_escape_ignores_late_reply() {
+        let (mut app, scans, replies, commands) = file_picker_fixture();
+        let mut dirty = false;
+        app.handle(Event::Paste("查看 @".into()), &mut dirty);
+        scans.try_recv().unwrap();
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(app.input.lines(), &["查看 @"]);
+        assert!(commands.try_recv().is_err());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        replies.send(Ok(vec!["new.rs".into()])).unwrap();
+        app.receive();
+        assert!(app.menu.is_none() && app.file_query.is_none());
+        assert_eq!(app.input.lines(), &["查看 @"]);
+        app.handle(key(KeyCode::Char('n')), &mut dirty);
+        scans.try_recv().unwrap();
+        replies.send(Ok(vec!["new.rs".into()])).unwrap();
+        app.receive();
+        assert_eq!(menu_values(&app), [MenuAction::File(0)]);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.handle(control('c'), &mut dirty));
+    }
+
+    #[test]
+    fn file_picker_cursor_history_and_resize_preserve_draft_and_selection() {
+        let (mut app, scans, replies, _) = file_picker_fixture();
+        let mut dirty = false;
+        app.handle(Event::Paste("查看 @".into()), &mut dirty);
+        scans.try_recv().unwrap();
+        replies
+            .send(Ok(vec!["a.rs".into(), "b.rs".into()]))
+            .unwrap();
+        app.receive();
+        app.handle(key(KeyCode::Down), &mut dirty);
+        app.handle(Event::Resize(20, 4), &mut dirty);
+        draw(&mut app, 20, 4);
+        app.handle(Event::Resize(100, 30), &mut dirty);
+        app.refresh_candidates(false);
+        assert_eq!(app.menu.as_ref().unwrap().selected_index(), Some(1));
+        app.handle(control('a'), &mut dirty);
+        assert!(app.file_query.is_none());
+        app.handle(control('e'), &mut dirty);
+        scans.try_recv().unwrap();
+        app.handle(key(KeyCode::Left), &mut dirty);
+        assert!(app.file_query.is_none());
+        app.handle(key(KeyCode::Right), &mut dirty);
+        assert!(app.file_query.is_some());
+        assert!(scans.try_recv().is_err());
+        app.handle(control('a'), &mut dirty);
+        app.input_history.push("历史 @old".into());
+        app.handle(key(KeyCode::Up), &mut dirty);
+        assert_eq!(app.input.lines(), &["历史 @old"]);
+        assert!(app.file_query.is_none() && app.menu.is_none());
+        app.handle(key(KeyCode::Down), &mut dirty);
+        assert_eq!(app.input.lines(), &["查看 @"]);
+        assert_eq!(app.input.cursor(), (0, 0));
+        replies.send(Ok(vec!["a.rs".into()])).unwrap();
+        app.receive();
+        assert!(app.menu.is_none());
+    }
+
+    #[test]
+    fn file_picker_empty_results_submit_raw_text_and_errors_preserve_worker() {
+        for result in [
+            Ok(Vec::new()),
+            Ok(vec!["src/other.rs".into()]),
+            Err(anyhow::anyhow!("fixture scan failed")),
+        ] {
+            let (mut app, scans, replies, commands) = file_picker_fixture();
+            let mut dirty = false;
+            app.handle(Event::Paste("查看 @missing".into()), &mut dirty);
+            scans.try_recv().unwrap();
+            replies.send(result).unwrap();
+            app.receive();
+            assert!(app.menu.is_none());
+            assert!(scans.try_recv().is_err());
+            app.handle(key(KeyCode::Enter), &mut dirty);
+            assert!(
+                matches!(commands.try_recv(), Ok(WorkerCommand::Run(text)) if text == "查看 @missing")
+            );
+        }
+        let (mut app, scans, replies, commands) = file_picker_fixture();
+        drop(replies);
+        let mut dirty = false;
+        app.handle(Event::Paste("@".into()), &mut dirty);
+        scans.try_recv().unwrap();
+        app.receive();
+        assert!(matches!(app.state, State::Ready));
+        assert_eq!(app.input.lines(), &["@"]);
+        assert!(commands.try_recv().is_err());
+        assert_notification(&mut app, Color::Rgb(224, 108, 117));
+        assert!(draw(&mut app, 100, 30).contains("File picker unavailable; restart pp."));
+    }
+
+    #[test]
+    fn file_picker_request_disconnect_preserves_draft_and_agent() {
+        let (mut app, scans, _replies, commands) = file_picker_fixture();
+        drop(scans);
+        let mut dirty = false;
+        app.handle(Event::Paste("查看 @".into()), &mut dirty);
+        assert!(matches!(app.state, State::Ready));
+        assert!(!app.files_pending);
+        assert_eq!(app.input.lines(), &["查看 @"]);
+        assert_notification(&mut app, Color::Rgb(224, 108, 117));
+        assert!(draw(&mut app, 100, 30).contains("File picker unavailable; restart pp."));
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(matches!(commands.try_recv(), Ok(WorkerCommand::Run(text)) if text == "查看 @"));
+    }
+
+    #[test]
+    fn file_picker_busy_slash_and_vertical_movement_do_not_reopen_files() {
+        let (mut app, scans, replies, commands) = file_picker_fixture();
+        let mut dirty = false;
+        app.handle(Event::Paste("first\n@".into()), &mut dirty);
+        scans.try_recv().unwrap();
+        app.handle(key(KeyCode::Up), &mut dirty);
+        assert!(app.file_query.is_none());
+        replies.send(Ok(vec!["src/main.rs".into()])).unwrap();
+        app.receive();
+        assert!(app.menu.is_none());
+        app.handle(key(KeyCode::Down), &mut dirty);
+        scans.try_recv().unwrap();
+        app.state = State::Running;
+        app.refresh_candidates(false);
+        replies.send(Ok(vec!["src/main.rs".into()])).unwrap();
+        app.receive();
+        assert!(app.menu.is_none() && app.file_query.is_none());
+        assert_eq!(app.input.lines(), &["first", "@"]);
+        assert!(commands.try_recv().is_err());
+        app.state = State::Ready;
+        app.clear_input();
+        app.handle(Event::Paste("/model @".into()), &mut dirty);
+        assert!(app.file_query.is_none());
+        assert!(scans.try_recv().is_err());
+        app.clear_input();
+        app.handle(Event::Paste("@".into()), &mut dirty);
+        scans.try_recv().unwrap();
+        app.handle(control('p'), &mut dirty);
+        assert!(app.file_query.is_none());
+        replies.send(Ok(vec!["src/main.rs".into()])).unwrap();
+        app.receive();
+        assert_eq!(app.input.lines(), &["/model "]);
+        assert!(app.file_query.is_none());
+    }
+
+    #[test]
+    fn file_picker_stale_action_cannot_replace_another_token() {
+        let (mut app, scans, replies, commands) = file_picker_fixture();
+        let mut dirty = false;
+        app.handle(Event::Paste("@a @b".into()), &mut dirty);
+        scans.try_recv().unwrap();
+        replies.send(Ok(vec!["b.rs".into()])).unwrap();
+        app.receive();
+        app.input.move_cursor(CursorMove::Head);
+        app.input.move_cursor(CursorMove::Forward);
+        app.apply_menu_action(MenuAction::File(0), true);
+        assert_eq!(app.input.lines(), &["@a @b"]);
+        assert_eq!(app.file_query.as_ref().unwrap().start, 0);
+        assert!(commands.try_recv().is_err());
+        app.apply_menu_action(MenuAction::File(usize::MAX), true);
+        assert_eq!(app.input.lines(), &["@a @b"]);
     }
 
     fn key(code: KeyCode) -> Event {
@@ -2071,9 +2622,12 @@ mod tests {
             "second diagnostic".into(),
         ];
         let shared = registry.shared();
-        let mut app =
-            App::new_with_skills(Err(anyhow::anyhow!("fixture unavailable")), shared.clone())
-                .unwrap();
+        let mut app = App::new_with_skills(
+            Err(anyhow::anyhow!("fixture unavailable")),
+            shared.clone(),
+            Path::new("."),
+        )
+        .unwrap();
         // 配置错误与 skill 诊断合并到同一个启动弹窗。
         app.show_welcome = true;
         assert_notification(&mut app, Color::Rgb(224, 108, 117));
