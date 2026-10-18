@@ -36,8 +36,8 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/skills",
         icon: "◆",
-        usage: "/skills [enable 名称|disable 名称]",
-        description: "管理全局 skill 启用状态",
+        usage: "/skills [enable NAME|disable NAME]",
+        description: "Manage globally enabled skills",
     },
     CommandSpec {
         name: "/quit",
@@ -80,11 +80,11 @@ pub(crate) fn parse(input: &str) -> Result<Option<Command<'_>>> {
             }
             let (action, name) = argument
                 .split_once(char::is_whitespace)
-                .context("用法：/skills [enable 名称|disable 名称]")?;
-            ensure!(!name.trim().is_empty(), "skill 名称不能为空");
+                .context("usage: /skills [enable NAME|disable NAME]")?;
+            ensure!(!name.trim().is_empty(), "skill name cannot be empty");
             ensure!(
                 matches!(action, "enable" | "disable"),
-                "用法：/skills [enable 名称|disable 名称]"
+                "usage: /skills [enable NAME|disable NAME]"
             );
             return Ok(Some(Command::Skills(Some((
                 name.trim(),

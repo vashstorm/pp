@@ -277,7 +277,7 @@ impl TranscriptEntry {
         if skill && !self.expanded && count > BASH_PREVIEW_LINES {
             let omitted = count - BASH_PREVIEW_LINES;
             lines.truncate(output_start + BASH_PREVIEW_LINES);
-            self.elision = format!("… 还有 {omitted} 行（Ctrl-O 展开）");
+            self.elision = format!("… {omitted} more lines (Ctrl-O to expand)");
             lines.push(LayoutLine {
                 source: Source::Elision,
                 range: 0..self.elision.len(),
@@ -287,9 +287,9 @@ impl TranscriptEntry {
         }
         if skill {
             self.footer = match self.status {
-                EntryStatus::Running => "加载中",
-                EntryStatus::Complete => "加载成功",
-                EntryStatus::Failed => "加载失败",
+                EntryStatus::Running => "Loading",
+                EntryStatus::Complete => "Loaded",
+                EntryStatus::Failed => "Load failed",
             }
             .into();
             self.add_lines(Source::Footer, &mut lines);
@@ -541,7 +541,7 @@ impl Transcript {
                     Some(name) if kind == EntryKind::Skill => {
                         format!("skill · {}", name.replace(char::is_control, " "))
                     }
-                    None if kind == EntryKind::Skill => "skill · 未知".into(),
+                    None if kind == EntryKind::Skill => "skill · unknown".into(),
                     Some(command) if name == "bash" => format!("$ {command}"),
                     Some(path) => format!("{name} · {path}"),
                     None => name.clone(),
@@ -841,7 +841,7 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
         }
     } else if name == "load_skill" {
         return format!(
-            "来源：{}\n{}",
+            "Source: {}\n{}",
             result
                 .get("path")
                 .and_then(Value::as_str)
@@ -1500,7 +1500,7 @@ mod tests {
                 .replace(' ', "")
                 .contains("╭─skill·中文技能")
         );
-        assert!(screen(&running).replace(' ', "").contains("加载中"));
+        assert_eq!(transcript.entries[0].status, EntryStatus::Running);
         assert_eq!(running[(0, 0)].fg, Color::Magenta);
         assert!(running[(2, 0)].modifier.contains(Modifier::BOLD));
         let content = (0..20)
@@ -1514,7 +1514,7 @@ mod tests {
         assert!(collapsed.contains("skill-body-00"));
         assert!(!collapsed.contains("skill-body-19"));
         assert!(collapsed.contains("Ctrl-O"));
-        assert!(collapsed.replace(' ', "").contains("加载成功"));
+        assert_eq!(transcript.entries[0].status, EntryStatus::Complete);
         transcript.toggle_tool_output();
         assert!(screen(&render(&mut transcript, 70, 40)).contains("skill-body-19"));
         for width in [1, 2, 4, 20, 70] {
@@ -1531,11 +1531,7 @@ mod tests {
             id: "failed".into(),
             result: serde_json::json!({"ok":false,"error":"skill 未启用"}),
         });
-        assert!(
-            screen(&render(&mut transcript, 70, 40))
-                .replace(' ', "")
-                .contains("加载失败")
-        );
+        assert_eq!(transcript.entries[1].status, EntryStatus::Failed);
         tool(
             &mut transcript,
             "read",

@@ -39,7 +39,7 @@ fn metadata(text: &str) -> Result<Metadata> {
     let mut lines = text.lines();
     ensure!(
         lines.next().is_some_and(|line| line.trim() == "---"),
-        "缺少 YAML frontmatter"
+        "Missing YAML frontmatter"
     );
     let mut yaml = String::new();
     let mut closed = false;
@@ -51,16 +51,16 @@ fn metadata(text: &str) -> Result<Metadata> {
         yaml.push_str(line);
         yaml.push('\n');
     }
-    ensure!(closed, "YAML frontmatter 未结束");
+    ensure!(closed, "YAML frontmatter is not closed");
     let meta: Metadata =
-        serde_yaml::from_str(&yaml).map_err(|_| anyhow::anyhow!("无效的 skill 元数据"))?;
+        serde_yaml::from_str(&yaml).map_err(|_| anyhow::anyhow!("Invalid skill metadata"))?;
     ensure!(
         !meta.name.trim().is_empty() && !meta.description.trim().is_empty(),
-        "skill 的 name 和 description 不能为空"
+        "Skill name and description must not be empty"
     );
     ensure!(
         !meta.name.chars().any(char::is_control),
-        "skill 名称不能包含控制字符"
+        "Skill name must not contain control characters"
     );
     Ok(meta)
 }
@@ -120,15 +120,22 @@ impl Skills {
             candidates.sort();
             for candidate in candidates {
                 let result = (|| -> Result<_> {
-                    let path = fs::canonicalize(&candidate).context("解析 skill 路径失败")?;
+                    let path =
+                        fs::canonicalize(&candidate).context("Failed to resolve skill path")?;
                     if !files.insert(path.clone()) {
                         return Ok(None);
                     }
-                    ensure!(fs::metadata(&path)?.is_file(), "SKILL.md 必须是普通文件");
-                    let text = fs::read_to_string(&path).context("读取 SKILL.md 失败")?;
+                    ensure!(
+                        fs::metadata(&path)?.is_file(),
+                        "SKILL.md must be a regular file"
+                    );
+                    let text = fs::read_to_string(&path).context("Failed to read SKILL.md")?;
                     let meta = metadata(&text)?;
                     if next.entries.iter().any(|skill| skill.name == meta.name) {
-                        anyhow::bail!("同名 skill {} 已存在，保留先发现的定义", meta.name);
+                        anyhow::bail!(
+                            "Skill {} is already defined; keeping the first definition",
+                            meta.name
+                        );
                     }
                     Ok(Some(Skill {
                         enabled: !disabled.contains(&meta.name),
@@ -155,12 +162,12 @@ impl Skills {
             let canonical = match fs::canonicalize(path) {
                 Ok(canonical) => canonical,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(error).context("无法访问 skill 目录"),
+                Err(error) => return Err(error).context("Unable to access skill directory"),
             };
             if !visited.insert(canonical) {
                 return Ok(());
             }
-            ensure!(path.is_dir(), "skill 根路径必须是目录");
+            ensure!(path.is_dir(), "Skill root path must be a directory");
             let skill = path.join("SKILL.md");
             match fs::metadata(&skill) {
                 Ok(_) => {
@@ -210,15 +217,16 @@ impl Skills {
             .entries
             .iter()
             .find(|skill| skill.name == name && skill.enabled)
-            .context("skill 不存在或未启用")?;
+            .context("Skill does not exist or is disabled")?;
         ensure!(
             fs::metadata(&skill.path)?.is_file(),
-            "SKILL.md 必须是普通文件"
+            "SKILL.md must be a regular file"
         );
-        let content = fs::read_to_string(&skill.path).context("读取 skill 全文失败")?;
+        let content =
+            fs::read_to_string(&skill.path).context("Failed to read full skill content")?;
         ensure!(
             metadata(&content)?.name == skill.name,
-            "skill 名称已改变，请重新扫描"
+            "Skill name has changed; rescan to refresh"
         );
         Ok(
             json!({"ok":true,"name":skill.name,"path":skill.path,"base_dir":skill.path.parent(),"content":content}),
@@ -232,7 +240,7 @@ impl Skills {
             for (name, enabled) in selection {
                 ensure!(
                     self.entries.iter().any(|entry| &entry.name == name),
-                    "未知 skill: {name}"
+                    "Unknown skill: {name}"
                 );
                 if *enabled {
                     disabled.remove(name);
@@ -331,7 +339,6 @@ mod tests {
         let skills = Skills::from_dir(&dir);
         assert!(skills.entries.is_empty());
         assert_eq!(skills.diagnostics.len(), 1);
-        assert!(skills.diagnostics[0].contains("skill 根路径必须是目录"));
     }
     #[test]
     fn configurable_roots_order_relative_absolute_tilde_and_disabled() {

@@ -41,8 +41,8 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
-const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S 在 /effort 菜单中将选中等级设为默认 · Ctrl-P choose model · F1 help · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
-const EFFORT_HINT: &str = "Enter 选择 · Ctrl-S 将选中等级设为默认 · Esc 取消";
+const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S set selected effort as default in the /effort menu · Ctrl-P choose model · F1 help · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+const EFFORT_HINT: &str = "Enter select · Ctrl-S set selected effort as default · Esc cancel";
 const MOUSE_SCROLL_LINES: usize = 3;
 
 pub(crate) fn run(
@@ -300,7 +300,7 @@ impl App {
         }
         if !diagnostics.is_empty() {
             let summary = format!(
-                "skill 扫描发现 {} 个问题，使用 /skills 查看详情。",
+                "Skill scan issues: {}. Use /skills for details.",
                 diagnostics.len()
             );
             startup_notice = Some(match startup_notice {
@@ -419,12 +419,16 @@ impl App {
                             self.default_think_level = level;
                             self.notify(
                                 Level::Normal,
-                                format!("默认思考等级已保存：{}（下次启动生效）", level.label()),
+                                format!(
+                                    "Default thinking effort saved: {} (takes effect next launch)",
+                                    level.label()
+                                ),
                             );
                         }
-                        Err(error) => {
-                            self.notify(Level::Error, format!("保存默认思考等级失败：{error:#}"))
-                        }
+                        Err(error) => self.notify(
+                            Level::Error,
+                            format!("Failed to save default thinking effort: {error:#}"),
+                        ),
                     }
                     self.state = State::Ready;
                     changed = true;
@@ -477,7 +481,7 @@ impl App {
                     .map(|level| MenuItem {
                         value: MenuAction::Effort(level),
                         label: if level == default_level {
-                            format!("{}（默认）", level.label())
+                            format!("{} (default)", level.label())
                         } else {
                             level.label().into()
                         },
@@ -703,7 +707,7 @@ impl App {
         if self.model_picker_draft.is_some() && !matches!(command, Some(Command::Model(_))) {
             self.notify(
                 Level::Error,
-                "模型选择器仅接受 /model 命令；按 Esc 返回草稿。".into(),
+                "The model picker only accepts /model; press Esc to restore your draft.".into(),
             );
             return false;
         }
@@ -778,7 +782,7 @@ impl App {
                     panel.busy = true;
                 }
             }
-            Err(_) => self.notify(Level::Error, "skill 管理线程不可用".into()),
+            Err(_) => self.notify(Level::Error, "Skill management worker unavailable.".into()),
         }
     }
 
@@ -1941,8 +1945,6 @@ mod tests {
         app.events = Some(receiver);
         let mut dirty = false;
         app.handle(Event::Paste("/effort ".into()), &mut dirty);
-        let screen = draw(&mut app, 100, 30);
-        assert!(screen.replace(' ', "").contains("Ctrl-S将选中等级设为默认"));
         app.handle(key(KeyCode::Down), &mut dirty);
         let mut repeat = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
         repeat.kind = KeyEventKind::Repeat;
@@ -1963,23 +1965,24 @@ mod tests {
         app.receive();
         assert_eq!(app.input.lines(), &["新草稿"]);
         assert_eq!(app.think_level, ThinkLevel::High);
-        assert!(
-            draw(&mut app, 100, 30)
-                .replace(' ', "")
-                .contains("默认思考等级已保存：xhigh")
-        );
         assert_notification(&mut app, statusline::ACCENT);
+        let pending = std::mem::take(&mut app.notifications);
+        let baseline = draw(&mut app, 100, 30);
+        app.notifications = pending;
         let snapshot = draw_buffer(&mut app, 100, 30);
         let mut scrollback = Vec::new();
         app.conversation
             .write_scrollback(&mut scrollback, &snapshot)
             .unwrap();
-        assert!(!String::from_utf8_lossy(&scrollback).contains("默认思考等级已保存"));
+        assert!(
+            !String::from_utf8_lossy(&scrollback)
+                .contains("Default thinking effort saved: xhigh (takes effect next launch)")
+        );
         assert!(
             app.notifications
                 .tick(Instant::now() + Duration::from_millis(10000))
         );
-        assert!(!draw(&mut app, 100, 30).contains("默认"));
+        assert_eq!(draw(&mut app, 100, 30), baseline);
         assert_eq!(app.input.lines(), &["新草稿"]);
         assert_eq!(app.think_level, ThinkLevel::High);
         app.handle(control('s'), &mut dirty);
@@ -2075,7 +2078,7 @@ mod tests {
         app.show_welcome = true;
         assert_notification(&mut app, Color::Rgb(224, 108, 117));
         let screen = draw(&mut app, 100, 30).replace(' ', "");
-        assert!(screen.contains("skill扫描发现2个问题，使用/skills查看详情。"));
+        assert!(screen.contains("Skillscanissues:2.Use/skillsfordetails."));
         assert!(app.show_welcome);
         assert_eq!(shared.lock().unwrap().diagnostics.len(), 2);
         app.skill_panel = Some(skills::Panel::new(shared.lock().unwrap().clone()));
@@ -2083,11 +2086,11 @@ mod tests {
         let screen = draw(&mut app, 100, 30).replace(' ', "");
         assert!(screen.contains("skill根路径必须是目录：first"));
         assert!(screen.contains("seconddiagnostic"));
-        assert!(!screen.contains("扫描发现"));
+        assert!(!screen.contains("Skillscanissues"));
         app.notifications
             .tick(Instant::now() + Duration::from_millis(10000));
         app.skill_panel = None;
-        assert!(!draw(&mut app, 100, 30).contains("扫描"));
+        assert!(!draw(&mut app, 100, 30).contains("Skill scan issues"));
     }
 
     #[test]

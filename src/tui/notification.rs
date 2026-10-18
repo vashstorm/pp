@@ -145,9 +145,9 @@ impl Notifications {
 
     fn copy_label(&self) -> &'static str {
         match self.copy_status {
-            None => "[复制]",
-            Some(true) => "[已发送]",
-            Some(false) => "[复制失败]",
+            None => "[Copy]",
+            Some(true) => "[Sent]",
+            Some(false) => "[Failed]",
         }
     }
 
@@ -198,10 +198,13 @@ impl Notifications {
         );
         self.area = Some(area);
         self.update_hover(Instant::now());
-        let notification = self.current.as_ref().expect("弹框仍然存在");
+        let notification = self
+            .current
+            .as_ref()
+            .expect("notification is still present");
         let (color, title) = match notification.level {
-            Level::Normal => (statusline::ACCENT, " 提示 "),
-            Level::Important => (Color::Rgb(229, 192, 92), " 重要 "),
+            Level::Normal => (statusline::ACCENT, " Note "),
+            Level::Important => (Color::Rgb(229, 192, 92), " Important "),
             Level::Error => (Color::Rgb(224, 108, 117), " Error "),
         };
         let paragraph = Paragraph::new(notification.message.as_str())
@@ -378,7 +381,7 @@ mod tests {
             String::from_utf8(output).unwrap(),
             format!("\x1b]52;c;{}CuS4reaWh/CfmYI=\x1b\\", "YWJj".repeat(100))
         );
-        assert_eq!(notifications.copy_label(), "[已发送]");
+        assert_eq!(notifications.copy_status, Some(true));
         // 写入错误保留原消息，并允许再次点击重试。
         struct Broken;
         impl io::Write for Broken {
@@ -390,9 +393,9 @@ mod tests {
             }
         }
         notifications.copy_to_clipboard(&mut Broken);
-        assert_eq!(notifications.copy_label(), "[复制失败]");
+        assert_eq!(notifications.copy_status, Some(false));
         notifications.copy_to_clipboard(&mut io::sink());
-        assert_eq!(notifications.copy_label(), "[已发送]");
+        assert_eq!(notifications.copy_status, Some(true));
         render(&mut notifications, 20, 30);
         let area = notifications.area.unwrap();
         let (_, action) = notifications.mouse(

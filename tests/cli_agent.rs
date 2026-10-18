@@ -2796,7 +2796,7 @@ mod tui {
             right - 1,
             top + 1
         ));
-        pty.text("[已发送]");
+        pty.text("[Sent]");
         assert!(
             pty.raw
                 .windows(b"\x1b]52;c;dW5rbm93biBjb21tYW5kOyB1c2UgL2hlbHA=\x1b\\".len())
@@ -2810,7 +2810,7 @@ mod tui {
             Duration::from_secs(12),
             |screen| {
                 hovered_at.elapsed() >= Duration::from_millis(10200)
-                    && screen.contents().contains("[已发送]")
+                    && screen.contents().contains("[Sent]")
                     && notification_bounds(screen, "Error", red).is_some()
             },
         );
@@ -2847,8 +2847,10 @@ mod tui {
         pty.wait_for(
             "full green save notification above the input at the right edge",
             |screen| {
-                notification_bounds(screen, "提示", green).is_some()
-                    && screen.contents().contains("默认思考等级已保存：low")
+                notification_bounds(screen, "Note", green).is_some()
+                    && screen
+                        .contents()
+                        .contains("Default thinking effort saved: low")
             },
         );
         pty.ready_effort("no think");
@@ -2862,8 +2864,8 @@ mod tui {
             Duration::from_secs(12),
             |screen| {
                 let text = screen.contents();
-                !text.contains("默认思考等级已保存")
-                    && !text.contains("提示")
+                !text.contains("Default thinking effort saved:")
+                    && !text.contains("Note")
                     && !text.contains("│ Note")
                     && text.contains("█▀▀█  █▀▀█")
             },
@@ -2898,8 +2900,8 @@ mod tui {
             "full yellow startup summary with welcome still visible",
             |screen| {
                 let text = screen.contents();
-                notification_bounds(screen, "重要", yellow).is_some()
-                    && text.contains("skill 扫描发现 1 个问题，使用 /skills 查看详情。")
+                notification_bounds(screen, "Important", yellow).is_some()
+                    && text.contains("Skill scan issues: 1. Use /skills for details.")
                     && text.contains("█▀▀█  █▀▀█")
                     && input_is_ready(screen)
             },
@@ -2908,7 +2910,7 @@ mod tui {
             !pty.parser
                 .screen()
                 .contents()
-                .contains("skill 根路径必须是目录")
+                .contains("Skill root path must be a directory")
         );
         pty.input("警告时草稿🙂");
         pty.draft("警告时草稿🙂");
@@ -2916,9 +2918,24 @@ mod tui {
         assert!(pty.parser.screen().contents().contains("█▀▀█  █▀▀█"));
         pty.input("\x01\x0b/skills\r");
         pty.text("Skills");
-        pty.text("根路径必须是目录");
-        pty.text("bad-root: skill");
-        assert!(!pty.parser.screen().contents().contains("skill 扫描发现"));
+        pty.wait_for(
+            "full skill root diagnostic across wrapped panel rows",
+            |screen| {
+                screen
+                    .contents()
+                    .chars()
+                    .filter(|ch| !ch.is_whitespace() && *ch != '│')
+                    .collect::<String>()
+                    .contains("Skillrootpathmustbeadirectory")
+            },
+        );
+        pty.text("bad-root: Skill");
+        assert!(
+            !pty.parser
+                .screen()
+                .contents()
+                .contains("Skill scan issues:")
+        );
         pty.input("\x03");
         pty.finish();
         no_more(&server);
@@ -4354,7 +4371,7 @@ mod tui {
         )
         .unwrap();
         pty.input("r");
-        pty.text("未发现 skill");
+        pty.text("No skills found");
         pty.resize(4, 20);
         pty.resize(30, 100);
         pty.text("Skills");
@@ -4401,7 +4418,7 @@ mod tui {
             let (request, body) = receive_at(&server, path);
             assert!(body.to_string().contains("secret-skill-line-19"));
             pty.text("skill · 中文技能");
-            pty.text("加载成功");
+            pty.text("Loaded");
             pty.drain();
             let screen = pty.parser.screen();
             let row = screen
@@ -4496,7 +4513,7 @@ mod tui {
         pty.ready();
         // 新 session 首次创建后，用绿色弹窗提示一次 Session ID。
         pty.wait_for("新会话 ID 显示为绿色弹窗", |screen| {
-            notification_bounds(screen, "提示", vt100::Color::Rgb(127, 166, 106)).is_some()
+            notification_bounds(screen, "Note", vt100::Color::Rgb(127, 166, 106)).is_some()
                 && screen.contents().contains("Session:")
                 && !screen.contents().contains("│ Note")
         });
@@ -4524,7 +4541,7 @@ mod tui {
                 let text = screen.contents();
                 text.contains("remember tui-marker")
                     && text.contains("tui-remembered")
-                    && notification_bounds(screen, "提示", vt100::Color::Rgb(127, 166, 106))
+                    && notification_bounds(screen, "Note", vt100::Color::Rgb(127, 166, 106))
                         .is_some()
                     && text.contains("Resumed session:")
                     && text.split_whitespace().collect::<String>().contains(&id)

@@ -383,15 +383,17 @@ pub(crate) fn update_settings(
     let read = || match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).context("读取 settings.jsonc 失败"),
+        Err(error) => Err(error).context("Failed to read settings.jsonc"),
     };
     let original = read()?;
     let settings: Settings = jsonc::parse(original.as_deref().unwrap_or("{}"), "settings")?;
     settings.validate()?;
     let (name, value) = update(settings)?;
     let root = CstRootNode::parse(original.as_deref().unwrap_or("{}\n"), &jsonc::options())
-        .map_err(|_| anyhow::anyhow!("无法更新无效的 settings.jsonc"))?;
-    let object = root.object_value().context("settings.jsonc 必须是对象")?;
+        .map_err(|_| anyhow::anyhow!("Cannot update invalid settings.jsonc"))?;
+    let object = root
+        .object_value()
+        .context("settings.jsonc must be an object")?;
     if let Some(property) = object.get(name) {
         property.set_value(value);
     } else {
@@ -404,20 +406,27 @@ pub(crate) fn update_settings(
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent).context("创建全局配置目录失败")?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent).context("创建配置临时文件失败")?;
+    fs::create_dir_all(parent).context("Failed to create global config directory")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .context("Failed to create temporary config file")?;
     if let Ok(meta) = fs::metadata(path) {
         temporary.as_file().set_permissions(meta.permissions())?;
     }
     temporary
         .write_all(updated.as_bytes())
-        .context("写入配置失败")?;
-    temporary.as_file().sync_all().context("同步配置失败")?;
-    ensure!(read()? == original, "配置已被其他进程修改，请重试");
+        .context("Failed to write configuration")?;
+    temporary
+        .as_file()
+        .sync_all()
+        .context("Failed to sync configuration")?;
+    ensure!(
+        read()? == original,
+        "Configuration was modified by another process; please try again."
+    );
     temporary
         .persist(path)
         .map_err(|error| error.error)
-        .context("提交配置失败")?;
+        .context("Failed to commit configuration")?;
     Ok(())
 }
 

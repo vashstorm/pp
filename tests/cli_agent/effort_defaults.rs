@@ -59,19 +59,19 @@ fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
         pty.ready_effort("high");
         pty.input("/effort ");
         pty.text("Ctrl-S");
-        pty.text("high（默认）");
+        pty.text("high (default)");
         pty.input("\x1b[B\x13");
         pty.wait_for("绿色保存弹框紧邻输入框上方并靠右留一格", |screen| {
             effort_save_popup(
                 screen,
-                "默认思考等级已保存：xhigh",
+                "Default thinking effort saved: xhigh",
                 vt100::Color::Rgb(127, 166, 106),
             )
         });
         pty.ready_effort("high");
         pty.input("/effort ");
-        pty.text("xhigh（默认）");
-        assert!(!pty.parser.screen().contents().contains(" high（默认）"));
+        pty.text("xhigh (default)");
+        assert!(!pty.parser.screen().contents().contains(" high (default)"));
         assert!(
             pty.parser
                 .screen()
@@ -93,7 +93,7 @@ fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
         let mut restarted = Pty::start_with_existing_files(home.path());
         restarted.ready_effort("xhigh");
         restarted.input("/effort ");
-        restarted.text("xhigh（默认）");
+        restarted.text("xhigh (default)");
         restarted.input("\x01\x0b");
         restarted.draft("");
         restarted.input("verify saved default\r");
@@ -107,7 +107,7 @@ fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
         restarted.wait_for("重启后的绿色保存弹框颜色和位置", |screen| {
             effort_save_popup(
                 screen,
-                "默认思考等级已保存：no think",
+                "Default thinking effort saved: no think",
                 vt100::Color::Rgb(127, 166, 106),
             )
         });
@@ -135,7 +135,7 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready_effort("no think");
     pty.input("/effort ");
-    pty.text("no think（默认）");
+    pty.text("no think (default)");
     pty.input("\x01\x0b");
     pty.draft("");
     pty.input("/effort low");
@@ -144,7 +144,7 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
     pty.wait_for("新建设置后的绿色保存弹框颜色和位置", |screen| {
         effort_save_popup(
             screen,
-            "默认思考等级已保存：low",
+            "Default thinking effort saved: low",
             vt100::Color::Rgb(127, 166, 106),
         )
     });
@@ -160,7 +160,7 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
     pty.wait_for("红色保存失败弹框紧邻输入框上方并靠右留一格", |screen| {
         effort_save_popup(
             screen,
-            "保存默认思考等级失败",
+            "Failed to save default thinking effort",
             vt100::Color::Rgb(224, 108, 117),
         )
     });
@@ -172,14 +172,14 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
     );
     pty.ready_effort("no think");
     pty.input("/effort ");
-    pty.text("low（默认）");
+    pty.text("low (default)");
     assert!(
         pty.parser
             .screen()
             .contents()
             .contains("Disable thinking (current)")
     );
-    assert!(!pty.parser.screen().contents().contains("max（默认）"));
+    assert!(!pty.parser.screen().contents().contains("max (default)"));
     pty.input("\x01\x0b");
     pty.draft("");
     assert!(
@@ -232,7 +232,7 @@ fn model_thinking_tui_effort_menu_follows_model_policy_across_switches() {
 
     // A 的菜单只列出 low/high，当前与默认标记都来自模型策略。
     pty.input("/effort ");
-    pty.text("high（默认）");
+    pty.text("high (default)");
     let screen = pty.parser.screen().contents();
     assert!(screen.contains("Light thinking"));
     assert!(screen.contains("Deep thinking (current)"));
@@ -241,7 +241,7 @@ fn model_thinking_tui_effort_menu_follows_model_policy_across_switches() {
         "Extra-deep thinking",
         "Highest level the model supports",
         "Disable thinking",
-        "low（默认）",
+        "low (default)",
         "Light thinking (current)",
     ] {
         assert!(!screen.contains(absent), "{absent} 不应出现在 A 的菜单");
@@ -271,7 +271,7 @@ fn model_thinking_tui_effort_menu_follows_model_policy_across_switches() {
     // Menus become actionable only after the worker's completion event;
     // an unchanged status label can still be visible while the task runs.
     pty.input("/effort ");
-    pty.text("high（默认）");
+    pty.text("high (default)");
     pty.input("\x01\x0b");
     pty.draft("");
     pty.ready_effort("high");
@@ -287,7 +287,7 @@ fn model_thinking_tui_effort_menu_follows_model_policy_across_switches() {
 
     // B 的菜单只出现 medium/max。
     pty.input("/effort ");
-    pty.text("medium（默认）");
+    pty.text("medium (default)");
     let screen = pty.parser.screen().contents();
     assert!(screen.contains("Moderate thinking (current)"));
     assert!(screen.contains("Highest level the model supports"));
@@ -296,9 +296,9 @@ fn model_thinking_tui_effort_menu_follows_model_policy_across_switches() {
         "Deep thinking",
         "Extra-deep thinking",
         "Disable thinking",
-        "low（默认）",
-        "high（默认）",
-        "max（默认）",
+        "low (default)",
+        "high (default)",
+        "max (default)",
     ] {
         assert!(!screen.contains(absent), "{absent} 不应出现在 B 的菜单");
     }
@@ -340,7 +340,7 @@ fn model_thinking_tui_effort_menu_follows_model_policy_across_switches() {
     );
     super::think::finish_request(request, "completion");
     pty.input("/effort ");
-    pty.text("medium（默认）");
+    pty.text("medium (default)");
     pty.input("\x01\x0b");
     pty.draft("");
     pty.ready_effort("medium");
@@ -389,7 +389,7 @@ fn model_thinking_tui_single_effort_shift_tab_retains_level_and_draft() {
     pty.input("\x01\x0b");
     pty.draft("");
     pty.input("/effort ");
-    pty.text("medium（默认）");
+    pty.text("medium (default)");
     let screen = pty.parser.screen().contents();
     assert!(screen.contains("Moderate thinking (current)"));
     for absent in [
@@ -398,8 +398,8 @@ fn model_thinking_tui_single_effort_shift_tab_retains_level_and_draft() {
         "Extra-deep thinking",
         "Highest level the model supports",
         "Disable thinking",
-        "low（默认）",
-        "max（默认）",
+        "low (default)",
+        "max (default)",
     ] {
         assert!(!screen.contains(absent), "{absent} 不应出现在 C 的菜单");
     }
@@ -433,12 +433,12 @@ fn model_thinking_tui_ctrl_s_saves_global_without_overriding_model_default() {
 
     // 菜单内高亮 low 并 Ctrl-S：仅保存全局默认，会话档位保持 high。
     pty.input("/effort ");
-    pty.text("high（默认）");
+    pty.text("high (default)");
     pty.input("\x1b[A\x13");
     pty.wait_for("绿色保存弹框", |screen| {
         effort_save_popup(
             screen,
-            "默认思考等级已保存：low",
+            "Default thinking effort saved: low",
             vt100::Color::Rgb(127, 166, 106),
         )
     });
@@ -452,11 +452,11 @@ fn model_thinking_tui_ctrl_s_saves_global_without_overriding_model_default() {
 
     // 重新打开菜单：显式模型默认标记仍在 high，不被全局保存覆盖。
     pty.input("/effort ");
-    pty.text("high（默认）");
+    pty.text("high (default)");
     let screen = pty.parser.screen().contents();
-    assert!(screen.contains("high（默认）"));
+    assert!(screen.contains("high (default)"));
     assert!(screen.contains("Deep thinking (current)"));
-    assert!(!screen.contains("low（默认）"));
+    assert!(!screen.contains("low (default)"));
     assert!(!screen.contains("Light thinking (current)"));
     pty.input("\x01\x0b");
     pty.draft("");

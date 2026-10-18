@@ -120,9 +120,9 @@ impl Panel {
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         frame.render_widget(Clear, area);
         let title = if self.busy {
-            " Skills · 处理中 "
+            " Skills · Working "
         } else {
-            " Skills · 全局管理 "
+            " Skills · Global management "
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -143,7 +143,7 @@ impl Panel {
         if self.entries.is_empty() {
             frame.render_widget(
                 Paragraph::new(
-                    "未发现 skill，请修改全局 settings.jsonc 的 skill_dirs 后按 r 重扫。",
+                    "No skills found. Update skill_dirs in global settings.jsonc, then press r to rescan.",
                 ),
                 list_area,
             );
@@ -175,7 +175,7 @@ impl Panel {
             .selected()
             .and_then(|index| self.entries.get(index))
         {
-            details.push(Line::raw(format!("来源：{}", skill.path.display())));
+            details.push(Line::raw(format!("Source: {}", skill.path.display())));
             details.push(Line::raw(skill.description.clone()));
         }
         for diagnostic in &self.diagnostics {
@@ -188,7 +188,9 @@ impl Panel {
             Rect::new(inner.x, list_area.bottom(), inner.width, detail_height),
         );
         frame.render_widget(
-            Line::raw("↑↓ 选择 · Space 启停 · Enter 保存 · Esc 取消 · r 重扫 · PgUp/PgDn 详情"),
+            Line::raw(
+                "↑↓ select · Space toggle · Enter save · Esc cancel · r rescan · PgUp/PgDn details",
+            ),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
     }

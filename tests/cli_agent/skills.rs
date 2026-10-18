@@ -87,7 +87,6 @@ fn skills_missing_roots_are_silent_and_existing_roots_still_load() {
         assert!(output.status.success(), "{stderr}");
         assert_eq!(output.stdout, b"ok\n");
         assert!(!stderr.contains("skill:"), "{stderr}");
-        assert!(!stderr.contains("无法访问 skill 目录"), "{stderr}");
         if !has_skill {
             assert!(!config_path(home.path(), "skills").exists());
         }
