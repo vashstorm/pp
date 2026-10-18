@@ -2420,6 +2420,8 @@ mod tui {
     use super::*;
     include!("cli_agent/effort_defaults.rs");
     include!("cli_agent/mcp_tui.rs");
+    include!("cli_agent/resume_tui.rs");
+    include!("cli_agent/resume_boundaries.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
     use std::{
         io::Read,
@@ -2801,14 +2803,19 @@ mod tui {
         color: vt100::Color,
     ) -> Option<(u16, u16, u16, u16)> {
         let (rows, cols) = screen.size();
-        let input_top = (1..rows)
-            .find(|&row| {
-                screen
-                    .cell(row, 0)
-                    .is_some_and(|cell| cell.contents() == "❯")
-            })?
-            .checked_sub(1)?;
-        let bottom = input_top.checked_sub(1)?;
+        let bottom = if screen.contents().contains("Resume session (") {
+            // 全屏会话面板没有底部编辑器，通知在快捷键提示上方。
+            rows.checked_sub(3)?
+        } else {
+            let input_top = (1..rows)
+                .find(|&row| {
+                    screen
+                        .cell(row, 0)
+                        .is_some_and(|cell| cell.contents() == "❯")
+                })?
+                .checked_sub(1)?;
+            input_top.checked_sub(1)?
+        };
         let right = cols.checked_sub(2)?;
         for top in 0..bottom {
             for left in 1..right {
@@ -4005,23 +4012,10 @@ mod tui {
         pty.ready_model("vendor-a");
 
         pty.input("/");
-        pty.wait_for("visible slash command menu", |screen| {
-            let text = screen.contents();
-            ["help", "model", "new", "effort", "skills", "quit"]
-                .iter()
-                .enumerate()
-                .all(|(index, command)| {
-                    text.lines()
-                        .nth(23 + index)
-                        .is_some_and(|line| line.contains(command))
-                })
-                && !screen.hide_cursor()
-                && screen.cursor_position() == (21, 3)
-        });
+        pty.draft("/");
         pty.input("\x1b[B");
         pty.resize(4, 20);
         pty.resize(30, 100);
-        pty.text("Exit pp");
         pty.input("\t");
         pty.draft("/model");
         no_more(&a);
@@ -5315,3 +5309,6 @@ mod skills;
 
 #[path = "cli_agent/session.rs"]
 mod session;
+
+#[path = "cli_agent/resume_cli.rs"]
+mod resume_cli;

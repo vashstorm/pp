@@ -159,8 +159,8 @@ cargo test --locked --test cli_agent mcp_ -- --test-threads=1
 - bash 使用暗色圆角边框卡片：顶部为 `$ command`，`Output` 横线分隔命令和灰色输出，底部显示耗时与退出码；运行中显示 running，失败保留错误和退出信息。超过 10 行时默认显示末尾 10 行及省略提示，Ctrl+O 展开或收起最近一次 bash 的完整输出，不改变输入草稿；退出时完整输出写入终端滚动历史。think 默认以无标题、无边框的灰色文本显示在独立暗色背景上，与最终回答分开。是否返回可读思考取决于服务端和模型；`/effort` 仍只控制思考级别。行模式和单次任务将思考文本写入 stderr，stdout 保持为回答正文，均不添加 ANSI 控制序列。Responses 摘要使用 [官方流式事件](https://developers.openai.com/api/reference/resources/responses/streaming-events)。
 - Mouse wheel scrolls the transcript by three visual lines per event; PgUp/PgDn scroll by a page. Both work without moving the input cursor or changing the draft, even with the pointer over the input box. Output follows the bottom by default; scrolling up leaves follow mode, so incoming chunks do not steal the viewport. Scrolling down to the bottom restores following. Drafts stay editable and scrollable while running, but Enter does not queue or clear the draft; submission resumes after completion or an error.
 - 命令、模型、思考级别和文件菜单展开时，滚轮仍滚动历史，不改变菜单选择。Clicks, drags, pointer movement, and horizontal wheel events are ignored. The TUI captures the mouse; any modifier needed to bypass capture for native terminal selection or scrollback depends on the terminal emulator.
-- Single-line slash commands share one registry with line mode: `/help` lists commands; `/model` opens a model picker; `/model provider/model` switches directly; `/new` resets history while keeping the selected model; `/quit` exits. Unknown names and invalid built-in arguments are local errors, never model tasks. Names are case-sensitive; leading/trailing whitespace is ignored, but the entire remaining `/model` argument preserves internal spaces and `/`. Multi-line slash drafts remain ordinary tasks.
-- 所有选择菜单（`/` 命令补全、`/model `、`/effort `、`@` 文件选择）统一使用 `src/tui/menu.rs` 中的 `SelectionMenu` 组件，业务层只提供选项数据和确认动作。统一在输入框下方显示无外框的两列列表，左列占 46%、右列占 54%；选中行以黄色文字和箭头突出，其余说明与图标为灰色，当前值显示“（当前）”，输入框使用紫色分隔线。最多显示八行，窄屏截断说明，短屏随选择滚动。↑/↓、Home/End、PgUp/PgDn 导航且不循环，Tab 补全或打开目录但不提交，Enter 确认当前项；Esc 收起列表并保留草稿，下次编辑时重新显示。输入 `/` 展开命令菜单，继续输入会按命令前缀筛选，左列保留命令图标。
+- Single-line slash commands share one registry with line mode: `/help` lists commands; `/model` opens a model picker; `/model provider/model` switches directly; `/new` resets history while keeping the selected model; `/resume` opens the fullscreen saved-session picker (TUI only); `/quit` exits. Unknown names and invalid built-in arguments are local errors, never model tasks. Names are case-sensitive; leading/trailing whitespace is ignored, but the entire remaining `/model` argument preserves internal spaces and `/`. Multi-line slash drafts remain ordinary tasks.
+- 输入框下方的选择菜单（`/` 命令补全、`/model `、`/effort `、`@` 文件选择）统一使用 `src/tui/menu.rs` 中的 `SelectionMenu` 组件，业务层只提供选项数据和确认动作。统一在输入框下方显示无外框的两列列表，左列占 46%、右列占 54%；选中行以黄色文字和箭头突出，其余说明与图标为灰色，当前值显示“（当前）”，输入框使用紫色分隔线。最多显示八行，窄屏截断说明，短屏随选择滚动。↑/↓、Home/End、PgUp/PgDn 导航且不循环，Tab 补全或打开目录但不提交，Enter 确认当前项；Esc 收起列表并保留草稿，下次编辑时重新显示。输入 `/` 展开命令菜单，继续输入会按命令前缀筛选，左列保留命令图标。
 - 输入 `/model `（命令后加空格）会在输入框下方展开与 `/effort ` 一致的两列菜单：左侧为 `provider/model`，右侧为实际模型名、`completion`/`response` 及“当前”标记，黄色文字和箭头突出选中项。`/model` 后按 Enter 也能展开，默认选中当前模型。按启动配置顺序排列，最多显示八行，长列表随选择滚动；↑/↓、Home/End、PgUp/PgDn 导航，Enter 确认，Esc 收起并保留输入。继续输入按引用或实际模型名的前缀筛选，Tab 补全引用但不切换；多行粘贴仍作为普通任务。后台完成切换后才更新状态栏，历史和确认后新编辑的草稿均保留；忙碌时拒绝切换、不排队、不清空草稿。`/new` 仍在后台确认后清空历史和草稿。
 - `/quit` 或 Ctrl-C 立即退出整个 pp，正常退出码为 0。恢复终端后，全部对话记录按退出时的终端宽度写入普通终端的滚动历史，保留原有颜色、缩进、分隔线、流式片段、工具输出及错误，末尾保留输入框、未提交的草稿、菜单和状态栏；可以向上滚动查看超出一屏的历史。保留长度受终端自身的滚动历史容量限制。退出不等待阻塞中的模型请求或工具，不提供任务级取消，也不保证终止工具子进程，文件修改不会回滚。
 - `-p/--prompt` runs one task and never parses slash commands: `pp -p '/model'` sends `/model` as a task. It can follow `-r ID` to append one task to saved history; combining it with `-c` is rejected. If either stdin or stdout is not a terminal, line mode supports the same commands without raw mode or an alternate screen. `/model` lists configured models and marks the current one; use `/model provider/model` to switch. Stdout streams **all readable assistant text**, including text before tools, with one terminating newline per nonempty turn and no replay at completion. Refusal is printed only if no non-blank content wins. Help, command responses, errors, and `tool <name>: running/ok/failed` go to stderr; live bash data uses `[bash stdout]` / `[bash stderr]` on pp's stderr. Non-TUI output adds no ANSI control sequences. A display write failure is returned only after the Agent finishes recording the task's history/tool results.
@@ -189,6 +189,14 @@ Review $1. Focus: $@[2:].
 
 ## Session 持久化与恢复
 
+TUI 空闲时提交 `/resume`，打开 omp 风格的全屏 `Resume session` 面板。默认只显示当前工作目录的会话，→/← 或 Tab 切换当前目录和全部项目。顶部输入搜索词，按标题、回答预览、ID 和目录筛选，支持粘贴、Backspace 删除字符和 Ctrl+U 清空查询。每条会话展示首条用户消息摘要、首条非空助手文本预览、相对更新时间、文件大小及 `current`／`✓ done`／`■ aborted` 标记。摘要折叠空白并最多保留 80 个 Unicode 字符，预览最多 200 个，超长追加 `…`。完成状态根据最后用户／助手记录及错误判断，不调用模型生成标题。
+
+会话按文件最后修改时间倒序（相同时间按完整 ID 倒序），默认选中第一项。↑/↓、Home/End、PgUp/PgDn 导航，滚轮移动选择，Enter 恢复，Esc 取消。筛选或切换范围后重新选中第一项；窗口缩放保留选择。Delete 或空查询时的 Backspace 请求删除，面板内 Enter/y 确认、Esc/n 取消；当前会话及持锁会话不可删除。扫描、恢复和删除均在 worker 中执行。单个坏文件跳过并提示数量，无用户消息的日志不展示，选中时才做完整恢复校验。浏览和搜索不加恢复锁、不改变日志字节或 mtime。
+
+加载时取消会保留旧界面，但扫描结束前 worker 仍忙碌，迟到回复不会重新打开列表；恢复或删除提交后不能取消或重复确认。选择当前 ID 仅关闭列表，不重加锁、不重放历史。
+
+`/resume` 只恢复对话历史：按原始日志顺序替换可见对话、模型上下文和用户输入历史，保留当前模型、协议、思考级别、工具限制、edit 模式、工作目录及 MCP 连接。保存时的模型被删除或修改、原目录已不存在，也可以恢复；跨模型或跨协议时转换历史，去除绑定旧模型的 Responses 状态，同一模型则保留原生推理历史。后续输入继续追加原 JSONL，不创建分叉、不重跑旧工具。失败时仍可在旧会话继续输入。行模式仅提示 `/resume requires the TUI; use pp --resume SESSION_ID.`，不支持 `/resume ID`；按 ID 启动恢复仍使用启动参数。
+
 | 命令 | 启动行为 | 任务后行为 |
 |---|---|---|
 | `pp` | 新的惰性 session，不请求模型 | 原有 TUI / 行模式 |
@@ -202,7 +210,7 @@ Review $1. Focus: $@[2:].
 
 日志唯一位置为 `~/.pp/agent/sessions/<ID>.jsonl`。启动、草稿和本地命令不创建目录或文件；只有真实 HTTP stream 打开调用返回（收到 headers 或请求失败）后才创建。因此请求仍在等待首次 headers 时被强杀，不保证已有日志。ID 使用 16 字节 OS 随机数；新目录权限 0700，新文件 0600，不改已有目录权限。日志是敏感明文，包含完整对话和工具结果，不保存 Config、API key 或 HTTP headers；不要提交或随意共享。
 
-恢复使用原工作目录、edit 模式、工具限制、模型引用、思考级别、原生 system/instructions 和完整历史，并继续追加原文件，不分叉。原目录缺失或不可进入时报错，不回退到启动目录。模型必须仍存在于当前 catalog 且实际 model/protocol 未改变；凭据、base URL、HTTP 超时和每任务请求上限使用当前配置。恢复失败是非零退出，不进入禁用模型的交互兜底。
+启动参数 `-r` / `-c` 使用原工作目录、edit 模式、工具限制、模型引用、思考级别、原生 system/instructions 和完整历史，并继续追加原文件，不分叉。原目录缺失或不可进入时报错，不回退到启动目录。模型必须仍存在于当前 catalog 且实际 model/protocol 未改变；凭据、base URL、HTTP 超时和每任务请求上限使用当前配置。启动恢复失败是非零退出，不进入禁用模型的交互兜底；运行中的 `/resume` 恢复失败保留旧会话、工作目录与列表选择，不发送模型请求。
 
 TUI 恢复可见消息、工具结果、错误和用户输入历史，输入框为空；不恢复草稿、菜单、滚动位置或布局缓存。恢复的 bash 卡片仅显示保存的退出状态，不伪造耗时。未完成展示事件显示 `Previous request was interrupted.`，不加入模型上下文。行模式不重印旧回答。恢复 ID 与首次创建 ID 分别通过 stderr / TUI Note 提示 `Resumed session: <ID>`、`Session: <ID>`；stdout 仍只有模型回答。
 

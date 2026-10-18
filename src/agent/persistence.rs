@@ -116,6 +116,7 @@ pub(super) struct SessionJournal {
     model_reference: String,
     thinking: String,
     capture_thinking: bool,
+    pending_checkpoint: bool,
 }
 
 impl SessionJournal {
@@ -130,6 +131,7 @@ impl SessionJournal {
             model_reference: String::new(),
             thinking: String::new(),
             capture_thinking: false,
+            pending_checkpoint: false,
         }
     }
     pub(super) fn id(&self) -> Option<&str> {
@@ -140,6 +142,10 @@ impl SessionJournal {
     }
     pub(super) fn reset(&mut self) {
         *self = Self::new(std::mem::take(&mut self.dir));
+    }
+    pub(super) fn history_replaced(&mut self) {
+        // 仅恢复时不改变日志和排序；下一次请求发送后再保存新的模型与原生历史。
+        self.pending_checkpoint = true;
     }
     pub(super) fn check(&self) -> Result<()> {
         if let Some(error) = &self.first_error {
@@ -274,6 +280,7 @@ impl SessionJournal {
         self.model_reference.push_str(metadata.model_reference);
         self.capture_thinking = matches!(session, SessionRef::Completion(_));
         self.thinking.clear();
+        self.pending_checkpoint = false;
         if first {
             self.record(
                 PayloadRef::ModelChange {
@@ -318,6 +325,8 @@ impl SessionJournal {
                 }
             });
             self.notice = self.id().map(str::to_owned);
+            self.checkpoint(metadata, session)?;
+        } else if self.pending_checkpoint {
             self.checkpoint(metadata, session)?;
         } else {
             if let Some(system) = instructions {
@@ -560,6 +569,238 @@ fn latest(dir: &Path) -> Result<String> {
     latest.map(|(_, id)| id).context("no saved sessions found")
 }
 
+pub(crate) struct SessionSummary {
+    pub(crate) id: String,
+    pub(crate) cwd: PathBuf,
+    pub(crate) updated_at: SystemTime,
+    pub(crate) summary: String,
+    pub(crate) preview: String,
+    pub(crate) bytes: u64,
+    pub(crate) done: bool,
+}
+
+pub(crate) struct SessionListing {
+    pub(crate) sessions: Vec<SessionSummary>,
+    pub(crate) diagnostics: Vec<String>,
+}
+
+pub(crate) fn list(dir: &Path) -> Result<SessionListing> {
+    let mut listing = SessionListing {
+        sessions: Vec::new(),
+        diagnostics: Vec::new(),
+    };
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(listing),
+        Err(error) => return Err(error).context("reading saved sessions"),
+    };
+    for entry in entries {
+        let entry = entry.context("reading saved session entry")?;
+        let name = entry.file_name();
+        let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".jsonl")) else {
+            continue;
+        };
+        if validate_id(id).is_err() {
+            continue;
+        }
+        let result = (|| -> Result<Option<SessionSummary>> {
+            if !entry.file_type()?.is_file() {
+                return Ok(None);
+            }
+            read_summary(&entry.path(), id)
+        })();
+        match result {
+            Ok(Some(summary)) => listing.sessions.push(summary),
+            Ok(None) => {}
+            Err(error) => listing
+                .diagnostics
+                .push(format!("Skipping session {id}: {error:#}")),
+        }
+    }
+    listing
+        .sessions
+        .sort_unstable_by(|a, b| (b.updated_at, &b.id).cmp(&(a.updated_at, &a.id)));
+    Ok(listing)
+}
+
+fn read_summary(path: &Path, id: &str) -> Result<Option<SessionSummary>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(
+            rustix::fs::OFlags::NOFOLLOW.bits() as i32 | rustix::fs::OFlags::NONBLOCK.bits() as i32,
+        )
+        .open(path)
+        .context("opening session")?;
+    let metadata = file.metadata().context("reading session metadata")?;
+    ensure!(metadata.is_file(), "session is not a regular file");
+    let updated_at = metadata
+        .modified()
+        .context("reading session modification time")?;
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    reader
+        .read_until(b'\n', &mut line)
+        .context("reading session header")?;
+    ensure!(line.ends_with(b"\n"), "incomplete session header");
+    let header: Header =
+        serde_json::from_slice(&line).map_err(|_| anyhow::anyhow!("invalid session header"))?;
+    ensure!(
+        header.kind == "session",
+        "first record must be a session header"
+    );
+    ensure!(header.version == 3, "unsupported session version");
+    ensure!(header.id == id, "session ID does not match filename");
+    ensure!(
+        header.cwd.is_absolute(),
+        "session working directory must be absolute"
+    );
+    parse_timestamp(&header.timestamp)?;
+    #[derive(Deserialize)]
+    struct SummaryEntry {
+        #[serde(rename = "type")]
+        kind: String,
+        #[serde(default)]
+        message: Option<SummaryMessage>,
+        #[serde(default, rename = "customType")]
+        custom_type: String,
+    }
+    #[derive(Deserialize)]
+    #[serde(tag = "role")]
+    enum SummaryMessage {
+        #[serde(rename = "user")]
+        User { content: String },
+        #[serde(rename = "assistant")]
+        Assistant {
+            #[serde(default)]
+            content: Vec<SummaryContent>,
+            #[serde(default, rename = "stopReason")]
+            stop_reason: String,
+        },
+        #[serde(other)]
+        Other,
+    }
+    #[derive(Deserialize)]
+    struct SummaryContent {
+        #[serde(default, rename = "type")]
+        kind: String,
+        #[serde(default)]
+        text: String,
+    }
+    let mut summary = None;
+    let mut preview = String::new();
+    let mut done = false;
+    loop {
+        line.clear();
+        reader
+            .read_until(b'\n', &mut line)
+            .context("reading session record")?;
+        if !line.ends_with(b"\n") {
+            if !line.is_empty() {
+                done = false;
+            }
+            break;
+        }
+        let entry: SummaryEntry = match serde_json::from_slice(&line) {
+            Ok(entry) => entry,
+            // 列表可展示已有摘要；损坏的尾部仍由完整恢复流程校验。
+            Err(_) if summary.is_some() => {
+                done = false;
+                break;
+            }
+            Err(_) => bail!("invalid session record before first user message"),
+        };
+        if entry.custom_type == "pp.error" {
+            done = false;
+        }
+        if entry.kind == "message" {
+            match entry.message {
+                Some(SummaryMessage::User { content }) => {
+                    summary.get_or_insert_with(|| compact_summary(&content, 80));
+                    done = false;
+                }
+                Some(SummaryMessage::Assistant {
+                    content,
+                    stop_reason,
+                }) => {
+                    if preview.is_empty() {
+                        preview = compact_summary(
+                            &content
+                                .iter()
+                                .filter(|part| part.kind == "text")
+                                .map(|part| part.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                            200,
+                        );
+                    }
+                    done = stop_reason == "stop";
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(summary.map(|summary| SessionSummary {
+        id: id.to_owned(),
+        cwd: header.cwd,
+        updated_at,
+        summary,
+        preview,
+        bytes: metadata.len(),
+        done,
+    }))
+}
+
+fn compact_summary(text: &str, limit: usize) -> String {
+    let mut result = String::new();
+    let mut count = 0;
+    let mut whitespace = false;
+    for character in text.chars() {
+        if character.is_whitespace() || character.is_control() {
+            whitespace = !result.is_empty();
+            continue;
+        }
+        if whitespace {
+            if count == limit {
+                result.push('…');
+                break;
+            }
+            result.push(' ');
+            count += 1;
+            whitespace = false;
+        }
+        if count == limit {
+            result.push('…');
+            break;
+        }
+        result.push(character);
+        count += 1;
+    }
+    result
+}
+
+pub(crate) fn delete(dir: &Path, id: &str) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    validate_id(id)?;
+    let path = dir.join(format!("{id}.jsonl"));
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(
+            rustix::fs::OFlags::NOFOLLOW.bits() as i32 | rustix::fs::OFlags::NONBLOCK.bits() as i32,
+        )
+        .open(&path)
+        .context("opening session for deletion")?;
+    let metadata = file.metadata().context("reading session metadata")?;
+    ensure!(metadata.is_file(), "session is not a regular file");
+    // 当前会话及其他进程持有的会话都不可删除。
+    lock(&file, id)?;
+    let current = fs::symlink_metadata(&path).context("checking session before deletion")?;
+    ensure!(
+        current.is_file() && current.dev() == metadata.dev() && current.ino() == metadata.ino(),
+        "session changed before deletion"
+    );
+    fs::remove_file(path).context("deleting session")
+}
+
 pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result<RestoredSession> {
     let id = match id {
         Some(id) => {
@@ -794,6 +1035,7 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
             model_reference,
             thinking: String::new(),
             capture_thinking,
+            pending_checkpoint: false,
         },
         replay,
     })
@@ -877,6 +1119,199 @@ mod tests {
         ] {
             assert!(validate_id(&format!("2026-10-17T01-02-03-{random}")).is_err());
         }
+    }
+
+    #[test]
+    fn listing_reads_preview_size_and_latest_turn_status_without_native_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = format!("2026-10-17T01-02-03-{}", "a".repeat(32));
+        let path = dir.path().join(format!("{id}.jsonl"));
+        let header = serde_json::json!({"type":"session", "version":3, "id":id,
+            "timestamp":"2026-10-17T01:02:03Z", "cwd":"/project"});
+        let mut data = format!(
+            "{header}\n{}\n{}\n",
+            serde_json::json!({"type":"message",
+            "message":{"role":"user", "content":"  修复\n测试 "}}),
+            serde_json::json!({"type":"message",
+            "message":{"role":"assistant", "content":[{"type":"thinking", "thinking":"private thought"},
+            {"type":"text", "text":"已经\n修复"}], "stopReason":"stop"}})
+        );
+        fs::write(&path, &data).unwrap();
+        let listing = list(dir.path()).unwrap();
+        let summary = &listing.sessions[0];
+        assert_eq!(summary.summary, "修复 测试");
+        assert_eq!(summary.preview, "已经 修复");
+        assert_eq!(summary.bytes, data.len() as u64);
+        assert!(summary.done);
+        for tail in [
+            "{\"type\":\"custom\",\"customType\":\"pp.error\",\"data\":{\"message\":\"safe error\"}}\n",
+            "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"next turn\"}}\n",
+            "{partial",
+        ] {
+            let original = data.clone();
+            data.push_str(tail);
+            fs::write(&path, &data).unwrap();
+            assert!(!list(dir.path()).unwrap().sessions[0].done);
+            data = original;
+        }
+    }
+
+    #[test]
+    fn deletion_rejects_locked_sessions_symlinks_and_invalid_ids() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let id = format!("2026-10-17T01-02-03-{}", "a".repeat(32));
+        let link_id = format!("2026-10-17T01-02-03-{}", "b".repeat(32));
+        let path = dir.path().join(format!("{id}.jsonl"));
+        fs::write(&path, "original bytes").unwrap();
+        let guard = File::open(&path).unwrap();
+        lock(&guard, &id).unwrap();
+        assert!(
+            delete(dir.path(), &id)
+                .unwrap_err()
+                .to_string()
+                .contains("already in use")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original bytes");
+        drop(guard);
+        let link = dir.path().join(format!("{link_id}.jsonl"));
+        symlink(&path, &link).unwrap();
+        assert!(delete(dir.path(), &link_id).is_err());
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(delete(dir.path(), "../escape").is_err());
+        delete(dir.path(), &id).unwrap();
+        assert!(!path.exists());
+        assert!(delete(dir.path(), &id).is_err());
+    }
+
+    #[test]
+    fn listing_is_read_only_sorted_and_isolates_invalid_sessions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            list(&dir.path().join("missing"))
+                .unwrap()
+                .sessions
+                .is_empty()
+        );
+        let mut paths = Vec::new();
+        for n in 0..5 {
+            let id = format!("2026-10-17T01-02-03-{n:032x}");
+            let path = dir.path().join(format!("{id}.jsonl"));
+            let header = serde_json::json!({"type":"session", "version":3, "id":id, "timestamp":"2026-10-17T01:02:03Z", "cwd":format!("/project/{n}")});
+            let user = if n == 0 {
+                "中文".repeat(50)
+            } else {
+                "  first\n\t user\u{0001} message  ".into()
+            };
+            let mut data = format!("{header}\n");
+            if n != 4 {
+                data.push_str(&format!(
+                    "{}\n",
+                    serde_json::json!({"type":"custom","data":{"huge":"ignored"}})
+                ));
+                data.push_str(&format!("{}\n", serde_json::json!({"type":"message","message":{"role":"assistant","content":[]}})));
+                if n == 3 {
+                    data.push_str("broken before user\n");
+                }
+                data.push_str(&format!(
+                    "{}\n",
+                    serde_json::json!({"type":"message","message":{"role":"user","content":user}})
+                ));
+                data.push_str("broken after user\n{partial");
+            }
+            fs::write(&path, data).unwrap();
+            File::open(&path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(
+                    UNIX_EPOCH + std::time::Duration::from_secs(if n == 0 { 20 } else { 10 }),
+                ))
+                .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+            paths.push(path);
+        }
+        fs::write(dir.path().join("invalid.jsonl"), "broken").unwrap();
+        let bad = dir
+            .path()
+            .join(format!("2026-10-17T01-02-03-{}.jsonl", "f".repeat(32)));
+        fs::write(&bad, "bad header\n").unwrap();
+        let link = dir
+            .path()
+            .join(format!("2026-10-17T01-02-03-{}.jsonl", "e".repeat(32)));
+        symlink(&paths[0], link).unwrap();
+        let before: Vec<_> = paths
+            .iter()
+            .map(|p| {
+                (
+                    fs::read(p).unwrap(),
+                    fs::metadata(p).unwrap().modified().unwrap(),
+                )
+            })
+            .collect();
+        let locked = File::open(&paths[0]).unwrap();
+        lock(&locked, "listing-fixture").unwrap();
+        let listing = list(dir.path()).unwrap();
+        assert_eq!(
+            listing
+                .sessions
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            [0, 2, 1].map(|n| format!("2026-10-17T01-02-03-{n:032x}"))
+        );
+        assert_eq!(
+            listing.sessions[0].summary,
+            format!("{}…", "中文".repeat(40))
+        );
+        assert_eq!(listing.sessions[1].summary, "first user message");
+        assert_eq!(listing.sessions[1].cwd, Path::new("/project/2"));
+        assert_eq!(listing.diagnostics.len(), 2);
+        assert!(
+            listing
+                .diagnostics
+                .iter()
+                .all(|d| !d.contains("broken before") && !d.contains("bad header"))
+        );
+        for (path, (bytes, modified)) in paths.iter().zip(before) {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+            assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), modified);
+        }
+    }
+
+    #[test]
+    fn listing_rejects_invalid_headers_and_ignores_unfinished_user_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = format!("2026-10-17T01-02-03-{}", "0".repeat(32));
+        let path = dir.path().join(format!("{id}.jsonl"));
+        let header = serde_json::json!({"type":"session", "version":3, "id":id, "timestamp":"2026-10-17T01:02:03Z", "cwd":"/project"});
+        let user =
+            serde_json::json!({"type":"message", "message":{"role":"user", "content":"first"}});
+        for (key, value) in [
+            ("type", serde_json::json!("message")),
+            ("version", serde_json::json!(2)),
+            ("id", serde_json::json!("mismatch")),
+            ("timestamp", serde_json::json!("invalid")),
+            ("cwd", serde_json::json!("relative")),
+        ] {
+            let mut invalid = header.clone();
+            invalid[key] = value;
+            fs::write(&path, format!("{invalid}\n{user}\n")).unwrap();
+            let listing = list(dir.path()).unwrap();
+            assert!(listing.sessions.is_empty(), "{key}");
+            assert_eq!(listing.diagnostics.len(), 1, "{key}");
+        }
+        fs::write(&path, format!("{header}\n{user}")).unwrap();
+        let listing = list(dir.path()).unwrap();
+        assert!(listing.sessions.is_empty());
+        assert!(listing.diagnostics.is_empty());
+        fs::write(&path, format!("{header}\n{user}\n{{partial")).unwrap();
+        let listing = list(dir.path()).unwrap();
+        assert_eq!(listing.sessions[0].summary, "first");
+        assert!(listing.diagnostics.is_empty());
+        fs::write(&path, format!("{header}\n{{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":[]}}}}\n")).unwrap();
+        let listing = list(dir.path()).unwrap();
+        assert!(listing.sessions.is_empty());
+        assert_eq!(listing.diagnostics.len(), 1);
     }
 
     #[test]

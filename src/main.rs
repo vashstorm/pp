@@ -145,12 +145,6 @@ fn run(args: Args) -> Result<()> {
         }),
     };
     if use_tui {
-        // TUI worker 可以在请求中退出；主线程独立持有 MCP 进程清理句柄。
-        let _mcp_cleanup = agent
-            .as_ref()
-            .ok()
-            .map(|agent| agent.mcp_cleanup())
-            .transpose()?;
         return tui::run(
             agent,
             &cwd,
@@ -260,6 +254,14 @@ fn run(args: Args) -> Result<()> {
                 writeln!(stderr, "{}", commands::help(&file_commands))?;
                 continue;
             }
+            // 行模式没有会话选择界面；按 ID 恢复仍用启动参数。
+            Some(commands::Command::Resume) => {
+                writeln!(
+                    stderr,
+                    "/resume requires the TUI; use pp --resume SESSION_ID."
+                )?;
+                continue;
+            }
             _ => {}
         }
         let agent = match &mut agent {
@@ -323,7 +325,10 @@ fn run(args: Args) -> Result<()> {
                 }
             }
             Some(
-                commands::Command::Help | commands::Command::Quit | commands::Command::Skills(_),
+                commands::Command::Help
+                | commands::Command::Quit
+                | commands::Command::Skills(_)
+                | commands::Command::Resume,
             ) => unreachable!(),
             Some(commands::Command::Prompt(prompt)) => {
                 if let Err(error) = run_cli_task(agent, Some(&prompt), &mut stdout, &mut stderr) {

@@ -263,6 +263,78 @@ impl Agent {
         })
     }
 
+    fn prepare_resume(&self, id: &str) -> Result<persistence::RestoredSession> {
+        let dir = crate::config::global_dir()?;
+        let mut restored = persistence::load(&dir.join("sessions"), Some(id), true)?;
+        let saved = &restored.checkpoint;
+        let same_model = saved.model_reference == self.current_model.reference
+            && match &saved.session {
+                Session::Completion(request) => {
+                    self.current_model.protocol == Protocol::Completion
+                        && request.model == self.current_model.model
+                }
+                Session::Response(request) => {
+                    self.current_model.protocol == Protocol::Response
+                        && request.model.as_deref() == Some(self.current_model.model.as_str())
+                }
+            };
+        // 跨模型时去掉供应商绑定的 Responses 状态，沿用已有的历史转换校验。
+        let source = if same_model
+            || matches!(saved.session, Session::Completion(_))
+                && self.current_model.protocol == Protocol::Completion
+        {
+            restored.checkpoint.session
+        } else {
+            history::convert(
+                &saved.session,
+                self.current_model.model.clone(),
+                self.current_model.protocol,
+                self.tools.edit_mode(),
+            )?
+        };
+        let system = format!(
+            "{}{}",
+            self.base_system,
+            self.tools
+                .skills
+                .lock()
+                .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
+                .summary()
+        );
+        let mut session = Session::new(
+            self.current_model.model.clone(),
+            self.current_model.protocol,
+            system,
+            self.tools.edit_mode(),
+        );
+        match (&mut session, source) {
+            (Session::Completion(target), Session::Completion(source)) => {
+                let skip_system = usize::from(matches!(
+                    source.messages.first(),
+                    Some(ChatCompletionRequestMessage::System(_))
+                ));
+                target
+                    .messages
+                    .extend(source.messages.into_iter().skip(skip_system));
+            }
+            (Session::Response(target), Session::Response(source)) => target.input = source.input,
+            _ => unreachable!("history converted to the current protocol"),
+        }
+        session.set_tools(self.tools.all_definitions());
+        session.set_think_level(self.think_level);
+        restored.checkpoint.session = session;
+        Ok(restored)
+    }
+
+    pub(crate) fn resume(&mut self, id: &str) -> Result<()> {
+        let mut restored = self.prepare_resume(id)?;
+        restored.journal.history_replaced();
+        self.session = restored.checkpoint.session;
+        self.journal = restored.journal;
+        self.replay = restored.replay;
+        Ok(())
+    }
+
     pub(crate) fn session_id(&self) -> Option<&str> {
         self.journal.id()
     }
@@ -687,6 +759,87 @@ fn response_input(request: &mut CreateResponse) -> &mut Vec<InputItem> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn resume_preparation_preserves_current_session_and_releases_failed_candidate() {
+        const FIXTURE: &str = "PP_TEST_RESUME_PREPARATION";
+        let Ok(root) = std::env::var(FIXTURE) else {
+            let home = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "agent::tests::resume_preparation_preserves_current_session_and_releases_failed_candidate", "--nocapture"])
+                .env("HOME", home.path())
+                .env(FIXTURE, home.path())
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        };
+        let root = std::path::Path::new(&root);
+        let global = root.join(".pp/agent");
+        let sessions = global.join("sessions");
+        std::fs::create_dir_all(&global).unwrap();
+        let models = global.join("models.jsonc");
+        let settings = global.join("settings.jsonc");
+        let configuration = json!({"providers":[{"id":"fixture","api_key":"fixture","models":[{"id":"one","model":"one"}]}]}).to_string();
+        std::fs::write(&models, &configuration).unwrap();
+        let mut ids = Vec::new();
+        let mut agents = Vec::new();
+        for name in ["old", "saved"] {
+            let cwd = root.join(name);
+            std::fs::create_dir(&cwd).unwrap();
+            let mut agent = Agent::new(
+                ModelCatalog::from_files(&settings, &models).unwrap(),
+                Tools::new(cwd, EditMode::Hashline).unwrap(),
+                sessions.clone(),
+            )
+            .unwrap();
+            let Session::Response(request) = &mut agent.session else {
+                panic!()
+            };
+            response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
+                role: Role::User,
+                content: name.into(),
+                ..Default::default()
+            }));
+            let metadata = Metadata {
+                cwd: agent.tools.cwd(),
+                model_reference: &agent.current_model.reference,
+                think_level: agent.think_level,
+                edit_mode: agent.tools.edit_mode(),
+                tool_limits: agent.tools.limits,
+                base_system: &agent.base_system,
+            };
+            agent
+                .journal
+                .sent(&metadata, (&agent.session).into(), Some(name), None)
+                .unwrap();
+            ids.push(agent.session_id().unwrap().to_owned());
+            agents.push(agent);
+        }
+        let saved = agents.pop().unwrap();
+        let expected = serde_json::to_value(&saved.session).unwrap();
+        drop(saved);
+        let old = agents.pop().unwrap();
+        let before = serde_json::to_value(&old.session).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        assert!(old.prepare_resume(&ids[0]).is_err());
+        // 运行中的恢复使用当前配置，不重新读取磁盘上的模型文件。
+        std::fs::write(&models, "invalid configuration").unwrap();
+        let candidate = old.prepare_resume(&ids[1]).unwrap();
+        let mut expected = expected;
+        expected["request"]["instructions"] = before["request"]["instructions"].clone();
+        assert_eq!(candidate.journal.id(), Some(ids[1].as_str()));
+        assert_eq!(
+            serde_json::to_value(&candidate.checkpoint.session).unwrap(),
+            expected
+        );
+        assert_eq!(old.session_id(), Some(ids[0].as_str()));
+        assert_eq!(serde_json::to_value(&old.session).unwrap(), before);
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
+        assert!(persistence::load(&sessions, Some(&ids[0]), true).is_err());
+        assert!(persistence::load(&sessions, Some(&ids[1]), true).is_err());
+        drop(candidate);
+        assert!(persistence::load(&sessions, Some(&ids[1]), true).is_ok());
+    }
 
     #[test]
     fn model_switch_failure_keeps_native_history_and_selection() {

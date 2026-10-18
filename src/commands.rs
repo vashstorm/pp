@@ -31,6 +31,12 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Reset the session, keeping the current model",
     },
     CommandSpec {
+        name: "/resume",
+        icon: "\u{f021}",
+        usage: "/resume",
+        description: "List saved sessions and resume a conversation",
+    },
+    CommandSpec {
         name: "/effort",
         icon: "\u{f0eb}",
         usage: "/effort [none|low|medium|high|xhigh|max]",
@@ -54,6 +60,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
 pub(crate) enum Command<'a> {
     Help,
     New,
+    Resume,
     Quit,
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
@@ -72,6 +79,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
     let command = match name {
         "/help" => Command::Help,
         "/new" => Command::New,
+        "/resume" => Command::Resume,
         "/quit" => Command::Quit,
         "/model" => {
             return Ok(Some(Command::Model(
@@ -147,6 +155,8 @@ mod tests {
         for (input, expected) in [
             (" /help \n", Command::Help),
             ("\t/new ", Command::New),
+            ("/resume", Command::Resume),
+            (" /resume ", Command::Resume),
             ("/quit", Command::Quit),
             ("/model", Command::Model(None)),
             (
@@ -171,7 +181,7 @@ mod tests {
                 "unknown command; use /help"
             );
         }
-        for command in ["/help", "/new", "/quit"] {
+        for command in ["/help", "/new", "/resume", "/quit"] {
             assert_eq!(
                 parse(&format!("{command} extra"), &FileCommands::default())
                     .unwrap_err()
@@ -188,6 +198,8 @@ mod tests {
             "  ",
             "task",
             "/model\nother",
+            "/resume\nsession-id",
+            "/resume\r\nextra",
             "/help\r\ncode",
             "text /quit",
         ] {

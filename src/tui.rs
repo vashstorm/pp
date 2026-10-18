@@ -2,6 +2,7 @@ mod files;
 mod menu;
 mod notification;
 mod scrollback;
+mod sessions;
 mod skills;
 mod statusline;
 mod transcript;
@@ -112,6 +113,9 @@ enum WorkerCommand {
     SwitchModel(String),
     SetThinkLevel(ThinkLevel),
     SaveDefaultThinkLevel(ThinkLevel),
+    ListSessions,
+    DeleteSession(String),
+    Resume(String),
 }
 enum WorkerEvent {
     Progress(AgentEvent),
@@ -121,6 +125,15 @@ enum WorkerEvent {
     ModelSwitched(Result<(ModelChoice, ThinkLevel)>),
     ThinkLevelSet(Result<ThinkLevel>),
     DefaultThinkLevelSaved(Result<ThinkLevel>),
+    SessionsListed(Result<crate::agent::persistence::SessionListing>),
+    SessionDeleted(String, Result<()>),
+    SessionResumed(Result<ResumeState>),
+}
+
+/// 由 worker 一次性准备好的会话切换产物；全部就绪后才替换 UI 状态。
+struct ResumeState {
+    id: String,
+    replay: Vec<crate::agent::persistence::ReplayRecord>,
 }
 
 #[derive(Clone, Copy)]
@@ -130,6 +143,8 @@ enum State {
     Resetting,
     SwitchingModel,
     SettingThinkLevel,
+    ListingSessions,
+    Resuming,
     Unavailable,
 }
 
@@ -175,6 +190,9 @@ struct App {
     skill_worker: skills::Worker,
     skill_panel: Option<skills::Panel>,
     skills_pending: bool,
+    session_panel: Option<sessions::Panel>,
+    session_id: Option<String>,
+    mcp_cleanup: Option<crate::mcp::Cleanup>,
     file_worker: files::Worker,
     file_paths: Vec<String>,
     file_directory: String,
@@ -251,6 +269,9 @@ impl App {
             skill_worker: skills::Worker::new(skills)?,
             skill_panel: None,
             skills_pending: false,
+            session_panel: None,
+            session_id: None,
+            mcp_cleanup: None,
             file_commands,
             file_worker: files::Worker::new(cwd)?,
             file_paths: Vec::new(),
@@ -261,13 +282,14 @@ impl App {
         let mut startup_notice = None;
         match agent {
             Ok(mut agent) => {
-                // 取 replay 与 session ID 必须发生在 agent move 进 worker 之前。
+                // 取 replay、模型字段与 MCP 清理句柄必须发生在 agent move 进 worker 之前。
                 let session_id = agent.session_id().map(str::to_owned);
                 let replay = agent.take_replay();
+                let current_model = agent.current_model().clone();
+                let think_level = agent.think_level();
+                let default_think_level = agent.default_think_level();
+                let mcp_cleanup = agent.mcp_cleanup()?;
                 app.choices = agent.model_choices();
-                app.current_model = Some(agent.current_model().clone());
-                app.think_level = agent.think_level();
-                app.default_think_level = agent.default_think_level();
                 let (commands, receiver) = mpsc::channel();
                 let (sender, events) = mpsc::sync_channel(256);
                 // Deliberately detached: quitting must not wait for HTTP or foreground tools.
@@ -302,6 +324,26 @@ impl App {
                                         |()| (agent.current_model().clone(), agent.think_level()),
                                     ))
                                 }
+                                WorkerCommand::ListSessions => WorkerEvent::SessionsListed(
+                                    crate::config::global_dir()
+                                        .map(|dir| dir.join("sessions"))
+                                        .and_then(|dir| crate::agent::persistence::list(&dir)),
+                                ),
+                                WorkerCommand::DeleteSession(id) => {
+                                    let result = crate::config::global_dir()
+                                        .map(|dir| dir.join("sessions"))
+                                        .and_then(|dir| {
+                                            crate::agent::persistence::delete(&dir, &id)
+                                        });
+                                    WorkerEvent::SessionDeleted(id, result)
+                                }
+                                WorkerCommand::Resume(id) => {
+                                    let result = agent.resume(&id).map(|()| ResumeState {
+                                        id,
+                                        replay: agent.take_replay(),
+                                    });
+                                    WorkerEvent::SessionResumed(result)
+                                }
                             };
                             // Report new IDs even on task failure, before Completed.
                             if let Some(id) = agent.take_session_notice()
@@ -318,13 +360,25 @@ impl App {
                 app.commands = Some(commands);
                 app.events = Some(events);
                 app.state = State::Ready;
+                app.mcp_cleanup = Some(mcp_cleanup);
                 if let Some(id) = session_id {
-                    let error = app.conversation.replay(replay, &mut app.input_history);
-                    app.show_welcome = false;
+                    let choices = std::mem::take(&mut app.choices);
+                    let error = app.adopt_session(
+                        replay,
+                        choices,
+                        current_model,
+                        think_level,
+                        default_think_level,
+                    );
+                    app.session_id = Some(id.clone());
                     startup_notice = Some(match error {
                         Some(error) => (Level::Error, format!("Resumed session: {id}\n{error}")),
                         None => (Level::Normal, format!("Resumed session: {id}")),
                     });
+                } else {
+                    app.current_model = Some(current_model);
+                    app.think_level = think_level;
+                    app.default_think_level = default_think_level;
                 }
             }
             Err(error) => {
@@ -371,12 +425,51 @@ impl App {
         self.conversation.append(label, text);
     }
 
+    /// 启动恢复时初始化模型字段，再接管可见对话。
+    fn adopt_session(
+        &mut self,
+        replay: Vec<crate::agent::persistence::ReplayRecord>,
+        choices: Vec<ModelChoice>,
+        current_model: ModelChoice,
+        think_level: ThinkLevel,
+        default_think_level: ThinkLevel,
+    ) -> Option<String> {
+        self.choices = choices;
+        self.current_model = Some(current_model);
+        self.think_level = think_level;
+        self.default_think_level = default_think_level;
+        self.adopt_history(replay)
+    }
+
+    fn adopt_history(
+        &mut self,
+        replay: Vec<crate::agent::persistence::ReplayRecord>,
+    ) -> Option<String> {
+        self.conversation = Transcript::new();
+        self.input_history = Vec::new();
+        let error = self.conversation.replay(replay, &mut self.input_history);
+        self.input = editor();
+        self.history_index = None;
+        self.history_draft = None;
+        self.model_picker_draft = None;
+        self.file_paths.clear();
+        self.file_directory.clear();
+        self.file_query = None;
+        self.menu = None;
+        self.menu_dismissed = true;
+        self.show_welcome = false;
+        self.refresh_candidates(false);
+        error
+    }
+
     fn fail_worker(&mut self) {
         let message = "Execution unavailable: agent worker channel closed; restart pp.";
         self.state = State::Unavailable;
         self.commands = None;
         self.events = None;
         self.unavailable = Some(message.into());
+        // worker 已死时不再等待恢复回复，会话面板不能继续吞掉按键。
+        self.session_panel = None;
         self.conversation.fail();
         self.notify(Level::Error, message.into());
     }
@@ -443,6 +536,7 @@ impl App {
                 }
                 Ok(WorkerEvent::SessionStarted(id)) => {
                     self.notify(Level::Normal, format!("Session: {id}"));
+                    self.session_id = Some(id);
                     changed = true;
                 }
                 Ok(WorkerEvent::Completed(result)) => {
@@ -459,6 +553,7 @@ impl App {
                     self.notifications.clear();
                     self.show_welcome = true;
                     self.state = State::Ready;
+                    self.session_id = None;
                     changed = true;
                 }
                 Ok(WorkerEvent::ModelSwitched(result)) => {
@@ -502,6 +597,77 @@ impl App {
                     self.state = State::Ready;
                     changed = true;
                 }
+                Ok(WorkerEvent::SessionsListed(result)) => {
+                    // 扫描结束，worker 空闲；若面板已取消则只丢弃迟到的列表。
+                    self.state = State::Ready;
+                    match result {
+                        Ok(listing) => {
+                            let skipped = listing.diagnostics.len();
+                            if let Some(panel) = &mut self.session_panel
+                                && panel.is_loading()
+                            {
+                                panel.set_listing(listing);
+                                if skipped > 0 {
+                                    self.notify(
+                                        Level::Error,
+                                        format!(
+                                            "Skipped {skipped} unreadable saved session file(s)."
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            self.session_panel = None;
+                            self.notify(
+                                Level::Error,
+                                format!("Failed to list saved sessions: {error:#}"),
+                            );
+                        }
+                    }
+                    changed = true;
+                }
+                Ok(WorkerEvent::SessionDeleted(id, result)) => {
+                    self.state = State::Ready;
+                    if let Some(panel) = &mut self.session_panel {
+                        panel.delete_finished(&id, result.is_ok());
+                    }
+                    if let Err(error) = result {
+                        self.notify(Level::Error, format!("Failed to delete session: {error:#}"));
+                    }
+                    changed = true;
+                }
+                Ok(WorkerEvent::SessionResumed(result)) => {
+                    self.state = State::Ready;
+                    match result {
+                        Ok(state) => {
+                            let id = state.id;
+                            let error = self.adopt_history(state.replay);
+                            self.session_id = Some(id.clone());
+                            self.session_panel = None;
+                            match error {
+                                Some(error) => self.notify(
+                                    Level::Error,
+                                    format!("Resumed session: {id}\n{error}"),
+                                ),
+                                None => {
+                                    self.notify(Level::Normal, format!("Resumed session: {id}"))
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            // 恢复失败：保留列表、选中项与旧对话，可重新选择或取消。
+                            if let Some(panel) = &mut self.session_panel {
+                                panel.restore_failed();
+                            }
+                            self.notify(
+                                Level::Error,
+                                format!("Failed to resume session: {error:#}"),
+                            );
+                        }
+                    }
+                    changed = true;
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.fail_worker();
@@ -521,6 +687,7 @@ impl App {
         }
         if self.skill_panel.is_some()
             || self.skills_pending
+            || self.session_panel.is_some()
             || self.menu_dismissed
             || !matches!(self.state, State::Ready | State::Unavailable)
         {
@@ -926,7 +1093,9 @@ impl App {
             State::Running
             | State::Resetting
             | State::SwitchingModel
-            | State::SettingThinkLevel => {}
+            | State::SettingThinkLevel
+            | State::ListingSessions
+            | State::Resuming => {}
             State::Unavailable => {
                 if let Some(error) = self.unavailable.take() {
                     self.notify(Level::Error, error.clone());
@@ -944,6 +1113,25 @@ impl App {
                 }
                 Some(Command::New) => {
                     self.send_submission(WorkerCommand::Reset, State::Resetting);
+                }
+                Some(Command::Resume) => {
+                    if self.skill_panel.is_some() || self.skills_pending {
+                        return false;
+                    }
+                    // 记入输入历史并清空输入；保留当前 Transcript 与欢迎页状态。
+                    self.remember_input();
+                    self.clear_input();
+                    self.file_directory.clear();
+                    self.file_paths.clear();
+                    self.file_query = None;
+                    self.menu = None;
+                    self.session_panel = Some(sessions::Panel::new(
+                        self.session_id.clone(),
+                        std::env::current_dir().unwrap_or_default(),
+                    ));
+                    if !self.send(WorkerCommand::ListSessions, State::ListingSessions) {
+                        self.session_panel = None;
+                    }
                 }
                 Some(Command::Model(Some(reference))) => self.switch_model(reference.to_owned()),
                 Some(Command::Model(None)) => {
@@ -982,6 +1170,13 @@ impl App {
             }
             Err(_) => self.notify(Level::Error, "Skill management worker unavailable.".into()),
         }
+    }
+
+    fn close_session_panel(&mut self) {
+        self.session_panel = None;
+        self.menu_dismissed = true;
+        // 加载中取消时扫描仍占用 worker：保持 ListingSessions，
+        // 迟到的列表回复发现面板已关闭即丢弃，状态随之恢复 Ready。
     }
 
     fn apply_menu_action(&mut self, action: MenuAction, confirm: bool) -> bool {
@@ -1098,6 +1293,39 @@ impl App {
                             self.request_skills(skills::Request::Save(selection))
                         }
                         skills::Action::Reload => self.request_skills(skills::Request::Reload),
+                    }
+                    return false;
+                }
+                // 会话面板打开时优先消费键盘输入，编辑器、历史翻阅与快捷操作不穿透。
+                if let Some(panel) = &mut self.session_panel {
+                    match panel.key(key) {
+                        sessions::Action::None => {}
+                        sessions::Action::Cancel => self.close_session_panel(),
+                        sessions::Action::Resume(index) => {
+                            let id = panel
+                                .id(index)
+                                .expect("selection indexes the session list")
+                                .to_owned();
+                            if self.session_id.as_deref() == Some(id.as_str()) {
+                                // 当前会话：只关闭列表，不重锁自己的 journal。
+                                self.close_session_panel();
+                            } else {
+                                panel.restore_started();
+                                if !self.send(WorkerCommand::Resume(id), State::Resuming) {
+                                    self.session_panel = None;
+                                }
+                            }
+                        }
+                        sessions::Action::Delete(index) => {
+                            let id = panel
+                                .id(index)
+                                .expect("selection indexes the session list")
+                                .to_owned();
+                            if !self.send(WorkerCommand::DeleteSession(id), State::ListingSessions)
+                            {
+                                self.session_panel = None;
+                            }
+                        }
                     }
                     return false;
                 }
@@ -1245,6 +1473,22 @@ impl App {
             }
             Event::Paste(_) if self.skill_panel.is_some() => {}
             Event::Mouse(_) if self.skill_panel.is_some() => {}
+            Event::Paste(text) if self.session_panel.is_some() => {
+                if let Some(panel) = &mut self.session_panel {
+                    panel.paste(&text);
+                }
+                *dirty = true;
+            }
+            Event::Mouse(mouse) if self.session_panel.is_some() => {
+                // 滚轮只改变列表选择，不滚动背后的对话。
+                if let MouseEventKind::ScrollUp | MouseEventKind::ScrollDown = mouse.kind {
+                    let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
+                    if let Some(panel) = &mut self.session_panel {
+                        panel.wheel(up);
+                    }
+                    *dirty = true;
+                }
+            }
             Event::Paste(text) => {
                 self.input
                     .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
@@ -1274,6 +1518,14 @@ impl App {
             return;
         }
         if let Some(panel) = &mut self.skill_panel {
+            panel.draw(frame, area);
+            self.notifications.draw(
+                frame,
+                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
+            );
+            return;
+        }
+        if let Some(panel) = &mut self.session_panel {
             panel.draw(frame, area);
             self.notifications.draw(
                 frame,
@@ -1438,6 +1690,61 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn resume_cancelled_scan_never_reopens_panel_and_keeps_worker_busy_until_reply() {
+        let mut app = app();
+        app.state = State::Ready;
+        app.append("You", "original conversation");
+        let original = draw(&mut app, 100, 30);
+        let (commands, requests) = mpsc::channel();
+        let (events, replies) = mpsc::channel();
+        app.commands = Some(commands);
+        app.events = Some(replies);
+        let mut dirty = false;
+        app.handle(Event::Paste("/resume".into()), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::ListSessions)
+        ));
+        assert!(draw(&mut app, 100, 30).contains("Loading saved sessions…"));
+        app.handle(Event::Paste("must not enter editor".into()), &mut dirty);
+        app.handle(control('p'), &mut dirty);
+        app.handle(key(KeyCode::F(1)), &mut dirty);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(draw(&mut app, 100, 30).contains("original conversation"));
+        app.handle(Event::Paste("next prompt".into()), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+        assert_eq!(app.input.lines(), &["next prompt"]);
+        events
+            .send(WorkerEvent::SessionsListed(Ok(
+                crate::agent::persistence::SessionListing {
+                    sessions: vec![crate::agent::persistence::SessionSummary {
+                        id: "late".into(),
+                        cwd: "/tmp".into(),
+                        updated_at: std::time::SystemTime::now(),
+                        summary: "late scan result".into(),
+                        preview: String::new(),
+                        bytes: 0,
+                        done: false,
+                    }],
+                    diagnostics: Vec::new(),
+                },
+            )))
+            .unwrap();
+        app.receive();
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("original conversation"));
+        assert!(!screen.contains("Resume session"));
+        assert!(!screen.contains("late scan result"));
+        assert_eq!(screen.lines().last(), original.lines().last());
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkerCommand::Run(prompt)) if prompt == "next prompt")
+        );
     }
 
     #[test]
@@ -2270,16 +2577,20 @@ mod tests {
             .draw(|frame| app.draw(frame, &StatusContext::default()))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 21)].symbol(), "❯");
-        assert_eq!(buffer[(2, 21)].symbol(), "/");
-        assert!(!buffer[(3, 21)].modifier.contains(Modifier::REVERSED));
-        assert_eq!(terminal.backend().cursor_position(), (3, 21).into());
+        // 布局随命令数量变化，按内容定位输入行与其下方的菜单。
+        let input_row = (0..30)
+            .find(|&y| buffer[(0, y)].symbol() == "❯" && buffer[(2, y)].symbol() == "/")
+            .expect("input row renders the prompt and draft");
+        assert!(!buffer[(3, input_row)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(terminal.backend().cursor_position(), (3, input_row).into());
+        let separator_row = input_row + 1;
         for x in 0..100 {
-            assert_eq!(buffer[(x, 22)].symbol(), "─");
-            assert_eq!(buffer[(x, 22)].fg, Color::Rgb(190, 133, 222));
+            assert_eq!(buffer[(x, separator_row)].symbol(), "─");
+            assert_eq!(buffer[(x, separator_row)].fg, Color::Rgb(190, 133, 222));
         }
+        let menu_top = separator_row + 1;
         for (index, spec) in COMMANDS.iter().enumerate() {
-            let y = 23 + index as u16;
+            let y = menu_top + index as u16;
             let active = index == 1;
             assert_eq!(buffer[(0, y)].symbol(), if active { "❯" } else { " " });
             assert_eq!(buffer[(2, y)].symbol(), spec.icon);
