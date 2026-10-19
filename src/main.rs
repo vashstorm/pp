@@ -1,4 +1,5 @@
 mod agent;
+mod cancellation;
 mod commands;
 mod config;
 mod events;
@@ -454,10 +455,12 @@ fn run_cli_task(
             }
         }
     };
+    let cancellation = cancellation::CancellationToken::new();
     let result = match prompt {
-        Some(prompt) => agent.run(prompt, &mut emit),
-        None => agent.continue_session(&mut emit),
-    };
+        Some(prompt) => agent.run(prompt, &cancellation, &mut emit),
+        None => agent.continue_session(&cancellation, &mut emit),
+    }
+    .map(|_| ());
     if !thinking_newline {
         cli_write(stderr, "\n", &mut err_broken, &mut first_error);
     }

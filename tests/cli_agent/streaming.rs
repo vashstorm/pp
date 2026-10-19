@@ -501,7 +501,7 @@ fn streaming_bash_both_pipes_are_live_and_failed_tool_does_not_stop_batch() {
             protocol.tool_result(&body, "live"),
             json!({
                 "ok":true, "stdout":"out-firstout-last", "stderr":"err-first",
-                "exit_code":0, "timed_out":false, "stdout_truncated":false, "stderr_truncated":false
+                "exit_code":0, "timed_out":false, "cancelled":false, "stdout_truncated":false, "stderr_truncated":false
             })
         );
         let failed = protocol.tool_result(&body, "bad");

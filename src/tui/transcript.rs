@@ -418,6 +418,11 @@ impl Transcript {
                     self.fail();
                     last_error = Some(message);
                 }
+                ReplayRecord::Cancelled => {
+                    self.cancel();
+                    assistant_running = false;
+                    last_error = None;
+                }
             }
         }
         self.replaying = false;
@@ -636,6 +641,12 @@ impl Transcript {
             }
             self.entries[index].layout = None;
         }
+    }
+
+    pub(super) fn cancel(&mut self) {
+        self.fail();
+        self.thinking = None;
+        self.append("Note", crate::cancellation::CANCELLED_NOTE);
     }
 
     pub(super) fn page_up(&mut self) {
@@ -951,6 +962,31 @@ mod tests {
         assert_eq!(error.as_deref(), Some("task failed"));
         assert!(!text.contains("task failed"));
         assert!(!text.contains("Previous request was interrupted."));
+    }
+
+    #[test]
+    fn replay_cancel_preserves_partial_and_clears_interruption() {
+        let mut transcript = Transcript::new();
+        let error = transcript.replay(
+            vec![
+                ReplayRecord::Error("previous failure".into()),
+                ReplayRecord::User("cancelled prompt".into()),
+                ReplayRecord::Event(AgentEvent::AssistantStarted),
+                ReplayRecord::Event(AgentEvent::AssistantDelta {
+                    text: "visible partial".into(),
+                    refusal: false,
+                }),
+                ReplayRecord::Cancelled,
+            ],
+            &mut Vec::new(),
+        );
+        assert!(error.is_none());
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(text.contains("visible partial"));
+        assert!(text.contains(crate::cancellation::CANCELLED_NOTE));
+        assert_eq!(transcript.entries[1].status, EntryStatus::Failed);
+        assert!(transcript.assistant.is_none());
+        assert!(transcript.thinking.is_none());
     }
 
     #[test]

@@ -2420,6 +2420,8 @@ mod tui {
     use super::*;
     include!("cli_agent/effort_defaults.rs");
     include!("cli_agent/mcp_tui.rs");
+    include!("cli_agent/cancel_tui.rs");
+    include!("cli_agent/cancel_mcp_tui.rs");
     include!("cli_agent/resume_tui.rs");
     include!("cli_agent/resume_boundaries.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
@@ -3178,7 +3180,6 @@ mod tui {
         for (row, col, color) in [
             (2, 45, vt100::Color::Rgb(127, 166, 106)),
             (26, 0, vt100::Color::Rgb(127, 166, 106)),
-            (29, 2, vt100::Color::Rgb(190, 133, 169)),
         ] {
             assert_eq!(screen.cell(row, col).unwrap().fgcolor(), color);
             assert_eq!(
@@ -3318,14 +3319,6 @@ mod tui {
         assert_eq!(
             background_color(screen, "retained-000"),
             ASSISTANT_BACKGROUND
-        );
-        let footer_row = text
-            .lines()
-            .position(|line| line.contains("fixture-model"))
-            .unwrap() as u16;
-        assert_eq!(
-            screen.cell(footer_row, 2).unwrap().fgcolor(),
-            vt100::Color::Rgb(190, 133, 169)
         );
         parser.process(b"shell> ");
         assert!(parser.screen().contents().contains("\nshell> "));

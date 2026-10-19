@@ -76,6 +76,8 @@ pub(super) enum CustomRef<'a> {
     Event { event: &'a AgentEvent },
     #[serde(rename = "pp.error")]
     Error { message: &'a str },
+    #[serde(rename = "pp.cancelled")]
+    Cancelled {},
 }
 
 #[derive(Serialize)]
@@ -185,6 +187,8 @@ pub(super) enum Custom {
     Event { event: AgentEvent },
     #[serde(rename = "pp.error")]
     Error { message: String },
+    #[serde(rename = "pp.cancelled")]
+    Cancelled {},
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

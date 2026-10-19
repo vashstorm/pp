@@ -1,4 +1,5 @@
 use super::{StreamText, drain_pipe, emit_output};
+use crate::cancellation::{CancellationCleanupError, CancellationToken};
 use crate::events::{AgentEvent, OutputStream};
 use anyhow::{Context, Result};
 use rustix::{
@@ -22,6 +23,14 @@ use std::{
 const POLL: Duration = Duration::from_millis(5);
 const GRACE: Duration = Duration::from_secs(1);
 const OUTPUT_LINE_LIMIT: usize = 500;
+
+/// Distinguishes a real exit from the two supervised stop reasons; a single
+/// bool cannot keep timeout and cancellation apart when both race.
+enum Termination {
+    Exited,
+    TimedOut,
+    Cancelled,
+}
 
 fn retain_lines<'a>(bytes: &'a [u8], at_line_start: &mut bool, remaining: &mut usize) -> &'a [u8] {
     for (index, byte) in bytes.iter().enumerate() {
@@ -70,7 +79,8 @@ impl ProcessGroup {
         stop: &AtomicBool,
         readers: &AtomicUsize,
         failed: &AtomicBool,
-    ) -> Result<(ExitStatus, bool)> {
+        cancellation: &CancellationToken,
+    ) -> Result<(ExitStatus, Termination)> {
         // 无论监督线程如何退出，都唤醒非阻塞管道读取线程。
         struct Stop<'a>(&'a AtomicBool);
         impl Drop for Stop<'_> {
@@ -84,20 +94,38 @@ impl ProcessGroup {
             // 清理整个组之前保留直接子进程的等待状态，防止 PID/进程组号被复用。
             let exited = self.exited().context("checking bash status")?;
             if exited && readers.load(Ordering::Acquire) == 2 {
-                return Ok((self.finish()?, false));
+                return Ok((self.finish()?, Termination::Exited));
             }
             if failed.load(Ordering::Acquire) {
-                return Ok((self.finish()?, false));
+                return Ok((self.finish()?, Termination::Exited));
+            }
+            // 同一轮内取消优先于 deadline；超时一旦选定并发出 TERM，
+            // 后续 grace 期间的取消不再改判为取消。
+            if cancellation.is_cancelled() {
+                let status = self
+                    .stop_cancelled()
+                    .map_err(|error| anyhow::Error::new(CancellationCleanupError(error)))?;
+                return Ok((status, Termination::Cancelled));
             }
             if started.elapsed() >= timeout {
                 self.signal(Signal::TERM)
                     .context("terminating timed out bash process group")?;
                 thread::sleep(GRACE);
-                return Ok((self.finish()?, true));
+                return Ok((self.finish()?, Termination::TimedOut));
             }
             thread::sleep(POLL);
         }
     }
+
+    // 取消收尾的 TERM/grace/KILL/wait 失败都包装为 typed
+    // CancellationCleanupError，不能被当作普通工具失败吞掉。
+    fn stop_cancelled(&mut self) -> Result<ExitStatus> {
+        self.signal(Signal::TERM)
+            .context("terminating cancelled bash process group")?;
+        thread::sleep(GRACE);
+        self.finish()
+    }
+
     fn finish(&mut self) -> Result<ExitStatus> {
         self.signal(Signal::KILL)
             .context("cleaning up bash process group")?;
@@ -150,6 +178,7 @@ pub(super) fn run(
     command: &str,
     timeout_seconds: u64,
     call_id: &str,
+    cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<Value> {
     let scratch = tempfile::Builder::new()
@@ -190,7 +219,7 @@ pub(super) fn run(
     let mut stderr_line_start = true;
     let mut stdout_line_truncated = false;
     let mut stderr_line_truncated = false;
-    let (status, timed_out, stdout_truncated, stderr_truncated) =
+    let (status, termination, stdout_truncated, stderr_truncated) =
         thread::scope(|scope| -> Result<_> {
             let (sender, receiver) = sync_channel(16);
             let err_sender = sender.clone();
@@ -207,7 +236,13 @@ pub(super) fn run(
                 )
             });
             let monitor = scope.spawn(|| {
-                process.supervise(Duration::from_secs(timeout_seconds), &stop, &done, &failed)
+                process.supervise(
+                    Duration::from_secs(timeout_seconds),
+                    &stop,
+                    &done,
+                    &failed,
+                    cancellation,
+                )
             });
             for (stream, bytes) in receiver {
                 let (at_line_start, truncated) = match stream {
@@ -224,7 +259,7 @@ pub(super) fn run(
             }
             emit_output(call_id, OutputStream::Stdout, stdout_text.finish(), emit);
             emit_output(call_id, OutputStream::Stderr, stderr_text.finish(), emit);
-            let (status, timed_out) = monitor
+            let (status, termination) = monitor
                 .join()
                 .map_err(|_| anyhow::anyhow!("bash supervisor thread failed"))??;
             let out = out
@@ -235,16 +270,24 @@ pub(super) fn run(
                 .map_err(|_| anyhow::anyhow!("bash stderr reader thread failed"))??;
             Ok((
                 status,
-                timed_out,
+                termination,
                 out || stdout_line_truncated,
                 err || stderr_line_truncated,
             ))
         })?;
+    let (ok, timed_out, cancelled) = match termination {
+        Termination::Exited => (status.success(), false, false),
+        Termination::TimedOut => (false, true, false),
+        Termination::Cancelled => (false, false, true),
+    };
     let mut result = json!({
-        "ok":status.success() && !timed_out, "exit_code":status.code(), "timed_out":timed_out,
+        "ok":ok, "exit_code":status.code(), "timed_out":timed_out, "cancelled":cancelled,
         "stdout":stdout_text.text, "stderr":stderr_text.text,
         "stdout_truncated":stdout_truncated, "stderr_truncated":stderr_truncated,
     });
+    if cancelled {
+        result["error"] = json!("Bash cancelled; file changes were not rolled back.");
+    }
     if let Err(error) = scratch.close() {
         result["warning"] = json!(format!(
             "command finished, but temporary directory cleanup failed: {error}"

@@ -29,6 +29,7 @@ pub(crate) enum ReplayRecord {
     User(String),
     Event(AgentEvent),
     Error(String),
+    Cancelled,
 }
 
 pub(crate) struct RestoredSession {
@@ -423,6 +424,9 @@ impl SessionJournal {
         }
         let _ = self.custom(CustomRef::Event { event }, false);
     }
+    pub(super) fn cancelled(&mut self) -> Result<()> {
+        self.custom(CustomRef::Cancelled {}, true)
+    }
     pub(super) fn error(&mut self, message: &str) {
         let _ = self.custom(CustomRef::Error { message }, true);
     }
@@ -709,7 +713,7 @@ fn read_summary(path: &Path, id: &str) -> Result<Option<SessionSummary>> {
             }
             Err(_) => bail!("invalid session record before first user message"),
         };
-        if entry.custom_type == "pp.error" {
+        if matches!(entry.custom_type.as_str(), "pp.error" | "pp.cancelled") {
             done = false;
         }
         if entry.kind == "message" {
@@ -989,6 +993,13 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
                         replay.push(ReplayRecord::Error(message));
                     }
                 }
+                Payload::Custom {
+                    custom: Custom::Cancelled {},
+                } => {
+                    if include_replay {
+                        replay.push(ReplayRecord::Cancelled);
+                    }
+                }
             }
             used_ids.insert(entry.id.clone());
             tail = Some(entry.id);
@@ -1146,6 +1157,7 @@ mod tests {
         for tail in [
             "{\"type\":\"custom\",\"customType\":\"pp.error\",\"data\":{\"message\":\"safe error\"}}\n",
             "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"next turn\"}}\n",
+            "{\"type\":\"custom\",\"customType\":\"pp.cancelled\",\"data\":{}}\n",
             "{partial",
         ] {
             let original = data.clone();
@@ -1559,7 +1571,10 @@ mod tests {
             assert_eq!(agent.think_level, original_level);
             assert_eq!(serde_json::to_value(&agent.session).unwrap(), native);
             assert_eq!(
-                agent.continue_session(&mut |_| {}).unwrap_err().to_string(),
+                agent
+                    .continue_session(&crate::cancellation::CancellationToken::new(), &mut |_| {})
+                    .unwrap_err()
+                    .to_string(),
                 error
             );
             assert!(

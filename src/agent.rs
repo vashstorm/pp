@@ -2,6 +2,7 @@ mod history;
 pub(crate) mod persistence;
 
 use crate::{
+    cancellation::{self, CancellationToken, Cancelled, RunOutcome},
     config::{EditMode, ModelCatalog, ModelChoice, ThinkLevel},
     events::AgentEvent,
     llm::OpenAiClient,
@@ -517,7 +518,12 @@ impl Agent {
         }
     }
 
-    pub(crate) fn run(&mut self, prompt: &str, emit: &mut dyn FnMut(AgentEvent)) -> Result<()> {
+    pub(crate) fn run(
+        &mut self,
+        prompt: &str,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<RunOutcome> {
         ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
         let instructions = self.refresh_skills()?;
         match &mut self.session {
@@ -535,27 +541,50 @@ impl Agent {
                 }))
             }
         }
-        let result = self.run_loop(Some(prompt), instructions.as_deref(), emit);
-        self.finish_run(result)
+        let result = self.run_loop(Some(prompt), instructions.as_deref(), cancellation, emit);
+        self.finish_run(result, cancellation)
     }
 
-    pub(crate) fn continue_session(&mut self, emit: &mut dyn FnMut(AgentEvent)) -> Result<()> {
-        let result = self.run_loop(None, None, emit);
-        self.finish_run(result)
+    pub(crate) fn continue_session(
+        &mut self,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<RunOutcome> {
+        let result = self.run_loop(None, None, cancellation, emit);
+        self.finish_run(result, cancellation)
     }
 
-    fn finish_run(&mut self, result: Result<()>) -> Result<()> {
-        if let Err(error) = &result {
-            self.journal.error(&format!("{error:#}"));
+    fn finish_run(
+        &mut self,
+        result: Result<()>,
+        cancellation: &CancellationToken,
+    ) -> Result<RunOutcome> {
+        if cancellation.is_cancelled() {
+            self.client.cancel_pending_io();
         }
-        self.journal.check()?;
-        result
+        match result {
+            Err(error) if error.is::<Cancelled>() => {
+                self.journal.check()?;
+                self.journal.cancelled()?;
+                Ok(RunOutcome::Cancelled)
+            }
+            Err(error) => {
+                self.journal.error(&format!("{error:#}"));
+                self.journal.check()?;
+                Err(error)
+            }
+            Ok(()) => {
+                self.journal.check()?;
+                Ok(RunOutcome::Completed)
+            }
+        }
     }
 
     fn run_loop(
         &mut self,
         mut user: Option<&str>,
         mut instructions: Option<&str>,
+        cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<()> {
         let metadata = Metadata {
@@ -568,6 +597,15 @@ impl Agent {
         };
         for _ in 0..self.max_model_requests {
             self.journal.check()?;
+            if cancellation.is_cancelled() {
+                self.journal.sent(
+                    &metadata,
+                    (&self.session).into(),
+                    user.take(),
+                    instructions.take(),
+                )?;
+                return Err(Cancelled.into());
+            }
             emit(AgentEvent::AssistantStarted);
             let update = RequestUpdate {
                 user: user.take(),
@@ -575,21 +613,23 @@ impl Agent {
             };
             let finished = match &mut self.session {
                 Session::Completion(request) => completion_turn(
-                    &self.client,
+                    &mut self.client,
                     &self.tools,
                     request,
                     &mut self.journal,
                     &metadata,
                     update,
+                    cancellation,
                     emit,
                 )?,
                 Session::Response(request) => response_turn(
-                    &self.client,
+                    &mut self.client,
                     &self.tools,
                     request,
                     &mut self.journal,
                     &metadata,
                     update,
+                    cancellation,
                     emit,
                 )?,
             };
@@ -597,6 +637,7 @@ impl Agent {
             if finished {
                 return Ok(());
             }
+            cancellation::check(cancellation)?;
         }
         bail!("{} model request limit reached", self.max_model_requests)
     }
@@ -608,12 +649,13 @@ struct RequestUpdate<'a> {
 }
 
 fn completion_turn(
-    client: &OpenAiClient,
+    client: &mut OpenAiClient,
     tools: &Tools,
     request: &mut CreateChatCompletionRequest,
     journal: &mut SessionJournal,
     metadata: &Metadata<'_>,
     update: RequestUpdate<'_>,
+    cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<bool> {
     let response = {
@@ -633,8 +675,9 @@ fn completion_turn(
             journal.borrow_mut().event(&event);
             emit(event);
         };
-        client.complete(request, &mut sent, &mut progress)?
+        client.complete(request, cancellation, &mut sent, &mut progress)?
     };
+    cancellation::check(cancellation)?;
     let mut progress = |event| {
         journal.event(&event);
         emit(event);
@@ -657,6 +700,7 @@ fn completion_turn(
     request
         .messages
         .push(ChatCompletionRequestMessage::Assistant(response));
+    let mut stop_error = None;
     for index in 0..count {
         let ChatCompletionRequestMessage::Assistant(response) = &request.messages[assistant_index]
         else {
@@ -673,26 +717,35 @@ fn completion_turn(
             &call.function.name,
             &call.function.arguments,
             &call.id,
+            cancellation,
             emit,
         );
+        if stop_error.is_none() {
+            stop_error = content.stop_error;
+        }
         let tool_call_id = call.id.clone();
         request.messages.push(ChatCompletionRequestMessage::Tool(
             ChatCompletionRequestToolMessage {
                 tool_call_id,
-                content: content.into(),
+                content: content.output.into(),
             },
         ));
+    }
+    if let Some(error) = stop_error {
+        journal.commit(SessionRef::Completion(request))?;
+        return Err(error);
     }
     Ok(false)
 }
 
 fn response_turn(
-    client: &OpenAiClient,
+    client: &mut OpenAiClient,
     tools: &Tools,
     request: &mut CreateResponse,
     journal: &mut SessionJournal,
     metadata: &Metadata<'_>,
     update: RequestUpdate<'_>,
+    cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<bool> {
     let turn = {
@@ -712,8 +765,9 @@ fn response_turn(
             journal.borrow_mut().event(&event);
             emit(event);
         };
-        client.respond(request, &mut sent, &mut progress)?
+        client.respond(request, cancellation, &mut sent, &mut progress)?
     };
+    cancellation::check(cancellation)?;
     let mut progress = |event| {
         journal.event(&event);
         emit(event);
@@ -727,16 +781,26 @@ fn response_turn(
         return Ok(true);
     }
     let end = input.len();
+    let mut stop_error = None;
     for index in start..end {
         let InputItem::Item(Item::FunctionCall(call)) = &input[index] else {
             continue;
         };
-        let output = tools.execute(&call.name, &call.arguments, &call.call_id, emit);
+        let output = tools.execute(
+            &call.name,
+            &call.arguments,
+            &call.call_id,
+            cancellation,
+            emit,
+        );
+        if stop_error.is_none() {
+            stop_error = output.stop_error;
+        }
         let call_id = Some(call.call_id.clone());
         input.push(InputItem::Item(Item::FunctionCallOutput(
             FunctionCallOutputItemParam {
                 call_id,
-                output: output.into(),
+                output: output.output.into(),
                 id: None,
                 status: None,
                 name: None,
@@ -744,6 +808,10 @@ fn response_turn(
                 caller: None,
             },
         )));
+    }
+    if let Some(error) = stop_error {
+        journal.commit(SessionRef::Response(request))?;
+        return Err(error);
     }
     Ok(false)
 }
@@ -839,6 +907,59 @@ mod tests {
         assert!(persistence::load(&sessions, Some(&ids[1]), true).is_err());
         drop(candidate);
         assert!(persistence::load(&sessions, Some(&ids[1]), true).is_ok());
+    }
+
+    #[test]
+    fn cancellation_before_request_saves_accepted_input_and_replays_terminal() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let settings = dir.path().join("settings.jsonc");
+            let models = dir.path().join("models.jsonc");
+            let sessions = dir.path().join("sessions");
+            std::fs::write(
+                &models,
+                json!({"providers":[{
+                    "id":"fixture", "api_key":"fixture-key", "protocol":protocol,
+                    "base_url":"http://127.0.0.1:1/v1", "models":[{"id":"one","model":"one"}]
+                }]})
+                .to_string(),
+            )
+            .unwrap();
+            let mut agent = Agent::new(
+                ModelCatalog::from_files(&settings, &models).unwrap(),
+                Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
+                sessions.clone(),
+            )
+            .unwrap();
+            let cancellation = CancellationToken::new();
+            cancellation.cancel();
+            let outcome = agent
+                .run("accepted input", &cancellation, &mut |_| {
+                    panic!("no request or tool may start")
+                })
+                .unwrap();
+            assert_eq!(outcome, RunOutcome::Cancelled);
+            let id = agent.session_id().unwrap().to_owned();
+            drop(agent);
+            let restored = persistence::load(&sessions, Some(&id), true).unwrap();
+            assert!(
+                matches!(restored.replay.as_slice(), [persistence::ReplayRecord::User(text), persistence::ReplayRecord::Cancelled] if text == "accepted input")
+            );
+            let native = serde_json::to_value(&restored.checkpoint.session).unwrap();
+            let entries = if protocol == "completion" {
+                native["request"]["messages"].as_array().unwrap()
+            } else {
+                native["request"]["input"].as_array().unwrap()
+            };
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|entry| entry["role"] == "user")
+                    .count(),
+                1
+            );
+            assert!(!persistence::list(&sessions).unwrap().sessions[0].done);
+        }
     }
 
     #[test]

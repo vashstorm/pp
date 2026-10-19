@@ -10,6 +10,7 @@ mod welcome;
 
 use crate::{
     agent::Agent,
+    cancellation::{CancellationToken, RunOutcome},
     commands::{self, COMMANDS, Command},
     config::{ModelChoice, NotificationOptions, ThinkLevel},
     events::AgentEvent,
@@ -43,7 +44,7 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
-const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S set selected effort as default in the /effort menu · Ctrl-P choose model · F1 help · Tab complete · Esc dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S set selected effort as default in the /effort menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
 const EFFORT_HINT: &str = "Enter select · Ctrl-S set selected effort as default · Esc cancel";
 const MOUSE_SCROLL_LINES: usize = 3;
 
@@ -63,7 +64,7 @@ pub(crate) fn run(
     let mut app = App::new_with_skills(agent, skills, file_commands, cwd, notification_options)?;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c: replay is already loaded; resend the saved request without touching the editor.
-        app.send(WorkerCommand::Continue, State::Running);
+        app.send_task(None);
     }
     let mut workspace = WorkspaceStatus::new(cwd)?;
     let mut dirty = true;
@@ -107,8 +108,13 @@ impl Drop for TerminalGuard {
 }
 
 enum WorkerCommand {
-    Run(String),
-    Continue,
+    Run {
+        prompt: String,
+        cancellation: CancellationToken,
+    },
+    Continue {
+        cancellation: CancellationToken,
+    },
     Reset,
     SwitchModel(String),
     SetThinkLevel(ThinkLevel),
@@ -119,7 +125,7 @@ enum WorkerCommand {
 }
 enum WorkerEvent {
     Progress(AgentEvent),
-    Completed(Result<()>),
+    Completed(Result<RunOutcome>),
     SessionStarted(String),
     Reset,
     ModelSwitched(Result<(ModelChoice, ThinkLevel)>),
@@ -140,6 +146,7 @@ struct ResumeState {
 enum State {
     Ready,
     Running,
+    Cancelling,
     Resetting,
     SwitchingModel,
     SettingThinkLevel,
@@ -176,6 +183,7 @@ struct App {
     history_index: Option<usize>,
     history_draft: Option<TextArea<'static>>,
     state: State,
+    active_cancellation: Option<CancellationToken>,
     commands: Option<Sender<WorkerCommand>>,
     events: Option<Receiver<WorkerEvent>>,
     unavailable: Option<String>,
@@ -255,6 +263,7 @@ impl App {
             history_index: None,
             history_draft: None,
             state: State::Unavailable,
+            active_cancellation: None,
             commands: None,
             events: None,
             unavailable: None,
@@ -301,12 +310,17 @@ impl App {
                                 let _ = sender.send(WorkerEvent::Progress(event));
                             };
                             let event = match command {
-                                WorkerCommand::Run(prompt) => {
-                                    WorkerEvent::Completed(agent.run(&prompt, &mut emit))
-                                }
-                                WorkerCommand::Continue => {
-                                    WorkerEvent::Completed(agent.continue_session(&mut emit))
-                                }
+                                WorkerCommand::Run {
+                                    prompt,
+                                    cancellation,
+                                } => WorkerEvent::Completed(agent.run(
+                                    &prompt,
+                                    &cancellation,
+                                    &mut emit,
+                                )),
+                                WorkerCommand::Continue { cancellation } => WorkerEvent::Completed(
+                                    agent.continue_session(&cancellation, &mut emit),
+                                ),
                                 WorkerCommand::Reset => {
                                     agent.reset();
                                     WorkerEvent::Reset
@@ -465,6 +479,7 @@ impl App {
     fn fail_worker(&mut self) {
         let message = "Execution unavailable: agent worker channel closed; restart pp.";
         self.state = State::Unavailable;
+        self.active_cancellation = None;
         self.commands = None;
         self.events = None;
         self.unavailable = Some(message.into());
@@ -540,9 +555,14 @@ impl App {
                     changed = true;
                 }
                 Ok(WorkerEvent::Completed(result)) => {
-                    if let Err(error) = result {
-                        self.conversation.fail();
-                        self.notify(Level::Error, format!("{error:#}"));
+                    self.active_cancellation = None;
+                    match result {
+                        Ok(RunOutcome::Completed) => {}
+                        Ok(RunOutcome::Cancelled) => self.conversation.cancel(),
+                        Err(error) => {
+                            self.conversation.fail();
+                            self.notify(Level::Error, format!("{error:#}"));
+                        }
                     }
                     self.state = State::Ready;
                     changed = true;
@@ -961,6 +981,25 @@ impl App {
         }
     }
 
+    fn send_task(&mut self, prompt: Option<String>) -> bool {
+        let cancellation = CancellationToken::new();
+        let command = match prompt {
+            Some(prompt) => WorkerCommand::Run {
+                prompt,
+                cancellation: cancellation.clone(),
+            },
+            None => WorkerCommand::Continue {
+                cancellation: cancellation.clone(),
+            },
+        };
+        if self.send(command, State::Running) {
+            self.active_cancellation = Some(cancellation);
+            true
+        } else {
+            false
+        }
+    }
+
     fn send_submission(&mut self, command: WorkerCommand, state: State) -> bool {
         if self.send(command, state) {
             self.remember_input();
@@ -1091,6 +1130,7 @@ impl App {
         }
         match self.state {
             State::Running
+            | State::Cancelling
             | State::Resetting
             | State::SwitchingModel
             | State::SettingThinkLevel
@@ -1140,14 +1180,16 @@ impl App {
                     self.refresh_candidates(true);
                 }
                 None => {
-                    if self.send_submission(WorkerCommand::Run(prompt.clone()), State::Running) {
+                    if self.send_task(Some(prompt.clone())) {
+                        self.remember_input();
                         self.append("You", &prompt);
                         self.clear_input();
                     }
                 }
                 Some(Command::Prompt(expanded)) => {
                     // 历史记录保存原始 slash 输入；回显与实际发送的都是展开后的正文。
-                    if self.send_submission(WorkerCommand::Run(expanded.clone()), State::Running) {
+                    if self.send_task(Some(expanded.clone())) {
+                        self.remember_input();
                         self.append("You", &expanded);
                         self.clear_input();
                     }
@@ -1447,6 +1489,16 @@ impl App {
                         }
                     }
                 }
+                if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+                    if key.kind == KeyEventKind::Press
+                        && matches!(self.state, State::Running)
+                        && let Some(cancellation) = &self.active_cancellation
+                    {
+                        cancellation.cancel();
+                        self.state = State::Cancelling;
+                    }
+                    return false;
+                }
                 match key.code {
                     KeyCode::Enter => {
                         if key.kind == KeyEventKind::Press && self.submit() {
@@ -1634,6 +1686,12 @@ impl App {
     fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
         // 上沿右半区为第二状态栏预留；未设置内容时保持横线。
         let left_width = area.width / 2;
+        if matches!(self.state, State::Cancelling) {
+            frame.render_widget(
+                Line::styled(" Cancelling... ", Style::default().fg(Color::DarkGray)),
+                Rect::new(area.x, area.y, left_width, 1),
+            );
+        }
         if let Some(extra) = self
             .secondary_status
             .as_deref()
@@ -1743,7 +1801,7 @@ mod tests {
         assert_eq!(screen.lines().last(), original.lines().last());
         app.handle(key(KeyCode::Enter), &mut dirty);
         assert!(
-            matches!(requests.try_recv(), Ok(WorkerCommand::Run(prompt)) if prompt == "next prompt")
+            matches!(requests.try_recv(), Ok(WorkerCommand::Run { prompt, .. }) if prompt == "next prompt")
         );
     }
 
@@ -1778,6 +1836,153 @@ mod tests {
                 .iter()
                 .any(|cell| cell.symbol() == "╭" && cell.fg == color)
         );
+    }
+
+    #[test]
+    fn task_cancel_idle_menu_repeat_and_modified_escape_do_not_cancel() {
+        let mut app = app();
+        app.state = State::Ready;
+        app.input.insert_str("保留草稿");
+        let cursor = app.input.cursor();
+        let mut dirty = false;
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert_eq!(app.input.lines(), &["保留草稿"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert!(app.active_cancellation.is_none());
+        app.input = editor();
+        app.input.insert_str("/");
+        app.refresh_candidates(true);
+        assert!(app.menu.is_some());
+        let token = CancellationToken::new();
+        app.active_cancellation = Some(token.clone());
+        app.state = State::Running;
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.menu.is_none());
+        assert!(!token.is_cancelled());
+        app.handle(
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                KeyEventKind::Repeat,
+            )),
+            &mut dirty,
+        );
+        app.handle(
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            )),
+            &mut dirty,
+        );
+        app.handle(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT)),
+            &mut dirty,
+        );
+        assert!(!token.is_cancelled());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(token.is_cancelled());
+        assert!(matches!(app.state, State::Cancelling));
+    }
+
+    #[test]
+    fn task_cancel_waits_for_completed_and_preserves_editable_draft() {
+        let mut app = app();
+        app.state = State::Ready;
+        app.show_welcome = false;
+        let (commands, requests) = mpsc::channel();
+        let (events, receiver) = mpsc::channel();
+        app.commands = Some(commands);
+        app.events = Some(receiver);
+        let mut dirty = false;
+        app.input.insert_str("first task");
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        let WorkerCommand::Run { cancellation, .. } = requests.try_recv().unwrap() else {
+            panic!()
+        };
+        app.input.insert_str("保留草稿");
+        app.input.move_cursor(CursorMove::Back);
+        let cursor = app.input.cursor();
+        let history = app.input_history.clone();
+        app.secondary_status = Some("secondary intact".into());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(cancellation.is_cancelled());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        app.handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)),
+            &mut dirty,
+        );
+        app.handle(key(KeyCode::BackTab), &mut dirty);
+        assert!(requests.try_recv().is_err());
+        assert_eq!(app.input.lines(), &["保留草稿"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(app.input_history, history);
+        assert!(matches!(app.state, State::Cancelling));
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("Cancelling..."));
+        assert!(screen.contains("secondary intact"));
+        app.handle(Event::Paste("新".into()), &mut dirty);
+        events
+            .send(WorkerEvent::Completed(Ok(RunOutcome::Cancelled)))
+            .unwrap();
+        app.receive();
+        assert!(matches!(app.state, State::Ready));
+        assert!(app.active_cancellation.is_none());
+        assert_eq!(app.input.lines(), &["保留草新稿"]);
+        assert_eq!(
+            draw(&mut app, 100, 30)
+                .matches(crate::cancellation::CANCELLED_NOTE)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn task_cancel_committed_completion_wins_and_next_token_is_independent() {
+        let mut app = app();
+        app.state = State::Ready;
+        app.show_welcome = false;
+        let (commands, requests) = mpsc::channel();
+        let (events, receiver) = mpsc::channel();
+        app.commands = Some(commands);
+        app.events = Some(receiver);
+        let mut dirty = false;
+        app.input.insert_str("first task");
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        let WorkerCommand::Run {
+            cancellation: old, ..
+        } = requests.try_recv().unwrap()
+        else {
+            panic!()
+        };
+        // 完成已在 worker 提交，UI 尚未接到 Completed；迟到 Esc 只取消旧 token。
+        events
+            .send(WorkerEvent::Completed(Ok(RunOutcome::Completed)))
+            .unwrap();
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(old.is_cancelled());
+        app.receive();
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(matches!(app.state, State::Ready));
+        assert!(!draw(&mut app, 100, 30).contains(crate::cancellation::CANCELLED_NOTE));
+        app.input.insert_str("next task");
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        let WorkerCommand::Run {
+            cancellation: next, ..
+        } = requests.try_recv().unwrap()
+        else {
+            panic!()
+        };
+        old.cancel();
+        assert!(!next.is_cancelled());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(next.is_cancelled());
+        assert!(matches!(app.state, State::Cancelling));
+        assert!(app.handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            &mut dirty
+        ));
     }
 
     #[test]
@@ -2126,7 +2331,7 @@ mod tests {
             assert!(scans.try_recv().is_err());
             app.handle(key(KeyCode::Enter), &mut dirty);
             assert!(
-                matches!(commands.try_recv(), Ok(WorkerCommand::Run(text)) if text == "查看 @missing")
+                matches!(commands.try_recv(), Ok(WorkerCommand::Run { prompt: text, .. }) if text == "查看 @missing")
             );
         }
         let (mut app, scans, replies, commands) = file_picker_fixture();
@@ -2154,7 +2359,9 @@ mod tests {
         assert_notification(&mut app, Color::Rgb(224, 108, 117));
         assert!(draw(&mut app, 100, 30).contains("File picker unavailable; restart pp."));
         app.handle(key(KeyCode::Enter), &mut dirty);
-        assert!(matches!(commands.try_recv(), Ok(WorkerCommand::Run(text)) if text == "查看 @"));
+        assert!(
+            matches!(commands.try_recv(), Ok(WorkerCommand::Run { prompt: text, .. }) if text == "查看 @")
+        );
     }
 
     #[test]
@@ -2232,7 +2439,9 @@ mod tests {
             app.state = State::Ready;
             app.handle(Event::Paste(prompt.into()), &mut dirty);
             app.handle(key(KeyCode::Enter), &mut dirty);
-            assert!(matches!(requests.try_recv(), Ok(WorkerCommand::Run(text)) if text == prompt));
+            assert!(
+                matches!(requests.try_recv(), Ok(WorkerCommand::Run { prompt: text, .. }) if text == prompt)
+            );
         }
         app.handle(Event::Paste("草稿\n未发送🙂".into()), &mut dirty);
         app.handle(key(KeyCode::Left), &mut dirty);
@@ -2265,7 +2474,7 @@ mod tests {
         app.handle(key(KeyCode::Char('!')), &mut dirty);
         app.handle(key(KeyCode::Enter), &mut dirty);
         assert!(
-            matches!(requests.try_recv(), Ok(WorkerCommand::Run(text)) if text == "second\n🙂末行!")
+            matches!(requests.try_recv(), Ok(WorkerCommand::Run { prompt: text, .. }) if text == "second\n🙂末行!")
         );
         assert_eq!(
             app.input_history,
@@ -3068,7 +3277,7 @@ mod tests {
         app.handle(key(KeyCode::Enter), &mut dirty);
         assert!(matches!(
             requests.try_recv(),
-            Ok(WorkerCommand::Run(text)) if text == "Review auth now."
+            Ok(WorkerCommand::Run { prompt: text, .. }) if text == "Review auth now."
         ));
         assert!(app.input.is_empty());
         let screen = draw(&mut app, 100, 30);
@@ -3325,7 +3534,11 @@ mod tests {
                     .is_ok()
             );
         }
-        assert!(sender.send(WorkerEvent::Completed(Ok(()))).is_ok());
+        assert!(
+            sender
+                .send(WorkerEvent::Completed(Ok(RunOutcome::Completed)))
+                .is_ok()
+        );
         assert!(app.receive());
         assert!(matches!(app.state, State::Running));
         assert_eq!(app.input.lines(), &["draft-中"]);

@@ -1,3 +1,4 @@
+use crate::cancellation::{CancellationCleanupError, CancellationToken, Cancelled};
 use crate::config::{EditMode, ToolLimits};
 use crate::events::{AgentEvent, OutputStream};
 use anyhow::{Context, Result, ensure};
@@ -29,6 +30,13 @@ pub(crate) struct Tools {
     edit_mode: EditMode,
     workspace: save::Workspace,
     pub(crate) limits: ToolLimits,
+}
+
+/// Separates a tool's serialized result from a cancellation-time stop failure:
+/// only a failed termination of an already cancelled tool sets `stop_error`.
+pub(crate) struct ToolExecution {
+    pub(crate) output: String,
+    pub(crate) stop_error: Option<anyhow::Error>,
 }
 
 #[derive(Deserialize)]
@@ -187,23 +195,50 @@ impl Tools {
         name: &str,
         arguments: &str,
         call_id: &str,
+        cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
-    ) -> String {
+    ) -> ToolExecution {
         emit(AgentEvent::ToolStarted {
             id: call_id.to_owned(),
             name: name.to_owned(),
             arguments: arguments.to_owned(),
         });
-        let value = match self.execute_inner(name, arguments, call_id, emit) {
-            Ok(result) => result,
-            Err(error) => json!({"ok":false,"error":format!("{error:#}")}),
+        // The cancellation check runs after ToolStarted and before any argument
+        // parsing, file access or process creation.
+        let mut stop_error = None;
+        let value = if cancellation.is_cancelled() {
+            json!({"ok":false,"cancelled":true,"error":"Not executed: task cancelled."})
+        } else {
+            match self.execute_inner(name, arguments, call_id, cancellation, emit) {
+                Ok(result) => result,
+                Err(error) => {
+                    let cleanup_failure = error
+                        .chain()
+                        .any(|cause| cause.is::<CancellationCleanupError>());
+                    let cancelled = error.chain().any(|cause| cause.is::<Cancelled>());
+                    let message = format!("{error:#}");
+                    if cleanup_failure {
+                        // A tool that could not be stopped is a real failure;
+                        // keep the typed error so the agent can report it.
+                        stop_error = Some(error);
+                        json!({"ok":false,"error":message})
+                    } else if cancelled {
+                        json!({"ok":false,"cancelled":true,"error":"Tool cancelled; side effects may have occurred."})
+                    } else {
+                        json!({"ok":false,"error":message})
+                    }
+                }
+            }
         };
         let serialized = value.to_string();
         emit(AgentEvent::ToolFinished {
             id: call_id.to_owned(),
             result: value,
         });
-        serialized
+        ToolExecution {
+            output: serialized,
+            stop_error,
+        }
     }
 
     fn execute_inner(
@@ -211,6 +246,7 @@ impl Tools {
         name: &str,
         arguments: &str,
         call_id: &str,
+        cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<Value> {
         match name {
@@ -299,10 +335,11 @@ impl Tools {
                     &args.command,
                     self.limits.bash_timeout_seconds,
                     call_id,
+                    cancellation,
                     emit,
                 )
             }
-            _ => self.mcp.call(name, arguments),
+            _ => self.mcp.call(name, arguments, cancellation),
         }
     }
 
@@ -435,8 +472,14 @@ mod tests {
     use super::*;
 
     fn execute(tools: &Tools, name: &str, args: Value) -> Value {
-        serde_json::from_str(&tools.execute(name, &args.to_string(), "test-call", &mut |_| {}))
-            .unwrap()
+        let token = CancellationToken::new();
+        let execution = tools.execute(name, &args.to_string(), "test-call", &token, &mut |_| {});
+        assert!(
+            execution.stop_error.is_none(),
+            "unexpected cleanup failure: {:?}",
+            execution.stop_error
+        );
+        serde_json::from_str(&execution.output).unwrap()
     }
     #[test]
     fn hashline_read_edit_roundtrip() {
@@ -942,10 +985,12 @@ mod tests {
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         let mut stdout = String::new();
         let mut stderr = String::new();
-        let result: Value = serde_json::from_str(&tools.execute(
+        let token = CancellationToken::new();
+        let execution = tools.execute(
             "bash",
             &json!({"command":"for ((i=0;i<10000;i++)); do printf 'out\\n'; printf 'err\\n' >&2; done; printf done > completed; exit 7"}).to_string(),
             "line-limit",
+            &token,
             &mut |event| {
                 if let AgentEvent::ToolOutput { stream, text, .. } = event {
                     match stream {
@@ -954,7 +999,9 @@ mod tests {
                     }
                 }
             },
-        )).unwrap();
+        );
+        assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
         assert_eq!(stdout.lines().count() + stderr.lines().count(), 500);
         assert_eq!(result["stdout"], stdout);
         assert_eq!(result["stderr"], stderr);
@@ -963,6 +1010,7 @@ mod tests {
         assert_eq!(result["ok"], false);
         assert_eq!(result["exit_code"], 7);
         assert_eq!(result["timed_out"], false);
+        assert_eq!(result["cancelled"], false);
         assert_eq!(
             fs::read_to_string(dir.path().join("completed")).unwrap(),
             "done"
@@ -1121,6 +1169,7 @@ mod tests {
             let result = execute(&tools, "bash", json!({"command":command}));
             assert_eq!(result["ok"], false, "{result}");
             assert_eq!(result["timed_out"], true, "{result}");
+            assert_eq!(result["cancelled"], false, "{result}");
             assert!(start.elapsed() < Duration::from_secs(4));
             assert!(!dir.path().join("late").exists());
             if command.contains("printf before") {
@@ -1145,23 +1194,25 @@ mod tests {
         tools.limits.bash_timeout_seconds = 1;
         let mut blocked = false;
         let start = Instant::now();
-        let result: Value = serde_json::from_str(
-            &tools.execute(
-                "bash",
-                &json!({"command":"trap '' TERM; printf ready; sleep 3; printf late > late"})
-                    .to_string(),
-                "call",
-                &mut |event| {
-                    if matches!(event, AgentEvent::ToolOutput { .. }) && !blocked {
-                        blocked = true;
-                        thread::sleep(Duration::from_millis(3200));
-                    }
-                },
-            ),
-        )
-        .unwrap();
+        let token = CancellationToken::new();
+        let execution = tools.execute(
+            "bash",
+            &json!({"command":"trap '' TERM; printf ready; sleep 3; printf late > late"})
+                .to_string(),
+            "call",
+            &token,
+            &mut |event| {
+                if matches!(event, AgentEvent::ToolOutput { .. }) && !blocked {
+                    blocked = true;
+                    thread::sleep(Duration::from_millis(3200));
+                }
+            },
+        );
+        assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
         assert!(blocked);
         assert_eq!(result["timed_out"], true);
+        assert_eq!(result["cancelled"], false);
         assert!(!dir.path().join("late").exists());
         assert!(start.elapsed() < Duration::from_secs(5));
         let result = execute(
@@ -1181,6 +1232,106 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".pp-tmp-")
         }));
+    }
+
+    fn wait_until_gone(pid: u32, what: &str) {
+        use rustix::process::{Pid, test_kill_process};
+        let pid = Pid::from_raw(pid as i32).expect("positive pid");
+        for _ in 0..1000 {
+            if test_kill_process(pid).is_err() {
+                return;
+            }
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("{what} (pid {pid}) still alive after cancellation");
+    }
+
+    #[test]
+    fn bash_cancel_stops_term_resistant_group_and_reports_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        tools.limits.bash_timeout_seconds = 60;
+        let token = CancellationToken::new();
+        // Cancel only after both pid markers exist, so the tool result can be
+        // asserted against a process that was definitely still running.
+        let marker = {
+            let watch = dir.path().to_owned();
+            let token = token.clone();
+            thread::spawn(move || {
+                loop {
+                    if watch.join("bash.pid").exists() && watch.join("bash-child.pid").exists() {
+                        token.cancel();
+                        return;
+                    }
+                    thread::sleep(std::time::Duration::from_millis(5));
+                }
+            })
+        };
+        let execution = tools.execute(
+            "bash",
+            &json!({"command":"trap '' TERM; printf 'cancel-ready\\n'; printf '%s' \"$$\" > bash.pid; sleep 30 & child=$!; printf '%s' \"$child\" > bash-child.pid; wait \"$child\""}).to_string(),
+            "cancel-call",
+            &token,
+            &mut |_| {},
+        );
+        assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(result["ok"], false, "{result}");
+        assert_eq!(result["cancelled"], true, "{result}");
+        assert_eq!(result["timed_out"], false, "{result}");
+        assert_eq!(
+            result["error"],
+            "Bash cancelled; file changes were not rolled back."
+        );
+        assert!(result["stdout"].as_str().unwrap().contains("cancel-ready"));
+        marker.join().unwrap();
+        let bash_pid: u32 = fs::read_to_string(dir.path().join("bash.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let child_pid: u32 = fs::read_to_string(dir.path().join("bash-child.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        wait_until_gone(bash_pid, "bash");
+        wait_until_gone(child_pid, "bash child");
+        assert!(!fs::read_dir(dir.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".pp-tmp-")
+        }));
+    }
+
+    #[test]
+    fn cancelled_token_skips_execution_but_reports_started_and_finished() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+        let mut events = 0;
+        let execution = tools.execute(
+            "write",
+            &json!({"path":"skipped.txt","content":"must-not-exist"}).to_string(),
+            "skip-call",
+            &token,
+            &mut |event| match event {
+                AgentEvent::ToolStarted { .. } | AgentEvent::ToolFinished { .. } => events += 1,
+                _ => panic!("unexpected event during skipped tool"),
+            },
+        );
+        assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+        assert_eq!(events, 2);
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(
+            result,
+            json!({"ok":false,"cancelled":true,"error":"Not executed: task cancelled."})
+        );
+        assert!(!dir.path().join("skipped.txt").exists());
+        assert!(!dir.path().join("skipped").exists());
     }
 
     struct ChunkedReader<'a> {
@@ -1293,45 +1444,53 @@ mod tests {
         let mut released = false;
         let mut started = false;
         let mut finished = false;
-        let serialized = tools.execute("bash", &args, "live-call", &mut |event| match event {
-            AgentEvent::ToolStarted {
-                id,
-                name,
-                arguments,
-            } => {
-                assert!(!started && !finished);
-                assert_eq!(id, "live-call");
-                assert_eq!(name, "bash");
-                assert_eq!(arguments, args);
-                started = true;
-            }
-            AgentEvent::ToolOutput { id, stream, text } => {
-                assert!(started && !finished);
-                assert_eq!(id, "live-call");
-                assert!(!text.is_empty());
-                if !released {
-                    assert!(!text.contains("out-last"), "output arrived only after exit");
+        let token = CancellationToken::new();
+        let execution = tools.execute(
+            "bash",
+            &args,
+            "live-call",
+            &token,
+            &mut |event| match event {
+                AgentEvent::ToolStarted {
+                    id,
+                    name,
+                    arguments,
+                } => {
+                    assert!(!started && !finished);
+                    assert_eq!(id, "live-call");
+                    assert_eq!(name, "bash");
+                    assert_eq!(arguments, args);
+                    started = true;
                 }
-                match stream {
-                    OutputStream::Stdout => stdout.push_str(&text),
-                    OutputStream::Stderr => stderr.push_str(&text),
+                AgentEvent::ToolOutput { id, stream, text } => {
+                    assert!(started && !finished);
+                    assert_eq!(id, "live-call");
+                    assert!(!text.is_empty());
+                    if !released {
+                        assert!(!text.contains("out-last"), "output arrived only after exit");
+                    }
+                    match stream {
+                        OutputStream::Stdout => stdout.push_str(&text),
+                        OutputStream::Stderr => stderr.push_str(&text),
+                    }
+                    if !released && stdout == "out-first" && stderr == "err-first" {
+                        fs::write(dir.path().join("release"), "").unwrap();
+                        released = true;
+                    }
                 }
-                if !released && stdout == "out-first" && stderr == "err-first" {
-                    fs::write(dir.path().join("release"), "").unwrap();
-                    released = true;
+                AgentEvent::ToolFinished { id, result } => {
+                    assert!(started && released && !finished);
+                    assert_eq!(id, "live-call");
+                    assert_eq!(result["stdout"], stdout);
+                    assert_eq!(result["stderr"], stderr);
+                    assert_eq!(result["exit_code"], 0);
+                    finished = true;
                 }
-            }
-            AgentEvent::ToolFinished { id, result } => {
-                assert!(started && released && !finished);
-                assert_eq!(id, "live-call");
-                assert_eq!(result["stdout"], stdout);
-                assert_eq!(result["stderr"], stderr);
-                assert_eq!(result["exit_code"], 0);
-                finished = true;
-            }
-            _ => panic!("unexpected assistant event"),
-        });
-        let result: Value = serde_json::from_str(&serialized).unwrap();
+                _ => panic!("unexpected assistant event"),
+            },
+        );
+        assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
         assert!(released && finished);
         assert_eq!(stdout, "out-firstout-last");
         assert_eq!(stderr, "err-first");
