@@ -524,25 +524,35 @@ impl Agent {
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
-        ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
-        let instructions = self.refresh_skills()?;
-        match &mut self.session {
-            Session::Completion(request) => request.messages.push(
-                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-                    content: prompt.into(),
-                    ..Default::default()
-                }),
-            ),
-            Session::Response(request) => {
-                response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
-                    role: Role::User,
-                    content: prompt.into(),
-                    ..Default::default()
-                }))
+        tracing::info!(
+            event = "task_started",
+            pid = std::process::id(),
+            operation = "run"
+        );
+        let started = std::time::Instant::now();
+        let result = (|| -> Result<RunOutcome> {
+            ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
+            let instructions = self.refresh_skills()?;
+            match &mut self.session {
+                Session::Completion(request) => request.messages.push(
+                    ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                        content: prompt.into(),
+                        ..Default::default()
+                    }),
+                ),
+                Session::Response(request) => {
+                    response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
+                        role: Role::User,
+                        content: prompt.into(),
+                        ..Default::default()
+                    }))
+                }
             }
-        }
-        let result = self.run_loop(Some(prompt), instructions.as_deref(), cancellation, emit);
-        self.finish_run(result, cancellation)
+            let result = self.run_loop(Some(prompt), instructions.as_deref(), cancellation, emit);
+            self.finish_run(result, cancellation)
+        })();
+        log_task_finished("run", started, &result);
+        result
     }
 
     pub(crate) fn continue_session(
@@ -550,8 +560,18 @@ impl Agent {
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
-        let result = self.run_loop(None, None, cancellation, emit);
-        self.finish_run(result, cancellation)
+        tracing::info!(
+            event = "task_started",
+            pid = std::process::id(),
+            operation = "continue"
+        );
+        let started = std::time::Instant::now();
+        let result = (|| -> Result<RunOutcome> {
+            let result = self.run_loop(None, None, cancellation, emit);
+            self.finish_run(result, cancellation)
+        })();
+        log_task_finished("continue", started, &result);
+        result
     }
 
     fn finish_run(
@@ -648,6 +668,66 @@ struct RequestUpdate<'a> {
     instructions: Option<&'a str>,
 }
 
+fn log_task_finished(operation: &str, started: std::time::Instant, result: &Result<RunOutcome>) {
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let pid = std::process::id();
+    match result {
+        Ok(RunOutcome::Completed) => tracing::info!(
+            event = "task_finished",
+            pid,
+            operation,
+            status = "ok",
+            elapsed_ms
+        ),
+        Ok(RunOutcome::Cancelled) => tracing::info!(
+            event = "task_finished",
+            pid,
+            operation,
+            status = "cancelled",
+            elapsed_ms
+        ),
+        Err(_) => tracing::error!(
+            event = "task_finished",
+            pid,
+            operation,
+            status = "error",
+            elapsed_ms
+        ),
+    }
+}
+
+fn log_model_request_finished<T>(
+    protocol: &str,
+    started: std::time::Instant,
+    outcome: &anyhow::Result<T>,
+) {
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let pid = std::process::id();
+    match outcome {
+        Ok(_) => tracing::info!(
+            event = "model_request_finished",
+            pid,
+            protocol,
+            status = "ok",
+            elapsed_ms
+        ),
+        Err(error) if error.is::<Cancelled>() => tracing::info!(
+            event = "model_request_finished",
+            pid,
+            protocol,
+            status = "cancelled",
+            elapsed_ms
+        ),
+        Err(_) => tracing::error!(
+            event = "model_request_finished",
+            pid,
+            protocol,
+            status = "error",
+            elapsed_ms
+        ),
+    }
+}
+
 fn completion_turn(
     client: &mut OpenAiClient,
     tools: &Tools,
@@ -658,6 +738,12 @@ fn completion_turn(
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<bool> {
+    tracing::info!(
+        event = "model_request_started",
+        pid = std::process::id(),
+        protocol = "completion"
+    );
+    let request_started = std::time::Instant::now();
     let response = {
         let journal = RefCell::new(&mut *journal);
         let mut sent = || {
@@ -675,7 +761,9 @@ fn completion_turn(
             journal.borrow_mut().event(&event);
             emit(event);
         };
-        client.complete(request, cancellation, &mut sent, &mut progress)?
+        let outcome = client.complete(request, cancellation, &mut sent, &mut progress);
+        log_model_request_finished("completion", request_started, &outcome);
+        outcome?
     };
     cancellation::check(cancellation)?;
     let mut progress = |event| {
@@ -748,6 +836,12 @@ fn response_turn(
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<bool> {
+    tracing::info!(
+        event = "model_request_started",
+        pid = std::process::id(),
+        protocol = "response"
+    );
+    let request_started = std::time::Instant::now();
     let turn = {
         let journal = RefCell::new(&mut *journal);
         let mut sent = || {
@@ -765,7 +859,9 @@ fn response_turn(
             journal.borrow_mut().event(&event);
             emit(event);
         };
-        client.respond(request, cancellation, &mut sent, &mut progress)?
+        let outcome = client.respond(request, cancellation, &mut sent, &mut progress);
+        log_model_request_finished("response", request_started, &outcome);
+        outcome?
     };
     cancellation::check(cancellation)?;
     let mut progress = |event| {

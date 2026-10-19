@@ -5305,3 +5305,6 @@ mod session;
 
 #[path = "cli_agent/resume_cli.rs"]
 mod resume_cli;
+
+#[path = "cli_agent/logging.rs"]
+mod logging;

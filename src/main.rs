@@ -5,6 +5,7 @@ mod config;
 mod events;
 mod jsonc;
 mod llm;
+mod logging;
 mod mcp;
 mod models;
 mod skills;
@@ -50,7 +51,46 @@ struct Args {
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    match run(args) {
+    let logging = match logging::init() {
+        Ok(guard) => Some(guard),
+        Err(_) => {
+            let _ = writeln!(io::stderr().lock(), "warning: file logging unavailable");
+            None
+        }
+    };
+    let started = std::time::Instant::now();
+    let pid = std::process::id();
+    let mode = if args.prompt.is_some() {
+        "prompt"
+    } else if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        "tui"
+    } else {
+        "line"
+    };
+    let cwd = std::env::current_dir().ok();
+    tracing::info!(
+        event = "app_started",
+        pid,
+        mode,
+        cwd = cwd
+            .as_ref()
+            .map(|path| tracing::field::display(path.display()))
+    );
+    let result = run(args);
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    if result.is_ok() {
+        tracing::info!(event = "app_stopped", pid, status = "ok", elapsed_ms);
+    } else {
+        tracing::error!(event = "app_stopped", pid, status = "error", elapsed_ms);
+    }
+    if logging
+        .as_ref()
+        .and_then(logging::LoggingGuard::take_error)
+        .is_some()
+    {
+        let _ = writeln!(io::stderr().lock(), "warning: file logging unavailable");
+    }
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let _ = writeln!(io::stderr().lock(), "error: {error:#}");
@@ -145,6 +185,12 @@ fn run(args: Args) -> Result<()> {
                 })
         }),
     };
+    if agent.is_err() {
+        tracing::warn!(
+            event = "configuration_unavailable",
+            pid = std::process::id()
+        );
+    }
     if use_tui {
         return tui::run(
             agent,

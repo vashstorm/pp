@@ -198,6 +198,17 @@ impl Tools {
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> ToolExecution {
+        let started = std::time::Instant::now();
+        let pid = std::process::id();
+        let tool = match name {
+            "load_skill" => "load_skill",
+            "read" => "read",
+            "edit" => "edit",
+            "write" => "write",
+            "bash" => "bash",
+            _ => "external",
+        };
+        tracing::info!(event = "tool_started", pid, tool);
         emit(AgentEvent::ToolStarted {
             id: call_id.to_owned(),
             name: name.to_owned(),
@@ -230,6 +241,19 @@ impl Tools {
                 }
             }
         };
+        let status = if value.get("cancelled").and_then(Value::as_bool) == Some(true) {
+            "cancelled"
+        } else if value.get("ok").and_then(Value::as_bool) == Some(true) {
+            "ok"
+        } else {
+            "error"
+        };
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        if status == "error" {
+            tracing::warn!(event = "tool_finished", pid, tool, status, elapsed_ms);
+        } else {
+            tracing::info!(event = "tool_finished", pid, tool, status, elapsed_ms);
+        }
         let serialized = value.to_string();
         emit(AgentEvent::ToolFinished {
             id: call_id.to_owned(),
