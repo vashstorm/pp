@@ -1603,3 +1603,124 @@ fn tool_limits_remain_startup_snapshots_across_model_switch_and_new() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"done-0\ndone-1\ndone-2\n");
 }
+
+// The search tools must run the real fallback backends end to end: the CLI is
+// spawned with an isolated PATH holding only symlinks to the system grep and
+// find, so rg/fd are unavailable and no bash is involved. The provider drives
+// the native argv interface; results, exit codes, and call-id pairing are
+// asserted on the next request, and the CLI labels must name the actual tool.
+#[test]
+fn search_tools_fallback_roundtrip_both_protocols() {
+    use std::os::unix::fs::symlink;
+    for protocol in PROTOCOLS {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("space dir")).unwrap();
+        std::fs::write(
+            dir.path().join("space dir/demo.txt"),
+            "needle\nother\nneedle\n",
+        )
+        .unwrap();
+        for name in ["grep", "find"] {
+            let executable = ["/usr/bin", "/bin"]
+                .into_iter()
+                .map(|base| std::path::Path::new(base).join(name))
+                .find(|candidate| candidate.is_file())
+                .unwrap_or_else(|| panic!("system {name} executable not found"));
+            symlink(&executable, bin.path().join(name)).unwrap();
+        }
+        let models = match protocol {
+            Protocol::Chat => fixture_models(&server),
+            Protocol::Responses => response_models(&server, Some("response")),
+        };
+        std::fs::write(
+            config_path(dir.path(), "settings.jsonc"),
+            fixture_settings(),
+        )
+        .unwrap();
+        std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
+        let mut cli = LiveCli::new(Cli::spawn(
+            dir.path(),
+            &["-p", "search files"],
+            &[("PATH", bin.path().to_str().unwrap())],
+        ));
+        let (request, _) = protocol.receive(&server);
+        protocol.calls_reply(
+            request,
+            json!([
+                protocol.call(
+                    "match",
+                    "grep",
+                    json!({"args":["-n","-e","needle","--","space dir/demo.txt"]})
+                ),
+                protocol.call(
+                    "paths",
+                    "find",
+                    json!({"args":["space dir","-type","f","-name","*.txt","-print"]})
+                ),
+                protocol.call(
+                    "absent",
+                    "grep",
+                    json!({"args":["-e","absent","--","space dir/demo.txt"]})
+                ),
+                protocol.call(
+                    "bad-regex",
+                    "grep",
+                    json!({"args":["-e","[","--","space dir/demo.txt"]})
+                )
+            ]),
+        );
+        cli.wait_for(Pipe::Stderr, "1:needle");
+        cli.assert_running();
+        let (request, body) = protocol.receive(&server);
+        assert_eq!(
+            protocol.tool_result(&body, "match"),
+            json!({
+                "ok":true, "exit_code":0, "timed_out":false, "cancelled":false,
+                "stdout":"1:needle\n3:needle\n", "stderr":"",
+                "stdout_truncated":false, "stderr_truncated":false
+            })
+        );
+        assert_eq!(
+            protocol.tool_result(&body, "paths"),
+            json!({
+                "ok":true, "exit_code":0, "timed_out":false, "cancelled":false,
+                "stdout":"space dir/demo.txt\n", "stderr":"",
+                "stdout_truncated":false, "stderr_truncated":false
+            })
+        );
+        // No match is grep's exit 1, normalized to success with empty output.
+        assert_eq!(
+            protocol.tool_result(&body, "absent"),
+            json!({
+                "ok":true, "exit_code":1, "timed_out":false, "cancelled":false,
+                "stdout":"", "stderr":"",
+                "stdout_truncated":false, "stderr_truncated":false
+            })
+        );
+        let bad = protocol.tool_result(&body, "bad-regex");
+        assert_eq!(bad["ok"], false, "{protocol:?}: {bad}");
+        assert_ne!(bad["exit_code"], 0);
+        assert_ne!(bad["exit_code"], 1);
+        assert_eq!(bad["stdout"], "");
+        assert!(!bad["stderr"].as_str().unwrap().is_empty());
+        protocol.final_reply(request, "search-complete");
+        let output = cli.finish();
+        assert!(output.status.success(), "{protocol:?}: {output:?}");
+        assert_eq!(output.stdout, b"search-complete\n");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("[grep stdout] 1:needle"), "{stderr}");
+        assert!(
+            stderr.contains("[find stdout] space dir/demo.txt"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("[grep stderr]"), "{stderr}");
+        assert!(!stderr.contains("[bash"), "{stderr}");
+        assert!(stderr.contains("tool grep: ok"), "{stderr}");
+        assert!(stderr.contains("tool find: ok"), "{stderr}");
+        assert!(stderr.contains("tool grep: failed"), "{stderr}");
+        assert_clean_pipes(&output);
+        no_more(&server);
+    }
+}

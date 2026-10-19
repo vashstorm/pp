@@ -474,14 +474,18 @@ fn run_cli_task(
                 );
                 current_tool = Some((id, name));
             }
-            AgentEvent::ToolOutput { stream, text, .. } => {
+            AgentEvent::ToolOutput { id, stream, text } => {
+                let name = current_tool
+                    .as_ref()
+                    .filter(|(current_id, _)| current_id == &id)
+                    .map_or("tool", |(_, name)| name.as_str());
                 let label = match stream {
                     OutputStream::Stdout => "stdout",
                     OutputStream::Stderr => "stderr",
                 };
                 cli_write(
                     stderr,
-                    &format!("[bash {label}] {text}"),
+                    &format!("[{name} {label}] {text}"),
                     &mut err_broken,
                     &mut first_error,
                 );

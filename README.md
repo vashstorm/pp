@@ -1,6 +1,6 @@
 # pp
 
-A minimal Pi-style coding agent in Rust: OpenAI-compatible Responses and Chat Completions via `async-openai`, real read/edit/write/bash tools, and multi-turn terminal interaction. Single crate, Rust Edition 2024, macOS/Linux supported; bash must be on the PATH.
+A minimal Pi-style coding agent in Rust: OpenAI-compatible Responses and Chat Completions via `async-openai`, real read/grep/find/edit/write/bash tools, and multi-turn terminal interaction. Single crate, Rust Edition 2024, macOS/Linux supported; bash must be on the PATH.
 
 ## Build and Run
 
@@ -149,17 +149,17 @@ cargo test --locked --test cli_agent mcp_ -- --test-threads=1
 
 保留今天及此前 29 个本地自然日，与 mtime 无关；未来日期暂留。每次启动和跨日后的首次写入清理严格匹配命名的过期普通文件，跳过其他名称、符号链接和目录；没有后台清理，也没有总容量上限。
 
-诊断事件包括应用启停（pid、启动 cwd、prompt/line/tui 模式）、配置不可用、任务、Completion/Responses 请求和工具的开始/结束、受控状态及耗时。工具类别仅为 `load_skill`、`read`、`edit`、`write`、`bash`，其他统一为 `external`。不记录 prompt、回答/思考、工具参数/结果/输出、工具文件路径、错误原文、配置、URL 或 API key；不启用依赖库日志，也不读取 `RUST_LOG`。这些运行诊断日志与下述包含完整交互的 session 文件相互独立。
+诊断事件包括应用启停（pid、启动 cwd、prompt/line/tui 模式）、配置不可用、任务、Completion/Responses 请求和工具的开始/结束、受控状态及耗时。工具类别仅为 `load_skill`、`read`、`grep`、`find`、`edit`、`write`、`bash`，其他统一为 `external`。不记录 prompt、回答/思考、工具参数/结果/输出、工具文件路径、错误原文、配置、URL 或 API key；不启用依赖库日志，也不读取 `RUST_LOG`。这些运行诊断日志与下述包含完整交互的 session 文件相互独立。
 
 初始化失败，或退出时发现写入/轮转/清理失败，仅在 stderr 输出一次固定 `warning: file logging unavailable`，不改变应用退出码；TUI 运行中不打印日志错误。事件同步交给操作系统，无后台队列，不逐条 fsync；强杀或断电不保证最后一条完整/持久化，也不保证存在 `app_stopped`。
 
 ## Terminal Interaction
 
-未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页采用 omp 风格的居中像素字标、版本号和简短操作提示；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏依次显示实际模型、思考级别、启动工作目录和 Git 信息。`no think` 表示显式请求关闭思考。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；右半区预留为第二状态栏，目前保持空白。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏或 Markdown 渲染。
+未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页采用 omp 风格的居中像素字标、版本号和简短操作提示；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏依次显示实际模型、思考级别、启动工作目录和 Git 信息。`no think` 表示显式请求关闭思考。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；右半区预留为第二状态栏，目前保持空白。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash/grep/find 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏或 Markdown 渲染。
 
 应用自有的 TUI 文案统一使用英文，包括帮助、菜单、通知、skill 管理与加载卡片，以及这些界面接收的配置保存错误和 skill 诊断。用户输入、模型回复、文件／命令输出、外部 skill 元数据与正文，以及名称和路径保持原文；不限制 Unicode，也不强制模型使用英语。已有 session 中保存的历史工具错误忠实回放，不改写旧日志。共享生产者的配置保存错误和 skill 诊断在 CLI 中也使用英文。
 
-用户输入继续使用蓝色左竖线和加粗标签，助手回答与 read/write 数据使用终端默认文字色。bash 与 think 使用下述独立样式；其他工具保留淡色正文与运行／完成／失败状态。青色 grep 仍为保留显示类别。真实 `load_skill` 调用使用品红色 skill 卡片，不按文件路径或 bash 命令猜测类别。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
+用户输入继续使用蓝色左竖线和加粗标签，助手回答与 read/write 数据使用终端默认文字色。bash 与 think 使用下述独立样式；其他工具保留淡色正文与运行／完成／失败状态。真实 `grep` 调用使用青色卡片，`find` 使用普通数据卡片；标题显示工具名与紧凑 JSON argv，保留空格、引用和控制字符边界。搜索结果直接显示 stdout/stderr，不使用 bash 专属折叠或计时 footer。真实 `load_skill` 调用使用品红色 skill 卡片，不按文件路径或 bash 命令猜测类别。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
 
 - 临时消息以非模态圆角弹框显示在输入框上方靠右，左右至少留一格，不挤占布局、不改变草稿、光标或历史滚动位置。普通消息为绿色，重要提示／警告为黄色，错误为红色；通过边框、标题和正文的颜色亮度实现 200ms 淡入与最后 400ms 淡出，默认总时长 10 秒，不是窗口透明度。右上角显示剩余秒数（向上取整），无需输入也会更新并自动消失；`notification_show_countdown` 默认 `true`，关闭仅隐藏秒数，`notification_timeout_seconds` 设置总时长，默认 `10`，必须为正整数且不超出计时范围。通知配置在启动时读取，即使模型不可用也生效；设置缺失或无效时使用默认通知行为，无效设置仍显示启动诊断，修改配置后需重启。鼠标停留在弹框内（含边框）时隐藏倒计时并保持完全显示，移出后重新从配置时长倒数；新消息替换旧消息，不堆叠。使用终端原生选区复制：先将鼠标移入弹框使其保持显示，再按终端要求的修饰键拖选，使用终端自身的复制快捷键；程序保留鼠标捕获以支持悬停与滚轮，不提供复制按钮或应用内选区。终端选区只能复制屏幕上可见的文字，可能包含边框；不会取得截断后未显示的内容。中文、emoji 和多行正文自动折行，最多八行，过长内容只显示开头；空间不足时隐藏弹框或倒计时，恢复尺寸后仅显示尚未到期的消息，倒计时不会覆盖标题和边框。skill 全屏管理面板中的弹框采用相同规则。
 - 界面已体现的成功变化不重复通知：模型和当前思考档位切换只更新状态栏，`/new` 直接恢复欢迎页并清空旧通知，skill 面板保存成功直接关闭。Ctrl+S 保存下次启动的默认思考档位以绿色弹框确认，不改变当前档位；本地命令、切换和保存的临时错误使用红框。启动 skill 扫描的非致命诊断汇总为黄色提示，完整详情保留在 `/skills`。任务／工具失败和执行不可用仍保留原有持久错误位置；通知不进入对话记录、session 或退出滚动历史，CLI／管道输出不变。
@@ -176,7 +176,7 @@ cargo test --locked --test cli_agent mcp_ -- --test-threads=1
 - 输入 `/model `（命令后加空格）会在输入框下方展开与 `/effort ` 一致的两列菜单：左侧为 `provider/model`，右侧为实际模型名、`completion`/`response` 及“当前”标记，黄色文字和箭头突出选中项。`/model` 后按 Enter 也能展开，默认选中当前模型。按启动配置顺序排列，最多显示八行，长列表随选择滚动；↑/↓、Home/End、PgUp/PgDn 导航，Enter 确认，Esc 收起并保留输入。继续输入按引用或实际模型名的前缀筛选，Tab 补全引用但不切换；多行粘贴仍作为普通任务。后台完成切换后才更新状态栏，历史和确认后新编辑的草稿均保留；忙碌时拒绝切换、不排队、不清空草稿。`/new` 仍在后台确认后清空历史和草稿。
 - 运行中按无修饰键的 Esc 取消当前任务，不退出 pp；已有面板或菜单优先消费 Esc。收尾期间显示 `Cancelling...`，仍可编辑草稿、滚动、F1/help、Ctrl-O 或退出，但不能提交／排队新任务、切换模型／思考级别或 `/new`。收尾完成后保留草稿、光标、输入历史、已完成的工具结果和文件修改，并追加 `Task cancelled. File changes were not rolled back.`；不重试、不回滚。每个任务使用独立取消 token，已提交的最终回答不会被迟到 Esc 改成取消。行模式和 `-p` 不提供取消入口。
 - `/quit` 或 Ctrl-C 立即退出整个 pp，正常退出码为 0。恢复终端后，全部对话记录按退出时的终端宽度写入普通终端的滚动历史，保留原有颜色、缩进、分隔线、流式片段、工具输出及错误，末尾保留输入框、未提交的草稿、菜单和状态栏；可以向上滚动查看超出一屏的历史。保留长度受终端自身的滚动历史容量限制。退出不等待阻塞中的模型请求或工具，也不保证终止 bash 子进程；需要任务级受控清理时应先按 Esc 等待收尾。文件修改不会回滚。
-- `-p/--prompt` runs one task and never parses slash commands: `pp -p '/model'` sends `/model` as a task. It can follow `-r ID` to append one task to saved history; combining it with `-c` is rejected. If either stdin or stdout is not a terminal, line mode supports the same commands without raw mode or an alternate screen. `/model` lists configured models and marks the current one; use `/model provider/model` to switch. Stdout streams **all readable assistant text**, including text before tools, with one terminating newline per nonempty turn and no replay at completion. Refusal is printed only if no non-blank content wins. Help, command responses, errors, and `tool <name>: running/ok/failed` go to stderr; live bash data uses `[bash stdout]` / `[bash stderr]` on pp's stderr. Non-TUI output adds no ANSI control sequences. A display write failure is returned only after the Agent finishes recording the task's history/tool results.
+- `-p/--prompt` runs one task and never parses slash commands: `pp -p '/model'` sends `/model` as a task. It can follow `-r ID` to append one task to saved history; combining it with `-c` is rejected. If either stdin or stdout is not a terminal, line mode supports the same commands without raw mode or an alternate screen. `/model` lists configured models and marks the current one; use `/model provider/model` to switch. Stdout streams **all readable assistant text**, including text before tools, with one terminating newline per nonempty turn and no replay at completion. Refusal is printed only if no non-blank content wins. Help, command responses, errors, and `tool <name>: running/ok/failed` go to stderr; live process data uses `[{name} stdout]` / `[{name} stderr]` on pp's stderr, with the actual `bash`, `grep`, or `find` tool name. Non-TUI output adds no ANSI control sequences. A display write failure is returned only after the Agent finishes recording the task's history/tool results.
 
 ## Markdown 提示词命令
 
@@ -261,7 +261,7 @@ TUI 输入 `/skills` 打开全局管理面板：↑/↓ 选择、Space 勾选、
 
 ## Execution and Permissions
 
-**write/edit 仅修改启动目录内文件，按单次调用原子提交。macOS/Linux 的 bash 均无文件权限隔离，仍可修改当前用户有权限访问的目录外文件；没有逐次确认。请在可信或临时目录中运行。**
+**write/edit 仅修改启动目录内文件，按单次调用原子提交。macOS/Linux 的 bash、grep、find 均无文件权限隔离，仍可修改当前用户有权限访问的目录外文件；没有逐次确认。请在可信或临时目录中运行。**
 
 - 启动时固定规范化工作目录。`read` 允许目录外读取及符号链接；`write/edit` 接受目录内的相对或绝对路径，拒绝越界路径以及写入路径上的符号链接（包括指向项目内的链接）。父目录通过目录句柄逐级打开，保存不重新按完整路径追踪链接。允许不越出工作目录的 `..`，不自动扫描项目规则文件；skill 仅扫描全局配置指定的目录。
 - `read(path, offset?, limit?)`：`offset` 是从 1 开始的起始行，默认 1；`limit` 默认 `read_max_lines`，必须为正整数且不超过该配置。读取普通文件，使用有界缓冲跳过前面的行；每页同时受 `read_max_bytes` 和行数限制。返回 `ok`、`content`、`truncated`、`lines_read`、`next_offset`；有后续内容时使用 `next_offset` 继续，文件结尾为 null。超出文件末尾返回空页。两种模式均只返回完整行，超长单行无法放入空页时返回错误；增大配置或使用 bash 检查有界片段。默认 replace 返回保留原始换行、无前缀的 lossy UTF-8；字节上限计算源文件内容，不包括 hashline 前缀及 JSON 编码。不会解析图片或二进制格式。
@@ -270,6 +270,9 @@ TUI 输入 `/skills` 打开全局管理面板：↑/↓ 选择、Space 勾选、
 - 设置 `"edit":"hashline"` 后，read 显示 `N:hash|text`：N 为从 1 开始的真实文件行号，分页不重新编号；hash 为原始行正文（不含 LF/CRLF）的 16 位小写十六进制 FNV-1a 64 位哈希。显示分隔符为 LF，只为完整行生成锚点，空文件没有锚点。edit 仅接受带锚点的 `replace`（包含首尾行，`lines:[]` 表示删除）、`insert_before`、`insert_after`。新行字符串不能包含 CR/LF 或显示前缀。操作均引用原始快照；拒绝重叠替换、重复插入位置及触及替换边界的插入。锚点失效时重新读取；只检查端点，不校验内部行或整文件版本。未触及的字节保持原样，新分隔符采用源文件首个换行风格，并保留被替换末行是否带换行的状态。
 - 两种 edit 模式均先对同一份原始快照校验全部修改，再调用共用原子保存流程。空文件、缺失文件、目录、符号链接和非 UTF-8 文件不能编辑；edit 不创建文件或目录。成功返回 `edits_applied` 和最终 UTF-8 `bytes_written`。保留严格且分模式的参数校验，不增加 diff/patch 字段。
 - `write(path, content)`：创建缺失父目录，并创建或完整覆盖 UTF-8 文件，允许空内容。write/edit 均在目标所在目录排他创建临时文件，完整写入、保留原文件权限（含可执行位）、同步临时文件后，以一次原子重命名提交。创建、部分写入、同步或重命名失败均保留原文件；新建失败不会留下残缺目标，已创建的空父目录允许保留。重命名是提交点，之后父目录同步失败返回 `ok:true` 并附 `warning`，不能当作尚未修改。失败路径清理临时文件；不提供成功后的撤销、备份、跨文件事务、跨进程并发隔离或断电恢复保证。
+- `grep({"args":[...]})` 搜索文件内容，`find({"args":[...]})` 查找路径。每个 Tools 实例构造时按 PATH 固定选择 `rg → grep`、`fd → find`，工具 description 根据实际后端提供原生参数语法；优先程序可位于后面的 PATH 项。相对／空 PATH 项相对启动目录解析，只选择普通文件且有执行位的候选（允许可执行 symlink）。不运行版本探测，不自动安装，不使用 `fdfind` 别名；运行时程序删除或权限变化返回真实错误，不拿相同 argv 静默换后端。新启动／恢复构造的 Tools 会重新探测，模型切换和历史恢复通过实时 schema 提供当前后端说明。
+- 搜索只接受必填的字符串数组 `args`，不传程序名，不拼接 shell、不做展开／管道或跨后端参数转换；空数组、空字符串原样传给程序，NUL 和额外字段被拒绝。rg 示例：`{"args":["-n","--color","never","-e","PATTERN","src"]}`；system grep 示例：`{"args":["-R","-n","-E","-e","PATTERN","--","src"]}`；fd 示例：`{"args":["--color","never","--type","f","PATTERN","src"]}`；system find 示例：`{"args":["src","-type","f","-name","*.rs","-print"]}`。rg/fd 默认遵守 ignore 且跳过隐藏文件，可用 `--hidden`／`--no-ignore` 扩大范围；系统 grep/find 不自动遵守 gitignore，不能照搬快速后端的 flags。find 的路径在表达式前，`-name` 的 glob 保持单个 argv；fd 的 pattern 在目录前，默认正则，`--glob` 改用 glob。
+- 搜索复用 bash 的受控执行层：启动 cwd、关闭 stdin、独立进程组、超时／取消／正常结束后的组清理、项目内 scratch/cache、UTF-8 流式输出与下述 500 行／每流 65,536 字节限额均相同，超时沿用 `bash_timeout_seconds`。结果保留 `ok`、`exit_code`、`timed_out`、`cancelled`、两流输出及截断标记；grep 正常 exit 1 表示无匹配，返回 `ok:true` 并保留 `exit_code:1`，其他非零退出、find 非零退出、超时／取消均失败。后端缺失不阻断启动和文件工具，schema 仍存在并标明 unavailable，调用返回 `grep requires rg or grep on PATH` 或 `find requires fd or find on PATH`。原生参数可产生副作用（如 find 的 `-exec`／`-delete`），没有参数白名单或文件系统沙箱。
 - `bash(command)`：以启动目录为工作目录执行 `bash -c`，关闭 stdin，并建立独立进程组。stdout/stderr 无需等待换行或进程退出即可实时显示；保留跨分块的 UTF-8 字符，无效字节采用 lossy 解码。两流合计最多保留 500 行，同时每流最多保留 65,536 个原始字节，先达到的限制生效；按 `\n` 分行，非空且没有末尾换行的片段也计一行。仅在确有超出内容时标记对应流截断；实时显示与返回输出使用相同限制，多余内容持续排空，命令继续执行。仅保证各流内部顺序，不保证跨流顺序；500 行额度按接收分块的顺序分配。返回退出码、输出、截断标记和 `timed_out`，信号退出时退出码为 null。
 - Arguments are strictly validated: missing or extra fields, invalid JSON, blank path/command, unknown tools, and file/process errors all return `ok: false` to the model, allowing it to correct itself. A non-zero bash exit likewise returns `ok: false` with the output preserved.
 - bash 的 `bash_timeout_seconds` 默认 120，与模型请求超时独立，模型不能通过工具参数延长。独立监督线程在超时时向进程组发送 TERM，最多等待 1 秒后发送 KILL 并回收直接子进程；可停止的非阻塞管道读取避免后代持有管道导致无限等待。超时返回 `ok:false, timed_out:true`，保留已捕获输出，不回滚 shell 修改。正常结束也清理同一进程组的残留后台任务；主动脱离进程组的进程不受保证，仍只支持有限前台命令。TUI Esc 取消同样通过 TERM→1 秒宽限→KILL／wait 停止受控进程组，返回 `ok:false, cancelled:true, timed_out:false` 并保留输出；正常／超时结果的 `cancelled` 为 false。Ctrl-C 仍立即退出整个 pp，不提供 bash 子进程清理保证。
@@ -338,6 +341,8 @@ cargo fmt --check
 工具加固回归包括：读取字节/行数边界、完整行分页和真实 hashline 行号，原子保存部分写入/同步/提交失败注入、权限保持、越界/符号链接拒绝和硬链接对端保留，以及静默/持续输出/忽略 TERM/后代持有管道的超时。两种协议验证工具失败后的历史记录、恢复和继续执行，跨模型切换及 `/new` 验证启动限制快照。
 
 本次工具加固已在 macOS arm64 验证：104 项单元测试、55 项集成测试（含双协议与 PTY）、构建、Clippy 和格式检查通过。Linux 尚未实机运行；本地夹具测试不代表真实服务商兼容性。
+
+新增搜索工具另经真实构建产物与临时 loopback provider 验证：全后端、仅系统 fallback、rg/find、grep/fd、两组均缺失五种 PATH 组合分别运行 Completion/Responses，确认动态 description、原生命令结果、无匹配成功、非法正则 stderr、带空格路径与 CLI 标签一致。另两次 bash smoke 保留原标签、500 行截断及超时行为。实际 100×30 PTY 观察到 grep 青色／find 普通卡片、紧凑 JSON argv 标题、结束前实时输出及非法正则失败状态；Ctrl-C 退出为 0 并恢复 termios。全部使用隔离 HOME／配置／工作目录，未访问个人凭证；临时脚本已删除。
 
 回归测试使用回环 HTTP、真实子进程、独立临时 HOME 下的全局 JSONC 配置及临时工作目录； they do not modify the test process environment or access external model services. Both APIs cover ordered tool dependencies, cross-turn history, tool-error correction, invalid batches without partial writes, request limits, timeouts, error redaction, and no automatic retries. Responses-specific cases cover omitted/explicit protocol selection, text aggregation/refusal, encrypted reasoning and complete output replay, optional function-call status, reset preserving instructions, rejected response/item statuses, and recovery without invalid output entering history. Configuration cases cover composite provider/model routing, default ordering, model aliases containing `/`, scoped uniqueness, strict protocol/URL/field types, full validation of unselected providers, removed protocol rejection, and no environment fallback. HTTP regressions include non-JSON 302/401/429/500 errors without redirects or exposed bodies.
 

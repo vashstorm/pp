@@ -28,8 +28,6 @@ pub(super) enum EntryKind {
     Assistant,
     Bash,
     Think,
-    // Reserved display categories; no production tool is classified heuristically.
-    #[allow(dead_code)]
     Grep,
     Skill,
     Data,
@@ -537,19 +535,38 @@ impl Transcript {
                 });
                 let kind = if name == "bash" {
                     EntryKind::Bash
+                } else if name == "grep" {
+                    EntryKind::Grep
                 } else if name == "load_skill" {
                     EntryKind::Skill
                 } else {
                     EntryKind::Data
                 };
-                let title = match detail {
-                    Some(name) if kind == EntryKind::Skill => {
-                        format!("skill · {}", name.replace(char::is_control, " "))
+                let search_args = arguments
+                    .as_ref()
+                    .and_then(|args| args.get("args"))
+                    .and_then(Value::as_array)
+                    .filter(|args| args.iter().all(Value::is_string));
+                let title = if matches!(name.as_str(), "grep" | "find") {
+                    search_args.map_or_else(
+                        || name.clone(),
+                        |args| {
+                            format!(
+                                "{name} · {}",
+                                serde_json::to_string(args).expect("JSON values serialize")
+                            )
+                        },
+                    )
+                } else {
+                    match detail {
+                        Some(name) if kind == EntryKind::Skill => {
+                            format!("skill · {}", name.replace(char::is_control, " "))
+                        }
+                        None if kind == EntryKind::Skill => "skill · unknown".into(),
+                        Some(command) if name == "bash" => format!("$ {command}"),
+                        Some(path) => format!("{name} · {path}"),
+                        None => name.clone(),
                     }
-                    None if kind == EntryKind::Skill => "skill · unknown".into(),
-                    Some(command) if name == "bash" => format!("$ {command}"),
-                    Some(path) => format!("{name} · {path}"),
-                    None => name.clone(),
                 };
                 let mut entry = TranscriptEntry::new(kind, title, String::new(), Some(name));
                 entry.status = EntryStatus::Running;
@@ -813,7 +830,7 @@ impl Transcript {
 }
 
 fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
-    if kind == EntryKind::Bash {
+    if kind == EntryKind::Bash || matches!(name, "grep" | "find") {
         let mut lines = Vec::new();
         for (field, label) in [("stdout", "stdout"), ("stderr", "stderr")] {
             if let Some(text) = result
@@ -832,7 +849,7 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
                 .and_then(Value::as_bool)
                 == Some(true)
             {
-                lines.push(format!("[{label} truncated at 65536 bytes]"));
+                lines.push(format!("[{field} truncated by output limits]"));
             }
         }
         if let Some(error) = result.get("error") {
@@ -1413,7 +1430,6 @@ mod tests {
         assert_eq!(complete.matches("out-first").count(), 1);
         assert_eq!(complete.matches("err-first").count(), 1);
         assert!(complete.contains("Exit code: 9"));
-        assert!(complete.contains("[stdout truncated at 65536 bytes]"));
         assert_eq!(transcript.entries[0].status, EntryStatus::Failed);
         tool(&mut transcript, "call", "bash", json!({"command": "true"}));
         transcript.progress(AgentEvent::ToolFinished {

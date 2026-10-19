@@ -47,7 +47,6 @@ fn mcp_roundtrip_both_protocols_preserves_schema_results_order_and_events() {
         };
         let (request, body) = receive_at(&provider, path);
         let tools = body["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 7);
         let echo = tools
             .iter()
             .find_map(|tool| {

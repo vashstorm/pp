@@ -92,7 +92,7 @@ impl ProcessGroup {
         let started = Instant::now();
         loop {
             // 清理整个组之前保留直接子进程的等待状态，防止 PID/进程组号被复用。
-            let exited = self.exited().context("checking bash status")?;
+            let exited = self.exited().context("checking command status")?;
             if exited && readers.load(Ordering::Acquire) == 2 {
                 return Ok((self.finish()?, Termination::Exited));
             }
@@ -109,7 +109,7 @@ impl ProcessGroup {
             }
             if started.elapsed() >= timeout {
                 self.signal(Signal::TERM)
-                    .context("terminating timed out bash process group")?;
+                    .context("terminating timed out command process group")?;
                 thread::sleep(GRACE);
                 return Ok((self.finish()?, Termination::TimedOut));
             }
@@ -121,15 +121,15 @@ impl ProcessGroup {
     // CancellationCleanupError，不能被当作普通工具失败吞掉。
     fn stop_cancelled(&mut self) -> Result<ExitStatus> {
         self.signal(Signal::TERM)
-            .context("terminating cancelled bash process group")?;
+            .context("terminating cancelled command process group")?;
         thread::sleep(GRACE);
         self.finish()
     }
 
     fn finish(&mut self) -> Result<ExitStatus> {
         self.signal(Signal::KILL)
-            .context("cleaning up bash process group")?;
-        let status = self.child.wait().context("reaping bash")?;
+            .context("cleaning up command process group")?;
+        let status = self.child.wait().context("reaping command")?;
         self.reaped = true;
         Ok(status)
     }
@@ -147,7 +147,7 @@ impl Drop for ProcessGroup {
 
 fn nonblocking(pipe: &impl AsFd) -> Result<()> {
     fcntl_setfl(pipe, fcntl_getfl(pipe)? | OFlags::NONBLOCK)
-        .context("configuring nonblocking bash pipe")
+        .context("configuring nonblocking command pipe")
 }
 
 fn reader(
@@ -181,13 +181,34 @@ pub(super) fn run(
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<Value> {
+    let mut process = Command::new("bash");
+    process.arg("-c").arg(command);
+    run_command(
+        cwd,
+        cache,
+        process,
+        timeout_seconds,
+        call_id,
+        cancellation,
+        emit,
+    )
+    .context("running bash")
+}
+
+pub(super) fn run_command(
+    cwd: &Path,
+    cache: &Path,
+    mut command: Command,
+    timeout_seconds: u64,
+    call_id: &str,
+    cancellation: &CancellationToken,
+    emit: &mut dyn FnMut(AgentEvent),
+) -> Result<Value> {
     let scratch = tempfile::Builder::new()
         .prefix(".pp-tmp-")
         .tempdir_in(cwd)
-        .context("creating bash temporary directory")?;
-    let child = Command::new("bash")
-        .arg("-c")
-        .arg(command)
+        .context("creating command temporary directory")?;
+    let child = command
         .current_dir(cwd)
         .env("TMPDIR", scratch.path())
         .env("TMP", scratch.path())
@@ -198,15 +219,23 @@ pub(super) fn run(
         .stderr(Stdio::piped())
         .process_group(0)
         .spawn()
-        .context("starting bash (bash must be on PATH)")?;
+        .context("starting command")?;
     let group = Pid::from_raw(child.id() as i32).expect("a spawned child has a positive pid");
     let mut process = ProcessGroup {
         child,
         group,
         reaped: false,
     };
-    let stdout = process.child.stdout.take().context("opening bash stdout")?;
-    let stderr = process.child.stderr.take().context("opening bash stderr")?;
+    let stdout = process
+        .child
+        .stdout
+        .take()
+        .context("opening command stdout")?;
+    let stderr = process
+        .child
+        .stderr
+        .take()
+        .context("opening command stderr")?;
     nonblocking(&stdout)?;
     nonblocking(&stderr)?;
     let stop = AtomicBool::new(false);
@@ -261,13 +290,13 @@ pub(super) fn run(
             emit_output(call_id, OutputStream::Stderr, stderr_text.finish(), emit);
             let (status, termination) = monitor
                 .join()
-                .map_err(|_| anyhow::anyhow!("bash supervisor thread failed"))??;
+                .map_err(|_| anyhow::anyhow!("command supervisor thread failed"))??;
             let out = out
                 .join()
-                .map_err(|_| anyhow::anyhow!("bash stdout reader thread failed"))??;
+                .map_err(|_| anyhow::anyhow!("command stdout reader thread failed"))??;
             let err = err
                 .join()
-                .map_err(|_| anyhow::anyhow!("bash stderr reader thread failed"))??;
+                .map_err(|_| anyhow::anyhow!("command stderr reader thread failed"))??;
             Ok((
                 status,
                 termination,
@@ -286,7 +315,7 @@ pub(super) fn run(
         "stdout_truncated":stdout_truncated, "stderr_truncated":stderr_truncated,
     });
     if cancelled {
-        result["error"] = json!("Bash cancelled; file changes were not rolled back.");
+        result["error"] = json!("Command cancelled; side effects were not rolled back.");
     }
     if let Err(error) = scratch.close() {
         result["warning"] = json!(format!(

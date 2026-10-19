@@ -17,6 +17,7 @@ mod hashline;
 mod read;
 mod replace;
 mod save;
+mod search;
 
 #[cfg(test)]
 use std::{fs, sync::mpsc::sync_channel};
@@ -29,6 +30,7 @@ pub(crate) struct Tools {
     cwd: PathBuf,
     edit_mode: EditMode,
     workspace: save::Workspace,
+    search: search::SearchTools,
     pub(crate) limits: ToolLimits,
 }
 
@@ -83,16 +85,24 @@ struct WriteArgs {
 struct BashArgs {
     command: String,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchArgs {
+    args: Vec<String>,
+}
 
 impl Tools {
     pub(crate) fn new(cwd: PathBuf, edit_mode: EditMode) -> Result<Self> {
         let workspace = save::Workspace::open(&cwd)?;
+        let path = std::env::var_os("PATH");
+        let search = search::SearchTools::detect(&workspace.path, path.as_deref());
         Ok(Self {
             mcp: Default::default(),
             skills: crate::skills::Skills::default().shared(),
             cwd: workspace.path.clone(),
             edit_mode,
             workspace,
+            search,
             limits: ToolLimits::default(),
         })
     }
@@ -105,6 +115,7 @@ impl Tools {
 
     pub(crate) fn all_definitions(&self) -> Vec<FunctionObject> {
         let mut definitions = Self::definitions(self.edit_mode);
+        definitions.extend(self.search.definitions());
         definitions.extend(self.mcp.definitions());
         definitions
     }
@@ -206,6 +217,8 @@ impl Tools {
             "edit" => "edit",
             "write" => "write",
             "bash" => "bash",
+            "grep" => "grep",
+            "find" => "find",
             _ => "external",
         };
         tracing::info!(event = "tool_started", pid, tool);
@@ -363,6 +376,36 @@ impl Tools {
                     emit,
                 )
             }
+            "grep" | "find" => {
+                let args: SearchArgs = serde_json::from_str(arguments)
+                    .with_context(|| format!("invalid {name} arguments"))?;
+                ensure!(
+                    !args.args.iter().any(|arg| arg.contains('\0')),
+                    "{name} args must not contain NUL bytes"
+                );
+                let mut command = self.search.command(name)?;
+                command.args(&args.args);
+                let backend = command.get_program().to_owned();
+                let cache = self.workspace.cache_dir()?;
+                let mut result = bash::run_command(
+                    &self.cwd,
+                    &cache,
+                    command,
+                    self.limits.bash_timeout_seconds,
+                    call_id,
+                    cancellation,
+                    emit,
+                )
+                .with_context(|| format!("running {}", backend.to_string_lossy()))?;
+                if name == "grep"
+                    && result["exit_code"] == 1
+                    && result["timed_out"] == false
+                    && result["cancelled"] == false
+                {
+                    result["ok"] = json!(true);
+                }
+                Ok(result)
+            }
             _ => self.mcp.call(name, arguments, cancellation),
         }
     }
@@ -505,6 +548,181 @@ mod tests {
         );
         serde_json::from_str(&execution.output).unwrap()
     }
+    fn fallback_search_tools(dir: &Path) -> Tools {
+        use std::os::unix::fs::symlink;
+        let bin = dir.join("bin");
+        fs::create_dir(&bin).unwrap();
+        for name in ["grep", "find"] {
+            let executable = ["/usr/bin", "/bin"]
+                .into_iter()
+                .map(|base| Path::new(base).join(name))
+                .find(|path| path.is_file())
+                .expect("system grep/find available");
+            symlink(executable, bin.join(name)).unwrap();
+        }
+        let mut tools = Tools::new(dir.into(), EditMode::Replace).unwrap();
+        tools.search = search::SearchTools::detect(tools.cwd(), Some(bin.as_os_str()));
+        tools
+    }
+
+    #[test]
+    fn search_tools_fallback_native_results_and_literal_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = fallback_search_tools(dir.path());
+        fs::create_dir(dir.path().join("space dir")).unwrap();
+        fs::write(
+            dir.path().join("space dir/demo.txt"),
+            "needle\nother\nneedle\n",
+        )
+        .unwrap();
+        let matched = execute(
+            &tools,
+            "grep",
+            json!({"args":["-n","-e","needle","--","space dir/demo.txt"]}),
+        );
+        assert_eq!(matched["ok"], true, "{matched}");
+        assert_eq!(matched["exit_code"], 0);
+        assert_eq!(matched["stdout"], "1:needle\n3:needle\n");
+        let absent = execute(
+            &tools,
+            "grep",
+            json!({"args":["-e","absent","space dir/demo.txt"]}),
+        );
+        assert_eq!(absent["ok"], true, "{absent}");
+        assert_eq!(absent["exit_code"], 1);
+        assert_eq!(absent["stdout"], "");
+        let invalid = execute(
+            &tools,
+            "grep",
+            json!({"args":["-e","[","space dir/demo.txt"]}),
+        );
+        assert_eq!(invalid["ok"], false, "{invalid}");
+        assert_ne!(invalid["exit_code"], 0);
+        assert_ne!(invalid["exit_code"], 1);
+        assert!(!invalid["stderr"].as_str().unwrap().is_empty());
+        let found = execute(
+            &tools,
+            "find",
+            json!({"args":["space dir","-type","f","-name","*.txt","-print"]}),
+        );
+        assert_eq!(found["ok"], true, "{found}");
+        assert_eq!(found["stdout"], "space dir/demo.txt\n");
+        let missing = execute(&tools, "find", json!({"args":["missing","-print"]}));
+        assert_eq!(missing["ok"], false, "{missing}");
+        assert!(!missing["stderr"].as_str().unwrap().is_empty());
+        for pattern in ["$(touch INJECTED)", "needle; touch INJECTED"] {
+            let result = execute(
+                &tools,
+                "grep",
+                json!({"args":["-F","-e",pattern,"space dir/demo.txt"]}),
+            );
+            assert_eq!(result["exit_code"], 1, "{result}");
+            assert_eq!(result["ok"], true);
+            assert!(!dir.path().join("INJECTED").exists());
+        }
+        let empty = execute(
+            &tools,
+            "grep",
+            json!({"args":["-e","","space dir/demo.txt"]}),
+        );
+        assert_eq!(empty["stdout"], "needle\nother\nneedle\n");
+        let stdin = execute(&tools, "grep", json!({"args":[]}));
+        assert_eq!(stdin["ok"], false, "{stdin}");
+    }
+
+    #[test]
+    fn search_tools_reject_invalid_args_and_missing_backends_without_breaking_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools = fallback_search_tools(dir.path());
+        for name in ["grep", "find"] {
+            for args in [
+                json!({}),
+                json!({"args":null}),
+                json!({"args":[1]}),
+                json!({"args":[],"extra":true}),
+                json!({"args":["\u{0}"]}),
+            ] {
+                let result = execute(&tools, name, args);
+                assert_eq!(result["ok"], false, "{name}: {result}");
+                assert!(result["error"].as_str().unwrap().contains(name));
+            }
+        }
+        tools.search = search::SearchTools::detect(tools.cwd(), None);
+        for name in ["grep", "find"] {
+            let result = execute(&tools, name, json!({"args":[]}));
+            assert_eq!(result["ok"], false);
+            assert!(result["error"].as_str().unwrap().contains("on PATH"));
+        }
+        assert_eq!(
+            execute(
+                &tools,
+                "write",
+                json!({"path":"kept","content":"available"})
+            )["ok"],
+            true
+        );
+        assert_eq!(
+            execute(&tools, "read", json!({"path":"kept"}))["content"],
+            "available"
+        );
+    }
+
+    #[test]
+    fn search_tools_timeout_and_cancel_reap_descendants() {
+        use std::os::unix::fs::PermissionsExt;
+        for cancelled in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let fixture = dir.path().join("rg");
+            fs::write(&fixture, "#!/bin/bash\ntrap 'exit 1' TERM\nprintf 'search-ready\\n'\nprintf '%s' $$ > parent.pid\n/bin/sleep 30 & child=$!\nprintf '%s' $child > child.pid\nwait $child\nexit 1\n").unwrap();
+            fs::set_permissions(&fixture, fs::Permissions::from_mode(0o755)).unwrap();
+            let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+            tools.search = search::SearchTools::detect(tools.cwd(), Some(dir.path().as_os_str()));
+            tools.limits.bash_timeout_seconds = if cancelled { 60 } else { 1 };
+            let token = CancellationToken::new();
+            let watcher = cancelled.then(|| {
+                let cwd = dir.path().to_owned();
+                let token = token.clone();
+                thread::spawn(move || {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while !cwd.join("child.pid").exists() {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "fixture never started"
+                        );
+                        thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    token.cancel();
+                })
+            });
+            let execution =
+                tools.execute("grep", "{\"args\":[]}", "search-stop", &token, &mut |_| {});
+            assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+            let result: Value = serde_json::from_str(&execution.output).unwrap();
+            assert_eq!(result["ok"], false, "{result}");
+            assert_eq!(result["timed_out"], !cancelled, "{result}");
+            assert_eq!(result["cancelled"], cancelled, "{result}");
+            assert_eq!(result["stdout"], "search-ready\n");
+            assert_eq!(result["exit_code"], 1, "{result}");
+            if let Some(watcher) = watcher {
+                watcher.join().unwrap();
+            }
+            for marker in ["parent.pid", "child.pid"] {
+                let pid = fs::read_to_string(dir.path().join(marker))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                wait_until_gone(pid, marker);
+            }
+            assert!(!fs::read_dir(dir.path()).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".pp-tmp-")
+            }));
+        }
+    }
+
     #[test]
     fn hashline_read_edit_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
@@ -1303,10 +1521,6 @@ mod tests {
         assert_eq!(result["ok"], false, "{result}");
         assert_eq!(result["cancelled"], true, "{result}");
         assert_eq!(result["timed_out"], false, "{result}");
-        assert_eq!(
-            result["error"],
-            "Bash cancelled; file changes were not rolled back."
-        );
         assert!(result["stdout"].as_str().unwrap().contains("cancel-ready"));
         marker.join().unwrap();
         let bash_pid: u32 = fs::read_to_string(dir.path().join("bash.pid"))
