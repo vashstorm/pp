@@ -232,13 +232,18 @@ pub(super) fn primary(
         } else {
             6 + 3 * ICON_WIDTH
         }
-        + 1;
+        + 6;
     let workdir = compact(&context.workdir, width.saturating_sub(reserved), true);
     let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
     let icon = |glyph, color| Span::styled(format!("{glyph} "), Style::default().fg(color));
     let model_text_style = Style::default().fg(MODEL).add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::raw(" "),
+        Span::styled(
+            "pp",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        separator(),
         icon(MODEL_ICON, MODEL),
         Span::styled(model, model_text_style),
         separator(),
@@ -273,8 +278,8 @@ mod tests {
         ] {
             let line = primary(None, level, &StatusContext::default(), 100);
             assert!(line.to_string().contains(&format!("{glyph} {label} ·")));
-            assert_eq!(line.spans[4].width(), ICON_WIDTH);
-            assert_eq!(line.spans[5].width(), 3);
+            assert_eq!(line.spans[6].width(), ICON_WIDTH);
+            assert_eq!(line.spans[7].width(), 3);
         }
     }
 
@@ -294,7 +299,7 @@ mod tests {
             let line = primary(Some(&model), ThinkLevel::None, &context, width);
             assert!(line.width() <= usize::from(width));
             let text = line.to_string();
-            assert!(text.starts_with(" \u{ec19} fixture-model · \u{f0766} off · \u{f07c} …"));
+            assert!(text.starts_with(" pp · \u{ec19} fixture-model · \u{f0766} off · \u{f07c} …"));
             assert!(text.ends_with("project · \u{f126} main ?1"));
             for glyph in [MODEL_ICON, THINK_ICON, DIRECTORY_ICON, GIT_ICON] {
                 let icon = line

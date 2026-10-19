@@ -3175,11 +3175,12 @@ mod tui {
         assert_eq!(lines[26], "─".repeat(100));
         assert!(lines[27].starts_with('❯'));
         assert_eq!(lines[28], "─".repeat(100));
-        assert!(lines[29].contains("fixture-model"));
+        assert!(lines[29].starts_with(" pp · \u{ec19} fixture-model · \u{f0766} off ·"));
         assert!(!text.contains("│ Note"));
         for (row, col, color) in [
             (2, 45, vt100::Color::Rgb(127, 166, 106)),
             (26, 0, vt100::Color::Rgb(127, 166, 106)),
+            (29, 1, vt100::Color::Rgb(127, 166, 106)),
         ] {
             assert_eq!(screen.cell(row, col).unwrap().fgcolor(), color);
             assert_eq!(
@@ -3548,7 +3549,7 @@ mod tui {
             "ordered model, thinking, directory and Git footer",
             |screen| {
                 screen.contents().lines().last().is_some_and(|line| {
-                    line.starts_with(" \u{ec19} fixture-model · \u{f0766} off · \u{f07c} ")
+                    line.starts_with(" pp · \u{ec19} fixture-model · \u{f0766} off · \u{f07c} ")
                         && line.ends_with("\u{f126} fixture *1")
                 })
             },
