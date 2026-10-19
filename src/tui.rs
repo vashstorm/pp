@@ -72,6 +72,7 @@ pub(crate) fn run(
         dirty |= app.receive();
         dirty |= workspace.receive();
         dirty |= app.notifications.tick(Instant::now());
+        dirty |= app.conversation.tick(Instant::now());
         if dirty {
             terminal
                 .draw(|frame| app.draw(frame, &workspace.context))
@@ -125,7 +126,11 @@ enum WorkerCommand {
 }
 enum WorkerEvent {
     Progress(AgentEvent),
-    Completed(Result<RunOutcome>),
+    Completed {
+        result: Result<RunOutcome>,
+        elapsed: Duration,
+        finished_at: chrono::DateTime<chrono::Local>,
+    },
     SessionStarted(String),
     Reset,
     ModelSwitched(Result<(ModelChoice, ThinkLevel)>),
@@ -134,6 +139,16 @@ enum WorkerEvent {
     SessionsListed(Result<crate::agent::persistence::SessionListing>),
     SessionDeleted(String, Result<()>),
     SessionResumed(Result<ResumeState>),
+}
+
+impl WorkerEvent {
+    fn completed(started: Instant, result: Result<RunOutcome>) -> Self {
+        Self::Completed {
+            result,
+            elapsed: started.elapsed(),
+            finished_at: chrono::Local::now(),
+        }
+    }
 }
 
 /// 由 worker 一次性准备好的会话切换产物；全部就绪后才替换 UI 状态。
@@ -306,6 +321,7 @@ impl App {
                     .name("pp-agent".into())
                     .spawn(move || {
                         while let Ok(command) = receiver.recv() {
+                            let started = Instant::now();
                             let mut emit = |event| {
                                 let _ = sender.send(WorkerEvent::Progress(event));
                             };
@@ -313,12 +329,12 @@ impl App {
                                 WorkerCommand::Run {
                                     prompt,
                                     cancellation,
-                                } => WorkerEvent::Completed(agent.run(
-                                    &prompt,
-                                    &cancellation,
-                                    &mut emit,
-                                )),
-                                WorkerCommand::Continue { cancellation } => WorkerEvent::Completed(
+                                } => WorkerEvent::completed(
+                                    started,
+                                    agent.run(&prompt, &cancellation, &mut emit),
+                                ),
+                                WorkerCommand::Continue { cancellation } => WorkerEvent::completed(
+                                    started,
                                     agent.continue_session(&cancellation, &mut emit),
                                 ),
                                 WorkerCommand::Reset => {
@@ -554,16 +570,25 @@ impl App {
                     self.session_id = Some(id);
                     changed = true;
                 }
-                Ok(WorkerEvent::Completed(result)) => {
+                Ok(WorkerEvent::Completed {
+                    result,
+                    elapsed,
+                    finished_at,
+                }) => {
                     self.active_cancellation = None;
-                    match result {
-                        Ok(RunOutcome::Completed) => {}
-                        Ok(RunOutcome::Cancelled) => self.conversation.cancel(),
+                    let label = match result {
+                        Ok(RunOutcome::Completed) => "Completed",
+                        Ok(RunOutcome::Cancelled) => {
+                            self.conversation.cancel();
+                            "Cancelled"
+                        }
                         Err(error) => {
                             self.conversation.fail();
                             self.notify(Level::Error, format!("{error:#}"));
+                            "Failed"
                         }
-                    }
+                    };
+                    self.conversation.finish_run(label, elapsed, finished_at);
                     self.state = State::Ready;
                     changed = true;
                 }
@@ -994,6 +1019,7 @@ impl App {
         };
         if self.send(command, State::Running) {
             self.active_cancellation = Some(cancellation);
+            self.conversation.begin_run();
             true
         } else {
             false
@@ -1496,6 +1522,7 @@ impl App {
                     {
                         cancellation.cancel();
                         self.state = State::Cancelling;
+                        self.conversation.cancelling();
                     }
                     return false;
                 }
@@ -1686,12 +1713,6 @@ impl App {
     fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
         // 上沿右半区为第二状态栏预留；未设置内容时保持横线。
         let left_width = area.width / 2;
-        if matches!(self.state, State::Cancelling) {
-            frame.render_widget(
-                Line::styled(" Cancelling... ", Style::default().fg(Color::DarkGray)),
-                Rect::new(area.x, area.y, left_width, 1),
-            );
-        }
         if let Some(extra) = self
             .secondary_status
             .as_deref()
@@ -1886,6 +1907,67 @@ mod tests {
     }
 
     #[test]
+    fn completed_turn_uses_worker_timing_and_preserves_draft() {
+        use chrono::TimeZone;
+
+        for (seconds, duration) in [(0, "0s"), (5, "5s"), (65, "65s"), (3725, "3725s")] {
+            let mut app = app();
+            app.state = State::Running;
+            app.show_welcome = false;
+            app.notifications.clear();
+            app.input.insert_str("下一轮草稿");
+            let cursor = app.input.cursor();
+            let (events, receiver) = mpsc::channel();
+            app.events = Some(receiver);
+            events
+                .send(WorkerEvent::Progress(AgentEvent::AssistantFinished {
+                    text: "finished answer".into(),
+                }))
+                .unwrap();
+            events
+                .send(WorkerEvent::Completed {
+                    result: Ok(RunOutcome::Completed),
+                    elapsed: Duration::from_secs(seconds),
+                    finished_at: chrono::Local
+                        .with_ymd_and_hms(2026, 10, 19, 19, 6, 0)
+                        .unwrap(),
+                })
+                .unwrap();
+            app.receive();
+            let expected = format!("✻ Completed · {duration} · done 19:06");
+            let screen = draw(&mut app, 100, 30);
+            assert!(screen.contains(&expected), "{screen}");
+            assert_eq!(screen.matches("Completed ·").count(), 1);
+            assert!(screen.find("finished answer").unwrap() < screen.find(&expected).unwrap());
+            assert!(matches!(app.state, State::Ready));
+            assert_eq!(app.input.lines(), &["下一轮草稿"]);
+            assert_eq!(app.input.cursor(), cursor);
+            app.receive();
+            assert_eq!(draw(&mut app, 100, 30).matches("Completed ·").count(), 1);
+            assert!(draw(&mut app, 35, 30).contains("Completed ·"));
+        }
+    }
+
+    #[test]
+    fn cancelled_and_failed_turns_have_no_completion_summary() {
+        for result in [
+            Ok(RunOutcome::Cancelled),
+            Err(anyhow::anyhow!("request failed")),
+        ] {
+            let mut app = app();
+            app.state = State::Running;
+            app.show_welcome = false;
+            let (events, receiver) = mpsc::channel();
+            app.events = Some(receiver);
+            events
+                .send(WorkerEvent::completed(Instant::now(), result))
+                .unwrap();
+            app.receive();
+            assert!(!draw(&mut app, 100, 30).contains("Completed ·"));
+        }
+    }
+
+    #[test]
     fn task_cancel_waits_for_completed_and_preserves_editable_draft() {
         let mut app = app();
         app.state = State::Ready;
@@ -1920,11 +2002,15 @@ mod tests {
         assert_eq!(app.input_history, history);
         assert!(matches!(app.state, State::Cancelling));
         let screen = draw(&mut app, 100, 30);
-        assert!(screen.contains("Cancelling..."));
+        assert!(screen.contains("✻ Cancelling ·"));
+        assert_eq!(screen.matches("Cancelling").count(), 1);
         assert!(screen.contains("secondary intact"));
         app.handle(Event::Paste("新".into()), &mut dirty);
         events
-            .send(WorkerEvent::Completed(Ok(RunOutcome::Cancelled)))
+            .send(WorkerEvent::completed(
+                Instant::now(),
+                Ok(RunOutcome::Cancelled),
+            ))
             .unwrap();
         app.receive();
         assert!(matches!(app.state, State::Ready));
@@ -1958,7 +2044,10 @@ mod tests {
         };
         // 完成已在 worker 提交，UI 尚未接到 Completed；迟到 Esc 只取消旧 token。
         events
-            .send(WorkerEvent::Completed(Ok(RunOutcome::Completed)))
+            .send(WorkerEvent::completed(
+                Instant::now(),
+                Ok(RunOutcome::Completed),
+            ))
             .unwrap();
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert!(old.is_cancelled());
@@ -2006,9 +2095,10 @@ mod tests {
         assert_notification(&mut app, statusline::ACCENT);
         assert!(draw(&mut app, 100, 30).contains("Session: fixture-session"));
         sender
-            .send(WorkerEvent::Completed(Err(anyhow::anyhow!(
-                "request failed"
-            ))))
+            .send(WorkerEvent::completed(
+                Instant::now(),
+                Err(anyhow::anyhow!("request failed")),
+            ))
             .unwrap();
         app.receive();
         assert!(matches!(app.state, State::Ready));
@@ -3536,7 +3626,10 @@ mod tests {
         }
         assert!(
             sender
-                .send(WorkerEvent::Completed(Ok(RunOutcome::Completed)))
+                .send(WorkerEvent::completed(
+                    Instant::now(),
+                    Ok(RunOutcome::Completed)
+                ))
                 .is_ok()
         );
         assert!(app.receive());
@@ -3585,9 +3678,10 @@ mod tests {
         app.events = Some(receiver);
         assert!(
             sender
-                .send(WorkerEvent::Completed(Err(anyhow::anyhow!(
-                    "stream failed"
-                ))))
+                .send(WorkerEvent::completed(
+                    Instant::now(),
+                    Err(anyhow::anyhow!("stream failed"))
+                ))
                 .is_ok()
         );
         app.receive();

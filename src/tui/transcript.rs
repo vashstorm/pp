@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::{
     io::{self, Write},
     ops::Range,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 const BASH_BACKGROUND: Color = Color::Rgb(22, 27, 33);
@@ -31,6 +31,7 @@ pub(super) enum EntryKind {
     Grep,
     Skill,
     Data,
+    Activity,
 }
 
 impl EntryKind {
@@ -39,7 +40,7 @@ impl EntryKind {
             Self::User => Color::Blue,
             Self::Assistant => Color::Reset,
             Self::Bash => Color::Yellow,
-            Self::Think => MUTED_TEXT,
+            Self::Think | Self::Activity => MUTED_TEXT,
             Self::Grep => Color::Cyan,
             Self::Skill => Color::Magenta,
             Self::Data => Color::Reset,
@@ -55,7 +56,10 @@ impl EntryKind {
     }
 
     fn hides_title(self) -> bool {
-        matches!(self, Self::User | Self::Assistant | Self::Think)
+        matches!(
+            self,
+            Self::User | Self::Assistant | Self::Think | Self::Activity
+        )
     }
 }
 
@@ -157,6 +161,9 @@ impl TranscriptEntry {
 
     fn line(&self, line: &LayoutLine) -> Line<'_> {
         let text = &self.source(line.source)[line.range.clone()];
+        if self.kind == EntryKind::Activity {
+            return Line::styled(text, Style::default().fg(MUTED_TEXT));
+        }
         if self.kind == EntryKind::Bash {
             let color = if matches!(line.source, Source::Title) {
                 Color::Rgb(190, 188, 139)
@@ -305,10 +312,14 @@ impl TranscriptEntry {
         }
         let mut height = 0;
         for line in &mut lines {
-            line.height = Paragraph::new(self.line(line))
-                .wrap(Wrap { trim: false })
-                .line_count(width)
-                .max(1);
+            line.height = if self.kind == EntryKind::Activity {
+                1
+            } else {
+                Paragraph::new(self.line(line))
+                    .wrap(Wrap { trim: false })
+                    .line_count(width)
+                    .max(1)
+            };
             height += line.height;
         }
         self.layout = Some(EntryLayout {
@@ -355,9 +366,69 @@ impl TranscriptEntry {
     }
 }
 
+struct Activity {
+    entry: TranscriptEntry,
+    started: Option<Instant>,
+    label: String,
+    seconds: u64,
+}
+
+impl Activity {
+    fn new(started: Instant) -> Self {
+        Self {
+            entry: TranscriptEntry::new(
+                EntryKind::Activity,
+                String::new(),
+                "✻ Requesting model · 0s".into(),
+                None,
+            ),
+            started: Some(started),
+            label: "Requesting model".into(),
+            seconds: 0,
+        }
+    }
+
+    fn tick(&mut self, now: Instant) -> bool {
+        let Some(started) = self.started else {
+            return false;
+        };
+        let seconds = now.saturating_duration_since(started).as_secs();
+        if seconds == self.seconds {
+            return false;
+        }
+        self.seconds = seconds;
+        self.refresh();
+        true
+    }
+
+    fn refresh(&mut self) {
+        self.entry.text = format!("✻ {} · {}s", self.label, self.seconds);
+        self.entry.layout = None;
+    }
+
+    fn phase(&mut self, label: &str) {
+        if self.started.is_some() && self.label != "Cancelling" && self.label != label {
+            self.label = label.into();
+            self.tick(Instant::now());
+            self.refresh();
+        }
+    }
+
+    fn stop(&mut self, label: &str) {
+        if self.started.is_some() {
+            self.tick(Instant::now());
+            self.started = None;
+            self.label = label.into();
+            self.refresh();
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Transcript {
     entries: Vec<TranscriptEntry>,
+    // 状态独立于历史条目，始终渲染在最新消息后面。
+    activity: Option<Activity>,
     assistant: Option<usize>,
     thinking: Option<usize>,
     running_tools: Vec<(String, usize)>,
@@ -386,6 +457,42 @@ impl Transcript {
         };
         self.entries
             .push(TranscriptEntry::new(kind, title, text.into(), None));
+    }
+
+    pub(super) fn begin_run(&mut self) {
+        self.activity = Some(Activity::new(Instant::now()));
+    }
+
+    pub(super) fn tick(&mut self, now: Instant) -> bool {
+        self.activity
+            .as_mut()
+            .is_some_and(|activity| activity.tick(now))
+    }
+
+    pub(super) fn cancelling(&mut self) {
+        if let Some(activity) = &mut self.activity {
+            activity.phase("Cancelling");
+        }
+    }
+
+    pub(super) fn finish_run(
+        &mut self,
+        label: &str,
+        elapsed: Duration,
+        finished_at: chrono::DateTime<chrono::Local>,
+    ) {
+        let activity = self
+            .activity
+            .get_or_insert_with(|| Activity::new(Instant::now()));
+        activity.started = None;
+        activity.label = label.into();
+        activity.seconds = elapsed.as_secs();
+        activity.entry.text = format!(
+            "✻ {label} · {}s · done {}",
+            activity.seconds,
+            finished_at.format("%H:%M")
+        );
+        activity.entry.layout = None;
     }
 
     /// 按日志顺序恢复可见对话，并返回最后一条错误供弹窗展示。
@@ -464,6 +571,21 @@ impl Transcript {
     }
 
     pub(super) fn progress(&mut self, event: AgentEvent) {
+        if !self.replaying
+            && let Some(activity) = &mut self.activity
+        {
+            match &event {
+                AgentEvent::AssistantStarted => activity.phase("Requesting model"),
+                AgentEvent::ThinkingDelta { .. } => activity.phase("Thinking"),
+                AgentEvent::AssistantDelta { .. } => activity.phase("Responding"),
+                AgentEvent::AssistantFinished { .. } => activity.phase("Processing response"),
+                AgentEvent::ToolStarted { name, .. } => {
+                    activity.phase(&format!("Running {}", name.replace(char::is_control, " ")))
+                }
+                AgentEvent::ToolFinished { .. } => activity.phase("Processing tool result"),
+                AgentEvent::ToolOutput { .. } => {}
+            }
+        }
         match event {
             AgentEvent::AssistantStarted => {
                 self.assistant = None;
@@ -647,6 +769,9 @@ impl Transcript {
     }
 
     pub(super) fn fail(&mut self) {
+        if let Some(activity) = &mut self.activity {
+            activity.stop("Failed");
+        }
         if let Some(index) = self.assistant.take() {
             self.entries[index].status = EntryStatus::Failed;
             self.entries[index].layout = None;
@@ -662,6 +787,10 @@ impl Transcript {
 
     pub(super) fn cancel(&mut self) {
         self.fail();
+        if let Some(activity) = &mut self.activity {
+            activity.label = "Cancelled".into();
+            activity.refresh();
+        }
         self.thinking = None;
         self.append("Note", crate::cancellation::CANCELLED_NOTE);
     }
@@ -715,7 +844,11 @@ impl Transcript {
 
     fn prepare_layout(&mut self, width: u16) {
         self.total = 0;
-        for entry in &mut self.entries {
+        for entry in self
+            .entries
+            .iter_mut()
+            .chain(self.activity.iter_mut().map(|activity| &mut activity.entry))
+        {
             let padding = if matches!(entry.kind, EntryKind::Bash | EntryKind::Skill) {
                 4
             } else {
@@ -731,7 +864,11 @@ impl Transcript {
         let inset = area.width.min(2);
         let mut y = area.y;
         let end = area.bottom();
-        for entry in &self.entries {
+        for entry in self
+            .entries
+            .iter()
+            .chain(self.activity.iter().map(|activity| &activity.entry))
+        {
             let layout = entry.layout.as_ref().expect("layout initialized");
             if skip > layout.height {
                 skip -= layout.height + 1;
@@ -800,7 +937,7 @@ impl Transcript {
                             )
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
-                    } else if !think && background.is_none() {
+                    } else if !think && entry.kind != EntryKind::Activity && background.is_none() {
                         Span::styled("│", Style::default().fg(entry.kind.color()))
                             .render(Rect::new(area.x, row, 1, 1), buffer);
                     }
@@ -921,6 +1058,109 @@ mod tests {
             text: text.into(),
             refusal,
         });
+    }
+
+    #[test]
+    fn activity_timer_ticks_without_events_and_stops_on_failure() {
+        let mut transcript = Transcript::new();
+        transcript.append("You", "waiting task");
+        transcript.begin_run();
+        let started = transcript.activity.as_ref().unwrap().started.unwrap();
+        assert!(!transcript.tick(started + Duration::from_millis(999)));
+        assert!(transcript.tick(started + Duration::from_secs(1)));
+        assert!(!transcript.tick(started + Duration::from_millis(1500)));
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(text.contains("✻ Requesting model · 1s"));
+        assert_eq!(transcript.entries.len(), 1);
+        transcript.fail();
+        assert!(!transcript.tick(started + Duration::from_secs(90)));
+        assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Failed ·"));
+    }
+
+    #[test]
+    fn activity_follows_latest_message_across_model_and_tool_phases() {
+        let mut transcript = Transcript::new();
+        transcript.append("You", "run task");
+        transcript.begin_run();
+        let phases = [
+            (AgentEvent::AssistantStarted, "Requesting model"),
+            (
+                AgentEvent::ThinkingDelta {
+                    text: "thinking content".into(),
+                },
+                "Thinking",
+            ),
+            (
+                AgentEvent::AssistantDelta {
+                    text: "answer content".into(),
+                    refusal: false,
+                },
+                "Responding",
+            ),
+            (
+                AgentEvent::AssistantFinished {
+                    text: "answer content".into(),
+                },
+                "Processing response",
+            ),
+            (
+                AgentEvent::ToolStarted {
+                    id: "read-1".into(),
+                    name: "read".into(),
+                    arguments: r#"{"path":"test.txt"}"#.into(),
+                },
+                "Running read",
+            ),
+            (
+                AgentEvent::ToolFinished {
+                    id: "read-1".into(),
+                    result: json!({"ok":true,"content":"tool content"}),
+                },
+                "Processing tool result",
+            ),
+            (AgentEvent::AssistantStarted, "Requesting model"),
+        ];
+        for (event, label) in phases {
+            transcript.progress(event);
+            let started = transcript.activity.as_ref().unwrap().started.unwrap();
+            transcript.tick(started + Duration::from_secs(5));
+            let text = screen(&render(&mut transcript, 100, 30));
+            assert!(text.contains(&format!("✻ {label} · 5s")), "{text}");
+            assert_eq!(text.matches('✻').count(), 1);
+            assert!(text.find("run task").unwrap() < text.find('✻').unwrap());
+            if text.contains("answer content") {
+                assert!(text.find("answer content").unwrap() < text.find('✻').unwrap());
+            }
+        }
+        transcript.cancelling();
+        transcript.progress(AgentEvent::ThinkingDelta {
+            text: "late delta".into(),
+        });
+        assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Cancelling ·"));
+        transcript.cancel();
+        assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Cancelled ·"));
+        transcript.begin_run();
+        transcript.append("You", "next task");
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert_eq!(text.matches('✻').count(), 1);
+        assert!(text.contains("✻ Requesting model · 0s"));
+        assert!(text.find("next task").unwrap() < text.find('✻').unwrap());
+        // 窄屏也只占一行；恢复宽度后显示完整状态。
+        let text = screen(&render(&mut transcript, 18, 40));
+        assert_eq!(text.lines().filter(|line| line.contains('✻')).count(), 1);
+        assert_eq!(
+            transcript
+                .activity
+                .as_ref()
+                .unwrap()
+                .entry
+                .layout
+                .as_ref()
+                .unwrap()
+                .height,
+            1
+        );
+        assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Requesting model · 0s"));
     }
 
     #[test]

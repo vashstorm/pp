@@ -3222,6 +3222,49 @@ mod tui {
     }
 
     #[test]
+    fn tui_activity_is_single_live_muted_and_cleared_by_new() {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let mut pty = Pty::start(&server, dir.path());
+        pty.ready();
+        for turn in 1..=2 {
+            pty.input(&format!("task {turn}\r"));
+            let (request, _) = pty.request(&server);
+            pty.text("✻ Requesting model ·");
+            assert_eq!(
+                pty.parser
+                    .screen()
+                    .contents()
+                    .matches("Completed ·")
+                    .count(),
+                0
+            );
+            pty.wait_for("等待网络时秒表持续更新", |screen| {
+                let text = screen.contents();
+                text.contains("✻ Requesting model · 1s") && text.matches('✻').count() == 1
+            });
+            final_reply(request, &format!("answer {turn}"));
+            pty.wait_for("每轮完成提示与灰色样式", |screen| {
+                let text = screen.contents();
+                text.matches('✻').count() == 1
+                    && text.contains("✻ Completed ·")
+                    && text.contains(" · done ")
+                    && label_color(screen, "✻ Completed ·") == vt100::Color::Rgb(110, 117, 129)
+                    && input_is_ready(screen)
+            });
+            let text = pty.parser.screen().contents();
+            assert!(text.find(&format!("answer {turn}")).unwrap() < text.find('✻').unwrap());
+        }
+        pty.input("/new\r");
+        pty.wait_for("新会话清空完成提示", |screen| {
+            input_is_ready(screen) && !screen.contents().contains("Completed ·")
+        });
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
+
+    #[test]
     fn tui_exit_keeps_conversation_on_normal_screen() {
         for exit in ["\x03", "/quit\r"] {
             let server = server();
@@ -3244,6 +3287,7 @@ mod tui {
                     && text.contains("保留提问")
                     && text.contains("retained-answer 中😀")
                     && text.contains("indented code")
+                    && text.contains("✻ Completed ·")
                     && text.contains("fixture-model")
                     && text.contains('❯')
                     && background_color(screen, "保留提问") == USER_BACKGROUND
@@ -3787,6 +3831,7 @@ mod tui {
             let mut stream = SseReply::new(request);
             streaming_delta(&mut stream, protocol, "first-中");
             pty.text("first-中");
+            pty.text("✻ Responding ·");
             pty.drain();
             assert!(input_is_ready(pty.parser.screen()));
             assert!(!pty.parser.screen().contents().contains("-last"));
@@ -3872,6 +3917,8 @@ mod tui {
             assert!(!pty.parser.screen().contents().contains("out-firstout-last"));
             let bash_color = label_color(pty.parser.screen(), "$ printf");
             assert_eq!(bash_color, vt100::Color::Rgb(190, 188, 139));
+            pty.text("✻ Running bash ·");
+            assert_eq!(pty.parser.screen().contents().matches('✻').count(), 1);
             no_more(&server);
             std::fs::write(dir.path().join("release"), "").unwrap();
             let (request, body) = receive_at(&server, path);
