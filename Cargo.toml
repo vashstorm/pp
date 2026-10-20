@@ -32,3 +32,13 @@ tempfile = "3"
 tiny_http = "0.12"
 portable-pty = "0.9.0"
 vt100 = "0.16.2"
+
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

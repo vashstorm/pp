@@ -10,6 +10,15 @@ cargo build --locked
 ./target/debug/pp --version
 ```
 
+发布构建使用体积优化配置，生成 `target/release/pp`：
+
+```sh
+cargo build --release --locked
+./target/release/pp --help
+```
+
+`release` 使用 `opt-level = "z"`、完整 LTO、单代码生成单元并剥离符号。此配置优先减小可执行文件体积，代价是更长的编译时间及潜在的运行性能取舍；保留默认 panic 展开行为。符号剥离会减少回溯信息，排查问题时可用 `CARGO_PROFILE_RELEASE_STRIP=none cargo build --release --locked` 保留符号。
+
 配置统一保存在 `~/.pp/agent/settings.jsonc` 和 `~/.pp/agent/models.jsonc`，支持 `//`、`/* ... */` 注释及末尾逗号。启动目录中的同名文件不再读取。 `models.jsonc` is required: providers share credentials, base URL, and protocol, with multiple models under each provider. `settings.jsonc` is optional and controls app behavior itself. The default model is the first model of the first provider in the file:
 
 ```jsonc
