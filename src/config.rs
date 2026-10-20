@@ -398,6 +398,12 @@ impl ModelCatalog {
         })
     }
 
+    pub(crate) fn save_default_model(&self, reference: &str) -> Result<()> {
+        update_settings(&self.settings_path, |_| {
+            Ok(("default_model", CstInputValue::String(reference.into())))
+        })
+    }
+
     pub(crate) fn default_reference(&self) -> &str {
         &self.default_reference
     }

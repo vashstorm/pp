@@ -39,6 +39,128 @@ fn effort_save_popup(screen: &vt100::Screen, message: &str, color: vt100::Color)
 }
 
 #[test]
+fn tui_model_ctrl_s_saves_selection_for_next_startup_and_restores_picker_draft() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let path = config_path(home.path(), "settings.jsonc");
+        let original = "{\n  // 保留默认模型之外的设置\n  \"think_level\": \"high\",\n  \"edit\": \"hashline\",\n  \"default_model\": \"fixture/primary\", // 默认模型说明\n}\n";
+        std::fs::write(&path, original).unwrap();
+        let models = json!({"providers":[
+            slash_provider(&server, "fixture", protocol, json!([
+                {"id":"primary","model":"first-model"}
+            ])),
+            slash_provider(&server, "gateway", protocol, json!([
+                {"id":"team/secondary","model":"second-model"}
+            ]))
+        ]}).to_string();
+        let models_path = config_path(home.path(), "models.jsonc");
+        std::fs::write(&models_path, &models).unwrap();
+        let mut pty = Pty::start_with_existing_files(home.path());
+        pty.ready_model("first-model");
+        pty.input("/model ");
+        pty.text("fixture/primary (default)");
+        assert!(!pty.parser.screen().contents().contains("gateway/team/secondary (default)"));
+        pty.input("\x01\x0b/model second");
+        pty.text("gateway/team/secondary");
+        pty.input("\x13");
+        pty.text("Default model saved: gateway/team/secondary");
+        pty.ready_model("first-model");
+        pty.ready_effort("high");
+        pty.draft("");
+        pty.input("/model ");
+        pty.text("gateway/team/secondary (default)");
+        assert!(!pty.parser.screen().contents().contains("fixture/primary (default)"));
+        pty.input("\x01\x0b");
+        pty.draft("");
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("// 保留默认模型之外的设置"));
+        assert!(saved.contains("// 默认模型说明"));
+        assert!(saved.contains("\"think_level\": \"high\""));
+        assert!(saved.contains("\"edit\": \"hashline\""));
+        assert!(saved.contains("\"default_model\": \"gateway/team/secondary\""));
+        assert_eq!(std::fs::read_to_string(&models_path).unwrap(), models);
+        no_more(&server);
+        pty.input("verify current model\r");
+        let (request, body) = receive_at(&server, api_path(protocol));
+        assert_eq!(body["model"], "first-model");
+        super::think::assert_level(&body, protocol, "high");
+        super::think::finish_request(request, protocol);
+        pty.ready_model("first-model");
+        pty.input("\x03");
+        pty.finish();
+
+        let mut restarted = Pty::start_with_existing_files(home.path());
+        restarted.ready_model("second-model");
+        restarted.input("/model ");
+        restarted.text("gateway/team/secondary (default)");
+        restarted.input("\x01\x0bverify startup model\r");
+        let (request, body) = receive_at(&server, api_path(protocol));
+        assert_eq!(body["model"], "second-model");
+        super::think::finish_request(request, protocol);
+        restarted.text("Session:");
+        restarted.ready_model("second-model");
+        restarted.input("草稿🙂");
+        restarted.draft("草稿🙂");
+        let cursor = restarted.parser.screen().cursor_position();
+        restarted.input("\x10");
+        restarted.text("fixture/primary");
+        restarted.input("\x1b[A\x13");
+        restarted.text("Default model saved: fixture/primary");
+        restarted.ready_model("second-model");
+        restarted.draft("草稿🙂");
+        assert_eq!(restarted.parser.screen().cursor_position(), cursor);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("\"default_model\": \"fixture/primary\""));
+        let invalid = "{ broken secret-marker-config }";
+        std::fs::write(&path, invalid).unwrap();
+        restarted.input("\x10");
+        restarted.text("fixture/primary (default)");
+        assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary (default)"));
+        restarted.input("\x13");
+        restarted.text("Failed to save default model");
+        restarted.draft("草稿🙂");
+        restarted.input("\x10");
+        restarted.text("fixture/primary (default)");
+        assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary (default)"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        restarted.input("\x03");
+        restarted.finish();
+        no_more(&server);
+    }
+}
+
+#[test]
+fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(config_path(home.path(), "models.jsonc"), fixture_models(&server)).unwrap();
+    let path = config_path(home.path(), "settings.jsonc");
+    let mut pty = Pty::start_with_existing_files(home.path());
+    pty.ready_model("fixture-model");
+    pty.input("/model\r");
+    pty.text("fixture/primary (default)");
+    pty.input("\x13");
+    pty.text("Default model saved: fixture/primary");
+    pty.ready_model("fixture-model");
+    pty.draft("");
+    assert!(std::fs::read_to_string(&path).unwrap().contains("\"default_model\": \"fixture/primary\""));
+
+    let invalid = "{ broken secret-marker-config }";
+    std::fs::write(&path, invalid).unwrap();
+    pty.input("draft after failure\x10");
+    pty.text("fixture/primary");
+    pty.input("\x13");
+    pty.text("Failed to save default model");
+    pty.ready_model("fixture-model");
+    pty.draft("draft after failure");
+    assert!(!pty.parser.screen().contents().contains("secret-marker-config"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+    pty.input("\x03");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
 fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
     for protocol in ["completion", "response"] {
         let server = server();

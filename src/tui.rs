@@ -47,8 +47,9 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
-const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S set selected effort as default in the /effort menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S save selected model/effort as default in its menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
 const EFFORT_HINT: &str = "Enter select · Ctrl-S set selected effort as default · Esc cancel";
+const MODEL_HINT: &str = "Enter select · Ctrl-S set selected model as default · Esc cancel";
 const MOUSE_SCROLL_LINES: usize = 3;
 
 pub(crate) fn run(
@@ -127,6 +128,7 @@ enum WorkerCommand {
     SwitchModel(String),
     SetThinkLevel(ThinkLevel),
     SaveDefaultThinkLevel(ThinkLevel),
+    SaveDefaultModel(String),
     ListSessions,
     DeleteSession(String),
     Resume(String),
@@ -149,6 +151,7 @@ enum WorkerEvent {
     ModelSwitched(Result<(ModelChoice, ThinkLevel)>),
     ThinkLevelSet(Result<ThinkLevel>),
     DefaultThinkLevelSaved(Result<ThinkLevel>),
+    DefaultModelSaved(Result<String>),
     SessionsListed(Result<crate::agent::persistence::SessionListing>),
     SessionDeleted(String, Result<()>),
     SessionResumed(Result<ResumeState>),
@@ -205,6 +208,7 @@ enum State {
     Compacting,
     Resetting,
     SwitchingModel,
+    SavingDefaultModel,
     SettingThinkLevel,
     ListingSessions,
     Resuming,
@@ -247,6 +251,7 @@ struct App {
     unavailable: Option<String>,
     choices: Vec<ModelChoice>,
     current_model: Option<ModelChoice>,
+    default_model_reference: Option<String>,
     think_level: ThinkLevel,
     default_think_level: ThinkLevel,
     menu: Option<SelectionMenu<MenuAction>>,
@@ -339,6 +344,7 @@ impl App {
             unavailable: None,
             choices: Vec::new(),
             current_model: None,
+            default_model_reference: None,
             think_level: ThinkLevel::None,
             default_think_level: ThinkLevel::default(),
             menu: None,
@@ -370,6 +376,7 @@ impl App {
                 let default_think_level = agent.default_think_level();
                 let mcp_cleanup = agent.mcp_cleanup()?;
                 app.choices = agent.model_choices();
+                app.default_model_reference = Some(agent.default_model_reference().to_owned());
                 let (commands, receiver) = mpsc::channel();
                 let (sender, events) = mpsc::sync_channel(256);
                 let ask_events = sender.clone();
@@ -427,6 +434,11 @@ impl App {
                                 WorkerCommand::SaveDefaultThinkLevel(level) => {
                                     WorkerEvent::DefaultThinkLevelSaved(
                                         agent.save_default_think_level(level).map(|()| level),
+                                    )
+                                }
+                                WorkerCommand::SaveDefaultModel(reference) => {
+                                    WorkerEvent::DefaultModelSaved(
+                                        agent.save_default_model(&reference).map(|()| reference),
                                     )
                                 }
                                 WorkerCommand::SwitchModel(reference) => {
@@ -785,6 +797,25 @@ impl App {
                     self.state = State::Ready;
                     changed = true;
                 }
+                Ok(WorkerEvent::DefaultModelSaved(result)) => {
+                    match result {
+                        Ok(reference) => {
+                            self.notify(
+                                Level::Normal,
+                                format!(
+                                    "Default model saved: {reference} (takes effect next launch)"
+                                ),
+                            );
+                            self.default_model_reference = Some(reference);
+                        }
+                        Err(error) => self.notify(
+                            Level::Error,
+                            format!("Failed to save default model: {error:#}"),
+                        ),
+                    }
+                    self.state = State::Ready;
+                    changed = true;
+                }
                 Ok(WorkerEvent::SessionsListed(result)) => {
                     // 扫描结束，worker 空闲；若面板已取消则只丢弃迟到的列表。
                     self.state = State::Ready;
@@ -943,7 +974,13 @@ impl App {
                     })
                     .map(|(index, choice)| MenuItem {
                         value: MenuAction::Model(index),
-                        label: choice.reference.clone(),
+                        label: if self.default_model_reference.as_deref()
+                            == Some(choice.reference.as_str())
+                        {
+                            format!("{} (default)", choice.reference)
+                        } else {
+                            choice.reference.clone()
+                        },
                         description: format!("{} [{}]", choice.model, choice.protocol),
                         icon: None,
                         current: self
@@ -954,7 +991,9 @@ impl App {
                     .collect();
                 preferred = items
                     .iter()
-                    .position(|item| item.label == prefix)
+                    .position(|item| {
+                        matches!(item.value, MenuAction::Model(index) if self.choices[index].reference == prefix)
+                    })
                     .or_else(|| items.iter().position(|item| item.current))
                     .unwrap_or(0);
                 items
@@ -1024,13 +1063,14 @@ impl App {
         if items.is_empty() {
             self.menu = None;
         } else if edited || self.menu.as_ref().is_none_or(|menu| menu.items() != items) {
-            let effort = matches!(
-                items.first().map(|item| item.value),
-                Some(MenuAction::Effort(_))
-            );
+            let hint = match items.first().map(|item| item.value) {
+                Some(MenuAction::Effort(_)) => Some(EFFORT_HINT),
+                Some(MenuAction::Model(_)) => Some(MODEL_HINT),
+                _ => None,
+            };
             let menu = SelectionMenu::new(items, preferred);
-            self.menu = Some(if effort {
-                menu.with_hint(EFFORT_HINT)
+            self.menu = Some(if let Some(hint) = hint {
+                menu.with_hint(hint)
             } else {
                 menu
             });
@@ -1321,6 +1361,7 @@ impl App {
             | State::Compacting
             | State::Resetting
             | State::SwitchingModel
+            | State::SavingDefaultModel
             | State::SettingThinkLevel
             | State::ListingSessions
             | State::Resuming => {}
@@ -1607,17 +1648,33 @@ impl App {
                 }
                 if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::CONTROL {
                     if key.kind == KeyEventKind::Press
-                        && let Some(MenuAction::Effort(level)) =
-                            self.menu.as_ref().and_then(|menu| {
-                                menu.selected_index().map(|index| menu.items()[index].value)
-                            })
+                        && let Some(action) = self.menu.as_ref().and_then(|menu| {
+                            menu.selected_index().map(|index| menu.items()[index].value)
+                        })
                         && self.shortcut_ready()
-                        && self.send(
-                            WorkerCommand::SaveDefaultThinkLevel(level),
-                            State::SettingThinkLevel,
-                        )
                     {
-                        self.clear_input();
+                        let request = match action {
+                            MenuAction::Effort(level) => Some((
+                                WorkerCommand::SaveDefaultThinkLevel(level),
+                                State::SettingThinkLevel,
+                            )),
+                            MenuAction::Model(index) => Some((
+                                WorkerCommand::SaveDefaultModel(
+                                    self.choices[index].reference.clone(),
+                                ),
+                                State::SavingDefaultModel,
+                            )),
+                            _ => None,
+                        };
+                        if let Some((command, state)) = request
+                            && self.send(command, state)
+                        {
+                            if self.model_picker_draft.is_some() {
+                                self.restore_model_picker_draft();
+                            } else {
+                                self.clear_input();
+                            }
+                        }
                     }
                     return false;
                 }
@@ -3240,6 +3297,7 @@ mod tests {
             })
             .collect();
         app.current_model = Some(app.choices[1].clone());
+        app.default_model_reference = Some(app.choices[0].reference.clone());
         let mut dirty = false;
         app.handle(Event::Paste("/model a/".into()), &mut dirty);
         assert_eq!(app.menu.as_ref().unwrap().selected_index(), Some(1));

@@ -494,6 +494,14 @@ impl Agent {
         self.catalog.save_default_think_level(level)
     }
 
+    pub(crate) fn default_model_reference(&self) -> &str {
+        self.catalog.default_reference()
+    }
+
+    pub(crate) fn save_default_model(&self, reference: &str) -> Result<()> {
+        self.catalog.save_default_model(reference)
+    }
+
     pub(crate) fn set_think_level(&mut self, level: ThinkLevel) -> Result<()> {
         if !self.current_model.thinking.supports(level) {
             let mut message =
