@@ -1,15 +1,11 @@
 fn effort_save_popup(screen: &vt100::Screen, message: &str, color: vt100::Color) -> bool {
     let (rows, cols) = screen.size();
-    if rows < 5 || cols < 6 || !screen.contents().contains(message) {
+    if rows < 5 || cols < 6 || !screen.contents().contains(message) || !input_is_ready(screen) {
         return false;
     }
     let Some(input_top) = (1..rows).find_map(|row| {
         (screen.cell(row, 0)?.contents() == "❯"
-            && (0..cols).all(|col| {
-                screen
-                    .cell(row - 1, col)
-                    .is_some_and(|cell| cell.contents() == "─")
-            }))
+            && screen.cell(row - 1, 0)?.contents() == "─")
         .then_some(row - 1)
     }) else {
         return false;

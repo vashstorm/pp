@@ -1800,7 +1800,6 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
-                    self.usage.as_ref(),
                     context,
                     status.width,
                 ),
@@ -1814,8 +1813,18 @@ impl App {
     }
 
     fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
-        // 上沿右半区为第二状态栏预留；未设置内容时保持横线。
-        let left_width = area.width / 2;
+        // 上下文固定在右端；压缩等临时状态显示在它左侧，空间不足时优先保留上下文。
+        let mut right = area.right();
+        if let Some(usage) = self.usage.as_ref() {
+            let (text, color) = statusline::context_field(usage);
+            let line = Line::styled(format!(" {text} "), Style::default().fg(color))
+                .alignment(Alignment::Right);
+            let width = u16::try_from(line.width())
+                .unwrap_or(u16::MAX)
+                .min(area.width);
+            right -= width;
+            frame.render_widget(line, Rect::new(right, area.y, width, 1));
+        }
         if let Some(extra) = self
             .secondary_status
             .as_deref()
@@ -1825,10 +1834,10 @@ impl App {
                 .alignment(Alignment::Right);
             let extra_width = u16::try_from(extra.width())
                 .unwrap_or(u16::MAX)
-                .min(area.width - left_width);
+                .min((right - area.x).min(area.width / 2));
             frame.render_widget(
                 extra,
-                Rect::new(area.right() - extra_width, area.y, extra_width, 1),
+                Rect::new(right - extra_width, area.y, extra_width, 1),
             );
         }
     }
@@ -3569,6 +3578,47 @@ mod tests {
             app.state = state;
             app.refresh_candidates(true);
             assert!(app.menu.is_none());
+        }
+    }
+
+    #[test]
+    fn context_usage_is_right_aligned_on_input_top_without_changing_draft() {
+        let mut app = app();
+        app.state = State::Ready;
+        app.input.insert_str("draft-中\nsecond line");
+        let mut usage = crate::context::ContextUsage {
+            estimated_tokens: 12345,
+            context_window: None,
+            last_request: None,
+            auto_compact: true,
+            threshold_percent: 80,
+        };
+        for (window, expected, color) in [
+            (None, " ctx 12k ", statusline::CONTEXT),
+            (Some(16000), " ctx 12k/16k ", statusline::CONTEXT),
+            (Some(15000), " ctx 12k/15k ", Color::Yellow),
+            (Some(12000), " ctx 12k/12k ", Color::Red),
+        ] {
+            usage.context_window = window;
+            app.usage = Some(usage);
+            app.secondary_status = Some("Compacting context...".into());
+            for width in [20, 40, 100] {
+                let buffer = draw_buffer(&mut app, width, 30);
+                let top: String = (0..width).map(|x| buffer[(x, 25)].symbol()).collect();
+                assert!(top.ends_with(expected), "{top}");
+                let start = width - expected.len() as u16;
+                assert_eq!(buffer[(start + 1, 25)].fg, color);
+                let footer: String = (0..width).map(|x| buffer[(x, 29)].symbol()).collect();
+                assert!(!footer.contains("ctx "));
+                if width == 100 {
+                    assert!(top.contains("Compacting context..."));
+                }
+                assert_eq!(app.input.lines(), &["draft-中", "second line"]);
+            }
+        }
+        for (width, height) in [(1, 1), (2, 2), (3, 4), (10, 4)] {
+            draw(&mut app, width, height);
+            assert_eq!(app.input.lines(), &["draft-中", "second line"]);
         }
     }
 

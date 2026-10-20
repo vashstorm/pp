@@ -2442,7 +2442,14 @@ mod tui {
             .lines()
             .collect::<Vec<_>>()
             .windows(2)
-            .any(|lines| lines[1].starts_with('❯') && lines[0].chars().all(|ch| ch == '─'))
+            .any(|lines| {
+                let border = lines[0]
+                    .split_once(" ctx ")
+                    .map_or(lines[0], |(border, _)| border);
+                lines[1].starts_with('❯')
+                    && border.starts_with('─')
+                    && border.chars().all(|ch| ch == '─')
+            })
     }
 
     struct Pty {
@@ -3173,11 +3180,15 @@ mod tui {
         assert_eq!(lines[2].trim(), "█▀▀█  █▀▀█");
         assert_eq!(lines[2].find('█'), Some(45));
         assert_eq!(lines[7].trim(), concat!("v", env!("CARGO_PKG_VERSION")));
-        assert_eq!(lines[26], "─".repeat(100));
+        assert!(lines[26].starts_with(&"─".repeat(50)));
+        let context_start = lines[26].find(" ctx ").expect("用量显示在输入栏上沿");
+        assert!(!lines[26][context_start..].contains('/'));
+        assert!(!lines[26][context_start..].contains('%'));
+        assert_eq!(lines[26].trim_end().chars().count(), 99);
         assert!(lines[27].starts_with('❯'));
         assert_eq!(lines[28], "─".repeat(100));
-        // 语义检查：状态栏在宽屏同时展示用量与模型；不固定字段顺序。
-        assert!(lines[29].contains("ctx ~"));
+        // 上沿右端显示用量，底部保留模型与思考级别。
+        assert!(!lines[29].contains("ctx "));
         assert!(lines[29].contains("fixture-model"));
         assert!(lines[29].contains("off"));
         assert!(!text.contains("│ Note"));
@@ -3200,11 +3211,11 @@ mod tui {
             let text = screen.contents();
             text.lines().next().is_some_and(|line| line.trim() == "pp")
                 && text.contains("startup draft")
-                // 窄屏优先保留上下文字段。
+                // 窄屏仍在输入栏上沿右端显示上下文字段。
                 && text
                     .lines()
-                    .last()
-                    .is_some_and(|line| line.contains("ctx ~"))
+                    .nth(8)
+                    .is_some_and(|line| line.contains("ctx "))
         });
         pty.resize(30, 100);
         pty.text("█▀▀█  █▀▀█");
@@ -3596,8 +3607,7 @@ mod tui {
         let mut pty = Pty::start(&server, dir.path());
         pty.wait_for("model, effort and Git footer", |screen| {
             screen.contents().lines().last().is_some_and(|line| {
-                line.contains("ctx ~")
-                    && line.contains("fixture-model")
+                line.contains("fixture-model")
                     && line.contains("\u{f0766} off")
                     && line.contains("\u{f126} fixture *1")
             })

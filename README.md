@@ -221,7 +221,7 @@ Review $1. Focus: $@[2:].
 
 ## 上下文用量与压缩
 
-- **用量可见，不增加查询命令。** TUI 状态栏显示 `ctx ~N/W P%`，未知容量为 `ctx ~N/?`；数字达到 1000 时缩写为一位小数的 k。达到配置阈值为黄色，达到容量为红色。CLI 每个任务结束（含失败）向 stderr 输出当前模型、完整整数的 `Context: ~N / W tokens (P%, estimated)`、最近普通请求的 input/output 和自动策略；stdout 仍只有模型回答。显示用量不发网络请求。
+- **用量可见，不增加查询命令。** TUI 在输入栏上沿右端显示 `ctx N/W`，未知容量时只显示 `ctx N`；小于 10000 时显示完整整数，达到 10000 后向下取整为整数 k（如 `9500`、`12k`），不显示小数或个位数加单位。普通用量为蓝色，达到配置阈值为黄色，达到容量为红色。CLI 每个任务结束（含失败）向 stderr 输出当前模型、完整整数的 `Context: ~N / W tokens (P%, estimated)`、最近普通请求的 input/output 和自动策略；stdout 仍只有模型回答。显示用量不发网络请求。
 - **估算不是 tokenizer。** `~N` 是整份当前原生请求序列化为 UTF-8 JSON 后的字节数向上除以 3，包括 system/instructions、工具 schema、参数、结果及原生／加密 reasoning 的 JSON 开销；不保证准确率或一定不会超限。百分比向下取整，允许超过 100%。最近请求的服务端 usage 独立显示，不累计为上下文占用，也不重复计算 cached/reasoning 明细；没有 usage 时显示 `unavailable`。初始化、恢复、`/new`、切模型和压缩成功后清空最近 usage，摘要请求不覆盖它。
 - **容量必须显式配置。** 每模型 `context_window` 为可选的正整数 token 数；省略表示未知，拒绝 null、0、负数、小数、字符串及溢出，未选中的模型也校验。不猜测模型名，不远程探测容量。`auto_compact` 默认 true，`auto_compact_threshold_percent` 默认 80 且必须为 1..=99 的整数；修改后重启生效，无运行时开关命令。当前模型没有容量时显示 `Auto compact: inactive (context_window not configured)`，不显示虚构的百分比；明确关闭则显示 `off`。切模型只用目标模型的容量，恢复只用当前模型目录配置，不继承旧模型或日志中的容量。
 - **主动 `/compact`，自动在每次普通请求前检查。** `/compact` 不接受参数，支持 TUI 和行模式；`-p '/compact'` 仍是普通提示词。自动检查包含刚接受的用户输入及同一任务内完整工具批次的增长；用量达到阈值时先摘要，再继续任务。手动压缩不要求已知容量；空历史、只有待回复用户输入或只有一个完整 exchange 时返回 `Nothing to compact.`，不发请求、不创建空日志。TUI 仅空闲时接受命令，运行中草稿可编辑，Esc 等待实际取消终态后恢复；自动压缩仍属于当前任务，手动压缩不产生虚假的任务 Completed 或 `You: /compact`。

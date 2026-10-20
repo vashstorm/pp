@@ -116,11 +116,11 @@ fn context_tui_exchange(
     pty.draft("");
 }
 
-// 从状态栏 `ctx ~N/W P%` 读取简写后的估算 token 数。
+// 从输入栏上沿的 `ctx N/W` 读取简写后的估算 token 数。
 fn context_tui_ctx_tokens(screen: &vt100::Screen) -> f64 {
     let contents = screen.contents();
-    let start = contents.find("ctx ~").expect("状态栏必须显示 ctx 字段");
-    let rest = &contents[start + "ctx ~".len()..];
+    let start = contents.find("ctx ").expect("状态栏必须显示 ctx 字段");
+    let rest = &contents[start + "ctx ".len()..];
     let figure: String = rest
         .chars()
         .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
@@ -133,21 +133,21 @@ fn context_tui_ctx_tokens(screen: &vt100::Screen) -> f64 {
     }
 }
 
-// 已知容量时状态栏显示向下取整的百分比；乘法用 u128，允许超过 100。
+// 从当前用量与容量计算百分比，界面本身只显示大小。
 fn context_tui_ctx_percent(screen: &vt100::Screen) -> u128 {
     let contents = screen.contents();
-    let start = contents.find("ctx ~").expect("状态栏必须显示 ctx 字段");
+    let start = contents.find("ctx ").expect("状态栏必须显示 ctx 字段");
     let rest = &contents[start..];
-    let percent = rest.find('%').expect("已知容量必须显示百分比");
-    let digits: String = rest[..percent]
+    let (_, capacity) = rest.split_once('/').expect("已知容量必须显示总容量");
+    let figure: String = capacity
         .chars()
-        .rev()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>()
-        .chars()
-        .rev()
+        .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
         .collect();
-    digits.parse().expect("ctx 百分比必须可解析")
+    let mut window: f64 = figure.parse().expect("ctx 容量必须可解析");
+    if capacity[figure.len()..].starts_with('k') {
+        window *= 1000.0;
+    }
+    (context_tui_ctx_tokens(screen) * 100.0 / window) as u128
 }
 
 // 上下文字段首字符的前景色：达到阈值时为终端调色板 3 号（黄）。
@@ -156,15 +156,47 @@ fn context_tui_ctx_color(pty: &Pty) -> vt100::Color {
     let contents = screen.contents();
     let row = contents
         .lines()
-        .position(|line| line.contains("ctx ~"))
+        .position(|line| line.contains("ctx "))
         .expect("状态栏必须显示 ctx 字段") as u16;
-    let column = contents
+    let line = contents
         .lines()
         .nth(row as usize)
-        .unwrap()
+        .unwrap();
+    let start = line
         .find("ctx")
-        .expect("ctx 字段必须有前缀位置") as u16;
+        .expect("ctx 字段必须有前缀位置");
+    let column = line[..start].chars().count() as u16;
     screen.cell(row, column).expect("ctx 首字符").fgcolor()
+}
+
+#[test]
+fn context_tui_shows_current_and_window_on_input_top_right() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
+        let contents = pty.parser.screen().contents();
+        let lines: Vec<_> = contents.lines().collect();
+        assert!(lines[26].contains(" ctx "));
+        assert!(lines[26].trim_end().ends_with("/40k"));
+        assert_eq!(lines[26].trim_end().chars().count(), 99);
+        assert!(!lines[26].contains('%'));
+        assert!(!lines[26].contains('~'));
+        assert!(!lines[26].contains('.'));
+        assert_eq!(context_tui_ctx_color(&pty), vt100::Color::Rgb(122, 162, 247));
+        assert!(!lines[29].contains("ctx "));
+        pty.input("context-position-draft");
+        pty.draft("context-position-draft");
+        pty.resize(12, 40);
+        pty.wait_for("缩放后用量仍在输入栏上沿右端", |screen| {
+            screen.contents().lines().nth(8).is_some_and(|line| {
+                line.contains(" ctx ") && line.trim_end().ends_with("/40k")
+            })
+        });
+        pty.draft("context-position-draft");
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
 }
 
 // 摘要请求的形状：取消工具配置、携带输出上限、只含旧前缀与一条固定
@@ -374,7 +406,7 @@ fn context_tui_compact_success_keeps_dialogue_drops_usage_and_survives_narrow_re
     for protocol in ["completion", "response"] {
         let fixture = server();
         let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
-        pty.text("ctx ~");
+        pty.text("ctx ");
         context_tui_fill_three_exchanges(&mut pty, &fixture, protocol);
         let before = context_tui_ctx_tokens(pty.parser.screen());
         pty.input("/compact\r");
@@ -440,13 +472,13 @@ fn context_tui_compact_success_keeps_dialogue_drops_usage_and_survives_narrow_re
         // 窄屏 resize：上下文字段优先保留，任何宽度不溢出、不 panic。
         pty.resize(30, 60);
         assert!(
-            pty.parser.screen().contents().lines().last().unwrap().contains("ctx"),
+            pty.parser.screen().contents().lines().nth(26).unwrap().contains("ctx "),
             "{}",
             pty.diagnostics()
         );
         pty.resize(30, 30);
         assert!(
-            pty.parser.screen().contents().lines().last().unwrap().contains("ctx"),
+            pty.parser.screen().contents().lines().nth(26).unwrap().contains("ctx "),
             "{}",
             pty.diagnostics()
         );

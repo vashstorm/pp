@@ -17,6 +17,7 @@ pub(super) const ACCENT: Color = Color::Rgb(127, 166, 106);
 const MODEL: Color = Color::Rgb(223, 167, 209);
 const DIRECTORY: Color = Color::Rgb(36, 174, 181);
 const GIT: Color = Color::Rgb(204, 167, 72);
+pub(super) const CONTEXT: Color = Color::Rgb(122, 162, 247);
 // 与 omp 的 Nerd Font 图标一致；图标后保留一列空白，容纳字形右侧伸展。
 const MODEL_ICON: &str = "\u{ec19}";
 const THINK_ICON: &str = "\u{f0766}";
@@ -29,31 +30,30 @@ const FIELD_ICON_WIDTH: usize = ICON_WIDTH + 1;
 // 目录字段低于该宽度时先隐藏 git、再缩短模型，而不是把目录挤成空。
 const MIN_DIRECTORY: usize = 8;
 
-/// 数值按 k 简写（>=1000 时一位小数）；状态栏专用，CLI 任务结束信息用完整整数。
+/// 只在缩写后至少为 10 时使用 k，省略小数；CLI 任务结束信息用完整整数。
 fn abbreviate_tokens(tokens: u64) -> String {
-    if tokens >= 1000 {
-        format!("{:.1}k", tokens as f64 / 1000.0)
+    if tokens >= 10000 {
+        format!("{}k", tokens / 1000)
     } else {
         tokens.to_string()
     }
 }
 
-/// 上下文用量字段：`ctx ~N/W P%`；容量未知时 `ctx ~N/?`，不伪造百分比。
-fn context_field(usage: &ContextUsage) -> (String, Color) {
+/// 输入栏上沿的上下文用量：容量未知时只显示当前估算值。
+pub(super) fn context_field(usage: &ContextUsage) -> (String, Color) {
     let percent = usage.percent();
-    let text = match percent {
-        Some(percent) => format!(
-            "ctx ~{}/{} {}%",
+    let text = match usage.context_window {
+        Some(window) => format!(
+            "ctx {}/{}",
             abbreviate_tokens(usage.estimated_tokens),
-            abbreviate_tokens(usage.context_window.unwrap_or_default()),
-            percent
+            abbreviate_tokens(window),
         ),
-        None => format!("ctx ~{}/?", abbreviate_tokens(usage.estimated_tokens)),
+        None => format!("ctx {}", abbreviate_tokens(usage.estimated_tokens)),
     };
     let color = match percent {
         Some(percent) if percent >= 100 => Color::Red,
         Some(percent) if percent >= u128::from(usage.threshold_percent) => Color::Yellow,
-        _ => ACCENT,
+        _ => CONTEXT,
     };
     (text, color)
 }
@@ -227,13 +227,11 @@ fn compact(text: &str, width: usize, keep_end: bool) -> String {
     }
 }
 
-// 宽度优先级：上下文字段 → 模型/effort → 目录/git。
-// 放不下时依次降级：缩短 cwd → 隐藏 git → 缩短模型 → 仅显示上下文字段的可见前缀；
-// 无用量字段时退回仅模型前缀。每级布局都保证整行不超过给定宽度。
+// 放不下时依次降级：缩短 cwd → 隐藏 git → 缩短模型 → 仅显示模型前缀。
+// 每级布局都保证整行不超过给定宽度。
 pub(super) fn primary(
     model: Option<&ModelChoice>,
     think_level: ThinkLevel,
-    usage: Option<&ContextUsage>,
     context: &StatusContext,
     width: u16,
 ) -> Line<'static> {
@@ -255,28 +253,9 @@ pub(super) fn primary(
         ThinkLevel::Xhigh => "\u{f0aa5}",
         ThinkLevel::Max => "\u{f0238}",
     };
-    let ctx = usage.map(context_field);
-    let ctx_width = ctx
-        .as_ref()
-        .map_or(0, |(text, _)| Line::from(text.as_str()).width());
-    // " pp · " 之后的空间；上下文字段全额保留。
-    let head_width = 6 + ctx_width;
-    let budget = width.saturating_sub(head_width);
+    let budget = width.saturating_sub(3);
     let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
     let icon = |glyph, color| Span::styled(format!("{glyph} "), Style::default().fg(color));
-    let only_context = |ctx: Option<(String, Color)>| {
-        let (text, color) = ctx.unwrap_or_else(|| {
-            (
-                model.map_or("—", |choice| choice.model.as_str()).to_owned(),
-                MODEL,
-            )
-        });
-        Line::from(Span::styled(
-            compact(&text, width, false),
-            Style::default().fg(color),
-        ))
-    };
-
     let model_src = model.map_or("—", |choice| choice.model.as_str());
     let think_width = Line::from(think).width();
     let effort_width = SEPARATOR_WIDTH + FIELD_ICON_WIDTH + think_width;
@@ -313,8 +292,11 @@ pub(super) fn primary(
                 false,
             );
             if budget < model_field(&model_text) + effort_width + dir_fixed {
-                // 4) 仍不足：仅上下文字段的可见前缀。
-                return only_context(ctx);
+                // 4) 仍不足：仅显示模型前缀。
+                return Line::from(Span::styled(
+                    compact(model_src, width, false),
+                    Style::default().fg(MODEL),
+                ));
             }
             cwd_slot = budget.saturating_sub(model_field(&model_text) + effort_width + dir_fixed);
         }
@@ -329,10 +311,6 @@ pub(super) fn primary(
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
     ];
-    if let Some((text, color)) = ctx {
-        spans.push(separator());
-        spans.push(Span::styled(text, Style::default().fg(color)));
-    }
     spans.push(separator());
     spans.push(icon(MODEL_ICON, MODEL));
     spans.push(Span::styled(model_text, model_text_style));
@@ -354,6 +332,22 @@ pub(super) fn primary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_abbreviation_uses_integer_units_only_from_ten() {
+        for (tokens, expected) in [
+            (0, "0"),
+            (999, "999"),
+            (1000, "1000"),
+            (9999, "9999"),
+            (10000, "10k"),
+            (10999, "10k"),
+            (12345, "12k"),
+            (128000, "128k"),
+        ] {
+            assert_eq!(abbreviate_tokens(tokens), expected);
+        }
+    }
 
     #[test]
     fn git_status_handles_renames_conflicts_and_detached_head() {
