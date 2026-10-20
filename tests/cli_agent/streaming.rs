@@ -562,6 +562,10 @@ fn fragmented_calls(protocol: Protocol, stream: &mut SseReply, invalid: bool) ->
                 );
                 item["status"] = json!("in_progress");
                 item["arguments"] = json!("");
+                // Ark 的起始调用可能省略参数；另一项仍覆盖标准空字符串。
+                if index == 0 {
+                    item.as_object_mut().unwrap().remove("arguments");
+                }
                 stream.event(
                     json!({"type":"response.output_item.added","sequence_number":index,
                     "output_index":index,"item":item}),
@@ -968,6 +972,64 @@ fn streaming_responses_annotations_default_only_when_missing() {
         assert_eq!(output.stdout, b"answer\ndone\n");
         assert_clean_pipes(&output);
         no_more(&server);
+    }
+}
+
+#[test]
+fn streaming_responses_function_arguments_invalid_or_missing_final_still_fail() {
+    for stage in ["added", "done", "completed"] {
+        for arguments in [None, Some(Value::Null), Some(json!({})), Some(json!(7))] {
+            if stage == "added" && arguments.is_none() {
+                continue;
+            }
+            let server = server();
+            let dir = tempfile::tempdir().unwrap();
+            let cli = Protocol::Responses.start(&server, dir.path(), Some("task"));
+            let (request, _) = Protocol::Responses.receive(&server);
+            let mut item = response_call(
+                "private-call",
+                "write",
+                json!({"path":"must-not-exist", "content":"private-content"}),
+            );
+            match arguments {
+                Some(arguments) => item["arguments"] = arguments,
+                None => {
+                    item.as_object_mut().unwrap().remove("arguments");
+                }
+            }
+            let mut stream = SseReply::new(request);
+            if stage == "completed" {
+                // 同时触发正文注释兼容路径，仍不得补齐最终工具参数。
+                Protocol::Responses.complete(
+                    &mut stream,
+                    json!([
+                        item,
+                        response_message(
+                            "msg-stream",
+                            json!([{"type":"output_text", "text":"private-text"}])
+                        )
+                    ]),
+                    true,
+                );
+            } else {
+                stream.event(json!({
+                    "type":format!("response.output_item.{stage}"), "sequence_number":0,
+                    "output_index":0, "item":item
+                }));
+            }
+            stream.finish();
+            let output = cli.finish();
+            assert!(!output.status.success(), "{stage}: {output:?}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("decoding Responses response: invalid JSON or response structure")
+            );
+            assert!(!stderr.contains("private-"));
+            assert!(!stderr.contains("tool write: running"));
+            assert!(output.stdout.is_empty());
+            assert!(!dir.path().join("must-not-exist").exists());
+            no_more(&server);
+        }
     }
 }
 

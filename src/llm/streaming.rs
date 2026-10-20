@@ -15,7 +15,7 @@ use async_openai::types::{
 use serde::{Deserialize, Deserializer, de::Error};
 use std::collections::BTreeMap;
 
-// 正常分片直接交给 SDK；仅在缺少正文注释时构造兼容补齐所需的 JSON 树。
+// 正常分片直接交给 SDK；仅在缺少可兼容字段时构造补齐所需的 JSON 树。
 pub(super) struct ResponseEvent(pub(super) ResponseStreamEvent);
 
 impl<'de> Deserialize<'de> for ResponseEvent {
@@ -25,11 +25,23 @@ impl<'de> Deserialize<'de> for ResponseEvent {
             Ok(event) => return Ok(Self(event)),
             Err(error)
                 if error.is_data()
-                    && error.to_string().starts_with("missing field `annotations`") => {}
+                    && (error.to_string().starts_with("missing field `annotations`")
+                        || error.to_string().starts_with("missing field `arguments`")) => {}
             Err(error) => return Err(D::Error::custom(error)),
         }
         let mut value: serde_json::Value =
             serde_json::from_str(raw.get()).map_err(D::Error::custom)?;
+        if value.get("type").and_then(serde_json::Value::as_str)
+            == Some("response.output_item.added")
+            && let Some(item) = value.get_mut("item")
+            && item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
+            && let Some(object) = item.as_object_mut()
+        {
+            // 起始事件的参数可由后续分片提供；done/completed 仍须带完整参数。
+            object
+                .entry("arguments")
+                .or_insert_with(|| serde_json::Value::String(String::new()));
+        }
         if let Some(part) = value.get_mut("part") {
             default_output_text_annotations(part);
         }
