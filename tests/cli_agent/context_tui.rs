@@ -174,6 +174,7 @@ fn context_tui_shows_current_and_window_on_input_top_right() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
+        assert_eq!(context_tui_ctx_tokens(pty.parser.screen()), 0.0);
         let contents = pty.parser.screen().contents();
         let lines: Vec<_> = contents.lines().collect();
         assert!(lines[26].contains(" ctx "));
@@ -186,6 +187,7 @@ fn context_tui_shows_current_and_window_on_input_top_right() {
         assert!(!lines[29].contains("ctx "));
         pty.input("context-position-draft");
         pty.draft("context-position-draft");
+        assert_eq!(context_tui_ctx_tokens(pty.parser.screen()), 0.0);
         pty.resize(12, 40);
         pty.wait_for("缩放后用量仍在输入栏上沿右端", |screen| {
             screen.contents().lines().nth(8).is_some_and(|line| {
@@ -193,6 +195,38 @@ fn context_tui_shows_current_and_window_on_input_top_right() {
             })
         });
         pty.draft("context-position-draft");
+        assert_eq!(context_tui_ctx_tokens(pty.parser.screen()), 0.0);
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
+fn context_tui_new_session_resets_context_to_zero_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
+        context_tui_exchange(
+            &mut pty,
+            &fixture,
+            protocol,
+            "context-first-message",
+            "context-first-answer",
+        );
+        assert!(context_tui_ctx_tokens(pty.parser.screen()) > 0.0);
+        pty.input("/new\r");
+        pty.wait_for("新会话上下文归零", |screen| {
+            screen.contents().contains("ctx 0/40k")
+        });
+        context_tui_exchange(
+            &mut pty,
+            &fixture,
+            protocol,
+            "context-after-new",
+            "context-after-new-answer",
+        );
+        assert!(context_tui_ctx_tokens(pty.parser.screen()) > 0.0);
         pty.input("\x03");
         pty.finish();
         no_more(&fixture);

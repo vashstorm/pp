@@ -2425,6 +2425,7 @@ mod tui {
     include!("cli_agent/resume_tui.rs");
     include!("cli_agent/resume_boundaries.rs");
     include!("cli_agent/context_tui.rs");
+    include!("cli_agent/project_instructions_tui.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
     use std::{
         io::Read,
@@ -5356,6 +5357,8 @@ fn streaming_broken_stdout_still_records_executed_tool_results() {
 
 #[path = "cli_agent/context.rs"]
 mod context;
+#[path = "cli_agent/project_instructions.rs"]
+mod project_instructions;
 #[path = "cli_agent/streaming.rs"]
 mod streaming;
 #[path = "cli_agent/think.rs"]

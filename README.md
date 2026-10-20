@@ -197,6 +197,16 @@ Debug 日志沿用普通日志的文件权限、跨进程锁、按本地日期�
 - `/quit` 或 Ctrl-C 立即退出整个 pp，正常退出码为 0。恢复终端后，全部对话记录按退出时的终端宽度写入普通终端的滚动历史，保留原有颜色、缩进、分隔线、流式片段、工具输出及错误，末尾保留输入框、未提交的草稿、菜单和状态栏；可以向上滚动查看超出一屏的历史。保留长度受终端自身的滚动历史容量限制。退出不等待阻塞中的模型请求或工具，也不保证终止 bash 子进程；需要任务级受控清理时应先按 Esc 等待收尾。文件修改不会回滚。
 - `-p/--prompt` runs one task and never parses slash commands: `pp -p '/model'` sends `/model` as a task. It can follow `-r ID` to append one task to saved history; combining it with `-c` is rejected. If either stdin or stdout is not a terminal, line mode supports the same commands without raw mode or an alternate screen. `/model` lists configured models and marks the current one; use `/model provider/model` to switch. Stdout streams **all readable assistant text**, including text before tools, with one terminating newline per nonempty turn and no replay at completion. Refusal is printed only if no non-blank content wins. Help, command responses, errors, and `tool <name>: running/ok/failed` go to stderr; live process data uses `[{name} stdout]` / `[{name} stderr]` on pp's stderr, with the actual `bash`, `grep`, or `find` tool name. Non-TUI output adds no ANSI control sequences. A display write failure is returned only after the Agent finishes recording the task's history/tool results.
 
+## 项目级 AGENTS.md
+
+pp 在每次模型请求前完整读取启动目录的 UTF-8 `AGENTS.md`，并将正文、来源路径和适用目录加入系统提示词；不搜索父目录、Git 根目录或子目录。文件不存在或仅含空白时不追加项目规则，也不会自动创建文件。拒绝符号链接、目录及其他特殊文件；读取失败或 UTF-8 无效时阻止本次请求并报错，修复文件后可在当前交互会话重新提交任务。
+
+刷新覆盖普通请求、工具执行后的下一轮请求和手动／自动压缩。文档修改或删除在下一次请求生效，不重复追加旧正文。启动参数恢复会话时从恢复后的工作目录加载；TUI `/resume` 保持当前工作目录并加载该目录的规则。恢复日志里的旧规则不会覆盖当前文件。项目规则计入完整请求的上下文估算；新建空会话和 `/new` 后仍显示 `ctx 0`。
+
+TUI 和行模式支持不带参数的 `/init`：使用当前模型和现有工具检查项目，创建或更新启动目录的 `AGENTS.md`。已有文档保留有效规则，修正过时的项目描述、命令、路径和流程。命令沿用当前会话、请求上限和工具保存限制；TUI 显示 `/init`，Esc 可取消任务，已落盘修改不回滚。`pp -p '/init'` 仍原样发送普通提示词，不解析命令。
+
+系统提示词固定要求模型在代码变更导致 AGENTS.md 过时时同步修正文档，保留仍有效的项目约束，不得仅为掩盖违反规则而改写规则。`/init` 的实际分析和修改由当前模型执行；程序不会替代模型推断项目事实或保证识别所有文档冲突。
+
 ## Markdown 提示词命令
 
 将 UTF-8 Markdown 文件放在 `~/.pp/agent/commands/`，重启 pp 后即可在 TUI 和行模式使用 `/文件名 参数`。例如 `commands/review.md`：
@@ -222,7 +232,7 @@ Review $1. Focus: $@[2:].
 ## 上下文用量与压缩
 
 - **用量可见，不增加查询命令。** TUI 在输入栏上沿右端显示 `ctx N/W`，未知容量时只显示 `ctx N`；小于 10000 时显示完整整数，达到 10000 后向下取整为整数 k（如 `9500`、`12k`），不显示小数或个位数加单位。普通用量为蓝色，达到配置阈值为黄色，达到容量为红色。CLI 每个任务结束（含失败）向 stderr 输出当前模型、完整整数的 `Context: ~N / W tokens (P%, estimated)`、最近普通请求的 input/output 和自动策略；stdout 仍只有模型回答。显示用量不发网络请求。
-- **估算不是 tokenizer。** `~N` 是整份当前原生请求序列化为 UTF-8 JSON 后的字节数向上除以 3，包括 system/instructions、工具 schema、参数、结果及原生／加密 reasoning 的 JSON 开销；不保证准确率或一定不会超限。百分比向下取整，允许超过 100%。最近请求的服务端 usage 独立显示，不累计为上下文占用，也不重复计算 cached/reasoning 明细；没有 usage 时显示 `unavailable`。初始化、恢复、`/new`、切模型和压缩成功后清空最近 usage，摘要请求不覆盖它。
+- **估算不是 tokenizer。** 新建空会话及 `/new` 后显示 `ctx 0`，未发送的输入草稿不计入用量。有对话历史后，`~N` 是整份当前原生请求序列化为 UTF-8 JSON 后的字节数向上除以 3，包括 system/instructions、工具 schema、参数、结果及原生／加密 reasoning 的 JSON 开销；不保证准确率或一定不会超限。百分比向下取整，允许超过 100%。最近请求的服务端 usage 独立显示，不累计为上下文占用，也不重复计算 cached/reasoning 明细；没有 usage 时显示 `unavailable`。初始化、恢复、`/new`、切模型和压缩成功后清空最近 usage，摘要请求不覆盖它。
 - **容量必须显式配置。** 每模型 `context_window` 为可选的正整数 token 数；省略表示未知，拒绝 null、0、负数、小数、字符串及溢出，未选中的模型也校验。不猜测模型名，不远程探测容量。`auto_compact` 默认 true，`auto_compact_threshold_percent` 默认 80 且必须为 1..=99 的整数；修改后重启生效，无运行时开关命令。当前模型没有容量时显示 `Auto compact: inactive (context_window not configured)`，不显示虚构的百分比；明确关闭则显示 `off`。切模型只用目标模型的容量，恢复只用当前模型目录配置，不继承旧模型或日志中的容量。
 - **主动 `/compact`，自动在每次普通请求前检查。** `/compact` 不接受参数，支持 TUI 和行模式；`-p '/compact'` 仍是普通提示词。自动检查包含刚接受的用户输入及同一任务内完整工具批次的增长；用量达到阈值时先摘要，再继续任务。手动压缩不要求已知容量；空历史、只有待回复用户输入或只有一个完整 exchange 时返回 `Nothing to compact.`，不发请求、不创建空日志。TUI 仅空闲时接受命令，运行中草稿可编辑，Esc 等待实际取消终态后恢复；自动压缩仍属于当前任务，手动压缩不产生虚假的任务 Completed 或 `You: /compact`。
 - **当前模型总结旧前缀，近期交互原生保留。** 完整 assistant 回复或 assistant calls 与该批全部 tool results 构成安全 exchange；Responses 的 reasoning 与输出／calls/results 不拆开。至少保留最后一个完整 exchange 和其后待回复用户输入；后缀预算为 `min(16384, context_window / 5)`，容量未知为 16384 tokens，最后一个 exchange 超预算也整体保留。旧摘要参与再次摘要，不叠加摘要链。摘要只发送当前 system/instructions、旧原生前缀和固定摘要请求，不发送近期后缀，不配置或执行工具，不改变当前 effort。摘要目标为 `min(2048, max(1, context_window / 16))` tokens（未知容量为 2048），输出上限为目标的两倍；候选为一个 `[Context summary]` 用户消息加原生后缀。可见对话和原始日志不删除，也不减少日志磁盘占用。
@@ -246,14 +256,14 @@ TUI 空闲时提交 `/resume`，打开 omp 风格的全屏 `Resume session` 面�
 | `pp -p TEXT` | 发送一次新任务 | 退出 |
 | `pp -r ID` | 精确恢复，不发送 HTTP | 等待输入；行模式可 EOF 退出 |
 | `pp -r ID -p TEXT` | 恢复后追加一次 TEXT | 退出 |
-| `pp -c` | 选择全局最近修改的 session，立即发送完整已保存请求 | 继续交互；行模式 stdin EOF 退出 |
-| `pp -c ID` | 精确恢复并立即发送完整已保存请求 | 同上 |
+| `pp -c` | 选择全局最近修改的 session，刷新项目规则和技能摘要后发送已保存历史 | 继续交互；行模式 stdin EOF 退出 |
+| `pp -c ID` | 精确恢复，刷新项目规则和技能摘要后发送已保存历史 | 同上 |
 
 `-c` 不附加“请继续”、不重复最后一条用户消息、不回滚助手回答，也不重放旧工具调用。只能使用完整 ID：`YYYY-MM-DDTHH-MM-SS-<32位小写hex>`，例如 `2026-10-17T01-02-03-0123456789abcdef0123456789abcdef`；日期时间使用创建时的本机时区，精确到秒，随机后缀避免同秒冲突。不支持前缀或文件路径，旧的 Unix 毫秒格式 ID 不再接受。`-r` 缺 ID、`-r` 与 `-c` 同用、`-c` 与 `-p` 同用均报错。
 
 会话日志唯一位置为 `~/.pp/agent/sessions/<ID>.jsonl`。启动、草稿和本地命令不创建 session 目录或文件（运行诊断日志独立创建）；只有真实 HTTP stream 打开调用返回（收到 headers 或请求失败）后才创建。因此请求仍在等待首次 headers 时被强杀，不保证已有日志。主动 Esc 取消是例外：即使 headers 尚未到达或任务尚未发送 HTTP，也同步保存已接受的用户输入和取消终态，供后续恢复。ID 使用 16 字节 OS 随机数；新目录权限 0700，新文件 0600，不改已有目录权限。日志是敏感明文，包含完整对话和工具结果，不保存 Config、API key 或 HTTP headers；不要提交或随意共享。
 
-启动参数 `-r` / `-c` 使用原工作目录、edit 模式、工具限制、模型引用、思考级别、原生 system/instructions 和完整历史，并继续追加原文件，不分叉。原目录缺失或不可进入时报错，不回退到启动目录。模型必须仍存在于当前 catalog 且实际 model/protocol 未改变；凭据、base URL、HTTP 超时和每任务请求上限使用当前配置。启动恢复失败是非零退出，不进入禁用模型的交互兜底；运行中的 `/resume` 恢复失败保留旧会话、工作目录与列表选择，不发送模型请求。
+启动参数 `-r` / `-c` 使用原工作目录、edit 模式、工具限制、模型引用、思考级别、基础系统提示词和完整历史；请求前按当前文件刷新项目规则及技能摘要，并继续追加原文件，不分叉。原目录缺失或不可进入时报错，不回退到启动目录。模型必须仍存在于当前 catalog 且实际 model/protocol 未改变；凭据、base URL、HTTP 超时和每任务请求上限使用当前配置。启动恢复失败是非零退出，不进入禁用模型的交互兜底；运行中的 `/resume` 恢复失败保留旧会话、工作目录与列表选择，不发送模型请求。
 
 TUI 恢复可见消息、工具结果、错误和用户输入历史，输入框为空；不恢复草稿、菜单、滚动位置或布局缓存。恢复的 bash 卡片仅显示保存的退出状态，不伪造耗时。未完成展示事件显示 `Previous request was interrupted.`，不加入模型上下文。行模式不重印旧回答。恢复 ID 与首次创建 ID 分别通过 stderr / TUI Note 提示 `Resumed session: <ID>`、`Session: <ID>`；stdout 仍只有模型回答。
 

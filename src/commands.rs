@@ -31,6 +31,12 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Reset the session, keeping the current model",
     },
     CommandSpec {
+        name: "/init",
+        icon: "\u{f044}",
+        usage: "/init",
+        description: "Create or update project AGENTS.md using the current model",
+    },
+    CommandSpec {
         name: "/compact",
         icon: "\u{f066}",
         usage: "/compact",
@@ -86,6 +92,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
     let command = match name {
         "/help" => Command::Help,
         "/new" => Command::New,
+        "/init" => Command::Prompt(crate::project_instructions::INIT_PROMPT.to_owned()),
         "/compact" => Command::Compact,
         "/resume" => Command::Resume,
         "/quit" => Command::Quit,
@@ -164,6 +171,10 @@ mod tests {
             (" /help \n", Command::Help),
             ("\t/new ", Command::New),
             (" /compact ", Command::Compact),
+            (
+                " /init ",
+                Command::Prompt(crate::project_instructions::INIT_PROMPT.to_owned()),
+            ),
             ("/resume", Command::Resume),
             (" /resume ", Command::Resume),
             ("/quit", Command::Quit),
@@ -190,7 +201,7 @@ mod tests {
                 "unknown command; use /help"
             );
         }
-        for command in ["/help", "/new", "/compact", "/resume", "/quit"] {
+        for command in ["/help", "/new", "/init", "/compact", "/resume", "/quit"] {
             assert_eq!(
                 parse(&format!("{command} extra"), &FileCommands::default())
                     .unwrap_err()

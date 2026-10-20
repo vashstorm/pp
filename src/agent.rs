@@ -10,6 +10,7 @@ use crate::{
     events::AgentEvent,
     llm::OpenAiClient,
     models::Protocol,
+    project_instructions,
     tools::Tools,
 };
 use anyhow::{Result, bail, ensure};
@@ -50,6 +51,7 @@ pub(crate) struct Agent {
     current_model: ModelChoice,
     think_level: ThinkLevel,
     base_system: String,
+    pending_instructions: Option<String>,
     journal: persistence::SessionJournal,
     replay: Vec<persistence::ReplayRecord>,
     debug: Option<debug::DebugState>,
@@ -201,13 +203,16 @@ impl Agent {
         let think_level = config
             .thinking
             .effective_default(config.settings.think_level);
-        let initial_system = format!(
-            "{system}{}",
-            tools
+        // 项目文件在任务开始时加载，读取失败不会让整个交互会话永久不可用。
+        let initial_system = project_instructions::compose(
+            &system,
+            tools.cwd(),
+            "",
+            &tools
                 .skills
                 .lock()
                 .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
-                .summary()
+                .summary(),
         );
         let mut session = Session::new(config.model, config.protocol, initial_system, edit_mode);
         session.set_tools(tools.all_definitions());
@@ -224,6 +229,7 @@ impl Agent {
             current_model,
             think_level,
             base_system: system,
+            pending_instructions: None,
             journal: SessionJournal::new(sessions_dir),
             replay: Vec::new(),
             debug: debug::DebugState::new(config.settings.debug),
@@ -285,6 +291,7 @@ impl Agent {
             catalog,
             think_level: checkpoint.think_level,
             base_system: checkpoint.base_system,
+            pending_instructions: None,
             journal,
             replay,
             debug: debug::DebugState::new(config.settings.debug),
@@ -320,14 +327,16 @@ impl Agent {
                 self.tools.edit_mode(),
             )?
         };
-        let system = format!(
-            "{}{}",
-            self.base_system,
-            self.tools
+        let system = project_instructions::compose(
+            &self.base_system,
+            self.tools.cwd(),
+            "",
+            &self
+                .tools
                 .skills
                 .lock()
                 .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
-                .summary()
+                .summary(),
         );
         let mut session = Session::new(
             self.current_model.model.clone(),
@@ -361,6 +370,7 @@ impl Agent {
         self.journal = restored.journal;
         self.replay = restored.replay;
         self.last_request = None;
+        self.pending_instructions = None;
         Ok(())
     }
 
@@ -379,15 +389,18 @@ impl Agent {
         self.tools.skills.clone()
     }
 
-    fn refresh_skills(&mut self) -> Result<Option<String>> {
-        let system = format!(
-            "{}{}",
-            self.base_system,
-            self.tools
+    fn refresh_instructions(&mut self) -> Result<()> {
+        let project = project_instructions::load(self.tools.cwd())?;
+        let system = project_instructions::compose(
+            &self.base_system,
+            self.tools.cwd(),
+            &project,
+            &self
+                .tools
                 .skills
                 .lock()
                 .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
-                .summary()
+                .summary(),
         );
         let unchanged = match &self.session {
             Session::Completion(request) => {
@@ -396,7 +409,7 @@ impl Agent {
             Session::Response(request) => request.instructions.as_deref() == Some(system.as_str()),
         };
         if unchanged {
-            return Ok(None);
+            return Ok(());
         }
         match &mut self.session {
             Session::Completion(request) => {
@@ -408,7 +421,8 @@ impl Agent {
             }
             Session::Response(request) => request.instructions = Some(system.clone()),
         }
-        Ok(Some(system))
+        self.pending_instructions = Some(system);
+        Ok(())
     }
 
     pub(crate) fn model_choices(&self) -> Vec<ModelChoice> {
@@ -420,7 +434,27 @@ impl Agent {
     }
 
     pub(crate) fn context_usage(&self) -> Result<ContextUsage> {
+        // 空会话尚未发送上下文；有对话后才计入系统提示和工具等完整请求开销。
         let estimated_tokens = match &self.session {
+            Session::Completion(request)
+                if request.messages.iter().all(|message| {
+                    matches!(
+                        message,
+                        ChatCompletionRequestMessage::System(_)
+                            | ChatCompletionRequestMessage::Developer(_)
+                    )
+                }) =>
+            {
+                0
+            }
+            Session::Response(request)
+                if match &request.input {
+                    InputParam::Text(text) => text.is_empty(),
+                    InputParam::Items(items) => items.is_empty(),
+                } =>
+            {
+                0
+            }
             Session::Completion(request) => estimate_tokens(request)?,
             Session::Response(request) => estimate_tokens(request)?,
         };
@@ -584,7 +618,7 @@ impl Agent {
         let started = std::time::Instant::now();
         let result = (|| -> Result<RunOutcome> {
             ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
-            let instructions = self.refresh_skills()?;
+            self.refresh_instructions()?;
             self.publish_context(emit)?;
             match &mut self.session {
                 Session::Completion(request) => request.messages.push(
@@ -601,7 +635,7 @@ impl Agent {
                     }))
                 }
             }
-            let result = self.run_loop(Some(prompt), instructions.as_deref(), cancellation, emit);
+            let result = self.run_loop(Some(prompt), cancellation, emit);
             self.finish_run(result, cancellation)
         })();
         if !matches!(&result, Ok(RunOutcome::Completed)) {
@@ -623,7 +657,7 @@ impl Agent {
         );
         let started = std::time::Instant::now();
         let result = (|| -> Result<RunOutcome> {
-            let result = self.run_loop(None, None, cancellation, emit);
+            let result = self.run_loop(None, cancellation, emit);
             self.finish_run(result, cancellation)
         })();
         if !matches!(&result, Ok(RunOutcome::Completed)) {
@@ -659,11 +693,7 @@ impl Agent {
         }
     }
 
-    fn persist_pending_input(
-        &mut self,
-        user: Option<&str>,
-        instructions: Option<&str>,
-    ) -> Result<()> {
+    fn persist_pending_input(&mut self, user: Option<&str>) -> Result<()> {
         let metadata = Metadata {
             cwd: self.tools.cwd(),
             model_reference: &self.current_model.reference,
@@ -672,14 +702,19 @@ impl Agent {
             tool_limits: self.tools.limits,
             base_system: &self.base_system,
         };
-        self.journal
-            .sent(&metadata, (&self.session).into(), user, instructions)
+        self.journal.sent(
+            &metadata,
+            (&self.session).into(),
+            user,
+            self.pending_instructions.as_deref(),
+        )?;
+        self.pending_instructions = None;
+        Ok(())
     }
 
     fn run_loop(
         &mut self,
         mut user: Option<&str>,
-        mut instructions: Option<&str>,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<()> {
@@ -687,9 +722,10 @@ impl Agent {
         while requests_used < self.max_model_requests {
             self.journal.check()?;
             if cancellation.is_cancelled() {
-                self.persist_pending_input(user.take(), instructions.take())?;
+                self.persist_pending_input(user.take())?;
                 return Err(Cancelled.into());
             }
+            self.refresh_instructions()?;
             let usage = self.context_usage()?;
             emit(AgentEvent::ContextUpdated { usage });
             let should_compact = usage.auto_compact
@@ -700,7 +736,7 @@ impl Agent {
             if should_compact {
                 // Save accepted input exactly once before cutoff, capacity, or
                 // quota checks can fail. Never journal the temporary summary.
-                self.persist_pending_input(user.take(), instructions.take())?;
+                self.persist_pending_input(user.take())?;
                 ensure!(
                     self.max_model_requests - requests_used >= 2,
                     "{} model request limit reached",
@@ -709,6 +745,8 @@ impl Agent {
                 requests_used += 1;
                 self.compact_impl(true, cancellation, emit)?;
                 cancellation::check(cancellation)?;
+                // 摘要期间文件也可能被修改；重新加载、估算并检查阈值后再发普通请求。
+                continue;
             }
             requests_used += 1;
             let metadata = Metadata {
@@ -736,7 +774,7 @@ impl Agent {
             emit(AgentEvent::AssistantStarted);
             let update = RequestUpdate {
                 user: user.take(),
-                instructions: instructions.take(),
+                instructions: self.pending_instructions.as_deref(),
             };
             let finished = match &mut self.session {
                 Session::Completion(request) => completion_turn(
@@ -762,6 +800,7 @@ impl Agent {
                     emit,
                 )?,
             };
+            self.pending_instructions = None;
             self.journal.commit((&self.session).into())?;
             self.publish_context(emit)?;
             if finished {

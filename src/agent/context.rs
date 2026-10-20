@@ -597,8 +597,8 @@ impl Agent {
         if self.compaction_cutoff()?.is_none() {
             return Ok(CompactionOutcome::Unchanged);
         }
-        let instructions = self.refresh_skills()?;
-        self.persist_pending_input(None, instructions.as_deref())?;
+        self.refresh_instructions()?;
+        self.persist_pending_input(None)?;
         self.compact_impl(false, cancellation, emit)
     }
 
@@ -626,6 +626,10 @@ impl Agent {
                 self.client.cancel_pending_io();
             }
             return cancelled_outcome(automatic);
+        }
+        self.refresh_instructions()?;
+        if self.pending_instructions.is_some() {
+            self.persist_pending_input(None)?;
         }
         let before_tokens = self.context_usage()?.estimated_tokens;
         let budget = summary_budget(self.current_model.context_window);

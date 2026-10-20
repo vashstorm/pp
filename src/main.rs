@@ -9,6 +9,7 @@ mod llm;
 mod logging;
 mod mcp;
 mod models;
+mod project_instructions;
 mod skills;
 mod tools;
 mod tui;

@@ -1311,10 +1311,17 @@ impl App {
                     }
                 }
                 Some(Command::Prompt(expanded)) => {
-                    // 历史记录保存原始 slash 输入；回显与实际发送的都是展开后的正文。
+                    // /init 回显用户命令；文件命令继续回显展开正文，输入历史均保留原文。
                     if self.send_task(Some(expanded.clone())) {
                         self.remember_input();
-                        self.append("You", &expanded);
+                        self.append(
+                            "You",
+                            if prompt.trim() == "/init" {
+                                &prompt
+                            } else {
+                                &expanded
+                            },
+                        );
                         self.clear_input();
                     }
                 }
@@ -3003,7 +3010,7 @@ mod tests {
             assert_eq!(buffer[(x, separator_row)].fg, Color::Rgb(190, 133, 222));
         }
         let menu_top = separator_row + 1;
-        for (index, spec) in COMMANDS.iter().enumerate() {
+        for (index, spec) in COMMANDS.iter().take(8).enumerate() {
             let y = menu_top + index as u16;
             let active = index == 1;
             assert_eq!(buffer[(0, y)].symbol(), if active { "❯" } else { " " });
@@ -3462,6 +3469,27 @@ mod tests {
             }],
             diagnostics: Vec::new(),
         }
+    }
+
+    #[test]
+    fn init_menu_submits_model_task_and_displays_command() {
+        let (mut app, requests) = file_commands_app(commands::FileCommands::default());
+        let mut dirty = false;
+        app.handle(Event::Paste("/ini".into()), &mut dirty);
+        assert!(draw(&mut app, 100, 30).contains("Create or update project AGENTS.md"));
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(app.input.lines(), &["/init"]);
+        assert!(requests.try_recv().is_err());
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkerCommand::Run { prompt, .. })
+            if prompt == crate::project_instructions::INIT_PROMPT)
+        );
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("/init"));
+        assert!(!screen.contains("First inspect"));
+        app.handle(key(KeyCode::Up), &mut dirty);
+        assert_eq!(app.input.lines(), &["/init"]);
     }
 
     #[test]
