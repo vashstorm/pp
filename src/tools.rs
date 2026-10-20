@@ -13,6 +13,7 @@ use std::{
 };
 
 mod bash;
+mod diff;
 mod hashline;
 mod read;
 mod replace;
@@ -25,6 +26,7 @@ use std::{fs, sync::mpsc::sync_channel};
 const OUTPUT_LIMIT: usize = 65_536;
 
 pub(crate) struct Tools {
+    pub(crate) ask_handler: Option<crate::interaction::AskHandler>,
     pub(crate) mcp: crate::mcp::Registry,
     pub(crate) skills: crate::skills::SharedSkills,
     cwd: PathBuf,
@@ -97,6 +99,7 @@ impl Tools {
         let path = std::env::var_os("PATH");
         let search = search::SearchTools::detect(&workspace.path, path.as_deref());
         Ok(Self {
+            ask_handler: None,
             mcp: Default::default(),
             skills: crate::skills::Skills::default().shared(),
             cwd: workspace.path.clone(),
@@ -115,6 +118,9 @@ impl Tools {
 
     pub(crate) fn all_definitions(&self) -> Vec<FunctionObject> {
         let mut definitions = Self::definitions(self.edit_mode);
+        if self.ask_handler.is_some() {
+            definitions.push(crate::interaction::definition());
+        }
         definitions.extend(self.search.definitions());
         definitions.extend(self.mcp.definitions());
         definitions
@@ -212,6 +218,7 @@ impl Tools {
         let started = std::time::Instant::now();
         let pid = std::process::id();
         let tool = match name {
+            "ask" => "ask",
             "load_skill" => "load_skill",
             "read" => "read",
             "edit" => "edit",
@@ -287,6 +294,25 @@ impl Tools {
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<Value> {
         match name {
+            "ask" => {
+                let handler = self
+                    .ask_handler
+                    .as_ref()
+                    .context("ask requires interactive TUI mode")?;
+                let args = std::sync::Arc::new(crate::interaction::AskArgs::parse(arguments)?);
+                let answers = handler(
+                    crate::interaction::AskRequest {
+                        call_id: call_id.to_owned(),
+                        args: args.clone(),
+                    },
+                    cancellation,
+                )?;
+                crate::cancellation::check(cancellation)?;
+                args.validate_answers(&answers)?;
+                Ok(crate::interaction::answer_result(
+                    args.canonicalize_answers(answers),
+                ))
+            }
             "load_skill" => {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
@@ -342,6 +368,11 @@ impl Tools {
                     EditBatch::Replace(edits) => (edits.len(), replace::apply(source, &edits)?),
                 };
                 let warning = target.save(output.as_bytes())?;
+                emit(AgentEvent::FileChanged {
+                    id: call_id.to_owned(),
+                    path,
+                    diff: diff::build(Some(source), &output),
+                });
                 let mut result =
                     json!({"ok":true,"edits_applied":count,"bytes_written":output.len()});
                 if let Some(warning) = warning {
@@ -354,7 +385,25 @@ impl Tools {
                     serde_json::from_str(arguments).context("invalid write arguments")?;
                 ensure!(!args.path.trim().is_empty(), "path must not be blank");
                 let target = self.workspace.target(Path::new(&args.path), true)?;
+                let before = target.read_optional();
                 let warning = target.save(args.content.as_bytes())?;
+                let diff = match before {
+                    Ok(None) => diff::build(None, &args.content),
+                    Ok(Some(bytes)) => match std::str::from_utf8(&bytes) {
+                        Ok(source) => diff::build(Some(source), &args.content),
+                        Err(_) => crate::events::FileDiff::Unavailable {
+                            reason: "Previous content is not UTF-8; text diff unavailable.".into(),
+                        },
+                    },
+                    Err(_) => crate::events::FileDiff::Unavailable {
+                        reason: "Previous content could not be read; text diff unavailable.".into(),
+                    },
+                };
+                emit(AgentEvent::FileChanged {
+                    id: call_id.to_owned(),
+                    path: args.path,
+                    diff,
+                });
                 let mut result = json!({"ok":true,"bytes_written":args.content.len()});
                 if let Some(warning) = warning {
                     result["warning"] = json!(warning);
@@ -1542,6 +1591,114 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".pp-tmp-")
         }));
+    }
+
+    #[test]
+    fn file_changed_follows_commit_and_never_changes_model_tool_result() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("demo.txt"), b"old\nkeep\n").unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let token = CancellationToken::new();
+        let mut events = Vec::new();
+        let output = tools
+            .execute(
+                "edit",
+                &json!({"path":"demo.txt","edits":[{"oldText":"old","newText":"new"}]}).to_string(),
+                "edit-1",
+                &token,
+                &mut |event| {
+                    if matches!(event, AgentEvent::FileChanged { .. }) {
+                        assert_eq!(
+                            fs::read(dir.path().join("demo.txt")).unwrap(),
+                            b"new\nkeep\n"
+                        );
+                    }
+                    events.push(event);
+                },
+            )
+            .output;
+        assert!(matches!(
+            &events[..],
+            [
+                AgentEvent::ToolStarted { .. },
+                AgentEvent::FileChanged {
+                    diff: crate::events::FileDiff::Text {
+                        added: 1,
+                        removed: 1,
+                        created: false,
+                        ..
+                    },
+                    ..
+                },
+                AgentEvent::ToolFinished { .. }
+            ]
+        ));
+        assert_eq!(
+            serde_json::from_str::<Value>(&output).unwrap(),
+            json!({"ok":true,"edits_applied":1,"bytes_written":9})
+        );
+        events.clear();
+        tools.execute(
+            "edit",
+            &json!({"path":"demo.txt","edits":[{"oldText":"missing","newText":"bad"}]}).to_string(),
+            "edit-fail",
+            &token,
+            &mut |event| events.push(event),
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::FileChanged { .. }))
+        );
+        fs::write(dir.path().join("binary.txt"), [0xff, 0xfe]).unwrap();
+        events.clear();
+        let output = tools
+            .execute(
+                "write",
+                &json!({"path":"binary.txt","content":"text\n"}).to_string(),
+                "write-binary",
+                &token,
+                &mut |event| events.push(event),
+            )
+            .output;
+        assert_eq!(fs::read(dir.path().join("binary.txt")).unwrap(), b"text\n");
+        assert_eq!(
+            serde_json::from_str::<Value>(&output).unwrap(),
+            json!({"ok":true,"bytes_written":5})
+        );
+        assert!(
+            matches!(&events[1], AgentEvent::FileChanged { diff: crate::events::FileDiff::Unavailable { reason }, .. } if reason == "Previous content is not UTF-8; text diff unavailable.")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_snapshot_permission_failure_does_not_block_commit() {
+        use std::os::unix::fs::PermissionsExt;
+        if rustix::process::getuid().as_raw() == 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unreadable.txt");
+        fs::write(&path, b"old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o200)).unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let mut events = Vec::new();
+        let output = tools
+            .execute(
+                "write",
+                &json!({"path":"unreadable.txt","content":"new"}).to_string(),
+                "unreadable",
+                &CancellationToken::new(),
+                &mut |event| events.push(event),
+            )
+            .output;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(serde_json::from_str::<Value>(&output).unwrap()["ok"], true);
+        assert!(
+            matches!(&events[1], AgentEvent::FileChanged { diff: crate::events::FileDiff::Unavailable { reason }, .. } if reason == "Previous content could not be read; text diff unavailable.")
+        );
     }
 
     #[test]

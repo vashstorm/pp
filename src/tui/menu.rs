@@ -24,6 +24,7 @@ pub(super) struct SelectionMenu<T> {
     selection: TableState,
     page_size: usize,
     hint: Option<&'static str>,
+    accent: Color,
 }
 
 pub(super) enum MenuEvent<T> {
@@ -42,12 +43,22 @@ impl<T: Copy> SelectionMenu<T> {
             selection: TableState::default().with_selected(selected),
             page_size: 1,
             hint: None,
+            accent: Color::Yellow,
         }
+    }
+
+    pub(super) fn with_accent(mut self, accent: Color) -> Self {
+        self.accent = accent;
+        self
     }
 
     pub(super) fn with_hint(mut self, hint: &'static str) -> Self {
         self.hint = Some(hint);
         self
+    }
+
+    pub(super) fn items_mut(&mut self) -> &mut [MenuItem<T>] {
+        &mut self.items
     }
 
     pub(super) fn items(&self) -> &[MenuItem<T>] {
@@ -117,13 +128,9 @@ impl<T: Copy> SelectionMenu<T> {
         let selected = self.selected_index();
         let rows = self.items.iter().enumerate().map(|(index, item)| {
             let active = selected == Some(index);
-            let label_style =
-                Style::default().fg(if active { Color::Yellow } else { Color::Reset });
-            let detail_style = Style::default().fg(if active {
-                Color::Yellow
-            } else {
-                Color::DarkGray
-            });
+            let label_style = Style::default().fg(if active { self.accent } else { Color::Reset });
+            let detail_style =
+                Style::default().fg(if active { self.accent } else { Color::DarkGray });
             let mut label = vec![Span::styled(
                 format!("{} ", if active { "❯" } else { " " }),
                 detail_style,

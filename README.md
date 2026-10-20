@@ -26,7 +26,7 @@ cargo build --release --locked
 {
   // Optional; the first provider's first model is used when omitted or when the reference matches no provider/model
   "default_model": "gateway/secondary",
-  // 调试日志：默认 false；开启后记录 harness 状态及每个模型的首个完整合成 prompt
+  // 调试日志：默认 false；开启后分别记录运行状态和每个 session 的初始完整 prompt
   "debug": false,
   // Optional, default "replace"; use "hashline" for anchored line edits
   "edit": "replace",
@@ -166,29 +166,34 @@ cargo test --locked --test cli_agent mcp_ -- --test-threads=1
 
 保留今天及此前 29 个本地自然日，与 mtime 无关；未来日期暂留。每次启动和跨日后的首次写入清理严格匹配命名的过期普通文件，跳过其他名称、符号链接和目录；没有后台清理，也没有总容量上限。
 
-诊断事件包括应用启停（pid、启动 cwd、prompt/line/tui 模式）、配置不可用、任务、Completion/Responses 请求和工具的开始/结束、受控状态及耗时。工具类别仅为 `load_skill`、`read`、`grep`、`find`、`edit`、`write`、`bash`，其他统一为 `external`。不记录 prompt、回答/思考、工具参数/结果/输出、工具文件路径、错误原文、配置、URL 或 API key；不启用依赖库日志，也不读取 `RUST_LOG`。这些运行诊断日志与下述包含完整交互的 session 文件相互独立。
+诊断事件包括应用启停（pid、启动 cwd、prompt/line/tui 模式）、配置不可用、任务、Completion/Responses 请求和工具的开始/结束、受控状态及耗时。工具类别仅为 `ask`、`load_skill`、`read`、`grep`、`find`、`edit`、`write`、`bash`，其他统一为 `external`。不记录 prompt、回答/思考、工具参数/结果/输出、工具文件路径、错误原文、配置、URL 或 API key；不启用依赖库日志，也不读取 `RUST_LOG`。这些运行诊断日志与下述包含完整交互的 session 文件相互独立。
 
 初始化失败，或退出时发现写入/轮转/清理失败，仅在 stderr 输出一次固定 `warning: file logging unavailable`，不改变应用退出码；TUI 运行中不打印日志错误。事件同步交给操作系统，无后台队列，不逐条 fsync；强杀或断电不保证最后一条完整/持久化，也不保证存在 `app_stopped`。
 
 ### Debug 日志
 
-在 `~/.pp/agent/settings.jsonc` 中设置 `"debug": true` 后，模型请求前向 `~/.pp/logs/debug.yyyy-mm-dd.xxxx` 写入独立的分段文本日志（不是 JSONL）；默认 `false`，省略字段或配置文件时均不开启，只接受布尔值，修改后重启生效。`xxxx` 是从 `0001` 开始的四位最小宽度分卷编号，不带 `.log` 后缀。只启动程序、不发送模型请求不会创建 debug 分卷。
+在 `~/.pp/agent/settings.jsonc` 中设置 `"debug": true` 后，启用以下两类独立的分段文本日志（不是 JSONL）；默认 `false`，省略字段或配置文件时均不开启，只接受布尔值，修改后重启生效。只启动程序、不发送模型请求不会创建这两类日志文件。
 
-- `harness_state`：每次请求前的 `request_ready` 快照，包含 pid、session ID（首次持久化前为 null）、provider/model 引用、协议、cwd、思考级别、edit 模式、工具限制、当前任务请求序号/上限、历史项数和工具数。
-- `llm_first_prompt`：本次进程中每个 `provider/model` 首次请求的完整原生 `request` 的文本展开，包括合成后的 system/instructions、用户输入、已有对话/工具结果与工具定义。每段以事件名和时间戳为标题，优先展示模型、协议及进程等定位信息；原生请求按「请求参数 → 系统指令 → 对话消息／输入历史 → 工具定义」分区。消息标题标明索引和角色／类型，工具标题标明名称，调用与结果保留 call ID，方便对应。正文用 `字段: |` 独立成块，原样保留换行、空行、代码缩进、引号和反斜杠，不折行、不截断；工具参数 schema 使用格式化 JSON，其他嵌套字段缩进展开，未知字段同样保留。Completion 与 Responses 均支持；切回模型、后续任务和 `/new` 不重复记录，重启进程后重新记录。请求发送前写入，因此供应商拒绝请求时也保留首个 prompt。
+- **`~/.pp/logs/prompt-debug.SESSION_ID`**：每个新 session 一个文件，仅记录首次普通模型请求的完整原生合成 prompt（`llm_first_prompt`），包括 system/instructions、初始用户输入、工具定义、模型参数，以及对应的 session ID。后续消息、工具轮次和切模型均不追加；`/new` 后的新 session 会生成另一个文件。重启后通过 `-r`、`-c` 或 TUI `/resume` 恢复同一 session，不覆盖、不追加，也不补录中途 prompt。请求发送并完成初始连接处理、session 持久化后写入，消费响应流之前完成；供应商拒绝请求时也保留初始 prompt，临时压缩摘要请求不记录。
+- **`~/.pp/logs/debug.yyyy-mm-dd.xxxx`**：保留其他调试信息，目前为每次普通请求前的 `harness_state` / `request_ready` 快照。包含 pid、session ID（首次持久化前为 null）、provider/model 引用、协议、cwd、思考级别、edit 模式、工具限制、当前任务请求序号/上限、历史项数和工具数；不再记录 prompt 正文、回答或工具内容。`xxxx` 是从 `0001` 开始的四位最小宽度分卷编号，不带 `.log` 后缀。
 
-Debug 日志沿用普通日志的文件权限、跨进程锁、按本地日期和 10 MiB 整条事件分卷、30 天保留策略；两种文件的分卷与清理互不混用。单条超限不截断；初始化、序列化、写入或清理失败时停止本次进程的 debug 记录，向普通诊断日志写入固定 `debug_logging_unavailable` 事件，不中断任务、不向 TUI 打印日志错误。
+Prompt 文本以事件名和时间戳为标题，按「请求参数 → 系统指令 → 对话消息／输入历史 → 工具定义」分区；Completion 与 Responses 均支持。正文用 `字段: |` 独立成块，原样保留换行、空行、代码缩进、引号和反斜杠，不折行、不截断；工具参数 schema 使用格式化 JSON，其他嵌套字段缩进展开，未知字段同样保留。
 
-**Debug 日志包含完整 prompt 与历史内容，可能含敏感源码或用户数据。** 不主动序列化配置、API key、HTTP 认证头或供应商错误体；但已进入 prompt 的敏感内容会原样记录。仅在需要排查时开启，分享日志前自行检查；普通 `pp.*.log` 的内容隔离规则不变。
+两类日志沿用普通日志的文件权限和跨进程锁，保留今天及此前 29 个自然日，各自清理互不混用。`debug` 按本地日期及 10 MiB 整条事件分卷；`prompt-debug` 不分卷、不追加，单个 prompt 上限为 10 MiB，并在新 session 首次写入时按文件名中的 session 创建日期清理过期文件。单条超限整条拒写，不截断。初始化、序列化、写入或清理失败时停止本次进程的 debug 与 prompt-debug 记录，向普通诊断日志写入固定 `debug_logging_unavailable` 事件，不中断任务、不向 TUI 打印日志错误。
+
+**`prompt-debug` 包含完整初始 prompt，可能含敏感源码或用户数据。** 不主动序列化配置、API key、HTTP 认证头或供应商错误体；但已进入 prompt 的敏感内容会原样记录。仅在需要排查时开启，分享日志前自行检查；普通 `pp.*.log` 的内容隔离规则不变。旧 `debug.*` 文件不会迁移或改写，可能仍含此前记录的 prompt。
 
 ## Terminal Interaction
 
-未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页采用 omp 风格的居中像素字标、版本号和简短操作提示；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏显示估算上下文用量、实际模型、思考级别、启动工作目录和 Git 信息。`no think` 表示显式请求关闭思考。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；手动压缩时在输入框上沿显示 `Compacting context...` 或 `Cancelling context...`。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash/grep/find 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏或 Markdown 渲染。
+未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页采用 omp 风格的居中像素字标、版本号和简短操作提示；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏显示估算上下文用量、实际模型、思考级别、启动工作目录和 Git 信息。`no think` 表示显式请求关闭思考。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；手动压缩时在输入框上沿显示 `Compacting context...` 或 `Cancelling context...`。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash/grep/find 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏。助手正文支持流式 Markdown，edit/write 与 ask 使用独立内容块；这些块共用原有 transcript 的滚动、恢复与退出 scrollback。
 
 应用自有的 TUI 文案统一使用英文，包括帮助、菜单、通知、skill 管理与加载卡片，以及这些界面接收的配置保存错误和 skill 诊断。用户输入、模型回复、文件／命令输出、外部 skill 元数据与正文，以及名称和路径保持原文；不限制 Unicode，也不强制模型使用英语。已有 session 中保存的历史工具错误忠实回放，不改写旧日志。共享生产者的配置保存错误和 skill 诊断在 CLI 中也使用英文。
 
-用户输入继续使用蓝色左竖线和加粗标签，助手回答与 read/write 数据使用终端默认文字色。bash 与 think 使用下述独立样式；其他工具保留淡色正文与运行／完成／失败状态。真实 `grep` 调用使用青色卡片，`find` 使用普通数据卡片；标题显示工具名与紧凑 JSON argv，保留空格、引用和控制字符边界。搜索结果直接显示 stdout/stderr，不使用 bash 专属折叠或计时 footer。真实 `load_skill` 调用使用品红色 skill 卡片，不按文件路径或 bash 命令猜测类别。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
+用户与助手保留既有角色背景；助手正文按 Markdown 渲染，read 等工具正文保持字面文本，edit/write 与 ask 使用下面说明的内容块。bash 与 think 使用下述独立样式；其他工具保留淡色正文与运行／完成／失败状态。真实 `grep` 调用使用青色卡片，`find` 使用普通数据卡片；标题显示工具名与紧凑 JSON argv，保留空格、引用和控制字符边界。搜索结果直接显示 stdout/stderr，不使用 bash 专属折叠或计时 footer。真实 `load_skill` 调用使用品红色 skill 卡片，不按文件路径或 bash 命令猜测类别。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
 
+- 仅助手正文（包括实际可见的 refusal）解析 Markdown：标题、粗体／斜体／删除线、链接、列表／任务项、引用、代码 frame 和表格随流显示；未闭合 fence 的已到达代码立即可见。图片只显示 ALT 与 URL，HTML 按字面显示，不执行、不下载或打开链接。表格按终端列宽缩列，过窄时改为 `header: value` 竖排；中文、组合字符、emoji 与续行前缀按 grapheme 布局。用户输入、think、read/bash/搜索/MCP 输出、错误和 Note 不解析 Markdown。resize 只重新布局已解析文档，用户上翻时新内容不会拉回底部。
+- edit/write 的 diff 是**保存成功后展示，不是写入前审批**：header、`+N -N`、真实行号、红色删除／绿色新增与三行上下文反映 worker 读取的旧快照和实际提交内容，不执行 git、不在 UI 线程读取文件。默认显示前 10 条逻辑 diff 行，Ctrl+O 切换最近一个可折叠的 bash/skill/diff；退出时全部展开写入 scrollback，恢复时重新采用默认折叠。相同内容、新建空文件、缺末尾换行、LF/CRLF 与 BOM 均有明确展示。write 的旧快照不可读或非 UTF-8 时仍可按原权限保存，只显示 diff unavailable；目录 sync warning 属于已提交成功。原有启动目录／symlink 限制不变，外部并发修改仍沿用原保存语义。diff 只进入 `pp.event` 和显示记录，不改变模型工具结果 JSON；旧日志缺少 FileChanged 时仅显示原摘要，不重建 diff，CLI 不额外打印 diff。
+- 新内容块仅在显示层将除 LF/TAB 外的 C0 字符及 DEL 替换为 `�`，TAB 按四列 tab stop 展开；原始助手正文、事件、参数和用户答案保持不变。
 - 临时消息以非模态圆角弹框显示在输入框上方靠右，左右至少留一格，不挤占布局、不改变草稿、光标或历史滚动位置。普通消息为绿色，重要提示／警告为黄色，错误为红色；通过边框、标题和正文的颜色亮度实现 200ms 淡入与最后 400ms 淡出，默认总时长 10 秒，不是窗口透明度。右上角显示剩余秒数（向上取整），无需输入也会更新并自动消失；`notification_show_countdown` 默认 `true`，关闭仅隐藏秒数，`notification_timeout_seconds` 设置总时长，默认 `10`，必须为正整数且不超出计时范围。通知配置在启动时读取，即使模型不可用也生效；设置缺失或无效时使用默认通知行为，无效设置仍显示启动诊断，修改配置后需重启。鼠标停留在弹框内（含边框）时隐藏倒计时并保持完全显示，移出后重新从配置时长倒数；新消息替换旧消息，不堆叠。使用终端原生选区复制：先将鼠标移入弹框使其保持显示，再按终端要求的修饰键拖选，使用终端自身的复制快捷键；程序保留鼠标捕获以支持悬停与滚轮，不提供复制按钮或应用内选区。终端选区只能复制屏幕上可见的文字，可能包含边框；不会取得截断后未显示的内容。中文、emoji 和多行正文自动折行，最多八行，过长内容只显示开头；空间不足时隐藏弹框或倒计时，恢复尺寸后仅显示尚未到期的消息，倒计时不会覆盖标题和边框。skill 全屏管理面板中的弹框采用相同规则。
 - 界面已体现的成功变化不重复通知：模型和当前思考档位切换只更新状态栏，`/new` 直接恢复欢迎页并清空旧通知，skill 面板保存成功直接关闭。Ctrl+S 保存下次启动的默认思考档位以绿色弹框确认，不改变当前档位；本地命令、切换和保存的临时错误使用红框。启动 skill 扫描的非致命诊断汇总为黄色提示，完整详情保留在 `/skills`。任务／工具失败和执行不可用仍保留原有持久错误位置；通知不进入对话记录、session 或退出滚动历史，CLI／管道输出不变。
 - Enter 发送非空草稿，Ctrl-J 插入换行；粘贴保留多行且不会自动发送。输入框使用终端原生光标，为拼音等输入法提供插入位置。菜单关闭时，↑/↓ 优先在输入框的显示行间移动（包括自动折行）；到达首行后再按 ↑、到达末行后再按 ↓，才浏览本次进程中已提交的历史输入，支持继续编辑；↓ 越过最新一条会恢复浏览前的草稿和光标，历史两端不循环。运行中也可浏览输入历史，忙碌时被拒绝的提交不计入历史；`/new` 重置模型会话后仍保留本次进程的输入历史；恢复 session 时从已保存用户消息恢复输入历史，不恢复草稿或历史浏览位置。菜单展开时，↑/↓ 仍用于选择菜单项。
@@ -196,7 +201,7 @@ Debug 日志沿用普通日志的文件权限、跨进程锁、按本地日期�
 - 在光标所在的空白分隔 token 中输入 `@`，立即在输入框下方按目录层级浏览项目文件：只显示当前目录的直接子项，目录在前并以 `/` 结尾，Enter 或 Tab 进入目录，选择 `../` 返回上级；进入／返回目录时同步将当前 `@` 引用补全为对应的目录路径（如 `@src/tui/`），光标停在路径末尾，不添加空格、不发送消息，也不重新扫盘；返回根目录时恢复为 `@`。继续输入按当前子树内的相对路径做大小写敏感的子串筛选，匹配到深层文件时仍逐级显示其祖先目录，不再平铺后代文件。↑/↓ 选择，Enter 或 Tab 选中文件后**只插入完整的 `@文件路径`，不发送消息、不读取文件正文、不上传附件**，随后再次 Enter 才发送编辑好的原始文本。含空白、双引号或反斜线的路径使用 JSON 引号，例如 `@"docs/my file.md"`；补全目录时光标停在闭引号前，仍可继续输入筛选或选择子项。补全只替换当前引用，保留多行草稿与其他引用。邮箱、`@@foo` 和光标位于闭引号之后的 `@"…"` 不触发菜单。候选根为启动／恢复会话的工作目录，不向上扩展到 Git 根；后台枚举遵守项目内 `.ignore`、`.gitignore` 和 `.git/info/exclude`，包含未被忽略的隐藏常规文件，不列出 `.git` 或符号链接。每次重新激活时重新扫描，同一次选择中的筛选不重复扫盘；扫描期间 Enter/Tab 不提交，根目录无可选文件或无匹配时 Enter 按普通提交处理；子目录无匹配时保留 `../` 供返回上级，只有包含可选文件的目录才会列出。Esc 收起菜单并保留草稿，迟到的扫描结果不会重新打开；普通行模式和 `-p` 不提供文件菜单，`@` 文本原样发送。
 - Ctrl+A / Ctrl+E 分别跳到当前行首 / 行尾；Ctrl+K 删除光标到当前行尾的内容，在行尾或空行按下不删除换行。左右键、Home/End、Backspace/Delete 继续支持中文和 Unicode 文本编辑。
 - The input box grows with explicit lines, up to six; long lines soft-wrap, and the editing viewport scrolls past its height. Narrow screens shorten cwd, hide Git, then shorten the model; context usage has priority and is clipped by display columns only as a last resort. Short screens keep input and status first; restoring size never loses the draft.
-- bash 使用暗色圆角边框卡片：顶部为 `$ command`，`Output` 横线分隔命令和灰色输出，底部显示耗时与退出码；运行中显示 running，失败保留错误和退出信息。超过 10 行时默认显示末尾 10 行及省略提示，Ctrl+O 展开或收起最近一次 bash 的完整输出，不改变输入草稿；退出时完整输出写入终端滚动历史。think 默认以无标题、无边框的灰色文本显示在独立暗色背景上，与最终回答分开。是否返回可读思考取决于服务端和模型；`/effort` 仍只控制思考级别。行模式和单次任务将思考文本写入 stderr，stdout 保持为回答正文，均不添加 ANSI 控制序列。Responses 摘要使用 [官方流式事件](https://developers.openai.com/api/reference/resources/responses/streaming-events)。
+- bash 使用暗色圆角边框卡片：顶部为 `$ command`，`Output` 横线分隔命令和灰色输出，底部显示耗时与退出码；运行中显示 running，失败保留错误和退出信息。超过 10 行时默认显示末尾 10 行及省略提示，Ctrl+O 展开或收起最近一个可折叠的 bash/skill/diff 块，不改变输入草稿；退出时完整输出写入终端滚动历史。think 默认以无标题、无边框的灰色文本显示在独立暗色背景上，与最终回答分开。是否返回可读思考取决于服务端和模型；`/effort` 仍只控制思考级别。行模式和单次任务将思考文本写入 stderr，stdout 保持为回答正文，均不添加 ANSI 控制序列。Responses 摘要使用 [官方流式事件](https://developers.openai.com/api/reference/resources/responses/streaming-events)。
 - Mouse wheel scrolls the transcript by three visual lines per event; PgUp/PgDn scroll by a page. Both work without moving the input cursor or changing the draft, even with the pointer over the input box. Output follows the bottom by default; scrolling up leaves follow mode, so incoming chunks do not steal the viewport. Scrolling down to the bottom restores following. Drafts stay editable and scrollable while running, but Enter does not queue or clear the draft; submission resumes after completion or an error.
 - 命令、模型、思考级别和文件菜单展开时，滚轮仍滚动历史，不改变菜单选择。Clicks, drags, pointer movement, and horizontal wheel events are ignored. The TUI captures the mouse; any modifier needed to bypass capture for native terminal selection or scrollback depends on the terminal emulator.
 - Single-line slash commands share one registry with line mode: `/help` lists commands; `/model` opens a model picker; `/model provider/model` switches directly; `/new` resets history while keeping the selected model; `/compact` summarizes older context without clearing the visible conversation; `/resume` opens the fullscreen saved-session picker (TUI only); `/quit` exits. Unknown names and invalid built-in arguments are local errors, never model tasks. Names are case-sensitive; leading/trailing whitespace is ignored, but the entire remaining `/model` argument preserves internal spaces and `/`. Multi-line slash drafts remain ordinary tasks.
@@ -205,6 +210,16 @@ Debug 日志沿用普通日志的文件权限、跨进程锁、按本地日期�
 - 运行中按无修饰键的 Esc 取消当前任务，不退出 pp；已有面板或菜单优先消费 Esc。收尾期间显示 `Cancelling...`，仍可编辑草稿、滚动、F1/help、Ctrl-O 或退出，但不能提交／排队新任务、切换模型／思考级别或 `/new`。收尾完成后保留草稿、光标、输入历史、已完成的工具结果和文件修改，并追加 `Task cancelled. File changes were not rolled back.`；不重试、不回滚。每个任务使用独立取消 token，已提交的最终回答不会被迟到 Esc 改成取消。行模式和 `-p` 不提供取消入口。
 - `/quit` 或 Ctrl-C 立即退出整个 pp，正常退出码为 0。恢复终端后，全部对话记录按退出时的终端宽度写入普通终端的滚动历史，保留原有颜色、缩进、分隔线、流式片段、工具输出及错误，末尾保留输入框、未提交的草稿、菜单和状态栏；可以向上滚动查看超出一屏的历史。保留长度受终端自身的滚动历史容量限制。退出不等待阻塞中的模型请求或工具，也不保证终止 bash 子进程；需要任务级受控清理时应先按 Esc 等待收尾。文件修改不会回滚。
 - `-p/--prompt` runs one task and never parses slash commands: `pp -p '/model'` sends `/model` as a task. It can follow `-r ID` to append one task to saved history; combining it with `-c` is rejected. If either stdin or stdout is not a terminal, line mode supports the same commands without raw mode or an alternate screen. `/model` lists configured models and marks the current one; use `/model provider/model` to switch. Stdout streams **all readable assistant text**, including text before tools, with one terminating newline per nonempty turn and no replay at completion. Refusal is printed only if no non-blank content wins. Help, command responses, errors, and `tool <name>: running/ok/failed` go to stderr; live process data uses `[{name} stdout]` / `[{name} stderr]` on pp's stderr, with the actual `bash`, `grep`, or `find` tool name. Non-TUI output adds no ANSI control sequences. A display write failure is returned only after the Agent finishes recording the task's history/tool results.
+
+### ask（仅 TUI）
+
+模型通过显式 `ask` 工具发起一批问题，不从普通助手文字猜测选项。仅在确实需要用户决定时提问；推荐项只是初始焦点和 `(Recommended)` 标记，不会自动选中，也不授权文件写入。问题使用唯一 `id`、非空 `question` 与 `options`，选项保留原始 `label`，可带 `description`／Markdown `preview`；`header` 为可选题目 chip，`multi` 默认 false，`recommended` 是从零开始的选项下标。空 options 可自由回答；重复 id／label、空白必填文字、未知字段或越界推荐项返回普通工具错误，不打开面板。
+
+面板锚定输入框上方，不改主草稿、光标或输入历史。↑/↓、Home/End、PgUp/PgDn 导航；Tab/Shift-Tab、左右键切问题／Review。单选 Enter 确认并前进，单题单选直接提交；多选 Space 勾选，Enter 只前进，不顺便选中焦点项。多题和单题多选须在 Review 再按 Enter 一次提交；未答单选会定位回该题，空多选可显式提交。每题自动有 `Other (type your own)`，Enter 打开独立编辑器，支持 Unicode、粘贴、多行和 Ctrl-J；非空白输入才可接受。单选的 custom 与选项互斥，多选可共存。
+
+选项 preview 默认最多三行；Ctrl+O 展开／收起完整问题、description 与 preview，Ctrl-↑/↓ 滚动详情。面板高度在打开／resize 时确定，最多屏幕 70%；短屏进入紧凑模式。滚轮在面板内导航，面板外继续滚 transcript。面板活跃时全局菜单、F1、切档、输入历史和主编辑器不会接收它的按键／粘贴，只有 custom 编辑器显示插入光标。custom 编辑器的 Esc 只丢弃本次编辑；picker／Review 的 Esc 取消整个任务，不提交部分答案，同批后续工具按既有取消规则跳过。Ctrl-C 仍立即退出并恢复终端，不等待回复线程。
+
+成功工具结果精确使用 `{"ok":true,"answers":[{"id":"storage","selected_options":["Postgres"],"custom_input":null}]}`：题目和多选答案分别按原题／原选项顺序排列，不包含推荐徽标；custom 有值时为原始字符串。问题与答案沿用 ToolStarted／ToolFinished 日志，恢复只重放卡片，不重开表单、不把答案放进主输入历史；中断请求显示既有 interrupted 状态。`/new`、跨协议 `/model` 和 `/resume` 后 TUI 仍提供 ask。`-p` 和管道行模式不提供 ask schema；服务端仍返回 ask 调用时固定报错 `ask requires interactive TUI mode`，不读取 stdin，不消耗下一条任务。
 
 ## 项目级 AGENTS.md
 

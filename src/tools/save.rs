@@ -121,20 +121,36 @@ impl Workspace {
 }
 
 impl Target {
-    pub(super) fn read(&self) -> Result<Vec<u8>> {
+    /// Opens the target for reading through the already-resolved parent
+    /// directory handle; NOFOLLOW prevents a symlink from sneaking in after
+    /// `Workspace::target` resolved the path.
+    fn open_read(&self) -> rustix::io::Result<File> {
         let fd = fs::openat(
             &self.parent,
             &self.name,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::empty(),
-        )
-        .context("opening edit target without symlinks")?;
-        let mut file = File::from(fd);
-        ensure!(file.metadata()?.is_file(), "edit requires a regular file");
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .context("reading edit target")?;
-        Ok(bytes)
+        )?;
+        Ok(File::from(fd))
+    }
+
+    pub(super) fn read(&self) -> Result<Vec<u8>> {
+        let file = self
+            .open_read()
+            .context("opening edit target without symlinks")?;
+        read_regular_file(file)
+    }
+
+    /// Optional snapshot for diff display. Only a genuinely missing target is
+    /// `None`; every other failure (permissions, IO, race with a symlink swap)
+    /// is a real error so callers can fall back to `Unavailable` instead of
+    /// inventing an empty baseline.
+    pub(super) fn read_optional(&self) -> Result<Option<Vec<u8>>> {
+        match self.open_read() {
+            Ok(file) => read_regular_file(file).map(Some),
+            Err(Errno::NOENT) => Ok(None),
+            Err(error) => Err(error).context("reading previous content for diff"),
+        }
     }
 
     pub(super) fn save(&self, content: &[u8]) -> Result<Option<String>> {
@@ -187,6 +203,15 @@ impl Target {
             .err()
             .map(|error| format!("file committed, but syncing parent directory failed: {error}")))
     }
+}
+
+fn read_regular_file(file: File) -> Result<Vec<u8>> {
+    let mut file = file;
+    ensure!(file.metadata()?.is_file(), "edit requires a regular file");
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .context("reading edit target")?;
+    Ok(bytes)
 }
 
 struct Temporary<'a> {
@@ -353,5 +378,48 @@ mod tests {
             .unwrap()
             .save(b"ok")
             .unwrap();
+    }
+
+    #[test]
+    fn read_optional_returns_none_only_for_missing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let target = workspace.target(Path::new("data"), false).unwrap();
+        // 缺失是唯一的 None 语义。
+        assert_eq!(target.read_optional().unwrap(), None);
+        // read() 的缺失错误语义保持不变。
+        assert!(target.read().is_err());
+
+        target.save(b"payload").unwrap();
+        assert_eq!(
+            target.read_optional().unwrap().as_deref(),
+            Some(&b"payload"[..])
+        );
+        assert_eq!(target.read().unwrap(), b"payload");
+
+        // 提交后名称被换成 symlink：NOFOLLOW 读取报真实错误，而不是 None。
+        std::fs::remove_file(dir.path().join("data")).unwrap();
+        symlink("elsewhere", dir.path().join("data")).unwrap();
+        let error = target.read_optional().unwrap_err();
+        assert!(!error.to_string().is_empty());
+        assert!(target.read().is_err());
+    }
+
+    #[test]
+    fn read_optional_reports_real_read_errors_instead_of_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret");
+        std::fs::write(&path, b"hidden").unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let target = workspace.target(Path::new("secret"), false).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // root 与部分环境不强制权限位；仅当普通读取确实被拒绝时断言。
+        if std::fs::read(&path).is_ok() {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            return;
+        }
+        assert!(target.read_optional().is_err());
+        assert!(target.read().is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 }

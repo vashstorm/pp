@@ -560,6 +560,20 @@ fn debug_text(home: &Path) -> String {
     text
 }
 
+fn prompt_logs(home: &Path) -> Vec<(String, String)> {
+    let mut logs: Vec<_> = fs::read_dir(log_dir(home))
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.strip_prefix("prompt-debug.")?;
+            Some((name, fs::read_to_string(entry.path()).unwrap()))
+        })
+        .collect();
+    logs.sort();
+    logs
+}
+
 #[test]
 fn debug_logging_is_opt_in() {
     for settings in [None, Some("{}"), Some(r#"{"debug":false}"#)] {
@@ -579,12 +593,13 @@ fn debug_logging_is_opt_in() {
         let output = cli.finish();
         assert!(output.status.success(), "{output:?}");
         assert!(debug_text(home.path()).is_empty());
+        assert!(prompt_logs(home.path()).is_empty());
         assert_no_secrets(home.path(), &["private disabled prompt", "fixture-key"]);
     }
 }
 
 #[test]
-fn debug_logging_captures_first_native_prompt_per_model_across_tasks_and_reset() {
+fn debug_logging_separates_initial_prompts_per_session_across_tasks_and_models() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     let mut models: Value =
@@ -603,7 +618,7 @@ fn debug_logging_captures_first_native_prompt_per_model_across_tasks_and_reset()
         r#"{"debug":true,"think_level":"high","max_model_requests":7}"#,
         &models.to_string(),
     );
-    cli.input("首个合成 prompt\nsecond\n/model responses/primary\nthird\n/model fixture/primary\nfourth\n/new\nfifth\n/quit\n");
+    cli.input("首个合成 prompt\nsecond\n/model responses/primary\nthird\n/model fixture/primary\nfourth\n/model responses/primary\n/new\nfifth\n/quit\n");
     let (request, _) = receive(&server);
     calls_reply(
         request,
@@ -621,43 +636,114 @@ fn debug_logging_captures_first_native_prompt_per_model_across_tasks_and_reset()
     response_final(request, "third done");
     let (request, _) = receive(&server);
     final_reply(request, "fourth done");
-    let (request, _) = receive(&server);
-    final_reply(request, "fifth done");
+    let (request, _) = receive_at(&server, "/v1/responses");
+    response_final(request, "fifth done");
     let output = cli.finish();
     assert!(output.status.success(), "{output:?}");
-    let text = debug_text(home.path());
-    let prompts: Vec<_> = text
-        .split("\n=== ")
-        .filter(|section| section.starts_with("llm_first_prompt |"))
-        .collect();
-    assert_eq!(prompts.len(), 2);
-    assert!(prompts[0].contains("model_reference: fixture/primary\n"));
-    assert!(prompts[1].contains("model_reference: responses/primary\n"));
-    assert!(prompts[0].contains("首个合成 prompt"));
-    assert!(!prompts[0].contains("tool result marker"));
-    assert!(prompts[1].contains("tool result marker"));
-    assert!(!prompts[1].contains("fourth"));
-    for prompt in &prompts {
-        assert!(prompt.contains("-- 请求参数 --\n"));
-        assert!(prompt.contains("-- 工具定义 / tools ("));
-        assert!(prompt.contains("] function / read\n"));
-        assert!(prompt.contains("\"properties\": {"));
+    let logs = prompt_logs(home.path());
+    assert_eq!(logs.len(), 2);
+    let first = &logs
+        .iter()
+        .find(|(_, text)| text.contains("首个合成 prompt"))
+        .unwrap()
+        .1;
+    let next = &logs
+        .iter()
+        .find(|(_, text)| text.contains("fifth"))
+        .unwrap()
+        .1;
+    assert!(first.contains("protocol: completion\n"));
+    assert!(next.contains("protocol: response\n"));
+    for (name, prompt) in &logs {
+        let id = name.strip_prefix("prompt-debug.").unwrap();
+        assert!(
+            home.path()
+                .join(".pp/agent/sessions")
+                .join(format!("{id}.jsonl"))
+                .is_file()
+        );
+        assert!(prompt.contains(&format!("session_id: {id}\n")));
+        assert_eq!(prompt.matches("=== llm_first_prompt |").count(), 1);
+        assert!(!prompt.contains("harness_state"));
+        assert!(prompt.contains("You are a coding assistant."));
+        assert!(prompt.contains("function / read"));
+        for marker in [
+            "tool result marker",
+            "second done",
+            "third done",
+            "fourth done",
+            "fixture-key",
+            "Authorization",
+        ] {
+            assert!(!prompt.contains(marker), "prompt log leaked {marker}");
+        }
     }
-    assert!(prompts[0].contains("-- 对话消息 / messages (2 项) --\n"));
-    assert!(prompts[0].contains("[0] system\n"));
-    assert!(prompts[0].contains("[1] user\n  role: user\n  content: |\n    首个合成 prompt\n"));
-    assert!(prompts[1].contains("-- 系统指令 / instructions --\n"));
-    assert!(prompts[1].contains("-- 输入历史 / input ("));
-    assert!(prompts[1].contains("function_call / read\n"));
-    assert!(prompts[1].contains("function_call_output\n  call_id: debug-read\n"));
+    assert!(!first.contains("fifth"));
+    assert!(!next.contains("首个合成 prompt"));
+    let text = debug_text(home.path());
     assert_eq!(text.matches("=== harness_state |").count(), 6);
+    for marker in [
+        "llm_first_prompt",
+        "首个合成 prompt",
+        "fifth",
+        "tool result marker",
+        "fixture-key",
+    ] {
+        assert!(!text.contains(marker), "debug log leaked {marker}");
+    }
     assert_no_secrets(
         home.path(),
         &["首个合成 prompt", "tool result marker", "fixture-key"],
     );
-    assert!(!text.contains("fixture-key"));
-    assert!(!text.contains("Authorization"));
     no_more(&server);
+}
+
+#[test]
+fn debug_logging_preserves_initial_prompt_on_resume_and_continue() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let models = response_models(&fixture, Some(protocol));
+        let cli = Cli::start_with(
+            home.path(),
+            Some("initial marker"),
+            r#"{"debug":true}"#,
+            &models,
+        );
+        let path = if protocol == "completion" {
+            "/v1/chat/completions"
+        } else {
+            "/v1/responses"
+        };
+        let (request, _) = receive_at(&fixture, path);
+        if protocol == "completion" {
+            final_reply(request, "initial answer");
+        } else {
+            response_final(request, "initial answer");
+        }
+        assert!(cli.finish().status.success());
+        let original = prompt_logs(home.path());
+        assert_eq!(original.len(), 1);
+        let id = original[0].0.strip_prefix("prompt-debug.").unwrap();
+        for args in [vec!["-r", id, "-p", "resumed marker"], vec!["-c", id]] {
+            let cli = Cli::spawn(home.path(), &args, &[]);
+            let (request, _) = receive_at(&fixture, path);
+            if protocol == "completion" {
+                final_reply(request, "later answer");
+            } else {
+                response_final(request, "later answer");
+            }
+            assert!(cli.finish().status.success());
+            assert_eq!(prompt_logs(home.path()), original);
+        }
+        assert_eq!(
+            debug_text(home.path())
+                .matches("=== harness_state |")
+                .count(),
+            3
+        );
+        no_more(&fixture);
+    }
 }
 
 #[test]
@@ -676,8 +762,11 @@ fn debug_logging_keeps_first_prompt_when_provider_rejects_request() {
         .unwrap();
     let output = cli.finish();
     assert!(!output.status.success());
-    let text = debug_text(home.path());
+    let logs = prompt_logs(home.path());
+    assert_eq!(logs.len(), 1);
+    let text = &logs[0].1;
     assert_eq!(text.matches("=== llm_first_prompt |").count(), 1);
+    assert!(!debug_text(home.path()).contains("debug failed request marker"));
     let lines: Vec<_> = text.lines().map(str::trim).collect();
     assert!(lines.windows(2).any(|pair| pair
         == [

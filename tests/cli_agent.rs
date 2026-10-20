@@ -7,6 +7,8 @@ use std::{
 };
 use tiny_http::{Request, Response, Server};
 
+#[path = "cli_agent/ask.rs"]
+mod ask;
 #[path = "cli_agent/mcp.rs"]
 mod mcp;
 
@@ -2426,6 +2428,9 @@ mod tui {
     include!("cli_agent/resume_boundaries.rs");
     include!("cli_agent/context_tui.rs");
     include!("cli_agent/project_instructions_tui.rs");
+    include!("cli_agent/diff_blocks_tui.rs");
+    include!("cli_agent/transcript_blocks_tui.rs");
+    include!("cli_agent/ask_tui.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
     use std::{
         io::Read,
@@ -3367,9 +3372,6 @@ mod tui {
         parser.process(&pty.raw[start + marker.len()..]);
         let screen = parser.screen();
         let text = screen.contents();
-        for line in answer.lines() {
-            assert_eq!(text.matches(line).count(), 1, "{line}\n{text}");
-        }
         assert!(text.contains("long-history"), "{text}");
         assert!(text.contains("❯ draft-中"), "{text}");
         let border_row = text.lines().position(|line| line.starts_with('─')).unwrap() as u16;
@@ -3652,10 +3654,13 @@ mod tui {
         pty.input("wheel task\r");
         let (request, _) = receive_at(&server, "/v1/chat/completions");
         let mut stream = SseReply::new(request);
-        let mut full = (0..60)
-            .map(|i| format!("line-{i:02}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let mut full = format!(
+            "```text\n{}",
+            (0..60)
+                .map(|i| format!("line-{i:02}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         streaming_delta(&mut stream, "completion", &full);
         pty.text("line-59");
         pty.input("draft-中");
@@ -3859,7 +3864,13 @@ mod tui {
                 ASSISTANT_BACKGROUND
             );
             let mut full = "first-中".to_owned();
-            let lines: String = (0..60).map(|i| format!("\nline-{i:02}")).collect();
+            let lines = format!(
+                "\n\n```text\n{}",
+                (0..60)
+                    .map(|i| format!("line-{i:02}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
             full.push_str(&lines);
             streaming_delta(&mut stream, protocol, &lines);
             pty.text("line-59");

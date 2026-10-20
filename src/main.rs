@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod context;
 mod events;
+mod interaction;
 mod jsonc;
 mod llm;
 mod logging;
@@ -563,6 +564,7 @@ fn run_cli_task(
                 );
                 current_tool = Some((id, name));
             }
+            AgentEvent::FileChanged { .. } => {}
             AgentEvent::ToolOutput { id, stream, text } => {
                 let name = current_tool
                     .as_ref()

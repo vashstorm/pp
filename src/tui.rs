@@ -1,4 +1,6 @@
+mod ask;
 mod files;
+mod markdown;
 mod menu;
 mod notification;
 mod scrollback;
@@ -6,6 +8,7 @@ mod sessions;
 mod skills;
 mod statusline;
 mod transcript;
+mod transcript_style;
 mod welcome;
 
 use crate::{
@@ -44,7 +47,7 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
-const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S set selected effort as default in the /effort menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S set selected effort as default in the /effort menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
 const EFFORT_HINT: &str = "Enter select · Ctrl-S set selected effort as default · Esc cancel";
 const MOUSE_SCROLL_LINES: usize = 3;
 
@@ -82,6 +85,7 @@ pub(crate) fn run(
         if event::poll(Duration::from_millis(50)).context("polling terminal input")? {
             let event = event::read().context("reading terminal input")?;
             if app.handle(event, &mut dirty) {
+                app.close_ask_on_exit();
                 app.notifications.clear();
                 let snapshot = terminal
                     .draw(|frame| app.draw(frame, &workspace.context))
@@ -128,6 +132,10 @@ enum WorkerCommand {
     Resume(String),
 }
 enum WorkerEvent {
+    Ask {
+        request: crate::interaction::AskRequest,
+        reply: mpsc::SyncSender<Vec<crate::interaction::AskAnswer>>,
+    },
     Progress(AgentEvent),
     Completed {
         result: Result<RunOutcome>,
@@ -144,6 +152,33 @@ enum WorkerEvent {
     SessionsListed(Result<crate::agent::persistence::SessionListing>),
     SessionDeleted(String, Result<()>),
     SessionResumed(Result<ResumeState>),
+}
+
+fn request_ask(
+    events: &mpsc::SyncSender<WorkerEvent>,
+    request: crate::interaction::AskRequest,
+    cancellation: &CancellationToken,
+) -> Result<Vec<crate::interaction::AskAnswer>> {
+    crate::cancellation::check(cancellation)?;
+    let (reply, answers) = mpsc::sync_channel(1);
+    if events.send(WorkerEvent::Ask { request, reply }).is_err() {
+        cancellation.cancel();
+        return Err(crate::cancellation::Cancelled.into());
+    }
+    loop {
+        crate::cancellation::check(cancellation)?;
+        match answers.recv_timeout(Duration::from_millis(50)) {
+            Ok(answers) => {
+                crate::cancellation::check(cancellation)?;
+                return Ok(answers);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                cancellation.cancel();
+                return Err(crate::cancellation::Cancelled.into());
+            }
+        }
+    }
 }
 
 impl WorkerEvent {
@@ -205,6 +240,8 @@ struct App {
     history_draft: Option<TextArea<'static>>,
     state: State,
     active_cancellation: Option<CancellationToken>,
+    ask_panel: Option<ask::Panel>,
+    ask_reply: Option<mpsc::SyncSender<Vec<crate::interaction::AskAnswer>>>,
     commands: Option<Sender<WorkerCommand>>,
     events: Option<Receiver<WorkerEvent>>,
     unavailable: Option<String>,
@@ -295,6 +332,8 @@ impl App {
             history_draft: None,
             state: State::Unavailable,
             active_cancellation: None,
+            ask_panel: None,
+            ask_reply: None,
             commands: None,
             events: None,
             unavailable: None,
@@ -329,11 +368,15 @@ impl App {
                 let current_model = agent.current_model().clone();
                 let think_level = agent.think_level();
                 let default_think_level = agent.default_think_level();
-                let usage = agent.context_usage().ok();
                 let mcp_cleanup = agent.mcp_cleanup()?;
                 app.choices = agent.model_choices();
                 let (commands, receiver) = mpsc::channel();
                 let (sender, events) = mpsc::sync_channel(256);
+                let ask_events = sender.clone();
+                agent.set_ask_handler(Box::new(move |request, cancellation| {
+                    request_ask(&ask_events, request, cancellation)
+                }));
+                let usage = agent.context_usage().ok();
                 // Deliberately detached: quitting must not wait for HTTP or foreground tools.
                 thread::Builder::new()
                     .name("pp-agent".into())
@@ -525,6 +568,7 @@ impl App {
         &mut self,
         replay: Vec<crate::agent::persistence::ReplayRecord>,
     ) -> Option<String> {
+        self.close_ask_on_exit();
         self.conversation = Transcript::new();
         self.input_history = Vec::new();
         let error = self.conversation.replay(replay, &mut self.input_history);
@@ -543,6 +587,7 @@ impl App {
     }
 
     fn fail_worker(&mut self) {
+        self.close_ask_on_exit();
         let message = "Execution unavailable: agent worker channel closed; restart pp.";
         self.state = State::Unavailable;
         self.active_cancellation = None;
@@ -612,6 +657,23 @@ impl App {
                 break;
             };
             match events.try_recv() {
+                Ok(WorkerEvent::Ask { request, reply }) => {
+                    if matches!(self.state, State::Running)
+                        && self
+                            .active_cancellation
+                            .as_ref()
+                            .is_some_and(|token| !token.is_cancelled())
+                        && self.ask_panel.is_none()
+                        && self.conversation.has_running_ask(&request.call_id)
+                    {
+                        self.menu = None;
+                        self.menu_dismissed = true;
+                        self.ask_panel = Some(ask::Panel::new(request));
+                        self.ask_reply = Some(reply);
+                        self.conversation.waiting_for_input();
+                    }
+                    changed = true;
+                }
                 Ok(WorkerEvent::Progress(event)) => {
                     // 用量快照由 App 缓存，供状态栏渲染；不进入 Transcript。
                     if let AgentEvent::ContextUpdated { usage } = event {
@@ -631,6 +693,8 @@ impl App {
                     elapsed,
                     finished_at,
                 }) => {
+                    self.ask_reply = None;
+                    self.ask_panel = None;
                     self.active_cancellation = None;
                     let label = match result {
                         Ok(RunOutcome::Completed) => "Completed",
@@ -666,6 +730,7 @@ impl App {
                     changed = true;
                 }
                 Ok(WorkerEvent::Reset) => {
+                    self.close_ask_on_exit();
                     self.conversation = Transcript::new();
                     self.clear_input();
                     self.notifications.clear();
@@ -1439,6 +1504,39 @@ impl App {
         false
     }
 
+    fn close_ask_on_exit(&mut self) {
+        if self.ask_panel.is_some() || self.ask_reply.is_some() {
+            if let Some(token) = &self.active_cancellation {
+                token.cancel();
+            }
+            self.ask_reply = None;
+            self.ask_panel = None;
+        }
+    }
+
+    fn apply_ask_action(&mut self, action: ask::Action) {
+        match action {
+            ask::Action::None => {}
+            ask::Action::Cancel => {
+                self.close_ask_on_exit();
+                self.state = State::Cancelling;
+                self.conversation.cancelling();
+            }
+            ask::Action::Submit(answers) => {
+                self.ask_panel = None;
+                if let Some(reply) = self.ask_reply.take()
+                    && reply.send(answers).is_err()
+                {
+                    if let Some(token) = &self.active_cancellation {
+                        token.cancel();
+                    }
+                    self.state = State::Cancelling;
+                    self.conversation.cancelling();
+                }
+            }
+        }
+    }
+
     fn handle(&mut self, event: Event, dirty: &mut bool) -> bool {
         if let Event::Mouse(mouse) = event {
             let (changed, action) = self.notifications.mouse(mouse, Instant::now());
@@ -1455,6 +1553,11 @@ impl App {
                     return key.kind == KeyEventKind::Press;
                 }
                 *dirty = true;
+                if let Some(panel) = &mut self.ask_panel {
+                    let action = panel.key(key);
+                    self.apply_ask_action(action);
+                    return false;
+                }
                 if let Some(panel) = &mut self.skill_panel {
                     match panel.key(key) {
                         skills::Action::None => {}
@@ -1659,6 +1762,35 @@ impl App {
                     }
                 }
             }
+            Event::Paste(text) if self.ask_panel.is_some() => {
+                let action = self
+                    .ask_panel
+                    .as_mut()
+                    .expect("active ask panel")
+                    .paste(&text);
+                self.apply_ask_action(action);
+                *dirty = true;
+            }
+            Event::Mouse(mouse) if self.ask_panel.is_some() => {
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) {
+                    let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
+                    if !self.ask_panel.as_mut().expect("active ask panel").wheel(
+                        up,
+                        mouse.column,
+                        mouse.row,
+                    ) {
+                        if up {
+                            self.conversation.scroll_up(MOUSE_SCROLL_LINES);
+                        } else {
+                            self.conversation.scroll_down(MOUSE_SCROLL_LINES);
+                        }
+                    }
+                    *dirty = true;
+                }
+            }
             Event::Paste(_) if self.skill_panel.is_some() => {}
             Event::Mouse(_) if self.skill_panel.is_some() => {}
             Event::Paste(text) if self.session_panel.is_some() => {
@@ -1785,7 +1917,8 @@ impl App {
             if let (Some(row), Some(column)) = (
                 cursor.row.checked_sub(usize::from(top)),
                 cursor.col.checked_sub(usize::from(left)),
-            ) && row < usize::from(editor_area.height)
+            ) && self.ask_panel.is_none()
+                && row < usize::from(editor_area.height)
                 && column < usize::from(editor_area.width)
             {
                 frame.set_cursor_position((
@@ -1811,6 +1944,12 @@ impl App {
                     status.width,
                 ),
                 status,
+            );
+        }
+        if let Some(panel) = &mut self.ask_panel {
+            panel.draw(
+                frame,
+                Rect::new(area.x, area.y, area.width, input.y.saturating_sub(area.y)),
             );
         }
         self.notifications.draw(
@@ -1964,6 +2103,132 @@ mod tests {
         assert_eq!(shown.lines().last(), before.lines().last());
         assert!(app.notifications.tick(now + Duration::from_millis(10000)));
         assert_eq!(draw(&mut app, 100, 30), before);
+    }
+
+    #[test]
+    fn ask_roundtrip_disconnect_and_cancelled_answer_return_typed_cancelled() {
+        for cancel_before_reply in [false, true] {
+            let (events, requests) = mpsc::sync_channel(1);
+            let token = CancellationToken::new();
+            let worker_token = token.clone();
+            let worker = thread::spawn(move || {
+                let args = crate::interaction::AskArgs::parse(
+                    r#"{"questions":[{"id":"q","question":"Question","options":[]}]}"#,
+                )
+                .unwrap();
+                request_ask(
+                    &events,
+                    crate::interaction::AskRequest {
+                        call_id: "race".into(),
+                        args: std::sync::Arc::new(args),
+                    },
+                    &worker_token,
+                )
+            });
+            let WorkerEvent::Ask { reply, .. } =
+                requests.recv_timeout(Duration::from_secs(1)).unwrap()
+            else {
+                panic!("ask request expected")
+            };
+            if cancel_before_reply {
+                token.cancel();
+                let _ = reply.send(vec![crate::interaction::AskAnswer {
+                    id: "q".into(),
+                    selected_options: Vec::new(),
+                    custom_input: Some("late".into()),
+                }]);
+            }
+            drop(reply);
+            let error = worker.join().unwrap().unwrap_err();
+            assert!(error.is::<crate::cancellation::Cancelled>());
+            assert!(token.is_cancelled());
+        }
+    }
+
+    fn ask_fixture(
+        app: &mut App,
+    ) -> (
+        mpsc::Receiver<Vec<crate::interaction::AskAnswer>>,
+        CancellationToken,
+    ) {
+        let token = CancellationToken::new();
+        app.state = State::Running;
+        app.active_cancellation = Some(token.clone());
+        app.conversation.begin_run();
+        let args = crate::interaction::AskArgs::parse(r#"{"questions":[{"id":"choice","question":"Choose storage","options":[{"label":"SQLite"},{"label":"Postgres"}],"recommended":0}]}"#).unwrap();
+        let (reply, answers) = mpsc::sync_channel(1);
+        app.ask_panel = Some(ask::Panel::new(crate::interaction::AskRequest {
+            call_id: "ask-1".into(),
+            args: std::sync::Arc::new(args),
+        }));
+        app.ask_reply = Some(reply);
+        (answers, token)
+    }
+
+    #[test]
+    fn ask_focus_submission_keeps_main_draft_and_sends_once() {
+        let mut app = app();
+        app.input.insert_str("主草稿🙂");
+        app.input.move_cursor(CursorMove::Back);
+        let cursor = app.input.cursor();
+        let (answers, token) = ask_fixture(&mut app);
+        let mut dirty = false;
+        app.handle(control('p'), &mut dirty);
+        app.handle(key(KeyCode::F(1)), &mut dirty);
+        app.handle(Event::Paste("must stay inside panel".into()), &mut dirty);
+        app.handle(Event::Resize(24, 10), &mut dirty);
+        draw(&mut app, 24, 10);
+        assert_eq!(app.input.lines(), &["主草稿🙂"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert!(matches!(answers.try_recv(), Err(TryRecvError::Empty)));
+        app.handle(key(KeyCode::Down), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        let response = answers.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(response[0].selected_options, ["Postgres"]);
+        assert!(!token.is_cancelled());
+        assert!(app.ask_panel.is_none());
+        assert!(matches!(
+            answers.try_recv(),
+            Err(TryRecvError::Disconnected)
+        ));
+        assert_eq!(app.input.cursor(), cursor);
+    }
+
+    #[test]
+    fn ask_cancel_exit_and_late_request_never_reopen_panel() {
+        for exit in [false, true] {
+            let mut app = app();
+            let (answers, token) = ask_fixture(&mut app);
+            if exit {
+                app.close_ask_on_exit();
+            } else {
+                app.handle(key(KeyCode::Esc), &mut false);
+            }
+            assert!(token.is_cancelled());
+            assert!(matches!(
+                answers.try_recv(),
+                Err(TryRecvError::Disconnected)
+            ));
+            let args = crate::interaction::AskArgs::parse(
+                r#"{"questions":[{"id":"late","question":"Late question","options":[]}]}"#,
+            )
+            .unwrap();
+            let (reply, late) = mpsc::sync_channel(1);
+            let (events, receiver) = mpsc::channel();
+            app.events = Some(receiver);
+            events
+                .send(WorkerEvent::Ask {
+                    request: crate::interaction::AskRequest {
+                        call_id: "late".into(),
+                        args: std::sync::Arc::new(args),
+                    },
+                    reply,
+                })
+                .unwrap();
+            app.receive();
+            assert!(app.ask_panel.is_none());
+            assert!(matches!(late.try_recv(), Err(TryRecvError::Disconnected)));
+        }
     }
 
     fn assert_notification(app: &mut App, color: Color) {

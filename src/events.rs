@@ -7,6 +7,41 @@ pub(crate) enum OutputStream {
     Stderr,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum FileDiff {
+    Text {
+        created: bool,
+        added: usize,
+        removed: usize,
+        hunks: Vec<DiffHunk>,
+    },
+    Unavailable {
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct DiffHunk {
+    pub(crate) lines: Vec<DiffLine>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct DiffLine {
+    pub(crate) kind: DiffLineKind,
+    pub(crate) old_line: Option<usize>,
+    pub(crate) new_line: Option<usize>,
+    pub(crate) text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DiffLineKind {
+    Context,
+    Added,
+    Removed,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentEvent {
@@ -35,6 +70,11 @@ pub(crate) enum AgentEvent {
         id: String,
         name: String,
         arguments: String,
+    },
+    FileChanged {
+        id: String,
+        path: String,
+        diff: FileDiff,
     },
     ToolOutput {
         id: String,

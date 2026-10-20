@@ -1,0 +1,1416 @@
+//! 提问面板：多题单选／多选／自定义回答与 Review 一次提交。
+//!
+//! Panel 只维护交互状态与绘制；请求通道、答案回传与 transcript 记录块由
+//! `App`（src/tui.rs）负责。所有展示文本经过 `display_text` 清洗，原始答案
+//! 始终使用未经改写的 label／custom 文本。
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+};
+use ratatui_textarea::TextArea;
+
+use super::markdown;
+use super::menu::{MenuEvent, MenuItem, SelectionMenu};
+use super::transcript_style::{ACCENT, BORDER, DIM, MUTED, REMOVED, display_text};
+use crate::interaction::{AskAnswer, AskArgs, AskRequest};
+
+const OTHER_LABEL: &str = "Other (type your own)";
+const REQUIRED_MESSAGE: &str = "Answer this question before submitting.";
+const EMPTY_MULTI_MESSAGE: &str = "No options selected";
+const NOT_ANSWERED_MESSAGE: &str = "(not answered)";
+const EDITOR_HINT: &str = "Enter accept · Ctrl-J newline · Esc discard";
+const SINGLE_HINT: &str = "↑↓ move · Enter select · Tab next · Ctrl-O details · Esc cancel";
+const MULTI_HINT: &str = "↑↓ move · Space toggle · Tab next · Ctrl-O details · Esc cancel";
+const REVIEW_HINT: &str = "Enter submit · Tab questions · Esc cancel";
+const COMPACT_HINT: &str = "Enter confirm · Tab next · Esc cancel";
+
+#[derive(Debug)]
+pub(super) enum Action {
+    None,
+    Submit(Vec<AskAnswer>),
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Question(usize),
+    Review,
+}
+
+/// 每题独立的焦点、选集、custom 答案与列表位置。
+struct QuestionState {
+    selected: Vec<usize>,
+    custom: String,
+    menu: SelectionMenu<usize>,
+    question_layout: Option<(u16, Vec<Line<'static>>)>,
+}
+
+impl QuestionState {
+    fn new(question: &crate::interaction::AskQuestion) -> Self {
+        let initial = question
+            .recommended
+            .filter(|index| *index < question.options.len())
+            .unwrap_or(0);
+        let menu =
+            SelectionMenu::new(menu_items(question, &[], false), initial).with_accent(ACCENT);
+        Self {
+            selected: Vec::new(),
+            custom: String::new(),
+            menu,
+            question_layout: None,
+        }
+    }
+}
+
+struct Preview {
+    document: markdown::MarkdownDocument,
+    width: u16,
+    lines: Vec<Line<'static>>,
+}
+
+pub(super) struct Panel {
+    questions: Arc<AskArgs>,
+    states: Vec<QuestionState>,
+    page: Page,
+    editor: Option<(usize, TextArea<'static>)>,
+    error: Option<String>,
+    submitted: bool,
+    expanded: bool,
+    detail_scroll: usize,
+    review_scroll: usize,
+    overlay: Option<Rect>,
+    layout_size: (u16, u16),
+    height: u16,
+    previews: HashMap<(usize, usize), Preview>,
+    details: Option<((usize, usize, u16), Vec<Line<'static>>)>,
+    review: Option<(u16, Vec<Line<'static>>)>,
+}
+
+impl Panel {
+    pub(super) fn new(request: AskRequest) -> Self {
+        let AskRequest { args, .. } = request;
+        let states = args.questions.iter().map(QuestionState::new).collect();
+        Self {
+            questions: args,
+            states,
+            page: Page::Question(0),
+            editor: None,
+            error: None,
+            submitted: false,
+            expanded: false,
+            detail_scroll: 0,
+            review_scroll: 0,
+            overlay: None,
+            layout_size: (0, 0),
+            height: 1,
+            previews: HashMap::new(),
+            details: None,
+            review: None,
+        }
+    }
+
+    pub(super) fn key(&mut self, key: KeyEvent) -> Action {
+        if self.submitted {
+            return Action::None;
+        }
+        if self.questions.questions.is_empty() {
+            return Action::Cancel;
+        }
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return Action::None;
+        }
+        if key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter {
+            return Action::None;
+        }
+        if self.editor.is_some() {
+            return self.editor_key(key);
+        }
+        match self.page {
+            Page::Question(index) => self.question_key(index, key),
+            Page::Review => self.review_key(key),
+        }
+    }
+
+    pub(super) fn paste(&mut self, text: &str) -> Action {
+        if let Some((_, editor)) = self.editor.as_mut() {
+            insert_custom_text(editor, text);
+        }
+        Action::None
+    }
+
+    /// 仅当滚轮命中面板 overlay 时导航选项列表；否则交还主界面滚动。
+    pub(super) fn wheel(&mut self, up: bool, column: u16, row: u16) -> bool {
+        let Some(area) = self.overlay else {
+            return false;
+        };
+        if column < area.x || column >= area.right() || row < area.y || row >= area.bottom() {
+            return false;
+        }
+        if self.questions.questions.is_empty() || self.editor.is_some() {
+            return true;
+        }
+        let key = KeyEvent::new(
+            if up { KeyCode::Up } else { KeyCode::Down },
+            KeyModifiers::NONE,
+        );
+        match self.page {
+            Page::Question(index) => {
+                let before = self.states[index].menu.selected_index();
+                self.states[index].menu.handle_key(key);
+                if self.states[index].menu.selected_index() != before {
+                    self.detail_scroll = 0;
+                }
+            }
+            Page::Review => {
+                if up {
+                    self.review_scroll = self.review_scroll.saturating_sub(1);
+                } else {
+                    self.review_scroll = self.review_scroll.saturating_add(1);
+                }
+            }
+        }
+        true
+    }
+
+    pub(super) fn draw(&mut self, frame: &mut Frame, available: Rect) {
+        if available.width == 0 || available.height == 0 {
+            self.overlay = None;
+            return;
+        }
+        if self.layout_size != (available.width, available.height) {
+            self.height = self.compute_height(available, frame.area().height);
+            self.layout_size = (available.width, available.height);
+        }
+        let height = self.height.min(available.height).max(1);
+        let area = Rect {
+            x: available.x,
+            y: available.y + available.height - height,
+            width: available.width,
+            height,
+        };
+        self.overlay = Some(area);
+        frame.render_widget(Clear, area);
+        if available.height < 5 {
+            self.draw_compact(frame, area);
+            return;
+        }
+        let title = Line::styled(
+            format!(" {} ", self.chip()),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        );
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(BORDER))
+            .title(title);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        match self.page {
+            Page::Question(index) => self.draw_question(frame, inner, index),
+            Page::Review => self.draw_review(frame, inner),
+        }
+    }
+
+    // ---- 键盘路由 ----
+
+    fn editor_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => {
+                // Esc 只丢弃本次编辑，回到 picker。
+                self.editor = None;
+                self.error = None;
+                Action::None
+            }
+            KeyCode::Enter => {
+                let accepted = match self.editor.as_ref() {
+                    Some((index, editor)) => {
+                        let text = editor.lines().join("\n");
+                        (!text.trim().is_empty()).then_some((*index, text))
+                    }
+                    None => None,
+                };
+                let Some((index, text)) = accepted else {
+                    return Action::None;
+                };
+                let multi = self.questions.questions[index].multi;
+                let state = &mut self.states[index];
+                state.custom = text;
+                if !multi {
+                    state.selected.clear();
+                }
+                self.editor = None;
+                self.rebuild_menu(index);
+                self.error = None;
+                self.detail_scroll = 0;
+                self.advance(index)
+            }
+            KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
+                if let Some((_, editor)) = self.editor.as_mut() {
+                    editor.insert_newline();
+                }
+                Action::None
+            }
+            _ => {
+                if let Some((_, editor)) = self.editor.as_mut() {
+                    editor.input(key);
+                }
+                Action::None
+            }
+        }
+    }
+
+    fn question_key(&mut self, index: usize, key: KeyEvent) -> Action {
+        let multi = self.questions.questions[index].multi;
+        let option_count = self.questions.questions[index].options.len();
+        let focused = self.states[index].menu.selected_index().unwrap_or(0);
+        match key.code {
+            KeyCode::Esc => Action::Cancel,
+            KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
+                self.expanded = !self.expanded;
+                self.detail_scroll = 0;
+                Action::None
+            }
+            KeyCode::Up if key.modifiers == KeyModifiers::CONTROL && self.expanded => {
+                self.detail_scroll = self.detail_scroll.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::Down if key.modifiers == KeyModifiers::CONTROL && self.expanded => {
+                self.detail_scroll = self.detail_scroll.saturating_add(1);
+                Action::None
+            }
+            KeyCode::Up if key.modifiers == KeyModifiers::CONTROL => Action::None,
+            KeyCode::Down if key.modifiers == KeyModifiers::CONTROL => Action::None,
+            KeyCode::Left | KeyCode::BackTab => {
+                self.step_page(-1);
+                Action::None
+            }
+            KeyCode::Right | KeyCode::Tab => {
+                self.step_page(1);
+                Action::None
+            }
+            KeyCode::Char(' ')
+                if multi
+                    && key.kind == KeyEventKind::Press
+                    && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
+                    && focused < option_count =>
+            {
+                let state = &mut self.states[index];
+                if let Some(position) = state
+                    .selected
+                    .iter()
+                    .position(|&selected| selected == focused)
+                {
+                    state.selected.remove(position);
+                } else {
+                    state.selected.push(focused);
+                    state.selected.sort_unstable();
+                }
+                self.rebuild_menu(index);
+                self.error = None;
+                Action::None
+            }
+            _ => {
+                let before = self.states[index].menu.selected_index();
+                match self.states[index].menu.handle_key(key) {
+                    MenuEvent::Confirm(item) => self.confirm(index, item),
+                    MenuEvent::Handled => {
+                        if self.states[index].menu.selected_index() != before {
+                            self.detail_scroll = 0;
+                        }
+                        Action::None
+                    }
+                    _ => Action::None,
+                }
+            }
+        }
+    }
+
+    fn review_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => Action::Cancel,
+            KeyCode::Enter => self.submit(),
+            KeyCode::Up => {
+                self.review_scroll = self.review_scroll.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::Down => {
+                self.review_scroll = self.review_scroll.saturating_add(1);
+                Action::None
+            }
+            KeyCode::PageUp => {
+                self.review_scroll = self.review_scroll.saturating_sub(8);
+                Action::None
+            }
+            KeyCode::PageDown => {
+                self.review_scroll = self.review_scroll.saturating_add(8);
+                Action::None
+            }
+            KeyCode::Home => {
+                self.review_scroll = 0;
+                Action::None
+            }
+            KeyCode::End => {
+                self.review_scroll = usize::MAX;
+                Action::None
+            }
+            KeyCode::Left | KeyCode::BackTab => {
+                self.step_page(-1);
+                Action::None
+            }
+            KeyCode::Right | KeyCode::Tab => {
+                self.step_page(1);
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn confirm(&mut self, index: usize, item: usize) -> Action {
+        let option_count = self.questions.questions[index].options.len();
+        if item == option_count {
+            let mut editor = super::editor();
+            insert_custom_text(&mut editor, &self.states[index].custom);
+            self.editor = Some((index, editor));
+            self.error = None;
+            return Action::None;
+        }
+        if self.questions.questions[index].multi {
+            // 多选 Enter 只前进，不额外勾选焦点项。
+            self.error = None;
+            self.detail_scroll = 0;
+            return self.advance(index);
+        }
+        let state = &mut self.states[index];
+        state.selected = vec![item];
+        state.custom.clear();
+        self.rebuild_menu(index);
+        self.error = None;
+        self.detail_scroll = 0;
+        self.advance(index)
+    }
+
+    fn step_page(&mut self, delta: isize) {
+        if !self.has_review() {
+            return;
+        }
+        let pages = self.questions.questions.len() as isize + 1;
+        let current = match self.page {
+            Page::Question(index) => index as isize,
+            Page::Review => pages - 1,
+        };
+        let next = (current + delta).rem_euclid(pages) as usize;
+        self.error = None;
+        self.detail_scroll = 0;
+        if next == pages as usize - 1 {
+            self.page = Page::Review;
+            self.review_scroll = 0;
+        } else {
+            self.page = Page::Question(next);
+        }
+    }
+
+    fn advance(&mut self, index: usize) -> Action {
+        if index + 1 < self.questions.questions.len() {
+            self.page = Page::Question(index + 1);
+            return Action::None;
+        }
+        if self.has_review() {
+            self.page = Page::Review;
+            self.review_scroll = 0;
+            return Action::None;
+        }
+        self.submit()
+    }
+
+    fn has_review(&self) -> bool {
+        !(self.questions.questions.len() == 1 && !self.questions.questions[0].multi)
+    }
+
+    fn submit(&mut self) -> Action {
+        for (index, question) in self.questions.questions.iter().enumerate() {
+            if question.multi {
+                continue;
+            }
+            let state = &self.states[index];
+            if state.selected.is_empty() && state.custom.trim().is_empty() {
+                self.error = Some(REQUIRED_MESSAGE.into());
+                self.page = Page::Question(index);
+                self.detail_scroll = 0;
+                return Action::None;
+            }
+        }
+        self.submitted = true;
+        Action::Submit(self.collect_answers())
+    }
+
+    /// 按问题原顺序构造答案；多选 label 按原选项顺序，custom 保留原文。
+    fn collect_answers(&self) -> Vec<AskAnswer> {
+        self.questions
+            .questions
+            .iter()
+            .enumerate()
+            .map(|(index, question)| {
+                let state = &self.states[index];
+                let selected_options = state
+                    .selected
+                    .iter()
+                    .filter_map(|&item| question.options.get(item))
+                    .map(|option| option.label.clone())
+                    .collect();
+                let custom_input = (!state.custom.is_empty()).then(|| state.custom.clone());
+                AskAnswer {
+                    id: question.id.clone(),
+                    selected_options,
+                    custom_input,
+                }
+            })
+            .collect()
+    }
+
+    fn rebuild_menu(&mut self, index: usize) {
+        self.review = None;
+        let question = &self.questions.questions[index];
+        let state = &mut self.states[index];
+        let custom = !state.custom.is_empty();
+        for item in state.menu.items_mut() {
+            let selected = if item.value == question.options.len() {
+                custom
+            } else {
+                state.selected.contains(&item.value)
+            };
+            item.icon = Some(match (question.multi, selected) {
+                (false, false) => "○",
+                (false, true) => "●",
+                (true, false) => "☐",
+                (true, true) => "☑",
+            });
+        }
+    }
+
+    fn chip(&self) -> String {
+        match self.page {
+            Page::Question(index) => {
+                let question = &self.questions.questions[index];
+                let base = question
+                    .header
+                    .as_deref()
+                    .filter(|header| !header.trim().is_empty())
+                    .unwrap_or(&question.id);
+                let mut chip = menu_text(base);
+                let total = self.questions.questions.len();
+                if total > 1 {
+                    chip.push_str(&format!(" · {}/{total}", index + 1));
+                }
+                chip
+            }
+            Page::Review => "Review".into(),
+        }
+    }
+
+    fn selection_summary(&self) -> String {
+        match self.page {
+            Page::Review => "Review".into(),
+            Page::Question(index) => {
+                let question = &self.questions.questions[index];
+                let state = &self.states[index];
+                let mut parts: Vec<String> = state
+                    .selected
+                    .iter()
+                    .filter_map(|&item| question.options.get(item))
+                    .map(|option| menu_text(&option.label))
+                    .collect();
+                if !state.custom.is_empty() {
+                    parts.push(menu_text(&state.custom));
+                }
+                if parts.is_empty() {
+                    let focused = state.menu.selected_index().unwrap_or(0);
+                    match focused.checked_sub(question.options.len()) {
+                        Some(_) => OTHER_LABEL.to_string(),
+                        None => question
+                            .options
+                            .get(focused)
+                            .map(|option| menu_text(&option.label))
+                            .unwrap_or_default(),
+                    }
+                } else {
+                    parts.join(", ")
+                }
+            }
+        }
+    }
+
+    // ---- 布局与绘制 ----
+
+    fn compute_height(&self, available: Rect, screen_height: u16) -> u16 {
+        let inner_width = available.width.saturating_sub(2);
+        let question_lines = self
+            .questions
+            .questions
+            .iter()
+            .map(|question| {
+                line_count(display_text(&question.question).as_ref(), inner_width).min(4)
+            })
+            .max()
+            .unwrap_or(0);
+        let menu_rows = self
+            .questions
+            .questions
+            .iter()
+            .map(|question| (question.options.len() + 1).min(8) as u16)
+            .max()
+            .unwrap_or(1);
+        let need = 2 + 1 + question_lines + menu_rows + 3 + 1 + 1;
+        if available.height < 5 {
+            return available.height;
+        }
+        let cap = (u32::from(screen_height) * 7 / 10) as u16;
+        need.min(cap).min(available.height).max(1)
+    }
+
+    fn cached_preview(&mut self, index: usize, item: usize, width: u16) -> &[Line<'static>] {
+        let text = self.questions.questions[index].options[item]
+            .preview
+            .as_deref()
+            .unwrap_or_default();
+        let entry = self.previews.entry((index, item)).or_insert_with(|| {
+            let document = markdown::parse(text);
+            let lines = document.layout(width);
+            Preview {
+                document,
+                width,
+                lines,
+            }
+        });
+        if entry.width != width {
+            entry.lines = entry.document.layout(width);
+            entry.width = width;
+        }
+        &entry.lines
+    }
+
+    fn draw_compact(&mut self, frame: &mut Frame, area: Rect) {
+        if area.height == 1 {
+            frame.render_widget(Line::from(self.selection_summary()), area);
+            return;
+        }
+        frame.render_widget(
+            Line::from(Span::styled(
+                self.chip(),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )),
+            Rect { height: 1, ..area },
+        );
+        frame.render_widget(
+            Line::from(self.selection_summary()),
+            Rect {
+                y: area.y + 1,
+                height: 1,
+                ..area
+            },
+        );
+        if area.height >= 3 {
+            frame.render_widget(
+                Line::styled(COMPACT_HINT, Style::default().fg(DIM)),
+                Rect {
+                    y: area.y + 2,
+                    height: 1,
+                    ..area
+                },
+            );
+        }
+    }
+
+    fn draw_question(&mut self, frame: &mut Frame, inner: Rect, index: usize) {
+        let multi = self.questions.questions[index].multi;
+        let error = self.error.clone();
+        let editing = matches!(&self.editor, Some((owner, _)) if *owner == index);
+        let hint = if editing {
+            EDITOR_HINT
+        } else if multi {
+            MULTI_HINT
+        } else {
+            SINGLE_HINT
+        };
+        let hint_h = u16::from(inner.height > 1);
+        let error_h = u16::from(error.is_some() && inner.height > 2);
+        let content_h = inner.height - hint_h - error_h;
+        let content_area = Rect {
+            height: content_h,
+            ..inner
+        };
+        let error_area = Rect {
+            y: inner.y + content_h,
+            height: error_h,
+            ..inner
+        };
+        let hint_area = Rect {
+            y: inner.y + content_h + error_h,
+            height: hint_h,
+            ..inner
+        };
+
+        if let Some((owner, editor)) = self.editor.as_mut()
+            && *owner == index
+        {
+            let header_h = 1.min(content_h);
+            frame.render_widget(
+                Line::from(vec![
+                    Span::styled("custom answer", Style::default().fg(ACCENT)),
+                    Span::styled(format!(" · {EDITOR_HINT}"), Style::default().fg(DIM)),
+                ]),
+                Rect {
+                    height: header_h,
+                    ..content_area
+                },
+            );
+            let editor_area = Rect {
+                y: content_area.y + header_h,
+                height: content_h - header_h,
+                ..content_area
+            };
+            if editor_area.width > 0 && editor_area.height > 0 {
+                frame.render_widget(&*editor, editor_area);
+                for y in editor_area.y..editor_area.bottom() {
+                    for x in editor_area.x..editor_area.right() {
+                        let cell = &mut frame.buffer_mut()[(x, y)];
+                        if let std::borrow::Cow::Owned(safe) = display_text(cell.symbol()) {
+                            cell.set_symbol(&safe);
+                        }
+                    }
+                }
+                let cursor = editor.screen_cursor();
+                let (top, left) = editor.scroll_offset();
+                if let (Some(row), Some(column)) = (
+                    cursor.row.checked_sub(usize::from(top)),
+                    cursor.col.checked_sub(usize::from(left)),
+                ) && row < usize::from(editor_area.height)
+                    && column < usize::from(editor_area.width)
+                {
+                    frame.set_cursor_position((
+                        editor_area.x + column as u16,
+                        editor_area.y + row as u16,
+                    ));
+                }
+            }
+        } else if self.expanded {
+            let detail_h = (content_h / 2).max(1).min(content_h);
+            let detail_area = Rect {
+                height: detail_h,
+                ..content_area
+            };
+            let menu_area = Rect {
+                y: content_area.y + detail_h,
+                height: content_h - detail_h,
+                ..content_area
+            };
+            let focused = self.states[index].menu.selected_index().unwrap_or(0);
+            let cache_key = (index, focused, inner.width);
+            if self
+                .details
+                .as_ref()
+                .is_none_or(|(key, _)| *key != cache_key)
+            {
+                let question = display_text(&self.questions.questions[index].question).into_owned();
+                let mut lines = super::transcript::wrap_block(
+                    super::transcript::block_line(question, Style::default()),
+                    inner.width,
+                    "",
+                );
+                if let Some(option) = self.questions.questions[index].options.get(focused) {
+                    if let Some(description) = option
+                        .description
+                        .as_deref()
+                        .filter(|text| !text.trim().is_empty())
+                    {
+                        lines.push(Line::default());
+                        lines.extend(super::transcript::wrap_block(
+                            super::transcript::block_line(
+                                display_text(description).into_owned(),
+                                Style::default().fg(MUTED),
+                            ),
+                            inner.width,
+                            "",
+                        ));
+                    }
+                    if option
+                        .preview
+                        .as_deref()
+                        .is_some_and(|text| !text.trim().is_empty())
+                    {
+                        lines.push(Line::default());
+                        lines.extend(
+                            self.cached_preview(index, focused, inner.width)
+                                .iter()
+                                .cloned(),
+                        );
+                    }
+                }
+                self.details = Some((cache_key, lines));
+            }
+            let lines = &self.details.as_ref().expect("detail layout initialized").1;
+            let max_scroll = lines.len().saturating_sub(usize::from(detail_h));
+            self.detail_scroll = self.detail_scroll.min(max_scroll);
+            for (row, line) in lines
+                .iter()
+                .skip(self.detail_scroll)
+                .take(usize::from(detail_h))
+                .enumerate()
+            {
+                frame.render_widget(
+                    line,
+                    Rect::new(
+                        detail_area.x,
+                        detail_area.y + row as u16,
+                        detail_area.width,
+                        1,
+                    ),
+                );
+            }
+            self.states[index].menu.draw(frame, menu_area);
+        } else {
+            if self.states[index]
+                .question_layout
+                .as_ref()
+                .is_none_or(|(width, _)| *width != inner.width)
+            {
+                let lines = super::transcript::wrap_block(
+                    super::transcript::block_line(
+                        self.questions.questions[index].question.clone(),
+                        Style::default(),
+                    ),
+                    inner.width,
+                    "",
+                );
+                self.states[index].question_layout = Some((inner.width, lines));
+            }
+            let question_rows = &self.states[index]
+                .question_layout
+                .as_ref()
+                .expect("question layout initialized")
+                .1;
+            let question_lines = question_rows.len().min(4) as u16;
+            let want_menu = (self.states[index].menu.items().len().min(8)) as u16;
+            let menu_h = want_menu
+                .min(content_h.saturating_sub(1))
+                .max(1)
+                .min(content_h);
+            let question_h = question_lines.min(content_h - menu_h);
+            let question_area = Rect {
+                height: question_h,
+                ..content_area
+            };
+            let menu_area = Rect {
+                y: content_area.y + question_h,
+                height: menu_h,
+                ..content_area
+            };
+            let preview_h = (content_h - question_h - menu_h).min(3);
+            let preview_area = Rect {
+                y: content_area.y + question_h + menu_h,
+                height: preview_h,
+                ..content_area
+            };
+            for (row, line) in question_rows
+                .iter()
+                .take(usize::from(question_h))
+                .enumerate()
+            {
+                frame.render_widget(
+                    line,
+                    Rect::new(
+                        question_area.x,
+                        question_area.y + row as u16,
+                        question_area.width,
+                        1,
+                    ),
+                );
+            }
+            let focused = self.states[index].menu.selected_index().unwrap_or(0);
+            if preview_h > 0
+                && let Some(_) = self.questions.questions[index]
+                    .options
+                    .get(focused)
+                    .and_then(|option| option.preview.as_deref())
+                    .filter(|text| !text.trim().is_empty())
+            {
+                let lines = self.cached_preview(index, focused, inner.width);
+                for (row, line) in lines.iter().take(usize::from(preview_h)).enumerate() {
+                    frame.render_widget(
+                        line,
+                        Rect::new(
+                            preview_area.x,
+                            preview_area.y + row as u16,
+                            preview_area.width,
+                            1,
+                        ),
+                    );
+                }
+            }
+            self.states[index].menu.draw(frame, menu_area);
+        }
+
+        if let Some(error) = error {
+            frame.render_widget(
+                Line::styled(error, Style::default().fg(REMOVED)),
+                error_area,
+            );
+        }
+        if hint_h > 0 {
+            frame.render_widget(Line::styled(hint, Style::default().fg(DIM)), hint_area);
+        }
+    }
+
+    fn draw_review(&mut self, frame: &mut Frame, inner: Rect) {
+        let error = self.error.clone();
+        let hint_h = u16::from(inner.height > 1);
+        let error_h = u16::from(error.is_some() && inner.height > 2);
+        let content_h = inner.height - hint_h - error_h;
+        if self
+            .review
+            .as_ref()
+            .is_none_or(|(width, _)| *width != inner.width)
+        {
+            let lines = self
+                .review_lines()
+                .into_iter()
+                .flat_map(|line| super::transcript::wrap_block(line, inner.width, ""))
+                .collect();
+            self.review = Some((inner.width, lines));
+        }
+        let lines = &self.review.as_ref().expect("review layout initialized").1;
+        let max_scroll = lines.len().saturating_sub(usize::from(content_h.max(1)));
+        self.review_scroll = self.review_scroll.min(max_scroll);
+        for (row, line) in lines
+            .iter()
+            .skip(self.review_scroll)
+            .take(usize::from(content_h))
+            .enumerate()
+        {
+            frame.render_widget(
+                line,
+                Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            );
+        }
+        if let Some(error) = error {
+            frame.render_widget(
+                Line::styled(error, Style::default().fg(REMOVED)),
+                Rect {
+                    y: inner.y + content_h,
+                    height: error_h,
+                    ..inner
+                },
+            );
+        }
+        if hint_h > 0 {
+            frame.render_widget(
+                Line::styled(REVIEW_HINT, Style::default().fg(DIM)),
+                Rect {
+                    y: inner.y + content_h + error_h,
+                    height: hint_h,
+                    ..inner
+                },
+            );
+        }
+    }
+
+    fn review_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        for (index, question) in self.questions.questions.iter().enumerate() {
+            let chip = question
+                .header
+                .as_deref()
+                .filter(|header| !header.trim().is_empty())
+                .unwrap_or(&question.id);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    display_text(chip).into_owned(),
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" — {}", display_text(&question.question)),
+                    Style::default().fg(MUTED),
+                ),
+            ]));
+            let state = &self.states[index];
+            let mut parts: Vec<String> = state
+                .selected
+                .iter()
+                .filter_map(|&item| question.options.get(item))
+                .map(|option| menu_text(&option.label))
+                .collect();
+            if !state.custom.is_empty() {
+                parts.push(format!("custom: {}", display_text(&state.custom)));
+            }
+            let answered = !parts.is_empty();
+            let summary = if answered {
+                parts.join(", ")
+            } else if question.multi {
+                EMPTY_MULTI_MESSAGE.to_string()
+            } else {
+                NOT_ANSWERED_MESSAGE.to_string()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {summary}"),
+                if answered {
+                    Style::default()
+                } else {
+                    Style::default().fg(DIM)
+                },
+            )));
+        }
+        lines
+    }
+}
+
+/// 选项列表：原选项加推荐徽标，末尾固定追加自定义回答入口。
+fn insert_custom_text(editor: &mut TextArea<'static>, text: &str) {
+    // TextArea::insert_str strips one CR before every LF and at EOF. Duplicate
+    // only those CRs in its input so the stored editor text remains byte-exact.
+    if !text.contains("\r\n") && !text.ends_with('\r') {
+        editor.insert_str(text);
+        return;
+    }
+    let mut insertion = String::with_capacity(text.len());
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            insertion.push('\n');
+        }
+        insertion.push_str(line);
+        if line.ends_with('\r') {
+            insertion.push('\r');
+        }
+    }
+    editor.insert_str(insertion);
+}
+
+fn menu_text(text: &str) -> String {
+    let safe = display_text(text);
+    let mut output = String::with_capacity(safe.len());
+    let mut column = 0;
+    for part in safe.split_inclusive(['\n', '\t']) {
+        let (plain, separator) = if let Some(text) = part.strip_suffix('\n') {
+            (text, Some('\n'))
+        } else if let Some(text) = part.strip_suffix('\t') {
+            (text, Some('\t'))
+        } else {
+            (part, None)
+        };
+        for grapheme in Span::raw(plain).styled_graphemes(Style::default()) {
+            output.push_str(grapheme.symbol);
+            column += Span::raw(grapheme.symbol).width();
+        }
+        if let Some(separator) = separator {
+            let spaces = if separator == '\t' { 4 - column % 4 } else { 1 };
+            output.extend(std::iter::repeat_n(' ', spaces));
+            column += spaces;
+        }
+    }
+    output
+}
+
+fn menu_items(
+    question: &crate::interaction::AskQuestion,
+    selected: &[usize],
+    custom: bool,
+) -> Vec<MenuItem<usize>> {
+    let count = question.options.len();
+    let mut items = Vec::with_capacity(count + 1);
+    for (index, option) in question.options.iter().enumerate() {
+        let icon = match (question.multi, selected.contains(&index)) {
+            (true, true) => "☑",
+            (true, false) => "☐",
+            (false, true) => "●",
+            (false, false) => "○",
+        };
+        let mut label = menu_text(&option.label);
+        if question.recommended == Some(index) {
+            label.push_str(" (Recommended)");
+        }
+        let description = option
+            .description
+            .as_deref()
+            .map(menu_text)
+            .unwrap_or_default();
+        items.push(MenuItem {
+            value: index,
+            label,
+            description,
+            icon: Some(icon),
+            current: false,
+        });
+    }
+    let other_icon = match (question.multi, custom) {
+        (true, true) => "☑",
+        (true, false) => "☐",
+        (false, true) => "●",
+        (false, false) => "○",
+    };
+    items.push(MenuItem {
+        value: count,
+        label: OTHER_LABEL.to_string(),
+        description: String::new(),
+        icon: Some(other_icon),
+        current: false,
+    });
+    items
+}
+
+fn line_count(text: &str, width: u16) -> u16 {
+    if width == 0 {
+        return 0;
+    }
+    Paragraph::new(Text::from(text.to_owned()))
+        .wrap(Wrap { trim: true })
+        .line_count(width) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interaction::{AskOption, AskQuestion};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn option(label: &str) -> AskOption {
+        AskOption {
+            label: label.into(),
+            description: None,
+            preview: None,
+        }
+    }
+
+    fn question(id: &str, multi: bool, recommended: Option<usize>, labels: &[&str]) -> AskQuestion {
+        AskQuestion {
+            id: id.into(),
+            question: format!("Choose for {id}?"),
+            options: labels.iter().map(|label| option(label)).collect(),
+            header: None,
+            multi,
+            recommended,
+        }
+    }
+
+    fn panel(questions: Vec<AskQuestion>) -> Panel {
+        Panel::new(AskRequest {
+            call_id: "call-1".into(),
+            args: Arc::new(AskArgs { questions }),
+        })
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(code: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL)
+    }
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    fn render(panel: &mut Panel, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| panel.draw(frame, Rect::new(0, 0, width, height)))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn initial_focus_recommended_without_preselection() {
+        let panel = panel(vec![question("q", false, Some(1), &["A", "B", "C"])]);
+        assert_eq!(panel.states[0].menu.selected_index(), Some(1));
+        assert!(panel.states[0].selected.is_empty());
+        assert!(panel.states[0].custom.is_empty());
+        let empty = self::panel(vec![question("q", true, None, &[])]);
+        assert_eq!(empty.states[0].menu.selected_index(), Some(0));
+    }
+
+    #[test]
+    fn recommended_badge_is_display_only_and_labels_sanitized() {
+        let mut q = question("q", false, Some(0), &["Postgres", "Da\u{7f}ta"]);
+        q.options[1].description = Some("fast\u{1b}[31m".into());
+        let mut panel = panel(vec![q]);
+        let items = panel.states[0].menu.items();
+        assert_eq!(items[0].label, "Postgres (Recommended)");
+        assert!(!items[1].label.contains('\u{7f}'));
+        assert!(!items[1].description.contains('\u{1b}'));
+        let action = panel.key(key(KeyCode::Enter));
+        let Action::Submit(answers) = action else {
+            panic!("single question single select must submit immediately");
+        };
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].id, "q");
+        assert_eq!(answers[0].selected_options, vec!["Postgres".to_string()]);
+        assert_eq!(answers[0].custom_input, None);
+    }
+
+    #[test]
+    fn single_select_custom_editor_submit_with_multiline() {
+        let mut panel = panel(vec![question("q", false, Some(0), &["A", "B"])]);
+        panel.key(key(KeyCode::End));
+        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+        assert!(panel.editor.is_some());
+        panel.paste("  ");
+        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+        assert!(panel.editor.is_some());
+        assert!(matches!(panel.key(key(KeyCode::Esc)), Action::None));
+        assert!(panel.editor.is_none());
+        assert!(panel.states[0].custom.is_empty());
+        panel.key(key(KeyCode::Enter));
+        assert!(panel.editor.is_some());
+        panel.paste("第一行");
+        panel.key(ctrl('j'));
+        panel.paste("second");
+        let action = panel.key(key(KeyCode::Enter));
+        let Action::Submit(answers) = action else {
+            panic!("expected submit after custom answer");
+        };
+        assert_eq!(answers[0].custom_input, Some("第一行\nsecond".to_string()));
+        assert!(answers[0].selected_options.is_empty());
+    }
+
+    #[test]
+    fn multi_toggle_order_then_required_answer_locates_question() {
+        let mut panel = panel(vec![
+            question("checks", true, Some(0), &["unit", "lint", "fmt"]),
+            question("db", false, Some(0), &["SQLite", "Postgres"]),
+        ]);
+        panel.key(key(KeyCode::End));
+        panel.key(key(KeyCode::Up));
+        panel.key(key(KeyCode::Char(' ')));
+        panel.key(key(KeyCode::Home));
+        panel.key(key(KeyCode::Char(' ')));
+        assert_eq!(panel.states[0].selected, vec![0, 2]);
+        panel.key(key(KeyCode::Tab));
+        panel.key(key(KeyCode::Tab));
+        assert_eq!(panel.page, Page::Review);
+        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+        assert_eq!(panel.error.as_deref(), Some(REQUIRED_MESSAGE));
+        assert_eq!(panel.page, Page::Question(1));
+        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+        assert_eq!(panel.page, Page::Review);
+        let action = panel.key(key(KeyCode::Enter));
+        let Action::Submit(answers) = action else {
+            panic!("expected submit after all questions answered");
+        };
+        assert_eq!(answers[0].id, "checks");
+        assert_eq!(
+            answers[0].selected_options,
+            vec!["unit".to_string(), "fmt".to_string()]
+        );
+        assert_eq!(answers[0].custom_input, None);
+        assert_eq!(answers[1].selected_options, vec!["SQLite".to_string()]);
+    }
+
+    #[test]
+    fn multi_empty_selection_is_submittable() {
+        let mut panel = panel(vec![question("checks", true, None, &["unit", "lint"])]);
+        panel.key(key(KeyCode::Tab));
+        assert_eq!(panel.page, Page::Review);
+        let action = panel.key(key(KeyCode::Enter));
+        let Action::Submit(answers) = action else {
+            panic!("empty multi selection must submit");
+        };
+        assert!(answers[0].selected_options.is_empty());
+        assert_eq!(answers[0].custom_input, None);
+    }
+
+    #[test]
+    fn multi_custom_coexists_with_selection() {
+        let mut panel = panel(vec![question("checks", true, Some(0), &["unit", "lint"])]);
+        panel.key(key(KeyCode::Char(' ')));
+        panel.key(key(KeyCode::End));
+        panel.key(key(KeyCode::Enter));
+        panel.paste("再检查中文");
+        panel.key(key(KeyCode::Enter));
+        assert_eq!(panel.page, Page::Review);
+        let action = panel.key(key(KeyCode::Enter));
+        let Action::Submit(answers) = action else {
+            panic!("expected submit with selection and custom answer");
+        };
+        assert_eq!(answers[0].selected_options, vec!["unit".to_string()]);
+        assert_eq!(answers[0].custom_input, Some("再检查中文".to_string()));
+    }
+
+    #[test]
+    fn single_select_option_clears_previous_custom() {
+        let mut panel = panel(vec![
+            question("a", false, None, &["A", "B"]),
+            question("b", true, None, &["x", "y"]),
+        ]);
+        panel.key(key(KeyCode::End));
+        panel.key(key(KeyCode::Enter));
+        panel.paste("custom");
+        panel.key(key(KeyCode::Enter));
+        assert_eq!(panel.page, Page::Question(1));
+        panel.key(key(KeyCode::BackTab));
+        assert_eq!(panel.page, Page::Question(0));
+        panel.key(key(KeyCode::Home));
+        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+        assert_eq!(panel.states[0].selected, vec![0]);
+        assert!(panel.states[0].custom.is_empty());
+        panel.key(key(KeyCode::Enter));
+        assert_eq!(panel.page, Page::Review);
+        let action = panel.key(key(KeyCode::Enter));
+        let Action::Submit(answers) = action else {
+            panic!("expected submit");
+        };
+        assert_eq!(answers[0].selected_options, vec!["A".to_string()]);
+        assert_eq!(answers[0].custom_input, None);
+    }
+
+    #[test]
+    fn esc_cancels_from_picker_and_review() {
+        let mut picker = panel(vec![question("q", false, None, &["A"])]);
+        assert!(matches!(picker.key(key(KeyCode::Esc)), Action::Cancel));
+        let mut review = panel(vec![question("q", true, None, &["A"])]);
+        review.key(key(KeyCode::Tab));
+        assert!(matches!(review.key(key(KeyCode::Esc)), Action::Cancel));
+    }
+
+    #[test]
+    fn tab_and_arrows_cycle_pages() {
+        let mut panel = panel(vec![
+            question("a", false, None, &["A"]),
+            question("b", false, None, &["B"]),
+        ]);
+        panel.key(key(KeyCode::Tab));
+        assert_eq!(panel.page, Page::Question(1));
+        panel.key(key(KeyCode::Right));
+        assert_eq!(panel.page, Page::Review);
+        panel.key(key(KeyCode::Tab));
+        assert_eq!(panel.page, Page::Question(0));
+        panel.key(key(KeyCode::Left));
+        assert_eq!(panel.page, Page::Review);
+    }
+
+    #[test]
+    fn single_single_select_question_has_no_review_page() {
+        let mut panel = panel(vec![question("a", false, None, &["A"])]);
+        panel.key(key(KeyCode::Tab));
+        assert_eq!(panel.page, Page::Question(0));
+    }
+
+    #[test]
+    fn details_expand_and_scroll() {
+        let mut panel = panel(vec![question("q", false, Some(0), &["A"])]);
+        assert!(!panel.expanded);
+        panel.key(ctrl('o'));
+        assert!(panel.expanded);
+        panel.key(ctrl_key(KeyCode::Down));
+        assert_eq!(panel.detail_scroll, 1);
+        panel.key(ctrl_key(KeyCode::Up));
+        assert_eq!(panel.detail_scroll, 0);
+        panel.key(ctrl('o'));
+        assert!(!panel.expanded);
+    }
+
+    #[test]
+    fn wheel_navigates_inside_overlay_only() {
+        let mut panel = panel(vec![question("q", false, Some(0), &["A", "B", "C"])]);
+        render(&mut panel, 40, 20);
+        let area = panel.overlay.expect("overlay cached after draw");
+        assert!(panel.wheel(false, area.x, area.bottom() - 1));
+        assert_eq!(panel.states[0].menu.selected_index(), Some(1));
+        assert!(!panel.wheel(true, area.right(), area.y));
+        assert!(!panel.wheel(true, area.x, area.bottom()));
+        assert_eq!(panel.states[0].menu.selected_index(), Some(1));
+    }
+
+    #[test]
+    fn draw_renders_preview_markdown_and_survives_resize() {
+        let mut q = question("q", false, Some(0), &["A"]);
+        q.options[0].preview = Some("# Head\n\ntext".into());
+        let mut panel = panel(vec![q]);
+        let screen = render(&mut panel, 40, 24);
+        assert!(
+            screen.contains("Head"),
+            "preview markdown missing: {screen}"
+        );
+        assert!(screen.contains("q"), "question chip missing");
+        panel.key(ctrl('o'));
+        let screen = render(&mut panel, 40, 24);
+        assert!(screen.contains("Head"), "expanded preview missing");
+        panel.key(key(KeyCode::Char(' ')));
+        render(&mut panel, 24, 12);
+        panel.key(ctrl_key(KeyCode::Down));
+        let resized = render(&mut panel, 24, 12);
+        assert!(
+            resized.contains("Head"),
+            "preview became unreachable after resize: {resized}"
+        );
+    }
+
+    #[test]
+    fn compact_mode_renders_without_border() {
+        let mut panel = panel(vec![question("db", false, None, &["A", "B"])]);
+        let screen = render(&mut panel, 30, 3);
+        assert!(screen.contains("db"), "chip missing in compact mode");
+        let screen = render(&mut panel, 30, 1);
+        assert!(
+            screen.starts_with('A'),
+            "focused option lost on one-row screen: {screen}"
+        );
+    }
+
+    #[test]
+    fn option_display_expands_tabs_without_rewriting_answer_labels() {
+        let mut panel = panel(vec![question("q", false, None, &["a\tb\nc"])]);
+        let screen = render(&mut panel, 80, 24);
+        assert!(
+            screen.contains("a   b c"),
+            "menu lost visible label whitespace: {screen}"
+        );
+        let Action::Submit(answers) = panel.key(key(KeyCode::Enter)) else {
+            panic!("expected selected answer")
+        };
+        assert_eq!(answers[0].selected_options, ["a\tb\nc"]);
+    }
+
+    #[test]
+    fn paste_without_editor_is_ignored() {
+        let mut panel = panel(vec![question("q", false, None, &["A"])]);
+        assert!(matches!(panel.paste("hello"), Action::None));
+        assert!(panel.states[0].custom.is_empty());
+    }
+
+    #[test]
+    fn custom_answer_keeps_raw_controls_but_terminal_cells_are_safe() {
+        let mut panel = panel(vec![question("q", false, None, &["A"])]);
+        panel.key(key(KeyCode::End));
+        panel.key(key(KeyCode::Enter));
+        panel.paste("bad\u{1b}[31mtail\r\nnext\rmiddle\r");
+        let screen = render(&mut panel, 80, 24);
+        assert!(
+            !screen.contains('\u{1b}'),
+            "unsafe control reached terminal cells"
+        );
+        let Action::Submit(answers) = panel.key(key(KeyCode::Enter)) else {
+            panic!("expected custom answer")
+        };
+        assert_eq!(
+            answers[0].custom_input.as_deref(),
+            Some("bad\u{1b}[31mtail\r\nnext\rmiddle\r")
+        );
+        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+    }
+}

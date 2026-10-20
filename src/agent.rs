@@ -232,8 +232,13 @@ impl Agent {
             pending_instructions: None,
             journal: SessionJournal::new(sessions_dir),
             replay: Vec::new(),
-            debug: debug::DebugState::new(config.settings.debug),
+            debug: debug::DebugState::new(config.settings.debug, false),
         })
+    }
+
+    pub(crate) fn set_ask_handler(&mut self, handler: crate::interaction::AskHandler) {
+        self.tools.ask_handler = Some(handler);
+        self.session.set_tools(self.tools.all_definitions());
     }
 
     pub(crate) fn restore(
@@ -294,7 +299,7 @@ impl Agent {
             pending_instructions: None,
             journal,
             replay,
-            debug: debug::DebugState::new(config.settings.debug),
+            debug: debug::DebugState::new(config.settings.debug, true),
         })
     }
 
@@ -369,6 +374,9 @@ impl Agent {
         self.session = restored.checkpoint.session;
         self.journal = restored.journal;
         self.replay = restored.replay;
+        if let Some(debug) = &mut self.debug {
+            debug.set_prompt_recorded(true);
+        }
         self.last_request = None;
         self.pending_instructions = None;
         Ok(())
@@ -596,6 +604,9 @@ impl Agent {
 
     pub(crate) fn reset(&mut self) {
         self.journal.reset();
+        if let Some(debug) = &mut self.debug {
+            debug.set_prompt_recorded(false);
+        }
         self.replay.clear();
         self.last_request = None;
         match &mut self.session {
@@ -775,6 +786,7 @@ impl Agent {
             let update = RequestUpdate {
                 user: user.take(),
                 instructions: self.pending_instructions.as_deref(),
+                debug: &mut self.debug,
             };
             let finished = match &mut self.session {
                 Session::Completion(request) => completion_turn(
@@ -815,6 +827,18 @@ impl Agent {
 struct RequestUpdate<'a> {
     user: Option<&'a str>,
     instructions: Option<&'a str>,
+    debug: &'a mut Option<debug::DebugState>,
+}
+
+impl RequestUpdate<'_> {
+    fn record_prompt(&mut self, session: SessionRef<'_>, metadata: &Metadata<'_>, id: &str) {
+        if let Some(debug) = self.debug
+            && debug.prompt(session, metadata, id).is_err()
+        {
+            debug::DebugState::warn_unavailable();
+            *self.debug = None;
+        }
+    }
 }
 
 fn log_task_finished(operation: &str, started: std::time::Instant, result: &Result<RunOutcome>) {
@@ -884,7 +908,7 @@ fn completion_turn(
     request: &mut CreateChatCompletionRequest,
     journal: &mut SessionJournal,
     metadata: &Metadata<'_>,
-    update: RequestUpdate<'_>,
+    mut update: RequestUpdate<'_>,
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<bool> {
@@ -904,6 +928,11 @@ fn completion_turn(
                 update.user,
                 update.instructions,
             )?;
+            update.record_prompt(
+                SessionRef::Completion(request),
+                metadata,
+                journal.id().expect("sent request has a session ID"),
+            );
             journal.event(&AgentEvent::AssistantStarted);
             journal.check()
         };
@@ -987,7 +1016,7 @@ fn response_turn(
     request: &mut CreateResponse,
     journal: &mut SessionJournal,
     metadata: &Metadata<'_>,
-    update: RequestUpdate<'_>,
+    mut update: RequestUpdate<'_>,
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<bool> {
@@ -1007,6 +1036,11 @@ fn response_turn(
                 update.user,
                 update.instructions,
             )?;
+            update.record_prompt(
+                SessionRef::Response(request),
+                metadata,
+                journal.id().expect("sent request has a session ID"),
+            );
             journal.event(&AgentEvent::AssistantStarted);
             journal.check()
         };

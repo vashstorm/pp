@@ -3,11 +3,11 @@ use crate::logging::DebugLog;
 use async_openai::types::responses::InputParam;
 use chrono::{DateTime, Local};
 use serde::Serialize;
-use std::{collections::HashSet, io};
+use std::io;
 
 pub(super) struct DebugState {
     log: DebugLog,
-    recorded_models: HashSet<String>,
+    prompt_recorded: bool,
 }
 
 #[derive(Serialize)]
@@ -36,6 +36,7 @@ struct FirstPrompt<'a> {
     timestamp: DateTime<Local>,
     event: &'static str,
     pid: u32,
+    session_id: &'a str,
     model_reference: &'a str,
     #[serde(flatten)]
     prompt: SessionRef<'a>,
@@ -49,14 +50,14 @@ fn serialize_timestamp<S: serde::Serializer>(
 }
 
 impl DebugState {
-    pub(super) fn new(enabled: bool) -> Option<Self> {
+    pub(super) fn new(enabled: bool, prompt_recorded: bool) -> Option<Self> {
         if !enabled {
             return None;
         }
         match DebugLog::new() {
             Ok(log) => Some(Self {
                 log,
-                recorded_models: HashSet::new(),
+                prompt_recorded,
             }),
             Err(_) => {
                 Self::warn_unavailable();
@@ -112,16 +113,32 @@ impl DebugState {
             history_items,
             tool_count,
         })?;
-        if !self.recorded_models.contains(metadata.model_reference) {
-            self.log.record(&FirstPrompt {
-                timestamp: Local::now(),
-                event: "llm_first_prompt",
-                pid: std::process::id(),
-                model_reference: metadata.model_reference,
-                prompt: session.into(),
-            })?;
-            self.recorded_models
-                .insert(metadata.model_reference.to_owned());
+        Ok(())
+    }
+
+    pub(super) fn set_prompt_recorded(&mut self, recorded: bool) {
+        self.prompt_recorded = recorded;
+    }
+
+    pub(super) fn prompt(
+        &mut self,
+        session: SessionRef<'_>,
+        metadata: &Metadata<'_>,
+        session_id: &str,
+    ) -> io::Result<()> {
+        if !self.prompt_recorded {
+            self.log.record_prompt(
+                session_id,
+                &FirstPrompt {
+                    timestamp: Local::now(),
+                    event: "llm_first_prompt",
+                    pid: std::process::id(),
+                    session_id,
+                    model_reference: metadata.model_reference,
+                    prompt: session,
+                },
+            )?;
+            self.prompt_recorded = true;
         }
         Ok(())
     }

@@ -66,8 +66,9 @@ fn logs_dir() -> anyhow::Result<PathBuf> {
 
 /// Opt-in human-readable debug text log. It shares `~/.pp/logs` and its `.lock` with the
 /// ordinary pp log but owns an independent `debug.DATE.NNNN` namespace with
-/// the same size and retention limits. No debug volume exists until the first
-/// [`DebugLog::record`]; this never touches the global tracing subscriber.
+/// the same size and retention limits. Initial prompts instead use one immutable
+/// `prompt-debug.SESSION_ID` file per session. Neither path touches the global
+/// tracing subscriber; files are only created when a record is written.
 pub(crate) struct DebugLog {
     file: RotatingFile,
 }
@@ -77,6 +78,40 @@ impl DebugLog {
         Ok(Self {
             file: RotatingFile::for_namespace(Namespace::Debug, logs_dir()?)?,
         })
+    }
+
+    /// Writes the session's initial prompt once, without rotating or appending.
+    pub(crate) fn record_prompt(
+        &mut self,
+        session_id: &str,
+        record: &impl serde::Serialize,
+    ) -> io::Result<()> {
+        let name = format!("prompt-debug.{session_id}");
+        if parse_prompt_name(&name).is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid prompt log ID",
+            ));
+        }
+        let value = serde_json::to_value(record).map_err(io::Error::other)?;
+        let text = debug::format_record(&value)?;
+        if text.len() as u64 > MAX_LOG_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "log event too large",
+            ));
+        }
+        let _lock = FileLock::acquire(&self.file.lock)?;
+        let cutoff = Local::now()
+            .date_naive()
+            .checked_sub_days(Days::new(RETENTION_DAYS - 1));
+        self.file.cleanup_matching(cutoff, parse_prompt_name)?;
+        let mut file = open_regular(&self.file.dir.join(name), true, false)?;
+        file.write_all(&text)?;
+        match self.file.cleanup_error.take() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Appends one complete text section. Formatting, write, and retention
@@ -367,6 +402,16 @@ impl RotatingFile {
         namespace: Namespace,
         cutoff: Option<NaiveDate>,
     ) -> io::Result<()> {
+        self.cleanup_matching(cutoff, |name| {
+            namespace.parse_file_name(name).map(|(date, _)| date)
+        })
+    }
+
+    fn cleanup_matching(
+        &mut self,
+        cutoff: Option<NaiveDate>,
+        parse: impl Fn(&str) -> Option<NaiveDate>,
+    ) -> io::Result<()> {
         let Some(cutoff) = cutoff else {
             return Ok(());
         };
@@ -376,8 +421,8 @@ impl RotatingFile {
                 if entry
                     .file_name()
                     .to_str()
-                    .and_then(|name| namespace.parse_file_name(name))
-                    .is_some_and(|(date, _)| date < cutoff)
+                    .and_then(&parse)
+                    .is_some_and(|date| date < cutoff)
                     && entry.file_type()?.is_file()
                 {
                     fs::remove_file(entry.path())?;
@@ -444,6 +489,20 @@ fn parse_name(name: &str) -> Option<(NaiveDate, u64)> {
         return None;
     }
     Some((parsed, number.parse().ok()?))
+}
+
+fn parse_prompt_name(name: &str) -> Option<NaiveDate> {
+    let (time, random) = name.strip_prefix("prompt-debug.")?.rsplit_once('-')?;
+    if time.len() != 19
+        || random.len() != 32
+        || !random
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let timestamp = chrono::NaiveDateTime::parse_from_str(time, "%Y-%m-%dT%H-%M-%S").ok()?;
+    (timestamp.format("%Y-%m-%dT%H-%M-%S").to_string() == time).then_some(timestamp.date())
 }
 
 fn parse_debug_name(name: &str) -> Option<(NaiveDate, u64)> {
@@ -995,6 +1054,59 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn prompt_logs_are_immutable_bounded_and_retained_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        let mut log = DebugLog {
+            file: RotatingFile::for_namespace(Namespace::Debug, logs.clone()).unwrap(),
+        };
+        let today = Local::now().date_naive();
+        let stale = today.checked_sub_days(Days::new(RETENTION_DAYS)).unwrap();
+        let id = format!("{today}T12-00-00-{}", "ab".repeat(16));
+        let stale_name = format!("prompt-debug.{stale}T12-00-00-{}", "ab".repeat(16));
+        let foreign = format!("{stale_name}.bak");
+        for name in [
+            &stale_name,
+            &foreign,
+            "debug.2000-01-01.0001",
+            "pp.2000-01-01.1.log",
+        ] {
+            fs::write(logs.join(name), "sentinel").unwrap();
+        }
+        log.record_prompt(&id, &serde_json::json!({"prompt": "initial"}))
+            .unwrap();
+        let path = logs.join(format!("prompt-debug.{id}"));
+        let before = fs::read(&path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!logs.join(stale_name).exists());
+        for name in [&foreign, "debug.2000-01-01.0001", "pp.2000-01-01.1.log"] {
+            assert_eq!(fs::read_to_string(logs.join(name)).unwrap(), "sentinel");
+        }
+        assert_eq!(
+            log.record_prompt(&id, &"replacement").unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let oversize_id = format!("{today}T12-00-00-{}", "cd".repeat(16));
+        assert_eq!(
+            log.record_prompt(&oversize_id, &"x".repeat(MAX_LOG_BYTES as usize))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(!logs.join(format!("prompt-debug.{oversize_id}")).exists());
+        let symlink_id = format!("{today}T12-00-00-{}", "ef".repeat(16));
+        let target = dir.path().join("target");
+        fs::write(&target, "untouched").unwrap();
+        symlink(&target, logs.join(format!("prompt-debug.{symlink_id}"))).unwrap();
+        assert!(log.record_prompt(&symlink_id, &"replacement").is_err());
+        assert_eq!(fs::read_to_string(target).unwrap(), "untouched");
     }
 
     #[test]

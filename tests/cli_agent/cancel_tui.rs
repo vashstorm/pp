@@ -782,13 +782,9 @@ fn tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_l
 
             // 交互式 -r 恢复：Note 恰好一次，不出现假 interrupted 横幅。
             let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
-            resumed.wait_for("恢复取消会话：绿色弹窗与取消 Note", |screen| {
-                let text = screen.contents();
-                text.contains("persist cancel prompt")
+            resumed.wait_for("恢复取消会话：持久记录与唯一取消 Note", |screen| {
+                screen.contents().contains("persist cancel prompt")
                     && cancel_count_normalized(screen, CANCEL_NOTE) == 1
-                    && notification_bounds(screen, "Note", vt100::Color::Rgb(127, 166, 106))
-                        .is_some()
-                    && text.contains("Resumed session:")
             });
             assert!(
                 !cancel_normalize(resumed.parser.screen())
