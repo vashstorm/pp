@@ -2,8 +2,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::{Color, Style},
-    text::{Line, Span},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
     widgets::{Cell, Clear, Row, Table, TableState},
 };
 
@@ -152,6 +152,90 @@ impl<T: Copy> SelectionMenu<T> {
         .column_spacing(1);
         frame.render_stateful_widget(table, rows_area, &mut self.selection);
     }
+
+    /// ask 使用纵向文字布局，复用菜单焦点与滚动状态。
+    pub(super) fn choices_height(&self, width: u16) -> u16 {
+        self.items
+            .iter()
+            .take(MAX_ROWS)
+            .map(|item| {
+                choice_lines(item, width.saturating_sub(6), Style::default()).len() as u16 + 1
+            })
+            .sum::<u16>()
+            .saturating_sub(1)
+    }
+
+    pub(super) fn draw_choices(&mut self, frame: &mut Frame, area: Rect) {
+        use super::transcript_style::{ACCENT, DIM, TOOL_PENDING_BG};
+
+        if area.is_empty() {
+            return;
+        }
+        let compact = area.height < 5;
+        self.page_size = usize::from(area.height / if compact { 1 } else { 3 }).max(1);
+        let focused = self.selected_index();
+        let rows = self.items.iter().enumerate().map(|(index, item)| {
+            let active = focused == Some(index);
+            let label_style = if active {
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let mut lines = choice_lines(item, area.width.saturating_sub(6), label_style);
+            if compact {
+                lines.truncate(1);
+            }
+            let height = (lines.len() as u16).min(area.height);
+            Row::new([
+                Cell::from(if active { "▸" } else { " " }).style(Style::default().fg(ACCENT)),
+                Cell::from(item.icon.unwrap_or_default())
+                    .style(Style::default().fg(if item.current { ACCENT } else { DIM })),
+                Cell::from(Text::from(lines)),
+            ])
+            .height(height)
+            .bottom_margin(u16::from(!compact && index + 1 < self.items.len()))
+            .style(if active {
+                Style::default().bg(TOOL_PENDING_BG)
+            } else {
+                Style::default()
+            })
+        });
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(1),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ],
+        )
+        .column_spacing(1);
+        frame.render_stateful_widget(table, area, &mut self.selection);
+    }
+}
+
+fn choice_lines<T>(item: &MenuItem<T>, width: u16, label_style: Style) -> Vec<Line<'static>> {
+    use super::transcript::{block_line, wrap_block};
+    use super::transcript_style::MUTED;
+
+    let mut lines: Vec<_> = wrap_block(block_line(item.label.clone(), label_style), width, "")
+        .into_iter()
+        .take(2)
+        .collect();
+    if lines.is_empty() {
+        lines.push(Line::default());
+    }
+    if !item.description.is_empty() {
+        lines.extend(
+            wrap_block(
+                block_line(item.description.clone(), Style::default().fg(MUTED)),
+                width,
+                "",
+            )
+            .into_iter()
+            .take(2),
+        );
+    }
+    lines
 }
 
 #[cfg(test)]

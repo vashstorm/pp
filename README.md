@@ -218,6 +218,8 @@ Prompt 文本以事件名和时间戳为标题，按「请求参数 → 系统�
 
 面板锚定输入框上方，不改主草稿、光标或输入历史。↑/↓、Home/End、PgUp/PgDn 导航；Tab/Shift-Tab、左右键切问题／Review。单选 Enter 确认并前进，单题单选直接提交；多选 Space 勾选，Enter 只前进，不顺便选中焦点项。多题和单题多选须在 Review 再按 Enter 一次提交；未答单选会定位回该题，空多选可显式提交。每题自动有 `Other (type your own)`，Enter 打开独立编辑器，支持 Unicode、粘贴、多行和 Ctrl-J；非空白输入才可接受。单选的 custom 与选项互斥，多选可共存。
 
+面板使用圆角边框和加粗问题；选项名称与下方说明左对齐，各最多显示两行。焦点以 `▸` 和背景高亮表示，单选使用 `( )`／`(●)`，多选使用 `[ ]`／`[✓]`，焦点与已选状态独立。字体家族和字号沿用终端设置。
+
 选项 preview 默认最多三行；Ctrl+O 展开／收起完整问题、description 与 preview，Ctrl-↑/↓ 滚动详情。面板高度在打开／resize 时确定，最多屏幕 70%；短屏进入紧凑模式。滚轮在面板内导航，面板外继续滚 transcript。面板活跃时全局菜单、F1、切档、输入历史和主编辑器不会接收它的按键／粘贴，只有 custom 编辑器显示插入光标。custom 编辑器的 Esc 只丢弃本次编辑；picker／Review 的 Esc 取消整个任务，不提交部分答案，同批后续工具按既有取消规则跳过。Ctrl-C 仍立即退出并恢复终端，不等待回复线程。
 
 成功工具结果精确使用 `{"ok":true,"answers":[{"id":"storage","selected_options":["Postgres"],"custom_input":null}]}`：题目和多选答案分别按原题／原选项顺序排列，不包含推荐徽标；custom 有值时为原始字符串。问题与答案沿用 ToolStarted／ToolFinished 日志，恢复只重放卡片，不重开表单、不把答案放进主输入历史；中断请求显示既有 interrupted 状态。`/new`、跨协议 `/model` 和 `/resume` 后 TUI 仍提供 ask。`-p` 和管道行模式不提供 ask schema；服务端仍返回 ask 调用时固定报错 `ask requires interactive TUI mode`，不读取 stdin，不消耗下一条任务。

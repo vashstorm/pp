@@ -99,6 +99,24 @@ fn ask_wait_editor(pty: &mut Pty) {
     });
 }
 
+// 面板位于 transcript 下方，从底部定位，避免误读 transcript 中重复的题目和选项。
+fn ask_panel_find(screen: &vt100::Screen, needle: &str) -> (u16, u16) {
+    let (rows, cols) = screen.size();
+    for row in (0..rows).rev() {
+        let line: String = (0..cols)
+            .filter_map(|col| screen.cell(row, col))
+            .map(|cell| {
+                let text = cell.contents();
+                if text.is_empty() { " ".into() } else { text }
+            })
+            .collect();
+        if let Some(index) = line.find(needle) {
+            return (row, line[..index].chars().count() as u16);
+        }
+    }
+    panic!("面板未显示 {needle}: {}", screen.contents());
+}
+
 fn ask_clear_draft(pty: &mut Pty) {
     pty.input("\x01\x0b");
     pty.draft("");
@@ -120,6 +138,69 @@ fn ask_assert_cursor_at_draft_end(pty: &Pty) {
 // —— 验证项：多题、Review 修改、精确 answers（两协议）——
 
 #[test]
+fn ask_tui_choice_layout_aligns_descriptions_and_keeps_focus_after_resize() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let mut pty = ask_tui_start(&server, home.path(), project.path(), "response");
+    pty.ready();
+    pty.input("ask layout task\r");
+    let (request, _) = pty.request_at(&server, api_path("response"));
+    let label = "PostgreSQL with connection pooling and managed backups";
+    ask_reply_calls(request, "response", json!([ask_call_json("response", "ask-layout", json!({"questions":[{
+        "id":"database", "header":"Database", "question":"Choose a database", "multi":true,
+        "options":[
+            {"label":label,"description":"Shared database for the production deployment."},
+            {"label":"SQLite 本地数据库","description":"Embedded storage for local development."}
+        ], "recommended":0
+    }]}))]));
+    ask_wait_panel(&mut pty, "Choose a database");
+    {
+        let screen = pty.parser.screen();
+        let (row, col) = ask_panel_find(screen, label);
+        let (description_row, description_col) = ask_panel_find(screen, "Shared database");
+        assert_eq!(description_col, col, "说明与选项名称左对齐");
+        assert_eq!(description_row, row + 1, "说明位于名称下一行");
+        assert!(screen.cell(row, col).unwrap().bold(), "焦点项使用粗体，位置 {row},{col}，单元格 {:?}\n{}", screen.cell(row, col), screen.contents());
+        assert_eq!(screen.cell(row, col).unwrap().bgcolor(), vt100::Color::Rgb(29, 33, 41));
+        let (question_row, question_col) = ask_panel_find(screen, "Choose a database");
+        assert!(screen.cell(question_row, question_col).unwrap().bold());
+        assert!(screen.contents().contains("[ ] PostgreSQL"), "推荐不自动勾选");
+    }
+    pty.input(" \x1b[B");
+    pty.wait_for("selection distinct from focus", |screen| {
+        screen.contents().contains("[✓] PostgreSQL")
+            && screen.contents().contains("▸ [ ] SQLite")
+    });
+    pty.resize(30, 40);
+    pty.wait_for("narrow choice layout", |screen| {
+        screen.size().1 == 40
+            && screen.contents().contains("[✓] PostgreSQL")
+            && screen.contents().contains("▸ [ ] SQLite")
+    });
+    pty.input("\x1b[F");
+    pty.wait_for("last choice remains reachable", |screen| {
+        screen.contents().contains("▸ [ ] Other")
+    });
+    pty.resize(30, 100);
+    pty.input("\r");
+    ask_wait_editor(&mut pty);
+    pty.input("custom layout answer");
+    pty.input("\r");
+    ask_wait_review(&mut pty);
+    pty.input("\r");
+    let (request, body) = pty.request_at(&server, api_path("response"));
+    let outputs = cancel_tool_outputs(&body, "response");
+    assert!(outputs.iter().any(|(id, value)| id == "ask-layout"
+        && value["answers"][0]["selected_options"] == json!([label])
+        && value["answers"][0]["custom_input"] == "custom layout answer"));
+    ask_final_reply(request, "response", "layout done");
+    pty.text("layout done");
+    pty.input("\x03");
+    pty.finish();
+}
+
+#[test]
 fn ask_tui_two_questions_review_modify_and_exact_answers() {
     for protocol in ["completion", "response"] {
         let server = server();
@@ -139,7 +220,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         {
             let text = pty.parser.screen().contents();
             assert!(
-                text.contains("○ SQLite (Recommended)") && text.contains("○ Postgres"),
+                text.contains("( ) SQLite (Recommended)") && text.contains("( ) Postgres"),
                 "recommendation must be a display badge only\n{text}"
             );
             assert!(
@@ -155,9 +236,9 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         });
         // Q2：Space 只勾选，Enter 只前进。
         pty.input(" ");
-        pty.wait_for("unit checked", |screen| screen.contents().contains("☑ unit"));
+        pty.wait_for("unit checked", |screen| screen.contents().contains("[✓] unit"));
         pty.input("\x1b[B ");
-        pty.wait_for("lint checked", |screen| screen.contents().contains("☑ lint"));
+        pty.wait_for("lint checked", |screen| screen.contents().contains("[✓] lint"));
 
         // 短屏 resize 不清选集：紧凑模式（去边框）仍显示选中摘要。
         pty.resize(8, 40);
@@ -166,7 +247,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         });
         pty.resize(30, 100);
         pty.wait_for("resize keeps selections", |screen| {
-            screen.contents().contains("☑ lint")
+            screen.contents().contains("[✓] lint")
         });
         pty.input("\r");
         ask_wait_review(&mut pty);
@@ -186,7 +267,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         {
             let text = pty.parser.screen().contents();
             assert!(
-                text.contains("● Postgres") && text.contains("○ SQLite (Recommended)"),
+                text.contains("(●) Postgres") && text.contains("( ) SQLite (Recommended)"),
                 "selection and focus must survive page switches\n{text}"
             );
         }
@@ -196,9 +277,9 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         });
         // 焦点仍在 lint：Space 先取消再重新勾选，提交前可以反复修改。
         pty.input(" ");
-        pty.wait_for("lint unchecked", |screen| screen.contents().contains("☐ lint"));
+        pty.wait_for("lint unchecked", |screen| screen.contents().contains("[ ] lint"));
         pty.input(" ");
-        pty.wait_for("lint rechecked", |screen| screen.contents().contains("☑ lint"));
+        pty.wait_for("lint rechecked", |screen| screen.contents().contains("[✓] lint"));
         pty.input("\r");
         ask_wait_review(&mut pty);
         pty.wait_for("review shows both checks again", |screen| {

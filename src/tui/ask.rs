@@ -10,10 +10,10 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Margin, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
 };
 use ratatui_textarea::TextArea;
 
@@ -202,16 +202,33 @@ impl Panel {
             self.draw_compact(frame, area);
             return;
         }
-        let title = Line::styled(
-            format!(" {} ", self.chip()),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        );
+        let title = Line::from(vec![
+            Span::styled(
+                " ? ",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                self.chip(),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+        ]);
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(BORDER))
+            .padding(Padding::new(
+                u16::from(area.width > 6),
+                u16::from(area.width > 6),
+                0,
+                0,
+            ))
             .title(title);
-        let inner = block.inner(area);
+        let mut inner = block.inner(area);
         frame.render_widget(block, area);
+        if inner.height > 6 {
+            inner = inner.inner(Margin::new(0, 1));
+        }
         if inner.width == 0 || inner.height == 0 {
             return;
         }
@@ -488,12 +505,8 @@ impl Panel {
             } else {
                 state.selected.contains(&item.value)
             };
-            item.icon = Some(match (question.multi, selected) {
-                (false, false) => "○",
-                (false, true) => "●",
-                (true, false) => "☐",
-                (true, true) => "☑",
-            });
+            item.icon = Some(selection_icon(question.multi, selected));
+            item.current = selected;
         }
     }
 
@@ -552,24 +565,31 @@ impl Panel {
     // ---- 布局与绘制 ----
 
     fn compute_height(&self, available: Rect, screen_height: u16) -> u16 {
-        let inner_width = available.width.saturating_sub(2);
-        let question_lines = self
+        let inner_width = available.width.saturating_sub(4);
+        let content_height = self
             .questions
             .questions
             .iter()
-            .map(|question| {
-                line_count(display_text(&question.question).as_ref(), inner_width).min(4)
+            .zip(&self.states)
+            .map(|(question, state)| {
+                let question_lines =
+                    line_count(display_text(&question.question).as_ref(), inner_width).min(4);
+                let preview_lines = if question.options.iter().any(|option| {
+                    option
+                        .preview
+                        .as_deref()
+                        .is_some_and(|text| !text.trim().is_empty())
+                }) {
+                    3
+                } else {
+                    0
+                };
+                question_lines + 1 + state.menu.choices_height(inner_width) + preview_lines
             })
             .max()
             .unwrap_or(0);
-        let menu_rows = self
-            .questions
-            .questions
-            .iter()
-            .map(|question| (question.options.len() + 1).min(8) as u16)
-            .max()
-            .unwrap_or(1);
-        let need = 2 + 1 + question_lines + menu_rows + 3 + 1 + 1;
+        // 边框、上下留白、快捷键与校验消息各自预留空间，翻页时高度保持稳定。
+        let need = 2 + 2 + content_height + 1 + 1;
         if available.height < 5 {
             return available.height;
         }
@@ -665,8 +685,11 @@ impl Panel {
             let header_h = 1.min(content_h);
             frame.render_widget(
                 Line::from(vec![
-                    Span::styled("custom answer", Style::default().fg(ACCENT)),
-                    Span::styled(format!(" · {EDITOR_HINT}"), Style::default().fg(DIM)),
+                    Span::styled(
+                        "custom answer",
+                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" · write your response", Style::default().fg(DIM)),
                 ]),
                 Rect {
                     height: header_h,
@@ -722,7 +745,10 @@ impl Panel {
             {
                 let question = display_text(&self.questions.questions[index].question).into_owned();
                 let mut lines = super::transcript::wrap_block(
-                    super::transcript::block_line(question, Style::default()),
+                    super::transcript::block_line(
+                        question,
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
                     inner.width,
                     "",
                 );
@@ -776,7 +802,7 @@ impl Panel {
                     ),
                 );
             }
-            self.states[index].menu.draw(frame, menu_area);
+            self.states[index].menu.draw_choices(frame, menu_area);
         } else {
             if self.states[index]
                 .question_layout
@@ -786,7 +812,7 @@ impl Panel {
                 let lines = super::transcript::wrap_block(
                     super::transcript::block_line(
                         self.questions.questions[index].question.clone(),
-                        Style::default(),
+                        Style::default().add_modifier(Modifier::BOLD),
                     ),
                     inner.width,
                     "",
@@ -799,24 +825,22 @@ impl Panel {
                 .expect("question layout initialized")
                 .1;
             let question_lines = question_rows.len().min(4) as u16;
-            let want_menu = (self.states[index].menu.items().len().min(8)) as u16;
-            let menu_h = want_menu
-                .min(content_h.saturating_sub(1))
-                .max(1)
-                .min(content_h);
-            let question_h = question_lines.min(content_h - menu_h);
+            let want_menu = self.states[index].menu.choices_height(inner.width);
+            let question_h = question_lines.min(content_h.saturating_sub(1));
+            let gap_h = u16::from(content_h > question_h + 1);
+            let menu_h = want_menu.min(content_h - question_h - gap_h);
             let question_area = Rect {
                 height: question_h,
                 ..content_area
             };
             let menu_area = Rect {
-                y: content_area.y + question_h,
+                y: content_area.y + question_h + gap_h,
                 height: menu_h,
                 ..content_area
             };
-            let preview_h = (content_h - question_h - menu_h).min(3);
+            let preview_h = (content_h - question_h - gap_h - menu_h).min(3);
             let preview_area = Rect {
-                y: content_area.y + question_h + menu_h,
+                y: content_area.y + question_h + gap_h + menu_h,
                 height: preview_h,
                 ..content_area
             };
@@ -856,7 +880,7 @@ impl Panel {
                     );
                 }
             }
-            self.states[index].menu.draw(frame, menu_area);
+            self.states[index].menu.draw_choices(frame, menu_area);
         }
 
         if let Some(error) = error {
@@ -866,7 +890,7 @@ impl Panel {
             );
         }
         if hint_h > 0 {
-            frame.render_widget(Line::styled(hint, Style::default().fg(DIM)), hint_area);
+            frame.render_widget(hint_line(hint), hint_area);
         }
     }
 
@@ -913,7 +937,7 @@ impl Panel {
         }
         if hint_h > 0 {
             frame.render_widget(
-                Line::styled(REVIEW_HINT, Style::default().fg(DIM)),
+                hint_line(REVIEW_HINT),
                 Rect {
                     y: inner.y + content_h + error_h,
                     height: hint_h,
@@ -926,6 +950,9 @@ impl Panel {
     fn review_lines(&self) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         for (index, question) in self.questions.questions.iter().enumerate() {
+            if index > 0 {
+                lines.push(Line::default());
+            }
             let chip = question
                 .header
                 .as_deref()
@@ -1026,12 +1053,8 @@ fn menu_items(
     let count = question.options.len();
     let mut items = Vec::with_capacity(count + 1);
     for (index, option) in question.options.iter().enumerate() {
-        let icon = match (question.multi, selected.contains(&index)) {
-            (true, true) => "☑",
-            (true, false) => "☐",
-            (false, true) => "●",
-            (false, false) => "○",
-        };
+        let chosen = selected.contains(&index);
+        let icon = selection_icon(question.multi, chosen);
         let mut label = menu_text(&option.label);
         if question.recommended == Some(index) {
             label.push_str(" (Recommended)");
@@ -1046,23 +1069,46 @@ fn menu_items(
             label,
             description,
             icon: Some(icon),
-            current: false,
+            current: chosen,
         });
     }
-    let other_icon = match (question.multi, custom) {
-        (true, true) => "☑",
-        (true, false) => "☐",
-        (false, true) => "●",
-        (false, false) => "○",
-    };
+    let other_icon = selection_icon(question.multi, custom);
     items.push(MenuItem {
         value: count,
         label: OTHER_LABEL.to_string(),
         description: String::new(),
         icon: Some(other_icon),
-        current: false,
+        current: custom,
     });
     items
+}
+
+fn selection_icon(multi: bool, selected: bool) -> &'static str {
+    match (multi, selected) {
+        (true, true) => "[✓]",
+        (true, false) => "[ ]",
+        (false, true) => "(●)",
+        (false, false) => "( )",
+    }
+}
+
+fn hint_line(hint: &'static str) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, action) in hint.split(" · ").enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(BORDER)));
+        }
+        let (key, description) = action.split_once(' ').unwrap_or((action, ""));
+        spans.push(Span::styled(
+            key,
+            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!(" {description}"),
+            Style::default().fg(DIM),
+        ));
+    }
+    Line::from(spans)
 }
 
 fn line_count(text: &str, width: u16) -> u16 {
