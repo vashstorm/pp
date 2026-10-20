@@ -2424,6 +2424,7 @@ mod tui {
     include!("cli_agent/cancel_mcp_tui.rs");
     include!("cli_agent/resume_tui.rs");
     include!("cli_agent/resume_boundaries.rs");
+    include!("cli_agent/context_tui.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
     use std::{
         io::Read,
@@ -3175,7 +3176,10 @@ mod tui {
         assert_eq!(lines[26], "─".repeat(100));
         assert!(lines[27].starts_with('❯'));
         assert_eq!(lines[28], "─".repeat(100));
-        assert!(lines[29].starts_with(" pp · \u{ec19} fixture-model · \u{f0766} off ·"));
+        // 语义检查：状态栏在宽屏同时展示用量与模型；不固定字段顺序。
+        assert!(lines[29].contains("ctx ~"));
+        assert!(lines[29].contains("fixture-model"));
+        assert!(lines[29].contains("off"));
         assert!(!text.contains("│ Note"));
         for (row, col, color) in [
             (2, 45, vt100::Color::Rgb(127, 166, 106)),
@@ -3196,10 +3200,11 @@ mod tui {
             let text = screen.contents();
             text.lines().next().is_some_and(|line| line.trim() == "pp")
                 && text.contains("startup draft")
+                // 窄屏优先保留上下文字段。
                 && text
                     .lines()
                     .last()
-                    .is_some_and(|line| line.contains("fixture-m"))
+                    .is_some_and(|line| line.contains("ctx ~"))
         });
         pty.resize(30, 100);
         pty.text("█▀▀█  █▀▀█");
@@ -3589,15 +3594,14 @@ mod tui {
                 .success()
         );
         let mut pty = Pty::start(&server, dir.path());
-        pty.wait_for(
-            "ordered model, thinking, directory and Git footer",
-            |screen| {
-                screen.contents().lines().last().is_some_and(|line| {
-                    line.starts_with(" pp · \u{ec19} fixture-model · \u{f0766} off · \u{f07c} ")
-                        && line.ends_with("\u{f126} fixture *1")
-                })
-            },
-        );
+        pty.wait_for("model, effort and Git footer", |screen| {
+            screen.contents().lines().last().is_some_and(|line| {
+                line.contains("ctx ~")
+                    && line.contains("fixture-model")
+                    && line.contains("\u{f0766} off")
+                    && line.contains("\u{f126} fixture *1")
+            })
+        });
         pty.input("draft-中");
         pty.draft("draft-中");
         std::fs::write(dir.path().join("new-file"), "draft").unwrap();
@@ -3606,7 +3610,7 @@ mod tui {
                 .contents()
                 .lines()
                 .last()
-                .is_some_and(|line| line.ends_with("\u{f126} fixture *1 ?1"))
+                .is_some_and(|line| line.contains("\u{f126} fixture *1 ?1"))
         });
         pty.draft("draft-中");
         pty.resize(4, 20);
@@ -5340,6 +5344,8 @@ fn streaming_broken_stdout_still_records_executed_tool_results() {
     no_more(&server);
 }
 
+#[path = "cli_agent/context.rs"]
+mod context;
 #[path = "cli_agent/streaming.rs"]
 mod streaming;
 #[path = "cli_agent/think.rs"]

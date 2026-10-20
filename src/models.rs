@@ -189,6 +189,19 @@ struct ModelEntry {
     model: String,
     #[serde(default)]
     thinking: ThinkingEntry,
+    // Omitted means unknown; an explicit value must be a positive integer.
+    // deserialize_with makes an explicit null a type error instead of None.
+    #[serde(default, deserialize_with = "deserialize_optional_context_window")]
+    context_window: Option<u64>,
+}
+
+fn deserialize_optional_context_window<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    u64::deserialize(deserializer).map(Some)
 }
 
 // Deliberately not Debug: this owns the API credential.
@@ -204,6 +217,7 @@ pub(crate) struct ValidatedModel {
     pub(crate) id: String,
     pub(crate) model: String,
     pub(crate) thinking: ModelThinking,
+    pub(crate) context_window: Option<u64>,
 }
 
 // Validate every provider and model before selecting anything.
@@ -249,6 +263,12 @@ fn validate_providers(providers: Vec<ProviderEntry>) -> Result<Vec<ValidatedProv
                 ensure!(!model.id.trim().is_empty(), "model id must not be blank");
                 ensure!(ids.insert(model.id.as_str()), "duplicate model id");
                 ensure!(!model.model.trim().is_empty(), "model must not be blank");
+                if let Some(context_window) = model.context_window {
+                    ensure!(
+                        context_window > 0,
+                        "context_window must be a positive integer"
+                    );
+                }
             }
             drop(ids);
             Ok(ValidatedProvider {
@@ -264,6 +284,7 @@ fn validate_providers(providers: Vec<ProviderEntry>) -> Result<Vec<ValidatedProv
                             id: model.id,
                             model: model.model,
                             thinking: model.thinking.validate()?,
+                            context_window: model.context_window,
                         })
                     })
                     .collect::<Result<_>>()?,

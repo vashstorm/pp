@@ -16,6 +16,7 @@ pub(crate) struct Config {
     pub(crate) protocol: models::Protocol,
     pub(crate) api_key: String,
     pub(crate) model: String,
+    pub(crate) context_window: Option<u64>,
     pub(crate) base_url: Url,
     pub(crate) settings: Settings,
 }
@@ -34,6 +35,7 @@ pub(crate) struct ModelChoice {
     pub(crate) reference: String,
     pub(crate) model: String,
     pub(crate) protocol: models::Protocol,
+    pub(crate) context_window: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -222,6 +224,10 @@ pub(crate) struct Settings {
     pub(crate) read_max_lines: usize,
     #[serde(default = "default_bash_timeout_seconds")]
     pub(crate) bash_timeout_seconds: u64,
+    #[serde(default = "default_auto_compact")]
+    pub(crate) auto_compact: bool,
+    #[serde(default = "default_auto_compact_threshold_percent")]
+    pub(crate) auto_compact_threshold_percent: u8,
 }
 
 impl Settings {
@@ -286,6 +292,10 @@ impl Settings {
             self.request_timeout_seconds > 0,
             "request_timeout_seconds must be greater than zero"
         );
+        ensure!(
+            (1..=99).contains(&self.auto_compact_threshold_percent),
+            "auto_compact_threshold_percent must be between 1 and 99"
+        );
         self.tool_limits().validate()?;
         Ok(())
     }
@@ -320,6 +330,8 @@ fn default_settings() -> Settings {
         read_max_bytes: default_read_max_bytes(),
         read_max_lines: default_read_max_lines(),
         bash_timeout_seconds: default_bash_timeout_seconds(),
+        auto_compact: default_auto_compact(),
+        auto_compact_threshold_percent: default_auto_compact_threshold_percent(),
     }
 }
 
@@ -329,6 +341,14 @@ fn default_max_model_requests() -> usize {
 
 fn default_request_timeout_seconds() -> u64 {
     120
+}
+
+fn default_auto_compact() -> bool {
+    true
+}
+
+fn default_auto_compact_threshold_percent() -> u8 {
+    80
 }
 
 impl ModelCatalog {
@@ -391,6 +411,7 @@ impl ModelCatalog {
                     model: model.model.clone(),
                     protocol: provider.protocol,
                     thinking: model.thinking,
+                    context_window: model.context_window,
                 })
             })
             .collect()
@@ -421,6 +442,7 @@ impl ModelCatalog {
             thinking: model.thinking,
             api_key: provider.api_key.clone(),
             model: model.model.clone(),
+            context_window: model.context_window,
             base_url: models::openai_base_url(provider.base_url.clone()),
             settings: self.settings.clone(),
         })
@@ -590,7 +612,7 @@ mod tests {
         "models":[{"id":"primary","model":"fixture-model"}]
     }]}"#;
 
-    fn load(settings: Option<&str>, models: Option<&str>) -> Result<Config> {
+    fn catalog(settings: Option<&str>, models: Option<&str>) -> Result<ModelCatalog> {
         let dir = tempfile::tempdir().unwrap();
         let settings_path = dir.path().join("settings.jsonc");
         let models_path = dir.path().join("models.jsonc");
@@ -600,7 +622,11 @@ mod tests {
         if let Some(models) = models {
             fs::write(&models_path, models).unwrap();
         }
-        let catalog = ModelCatalog::from_files(&settings_path, &models_path)?;
+        ModelCatalog::from_files(&settings_path, &models_path)
+    }
+
+    fn load(settings: Option<&str>, models: Option<&str>) -> Result<Config> {
+        let catalog = catalog(settings, models)?;
         catalog.resolve(catalog.default_reference())
     }
 
@@ -1299,5 +1325,167 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn context_window_omission_means_unknown_and_explicit_values_propagate() {
+        let default_catalog = catalog(None, Some(VALID_MODELS)).unwrap();
+        assert!(
+            default_catalog
+                .resolve(default_catalog.default_reference())
+                .unwrap()
+                .context_window
+                .is_none()
+        );
+        assert!(
+            default_catalog
+                .choices()
+                .iter()
+                .all(|choice| choice.context_window.is_none())
+        );
+        let models = r#"{"providers":[{
+            "id":"fixture","api_key":"fixture-key",
+            "models":[
+                {"id":"primary","model":"primary-model","context_window":32768},
+                {"id":"secondary","model":"secondary-model"}
+            ]
+        }]}"#;
+        let catalog = catalog(
+            Some(r#"{"default_model":"fixture/secondary"}"#),
+            Some(models),
+        )
+        .unwrap();
+        // The unselected model keeps its explicit capacity; the selected one
+        // stays unknown, so capacities are per model and never inferred.
+        assert_eq!(
+            catalog
+                .resolve(catalog.default_reference())
+                .unwrap()
+                .context_window,
+            None
+        );
+        assert_eq!(
+            catalog.resolve("fixture/primary").unwrap().context_window,
+            Some(32768)
+        );
+        let choices = catalog.choices();
+        let window = |reference: &str| {
+            choices
+                .iter()
+                .find(|choice| choice.reference == reference)
+                .unwrap()
+                .context_window
+        };
+        assert_eq!(window("fixture/primary"), Some(32768));
+        assert_eq!(window("fixture/secondary"), None);
+        let models = r#"{"providers":[{"id":"fixture","api_key":"fixture-key",
+            "models":[{"id":"primary","model":"m","context_window":18446744073709551615}]}]}"#;
+        assert_eq!(
+            load(Some(VALID_SETTINGS), Some(models))
+                .unwrap()
+                .context_window,
+            Some(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn context_window_rejects_invalid_values_including_unselected_models() {
+        for value in [
+            "null",
+            "0",
+            "-1",
+            "1.5",
+            "20.0",
+            "true",
+            "\"secret-marker\"",
+            "[]",
+            "{}",
+            "1e30",
+            "18446744073709551616",
+        ] {
+            let selected = format!(
+                r#"{{"providers":[{{"id":"fixture","api_key":"fixture-key","models":[{{"id":"primary","model":"m","context_window":{value}}}]}}]}}"#
+            );
+            rejection(Some(VALID_SETTINGS), Some(&selected), &["models.jsonc"]);
+            let unselected_model = format!(
+                r#"{{"providers":[{{"id":"fixture","api_key":"fixture-key","models":[{{"id":"primary","model":"m"}},{{"id":"other","model":"m","context_window":{value}}}]}}]}}"#
+            );
+            rejection(
+                Some(VALID_SETTINGS),
+                Some(&unselected_model),
+                &["models.jsonc"],
+            );
+            let unselected_provider = format!(
+                r#"{{"providers":[{{"id":"fixture","api_key":"fixture-key","models":[{{"id":"primary","model":"m"}}]}},{{"id":"other","api_key":"fixture-key","models":[{{"id":"primary","model":"m","context_window":{value}}}]}}]}}"#
+            );
+            rejection(
+                Some(VALID_SETTINGS),
+                Some(&unselected_provider),
+                &["models.jsonc"],
+            );
+        }
+        // Zero reaches semantic validation, so the fixed diagnostic names it.
+        let models = r#"{"providers":[{"id":"fixture","api_key":"fixture-key",
+            "models":[{"id":"primary","model":"m","context_window":0}]}]}"#;
+        let chain = rejection(Some(VALID_SETTINGS), Some(models), &["models.jsonc"]);
+        assert!(
+            chain.contains("context_window must be a positive integer"),
+            "{chain}"
+        );
+    }
+
+    #[test]
+    fn context_auto_compact_defaults_on_at_80_with_strict_bounds() {
+        for settings in [None, Some("{}")] {
+            let settings = load(settings, Some(VALID_MODELS)).unwrap().settings;
+            assert!(settings.auto_compact);
+            assert_eq!(settings.auto_compact_threshold_percent, 80);
+        }
+        let settings = load(
+            Some(r#"{"auto_compact":false,"auto_compact_threshold_percent":42}"#),
+            Some(VALID_MODELS),
+        )
+        .unwrap()
+        .settings;
+        assert!(!settings.auto_compact);
+        assert_eq!(settings.auto_compact_threshold_percent, 42);
+        for threshold in [1u8, 99] {
+            let settings = json!({"auto_compact_threshold_percent": threshold}).to_string();
+            assert_eq!(
+                load(Some(&settings), Some(VALID_MODELS))
+                    .unwrap()
+                    .settings
+                    .auto_compact_threshold_percent,
+                threshold
+            );
+        }
+        for value in [
+            "0",
+            "100",
+            "255",
+            "256",
+            "-1",
+            "1.5",
+            "\"secret-marker\"",
+            "null",
+            "true",
+            "1e2",
+            "18446744073709551616",
+        ] {
+            let settings = format!(r#"{{"auto_compact_threshold_percent":{value}}}"#);
+            rejection(Some(&settings), Some(VALID_MODELS), &["settings.jsonc"]);
+        }
+        for value in ["\"secret-marker\"", "null", "0", "1"] {
+            let settings = format!(r#"{{"auto_compact":{value}}}"#);
+            rejection(Some(&settings), Some(VALID_MODELS), &["settings.jsonc"]);
+        }
+        // The out-of-range u8 value reaches semantic validation with a fixed
+        // diagnostic; type errors are redacted by the JSONC parser.
+        let settings = r#"{"auto_compact_threshold_percent":100}"#;
+        let chain = rejection(Some(settings), Some(VALID_MODELS), &["settings.jsonc"]);
+        assert!(
+            chain.contains("auto_compact_threshold_percent must be between 1 and 99"),
+            "{chain}"
+        );
     }
 }

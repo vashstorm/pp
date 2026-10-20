@@ -157,7 +157,7 @@ impl Protocol {
 const PROTOCOLS: [Protocol; 2] = [Protocol::Chat, Protocol::Responses];
 
 #[derive(Clone, Copy)]
-enum Pipe {
+pub(super) enum Pipe {
     Stdout,
     Stderr,
 }
@@ -212,7 +212,7 @@ impl LiveCli {
         }
     }
 
-    fn input(&mut self, text: &str) {
+    pub(super) fn input(&mut self, text: &str) {
         self.cli.input(text);
     }
 
@@ -223,7 +223,7 @@ impl LiveCli {
         }
     }
 
-    fn text(&self, pipe: Pipe) -> String {
+    pub(super) fn text(&self, pipe: Pipe) -> String {
         String::from_utf8_lossy(match pipe {
             Pipe::Stdout => &self.stdout,
             Pipe::Stderr => &self.stderr,
@@ -231,7 +231,7 @@ impl LiveCli {
         .into_owned()
     }
 
-    fn wait_for(&mut self, pipe: Pipe, expected: &str) {
+    pub(super) fn wait_for(&mut self, pipe: Pipe, expected: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !self.text(pipe).contains(expected) {
             let remaining = deadline.saturating_duration_since(Instant::now());

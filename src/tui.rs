@@ -9,7 +9,7 @@ mod transcript;
 mod welcome;
 
 use crate::{
-    agent::Agent,
+    agent::{Agent, context::CompactionOutcome},
     cancellation::{CancellationToken, RunOutcome},
     commands::{self, COMMANDS, Command},
     config::{ModelChoice, NotificationOptions, ThinkLevel},
@@ -116,6 +116,9 @@ enum WorkerCommand {
     Continue {
         cancellation: CancellationToken,
     },
+    Compact {
+        cancellation: CancellationToken,
+    },
     Reset,
     SwitchModel(String),
     SetThinkLevel(ThinkLevel),
@@ -132,6 +135,8 @@ enum WorkerEvent {
         finished_at: chrono::DateTime<chrono::Local>,
     },
     SessionStarted(String),
+    // 压缩终态：与普通任务 Completed 是不同的判别值，不触发任务收尾展示。
+    Compacted(Result<CompactionOutcome>),
     Reset,
     ModelSwitched(Result<(ModelChoice, ThinkLevel)>),
     ThinkLevelSet(Result<ThinkLevel>),
@@ -162,6 +167,7 @@ enum State {
     Ready,
     Running,
     Cancelling,
+    Compacting,
     Resetting,
     SwitchingModel,
     SettingThinkLevel,
@@ -215,6 +221,8 @@ struct App {
     skills_pending: bool,
     session_panel: Option<sessions::Panel>,
     session_id: Option<String>,
+    // 最近一次 ContextUpdated 快照；渲染直接使用，不逐帧重新估算。
+    usage: Option<crate::context::ContextUsage>,
     mcp_cleanup: Option<crate::mcp::Cleanup>,
     file_worker: files::Worker,
     file_paths: Vec<String>,
@@ -222,6 +230,14 @@ struct App {
     file_query: Option<files::Query>,
     files_pending: bool,
     file_commands: commands::FileCommands,
+}
+
+// worker 内部把 Agent 用量快照包装为进度事件；估算失败时跳过，不中断命令。
+fn usage_snapshot(agent: &Agent) -> Option<WorkerEvent> {
+    agent
+        .context_usage()
+        .ok()
+        .map(|usage| WorkerEvent::Progress(AgentEvent::ContextUpdated { usage }))
 }
 
 // 合并启动弹窗摘要：保留最高严重程度，摘要始终显示在既有提示之前。
@@ -295,6 +311,7 @@ impl App {
             skills_pending: false,
             session_panel: None,
             session_id: None,
+            usage: None,
             mcp_cleanup: None,
             file_commands,
             file_worker: files::Worker::new(cwd)?,
@@ -312,6 +329,7 @@ impl App {
                 let current_model = agent.current_model().clone();
                 let think_level = agent.think_level();
                 let default_think_level = agent.default_think_level();
+                let usage = agent.context_usage().ok();
                 let mcp_cleanup = agent.mcp_cleanup()?;
                 app.choices = agent.model_choices();
                 let (commands, receiver) = mpsc::channel();
@@ -325,6 +343,8 @@ impl App {
                             let mut emit = |event| {
                                 let _ = sender.send(WorkerEvent::Progress(event));
                             };
+                            // 状态切换成功后紧随一份新用量快照，与动作保持 FIFO 顺序。
+                            let mut snapshot = None;
                             let event = match command {
                                 WorkerCommand::Run {
                                     prompt,
@@ -337,22 +357,43 @@ impl App {
                                     started,
                                     agent.continue_session(&cancellation, &mut emit),
                                 ),
+                                WorkerCommand::Compact { cancellation } => {
+                                    let result = agent.compact(&cancellation, &mut emit);
+                                    // 终态事件之前先发布最终用量快照；
+                                    // 成功、失败、取消、未变化都会刷新状态栏。
+                                    if let Some(event) = usage_snapshot(&agent)
+                                        && sender.send(event).is_err()
+                                    {
+                                        break;
+                                    }
+                                    WorkerEvent::Compacted(result)
+                                }
                                 WorkerCommand::Reset => {
                                     agent.reset();
+                                    snapshot = usage_snapshot(&agent);
                                     WorkerEvent::Reset
                                 }
-                                WorkerCommand::SetThinkLevel(level) => WorkerEvent::ThinkLevelSet(
-                                    agent.set_think_level(level).map(|()| agent.think_level()),
-                                ),
+                                WorkerCommand::SetThinkLevel(level) => {
+                                    let result =
+                                        agent.set_think_level(level).map(|()| agent.think_level());
+                                    if result.is_ok() {
+                                        snapshot = usage_snapshot(&agent);
+                                    }
+                                    WorkerEvent::ThinkLevelSet(result)
+                                }
                                 WorkerCommand::SaveDefaultThinkLevel(level) => {
                                     WorkerEvent::DefaultThinkLevelSaved(
                                         agent.save_default_think_level(level).map(|()| level),
                                     )
                                 }
                                 WorkerCommand::SwitchModel(reference) => {
-                                    WorkerEvent::ModelSwitched(agent.switch_model(&reference).map(
-                                        |()| (agent.current_model().clone(), agent.think_level()),
-                                    ))
+                                    let result = agent.switch_model(&reference).map(|()| {
+                                        (agent.current_model().clone(), agent.think_level())
+                                    });
+                                    if result.is_ok() {
+                                        snapshot = usage_snapshot(&agent);
+                                    }
+                                    WorkerEvent::ModelSwitched(result)
                                 }
                                 WorkerCommand::ListSessions => WorkerEvent::SessionsListed(
                                     crate::config::global_dir()
@@ -372,6 +413,9 @@ impl App {
                                         id,
                                         replay: agent.take_replay(),
                                     });
+                                    if result.is_ok() {
+                                        snapshot = usage_snapshot(&agent);
+                                    }
                                     WorkerEvent::SessionResumed(result)
                                 }
                             };
@@ -384,6 +428,11 @@ impl App {
                             if sender.send(event).is_err() {
                                 break;
                             }
+                            if let Some(event) = snapshot
+                                && sender.send(event).is_err()
+                            {
+                                break;
+                            }
                         }
                     })
                     .context("starting agent worker")?;
@@ -391,6 +440,7 @@ impl App {
                 app.events = Some(events);
                 app.state = State::Ready;
                 app.mcp_cleanup = Some(mcp_cleanup);
+                app.usage = usage;
                 if let Some(id) = session_id {
                     let choices = std::mem::take(&mut app.choices);
                     let error = app.adopt_session(
@@ -496,6 +546,7 @@ impl App {
         let message = "Execution unavailable: agent worker channel closed; restart pp.";
         self.state = State::Unavailable;
         self.active_cancellation = None;
+        self.secondary_status = None;
         self.commands = None;
         self.events = None;
         self.unavailable = Some(message.into());
@@ -562,7 +613,12 @@ impl App {
             };
             match events.try_recv() {
                 Ok(WorkerEvent::Progress(event)) => {
-                    self.conversation.progress(event);
+                    // 用量快照由 App 缓存，供状态栏渲染；不进入 Transcript。
+                    if let AgentEvent::ContextUpdated { usage } = event {
+                        self.usage = Some(usage);
+                    } else {
+                        self.conversation.progress(event);
+                    }
                     changed = true;
                 }
                 Ok(WorkerEvent::SessionStarted(id)) => {
@@ -592,6 +648,23 @@ impl App {
                     self.state = State::Ready;
                     changed = true;
                 }
+                Ok(WorkerEvent::Compacted(result)) => {
+                    // 压缩不是普通任务：不收尾 Transcript、不显示任务 Completed。
+                    self.active_cancellation = None;
+                    self.secondary_status = None;
+                    self.state = State::Ready;
+                    match result {
+                        Ok(CompactionOutcome::Compacted { .. }) => {}
+                        Ok(CompactionOutcome::Unchanged) => {
+                            self.notify(Level::Normal, "Nothing to compact.".into());
+                        }
+                        Ok(CompactionOutcome::Cancelled) => {
+                            self.notify(Level::Normal, "Context compaction cancelled.".into());
+                        }
+                        Err(error) => self.notify(Level::Error, format!("{error:#}")),
+                    }
+                    changed = true;
+                }
                 Ok(WorkerEvent::Reset) => {
                     self.conversation = Transcript::new();
                     self.clear_input();
@@ -599,6 +672,8 @@ impl App {
                     self.show_welcome = true;
                     self.state = State::Ready;
                     self.session_id = None;
+                    // 新快照紧随其后；先丢弃旧会话用量，避免短暂显示旧占比。
+                    self.usage = None;
                     changed = true;
                 }
                 Ok(WorkerEvent::ModelSwitched(result)) => {
@@ -606,6 +681,8 @@ impl App {
                         Ok((choice, level)) => {
                             self.current_model = Some(choice);
                             self.think_level = level;
+                            // 容量随模型变化；等待紧随的新快照，不显示旧分母。
+                            self.usage = None;
                         }
                         Err(error) => self.notify(Level::Error, format!("{error:#}")),
                     }
@@ -616,6 +693,7 @@ impl App {
                     match result {
                         Ok(level) => {
                             self.think_level = level;
+                            self.usage = None;
                         }
                         Err(error) => self.notify(Level::Error, format!("{error:#}")),
                     }
@@ -690,6 +768,8 @@ impl App {
                             let error = self.adopt_history(state.replay);
                             self.session_id = Some(id.clone());
                             self.session_panel = None;
+                            // 恢复只重新估算当前请求；不沿用上一会话的用量。
+                            self.usage = None;
                             match error {
                                 Some(error) => self.notify(
                                     Level::Error,
@@ -1035,6 +1115,22 @@ impl App {
         }
     }
 
+    /// 手动压缩入口：命令本身不进对话、不伪造普通任务；沿用 slash 命令的
+    /// 提交语义（成功后清空初始输入），压缩期间新输入的草稿不受影响。
+    fn send_compaction(&mut self) {
+        let cancellation = CancellationToken::new();
+        if self.send_submission(
+            WorkerCommand::Compact {
+                cancellation: cancellation.clone(),
+            },
+            State::Compacting,
+        ) {
+            self.active_cancellation = Some(cancellation);
+            self.clear_input();
+            self.secondary_status = Some("Compacting context...".into());
+        }
+    }
+
     fn show_help(&mut self) {
         self.append("Help", &commands::help(&self.file_commands));
         if !self.file_commands.diagnostics.is_empty() {
@@ -1157,6 +1253,7 @@ impl App {
         match self.state {
             State::Running
             | State::Cancelling
+            | State::Compacting
             | State::Resetting
             | State::SwitchingModel
             | State::SettingThinkLevel
@@ -1180,6 +1277,7 @@ impl App {
                 Some(Command::New) => {
                     self.send_submission(WorkerCommand::Reset, State::Resetting);
                 }
+                Some(Command::Compact) => self.send_compaction(),
                 Some(Command::Resume) => {
                     if self.skill_panel.is_some() || self.skills_pending {
                         return false;
@@ -1517,12 +1615,16 @@ impl App {
                 }
                 if key.code == KeyCode::Esc && key.modifiers.is_empty() {
                     if key.kind == KeyEventKind::Press
-                        && matches!(self.state, State::Running)
+                        && matches!(self.state, State::Running | State::Compacting)
                         && let Some(cancellation) = &self.active_cancellation
                     {
                         cancellation.cancel();
+                        if matches!(self.state, State::Compacting) {
+                            self.secondary_status = Some("Cancelling context...".into());
+                        } else {
+                            self.conversation.cancelling();
+                        }
                         self.state = State::Cancelling;
-                        self.conversation.cancelling();
                     }
                     return false;
                 }
@@ -1698,6 +1800,7 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
+                    self.usage.as_ref(),
                     context,
                     status.width,
                 ),
@@ -2745,6 +2848,7 @@ mod tests {
                 model: format!("vendor-{index}"),
                 protocol: crate::models::Protocol::Response,
                 thinking: crate::models::ModelThinking::default(),
+                context_window: None,
             })
             .collect();
         app.current_model = Some(app.choices[2].clone());
@@ -2809,6 +2913,7 @@ mod tests {
             model: "vendor-one".into(),
             protocol: crate::models::Protocol::Completion,
             thinking: crate::models::ModelThinking::default(),
+            context_window: None,
         }];
         let mut dirty = false;
         app.handle(Event::Paste("/model vendor".into()), &mut dirty);
@@ -2850,6 +2955,7 @@ mod tests {
                 model: id.into(),
                 protocol: crate::models::Protocol::Completion,
                 thinking: crate::models::ModelThinking::default(),
+                context_window: None,
             })
             .collect();
         app.current_model = Some(app.choices[1].clone());
@@ -3001,6 +3107,7 @@ mod tests {
                 model: id.into(),
                 protocol: crate::models::Protocol::Completion,
                 thinking: crate::models::ModelThinking::default(),
+                context_window: None,
             })
             .to_vec();
         app.current_model = Some(app.choices[0].clone());

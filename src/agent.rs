@@ -1,3 +1,4 @@
+pub(crate) mod context;
 mod debug;
 mod history;
 pub(crate) mod persistence;
@@ -5,6 +6,7 @@ pub(crate) mod persistence;
 use crate::{
     cancellation::{self, CancellationToken, Cancelled, RunOutcome},
     config::{EditMode, ModelCatalog, ModelChoice, ThinkLevel},
+    context::{ContextUsage, TokenUsage, estimate_tokens},
     events::AgentEvent,
     llm::OpenAiClient,
     models::Protocol,
@@ -41,6 +43,9 @@ pub(crate) struct Agent {
     tools: Tools,
     session: Session,
     max_model_requests: usize,
+    auto_compact: bool,
+    auto_compact_threshold_percent: u8,
+    last_request: Option<TokenUsage>,
     catalog: ModelCatalog,
     current_model: ModelChoice,
     think_level: ThinkLevel,
@@ -119,6 +124,10 @@ impl Session {
                     ToolChoiceOptions::Auto,
                 )),
                 stream: Some(true),
+                stream_options: Some(async_openai::types::chat::ChatCompletionStreamOptions {
+                    include_usage: Some(true),
+                    include_obfuscation: None,
+                }),
                 ..Default::default()
             })),
             Protocol::Response => Session::Response(Box::new(CreateResponse {
@@ -168,6 +177,7 @@ impl Agent {
             model: config.model.clone(),
             protocol: config.protocol,
             thinking: config.thinking,
+            context_window: config.context_window,
         };
         let edit_mode = tools.edit_mode();
         let common = format!(
@@ -207,6 +217,9 @@ impl Agent {
             session,
             tools,
             max_model_requests: config.settings.max_model_requests,
+            auto_compact: config.settings.auto_compact,
+            auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
+            last_request: None,
             catalog,
             current_model,
             think_level,
@@ -248,16 +261,26 @@ impl Agent {
         tools.limits = checkpoint.tool_limits;
         tools.mcp = crate::mcp::Registry::connect(&config.settings.mcp_servers, tools.cwd())?;
         checkpoint.session.set_tools(tools.all_definitions());
+        if let Session::Completion(request) = &mut checkpoint.session {
+            request.stream_options = Some(async_openai::types::chat::ChatCompletionStreamOptions {
+                include_usage: Some(true),
+                include_obfuscation: None,
+            });
+        }
         Ok(Self {
             client,
             tools,
             session: checkpoint.session,
             max_model_requests: config.settings.max_model_requests,
+            auto_compact: config.settings.auto_compact,
+            auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
+            last_request: None,
             current_model: ModelChoice {
                 reference: checkpoint.model_reference,
                 model: config.model,
                 protocol: config.protocol,
                 thinking: config.thinking,
+                context_window: config.context_window,
             },
             catalog,
             think_level: checkpoint.think_level,
@@ -337,6 +360,7 @@ impl Agent {
         self.session = restored.checkpoint.session;
         self.journal = restored.journal;
         self.replay = restored.replay;
+        self.last_request = None;
         Ok(())
     }
 
@@ -393,6 +417,27 @@ impl Agent {
 
     pub(crate) fn current_model(&self) -> &ModelChoice {
         &self.current_model
+    }
+
+    pub(crate) fn context_usage(&self) -> Result<ContextUsage> {
+        let estimated_tokens = match &self.session {
+            Session::Completion(request) => estimate_tokens(request)?,
+            Session::Response(request) => estimate_tokens(request)?,
+        };
+        Ok(ContextUsage {
+            estimated_tokens,
+            context_window: self.current_model.context_window,
+            last_request: self.last_request,
+            auto_compact: self.auto_compact,
+            threshold_percent: self.auto_compact_threshold_percent,
+        })
+    }
+
+    fn publish_context(&self, emit: &mut dyn FnMut(AgentEvent)) -> Result<()> {
+        emit(AgentEvent::ContextUpdated {
+            usage: self.context_usage()?,
+        });
+        Ok(())
     }
 
     pub(crate) fn think_level(&self) -> ThinkLevel {
@@ -463,6 +508,7 @@ impl Agent {
             model: config.model.clone(),
             protocol: config.protocol,
             thinking: config.thinking,
+            context_window: config.context_window,
         };
         let metadata = Metadata {
             cwd: self.tools.cwd(),
@@ -510,12 +556,14 @@ impl Agent {
         self.client = client;
         self.current_model = choice;
         self.think_level = target_level;
+        self.last_request = None;
         Ok(())
     }
 
     pub(crate) fn reset(&mut self) {
         self.journal.reset();
         self.replay.clear();
+        self.last_request = None;
         match &mut self.session {
             Session::Completion(request) => request.messages.truncate(1),
             Session::Response(request) => response_input(request).clear(),
@@ -537,6 +585,7 @@ impl Agent {
         let result = (|| -> Result<RunOutcome> {
             ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
             let instructions = self.refresh_skills()?;
+            self.publish_context(emit)?;
             match &mut self.session {
                 Session::Completion(request) => request.messages.push(
                     ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
@@ -555,6 +604,9 @@ impl Agent {
             let result = self.run_loop(Some(prompt), instructions.as_deref(), cancellation, emit);
             self.finish_run(result, cancellation)
         })();
+        if !matches!(&result, Ok(RunOutcome::Completed)) {
+            self.publish_context(emit)?;
+        }
         log_task_finished("run", started, &result);
         result
     }
@@ -574,6 +626,9 @@ impl Agent {
             let result = self.run_loop(None, None, cancellation, emit);
             self.finish_run(result, cancellation)
         })();
+        if !matches!(&result, Ok(RunOutcome::Completed)) {
+            self.publish_context(emit)?;
+        }
         log_task_finished("continue", started, &result);
         result
     }
@@ -604,12 +659,10 @@ impl Agent {
         }
     }
 
-    fn run_loop(
+    fn persist_pending_input(
         &mut self,
-        mut user: Option<&str>,
-        mut instructions: Option<&str>,
-        cancellation: &CancellationToken,
-        emit: &mut dyn FnMut(AgentEvent),
+        user: Option<&str>,
+        instructions: Option<&str>,
     ) -> Result<()> {
         let metadata = Metadata {
             cwd: self.tools.cwd(),
@@ -619,24 +672,60 @@ impl Agent {
             tool_limits: self.tools.limits,
             base_system: &self.base_system,
         };
-        for request_index in 1..=self.max_model_requests {
+        self.journal
+            .sent(&metadata, (&self.session).into(), user, instructions)
+    }
+
+    fn run_loop(
+        &mut self,
+        mut user: Option<&str>,
+        mut instructions: Option<&str>,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<()> {
+        let mut requests_used = 0;
+        while requests_used < self.max_model_requests {
             self.journal.check()?;
             if cancellation.is_cancelled() {
-                self.journal.sent(
-                    &metadata,
-                    (&self.session).into(),
-                    user.take(),
-                    instructions.take(),
-                )?;
+                self.persist_pending_input(user.take(), instructions.take())?;
                 return Err(Cancelled.into());
             }
+            let usage = self.context_usage()?;
+            emit(AgentEvent::ContextUpdated { usage });
+            let should_compact = usage.auto_compact
+                && usage.context_window.is_some_and(|window| {
+                    u128::from(usage.estimated_tokens) * 100
+                        >= u128::from(window) * u128::from(usage.threshold_percent)
+                });
+            if should_compact {
+                // Save accepted input exactly once before cutoff, capacity, or
+                // quota checks can fail. Never journal the temporary summary.
+                self.persist_pending_input(user.take(), instructions.take())?;
+                ensure!(
+                    self.max_model_requests - requests_used >= 2,
+                    "{} model request limit reached",
+                    self.max_model_requests
+                );
+                requests_used += 1;
+                self.compact_impl(true, cancellation, emit)?;
+                cancellation::check(cancellation)?;
+            }
+            requests_used += 1;
+            let metadata = Metadata {
+                cwd: self.tools.cwd(),
+                model_reference: &self.current_model.reference,
+                think_level: self.think_level,
+                edit_mode: self.tools.edit_mode(),
+                tool_limits: self.tools.limits,
+                base_system: &self.base_system,
+            };
             if let Some(debug) = &mut self.debug
                 && debug
                     .request(
                         &self.session,
                         &metadata,
                         self.journal.id(),
-                        request_index,
+                        requests_used,
                         self.max_model_requests,
                     )
                     .is_err()
@@ -652,6 +741,7 @@ impl Agent {
             let finished = match &mut self.session {
                 Session::Completion(request) => completion_turn(
                     &mut self.client,
+                    &mut self.last_request,
                     &self.tools,
                     request,
                     &mut self.journal,
@@ -662,6 +752,7 @@ impl Agent {
                 )?,
                 Session::Response(request) => response_turn(
                     &mut self.client,
+                    &mut self.last_request,
                     &self.tools,
                     request,
                     &mut self.journal,
@@ -672,6 +763,7 @@ impl Agent {
                 )?,
             };
             self.journal.commit((&self.session).into())?;
+            self.publish_context(emit)?;
             if finished {
                 return Ok(());
             }
@@ -748,6 +840,7 @@ fn log_model_request_finished<T>(
 
 fn completion_turn(
     client: &mut OpenAiClient,
+    last_request: &mut Option<TokenUsage>,
     tools: &Tools,
     request: &mut CreateChatCompletionRequest,
     journal: &mut SessionJournal,
@@ -784,6 +877,8 @@ fn completion_turn(
         outcome?
     };
     cancellation::check(cancellation)?;
+    let usage = response.usage;
+    let response = response.message;
     let mut progress = |event| {
         journal.event(&event);
         emit(event);
@@ -799,6 +894,7 @@ fn completion_turn(
         request
             .messages
             .push(ChatCompletionRequestMessage::Assistant(response));
+        *last_request = usage;
         return Ok(true);
     }
     let count = calls.len();
@@ -837,6 +933,7 @@ fn completion_turn(
             },
         ));
     }
+    *last_request = usage;
     if let Some(error) = stop_error {
         journal.commit(SessionRef::Completion(request))?;
         return Err(error);
@@ -846,6 +943,7 @@ fn completion_turn(
 
 fn response_turn(
     client: &mut OpenAiClient,
+    last_request: &mut Option<TokenUsage>,
     tools: &Tools,
     request: &mut CreateResponse,
     journal: &mut SessionJournal,
@@ -892,6 +990,7 @@ fn response_turn(
     let start = input.len();
     input.extend(turn.output.into_iter().map(InputItem::from));
     if !turn.has_calls {
+        *last_request = turn.usage;
         return Ok(true);
     }
     let end = input.len();
@@ -923,6 +1022,7 @@ fn response_turn(
             },
         )));
     }
+    *last_request = turn.usage;
     if let Some(error) = stop_error {
         journal.commit(SessionRef::Response(request))?;
         return Err(error);
@@ -1048,8 +1148,14 @@ mod tests {
             let cancellation = CancellationToken::new();
             cancellation.cancel();
             let outcome = agent
-                .run("accepted input", &cancellation, &mut |_| {
-                    panic!("no request or tool may start")
+                .run("accepted input", &cancellation, &mut |event| {
+                    assert!(
+                        !matches!(
+                            event,
+                            AgentEvent::AssistantStarted | AgentEvent::ToolStarted { .. }
+                        ),
+                        "no request or tool may start"
+                    );
                 })
                 .unwrap();
             assert_eq!(outcome, RunOutcome::Cancelled);

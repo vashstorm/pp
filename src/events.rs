@@ -10,6 +10,16 @@ pub(crate) enum OutputStream {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentEvent {
+    ContextUpdated {
+        usage: crate::context::ContextUsage,
+    },
+    CompactionStarted {
+        automatic: bool,
+    },
+    CompactionFinished {
+        before_tokens: u64,
+        after_tokens: u64,
+    },
     AssistantStarted,
     ThinkingDelta {
         text: String,

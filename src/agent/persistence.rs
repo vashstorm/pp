@@ -275,13 +275,7 @@ impl SessionJournal {
                 false,
             )?;
         }
-        self.custom(CustomRef::State(StateRef::new(metadata, session)), true)?;
-        self.committed = session.len();
-        self.model_reference.clear();
-        self.model_reference.push_str(metadata.model_reference);
-        self.capture_thinking = matches!(session, SessionRef::Completion(_));
-        self.thinking.clear();
-        self.pending_checkpoint = false;
+        self.write_state(metadata, session)?;
         if first {
             self.record(
                 PayloadRef::ModelChange {
@@ -294,6 +288,34 @@ impl SessionJournal {
         }
         Ok(())
     }
+    /// Commit a complete native history without inventing a model-switch audit.
+    /// The new state record is the logical commit point; old records remain.
+    pub(super) fn replace_history(
+        &mut self,
+        metadata: &Metadata<'_>,
+        session: SessionRef<'_>,
+    ) -> Result<()> {
+        self.check()?;
+        ensure!(
+            self.active
+                .as_ref()
+                .is_some_and(|active| active.header_written),
+            "persisting session: missing session checkpoint"
+        );
+        self.write_state(metadata, session)
+    }
+
+    fn write_state(&mut self, metadata: &Metadata<'_>, session: SessionRef<'_>) -> Result<()> {
+        self.custom(CustomRef::State(StateRef::new(metadata, session)), true)?;
+        self.committed = session.len();
+        self.model_reference.clear();
+        self.model_reference.push_str(metadata.model_reference);
+        self.capture_thinking = matches!(session, SessionRef::Completion(_));
+        self.thinking.clear();
+        self.pending_checkpoint = false;
+        Ok(())
+    }
+
     pub(super) fn sent(
         &mut self,
         metadata: &Metadata<'_>,
@@ -415,6 +437,14 @@ impl SessionJournal {
         Ok(())
     }
     pub(super) fn event(&mut self, event: &AgentEvent) {
+        if matches!(
+            event,
+            AgentEvent::ContextUpdated { .. }
+                | AgentEvent::CompactionStarted { .. }
+                | AgentEvent::CompactionFinished { .. }
+        ) {
+            return;
+        }
         if self.capture_thinking && self.active.is_some() && self.first_error.is_none() {
             match event {
                 AgentEvent::AssistantStarted => self.thinking.clear(),
@@ -1490,6 +1520,126 @@ mod tests {
                     .checkpoint
                     .think_level,
                 ThinkLevel::High
+            );
+        }
+    }
+
+    #[test]
+    fn context_failed_history_replacement_restores_native_memory_and_disk() {
+        use crate::{
+            agent::Agent, cancellation::CancellationToken, config::ModelCatalog, tools::Tools,
+        };
+        use serde_json::json;
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let models = dir.path().join("models.jsonc");
+            fs::write(&models, json!({"providers":[{"id":"fixture","protocol":protocol,"api_key":"fixture-key","base_url":format!("http://{}/v1",server.server_addr()),"models":[{"id":"primary","model":"fixture-model"}]}]}).to_string()).unwrap();
+            let catalog =
+                ModelCatalog::from_files(&dir.path().join("settings.jsonc"), &models).unwrap();
+            let mut agent = Agent::new(
+                catalog,
+                Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
+                dir.path().join("sessions"),
+            )
+            .unwrap();
+            for index in 0..3 {
+                let text = format!("old-{index} {}", "retained-data ".repeat(5000));
+                match &mut agent.session {
+                    Session::Completion(request) => {
+                        request.messages.push(
+                            serde_json::from_value(json!({"role":"user","content":text})).unwrap(),
+                        );
+                        request.messages.push(
+                            serde_json::from_value(
+                                json!({"role":"assistant","content":format!("answer-{index}")}),
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    Session::Response(request) => {
+                        let InputParam::Items(input) = &mut request.input else {
+                            panic!()
+                        };
+                        input.push(
+                            serde_json::from_value(json!({"role":"user","content":text})).unwrap(),
+                        );
+                        input.push(serde_json::from_value(json!({"type":"message","id":format!("msg-{index}"),"role":"assistant","status":"completed","content":[{"type":"output_text","text":format!("answer-{index}"),"annotations":[],"logprobs":null}]})).unwrap());
+                    }
+                }
+            }
+            let metadata = Metadata {
+                cwd: agent.tools.cwd(),
+                model_reference: &agent.current_model.reference,
+                think_level: agent.think_level,
+                edit_mode: agent.tools.edit_mode(),
+                tool_limits: agent.tools.limits,
+                base_system: &agent.base_system,
+            };
+            agent
+                .journal
+                .sent(&metadata, (&agent.session).into(), None, None)
+                .unwrap();
+            let id = agent.session_id().unwrap().to_owned();
+            let path = agent.journal.dir.join(format!("{id}.jsonl"));
+            let before = fs::read(&path).unwrap();
+            let native = serde_json::to_value(&agent.session).unwrap();
+            agent.journal.active.as_mut().unwrap().file = File::open(&path).unwrap();
+            let responder = std::thread::spawn(move || {
+                let mut request = server
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .expect("summary request");
+                let body: serde_json::Value = serde_json::from_reader(request.as_reader()).unwrap();
+                assert!(body.get("tools").is_none_or(serde_json::Value::is_null));
+                assert!(
+                    !body.to_string().contains("old-2"),
+                    "latest exchange must not enter summary request"
+                );
+                let sse = if protocol == "completion" {
+                    format!(
+                        "data: {}\n\ndata: [DONE]\n\n",
+                        json!({"id":"summary","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{"role":"assistant","content":"short factual summary"},"finish_reason":"stop"}]})
+                    )
+                } else {
+                    format!(
+                        "data: {}\n\n",
+                        json!({"type":"response.completed","sequence_number":1,"response":{"id":"summary","object":"response","created_at":1,"model":"fixture-model","status":"completed","output":[{"type":"message","id":"summary-message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"short factual summary","annotations":[],"logprobs":null}]}]}})
+                    )
+                };
+                request
+                    .respond(tiny_http::Response::from_string(sse).with_header(
+                        tiny_http::Header::from_bytes("Content-Type", "text/event-stream").unwrap(),
+                    ))
+                    .unwrap();
+                assert!(
+                    server
+                        .recv_timeout(std::time::Duration::from_millis(100))
+                        .unwrap()
+                        .is_none()
+                );
+            });
+            let mut finished = false;
+            let error = agent
+                .compact(&CancellationToken::new(), &mut |event| {
+                    finished |= matches!(event, AgentEvent::CompactionFinished { .. });
+                })
+                .unwrap_err()
+                .to_string();
+            responder.join().unwrap();
+            assert!(error.contains("persisting session"), "{error}");
+            assert!(
+                !finished,
+                "failed checkpoint cannot announce compaction success"
+            );
+            assert_eq!(serde_json::to_value(&agent.session).unwrap(), native);
+            assert_eq!(fs::read(&path).unwrap(), before);
+            assert!(agent.journal.check().is_err());
+            drop(agent);
+            let restored = load(&dir.path().join("sessions"), Some(&id), false).unwrap();
+            assert_eq!(
+                serde_json::to_value(&restored.checkpoint.session).unwrap(),
+                native
             );
         }
     }

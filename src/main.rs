@@ -2,6 +2,7 @@ mod agent;
 mod cancellation;
 mod commands;
 mod config;
+mod context;
 mod events;
 mod jsonc;
 mod llm;
@@ -339,6 +340,11 @@ fn run(args: Args) -> Result<()> {
                 }
                 writeln!(stderr, ")")?;
             }
+            Some(commands::Command::Compact) => {
+                if let Err(error) = run_cli_compaction(agent, &mut stderr) {
+                    writeln!(stderr, "error: {error:#}")?;
+                }
+            }
             Some(commands::Command::New) => {
                 agent.reset();
                 writeln!(stderr, "Session reset.")?;
@@ -412,6 +418,78 @@ fn cli_write(
     }
 }
 
+fn cli_context_event(
+    event: events::AgentEvent,
+    usage: &mut Option<context::ContextUsage>,
+    stderr: &mut impl Write,
+    broken: &mut bool,
+    first_error: &mut Option<io::Error>,
+) {
+    match event {
+        events::AgentEvent::ContextUpdated { usage: current } => *usage = Some(current),
+        events::AgentEvent::CompactionStarted { .. } => {
+            cli_write(stderr, "Compacting context...\n", broken, first_error)
+        }
+        events::AgentEvent::CompactionFinished {
+            before_tokens,
+            after_tokens,
+        } => cli_write(
+            stderr,
+            &format!("Context compacted: ~{before_tokens} → ~{after_tokens} tokens (estimated)\n"),
+            broken,
+            first_error,
+        ),
+        _ => {}
+    }
+}
+
+fn run_cli_compaction(agent: &mut agent::Agent, stderr: &mut impl Write) -> Result<()> {
+    use agent::context::CompactionOutcome;
+    let mut usage = None;
+    let mut broken = false;
+    let mut first_error = None;
+    let result = agent.compact(&cancellation::CancellationToken::new(), &mut |event| {
+        cli_context_event(event, &mut usage, stderr, &mut broken, &mut first_error);
+    });
+    match &result {
+        Ok(CompactionOutcome::Unchanged) => cli_write(
+            stderr,
+            "Nothing to compact.\n",
+            &mut broken,
+            &mut first_error,
+        ),
+        Ok(CompactionOutcome::Cancelled) => cli_write(
+            stderr,
+            "Context compaction cancelled.\n",
+            &mut broken,
+            &mut first_error,
+        ),
+        _ => {}
+    }
+    if let Some(id) = agent.take_session_notice() {
+        cli_write(
+            stderr,
+            &format!("Session: {id}\n"),
+            &mut broken,
+            &mut first_error,
+        );
+    }
+    let usage = match usage {
+        Some(usage) => usage,
+        None => agent.context_usage()?,
+    };
+    cli_write(
+        stderr,
+        &usage.cli_status(&agent.current_model().reference),
+        &mut broken,
+        &mut first_error,
+    );
+    if let Some(error) = first_error {
+        return Err(error).context("writing context output");
+    }
+    result.map(|_| ())
+}
+
 fn run_cli_task(
     agent: &mut agent::Agent,
     prompt: Option<&str>,
@@ -424,12 +502,22 @@ fn run_cli_task(
     let (mut visible, mut content, mut newline) = (false, false, true);
     let mut current_tool = None;
     let mut thinking_newline = true;
+    let mut context_usage = None;
     let mut emit = |event: AgentEvent| {
         if !matches!(&event, AgentEvent::ThinkingDelta { .. }) && !thinking_newline {
             cli_write(stderr, "\n", &mut err_broken, &mut first_error);
             thinking_newline = true;
         }
         match event {
+            event @ (AgentEvent::ContextUpdated { .. }
+            | AgentEvent::CompactionStarted { .. }
+            | AgentEvent::CompactionFinished { .. }) => cli_context_event(
+                event,
+                &mut context_usage,
+                stderr,
+                &mut err_broken,
+                &mut first_error,
+            ),
             AgentEvent::AssistantStarted => {
                 visible = false;
                 content = false;
@@ -523,6 +611,14 @@ fn run_cli_task(
         cli_write(
             stderr,
             &format!("Session: {id}\n"),
+            &mut err_broken,
+            &mut first_error,
+        );
+    }
+    if let Some(usage) = context_usage {
+        cli_write(
+            stderr,
+            &usage.cli_status(&agent.current_model().reference),
             &mut err_broken,
             &mut first_error,
         );

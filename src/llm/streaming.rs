@@ -4,7 +4,7 @@ use anyhow::{Result, bail, ensure};
 use async_openai::types::{
     chat::{
         ChatChoice, ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
-        ChatCompletionResponseMessage, CreateChatCompletionResponse,
+        ChatCompletionResponseMessage, CompletionUsage, CreateChatCompletionResponse,
         CreateChatCompletionStreamResponse, FinishReason, Role,
     },
     responses::{
@@ -47,6 +47,7 @@ pub(super) struct ChatStream {
     refusal: String,
     calls: BTreeMap<u32, ChatCompletionMessageToolCall>,
     finish_reason: Option<FinishReason>,
+    usage: Option<CompletionUsage>,
 }
 
 impl ChatStream {
@@ -56,6 +57,11 @@ impl ChatStream {
         chunk: ChatChunk,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<()> {
+        // Keep the last non-empty usage even when the chunk carries no choices:
+        // streams with include_usage end with a usage-only chunk.
+        if chunk.native.usage.is_some() {
+            self.usage = chunk.native.usage;
+        }
         if !chunk.thinking.is_empty() {
             ensure!(
                 self.finish_reason.is_none(),
@@ -157,7 +163,7 @@ impl ChatStream {
             }],
             service_tier: None,
             system_fingerprint: None,
-            usage: None,
+            usage: self.usage,
             metadata: None,
             moderation: None,
         })
@@ -545,7 +551,8 @@ impl ResponsesStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::into_message;
+    use crate::context::TokenUsage;
+    use crate::llm::into_completion_turn;
     use async_openai::types::chat::ChatCompletionRequestAssistantMessageContent;
     use serde_json::{Value, json};
 
@@ -553,6 +560,14 @@ mod tests {
         serde_json::from_value(json!({
             "id":"fixture", "object":"chat.completion.chunk", "created":0, "model":"fixture",
             "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
+        }))
+        .unwrap()
+    }
+
+    fn usage_chunk(usage: Value) -> ChatChunk {
+        serde_json::from_value(json!({
+            "id":"fixture", "object":"chat.completion.chunk", "created":0, "model":"fixture",
+            "choices":[], "usage":usage
         }))
         .unwrap()
     }
@@ -570,11 +585,18 @@ mod tests {
     }
 
     fn completed(output: Value) -> ResponseStreamEvent {
-        event(json!({
-            "type":"response.completed","sequence_number":100,
-            "response":{"id":"fixture","object":"response","created_at":0,
-                "model":"fixture","status":"completed","output":output}
-        }))
+        completed_with(output, None)
+    }
+
+    fn completed_with(output: Value, usage: Option<Value>) -> ResponseStreamEvent {
+        let mut response = json!({
+            "id":"fixture","object":"response","created_at":0,
+            "model":"fixture","status":"completed","output":output
+        });
+        if let Some(usage) = usage {
+            response["usage"] = usage;
+        }
+        event(json!({"type":"response.completed","sequence_number":100,"response":response}))
     }
 
     fn terminal_response(kind: &str, details: Value) -> ResponseStreamEvent {
@@ -633,15 +655,16 @@ mod tests {
                     &mut emit,
                 )
                 .unwrap();
-            let message = into_message(stream.finish().unwrap()).unwrap();
+            let turn = into_completion_turn(stream.finish().unwrap()).unwrap();
             assert_eq!(thinking, "inspect 中 then answer");
             assert_eq!(answer, "done");
             assert_eq!(
-                message.content,
+                turn.message.content,
                 Some(ChatCompletionRequestAssistantMessageContent::Text(
                     "done".into()
                 ))
             );
+            assert_eq!(turn.usage, None);
         }
     }
 
@@ -697,9 +720,9 @@ mod tests {
             {"index":0,"function":{"name":"ite","arguments":"\"a\",\"content\":\"b\"}"}},
             {"index":1,"function":{"name":"sh","arguments":"\"true\"}"}}
         ]}), Some("tool_calls")), &mut capture(&mut visible)).unwrap();
-        let message = into_message(stream.finish().unwrap()).unwrap();
+        let turn = into_completion_turn(stream.finish().unwrap()).unwrap();
         assert_eq!(visible, [("before".into(), false)]);
-        let calls = message.tool_calls.unwrap();
+        let calls = turn.message.tool_calls.unwrap();
         let ChatCompletionMessageToolCalls::Function(first) = &calls[0] else {
             panic!()
         };
@@ -743,7 +766,7 @@ mod tests {
         ] {
             let mut stream = ChatStream::default();
             stream.push(chat(delta, Some(finish)), &mut |_| {}).unwrap();
-            assert!(stream.finish().and_then(into_message).is_err());
+            assert!(stream.finish().and_then(into_completion_turn).is_err());
         }
         let mut stream = ChatStream::default();
         assert!(
@@ -760,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_chat_refusal_is_provisional_and_usage_chunks_are_ignored() {
+    fn streaming_chat_refusal_is_provisional_and_usage_only_chunk_keeps_usage() {
         let mut stream = ChatStream::default();
         let mut visible = Vec::new();
         stream
@@ -775,17 +798,86 @@ mod tests {
                 &mut capture(&mut visible),
             )
             .unwrap();
-        let mut usage = chat(json!({}), None);
-        usage.native.choices.clear();
-        stream.push(usage, &mut capture(&mut visible)).unwrap();
-        let message = into_message(stream.finish().unwrap()).unwrap();
+        // The trailing usage-only chunk carries no choices; its usage must still
+        // be kept and later non-empty usage wins over earlier ones.
+        stream
+            .push(
+                usage_chunk(json!({"prompt_tokens":10,"completion_tokens":2,"total_tokens":12})),
+                &mut capture(&mut visible),
+            )
+            .unwrap();
+        stream
+            .push(
+                usage_chunk(
+                    json!({"prompt_tokens":12000,"completion_tokens":300,"total_tokens":12300}),
+                ),
+                &mut capture(&mut visible),
+            )
+            .unwrap();
+        let turn = into_completion_turn(stream.finish().unwrap()).unwrap();
         assert_eq!(
-            message.content,
+            turn.message.content,
             Some(ChatCompletionRequestAssistantMessageContent::Text(
                 "yes".into()
             ))
         );
+        assert!(!turn.refusal);
+        assert_eq!(
+            turn.usage,
+            Some(TokenUsage {
+                input_tokens: 12000,
+                output_tokens: 300
+            })
+        );
         assert_eq!(visible, [("no".into(), true), ("yes".into(), false)]);
+    }
+
+    #[test]
+    fn context_responses_usage_and_refusal_flags_from_completed_response() {
+        let usage = json!({
+            "input_tokens":12000, "output_tokens":300, "total_tokens":12300,
+            "input_tokens_details":{"cached_tokens":40},
+            "output_tokens_details":{"reasoning_tokens":50}
+        });
+        let mut stream = ResponsesStream::default();
+        let turn = stream
+            .push(
+                completed_with(json!([message("m", json!([text("answer")]))]), Some(usage)),
+                &mut |_| {},
+            )
+            .unwrap()
+            .unwrap();
+        // Input/output only; cached and reasoning details are not added on top.
+        assert_eq!(
+            turn.usage,
+            Some(TokenUsage {
+                input_tokens: 12000,
+                output_tokens: 300
+            })
+        );
+        assert!(!turn.refusal);
+
+        let refusal = json!([{"type":"refusal","refusal":"cannot"}]);
+        let mut stream = ResponsesStream::default();
+        let turn = stream
+            .push(completed(json!([message("m", refusal)])), &mut |_| {})
+            .unwrap()
+            .unwrap();
+        assert!(turn.refusal);
+        assert_eq!(turn.usage, None);
+
+        let mut stream = ResponsesStream::default();
+        let turn = stream
+            .push(
+                completed(json!([message(
+                    "m",
+                    json!([{"type":"refusal","refusal":"cannot"}, text("answer")])
+                )])),
+                &mut |_| {},
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!turn.refusal);
     }
 
     #[test]

@@ -584,9 +584,26 @@ impl Transcript {
                 }
                 AgentEvent::ToolFinished { .. } => activity.phase("Processing tool result"),
                 AgentEvent::ToolOutput { .. } => {}
+                // 运行时上下文管理：自动压缩开始切换阶段；用量更新不影响活动显示。
+                AgentEvent::ContextUpdated { .. } => {}
+                AgentEvent::CompactionStarted { .. } => activity.phase("Compacting context"),
+                AgentEvent::CompactionFinished { .. } => {}
             }
         }
         match event {
+            // 用量更新不产生对话条目。
+            AgentEvent::ContextUpdated { .. } => {}
+            AgentEvent::CompactionStarted { .. } => {}
+            AgentEvent::CompactionFinished {
+                before_tokens,
+                after_tokens,
+            } => {
+                // 简短结果用现有 Note 样式追加，保留原对话。
+                self.append(
+                    "Note",
+                    &format!("Context compacted: ~{before_tokens} → ~{after_tokens} tokens"),
+                );
+            }
             AgentEvent::AssistantStarted => {
                 self.assistant = None;
                 self.thinking = None;

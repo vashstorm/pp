@@ -1,4 +1,5 @@
 use crate::cancellation::{CancellationToken, Cancelled};
+use crate::context::TokenUsage;
 use crate::{config::Config, events::AgentEvent};
 use anyhow::{Result, bail, ensure};
 use async_openai::{
@@ -35,6 +36,15 @@ pub(crate) struct ResponseTurn {
     pub(crate) output: Vec<OutputItem>,
     pub(crate) text: String,
     pub(crate) has_calls: bool,
+    pub(crate) usage: Option<TokenUsage>,
+    pub(crate) refusal: bool,
+}
+
+pub(crate) struct CompletionTurn {
+    pub(crate) message: ChatCompletionRequestAssistantMessage,
+    pub(crate) usage: Option<TokenUsage>,
+    /// True only when the model refused without any normal non-empty content.
+    pub(crate) refusal: bool,
 }
 
 impl OpenAiClient {
@@ -97,7 +107,7 @@ impl OpenAiClient {
         cancellation: &CancellationToken,
         on_request_sent: &mut dyn FnMut() -> Result<()>,
         emit: &mut dyn FnMut(AgentEvent),
-    ) -> Result<ChatCompletionRequestAssistantMessage> {
+    ) -> Result<CompletionTurn> {
         self.ensure_ready()?;
         let client = &self.client;
         let runtime = self
@@ -130,7 +140,7 @@ impl OpenAiClient {
                     }
                 }
             }
-            into_message(output.finish()?)
+            into_completion_turn(output.finish()?)
         })
     }
 
@@ -227,9 +237,12 @@ fn redacted_error(error: OpenAIError, api: &str) -> anyhow::Error {
     }
 }
 
-fn into_message(
-    response: CreateChatCompletionResponse,
-) -> Result<ChatCompletionRequestAssistantMessage> {
+fn into_completion_turn(response: CreateChatCompletionResponse) -> Result<CompletionTurn> {
+    // Extract server-side usage before the message validation merges or drops fields.
+    let usage = response.usage.map(|usage| TokenUsage {
+        input_tokens: u64::from(usage.prompt_tokens),
+        output_tokens: u64::from(usage.completion_tokens),
+    });
     let choice = response
         .choices
         .into_iter()
@@ -266,6 +279,16 @@ fn into_message(
             "Chat Completions protocol: duplicate tool call id"
         );
     }
+    // Record refusal before the content merge below replaces it: only a refusal
+    // without any normal non-empty content counts as a true refusal.
+    let refusal = !message
+        .content
+        .as_ref()
+        .is_some_and(|text| !text.trim().is_empty())
+        && message
+            .refusal
+            .as_ref()
+            .is_some_and(|text| !text.trim().is_empty());
     let content = message
         .content
         .filter(|text| !text.trim().is_empty())
@@ -273,10 +296,14 @@ fn into_message(
     if content.is_none() && calls.is_empty() {
         bail!("Chat Completions protocol: response has neither text nor tool calls");
     }
-    Ok(ChatCompletionRequestAssistantMessage {
-        content: content.map(Into::into),
-        tool_calls: (!calls.is_empty()).then_some(calls),
-        ..Default::default()
+    Ok(CompletionTurn {
+        message: ChatCompletionRequestAssistantMessage {
+            content: content.map(Into::into),
+            tool_calls: (!calls.is_empty()).then_some(calls),
+            ..Default::default()
+        },
+        usage,
+        refusal,
     })
 }
 
@@ -329,15 +356,40 @@ fn into_response_turn(response: Response) -> Result<ResponseTurn> {
         }
     }
     let has_calls = !ids.is_empty();
-    let text = response_text(&response.output);
+    // Extract server-side usage: input/output only; cached and reasoning token
+    // details are breakdowns of those totals, never added on top.
+    let usage = response.usage.map(|usage| TokenUsage {
+        input_tokens: u64::from(usage.input_tokens),
+        output_tokens: u64::from(usage.output_tokens),
+    });
+    let has_text = |output: &[OutputItem]| {
+        output.iter().any(|item| match item {
+            OutputItem::Message(message) => message.content.iter().any(|part| {
+                matches!(part, OutputMessageContent::OutputText(text) if !text.text.trim().is_empty())
+            }),
+            _ => false,
+        })
+    };
+    let refusal = !has_text(&response.output)
+        && response.output.iter().any(|item| match item {
+            OutputItem::Message(message) => message
+                .content
+                .iter()
+                .any(|part| matches!(part, OutputMessageContent::Refusal(_))),
+            _ => false,
+        });
+    let output = response.output;
+    let text = response_text(&output);
     ensure!(
         has_calls || !text.trim().is_empty(),
         "Responses protocol: response has neither text nor tool calls"
     );
     Ok(ResponseTurn {
-        output: response.output,
+        output,
         text,
         has_calls,
+        usage,
+        refusal,
     })
 }
 
@@ -376,8 +428,8 @@ mod tests {
     use serde_json::{Value, json};
     use std::io::Write;
 
-    fn decode(message: Value, finish: &str) -> Result<ChatCompletionRequestAssistantMessage> {
-        into_message(serde_json::from_value(json!({
+    fn decode(message: Value, finish: &str) -> Result<CompletionTurn> {
+        into_completion_turn(serde_json::from_value(json!({
             "id":"chatcmpl-fixture", "object":"chat.completion", "created":0, "model":"fixture",
             "choices":[{"index":0,"message":message,"finish_reason":finish}]
         }))?)
@@ -390,6 +442,7 @@ mod tests {
             protocol: crate::models::Protocol::Completion,
             thinking: crate::models::ModelThinking::default(),
             base_url: base_url.parse().unwrap(),
+            context_window: None,
             settings: crate::config::Settings {
                 debug: false,
                 notification_show_countdown: true,
@@ -405,6 +458,8 @@ mod tests {
                 read_max_bytes: 65_536,
                 read_max_lines: 2_000,
                 bash_timeout_seconds: 120,
+                auto_compact: true,
+                auto_compact_threshold_percent: 80,
             },
         })
         .unwrap()
@@ -608,7 +663,7 @@ mod tests {
             release_first.send(()).unwrap();
             let token = CancellationToken::new();
             let mut sent = 0;
-            let message = client
+            let turn = client
                 .complete(
                     &CreateChatCompletionRequest::default(),
                     &token,
@@ -622,12 +677,14 @@ mod tests {
             assert_eq!(sent, 1);
             assert!(client.runtime.is_some());
             assert_eq!(
-                message.content,
+                turn.message.content,
                 Some(ChatCompletionRequestAssistantMessageContent::Text(
                     "recovered".into()
                 ))
             );
-            assert!(message.tool_calls.is_none());
+            assert!(turn.message.tool_calls.is_none());
+            assert_eq!(turn.usage, None);
+            assert!(!turn.refusal);
         });
     }
 
@@ -663,14 +720,187 @@ mod tests {
             json!({"role":"assistant","refusal":"Cannot help"}),
             json!({"role":"assistant","content":null,"tool_calls":null,"refusal":"Cannot help"}),
         ] {
-            let message = decode(message, "stop").unwrap();
+            let turn = decode(message, "stop").unwrap();
             assert_eq!(
-                message.content,
+                turn.message.content,
                 Some(ChatCompletionRequestAssistantMessageContent::Text(
                     "Cannot help".into()
                 ))
             );
-            assert!(message.tool_calls.is_none());
+            assert!(turn.message.tool_calls.is_none());
+            assert!(turn.refusal);
+            assert_eq!(turn.usage, None);
         }
+    }
+
+    #[test]
+    fn context_chat_refusal_flag_requires_no_normal_content() {
+        let refusal_only = decode(json!({"role":"assistant","refusal":"no"}), "stop").unwrap();
+        assert!(refusal_only.refusal);
+        let mixed = decode(
+            json!({"role":"assistant","content":"answer","refusal":"no"}),
+            "stop",
+        )
+        .unwrap();
+        assert!(!mixed.refusal);
+        let blank_content = decode(
+            json!({"role":"assistant","content":"  ","refusal":"no"}),
+            "stop",
+        )
+        .unwrap();
+        assert!(blank_content.refusal);
+        let text_only = decode(json!({"role":"assistant","content":"answer"}), "stop").unwrap();
+        assert!(!text_only.refusal);
+    }
+
+    #[test]
+    fn context_chat_usage_only_chunk_after_finish_returns_usage() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let mut client = test_client(&format!("http://{}", server.server_addr()));
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                // First request: normal chunks, then a choices-empty usage-only chunk.
+                let request = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let mut writer = sse_writer(request);
+                sse_frame(
+                    &mut writer,
+                    &chat_chunk(json!({"role":"assistant","content":"answer"}), None).to_string(),
+                );
+                sse_frame(&mut writer, &chat_chunk(json!({}), Some("stop")).to_string());
+                sse_frame(
+                    &mut writer,
+                    r#"{"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":2,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":12000,"completion_tokens":300,"total_tokens":12300}}"#,
+                );
+                sse_frame(&mut writer, "[DONE]");
+                let _ = sse_end(writer);
+                // Second request: no usage at all; the answer still succeeds.
+                let request = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let mut writer = sse_writer(request);
+                sse_frame(
+                    &mut writer,
+                    &chat_chunk(json!({"role":"assistant","content":"again"}), Some("stop"))
+                        .to_string(),
+                );
+                sse_frame(&mut writer, "[DONE]");
+                let _ = sse_end(writer);
+            });
+            let token = CancellationToken::new();
+            let turn = client
+                .complete(
+                    &CreateChatCompletionRequest::default(),
+                    &token,
+                    &mut || Ok(()),
+                    &mut |_| {},
+                )
+                .unwrap();
+            assert_eq!(
+                turn.usage,
+                Some(TokenUsage {
+                    input_tokens: 12000,
+                    output_tokens: 300
+                })
+            );
+            assert_eq!(
+                turn.message.content,
+                Some(ChatCompletionRequestAssistantMessageContent::Text(
+                    "answer".into()
+                ))
+            );
+            assert!(!turn.refusal);
+            let token = CancellationToken::new();
+            let turn = client
+                .complete(
+                    &CreateChatCompletionRequest::default(),
+                    &token,
+                    &mut || Ok(()),
+                    &mut |_| {},
+                )
+                .unwrap();
+            assert_eq!(turn.usage, None);
+            assert_eq!(
+                turn.message.content,
+                Some(ChatCompletionRequestAssistantMessageContent::Text(
+                    "again".into()
+                ))
+            );
+        });
+    }
+
+    #[test]
+    fn context_responses_usage_extracted_and_missing_usage_is_none() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let mut client = test_client(&format!("http://{}", server.server_addr()));
+        let completed = |usage: Option<Value>| {
+            let mut response = json!({
+                "id":"fixture", "object":"response", "created_at":0, "model":"fixture",
+                "status":"completed",
+                "output":[{"type":"message","id":"m","role":"assistant","status":"completed",
+                    "content":[{"type":"output_text","text":"answer","annotations":[]}]}]
+            });
+            if let Some(usage) = usage {
+                response["usage"] = usage;
+            }
+            json!({"type":"response.completed","sequence_number":5,"response":response}).to_string()
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let request = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let mut writer = sse_writer(request);
+                sse_frame(
+                    &mut writer,
+                    &completed(Some(json!({
+                        "input_tokens":12000, "output_tokens":300, "total_tokens":12300,
+                        "input_tokens_details":{"cached_tokens":40},
+                        "output_tokens_details":{"reasoning_tokens":50}
+                    }))),
+                );
+                let _ = sse_end(writer);
+                let request = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let mut writer = sse_writer(request);
+                sse_frame(&mut writer, &completed(None));
+                let _ = sse_end(writer);
+            });
+            let token = CancellationToken::new();
+            let turn = client
+                .respond(
+                    &CreateResponse::default(),
+                    &token,
+                    &mut || Ok(()),
+                    &mut |_| {},
+                )
+                .unwrap();
+            assert_eq!(turn.text, "answer");
+            assert!(!turn.has_calls);
+            assert!(!turn.refusal);
+            assert_eq!(
+                turn.usage,
+                Some(TokenUsage {
+                    input_tokens: 12000,
+                    output_tokens: 300
+                })
+            );
+            let token = CancellationToken::new();
+            let turn = client
+                .respond(
+                    &CreateResponse::default(),
+                    &token,
+                    &mut || Ok(()),
+                    &mut |_| {},
+                )
+                .unwrap();
+            assert_eq!(turn.usage, None);
+        });
     }
 }

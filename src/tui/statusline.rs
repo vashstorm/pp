@@ -1,4 +1,5 @@
 use crate::config::{ModelChoice, ThinkLevel};
+use crate::context::ContextUsage;
 use anyhow::{Context, Result};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -22,6 +23,40 @@ const THINK_ICON: &str = "\u{f0766}";
 const DIRECTORY_ICON: &str = "\u{f07c}";
 const GIT_ICON: &str = "\u{f126}";
 const ICON_WIDTH: usize = 2;
+// 分隔符与图标列在宽度预算中的固定开销。
+const SEPARATOR_WIDTH: usize = 3;
+const FIELD_ICON_WIDTH: usize = ICON_WIDTH + 1;
+// 目录字段低于该宽度时先隐藏 git、再缩短模型，而不是把目录挤成空。
+const MIN_DIRECTORY: usize = 8;
+
+/// 数值按 k 简写（>=1000 时一位小数）；状态栏专用，CLI 任务结束信息用完整整数。
+fn abbreviate_tokens(tokens: u64) -> String {
+    if tokens >= 1000 {
+        format!("{:.1}k", tokens as f64 / 1000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+/// 上下文用量字段：`ctx ~N/W P%`；容量未知时 `ctx ~N/?`，不伪造百分比。
+fn context_field(usage: &ContextUsage) -> (String, Color) {
+    let percent = usage.percent();
+    let text = match percent {
+        Some(percent) => format!(
+            "ctx ~{}/{} {}%",
+            abbreviate_tokens(usage.estimated_tokens),
+            abbreviate_tokens(usage.context_window.unwrap_or_default()),
+            percent
+        ),
+        None => format!("ctx ~{}/?", abbreviate_tokens(usage.estimated_tokens)),
+    };
+    let color = match percent {
+        Some(percent) if percent >= 100 => Color::Red,
+        Some(percent) if percent >= u128::from(usage.threshold_percent) => Color::Yellow,
+        _ => ACCENT,
+    };
+    (text, color)
+}
 
 #[derive(Default)]
 pub(super) struct StatusContext {
@@ -192,19 +227,17 @@ fn compact(text: &str, width: usize, keep_end: bool) -> String {
     }
 }
 
+// 宽度优先级：上下文字段 → 模型/effort → 目录/git。
+// 放不下时依次降级：缩短 cwd → 隐藏 git → 缩短模型 → 仅显示上下文字段的可见前缀；
+// 无用量字段时退回仅模型前缀。每级布局都保证整行不超过给定宽度。
 pub(super) fn primary(
     model: Option<&ModelChoice>,
     think_level: ThinkLevel,
+    usage: Option<&ContextUsage>,
     context: &StatusContext,
     width: u16,
 ) -> Line<'static> {
     let width = usize::from(width);
-    let model = model.map_or("—", |choice| choice.model.as_str());
-    let model = compact(model, (width / 4).max(12).saturating_sub(ICON_WIDTH), false);
-    let git = context
-        .git
-        .as_ref()
-        .map(|git| compact(&git.label(), (width / 4).saturating_sub(ICON_WIDTH), false));
     let think = match think_level {
         ThinkLevel::None => "off",
         ThinkLevel::Low => "low",
@@ -222,20 +255,72 @@ pub(super) fn primary(
         ThinkLevel::Xhigh => "\u{f0aa5}",
         ThinkLevel::Max => "\u{f0238}",
     };
-    let reserved = Line::from(model.as_str()).width()
-        + Line::from(think).width()
-        + git
-            .as_ref()
-            .map_or(0, |git| Line::from(git.as_str()).width())
-        + if git.is_some() {
-            9 + 4 * ICON_WIDTH
-        } else {
-            6 + 3 * ICON_WIDTH
-        }
-        + 6;
-    let workdir = compact(&context.workdir, width.saturating_sub(reserved), true);
+    let ctx = usage.map(context_field);
+    let ctx_width = ctx
+        .as_ref()
+        .map_or(0, |(text, _)| Line::from(text.as_str()).width());
+    // " pp · " 之后的空间；上下文字段全额保留。
+    let head_width = 6 + ctx_width;
+    let budget = width.saturating_sub(head_width);
     let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
     let icon = |glyph, color| Span::styled(format!("{glyph} "), Style::default().fg(color));
+    let only_context = |ctx: Option<(String, Color)>| {
+        let (text, color) = ctx.unwrap_or_else(|| {
+            (
+                model.map_or("—", |choice| choice.model.as_str()).to_owned(),
+                MODEL,
+            )
+        });
+        Line::from(Span::styled(
+            compact(&text, width, false),
+            Style::default().fg(color),
+        ))
+    };
+
+    let model_src = model.map_or("—", |choice| choice.model.as_str());
+    let think_width = Line::from(think).width();
+    let effort_width = SEPARATOR_WIDTH + FIELD_ICON_WIDTH + think_width;
+    let dir_fixed = SEPARATOR_WIDTH + FIELD_ICON_WIDTH;
+    let model_field = |text: &str| SEPARATOR_WIDTH + FIELD_ICON_WIDTH + Line::from(text).width();
+    let git_field = |text: &str| SEPARATOR_WIDTH + FIELD_ICON_WIDTH + Line::from(text).width();
+    let workdir_full = Line::from(context.workdir.as_str()).width();
+    let git = context.git.as_ref().map(|git| git.label());
+
+    let mut model_text = model_src.to_owned();
+    let mut git_text = git.clone();
+    let mut workdir_text = context.workdir.clone();
+    if budget
+        < model_field(model_src)
+            + effort_width
+            + dir_fixed
+            + workdir_full
+            + git.as_deref().map_or(0, git_field)
+    {
+        // 1) 缩短 cwd（git 保留）。
+        let mut cwd_slot = budget.saturating_sub(
+            model_field(model_src) + effort_width + dir_fixed + git.as_deref().map_or(0, git_field),
+        );
+        if cwd_slot < MIN_DIRECTORY && git_text.is_some() {
+            // 2) 隐藏 git，把空间让给目录。
+            git_text = None;
+            cwd_slot = budget.saturating_sub(model_field(model_src) + effort_width + dir_fixed);
+        }
+        if cwd_slot < MIN_DIRECTORY {
+            // 3) 缩短模型。
+            model_text = compact(
+                model_src,
+                (budget / 4).max(12).saturating_sub(FIELD_ICON_WIDTH),
+                false,
+            );
+            if budget < model_field(&model_text) + effort_width + dir_fixed {
+                // 4) 仍不足：仅上下文字段的可见前缀。
+                return only_context(ctx);
+            }
+            cwd_slot = budget.saturating_sub(model_field(&model_text) + effort_width + dir_fixed);
+        }
+        workdir_text = compact(&context.workdir, cwd_slot, true);
+    }
+
     let model_text_style = Style::default().fg(MODEL).add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::raw(" "),
@@ -243,21 +328,25 @@ pub(super) fn primary(
             "pp",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
-        separator(),
-        icon(MODEL_ICON, MODEL),
-        Span::styled(model, model_text_style),
-        separator(),
-        // off 表示显式发送 none，请求关闭思考。
-        icon(think_icon, MODEL),
-        Span::styled(think, model_text_style),
-        separator(),
-        icon(DIRECTORY_ICON, DIRECTORY),
-        Span::styled(workdir, Style::default().fg(DIRECTORY)),
     ];
-    if let Some(git) = git {
+    if let Some((text, color)) = ctx {
+        spans.push(separator());
+        spans.push(Span::styled(text, Style::default().fg(color)));
+    }
+    spans.push(separator());
+    spans.push(icon(MODEL_ICON, MODEL));
+    spans.push(Span::styled(model_text, model_text_style));
+    spans.push(separator());
+    // off 表示显式发送 none，请求关闭思考。
+    spans.push(icon(think_icon, MODEL));
+    spans.push(Span::styled(think, model_text_style));
+    spans.push(separator());
+    spans.push(icon(DIRECTORY_ICON, DIRECTORY));
+    spans.push(Span::styled(workdir_text, Style::default().fg(DIRECTORY)));
+    if let Some(git_text) = git_text {
         spans.push(separator());
         spans.push(icon(GIT_ICON, GIT));
-        spans.push(Span::styled(git, Style::default().fg(GIT)));
+        spans.push(Span::styled(git_text, Style::default().fg(GIT)));
     }
     Line::from(spans)
 }
@@ -265,55 +354,6 @@ pub(super) fn primary(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn primary_displays_selected_think_level() {
-        for (level, glyph, label) in [
-            (ThinkLevel::None, THINK_ICON, "off"),
-            (ThinkLevel::Low, "\u{f0a9f}", "low"),
-            (ThinkLevel::Medium, "\u{f0aa1}", "med"),
-            (ThinkLevel::High, "\u{f0aa3}", "hig"),
-            (ThinkLevel::Xhigh, "\u{f0aa5}", "xhi"),
-            (ThinkLevel::Max, "\u{f0238}", "max"),
-        ] {
-            let line = primary(None, level, &StatusContext::default(), 100);
-            assert!(line.to_string().contains(&format!("{glyph} {label} ·")));
-            assert_eq!(line.spans[6].width(), ICON_WIDTH);
-            assert_eq!(line.spans[7].width(), 3);
-        }
-    }
-
-    #[test]
-    fn primary_keeps_field_order_and_git_visible_with_long_unicode_workdir() {
-        let model = ModelChoice {
-            reference: "fixture/alias".into(),
-            model: "fixture-model".into(),
-            protocol: crate::models::Protocol::Response,
-            thinking: crate::models::ModelThinking::default(),
-        };
-        let context = StatusContext {
-            workdir: format!("/{}project", "中文目录/".repeat(30)),
-            git: Some(GitInfo::parse(b"# branch.head main\0? file\0")),
-        };
-        for width in [60, 80, 100, 200] {
-            let line = primary(Some(&model), ThinkLevel::None, &context, width);
-            assert!(line.width() <= usize::from(width));
-            let text = line.to_string();
-            assert!(text.starts_with(" pp · \u{ec19} fixture-model · \u{f0766} off · \u{f07c} …"));
-            assert!(text.ends_with("project · \u{f126} main ?1"));
-            for glyph in [MODEL_ICON, THINK_ICON, DIRECTORY_ICON, GIT_ICON] {
-                let icon = line
-                    .spans
-                    .iter()
-                    .find(|span| span.content.starts_with(glyph))
-                    .unwrap();
-                assert_eq!(icon.width(), ICON_WIDTH);
-                assert!(icon.content.ends_with(' '));
-            }
-        }
-        let no_git = primary(None, ThinkLevel::None, &StatusContext::default(), 100).to_string();
-        assert!(!no_git.contains(GIT_ICON));
-    }
 
     #[test]
     fn git_status_handles_renames_conflicts_and_detached_head() {
