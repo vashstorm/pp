@@ -1,3 +1,5 @@
+mod debug;
+
 use std::{
     fs::{self, DirBuilder, File, OpenOptions},
     io::{self, Write},
@@ -31,12 +33,7 @@ impl LoggingGuard {
 }
 
 pub(crate) fn init() -> anyhow::Result<LoggingGuard> {
-    let home = std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .context("HOME is required to locate ~/.pp/logs")?;
-    let home = PathBuf::from(home);
-    ensure!(home.is_absolute(), "HOME must be an absolute path");
-    let mut file = RotatingFile::new(home.join(".pp/logs"))?;
+    let mut file = RotatingFile::new(logs_dir()?)?;
     let error = file.cleanup_error.take();
     let writer = EventMakeWriter(Arc::new(Mutex::new(WriterState {
         file,
@@ -56,6 +53,45 @@ pub(crate) fn init() -> anyhow::Result<LoggingGuard> {
         )
         .try_init()?;
     Ok(LoggingGuard { state: writer.0 })
+}
+
+fn logs_dir() -> anyhow::Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .context("HOME is required to locate ~/.pp/logs")?;
+    let home = PathBuf::from(home);
+    ensure!(home.is_absolute(), "HOME must be an absolute path");
+    Ok(home.join(".pp/logs"))
+}
+
+/// Opt-in human-readable debug text log. It shares `~/.pp/logs` and its `.lock` with the
+/// ordinary pp log but owns an independent `debug.DATE.NNNN` namespace with
+/// the same size and retention limits. No debug volume exists until the first
+/// [`DebugLog::record`]; this never touches the global tracing subscriber.
+pub(crate) struct DebugLog {
+    file: RotatingFile,
+}
+
+impl DebugLog {
+    pub(crate) fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            file: RotatingFile::for_namespace(Namespace::Debug, logs_dir()?)?,
+        })
+    }
+
+    /// Appends one complete text section. Formatting, write, and retention
+    /// failures all surface as io errors; nothing is printed or logged here.
+    pub(crate) fn record(&mut self, record: &impl serde::Serialize) -> io::Result<()> {
+        let value = serde_json::to_value(record).map_err(io::Error::other)?;
+        let text = debug::format_record(&value)?;
+        self.file.append_record_for(Namespace::Debug, &text)?;
+        // Retention runs inside the append: report its failure even though the
+        // record itself was written, once, on the record after it occurs.
+        match self.file.cleanup_error.take() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
 }
 
 struct WriterState {
@@ -168,6 +204,12 @@ struct RotatingFile {
 
 impl RotatingFile {
     fn new(dir: PathBuf) -> io::Result<Self> {
+        Self::for_namespace(Namespace::Pp, dir)
+    }
+
+    // Both namespaces share one directory and one .lock file; only their file
+    // naming differs, so cleanup, scanning, and rotation stay isolated.
+    fn for_namespace(namespace: Namespace, dir: PathBuf) -> io::Result<Self> {
         DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
         let metadata = fs::symlink_metadata(&dir)?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -186,8 +228,8 @@ impl RotatingFile {
         };
         let _lock = FileLock::acquire(&file.lock)?;
         let today = Local::now().date_naive();
-        file.cleanup(today);
-        file.current = file.scan(today)?.map(|number| (today, number));
+        file.cleanup(namespace, today);
+        file.current = file.scan(namespace, today)?.map(|number| (today, number));
         Ok(file)
     }
 
@@ -196,8 +238,22 @@ impl RotatingFile {
         self.append_record_locked(record, Local::now().date_naive())
     }
 
-    // Caller holds .lock. The explicit date keeps boundary tests clock-independent.
+    fn append_record_for(&mut self, namespace: Namespace, record: &[u8]) -> io::Result<()> {
+        let _lock = FileLock::acquire(&self.lock)?;
+        self.append_record_locked_for(namespace, record, Local::now().date_naive())
+    }
+
     fn append_record_locked(&mut self, record: &[u8], today: NaiveDate) -> io::Result<()> {
+        self.append_record_locked_for(Namespace::Pp, record, today)
+    }
+
+    // Caller holds .lock. The explicit date keeps boundary tests clock-independent.
+    fn append_record_locked_for(
+        &mut self,
+        namespace: Namespace,
+        record: &[u8],
+        today: NaiveDate,
+    ) -> io::Result<()> {
         if record.len() as u64 > MAX_LOG_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -205,24 +261,26 @@ impl RotatingFile {
             ));
         }
         if self.cleaned != Some(today) {
-            self.cleanup(today);
+            self.cleanup(namespace, today);
         }
         let mut number = match self.current {
             Some((date, number)) if date == today => {
-                match fs::symlink_metadata(self.path(today, number)) {
+                match fs::symlink_metadata(self.path_for(namespace, today, number)) {
                     Ok(_) => Some(number),
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => self.scan(today)?,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        self.scan(namespace, today)?
+                    }
                     Err(error) => return Err(error),
                 }
             }
-            _ => self.scan(today)?,
+            _ => self.scan(namespace, today)?,
         };
         if let Some(mut latest) = number {
-            // Other pp instances create contiguous successors while holding .lock.
+            // Other instances create contiguous successors while holding .lock.
             while let Some(next) = latest.checked_add(1) {
-                match fs::symlink_metadata(self.path(today, next)) {
+                match fs::symlink_metadata(self.path_for(namespace, today, next)) {
                     Ok(_) => {
-                        open_regular(&self.path(today, next), false, false)?;
+                        open_regular(&self.path_for(namespace, today, next), false, false)?;
                         latest = next;
                     }
                     Err(error) if error.kind() == io::ErrorKind::NotFound => break,
@@ -232,7 +290,7 @@ impl RotatingFile {
             number = Some(latest);
         }
         if let Some(number) = number {
-            let mut file = open_regular(&self.path(today, number), false, false)?;
+            let mut file = open_regular(&self.path_for(namespace, today, number), false, false)?;
             let length = file.metadata()?.len();
             if length <= MAX_LOG_BYTES && record.len() as u64 <= MAX_LOG_BYTES - length {
                 self.current = Some((today, number));
@@ -246,30 +304,38 @@ impl RotatingFile {
                     .ok_or_else(|| io::Error::other("log volume overflow"))?,
                 None => 1,
             };
-            match open_regular(&self.path(today, next), true, false) {
+            match open_regular(&self.path_for(namespace, today, next), true, false) {
                 Ok(mut file) => {
                     self.current = Some((today, next));
                     return file.write_all(record);
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                     // Validate conflicts rather than skipping unsafe paths.
-                    open_regular(&self.path(today, next), false, false)?;
-                    number = self.scan(today)?;
+                    open_regular(&self.path_for(namespace, today, next), false, false)?;
+                    number = self.scan(namespace, today)?;
                 }
                 Err(error) => return Err(error),
             }
         }
     }
 
+    #[cfg(test)]
     fn path(&self, date: NaiveDate, number: u64) -> PathBuf {
-        self.dir.join(format!("pp.{date}.{number}.log"))
+        self.path_for(Namespace::Pp, date, number)
     }
 
-    fn scan(&self, today: NaiveDate) -> io::Result<Option<u64>> {
+    fn path_for(&self, namespace: Namespace, date: NaiveDate, number: u64) -> PathBuf {
+        self.dir.join(namespace.file_name(date, number))
+    }
+
+    fn scan(&self, namespace: Namespace, today: NaiveDate) -> io::Result<Option<u64>> {
         let mut maximum = None;
         for entry in fs::read_dir(&self.dir)? {
             let entry = entry?;
-            if let Some((date, number)) = entry.file_name().to_str().and_then(parse_name)
+            if let Some((date, number)) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| namespace.parse_file_name(name))
                 && date == today
             {
                 open_regular(&entry.path(), false, false)?;
@@ -279,9 +345,12 @@ impl RotatingFile {
         Ok(maximum)
     }
 
-    fn cleanup(&mut self, today: NaiveDate) {
+    fn cleanup(&mut self, namespace: Namespace, today: NaiveDate) {
         self.cleaned = Some(today);
-        let result = self.cleanup_before(today.checked_sub_days(Days::new(RETENTION_DAYS - 1)));
+        let result = self.cleanup_before(
+            namespace,
+            today.checked_sub_days(Days::new(RETENTION_DAYS - 1)),
+        );
         if let Err(error) = result {
             self.remember_cleanup(error);
         }
@@ -293,7 +362,11 @@ impl RotatingFile {
         }
     }
 
-    fn cleanup_before(&mut self, cutoff: Option<NaiveDate>) -> io::Result<()> {
+    fn cleanup_before(
+        &mut self,
+        namespace: Namespace,
+        cutoff: Option<NaiveDate>,
+    ) -> io::Result<()> {
         let Some(cutoff) = cutoff else {
             return Ok(());
         };
@@ -303,7 +376,7 @@ impl RotatingFile {
                 if entry
                     .file_name()
                     .to_str()
-                    .and_then(parse_name)
+                    .and_then(|name| namespace.parse_file_name(name))
                     .is_some_and(|(date, _)| date < cutoff)
                     && entry.file_type()?.is_file()
                 {
@@ -337,6 +410,29 @@ fn open_regular(path: &Path, create_new: bool, create: bool) -> io::Result<File>
     Ok(file)
 }
 
+#[derive(Clone, Copy)]
+enum Namespace {
+    Pp,
+    Debug,
+}
+
+impl Namespace {
+    fn file_name(self, date: NaiveDate, number: u64) -> String {
+        match self {
+            Self::Pp => format!("pp.{date}.{number}.log"),
+            // Debug volumes are padded to four digits minimum, no ".log".
+            Self::Debug => format!("debug.{date}.{number:04}"),
+        }
+    }
+
+    fn parse_file_name(self, name: &str) -> Option<(NaiveDate, u64)> {
+        match self {
+            Self::Pp => parse_name(name),
+            Self::Debug => parse_debug_name(name),
+        }
+    }
+}
+
 fn parse_name(name: &str) -> Option<(NaiveDate, u64)> {
     let body = name.strip_prefix("pp.")?.strip_suffix(".log")?;
     let (date, number) = body.rsplit_once('.')?;
@@ -348,6 +444,22 @@ fn parse_name(name: &str) -> Option<(NaiveDate, u64)> {
         return None;
     }
     Some((parsed, number.parse().ok()?))
+}
+
+fn parse_debug_name(name: &str) -> Option<(NaiveDate, u64)> {
+    let body = name.strip_prefix("debug.")?;
+    let (date, digits) = body.rsplit_once('.')?;
+    if date.len() != 10 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    if parsed.to_string() != date {
+        return None;
+    }
+    let number: u64 = digits.parse().ok()?;
+    // Only the exact {:04} spelling is a volume: unpadded or over-padded
+    // numbers and volume zero are foreign files, never rotated into.
+    (number > 0 && format!("{number:04}") == digits).then_some((parsed, number))
 }
 
 #[cfg(test)]
@@ -367,6 +479,11 @@ mod tests {
     fn append(file: &mut RotatingFile, record: &[u8], day: NaiveDate) -> io::Result<()> {
         let _lock = FileLock::acquire(&file.lock)?;
         file.append_record_locked(record, day)
+    }
+
+    fn debug_append(file: &mut RotatingFile, record: &[u8], day: NaiveDate) -> io::Result<()> {
+        let _lock = FileLock::acquire(&file.lock)?;
+        file.append_record_locked_for(Namespace::Debug, record, day)
     }
 
     fn padded_record(size: usize) -> Vec<u8> {
@@ -729,5 +846,193 @@ mod tests {
         file.current = None;
         assert!(append(&mut file, b"{}\n", date()).is_err());
         assert_eq!(fs::read(file.path(date(), 2)).unwrap(), b"{}\n");
+    }
+
+    #[test]
+    fn debug_volumes_are_padded_names_isolated_from_pp_and_foreign_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        let mut file = RotatingFile::for_namespace(Namespace::Debug, logs.clone()).unwrap();
+        // Nothing is eagerly created beyond the shared .lock.
+        let only: Vec<String> = fs::read_dir(&logs)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(only, [".lock".to_owned()]);
+        // pp volumes and non-canonical debug names must not seed numbering.
+        for name in [
+            "pp.2026-10-19.1.log",
+            "pp.2026-10-19.7.log",
+            "debug.2026-10-19.1",
+            "debug.2026-10-19.0000",
+            "debug.2026-10-19.00001",
+            "debug.2026-10-19.0001.log",
+        ] {
+            fs::write(logs.join(name), b"{}\n").unwrap();
+        }
+        debug_append(&mut file, b"{\"first\":true}\n", date()).unwrap();
+        assert_eq!(
+            fs::read(logs.join("debug.2026-10-19.0001")).unwrap(),
+            b"{\"first\":true}\n"
+        );
+        fs::write(
+            logs.join("debug.2026-10-19.0001"),
+            padded_record(MAX_LOG_BYTES as usize),
+        )
+        .unwrap();
+        debug_append(&mut file, b"{\"second\":true}\n", date()).unwrap();
+        assert_eq!(
+            fs::read(logs.join("debug.2026-10-19.0002")).unwrap(),
+            b"{\"second\":true}\n"
+        );
+        // Every foreign or pp file is still present, byte for byte.
+        let names: BTreeSet<String> = fs::read_dir(&logs)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ".lock",
+                "debug.2026-10-19.1",
+                "debug.2026-10-19.0000",
+                "debug.2026-10-19.00001",
+                "debug.2026-10-19.0001",
+                "debug.2026-10-19.0001.log",
+                "debug.2026-10-19.0002",
+                "pp.2026-10-19.1.log",
+                "pp.2026-10-19.7.log",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect()
+        );
+    }
+
+    #[test]
+    fn debug_retention_and_scanning_stay_within_their_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        fs::create_dir(&logs).unwrap();
+        for name in [
+            "pp.2026-09-01.1.log",
+            "pp.2026-10-01.1.log",
+            "debug.2026-09-01.0001",
+            "debug.2026-10-01.0001",
+        ] {
+            fs::write(logs.join(name), b"{}\n").unwrap();
+        }
+        // Create the shared lock without applying the host clock's retention.
+        let lock = Arc::new(open_regular(&logs.join(".lock"), false, true).unwrap());
+        let mut pp = RotatingFile {
+            dir: logs.clone(),
+            lock: Arc::clone(&lock),
+            current: None,
+            cleaned: None,
+            cleanup_error: None,
+        };
+        append(&mut pp, b"{\"pp\":true}\n", date()).unwrap();
+        assert!(!logs.join("pp.2026-09-01.1.log").exists());
+        assert!(logs.join("debug.2026-09-01.0001").exists());
+        let mut debug = RotatingFile {
+            dir: logs.clone(),
+            lock,
+            current: None,
+            cleaned: None,
+            cleanup_error: None,
+        };
+        debug_append(&mut debug, b"{\"debug\":true}\n", date()).unwrap();
+        assert!(!logs.join("debug.2026-09-01.0001").exists());
+        assert!(logs.join("debug.2026-10-01.0001").exists());
+        assert!(logs.join("pp.2026-10-01.1.log").exists());
+        assert_eq!(
+            fs::read(logs.join("debug.2026-10-19.0001")).unwrap(),
+            b"{\"debug\":true}\n"
+        );
+        assert_eq!(
+            fs::read(logs.join("pp.2026-10-19.1.log")).unwrap(),
+            b"{\"pp\":true}\n"
+        );
+    }
+
+    #[test]
+    fn debug_reopen_follows_successors_and_rolls_dates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("logs");
+        let mut first = RotatingFile::for_namespace(Namespace::Debug, path.clone()).unwrap();
+        let mut second = RotatingFile::for_namespace(Namespace::Debug, path).unwrap();
+        debug_append(&mut first, b"{\"one\":1}\n", date()).unwrap();
+        debug_append(&mut second, b"{\"two\":2}\n", date()).unwrap();
+        assert_eq!(
+            fs::read(first.path_for(Namespace::Debug, date(), 1)).unwrap(),
+            b"{\"one\":1}\n{\"two\":2}\n"
+        );
+        let tomorrow = date().succ_opt().unwrap();
+        debug_append(&mut first, b"{\"next\":true}\n", tomorrow).unwrap();
+        assert_eq!(
+            fs::read(first.path_for(Namespace::Debug, tomorrow, 1)).unwrap(),
+            b"{\"next\":true}\n"
+        );
+        assert!(!first.path_for(Namespace::Debug, tomorrow, 2).exists());
+    }
+
+    #[test]
+    fn debug_record_rejects_oversize_without_partial_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = DebugLog {
+            file: RotatingFile::for_namespace(Namespace::Debug, dir.path().join("logs")).unwrap(),
+        };
+        log.record(&serde_json::json!({"turn": 1, "note": "a\nb"}))
+            .unwrap();
+        log.record(&serde_json::json!({"turn": 2})).unwrap();
+        let today = Local::now().date_naive();
+        let path = log.file.path_for(Namespace::Debug, today, 1);
+        let bytes = fs::read(&path).unwrap();
+        // Oversize records are rejected whole, leaving the file unchanged.
+        let oversize = serde_json::json!({"pad": "x".repeat(MAX_LOG_BYTES as usize)});
+        assert_eq!(
+            log.record(&oversize).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn debug_record_surfaces_cleanup_errors_as_io_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        fs::create_dir(&logs).unwrap();
+        let today = Local::now().date_naive();
+        let stale = today
+            .checked_sub_days(Days::new(RETENTION_DAYS + 1))
+            .unwrap();
+        fs::write(logs.join(Namespace::Debug.file_name(stale, 1)), b"{}\n").unwrap();
+        fs::write(logs.join(Namespace::Debug.file_name(today, 1)), b"{}\n").unwrap();
+        let mut log = DebugLog {
+            file: RotatingFile {
+                dir: logs.clone(),
+                lock: Arc::new(open_regular(&logs.join(".lock"), false, true).unwrap()),
+                current: None,
+                cleaned: None,
+                cleanup_error: None,
+            },
+        };
+        fs::set_permissions(&logs, fs::Permissions::from_mode(0o500)).unwrap();
+        assert_eq!(
+            log.record(&"cleanup failure write marker")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        // The write itself still landed; only retention failed.
+        assert!(
+            fs::read_to_string(logs.join(Namespace::Debug.file_name(today, 1)))
+                .unwrap()
+                .contains("cleanup failure write marker")
+        );
+        fs::set_permissions(&logs, fs::Permissions::from_mode(0o700)).unwrap();
+        log.record(&serde_json::json!({"turn": 2})).unwrap();
+        // Cleanup does not retry within the same day, matching pp behavior.
+        assert!(logs.join(Namespace::Debug.file_name(stale, 1)).exists());
     }
 }

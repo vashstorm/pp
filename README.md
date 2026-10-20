@@ -17,6 +17,8 @@ cargo build --locked
 {
   // Optional; the first provider's first model is used when omitted or when the reference matches no provider/model
   "default_model": "gateway/secondary",
+  // 调试日志：默认 false；开启后记录 harness 状态及每个模型的首个完整合成 prompt
+  "debug": false,
   // Optional, default "replace"; use "hashline" for anchored line edits
   "edit": "replace",
   // 启动默认思考级别：none（关闭思考）、low、medium、high、xhigh、max；省略时为 none
@@ -152,6 +154,17 @@ cargo test --locked --test cli_agent mcp_ -- --test-threads=1
 诊断事件包括应用启停（pid、启动 cwd、prompt/line/tui 模式）、配置不可用、任务、Completion/Responses 请求和工具的开始/结束、受控状态及耗时。工具类别仅为 `load_skill`、`read`、`grep`、`find`、`edit`、`write`、`bash`，其他统一为 `external`。不记录 prompt、回答/思考、工具参数/结果/输出、工具文件路径、错误原文、配置、URL 或 API key；不启用依赖库日志，也不读取 `RUST_LOG`。这些运行诊断日志与下述包含完整交互的 session 文件相互独立。
 
 初始化失败，或退出时发现写入/轮转/清理失败，仅在 stderr 输出一次固定 `warning: file logging unavailable`，不改变应用退出码；TUI 运行中不打印日志错误。事件同步交给操作系统，无后台队列，不逐条 fsync；强杀或断电不保证最后一条完整/持久化，也不保证存在 `app_stopped`。
+
+### Debug 日志
+
+在 `~/.pp/agent/settings.jsonc` 中设置 `"debug": true` 后，模型请求前向 `~/.pp/logs/debug.yyyy-mm-dd.xxxx` 写入独立的分段文本日志（不是 JSONL）；默认 `false`，省略字段或配置文件时均不开启，只接受布尔值，修改后重启生效。`xxxx` 是从 `0001` 开始的四位最小宽度分卷编号，不带 `.log` 后缀。只启动程序、不发送模型请求不会创建 debug 分卷。
+
+- `harness_state`：每次请求前的 `request_ready` 快照，包含 pid、session ID（首次持久化前为 null）、provider/model 引用、协议、cwd、思考级别、edit 模式、工具限制、当前任务请求序号/上限、历史项数和工具数。
+- `llm_first_prompt`：本次进程中每个 `provider/model` 首次请求的完整原生 `request` 的文本展开，包括合成后的 system/instructions、用户输入、已有对话/工具结果与工具定义。每段以事件名和时间戳为标题，优先展示模型、协议及进程等定位信息；原生请求按「请求参数 → 系统指令 → 对话消息／输入历史 → 工具定义」分区。消息标题标明索引和角色／类型，工具标题标明名称，调用与结果保留 call ID，方便对应。正文用 `字段: |` 独立成块，原样保留换行、空行、代码缩进、引号和反斜杠，不折行、不截断；工具参数 schema 使用格式化 JSON，其他嵌套字段缩进展开，未知字段同样保留。Completion 与 Responses 均支持；切回模型、后续任务和 `/new` 不重复记录，重启进程后重新记录。请求发送前写入，因此供应商拒绝请求时也保留首个 prompt。
+
+Debug 日志沿用普通日志的文件权限、跨进程锁、按本地日期和 10 MiB 整条事件分卷、30 天保留策略；两种文件的分卷与清理互不混用。单条超限不截断；初始化、序列化、写入或清理失败时停止本次进程的 debug 记录，向普通诊断日志写入固定 `debug_logging_unavailable` 事件，不中断任务、不向 TUI 打印日志错误。
+
+**Debug 日志包含完整 prompt 与历史内容，可能含敏感源码或用户数据。** 不主动序列化配置、API key、HTTP 认证头或供应商错误体；但已进入 prompt 的敏感内容会原样记录。仅在需要排查时开启，分享日志前自行检查；普通 `pp.*.log` 的内容隔离规则不变。
 
 ## Terminal Interaction
 

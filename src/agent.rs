@@ -1,3 +1,4 @@
+mod debug;
 mod history;
 pub(crate) mod persistence;
 
@@ -46,6 +47,7 @@ pub(crate) struct Agent {
     base_system: String,
     journal: persistence::SessionJournal,
     replay: Vec<persistence::ReplayRecord>,
+    debug: Option<debug::DebugState>,
 }
 
 impl Session {
@@ -211,6 +213,7 @@ impl Agent {
             base_system: system,
             journal: SessionJournal::new(sessions_dir),
             replay: Vec::new(),
+            debug: debug::DebugState::new(config.settings.debug),
         })
     }
 
@@ -261,6 +264,7 @@ impl Agent {
             base_system: checkpoint.base_system,
             journal,
             replay,
+            debug: debug::DebugState::new(config.settings.debug),
         })
     }
 
@@ -615,7 +619,7 @@ impl Agent {
             tool_limits: self.tools.limits,
             base_system: &self.base_system,
         };
-        for _ in 0..self.max_model_requests {
+        for request_index in 1..=self.max_model_requests {
             self.journal.check()?;
             if cancellation.is_cancelled() {
                 self.journal.sent(
@@ -625,6 +629,20 @@ impl Agent {
                     instructions.take(),
                 )?;
                 return Err(Cancelled.into());
+            }
+            if let Some(debug) = &mut self.debug
+                && debug
+                    .request(
+                        &self.session,
+                        &metadata,
+                        self.journal.id(),
+                        request_index,
+                        self.max_model_requests,
+                    )
+                    .is_err()
+            {
+                debug::DebugState::warn_unavailable();
+                self.debug = None;
             }
             emit(AgentEvent::AssistantStarted);
             let update = RequestUpdate {

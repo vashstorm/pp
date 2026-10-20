@@ -546,6 +546,157 @@ fn logging_operational_events_do_not_store_content_or_secrets() {
     }
 }
 
+fn debug_text(home: &Path) -> String {
+    let mut files: Vec<_> = fs::read_dir(log_dir(home))
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("debug."))
+        .collect();
+    files.sort_by_key(|entry| entry.file_name());
+    let mut text = String::new();
+    for entry in files {
+        text.push_str(&fs::read_to_string(entry.path()).unwrap());
+    }
+    text
+}
+
+#[test]
+fn debug_logging_is_opt_in() {
+    for settings in [None, Some("{}"), Some(r#"{"debug":false}"#)] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        fs::write(
+            config_path(home.path(), "models.jsonc"),
+            fixture_models(&server),
+        )
+        .unwrap();
+        if let Some(settings) = settings {
+            fs::write(config_path(home.path(), "settings.jsonc"), settings).unwrap();
+        }
+        let cli = Cli::start_with_existing_files(home.path(), Some("private disabled prompt"));
+        let (request, _) = receive(&server);
+        final_reply(request, "done");
+        let output = cli.finish();
+        assert!(output.status.success(), "{output:?}");
+        assert!(debug_text(home.path()).is_empty());
+        assert_no_secrets(home.path(), &["private disabled prompt", "fixture-key"]);
+    }
+}
+
+#[test]
+fn debug_logging_captures_first_native_prompt_per_model_across_tasks_and_reset() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let mut models: Value =
+        serde_json::from_str(&response_models(&server, Some("completion"))).unwrap();
+    let mut response_provider: Value =
+        serde_json::from_str(&response_models(&server, None)).unwrap();
+    response_provider["providers"][0]["id"] = json!("responses");
+    models["providers"]
+        .as_array_mut()
+        .unwrap()
+        .push(response_provider["providers"][0].take());
+    fs::write(home.path().join("debug-source.txt"), "tool result marker").unwrap();
+    let mut cli = Cli::start_with(
+        home.path(),
+        None,
+        r#"{"debug":true,"think_level":"high","max_model_requests":7}"#,
+        &models.to_string(),
+    );
+    cli.input("首个合成 prompt\nsecond\n/model responses/primary\nthird\n/model fixture/primary\nfourth\n/new\nfifth\n/quit\n");
+    let (request, _) = receive(&server);
+    calls_reply(
+        request,
+        json!([call(
+            "debug-read",
+            "read",
+            json!({"path":"debug-source.txt"})
+        )]),
+    );
+    let (request, _) = receive(&server);
+    final_reply(request, "tool done");
+    let (request, _) = receive(&server);
+    final_reply(request, "second done");
+    let (request, _) = receive_at(&server, "/v1/responses");
+    response_final(request, "third done");
+    let (request, _) = receive(&server);
+    final_reply(request, "fourth done");
+    let (request, _) = receive(&server);
+    final_reply(request, "fifth done");
+    let output = cli.finish();
+    assert!(output.status.success(), "{output:?}");
+    let text = debug_text(home.path());
+    let prompts: Vec<_> = text
+        .split("\n=== ")
+        .filter(|section| section.starts_with("llm_first_prompt |"))
+        .collect();
+    assert_eq!(prompts.len(), 2);
+    assert!(prompts[0].contains("model_reference: fixture/primary\n"));
+    assert!(prompts[1].contains("model_reference: responses/primary\n"));
+    assert!(prompts[0].contains("首个合成 prompt"));
+    assert!(!prompts[0].contains("tool result marker"));
+    assert!(prompts[1].contains("tool result marker"));
+    assert!(!prompts[1].contains("fourth"));
+    for prompt in &prompts {
+        assert!(prompt.contains("-- 请求参数 --\n"));
+        assert!(prompt.contains("-- 工具定义 / tools ("));
+        assert!(prompt.contains("] function / read\n"));
+        assert!(prompt.contains("\"properties\": {"));
+    }
+    assert!(prompts[0].contains("-- 对话消息 / messages (2 项) --\n"));
+    assert!(prompts[0].contains("[0] system\n"));
+    assert!(prompts[0].contains("[1] user\n  role: user\n  content: |\n    首个合成 prompt\n"));
+    assert!(prompts[1].contains("-- 系统指令 / instructions --\n"));
+    assert!(prompts[1].contains("-- 输入历史 / input ("));
+    assert!(prompts[1].contains("function_call / read\n"));
+    assert!(prompts[1].contains("function_call_output\n  call_id: debug-read\n"));
+    assert_eq!(text.matches("=== harness_state |").count(), 6);
+    assert_no_secrets(
+        home.path(),
+        &["首个合成 prompt", "tool result marker", "fixture-key"],
+    );
+    assert!(!text.contains("fixture-key"));
+    assert!(!text.contains("Authorization"));
+    no_more(&server);
+}
+
+#[test]
+fn debug_logging_keeps_first_prompt_when_provider_rejects_request() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let cli = Cli::start_with(
+        home.path(),
+        Some("debug failed request marker\nsecond line with \"quotes\" and \\path"),
+        r#"{"debug":true}"#,
+        &fixture_models(&server),
+    );
+    let (request, _) = receive(&server);
+    request
+        .respond(Response::from_string("private provider error body").with_status_code(401))
+        .unwrap();
+    let output = cli.finish();
+    assert!(!output.status.success());
+    let text = debug_text(home.path());
+    assert_eq!(text.matches("=== llm_first_prompt |").count(), 1);
+    let lines: Vec<_> = text.lines().map(str::trim).collect();
+    assert!(lines.windows(2).any(|pair| pair
+        == [
+            "debug failed request marker",
+            "second line with \"quotes\" and \\path",
+        ]));
+    assert!(!text.contains("private provider error body"));
+    assert!(!text.contains("fixture-key"));
+    assert_no_secrets(
+        home.path(),
+        &[
+            "debug failed request marker",
+            "private provider error body",
+            "fixture-key",
+        ],
+    );
+    no_more(&server);
+}
+
 #[test]
 fn logging_unavailable_directory_preserves_application_result() {
     let home = tempfile::tempdir().unwrap();

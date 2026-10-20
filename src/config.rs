@@ -193,6 +193,8 @@ impl Default for NotificationOptions {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
+    #[serde(default)]
+    pub(crate) debug: bool,
     #[serde(default = "default_notification_show_countdown")]
     pub(crate) notification_show_countdown: bool,
     #[serde(default = "default_notification_timeout_seconds")]
@@ -304,6 +306,7 @@ pub(crate) fn global_dir() -> Result<PathBuf> {
 
 fn default_settings() -> Settings {
     Settings {
+        debug: false,
         notification_show_countdown: default_notification_show_countdown(),
         notification_timeout_seconds: default_notification_timeout_seconds(),
         mcp_servers: Default::default(),

@@ -391,6 +391,7 @@ mod tests {
             thinking: crate::models::ModelThinking::default(),
             base_url: base_url.parse().unwrap(),
             settings: crate::config::Settings {
+                debug: false,
                 notification_show_countdown: true,
                 notification_timeout_seconds: 10,
                 mcp_servers: Default::default(),
