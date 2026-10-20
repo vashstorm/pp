@@ -15,6 +15,66 @@ use async_openai::types::{
 use serde::{Deserialize, Deserializer, de::Error};
 use std::collections::BTreeMap;
 
+// 正常分片直接交给 SDK；仅在缺少正文注释时构造兼容补齐所需的 JSON 树。
+pub(super) struct ResponseEvent(pub(super) ResponseStreamEvent);
+
+impl<'de> Deserialize<'de> for ResponseEvent {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
+        match serde_json::from_str(raw.get()) {
+            Ok(event) => return Ok(Self(event)),
+            Err(error)
+                if error.is_data()
+                    && error.to_string().starts_with("missing field `annotations`") => {}
+            Err(error) => return Err(D::Error::custom(error)),
+        }
+        let mut value: serde_json::Value =
+            serde_json::from_str(raw.get()).map_err(D::Error::custom)?;
+        if let Some(part) = value.get_mut("part") {
+            default_output_text_annotations(part);
+        }
+        if let Some(item) = value.get_mut("item") {
+            default_message_annotations(item);
+        }
+        if let Some(output) = value
+            .pointer_mut("/response/output")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for item in output {
+                default_message_annotations(item);
+            }
+        }
+        serde_json::from_value(value)
+            .map(Self)
+            .map_err(D::Error::custom)
+    }
+}
+
+fn default_message_annotations(item: &mut serde_json::Value) {
+    if item.get("type").and_then(serde_json::Value::as_str) != Some("message") {
+        return;
+    }
+    if let Some(content) = item
+        .get_mut("content")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for part in content {
+            default_output_text_annotations(part);
+        }
+    }
+}
+
+fn default_output_text_annotations(part: &mut serde_json::Value) {
+    if part.get("type").and_then(serde_json::Value::as_str) != Some("output_text") {
+        return;
+    }
+    if let Some(object) = part.as_object_mut() {
+        object
+            .entry("annotations")
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    }
+}
+
 // 保留 SDK 的完整分片校验，同时读取兼容供应商的可读思考扩展。
 pub(super) struct ChatChunk {
     native: CreateChatCompletionStreamResponse,

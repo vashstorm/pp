@@ -24,7 +24,7 @@ use tokio::runtime::Runtime;
 
 mod streaming;
 
-use streaming::{ChatChunk, ChatStream, ResponsesStream};
+use streaming::{ChatChunk, ChatStream, ResponseEvent, ResponsesStream};
 
 pub(crate) struct OpenAiClient {
     client: Client<OpenAIConfig>,
@@ -162,9 +162,7 @@ impl OpenAiClient {
                 .run_until_cancelled(
                     client
                         .responses()
-                        .create_stream_byot::<_, async_openai::types::responses::ResponseStreamEvent>(
-                            request,
-                        ),
+                        .create_stream_byot::<_, ResponseEvent>(request),
                 )
                 .await;
             on_request_sent()?;
@@ -177,10 +175,12 @@ impl OpenAiClient {
             loop {
                 match cancellation.run_until_cancelled(stream.next()).await {
                     None => return Err(Cancelled.into()),
-                    Some(None) => bail!("Responses protocol: stream ended before response.completed"),
+                    Some(None) => {
+                        bail!("Responses protocol: stream ended before response.completed")
+                    }
                     Some(Some(event)) => {
                         if let Some(turn) = output.push(
-                            event.map_err(|error| redacted_error(error, "Responses"))?,
+                            event.map_err(|error| redacted_error(error, "Responses"))?.0,
                             emit,
                         )? {
                             // response.completed is authoritative; do not wait for HTTP EOF.

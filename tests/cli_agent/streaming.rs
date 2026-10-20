@@ -913,6 +913,95 @@ fn default_reasoning_rejection_allows_manual_effort_recovery_without_committing_
 }
 
 #[test]
+fn streaming_responses_annotations_default_only_when_missing() {
+    for annotations in [
+        None,
+        Some(json!([])),
+        Some(json!([{
+            "type":"url_citation", "start_index":0, "end_index":6,
+            "url":"https://example.com/source", "title":"source"
+        }])),
+    ] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let mut cli = Protocol::Responses.start(&server, dir.path(), None);
+        cli.input("first task\n");
+        let (request, _) = Protocol::Responses.receive(&server);
+        let mut part = json!({"type":"output_text", "text":"answer"});
+        if let Some(annotations) = &annotations {
+            part["annotations"] = annotations.clone();
+        }
+        let item = response_message("msg-stream", json!([part]));
+        let mut stream = SseReply::new(request);
+        stream.event(json!({
+            "type":"response.output_item.added", "sequence_number":0,
+            "output_index":0, "item":item
+        }));
+        stream.event(json!({
+            "type":"response.content_part.added", "sequence_number":1,
+            "item_id":"msg-stream", "output_index":0, "content_index":0,
+            "part":part
+        }));
+        Protocol::Responses.text(&mut stream, "answer");
+        stream.event(json!({
+            "type":"response.content_part.done", "sequence_number":2,
+            "item_id":"msg-stream", "output_index":0, "content_index":0,
+            "part":part
+        }));
+        stream.event(json!({
+            "type":"response.output_item.done", "sequence_number":3,
+            "output_index":0, "item":item
+        }));
+        Protocol::Responses.complete(&mut stream, json!([item]), false);
+        cli.wait_for(Pipe::Stdout, "answer\n");
+        cli.input("second task\n");
+        let (request, body) = Protocol::Responses.receive(&server);
+        assert_eq!(
+            body["input"][1]["content"][0]["annotations"],
+            annotations.unwrap_or_else(|| json!([]))
+        );
+        stream.finish();
+        Protocol::Responses.final_reply(request, "done");
+        cli.input("/quit\n");
+        let output = cli.finish();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, b"answer\ndone\n");
+        assert_clean_pipes(&output);
+        no_more(&server);
+    }
+}
+
+#[test]
+fn streaming_responses_annotations_invalid_values_still_fail() {
+    for part in [
+        json!({"type":"output_text", "text":"private-text", "annotations":null}),
+        json!({"type":"output_text", "text":"private-text", "annotations":{}}),
+        json!({"type":"output_text", "text":"private-text", "annotations":"private-value"}),
+        json!({"type":"output_text", "text":"private-text", "annotations":[{}]}),
+        json!({"type":"output_text"}),
+    ] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Protocol::Responses.start(&server, dir.path(), Some("task"));
+        let (request, _) = Protocol::Responses.receive(&server);
+        let mut stream = SseReply::new(request);
+        Protocol::Responses.complete(
+            &mut stream,
+            json!([response_message("msg-stream", json!([part]))]),
+            false,
+        );
+        stream.finish();
+        let output = cli.finish();
+        assert!(!output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("decoding Responses response: invalid JSON or response structure"));
+        assert!(!stderr.contains("private-"));
+        no_more(&server);
+    }
+}
+
+#[test]
 fn streaming_completed_only_text_and_missing_tail_are_printed_once() {
     for prefix in [None, Some("prefix-中")] {
         let server = server();
