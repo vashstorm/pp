@@ -233,6 +233,8 @@ async function refresh() {
       "costs",
       "errors",
       "traces",
+      "tools",
+      "projects",
     ].includes(page)
   ) {
     lastUpdated = Date.now();
@@ -303,6 +305,7 @@ function onRoute() {
   data = null;
   requestData = null;
   resetActivity(url);
+  resetInsights();
   expandedGroups.clear();
   hiddenSeries.clear();
   peakProvider = "";
@@ -694,8 +697,9 @@ function modelDetails(g, key) {
 function groupRow(g, kind, cells, detail, columns) {
   const key = groupKey(kind, g.key),
     open = expandedGroups.has(key);
-  const name = kind === "provider" ? g.provider : g.model;
-  return `<tr class="group-row${open ? " expanded" : ""}" tabindex="0" data-expand="${h(key)}" aria-expanded="${open}" aria-controls="details-${h(key)}" aria-label="${open ? "Collapse" : "Expand"} ${h(name)}"><td><div class="model-name">${icon(open ? "down" : "chevron", 12)} ${h(name)}</div>${kind !== "provider" ? `<div class="provider">${h(g.provider)} · ${h(g.key)}</div>` : ""}</td>${cells}</tr><tr class="expanded-detail" id="details-${h(key)}"${open ? "" : " hidden"}><td colspan="${columns}">${open ? detail(key) : ""}</td></tr>`;
+  const name = g.label ?? (kind === "provider" ? g.provider : g.model);
+  const description = g.description ?? (kind !== "provider" ? `${g.provider} · ${g.key}` : "");
+  return `<tr class="group-row${open ? " expanded" : ""}" tabindex="0" data-expand="${h(key)}" aria-expanded="${open}" aria-controls="details-${h(key)}" aria-label="${open ? "Collapse" : "Expand"} ${h(name)}"><td><div class="model-name">${icon(open ? "down" : "chevron", 12)} ${h(name)}</div>${description ? `<div class="provider insight-path" title="${h(description)}">${h(description)}</div>` : ""}</td>${cells}</tr><tr class="expanded-detail" id="details-${h(key)}"${open ? "" : " hidden"}><td colspan="${columns}">${open ? detail(key) : ""}</td></tr>`;
 }
 function analyticsTable(headers, rows) {
   return `<div class="table-wrap"><table class="analytics-table"><thead><tr>${headers.map((name, i) => `<th${i ? ' class="right"' : ""}>${h(name)}</th>`).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}"><div class="empty">No requests in this range</div></td></tr>`}</tbody></table></div>`;
@@ -1038,6 +1042,7 @@ function render() {
     : null;
   const focusedId = focused?.dataset?.id;
   const peakFocused = focused?.id === "peak-provider";
+  const insightFocused = ["tool-filter", "insight-sort"].includes(focused?.id) ? focused.id : null;
   const focusedStatus = focused?.dataset?.status;
   const focusedExpand = focused?.closest("[data-expand]")?.dataset.expand;
   const focusControl = [
@@ -1059,11 +1064,13 @@ function render() {
           ? errorsPage()
           : page === "traces"
             ? tracesPage()
-            : ["models", "providers", "costs"].includes(page)
+            : ["models", "providers", "costs", "tools", "projects"].includes(page)
               ? {
                   models: modelsPage,
                   providers: providersPage,
                   costs: costsPage,
+                  tools: toolsPage,
+                  projects: projectsPage,
                 }[page]()
               : `<h1>${h(label)}</h1><p class="subtitle">${h(label)} across your sessions in the ${descriptions[range]}.</p><section class="panel placeholder"><div class="empty">${h(label)} is coming soon.</div></section>`;
   if (focusedSection) {
@@ -1075,6 +1082,8 @@ function render() {
     [...$("page").querySelectorAll("button,tr")]
       .find((el) => el.dataset[activityFocus] === activityValue)
       ?.focus({ preventScroll: true });
+  } else if (insightFocused) {
+    $(insightFocused)?.focus({ preventScroll: true });
   } else if (peakFocused) {
     $("peak-provider")?.focus({ preventScroll: true });
   } else if (focusControl) {
@@ -1112,6 +1121,7 @@ $("page").addEventListener("input", (e) => {
   }
 });
 $("page").addEventListener("click", (e) => {
+  if (insightsClick(e)) return;
   if (activityClick(e)) return;
   const expand = e.target.closest("[data-expand]");
   if (expand) {
@@ -1194,6 +1204,7 @@ $("page").addEventListener(
   true,
 );
 $("page").addEventListener("change", (e) => {
+  if (insightsChange(e)) return;
   if (e.target.id === "peak-provider") {
     peakProvider = e.target.value;
     render();

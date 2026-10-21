@@ -1,6 +1,7 @@
 //! 与会话日志独立的请求统计；数据库故障不改变模型调用结果。
 mod activity;
 mod analytics;
+mod insights;
 pub(crate) mod server;
 
 use anyhow::{Context, Result, ensure};
@@ -623,6 +624,92 @@ providers:
         );
     }
     #[test]
+    fn stats_insights_count_both_protocols_without_double_counting_or_leaking_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("models.yml"),
+            models_with_cost(json!({"input":2.0,"cacheRead":0.2,"output":8.0})),
+        )
+        .unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        let completion = json!({"native":{"tool_calls":[
+            {"function":{"name":"read","arguments":"private-arguments"}},
+            {"function":{"name":"bash","arguments":"{}"}}
+        ]},"text":"private-output"});
+        let mut first = fixture("one", now - 1000);
+        first.session_file = Some("/missing/session.jsonl".into());
+        store.insert(&first, &completion).unwrap();
+        store
+            .link(
+                "one",
+                Path::new("/missing/session.jsonl"),
+                &[json!({"id":"entry","message":{"content":[
+                    {"type":"toolCall","name":"read","arguments":{"path":"private-arguments"}},
+                    {"type":"toolCall","name":"bash","arguments":{}}
+                ]}})],
+            )
+            .unwrap();
+        let responses = json!({"native":[{"type":"function_call","name":"read","arguments":"{}"}]});
+        for n in 0..501 {
+            let mut r = fixture(&format!("response-{n}"), now);
+            r.api = "responses".into();
+            r.cwd = "/other/project".into();
+            r.model_reference = "other/primary".into();
+            r.input_tokens = None;
+            r.output_tokens = None;
+            r.cached_tokens = None;
+            store.insert(&r, &responses).unwrap();
+        }
+        let mut failed = fixture("failed", now);
+        failed.status = "aborted".into();
+        store.insert(&failed, &json!({"native":{"output":[{"type":"function_call","name":"grep","arguments":"中😀"}]}})).unwrap();
+        store
+            .insert(&fixture("future", now + 1), &responses)
+            .unwrap();
+        store
+            .insert(&fixture("old", now - 3_600_001), &responses)
+            .unwrap();
+        let pricing = analytics::Pricing::load(&store);
+        let tools = store.tools(Range::Hour, now, &pricing).unwrap();
+        assert_eq!(tools["summary"]["calls"], 504);
+        assert_eq!(tools["requests_with_tools"], 503);
+        assert_eq!(tools["partial_requests"], 1);
+        assert_eq!(tools["summary"]["priced"], 3);
+        assert_eq!(tools["summary"]["unpriced"], 501);
+        assert_eq!(tools["summary"]["tokens"], 240.0);
+        assert!((tools["summary"]["cost"].as_f64().unwrap() - 0.000432).abs() < 1e-12);
+        let read = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["tool"] == "read")
+            .unwrap();
+        assert_eq!(read["calls"], 502);
+        assert_eq!(read["tokens"], 60.0);
+        assert_eq!(read["models"].as_array().unwrap().len(), 2);
+        assert!(tools["summary"]["errors"].is_null());
+        assert!(!tools.to_string().contains("private-arguments"));
+        assert!(!tools.to_string().contains("private-output"));
+        let projects = store.projects(Range::Hour, now, &pricing).unwrap();
+        assert_eq!(projects["summary"]["requests"], 503);
+        assert_eq!(projects["projects"].as_array().unwrap().len(), 2);
+        let p = projects["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["key"] == "/tmp/project")
+            .unwrap();
+        assert_eq!(p["sessions"], 1);
+        assert_eq!(p["requests_without_session"], 1);
+        assert_eq!(p["requests"], 2);
+        assert!(!projects.to_string().contains("private-output"));
+        let empty = store.tools(Range::Hour, now - 7_200_000, &pricing).unwrap();
+        assert_eq!(empty["summary"]["cost"], 0.0);
+        assert_eq!(empty["summary"]["tokens"], 0.0);
+        assert!(empty["tools"].as_array().unwrap().is_empty());
+    }
+    #[test]
     fn stats_analytics_api_validates_ranges_and_omits_payloads() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = open_store(&dir.path().join("stats.db")).unwrap();
@@ -632,17 +719,24 @@ providers:
                 &json!({"text":"private-output"}),
             )
             .unwrap();
-        for endpoint in ["models", "providers", "costs"] {
+        for endpoint in ["models", "providers", "costs", "projects", "tools"] {
             for range in ["1h", "24h", "7d", "30d", "90d", "all"] {
                 let (code, _, body) =
                     server::dispatch(&store, &format!("/api/stats/{endpoint}?range={range}"));
                 assert_eq!(code, 200);
                 assert!(!body.contains("private-output"));
-                assert!(!body.contains("session_file"));
+                if endpoint != "projects" {
+                    assert!(!body.contains("session_file"));
+                }
                 let value: Value = serde_json::from_str(&body).unwrap();
-                assert_eq!(value["summary"]["requests"], 1);
-                assert_eq!(value["summary"]["unpriced"], 1);
-                assert!(value["summary"]["cost"].is_null());
+                if endpoint == "tools" {
+                    assert_eq!(value["summary"]["calls"], 0);
+                    assert_eq!(value["summary"]["cost"], 0.0);
+                } else {
+                    assert_eq!(value["summary"]["requests"], 1);
+                    assert_eq!(value["summary"]["unpriced"], 1);
+                    assert!(value["summary"]["cost"].is_null());
+                }
             }
             for query in [
                 "range=bad",

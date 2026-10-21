@@ -68,6 +68,7 @@ pub(super) fn dispatch(store: &Store, path: &str) -> (u16, &'static str, String)
         "/stats.css" => return (200, "text/css", include_str!("stats.css").into()),
         "/stats.js" => return (200, "text/javascript", include_str!("stats.js").into()),
         "/activity.js" => return (200, "text/javascript", include_str!("activity.js").into()),
+        "/insights.js" => return (200, "text/javascript", include_str!("insights.js").into()),
         "/icon.svg" => return (200, "image/svg+xml", include_str!("icon.svg").into()),
         _ => {}
     }
@@ -134,6 +135,8 @@ fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError
             | "/api/stats/costs"
             | "/api/stats/errors"
             | "/api/stats/traces"
+            | "/api/stats/tools"
+            | "/api/stats/projects"
     ) {
         return Ok(None);
     }
@@ -166,6 +169,14 @@ fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError
             .map_err(|_| ApiError::Database);
     }
     let pricing = super::analytics::Pricing::load(store);
+    if matches!(url.path(), "/api/stats/tools" | "/api/stats/projects") {
+        let result = if url.path() == "/api/stats/tools" {
+            store.tools(range, now, &pricing)
+        } else {
+            store.projects(range, now, &pricing)
+        };
+        return result.map(Some).map_err(|_| ApiError::Database);
+    }
     if url.path() == "/api/stats/errors" {
         return store
             .errors(range, now, limit, &pricing)

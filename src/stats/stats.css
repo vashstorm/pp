@@ -4,6 +4,56 @@
   font-weight: 100 900;
   font-display: swap;
 }
+.insight-path {
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.insight-ranking {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+.insight-ranking button {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 5px;
+}
+.insight-ranking button::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0 auto 0 0;
+  width: var(--rank-width);
+  background: color-mix(in srgb, var(--rank-color) 18%, transparent);
+  border-radius: inherit;
+}
+.insight-ranking button:hover { background: var(--hover); }
+.insight-ranking button > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.insight-ranking .num { flex-shrink: 0; }
+.tool-model-group h3 { padding: 12px 20px 0; font-size: 13px; }
+.group-details > h2 { margin: 20px 0 12px; }
+.graphs.project-ranks {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+}
+.insight-select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 9px;
+}
 :root {
   color-scheme: light;
   --bg: #f2f2f3;

@@ -17,7 +17,11 @@ Overview 展示当前时间范围内的请求、Token、缓存命中和耗时；
 
 Errors 按归一化的错误签名聚合失败请求，签名可展开查看完整消息并筛选失败列表，模型支持交叉筛选；点击失败行打开原有请求详情。
 
-Traces 按会话展示请求数量、模型、失败数、Token 和费用，点击会话查看完整已记录会话的请求时间线；时间线色块与请求项均可点击展开，正文、思考、工具参数、原生输出及会话条目可继续逐项展开，支持全部展开／收起。请求详情的 Trace 链接可直接定位并展开对应请求。Errors 汇总覆盖范围内全部失败，Traces 列表指标覆盖范围内请求；两者默认加载最新 500 条失败／会话，可扩大为 2,000，搜索只作用于已加载列表。单个会话详情不受列表范围限制，自动刷新保留展开状态。无会话记录的请求独立展示，不合并为同一会话。Traces 仅使用统计库快照，不读取原始会话文件；用户输入、工具结果／耗时及子代理跨度未采集，页面不推算这些数据。其余 Insights 导航页暂为占位。支持明暗／系统主题、数字 1–6 切换范围、G 加导航字母跳转。页面每 5 秒刷新，点击 Live 立即刷新。
+Traces 按会话展示请求数量、模型、失败数、Token 和费用，点击会话查看完整已记录会话的请求时间线；时间线色块与请求项均可点击展开，正文、思考、工具参数、原生输出及会话条目可继续逐项展开，支持全部展开／收起。请求详情的 Trace 链接可直接定位并展开对应请求。Errors 汇总覆盖范围内全部失败，Traces 列表指标覆盖范围内请求；两者默认加载最新 500 条失败／会话，可扩大为 2,000，搜索只作用于已加载列表。单个会话详情不受列表范围限制，自动刷新保留展开状态。无会话记录的请求独立展示，不合并为同一会话。Traces 仅使用统计库快照，不读取原始会话文件；用户输入、工具结果／耗时及子代理跨度未采集，页面不推算这些数据。Tools 和 Projects 提供独立统计页面（见下）；Frustration 和 Gain 暂为占位。支持明暗／系统主题、数字 1–6 切换范围、G 加导航字母跳转。页面每 5 秒刷新，点击 Live 立即刷新。
+
+Tools 展示模型发出的工具调用数量、趋势、参数字符数及归属 Token／费用；工具行和模型行可逐层展开，最近调用请求可打开原有详情，也支持搜索、按工具筛选和图例开关。调用优先从已提交会话快照提取，缺失时回退到 Completion／Responses 原生输出，同一请求不重复计数。每次模型请求的 Token／费用均分到该请求发出的全部工具调用，仅表示归属估算，不是工具独立费用。失败／取消请求的已保存调用可能不完整或未执行；工具执行结果、错误率和耗时仍为未采集。
+
+Projects 按完整 cwd 聚合，保留同名不同路径的独立目录，展示费用／请求排行、搜索和排序；点击目录行或排行可展开 Token、会话计数、模型用量和范围内最近 10 条请求，模型行还可继续展开延迟和 Token 明细。两个页面的汇总覆盖范围内全部请求，自动刷新保留搜索、筛选及展开状态，行支持 Enter／空格展开；请求正文和工具参数原文只在原有请求详情中按需加载。
 
 统计口径：以请求开始时间筛选，UTC 毫秒落盘、本地时间展示；总输入 Token 已包含缓存读取，Conversation tokens 为总输入加输出，Uncached input 为总输入减缓存读取。缺失的 usage／缓存明细保持未知，不用估算值填充。TTFT 是发起调用至首个非空正文、思考、拒绝或工具参数增量的时间；Tokens/s 为输出 Token 除以请求总耗时。用户取消记为 Aborted，服务或协议错误记为 Failed；发送前取消和本地校验失败不计入。缓存写入、Premium requests 和订阅额度没有采集数据，保持未知。
 
@@ -36,7 +40,7 @@ cost:
 
 数据库保存模型输出（含可获得的思考、工具参数）、请求指标和已提交的对应会话条目快照；不额外保存完整输入上下文、请求头或认证配置。摘要和未提交输出没有会话条目时明确显示未记录。统计文件可能包含代码和模型输出，应按个人会话数据保管；首版不会自动清理。目录权限为 `0700`、数据库为 `0600`，SQLite 使用 WAL 支持多进程写入；存储不可用只提示，不中断模型任务。
 
-前端及 Inter 字体内嵌在二进制中，运行无需 Node 或 CDN；字体许可证见 `src/stats/fonts/LICENSE.txt`。只读接口为 `/api/stats/overview?range=24h`、`/api/stats/requests?range=24h&limit=500`、`/api/stats/models?range=24h`、`/api/stats/providers?range=24h`、`/api/stats/costs?range=24h`、`/api/stats/errors?range=24h&limit=500`、`/api/stats/traces?range=24h&limit=500`、`/api/stats/traces/{request_id}` 和 `/api/stats/requests/{id}`；详情正文按需加载，不在列表接口中返回。
+前端及 Inter 字体内嵌在二进制中，运行无需 Node 或 CDN；字体许可证见 `src/stats/fonts/LICENSE.txt`。只读接口为 `/api/stats/overview?range=24h`、`/api/stats/requests?range=24h&limit=500`、`/api/stats/models?range=24h`、`/api/stats/providers?range=24h`、`/api/stats/costs?range=24h`、`/api/stats/tools?range=24h`、`/api/stats/projects?range=24h`、`/api/stats/errors?range=24h&limit=500`、`/api/stats/traces?range=24h&limit=500`、`/api/stats/traces/{request_id}` 和 `/api/stats/requests/{id}`；详情正文按需加载，不在列表接口中返回。
 
 ## Build and Run
 

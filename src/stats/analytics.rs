@@ -83,7 +83,7 @@ pub(super) struct Cost {
     output: f64,
 }
 impl Cost {
-    fn total(&self) -> f64 {
+    pub(super) fn total(&self) -> f64 {
         self.input + self.cache_read + self.output
     }
 }
