@@ -1,4 +1,5 @@
 //! 与会话日志独立的请求统计；数据库故障不改变模型调用结果。
+mod analytics;
 pub(crate) mod server;
 
 use anyhow::{Context, Result, ensure};
@@ -209,35 +210,19 @@ impl Store {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         Ok(Some(
-            json!({"request":record,"output_message":serde_json::from_str::<Value>(&output)?,"session_entry":entry.map(|s|serde_json::from_str::<Value>(&s)).transpose()?}),
+            json!({"request":analytics::Pricing::load(self).request(&record)?,"output_message":serde_json::from_str::<Value>(&output)?,"session_entry":entry.map(|s|serde_json::from_str::<Value>(&s)).transpose()?}),
         ))
     }
     pub fn overview(&self, range: Range, now: i64) -> Result<Value> {
-        let since = range.since(now);
-        let mut totals = self.conn.query_row("SELECT COUNT(*),SUM(status='ok'),SUM(status='failed'),SUM(status='aborted'),SUM(input_tokens),SUM(output_tokens),SUM(cached_tokens),SUM(CASE WHEN cached_tokens IS NOT NULL AND cached_tokens<=input_tokens THEN input_tokens-cached_tokens END),AVG(duration_ms),AVG(ttft_ms),AVG(CASE WHEN duration_ms>0 THEN output_tokens*1000.0/duration_ms END),COUNT(input_tokens),COUNT(cached_tokens) FROM requests WHERE timestamp>=?1 AND timestamp<=?2",params![since,now],|r|Ok(json!({
-            "requests":r.get::<_,i64>(0)?,"ok":r.get::<_,Option<i64>>(1)?.unwrap_or(0),"failed":r.get::<_,Option<i64>>(2)?.unwrap_or(0),"aborted":r.get::<_,Option<i64>>(3)?.unwrap_or(0),
-            "input_tokens":r.get::<_,Option<i64>>(4)?,"output_tokens":r.get::<_,Option<i64>>(5)?,"cached_tokens":r.get::<_,Option<i64>>(6)?,"uncached_tokens":r.get::<_,Option<i64>>(7)?,
-            "avg_duration_ms":r.get::<_,Option<f64>>(8)?,"avg_ttft_ms":r.get::<_,Option<f64>>(9)?,"tokens_per_second":r.get::<_,Option<f64>>(10)?,"usage_known":r.get::<_,i64>(11)?,"cache_known":r.get::<_,i64>(12)?
-        })))?;
-        if totals["requests"] == 0 {
-            totals["input_tokens"] = json!(0);
-            totals["output_tokens"] = json!(0);
-            totals["cached_tokens"] = json!(0);
-            totals["uncached_tokens"] = json!(0);
-        }
-        // 小时和五分钟桶采用固定时长；日桶交给 SQLite 按本机本地日历分组，兼容夏令时。
-        let bucket = match range {
-            Range::Hour => "(timestamp / 300000)*300000",
-            Range::Day => "(timestamp / 3600000)*3600000",
-            _ => {
-                "CAST(strftime('%s',date(timestamp/1000,'unixepoch','localtime'),'utc') AS INTEGER)*1000"
-            }
-        };
-        let mut statement=self.conn.prepare(&format!("SELECT {bucket} AS bucket,COUNT(*),SUM(input_tokens+output_tokens),SUM(status='failed') FROM requests WHERE timestamp>=?1 AND timestamp<=?2 GROUP BY bucket ORDER BY bucket"))?;
-        let buckets:Vec<Value>=statement.query_map(params![since,now],|r|Ok(json!({"timestamp":r.get::<_,i64>(0)?,"requests":r.get::<_,i64>(1)?,"tokens":r.get::<_,Option<i64>>(2)?,"failed":r.get::<_,i64>(3)?})))?.collect::<rusqlite::Result<_>>()?;
-        Ok(
-            json!({"summary":totals,"buckets":buckets,"latest":self.latest(since,now,12)?,"updated_at":now,"range":range.label()}),
-        )
+        let pricing = analytics::Pricing::load(self);
+        let mut value = self.analytics(range, now, &pricing)?;
+        value["latest"] = json!(
+            self.latest(range.since(now), now, 12)?
+                .iter()
+                .map(|r| pricing.request(r))
+                .collect::<Result<Vec<_>>>()?
+        );
+        Ok(value)
     }
 }
 
@@ -404,6 +389,135 @@ mod tests {
             status: "ok".into(),
             stop_reason: Some("stop".into()),
             error_message: None,
+        }
+    }
+    #[test]
+    fn stats_analytics_groups_all_rows_and_prices_cached_input_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("stats.db")).unwrap();
+        fs::write(dir.path().join("pricing.json"), r#"{"fixture/primary":{"input":2,"cached_input":0.2,"output":8},"other/primary":{"input":0,"cached_input":0,"output":0}}"#).unwrap();
+        let now = 1_800_000_000_000;
+        for n in 0..2005 {
+            store
+                .insert(&fixture(&format!("priced-{n}"), now), &Value::Null)
+                .unwrap();
+        }
+        let mut other = fixture("other", now - 86_400_000);
+        other.provider = "other".into();
+        other.model_reference = "other/primary".into();
+        other.status = "failed".into();
+        store.insert(&other, &Value::Null).unwrap();
+        let mut unknown = fixture("unknown", now);
+        unknown.cached_tokens = None;
+        unknown.ttft_ms = None;
+        unknown.status = "aborted".into();
+        store.insert(&unknown, &Value::Null).unwrap();
+        store
+            .insert(&fixture("outside", now + 1), &Value::Null)
+            .unwrap();
+        let pricing = analytics::Pricing::load(&store);
+        let result = store.analytics(Range::Day, now, &pricing).unwrap();
+        let s = &result["summary"];
+        assert_eq!(s["requests"], 2007);
+        assert_eq!(s["priced"], 2006);
+        assert_eq!(s["unpriced"], 1);
+        assert_eq!(s["failed"], 1);
+        assert_eq!(s["aborted"], 1);
+        assert_eq!(result["models"].as_array().unwrap().len(), 2);
+        assert_eq!(result["providers"].as_array().unwrap().len(), 2);
+        assert_eq!(result["active_days"], 2);
+        let expected = 2005.0 * (20.0 * 2.0 + 80.0 * 0.2 + 20.0 * 8.0) / 1e6;
+        assert!((s["cost"].as_f64().unwrap() - expected).abs() < 1e-10);
+        for field in ["models", "providers", "buckets", "daily", "hours"] {
+            let rows = result[field].as_array().unwrap();
+            assert_eq!(
+                rows.iter()
+                    .map(|r| r["requests"].as_u64().unwrap())
+                    .sum::<u64>(),
+                2007
+            );
+            assert!(
+                (rows.iter().filter_map(|r| r["cost"].as_f64()).sum::<f64>() - expected).abs()
+                    < 1e-10
+            );
+        }
+        let detail = store.detail(1).unwrap().unwrap();
+        assert!((detail["request"]["cost"].as_f64().unwrap() - expected / 2005.0).abs() < 1e-10);
+        assert_eq!(result["providers"][0]["models"], 1);
+        assert_eq!(result["summary"]["avg_ttft_ms"], 500.0);
+        assert_eq!(result["models"][0]["buckets"][0]["tokens_per_second"], 10.0);
+    }
+    #[test]
+    fn stats_pricing_preserves_unknown_and_reloads_validated_rates() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("stats.db")).unwrap();
+        let mut record = fixture("one", 1000);
+        assert!(analytics::Pricing::load(&store).cost(&record).is_none());
+        let path = dir.path().join("pricing.json");
+        for invalid in [
+            r#"{"fixture/primary":{"input":-1,"cached_input":0,"output":1}}"#,
+            r#"{"fixture/primary":{"input":1,"output":1}}"#,
+            r#"{"fixture/primary":{"input":1,"cached_input":0,"output":1,"typo":0}}"#,
+            "invalid",
+        ] {
+            fs::write(&path, invalid).unwrap();
+            let pricing = analytics::Pricing::load(&store);
+            assert!(pricing.error.is_some());
+            assert!(pricing.cost(&record).is_none());
+            assert!(store.overview(Range::All, 2000).is_ok());
+        }
+        fs::write(
+            &path,
+            r#"{"fixture/primary":{"input":0,"cached_input":0,"output":0}}"#,
+        )
+        .unwrap();
+        let pricing = analytics::Pricing::load(&store);
+        assert_eq!(pricing.request(&record).unwrap()["cost"], 0.0);
+        record.cached_tokens = Some(101);
+        assert!(pricing.cost(&record).is_none());
+        record.cached_tokens = None;
+        assert!(pricing.cost(&record).is_none());
+        record.cached_tokens = Some(80);
+        record.output_tokens = None;
+        assert!(pricing.cost(&record).is_none());
+        let empty = store.analytics(Range::All, 2000, &pricing).unwrap();
+        assert_eq!(empty["summary"]["cost"], 0.0);
+        assert_eq!(empty["summary"]["unpriced"], 0);
+        assert_eq!(empty["summary"]["tokens"], 0);
+    }
+    #[test]
+    fn stats_analytics_api_validates_ranges_and_omits_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("stats.db")).unwrap();
+        store
+            .insert(
+                &fixture("one", chrono::Utc::now().timestamp_millis()),
+                &json!({"text":"private-output"}),
+            )
+            .unwrap();
+        for endpoint in ["models", "providers", "costs"] {
+            for range in ["1h", "24h", "7d", "30d", "90d", "all"] {
+                let (code, _, body) =
+                    server::dispatch(&store, &format!("/api/stats/{endpoint}?range={range}"));
+                assert_eq!(code, 200);
+                assert!(!body.contains("private-output"));
+                assert!(!body.contains("session_file"));
+                let value: Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(value["summary"]["requests"], 1);
+                assert_eq!(value["summary"]["unpriced"], 1);
+                assert!(value["summary"]["cost"].is_null());
+            }
+            for query in [
+                "range=bad",
+                "range=24h&range=all",
+                "limit=500",
+                "unexpected=1",
+            ] {
+                assert_eq!(
+                    server::dispatch(&store, &format!("/api/stats/{endpoint}?{query}")).0,
+                    400
+                );
+            }
         }
     }
     #[test]

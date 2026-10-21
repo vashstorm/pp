@@ -969,3 +969,144 @@ pre {
     gap: 8px;
   }
 }
+
+.analytics-panel {
+  margin-bottom: 20px;
+}
+.graphs .analytics-panel {
+  margin-bottom: 0;
+}
+.analytics-table .group-row {
+  cursor: pointer;
+}
+.analytics-table .group-row:hover,
+.analytics-table .group-row.expanded {
+  background: var(--hover);
+}
+.analytics-table .model-name svg {
+  margin-right: 5px;
+}
+.analytics-table .provider {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.analytics-table .trend {
+  min-width: 110px;
+  width: 130px;
+}
+.trend .sparkline {
+  margin: 0;
+  height: 24px;
+}
+.expanded-detail > td {
+  padding: 0;
+  white-space: normal;
+}
+.expanded-detail[hidden] {
+  display: none;
+}
+.group-details {
+  padding: 20px 24px;
+  background: var(--hover);
+}
+.group-details .detail-grid {
+  margin: 12px 0;
+}
+.detail-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+}
+.detail-columns .detail-grid {
+  grid-template-columns: 1fr;
+}
+.performance-heading {
+  align-items: center;
+  margin-top: 18px;
+}
+.performance-chart {
+  height: 180px;
+}
+.series-legend {
+  margin-top: 12px;
+  gap: 6px 12px;
+}
+.series-legend button {
+  border-radius: 5px;
+  padding: 4px 6px;
+  color: var(--text);
+  text-align: left;
+}
+.series-legend button:hover {
+  background: var(--hover);
+}
+.series-legend button[aria-pressed="false"] {
+  opacity: .4;
+  text-decoration: line-through;
+}
+.series-legend .num {
+  margin-left: 6px;
+  color: var(--muted);
+}
+.cost-split {
+  height: 8px;
+  width: 100%;
+  min-width: 80px;
+  display: flex;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--line);
+}
+.component-list {
+  margin: 25px 0 18px;
+}
+.component-list > div {
+  display: grid;
+  grid-template-columns: 1fr auto 60px;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.component-list > div:last-child {
+  border-bottom: 0;
+}
+.component-list > div > :last-child {
+  text-align: right;
+}
+.pricing-note {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 16px;
+  line-height: 1.8;
+}
+.pricing-error {
+  color: var(--red);
+  display: block;
+}
+#peak-provider {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 8px;
+  max-width: 230px;
+}
+@media (max-width: 900px) {
+  .detail-columns {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .group-details {
+    padding: 15px;
+  }
+  .performance-heading {
+    flex-wrap: wrap;
+  }
+}
+.metric-value {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -107,7 +107,14 @@ fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError
             .ok_or(ApiError::Invalid)?;
         return store.detail(id).map_err(|_| ApiError::Database);
     }
-    if !matches!(url.path(), "/api/stats/overview" | "/api/stats/requests") {
+    if !matches!(
+        url.path(),
+        "/api/stats/overview"
+            | "/api/stats/requests"
+            | "/api/stats/models"
+            | "/api/stats/providers"
+            | "/api/stats/costs"
+    ) {
         return Ok(None);
     }
     let mut range = Range::Day;
@@ -133,12 +140,25 @@ fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError
             .map(Some)
             .map_err(|_| ApiError::Database);
     }
+    let pricing = super::analytics::Pricing::load(store);
+    if url.path() != "/api/stats/requests" {
+        return store
+            .analytics(range, now, &pricing)
+            .map(Some)
+            .map_err(|_| ApiError::Database);
+    }
     let rows = store
         .latest(range.since(now), now, limit + 1)
         .map_err(|_| ApiError::Database)?;
     let has_more = rows.len() > limit;
+    let rows = rows
+        .iter()
+        .take(limit)
+        .map(|r| pricing.request(r))
+        .collect::<Result<Vec<_>>>()
+        .map_err(|_| ApiError::Database)?;
     Ok(Some(
-        json!({"requests":rows.into_iter().take(limit).collect::<Vec<_>>(),"has_more":has_more,"limit":limit,"updated_at":now,"range":range.label()}),
+        json!({"requests":rows,"has_more":has_more,"limit":limit,"updated_at":now,"range":range.label(),"pricing_error":pricing.error}),
     ))
 }
 fn ensure_limit(limit: usize) -> Result<()> {
