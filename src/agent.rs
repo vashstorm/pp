@@ -391,8 +391,8 @@ impl Agent {
         self.journal.id()
     }
 
-    pub(crate) fn session_tree(&mut self) -> Result<persistence::tree::Tree> {
-        self.journal.tree()
+    pub(crate) fn session_tree(&mut self) -> Result<persistence::tree::View> {
+        self.journal.tree_view()
     }
 
     pub(crate) fn navigate_tree(&mut self, id: &str) -> Result<TreeNavigation> {

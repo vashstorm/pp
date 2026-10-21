@@ -55,7 +55,66 @@ pub(crate) struct Tree {
     pending: (u64, u64),
 }
 
+pub(crate) struct View {
+    pub tree: Tree,
+    pub records: Vec<Vec<ReplayRecord>>,
+}
+
+fn replay_range(
+    reader: &mut BufReader<&File>,
+    line: &mut Vec<u8>,
+    (start, end): (u64, u64),
+    records: &mut Vec<ReplayRecord>,
+) -> Result<()> {
+    reader.seek(SeekFrom::Start(start))?;
+    let mut offset = start;
+    while offset < end {
+        line.clear();
+        let count = reader.read_until(b'\n', line)?;
+        ensure!(count > 0, "incomplete session tree replay");
+        offset += count as u64;
+        let value: serde_json::Value = serde_json::from_slice(line)
+            .map_err(|_| anyhow::anyhow!("invalid session tree replay"))?;
+        if value["type"] == "session" {
+            continue;
+        }
+        let entry: Entry = serde_json::from_value(value)
+            .map_err(|_| anyhow::anyhow!("invalid session tree replay"))?;
+        match entry.payload {
+            Payload::Message {
+                message: SavedMessage::User { content, .. },
+            } => records.push(ReplayRecord::User(content)),
+            Payload::Custom {
+                custom: Custom::Event { event },
+            } => records.push(ReplayRecord::Event(event)),
+            Payload::Custom {
+                custom: Custom::Error { message },
+            } => records.push(ReplayRecord::Error(message)),
+            Payload::Custom {
+                custom: Custom::Cancelled {},
+            } => records.push(ReplayRecord::Cancelled),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 impl Tree {
+    pub(super) fn view(self, file: &File) -> Result<View> {
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        let mut records = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            let mut own = Vec::new();
+            replay_range(&mut reader, &mut line, node.replay, &mut own)?;
+            records.push(own);
+        }
+        Ok(View {
+            tree: self,
+            records,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn fixture(nodes: &[(Option<usize>, Kind, &str)], leaf: Option<usize>) -> Self {
         Self {
@@ -257,38 +316,9 @@ impl Tree {
         if pending {
             ranges.push(self.pending);
         }
-        for (start, end) in ranges {
-            reader.seek(SeekFrom::Start(start))?;
-            let mut offset = start;
-            let mut line = Vec::new();
-            while offset < end {
-                line.clear();
-                let count = reader.read_until(b'\n', &mut line)?;
-                ensure!(count > 0, "incomplete session tree replay");
-                offset += count as u64;
-                let value: serde_json::Value = serde_json::from_slice(&line)
-                    .map_err(|_| anyhow::anyhow!("invalid session tree replay"))?;
-                if value["type"] == "session" {
-                    continue;
-                }
-                let entry: Entry = serde_json::from_value(value)
-                    .map_err(|_| anyhow::anyhow!("invalid session tree replay"))?;
-                match entry.payload {
-                    Payload::Message {
-                        message: SavedMessage::User { content, .. },
-                    } => records.push(ReplayRecord::User(content)),
-                    Payload::Custom {
-                        custom: Custom::Event { event },
-                    } => records.push(ReplayRecord::Event(event)),
-                    Payload::Custom {
-                        custom: Custom::Error { message },
-                    } => records.push(ReplayRecord::Error(message)),
-                    Payload::Custom {
-                        custom: Custom::Cancelled {},
-                    } => records.push(ReplayRecord::Cancelled),
-                    _ => {}
-                }
-            }
+        let mut line = Vec::new();
+        for range in ranges {
+            replay_range(&mut reader, &mut line, range, &mut records)?;
         }
         Ok(records)
     }
@@ -408,6 +438,19 @@ mod tests {
         journal.event(&AgentEvent::AssistantFinished {
             text: answer.into(),
         });
+        if tools {
+            for id in ["call-a", "call-b"] {
+                journal.event(&AgentEvent::ToolStarted {
+                    id: id.into(),
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                });
+                journal.event(&AgentEvent::ToolFinished {
+                    id: id.into(),
+                    result: json!({"ok":true,"content":format!("result for {id}")}),
+                });
+            }
+        }
         match session {
             Session::Completion(request) => {
                 let value = if tools {
@@ -519,6 +562,41 @@ mod tests {
             assert_eq!(tree.nodes.len(), 6);
             assert_eq!(tree.nodes[4].parent, Some(1));
             assert_eq!(tree.path(tree.leaf), vec![0, 1, 4, 5]);
+            let path = dir.path().join(format!("{}.jsonl", journal.id().unwrap()));
+            let before = std::fs::read(&path).unwrap();
+            let view = journal.tree_view().unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(view.records.len(), 6);
+            for (index, records) in view.records.iter().enumerate() {
+                let users: Vec<_> = records
+                    .iter()
+                    .filter_map(|record| match record {
+                        ReplayRecord::User(text) => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                let answers: Vec<_> = records
+                    .iter()
+                    .filter_map(|record| match record {
+                        ReplayRecord::Event(AgentEvent::AssistantFinished { text }) => {
+                            Some(text.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                match index {
+                    0 => assert_eq!(users, ["question-a"]),
+                    2 => assert_eq!(users, ["question-b"]),
+                    4 => assert_eq!(users, ["question-new"]),
+                    _ => assert!(users.is_empty()),
+                }
+                match index {
+                    1 => assert_eq!(answers, ["answer-a"]),
+                    3 => assert_eq!(answers, ["answer-b"]),
+                    5 => assert_eq!(answers, ["answer-new"]),
+                    _ => assert!(answers.is_empty()),
+                }
+            }
             let Prepared {
                 session: candidate,
                 replay,
@@ -558,6 +636,105 @@ mod tests {
             let tree = Tree::read(&restored.journal.active.as_ref().unwrap().file).unwrap();
             assert_eq!(tree.nodes.len(), 6);
             assert_eq!(tree.path(tree.leaf), vec![0, 1, 2, 3]);
+        }
+    }
+
+    #[test]
+    fn tree_view_keeps_duplicate_text_branches_and_tool_events_separate() {
+        for protocol in [Protocol::Completion, Protocol::Response] {
+            let dir = tempfile::tempdir().unwrap();
+            let metadata = Metadata {
+                cwd: dir.path(),
+                model_reference: "fixture/model",
+                think_level: ThinkLevel::None,
+                edit_mode: EditMode::Replace,
+                tool_limits: ToolLimits::default(),
+                base_system: "system",
+            };
+            let mut journal = SessionJournal::new(dir.path().into());
+            let mut session =
+                Session::new("model".into(), protocol, "system".into(), EditMode::Replace);
+            turn(
+                &mut journal,
+                &mut session,
+                &metadata,
+                "same question",
+                "same answer",
+                true,
+            );
+            let first = journal.tree().unwrap().nodes[0].id.clone();
+            let Prepared {
+                session: candidate,
+                selection,
+                ..
+            } = journal.prepare_tree(&first).unwrap();
+            journal
+                .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
+                .unwrap();
+            session = candidate;
+            turn(
+                &mut journal,
+                &mut session,
+                &metadata,
+                "same question",
+                "same answer",
+                false,
+            );
+            journal.event(&AgentEvent::AssistantStarted);
+            journal.event(&AgentEvent::AssistantFinished {
+                text: "pending answer".into(),
+            });
+            let path = dir.path().join(format!("{}.jsonl", journal.id().unwrap()));
+            let before = std::fs::read(&path).unwrap();
+            let view = journal.tree_view().unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(view.tree.nodes[0].text, view.tree.nodes[2].text);
+            assert_ne!(view.tree.nodes[0].id, view.tree.nodes[2].id);
+            assert_eq!(view.tree.nodes[2].parent, None);
+            assert_eq!(view.records.len(), 4);
+            let replay = view
+                .tree
+                .replay(&journal.active.as_ref().unwrap().file, view.tree.leaf, true)
+                .unwrap();
+            assert!(replay.iter().any(|record| matches!(record,ReplayRecord::Event(AgentEvent::AssistantFinished {text}) if text == "pending answer")));
+            for (index, records) in view.records.iter().enumerate() {
+                assert!(!records.iter().any(|record| matches!(record,ReplayRecord::Event(AgentEvent::AssistantFinished {text}) if text == "pending answer")));
+                let users = records
+                    .iter()
+                    .filter(|r| matches!(r, ReplayRecord::User(_)))
+                    .count();
+                assert_eq!(users, usize::from(index % 2 == 0));
+                let tools: Vec<_> = records
+                    .iter()
+                    .filter_map(|r| match r {
+                        ReplayRecord::Event(AgentEvent::ToolFinished { id, result }) => {
+                            Some((id.as_str(), result["content"].as_str().unwrap()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if index == 1 {
+                    assert_eq!(
+                        tools,
+                        [
+                            ("call-a", "result for call-a"),
+                            ("call-b", "result for call-b")
+                        ]
+                    );
+                } else {
+                    assert!(tools.is_empty());
+                }
+            }
+            // Read failure must reject the whole View, not return the earlier valid nodes.
+            let tree = journal.tree().unwrap();
+            journal
+                .active
+                .as_mut()
+                .unwrap()
+                .file
+                .set_len(before.len() as u64 / 2)
+                .unwrap();
+            assert!(tree.view(&journal.active.as_ref().unwrap().file).is_err());
         }
     }
 

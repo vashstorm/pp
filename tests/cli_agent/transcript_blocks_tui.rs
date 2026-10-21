@@ -443,6 +443,8 @@ fn transcript_blocks_markdown_unicode_and_long_line_survive_resize() {
             && text.contains("😀")
     };
     pty.wait_for("100 列底部显示表格与长行尾巴", |s| bottom(s));
+    // The session toast can cover the entire narrow table after resize.
+    pty.wait_for("会话通知消失后检查窄屏正文", |s| !s.contents().contains("Session:"));
     {
         let screen = pty.parser.screen();
         assert_eq!(
@@ -499,22 +501,30 @@ fn transcript_blocks_markdown_unicode_and_long_line_survive_resize() {
             MARKDOWN_BLOCKS_CODE_BLOCK
         );
     };
+    // Fence each page with an observed draft update. Repeated x-only pages can look
+    // identical, and a resize redraw alone does not acknowledge queued paging keys.
+    let page_until = |pty: &mut Pty, key: &str, visible: fn(&vt100::Screen) -> bool| {
+        for step in 0..64 {
+            pty.input(key);
+            let marker = format!("page-fence-{step}");
+            pty.input("\x01\x0b");
+            context_tui_paste(pty, &marker);
+            pty.draft(&marker);
+            if visible(pty.parser.screen()) {
+                pty.input("\x01\x0b");
+                pty.draft("");
+                return;
+            }
+        }
+        panic!("paging did not reach the expected content: {}", pty.diagnostics());
+    };
     for (rows, cols) in [(30u16, 24u16), (30u16, 100u16)] {
         pty.resize(rows, cols);
-        for _ in 0..8 {
-            pty.input("\x1b[6~");
-        }
-        pty.wait_for(&format!("{cols} 列回到底部显示表格与长行尾巴"), |s| bottom(s));
-        for _ in 0..40 {
-            pty.input("\x1b[5~");
-        }
-        pty.wait_for(&format!("{cols} 列翻到顶部显示列表引用与代码"), |s| top(s));
+        page_until(&mut pty, "\x1b[6~", bottom);
+        page_until(&mut pty, "\x1b[5~", top);
         top_styles(pty.parser.screen());
     }
-    for _ in 0..8 {
-        pty.input("\x1b[6~");
-    }
-    pty.wait_for("恢复 100 列后再次回到底部", |s| bottom(s));
+    page_until(&mut pty, "\x1b[6~", bottom);
     {
         let screen = pty.parser.screen();
         assert_eq!(

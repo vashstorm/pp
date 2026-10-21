@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Cell, Clear, Row, Table, TableState},
 };
@@ -155,56 +155,62 @@ impl<T: Copy> SelectionMenu<T> {
 
     /// ask 使用纵向文字布局，复用菜单焦点与滚动状态。
     pub(super) fn choices_height(&self, width: u16) -> u16 {
+        let prefix_width = self.choice_prefix_width();
         self.items
             .iter()
             .take(MAX_ROWS)
             .map(|item| {
-                choice_lines(item, width.saturating_sub(6), Style::default()).len() as u16 + 1
+                choice_lines(item, width.saturating_sub(prefix_width), Style::default()).len()
+                    as u16
             })
             .sum::<u16>()
-            .saturating_sub(1)
+    }
+
+    fn choice_prefix_width(&self) -> u16 {
+        3 + self
+            .items
+            .iter()
+            .map(|item| Span::raw(item.icon.unwrap_or_default()).width() as u16)
+            .max()
+            .unwrap_or(0)
     }
 
     pub(super) fn draw_choices(&mut self, frame: &mut Frame, area: Rect) {
-        use super::transcript_style::{ACCENT, DIM, TOOL_PENDING_BG};
+        use super::transcript_style::{ACCENT, ADDED, DIM};
 
         if area.is_empty() {
             return;
         }
-        let compact = area.height < 5;
-        self.page_size = usize::from(area.height / if compact { 1 } else { 3 }).max(1);
+        let compact = area.height < 3;
+        self.page_size = usize::from(area.height / if compact { 1 } else { 2 }).max(1);
+        let prefix_width = self.choice_prefix_width();
         let focused = self.selected_index();
         let rows = self.items.iter().enumerate().map(|(index, item)| {
             let active = focused == Some(index);
             let label_style = if active {
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                Style::default().fg(ACCENT)
             } else {
                 Style::default()
             };
-            let mut lines = choice_lines(item, area.width.saturating_sub(6), label_style);
+            let mut lines =
+                choice_lines(item, area.width.saturating_sub(prefix_width), label_style);
             if compact {
                 lines.truncate(1);
             }
             let height = (lines.len() as u16).min(area.height);
             Row::new([
-                Cell::from(if active { "▸" } else { " " }).style(Style::default().fg(ACCENT)),
+                Cell::from(if active { "❯" } else { " " }).style(Style::default().fg(ACCENT)),
                 Cell::from(item.icon.unwrap_or_default())
-                    .style(Style::default().fg(if item.current { ACCENT } else { DIM })),
+                    .style(Style::default().fg(if item.current { ADDED } else { DIM })),
                 Cell::from(Text::from(lines)),
             ])
             .height(height)
-            .bottom_margin(u16::from(!compact && index + 1 < self.items.len()))
-            .style(if active {
-                Style::default().bg(TOOL_PENDING_BG)
-            } else {
-                Style::default()
-            })
         });
         let table = Table::new(
             rows,
             [
                 Constraint::Length(1),
-                Constraint::Length(3),
+                Constraint::Length(prefix_width - 3),
                 Constraint::Min(0),
             ],
         )
@@ -228,10 +234,14 @@ fn choice_lines<T>(item: &MenuItem<T>, width: u16, label_style: Style) -> Vec<Li
         lines.extend(
             wrap_block(
                 block_line(item.description.clone(), Style::default().fg(MUTED)),
-                width,
+                width.saturating_sub(2),
                 "",
             )
             .into_iter()
+            .map(|mut line| {
+                line.spans.insert(0, Span::raw("  "));
+                line
+            })
             .take(2),
         );
     }

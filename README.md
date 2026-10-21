@@ -206,6 +206,7 @@ Prompt 文本以事件名和时间戳为标题，按「请求参数 → 系统�
 - Mouse wheel scrolls the transcript by three visual lines per event; PgUp/PgDn scroll by a page. Both work without moving the input cursor or changing the draft, even with the pointer over the input box. Output follows the bottom by default; scrolling up leaves follow mode, so incoming chunks do not steal the viewport. Scrolling down to the bottom restores following. Drafts stay editable and scrollable while running, but Enter does not queue or clear the draft; submission resumes after completion or an error.
 - 命令、模型、思考级别和文件菜单展开时，滚轮仍滚动历史，不改变菜单选择。Clicks, drags, pointer movement, and horizontal wheel events are ignored. The TUI captures the mouse; any modifier needed to bypass capture for native terminal selection or scrollback depends on the terminal emulator.
 - Single-line slash commands share one registry with line mode: `/help` lists commands; `/model` opens a model picker; `/model provider/model` switches directly; `/new` resets history while keeping the selected model; `/compact` summarizes older context without clearing the visible conversation; `/resume` opens the fullscreen saved-session picker (TUI only); `/quit` exits. Unknown names and invalid built-in arguments are local errors, never model tasks. Names are case-sensitive; leading/trailing whitespace is ignored, but the entire remaining `/model` argument preserves internal spaces and `/`. Multi-line slash drafts remain ordinary tasks.
+- 退出时仅在内存中生成最终画面，切回主屏幕与完整会话回放使用同一次终端同步更新（DEC 2026）；支持该协议的终端会隐藏中间画面，减少闪烁。退出后仍保留完整历史、草稿和状态栏；不支持同步更新的终端按原有方式显示回放。
 - 输入框下方的选择菜单（`/` 命令补全、`/model `、`/effort `、`@` 文件选择）统一使用 `src/tui/menu.rs` 中的 `SelectionMenu` 组件，业务层只提供选项数据和确认动作。统一在输入框下方显示无外框的两列列表，左列占 46%、右列占 54%；选中行以黄色文字和箭头突出，其余说明与图标为灰色，当前值显示“（当前）”，输入框使用紫色分隔线。最多显示八行，窄屏截断说明，短屏随选择滚动。↑/↓、Home/End、PgUp/PgDn 导航且不循环，Tab 补全或打开目录但不提交，Enter 确认当前项；Esc 收起列表并保留草稿，下次编辑时重新显示。输入 `/` 展开命令菜单，继续输入会按命令前缀筛选，左列保留命令图标。
 - 输入 `/model `（命令后加空格）会在输入框下方展开与 `/effort ` 一致的两列菜单：左侧为 `provider/model`，实际启动默认模型附带 `(default)`；右侧为实际模型名、`completion`/`response` 及“当前”标记，默认与当前可分别标在不同模型上。Ctrl+S 保存成功后更新 default 标记，失败保持原标记。黄色文字和箭头突出选中项。`/model` 后按 Enter 也能展开，默认选中当前模型。按启动配置顺序排列，最多显示八行，长列表随选择滚动；↑/↓、Home/End、PgUp/PgDn 导航，Enter 确认，Esc 收起并保留输入。继续输入按引用或实际模型名的前缀筛选，Tab 补全引用但不切换；Ctrl+S 将高亮模型保存到 `~/.pp/agent/settings.jsonc` 的 `default_model`，下次普通新启动生效，不切换当前会话模型、不改写 `models.jsonc`。保存沿用 JSONC 原子更新，保留注释与其他设置，缺少设置文件时自动创建；失败显示错误并保留原配置。菜单底部显示快捷键提示；通过 Ctrl+P 打开时，保存后恢复原草稿和光标。多行粘贴仍作为普通任务。后台完成切换后才更新状态栏，历史和确认后新编辑的草稿均保留；忙碌时拒绝切换、不排队、不清空草稿。`/new` 仍在后台确认后清空历史和草稿。
 - 运行中按无修饰键的 Esc 取消当前任务，不退出 pp；已有面板或菜单优先消费 Esc。收尾期间显示 `Cancelling...`，仍可编辑草稿、滚动、F1/help、Ctrl-O 或退出，但不能提交／排队新任务、切换模型／思考级别或 `/new`。收尾完成后保留草稿、光标、输入历史、已完成的工具结果和文件修改，并追加 `Task cancelled. File changes were not rolled back.`；不重试、不回滚。每个任务使用独立取消 token，已提交的最终回答不会被迟到 Esc 改成取消。行模式和 `-p` 不提供取消入口。
@@ -218,7 +219,7 @@ Prompt 文本以事件名和时间戳为标题，按「请求参数 → 系统�
 
 面板锚定输入框上方，不改主草稿、光标或输入历史。↑/↓、Home/End、PgUp/PgDn 导航；Tab/Shift-Tab、左右键切问题／Review。单选 Enter 确认并前进，单题单选直接提交；多选 Space 勾选，Enter 只前进，不顺便选中焦点项。多题和单题多选须在 Review 再按 Enter 一次提交；未答单选会定位回该题，空多选可显式提交。每题自动有 `Other (type your own)`，Enter 打开独立编辑器，支持 Unicode、粘贴、多行和 Ctrl-J；非空白输入才可接受。单选的 custom 与选项互斥，多选可共存。
 
-面板使用圆角边框和加粗问题；选项名称与下方说明左对齐，各最多显示两行。焦点以 `▸` 和背景高亮表示，单选使用 `( )`／`(●)`，多选使用 `[ ]`／`[✓]`，焦点与已选状态独立。字体家族和字号沿用终端设置。
+面板采用深灰背景、青色圆角边框与分隔线，顶部固定显示 `Ask`，下方标签栏展示各题 header（缺省为 id）；多题或多选另有 `Submit` 标签进入 Review，当前标签使用灰色底色。选项紧凑纵向排列，灰色说明位于名称下一行并缩进两列，名称与说明各最多显示两行。焦点以黄色 `❯` 和黄色名称表示，单选使用 `○`／绿色 `◉`，多选使用 `[ ]`／绿色 `[✓]`，焦点与已选状态独立；底部独立分隔快捷键提示。字体家族和字号沿用终端设置。
 
 选项 preview 默认最多三行；Ctrl+O 展开／收起完整问题、description 与 preview，Ctrl-↑/↓ 滚动详情。面板高度在打开／resize 时确定，最多屏幕 70%；短屏进入紧凑模式。滚轮在面板内导航，面板外继续滚 transcript。面板活跃时全局菜单、F1、切档、输入历史和主编辑器不会接收它的按键／粘贴，只有 custom 编辑器显示插入光标。custom 编辑器的 Esc 只丢弃本次编辑；picker／Review 的 Esc 取消整个任务，不提交部分答案，同批后续工具按既有取消规则跳过。Ctrl-C 仍立即退出并恢复终端，不等待回复线程。
 
@@ -272,9 +273,9 @@ Review $1. Focus: $@[2:].
 
 运行中按一次 Esc 中断当前任务，等待连接／受控进程回收和历史保存完成后恢复输入。空闲、输入完全为空且没有其他面板时，500ms 内连续两次 Esc 打开 `/tree`；其他输入、粘贴或任务状态变化会重置双击。关闭菜单、取消 ask 或中断任务的 Esc 不计入双击；Ctrl+C 仍退出程序。
 
-TUI 空闲时提交无参数 `/tree`，在输入区域打开 OMP 风格的圆角 `Session Tree` 面板：顶部快捷键与 `Search:`，中间分隔线，单行树节点、真实分叉连线、当前路径圆点、整行高亮与选中箭头，长列表带滚动条。当前分支优先显示，连续单子节点不增加缩进，深分叉压缩较早的缩进以保留正文。界面使用 OMP 默认暗色树面板配色，并随终端尺寸调整。
+TUI 空闲时提交无参数 `/tree`，直接在原消息区域浏览全部分支的完整消息卡，复用普通对话的 Markdown、工具、diff 与 ask 渲染，不另开弹窗或搜索栏。进入时所有消息左右各预留一列；移动候选只移动外围虚线框，不改变正文宽度、换行或组高。当前分支优先显示，顶部标签保留分叉连线、当前路径圆点与角色；深分叉只压缩标签缩进，不缩窄正文。加载期间保留普通消息区域，在原输入区显示加载状态与提示。
 
-↑/↓ 选择，PgUp/PgDn 或 ←/→ 翻页，Home/End 首尾，Enter 跳转；直接输入或粘贴搜索，按空格分词、忽略大小写、全部词均须模糊匹配。Ctrl+O 循环默认／隐藏工具／仅用户筛选；Esc 先清空搜索，再关闭面板。工具调用及整批结果合并为一个安全节点，不能在调用和结果之间截断。
+底部提示为 `↑/↓ step  ←/→ user turns  f filter  󰌑 rewind  󱊷 cancel`。↑/↓ 前后选择安全节点，首尾不循环；←/→ 按同一树顺序跳到前后用户节点；Home/End 选首尾。`f` 循环全部／隐藏工具／仅用户，尽量保留节点身份；候选被隐藏时选择其后的可见节点，否则选最后一个。PgUp/PgDn 和滚轮只滚动消息物理行，不改变候选；后续方向键导航会重新显示候选。Enter 跳转，Esc 一次退出；普通输入、Ctrl+O 与粘贴只消费，不搜索也不改草稿。工具说明、整批结果与 diff 作为一个安全节点整体框选，不能在调用和结果之间截断。超高消息仅绘制真实边界，裁切处不伪造闭合边框；窄屏裁切提示而不换行，宽度不足三列时省略外框。取消后恢复原消息 viewport、草稿与输入历史；退出时只把当前分支的普通对话写入 scrollback，不写入全树预览、虚线框或提示。
 
 选择用户消息会回到该问题之前，并在输入框为空时回填问题；选择助手回复或工具批次会保留该节点的完整上下文。选中当前叶子只关闭面板。跳转不请求模型、不重跑工具、不回滚磁盘文件；下一次提交形成新分支，旧分支仍可在 `/tree` 返回，退出或 `/resume` 后全部分支保留。模型、思考级别、当前工作目录与工具配置保持当前值；跨协议复用历史转换，不支持转换时拒绝跳转并保留当前状态。项目指令按当前文件刷新。标签、分支摘要和历史 ask 重新作答暂未提供。
 

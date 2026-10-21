@@ -2697,6 +2697,27 @@ mod tui {
             self.wait_for(text, |screen| screen.contents().contains(text));
         }
 
+        fn wait_for_raw(&mut self, expected: &[u8]) {
+            let deadline = Instant::now() + DEADLINE;
+            loop {
+                self.drain();
+                if self
+                    .raw
+                    .windows(expected.len())
+                    .any(|bytes| bytes == expected)
+                {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "等待终端控制序列 {:?} 超时\n{}",
+                    String::from_utf8_lossy(expected),
+                    self.diagnostics()
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
         fn request(&mut self, server: &Server) -> (Request, Value) {
             // Reuse the HTTP fixture, adding the PTY's diagnostics on its deadline.
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| receive(server))) {
@@ -3295,8 +3316,38 @@ mod tui {
             if exit == "\x03" {
                 pty.input("unsubmitted-draft");
                 pty.draft("unsubmitted-draft");
+            } else {
+                pty.input("/quit");
+                pty.draft("/quit");
             }
-            pty.input(exit);
+            let before_exit = pty.parser.screen().contents();
+            let exit_start = pty.raw.len();
+            pty.input(if exit == "\x03" { exit } else { "\r" });
+            pty.wait_for_raw(b"\x1b[?2026l");
+            let output = &pty.raw[exit_start..];
+            let position = |marker: &[u8]| {
+                output
+                    .windows(marker.len())
+                    .position(|bytes| bytes == marker)
+                    .unwrap_or_else(|| panic!("缺少退出控制序列：{:?}", marker))
+            };
+            let begin = position(b"\x1b[?2026h");
+            let leave = position(b"\x1b[?1049l");
+            let end = position(b"\x1b[?2026l");
+            assert!(begin < leave && leave < end, "退出切屏必须处于同步更新内");
+            let replay = String::from_utf8_lossy(&output[leave..end]);
+            assert!(
+                replay.contains("retained-answer"),
+                "历史回放必须处于同步更新内"
+            );
+            assert!(
+                replay.contains("fixture-model"),
+                "状态栏回放必须处于同步更新内"
+            );
+            // 重放到切屏前一刻，确认退出没有额外绘制或清空备用屏幕。
+            let mut before_leave = vt100::Parser::new(30, 100, 0);
+            before_leave.process(&pty.raw[..exit_start + leave]);
+            assert_eq!(before_leave.screen().contents(), before_exit);
             pty.wait_for("退出后普通屏幕保留完整对话", |screen| {
                 let text = screen.contents();
                 !screen.alternate_screen()

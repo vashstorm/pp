@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Margin, Rect},
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
@@ -19,7 +19,9 @@ use ratatui_textarea::TextArea;
 
 use super::markdown;
 use super::menu::{MenuEvent, MenuItem, SelectionMenu};
-use super::transcript_style::{ACCENT, BORDER, DIM, MUTED, REMOVED, display_text};
+use super::transcript_style::{
+    ACCENT, ASK_BG, ASK_BORDER, ASK_TAB_BG, DIM, MUTED, REMOVED, display_text,
+};
 use crate::interaction::{AskAnswer, AskArgs, AskRequest};
 
 const OTHER_LABEL: &str = "Other (type your own)";
@@ -27,8 +29,9 @@ const REQUIRED_MESSAGE: &str = "Answer this question before submitting.";
 const EMPTY_MULTI_MESSAGE: &str = "No options selected";
 const NOT_ANSWERED_MESSAGE: &str = "(not answered)";
 const EDITOR_HINT: &str = "Enter accept · Ctrl-J newline · Esc discard";
-const SINGLE_HINT: &str = "↑↓ move · Enter select · Tab next · Ctrl-O details · Esc cancel";
-const MULTI_HINT: &str = "↑↓ move · Space toggle · Tab next · Ctrl-O details · Esc cancel";
+const SINGLE_HINT: &str = "↵ select · ↑/↓ move · Tab/←/→ question · Ctrl-O details · Esc cancel";
+const MULTI_HINT: &str =
+    "Space toggle · ↵ next · ↑/↓ move · Tab/←/→ question · Ctrl-O details · Esc cancel";
 const REVIEW_HINT: &str = "Enter submit · Tab questions · Esc cancel";
 const COMPACT_HINT: &str = "Enter confirm · Tab next · Esc cancel";
 
@@ -198,25 +201,16 @@ impl Panel {
         };
         self.overlay = Some(area);
         frame.render_widget(Clear, area);
-        if available.height < 5 {
+        if height < 7 {
             self.draw_compact(frame, area);
             return;
         }
-        let title = Line::from(vec![
-            Span::styled(
-                " ? ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                self.chip(),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-        ]);
+        let title = Line::from(Span::styled(" Ask ", Style::default().fg(ACCENT)));
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(BORDER))
+            .style(Style::default().bg(ASK_BG))
+            .border_style(Style::default().fg(ASK_BORDER))
             .padding(Padding::new(
                 u16::from(area.width > 6),
                 u16::from(area.width > 6),
@@ -226,12 +220,12 @@ impl Panel {
             .title(title);
         let mut inner = block.inner(area);
         frame.render_widget(block, area);
-        if inner.height > 6 {
-            inner = inner.inner(Margin::new(0, 1));
-        }
         if inner.width == 0 || inner.height == 0 {
             return;
         }
+        self.draw_tabs(frame, Rect { height: 1, ..inner });
+        inner.y += 1;
+        inner.height -= 1;
         match self.page {
             Page::Question(index) => self.draw_question(frame, inner, index),
             Page::Review => self.draw_review(frame, inner),
@@ -564,6 +558,65 @@ impl Panel {
 
     // ---- 布局与绘制 ----
 
+    fn draw_tabs(&self, frame: &mut Frame, area: Rect) {
+        let mut spans = Vec::new();
+        let mut column = 0;
+        let mut active_start = 0;
+        let mut active_end = 0;
+        let labels = self.questions.questions.iter().map(|question| {
+            menu_text(
+                question
+                    .header
+                    .as_deref()
+                    .filter(|header| !header.trim().is_empty())
+                    .unwrap_or(&question.id),
+            )
+        });
+        for (index, label) in labels
+            .chain(self.has_review().then(|| "Submit".to_string()))
+            .enumerate()
+        {
+            let active = match self.page {
+                Page::Question(current) => index == current,
+                Page::Review => index == self.questions.questions.len(),
+            };
+            let label = format!(" {label} ");
+            let width = Span::raw(&label).width();
+            if active {
+                active_start = column;
+                active_end = column + width;
+            }
+            spans.push(Span::styled(
+                label,
+                if active {
+                    Style::default().bg(ASK_TAB_BG)
+                } else {
+                    Style::default().fg(DIM)
+                },
+            ));
+            spans.push(Span::raw("  "));
+            column += width + 2;
+        }
+        // 窄屏横向平移标签栏，始终让当前题目或提交标签可见。
+        let scroll = active_end
+            .saturating_sub(usize::from(area.width))
+            .min(active_start)
+            .min(usize::from(u16::MAX)) as u16;
+        frame.render_widget(Paragraph::new(Line::from(spans)).scroll((0, scroll)), area);
+    }
+
+    fn draw_separator(&self, frame: &mut Frame, y: u16) {
+        if let Some(area) = self.overlay {
+            frame.render_widget(
+                Line::styled(
+                    "─".repeat(usize::from(area.width.saturating_sub(2))),
+                    Style::default().fg(ASK_BORDER),
+                ),
+                Rect::new(area.x + 1, y, area.width.saturating_sub(2), 1),
+            );
+        }
+    }
+
     fn compute_height(&self, available: Rect, screen_height: u16) -> u16 {
         let inner_width = available.width.saturating_sub(4);
         let content_height = self
@@ -588,8 +641,8 @@ impl Panel {
             })
             .max()
             .unwrap_or(0);
-        // 边框、上下留白、快捷键与校验消息各自预留空间，翻页时高度保持稳定。
-        let need = 2 + 2 + content_height + 1 + 1;
+        // 边框、标签栏、底部分隔线、快捷键与校验消息预留空间，翻页时高度稳定。
+        let need = 2 + 1 + content_height + 1 + 1 + 1;
         if available.height < 5 {
             return available.height;
         }
@@ -662,8 +715,9 @@ impl Panel {
             SINGLE_HINT
         };
         let hint_h = u16::from(inner.height > 1);
+        let separator_h = u16::from(inner.height > 2);
         let error_h = u16::from(error.is_some() && inner.height > 2);
-        let content_h = inner.height - hint_h - error_h;
+        let content_h = inner.height - hint_h - separator_h - error_h;
         let content_area = Rect {
             height: content_h,
             ..inner
@@ -674,7 +728,7 @@ impl Panel {
             ..inner
         };
         let hint_area = Rect {
-            y: inner.y + content_h + error_h,
+            y: inner.y + content_h + error_h + separator_h,
             height: hint_h,
             ..inner
         };
@@ -726,7 +780,7 @@ impl Panel {
                 }
             }
         } else if self.expanded {
-            let detail_h = (content_h / 2).max(1).min(content_h);
+            let detail_h = (content_h / 2).max(2).min(content_h);
             let detail_area = Rect {
                 height: detail_h,
                 ..content_area
@@ -745,10 +799,7 @@ impl Panel {
             {
                 let question = display_text(&self.questions.questions[index].question).into_owned();
                 let mut lines = super::transcript::wrap_block(
-                    super::transcript::block_line(
-                        question,
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
+                    super::transcript::block_line(question, Style::default()),
                     inner.width,
                     "",
                 );
@@ -812,7 +863,7 @@ impl Panel {
                 let lines = super::transcript::wrap_block(
                     super::transcript::block_line(
                         self.questions.questions[index].question.clone(),
-                        Style::default().add_modifier(Modifier::BOLD),
+                        Style::default(),
                     ),
                     inner.width,
                     "",
@@ -859,6 +910,9 @@ impl Panel {
                     ),
                 );
             }
+            if gap_h > 0 {
+                self.draw_separator(frame, question_area.bottom());
+            }
             let focused = self.states[index].menu.selected_index().unwrap_or(0);
             if preview_h > 0
                 && let Some(_) = self.questions.questions[index]
@@ -890,6 +944,9 @@ impl Panel {
             );
         }
         if hint_h > 0 {
+            if separator_h > 0 {
+                self.draw_separator(frame, hint_area.y - 1);
+            }
             frame.render_widget(hint_line(hint), hint_area);
         }
     }
@@ -897,8 +954,9 @@ impl Panel {
     fn draw_review(&mut self, frame: &mut Frame, inner: Rect) {
         let error = self.error.clone();
         let hint_h = u16::from(inner.height > 1);
+        let separator_h = u16::from(inner.height > 2);
         let error_h = u16::from(error.is_some() && inner.height > 2);
-        let content_h = inner.height - hint_h - error_h;
+        let content_h = inner.height - hint_h - separator_h - error_h;
         if self
             .review
             .as_ref()
@@ -936,10 +994,13 @@ impl Panel {
             );
         }
         if hint_h > 0 {
+            if separator_h > 0 {
+                self.draw_separator(frame, inner.y + content_h + error_h);
+            }
             frame.render_widget(
                 hint_line(REVIEW_HINT),
                 Rect {
-                    y: inner.y + content_h + error_h,
+                    y: inner.y + content_h + error_h + separator_h,
                     height: hint_h,
                     ..inner
                 },
@@ -1087,28 +1148,13 @@ fn selection_icon(multi: bool, selected: bool) -> &'static str {
     match (multi, selected) {
         (true, true) => "[✓]",
         (true, false) => "[ ]",
-        (false, true) => "(●)",
-        (false, false) => "( )",
+        (false, true) => "◉",
+        (false, false) => "○",
     }
 }
 
 fn hint_line(hint: &'static str) -> Line<'static> {
-    let mut spans = Vec::new();
-    for (index, action) in hint.split(" · ").enumerate() {
-        if index > 0 {
-            spans.push(Span::styled(" · ", Style::default().fg(BORDER)));
-        }
-        let (key, description) = action.split_once(' ').unwrap_or((action, ""));
-        spans.push(Span::styled(
-            key,
-            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            format!(" {description}"),
-            Style::default().fg(DIM),
-        ));
-    }
-    Line::from(spans)
+    Line::styled(hint, Style::default().fg(DIM))
 }
 
 fn line_count(text: &str, width: u16) -> u16 {
@@ -1188,6 +1234,57 @@ mod tests {
         assert!(panel.states[0].custom.is_empty());
         let empty = self::panel(vec![question("q", true, None, &[])]);
         assert_eq!(empty.states[0].menu.selected_index(), Some(0));
+    }
+
+    #[test]
+    fn reference_layout_separates_tabs_options_and_footer() {
+        use super::super::transcript_style::ADDED;
+
+        let mut scope = question(
+            "scope",
+            false,
+            Some(0),
+            &["Last request", "Session", "Task"],
+        );
+        scope.header = Some("统计范围".into());
+        scope.question = "in / out / cached 显示哪种统计？".into();
+        for option in &mut scope.options {
+            option.description = Some("Usage explanation".into());
+        }
+        let mut speed = question("speed", false, None, &["Tokens per second"]);
+        speed.header = Some("速度口径".into());
+        let mut panel = panel(vec![scope, speed]);
+        panel.key(key(KeyCode::Enter));
+        panel.key(key(KeyCode::Left));
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| panel.draw(frame, frame.area()))
+            .unwrap();
+        let area = panel.overlay.unwrap();
+        let y = area.y;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, y)].symbol(), "╭");
+        assert_eq!(buffer[(0, y)].fg, ASK_BORDER);
+        assert_eq!(buffer[(3, y + 1)].symbol(), "统");
+        assert_eq!(buffer[(3, y + 1)].bg, ASK_TAB_BG);
+        assert_eq!(buffer[(15, y + 1)].symbol(), "速");
+        assert_eq!(buffer[(27, y + 1)].symbol(), "S");
+        assert_eq!(buffer[(1, y + 3)].symbol(), "─");
+        assert_eq!(buffer[(1, y + 3)].fg, ASK_BORDER);
+        assert_eq!(buffer[(2, y + 4)].symbol(), "❯");
+        assert_eq!(buffer[(2, y + 4)].fg, ACCENT);
+        assert_eq!(buffer[(4, y + 4)].symbol(), "◉");
+        assert_eq!(buffer[(4, y + 4)].fg, ADDED);
+        assert_eq!(buffer[(6, y + 4)].symbol(), "L");
+        assert_eq!(buffer[(6, y + 4)].fg, ACCENT);
+        assert_eq!(buffer[(6, y + 4)].bg, ASK_BG);
+        assert_eq!(buffer[(8, y + 5)].symbol(), "U");
+        assert_eq!(buffer[(8, y + 5)].fg, MUTED);
+        assert_eq!(buffer[(4, y + 6)].symbol(), "○");
+        assert_eq!(buffer[(4, y + 6)].fg, DIM);
+        assert_eq!(buffer[(1, area.bottom() - 3)].symbol(), "─");
+        assert_eq!(buffer[(2, area.bottom() - 2)].symbol(), "↵");
+        assert_eq!(buffer[(2, area.bottom() - 2)].fg, DIM);
     }
 
     #[test]

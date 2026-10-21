@@ -21,6 +21,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use crossterm::{
+    SynchronizedUpdate,
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
         Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
@@ -89,17 +90,23 @@ pub(crate) fn run(
             let event = event::read().context("reading terminal input")?;
             if app.handle(event, &mut dirty) {
                 app.close_ask_on_exit();
+                app.tree_panel = None;
                 app.notifications.clear();
-                let snapshot = terminal
-                    .draw(|frame| app.draw(frame, &workspace.context))
-                    .context("drawing final terminal screen")?
-                    .buffer
-                    .clone();
-                drop(terminal);
-                drop(guard);
-                return app
-                    .conversation
-                    .write_scrollback(&mut io::stdout().lock(), &snapshot)
+                // 仅在内存中准备退出快照，避免退出前额外刷新备用屏幕。
+                let snapshot = {
+                    let mut frame = terminal.get_frame();
+                    app.draw(&mut frame, &workspace.context);
+                    frame.buffer_mut().clone()
+                };
+                // 屏幕切换与完整历史回放共用一次同步更新，隐藏中间画面。
+                return io::stdout()
+                    .lock()
+                    .sync_update(|stdout| {
+                        drop(terminal);
+                        drop(guard);
+                        app.conversation.write_scrollback(stdout, &snapshot)
+                    })
+                    .context("synchronizing terminal exit")?
                     .context("writing terminal transcript");
             }
         }
@@ -159,7 +166,7 @@ enum WorkerEvent {
     SessionsListed(Result<crate::agent::persistence::SessionListing>),
     SessionDeleted(String, Result<()>),
     SessionResumed(Result<ResumeState>),
-    TreeRead(Result<crate::agent::persistence::tree::Tree>),
+    TreeRead(Result<crate::agent::persistence::tree::View>),
     TreeNavigated(Result<crate::agent::TreeNavigation>),
 }
 
@@ -927,13 +934,13 @@ impl App {
                 Ok(WorkerEvent::TreeRead(result)) => {
                     self.state = State::Ready;
                     match result {
-                        Ok(tree) if tree.nodes.is_empty() => {
+                        Ok(view) if view.tree.nodes.is_empty() => {
                             self.tree_panel = None;
                             self.notify(Level::Normal, "No entries found in session tree.".into());
                         }
-                        Ok(tree) => {
+                        Ok(view) => {
                             if let Some(panel) = &mut self.tree_panel {
-                                panel.set_tree(tree);
+                                panel.set_tree(view);
                             }
                         }
                         Err(error) => {
@@ -2017,11 +2024,7 @@ impl App {
                     }
                 }
             }
-            Event::Paste(text) if self.tree_panel.is_some() => {
-                self.tree_panel
-                    .as_mut()
-                    .expect("active tree panel")
-                    .paste(&text);
+            Event::Paste(_) if self.tree_panel.is_some() => {
                 *dirty = true;
             }
             Event::Mouse(mouse) if self.tree_panel.is_some() => {
@@ -2029,10 +2032,10 @@ impl App {
                     mouse.kind,
                     MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 ) {
-                    self.tree_panel
-                        .as_mut()
-                        .expect("active tree panel")
-                        .wheel(matches!(mouse.kind, MouseEventKind::ScrollUp));
+                    self.tree_panel.as_mut().expect("active tree panel").wheel(
+                        matches!(mouse.kind, MouseEventKind::ScrollUp),
+                        MOUSE_SCROLL_LINES,
+                    );
                     *dirty = true;
                 }
             }
@@ -2127,13 +2130,18 @@ impl App {
             );
             return;
         }
-        if let Some(panel) = &mut self.tree_panel {
+        if let Some(panel) = &mut self.tree_panel
+            && !panel.is_loading()
+        {
             let available = area.height.saturating_sub(1);
-            let height = panel.height(available);
-            let top = area.y + available.saturating_sub(height);
-            self.conversation
-                .draw(frame, Rect::new(area.x, area.y, area.width, top - area.y));
-            panel.draw(frame, Rect::new(area.x, top, area.width, height));
+            let height = available.saturating_sub(1);
+            panel.draw(frame, Rect::new(area.x, area.y, area.width, height));
+            if available > 0 {
+                frame.render_widget(
+                    Line::styled(tree::HINT, Style::default().fg(transcript_style::MUTED)),
+                    Rect::new(area.x, area.y + height, area.width, 1),
+                );
+            }
             frame.render_widget(
                 statusline::primary(
                     self.current_model.as_ref(),
@@ -2177,6 +2185,30 @@ impl App {
             conversation
         };
         self.conversation.draw(frame, conversation);
+        if let Some(panel) = &self.tree_panel {
+            if input.height > 0 {
+                panel.draw_status(frame, Rect::new(input.x, input.y, input.width, 1));
+            }
+            if input.height > 1 {
+                frame.render_widget(
+                    Line::styled(tree::HINT, Style::default().fg(transcript_style::MUTED)),
+                    Rect::new(input.x, input.y + 1, input.width, 1),
+                );
+            }
+            if status.height > 0 {
+                frame.render_widget(
+                    statusline::primary(
+                        self.current_model.as_ref(),
+                        self.think_level,
+                        context,
+                        status.width,
+                    ),
+                    status,
+                );
+            }
+            self.notifications.draw(frame, conversation);
+            return;
+        }
         let editor_area = if bordered {
             let block = Block::default()
                 .borders(Borders::TOP | Borders::BOTTOM)
@@ -2369,10 +2401,15 @@ mod tests {
         assert!(matches!(app.state, State::ReadingTree));
         events
             .send(WorkerEvent::TreeRead(Ok(
-                crate::agent::persistence::tree::Tree::fixture(
-                    &[(None, crate::agent::persistence::tree::Kind::User, "seed")],
-                    Some(0),
-                ),
+                crate::agent::persistence::tree::View {
+                    tree: crate::agent::persistence::tree::Tree::fixture(
+                        &[(None, crate::agent::persistence::tree::Kind::User, "seed")],
+                        Some(0),
+                    ),
+                    records: vec![vec![crate::agent::persistence::ReplayRecord::User(
+                        "seed".into(),
+                    )]],
+                },
             )))
             .unwrap();
         app.receive();
@@ -2393,6 +2430,76 @@ mod tests {
         app.handle(key(KeyCode::Esc), &mut dirty);
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert!(token.is_cancelled());
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn tree_inline_preview_keeps_history_viewport_draft_and_paste_isolated() {
+        use crate::agent::persistence::{
+            ReplayRecord,
+            tree::{Kind, Tree, View},
+        };
+        let mut app = app();
+        app.state = State::Ready;
+        for i in 0..40 {
+            app.append("You", &format!("original message {i}"));
+        }
+        app.input.insert_str("existing draft");
+        draw(&mut app, 100, 30);
+        app.conversation.page_up();
+        let before = draw(&mut app, 100, 30);
+        let history = app.input_history.clone();
+        let (commands, requests) = mpsc::channel();
+        let (events, replies) = mpsc::channel();
+        app.commands = Some(commands);
+        app.events = Some(replies);
+        app.open_tree();
+        assert!(matches!(requests.try_recv(), Ok(WorkerCommand::ReadTree)));
+        let loading = draw(&mut app, 100, 30);
+        assert!(loading.contains("Loading session tree…"));
+        assert!(loading.contains("user turns"));
+        assert_eq!(
+            before.lines().take(26).collect::<Vec<_>>(),
+            loading.lines().take(26).collect::<Vec<_>>()
+        );
+        events
+            .send(WorkerEvent::TreeRead(Ok(View {
+                tree: Tree::fixture(
+                    &[
+                        (None, Kind::User, "preview only"),
+                        (Some(0), Kind::Assistant, "branch answer"),
+                    ],
+                    Some(1),
+                ),
+                records: vec![
+                    vec![ReplayRecord::User("preview only".into())],
+                    vec![
+                        ReplayRecord::Event(AgentEvent::AssistantStarted),
+                        ReplayRecord::Event(AgentEvent::AssistantFinished {
+                            text: "branch answer".into(),
+                        }),
+                    ],
+                ],
+            })))
+            .unwrap();
+        app.receive();
+        let preview = draw(&mut app, 100, 30);
+        assert!(preview.contains("preview only") && preview.contains("branch answer"));
+        assert!(!preview.contains("existing draft"));
+        let mut dirty = false;
+        for event in [
+            key(KeyCode::Up),
+            key(KeyCode::Char('f')),
+            Event::Paste("must not search or edit".into()),
+            key(KeyCode::PageDown),
+        ] {
+            app.handle(event, &mut dirty);
+        }
+        assert_eq!(app.input.lines(), &["existing draft"]);
+        assert_eq!(app.input_history, history);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.tree_panel.is_none());
+        assert_eq!(draw(&mut app, 100, 30), before);
         assert!(requests.try_recv().is_err());
     }
 

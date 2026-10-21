@@ -364,6 +364,17 @@ impl SessionJournal {
         tree::Tree::read(&active.file)
     }
 
+    pub(super) fn tree_view(&mut self) -> Result<tree::View> {
+        let tree = self.tree()?;
+        match &self.active {
+            Some(active) => tree.view(&active.file),
+            None => Ok(tree::View {
+                tree,
+                records: Vec::new(),
+            }),
+        }
+    }
+
     pub(super) fn prepare_tree(&mut self, id: &str) -> Result<tree::Prepared> {
         let tree = self.tree()?;
         let active = self.active.as_ref().context("empty session tree")?;
