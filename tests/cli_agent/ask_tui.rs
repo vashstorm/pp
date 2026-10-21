@@ -53,6 +53,45 @@ fn ask_reply_calls(request: Request, protocol: &str, calls: Value) {
     }
 }
 
+// 覆盖完整参数快照与分片 SSE；Responses 起始项省略 arguments 的格式也必须可用。
+fn ask_provider_reply(request: Request, protocol: &str, id: &str, arguments: &str, fragmented: bool) {
+    if !fragmented {
+        ask_reply_calls(request, protocol, json!([ask_call_raw(protocol, id, arguments)]));
+        return;
+    }
+    let split = arguments.char_indices().nth(arguments.chars().count() / 2).unwrap().0;
+    let parts = [&arguments[..split], &arguments[split..]];
+    let mut stream = SseReply::new(request);
+    if protocol == "completion" {
+        stream.event(chat_chunk(json!({"role":"assistant","tool_calls":[{
+            "index":0,"id":id,"type":"function","function":{"name":"ask","arguments":parts[0]}
+        }]}), None));
+        stream.event(chat_chunk(json!({"tool_calls":[{
+            "index":0,"function":{"arguments":parts[1]}
+        }]}), None));
+        stream.event(chat_chunk(json!({}), Some("tool_calls")));
+        stream.frame("[DONE]");
+    } else {
+        let item = ask_call_raw(protocol, id, arguments);
+        let mut added = item.clone();
+        added["status"] = json!("in_progress");
+        added.as_object_mut().unwrap().remove("arguments");
+        stream.event(json!({"type":"response.output_item.added","sequence_number":0,
+            "output_index":0,"item":added}));
+        for (index, part) in parts.into_iter().enumerate() {
+            stream.event(json!({"type":"response.function_call_arguments.delta","sequence_number":index+1,
+                "item_id":item["id"],"output_index":0,"delta":part}));
+        }
+        stream.event(json!({"type":"response.function_call_arguments.done","sequence_number":3,
+            "item_id":item["id"],"output_index":0,"name":"ask","arguments":arguments}));
+        stream.event(json!({"type":"response.output_item.done","sequence_number":4,
+            "output_index":0,"item":item}));
+        stream.event(json!({"type":"response.completed","sequence_number":5,
+            "response":response_body(json!([item]))}));
+    }
+    stream.finish();
+}
+
 fn ask_final_reply(request: Request, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);
@@ -478,6 +517,66 @@ fn ask_tui_freeform_empty_options_and_empty_multi_submit() {
 // —— 验证项：畸形参数不开面板、不挂起、正常工具错误 ——
 
 #[test]
+fn ask_tui_provider_argument_variants_succeed_without_model_retry() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = ask_tui_start(&server, home.path(), project.path(), protocol);
+        pty.ready();
+        let cases = [
+            // 最新实际故障：选项级布尔推荐，不需要模型修正后再调用。
+            (json!({"options":[{"label":"拆成两个提交","recommended":true},
+                {"label":"合并为一个提交"},{"label":"取消提交"}]}), "拆成两个提交", false),
+            // 上次实际故障：嵌套数字按数值指向第三项，不能把所在的第一项当作推荐。
+            (json!({"options":[{"label":"拆成两个提交","recommended":2},
+                {"label":"合并为一个提交"},{"label":"取消提交"}]}), "取消提交", false),
+            (json!({"recommended":1,"options":[{"label":"拆成两个提交"},
+                {"label":"合并为一个提交","recommended":true},{"label":"取消提交"}]}), "合并为一个提交", false),
+            (json!({"recommended":"1","multi":null,
+                "options":["拆成两个提交","合并为一个提交","取消提交"]}), "合并为一个提交", false),
+            (json!({"options":[{"label":"拆成两个提交","recommended":false},
+                {"label":"合并为一个提交","recommended":"1"},{"label":"取消提交"}]}), "合并为一个提交", true),
+        ];
+        for fragmented in [false, true] {
+            for (index, (mut question, expected, encoded)) in cases.clone().into_iter().enumerate() {
+                let id = format!("ask-provider-{}-{index}", usize::from(fragmented));
+                question["id"] = json!("scope");
+                question["question"] = json!("本次变更如何组织提交？");
+                let mut arguments = json!({"questions":[question]}).to_string();
+                if encoded {
+                    arguments = serde_json::to_string(&arguments).unwrap();
+                }
+                pty.input(&format!("{id} task\r"));
+                let (request, _) = pty.request_at(&server, api_path(protocol));
+                ask_provider_reply(request, protocol, &id, &arguments, fragmented);
+                ask_wait_panel(&mut pty, "本次变更如何组织提交？");
+                pty.wait_for("兼容参数推荐项正常显示", |screen| {
+                    screen.contents().contains(&format!("{expected} (Recommended)"))
+                });
+                no_more(&server);
+                pty.input("\r");
+                let (request, body) = pty.request_at(&server, api_path(protocol));
+                let outputs = cancel_tool_outputs(&body, protocol);
+                let (_, answer) = outputs.iter().find(|(call_id, _)| call_id == &id).unwrap();
+                assert_eq!(answer, &json!({"ok":true,"answers":[{
+                    "id":"scope", "selected_options":[expected], "custom_input":null
+                }]}), "{protocol}, fragmented={fragmented}, case={index}");
+                // 工具执行和恢复可以归一化显示，但发回 provider 的调用参数必须保留原样。
+                assert!(body.to_string().contains(&serde_json::to_string(&arguments).unwrap()), "{body}");
+                let done = format!("{id} done");
+                ask_final_reply(request, protocol, &done);
+                pty.text(&done);
+                pty.ready();
+            }
+        }
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
+}
+
+#[test]
 fn ask_tui_invalid_arguments_never_open_panel_and_recover() {
     for protocol in ["completion", "response"] {
         let server = server();
@@ -784,12 +883,12 @@ fn ask_tui_replay_restores_cards_without_reopening() {
                 "ask-replay",
                 json!({"questions":[{"id":"db","header":"Database","question":"Pick one?",
                     "options":[{"label":"MySQL","description":"mysql-details"},
-                        {"label":"Postgres","description":"postgres-details","preview":"**Replay preview**"}]}]})
+                        {"label":"Postgres","description":"postgres-details","preview":"**Replay preview**","recommended":true}]}]})
             )]),
         );
         ask_wait_panel(&mut pty, "Pick one?");
         // 单题单选：Enter 选中并立即提交。
-        pty.input("\x1b[B\r");
+        pty.input("\r");
         let (request, body) = pty.request_at(&server, api_path(protocol));
         assert_eq!(
             cancel_tool_outputs(&body, protocol),

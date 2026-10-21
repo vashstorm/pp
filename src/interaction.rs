@@ -6,6 +6,8 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+mod arguments;
+
 pub(crate) const RESERVED_CUSTOM_LABEL: &str = "Other (type your own)";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -49,7 +51,7 @@ pub(crate) fn definition() -> FunctionObject {
     FunctionObject {
         name: "ask".into(),
         description: Some(
-            "Ask the user one or more questions and wait for their answers. Call this only when a decision genuinely requires the user's input; batch related questions into a single call instead of asking repeatedly. Each question needs a unique id, the question text, and options; empty options allows only a free-form answer. Set multi to true to let the user pick several options. recommended is a zero-based advisory hint only; it never auto-selects and never grants authorization. This tool does not approve file writes or any other tool execution, and it does not block other tools in the same batch. Answers are returned in question order using the original option labels exactly."
+            "Ask the user one or more questions and wait for their answers. Call this only when a decision genuinely requires the user's input; batch related questions into a single call instead of asking repeatedly. Each question needs a unique id, the question text, and options; empty options allows only a free-form answer. Set multi to true to let the user pick several options. Prefer recommended as a zero-based option index on the question object, alongside id, question and options. Alternatively, set recommended:true on one option. Do not provide conflicting recommendations. recommended is advisory only; it never auto-selects and never grants authorization. This tool does not approve file writes or any other tool execution, and it does not block other tools in the same batch. Answers are returned in question order using the original option labels exactly."
                 .into(),
         ),
         parameters: Some(json!({
@@ -65,7 +67,10 @@ pub(crate) fn definition() -> FunctionObject {
                             "question": {"type": "string"},
                             "header": {"type": "string"},
                             "multi": {"type": "boolean", "default": false},
-                            "recommended": {"type": "integer", "minimum": 0},
+                            "recommended": {
+                                "type": "integer", "minimum": 0,
+                                "description": "Optional zero-based index into this question's options. Omit when there is no recommendation."
+                            },
                             "options": {
                                 "type": "array",
                                 "items": {
@@ -73,7 +78,11 @@ pub(crate) fn definition() -> FunctionObject {
                                     "properties": {
                                         "label": {"type": "string"},
                                         "description": {"type": "string"},
-                                        "preview": {"type": "string"}
+                                        "preview": {"type": "string"},
+                                        "recommended": {
+                                            "type": "boolean",
+                                            "description": "Optional advisory hint: true recommends this option. Mark at most one option; it must agree with any question-level recommended index."
+                                        }
                                     },
                                     "required": ["label"],
                                     "additionalProperties": false
@@ -93,11 +102,9 @@ pub(crate) fn definition() -> FunctionObject {
 }
 
 impl AskArgs {
-    /// Parse the raw tool-call arguments. Any JSON problem returns the fixed
-    /// message `invalid ask arguments` without echoing the input.
+    /// 归一化 provider 参数后统一校验；不回显输入或解析器原文。
     pub(crate) fn parse(arguments: &str) -> Result<Self> {
-        let args: AskArgs = serde_json::from_str(arguments)
-            .map_err(|_| anyhow::anyhow!("invalid ask arguments"))?;
+        let args = arguments::parse(arguments)?;
         args.validate()?;
         Ok(args)
     }
@@ -277,6 +284,138 @@ mod tests {
             .expect_err("must fail")
             .to_string();
         assert_eq!(message, "invalid ask arguments");
+    }
+
+    #[test]
+    fn parse_normalizes_provider_recommendations_and_preserves_content() {
+        let cases = [
+            (
+                json!([{"label":" A "},{"label":"B"},{"label":"C"}]),
+                Some(json!(1)),
+                Some(1),
+            ),
+            (
+                json!([{"label":" A ","recommended":false},{"label":"B","recommended":true},{"label":"C"}]),
+                None,
+                Some(1),
+            ),
+            (
+                json!([{"label":" A ","recommended":2},{"label":"B"},{"label":"C"}]),
+                None,
+                Some(2),
+            ),
+            (
+                json!([{"label":" A ","recommended":"2"},{"label":"B"},{"label":"C"}]),
+                None,
+                Some(2),
+            ),
+            (json!([" A ", "B", "C"]), Some(json!("1")), Some(1)),
+            (
+                json!([{"label":" A ","recommended":false},{"label":"B","recommended":null},{"label":"C"}]),
+                Some(json!(null)),
+                None,
+            ),
+            (
+                json!([{"label":" A "},{"label":"B","recommended":true},{"label":"C"}]),
+                Some(json!(1)),
+                Some(1),
+            ),
+        ];
+        for (options, hint, expected) in cases {
+            let mut question =
+                json!({"id":"choice","question":"完整问题？","multi":null,"options":options});
+            if let Some(hint) = hint {
+                question["recommended"] = hint;
+            }
+            let input = json!({"questions":[question]}).to_string();
+            // 同时覆盖普通参数与 provider 再次编码成 JSON 字符串的参数。
+            for input in [input.clone(), serde_json::to_string(&input).unwrap()] {
+                let args = AskArgs::parse(&input).unwrap();
+                let question = &args.questions[0];
+                assert_eq!(question.recommended, expected);
+                assert_eq!(question.question, "完整问题？");
+                assert!(!question.multi);
+                assert_eq!(
+                    question
+                        .options
+                        .iter()
+                        .map(|option| option.label.as_str())
+                        .collect::<Vec<_>>(),
+                    [" A ", "B", "C"]
+                );
+                let canonical = serde_json::to_string(&args).unwrap();
+                assert_eq!(
+                    serde_json::to_string(&AskArgs::parse(&canonical).unwrap()).unwrap(),
+                    canonical
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parse_keeps_rejecting_duplicate_fields() {
+        for input in [
+            r#"{"questions":[{"id":"a","question":"t","options":[],"options":[]}]}"#,
+            r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x","label":"y"}]}]}"#,
+            r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x","recommended":true,"recommended":false}]}]}"#,
+            r#"{"questions":[],"questions":[]}"#,
+        ] {
+            assert_eq!(
+                AskArgs::parse(input).unwrap_err().to_string(),
+                "invalid ask arguments"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_conflicting_recommendations_and_invalid_shapes_without_echo() {
+        let cases = [
+            (
+                json!({"options":[{"label":"A","recommended":true},{"label":"B","recommended":true}]}),
+                "conflicting ask recommended hints",
+            ),
+            (
+                json!({"recommended":0,"options":[{"label":"A"},{"label":"B","recommended":true}]}),
+                "conflicting ask recommended hints",
+            ),
+            (
+                json!({"options":[{"label":"A","recommended":9}]}),
+                "ask recommended index is out of range",
+            ),
+            (
+                json!({"options":[{"label":"A","recommended":"private-value"}]}),
+                "invalid ask recommended index",
+            ),
+            (
+                json!({"recommended":"-1","options":["A"]}),
+                "invalid ask recommended index",
+            ),
+            (
+                json!({"recommended":"9999999999999999999999999999999","options":["A"]}),
+                "invalid ask recommended index",
+            ),
+            (
+                json!({"recommended":true,"options":["A"]}),
+                "invalid ask arguments",
+            ),
+            (
+                json!({"options":[{"label":"A","private-field":true}]}),
+                "invalid ask arguments",
+            ),
+        ];
+        for (mut question, expected) in cases {
+            question["id"] = json!("private-id");
+            question["question"] = json!("private-question");
+            let input = json!({"questions":[question]}).to_string();
+            assert_eq!(AskArgs::parse(&input).unwrap_err().to_string(), expected);
+        }
+        let valid = r#"{"questions":[{"id":"a","question":"t","options":[]}]}"#;
+        let twice = serde_json::to_string(valid).unwrap();
+        let triple = serde_json::to_string(&twice).unwrap();
+        assert_eq!(
+            AskArgs::parse(&triple).unwrap_err().to_string(),
+            "invalid ask arguments"
+        );
     }
 
     #[test]
