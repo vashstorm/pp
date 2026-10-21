@@ -119,9 +119,36 @@ pub(super) struct SessionJournal {
     thinking: String,
     capture_thinking: bool,
     pending_checkpoint: bool,
+    pending_stats: Option<String>,
 }
 
 impl SessionJournal {
+    pub(super) fn stats_context(
+        &self,
+        metadata: &Metadata<'_>,
+        purpose: &'static str,
+    ) -> crate::stats::RequestContext {
+        crate::stats::RequestContext {
+            model_reference: metadata.model_reference.to_owned(),
+            cwd: metadata.cwd.to_owned(),
+            purpose,
+            session_file: self.id().map(|id| self.dir.join(format!("{id}.jsonl"))),
+        }
+    }
+    pub(super) fn track_stats(&mut self, key: Option<String>, success: bool) {
+        if !success {
+            self.pending_stats = None;
+        }
+        if let Some(key) = key {
+            if let Some(id) = self.id() {
+                crate::stats::link(&key, &self.dir.join(format!("{id}.jsonl")), &[]);
+            }
+            if success {
+                self.pending_stats = Some(key);
+            }
+        }
+    }
+
     pub(super) fn new(dir: PathBuf) -> Self {
         Self {
             dir,
@@ -134,6 +161,7 @@ impl SessionJournal {
             thinking: String::new(),
             capture_thinking: false,
             pending_checkpoint: false,
+            pending_stats: None,
         }
     }
     pub(super) fn id(&self) -> Option<&str> {
@@ -487,11 +515,23 @@ impl SessionJournal {
                         )
                     }
                 };
+                let mut entries = Vec::new();
                 for message in &messages {
                     self.record(PayloadRef::Message { message }, false)?;
+                    if self.pending_stats.is_some()
+                        && matches!(message, Message::Assistant { .. })
+                        && let Ok(entry) = serde_json::from_slice::<serde_json::Value>(&self.buffer)
+                    {
+                        entries.push(entry);
+                    }
                 }
                 self.custom(CustomRef::NativeAppend(append), true)?;
                 self.committed = end;
+                if let Some(key) = self.pending_stats.take()
+                    && let Some(id) = self.id()
+                {
+                    crate::stats::link(&key, &self.dir.join(format!("{id}.jsonl")), &entries);
+                }
                 Ok(())
             })();
             self.model_reference = model_reference;
@@ -523,9 +563,11 @@ impl SessionJournal {
         let _ = self.custom(CustomRef::Event { event }, false);
     }
     pub(super) fn cancelled(&mut self) -> Result<()> {
+        self.pending_stats = None;
         self.custom(CustomRef::Cancelled {}, true)
     }
     pub(super) fn error(&mut self, message: &str) {
+        self.pending_stats = None;
         let _ = self.custom(CustomRef::Error { message }, true);
     }
     pub(super) fn think(&mut self, level: ThinkLevel) -> Result<()> {
@@ -1181,6 +1223,7 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
             thinking: String::new(),
             capture_thinking,
             pending_checkpoint: false,
+            pending_stats: None,
         },
         replay,
     })

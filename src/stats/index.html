@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>pp stats</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/stats.css" />
+    <script src="/stats.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <span class="brand-icon">π</span><b>pp</b><span class="slash">/</span
+        ><b>stats</b>
+      </div>
+      <div class="header-controls">
+        <button id="live" title="Refresh statistics now">
+          <i></i> Live <span>just now</span>
+        </button>
+        <div id="ranges" role="radiogroup" aria-label="Time range"></div>
+        <button
+          id="theme"
+          aria-label="System theme (click to switch)"
+          title="Switch theme"
+        ></button>
+      </div>
+    </header>
+    <aside>
+      <nav aria-label="Pages" id="navigation"></nav>
+      <div class="keyboard">
+        <div><kbd>1</kbd>–<kbd>6</kbd> range</div>
+        <div><kbd>G</kbd> then letter to jump</div>
+      </div>
+    </aside>
+    <main id="main">
+      <div id="error" role="status" hidden></div>
+      <div id="page"></div>
+    </main>
+    <div id="overlay" hidden>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label="Request details"
+        tabindex="-1"
+        id="drawer"
+      ></section>
+    </div>
+    <div id="toast" role="status" hidden></div>
+  </body>
+</html>

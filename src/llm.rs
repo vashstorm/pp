@@ -33,6 +33,8 @@ pub(crate) struct OpenAiClient {
     client: Client<OpenAIConfig>,
     runtime: Option<Runtime>,
     request_timeout: Duration,
+    stats_context: Option<crate::stats::RequestContext>,
+    stats_key: Option<String>,
 }
 
 pub(crate) struct ResponseTurn {
@@ -51,6 +53,14 @@ pub(crate) struct CompletionTurn {
 }
 
 impl OpenAiClient {
+    pub(crate) fn set_stats_context(&mut self, context: crate::stats::RequestContext) {
+        self.stats_context = Some(context);
+        self.stats_key = None;
+    }
+    pub(crate) fn take_stats_key(&mut self) -> Option<String> {
+        self.stats_key.take()
+    }
+
     pub(crate) fn new(config: &Config) -> Result<Self> {
         // Validate before the SDK constructs its authorization header (which can panic).
         HeaderValue::from_str(&format!("Bearer {}", config.api_key)).map_err(|_| {
@@ -72,6 +82,8 @@ impl OpenAiClient {
             client,
             runtime: Some(runtime),
             request_timeout,
+            stats_context: None,
+            stats_key: None,
         })
     }
 
@@ -113,12 +125,22 @@ impl OpenAiClient {
     ) -> Result<CompletionTurn> {
         self.ensure_ready()?;
         let started_at = Instant::now();
+        let record = !cancellation.is_cancelled() && self.stats_context.is_some();
+        let mut observation = crate::stats::Observation::new();
         emit(AgentEvent::ModelRequestStarted);
+        let mut progress = |event: AgentEvent| {
+            if record {
+                observation.event(&event, started_at);
+            }
+            emit(event);
+        };
         let client = &self.client;
         let runtime = self
             .runtime
             .as_ref()
             .expect("ensure_ready leaves a runtime in place");
+        let mut output = ChatStream::default();
+        let mut snapshot = serde_json::Value::Null;
         let result: Result<CompletionTurn> = runtime.block_on(async {
             // BYOT serializes a borrowed request before returning the stream.
             let opened = cancellation
@@ -132,7 +154,6 @@ impl OpenAiClient {
                 None => return Err(Cancelled.into()),
             };
             let mut stream = opened.map_err(|error| redacted_error(error, "Chat Completions"))?;
-            let mut output = ChatStream::default();
             loop {
                 match cancellation.run_until_cancelled(stream.next()).await {
                     None => return Err(Cancelled.into()),
@@ -140,17 +161,50 @@ impl OpenAiClient {
                     Some(Some(chunk)) => {
                         output.push(
                             chunk.map_err(|error| redacted_error(error, "Chat Completions"))?,
-                            emit,
+                            &mut progress,
                         )?;
                     }
                 }
             }
-            into_completion_turn(output.finish()?)
+            if record {
+                snapshot = output.stats_snapshot();
+            }
+            into_completion_turn(std::mem::take(&mut output).finish()?)
         });
+        let elapsed_ms = elapsed_millis(started_at);
+        if record {
+            if snapshot.is_null() {
+                snapshot = output.stats_snapshot();
+            }
+            observation.stop_reason = snapshot["finish_reason"].as_str().map(str::to_owned);
+            observation.usage = result
+                .as_ref()
+                .ok()
+                .and_then(|turn| turn.usage)
+                .or_else(|| {
+                    let usage = &snapshot["usage"];
+                    Some(TokenUsage {
+                        input_tokens: usage["prompt_tokens"].as_u64()?,
+                        output_tokens: usage["completion_tokens"].as_u64()?,
+                        cached_tokens: usage["prompt_tokens_details"]["cached_tokens"].as_u64(),
+                    })
+                });
+            observation.output = snapshot;
+            if let Some(context) = &self.stats_context {
+                self.stats_key = crate::stats::save(
+                    context,
+                    &request.model,
+                    "chat-completions",
+                    observation,
+                    started_at,
+                    &result,
+                );
+            }
+        }
         // Every outcome, including cancellation and callback failures, closes the
         // request exactly once with the authoritative usage when there is one.
         emit(AgentEvent::ModelRequestFinished {
-            elapsed_ms: elapsed_millis(started_at),
+            elapsed_ms,
             usage: result.as_ref().ok().and_then(|turn| turn.usage),
             success: result.is_ok(),
         });
@@ -166,12 +220,24 @@ impl OpenAiClient {
     ) -> Result<ResponseTurn> {
         self.ensure_ready()?;
         let started_at = Instant::now();
+        let record = !cancellation.is_cancelled() && self.stats_context.is_some();
+        let mut observation = crate::stats::Observation::new();
         emit(AgentEvent::ModelRequestStarted);
+        let mut progress = |event: AgentEvent| {
+            if record {
+                observation.event(&event, started_at);
+            }
+            emit(event);
+        };
         let client = &self.client;
         let runtime = self
             .runtime
             .as_ref()
             .expect("ensure_ready leaves a runtime in place");
+        let mut snapshot = serde_json::Value::Null;
+        let mut tool_deltas = Vec::new();
+        let mut stop_reason = None;
+        let mut reported_usage = None;
         let result: Result<ResponseTurn> = runtime.block_on(async {
             let opened = cancellation
                 .run_until_cancelled(
@@ -194,10 +260,33 @@ impl OpenAiClient {
                         bail!("Responses protocol: stream ended before response.completed")
                     }
                     Some(Some(event)) => {
-                        if let Some(turn) = output.push(
-                            event.map_err(|error| redacted_error(error, "Responses"))?.0,
-                            emit,
-                        )? {
+                        let event = event.map_err(|error| redacted_error(error, "Responses"))?.0;
+                        if record {
+                            use async_openai::types::responses::ResponseStreamEvent;
+                            let response = match &event {
+                                ResponseStreamEvent::ResponseCompleted(done) => Some(&done.response),
+                                ResponseStreamEvent::ResponseFailed(failed) => Some(&failed.response),
+                                ResponseStreamEvent::ResponseIncomplete(incomplete) => Some(&incomplete.response),
+                                _ => None,
+                            };
+                            if let Some(response) = response {
+                                snapshot = serde_json::to_value(&response.output).unwrap_or_default();
+                                reported_usage = response.usage.as_ref().map(|usage| TokenUsage {
+                                    input_tokens: u64::from(usage.input_tokens),
+                                    output_tokens: u64::from(usage.output_tokens),
+                                    cached_tokens: Some(u64::from(usage.input_tokens_details.cached_tokens)),
+                                });
+                                stop_reason = Some(if response.status != Status::Completed {
+                                    response.incomplete_details.as_ref().map_or("failed", |d|d.reason.as_str())
+                                } else if response.output.iter().any(|item|matches!(item,OutputItem::FunctionCall(_))) {
+                                    "tool_calls"
+                                } else { "stop" }.to_owned());
+                            }
+                            if let ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(delta) = &event {
+                                tool_deltas.push(serde_json::json!({"item_id":delta.item_id,"delta":delta.delta}));
+                            }
+                        }
+                        if let Some(turn) = output.push(event, &mut progress)? {
                             // response.completed is authoritative; do not wait for HTTP EOF.
                             return Ok(turn);
                         }
@@ -205,10 +294,34 @@ impl OpenAiClient {
                 }
             }
         });
+        let elapsed_ms = elapsed_millis(started_at);
+        if record {
+            observation.usage = result
+                .as_ref()
+                .ok()
+                .and_then(|turn| turn.usage)
+                .or(reported_usage);
+            observation.stop_reason = stop_reason;
+            observation.output = if snapshot.is_null() {
+                serde_json::json!({"tool_argument_deltas":tool_deltas})
+            } else {
+                snapshot
+            };
+            if let Some(context) = &self.stats_context {
+                self.stats_key = crate::stats::save(
+                    context,
+                    request.model.as_deref().unwrap_or_default(),
+                    "responses",
+                    observation,
+                    started_at,
+                    &result,
+                );
+            }
+        }
         // The stream may still be open on the wire (or already cancelled); the
         // finish event reports this request, not HTTP EOF.
         emit(AgentEvent::ModelRequestFinished {
-            elapsed_ms: elapsed_millis(started_at),
+            elapsed_ms,
             usage: result.as_ref().ok().and_then(|turn| turn.usage),
             success: result.is_ok(),
         });

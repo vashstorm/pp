@@ -12,11 +12,12 @@ mod mcp;
 mod models;
 mod project_instructions;
 mod skills;
+mod stats;
 mod tools;
 mod tui;
 
 use anyhow::{Context, Result, ensure};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::{
     io::{self, BufRead, IsTerminal, Write},
     process::ExitCode,
@@ -25,9 +26,13 @@ use std::{
 #[derive(Parser)]
 #[command(
     version,
+    args_conflicts_with_subcommands = true,
     about = "Minimal coding agent using OpenAI-compatible Responses or Chat Completions"
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Run one complete task and exit; omit for an interactive session
     #[arg(short, long)]
     prompt: Option<String>,
@@ -52,6 +57,15 @@ struct Args {
     continue_session: Option<Option<String>>,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// 启动本地统计页面
+    Stats {
+        #[arg(long, default_value_t = 3848)]
+        port: u16,
+    },
+}
+
 fn main() -> ExitCode {
     let args = Args::parse();
     let logging = match logging::init() {
@@ -63,7 +77,9 @@ fn main() -> ExitCode {
     };
     let started = std::time::Instant::now();
     let pid = std::process::id();
-    let mode = if args.prompt.is_some() {
+    let mode = if args.command.is_some() {
+        "stats"
+    } else if args.prompt.is_some() {
         "prompt"
     } else if io::stdin().is_terminal() && io::stdout().is_terminal() {
         "tui"
@@ -103,6 +119,9 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args) -> Result<()> {
+    if let Some(Command::Stats { port }) = args.command {
+        return stats::server::run(port);
+    }
     if let Some(prompt) = &args.prompt {
         ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
     }

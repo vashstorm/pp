@@ -29,9 +29,10 @@ ratatui-textarea = "0.9.3"
 unicode-normalization = "0.1"
 rustix = { version = "1", features = ["fs", "process"] }
 tempfile = "3"
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
+tiny_http = "0.12"
 
 [dev-dependencies]
-tiny_http = "0.12"
 portable-pty = "0.9.0"
 vt100 = "0.16.2"
 

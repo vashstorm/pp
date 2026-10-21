@@ -823,6 +823,17 @@ fn context_manual_compact_summarizes_old_prefix_and_keeps_native_suffix() {
         // The old tool batch ran once and was never replayed.
         assert_eq!(stderr.matches("tool read: running").count(), 1, "{stderr}");
         no_more(&server);
+        let statistics = super::stats::database(dir.path());
+        let summaries: i64 = statistics
+            .query_row(
+                "SELECT COUNT(*) FROM requests WHERE purpose='compact'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(summaries, 1);
+        let entries: i64 = statistics.query_row("SELECT COUNT(*) FROM requests r JOIN request_payloads p ON r.id=p.request_id WHERE r.purpose='compact' AND p.session_entry_json IS NOT NULL", [], |r|r.get(0)).unwrap();
+        assert_eq!(entries, 0);
     }
 }
 
@@ -1766,6 +1777,17 @@ fn context_auto_compact_summarizes_old_prefix_inside_task_both_protocols() {
             "{}",
             statuses[0]
         );
+        let statistics = super::stats::database(dir.path());
+        let summaries: i64 = statistics
+            .query_row(
+                "SELECT COUNT(*) FROM requests WHERE purpose='auto_compact'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(summaries, 1);
+        let entries: i64 = statistics.query_row("SELECT COUNT(*) FROM requests r JOIN request_payloads p ON r.id=p.request_id WHERE r.purpose='auto_compact' AND p.session_entry_json IS NOT NULL", [], |r|r.get(0)).unwrap();
+        assert_eq!(entries, 0);
     }
 }
 

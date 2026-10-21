@@ -1031,7 +1031,11 @@ fn completion_turn(
             journal.borrow_mut().event(&event);
             emit(event);
         };
+        client.set_stats_context(journal.borrow().stats_context(metadata, "task"));
         let outcome = client.complete(request, cancellation, &mut sent, &mut progress);
+        journal
+            .borrow_mut()
+            .track_stats(client.take_stats_key(), outcome.is_ok());
         log_model_request_finished("completion", request_started, &outcome);
         outcome?
     };
@@ -1142,7 +1146,11 @@ fn response_turn(
             journal.borrow_mut().event(&event);
             emit(event);
         };
+        client.set_stats_context(journal.borrow().stats_context(metadata, "task"));
         let outcome = client.respond(request, cancellation, &mut sent, &mut progress);
+        journal
+            .borrow_mut()
+            .track_stats(client.take_stats_key(), outcome.is_ok());
         log_model_request_finished("response", request_started, &outcome);
         outcome?
     };

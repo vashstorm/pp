@@ -633,6 +633,11 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
             pty.input("/quit\r");
             pty.finish();
             raw.assert_silent();
+            let database = super::stats::database(home.path());
+            let statuses: Vec<String> = database.prepare("SELECT status FROM requests ORDER BY id").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+            assert_eq!(statuses, ["aborted", "ok"]);
+            let ttft: Option<f64> = database.query_row("SELECT ttft_ms FROM requests WHERE status='aborted'",[],|r|r.get(0)).unwrap();
+            assert_eq!(ttft.is_some(), phase == "sse");
         }
     }
 }

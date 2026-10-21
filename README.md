@@ -2,6 +2,25 @@
 
 A minimal Pi-style coding agent in Rust: OpenAI-compatible Responses and Chat Completions via `async-openai`, real read/grep/find/edit/write/bash tools, and multi-turn terminal interaction. Single crate, Rust Edition 2024, macOS/Linux supported; bash must be on the PATH.
 
+## 请求统计
+
+所有新发起的模型调用都会自动记录到 `~/.pp/stats/stats.db`，包括工具循环及手动／自动摘要；统计页面是否运行不影响采集。不会导入此前的 pp 或 omp 日志。
+
+```sh
+pp stats
+pp stats --port 4000
+```
+
+默认访问 [http://127.0.0.1:3848/#/overview?range=24h](http://127.0.0.1:3848/#/overview?range=24h)。服务在前台运行，打印网址而不自动打开浏览器，Ctrl+C 退出；无需模型配置。`stats` 与 `-p`、`--resume`、`--continue` 互斥，`--port 0` 可让系统分配可用端口。服务仅监听本机回环地址。
+
+Overview 展示当前时间范围内的请求、Token、缓存命中和耗时；右上角支持 1h、24h、7d、30d、90d、All。All requests 跳到保留范围的 Requests，点击请求行可查看详情、展开及复制 JSON。Requests 默认加载最新 500 条、每次显示 100 条，可扩大为最新 2,000 条；摘要针对已加载集合，搜索／状态筛选及排序也只作用于此集合。其余导航页暂为占位。支持明暗／系统主题、数字 1–6 切换范围、G 加导航字母跳转。页面每 5 秒刷新，点击 Live 立即刷新。
+
+统计口径：以请求开始时间筛选，UTC 毫秒落盘、本地时间展示；总输入 Token 已包含缓存读取，Conversation tokens 为总输入加输出，Uncached input 为总输入减缓存读取。缺失的 usage／缓存明细保持未知，不用估算值填充。TTFT 是发起调用至首个非空正文、思考、拒绝或工具参数增量的时间；Tokens/s 为输出 Token 除以请求总耗时。用户取消记为 Aborted，服务或协议错误记为 Failed；发送前取消和本地校验失败不计入。费用、缓存写入和 Premium requests 暂显示 `—`。
+
+数据库保存模型输出（含可获得的思考、工具参数）、请求指标和已提交的对应会话条目快照；不额外保存完整输入上下文、请求头或认证配置。摘要和未提交输出没有会话条目时明确显示未记录。统计文件可能包含代码和模型输出，应按个人会话数据保管；首版不会自动清理。目录权限为 `0700`、数据库为 `0600`，SQLite 使用 WAL 支持多进程写入；存储不可用只提示，不中断模型任务。
+
+前端及 Inter 字体内嵌在二进制中，运行无需 Node 或 CDN；字体许可证见 `src/stats/fonts/LICENSE.txt`。只读接口为 `/api/stats/overview?range=24h`、`/api/stats/requests?range=24h&limit=500` 和 `/api/stats/requests/{id}`；详情正文按需加载，不在列表接口中返回。
+
 ## Build and Run
 
 ```sh

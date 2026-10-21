@@ -1,0 +1,579 @@
+//! 与会话日志独立的请求统计；数据库故障不改变模型调用结果。
+pub(crate) mod server;
+
+use anyhow::{Context, Result, ensure};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    fs::{self, DirBuilder, OpenOptions},
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
+
+#[derive(Clone)]
+pub(crate) struct RequestContext {
+    pub model_reference: String,
+    pub cwd: PathBuf,
+    pub purpose: &'static str,
+    pub session_file: Option<PathBuf>,
+}
+
+pub(crate) struct Observation {
+    pub timestamp: i64,
+    pub ttft_ms: Option<u64>,
+    pub text: String,
+    pub thinking: String,
+    pub output: Value,
+    pub stop_reason: Option<String>,
+    pub usage: Option<crate::context::TokenUsage>,
+}
+impl Observation {
+    pub fn new() -> Self {
+        Self {
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            ttft_ms: None,
+            text: String::new(),
+            thinking: String::new(),
+            output: Value::Null,
+            stop_reason: None,
+            usage: None,
+        }
+    }
+    pub fn event(&mut self, event: &crate::events::AgentEvent, started: Instant) {
+        use crate::events::AgentEvent;
+        match event {
+            AgentEvent::ModelOutputProgress { output_bytes } if *output_bytes > 0 => {
+                self.ttft_ms
+                    .get_or_insert(started.elapsed().as_millis() as u64);
+            }
+            AgentEvent::AssistantDelta { text, .. } => self.text.push_str(text),
+            AgentEvent::ThinkingDelta { text } => self.thinking.push_str(text),
+            _ => {}
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct RequestRow {
+    pub id: i64,
+    pub request_key: String,
+    pub timestamp: i64,
+    pub model: String,
+    pub provider: String,
+    pub model_reference: String,
+    pub api: String,
+    pub project: String,
+    pub cwd: String,
+    pub purpose: String,
+    pub session_file: Option<String>,
+    pub entry_id: Option<String>,
+    pub duration_ms: f64,
+    pub ttft_ms: Option<f64>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cached_tokens: Option<i64>,
+    pub status: String,
+    pub stop_reason: Option<String>,
+    pub error_message: Option<String>,
+}
+
+const COLUMNS: &str = "id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,entry_id,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message";
+fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
+    Ok(RequestRow {
+        id: r.get(0)?,
+        request_key: r.get(1)?,
+        timestamp: r.get(2)?,
+        model: r.get(3)?,
+        provider: r.get(4)?,
+        model_reference: r.get(5)?,
+        api: r.get(6)?,
+        project: r.get(7)?,
+        cwd: r.get(8)?,
+        purpose: r.get(9)?,
+        session_file: r.get(10)?,
+        entry_id: r.get(11)?,
+        duration_ms: r.get(12)?,
+        ttft_ms: r.get(13)?,
+        input_tokens: r.get(14)?,
+        output_tokens: r.get(15)?,
+        cached_tokens: r.get(16)?,
+        status: r.get(17)?,
+        stop_reason: r.get(18)?,
+        error_message: r.get(19)?,
+    })
+}
+
+pub(crate) fn database_path() -> Result<PathBuf> {
+    let agent = crate::config::global_dir()?;
+    Ok(agent
+        .parent()
+        .context("statistics directory unavailable")?
+        .join("stats/stats.db"))
+}
+
+pub(crate) struct Store {
+    pub conn: Connection,
+}
+impl Store {
+    pub fn open(path: &Path) -> Result<Self> {
+        let dir = path.parent().context("statistics directory unavailable")?;
+        DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        ensure!(
+            !fs::symlink_metadata(dir)?.file_type().is_symlink(),
+            "statistics directory must not be a symlink"
+        );
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(path)?;
+        ensure!(
+            file.metadata()?.is_file(),
+            "statistics database must be a file"
+        );
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        let mut conn = Connection::open(path)?;
+        conn.busy_timeout(Duration::from_millis(250))?;
+        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        ensure!(version <= 1, "unsupported statistics database version");
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        if version == 0 {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS requests (
+                id INTEGER PRIMARY KEY, request_key TEXT NOT NULL UNIQUE, timestamp INTEGER NOT NULL,
+                model TEXT NOT NULL, provider TEXT NOT NULL, model_reference TEXT NOT NULL, api TEXT NOT NULL,
+                project TEXT NOT NULL, cwd TEXT NOT NULL, purpose TEXT NOT NULL,
+                session_file TEXT, entry_id TEXT, duration_ms REAL NOT NULL, ttft_ms REAL,
+                input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER,
+                status TEXT NOT NULL CHECK(status IN ('ok','failed','aborted')), stop_reason TEXT, error_message TEXT
+            );
+            CREATE INDEX IF NOT EXISTS requests_time ON requests(timestamp DESC,id DESC);
+            CREATE TABLE IF NOT EXISTS request_payloads (
+                request_id INTEGER PRIMARY KEY REFERENCES requests(id), output_json TEXT NOT NULL,
+                session_entry_json TEXT
+            );
+            PRAGMA user_version=1;")?;
+            tx.commit()?;
+        }
+        Ok(Self { conn })
+    }
+    pub fn insert(&mut self, record: &RequestRow, output: &Value) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let inserted = tx.execute("INSERT INTO requests (request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18) ON CONFLICT(request_key) DO NOTHING",params![record.request_key,record.timestamp,record.model,record.provider,record.model_reference,record.api,record.project,record.cwd,record.purpose,record.session_file,record.duration_ms,record.ttft_ms,record.input_tokens,record.output_tokens,record.cached_tokens,record.status,record.stop_reason,record.error_message])?;
+        if inserted != 0 {
+            tx.execute(
+                "INSERT INTO request_payloads(request_id,output_json) VALUES (?1,?2)",
+                params![tx.last_insert_rowid(), serde_json::to_string(output)?],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+    pub fn link(&mut self, key: &str, file: &Path, entries: &[Value]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let entry_id = entries.first().and_then(|e| e["id"].as_str());
+        tx.execute("UPDATE requests SET session_file=?1,entry_id=COALESCE(?2,entry_id) WHERE request_key=?3",params![file.to_string_lossy(),entry_id,key])?;
+        if !entries.is_empty() {
+            tx.execute("UPDATE request_payloads SET session_entry_json=?1 WHERE request_id=(SELECT id FROM requests WHERE request_key=?2)",params![serde_json::to_string(entries)?,key])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+    pub fn latest(&self, since: i64, until: i64, limit: usize) -> Result<Vec<RequestRow>> {
+        Ok(self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC LIMIT ?3"))?
+            .query_map(params![since,until,limit as i64], row)?.collect::<rusqlite::Result<_>>()?)
+    }
+    pub fn detail(&self, id: i64) -> Result<Option<Value>> {
+        let record = self
+            .conn
+            .query_row(
+                &format!("SELECT {COLUMNS} FROM requests WHERE id=?1"),
+                [id],
+                row,
+            )
+            .optional()?;
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        let (output, entry): (String, Option<String>) = self.conn.query_row(
+            "SELECT output_json,session_entry_json FROM request_payloads WHERE request_id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(Some(
+            json!({"request":record,"output_message":serde_json::from_str::<Value>(&output)?,"session_entry":entry.map(|s|serde_json::from_str::<Value>(&s)).transpose()?}),
+        ))
+    }
+    pub fn overview(&self, range: Range, now: i64) -> Result<Value> {
+        let since = range.since(now);
+        let mut totals = self.conn.query_row("SELECT COUNT(*),SUM(status='ok'),SUM(status='failed'),SUM(status='aborted'),SUM(input_tokens),SUM(output_tokens),SUM(cached_tokens),SUM(CASE WHEN cached_tokens IS NOT NULL AND cached_tokens<=input_tokens THEN input_tokens-cached_tokens END),AVG(duration_ms),AVG(ttft_ms),AVG(CASE WHEN duration_ms>0 THEN output_tokens*1000.0/duration_ms END),COUNT(input_tokens),COUNT(cached_tokens) FROM requests WHERE timestamp>=?1 AND timestamp<=?2",params![since,now],|r|Ok(json!({
+            "requests":r.get::<_,i64>(0)?,"ok":r.get::<_,Option<i64>>(1)?.unwrap_or(0),"failed":r.get::<_,Option<i64>>(2)?.unwrap_or(0),"aborted":r.get::<_,Option<i64>>(3)?.unwrap_or(0),
+            "input_tokens":r.get::<_,Option<i64>>(4)?,"output_tokens":r.get::<_,Option<i64>>(5)?,"cached_tokens":r.get::<_,Option<i64>>(6)?,"uncached_tokens":r.get::<_,Option<i64>>(7)?,
+            "avg_duration_ms":r.get::<_,Option<f64>>(8)?,"avg_ttft_ms":r.get::<_,Option<f64>>(9)?,"tokens_per_second":r.get::<_,Option<f64>>(10)?,"usage_known":r.get::<_,i64>(11)?,"cache_known":r.get::<_,i64>(12)?
+        })))?;
+        if totals["requests"] == 0 {
+            totals["input_tokens"] = json!(0);
+            totals["output_tokens"] = json!(0);
+            totals["cached_tokens"] = json!(0);
+            totals["uncached_tokens"] = json!(0);
+        }
+        // 小时和五分钟桶采用固定时长；日桶交给 SQLite 按本机本地日历分组，兼容夏令时。
+        let bucket = match range {
+            Range::Hour => "(timestamp / 300000)*300000",
+            Range::Day => "(timestamp / 3600000)*3600000",
+            _ => {
+                "CAST(strftime('%s',date(timestamp/1000,'unixepoch','localtime'),'utc') AS INTEGER)*1000"
+            }
+        };
+        let mut statement=self.conn.prepare(&format!("SELECT {bucket} AS bucket,COUNT(*),SUM(input_tokens+output_tokens),SUM(status='failed') FROM requests WHERE timestamp>=?1 AND timestamp<=?2 GROUP BY bucket ORDER BY bucket"))?;
+        let buckets:Vec<Value>=statement.query_map(params![since,now],|r|Ok(json!({"timestamp":r.get::<_,i64>(0)?,"requests":r.get::<_,i64>(1)?,"tokens":r.get::<_,Option<i64>>(2)?,"failed":r.get::<_,i64>(3)?})))?.collect::<rusqlite::Result<_>>()?;
+        Ok(
+            json!({"summary":totals,"buckets":buckets,"latest":self.latest(since,now,12)?,"updated_at":now,"range":range.label()}),
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Range {
+    Hour,
+    Day,
+    Week,
+    Month,
+    Quarter,
+    All,
+}
+impl Range {
+    pub fn parse(value: &str) -> Result<Self> {
+        Ok(match value {
+            "1h" => Self::Hour,
+            "24h" => Self::Day,
+            "7d" => Self::Week,
+            "30d" => Self::Month,
+            "90d" => Self::Quarter,
+            "all" => Self::All,
+            _ => anyhow::bail!("invalid time range"),
+        })
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hour => "1h",
+            Self::Day => "24h",
+            Self::Week => "7d",
+            Self::Month => "30d",
+            Self::Quarter => "90d",
+            Self::All => "all",
+        }
+    }
+    pub fn since(self, now: i64) -> i64 {
+        let hours = match self {
+            Self::Hour => 1,
+            Self::Day => 24,
+            Self::Week => 168,
+            Self::Month => 720,
+            Self::Quarter => 2160,
+            Self::All => return 0,
+        };
+        now.saturating_sub(hours * 3600000)
+    }
+}
+
+static WARNED: AtomicBool = AtomicBool::new(false);
+pub(crate) fn warn() {
+    tracing::warn!(event = "statistics_unavailable");
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!("warning: statistics unavailable; model tasks are unaffected");
+    }
+}
+pub(crate) fn save(
+    context: &RequestContext,
+    model: &str,
+    api: &str,
+    observation: Observation,
+    started: Instant,
+    outcome: &Result<impl Sized>,
+) -> Option<String> {
+    let result = (|| -> Result<String> {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes)
+            .map_err(|_| anyhow::anyhow!("statistics random source unavailable"))?;
+        let key = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let status = if outcome.is_ok() {
+            "ok"
+        } else if outcome
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.is::<crate::cancellation::Cancelled>())
+        {
+            "aborted"
+        } else {
+            "failed"
+        };
+        let record = RequestRow {
+            id: 0,
+            request_key: key.clone(),
+            timestamp: observation.timestamp,
+            model: model.into(),
+            provider: context
+                .model_reference
+                .split('/')
+                .next()
+                .unwrap_or_default()
+                .into(),
+            model_reference: context.model_reference.clone(),
+            api: api.into(),
+            project: context
+                .cwd
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into(),
+            cwd: context.cwd.to_string_lossy().into(),
+            purpose: context.purpose.into(),
+            session_file: context
+                .session_file
+                .as_ref()
+                .map(|p| p.to_string_lossy().into()),
+            entry_id: None,
+            duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+            ttft_ms: observation.ttft_ms.map(|n| n as f64),
+            input_tokens: observation
+                .usage
+                .map(|u| i64::try_from(u.input_tokens))
+                .transpose()?,
+            output_tokens: observation
+                .usage
+                .map(|u| i64::try_from(u.output_tokens))
+                .transpose()?,
+            cached_tokens: observation
+                .usage
+                .and_then(|u| u.cached_tokens)
+                .map(i64::try_from)
+                .transpose()?,
+            status: status.into(),
+            stop_reason: observation.stop_reason,
+            error_message: outcome.as_ref().err().map(|e| format!("{e:#}")),
+        };
+        let output = json!({"native":observation.output,"text":observation.text,"thinking":observation.thinking,"partial":outcome.is_err()});
+        Store::open(&database_path()?)?.insert(&record, &output)?;
+        Ok(key)
+    })();
+    match result {
+        Ok(key) => Some(key),
+        Err(_) => {
+            warn();
+            None
+        }
+    }
+}
+pub(crate) fn link(key: &str, file: &Path, entries: &[Value]) {
+    if (|| -> Result<()> { Store::open(&database_path()?)?.link(key, file, entries) })().is_err() {
+        warn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fixture(key: &str, timestamp: i64) -> RequestRow {
+        RequestRow {
+            id: 0,
+            request_key: key.into(),
+            timestamp,
+            model: "fixture-model".into(),
+            provider: "fixture".into(),
+            model_reference: "fixture/primary".into(),
+            api: "responses".into(),
+            project: "project".into(),
+            cwd: "/tmp/project".into(),
+            purpose: "task".into(),
+            session_file: None,
+            entry_id: None,
+            duration_ms: 2000.0,
+            ttft_ms: Some(500.0),
+            input_tokens: Some(100),
+            output_tokens: Some(20),
+            cached_tokens: Some(80),
+            status: "ok".into(),
+            stop_reason: Some("stop".into()),
+            error_message: None,
+        }
+    }
+    #[test]
+    fn stats_creation_reopen_dedup_and_snapshot_are_transactional() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats/stats.db");
+        let mut store = Store::open(&path).unwrap();
+        let record = fixture("one", 1000);
+        store.insert(&record, &json!({"text":"hello"})).unwrap();
+        store.insert(&record, &json!({"text":"wrong"})).unwrap();
+        store.link("one",Path::new("/tmp/session.jsonl"),&[json!({"id":"entry","type":"message","message":{"role":"assistant","content":"hello"}})]).unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.latest(0, 2000, 500).unwrap().len(), 1);
+        let detail = store.detail(1).unwrap().unwrap();
+        assert_eq!(detail["output_message"]["text"], "hello");
+        assert_eq!(detail["request"]["entry_id"], "entry");
+        assert_eq!(detail["session_entry"][0]["id"], "entry");
+        assert_eq!(
+            fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            store
+                .conn
+                .pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
+                .unwrap(),
+            "wal"
+        );
+        assert_eq!(
+            store
+                .conn
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+    #[test]
+    fn stats_ranges_include_boundaries_and_preserve_unknown_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("stats.db")).unwrap();
+        let now = 10_000_000;
+        store
+            .insert(&fixture("boundary", now - 3600000), &Value::Null)
+            .unwrap();
+        store
+            .insert(&fixture("outside", now - 3600001), &Value::Null)
+            .unwrap();
+        let mut missing = fixture("missing", now);
+        missing.input_tokens = None;
+        missing.output_tokens = None;
+        missing.cached_tokens = None;
+        missing.ttft_ms = None;
+        missing.status = "aborted".into();
+        store.insert(&missing, &Value::Null).unwrap();
+        store
+            .insert(&fixture("future", now + 1), &Value::Null)
+            .unwrap();
+        let summary = store.overview(Range::Hour, now).unwrap();
+        let s = &summary["summary"];
+        assert_eq!(s["requests"], 2);
+        assert_eq!(s["aborted"], 1);
+        assert_eq!(s["input_tokens"], 100);
+        assert_eq!(s["uncached_tokens"], 20);
+        assert_eq!(s["output_tokens"], 20);
+        assert_eq!(s["usage_known"], 1);
+        assert_eq!(s["avg_ttft_ms"], 500.0);
+        assert_eq!(
+            store.overview(Range::All, now).unwrap()["summary"]["requests"],
+            3
+        );
+        assert!(store.detail(999).unwrap().is_none());
+        for label in ["1h", "24h", "7d", "30d", "90d", "all"] {
+            assert!(Range::parse(label).is_ok());
+        }
+        assert!(Range::parse("1d").is_err());
+    }
+    #[test]
+    fn stats_multiple_connections_read_during_write_and_bound_lock_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.db");
+        Store::open(&path).unwrap();
+        std::thread::scope(|scope| {
+            for i in 0..4 {
+                let path = &path;
+                scope.spawn(move || {
+                    let mut store = Store::open(path).unwrap();
+                    for j in 0..15 {
+                        store
+                            .insert(&fixture(&format!("{i}-{j}"), 1000), &Value::Null)
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        let mut writer = Store::open(&path).unwrap();
+        let mut reader = Store::open(&path).unwrap();
+        assert_eq!(reader.latest(0, 2000, 500).unwrap().len(), 60);
+        let tx = writer
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        tx.execute("UPDATE requests SET project='pending'", [])
+            .unwrap();
+        assert_eq!(reader.latest(0, 2000, 500).unwrap()[0].project, "project");
+        let started = Instant::now();
+        assert!(
+            reader
+                .insert(&fixture("locked", 1000), &Value::Null)
+                .is_err()
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(tx);
+        reader
+            .insert(&fixture("unlocked", 1000), &Value::Null)
+            .unwrap();
+    }
+    #[test]
+    fn stats_api_rejects_invalid_queries_and_keeps_payloads_out_of_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("stats.db")).unwrap();
+        store
+            .insert(
+                &fixture("test", chrono::Utc::now().timestamp_millis()),
+                &json!({"text":"private output"}),
+            )
+            .unwrap();
+        for path in [
+            "/api/stats/overview?range=bad",
+            "/api/stats/overview?range=1h&range=7d",
+            "/api/stats/requests?limit=9999999",
+            "/api/stats/requests/-1",
+            "/api/stats/requests/not-a-number",
+            "/api/stats/requests?foo=bar",
+        ] {
+            assert_eq!(server::dispatch(&store, path).0, 400, "{path}");
+        }
+        for path in [
+            "/api/stats/overview?range=all",
+            "/api/stats/requests?range=all&limit=500",
+        ] {
+            let (status, _, body) = server::dispatch(&store, path);
+            assert_eq!(status, 200);
+            assert!(!body.contains("private output"));
+        }
+        assert_eq!(server::dispatch(&store, "/api/stats/requests/999").0, 404);
+        assert!(
+            server::dispatch(&store, "/api/stats/requests/1")
+                .2
+                .contains("private output")
+        );
+    }
+    #[test]
+    fn stats_future_schema_and_symlinks_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.db");
+        let store = Store::open(&path).unwrap();
+        store.conn.pragma_update(None, "user_version", 999).unwrap();
+        drop(store);
+        assert!(Store::open(&path).is_err());
+        let link = dir.path().join("link.db");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(Store::open(&link).is_err());
+    }
+}

@@ -350,6 +350,7 @@ fn summarize_completion_request(
     let started = std::time::Instant::now();
     let mut on_request_sent = || journal.check();
     let outcome = client.complete(request, cancellation, &mut on_request_sent, &mut |_| {});
+    journal.track_stats(client.take_stats_key(), false);
     log_model_request_finished("completion", started, &outcome);
     let turn = outcome.map_err(summary_error)?;
     cancellation::check(cancellation)?;
@@ -379,6 +380,7 @@ fn summarize_response_request(
     let started = std::time::Instant::now();
     let mut on_request_sent = || journal.check();
     let outcome = client.respond(request, cancellation, &mut on_request_sent, &mut |_| {});
+    journal.track_stats(client.take_stats_key(), false);
     log_model_request_finished("response", started, &outcome);
     let turn = outcome.map_err(summary_error)?;
     cancellation::check(cancellation)?;
@@ -654,6 +656,10 @@ impl Agent {
             tool_limits: self.tools.limits,
             base_system: &self.base_system,
         };
+        self.client.set_stats_context(self.journal.stats_context(
+            &metadata,
+            if automatic { "auto_compact" } else { "compact" },
+        ));
         let outcome = match &mut self.session {
             Session::Completion(request) => compact_completion(
                 &mut self.client,

@@ -7,6 +7,9 @@ use std::{
 };
 use tiny_http::{Request, Response, Server};
 
+#[path = "cli_agent/stats.rs"]
+mod stats;
+
 #[path = "cli_agent/ask.rs"]
 mod ask;
 #[path = "cli_agent/mcp.rs"]

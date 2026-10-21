@@ -124,6 +124,10 @@ pub(super) struct ChatStream {
 }
 
 impl ChatStream {
+    pub(super) fn stats_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"role":self.role,"content":self.content,"refusal":self.refusal,"tool_calls":self.calls.values().collect::<Vec<_>>(),"finish_reason":self.finish_reason,"usage":self.usage})
+    }
+
     #[allow(deprecated)] // Reject legacy function_call rather than silently dropping it.
     pub(super) fn push(
         &mut self,
