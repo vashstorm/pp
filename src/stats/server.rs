@@ -67,6 +67,7 @@ pub(super) fn dispatch(store: &Store, path: &str) -> (u16, &'static str, String)
         "/" | "/index.html" => return (200, "text/html", include_str!("index.html").into()),
         "/stats.css" => return (200, "text/css", include_str!("stats.css").into()),
         "/stats.js" => return (200, "text/javascript", include_str!("stats.js").into()),
+        "/icon.svg" => return (200, "image/svg+xml", include_str!("icon.svg").into()),
         _ => {}
     }
     match api(store, path) {
