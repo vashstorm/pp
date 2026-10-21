@@ -312,6 +312,10 @@ fn run(args: Args) -> Result<()> {
                 )?;
                 continue;
             }
+            Some(commands::Command::Tree) => {
+                writeln!(stderr, "/tree requires the TUI; run pp in a terminal.")?;
+                continue;
+            }
             _ => {}
         }
         let agent = match &mut agent {
@@ -383,7 +387,8 @@ fn run(args: Args) -> Result<()> {
                 commands::Command::Help
                 | commands::Command::Quit
                 | commands::Command::Skills(_)
-                | commands::Command::Resume,
+                | commands::Command::Resume
+                | commands::Command::Tree,
             ) => unreachable!(),
             Some(commands::Command::Prompt(prompt)) => {
                 if let Err(error) = run_cli_task(agent, Some(&prompt), &mut stdout, &mut stderr) {

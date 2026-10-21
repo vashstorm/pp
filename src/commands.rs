@@ -55,6 +55,12 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "View or set the thinking effort level, keeping session history",
     },
     CommandSpec {
+        name: "/tree",
+        icon: "⑂",
+        usage: "/tree",
+        description: "Browse session branches and continue from an earlier point (TUI)",
+    },
+    CommandSpec {
         name: "/skills",
         icon: "◆",
         usage: "/skills [enable NAME|disable NAME]",
@@ -74,6 +80,7 @@ pub(crate) enum Command<'a> {
     New,
     Compact,
     Resume,
+    Tree,
     Quit,
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
@@ -95,6 +102,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/init" => Command::Prompt(crate::project_instructions::INIT_PROMPT.to_owned()),
         "/compact" => Command::Compact,
         "/resume" => Command::Resume,
+        "/tree" => Command::Tree,
         "/quit" => Command::Quit,
         "/model" => {
             return Ok(Some(Command::Model(
@@ -176,6 +184,7 @@ mod tests {
                 Command::Prompt(crate::project_instructions::INIT_PROMPT.to_owned()),
             ),
             ("/resume", Command::Resume),
+            ("/tree", Command::Tree),
             (" /resume ", Command::Resume),
             ("/quit", Command::Quit),
             ("/model", Command::Model(None)),
@@ -201,7 +210,9 @@ mod tests {
                 "unknown command; use /help"
             );
         }
-        for command in ["/help", "/new", "/init", "/compact", "/resume", "/quit"] {
+        for command in [
+            "/help", "/new", "/init", "/compact", "/resume", "/tree", "/quit",
+        ] {
             assert_eq!(
                 parse(&format!("{command} extra"), &FileCommands::default())
                     .unwrap_err()

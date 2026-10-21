@@ -107,7 +107,7 @@ fn ask_panel_find(screen: &vt100::Screen, needle: &str) -> (u16, u16) {
             .filter_map(|col| screen.cell(row, col))
             .map(|cell| {
                 let text = cell.contents();
-                if text.is_empty() { " ".into() } else { text }
+                if text.is_empty() { " " } else { text }
             })
             .collect();
         if let Some(index) = line.find(needle) {

@@ -2431,6 +2431,7 @@ mod tui {
     include!("cli_agent/diff_blocks_tui.rs");
     include!("cli_agent/transcript_blocks_tui.rs");
     include!("cli_agent/ask_tui.rs");
+    include!("cli_agent/tree_tui.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
     use std::{
         io::Read,
@@ -4090,6 +4091,7 @@ mod tui {
         pty.input(" ");
         pty.wait_for("空格展开输入框下方模型菜单", |screen| {
             let text = screen.contents();
+            let (cursor_row, cursor_col) = screen.cursor_position();
             text.contains("a/primary")
                 && text.contains("gateway/team/secondary")
                 && text.contains("vendor-b")
@@ -4097,7 +4099,11 @@ mod tui {
                 && text.find("❯ /model").unwrap() < text.find("a/primary").unwrap()
                 && text.contains("(current)")
                 && !screen.hide_cursor()
-                && screen.cursor_position() == (25, 9)
+                && cursor_col == 9
+                && text
+                    .lines()
+                    .nth(usize::from(cursor_row))
+                    .is_some_and(|line| line.starts_with("❯ /model"))
         });
         // 确认前检查首尾导航、翻页以及窗口缩放。
         pty.input("\x1b[H\x1b[5~\x1b[A\x1b[F\x1b[6~\x1b[B");

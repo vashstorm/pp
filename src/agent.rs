@@ -57,6 +57,11 @@ pub(crate) struct Agent {
     debug: Option<debug::DebugState>,
 }
 
+pub(crate) struct TreeNavigation {
+    pub replay: Vec<persistence::ReplayRecord>,
+    pub draft: Option<String>,
+}
+
 impl Session {
     fn set_think_level(&mut self, level: ThinkLevel) {
         match self {
@@ -385,6 +390,85 @@ impl Agent {
     pub(crate) fn session_id(&self) -> Option<&str> {
         self.journal.id()
     }
+
+    pub(crate) fn session_tree(&mut self) -> Result<persistence::tree::Tree> {
+        self.journal.tree()
+    }
+
+    pub(crate) fn navigate_tree(&mut self, id: &str) -> Result<TreeNavigation> {
+        let persistence::tree::Prepared {
+            session: source,
+            model_reference,
+            replay,
+            selection,
+            draft,
+        } = self.journal.prepare_tree(id)?;
+        let compatible = match &source {
+            Session::Completion(_) => self.current_model.protocol == Protocol::Completion,
+            Session::Response(request) => {
+                self.current_model.protocol == Protocol::Response
+                    && model_reference == self.current_model.reference
+                    && request.model.as_deref() == Some(self.current_model.model.as_str())
+            }
+        };
+        let source = if compatible {
+            source
+        } else {
+            history::convert(
+                &source,
+                self.current_model.model.clone(),
+                self.current_model.protocol,
+                self.tools.edit_mode(),
+            )?
+        };
+        let project = project_instructions::load(self.tools.cwd())?;
+        let system = project_instructions::compose(
+            &self.base_system,
+            self.tools.cwd(),
+            &project,
+            &self
+                .tools
+                .skills
+                .lock()
+                .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
+                .summary(),
+        );
+        let mut session = Session::new(
+            self.current_model.model.clone(),
+            self.current_model.protocol,
+            system,
+            self.tools.edit_mode(),
+        );
+        match (&mut session, source) {
+            (Session::Completion(target), Session::Completion(source)) => {
+                let skip = usize::from(matches!(
+                    source.messages.first(),
+                    Some(ChatCompletionRequestMessage::System(_))
+                ));
+                target
+                    .messages
+                    .extend(source.messages.into_iter().skip(skip));
+            }
+            (Session::Response(target), Session::Response(source)) => target.input = source.input,
+            _ => unreachable!("tree history converted to current protocol"),
+        }
+        session.set_tools(self.tools.all_definitions());
+        session.set_think_level(self.think_level);
+        let metadata = Metadata {
+            cwd: self.tools.cwd(),
+            model_reference: &self.current_model.reference,
+            think_level: self.think_level,
+            edit_mode: self.tools.edit_mode(),
+            tool_limits: self.tools.limits,
+            base_system: &self.base_system,
+        };
+        self.journal
+            .write_tree_state(&metadata, (&session).into(), Some(&selection))?;
+        self.session = session;
+        self.last_request = None;
+        self.pending_instructions = None;
+        Ok(TreeNavigation { replay, draft })
+    }
     pub(crate) fn take_session_notice(&mut self) -> Option<String> {
         self.journal.take_notice()
     }
@@ -675,10 +759,8 @@ impl Agent {
             operation = "continue"
         );
         let started = std::time::Instant::now();
-        let result = (|| -> Result<RunOutcome> {
-            let result = self.run_loop(None, cancellation, emit);
-            self.finish_run(result, cancellation)
-        })();
+        let result = self.run_loop(None, cancellation, emit);
+        let result = self.finish_run(result, cancellation);
         if !matches!(&result, Ok(RunOutcome::Completed)) {
             self.publish_context(emit)?;
         }
@@ -796,29 +878,19 @@ impl Agent {
                 instructions: self.pending_instructions.as_deref(),
                 debug: &mut self.debug,
             };
+            let resources = TurnResources {
+                client: &mut self.client,
+                last_request: &mut self.last_request,
+                tools: &self.tools,
+                journal: &mut self.journal,
+            };
             let finished = match &mut self.session {
-                Session::Completion(request) => completion_turn(
-                    &mut self.client,
-                    &mut self.last_request,
-                    &self.tools,
-                    request,
-                    &mut self.journal,
-                    &metadata,
-                    update,
-                    cancellation,
-                    emit,
-                )?,
-                Session::Response(request) => response_turn(
-                    &mut self.client,
-                    &mut self.last_request,
-                    &self.tools,
-                    request,
-                    &mut self.journal,
-                    &metadata,
-                    update,
-                    cancellation,
-                    emit,
-                )?,
+                Session::Completion(request) => {
+                    completion_turn(resources, request, &metadata, update, cancellation, emit)?
+                }
+                Session::Response(request) => {
+                    response_turn(resources, request, &metadata, update, cancellation, emit)?
+                }
             };
             self.pending_instructions = None;
             self.journal.commit((&self.session).into())?;
@@ -909,17 +981,28 @@ fn log_model_request_finished<T>(
     }
 }
 
+// 两种协议在一次模型／工具轮次中使用相同的同步依赖。
+struct TurnResources<'a> {
+    client: &'a mut OpenAiClient,
+    last_request: &'a mut Option<TokenUsage>,
+    tools: &'a Tools,
+    journal: &'a mut SessionJournal,
+}
+
 fn completion_turn(
-    client: &mut OpenAiClient,
-    last_request: &mut Option<TokenUsage>,
-    tools: &Tools,
+    resources: TurnResources<'_>,
     request: &mut CreateChatCompletionRequest,
-    journal: &mut SessionJournal,
     metadata: &Metadata<'_>,
     mut update: RequestUpdate<'_>,
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<bool> {
+    let TurnResources {
+        client,
+        last_request,
+        tools,
+        journal,
+    } = resources;
     tracing::info!(
         event = "model_request_started",
         pid = std::process::id(),
@@ -1018,16 +1101,19 @@ fn completion_turn(
 }
 
 fn response_turn(
-    client: &mut OpenAiClient,
-    last_request: &mut Option<TokenUsage>,
-    tools: &Tools,
+    resources: TurnResources<'_>,
     request: &mut CreateResponse,
-    journal: &mut SessionJournal,
     metadata: &Metadata<'_>,
     mut update: RequestUpdate<'_>,
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<bool> {
+    let TurnResources {
+        client,
+        last_request,
+        tools,
+        journal,
+    } = resources;
     tracing::info!(
         event = "model_request_started",
         pid = std::process::id(),

@@ -9,6 +9,7 @@ mod skills;
 mod statusline;
 mod transcript;
 mod transcript_style;
+mod tree;
 mod welcome;
 
 use crate::{
@@ -47,7 +48,7 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
-const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S save selected model/effort as default in its menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S save selected model/effort as default in its menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
 const EFFORT_HINT: &str = "Enter select · Ctrl-S set selected effort as default · Esc cancel";
 const MODEL_HINT: &str = "Enter select · Ctrl-S set selected model as default · Esc cancel";
 const MOUSE_SCROLL_LINES: usize = 3;
@@ -132,6 +133,8 @@ enum WorkerCommand {
     ListSessions,
     DeleteSession(String),
     Resume(String),
+    ReadTree,
+    NavigateTree(String),
 }
 enum WorkerEvent {
     Ask {
@@ -155,6 +158,8 @@ enum WorkerEvent {
     SessionsListed(Result<crate::agent::persistence::SessionListing>),
     SessionDeleted(String, Result<()>),
     SessionResumed(Result<ResumeState>),
+    TreeRead(Result<crate::agent::persistence::tree::Tree>),
+    TreeNavigated(Result<crate::agent::TreeNavigation>),
 }
 
 fn request_ask(
@@ -212,6 +217,8 @@ enum State {
     SettingThinkLevel,
     ListingSessions,
     Resuming,
+    ReadingTree,
+    NavigatingTree,
     Unavailable,
 }
 
@@ -232,6 +239,27 @@ struct ModelPickerDraft {
     history_draft: Option<TextArea<'static>>,
     menu: Option<SelectionMenu<MenuAction>>,
     menu_dismissed: bool,
+}
+
+#[derive(Default)]
+struct EscapeTap(Option<Instant>);
+
+impl EscapeTap {
+    fn reset(&mut self) {
+        self.0 = None;
+    }
+    fn press(&mut self, now: Instant) -> bool {
+        if self
+            .0
+            .take()
+            .is_some_and(|last| now.saturating_duration_since(last) <= Duration::from_millis(500))
+        {
+            true
+        } else {
+            self.0 = Some(now);
+            false
+        }
+    }
 }
 
 struct App {
@@ -262,6 +290,8 @@ struct App {
     skill_panel: Option<skills::Panel>,
     skills_pending: bool,
     session_panel: Option<sessions::Panel>,
+    tree_panel: Option<tree::Panel>,
+    escape_tap: EscapeTap,
     session_id: Option<String>,
     // 最近一次 ContextUpdated 快照；渲染直接使用，不逐帧重新估算。
     usage: Option<crate::context::ContextUsage>,
@@ -355,6 +385,8 @@ impl App {
             skill_panel: None,
             skills_pending: false,
             session_panel: None,
+            tree_panel: None,
+            escape_tap: EscapeTap::default(),
             session_id: None,
             usage: None,
             mcp_cleanup: None,
@@ -449,6 +481,16 @@ impl App {
                                         snapshot = usage_snapshot(&agent);
                                     }
                                     WorkerEvent::ModelSwitched(result)
+                                }
+                                WorkerCommand::ReadTree => {
+                                    WorkerEvent::TreeRead(agent.session_tree())
+                                }
+                                WorkerCommand::NavigateTree(id) => {
+                                    let result = agent.navigate_tree(&id);
+                                    if result.is_ok() {
+                                        snapshot = usage_snapshot(&agent);
+                                    }
+                                    WorkerEvent::TreeNavigated(result)
                                 }
                                 WorkerCommand::ListSessions => WorkerEvent::SessionsListed(
                                     crate::config::global_dir()
@@ -607,6 +649,8 @@ impl App {
         self.commands = None;
         self.events = None;
         self.unavailable = Some(message.into());
+        self.tree_panel = None;
+        self.escape_tap.reset();
         // worker 已死时不再等待恢复回复，会话面板不能继续吞掉按键。
         self.session_panel = None;
         self.conversation.fail();
@@ -846,6 +890,57 @@ impl App {
                     }
                     changed = true;
                 }
+                Ok(WorkerEvent::TreeRead(result)) => {
+                    self.state = State::Ready;
+                    match result {
+                        Ok(tree) if tree.nodes.is_empty() => {
+                            self.tree_panel = None;
+                            self.notify(Level::Normal, "No entries found in session tree.".into());
+                        }
+                        Ok(tree) => {
+                            if let Some(panel) = &mut self.tree_panel {
+                                panel.set_tree(tree);
+                            }
+                        }
+                        Err(error) => {
+                            self.tree_panel = None;
+                            self.notify(
+                                Level::Error,
+                                format!("Failed to read session tree: {error:#}"),
+                            );
+                        }
+                    }
+                    changed = true;
+                }
+                Ok(WorkerEvent::TreeNavigated(result)) => {
+                    self.state = State::Ready;
+                    match result {
+                        Ok(navigation) => {
+                            let draft = std::mem::replace(&mut self.input, editor());
+                            let empty = draft.lines().iter().all(|line| line.trim().is_empty());
+                            let error = self.adopt_history(navigation.replay);
+                            self.input = draft;
+                            if empty && let Some(text) = navigation.draft {
+                                self.input.insert_str(text);
+                            }
+                            self.tree_panel = None;
+                            self.usage = None;
+                            if let Some(error) = error {
+                                self.notify(Level::Error, error);
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(panel) = &mut self.tree_panel {
+                                panel.pending = false;
+                            }
+                            self.notify(
+                                Level::Error,
+                                format!("Failed to navigate session tree: {error:#}"),
+                            );
+                        }
+                    }
+                    changed = true;
+                }
                 Ok(WorkerEvent::SessionDeleted(id, result)) => {
                     self.state = State::Ready;
                     if let Some(panel) = &mut self.session_panel {
@@ -897,6 +992,7 @@ impl App {
             }
         }
         if changed {
+            self.escape_tap.reset();
             self.refresh_candidates(false);
         }
         changed
@@ -909,6 +1005,7 @@ impl App {
         if self.skill_panel.is_some()
             || self.skills_pending
             || self.session_panel.is_some()
+            || self.tree_panel.is_some()
             || self.menu_dismissed
             || !matches!(self.state, State::Ready | State::Unavailable)
         {
@@ -1182,6 +1279,7 @@ impl App {
             .as_ref()
             .is_some_and(|sender| sender.send(command).is_ok())
         {
+            self.escape_tap.reset();
             self.state = state;
             self.refresh_candidates(false);
             true
@@ -1234,6 +1332,23 @@ impl App {
             self.clear_input();
             self.secondary_status = Some("Compacting context...".into());
         }
+    }
+
+    fn open_tree(&mut self) {
+        self.escape_tap.reset();
+        if !matches!(self.state, State::Ready)
+            || self.skills_pending
+            || self.skill_panel.is_some()
+            || self.session_panel.is_some()
+            || self.ask_panel.is_some()
+            || self.tree_panel.is_some()
+        {
+            return;
+        }
+        self.menu = None;
+        self.file_query = None;
+        self.tree_panel = Some(tree::Panel::new());
+        self.send(WorkerCommand::ReadTree, State::ReadingTree);
     }
 
     fn show_help(&mut self) {
@@ -1364,7 +1479,9 @@ impl App {
             | State::SavingDefaultModel
             | State::SettingThinkLevel
             | State::ListingSessions
-            | State::Resuming => {}
+            | State::Resuming
+            | State::ReadingTree
+            | State::NavigatingTree => {}
             State::Unavailable => {
                 if let Some(error) = self.unavailable.take() {
                     self.notify(Level::Error, error.clone());
@@ -1384,6 +1501,11 @@ impl App {
                     self.send_submission(WorkerCommand::Reset, State::Resetting);
                 }
                 Some(Command::Compact) => self.send_compaction(),
+                Some(Command::Tree) => {
+                    self.remember_input();
+                    self.clear_input();
+                    self.open_tree();
+                }
                 Some(Command::Resume) => {
                     if self.skill_panel.is_some() || self.skills_pending {
                         return false;
@@ -1579,6 +1701,11 @@ impl App {
     }
 
     fn handle(&mut self, event: Event, dirty: &mut bool) -> bool {
+        if !matches!(&event, Event::Key(key) if key.code == KeyCode::Esc
+            && key.modifiers.is_empty() && key.kind == KeyEventKind::Press)
+        {
+            self.escape_tap.reset();
+        }
         if let Event::Mouse(mouse) = event {
             let (changed, action) = self.notifications.mouse(mouse, Instant::now());
             *dirty |= changed;
@@ -1594,6 +1721,30 @@ impl App {
                     return key.kind == KeyEventKind::Press;
                 }
                 *dirty = true;
+                if let Some(panel) = &mut self.tree_panel {
+                    let action = panel.key(key);
+                    self.escape_tap.reset();
+                    match action {
+                        tree::Action::None => {}
+                        tree::Action::Cancel => {
+                            self.tree_panel = None;
+                            self.menu_dismissed = true;
+                        }
+                        tree::Action::Navigate(id) => {
+                            self.send(WorkerCommand::NavigateTree(id), State::NavigatingTree);
+                        }
+                    }
+                    return false;
+                }
+                if self.ask_panel.is_some()
+                    || self.skill_panel.is_some()
+                    || self.session_panel.is_some()
+                    || self.menu.is_some()
+                    || self.model_picker_draft.is_some()
+                    || self.file_query.is_some()
+                {
+                    self.escape_tap.reset();
+                }
                 if let Some(panel) = &mut self.ask_panel {
                     let action = panel.key(key);
                     self.apply_ask_action(action);
@@ -1792,6 +1943,17 @@ impl App {
                             self.conversation.cancelling();
                         }
                         self.state = State::Cancelling;
+                        self.escape_tap.reset();
+                    } else if key.kind == KeyEventKind::Press
+                        && matches!(self.state, State::Ready)
+                        && !self.skills_pending
+                        && self.input.lines().iter().all(String::is_empty)
+                    {
+                        if self.escape_tap.press(Instant::now()) {
+                            self.open_tree();
+                        }
+                    } else {
+                        self.escape_tap.reset();
                     }
                     return false;
                 }
@@ -1817,6 +1979,25 @@ impl App {
                         let edited = self.input.input(key);
                         self.refresh_candidates(edited);
                     }
+                }
+            }
+            Event::Paste(text) if self.tree_panel.is_some() => {
+                self.tree_panel
+                    .as_mut()
+                    .expect("active tree panel")
+                    .paste(&text);
+                *dirty = true;
+            }
+            Event::Mouse(mouse) if self.tree_panel.is_some() => {
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) {
+                    self.tree_panel
+                        .as_mut()
+                        .expect("active tree panel")
+                        .wheel(matches!(mouse.kind, MouseEventKind::ScrollUp));
+                    *dirty = true;
                 }
             }
             Event::Paste(text) if self.ask_panel.is_some() => {
@@ -1904,6 +2085,28 @@ impl App {
         }
         if let Some(panel) = &mut self.session_panel {
             panel.draw(frame, area);
+            self.notifications.draw(
+                frame,
+                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
+            );
+            return;
+        }
+        if let Some(panel) = &mut self.tree_panel {
+            let available = area.height.saturating_sub(1);
+            let height = panel.height(available);
+            let top = area.y + available.saturating_sub(height);
+            self.conversation
+                .draw(frame, Rect::new(area.x, area.y, area.width, top - area.y));
+            panel.draw(frame, Rect::new(area.x, top, area.width, height));
+            frame.render_widget(
+                statusline::primary(
+                    self.current_model.as_ref(),
+                    self.think_level,
+                    context,
+                    area.width,
+                ),
+                Rect::new(area.x, area.bottom() - 1, area.width, 1),
+            );
             self.notifications.draw(
                 frame,
                 Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
@@ -2084,6 +2287,86 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn tree_double_escape_deadline_and_reset_are_deterministic() {
+        let now = Instant::now();
+        let mut tap = EscapeTap::default();
+        assert!(!tap.press(now));
+        assert!(tap.press(now + Duration::from_millis(500)));
+        assert!(!tap.press(now + Duration::from_secs(1)));
+        assert!(!tap.press(now + Duration::from_millis(1501)));
+        tap.reset();
+        assert!(!tap.press(now + Duration::from_millis(1502)));
+    }
+
+    #[test]
+    fn tree_double_escape_cancelled_scan_ignores_late_result_and_keeps_draft() {
+        let mut app = app();
+        app.state = State::Ready;
+        let (commands, requests) = mpsc::channel();
+        let (events, replies) = mpsc::channel();
+        app.commands = Some(commands);
+        app.events = Some(replies);
+        let mut dirty = false;
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(matches!(requests.try_recv(), Ok(WorkerCommand::ReadTree)));
+        assert!(app.tree_panel.is_some());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.tree_panel.is_none());
+        assert!(matches!(app.state, State::ReadingTree));
+        events
+            .send(WorkerEvent::TreeRead(Ok(
+                crate::agent::persistence::tree::Tree::fixture(
+                    &[(None, crate::agent::persistence::tree::Kind::User, "seed")],
+                    Some(0),
+                ),
+            )))
+            .unwrap();
+        app.receive();
+        assert!(app.tree_panel.is_none());
+        app.input.insert_str("保留草稿");
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(requests.try_recv().is_err());
+        assert_eq!(app.input.lines(), &["保留草稿"]);
+        app.clear_input();
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        app.handle(Event::Paste("".into()), &mut dirty);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(requests.try_recv().is_err());
+        let token = CancellationToken::new();
+        app.active_cancellation = Some(token.clone());
+        app.state = State::Running;
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(token.is_cancelled());
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn tree_navigation_error_preserves_transcript_draft_and_panel() {
+        let mut app = app();
+        app.state = State::NavigatingTree;
+        app.append("You", "original branch");
+        app.input.insert_str("existing draft");
+        app.tree_panel = Some(tree::Panel::new());
+        app.tree_panel.as_mut().unwrap().pending = true;
+        let (events, replies) = mpsc::channel();
+        app.events = Some(replies);
+        events
+            .send(WorkerEvent::TreeNavigated(Err(anyhow::anyhow!(
+                "cannot switch model: unsupported history item"
+            ))))
+            .unwrap();
+        app.receive();
+        assert!(matches!(app.state, State::Ready));
+        assert_eq!(app.input.lines(), &["existing draft"]);
+        assert!(!app.tree_panel.as_ref().unwrap().pending);
+        app.tree_panel = None;
+        assert!(draw(&mut app, 100, 30).contains("original branch"));
     }
 
     #[test]

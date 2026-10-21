@@ -1,4 +1,5 @@
 mod format;
+pub(crate) mod tree;
 
 use super::Session;
 use crate::{
@@ -306,7 +307,45 @@ impl SessionJournal {
     }
 
     fn write_state(&mut self, metadata: &Metadata<'_>, session: SessionRef<'_>) -> Result<()> {
-        self.custom(CustomRef::State(StateRef::new(metadata, session)), true)?;
+        self.write_tree_state(metadata, session, None)
+    }
+
+    pub(super) fn write_tree_state(
+        &mut self,
+        metadata: &Metadata<'_>,
+        session: SessionRef<'_>,
+        tree: Option<&tree::Selection>,
+    ) -> Result<()> {
+        let mut state = StateRef::new(metadata, session);
+        state.tree = tree;
+        // 导航失败时保留此前完整提交，避免半条或未同步的 state 在恢复时生效。
+        let rollback = if tree.is_some() {
+            self.active
+                .as_ref()
+                .map(|active| {
+                    active
+                        .file
+                        .metadata()
+                        .map(|m| active.truncate_to.unwrap_or(m.len()))
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        if let Err(error) = self.custom(CustomRef::State(state), true) {
+            if let Some(offset) = rollback
+                && let Some(active) = &mut self.active
+                && let Err(rollback) = active
+                    .file
+                    .set_len(offset)
+                    .and_then(|()| active.file.sync_data())
+            {
+                return Err(error.context(format!(
+                    "rolling back failed session tree navigation: {rollback}"
+                )));
+            }
+            return Err(error);
+        }
         self.committed = session.len();
         self.model_reference.clear();
         self.model_reference.push_str(metadata.model_reference);
@@ -314,6 +353,21 @@ impl SessionJournal {
         self.thinking.clear();
         self.pending_checkpoint = false;
         Ok(())
+    }
+
+    pub(super) fn tree(&mut self) -> Result<tree::Tree> {
+        self.check()?;
+        let Some(active) = &mut self.active else {
+            return Ok(tree::Tree::default());
+        };
+        active.file.flush().context("reading session tree")?;
+        tree::Tree::read(&active.file)
+    }
+
+    pub(super) fn prepare_tree(&mut self, id: &str) -> Result<tree::Prepared> {
+        let tree = self.tree()?;
+        let active = self.active.as_ref().context("empty session tree")?;
+        tree.prepare(&active.file, id)
     }
 
     pub(super) fn sent(
@@ -670,7 +724,7 @@ fn read_summary(path: &Path, id: &str) -> Result<Option<SessionSummary>> {
     let updated_at = metadata
         .modified()
         .context("reading session modification time")?;
-    let mut reader = BufReader::new(file);
+    let mut reader = BufReader::new(&file);
     let mut line = Vec::new();
     reader
         .read_until(b'\n', &mut line)
@@ -697,6 +751,13 @@ fn read_summary(path: &Path, id: &str) -> Result<Option<SessionSummary>> {
         message: Option<SummaryMessage>,
         #[serde(default, rename = "customType")]
         custom_type: String,
+        #[serde(default)]
+        data: SummaryData,
+    }
+    #[derive(Default, Deserialize)]
+    struct SummaryData {
+        #[serde(default)]
+        tree: Option<serde::de::IgnoredAny>,
     }
     #[derive(Deserialize)]
     #[serde(tag = "role")]
@@ -720,6 +781,7 @@ fn read_summary(path: &Path, id: &str) -> Result<Option<SessionSummary>> {
         #[serde(default)]
         text: String,
     }
+    let mut branched = false;
     let mut summary = None;
     let mut preview = String::new();
     let mut done = false;
@@ -743,6 +805,7 @@ fn read_summary(path: &Path, id: &str) -> Result<Option<SessionSummary>> {
             }
             Err(_) => bail!("invalid session record before first user message"),
         };
+        branched |= entry.data.tree.is_some();
         if matches!(entry.custom_type.as_str(), "pp.error" | "pp.cancelled") {
             done = false;
         }
@@ -772,6 +835,25 @@ fn read_summary(path: &Path, id: &str) -> Result<Option<SessionSummary>> {
                 _ => {}
             }
         }
+    }
+    if branched {
+        let tree = tree::Tree::read(&file)?;
+        let path = tree.path(tree.leaf);
+        summary = Some(
+            path.iter()
+                .map(|i| &tree.nodes[*i])
+                .find(|n| n.kind == tree::Kind::User)
+                .map_or_else(
+                    || "Untitled session".into(),
+                    |n| compact_summary(&n.text, 80),
+                ),
+        );
+        preview = path
+            .iter()
+            .map(|i| &tree.nodes[*i])
+            .find(|n| n.kind == tree::Kind::Assistant)
+            .map_or_else(String::new, |n| compact_summary(&n.text, 200));
+        done = tree.leaf.is_some_and(|i| tree.nodes[i].done);
     }
     Ok(summary.map(|summary| SessionSummary {
         id: id.to_owned(),
@@ -868,6 +950,7 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
     let mut tail: Option<String> = None;
     let mut used_ids = HashSet::new();
     let mut replay = Vec::new();
+    let mut has_tree = false;
     loop {
         line.clear();
         let count = reader.read_until(b'\n', &mut line).with_context(|| {
@@ -929,6 +1012,7 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
                 Payload::Custom {
                     custom: Custom::State(state),
                 } => {
+                    has_tree |= state.tree.is_some();
                     let header = header.as_ref().expect("header checked");
                     let saved = Checkpoint {
                         version: state.version,
@@ -1056,6 +1140,12 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
     let created_at_ms = checkpoint.created_at_ms;
     let model_reference = checkpoint.model_reference.clone();
     let capture_thinking = matches!(checkpoint.session, Session::Completion(_));
+    if has_tree {
+        let tree = tree::Tree::read(&file)?;
+        if include_replay {
+            replay = tree.replay(&file, tree.leaf, true)?;
+        }
+    }
     Ok(RestoredSession {
         checkpoint,
         journal: SessionJournal {

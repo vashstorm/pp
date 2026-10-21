@@ -75,7 +75,9 @@ fn summary_output_limit(summary_budget: u64) -> u32 {
 /// function calls closes only after the tool messages for all of its call ids.
 /// Missing, duplicate, or orphaned call/result relationships are rejected
 /// with a fixed diagnostic, without touching the history.
-fn completion_boundaries(messages: &[ChatCompletionRequestMessage]) -> Result<Vec<usize>> {
+pub(super) fn completion_boundaries(
+    messages: &[ChatCompletionRequestMessage],
+) -> Result<Vec<usize>> {
     let mut boundaries = Vec::new();
     let mut pending: HashSet<&str> = HashSet::new();
     let mut answered: HashSet<&str> = HashSet::new();
@@ -131,7 +133,7 @@ fn completion_boundaries(messages: &[ChatCompletionRequestMessage]) -> Result<Ve
 /// call ids, or — without calls — at the next user item or the end of the
 /// history. Reasoning never separates from its output, and call results are
 /// never split from their calls.
-fn response_boundaries(items: &[InputItem]) -> Result<Vec<usize>> {
+pub(super) fn response_boundaries(items: &[InputItem]) -> Result<Vec<usize>> {
     let mut boundaries = Vec::new();
     let mut pending: HashSet<&str> = HashSet::new();
     let mut answered: HashSet<&str> = HashSet::new();

@@ -83,6 +83,8 @@ pub(super) enum CustomRef<'a> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct StateRef<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree: Option<&'a super::tree::Selection>,
     pub version: u32,
     pub model_reference: &'a str,
     pub think_level: ThinkLevel,
@@ -94,6 +96,7 @@ pub(super) struct StateRef<'a> {
 impl<'a> StateRef<'a> {
     pub fn new(metadata: &'a Metadata<'a>, session: SessionRef<'a>) -> Self {
         Self {
+            tree: None,
             version: 1,
             model_reference: metadata.model_reference,
             think_level: metadata.think_level,
@@ -193,6 +196,8 @@ pub(super) enum Custom {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct State {
+    #[serde(default)]
+    pub tree: Option<super::tree::Selection>,
     pub version: u32,
     pub model_reference: String,
     pub think_level: ThinkLevel,

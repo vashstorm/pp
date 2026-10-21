@@ -96,7 +96,7 @@ fn str_field<'a>(record: &'a Value, field: &str) -> &'a str {
     record["fields"][field].as_str().unwrap()
 }
 
-fn pid_records<'a>(records: &'a [Value], pid: u32) -> Vec<&'a Value> {
+fn pid_records(records: &[Value], pid: u32) -> Vec<&Value> {
     records
         .iter()
         .filter(|record| record["fields"]["pid"].as_u64() == Some(pid as u64))
@@ -238,6 +238,7 @@ fn logging_concurrent_cwds_rotate_without_loss() {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(log_dir(home.path()).join(".lock"))
         .unwrap();
     flock(&lock, FlockOperation::LockExclusive).unwrap();

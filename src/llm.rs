@@ -617,7 +617,7 @@ mod tests {
                     &chat_chunk(json!({"role":"assistant","content":"partial"}), None).to_string(),
                 );
                 first_released.recv_timeout(Duration::from_secs(5)).unwrap();
-                let _ = sse_end(writer);
+                sse_end(writer);
                 // Second request: a fresh client must reconnect and finish normally.
                 let request = server
                     .recv_timeout(Duration::from_secs(5))
@@ -634,7 +634,7 @@ mod tests {
                     &chat_chunk(json!({}), Some("stop")).to_string(),
                 );
                 sse_frame(&mut writer, "[DONE]");
-                let _ = sse_end(writer);
+                sse_end(writer);
             });
             let token = CancellationToken::new();
             let mut sent = 0;
@@ -775,7 +775,7 @@ mod tests {
                     r#"{"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":2,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":12000,"completion_tokens":300,"total_tokens":12300}}"#,
                 );
                 sse_frame(&mut writer, "[DONE]");
-                let _ = sse_end(writer);
+                sse_end(writer);
                 // Second request: no usage at all; the answer still succeeds.
                 let request = server
                     .recv_timeout(Duration::from_secs(5))
@@ -788,7 +788,7 @@ mod tests {
                         .to_string(),
                 );
                 sse_frame(&mut writer, "[DONE]");
-                let _ = sse_end(writer);
+                sse_end(writer);
             });
             let token = CancellationToken::new();
             let turn = client
@@ -863,14 +863,14 @@ mod tests {
                         "output_tokens_details":{"reasoning_tokens":50}
                     }))),
                 );
-                let _ = sse_end(writer);
+                sse_end(writer);
                 let request = server
                     .recv_timeout(Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
                 let mut writer = sse_writer(request);
                 sse_frame(&mut writer, &completed(None));
-                let _ = sse_end(writer);
+                sse_end(writer);
             });
             let token = CancellationToken::new();
             let turn = client

@@ -220,12 +220,7 @@ impl FileLock {
 
 impl Drop for FileLock {
     fn drop(&mut self) {
-        loop {
-            match flock(self.0.as_ref(), FlockOperation::Unlock) {
-                Err(rustix::io::Errno::INTR) => continue,
-                _ => break,
-            }
-        }
+        while let Err(rustix::io::Errno::INTR) = flock(self.0.as_ref(), FlockOperation::Unlock) {}
     }
 }
 
