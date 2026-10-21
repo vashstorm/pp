@@ -1,4 +1,5 @@
 /target/
+/.cargo/
 /models.jsonc
 
 # 工具运行时生成的项目内缓存与临时文件
