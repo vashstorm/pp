@@ -2449,14 +2449,7 @@ mod tui {
             .lines()
             .collect::<Vec<_>>()
             .windows(2)
-            .any(|lines| {
-                let border = lines[0]
-                    .split_once(" ctx ")
-                    .map_or(lines[0], |(border, _)| border);
-                lines[1].starts_with('❯')
-                    && border.starts_with('─')
-                    && border.chars().all(|ch| ch == '─')
-            })
+            .any(|lines| lines[0].starts_with('─') && lines[1].starts_with('❯'))
     }
 
     struct Pty {
@@ -2931,8 +2924,10 @@ mod tui {
         pty.wait_for(
             "tiny terminal preserves the draft without an overlapping popup",
             |screen| {
-                input_is_ready(screen)
-                    && screen.contents().contains("草稿🙂")
+                screen
+                    .contents()
+                    .lines()
+                    .any(|line| line.starts_with("❯ 草稿🙂"))
                     && !screen.contents().contains("Error")
             },
         );
@@ -3187,11 +3182,9 @@ mod tui {
         assert_eq!(lines[2].trim(), "█▀▀█  █▀▀█");
         assert_eq!(lines[2].find('█'), Some(45));
         assert_eq!(lines[7].trim(), concat!("v", env!("CARGO_PKG_VERSION")));
-        assert!(lines[26].starts_with(&"─".repeat(50)));
         let context_start = lines[26].find(" ctx ").expect("用量显示在输入栏上沿");
         assert!(!lines[26][context_start..].contains('/'));
         assert!(!lines[26][context_start..].contains('%'));
-        assert_eq!(lines[26].trim_end().chars().count(), 99);
         assert!(lines[27].starts_with('❯'));
         assert_eq!(lines[28], "─".repeat(100));
         // 上沿右端显示用量，底部保留模型与思考级别。

@@ -4,8 +4,11 @@
 // 保留而用量下降且 Compact Note 先于任务 assistant、下一个普通请求只含
 // 摘要包装与原生近期后缀、窄屏 resize 的上下文字段优先与 Ctrl-C 终端标志
 // 恢复、达到配置阈值时上下文字段变黄，以及 ulimit -f 下压缩 state 写入
-// 留下 partial tail 后恢复读取此前完整快照。辅助项与测试名均以 context_
-// 开头；不新增 use 声明，直接复用同模块私有 Pty 与既有 HTTP fixture。
+// 留下 partial tail 后恢复读取此前完整快照。此外覆盖输入栏上沿的实时 token
+// 指标：流中带 ~ 的估算速度、权威 usage 后的精确速度与 in/out/cached 配色、
+// 缺失 usage 与 /new 的清理、取消后的速率停止，以及 60/40/20 列下 ctx 优先
+// 与指标整块降级。辅助项与测试名均以 context_ 开头；不新增 use 声明，直接
+// 复用同模块私有 Pty 与既有 HTTP fixture。
 
 const CONTEXT_TUI_SUMMARY: &str = "SUMMARY: kept constraint";
 const CONTEXT_TUI_INSTRUCTION: &str = "Summarize the preceding conversation";
@@ -150,23 +153,140 @@ fn context_tui_ctx_percent(screen: &vt100::Screen) -> u128 {
     (context_tui_ctx_tokens(screen) * 100.0 / window) as u128
 }
 
+// 在真实屏幕单元格中定位文本，返回 (行, 起始列)。列号必须来自 cell 扫描：
+// Nerd 图标与宽字符的显示宽度既不等于 UTF-8 字节数，也不等于 chars().count()。
+fn context_tui_locate(screen: &vt100::Screen, needle: &str) -> Option<(u16, u16)> {
+    let (rows, columns) = screen.size();
+    for row in 0..rows {
+        for start in 0..columns {
+            let mut text = String::new();
+            for column in start..columns {
+                let Some(cell) = screen.cell(row, column) else {
+                    break;
+                };
+                text.push_str(cell.contents());
+                if text == needle {
+                    return Some((row, start));
+                }
+                if !needle.starts_with(text.as_str()) {
+                    break;
+                }
+            }
+        }
+    }
+    None
+}
+
 // 上下文字段首字符的前景色：达到阈值时为终端调色板 3 号（黄）。
 fn context_tui_ctx_color(pty: &Pty) -> vt100::Color {
     let screen = pty.parser.screen();
-    let contents = screen.contents();
-    let row = contents
-        .lines()
-        .position(|line| line.contains("ctx "))
-        .expect("状态栏必须显示 ctx 字段") as u16;
-    let line = contents
-        .lines()
-        .nth(row as usize)
-        .unwrap();
-    let start = line
-        .find("ctx")
-        .expect("ctx 字段必须有前缀位置");
-    let column = line[..start].chars().count() as u16;
+    let (row, column) =
+        context_tui_locate(screen, "ctx ").expect("状态栏必须显示 ctx 字段，且必须能在真实 cell 上定位");
     screen.cell(row, column).expect("ctx 首字符").fgcolor()
+}
+
+// 未完成任何普通请求时四个指标都是未知，而不是伪装成 0。
+fn context_tui_metrics_unknown(screen: &vt100::Screen) -> bool {
+    let contents = screen.contents();
+    ["— tok/s", "in —", "out —", "cached —"]
+        .iter()
+        .all(|field| contents.contains(*field))
+}
+
+// 指标的图标与字段文本必须同时出现：整字段降级，不允许截断字形或半个字段。
+fn context_tui_assert_metric_whole(screen: &vt100::Screen, icon: &str, text: &str) {
+    assert_eq!(
+        context_tui_locate(screen, icon).is_some(),
+        context_tui_locate(screen, text).is_some(),
+        "指标字段必须整块显示或整块隐藏：{icon:?} 与 {text:?}\n{}",
+        screen.contents()
+    );
+}
+
+// 速度字段的数值与是否估算：字段自身格式为 `[~]N.N tok/s`，未知时只有 `— tok/s`。
+fn context_tui_speed(screen: &vt100::Screen) -> Option<(f64, bool)> {
+    let (row, column) = context_tui_locate(screen, "tok/s")?;
+    let head: String = (0..column)
+        .rev()
+        .take(32)
+        .filter_map(|column| screen.cell(row, column))
+        .map(|cell| cell.contents())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let head = head.trim_end();
+    let figure: String = head
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if figure.is_empty() {
+        return None;
+    }
+    Some((
+        figure.parse().ok()?,
+        head[..head.len() - figure.len()].ends_with('~'),
+    ))
+}
+
+// 流式生成中的估算速度：带 ~ 且非零；权威 usage 到达后不再成立。
+fn context_tui_estimated_speed(screen: &vt100::Screen) -> bool {
+    context_tui_speed(screen).is_some_and(|(rate, estimated)| estimated && rate > 0.0)
+}
+
+// 流式请求的权威收尾：Chat 用 usage-only 尾块 + DONE，Responses 用 completed
+// 事件携带同一 usage；文本与已发送的增量一致，供速率按服务端 output 校正。
+fn context_tui_stream_usage(stream: &mut SseReply, protocol: &str, text: &str) {
+    if protocol == "completion" {
+        stream.event(chat_chunk(json!({}), Some("stop")));
+        stream.event(json!({
+            "id":"chatcmpl-fixture", "object":"chat.completion.chunk",
+            "created":1, "model":"fixture-model", "choices":[],
+            "usage":{"prompt_tokens":12000, "completion_tokens":300,
+                     "total_tokens":12300,
+                     "prompt_tokens_details":{"cached_tokens":40}}
+        }));
+        stream.frame("[DONE]");
+    } else {
+        let mut response = response_body(json!([response_message(
+            "msg-live",
+            json!([response_text(text)])
+        )]));
+        response["usage"] = json!({
+            "input_tokens":12000,
+            "input_tokens_details":{"cached_tokens":40},
+            "output_tokens":300,
+            "output_tokens_details":{"reasoning_tokens":50},
+            "total_tokens":12300
+        });
+        stream.event(json!({
+            "type":"response.completed", "sequence_number":100, "response":response
+        }));
+    }
+}
+
+// 摘要请求的回复：与普通流一样收尾，但压缩流不进入指标（由空回调隔离）。
+fn context_tui_summary_reply(stream: &mut SseReply, protocol: &str) {
+    if protocol == "completion" {
+        stream.event(chat_chunk(
+            json!({"role":"assistant","content":CONTEXT_TUI_SUMMARY}),
+            None,
+        ));
+        stream.event(chat_chunk(json!({}), Some("stop")));
+        stream.frame("[DONE]");
+    } else {
+        stream.event(json!({
+            "type":"response.completed", "sequence_number":100,
+            "response": response_body(json!([response_message(
+                "msg-summary",
+                json!([response_text(CONTEXT_TUI_SUMMARY)])
+            )]))
+        }));
+    }
 }
 
 #[test]
@@ -177,12 +297,13 @@ fn context_tui_shows_current_and_window_on_input_top_right() {
         assert_eq!(context_tui_ctx_tokens(pty.parser.screen()), 0.0);
         let contents = pty.parser.screen().contents();
         let lines: Vec<_> = contents.lines().collect();
-        assert!(lines[26].contains(" ctx "));
         assert!(lines[26].trim_end().ends_with("/40k"));
-        assert_eq!(lines[26].trim_end().chars().count(), 99);
         assert!(!lines[26].contains('%'));
-        assert!(!lines[26].contains('~'));
-        assert!(!lines[26].contains('.'));
+        // 右对齐位置用真实 screen cell 验证；新指标占据左侧，字面长度不再固定。
+        let (row, column) = context_tui_locate(pty.parser.screen(), "ctx 0/40k")
+            .expect("状态栏必须在输入栏上沿显示 ctx 容量");
+        assert_eq!(row, 26);
+        assert_eq!(usize::from(column) + "ctx 0/40k".len(), 99);
         assert_eq!(context_tui_ctx_color(&pty), vt100::Color::Rgb(122, 162, 247));
         assert!(!lines[29].contains("ctx "));
         pty.input("context-position-draft");
@@ -861,6 +982,324 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
         no_more(&fixture);
         resumed.input("\x03");
         resumed.finish();
+        no_more(&fixture);
+    }
+}
+
+// 验证项 4（token 指标，双协议）：流式生成期间在 ctx 左侧显示带 ~ 的非零估算
+// 速度；服务端权威 usage 到达后速度去掉 ~，in/out/cached 使用最近一次已完成
+// 普通请求（input 仍含缓存命中总数，cached 只是其中的明细）；下一轮缺失 usage
+// 时计数退回未知而估算速度冻结；/new 清空全部新指标。
+#[test]
+fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
+        // 初始 100×30：ctx 正常，新计数字段全部为未知而不是 0。
+        pty.wait_for("初始状态栏显示未知 token 指标", context_tui_metrics_unknown);
+        assert!(pty.parser.screen().contents().contains("ctx 0/40k"));
+        assert_eq!(
+            context_tui_ctx_color(&pty),
+            vt100::Color::Rgb(122, 162, 247)
+        );
+
+        pty.input("context-metrics-live\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        let mut stream = SseReply::new(request);
+        let first = format!("context-metrics-live-one {}", "x".repeat(600));
+        streaming_delta(&mut stream, protocol, &first);
+        pty.text("context-metrics-live-one");
+        // SSE 仍被服务端握住：速度只能是估算，且 in/out/cached 尚无完成请求。
+        pty.wait_for("流式生成中显示非零估算速度", context_tui_estimated_speed);
+        let live = pty.parser.screen().contents();
+        assert!(live.contains("in —") && live.contains("out —") && live.contains("cached —"));
+        let (speed_row, speed_column) = context_tui_locate(pty.parser.screen(), "tok/s")
+            .expect("流式生成中必须显示速率字段");
+        let (ctx_row, ctx_column) =
+            context_tui_locate(pty.parser.screen(), "ctx ").expect("ctx 必须可见");
+        assert_eq!(speed_row, ctx_row, "指标必须与 ctx 同在输入栏上沿");
+        assert!(speed_column < ctx_column, "速度必须位于 ctx 左侧");
+
+        streaming_delta(&mut stream, protocol, " context-metrics-live-two");
+        pty.text("context-metrics-live-two");
+        assert!(
+            context_tui_speed(pty.parser.screen()).is_some_and(|(_, estimated)| estimated),
+            "权威 usage 到达前必须保留 ~ 估算标记"
+        );
+
+        context_tui_stream_usage(
+            &mut stream,
+            protocol,
+            &format!("{first} context-metrics-live-two"),
+        );
+        stream.finish();
+        pty.wait_for("权威 usage 更新完成态指标", |screen| {
+            let contents = screen.contents();
+            contents.contains("in 12k")
+                && contents.contains("out 300")
+                && contents.contains("cached 40")
+        });
+        pty.ready();
+        let screen = pty.parser.screen();
+        let (rate, estimated) = context_tui_speed(screen).expect("完成后必须显示精确速度");
+        assert!(!estimated, "权威 usage 到达后不得保留 ~");
+        assert!(rate > 0.0, "完成速度必须为正：{rate}");
+        let (row, ctx_column) = context_tui_locate(screen, "ctx ").expect("ctx 必须可见");
+        let mut previous = context_tui_locate(screen, "tok/s")
+            .expect("速率字段必须可见")
+            .1;
+        assert_eq!(
+            screen.cell(row, previous).expect("速率数值").fgcolor(),
+            vt100::Color::Rgb(224, 175, 104),
+            "速率数值必须使用 speed 颜色"
+        );
+        for (label, offset, color) in [
+            ("in 12k", 3, vt100::Color::Rgb(125, 207, 255)),
+            ("out 300", 4, vt100::Color::Rgb(158, 206, 106)),
+            ("cached 40", 7, vt100::Color::Rgb(187, 154, 247)),
+        ] {
+            let (field_row, column) = context_tui_locate(screen, label)
+                .unwrap_or_else(|| panic!("状态栏必须显示 {label}\n{}", screen.contents()));
+            assert_eq!(field_row, row, "指标必须与 ctx 同一行：{label}");
+            assert!(
+                column > previous,
+                "字段顺序必须是 speed → in → out → cached：{label}"
+            );
+            previous = column;
+            assert_eq!(
+                screen
+                    .cell(field_row, column + offset)
+                    .expect("字段数值")
+                    .fgcolor(),
+                color,
+                "{label} 数值颜色"
+            );
+        }
+        assert!(previous < ctx_column, "指标必须整体位于 ctx 左侧");
+        for (icon, color) in [
+            ("\u{f0e7}", vt100::Color::Rgb(224, 175, 104)),
+            ("\u{f019}", vt100::Color::Rgb(125, 207, 255)),
+            ("\u{f093}", vt100::Color::Rgb(158, 206, 106)),
+            ("\u{f1c0}", vt100::Color::Rgb(187, 154, 247)),
+        ] {
+            let (icon_row, icon_column) =
+                context_tui_locate(screen, icon).unwrap_or_else(|| panic!("状态栏必须显示 {icon:?}"));
+            assert_eq!(icon_row, row, "图标必须与 ctx 同一行");
+            assert_eq!(
+                screen
+                    .cell(icon_row, icon_column)
+                    .expect("图标 cell")
+                    .fgcolor(),
+                color,
+                "{icon:?} 颜色"
+            );
+        }
+        assert_eq!(
+            context_tui_ctx_color(&pty),
+            vt100::Color::Rgb(122, 162, 247)
+        );
+
+        // 下一轮：成功但没有 usage。计数退回未知，流式估算保留 ~ 并冻结。
+        pty.input("context-metrics-missing\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        let mut stream = SseReply::new(request);
+        streaming_delta(&mut stream, protocol, "context-metrics-missing-answer");
+        pty.text("context-metrics-missing-answer");
+        pty.wait_for(
+            "缺失 usage 的请求也显示估算速度",
+            context_tui_estimated_speed,
+        );
+        streaming_complete(&mut stream, protocol, "context-metrics-missing-answer");
+        stream.finish();
+        pty.wait_for("缺失 usage 后完成态计数退回未知", |screen| {
+            let contents = screen.contents();
+            contents.contains("in —")
+                && contents.contains("out —")
+                && contents.contains("cached —")
+        });
+        let (rate, estimated) =
+            context_tui_speed(pty.parser.screen()).expect("流式字节必须保留最终估算速度");
+        assert!(
+            estimated && rate > 0.0,
+            "缺失 usage 时速度必须保持 ~：{rate}"
+        );
+
+        pty.ready();
+        pty.input("/new\r");
+        pty.wait_for("/new 清空全部新指标", |screen| {
+            screen.contents().contains("ctx 0/40k") && context_tui_metrics_unknown(screen)
+        });
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+// 验证项 4（token 指标布局与取消）：流中 Esc 后速度停止，下一轮请求重新计数；
+// 含中文草稿与光标在 60/40/20 列 resize 中保持不变，ctx 优先保留而指标只能整块
+// 降级、不留图标残片；成功压缩清空普通请求指标，摘要等待期间临时状态与既有
+// 指标同处输入栏上沿且互不侵占。
+#[test]
+fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
+        pty.wait_for("初始状态栏显示未知 token 指标", context_tui_metrics_unknown);
+
+        // 流式生成中 Esc：速度计时停止并从状态栏清除。
+        pty.input("context-metrics-cancel\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        let mut stream = SseReply::new(request);
+        streaming_delta(&mut stream, protocol, "context-metrics-cancel-partial");
+        pty.text("context-metrics-cancel-partial");
+        pty.wait_for("取消前显示估算速度", context_tui_estimated_speed);
+        pty.input("\x1b");
+        cancel_wait_cancelled_ready(&mut pty);
+        let cancelled = pty.parser.screen().contents();
+        assert!(
+            cancelled.contains("— tok/s"),
+            "取消后速度必须清除：{cancelled}"
+        );
+        assert!(
+            context_tui_speed(pty.parser.screen()).is_none(),
+            "取消后不得保留任何速率：{cancelled}"
+        );
+        drop(stream);
+
+        // 下一轮请求重新计数：新请求再次出现带 ~ 的非零估算速度。
+        pty.input("context-metrics-recount\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        let mut stream = SseReply::new(request);
+        streaming_delta(&mut stream, protocol, "context-metrics-recount-partial");
+        pty.text("context-metrics-recount-partial");
+        pty.wait_for("新请求重新显示估算速度", context_tui_estimated_speed);
+        pty.input("\x1b");
+        cancel_wait_cancelled_ready(&mut pty);
+        drop(stream);
+        pty.wait_for("本轮取消清空速度而非上一轮取消提示", |screen| {
+            screen.contents().contains("— tok/s") && context_tui_speed(screen).is_none()
+        });
+
+        // 中文草稿与光标在窄屏 resize 中保持不变；ctx 优先，指标整块降级。
+        pty.input("草稿-指标");
+        pty.draft("草稿-指标");
+        let cursor_column = pty.parser.screen().cursor_position().1;
+        for (rows, columns) in [(30, 60), (30, 40), (30, 20)] {
+            pty.resize(rows, columns);
+            pty.wait_for("resize 后上下文字段仍位于输入栏上沿", |screen| {
+                let contents = screen.contents();
+                let lines: Vec<&str> = contents.lines().collect();
+                lines.windows(2).any(|pair| {
+                    pair[0].contains(" ctx ")
+                        && pair[0].trim_end().ends_with("/40k")
+                        && pair[1].starts_with('❯')
+                })
+            });
+            pty.draft("草稿-指标");
+            let screen = pty.parser.screen();
+            assert!(
+                !screen.contents().contains('\u{fffd}'),
+                "{columns} 列出现损坏字形\n{}",
+                pty.diagnostics()
+            );
+            for (icon, text) in [
+                ("\u{f0e7}", "tok/s"),
+                ("\u{f019}", "in —"),
+                ("\u{f093}", "out —"),
+                ("\u{f1c0}", "cached —"),
+            ] {
+                context_tui_assert_metric_whole(screen, icon, text);
+            }
+            if columns == 20 {
+                // ctx 之后只剩不足一个完整图标的宽度：指标整块隐藏，不切开 glyph。
+                for icon in ["\u{f0e7}", "\u{f019}", "\u{f093}", "\u{f1c0}"] {
+                    assert!(
+                        context_tui_locate(screen, icon).is_none(),
+                        "{columns} 列必须整块隐藏指标\n{}",
+                        pty.diagnostics()
+                    );
+                }
+            }
+            assert_eq!(
+                pty.parser.screen().cursor_position().1,
+                cursor_column,
+                "{columns} 列 resize 不得移动草稿光标"
+            );
+        }
+        pty.resize(30, 100);
+        pty.draft("草稿-指标");
+        pty.input("\x01\x0b");
+        pty.draft("");
+
+        // 三个完整交互使手动压缩有可移除的旧前缀，最后一个带权威 usage。
+        context_tui_exchange(
+            &mut pty,
+            &fixture,
+            protocol,
+            &context_tui_filler("context-metrics-first", 16000),
+            "context-metrics-first-answer",
+        );
+        context_tui_exchange(
+            &mut pty,
+            &fixture,
+            protocol,
+            &context_tui_filler("context-metrics-second", 16000),
+            "context-metrics-second-answer",
+        );
+        pty.input("context-metrics-authoritative\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        let mut stream = SseReply::new(request);
+        streaming_delta(&mut stream, protocol, "context-metrics-authoritative-answer");
+        context_tui_stream_usage(&mut stream, protocol, "context-metrics-authoritative-answer");
+        stream.finish();
+        pty.wait_for("普通请求完成并显示权威计数", |screen| {
+            screen.contents().contains("in 12k")
+                && screen.contents().contains("out 300")
+                && screen.contents().contains("cached 40")
+        });
+        pty.ready();
+
+        // 摘要被服务端握住：临时状态、既有指标与 ctx 仍能在 100 列内共存。
+        pty.input("/compact\r");
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        context_tui_assert_summary_body(
+            &body,
+            protocol,
+            "context-metrics-first",
+            "context-metrics-second",
+        );
+        let mut stream = SseReply::new(request);
+        pty.text("Compacting context...");
+        pty.wait_for("压缩等待期间保留既有指标与临时状态", |screen| {
+            let contents = screen.contents();
+            contents.contains("Compacting context...")
+                && contents.contains("in 12k")
+                && contents.contains("out 300")
+                && contents.contains("cached 40")
+        });
+        let screen = pty.parser.screen();
+        let (row, extra_column) = context_tui_locate(screen, "Compacting context...")
+            .expect("压缩等待时必须显示临时状态");
+        let (ctx_row, ctx_column) =
+            context_tui_locate(screen, "ctx ").expect("ctx 必须可见");
+        let (metrics_row, metrics_column) =
+            context_tui_locate(screen, "tok/s").expect("已有完成速率必须可见");
+        assert_eq!(metrics_row, row, "指标必须与 ctx 同一行");
+        assert!(
+            extra_column < metrics_column,
+            "临时状态必须位于指标左侧：{extra_column} / {metrics_column}"
+        );
+        assert_eq!(ctx_row, row);
+        assert!(metrics_column < ctx_column, "ctx 必须仍在最右端");
+
+        context_tui_summary_reply(&mut stream, protocol);
+        stream.finish();
+        pty.text("Context compacted:");
+        pty.ready();
+        pty.wait_for("成功压缩后普通请求指标清空", context_tui_metrics_unknown);
+        assert!(context_tui_locate(pty.parser.screen(), "ctx ").is_some());
+        pty.input("\x03");
+        pty.finish();
         no_more(&fixture);
     }
 }

@@ -78,6 +78,7 @@ pub(crate) fn run(
         dirty |= workspace.receive();
         dirty |= app.notifications.tick(Instant::now());
         dirty |= app.conversation.tick(Instant::now());
+        dirty |= app.token_speed.tick(Instant::now());
         if dirty {
             terminal
                 .draw(|frame| app.draw(frame, &workspace.context))
@@ -295,6 +296,7 @@ struct App {
     session_id: Option<String>,
     // 最近一次 ContextUpdated 快照；渲染直接使用，不逐帧重新估算。
     usage: Option<crate::context::ContextUsage>,
+    token_speed: statusline::TokenSpeed,
     mcp_cleanup: Option<crate::mcp::Cleanup>,
     file_worker: files::Worker,
     file_paths: Vec<String>,
@@ -389,6 +391,7 @@ impl App {
             escape_tap: EscapeTap::default(),
             session_id: None,
             usage: None,
+            token_speed: statusline::TokenSpeed::default(),
             mcp_cleanup: None,
             file_commands,
             file_worker: files::Worker::new(cwd)?,
@@ -623,6 +626,7 @@ impl App {
         replay: Vec<crate::agent::persistence::ReplayRecord>,
     ) -> Option<String> {
         self.close_ask_on_exit();
+        self.token_speed.clear();
         self.conversation = Transcript::new();
         self.input_history = Vec::new();
         let error = self.conversation.replay(replay, &mut self.input_history);
@@ -642,6 +646,9 @@ impl App {
 
     fn fail_worker(&mut self) {
         self.close_ask_on_exit();
+        if self.token_speed.is_active() {
+            self.token_speed.clear();
+        }
         let message = "Execution unavailable: agent worker channel closed; restart pp.";
         self.state = State::Unavailable;
         self.active_cancellation = None;
@@ -732,10 +739,31 @@ impl App {
                 }
                 Ok(WorkerEvent::Progress(event)) => {
                     // 用量快照由 App 缓存，供状态栏渲染；不进入 Transcript。
-                    if let AgentEvent::ContextUpdated { usage } = event {
-                        self.usage = Some(usage);
-                    } else {
-                        self.conversation.progress(event);
+                    match event {
+                        AgentEvent::ContextUpdated { usage } => self.usage = Some(usage),
+                        AgentEvent::ModelRequestStarted => self.token_speed.start(Instant::now()),
+                        AgentEvent::ModelOutputProgress { output_bytes } => {
+                            self.token_speed.progress(output_bytes)
+                        }
+                        AgentEvent::ModelRequestFinished {
+                            elapsed_ms,
+                            usage,
+                            success,
+                        } => {
+                            self.token_speed.finish(
+                                elapsed_ms,
+                                usage.map(|usage| usage.output_tokens),
+                                success,
+                            );
+                            if success && let Some(snapshot) = &mut self.usage {
+                                snapshot.last_request = usage;
+                            }
+                        }
+                        event @ AgentEvent::CompactionFinished { .. } => {
+                            self.token_speed.clear();
+                            self.conversation.progress(event);
+                        }
+                        event => self.conversation.progress(event),
                     }
                     changed = true;
                 }
@@ -749,6 +777,9 @@ impl App {
                     elapsed,
                     finished_at,
                 }) => {
+                    if self.token_speed.is_active() {
+                        self.token_speed.clear();
+                    }
                     self.ask_reply = None;
                     self.ask_panel = None;
                     self.active_cancellation = None;
@@ -795,6 +826,7 @@ impl App {
                     self.session_id = None;
                     // 新快照紧随其后；先丢弃旧会话用量，避免短暂显示旧占比。
                     self.usage = None;
+                    self.token_speed.clear();
                     changed = true;
                 }
                 Ok(WorkerEvent::ModelSwitched(result)) => {
@@ -804,6 +836,7 @@ impl App {
                             self.think_level = level;
                             // 容量随模型变化；等待紧随的新快照，不显示旧分母。
                             self.usage = None;
+                            self.token_speed.clear();
                         }
                         Err(error) => self.notify(Level::Error, format!("{error:#}")),
                     }
@@ -815,6 +848,7 @@ impl App {
                         Ok(level) => {
                             self.think_level = level;
                             self.usage = None;
+                            self.token_speed.clear();
                         }
                         Err(error) => self.notify(Level::Error, format!("{error:#}")),
                     }
@@ -925,6 +959,7 @@ impl App {
                             }
                             self.tree_panel = None;
                             self.usage = None;
+                            self.token_speed.clear();
                             if let Some(error) = error {
                                 self.notify(Level::Error, error);
                             }
@@ -961,6 +996,7 @@ impl App {
                             self.session_panel = None;
                             // 恢复只重新估算当前请求；不沿用上一会话的用量。
                             self.usage = None;
+                            self.token_speed.clear();
                             match error {
                                 Some(error) => self.notify(
                                     Level::Error,
@@ -2231,16 +2267,30 @@ impl App {
             right -= width;
             frame.render_widget(line, Rect::new(right, area.y, width, 1));
         }
-        if let Some(extra) = self
+        let extra = self
             .secondary_status
             .as_deref()
             .filter(|text| !text.is_empty())
-        {
-            let extra = Line::styled(format!(" {extra} "), Style::default().fg(Color::DarkGray))
-                .alignment(Alignment::Right);
-            let extra_width = u16::try_from(extra.width())
+            .map(|extra| {
+                Line::styled(format!(" {extra} "), Style::default().fg(Color::DarkGray))
+                    .alignment(Alignment::Right)
+            });
+        let extra_width = extra.as_ref().map_or(0, |line| {
+            u16::try_from(line.width())
                 .unwrap_or(u16::MAX)
-                .min((right - area.x).min(area.width / 2));
+                .min((right - area.x).min(area.width / 2))
+        });
+        if let Some(usage) = self.usage.as_ref() {
+            let metrics = statusline::metric_fields(
+                usage.last_request.as_ref(),
+                self.token_speed.value(Instant::now()),
+                (right - area.x).saturating_sub(extra_width),
+            );
+            let width = u16::try_from(metrics.width()).unwrap_or(u16::MAX);
+            right -= width;
+            frame.render_widget(metrics, Rect::new(right, area.y, width, 1));
+        }
+        if let Some(extra) = extra {
             frame.render_widget(
                 extra,
                 Rect::new(right - extra_width, area.y, extra_width, 1),
@@ -4216,6 +4266,99 @@ mod tests {
     }
 
     #[test]
+    fn token_speed_completion_and_worker_fallback_preserve_success() {
+        let mut app = app();
+        app.usage = Some(crate::context::ContextUsage {
+            estimated_tokens: 100,
+            context_window: Some(40000),
+            last_request: None,
+            auto_compact: false,
+            threshold_percent: 80,
+        });
+        let (events, receiver) = mpsc::channel();
+        app.events = Some(receiver);
+        let usage = crate::context::TokenUsage {
+            input_tokens: 12000,
+            output_tokens: 300,
+            cached_tokens: Some(40),
+        };
+        for event in [
+            AgentEvent::ModelRequestStarted,
+            AgentEvent::ModelOutputProgress { output_bytes: 600 },
+            AgentEvent::ModelRequestFinished {
+                elapsed_ms: 2000,
+                usage: Some(usage),
+                success: true,
+            },
+        ] {
+            events.send(WorkerEvent::Progress(event)).unwrap();
+        }
+        app.receive();
+        assert_eq!(app.usage.unwrap().last_request, Some(usage));
+        assert_eq!(app.token_speed.value(Instant::now()), Some((150.0, false)));
+        app.fail_worker();
+        assert_eq!(app.token_speed.value(Instant::now()), Some((150.0, false)));
+        app.events = Some(mpsc::channel().1);
+        app.token_speed.start(Instant::now());
+        app.token_speed.progress(600);
+        app.fail_worker();
+        assert!(!app.token_speed.is_active());
+        assert_eq!(app.token_speed.value(Instant::now()), None);
+    }
+
+    #[test]
+    fn token_speed_missing_usage_replaces_counts_but_failure_preserves_them() {
+        let mut app = app();
+        let usage = crate::context::TokenUsage {
+            input_tokens: 12000,
+            output_tokens: 300,
+            cached_tokens: Some(40),
+        };
+        app.usage = Some(crate::context::ContextUsage {
+            estimated_tokens: 100,
+            context_window: Some(40000),
+            last_request: Some(usage),
+            auto_compact: false,
+            threshold_percent: 80,
+        });
+        let (events, receiver) = mpsc::channel();
+        app.events = Some(receiver);
+        for success in [false, true] {
+            events
+                .send(WorkerEvent::Progress(AgentEvent::ModelRequestStarted))
+                .unwrap();
+            events
+                .send(WorkerEvent::Progress(AgentEvent::ModelOutputProgress {
+                    output_bytes: 600,
+                }))
+                .unwrap();
+            events
+                .send(WorkerEvent::Progress(AgentEvent::ModelRequestFinished {
+                    elapsed_ms: 2000,
+                    usage: None,
+                    success,
+                }))
+                .unwrap();
+            events
+                .send(WorkerEvent::Completed {
+                    result: Ok(RunOutcome::Completed),
+                    elapsed: Duration::from_secs(2),
+                    finished_at: chrono::Local::now(),
+                })
+                .unwrap();
+            app.receive();
+            assert_eq!(
+                app.usage.unwrap().last_request,
+                if success { None } else { Some(usage) }
+            );
+            assert_eq!(
+                app.token_speed.value(Instant::now()),
+                if success { Some((100.0, true)) } else { None }
+            );
+        }
+    }
+
+    #[test]
     fn context_usage_is_right_aligned_on_input_top_without_changing_draft() {
         let mut app = app();
         app.state = State::Ready;
@@ -4253,6 +4396,70 @@ mod tests {
         for (width, height) in [(1, 1), (2, 2), (3, 4), (10, 4)] {
             draw(&mut app, width, height);
             assert_eq!(app.input.lines(), &["draft-中", "second line"]);
+        }
+    }
+
+    #[test]
+    fn context_token_metrics_keep_ctx_and_draft_at_every_width() {
+        let mut app = app();
+        app.state = State::Ready;
+        app.input.insert_str("draft-中文");
+        app.input.move_cursor(CursorMove::Back);
+        let cursor = app.input.cursor();
+        app.usage = Some(crate::context::ContextUsage {
+            estimated_tokens: 12000,
+            context_window: Some(40000),
+            last_request: Some(crate::context::TokenUsage {
+                input_tokens: 12000,
+                output_tokens: 300,
+                cached_tokens: Some(40),
+            }),
+            auto_compact: false,
+            threshold_percent: 80,
+        });
+        app.token_speed.start(Instant::now());
+        app.token_speed.finish(2000, Some(300), true);
+        for extra in [None, Some("Compacting context...".to_owned())] {
+            app.secondary_status = extra;
+            for width in 1..=140 {
+                let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+                terminal
+                    .draw(|frame| app.draw_input_status(frame, frame.area()))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let row: String = (0..width).map(|x| buffer[(x, 0)].symbol()).collect();
+                if width >= 13 {
+                    assert!(row.ends_with(" ctx 12k/40k "), "{width}: {row}");
+                }
+                for (icon, text) in [
+                    ("\u{f0e7}", "150.0 tok/s"),
+                    ("\u{f019}", "in 12k"),
+                    ("\u{f093}", "out 300"),
+                    ("\u{f1c0}", "cached 40"),
+                ] {
+                    assert_eq!(row.contains(icon), row.contains(text), "{width}: {row}");
+                }
+                if row.contains("cached 40") {
+                    assert!(row.contains("in 12k") && row.contains("out 300"));
+                }
+                if row.contains("in 12k") {
+                    assert!(row.contains("out 300"));
+                }
+                if row.contains("out 300") {
+                    assert!(row.contains("150.0 tok/s"));
+                }
+                if width == 140 {
+                    assert!(row.contains("cached 40"));
+                    if app.secondary_status.is_some() {
+                        assert!(
+                            row.find("Compacting context...").unwrap()
+                                < row.find("150.0 tok/s").unwrap()
+                        );
+                    }
+                }
+                assert_eq!(app.input.lines(), &["draft-中文"]);
+                assert_eq!(app.input.cursor(), cursor);
+            }
         }
     }
 

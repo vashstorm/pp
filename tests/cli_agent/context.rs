@@ -99,7 +99,8 @@ fn chat_usage_reply(request: Request, text: &str) {
         "id":"chatcmpl-fixture", "object":"chat.completion.chunk",
         "created":1, "model":"fixture-model", "choices":[],
         "usage":{"prompt_tokens":USAGE_INPUT, "completion_tokens":USAGE_OUTPUT,
-                 "total_tokens":USAGE_INPUT + USAGE_OUTPUT}
+                 "total_tokens":USAGE_INPUT + USAGE_OUTPUT,
+                 "prompt_tokens_details":{"cached_tokens":40}}
     }));
     stream.frame("[DONE]");
     stream.finish();

@@ -1,5 +1,5 @@
 use crate::config::{ModelChoice, ThinkLevel};
-use crate::context::ContextUsage;
+use crate::context::{ContextUsage, TokenUsage};
 use anyhow::{Context, Result};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -10,7 +10,7 @@ use std::{
     process::{Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub(super) const ACCENT: Color = Color::Rgb(127, 166, 106);
@@ -18,11 +18,19 @@ const MODEL: Color = Color::Rgb(223, 167, 209);
 const DIRECTORY: Color = Color::Rgb(36, 174, 181);
 const GIT: Color = Color::Rgb(204, 167, 72);
 pub(super) const CONTEXT: Color = Color::Rgb(122, 162, 247);
+const SPEED: Color = Color::Rgb(224, 175, 104);
+const INPUT: Color = Color::Rgb(125, 207, 255);
+const OUTPUT: Color = Color::Rgb(158, 206, 106);
+const CACHED: Color = Color::Rgb(187, 154, 247);
 // 与 omp 的 Nerd Font 图标一致；图标后保留一列空白，容纳字形右侧伸展。
 const MODEL_ICON: &str = "\u{ec19}";
 const THINK_ICON: &str = "\u{f0766}";
 const DIRECTORY_ICON: &str = "\u{f07c}";
 const GIT_ICON: &str = "\u{f126}";
+const SPEED_ICON: &str = "\u{f0e7}";
+const INPUT_ICON: &str = "\u{f019}";
+const OUTPUT_ICON: &str = "\u{f093}";
+const CACHED_ICON: &str = "\u{f1c0}";
 const ICON_WIDTH: usize = 2;
 // 分隔符与图标列在宽度预算中的固定开销。
 const SEPARATOR_WIDTH: usize = 3;
@@ -56,6 +64,146 @@ pub(super) fn context_field(usage: &ContextUsage) -> (String, Color) {
         _ => CONTEXT,
     };
     (text, color)
+}
+
+/// 输入栏上沿的 token 指标：速度 → 输入 → 输出 → 缓存，末尾留分隔符以衔接 ctx。
+/// 空间不足时按 cached → in → out → speed 的整字段顺序降级，绝不切开图标或文字。
+pub(super) fn metric_fields(
+    usage: Option<&TokenUsage>,
+    speed: Option<(f64, bool)>,
+    width: u16,
+) -> Line<'static> {
+    let speed_text = speed.map_or_else(
+        || "— tok/s".to_owned(),
+        |(rate, estimated)| format!("{}{rate:.1} tok/s", if estimated { "~" } else { "" }),
+    );
+    // 缺失用量显示 —，显式的 0 仍显示 0。
+    let (input_text, output_text, cached_text) = usage.map_or_else(
+        || ("—".to_owned(), "—".to_owned(), "—".to_owned()),
+        |usage| {
+            (
+                abbreviate_tokens(usage.input_tokens),
+                abbreviate_tokens(usage.output_tokens),
+                usage
+                    .cached_tokens
+                    .map_or_else(|| "—".to_owned(), abbreviate_tokens),
+            )
+        },
+    );
+    let fields = [
+        (SPEED_ICON, SPEED, speed_text),
+        (INPUT_ICON, INPUT, format!("in {input_text}")),
+        (OUTPUT_ICON, OUTPUT, format!("out {output_text}")),
+        (CACHED_ICON, CACHED, format!("cached {cached_text}")),
+    ];
+    let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
+    let mut spans = Vec::with_capacity(13);
+    spans.push(Span::raw(" "));
+    for (icon, color, text) in fields {
+        let style = Style::default().fg(color);
+        spans.push(Span::styled(format!("{icon} "), style));
+        spans.push(Span::styled(text, style));
+        spans.push(separator());
+    }
+    let mut line = Line::from(spans);
+    let mut keep = [true; 4];
+    for remove in [3, 1, 2, 0] {
+        if line.width() <= usize::from(width) {
+            return line;
+        }
+        // Each complete field owns its icon, value and following separator.
+        let start = 1 + keep[..remove].iter().filter(|&&kept| kept).count() * 3;
+        line.spans.drain(start..start + 3);
+        keep[remove] = false;
+    }
+    Line::default()
+}
+
+const TICK_INTERVAL: Duration = Duration::from_millis(100);
+
+/// 当前流式请求的输出速度：生成中按已观测字节估算，完成后用服务端 usage 校正。
+#[derive(Debug, Default)]
+pub(super) struct TokenSpeed {
+    started_at: Option<Instant>,
+    output_bytes: u64,
+    /// 完成后的速率（tok/s），bool 表示是否为估算值。
+    final_rate: Option<(f64, bool)>,
+    last_tick: Option<Instant>,
+}
+
+impl TokenSpeed {
+    pub(super) fn start(&mut self, now: Instant) {
+        *self = Self {
+            started_at: Some(now),
+            // 起点即基线：首个 tick 也要等满 100ms，而不是启动瞬间就重绘。
+            last_tick: Some(now),
+            ..Self::default()
+        };
+    }
+
+    /// 本次请求截至当前的累计输出字节数。
+    pub(super) fn progress(&mut self, output_bytes: u64) {
+        if self.started_at.is_some() {
+            self.output_bytes = output_bytes;
+        }
+    }
+
+    /// 结束计时：成功且有服务端结果时显示权威速率，否则保留或丢弃估算。
+    pub(super) fn finish(&mut self, elapsed_ms: u64, output_tokens: Option<u64>, success: bool) {
+        let elapsed_secs = elapsed_ms as f64 / 1000.0;
+        self.started_at = None;
+        self.last_tick = None;
+        self.final_rate = if !success || elapsed_secs <= 0.0 {
+            None
+        } else if let Some(tokens) = output_tokens {
+            Some((tokens as f64 / elapsed_secs, false))
+        } else {
+            estimate_rate(self.output_bytes, elapsed_secs).map(|rate| (rate, true))
+        };
+    }
+
+    pub(super) fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// 仅在流式请求已有输出时按 100ms 节流触发重绘。
+    pub(super) fn tick(&mut self, now: Instant) -> bool {
+        if self.started_at.is_none() || self.output_bytes == 0 {
+            return false;
+        }
+        match self.last_tick {
+            Some(last) if now.saturating_duration_since(last) < TICK_INTERVAL => false,
+            _ => {
+                self.last_tick = Some(now);
+                true
+            }
+        }
+    }
+
+    /// 活跃时返回实时估算，结束后返回最终速率；`bool` 表示是否为估算值。
+    pub(super) fn value(&self, now: Instant) -> Option<(f64, bool)> {
+        if let Some(rate) = self.final_rate {
+            return Some(rate);
+        }
+        let started_at = self.started_at?;
+        estimate_rate(
+            self.output_bytes,
+            now.saturating_duration_since(started_at).as_secs_f64(),
+        )
+        .map(|rate| (rate, true))
+    }
+
+    pub(super) fn is_active(&self) -> bool {
+        self.started_at.is_some()
+    }
+}
+
+/// 沿用项目 `/3` 的字节启发式；首个 token 等待时间计入分母。
+fn estimate_rate(output_bytes: u64, elapsed_secs: f64) -> Option<f64> {
+    if output_bytes == 0 || elapsed_secs <= 0.0 {
+        return None;
+    }
+    Some(output_bytes.div_ceil(3) as f64 / elapsed_secs)
 }
 
 #[derive(Default)]
@@ -392,5 +540,320 @@ mod tests {
                 .success()
         );
         assert_eq!(GitInfo::read(dir.path()).unwrap().label(), "fixture *1");
+    }
+
+    #[test]
+    fn token_speed_estimates_from_streamed_bytes() {
+        let base = Instant::now();
+        let mut speed = TokenSpeed::default();
+        assert_eq!(speed.value(base), None);
+        speed.start(base);
+        assert!(speed.is_active());
+        // 还没有可见输出时不显示速度，而不是显示 0。
+        assert_eq!(speed.value(base + Duration::from_secs(2)), None);
+        speed.progress(600);
+        assert_eq!(
+            speed.value(base + Duration::from_secs(2)),
+            Some((100.0, true)),
+            "600 bytes / 3 / 2s 应为估算 100 tok/s"
+        );
+        // progress 收到的是累计字节数。
+        speed.progress(300);
+        assert_eq!(
+            speed.value(base + Duration::from_secs(1)),
+            Some((100.0, true))
+        );
+    }
+
+    #[test]
+    fn token_speed_finish_uses_authoritative_usage() {
+        let base = Instant::now();
+        let mut speed = TokenSpeed::default();
+        speed.start(base);
+        speed.progress(600);
+        speed.finish(2000, Some(300), true);
+        assert!(!speed.is_active());
+        assert_eq!(
+            speed.value(base + Duration::from_secs(9)),
+            Some((150.0, false)),
+            "完成后以服务端 output tokens 与整段耗时为准"
+        );
+        // 完成后继续前进的时钟不再改变结果。
+        assert_eq!(
+            speed.value(base + Duration::from_secs(60)),
+            Some((150.0, false))
+        );
+    }
+
+    #[test]
+    fn token_speed_finish_without_usage_keeps_estimate() {
+        let base = Instant::now();
+        let mut speed = TokenSpeed::default();
+        speed.start(base);
+        speed.progress(600);
+        speed.finish(2000, None, true);
+        assert!(!speed.is_active());
+        assert_eq!(
+            speed.value(base + Duration::from_secs(3)),
+            Some((100.0, true))
+        );
+
+        // 没有流式字节就没有可冻结的估算。
+        speed.start(base);
+        speed.finish(2000, None, true);
+        assert_eq!(speed.value(base + Duration::from_secs(3)), None);
+    }
+
+    #[test]
+    fn token_speed_zero_elapsed_or_cancel_has_no_rate() {
+        let base = Instant::now();
+        let mut speed = TokenSpeed::default();
+        speed.start(base);
+        speed.progress(600);
+        assert_eq!(speed.value(base), None, "零耗时不产生 inf/NaN");
+        speed.finish(0, Some(300), true);
+        assert!(!speed.is_active());
+        assert_eq!(speed.value(base + Duration::from_secs(1)), None);
+
+        speed.start(base);
+        speed.progress(600);
+        speed.finish(500, Some(300), false);
+        assert!(!speed.is_active());
+        assert_eq!(speed.value(base + Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn token_speed_start_resets_previous_request() {
+        let base = Instant::now();
+        let mut speed = TokenSpeed::default();
+        speed.start(base);
+        speed.progress(600);
+        speed.finish(2000, Some(300), true);
+        assert_eq!(speed.value(base), Some((150.0, false)));
+
+        let second = base + Duration::from_secs(5);
+        speed.start(second);
+        assert_eq!(
+            speed.value(second + Duration::from_secs(1)),
+            None,
+            "新请求不能沿用上一请求的字节数与最终速率"
+        );
+        speed.progress(90);
+        assert_eq!(
+            speed.value(second + Duration::from_secs(1)),
+            Some((30.0, true))
+        );
+
+        speed.clear();
+        assert!(!speed.is_active());
+        assert_eq!(speed.value(second + Duration::from_secs(2)), None);
+    }
+
+    #[test]
+    fn token_speed_ticks_only_while_streaming() {
+        let base = Instant::now();
+        let mut speed = TokenSpeed::default();
+        assert!(!speed.tick(base), "空闲时不触发重绘");
+        speed.start(base);
+        assert!(!speed.tick(base), "没有输出字节时不触发重绘");
+        speed.progress(90);
+        assert!(
+            !speed.tick(base + Duration::from_millis(99)),
+            "起点才算基线，首个 tick 也要等满 100ms"
+        );
+        assert!(speed.tick(base + Duration::from_millis(100)));
+        assert!(!speed.tick(base + Duration::from_millis(150)));
+        assert!(speed.tick(base + Duration::from_millis(200)));
+        speed.finish(100, Some(30), true);
+        assert!(
+            !speed.tick(base + Duration::from_secs(1)),
+            "结束后停止 tick"
+        );
+    }
+
+    fn metric_usage(
+        input_tokens: u64,
+        output_tokens: u64,
+        cached_tokens: Option<u64>,
+    ) -> TokenUsage {
+        TokenUsage {
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+        }
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn metric_fields_render_speed_usage_and_cached_in_order_with_colors() {
+        let usage = metric_usage(12000, 300, Some(40));
+        let line = metric_fields(Some(&usage), Some((42.5, true)), 100);
+        assert_eq!(
+            line_text(&line),
+            " \u{f0e7} ~42.5 tok/s · \u{f019} in 12k · \u{f093} out 300 · \u{f1c0} cached 40 · "
+        );
+        let expected = [
+            ("\u{f0e7} ", SPEED),
+            ("~42.5 tok/s", SPEED),
+            ("\u{f019} ", INPUT),
+            ("in 12k", INPUT),
+            ("\u{f093} ", OUTPUT),
+            ("out 300", OUTPUT),
+            ("\u{f1c0} ", CACHED),
+            ("cached 40", CACHED),
+        ];
+        let styled: Vec<(&str, Option<Color>)> = line
+            .spans
+            .iter()
+            .filter(|span| span.content.as_ref() != " " && span.content.as_ref() != " · ")
+            .map(|span| (span.content.as_ref(), span.style.fg))
+            .collect();
+        assert_eq!(styled.len(), expected.len());
+        for ((content, fg), (expected_content, expected_color)) in styled.iter().zip(expected) {
+            assert_eq!(*content, expected_content);
+            assert_eq!(*fg, Some(expected_color));
+        }
+        let separators: Vec<_> = line
+            .spans
+            .iter()
+            .filter(|span| span.content.as_ref() == " · ")
+            .collect();
+        assert_eq!(separators.len(), 4);
+        assert!(
+            separators
+                .iter()
+                .all(|span| span.style.fg == Some(Color::DarkGray))
+        );
+    }
+
+    #[test]
+    fn metric_fields_distinguish_unknown_estimated_and_exact_speed() {
+        let usage = metric_usage(0, 0, Some(0));
+        let text = |speed| line_text(&metric_fields(Some(&usage), speed, 200));
+        assert!(text(None).contains(" \u{f0e7} — tok/s · "));
+        assert!(!text(None).contains('~'));
+        assert!(text(Some((0.0, false))).contains("\u{f0e7} 0.0 tok/s"));
+        assert!(text(Some((150.0, false))).contains("\u{f0e7} 150.0 tok/s"));
+        assert!(!text(Some((150.0, false))).contains('~'));
+        assert!(text(Some((42.5, true))).contains("\u{f0e7} ~42.5 tok/s"));
+    }
+
+    #[test]
+    fn metric_fields_distinguish_missing_usage_from_zero() {
+        let missing = line_text(&metric_fields(None, Some((12.0, false)), 200));
+        assert!(missing.contains("in —"));
+        assert!(missing.contains("out —"));
+        assert!(missing.contains("cached —"));
+        assert!(!missing.contains("in 0"));
+
+        let absent_cached = metric_usage(0, 0, None);
+        let text = line_text(&metric_fields(Some(&absent_cached), None, 200));
+        assert!(text.contains("in 0"));
+        assert!(text.contains("out 0"));
+        assert!(text.contains("cached —"));
+
+        let zero_cached = metric_usage(1000, 9999, Some(0));
+        let text = line_text(&metric_fields(Some(&zero_cached), None, 200));
+        assert!(text.contains("in 1000"));
+        assert!(text.contains("out 9999"));
+        assert!(text.contains("cached 0"));
+
+        let abbreviated = metric_usage(12000, 10800, Some(10000));
+        let text = line_text(&metric_fields(Some(&abbreviated), Some((1.0, false)), 200));
+        assert!(text.contains("in 12k"));
+        assert!(text.contains("out 10k"));
+        assert!(text.contains("cached 10k"));
+    }
+
+    #[test]
+    fn metric_fields_drop_whole_fields_cached_then_in_then_out_then_speed() {
+        let usage = metric_usage(12000, 300, Some(40));
+        let speed = Some((150.0, false));
+        let fields = [
+            ("\u{f0e7}", "150.0 tok/s"),
+            ("\u{f019}", "in 12k"),
+            ("\u{f093}", "out 300"),
+            ("\u{f1c0}", "cached 40"),
+        ];
+        // 移除顺序 cached → in → out → speed；任何宽度下都只能是这些完整的行形态。
+        let kept_states = [vec![0, 1, 2, 3], vec![0, 1, 2], vec![0, 2], vec![0], vec![]];
+        let candidates: Vec<String> = kept_states
+            .iter()
+            .map(|kept| {
+                if kept.is_empty() {
+                    return String::new();
+                }
+                let mut text = String::from(" ");
+                for (position, index) in kept.iter().enumerate() {
+                    if position > 0 {
+                        text.push_str(" · ");
+                    }
+                    text.push_str(fields[*index].0);
+                    text.push(' ');
+                    text.push_str(fields[*index].1);
+                }
+                text.push_str(" · ");
+                text
+            })
+            .collect();
+        let widths: Vec<usize> = candidates
+            .iter()
+            .map(|text| Line::from(text.as_str()).width())
+            .collect();
+        for pair in widths.windows(2) {
+            assert!(pair[0] > pair[1], "每次降级都必须严格变窄: {widths:?}");
+        }
+        for width in 0..=u16::try_from(widths[0] + 2).unwrap() {
+            let line = metric_fields(Some(&usage), speed, width);
+            assert!(
+                line.width() <= usize::from(width),
+                "宽度 {width} 放不下 {line:?}"
+            );
+            let expected = widths
+                .iter()
+                .position(|candidate| *candidate <= usize::from(width))
+                .unwrap();
+            assert_eq!(line_text(&line), candidates[expected], "宽度 {width}");
+        }
+    }
+
+    #[test]
+    fn metric_fields_fit_display_columns_not_utf8_bytes() {
+        let usage = metric_usage(12000, 300, Some(40));
+        let speed = Some((150.0, false));
+        let full = metric_fields(Some(&usage), speed, u16::MAX);
+        let text = line_text(&full);
+        assert!(
+            text.len() > full.width(),
+            "Nerd 图标是多字节 UTF-8，但只占少量显示列"
+        );
+        let width = u16::try_from(full.width()).unwrap();
+        assert_eq!(line_text(&metric_fields(Some(&usage), speed, width)), text);
+        let narrower = line_text(&metric_fields(Some(&usage), speed, width - 1));
+        assert!(!narrower.contains("cached 40"), "{narrower}");
+        assert!(Line::from(narrower.as_str()).width() < full.width());
+    }
+
+    #[test]
+    fn metric_fields_are_empty_when_no_field_fits() {
+        let usage = metric_usage(12000, 300, Some(40));
+        let first = (0..=200)
+            .find(|width| !metric_fields(Some(&usage), None, *width).spans.is_empty())
+            .unwrap();
+        assert!(first > 0);
+        for width in 0..first {
+            let line = metric_fields(Some(&usage), None, width);
+            assert!(line.spans.is_empty(), "宽度 {width}: {line:?}");
+            assert_eq!(line.width(), 0);
+        }
+        let line = metric_fields(Some(&usage), None, first);
+        assert_eq!(line.width(), usize::from(first));
+        assert_eq!(line_text(&line), " \u{f0e7} — tok/s · ");
     }
 }

@@ -19,7 +19,10 @@ use async_openai::{
 };
 use futures_util::StreamExt;
 use reqwest::{header::HeaderValue, redirect::Policy};
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 use tokio::runtime::Runtime;
 
 mod streaming;
@@ -109,12 +112,14 @@ impl OpenAiClient {
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<CompletionTurn> {
         self.ensure_ready()?;
+        let started_at = Instant::now();
+        emit(AgentEvent::ModelRequestStarted);
         let client = &self.client;
         let runtime = self
             .runtime
             .as_ref()
             .expect("ensure_ready leaves a runtime in place");
-        runtime.block_on(async {
+        let result: Result<CompletionTurn> = runtime.block_on(async {
             // BYOT serializes a borrowed request before returning the stream.
             let opened = cancellation
                 .run_until_cancelled(client.chat().create_stream_byot::<_, ChatChunk>(request))
@@ -141,7 +146,15 @@ impl OpenAiClient {
                 }
             }
             into_completion_turn(output.finish()?)
-        })
+        });
+        // Every outcome, including cancellation and callback failures, closes the
+        // request exactly once with the authoritative usage when there is one.
+        emit(AgentEvent::ModelRequestFinished {
+            elapsed_ms: elapsed_millis(started_at),
+            usage: result.as_ref().ok().and_then(|turn| turn.usage),
+            success: result.is_ok(),
+        });
+        result
     }
 
     pub(crate) fn respond(
@@ -152,12 +165,14 @@ impl OpenAiClient {
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<ResponseTurn> {
         self.ensure_ready()?;
+        let started_at = Instant::now();
+        emit(AgentEvent::ModelRequestStarted);
         let client = &self.client;
         let runtime = self
             .runtime
             .as_ref()
             .expect("ensure_ready leaves a runtime in place");
-        runtime.block_on(async {
+        let result: Result<ResponseTurn> = runtime.block_on(async {
             let opened = cancellation
                 .run_until_cancelled(
                     client
@@ -189,8 +204,22 @@ impl OpenAiClient {
                     }
                 }
             }
-        })
+        });
+        // The stream may still be open on the wire (or already cancelled); the
+        // finish event reports this request, not HTTP EOF.
+        emit(AgentEvent::ModelRequestFinished {
+            elapsed_ms: elapsed_millis(started_at),
+            usage: result.as_ref().ok().and_then(|turn| turn.usage),
+            success: result.is_ok(),
+        });
+        result
     }
+}
+
+/// Saturates instead of wrapping: an `elapsed_ms` beyond `u64` is far past any
+/// meaningful request duration.
+fn elapsed_millis(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn build_client(sdk_config: OpenAIConfig, timeout: Duration) -> Result<Client<OpenAIConfig>> {
@@ -242,6 +271,10 @@ fn into_completion_turn(response: CreateChatCompletionResponse) -> Result<Comple
     let usage = response.usage.map(|usage| TokenUsage {
         input_tokens: u64::from(usage.prompt_tokens),
         output_tokens: u64::from(usage.completion_tokens),
+        cached_tokens: usage
+            .prompt_tokens_details
+            .and_then(|details| details.cached_tokens)
+            .map(u64::from),
     });
     let choice = response
         .choices
@@ -356,11 +389,12 @@ fn into_response_turn(response: Response) -> Result<ResponseTurn> {
         }
     }
     let has_calls = !ids.is_empty();
-    // Extract server-side usage: input/output only; cached and reasoning token
-    // details are breakdowns of those totals, never added on top.
+    // Preserve server totals and the cached input breakdown; cached and
+    // reasoning tokens are already included in their respective totals.
     let usage = response.usage.map(|usage| TokenUsage {
         input_tokens: u64::from(usage.input_tokens),
         output_tokens: u64::from(usage.output_tokens),
+        cached_tokens: Some(u64::from(usage.input_tokens_details.cached_tokens)),
     });
     let has_text = |output: &[OutputItem]| {
         output.iter().any(|item| match item {
@@ -521,6 +555,7 @@ mod tests {
                         .unwrap();
                 });
                 let mut sent = 0;
+                let mut finished = None;
                 let error = client
                     .complete(
                         &CreateChatCompletionRequest::default(),
@@ -529,11 +564,16 @@ mod tests {
                             sent += 1;
                             Ok(())
                         },
-                        &mut |_| {},
+                        &mut |event| {
+                            if let AgentEvent::ModelRequestFinished { usage, success, .. } = event {
+                                finished = Some((usage, success));
+                            }
+                        },
                     )
                     .err()
                     .unwrap()
                     .to_string();
+                assert_eq!(finished, Some((None, false)));
                 assert_eq!(sent, 1);
                 assert!(error.contains(&status.to_string()));
                 assert!(!error.contains("private-body") && !error.contains("private-key"));
@@ -639,6 +679,7 @@ mod tests {
             let token = CancellationToken::new();
             let mut sent = 0;
             let mut events = 0;
+            let mut finished = None;
             let error = client
                 .complete(
                     &CreateChatCompletionRequest::default(),
@@ -647,15 +688,24 @@ mod tests {
                         sent += 1;
                         Ok(())
                     },
-                    &mut |_| {
-                        events += 1;
-                        token.cancel();
+                    &mut |event| match event {
+                        // Cancel from the first real stream delta, not from the
+                        // request lifecycle events that bracket the stream.
+                        AgentEvent::AssistantDelta { .. } => {
+                            events += 1;
+                            token.cancel();
+                        }
+                        AgentEvent::ModelRequestFinished { usage, success, .. } => {
+                            finished = Some((usage, success));
+                        }
+                        _ => {}
                     },
                 )
                 .err()
                 .unwrap();
             assert!(events > 0);
             assert_eq!(sent, 1);
+            assert_eq!(finished, Some((None, false)));
             assert!(error.downcast_ref::<Cancelled>().is_some());
             // Retire the cancelled stream's runtime; the next request rebuilds it.
             client.cancel_pending_io();
@@ -663,6 +713,7 @@ mod tests {
             release_first.send(()).unwrap();
             let token = CancellationToken::new();
             let mut sent = 0;
+            let mut finished = None;
             let turn = client
                 .complete(
                     &CreateChatCompletionRequest::default(),
@@ -671,9 +722,14 @@ mod tests {
                         sent += 1;
                         Ok(())
                     },
-                    &mut |_| {},
+                    &mut |event| {
+                        if let AgentEvent::ModelRequestFinished { usage, success, .. } = event {
+                            finished = Some((usage, success));
+                        }
+                    },
                 )
                 .unwrap();
+            assert_eq!(finished, Some((None, true)));
             assert_eq!(sent, 1);
             assert!(client.runtime.is_some());
             assert_eq!(
@@ -754,6 +810,33 @@ mod tests {
     }
 
     #[test]
+    fn context_chat_cached_breakdown_preserves_unknown_and_zero() {
+        for (details, expected) in [
+            (None, None),
+            (Some(json!({"cached_tokens":0})), Some(0)),
+            (Some(json!({"cached_tokens":40})), Some(40)),
+        ] {
+            let mut response = json!({
+                "id":"fixture", "object":"chat.completion", "created":1, "model":"fixture",
+                "choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":12000,"completion_tokens":300,"total_tokens":12300}
+            });
+            if let Some(details) = details {
+                response["usage"]["prompt_tokens_details"] = details;
+            }
+            let turn = into_completion_turn(serde_json::from_value(response).unwrap()).unwrap();
+            assert_eq!(
+                turn.usage,
+                Some(TokenUsage {
+                    input_tokens: 12000,
+                    output_tokens: 300,
+                    cached_tokens: expected
+                })
+            );
+        }
+    }
+
+    #[test]
     fn context_chat_usage_only_chunk_after_finish_returns_usage() {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let mut client = test_client(&format!("http://{}", server.server_addr()));
@@ -791,21 +874,28 @@ mod tests {
                 sse_end(writer);
             });
             let token = CancellationToken::new();
+            let mut finished = None;
             let turn = client
                 .complete(
                     &CreateChatCompletionRequest::default(),
                     &token,
                     &mut || Ok(()),
-                    &mut |_| {},
+                    &mut |event| {
+                        if let AgentEvent::ModelRequestFinished { usage, success, .. } = event {
+                            finished = Some((usage, success));
+                        }
+                    },
                 )
                 .unwrap();
             assert_eq!(
                 turn.usage,
                 Some(TokenUsage {
                     input_tokens: 12000,
-                    output_tokens: 300
+                    output_tokens: 300,
+                    cached_tokens: None,
                 })
             );
+            assert_eq!(finished, Some((turn.usage, true)));
             assert_eq!(
                 turn.message.content,
                 Some(ChatCompletionRequestAssistantMessageContent::Text(
@@ -814,15 +904,21 @@ mod tests {
             );
             assert!(!turn.refusal);
             let token = CancellationToken::new();
+            let mut finished = None;
             let turn = client
                 .complete(
                     &CreateChatCompletionRequest::default(),
                     &token,
                     &mut || Ok(()),
-                    &mut |_| {},
+                    &mut |event| {
+                        if let AgentEvent::ModelRequestFinished { usage, success, .. } = event {
+                            finished = Some((usage, success));
+                        }
+                    },
                 )
                 .unwrap();
             assert_eq!(turn.usage, None);
+            assert_eq!(finished, Some((None, true)));
             assert_eq!(
                 turn.message.content,
                 Some(ChatCompletionRequestAssistantMessageContent::Text(
@@ -873,12 +969,17 @@ mod tests {
                 sse_end(writer);
             });
             let token = CancellationToken::new();
+            let mut finished = None;
             let turn = client
                 .respond(
                     &CreateResponse::default(),
                     &token,
                     &mut || Ok(()),
-                    &mut |_| {},
+                    &mut |event| {
+                        if let AgentEvent::ModelRequestFinished { usage, success, .. } = event {
+                            finished = Some((usage, success));
+                        }
+                    },
                 )
                 .unwrap();
             assert_eq!(turn.text, "answer");
@@ -888,19 +989,27 @@ mod tests {
                 turn.usage,
                 Some(TokenUsage {
                     input_tokens: 12000,
-                    output_tokens: 300
+                    output_tokens: 300,
+                    cached_tokens: Some(40),
                 })
             );
+            assert_eq!(finished, Some((turn.usage, true)));
             let token = CancellationToken::new();
+            let mut finished = None;
             let turn = client
                 .respond(
                     &CreateResponse::default(),
                     &token,
                     &mut || Ok(()),
-                    &mut |_| {},
+                    &mut |event| {
+                        if let AgentEvent::ModelRequestFinished { usage, success, .. } = event {
+                            finished = Some((usage, success));
+                        }
+                    },
                 )
                 .unwrap();
             assert_eq!(turn.usage, None);
+            assert_eq!(finished, Some((None, true)));
         });
     }
 }

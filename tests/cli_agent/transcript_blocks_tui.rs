@@ -607,7 +607,9 @@ fn transcript_blocks_markdown_scroll_offset_follow_and_exit_scrollback() {
     no_more(&fixture);
 
     pty.input("/quit\r");
-    pty.wait_for("退出后回到主屏", |s| !s.alternate_screen());
+    pty.wait_for("退出后滚动历史写入主屏", |s| {
+        !s.alternate_screen() && s.contents().contains("follow-bottom-restored")
+    });
     let marker = b"\x1b[?1049l";
     let start = pty
         .raw

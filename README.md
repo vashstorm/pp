@@ -259,7 +259,8 @@ Review $1. Focus: $@[2:].
 ## 上下文用量与压缩
 
 - **用量可见，不增加查询命令。** TUI 在输入栏上沿右端显示 `ctx N/W`，未知容量时只显示 `ctx N`；小于 10000 时显示完整整数，达到 10000 后向下取整为整数 k（如 `9500`、`12k`），不显示小数或个位数加单位。普通用量为蓝色，达到配置阈值为黄色，达到容量为红色。CLI 每个任务结束（含失败）向 stderr 输出当前模型、完整整数的 `Context: ~N / W tokens (P%, estimated)`、最近普通请求的 input/output 和自动策略；stdout 仍只有模型回答。显示用量不发网络请求。
-- **估算不是 tokenizer。** 新建空会话及 `/new` 后显示 `ctx 0`，未发送的输入草稿不计入用量。有对话历史后，`~N` 是整份当前原生请求序列化为 UTF-8 JSON 后的字节数向上除以 3，包括 system/instructions、工具 schema、参数、结果及原生／加密 reasoning 的 JSON 开销；不保证准确率或一定不会超限。百分比向下取整，允许超过 100%。最近请求的服务端 usage 独立显示，不累计为上下文占用，也不重复计算 cached/reasoning 明细；没有 usage 时显示 `unavailable`。初始化、恢复、`/new`、切模型和压缩成功后清空最近 usage，摘要请求不覆盖它。
+- **实时请求指标。** TUI 在 `ctx` 左侧依次显示带 Nerd Font 图标的 speed（金色）、in（蓝色）、out（绿色）、cached（紫色）。流中速度为累计输出 UTF-8 字节数向上除以 3，再除以含首 token 等待的完整请求耗时，每 100ms 刷新并带 `~`；计入可读思考、回答、拒绝及工具参数 delta，不计完成事件的重复全文、工具名或 opaque reasoning。成功完成后以服务端 output tokens 校正为不带 `~` 的速率；没有 usage 时冻结估速，没有流式字节则保持未知。in/out/cached 是最近一次已完成的普通请求，不累计任务或会话；新请求生成期间保留上一请求计数，成功但没有 usage 时变回 `—`，明确的 0 仍显示为 0。input 包含 cached，cached 只是其明细，不加减 input；output 包含供应商计入的 reasoning。失败或 Esc 取消清除速度但保留最近成功计数。`/new`、切模型／effort、恢复、会话树跳转和成功压缩清空指标；失败操作保留完成态。摘要流隔离，不覆盖普通请求指标。窄屏优先保留最右的 `ctx` 和至多半行临时状态，依次整块隐藏 cached、in、out、speed；不拆开图标。指标仅运行时使用，不写 session journal，不改变 CLI 输出协议。
+- **估算不是 tokenizer。** 新建空会话及 `/new` 后显示 `ctx 0`，未发送的输入草稿不计入用量。有对话历史后，`~N` 是整份当前原生请求序列化为 UTF-8 JSON 后的字节数向上除以 3，包括 system/instructions、工具 schema、参数、结果及原生／加密 reasoning 的 JSON 开销；不保证准确率或一定不会超限。百分比向下取整，允许超过 100%。最近请求的服务端 usage 独立显示，不累计为上下文占用，也不重复计算 cached/reasoning 明细；没有 usage 时 CLI 显示 `unavailable`，TUI 计数字段显示 `—`。初始化、恢复、`/new`、切模型／effort、会话树跳转和压缩成功后清空最近 usage，摘要请求不覆盖它。
 - **容量必须显式配置。** 每模型 `context_window` 为可选的正整数 token 数；省略表示未知，拒绝 null、0、负数、小数、字符串及溢出，未选中的模型也校验。不猜测模型名，不远程探测容量。`auto_compact` 默认 true，`auto_compact_threshold_percent` 默认 80 且必须为 1..=99 的整数；修改后重启生效，无运行时开关命令。当前模型没有容量时显示 `Auto compact: inactive (context_window not configured)`，不显示虚构的百分比；明确关闭则显示 `off`。切模型只用目标模型的容量，恢复只用当前模型目录配置，不继承旧模型或日志中的容量。
 - **主动 `/compact`，自动在每次普通请求前检查。** `/compact` 不接受参数，支持 TUI 和行模式；`-p '/compact'` 仍是普通提示词。自动检查包含刚接受的用户输入及同一任务内完整工具批次的增长；用量达到阈值时先摘要，再继续任务。手动压缩不要求已知容量；空历史、只有待回复用户输入或只有一个完整 exchange 时返回 `Nothing to compact.`，不发请求、不创建空日志。TUI 仅空闲时接受命令，运行中草稿可编辑，Esc 等待实际取消终态后恢复；自动压缩仍属于当前任务，手动压缩不产生虚假的任务 Completed 或 `You: /compact`。
 - **当前模型总结旧前缀，近期交互原生保留。** 完整 assistant 回复或 assistant calls 与该批全部 tool results 构成安全 exchange；Responses 的 reasoning 与输出／calls/results 不拆开。至少保留最后一个完整 exchange 和其后待回复用户输入；后缀预算为 `min(16384, context_window / 5)`，容量未知为 16384 tokens，最后一个 exchange 超预算也整体保留。旧摘要参与再次摘要，不叠加摘要链。摘要只发送当前 system/instructions、旧原生前缀和固定摘要请求，不发送近期后缀，不配置或执行工具，不改变当前 effort。摘要目标为 `min(2048, max(1, context_window / 16))` tokens（未知容量为 2048），输出上限为目标的两倍；候选为一个 `[Context summary]` 用户消息加原生后缀。可见对话和原始日志不删除，也不减少日志磁盘占用。
@@ -314,7 +315,7 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 
 首个 `pp.session_state`、用户原生输入、每个完整模型/工具批次及设置更改均同步落盘；流式展示事件不逐 token fsync。原生历史与展示日志分离，Responses item ID、encrypted reasoning、call_id 及工具原始结果均保留。完整工具批次在下一次请求前提交；网络错误不撤销已执行工具。写入失败锁存首次 `persisting session` 错误，当前已接受工具批次仍执行完毕，停止后续 HTTP；`/new` 或重启后才可重新发送。模型/思考级别设置写入失败保留旧内存选择。
 
-压缩通过同步追加新的完整 `pp.session_state` 提交替换后的原生历史，同时更新增量游标；不虚构 `model_change`，成功后立即退出也能恢复摘要与近期后缀。`ContextUpdated`、压缩阶段／结果事件及摘要调用的 assistant/thinking 流不写 `pp.event`；恢复重新估算，不恢复旧 usage。逻辑提交点是完整 state 记录，不是文件 rename，也不承诺断电绝对原子性。
+压缩通过同步追加新的完整 `pp.session_state` 提交替换后的原生历史，同时更新增量游标；不虚构 `model_change`，成功后立即退出也能恢复摘要与近期后缀。`ContextUpdated`、请求开始／输出进度／完成指标、压缩阶段／结果事件及摘要调用的 assistant/thinking 流不写 `pp.event`；恢复重新估算，不恢复旧 usage。逻辑提交点是完整 state 记录，不是文件 rename，也不承诺断电绝对原子性。
 
 仅允许忽略末尾未换行的残缺记录；恢复时提示，首次真正追加前持锁截去残尾。完整坏行、未知版本/记录、ID 不符或协议不符均报错，不覆盖旧日志。正常退出和完整批次可恢复；强杀期间的未完成回答不提交到模型历史，工具副作用不提供事务、回滚或 exactly-once 保证。
 

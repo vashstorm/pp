@@ -55,6 +55,15 @@ pub(crate) enum AgentEvent {
         before_tokens: u64,
         after_tokens: u64,
     },
+    ModelRequestStarted,
+    ModelOutputProgress {
+        output_bytes: u64,
+    },
+    ModelRequestFinished {
+        elapsed_ms: u64,
+        usage: Option<crate::context::TokenUsage>,
+        success: bool,
+    },
     AssistantStarted,
     ThinkingDelta {
         text: String,

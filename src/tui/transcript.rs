@@ -838,6 +838,10 @@ impl Transcript {
                 }
                 AgentEvent::ToolFinished { .. } => activity.phase("Processing tool result"),
                 AgentEvent::ToolOutput { .. } | AgentEvent::FileChanged { .. } => {}
+                // 运行时指标只服务状态栏，不改变对话阶段。
+                AgentEvent::ModelRequestStarted
+                | AgentEvent::ModelOutputProgress { .. }
+                | AgentEvent::ModelRequestFinished { .. } => {}
                 // 运行时上下文管理：自动压缩开始切换阶段；用量更新不影响活动显示。
                 AgentEvent::ContextUpdated { .. } => {}
                 AgentEvent::CompactionStarted { .. } => activity.phase("Compacting context"),
@@ -847,6 +851,10 @@ impl Transcript {
         match event {
             // 用量更新不产生对话条目。
             AgentEvent::ContextUpdated { .. } => {}
+            // 运行时指标只服务状态栏，不产生对话条目。
+            AgentEvent::ModelRequestStarted
+            | AgentEvent::ModelOutputProgress { .. }
+            | AgentEvent::ModelRequestFinished { .. } => {}
             AgentEvent::CompactionStarted { .. } => {}
             AgentEvent::CompactionFinished {
                 before_tokens,

@@ -511,6 +511,15 @@ fn run_cli_task(
     let mut thinking_newline = true;
     let mut context_usage = None;
     let mut emit = |event: AgentEvent| {
+        // 运行时指标事件只服务 TUI，CLI 不输出，也不得触发思考换行。
+        if matches!(
+            &event,
+            AgentEvent::ModelRequestStarted
+                | AgentEvent::ModelOutputProgress { .. }
+                | AgentEvent::ModelRequestFinished { .. }
+        ) {
+            return;
+        }
         if !matches!(&event, AgentEvent::ThinkingDelta { .. }) && !thinking_newline {
             cli_write(stderr, "\n", &mut err_broken, &mut first_error);
             thinking_newline = true;
@@ -599,6 +608,9 @@ fn run_cli_task(
                     );
                 }
             }
+            AgentEvent::ModelRequestStarted
+            | AgentEvent::ModelOutputProgress { .. }
+            | AgentEvent::ModelRequestFinished { .. } => {}
         }
     };
     let cancellation = cancellation::CancellationToken::new();

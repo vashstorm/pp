@@ -120,6 +120,7 @@ pub(super) struct ChatStream {
     calls: BTreeMap<u32, ChatCompletionMessageToolCall>,
     finish_reason: Option<FinishReason>,
     usage: Option<CompletionUsage>,
+    output_bytes: u64,
 }
 
 impl ChatStream {
@@ -129,6 +130,9 @@ impl ChatStream {
         chunk: ChatChunk,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<()> {
+        // Only borrowed lengths feed the heuristic speed, and the cumulative
+        // value is released once this chunk passed the protocol validation.
+        let mut bytes: u64 = 0;
         // Keep the last non-empty usage even when the chunk carries no choices:
         // streams with include_usage end with a usage-only chunk.
         if chunk.native.usage.is_some() {
@@ -139,6 +143,7 @@ impl ChatStream {
                 self.finish_reason.is_none(),
                 "Chat Completions protocol: choice continued after finish_reason"
             );
+            bytes = bytes.saturating_add(chunk.thinking.len() as u64);
             emit(AgentEvent::ThinkingDelta {
                 text: chunk.thinking,
             });
@@ -166,6 +171,7 @@ impl ChatStream {
                 self.role = Some(role);
             }
             if let Some(text) = delta.content.filter(|text| !text.is_empty()) {
+                bytes = bytes.saturating_add(text.len() as u64);
                 self.content.push_str(&text);
                 emit(AgentEvent::AssistantDelta {
                     text,
@@ -173,6 +179,7 @@ impl ChatStream {
                 });
             }
             if let Some(text) = delta.refusal.filter(|text| !text.is_empty()) {
+                bytes = bytes.saturating_add(text.len() as u64);
                 self.refusal.push_str(&text);
                 emit(AgentEvent::AssistantDelta {
                     text,
@@ -190,11 +197,18 @@ impl ChatStream {
                         call.function.name.push_str(&name);
                     }
                     if let Some(arguments) = function.arguments {
+                        bytes = bytes.saturating_add(arguments.len() as u64);
                         call.function.arguments.push_str(&arguments);
                     }
                 }
             }
             self.finish_reason = choice.finish_reason;
+        }
+        if bytes > 0 {
+            self.output_bytes = self.output_bytes.saturating_add(bytes);
+            emit(AgentEvent::ModelOutputProgress {
+                output_bytes: self.output_bytes,
+            });
         }
         Ok(())
     }
@@ -294,6 +308,7 @@ pub(super) struct ResponsesStream {
     refusal: String,
     thinking: BTreeMap<(u32, bool, u32), String>,
     last_thinking: Option<(u32, bool, u32)>,
+    output_bytes: u64,
 }
 
 impl ResponsesStream {
@@ -302,6 +317,9 @@ impl ResponsesStream {
         event: ResponseStreamEvent,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<Option<ResponseTurn>> {
+        // Deltas are the only credited bytes; done/completed copies repeat text
+        // and would double count. The sum is emitted after validation passes.
+        let mut bytes: u64 = 0;
         match event {
             ResponseStreamEvent::ResponseCompleted(event) => {
                 let turn = into_response_turn(event.response)?;
@@ -370,6 +388,7 @@ impl ResponsesStream {
                 bail!("Responses protocol: error event ({detail})");
             }
             ResponseStreamEvent::ResponseOutputTextDelta(event) => {
+                let len = event.delta.len() as u64;
                 self.delta(
                     event.output_index,
                     event.content_index,
@@ -377,8 +396,10 @@ impl ResponsesStream {
                     false,
                     emit,
                 )?;
+                bytes = bytes.saturating_add(len);
             }
             ResponseStreamEvent::ResponseRefusalDelta(event) => {
+                let len = event.delta.len() as u64;
                 self.delta(
                     event.output_index,
                     event.content_index,
@@ -386,14 +407,17 @@ impl ResponsesStream {
                     true,
                     emit,
                 )?;
+                bytes = bytes.saturating_add(len);
             }
             ResponseStreamEvent::ResponseReasoningSummaryTextDelta(event) => {
+                let len = event.delta.len() as u64;
                 self.thinking_text(
                     (event.output_index, true, event.summary_index),
                     &event.delta,
                     false,
                     emit,
                 );
+                bytes = bytes.saturating_add(len);
             }
             ResponseStreamEvent::ResponseReasoningSummaryTextDone(event) => {
                 self.thinking_text(
@@ -413,12 +437,14 @@ impl ResponsesStream {
                 );
             }
             ResponseStreamEvent::ResponseReasoningTextDelta(event) => {
+                let len = event.delta.len() as u64;
                 self.thinking_text(
                     (event.output_index, false, event.content_index),
                     &event.delta,
                     false,
                     emit,
                 );
+                bytes = bytes.saturating_add(len);
             }
             ResponseStreamEvent::ResponseReasoningTextDone(event) => {
                 self.thinking_text(
@@ -479,8 +505,18 @@ impl ResponsesStream {
                     });
                 }
             }
-            // 新增项、注释和参数分片不能触发工具执行。
+            // Tool arguments produce no visible text but still advance generation.
+            ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(event) => {
+                bytes = bytes.saturating_add(event.delta.len() as u64);
+            }
+            // 新增项和注释不能触发工具执行，也不计入输出字节。
             _ => {}
+        }
+        if bytes > 0 {
+            self.output_bytes = self.output_bytes.saturating_add(bytes);
+            emit(AgentEvent::ModelOutputProgress {
+                output_bytes: self.output_bytes,
+            });
         }
         self.flush(emit);
         Ok(None)
@@ -697,11 +733,160 @@ mod tests {
         )
     }
 
+    fn arguments_delta(value: &str) -> ResponseStreamEvent {
+        event(
+            json!({"type":"response.function_call_arguments.delta","sequence_number":1,
+            "item_id":"fc","output_index":0,"delta":value}),
+        )
+    }
+
     fn capture(target: &mut Vec<(String, bool)>) -> impl FnMut(AgentEvent) + '_ {
-        |event| match event {
-            AgentEvent::AssistantDelta { text, refusal } => target.push((text, refusal)),
-            _ => panic!("model client must only emit deltas"),
+        |event| {
+            if let AgentEvent::AssistantDelta { text, refusal } = event {
+                target.push((text, refusal));
+            }
         }
+    }
+
+    fn progress_of(push: impl FnOnce(&mut dyn FnMut(AgentEvent))) -> Option<u64> {
+        let mut seen = None;
+        push(&mut |event| {
+            if let AgentEvent::ModelOutputProgress { output_bytes } = event {
+                seen = Some(output_bytes);
+            }
+        });
+        seen
+    }
+
+    #[test]
+    fn streaming_chat_progress_matches_across_utf8_chunk_splits() {
+        let payload = "指标完成 value";
+        let whole: [&str; 1] = [payload];
+        let pieces: [&str; 3] = ["指", "标完成 ", "value"];
+        let mut totals = Vec::new();
+        for split in [&whole[..], &pieces[..]] {
+            let mut stream = ChatStream::default();
+            totals.push(progress_of(|emit| {
+                for piece in split {
+                    stream
+                        .push(chat(json!({"content": piece}), None), &mut *emit)
+                        .unwrap();
+                }
+            }));
+        }
+        assert_eq!(
+            totals,
+            [Some(payload.len() as u64), Some(payload.len() as u64)]
+        );
+    }
+
+    #[test]
+    fn streaming_chat_tool_arguments_advance_progress_without_answer_text() {
+        let arguments = ["{\"command\":", "\"true\"}"];
+        let mut stream = ChatStream::default();
+        let first = progress_of(|emit| {
+            stream
+                .push(
+                    chat(
+                        json!({"tool_calls":[{"index":0,"id":"call","type":"function",
+                            "function":{"name":"shell","arguments":arguments[0]}}]}),
+                        None,
+                    ),
+                    emit,
+                )
+                .unwrap();
+        });
+        let second = progress_of(|emit| {
+            stream
+                .push(
+                    chat(
+                        json!({"tool_calls":[{"index":0,
+                            "function":{"arguments":arguments[1]}}]}),
+                        Some("tool_calls"),
+                    ),
+                    emit,
+                )
+                .unwrap();
+        });
+        // Tool ids and names never count: only the argument fragments do.
+        assert_eq!(first, Some(arguments[0].len() as u64));
+        assert_eq!(
+            second,
+            Some((arguments[0].len() + arguments[1].len()) as u64)
+        );
+    }
+
+    #[test]
+    fn streaming_responses_progress_ignores_done_and_completed_copies() {
+        let mut stream = ResponsesStream::default();
+        let streamed = progress_of(|emit| {
+            assert!(stream.push(delta(0, 0, "answer"), emit).unwrap().is_none());
+        });
+        assert_eq!(streamed, Some("answer".len() as u64));
+        let done = progress_of(|emit| {
+            assert!(
+                stream
+                    .push(part_done(0, 0, "answer"), emit)
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        assert_eq!(done, None);
+        let completed_bytes = progress_of(|emit| {
+            assert!(
+                stream
+                    .push(
+                        completed(json!([message("m", json!([text("answer")]))])),
+                        emit,
+                    )
+                    .unwrap()
+                    .is_some()
+            );
+        });
+        assert_eq!(completed_bytes, None);
+    }
+
+    #[test]
+    fn streaming_responses_argument_progress_without_visible_answer() {
+        let arguments = ["{\"command\":", "\"true\"}"];
+        let mut stream = ResponsesStream::default();
+        let mut visible = Vec::new();
+        let first = {
+            let mut seen = None;
+            let mut emit = |event| match event {
+                AgentEvent::AssistantDelta { text, refusal } => visible.push((text, refusal)),
+                AgentEvent::ModelOutputProgress { output_bytes } => seen = Some(output_bytes),
+                _ => {}
+            };
+            assert!(
+                stream
+                    .push(arguments_delta(arguments[0]), &mut emit)
+                    .unwrap()
+                    .is_none()
+            );
+            seen
+        };
+        let second = {
+            let mut seen = None;
+            let mut emit = |event| match event {
+                AgentEvent::AssistantDelta { text, refusal } => visible.push((text, refusal)),
+                AgentEvent::ModelOutputProgress { output_bytes } => seen = Some(output_bytes),
+                _ => {}
+            };
+            assert!(
+                stream
+                    .push(arguments_delta(arguments[1]), &mut emit)
+                    .unwrap()
+                    .is_none()
+            );
+            seen
+        };
+        assert_eq!(first, Some(arguments[0].len() as u64));
+        assert_eq!(
+            second,
+            Some((arguments[0].len() + arguments[1].len()) as u64)
+        );
+        assert!(visible.is_empty());
     }
 
     #[test]
@@ -713,7 +898,7 @@ mod tests {
             let mut emit = |event| match event {
                 AgentEvent::ThinkingDelta { text } => thinking.push_str(&text),
                 AgentEvent::AssistantDelta { text, .. } => answer.push_str(&text),
-                _ => panic!(),
+                _ => {}
             };
             stream
                 .push(
@@ -881,7 +1066,7 @@ mod tests {
         stream
             .push(
                 usage_chunk(
-                    json!({"prompt_tokens":12000,"completion_tokens":300,"total_tokens":12300}),
+                    json!({"prompt_tokens":12000,"completion_tokens":300,"total_tokens":12300,"prompt_tokens_details":{"cached_tokens":40}}),
                 ),
                 &mut capture(&mut visible),
             )
@@ -898,7 +1083,8 @@ mod tests {
             turn.usage,
             Some(TokenUsage {
                 input_tokens: 12000,
-                output_tokens: 300
+                output_tokens: 300,
+                cached_tokens: Some(40),
             })
         );
         assert_eq!(visible, [("no".into(), true), ("yes".into(), false)]);
@@ -924,7 +1110,8 @@ mod tests {
             turn.usage,
             Some(TokenUsage {
                 input_tokens: 12000,
-                output_tokens: 300
+                output_tokens: 300,
+                cached_tokens: Some(40),
             })
         );
         assert!(!turn.refusal);

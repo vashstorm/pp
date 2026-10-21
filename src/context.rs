@@ -6,6 +6,8 @@ use std::io::{self, Write};
 pub(crate) struct TokenUsage {
     pub(crate) input_tokens: u64,
     pub(crate) output_tokens: u64,
+    #[serde(default)]
+    pub(crate) cached_tokens: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

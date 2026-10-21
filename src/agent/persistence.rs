@@ -496,6 +496,9 @@ impl SessionJournal {
             AgentEvent::ContextUpdated { .. }
                 | AgentEvent::CompactionStarted { .. }
                 | AgentEvent::CompactionFinished { .. }
+                | AgentEvent::ModelRequestStarted
+                | AgentEvent::ModelOutputProgress { .. }
+                | AgentEvent::ModelRequestFinished { .. }
         ) {
             return;
         }
