@@ -1,4 +1,5 @@
 //! 与会话日志独立的请求统计；数据库故障不改变模型调用结果。
+mod activity;
 mod analytics;
 pub(crate) mod server;
 
@@ -541,6 +542,85 @@ providers:
         assert_eq!(empty["summary"]["cost"], 0.0);
         assert_eq!(empty["summary"]["unpriced"], 0);
         assert_eq!(empty["summary"]["tokens"], 0);
+    }
+    #[test]
+    fn stats_activity_uses_complete_ranges_and_full_session_traces() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut failed = fixture("old-failure", now - 7_200_000);
+        failed.status = "failed".into();
+        failed.error_message = Some("HTTP 429 request 0123456789abcdef after 12ms".into());
+        failed.session_file = Some("/missing/session.jsonl".into());
+        store
+            .insert(&failed, &json!({"text":"private-output"}))
+            .unwrap();
+        for n in 0..501 {
+            let mut r = fixture(&format!("failure-{n}"), now - 1000);
+            r.status = "failed".into();
+            r.error_message = Some("HTTP 429 request fedcba9876543210 after 99ms".into());
+            store.insert(&r, &Value::Null).unwrap();
+        }
+        let mut latest = fixture("latest", now);
+        latest.session_file = failed.session_file.clone();
+        store.insert(&latest, &Value::Null).unwrap();
+        store
+            .insert(&fixture("future", now + 1), &Value::Null)
+            .unwrap();
+        let pricing = analytics::Pricing::default();
+        let errors = store.errors(Range::Day, now, 500, &pricing).unwrap();
+        assert_eq!(errors["summary"]["requests"], 502);
+        assert_eq!(errors["signatures"].as_array().unwrap().len(), 1);
+        assert_eq!(errors["signatures"][0]["requests"], 502);
+        assert_eq!(errors["requests"].as_array().unwrap().len(), 500);
+        assert_eq!(errors["has_more"], true);
+        assert!(!errors.to_string().contains("private-output"));
+        let traces = store.traces(Range::Hour, now, 500, &pricing).unwrap();
+        assert_eq!(traces["total"], 502);
+        assert_eq!(traces["sessions"][0]["requests"], 1);
+        let id = traces["sessions"][0]["id"].as_i64().unwrap();
+        let trace = store.trace(id, now, &pricing).unwrap().unwrap();
+        assert_eq!(trace["summary"]["requests"], 2);
+        assert_eq!(trace["requests"][0]["id"], 1);
+        assert_eq!(trace["summary"]["wall_ms"], 7_202_000.0);
+        assert_eq!(trace["summary"]["model_ms"], 4000.0);
+        assert!(!trace.to_string().contains("private-output"));
+        assert_eq!(
+            store.detail(1).unwrap().unwrap()["output_message"]["text"],
+            "private-output"
+        );
+        assert!(store.trace(9999, now, &pricing).unwrap().is_none());
+        assert_eq!(
+            store.trace(2, now, &pricing).unwrap().unwrap()["summary"]["requests"],
+            1
+        );
+        for endpoint in ["errors", "traces"] {
+            for query in [
+                "range=bad",
+                "range=all&range=24h",
+                "limit=1",
+                "unexpected=1",
+            ] {
+                assert_eq!(
+                    server::dispatch(&store, &format!("/api/stats/{endpoint}?{query}")).0,
+                    400
+                );
+            }
+            assert_eq!(
+                server::dispatch(
+                    &store,
+                    &format!("/api/stats/{endpoint}?range=all&limit=2000")
+                )
+                .0,
+                200
+            );
+        }
+        assert_eq!(server::dispatch(&store, "/api/stats/traces/99999").0, 404);
+        assert_eq!(server::dispatch(&store, "/api/stats/traces/0").0, 400);
+        assert_eq!(
+            server::dispatch(&store, "/api/stats/traces/1?file=/tmp/private").0,
+            400
+        );
     }
     #[test]
     fn stats_analytics_api_validates_ranges_and_omits_payloads() {

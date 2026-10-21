@@ -78,6 +78,28 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     )
     .unwrap();
     let (_stats, address) = start_stats_server(dir.path());
+    let (status, body) = http(&address, "/api/stats/traces?range=all", &address);
+    assert_eq!(status, 200);
+    assert!(!body.contains("verified reasoning"));
+    let traces: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(traces["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(traces["sessions"][0]["requests"], 2);
+    let (status, body) = http(
+        &address,
+        &format!("/api/stats/traces/{}", last["id"]),
+        &address,
+    );
+    assert_eq!(status, 200);
+    let trace: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(trace["requests"].as_array().unwrap().len(), 2);
+    assert!(!body.contains("private input marker"));
+    assert!(!body.contains("verified reasoning"));
+    let (status, body) = http(&address, "/api/stats/errors?range=all", &address);
+    assert_eq!(status, 200);
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["summary"]["requests"],
+        0
+    );
     for endpoint in ["overview", "requests", "models", "providers", "costs"] {
         let (status, body) = http(
             &address,

@@ -67,6 +67,7 @@ pub(super) fn dispatch(store: &Store, path: &str) -> (u16, &'static str, String)
         "/" | "/index.html" => return (200, "text/html", include_str!("index.html").into()),
         "/stats.css" => return (200, "text/css", include_str!("stats.css").into()),
         "/stats.js" => return (200, "text/javascript", include_str!("stats.js").into()),
+        "/activity.js" => return (200, "text/javascript", include_str!("activity.js").into()),
         "/icon.svg" => return (200, "image/svg+xml", include_str!("icon.svg").into()),
         _ => {}
     }
@@ -99,6 +100,23 @@ enum ApiError {
 fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError> {
     let url =
         reqwest::Url::parse(&format!("http://localhost{path}")).map_err(|_| ApiError::Invalid)?;
+    if let Some(id) = url.path().strip_prefix("/api/stats/traces/") {
+        if url.query().is_some() {
+            return Err(ApiError::Invalid);
+        }
+        let id = id
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or(ApiError::Invalid)?;
+        return store
+            .trace(
+                id,
+                chrono::Utc::now().timestamp_millis(),
+                &super::analytics::Pricing::load(store),
+            )
+            .map_err(|_| ApiError::Database);
+    }
     if let Some(id) = url.path().strip_prefix("/api/stats/requests/") {
         let id = id
             .parse::<i64>()
@@ -114,6 +132,8 @@ fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError
             | "/api/stats/models"
             | "/api/stats/providers"
             | "/api/stats/costs"
+            | "/api/stats/errors"
+            | "/api/stats/traces"
     ) {
         return Ok(None);
     }
@@ -126,7 +146,12 @@ fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError
         }
         match key.as_ref() {
             "range" => range = Range::parse(&value).map_err(|_| ApiError::Invalid)?,
-            "limit" if url.path() == "/api/stats/requests" => {
+            "limit"
+                if matches!(
+                    url.path(),
+                    "/api/stats/requests" | "/api/stats/errors" | "/api/stats/traces"
+                ) =>
+            {
                 limit = value.parse::<usize>().map_err(|_| ApiError::Invalid)?;
                 ensure_limit(limit).map_err(|_| ApiError::Invalid)?;
             }
@@ -141,6 +166,18 @@ fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError
             .map_err(|_| ApiError::Database);
     }
     let pricing = super::analytics::Pricing::load(store);
+    if url.path() == "/api/stats/errors" {
+        return store
+            .errors(range, now, limit, &pricing)
+            .map(Some)
+            .map_err(|_| ApiError::Database);
+    }
+    if url.path() == "/api/stats/traces" {
+        return store
+            .traces(range, now, limit, &pricing)
+            .map(Some)
+            .map_err(|_| ApiError::Database);
+    }
     if url.path() != "/api/stats/requests" {
         return store
             .analytics(range, now, &pricing)

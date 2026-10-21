@@ -225,7 +225,15 @@ async function refresh() {
   controller?.abort();
   controller = new AbortController();
   if (
-    !["overview", "requests", "models", "providers", "costs"].includes(page)
+    ![
+      "overview",
+      "requests",
+      "models",
+      "providers",
+      "costs",
+      "errors",
+      "traces",
+    ].includes(page)
   ) {
     lastUpdated = Date.now();
     render();
@@ -233,16 +241,33 @@ async function refresh() {
   }
   try {
     const result = await getJSON(
-      `/api/stats/${page}?range=${range}${page === "requests" ? `&limit=${limit}` : ""}`,
+      page === "traces" && traceRequest
+        ? `/api/stats/traces/${traceRequest}`
+        : `/api/stats/${page}?range=${range}${["requests", "errors", "traces"].includes(page) ? `&limit=${limit}` : ""}`,
       controller.signal,
     );
     if (token !== generation) return;
     if (page !== "requests") data = result;
     else requestData = result;
+    if (page === "traces" && traceRequest && traceFocusPending) {
+      visible = Math.max(
+        visible,
+        result.requests.findIndex((r) => r.id === Number(traceRequest)) + 1,
+      );
+    }
     lastUpdated = result.updated_at;
     $("error").hidden = true;
     $("live").classList.remove("error");
     render();
+    if (page === "traces" && traceRequest) {
+      if (traceFocusPending) {
+        $(`trace-request-${traceRequest}`)?.scrollIntoView({
+          block: "nearest",
+        });
+        traceFocusPending = false;
+      }
+      for (const id of traceExpanded) loadTraceRequest(id);
+    }
   } catch (error) {
     if (error.name === "AbortError" || token !== generation) return;
     $("error").textContent = `${error.message} Click Live to retry.`;
@@ -277,6 +302,7 @@ function onRoute() {
   sortDirection = -1;
   data = null;
   requestData = null;
+  resetActivity(url);
   expandedGroups.clear();
   hiddenSeries.clear();
   peakProvider = "";
@@ -990,6 +1016,22 @@ function requests() {
 }
 function render() {
   const focused = document.activeElement;
+  const focusedSection = focused?.closest("details[data-trace-section]")
+    ?.dataset.traceSection;
+  const activityFocus = [
+    "errorSignature",
+    "errorModel",
+    "clearErrors",
+    "trace",
+    "sessions",
+    "traceRequest",
+    "timelineRequest",
+    "expandTrace",
+    "collapseTrace",
+    "retryTrace",
+    "refreshTrace",
+  ].find((k) => focused?.dataset?.[k] !== undefined);
+  const activityValue = activityFocus && focused.dataset[activityFocus];
   const searchFocused = focused?.id === "search";
   const selection = searchFocused
     ? [focused.selectionStart, focused.selectionEnd]
@@ -1013,12 +1055,27 @@ function render() {
       ? overview()
       : page === "requests"
         ? requests()
-        : ["models", "providers", "costs"].includes(page)
-          ? { models: modelsPage, providers: providersPage, costs: costsPage }[
-              page
-            ]()
-          : `<h1>${h(label)}</h1><p class="subtitle">${h(label)} across your sessions in the ${descriptions[range]}.</p><section class="panel placeholder"><div class="empty">${h(label)} is coming soon.</div></section>`;
-  if (peakFocused) {
+        : page === "errors"
+          ? errorsPage()
+          : page === "traces"
+            ? tracesPage()
+            : ["models", "providers", "costs"].includes(page)
+              ? {
+                  models: modelsPage,
+                  providers: providersPage,
+                  costs: costsPage,
+                }[page]()
+              : `<h1>${h(label)}</h1><p class="subtitle">${h(label)} across your sessions in the ${descriptions[range]}.</p><section class="panel placeholder"><div class="empty">${h(label)} is coming soon.</div></section>`;
+  if (focusedSection) {
+    [...$("page").querySelectorAll("details[data-trace-section]")]
+      .find((el) => el.dataset.traceSection === focusedSection)
+      ?.querySelector("summary")
+      ?.focus({ preventScroll: true });
+  } else if (activityFocus) {
+    [...$("page").querySelectorAll("button,tr")]
+      .find((el) => el.dataset[activityFocus] === activityValue)
+      ?.focus({ preventScroll: true });
+  } else if (peakFocused) {
     $("peak-provider")?.focus({ preventScroll: true });
   } else if (focusControl) {
     [...$("page").querySelectorAll("button")]
@@ -1055,6 +1112,7 @@ $("page").addEventListener("input", (e) => {
   }
 });
 $("page").addEventListener("click", (e) => {
+  if (activityClick(e)) return;
   const expand = e.target.closest("[data-expand]");
   if (expand) {
     const key = expand.dataset.expand;
@@ -1117,12 +1175,24 @@ $("page").addEventListener("keydown", (e) => {
     (e.key === "Enter" || e.key === " ") &&
     (e.target.matches("tr[data-id]") ||
       e.target.matches("th[data-sort]") ||
-      e.target.matches("tr[data-expand]"))
+      e.target.matches("tr[data-expand]") ||
+      e.target.matches("tr[data-error-signature]") ||
+      e.target.matches("tr[data-trace]"))
   ) {
     e.preventDefault();
     e.target.click();
   }
 });
+$("page").addEventListener(
+  "toggle",
+  (e) => {
+    const key = e.target.dataset.traceSection;
+    if (!key || !e.target.isConnected) return;
+    if (e.target.open) traceSections.add(key);
+    else traceSections.delete(key);
+  },
+  true,
+);
 $("page").addEventListener("change", (e) => {
   if (e.target.id === "peak-provider") {
     peakProvider = e.target.value;

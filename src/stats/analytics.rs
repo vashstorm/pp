@@ -88,7 +88,7 @@ impl Cost {
     }
 }
 #[derive(Default)]
-struct Aggregate {
+pub(super) struct Aggregate {
     requests: u64,
     ok: u64,
     failed: u64,
@@ -116,7 +116,7 @@ fn add(total: &mut Option<i64>, value: Option<i64>) {
     }
 }
 impl Aggregate {
-    fn push(&mut self, r: &RequestRow, cost: Option<&Cost>) {
+    pub(super) fn push(&mut self, r: &RequestRow, cost: Option<&Cost>) {
         self.requests += 1;
         self.ok += u64::from(r.status == "ok");
         self.failed += u64::from(r.status == "failed");
@@ -155,7 +155,7 @@ impl Aggregate {
             self.components.output += c.output;
         }
     }
-    fn value(&self) -> Value {
+    pub(super) fn value(&self) -> Value {
         let avg = |value, count| {
             if count > 0 {
                 Some(value / count as f64)

@@ -1042,7 +1042,7 @@ pre {
   background: var(--hover);
 }
 .series-legend button[aria-pressed="false"] {
-  opacity: .4;
+  opacity: 0.4;
   text-decoration: line-through;
 }
 .series-legend .num {
@@ -1109,4 +1109,319 @@ pre {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 错误分组与请求时间线沿用统计页的卡片、表格和详情样式。 */
+.error-metrics {
+  --columns: 4;
+}
+.error-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+  align-items: start;
+}
+.error-layout > .panel {
+  min-width: 0;
+}
+.signature-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.signature-label svg {
+  flex-shrink: 0;
+}
+.signature-label span {
+  max-width: 520px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.signature-table .group-row,
+.session-table tbody tr {
+  cursor: pointer;
+}
+.signature-table .selected,
+.error-model.selected {
+  background: var(--hover);
+}
+.error-example {
+  margin: 6px 0 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.error-model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+  gap: 12px;
+  padding: 12px 16px;
+  width: 100%;
+  border-top: 1px solid var(--line);
+}
+.error-model .provider {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.error-model:hover,
+.session-table tbody tr:hover {
+  background: var(--hover);
+}
+.failure-message {
+  max-width: 520px;
+  min-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.failure-count {
+  color: var(--red);
+}
+.inline-link {
+  color: var(--accent);
+  padding: 0;
+  font-size: inherit;
+}
+.inline-link:hover {
+  text-decoration: underline;
+}
+.session-name {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.trace-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+.trace-heading h1 {
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+  font-size: 23px;
+}
+.trace-heading .subtitle {
+  overflow-wrap: anywhere;
+}
+.trace-heading > button {
+  flex-shrink: 0;
+}
+.trace-panel {
+  margin-bottom: 20px;
+}
+.trace-timeline {
+  padding: 0 20px 18px;
+  overflow-x: auto;
+}
+.timeline-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-left: 150px;
+  min-width: 300px;
+  color: var(--muted);
+  font-size: 11px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+.timeline-lane {
+  display: flex;
+  align-items: center;
+  min-width: 450px;
+  min-height: 54px;
+  border-bottom: 1px solid var(--line);
+}
+.timeline-label {
+  width: 150px;
+  flex-shrink: 0;
+  padding-right: 12px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-label .provider {
+  display: block;
+}
+.timeline-track {
+  position: relative;
+  height: 34px;
+  flex: 1;
+  background: repeating-linear-gradient(
+    to right,
+    transparent 0,
+    transparent calc(25% - 1px),
+    var(--line) 25%
+  );
+}
+.timeline-span {
+  position: absolute;
+  top: 7px;
+  height: 20px;
+  min-width: 4px;
+  border-radius: 4px;
+  background: var(--accent);
+  opacity: 0.8;
+  padding: 0;
+}
+.timeline-span.failed,
+.timeline-legend .failed {
+  background: var(--red);
+}
+.timeline-span.aborted,
+.timeline-legend .aborted {
+  background: var(--yellow);
+}
+.timeline-span:hover,
+.timeline-span.active {
+  opacity: 1;
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+  z-index: 1;
+}
+.timeline-legend {
+  display: flex;
+  gap: 18px;
+  justify-content: flex-end;
+  color: var(--muted);
+  margin-top: 12px;
+  font-size: 11px;
+}
+.timeline-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 5px;
+  background: var(--accent);
+}
+.trace-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.trace-request {
+  border-top: 1px solid var(--line);
+}
+.trace-request-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  text-align: left;
+  gap: 14px;
+  padding: 13px 18px;
+}
+.trace-request-toggle:hover {
+  background: var(--hover);
+}
+.trace-kind {
+  font-size: 10px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.trace-request-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+}
+.trace-request-name .provider {
+  display: block;
+}
+.trace-request-toggle > .num {
+  min-width: 65px;
+  text-align: right;
+}
+.trace-content {
+  padding: 4px 22px 20px 52px;
+  background: var(--hover);
+}
+.trace-request-meta {
+  padding: 12px 0;
+}
+.trace-request-meta .detail-grid {
+  margin-top: 0;
+}
+.trace-section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin-top: 10px;
+  overflow: hidden;
+}
+.trace-section summary {
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+.trace-section pre {
+  padding: 14px;
+  margin: 0;
+  max-height: 480px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.trace-section .unavailable {
+  padding: 12px;
+}
+@media (max-width: 1100px) {
+  .error-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .error-models {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .error-models .requests-heading {
+    width: 100%;
+  }
+  .error-model {
+    width: 50%;
+  }
+  .trace-controls {
+    justify-content: flex-end;
+  }
+}
+@media (max-width: 800px) {
+  .trace-heading {
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .trace-request-toggle {
+    gap: 8px;
+    padding: 12px;
+  }
+  .trace-kind {
+    display: none;
+  }
+  .trace-content {
+    padding: 4px 12px 14px;
+  }
+  .trace-request-toggle > .num {
+    min-width: auto;
+  }
+  .trace-request-toggle > .provider {
+    display: none;
+  }
+  .trace-controls .search {
+    width: 100%;
+  }
+  .trace-controls input {
+    width: 100%;
+  }
+  .error-model {
+    width: 100%;
+  }
+  .trace-controls {
+    justify-content: flex-start;
+  }
 }
