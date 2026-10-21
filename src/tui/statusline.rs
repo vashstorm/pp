@@ -38,12 +38,22 @@ const FIELD_ICON_WIDTH: usize = ICON_WIDTH + 1;
 // 目录字段低于该宽度时先隐藏 git、再缩短模型，而不是把目录挤成空。
 const MIN_DIRECTORY: usize = 8;
 
-/// 只在缩写后至少为 10 时使用 k，省略小数；CLI 任务结束信息用完整整数。
+/// 满 1000 使用 k，满 100 万使用 m，缩写后保留一位小数；CLI 仍用完整整数。
 fn abbreviate_tokens(tokens: u64) -> String {
-    if tokens >= 10000 {
-        format!("{}k", tokens / 1000)
+    if tokens >= 1000 {
+        abbreviate_metric(tokens as f64)
     } else {
         tokens.to_string()
+    }
+}
+
+fn abbreviate_metric(value: f64) -> String {
+    if value >= 1_000_000.0 {
+        format!("{:.1}m", value / 1_000_000.0)
+    } else if value >= 1000.0 {
+        format!("{:.1}k", value / 1000.0)
+    } else {
+        format!("{value:.1}")
     }
 }
 
@@ -75,7 +85,13 @@ pub(super) fn metric_fields(
 ) -> Line<'static> {
     let speed_text = speed.map_or_else(
         || "— tok/s".to_owned(),
-        |(rate, estimated)| format!("{}{rate:.1} tok/s", if estimated { "~" } else { "" }),
+        |(rate, estimated)| {
+            format!(
+                "{}{} tok/s",
+                if estimated { "~" } else { "" },
+                abbreviate_metric(rate)
+            )
+        },
     );
     // 缺失用量显示 —，显式的 0 仍显示 0。
     let (input_text, output_text, cached_text) = usage.map_or_else(
@@ -482,16 +498,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn context_abbreviation_uses_integer_units_only_from_ten() {
+    fn context_abbreviation_uses_thousands_and_millions_with_one_decimal() {
         for (tokens, expected) in [
             (0, "0"),
             (999, "999"),
-            (1000, "1000"),
-            (9999, "9999"),
-            (10000, "10k"),
-            (10999, "10k"),
-            (12345, "12k"),
-            (128000, "128k"),
+            (1000, "1.0k"),
+            (1050, "1.1k"),
+            (9999, "10.0k"),
+            (10000, "10.0k"),
+            (10999, "11.0k"),
+            (12345, "12.3k"),
+            (128000, "128.0k"),
+            (999900, "999.9k"),
+            (1_000_000, "1.0m"),
+            (1_240_000, "1.2m"),
+            (1_280_000, "1.3m"),
+            (1_000_000_000, "1000.0m"),
         ] {
             assert_eq!(abbreviate_tokens(tokens), expected);
         }
@@ -696,13 +718,13 @@ mod tests {
         let line = metric_fields(Some(&usage), Some((42.5, true)), 100);
         assert_eq!(
             line_text(&line),
-            " \u{f0e7} ~42.5 tok/s · \u{f019} in 12k · \u{f093} out 300 · \u{f1c0} cached 40 · "
+            " \u{f0e7} ~42.5 tok/s · \u{f019} in 12.0k · \u{f093} out 300 · \u{f1c0} cached 40 · "
         );
         let expected = [
             ("\u{f0e7} ", SPEED),
             ("~42.5 tok/s", SPEED),
             ("\u{f019} ", INPUT),
-            ("in 12k", INPUT),
+            ("in 12.0k", INPUT),
             ("\u{f093} ", OUTPUT),
             ("out 300", OUTPUT),
             ("\u{f1c0} ", CACHED),
@@ -742,6 +764,11 @@ mod tests {
         assert!(text(Some((150.0, false))).contains("\u{f0e7} 150.0 tok/s"));
         assert!(!text(Some((150.0, false))).contains('~'));
         assert!(text(Some((42.5, true))).contains("\u{f0e7} ~42.5 tok/s"));
+        assert!(text(Some((999.0, false))).contains("\u{f0e7} 999.0 tok/s"));
+        assert!(text(Some((1000.0, true))).contains("\u{f0e7} ~1.0k tok/s"));
+        assert!(text(Some((12345.0, false))).contains("\u{f0e7} 12.3k tok/s"));
+        assert!(text(Some((1_000_000.0, false))).contains("\u{f0e7} 1.0m tok/s"));
+        assert!(text(Some((1_280_000.0, true))).contains("\u{f0e7} ~1.3m tok/s"));
     }
 
     #[test]
@@ -760,15 +787,21 @@ mod tests {
 
         let zero_cached = metric_usage(1000, 9999, Some(0));
         let text = line_text(&metric_fields(Some(&zero_cached), None, 200));
-        assert!(text.contains("in 1000"));
-        assert!(text.contains("out 9999"));
+        assert!(text.contains("in 1.0k"));
+        assert!(text.contains("out 10.0k"));
         assert!(text.contains("cached 0"));
 
         let abbreviated = metric_usage(12000, 10800, Some(10000));
         let text = line_text(&metric_fields(Some(&abbreviated), Some((1.0, false)), 200));
-        assert!(text.contains("in 12k"));
-        assert!(text.contains("out 10k"));
-        assert!(text.contains("cached 10k"));
+        assert!(text.contains("in 12.0k"));
+        assert!(text.contains("out 10.8k"));
+        assert!(text.contains("cached 10.0k"));
+
+        let millions = metric_usage(1_280_000, 1_000_000, Some(1_240_000));
+        let text = line_text(&metric_fields(Some(&millions), None, 200));
+        assert!(text.contains("in 1.3m"));
+        assert!(text.contains("out 1.0m"));
+        assert!(text.contains("cached 1.2m"));
     }
 
     #[test]
@@ -777,7 +810,7 @@ mod tests {
         let speed = Some((150.0, false));
         let fields = [
             ("\u{f0e7}", "150.0 tok/s"),
-            ("\u{f019}", "in 12k"),
+            ("\u{f019}", "in 12.0k"),
             ("\u{f093}", "out 300"),
             ("\u{f1c0}", "cached 40"),
         ];

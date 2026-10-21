@@ -129,10 +129,10 @@ fn context_tui_ctx_tokens(screen: &vt100::Screen) -> f64 {
         .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
         .collect();
     let value: f64 = figure.parse().expect("ctx 数字必须可解析");
-    if rest[figure.len()..].starts_with('k') {
-        value * 1000.0
-    } else {
-        value
+    match rest[figure.len()..].chars().next() {
+        Some('k') => value * 1000.0,
+        Some('m') => value * 1_000_000.0,
+        _ => value,
     }
 }
 
@@ -147,9 +147,11 @@ fn context_tui_ctx_percent(screen: &vt100::Screen) -> u128 {
         .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
         .collect();
     let mut window: f64 = figure.parse().expect("ctx 容量必须可解析");
-    if capacity[figure.len()..].starts_with('k') {
-        window *= 1000.0;
-    }
+    window *= match capacity[figure.len()..].chars().next() {
+        Some('k') => 1000.0,
+        Some('m') => 1_000_000.0,
+        _ => 1.0,
+    };
     (context_tui_ctx_tokens(screen) * 100.0 / window) as u128
 }
 
@@ -203,7 +205,7 @@ fn context_tui_assert_metric_whole(screen: &vt100::Screen, icon: &str, text: &st
     );
 }
 
-// 速度字段的数值与是否估算：字段自身格式为 `[~]N.N tok/s`，未知时只有 `— tok/s`。
+// 速度字段的数值与是否估算：字段自身格式为 `[~]N.N[k|m] tok/s`，未知时只有 `— tok/s`。
 fn context_tui_speed(screen: &vt100::Screen) -> Option<(f64, bool)> {
     let (row, column) = context_tui_locate(screen, "tok/s")?;
     let head: String = (0..column)
@@ -216,6 +218,13 @@ fn context_tui_speed(screen: &vt100::Screen) -> Option<(f64, bool)> {
         .rev()
         .collect();
     let head = head.trim_end();
+    let (head, multiplier) = if let Some(head) = head.strip_suffix('k') {
+        (head, 1000.0)
+    } else if let Some(head) = head.strip_suffix('m') {
+        (head, 1_000_000.0)
+    } else {
+        (head, 1.0)
+    };
     let figure: String = head
         .chars()
         .rev()
@@ -228,7 +237,7 @@ fn context_tui_speed(screen: &vt100::Screen) -> Option<(f64, bool)> {
         return None;
     }
     Some((
-        figure.parse().ok()?,
+        figure.parse::<f64>().ok()? * multiplier,
         head[..head.len() - figure.len()].ends_with('~'),
     ))
 }
@@ -293,17 +302,17 @@ fn context_tui_summary_reply(stream: &mut SseReply, protocol: &str) {
 fn context_tui_shows_current_and_window_on_input_top_right() {
     for protocol in ["completion", "response"] {
         let fixture = server();
-        let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
+        let (_home, mut pty) = context_tui_start(&fixture, protocol, 1_280_000, 80);
         assert_eq!(context_tui_ctx_tokens(pty.parser.screen()), 0.0);
         let contents = pty.parser.screen().contents();
         let lines: Vec<_> = contents.lines().collect();
-        assert!(lines[26].trim_end().ends_with("/40k"));
+        assert!(lines[26].trim_end().ends_with("/1.3m"));
         assert!(!lines[26].contains('%'));
         // 右对齐位置用真实 screen cell 验证；新指标占据左侧，字面长度不再固定。
-        let (row, column) = context_tui_locate(pty.parser.screen(), "ctx 0/40k")
+        let (row, column) = context_tui_locate(pty.parser.screen(), "ctx 0/1.3m")
             .expect("状态栏必须在输入栏上沿显示 ctx 容量");
         assert_eq!(row, 26);
-        assert_eq!(usize::from(column) + "ctx 0/40k".len(), 99);
+        assert_eq!(usize::from(column) + "ctx 0/1.3m".len(), 99);
         assert_eq!(context_tui_ctx_color(&pty), vt100::Color::Rgb(122, 162, 247));
         assert!(!lines[29].contains("ctx "));
         pty.input("context-position-draft");
@@ -312,7 +321,7 @@ fn context_tui_shows_current_and_window_on_input_top_right() {
         pty.resize(12, 40);
         pty.wait_for("缩放后用量仍在输入栏上沿右端", |screen| {
             screen.contents().lines().nth(8).is_some_and(|line| {
-                line.contains(" ctx ") && line.trim_end().ends_with("/40k")
+                line.contains(" ctx ") && line.trim_end().ends_with("/1.3m")
             })
         });
         pty.draft("context-position-draft");
@@ -338,7 +347,7 @@ fn context_tui_new_session_resets_context_to_zero_both_protocols() {
         assert!(context_tui_ctx_tokens(pty.parser.screen()) > 0.0);
         pty.input("/new\r");
         pty.wait_for("新会话上下文归零", |screen| {
-            screen.contents().contains("ctx 0/40k")
+            screen.contents().contains("ctx 0/40.0k")
         });
         context_tui_exchange(
             &mut pty,
@@ -997,7 +1006,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
         // 初始 100×30：ctx 正常，新计数字段全部为未知而不是 0。
         pty.wait_for("初始状态栏显示未知 token 指标", context_tui_metrics_unknown);
-        assert!(pty.parser.screen().contents().contains("ctx 0/40k"));
+        assert!(pty.parser.screen().contents().contains("ctx 0/40.0k"));
         assert_eq!(
             context_tui_ctx_color(&pty),
             vt100::Color::Rgb(122, 162, 247)
@@ -1035,7 +1044,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         stream.finish();
         pty.wait_for("权威 usage 更新完成态指标", |screen| {
             let contents = screen.contents();
-            contents.contains("in 12k")
+            contents.contains("in 12.0k")
                 && contents.contains("out 300")
                 && contents.contains("cached 40")
         });
@@ -1054,7 +1063,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
             "速率数值必须使用 speed 颜色"
         );
         for (label, offset, color) in [
-            ("in 12k", 3, vt100::Color::Rgb(125, 207, 255)),
+            ("in 12.0k", 3, vt100::Color::Rgb(125, 207, 255)),
             ("out 300", 4, vt100::Color::Rgb(158, 206, 106)),
             ("cached 40", 7, vt100::Color::Rgb(187, 154, 247)),
         ] {
@@ -1127,7 +1136,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         pty.ready();
         pty.input("/new\r");
         pty.wait_for("/new 清空全部新指标", |screen| {
-            screen.contents().contains("ctx 0/40k") && context_tui_metrics_unknown(screen)
+            screen.contents().contains("ctx 0/40.0k") && context_tui_metrics_unknown(screen)
         });
         pty.input("\x03");
         pty.finish();
@@ -1191,7 +1200,7 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
                 let lines: Vec<&str> = contents.lines().collect();
                 lines.windows(2).any(|pair| {
                     pair[0].contains(" ctx ")
-                        && pair[0].trim_end().ends_with("/40k")
+                        && pair[0].trim_end().ends_with("/40.0k")
                         && pair[1].starts_with('❯')
                 })
             });
@@ -1253,7 +1262,7 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
         context_tui_stream_usage(&mut stream, protocol, "context-metrics-authoritative-answer");
         stream.finish();
         pty.wait_for("普通请求完成并显示权威计数", |screen| {
-            screen.contents().contains("in 12k")
+            screen.contents().contains("in 12.0k")
                 && screen.contents().contains("out 300")
                 && screen.contents().contains("cached 40")
         });
@@ -1273,7 +1282,7 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
         pty.wait_for("压缩等待期间保留既有指标与临时状态", |screen| {
             let contents = screen.contents();
             contents.contains("Compacting context...")
-                && contents.contains("in 12k")
+                && contents.contains("in 12.0k")
                 && contents.contains("out 300")
                 && contents.contains("cached 40")
         });
