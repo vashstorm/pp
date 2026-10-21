@@ -123,9 +123,35 @@ enum EntryBody {
 struct AskBlock {
     args: crate::interaction::AskArgs,
     answers: Option<Vec<crate::interaction::AskAnswer>>,
+    previews: Vec<Vec<Option<super::markdown::MarkdownDocument>>>,
 }
 
 impl AskBlock {
+    fn new(args: crate::interaction::AskArgs) -> Self {
+        let previews = args
+            .questions
+            .iter()
+            .map(|question| {
+                question
+                    .options
+                    .iter()
+                    .map(|option| {
+                        option
+                            .preview
+                            .as_deref()
+                            .filter(|text| !text.trim().is_empty())
+                            .map(super::markdown::parse)
+                    })
+                    .collect()
+            })
+            .collect();
+        Self {
+            args,
+            answers: None,
+            previews,
+        }
+    }
+
     fn finish(&mut self, result: &Value) -> bool {
         match result.get("ok").and_then(Value::as_bool) {
             Some(false) => return true,
@@ -146,7 +172,7 @@ impl AskBlock {
 
     fn layout(&self, width: u16) -> Vec<Line<'static>> {
         let mut rows = Vec::new();
-        for question in &self.args.questions {
+        for (question_index, question) in self.args.questions.iter().enumerate() {
             rows.extend(wrap_block(
                 block_line(
                     format!(
@@ -161,39 +187,61 @@ impl AskBlock {
                 width,
                 "",
             ));
-            if let Some(answers) = &self.answers {
-                if let Some(answer) = answers.iter().find(|answer| answer.id == question.id) {
-                    for label in &answer.selected_options {
-                        rows.extend(wrap_block(
-                            block_line(format!("● {label}"), Style::default()),
-                            width,
-                            "  ",
-                        ));
-                    }
-                    if let Some(custom) = &answer.custom_input {
-                        rows.extend(wrap_block(
-                            block_line(format!("Other: {custom}"), Style::default()),
-                            width,
-                            "  ",
-                        ));
-                    }
-                    if answer.selected_options.is_empty() && answer.custom_input.is_none() {
-                        rows.extend(wrap_block(
-                            block_line("No options selected", Style::default().fg(palette::MUTED)),
-                            width,
-                            "",
-                        ));
-                    }
-                }
-            } else {
-                for option in &question.options {
+            let answer = self
+                .answers
+                .as_ref()
+                .and_then(|answers| answers.iter().find(|answer| answer.id == question.id));
+            for (option_index, option) in question.options.iter().enumerate() {
+                let selected =
+                    answer.is_some_and(|answer| answer.selected_options.contains(&option.label));
+                rows.extend(wrap_block(
+                    block_line(
+                        format!("{} {}", if selected { "●" } else { "○" }, option.label),
+                        if selected {
+                            Style::default()
+                        } else {
+                            Style::default().fg(palette::MUTED)
+                        },
+                    ),
+                    width,
+                    "  ",
+                ));
+                if let Some(description) = option
+                    .description
+                    .as_deref()
+                    .filter(|text| !text.trim().is_empty())
+                {
                     rows.extend(wrap_block(
                         block_line(
-                            format!("○ {}", option.label),
+                            format!("  {description}"),
                             Style::default().fg(palette::MUTED),
                         ),
                         width,
                         "  ",
+                    ));
+                }
+                if let Some(document) = &self.previews[question_index][option_index] {
+                    rows.extend(document.layout(width.saturating_sub(2)).into_iter().map(
+                        |mut line| {
+                            line.spans.insert(0, Span::raw("  "));
+                            line
+                        },
+                    ));
+                }
+            }
+            if let Some(answer) = answer {
+                if let Some(custom) = &answer.custom_input {
+                    rows.extend(wrap_block(
+                        block_line(format!("Other: {custom}"), Style::default()),
+                        width,
+                        "  ",
+                    ));
+                }
+                if answer.selected_options.is_empty() && answer.custom_input.is_none() {
+                    rows.extend(wrap_block(
+                        block_line("No options selected", Style::default().fg(palette::MUTED)),
+                        width,
+                        "",
                     ));
                 }
             }
@@ -1031,10 +1079,7 @@ impl Transcript {
                 };
                 let mut entry = TranscriptEntry::new(kind, title, String::new(), Some(name));
                 if let Some(args) = ask_args {
-                    entry.body = EntryBody::Ask(AskBlock {
-                        args,
-                        answers: None,
-                    });
+                    entry.body = EntryBody::Ask(AskBlock::new(args));
                 }
                 entry.status = EntryStatus::Running;
                 self.running_tools.push((id, self.entries.len()));
@@ -1863,6 +1908,59 @@ mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
     use serde_json::json;
+
+    #[test]
+    fn ask_details_stay_in_messages_after_answering_and_resize() {
+        let args = crate::interaction::AskArgs::parse(
+            &json!({"questions":[{
+                "id":"db", "question":"Database question?", "options":[{
+                    "label":"SQLite", "description":"description-marker\u{1b}",
+                    "preview":"**Preview**\n\nline-one\n\nline-two\n\npreview-tail"
+                }, {"label":"Postgres", "description":"other-description"}]
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        let mut block = AskBlock::new(args);
+        let text = block
+            .layout(80)
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for expected in [
+            "Database question?",
+            "○ SQLite",
+            "description-marker",
+            "Preview",
+            "preview-tail",
+            "other-description",
+        ] {
+            assert!(text.contains(expected), "消息中应显示完整详情：{text}");
+        }
+        assert!(!text.contains('\u{1b}'));
+        assert!(!text.contains("**Preview**"), "预览应按 Markdown 渲染");
+        assert!(block.finish(&json!({"ok":true,"answers":[{
+            "id":"db", "selected_options":["SQLite"], "custom_input":null
+        }]})));
+        for width in [32, 80] {
+            let text = block
+                .layout(width)
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            for expected in [
+                "● SQLite",
+                "description-marker",
+                "preview-tail",
+                "○ Postgres",
+                "other-description",
+            ] {
+                assert!(text.contains(expected), "回答和缩放后仍应保留详情：{text}");
+            }
+        }
+    }
 
     fn render(transcript: &mut Transcript, width: u16, height: u16) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

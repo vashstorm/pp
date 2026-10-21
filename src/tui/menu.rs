@@ -200,8 +200,11 @@ impl<T: Copy> SelectionMenu<T> {
             let height = (lines.len() as u16).min(area.height);
             Row::new([
                 Cell::from(if active { "❯" } else { " " }).style(Style::default().fg(ACCENT)),
-                Cell::from(item.icon.unwrap_or_default())
-                    .style(Style::default().fg(if item.current { ADDED } else { DIM })),
+                Cell::from(item.icon.unwrap_or_default()).style(
+                    Style::default()
+                        .fg(if item.current { ADDED } else { DIM })
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
                 Cell::from(Text::from(lines)),
             ])
             .height(height)

@@ -4,7 +4,6 @@
 //! `App`（src/tui.rs）负责。所有展示文本经过 `display_text` 清洗，原始答案
 //! 始终使用未经改写的 label／custom 文本。
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -12,16 +11,13 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
 };
 use ratatui_textarea::TextArea;
 
-use super::markdown;
 use super::menu::{MenuEvent, MenuItem, SelectionMenu};
-use super::transcript_style::{
-    ACCENT, ASK_BG, ASK_BORDER, ASK_TAB_BG, DIM, MUTED, REMOVED, display_text,
-};
+use super::transcript_style::{ACCENT, ASK_BG, ASK_BORDER, ASK_TAB_BG, DIM, REMOVED, display_text};
 use crate::interaction::{AskAnswer, AskArgs, AskRequest};
 
 const OTHER_LABEL: &str = "Other (type your own)";
@@ -29,11 +25,10 @@ const REQUIRED_MESSAGE: &str = "Answer this question before submitting.";
 const EMPTY_MULTI_MESSAGE: &str = "No options selected";
 const NOT_ANSWERED_MESSAGE: &str = "(not answered)";
 const EDITOR_HINT: &str = "Enter accept · Ctrl-J newline · Esc discard";
-const SINGLE_HINT: &str = "↵ select · ↑/↓ move · Tab/←/→ question · Ctrl-O details · Esc cancel";
-const MULTI_HINT: &str =
-    "Space toggle · ↵ next · ↑/↓ move · Tab/←/→ question · Ctrl-O details · Esc cancel";
+const SINGLE_HINT: &str = "Space select · ↵ confirm · ↑/↓ move · Tab/←/→ question · Esc cancel";
+const MULTI_HINT: &str = "Space toggle · ↵ next · ↑/↓ move · Tab/←/→ question · Esc cancel";
 const REVIEW_HINT: &str = "Enter submit · Tab questions · Esc cancel";
-const COMPACT_HINT: &str = "Enter confirm · Tab next · Esc cancel";
+const COMPACT_HINT: &str = "Space select · Enter confirm · Tab next · Esc cancel";
 
 #[derive(Debug)]
 pub(super) enum Action {
@@ -53,7 +48,6 @@ struct QuestionState {
     selected: Vec<usize>,
     custom: String,
     menu: SelectionMenu<usize>,
-    question_layout: Option<(u16, Vec<Line<'static>>)>,
 }
 
 impl QuestionState {
@@ -68,15 +62,8 @@ impl QuestionState {
             selected: Vec::new(),
             custom: String::new(),
             menu,
-            question_layout: None,
         }
     }
-}
-
-struct Preview {
-    document: markdown::MarkdownDocument,
-    width: u16,
-    lines: Vec<Line<'static>>,
 }
 
 pub(super) struct Panel {
@@ -86,14 +73,10 @@ pub(super) struct Panel {
     editor: Option<(usize, TextArea<'static>)>,
     error: Option<String>,
     submitted: bool,
-    expanded: bool,
-    detail_scroll: usize,
     review_scroll: usize,
     overlay: Option<Rect>,
     layout_size: (u16, u16),
     height: u16,
-    previews: HashMap<(usize, usize), Preview>,
-    details: Option<((usize, usize, u16), Vec<Line<'static>>)>,
     review: Option<(u16, Vec<Line<'static>>)>,
 }
 
@@ -108,14 +91,10 @@ impl Panel {
             editor: None,
             error: None,
             submitted: false,
-            expanded: false,
-            detail_scroll: 0,
             review_scroll: 0,
             overlay: None,
             layout_size: (0, 0),
             height: 1,
-            previews: HashMap::new(),
-            details: None,
             review: None,
         }
     }
@@ -166,11 +145,7 @@ impl Panel {
         );
         match self.page {
             Page::Question(index) => {
-                let before = self.states[index].menu.selected_index();
                 self.states[index].menu.handle_key(key);
-                if self.states[index].menu.selected_index() != before {
-                    self.detail_scroll = 0;
-                }
             }
             Page::Review => {
                 if up {
@@ -262,7 +237,6 @@ impl Panel {
                 self.editor = None;
                 self.rebuild_menu(index);
                 self.error = None;
-                self.detail_scroll = 0;
                 self.advance(index)
             }
             KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
@@ -286,19 +260,6 @@ impl Panel {
         let focused = self.states[index].menu.selected_index().unwrap_or(0);
         match key.code {
             KeyCode::Esc => Action::Cancel,
-            KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
-                self.expanded = !self.expanded;
-                self.detail_scroll = 0;
-                Action::None
-            }
-            KeyCode::Up if key.modifiers == KeyModifiers::CONTROL && self.expanded => {
-                self.detail_scroll = self.detail_scroll.saturating_sub(1);
-                Action::None
-            }
-            KeyCode::Down if key.modifiers == KeyModifiers::CONTROL && self.expanded => {
-                self.detail_scroll = self.detail_scroll.saturating_add(1);
-                Action::None
-            }
             KeyCode::Up if key.modifiers == KeyModifiers::CONTROL => Action::None,
             KeyCode::Down if key.modifiers == KeyModifiers::CONTROL => Action::None,
             KeyCode::Left | KeyCode::BackTab => {
@@ -310,13 +271,15 @@ impl Panel {
                 Action::None
             }
             KeyCode::Char(' ')
-                if multi
-                    && key.kind == KeyEventKind::Press
+                if key.kind == KeyEventKind::Press
                     && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
                     && focused < option_count =>
             {
                 let state = &mut self.states[index];
-                if let Some(position) = state
+                if !multi {
+                    state.selected = vec![focused];
+                    state.custom.clear();
+                } else if let Some(position) = state
                     .selected
                     .iter()
                     .position(|&selected| selected == focused)
@@ -330,19 +293,10 @@ impl Panel {
                 self.error = None;
                 Action::None
             }
-            _ => {
-                let before = self.states[index].menu.selected_index();
-                match self.states[index].menu.handle_key(key) {
-                    MenuEvent::Confirm(item) => self.confirm(index, item),
-                    MenuEvent::Handled => {
-                        if self.states[index].menu.selected_index() != before {
-                            self.detail_scroll = 0;
-                        }
-                        Action::None
-                    }
-                    _ => Action::None,
-                }
-            }
+            _ => match self.states[index].menu.handle_key(key) {
+                MenuEvent::Confirm(item) => self.confirm(index, item),
+                _ => Action::None,
+            },
         }
     }
 
@@ -398,7 +352,6 @@ impl Panel {
         if self.questions.questions[index].multi {
             // 多选 Enter 只前进，不额外勾选焦点项。
             self.error = None;
-            self.detail_scroll = 0;
             return self.advance(index);
         }
         let state = &mut self.states[index];
@@ -406,7 +359,6 @@ impl Panel {
         state.custom.clear();
         self.rebuild_menu(index);
         self.error = None;
-        self.detail_scroll = 0;
         self.advance(index)
     }
 
@@ -421,7 +373,6 @@ impl Panel {
         };
         let next = (current + delta).rem_euclid(pages) as usize;
         self.error = None;
-        self.detail_scroll = 0;
         if next == pages as usize - 1 {
             self.page = Page::Review;
             self.review_scroll = 0;
@@ -456,7 +407,6 @@ impl Panel {
             if state.selected.is_empty() && state.custom.trim().is_empty() {
                 self.error = Some(REQUIRED_MESSAGE.into());
                 self.page = Page::Question(index);
-                self.detail_scroll = 0;
                 return Action::None;
             }
         }
@@ -620,55 +570,28 @@ impl Panel {
     fn compute_height(&self, available: Rect, screen_height: u16) -> u16 {
         let inner_width = available.width.saturating_sub(4);
         let content_height = self
-            .questions
-            .questions
+            .states
             .iter()
-            .zip(&self.states)
-            .map(|(question, state)| {
-                let question_lines =
-                    line_count(display_text(&question.question).as_ref(), inner_width).min(4);
-                let preview_lines = if question.options.iter().any(|option| {
-                    option
-                        .preview
-                        .as_deref()
-                        .is_some_and(|text| !text.trim().is_empty())
-                }) {
-                    3
-                } else {
-                    0
-                };
-                question_lines + 1 + state.menu.choices_height(inner_width) + preview_lines
-            })
+            .map(|state| state.menu.choices_height(inner_width))
             .max()
             .unwrap_or(0);
+        let review_height = if self.has_review() {
+            self.questions
+                .questions
+                .len()
+                .saturating_mul(3)
+                .saturating_sub(1)
+                .min(usize::from(u16::MAX)) as u16
+        } else {
+            0
+        };
         // 边框、标签栏、底部分隔线、快捷键与校验消息预留空间，翻页时高度稳定。
-        let need = 2 + 1 + content_height + 1 + 1 + 1;
+        let need = content_height.max(review_height).saturating_add(6);
         if available.height < 5 {
             return available.height;
         }
         let cap = (u32::from(screen_height) * 7 / 10) as u16;
         need.min(cap).min(available.height).max(1)
-    }
-
-    fn cached_preview(&mut self, index: usize, item: usize, width: u16) -> &[Line<'static>] {
-        let text = self.questions.questions[index].options[item]
-            .preview
-            .as_deref()
-            .unwrap_or_default();
-        let entry = self.previews.entry((index, item)).or_insert_with(|| {
-            let document = markdown::parse(text);
-            let lines = document.layout(width);
-            Preview {
-                document,
-                width,
-                lines,
-            }
-        });
-        if entry.width != width {
-            entry.lines = entry.document.layout(width);
-            entry.width = width;
-        }
-        &entry.lines
     }
 
     fn draw_compact(&mut self, frame: &mut Frame, area: Rect) {
@@ -779,162 +702,8 @@ impl Panel {
                     ));
                 }
             }
-        } else if self.expanded {
-            let detail_h = (content_h / 2).max(2).min(content_h);
-            let detail_area = Rect {
-                height: detail_h,
-                ..content_area
-            };
-            let menu_area = Rect {
-                y: content_area.y + detail_h,
-                height: content_h - detail_h,
-                ..content_area
-            };
-            let focused = self.states[index].menu.selected_index().unwrap_or(0);
-            let cache_key = (index, focused, inner.width);
-            if self
-                .details
-                .as_ref()
-                .is_none_or(|(key, _)| *key != cache_key)
-            {
-                let question = display_text(&self.questions.questions[index].question).into_owned();
-                let mut lines = super::transcript::wrap_block(
-                    super::transcript::block_line(question, Style::default()),
-                    inner.width,
-                    "",
-                );
-                if let Some(option) = self.questions.questions[index].options.get(focused) {
-                    if let Some(description) = option
-                        .description
-                        .as_deref()
-                        .filter(|text| !text.trim().is_empty())
-                    {
-                        lines.push(Line::default());
-                        lines.extend(super::transcript::wrap_block(
-                            super::transcript::block_line(
-                                display_text(description).into_owned(),
-                                Style::default().fg(MUTED),
-                            ),
-                            inner.width,
-                            "",
-                        ));
-                    }
-                    if option
-                        .preview
-                        .as_deref()
-                        .is_some_and(|text| !text.trim().is_empty())
-                    {
-                        lines.push(Line::default());
-                        lines.extend(
-                            self.cached_preview(index, focused, inner.width)
-                                .iter()
-                                .cloned(),
-                        );
-                    }
-                }
-                self.details = Some((cache_key, lines));
-            }
-            let lines = &self.details.as_ref().expect("detail layout initialized").1;
-            let max_scroll = lines.len().saturating_sub(usize::from(detail_h));
-            self.detail_scroll = self.detail_scroll.min(max_scroll);
-            for (row, line) in lines
-                .iter()
-                .skip(self.detail_scroll)
-                .take(usize::from(detail_h))
-                .enumerate()
-            {
-                frame.render_widget(
-                    line,
-                    Rect::new(
-                        detail_area.x,
-                        detail_area.y + row as u16,
-                        detail_area.width,
-                        1,
-                    ),
-                );
-            }
-            self.states[index].menu.draw_choices(frame, menu_area);
         } else {
-            if self.states[index]
-                .question_layout
-                .as_ref()
-                .is_none_or(|(width, _)| *width != inner.width)
-            {
-                let lines = super::transcript::wrap_block(
-                    super::transcript::block_line(
-                        self.questions.questions[index].question.clone(),
-                        Style::default(),
-                    ),
-                    inner.width,
-                    "",
-                );
-                self.states[index].question_layout = Some((inner.width, lines));
-            }
-            let question_rows = &self.states[index]
-                .question_layout
-                .as_ref()
-                .expect("question layout initialized")
-                .1;
-            let question_lines = question_rows.len().min(4) as u16;
-            let want_menu = self.states[index].menu.choices_height(inner.width);
-            let question_h = question_lines.min(content_h.saturating_sub(1));
-            let gap_h = u16::from(content_h > question_h + 1);
-            let menu_h = want_menu.min(content_h - question_h - gap_h);
-            let question_area = Rect {
-                height: question_h,
-                ..content_area
-            };
-            let menu_area = Rect {
-                y: content_area.y + question_h + gap_h,
-                height: menu_h,
-                ..content_area
-            };
-            let preview_h = (content_h - question_h - gap_h - menu_h).min(3);
-            let preview_area = Rect {
-                y: content_area.y + question_h + gap_h + menu_h,
-                height: preview_h,
-                ..content_area
-            };
-            for (row, line) in question_rows
-                .iter()
-                .take(usize::from(question_h))
-                .enumerate()
-            {
-                frame.render_widget(
-                    line,
-                    Rect::new(
-                        question_area.x,
-                        question_area.y + row as u16,
-                        question_area.width,
-                        1,
-                    ),
-                );
-            }
-            if gap_h > 0 {
-                self.draw_separator(frame, question_area.bottom());
-            }
-            let focused = self.states[index].menu.selected_index().unwrap_or(0);
-            if preview_h > 0
-                && let Some(_) = self.questions.questions[index]
-                    .options
-                    .get(focused)
-                    .and_then(|option| option.preview.as_deref())
-                    .filter(|text| !text.trim().is_empty())
-            {
-                let lines = self.cached_preview(index, focused, inner.width);
-                for (row, line) in lines.iter().take(usize::from(preview_h)).enumerate() {
-                    frame.render_widget(
-                        line,
-                        Rect::new(
-                            preview_area.x,
-                            preview_area.y + row as u16,
-                            preview_area.width,
-                            1,
-                        ),
-                    );
-                }
-            }
-            self.states[index].menu.draw_choices(frame, menu_area);
+            self.states[index].menu.draw_choices(frame, content_area);
         }
 
         if let Some(error) = error {
@@ -1019,16 +788,10 @@ impl Panel {
                 .as_deref()
                 .filter(|header| !header.trim().is_empty())
                 .unwrap_or(&question.id);
-            lines.push(Line::from(vec![
-                Span::styled(
-                    display_text(chip).into_owned(),
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!(" — {}", display_text(&question.question)),
-                    Style::default().fg(MUTED),
-                ),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                display_text(chip).into_owned(),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )]));
             let state = &self.states[index];
             let mut parts: Vec<String> = state
                 .selected
@@ -1120,15 +883,10 @@ fn menu_items(
         if question.recommended == Some(index) {
             label.push_str(" (Recommended)");
         }
-        let description = option
-            .description
-            .as_deref()
-            .map(menu_text)
-            .unwrap_or_default();
         items.push(MenuItem {
             value: index,
             label,
-            description,
+            description: String::new(),
             icon: Some(icon),
             current: chosen,
         });
@@ -1146,24 +904,15 @@ fn menu_items(
 
 fn selection_icon(multi: bool, selected: bool) -> &'static str {
     match (multi, selected) {
-        (true, true) => "[✓]",
-        (true, false) => "[ ]",
-        (false, true) => "◉",
-        (false, false) => "○",
+        (true, true) => "☑",
+        (true, false) => "☐",
+        (false, true) => "⦿",
+        (false, false) => "◯",
     }
 }
 
 fn hint_line(hint: &'static str) -> Line<'static> {
     Line::styled(hint, Style::default().fg(DIM))
-}
-
-fn line_count(text: &str, width: u16) -> u16 {
-    if width == 0 {
-        return 0;
-    }
-    Paragraph::new(Text::from(text.to_owned()))
-        .wrap(Wrap { trim: true })
-        .line_count(width) as u16
 }
 
 #[cfg(test)]
@@ -1204,10 +953,6 @@ mod tests {
 
     fn ctrl(code: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL)
-    }
-
-    fn ctrl_key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
     fn render(panel: &mut Panel, width: u16, height: u16) -> String {
@@ -1269,21 +1014,18 @@ mod tests {
         assert_eq!(buffer[(3, y + 1)].bg, ASK_TAB_BG);
         assert_eq!(buffer[(15, y + 1)].symbol(), "速");
         assert_eq!(buffer[(27, y + 1)].symbol(), "S");
-        assert_eq!(buffer[(1, y + 3)].symbol(), "─");
-        assert_eq!(buffer[(1, y + 3)].fg, ASK_BORDER);
-        assert_eq!(buffer[(2, y + 4)].symbol(), "❯");
-        assert_eq!(buffer[(2, y + 4)].fg, ACCENT);
-        assert_eq!(buffer[(4, y + 4)].symbol(), "◉");
-        assert_eq!(buffer[(4, y + 4)].fg, ADDED);
-        assert_eq!(buffer[(6, y + 4)].symbol(), "L");
-        assert_eq!(buffer[(6, y + 4)].fg, ACCENT);
-        assert_eq!(buffer[(6, y + 4)].bg, ASK_BG);
-        assert_eq!(buffer[(8, y + 5)].symbol(), "U");
-        assert_eq!(buffer[(8, y + 5)].fg, MUTED);
-        assert_eq!(buffer[(4, y + 6)].symbol(), "○");
-        assert_eq!(buffer[(4, y + 6)].fg, DIM);
+        assert_eq!(buffer[(2, y + 2)].symbol(), "❯");
+        assert_eq!(buffer[(2, y + 2)].fg, ACCENT);
+        assert_eq!(buffer[(4, y + 2)].symbol(), "⦿");
+        assert_eq!(buffer[(4, y + 2)].fg, ADDED);
+        assert!(buffer[(4, y + 2)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(6, y + 2)].symbol(), "L");
+        assert_eq!(buffer[(6, y + 2)].fg, ACCENT);
+        assert_eq!(buffer[(6, y + 2)].bg, ASK_BG);
+        assert_eq!(buffer[(4, y + 3)].symbol(), "◯");
+        assert_eq!(buffer[(4, y + 3)].fg, DIM);
         assert_eq!(buffer[(1, area.bottom() - 3)].symbol(), "─");
-        assert_eq!(buffer[(2, area.bottom() - 2)].symbol(), "↵");
+        assert_eq!(buffer[(2, area.bottom() - 2)].symbol(), "S");
         assert_eq!(buffer[(2, area.bottom() - 2)].fg, DIM);
     }
 
@@ -1408,9 +1150,11 @@ mod tests {
         panel.key(key(KeyCode::BackTab));
         assert_eq!(panel.page, Page::Question(0));
         panel.key(key(KeyCode::Home));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+        assert!(matches!(panel.key(key(KeyCode::Char(' '))), Action::None));
+        assert_eq!(panel.page, Page::Question(0));
         assert_eq!(panel.states[0].selected, vec![0]);
         assert!(panel.states[0].custom.is_empty());
+        panel.key(key(KeyCode::Enter));
         panel.key(key(KeyCode::Enter));
         assert_eq!(panel.page, Page::Review);
         let action = panel.key(key(KeyCode::Enter));
@@ -1454,17 +1198,32 @@ mod tests {
     }
 
     #[test]
-    fn details_expand_and_scroll() {
-        let mut panel = panel(vec![question("q", false, Some(0), &["A"])]);
-        assert!(!panel.expanded);
-        panel.key(ctrl('o'));
-        assert!(panel.expanded);
-        panel.key(ctrl_key(KeyCode::Down));
-        assert_eq!(panel.detail_scroll, 1);
-        panel.key(ctrl_key(KeyCode::Up));
-        assert_eq!(panel.detail_scroll, 0);
-        panel.key(ctrl('o'));
-        assert!(!panel.expanded);
+    fn single_space_selects_without_submitting_and_details_key_is_ignored() {
+        let mut panel = panel(vec![question("q", false, Some(1), &["A", "B"])]);
+        assert!(matches!(panel.key(key(KeyCode::Char(' '))), Action::None));
+        assert_eq!(panel.page, Page::Question(0));
+        assert_eq!(panel.states[0].selected, [1]);
+        assert!(!panel.submitted);
+        let before = render(&mut panel, 100, 24);
+        assert!(before.contains("⦿ B (Recommended)"));
+        assert!(!before.contains("details"));
+        assert!(matches!(panel.key(ctrl('o')), Action::None));
+        assert_eq!(render(&mut panel, 100, 24), before);
+        panel.key(key(KeyCode::Home));
+        panel.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        panel.key(KeyEvent::new_with_kind(
+            KeyCode::Char(' '),
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        ));
+        assert_eq!(panel.states[0].selected, [1]);
+        panel.key(key(KeyCode::Char(' ')));
+        assert_eq!(panel.states[0].selected, [0]);
+        assert!(!panel.submitted);
+        let Action::Submit(answers) = panel.key(key(KeyCode::Enter)) else {
+            panic!("按 Enter 后应提交已选答案");
+        };
+        assert_eq!(answers[0].selected_options, ["A"]);
     }
 
     #[test]
@@ -1480,27 +1239,22 @@ mod tests {
     }
 
     #[test]
-    fn draw_renders_preview_markdown_and_survives_resize() {
+    fn picker_only_shows_options_and_survives_resize() {
         let mut q = question("q", false, Some(0), &["A"]);
+        q.options[0].description = Some("Option description".into());
         q.options[0].preview = Some("# Head\n\ntext".into());
         let mut panel = panel(vec![q]);
-        let screen = render(&mut panel, 40, 24);
-        assert!(
-            screen.contains("Head"),
-            "preview markdown missing: {screen}"
-        );
-        assert!(screen.contains("q"), "question chip missing");
-        panel.key(ctrl('o'));
-        let screen = render(&mut panel, 40, 24);
-        assert!(screen.contains("Head"), "expanded preview missing");
+        for (width, height) in [(40, 24), (24, 12), (40, 24)] {
+            let screen = render(&mut panel, width, height);
+            assert!(screen.contains("◯ A"), "应显示选项：{screen}");
+            assert!(!screen.contains("Choose for q?"));
+            assert!(!screen.contains("Option description"));
+            assert!(!screen.contains("Head"));
+            assert!(!screen.contains("text"));
+        }
         panel.key(key(KeyCode::Char(' ')));
-        render(&mut panel, 24, 12);
-        panel.key(ctrl_key(KeyCode::Down));
-        let resized = render(&mut panel, 24, 12);
-        assert!(
-            resized.contains("Head"),
-            "preview became unreachable after resize: {resized}"
-        );
+        let screen = render(&mut panel, 40, 24);
+        assert!(screen.contains("⦿ A"));
     }
 
     #[test]
