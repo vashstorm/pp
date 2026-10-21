@@ -1709,7 +1709,7 @@ fn context_auto_grow_batches(protocol: Protocol, server: &Server, cli: &mut Live
 }
 
 fn context_auto_rewrite_settings(home: &std::path::Path, settings: &str) {
-    std::fs::write(config_path(home, "settings.jsonc"), settings).unwrap();
+    std::fs::write(config_path(home, "settings.yml"), settings).unwrap();
 }
 
 fn context_auto_resume(home: &std::path::Path, id: &str, prompt: &str) -> LiveCli {
@@ -2301,7 +2301,7 @@ fn context_resume_capacity_comes_from_models_not_the_saved_log_both_protocols() 
         // Removing the capacity from the current model config, then resuming,
         // must not reuse a window inferred from the saved log.
         std::fs::write(
-            config_path(dir.path(), "models.jsonc"),
+            config_path(dir.path(), "models.yml"),
             protocol.models(&server, &[("primary", None)]),
         )
         .unwrap();
@@ -2334,7 +2334,7 @@ fn context_resume_capacity_comes_from_models_not_the_saved_log_both_protocols() 
         // Restoring the capacity in the current catalog enables the trigger
         // immediately for the same saved history.
         std::fs::write(
-            config_path(dir.path(), "models.jsonc"),
+            config_path(dir.path(), "models.yml"),
             protocol.models(&server, &[("primary", Some(32768))]),
         )
         .unwrap();
@@ -2630,7 +2630,7 @@ fn context_auto_compact_rejects_system_over_threshold_both_protocols() {
         );
         let window = bytes.div_ceil(3) + 6000;
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             protocol.models(&server, &[("open", None), ("tight", Some(window))]),
         )
         .unwrap();

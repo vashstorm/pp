@@ -76,8 +76,8 @@ fn tui_cancel_mcp_stops_real_work_and_restarts_only_for_new_call() {
     for protocol in ["completion", "response"] {
         let provider = server();
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(dir.path(), "settings.jsonc"), cancel_mcp_settings("cancel_once", false)).unwrap();
-        std::fs::write(config_path(dir.path(), "models.jsonc"), response_models(&provider, Some(protocol))).unwrap();
+        std::fs::write(config_path(dir.path(), "settings.yml"), cancel_mcp_settings("cancel_once", false)).unwrap();
+        std::fs::write(config_path(dir.path(), "models.yml"), response_models(&provider, Some(protocol))).unwrap();
         let mut pty = Pty::start_with_existing_files(dir.path());
         cancel_mcp_begin(&mut pty, &provider, dir.path(), protocol);
         pty.input("new MCP task\r");
@@ -110,8 +110,8 @@ fn tui_cancel_mcp_stops_real_work_and_restarts_only_for_new_call() {
 fn tui_cancel_mcp_schema_change_rejects_new_call_without_poisoning_local_tools() {
     let provider = server();
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(dir.path(), "settings.jsonc"), cancel_mcp_settings("cancel_then_schema_change", false)).unwrap();
-    std::fs::write(config_path(dir.path(), "models.jsonc"), fixture_models(&provider)).unwrap();
+    std::fs::write(config_path(dir.path(), "settings.yml"), cancel_mcp_settings("cancel_then_schema_change", false)).unwrap();
+    std::fs::write(config_path(dir.path(), "models.yml"), fixture_models(&provider)).unwrap();
     let mut pty = Pty::start_with_existing_files(dir.path());
     cancel_mcp_begin(&mut pty, &provider, dir.path(), "completion");
     pty.input("schema check\r");
@@ -148,8 +148,8 @@ fn tui_cancel_mcp_schema_change_rejects_new_call_without_poisoning_local_tools()
 fn tui_cancel_mcp_ctrl_c_reaps_replacement_during_rediscovery() {
     let provider = server();
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(dir.path(), "settings.jsonc"), cancel_mcp_settings("cancel_once", true)).unwrap();
-    std::fs::write(config_path(dir.path(), "models.jsonc"), fixture_models(&provider)).unwrap();
+    std::fs::write(config_path(dir.path(), "settings.yml"), cancel_mcp_settings("cancel_once", true)).unwrap();
+    std::fs::write(config_path(dir.path(), "models.yml"), fixture_models(&provider)).unwrap();
     let mut pty = Pty::start_with_existing_files(dir.path());
     cancel_mcp_begin(&mut pty, &provider, dir.path(), "completion");
     pty.input("restart task\r");

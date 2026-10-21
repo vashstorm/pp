@@ -563,9 +563,9 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
         for phase in ["headers", "sse"] {
             let raw = CancelRawModel::start();
             let home = tempfile::tempdir().unwrap();
-            std::fs::write(config_path(home.path(), "settings.jsonc"), CANCEL_SETTINGS).unwrap();
+            std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
             std::fs::write(
-                config_path(home.path(), "models.jsonc"),
+                config_path(home.path(), "models.yml"),
                 raw.models(protocol),
             )
             .unwrap();
@@ -651,9 +651,9 @@ fn tui_cancel_tool_batch_stops_process_group_and_pairs_results_on_next_request()
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(home.path(), "settings.jsonc"), CANCEL_SETTINGS).unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             response_models(&fixture, Some(protocol)),
         )
         .unwrap();
@@ -723,9 +723,9 @@ fn tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_l
             let fixture = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
-            std::fs::write(config_path(home.path(), "settings.jsonc"), CANCEL_SETTINGS).unwrap();
+            std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
             std::fs::write(
-                config_path(home.path(), "models.jsonc"),
+                config_path(home.path(), "models.yml"),
                 response_models(&fixture, Some(protocol)),
             )
             .unwrap();
@@ -954,9 +954,9 @@ fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(home.path(), "settings.jsonc"), CANCEL_SETTINGS).unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             response_models(&fixture, Some(protocol)),
         )
         .unwrap();

@@ -3,8 +3,8 @@ fn agents_tui_init_submit_cancel_then_run_with_latest_rules_both_protocols() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let cwd = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(cwd.path(), "settings.jsonc"), fixture_settings()).unwrap();
-        std::fs::write(config_path(cwd.path(), "models.jsonc"), response_models(&fixture, Some(protocol))).unwrap();
+        std::fs::write(config_path(cwd.path(), "settings.yml"), fixture_settings()).unwrap();
+        std::fs::write(config_path(cwd.path(), "models.yml"), response_models(&fixture, Some(protocol))).unwrap();
         let mut pty = Pty::start_with_existing_files(cwd.path());
         pty.ready();
         pty.input("/ini");

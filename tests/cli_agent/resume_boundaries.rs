@@ -44,7 +44,7 @@ fn resume_boundary_journal(home: &Path, id: &str) -> std::path::PathBuf {
 // popup that a failed or successful resume renders above the input.
 fn resume_boundary_quick_notifications(home: &Path) {
     std::fs::write(
-        config_path(home, "settings.jsonc"),
+        config_path(home, "settings.yml"),
         r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#,
     )
     .unwrap();
@@ -61,8 +61,8 @@ fn resume_boundary_create_session_with(
     user_message: &str,
     answer: &str,
 ) -> String {
-    std::fs::write(config_path(home, "settings.jsonc"), settings).unwrap();
-    std::fs::write(config_path(home, "models.jsonc"), models).unwrap();
+    std::fs::write(config_path(home, "settings.yml"), settings).unwrap();
+    std::fs::write(config_path(home, "models.yml"), models).unwrap();
     let before = resume_boundary_session_ids(home);
     let mut pty = Pty::start_with_args(cwd, home, &[]);
     pty.ready();
@@ -342,12 +342,12 @@ fn tui_slash_resume_truncates_long_first_user_message_summary() {
     let project = tempfile::tempdir().unwrap();
     let launch = tempfile::tempdir().unwrap();
     std::fs::write(
-        config_path(home.path(), "settings.jsonc"),
+        config_path(home.path(), "settings.yml"),
         fixture_settings(),
     )
     .unwrap();
     std::fs::write(
-        config_path(home.path(), "models.jsonc"),
+        config_path(home.path(), "models.yml"),
         fixture_models(&server),
     )
     .unwrap();
@@ -406,12 +406,12 @@ fn tui_slash_resume_empty_state_without_sessions_directory() {
     let home = tempfile::tempdir().unwrap();
     let launch = tempfile::tempdir().unwrap();
     std::fs::write(
-        config_path(home.path(), "settings.jsonc"),
+        config_path(home.path(), "settings.yml"),
         fixture_settings(),
     )
     .unwrap();
     std::fs::write(
-        config_path(home.path(), "models.jsonc"),
+        config_path(home.path(), "models.yml"),
         fixture_models(&server),
     )
     .unwrap();
@@ -730,7 +730,7 @@ fn tui_slash_resume_selecting_current_session_is_a_noop() {
     let launch = tempfile::tempdir().unwrap();
     resume_boundary_quick_notifications(home.path());
     std::fs::write(
-        config_path(home.path(), "models.jsonc"),
+        config_path(home.path(), "models.yml"),
         fixture_models(&server),
     )
     .unwrap();
@@ -795,7 +795,7 @@ fn tui_slash_resume_interrupted_session_replays_partial_text_once() {
         let path = api_path(protocol);
         resume_boundary_quick_notifications(home.path());
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             response_models(&server, Some(protocol)),
         )
         .unwrap();
@@ -947,12 +947,12 @@ fn tui_slash_resume_while_busy_does_not_switch_or_request() {
     let home = tempfile::tempdir().unwrap();
     let launch = tempfile::tempdir().unwrap();
     std::fs::write(
-        config_path(home.path(), "settings.jsonc"),
+        config_path(home.path(), "settings.yml"),
         fixture_settings(),
     )
     .unwrap();
     std::fs::write(
-        config_path(home.path(), "models.jsonc"),
+        config_path(home.path(), "models.yml"),
         fixture_models(&server),
     )
     .unwrap();

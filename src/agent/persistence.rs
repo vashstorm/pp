@@ -1680,10 +1680,10 @@ mod tests {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
             let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-            let models = dir.path().join("models.jsonc");
+            let models = dir.path().join("models.yml");
             fs::write(&models, json!({"providers":[{"id":"fixture","protocol":protocol,"api_key":"fixture-key","base_url":format!("http://{}/v1",server.server_addr()),"models":[{"id":"primary","model":"fixture-model"}]}]}).to_string()).unwrap();
             let catalog =
-                ModelCatalog::from_files(&dir.path().join("settings.jsonc"), &models).unwrap();
+                ModelCatalog::from_files(&dir.path().join("settings.yml"), &models).unwrap();
             let mut agent = Agent::new(
                 catalog,
                 Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
@@ -1795,7 +1795,7 @@ mod tests {
     fn write_failure_preserves_settings_and_blocks_requests_until_reset() {
         use crate::{agent::Agent, config::ModelCatalog, tools::Tools};
         let dir = tempfile::tempdir().unwrap();
-        let models = dir.path().join("models.jsonc");
+        let models = dir.path().join("models.yml");
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         fs::write(&models, serde_json::json!({"providers":[
             {"id":"a","protocol":"completion","api_key":"fixture", "base_url":format!("http://{}/v1", server.server_addr()),
@@ -1810,12 +1810,12 @@ mod tests {
             ("a/one", "effort"),
         ] {
             fs::write(
-                dir.path().join("settings.jsonc"),
+                dir.path().join("settings.yml"),
                 serde_json::json!({"default_model":source}).to_string(),
             )
             .unwrap();
             let catalog =
-                ModelCatalog::from_files(&dir.path().join("settings.jsonc"), &models).unwrap();
+                ModelCatalog::from_files(&dir.path().join("settings.yml"), &models).unwrap();
             let mut agent = Agent::new(
                 catalog,
                 Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),

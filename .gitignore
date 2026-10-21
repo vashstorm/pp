@@ -1,6 +1,8 @@
 /target/
 /.cargo/
 /models.jsonc
+/models.yml
+/settings.yml
 
 # 工具运行时生成的项目内缓存与临时文件
 /.pp-cache/
@@ -11,3 +13,6 @@
 
 # git worktree 目录
 /.worktree/
+
+# Playwright MCP 运行时日志与页面快照
+/.playwright-mcp/

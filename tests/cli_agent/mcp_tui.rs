@@ -2,8 +2,8 @@
 fn mcp_tui_runs_tools_in_worker_and_keeps_input_draft_responsive() {
     let provider = server();
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(dir.path(), "settings.jsonc"), super::mcp::settings("call_timeout").to_string()).unwrap();
-    std::fs::write(config_path(dir.path(), "models.jsonc"), fixture_models(&provider)).unwrap();
+    std::fs::write(config_path(dir.path(), "settings.yml"), super::mcp::settings("call_timeout").to_string()).unwrap();
+    std::fs::write(config_path(dir.path(), "models.yml"), fixture_models(&provider)).unwrap();
     let mut pty = Pty::start_with_existing_files(dir.path());
     pty.ready();
     pty.input("MCP task\r");
@@ -32,8 +32,8 @@ fn mcp_tui_exit_reaps_servers_while_idle_waiting_for_model_or_running_tool() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = super::mcp::settings("call_timeout");
         config["mcp_servers"]["local"]["timeout_seconds"] = json!(30);
-        std::fs::write(config_path(dir.path(),"settings.jsonc"),config.to_string()).unwrap();
-        std::fs::write(config_path(dir.path(),"models.jsonc"),fixture_models(&provider)).unwrap();
+        std::fs::write(config_path(dir.path(),"settings.yml"),config.to_string()).unwrap();
+        std::fs::write(config_path(dir.path(),"models.yml"),fixture_models(&provider)).unwrap();
         let mut pty = Pty::start_with_existing_files(dir.path());
         pty.ready();
         let mut pending = None;

@@ -484,12 +484,12 @@ fn logging_operational_events_do_not_store_content_or_secrets() {
         let failure_home = tempfile::tempdir().unwrap();
         let failure_work = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(failure_home.path(), "settings.jsonc"),
+            config_path(failure_home.path(), "settings.yml"),
             fixture_settings(),
         )
         .unwrap();
         std::fs::write(
-            config_path(failure_home.path(), "models.jsonc"),
+            config_path(failure_home.path(), "models.yml"),
             api.models(&failure_server),
         )
         .unwrap();
@@ -581,12 +581,12 @@ fn debug_logging_is_opt_in() {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             fixture_models(&server),
         )
         .unwrap();
         if let Some(settings) = settings {
-            fs::write(config_path(home.path(), "settings.jsonc"), settings).unwrap();
+            fs::write(config_path(home.path(), "settings.yml"), settings).unwrap();
         }
         let cli = Cli::start_with_existing_files(home.path(), Some("private disabled prompt"));
         let (request, _) = receive(&server);

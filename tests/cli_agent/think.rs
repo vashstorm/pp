@@ -102,11 +102,11 @@ fn think_commands_preserve_history_and_level_across_model_switch_and_new() {
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("thinking level must be one of"));
     assert_eq!(
-        std::fs::read_to_string(config_path(dir.path(), "settings.jsonc")).unwrap(),
+        std::fs::read_to_string(config_path(dir.path(), "settings.yml")).unwrap(),
         settings
     );
     assert_eq!(
-        std::fs::read_to_string(config_path(dir.path(), "models.jsonc")).unwrap(),
+        std::fs::read_to_string(config_path(dir.path(), "models.yml")).unwrap(),
         models
     );
 }
@@ -139,7 +139,7 @@ fn think_level_runtime_changes_do_not_override_startup_settings_after_restart() 
         cli.input("/quit\n");
         assert!(cli.finish().status.success());
         assert_eq!(
-            std::fs::read_to_string(config_path(dir.path(), "settings.jsonc")).unwrap(),
+            std::fs::read_to_string(config_path(dir.path(), "settings.yml")).unwrap(),
             settings
         );
 
@@ -564,10 +564,10 @@ fn think_level_missing_settings_or_field_explicitly_sends_none_to_both_apis() {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
             if let Some(settings) = settings {
-                std::fs::write(config_path(dir.path(), "settings.jsonc"), settings).unwrap();
+                std::fs::write(config_path(dir.path(), "settings.yml"), settings).unwrap();
             }
             std::fs::write(
-                config_path(dir.path(), "models.jsonc"),
+                config_path(dir.path(), "models.yml"),
                 response_models(&server, Some(protocol)),
             )
             .unwrap();

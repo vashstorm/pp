@@ -43,8 +43,8 @@ fn tui_model_ctrl_s_saves_selection_for_next_startup_and_restores_picker_draft()
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();
-        let path = config_path(home.path(), "settings.jsonc");
-        let original = "{\n  // 保留默认模型之外的设置\n  \"think_level\": \"high\",\n  \"edit\": \"hashline\",\n  \"default_model\": \"fixture/primary\", // 默认模型说明\n}\n";
+        let path = config_path(home.path(), "settings.yml");
+        let original = "# 保留默认模型之外的设置\nthink_level: high\nedit: hashline\ndefault_model: fixture/primary # 默认模型说明\n";
         std::fs::write(&path, original).unwrap();
         let models = json!({"providers":[
             slash_provider(&server, "fixture", protocol, json!([
@@ -54,7 +54,7 @@ fn tui_model_ctrl_s_saves_selection_for_next_startup_and_restores_picker_draft()
                 {"id":"team/secondary","model":"second-model"}
             ]))
         ]}).to_string();
-        let models_path = config_path(home.path(), "models.jsonc");
+        let models_path = config_path(home.path(), "models.yml");
         std::fs::write(&models_path, &models).unwrap();
         let mut pty = Pty::start_with_existing_files(home.path());
         pty.ready_model("first-model");
@@ -74,11 +74,11 @@ fn tui_model_ctrl_s_saves_selection_for_next_startup_and_restores_picker_draft()
         pty.input("\x01\x0b");
         pty.draft("");
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("// 保留默认模型之外的设置"));
-        assert!(saved.contains("// 默认模型说明"));
-        assert!(saved.contains("\"think_level\": \"high\""));
-        assert!(saved.contains("\"edit\": \"hashline\""));
-        assert!(saved.contains("\"default_model\": \"gateway/team/secondary\""));
+        assert!(saved.contains("# 保留默认模型之外的设置"));
+        assert!(saved.contains("# 默认模型说明"));
+        assert!(saved.contains("think_level: high"));
+        assert!(saved.contains("edit: hashline"));
+        assert!(saved.contains("default_model: gateway/team/secondary"));
         assert_eq!(std::fs::read_to_string(&models_path).unwrap(), models);
         no_more(&server);
         pty.input("verify current model\r");
@@ -110,7 +110,7 @@ fn tui_model_ctrl_s_saves_selection_for_next_startup_and_restores_picker_draft()
         restarted.ready_model("second-model");
         restarted.draft("草稿🙂");
         assert_eq!(restarted.parser.screen().cursor_position(), cursor);
-        assert!(std::fs::read_to_string(&path).unwrap().contains("\"default_model\": \"fixture/primary\""));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("default_model: fixture/primary"));
         let invalid = "{ broken secret-marker-config }";
         std::fs::write(&path, invalid).unwrap();
         restarted.input("\x10");
@@ -133,8 +133,8 @@ fn tui_model_ctrl_s_saves_selection_for_next_startup_and_restores_picker_draft()
 fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(home.path(), "models.jsonc"), fixture_models(&server)).unwrap();
-    let path = config_path(home.path(), "settings.jsonc");
+    std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&server)).unwrap();
+    let path = config_path(home.path(), "settings.yml");
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready_model("fixture-model");
     pty.input("/model\r");
@@ -143,7 +143,7 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     pty.text("Default model saved: fixture/primary");
     pty.ready_model("fixture-model");
     pty.draft("");
-    assert!(std::fs::read_to_string(&path).unwrap().contains("\"default_model\": \"fixture/primary\""));
+    assert!(std::fs::read_to_string(&path).unwrap().contains("default_model: fixture/primary"));
 
     let invalid = "{ broken secret-marker-config }";
     std::fs::write(&path, invalid).unwrap();
@@ -165,11 +165,11 @@ fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();
-        let path = config_path(home.path(), "settings.jsonc");
-        let original = "{\n  // 保留其他设置与注释\n  \"think_level\": \"high\", // 等级说明\n  \"edit\": \"hashline\",\n  \"disabled_skills\": [\"uninstalled\"],\n}\n";
+        let path = config_path(home.path(), "settings.yml");
+        let original = "# 保留其他设置与注释\nthink_level: high # 等级说明\nedit: hashline\ndisabled_skills: [uninstalled]\n";
         std::fs::write(&path, original).unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             response_models(&server, Some(protocol)),
         )
         .unwrap();
@@ -199,11 +199,11 @@ fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
         pty.input("\x01\x0b");
         pty.draft("");
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("// 保留其他设置与注释"));
-        assert!(saved.contains("// 等级说明"));
-        assert!(saved.contains("\"think_level\": \"xhigh\""));
-        assert!(saved.contains("\"edit\": \"hashline\""));
-        assert!(saved.contains("\"disabled_skills\": [\"uninstalled\"]"));
+        assert!(saved.contains("# 保留其他设置与注释"));
+        assert!(saved.contains("# 等级说明"));
+        assert!(saved.contains("think_level: xhigh"));
+        assert!(saved.contains("edit: hashline"));
+        assert!(saved.contains("disabled_skills: [uninstalled]"));
         no_more(&server);
         pty.input("\x03");
         pty.finish();
@@ -245,11 +245,11 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     std::fs::write(
-        config_path(home.path(), "models.jsonc"),
+        config_path(home.path(), "models.yml"),
         fixture_models(&server),
     )
     .unwrap();
-    let path = config_path(home.path(), "settings.jsonc");
+    let path = config_path(home.path(), "settings.yml");
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready_effort("no think");
     pty.input("/effort ");
@@ -267,7 +267,7 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
         )
     });
     pty.ready_effort("no think");
-    assert!(std::fs::read_to_string(&path).unwrap().contains("\"low\""));
+    assert!(std::fs::read_to_string(&path).unwrap().contains("think_level: low"));
 
     // 启动后配置变为无效内容时，保存应失败且不暴露原文。
     let invalid = "{ broken secret-marker-config }";
@@ -328,12 +328,12 @@ fn model_thinking_models(server: &Server) -> String {
 fn model_thinking_home(server: &Server) -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     std::fs::write(
-        config_path(home.path(), "settings.jsonc"),
+        config_path(home.path(), "settings.yml"),
         "{\n  \"think_level\": \"max\"\n}\n",
     )
     .unwrap();
     std::fs::write(
-        config_path(home.path(), "models.jsonc"),
+        config_path(home.path(), "models.yml"),
         model_thinking_models(server),
     )
     .unwrap();
@@ -545,7 +545,7 @@ fn model_thinking_tui_single_effort_shift_tab_retains_level_and_draft() {
 fn model_thinking_tui_ctrl_s_saves_global_without_overriding_model_default() {
     let server = server();
     let home = model_thinking_home(&server);
-    let settings = config_path(home.path(), "settings.jsonc");
+    let settings = config_path(home.path(), "settings.yml");
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready_effort("high");
 
@@ -563,7 +563,7 @@ fn model_thinking_tui_ctrl_s_saves_global_without_overriding_model_default() {
     assert!(
         std::fs::read_to_string(&settings)
             .unwrap()
-            .contains("\"think_level\": \"low\"")
+            .contains("think_level: low")
     );
     pty.ready_effort("high");
     no_more(&server);

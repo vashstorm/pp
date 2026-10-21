@@ -909,7 +909,7 @@ fn default_reasoning_rejection_allows_manual_effort_recovery_without_committing_
     assert!(!stderr.contains(&server.server_addr().to_string()));
     assert!(!dir.path().join("must-not-exist").exists());
     assert_eq!(
-        std::fs::read_to_string(config_path(dir.path(), "settings.jsonc")).unwrap(),
+        std::fs::read_to_string(config_path(dir.path(), "settings.yml")).unwrap(),
         settings
     );
     assert_clean_pipes(&output);
@@ -1727,7 +1727,7 @@ fn tool_limits_remain_startup_snapshots_across_model_switch_and_new() {
         let (request, _) = protocol.receive(server);
         // 启动后改配置，切换模型和新建会话均不得放宽工具限制。
         std::fs::write(
-            config_path(dir.path(), "settings.jsonc"),
+            config_path(dir.path(), "settings.yml"),
             r#"{"read_max_bytes":65536,"read_max_lines":2000,"bash_timeout_seconds":120}"#,
         )
         .unwrap();
@@ -1785,12 +1785,8 @@ fn search_tools_fallback_roundtrip_both_protocols() {
             Protocol::Chat => fixture_models(&server),
             Protocol::Responses => response_models(&server, Some("response")),
         };
-        std::fs::write(
-            config_path(dir.path(), "settings.jsonc"),
-            fixture_settings(),
-        )
-        .unwrap();
-        std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
+        std::fs::write(config_path(dir.path(), "settings.yml"), fixture_settings()).unwrap();
+        std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
         let mut cli = LiveCli::new(Cli::spawn(
             dir.path(),
             &["-p", "search files"],

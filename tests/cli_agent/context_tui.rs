@@ -45,12 +45,12 @@ fn context_tui_start_with_policy(
 ) -> (tempfile::TempDir, Pty) {
     let home = tempfile::tempdir().unwrap();
     std::fs::write(
-        config_path(home.path(), "settings.jsonc"),
+        config_path(home.path(), "settings.yml"),
         context_tui_settings(auto_compact, threshold_percent),
     )
     .unwrap();
     std::fs::write(
-        config_path(home.path(), "models.jsonc"),
+        config_path(home.path(), "models.yml"),
         context_tui_models(server, protocol, window),
     )
     .unwrap();
@@ -461,12 +461,12 @@ fn context_tui_seed_large_session(
     protocol: &str,
 ) -> (String, u64) {
     std::fs::write(
-        config_path(home, "settings.jsonc"),
+        config_path(home, "settings.yml"),
         context_tui_settings(false, 80),
     )
     .unwrap();
     std::fs::write(
-        config_path(home, "models.jsonc"),
+        config_path(home, "models.yml"),
         context_tui_models(server, protocol, 32768),
     )
     .unwrap();
@@ -762,7 +762,7 @@ fn context_tui_auto_compact_cancel_keeps_draft_and_recovers_accepted_history() {
         pty.input("/quit\r");
         pty.finish();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             context_tui_settings(false, 80),
         )
         .unwrap();
@@ -914,7 +914,7 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
         // 新输入与审计可写完；候选含完整 40KB 最新批次，超过 16KB 余量。
         let limit = (seeded_len + 16384).div_ceil(1024) * 1024;
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             context_tui_settings(true, 80),
         )
         .unwrap();

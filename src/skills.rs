@@ -1,6 +1,5 @@
 use crate::config;
 use anyhow::{Context, Result, ensure};
-use jsonc_parser::cst::CstInputValue;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -72,7 +71,7 @@ impl Skills {
 
     pub(crate) fn from_dir(dir: &Path) -> Self {
         let mut skills = Self {
-            settings_path: dir.join("settings.jsonc"),
+            settings_path: dir.join("settings.yml"),
             home: dir
                 .parent()
                 .and_then(Path::parent)
@@ -250,10 +249,10 @@ impl Skills {
             }
             Ok((
                 "disabled_skills",
-                CstInputValue::Array(
+                serde_yaml::Value::Sequence(
                     disabled
                         .iter()
-                        .map(|name| CstInputValue::String(name.clone()))
+                        .map(|name| serde_yaml::Value::String(name.clone()))
                         .collect(),
                 ),
             ))
@@ -346,7 +345,7 @@ mod tests {
         skill(&dir.join("relative"), "z", "same", "first");
         skill(&home.path().join("other"), "a", "same", "second");
         skill(&home.path().join("other"), "b", "other", "third");
-        fs::write(dir.join("settings.jsonc"), json!({"skill_dirs":["relative", "~/other", home.path().join("other"), "missing"],"disabled_skills":["same"]}).to_string()).unwrap();
+        fs::write(dir.join("settings.yml"), json!({"skill_dirs":["relative", "~/other", home.path().join("other"), "missing"],"disabled_skills":["same"]}).to_string()).unwrap();
         let skills = Skills::from_dir(&dir);
         assert_eq!(skills.entries.len(), 2);
         assert!(!skills.entries[0].enabled);
@@ -359,7 +358,7 @@ mod tests {
         assert!(!skills.summary().contains("same"));
         assert!(skills.summary().contains("other"));
         assert_eq!(skills.diagnostics.len(), 1);
-        fs::write(dir.join("settings.jsonc"), r#"{"skill_dirs":[]}"#).unwrap();
+        fs::write(dir.join("settings.yml"), r#"{"skill_dirs":[]}"#).unwrap();
         let mut skills = skills;
         skills.reload().unwrap();
         assert!(skills.entries.is_empty());
@@ -381,8 +380,12 @@ mod tests {
     fn saves_preserve_comments_other_fields_permissions_and_unknown_disabled_names() {
         let (_home, dir) = fixture();
         skill(&dir.join("skills"), "a", "rust", "body");
-        let path = dir.join("settings.jsonc");
-        fs::write(&path, "{\n  // keep this comment\n  \"think_level\": \"high\",\n  \"disabled_skills\": [\"not-installed\"], // keep trailing comment\n}\n").unwrap();
+        let path = dir.join("settings.yml");
+        fs::write(
+            &path,
+            "# 保留此注释\nthink_level: high\ndisabled_skills: [not-installed] # 保留行尾注释\n",
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -399,9 +402,9 @@ mod tests {
             );
         }
         let text = fs::read_to_string(&path).unwrap();
-        assert!(text.contains("// keep this comment"));
-        assert!(text.contains("// keep trailing comment"));
-        assert!(text.contains("\"think_level\": \"high\""));
+        assert!(text.contains("# 保留此注释"));
+        assert!(text.contains("# 保留行尾注释"));
+        assert!(text.contains("think_level: high"));
         let settings = config::read_settings(&path).unwrap();
         assert_eq!(settings.disabled_skills, ["not-installed", "rust"]);
         assert!(!skills.entries[0].enabled);
@@ -415,14 +418,14 @@ mod tests {
         skill(&dir.join("skills"), "a", "rust", "body");
         let mut skills = Skills::from_dir(&dir);
         skills.save_selection(&[("rust".into(), false)]).unwrap();
-        assert!(dir.join("settings.jsonc").is_file());
-        fs::write(dir.join("settings.jsonc"), "invalid jsonc").unwrap();
+        assert!(dir.join("settings.yml").is_file());
+        fs::write(dir.join("settings.yml"), "invalid yaml").unwrap();
         assert!(skills.save_selection(&[("rust".into(), true)]).is_err());
         assert!(skills.reload().is_err());
         assert!(!skills.entries[0].enabled);
         assert_eq!(
-            fs::read_to_string(dir.join("settings.jsonc")).unwrap(),
-            "invalid jsonc"
+            fs::read_to_string(dir.join("settings.yml")).unwrap(),
+            "invalid yaml"
         );
         assert!(skills.load("rust").is_err());
     }
@@ -450,8 +453,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let (_home, dir) = fixture();
         skill(&dir.join("skills"), "a", "rust", "body");
-        let path = dir.join("settings.jsonc");
-        fs::write(&path, "{ /* original */ }\n").unwrap();
+        let path = dir.join("settings.yml");
+        fs::write(&path, "{} # 原始配置\n").unwrap();
         let mut skills = Skills::from_dir(&dir);
         let permissions = fs::metadata(&dir).unwrap().permissions();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
@@ -459,7 +462,7 @@ mod tests {
         fs::set_permissions(&dir, permissions).unwrap();
         assert!(result.is_err());
         assert!(skills.entries[0].enabled);
-        assert_eq!(fs::read_to_string(path).unwrap(), "{ /* original */ }\n");
+        assert_eq!(fs::read_to_string(path).unwrap(), "{} # 原始配置\n");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
     }
 }

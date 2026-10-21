@@ -103,12 +103,12 @@ fn ask_final_reply(request: Request, protocol: &str, text: &str) {
 fn ask_tui_start(server: &Server, home: &Path, project: &Path, protocol: &str) -> Pty {
     // 弹窗一秒淡出，避免与 5 秒栅栏竞争。
     std::fs::write(
-        config_path(home, "settings.jsonc"),
+        config_path(home, "settings.yml"),
         r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#,
     )
     .unwrap();
     std::fs::write(
-        config_path(home, "models.jsonc"),
+        config_path(home, "models.yml"),
         response_models(server, Some(protocol)),
     )
     .unwrap();
@@ -789,8 +789,8 @@ fn ask_tui_schema_survives_new_model_switch_and_resume() {
         ]))
     ]})
     .to_string();
-    std::fs::write(config_path(home.path(), "settings.jsonc"), fixture_settings()).unwrap();
-    std::fs::write(config_path(home.path(), "models.jsonc"), models).unwrap();
+    std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+    std::fs::write(config_path(home.path(), "models.yml"), models).unwrap();
     let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
     pty.ready();
     pty.input("ask schema task one\r");

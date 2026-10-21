@@ -340,7 +340,7 @@ fn mcp_connections_survive_model_switch_and_reset_and_refresh_on_resume() {
     let mut changed = settings("");
     changed["mcp_servers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
     std::fs::write(
-        config_path(home.path(), "settings.jsonc"),
+        config_path(home.path(), "settings.yml"),
         changed.to_string(),
     )
     .unwrap();
@@ -361,7 +361,7 @@ fn mcp_connections_survive_model_switch_and_reset_and_refresh_on_resume() {
     final_reply(request, "resumed");
     assert!(cli.finish().status.success());
     assert_stopped(home.path());
-    std::fs::write(config_path(home.path(), "settings.jsonc"), "{}").unwrap();
+    std::fs::write(config_path(home.path(), "settings.yml"), "{}").unwrap();
     let cli = Cli::spawn(home.path(), &["-r", id, "-p", "removed"], &[]);
     let (request, body) = receive(&provider);
     assert!(!body["tools"].to_string().contains("mcp__"));

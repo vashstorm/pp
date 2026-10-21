@@ -144,12 +144,12 @@ fn transcript_blocks_diff_replace_edit_and_write_cards() {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             diff_blocks_settings("replace"),
         )
         .unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             response_models(&server, Some(protocol)),
         )
         .unwrap();
@@ -270,12 +270,12 @@ fn transcript_blocks_diff_hashline_edit_from_read_anchors() {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             diff_blocks_settings("hashline"),
         )
         .unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             response_models(&server, Some(protocol)),
         )
         .unwrap();
@@ -349,12 +349,12 @@ fn transcript_blocks_diff_endings_bom_and_unavailable() {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             diff_blocks_settings("replace"),
         )
         .unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             response_models(&server, Some(protocol)),
         )
         .unwrap();
@@ -457,12 +457,12 @@ fn transcript_blocks_diff_failed_edits_have_no_fabricated_diff() {
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
             std::fs::write(
-                config_path(home.path(), "settings.jsonc"),
+                config_path(home.path(), "settings.yml"),
                 diff_blocks_settings(mode),
             )
             .unwrap();
             std::fs::write(
-                config_path(home.path(), "models.jsonc"),
+                config_path(home.path(), "models.yml"),
                 response_models(&server, Some(protocol)),
             )
             .unwrap();
@@ -558,12 +558,12 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             diff_blocks_settings("replace"),
         )
         .unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             response_models(&server, Some(protocol)),
         )
         .unwrap();
@@ -654,12 +654,12 @@ fn transcript_blocks_diff_resume_replays_committed_diffs_without_reexecution() {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             diff_blocks_settings("replace"),
         )
         .unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             response_models(&server, Some(protocol)),
         )
         .unwrap();
@@ -787,12 +787,12 @@ fn transcript_blocks_diff_write_without_read_permission_reports_unavailable() {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             diff_blocks_settings("replace"),
         )
         .unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             response_models(&server, Some(protocol)),
         )
         .unwrap();

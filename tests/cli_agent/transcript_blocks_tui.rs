@@ -16,9 +16,9 @@ const MARKDOWN_BLOCKS_LINK: vt100::Color = vt100::Color::Rgb(0, 136, 250);
 const MARKDOWN_BLOCKS_ERROR: vt100::Color = vt100::Color::Rgb(224, 108, 117);
 
 fn markdown_blocks_start(fixture: &Server, protocol: &str, home: &Path, project: &Path) -> Pty {
-    std::fs::write(config_path(home, "settings.jsonc"), r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#).unwrap();
+    std::fs::write(config_path(home, "settings.yml"), r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#).unwrap();
     std::fs::write(
-        config_path(home, "models.jsonc"),
+        config_path(home, "models.yml"),
         response_models(fixture, Some(protocol)),
     )
     .unwrap();

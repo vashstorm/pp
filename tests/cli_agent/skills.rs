@@ -106,7 +106,7 @@ fn skills_load_on_demand_disable_persist_and_reset_in_both_protocols() {
         let mut cli = Cli::start_with(
             home.path(),
             None,
-            "{ // 保留配置注释\n\"think_level\":\"high\",\n}",
+            "# 保留配置注释\nthink_level: high\n",
             &response_models(&server, Some(protocol)),
         );
         cli.input("first\n");
@@ -163,9 +163,9 @@ fn skills_load_on_demand_disable_persist_and_reset_in_both_protocols() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(output.stdout, b"ok\nok\nok\n");
-        let settings = std::fs::read_to_string(config_path(home.path(), "settings.jsonc")).unwrap();
-        assert!(settings.contains("// 保留配置注释"));
-        assert!(settings.contains("\"think_level\":\"high\""));
+        let settings = std::fs::read_to_string(config_path(home.path(), "settings.yml")).unwrap();
+        assert!(settings.contains("# 保留配置注释"));
+        assert!(settings.contains("think_level: high"));
         let mut cli = Cli::start_with_existing_files(home.path(), None);
         cli.input("restart\n");
         let (request, body) = receive_at(&server, path);
@@ -215,25 +215,21 @@ fn global_configs_ignore_project_files_and_keep_tool_cwd() {
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     std::fs::write(
-        config_path(home.path(), "settings.jsonc"),
+        config_path(home.path(), "settings.yml"),
         r#"{"skill_dirs":[]}"#,
     )
     .unwrap();
     std::fs::write(
-        config_path(home.path(), "models.jsonc"),
+        config_path(home.path(), "models.yml"),
         fixture_models(&server),
     )
     .unwrap();
     std::fs::write(
-        project.path().join("settings.jsonc"),
+        project.path().join("settings.yml"),
         "invalid project config",
     )
     .unwrap();
-    std::fs::write(
-        project.path().join("models.jsonc"),
-        "invalid project config",
-    )
-    .unwrap();
+    std::fs::write(project.path().join("models.yml"), "invalid project config").unwrap();
     let cli = Cli::spawn(
         project.path(),
         &["-p", "write"],

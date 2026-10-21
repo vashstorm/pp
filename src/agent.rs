@@ -1234,8 +1234,8 @@ mod tests {
         let global = root.join(".pp/agent");
         let sessions = global.join("sessions");
         std::fs::create_dir_all(&global).unwrap();
-        let models = global.join("models.jsonc");
-        let settings = global.join("settings.jsonc");
+        let models = global.join("models.yml");
+        let settings = global.join("settings.yml");
         let configuration = json!({"providers":[{"id":"fixture","api_key":"fixture","models":[{"id":"one","model":"one"}]}]}).to_string();
         std::fs::write(&models, &configuration).unwrap();
         let mut ids = Vec::new();
@@ -1302,8 +1302,8 @@ mod tests {
     fn cancellation_before_request_saves_accepted_input_and_replays_terminal() {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
-            let settings = dir.path().join("settings.jsonc");
-            let models = dir.path().join("models.jsonc");
+            let settings = dir.path().join("settings.yml");
+            let models = dir.path().join("models.yml");
             let sessions = dir.path().join("sessions");
             std::fs::write(
                 &models,
@@ -1360,8 +1360,8 @@ mod tests {
     #[test]
     fn model_switch_failure_keeps_native_history_and_selection() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = dir.path().join("settings.jsonc");
-        let models = dir.path().join("models.jsonc");
+        let settings = dir.path().join("settings.yml");
+        let models = dir.path().join("models.yml");
         std::fs::write(
             &models,
             json!({"providers": [

@@ -143,7 +143,7 @@ impl Panel {
         if self.entries.is_empty() {
             frame.render_widget(
                 Paragraph::new(
-                    "No skills found. Update skill_dirs in global settings.jsonc, then press r to rescan.",
+                    "No skills found. Update skill_dirs in global settings.yml, then press r to rescan.",
                 ),
                 list_area,
             );

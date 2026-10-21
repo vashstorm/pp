@@ -5,7 +5,6 @@ mod config;
 mod context;
 mod events;
 mod interaction;
-mod jsonc;
 mod llm;
 mod logging;
 mod mcp;
@@ -15,6 +14,7 @@ mod skills;
 mod stats;
 mod tools;
 mod tui;
+mod yaml;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
@@ -143,7 +143,7 @@ fn run(args: Args) -> Result<()> {
         .as_ref()
         .ok()
         .filter(|_| use_tui)
-        .and_then(|dir| config::read_settings(&dir.join("settings.jsonc")).ok())
+        .and_then(|dir| config::read_settings(&dir.join("settings.yml")).ok())
         .map(|settings| settings.notification_options())
         .unwrap_or_default();
     let file_commands = if args.prompt.is_none() {
@@ -190,8 +190,8 @@ fn run(args: Args) -> Result<()> {
         Some(session) => {
             let global_dir = global_dir?;
             let catalog = config::ModelCatalog::from_files(
-                &global_dir.join("settings.jsonc"),
-                &global_dir.join("models.jsonc"),
+                &global_dir.join("settings.yml"),
+                &global_dir.join("models.yml"),
             )
             .context("loading configuration for saved session")?;
             let mut tools = tools::Tools::new(cwd.clone(), session.edit_mode())?;
@@ -199,7 +199,7 @@ fn run(args: Args) -> Result<()> {
             Ok(agent::Agent::restore(catalog, tools, session)?)
         }
         None => global_dir.and_then(|dir| {
-            config::ModelCatalog::from_files(&dir.join("settings.jsonc"), &dir.join("models.jsonc"))
+            config::ModelCatalog::from_files(&dir.join("settings.yml"), &dir.join("models.yml"))
                 .and_then(|catalog| {
                     let mut tools = tools::Tools::new(cwd.clone(), catalog.edit_mode())?;
                     tools.skills = skills.clone();

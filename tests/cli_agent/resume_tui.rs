@@ -202,12 +202,12 @@ fn tui_slash_resume_history_replays_reasoning_tools_and_appends_native_context()
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#,
         )
         .unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             response_models(&server, Some(protocol)),
         )
         .unwrap();
@@ -504,9 +504,9 @@ fn tui_slash_resume_history_keeps_current_cwd_status_files_model_and_effort() {
             json!([{"id": "other", "model": "vendor-other"}]))
     ]})
     .to_string();
-    std::fs::write(config_path(home.path(), "models.jsonc"), &models).unwrap();
+    std::fs::write(config_path(home.path(), "models.yml"), &models).unwrap();
     std::fs::write(
-        config_path(home.path(), "settings.jsonc"),
+        config_path(home.path(), "settings.yml"),
         r#"{"default_model":"fixture/primary","think_level":"high","notification_timeout_seconds":1}"#,
     )
     .unwrap();
@@ -533,12 +533,12 @@ fn tui_slash_resume_history_keeps_current_cwd_status_files_model_and_effort() {
 
     // 删除旧 provider，当前模型改用另一协议；恢复不再依赖保存时的模型配置。
     std::fs::write(
-        config_path(home.path(), "models.jsonc"),
+        config_path(home.path(), "models.yml"),
         json!({"providers": [slash_provider(&server, "fixture2", "completion",
             json!([{"id": "other", "model": "vendor-other"}]))]}).to_string(),
     ).unwrap();
     std::fs::write(
-        config_path(home.path(), "settings.jsonc"),
+        config_path(home.path(), "settings.yml"),
         r#"{"default_model":"fixture2/other","notification_timeout_seconds":1}"#,
     )
     .unwrap();
@@ -677,8 +677,8 @@ fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_
             let server = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
-            let settings = config_path(home.path(), "settings.jsonc");
-            let models = config_path(home.path(), "models.jsonc");
+            let settings = config_path(home.path(), "settings.yml");
+            let models = config_path(home.path(), "models.yml");
             std::fs::write(&settings,
                 r#"{"default_model":"fixture/primary","think_level":"high","edit":"hashline","notification_timeout_seconds":1}"#).unwrap();
             std::fs::write(&models, json!({"providers": [slash_provider(
@@ -789,12 +789,12 @@ fn tui_slash_resume_history_smoke_selects_older_session_and_continues() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     std::fs::write(
-        config_path(home.path(), "settings.jsonc"),
+        config_path(home.path(), "settings.yml"),
         r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#,
     )
     .unwrap();
     std::fs::write(
-        config_path(home.path(), "models.jsonc"),
+        config_path(home.path(), "models.yml"),
         fixture_models(&server),
     )
     .unwrap();

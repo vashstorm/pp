@@ -3,7 +3,7 @@ use reqwest::Url;
 use serde::Deserialize;
 use std::{collections::HashSet, fs, path::Path};
 
-use crate::{config::ThinkLevel, jsonc};
+use crate::{config::ThinkLevel, yaml};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ModelThinking {
@@ -187,12 +187,41 @@ where
 struct ModelEntry {
     id: String,
     model: String,
+    #[serde(default, deserialize_with = "deserialize_optional_cost")]
+    cost: Option<ModelCost>,
     #[serde(default)]
     thinking: ThinkingEntry,
     // Omitted means unknown; an explicit value must be a positive integer.
     // deserialize_with makes an explicit null a type error instead of None.
     #[serde(default, deserialize_with = "deserialize_optional_context_window")]
     context_window: Option<u64>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelCost {
+    pub(crate) input: f64,
+    #[serde(rename = "cacheRead")]
+    pub(crate) cache_read: f64,
+    pub(crate) output: f64,
+}
+
+fn deserialize_optional_cost<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<ModelCost>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let cost = ModelCost::deserialize(deserializer)?;
+    if [cost.input, cost.cache_read, cost.output]
+        .iter()
+        .any(|rate| !rate.is_finite() || *rate < 0.0)
+    {
+        return Err(serde::de::Error::custom(
+            "cost must contain non-negative finite rates",
+        ));
+    }
+    Ok(Some(cost))
 }
 
 fn deserialize_optional_context_window<'de, D>(
@@ -216,6 +245,7 @@ pub(crate) struct ValidatedProvider {
 pub(crate) struct ValidatedModel {
     pub(crate) id: String,
     pub(crate) model: String,
+    pub(crate) cost: Option<ModelCost>,
     pub(crate) thinking: ModelThinking,
     pub(crate) context_window: Option<u64>,
 }
@@ -223,11 +253,11 @@ pub(crate) struct ValidatedModel {
 // Validate every provider and model before selecting anything.
 pub(crate) fn load_models(path: &Path) -> Result<Vec<ValidatedProvider>> {
     let text = fs::read_to_string(path)
-        .with_context(|| format!("reading JSONC models config {}", path.display()))?;
-    let ModelsFile { providers } = jsonc::parse(&text, "models")
-        .with_context(|| format!("loading JSONC models config {}", path.display()))?;
+        .with_context(|| format!("reading YAML models config {}", path.display()))?;
+    let ModelsFile { providers } = yaml::parse(&text, "models")
+        .with_context(|| format!("loading YAML models config {}", path.display()))?;
     validate_providers(providers)
-        .with_context(|| format!("loading JSONC models config {}", path.display()))
+        .with_context(|| format!("loading YAML models config {}", path.display()))
 }
 
 fn validate_providers(providers: Vec<ProviderEntry>) -> Result<Vec<ValidatedProvider>> {
@@ -283,6 +313,7 @@ fn validate_providers(providers: Vec<ProviderEntry>) -> Result<Vec<ValidatedProv
                         Ok(ValidatedModel {
                             id: model.id,
                             model: model.model,
+                            cost: model.cost,
                             thinking: model.thinking.validate()?,
                             context_window: model.context_window,
                         })

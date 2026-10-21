@@ -487,7 +487,7 @@ const componentNames = [
   ["output", "Output", colors[1]],
 ];
 function pricingNotice(stats = data) {
-  return `<div class="pricing-note" role="note">${stats?.pricing_error ? `<span class="pricing-error">${h(stats.pricing_error)}</span> ` : ""}Estimates use current configured rates in <code>~/.pp/stats/pricing.json</code> (USD / million tokens). Unpriced requests are excluded; missing prices or usage are never treated as free. Cache writes and subscription quotas are not reported by pp.</div>`;
+  return `<div class="pricing-note" role="note">${stats?.pricing_error ? `<span class="pricing-error">${h(stats.pricing_error)}</span> ` : ""}Estimates use each model’s cost configuration in <code>~/.pp/agent/models.yml</code> (USD / million tokens). Unpriced requests are excluded; missing prices or usage are never treated as free. Cache writes and subscription quotas are not reported by pp.</div>`;
 }
 function segmentControls(key, options, selected, label) {
   return `<div class="segmented" role="radiogroup" aria-label="${h(label)}">${options.map(([id, name]) => `<button role="radio" aria-checked="${id === selected}" data-${key}="${id}">${h(name)}</button>`).join("")}</div>`;

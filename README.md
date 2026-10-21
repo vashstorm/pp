@@ -17,19 +17,18 @@ Overview 展示当前时间范围内的请求、Token、缓存命中和耗时；
 
 统计口径：以请求开始时间筛选，UTC 毫秒落盘、本地时间展示；总输入 Token 已包含缓存读取，Conversation tokens 为总输入加输出，Uncached input 为总输入减缓存读取。缺失的 usage／缓存明细保持未知，不用估算值填充。TTFT 是发起调用至首个非空正文、思考、拒绝或工具参数增量的时间；Tokens/s 为输出 Token 除以请求总耗时。用户取消记为 Aborted，服务或协议错误记为 Failed；发送前取消和本地校验失败不计入。缓存写入、Premium requests 和订阅额度没有采集数据，保持未知。
 
-费用使用可选的 `~/.pp/stats/pricing.json`，键精确匹配调用时保存的 `model_reference`（`provider/model` 配置引用，并非供应商模型名）。单价单位为 **USD／百万 Token**，三个字段都必填且必须为非负有限数；`0` 表示已知免费。下面仅为格式示例，数值需按实际价格填写：
+费用直接使用 `~/.pp/agent/models.yml` 中各模型的 `cost` 配置，按调用时保存的 `model_reference`（`provider/model` 配置引用，并非供应商模型名）精确匹配。无需另建价格文件。`cost` 可省略，省略时该模型未定价；配置时三个字段都必填且必须为非负有限数，单位为 **USD／百万 Token**，`0` 表示已知免费。例如在 `providers[].models[]` 的模型条目中填写：
 
-```json
-{
-  "my-provider/my-model": {
-    "input": 2.0,
-    "cached_input": 0.2,
-    "output": 8.0
-  }
-}
+```yaml
+id: primary
+model: vendor-model-one
+cost:
+  input: 2.0
+  cacheRead: 0.2
+  output: 8.0
 ```
 
-费用公式为 `(总输入 - 缓存读取) × input + 缓存读取 × cached_input + 输出 × output`，最后除以一百万。价格文件每次查询重新读取，修改后历史估算按当前单价重算，不代表历史账单或订阅实际支出。缺少价格、完整 usage 或缓存读取数量，以及缓存数量异常的请求都计入 Unpriced 并从估算中排除；全未定价显示 `—`，混合数据只合计已定价部分并标示覆盖数量。空范围的费用为 `$0`。价格文件不存在时全部未定价；文件损坏、字段错误或无法读取时，页面提示问题并保留其余统计。统计启动不依赖模型配置或价格文件。Overview、Requests 及请求详情沿用相同计价规则。每日费用按 UTC 日聚合，Average per day 以有请求的 UTC 日数为分母。模型按完整配置引用分组，同名跨供应商或同供应商不同别名不会混在一起。
+费用公式为 `(总输入 - 缓存读取) × cost.input + 缓存读取 × cost.cacheRead + 输出 × cost.output`，最后除以一百万。每次统计查询重新读取模型配置，修改后历史估算按当前单价重算，不代表历史账单或订阅实际支出。缺少价格、完整 usage 或缓存读取数量，以及缓存数量异常的请求都计入 Unpriced 并从估算中排除；全未定价显示 `—`，混合数据只合计已定价部分并标示覆盖数量。空范围的费用为 `$0`。模型配置不存在时全部未定价；文件损坏、字段错误或无法读取时，页面提示问题并保留其余统计，不返回配置原文或密钥。统计服务仍可在没有模型配置时启动。Overview、Requests 及请求详情沿用相同计价规则。每日费用按 UTC 日聚合，Average per day 以有请求的 UTC 日数为分母。模型按完整配置引用分组，同名跨供应商或同供应商不同别名不会混在一起。
 
 数据库保存模型输出（含可获得的思考、工具参数）、请求指标和已提交的对应会话条目快照；不额外保存完整输入上下文、请求头或认证配置。摘要和未提交输出没有会话条目时明确显示未记录。统计文件可能包含代码和模型输出，应按个人会话数据保管；首版不会自动清理。目录权限为 `0700`、数据库为 `0600`，SQLite 使用 WAL 支持多进程写入；存储不可用只提示，不中断模型任务。
 
@@ -52,93 +51,72 @@ cargo build --release --locked
 
 `release` 使用 `opt-level = "z"`、完整 LTO、单代码生成单元并剥离符号。此配置优先减小可执行文件体积，代价是更长的编译时间及潜在的运行性能取舍；保留默认 panic 展开行为。符号剥离会减少回溯信息，排查问题时可用 `CARGO_PROFILE_RELEASE_STRIP=none cargo build --release --locked` 保留符号。
 
-配置统一保存在 `~/.pp/agent/settings.jsonc` 和 `~/.pp/agent/models.jsonc`，支持 `//`、`/* ... */` 注释及末尾逗号。启动目录中的同名文件不再读取。 `models.jsonc` is required: providers share credentials, base URL, and protocol, with multiple models under each provider. `settings.jsonc` is optional and controls app behavior itself. The default model is the first model of the first provider in the file:
+配置统一保存在 `~/.pp/agent/settings.yml` 和 `~/.pp/agent/models.yml`，使用 YAML 块映射、列表和 `#` 注释。启动目录中的同名文件不再读取。 `models.yml` 为必需文件：同一供应商的多个模型共享凭证、接口地址和协议。`settings.yml` 为可选的应用设置；默认使用文件中首个供应商的首个模型：
 
-```jsonc
-// settings.jsonc
-{
-  // Optional; the first provider's first model is used when omitted or when the reference matches no provider/model
-  "default_model": "gateway/secondary",
-  // 调试日志：默认 false；开启后分别记录运行状态和每个 session 的初始完整 prompt
-  "debug": false,
-  // Optional, default "replace"; use "hashline" for anchored line edits
-  "edit": "replace",
-  // 启动默认思考级别：none（关闭思考）、low、medium、high、xhigh、max；省略时为 none
-  "think_level": "high",
-  // 是否显示通知右上角的倒计时；关闭后通知仍会按时淡出
-  "notification_show_countdown": true,
-  // 通知自动消失的总时长（正整数秒），默认 10；修改后重启生效
-  "notification_timeout_seconds": 10,
-  // skill 根目录；相对路径以 ~/.pp/agent 为基准，空数组关闭扫描
-  "skill_dirs": ["~/.pp/agent/skills"],
-  // 全局禁用的 skill 名称；新发现的 skill 默认启用
-  "disabled_skills": [],
-  // Optional, default 20: task requests plus automatic summary requests per user task
-  "max_model_requests": 20,
-  // 默认开启；仅当前模型显式配置 context_window 时自动生效
-  "auto_compact": true,
-  // 估算用量达到此百分比时自动摘要；严格限制 1..=99，默认 80
-  "auto_compact_threshold_percent": 80,
-  // Optional, default 120: model request timeout in seconds, for either API
-  "request_timeout_seconds": 120,
-  // read 单次返回的源字节数与完整行数上限
-  "read_max_bytes": 65536,
-  "read_max_lines": 2000,
-  // bash 超时秒数，与模型请求超时独立
-  "bash_timeout_seconds": 120,
-}
+```yaml
+# settings.yml
+# 省略或找不到匹配模型时，使用首个供应商的首个模型
+default_model: gateway/secondary
+# 默认关闭；开启后记录运行状态和每个 session 的初始完整 prompt
+debug: false
+# 可选 replace 或 hashline
+edit: replace
+# 可选 none、low、medium、high、xhigh、max；默认 none
+think_level: high
+# 通知倒计时及自动消失时长，修改后重启生效
+notification_show_countdown: true
+notification_timeout_seconds: 10
+# 相对路径以 ~/.pp/agent 为基准；空列表关闭扫描
+skill_dirs:
+  - ~/.pp/agent/skills
+disabled_skills: []
+# 每次用户任务最多请求数，包含自动摘要请求
+max_model_requests: 20
+# 仅当前模型显式配置 context_window 时生效
+auto_compact: true
+auto_compact_threshold_percent: 80 # 严格限制 1..=99
+request_timeout_seconds: 120
+read_max_bytes: 65536
+read_max_lines: 2000
+bash_timeout_seconds: 120
 ```
 
-```jsonc
-// models.jsonc
-{
-  "providers": [
-    {
-      // Provider alias, unique across the file, must not contain /
-      "id": "openai",
-      // protocol omitted: defaults to "response" (Responses API)
-      "api_key": "your-key",
-      // Optional for OpenAI, default https://api.openai.com/v1
-      "base_url": "https://api.openai.com/v1",
-      "models": [
-        // id is an alias within the provider; model is the raw model name sent to the vendor
-        {
-          "id": "primary",
-          "model": "vendor-model-one",
-          // Optional token capacity: example only; replace with documented capacity or omit
-          "context_window": 32768,
-          // Optional: restrict available efforts and choose this model's default
-          "thinking": {
-            "efforts": ["low", "high", "xhigh"],
-            "defaultLevel": "high",
-          },
-        },
-        {"id": "secondary", "model": "vendor-model-two"},
-      ],
-    },
-    {
-      "id": "gateway",
-      "protocol": "completion", // Chat Completions API
-      "api_key": "another-key",
-      "base_url": "https://example.com/custom/v1",
-      "models": [
-        {"id": "primary", "model": "gateway-model-one"},
-        {"id": "secondary", "model": "gateway-model-two"},
-      ],
-    },
-  ],
-}
+```yaml
+# models.yml
+providers:
+  - id: openai # 供应商别名，全局唯一且不能含 /
+    # 省略 protocol 时默认使用 response（Responses API）
+    api_key: your-key
+    base_url: https://api.openai.com/v1 # 可省略，默认使用此地址
+    models:
+      - id: primary # 供应商内的模型别名
+        model: vendor-model-one # 发送给供应商的实际模型名
+        context_window: 32768 # 仅为示例，应按实际容量填写或省略
+        thinking:
+          efforts: [low, high, xhigh]
+          defaultLevel: high
+      - id: secondary
+        model: vendor-model-two
+  - id: gateway
+    protocol: completion # Chat Completions API
+    api_key: another-key
+    base_url: https://example.com/custom/v1
+    models:
+      - id: primary
+        model: gateway-model-one
+      - id: secondary
+        model: gateway-model-two
 ```
 
-配置文件名和目录固定；`settings.jsonc` 可以缺省，缺少 `models.jsonc` 时模型不可用。通过 HOME 定位用户目录，不读取项目配置。新会话的工具以启动目录为工作目录；恢复会话使用日志保存的原工作目录。旧版本用户需手动将配置迁移到 `~/.pp/agent/`；程序不会自动复制含密钥的文件。
+配置文件名和目录固定；`settings.yml` 可以缺省，缺少 `models.yml` 时模型不可用。通过 HOME 定位用户目录，不读取项目配置。新会话的工具以启动目录为工作目录；恢复会话使用日志保存的原工作目录。旧版本用户需将 JSONC 内容转换为 YAML，保存为上述两个 `.yml` 文件；仅重命名含 `//` 或 `/* ... */` 注释的文件无效。程序不再读取旧文件，也不会自动迁移含密钥的配置。
 
 ```sh
-chmod 600 ~/.pp/agent/models.jsonc
+chmod 600 ~/.pp/agent/models.yml
 ./target/debug/pp -p 'Read the current project and explain its structure; do not modify files.'
 ./target/debug/pp
 ```
 
-**API 密钥以明文保存在 `~/.pp/agent/models.jsonc`。** The repository root `models.jsonc` is already in `.gitignore` to prevent a leftover personal key file on disk from accidentally entering version control. The tools have no sandbox and can still read configuration files; do not let the model read or output files containing keys. 如果 MCP 的命令参数或环境变量含凭证，`settings.jsonc` 也属于敏感配置，应限制权限并避免提交。
+**API 密钥以明文保存在 `~/.pp/agent/models.yml`。** 仓库根目录的 `models.yml`、`settings.yml` 及旧版 `models.jsonc` 已加入 `.gitignore`，避免误提交个人配置。 The tools have no sandbox and can still read configuration files; do not let the model read or output files containing keys. 如果 MCP 的命令参数或环境变量含凭证，`settings.yml` 也属于敏感配置，应限制权限并避免提交。
 
 Validation and model-selection rules:
 
@@ -147,35 +125,32 @@ Validation and model-selection rules:
 - 白名单贯穿 `/effort`（含 `/think` 和 `default` 别名）、TUI 菜单、Shift+Tab、会话恢复与 API 请求；不支持的输入在本地拒绝，不改变档位、请求或日志。Shift+Tab 仅循环允许档，单档时保持档位与草稿。恢复精确保留仍被允许的保存档位及原生请求，修改 `defaultLevel` 不覆盖它；收窄白名单排除保存档位时拒绝恢复，不改写日志或发送请求。Ctrl+S 仍只保存全局 `settings.think_level`，不写模型配置、不改变当前会话；显式模型默认值及菜单 `(default)` 标记仍优先于保存的全局值。
 
 - `think_level` 设置启动时的默认思考级别，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；省略字段或缺少配置文件时使用 `none`。界面将 `none` 显示为 `no think`。旧值 `default` 仍可读取，但作为 `none` 的兼容别名，含义变为显式关闭思考。仅接受这些小写字符串，拒绝 null 和其他值。Responses 请求显式发送 `reasoning.effort`，Chat Completions 请求显式发送 `reasoning_effort`；`none` 均传为字符串 `"none"`，Responses 同时省略 `reasoning.summary`，其他档位仍使用 `reasoning.summary: "auto"` 请求可读思考摘要。通过本地模型白名单校验的档位原样传给服务端；白名单不保证供应商实际支持，未配置白名单时仍由服务端决定，不自动降档或重试。参见 [OpenAI 官方思考级别说明](https://developers.openai.com/api/docs/guides/reasoning)。
-- TUI 输入 `/effort `（命令后加空格）即在输入框下方展开档位菜单，左侧显示档位，右侧显示说明和“当前”标记，黄色突出选中项。↑/↓ 选择，Enter 确认，Esc 取消并保留输入；Ctrl+S 将当前高亮选中的档位保存为全局默认值（写入 `~/.pp/agent/settings.jsonc`，下次普通新启动生效），不改变当前会话档位。菜单底部显示快捷键提示；继续输入档位前缀会筛选候选，Tab 补全但不执行。菜单只包含当前模型允许的档位；未配置限制时包含 `no think` 和上述五档，关闭思考的补全值为 `none`，不显示固定 token 预算。输入 `/effort` 后按 Enter 也可展开。行模式用 `/effort` 查看当前级别及可选值；两种模式均可用 `/effort high` 直接切换、`/effort none` 关闭思考，兼容旧命令 `/think` 和旧值 `default`。切换保留历史，对后续请求生效；`/new` 保留当前级别，`/model` 按目标模型策略选择档位；未配置策略的模型仍保留当前级别。TUI 底部状态栏显示实际选择，运行中拒绝切换并保留输入草稿。命令及 Shift+Tab 不改写配置文件；已有活动 session 时会持久化选择，写入失败则保留原档位。普通新启动按模型默认值与全局 `think_level` 优先级选择，恢复 session 使用仍被允许的保存档位。
-- 缺少 `settings.jsonc`、省略 `default_model` 或没有匹配的 provider/model 时，使用首个 provider 的首个模型。模型请求次数默认 20，模型请求超时和 bash 超时分别默认 120 秒；read 默认最多返回 65,536 源字节且不超过 2000 个完整行。限制值必须为正整数，拒绝 null、负数、小数、字符串和数值溢出。
+- TUI 输入 `/effort `（命令后加空格）即在输入框下方展开档位菜单，左侧显示档位，右侧显示说明和“当前”标记，黄色突出选中项。↑/↓ 选择，Enter 确认，Esc 取消并保留输入；Ctrl+S 将当前高亮选中的档位保存为全局默认值（写入 `~/.pp/agent/settings.yml`，下次普通新启动生效），不改变当前会话档位。菜单底部显示快捷键提示；继续输入档位前缀会筛选候选，Tab 补全但不执行。菜单只包含当前模型允许的档位；未配置限制时包含 `no think` 和上述五档，关闭思考的补全值为 `none`，不显示固定 token 预算。输入 `/effort` 后按 Enter 也可展开。行模式用 `/effort` 查看当前级别及可选值；两种模式均可用 `/effort high` 直接切换、`/effort none` 关闭思考，兼容旧命令 `/think` 和旧值 `default`。切换保留历史，对后续请求生效；`/new` 保留当前级别，`/model` 按目标模型策略选择档位；未配置策略的模型仍保留当前级别。TUI 底部状态栏显示实际选择，运行中拒绝切换并保留输入草稿。命令及 Shift+Tab 不改写配置文件；已有活动 session 时会持久化选择，写入失败则保留原档位。普通新启动按模型默认值与全局 `think_level` 优先级选择，恢复 session 使用仍被允许的保存档位。
+- 缺少 `settings.yml`、省略 `default_model` 或没有匹配的 provider/model 时，使用首个 provider 的首个模型。模型请求次数默认 20，模型请求超时和 bash 超时分别默认 120 秒；read 默认最多返回 65,536 源字节且不超过 2000 个完整行。限制值必须为正整数，拒绝 null、负数、小数、字符串和数值溢出。
 - `edit` defaults to `"replace"` when settings or the field are absent. Only exact lowercase `"replace"` and `"hashline"` strings are accepted; null, other types, case variants, and surrounding whitespace are rejected. It is fixed at startup and survives `/model` (including cross-protocol switches) and `/new`. Existing anchored-edit users must explicitly select `"hashline"`.
 - An explicit `default_model` must be `provider/model`, split at the first `/`; neither part may be blank, matching is case-sensitive and exact with no trimming. The provider id cannot contain `/`, but the model id can: `gateway/team/model` selects the model with id `team/model` under gateway. Bare model ids are not accepted, and there is no environment-variable fallback.
 - `providers` and every provider's `models` must be non-empty. Provider ids are unique across the file; model ids only need to be unique within their provider, and different providers may reuse the same model alias. id, `api_key`, and the vendor `model` must all be non-blank. All providers and models are fully validated at load, including unselected ones.
 - Unknown fields are rejected at the file top level, the provider level, and the model level. A model may contain only `id`, `model`, and optional `thinking` / `context_window` and cannot override the provider's credentials, base URL, or protocol; the old top-level flat `models` format is no longer accepted.
 - Provider-level `protocol` selects the API: `"response"` uses `POST /responses` and is the default when omitted; `"completion"` uses `POST /chat/completions` (not the legacy `/completions` API). Only these exact lowercase strings are accepted. Null, wrong types, old `"openai"`, and `"anthropic"` invalidate the entire configuration, including on an unselected provider. To migrate an existing Chat Completions provider, replace `"openai"` with `"completion"`; omitting the field now selects Responses.
 - Responses 流优先直接解码为 SDK 类型；仅在报告缺少 `annotations` 或 `arguments` 时构造 JSON 树，为缺少注释的 `output_text` 补 `annotations: []`，并仅为 `response.output_item.added` 中的 `function_call` 补缺失的 `arguments: ""`，随后仍由 SDK 校验。已有值（包括 `null` 或错误类型）不会被覆盖；调用结束与最终响应中的工具参数仍须完整，工具只在最终批次校验通过后执行。
-- Provider configuration is read only from these two JSONC files: no provider environment variables, no environment substitution or fallback, and no `.env` or OAuth loading. Errors name the offending file and never dump config values, URLs, or keys. Choose the API supported by the configured service and model; there is no automatic protocol fallback.
+- Provider configuration is read only from these two YAML files: no provider environment variables, no environment substitution or fallback, and no `.env` or OAuth loading. Errors name the offending file and never dump config values, URLs, or keys. Choose the API supported by the configured service and model; there is no automatic protocol fallback.
 
-When running `pp` directly, an unusable configuration (`models.jsonc` missing, unreadable, encoding/JSONC/field/validation errors, or initialization errors such as an API key unusable in an HTTP header) never blocks entering interactive mode: the error is shown in the conversation area or the line terminal, and input remains editable. A missing `settings.jsonc` is not an error; defaults apply. With unusable configuration, submitting a task, `/compact`, `/new`, or `/model` shows the startup error without sending requests or running tools; `/help` remains available and `/quit` exits cleanly (exit code 0). Line mode also supports EOF. 模型及其他运行参数修复后需重启；skill 目录配置可以在 `/skills` 面板按 r 重扫。 `pp -p 'task'` instead exits non-zero on unusable configuration.
+When running `pp` directly, an unusable configuration (`models.yml` missing, unreadable, encoding/YAML/field/validation errors, or initialization errors such as an API key unusable in an HTTP header) never blocks entering interactive mode: the error is shown in the conversation area or the line terminal, and input remains editable. A missing `settings.yml` is not an error; defaults apply. With unusable configuration, submitting a task, `/compact`, `/new`, or `/model` shows the startup error without sending requests or running tools; `/help` remains available and `/quit` exits cleanly (exit code 0). Line mode also supports EOF. 模型及其他运行参数修复后需重启；skill 目录配置可以在 `/skills` 面板按 r 重扫。 `pp -p 'task'` instead exits non-zero on unusable configuration.
 
 A provider's `base_url` is the API root. The existing path prefix is preserved; trailing `/` characters are stripped and the SDK appends `/responses` or `/chat/completions` according to `protocol`, with no automatic `/v1`. When omitted, `https://api.openai.com/v1` is used. Every explicit URL (including unselected providers) must be http/https with a host; userinfo, query, fragment, all-blank, and null are rejected. An explicit HTTP URL transmits credentials and sessions in plaintext — use it only with trusted compatible services. Only the selected key goes through HTTP header validation; unselected keys are merely checked for non-blankness.
 
 ## MCP 工具
 
-在 `~/.pp/agent/settings.jsonc` 中添加 `mcp_servers`，连接本地 stdio MCP 服务：
+在 `~/.pp/agent/settings.yml` 中添加 `mcp_servers`，连接本地 stdio MCP 服务：
 
-```jsonc
-{
-  "mcp_servers": {
-    "local": {
-      "command": "python3",
-      "args": ["/absolute/path/to/mcp_server.py"],
-      "env": {"APP_MODE": "development"},
-      "timeout_seconds": 30,
-    },
-  },
-}
+```yaml
+mcp_servers:
+  local:
+    command: python3
+    args: [/absolute/path/to/mcp_server.py]
+    env:
+      APP_MODE: development
+    timeout_seconds: 30
 ```
 
 `command` 必填，按 PATH 查找程序；`args` 和 `env` 默认为空，超时默认 30 秒且必须为正整数。直接传递参数，不执行 shell 展开；需要 shell 时显式使用 `bash -c`。服务继承进程环境，`env` 覆盖指定变量，工作目录为当前会话的工作目录。省略 `mcp_servers` 或设为 `{}` 时不启动服务。所有配置层均拒绝未知字段；服务名只能包含 ASCII 字母、数字、下划线和连字符，最长 24 字节，不能含 `__`。
@@ -206,7 +181,7 @@ cargo test --locked --test cli_agent mcp_ -- --test-threads=1
 
 ### Debug 日志
 
-在 `~/.pp/agent/settings.jsonc` 中设置 `"debug": true` 后，启用以下两类独立的分段文本日志（不是 JSONL）；默认 `false`，省略字段或配置文件时均不开启，只接受布尔值，修改后重启生效。只启动程序、不发送模型请求不会创建这两类日志文件。
+在 `~/.pp/agent/settings.yml` 中设置 `debug: true` 后，启用以下两类独立的分段文本日志（不是 JSONL）；默认 `false`，省略字段或配置文件时均不开启，只接受布尔值，修改后重启生效。只启动程序、不发送模型请求不会创建这两类日志文件。
 
 - **`~/.pp/logs/prompt-debug.SESSION_ID`**：每个新 session 一个文件，仅记录首次普通模型请求的完整原生合成 prompt（`llm_first_prompt`），包括 system/instructions、初始用户输入、工具定义、模型参数，以及对应的 session ID。后续消息、工具轮次和切模型均不追加；`/new` 后的新 session 会生成另一个文件。重启后通过 `-r`、`-c` 或 TUI `/resume` 恢复同一 session，不覆盖、不追加，也不补录中途 prompt。请求发送并完成初始连接处理、session 持久化后写入，消费响应流之前完成；供应商拒绝请求时也保留初始 prompt，临时压缩摘要请求不记录。
 - **`~/.pp/logs/debug.yyyy-mm-dd.xxxx`**：保留其他调试信息，目前为每次普通请求前的 `harness_state` / `request_ready` 快照。包含 pid、session ID（首次持久化前为 null）、provider/model 引用、协议、cwd、思考级别、edit 模式、工具限制、当前任务请求序号/上限、历史项数和工具数；不再记录 prompt 正文、回答或工具内容。`xxxx` 是从 `0001` 开始的四位最小宽度分卷编号，不带 `.log` 后缀。
@@ -241,7 +216,7 @@ Prompt 文本以事件名和时间戳为标题，按「请求参数 → 系统�
 - Single-line slash commands share one registry with line mode: `/help` lists commands; `/model` opens a model picker; `/model provider/model` switches directly; `/new` resets history while keeping the selected model; `/compact` summarizes older context without clearing the visible conversation; `/resume` opens the fullscreen saved-session picker (TUI only); `/quit` exits. Unknown names and invalid built-in arguments are local errors, never model tasks. Names are case-sensitive; leading/trailing whitespace is ignored, but the entire remaining `/model` argument preserves internal spaces and `/`. Multi-line slash drafts remain ordinary tasks.
 - 退出时仅在内存中生成最终画面，切回主屏幕与完整会话回放使用同一次终端同步更新（DEC 2026）；支持该协议的终端会隐藏中间画面，减少闪烁。退出后仍保留完整历史、草稿和状态栏；不支持同步更新的终端按原有方式显示回放。
 - 输入框下方的选择菜单（`/` 命令补全、`/model `、`/effort `、`@` 文件选择）统一使用 `src/tui/menu.rs` 中的 `SelectionMenu` 组件，业务层只提供选项数据和确认动作。统一在输入框下方显示无外框的两列列表，左列占 46%、右列占 54%；选中行以黄色文字和箭头突出，其余说明与图标为灰色，当前值显示“（当前）”，输入框使用紫色分隔线。最多显示八行，窄屏截断说明，短屏随选择滚动。↑/↓、Home/End、PgUp/PgDn 导航且不循环，Tab 补全或打开目录但不提交，Enter 确认当前项；Esc 收起列表并保留草稿，下次编辑时重新显示。输入 `/` 展开命令菜单，继续输入会按命令前缀筛选，左列保留命令图标。
-- 输入 `/model `（命令后加空格）会在输入框下方展开与 `/effort ` 一致的两列菜单：左侧为 `provider/model`，实际启动默认模型附带 `(default)`；右侧为实际模型名、`completion`/`response` 及“当前”标记，默认与当前可分别标在不同模型上。Ctrl+S 保存成功后更新 default 标记，失败保持原标记。黄色文字和箭头突出选中项。`/model` 后按 Enter 也能展开，默认选中当前模型。按启动配置顺序排列，最多显示八行，长列表随选择滚动；↑/↓、Home/End、PgUp/PgDn 导航，Enter 确认，Esc 收起并保留输入。继续输入按引用或实际模型名的前缀筛选，Tab 补全引用但不切换；Ctrl+S 将高亮模型保存到 `~/.pp/agent/settings.jsonc` 的 `default_model`，下次普通新启动生效，不切换当前会话模型、不改写 `models.jsonc`。保存沿用 JSONC 原子更新，保留注释与其他设置，缺少设置文件时自动创建；失败显示错误并保留原配置。菜单底部显示快捷键提示；通过 Ctrl+P 打开时，保存后恢复原草稿和光标。多行粘贴仍作为普通任务。后台完成切换后才更新状态栏，历史和确认后新编辑的草稿均保留；忙碌时拒绝切换、不排队、不清空草稿。`/new` 仍在后台确认后清空历史和草稿。
+- 输入 `/model `（命令后加空格）会在输入框下方展开与 `/effort ` 一致的两列菜单：左侧为 `provider/model`，实际启动默认模型附带 `(default)`；右侧为实际模型名、`completion`/`response` 及“当前”标记，默认与当前可分别标在不同模型上。Ctrl+S 保存成功后更新 default 标记，失败保持原标记。黄色文字和箭头突出选中项。`/model` 后按 Enter 也能展开，默认选中当前模型。按启动配置顺序排列，最多显示八行，长列表随选择滚动；↑/↓、Home/End、PgUp/PgDn 导航，Enter 确认，Esc 收起并保留输入。继续输入按引用或实际模型名的前缀筛选，Tab 补全引用但不切换；Ctrl+S 将高亮模型保存到 `~/.pp/agent/settings.yml` 的 `default_model`，下次普通新启动生效，不切换当前会话模型、不改写 `models.yml`。保存沿用 YAML 原子更新，保留注释与其他设置，缺少设置文件时自动创建；失败显示错误并保留原配置。菜单底部显示快捷键提示；通过 Ctrl+P 打开时，保存后恢复原草稿和光标。多行粘贴仍作为普通任务。后台完成切换后才更新状态栏，历史和确认后新编辑的草稿均保留；忙碌时拒绝切换、不排队、不清空草稿。`/new` 仍在后台确认后清空历史和草稿。
 - 运行中按无修饰键的 Esc 取消当前任务，不退出 pp；已有面板或菜单优先消费 Esc。收尾期间显示 `Cancelling...`，仍可编辑草稿、滚动、F1/help、Ctrl-O 或退出，但不能提交／排队新任务、切换模型／思考级别或 `/new`。收尾完成后保留草稿、光标、输入历史、已完成的工具结果和文件修改，并追加 `Task cancelled. File changes were not rolled back.`；不重试、不回滚。每个任务使用独立取消 token，已提交的最终回答不会被迟到 Esc 改成取消。行模式和 `-p` 不提供取消入口。
 - `/quit` 或 Ctrl-C 立即退出整个 pp，正常退出码为 0。恢复终端后，全部对话记录按退出时的终端宽度写入普通终端的滚动历史，保留原有颜色、缩进、分隔线、流式片段、工具输出及错误，末尾保留输入框、未提交的草稿、菜单和状态栏；可以向上滚动查看超出一屏的历史。保留长度受终端自身的滚动历史容量限制。退出不等待阻塞中的模型请求或工具，也不保证终止 bash 子进程；需要任务级受控清理时应先按 Esc 等待收尾。文件修改不会回滚。
 - `-p/--prompt` runs one task and never parses slash commands: `pp -p '/model'` sends `/model` as a task. It can follow `-r ID` to append one task to saved history; combining it with `-c` is rejected. If either stdin or stdout is not a terminal, line mode supports the same commands without raw mode or an alternate screen. `/model` lists configured models and marks the current one; use `/model provider/model` to switch. Stdout streams **all readable assistant text**, including text before tools, with one terminating newline per nonempty turn and no replay at completion. Refusal is printed only if no non-blank content wins. Help, command responses, errors, and `tool <name>: running/ok/failed` go to stderr; live process data uses `[{name} stdout]` / `[{name} stderr]` on pp's stderr, with the actual `bash`, `grep`, or `find` tool name. Non-TUI output adds no ANSI control sequences. A display write failure is returned only after the Agent finishes recording the task's history/tool results.
@@ -371,7 +346,7 @@ description: Rust 开发与审查指导
 
 `name` 和 `description` 必须为非空字符串，支持 YAML 多行说明和其他元数据。名称作为全局启停标识，需要唯一。默认根目录为 `~/.pp/agent/skills`；`~/` 展开为用户目录，普通相对路径以 `~/.pp/agent` 为基准。
 
-TUI 输入 `/skills` 打开全局管理面板：↑/↓ 选择、Space 勾选、Enter 保存、Esc 放弃本次选择，r 重读目录配置并扫描（会重置未保存选择），PgUp/PgDn 滚动详情及诊断。面板显示名称、说明、来源和启用状态；配置中的目录通过编辑 settings 修改。保存仅更新 `disabled_skills`，保留其他字段和 JSONC 注释，使用临时文件原子提交；失败保留原运行状态与面板选择。运行任务时拒绝管理并保留草稿；缺少或无效模型配置时仍可管理 skill。行模式支持 `/skills` 查看列表，以及 `/skills enable 名称`、`/skills disable 名称`。
+TUI 输入 `/skills` 打开全局管理面板：↑/↓ 选择、Space 勾选、Enter 保存、Esc 放弃本次选择，r 重读目录配置并扫描（会重置未保存选择），PgUp/PgDn 滚动详情及诊断。面板显示名称、说明、来源和启用状态；配置中的目录通过编辑 settings 修改。保存仅更新 `disabled_skills`，保留其他字段；常规块映射尽量保留原有注释，流式映射等特殊格式会重新排版为 YAML 块映射，使用临时文件原子提交；失败保留原运行状态与面板选择。运行任务时拒绝管理并保留草稿；缺少或无效模型配置时仍可管理 skill。行模式支持 `/skills` 查看列表，以及 `/skills enable 名称`、`/skills disable 名称`。
 
 模型只收到已启用 skill 的名称与说明；通过 `load_skill({"name":"rust"})` 按需读取全文，结果包含 `content`、`path` 和资源基准 `base_dir`。加载工具只接受已发现且启用的名称，不会执行 skill 内的脚本。TUI 用品红色完整边框显示加载过程，左上角加粗标题为 `skill · 名称`，并显示来源及成功／失败状态。正文默认预览前 10 行，Ctrl-O 展开／收起最近的 bash 或 skill 卡片；模型接收全文，退出回放也保留全文。
 
@@ -416,7 +391,7 @@ Both APIs validate the entire batch before saving assistant output or executing 
 
 ### Responses 故障排查
 
-- 部分模型始终启用思考，不接受 `reasoning.effort: "none"`。旧配置 `"think_level": "default"` 在当前版本是 `none` 的别名，**不是服务端默认值**。可在该模型配置 `thinking.efforts` 排除 `none`，并用 `thinking.defaultLevel` 指定支持的启动档位。若服务端仍拒绝请求，在交互模式执行允许的 `/effort low` 后重新提交任务；启动默认值在 `~/.pp/agent/settings.jsonc` 中改为 `"think_level": "low"`，或选择服务端支持的其他档位。已恢复的 session 保留其保存的档位，需要执行 `/effort low`；仅修改启动设置不会覆盖已恢复的档位。
+- 部分模型始终启用思考，不接受 `reasoning.effort: "none"`。旧配置 `think_level: default` 在当前版本是 `none` 的别名，**不是服务端默认值**。可在该模型配置 `thinking.efforts` 排除 `none`，并用 `thinking.defaultLevel` 指定支持的启动档位。若服务端仍拒绝请求，在交互模式执行允许的 `/effort low` 后重新提交任务；启动默认值在 `~/.pp/agent/settings.yml` 中改为 `think_level: low`，或选择服务端支持的其他档位。已恢复的 session 保留其保存的档位，需要执行 `/effort low`；仅修改启动设置不会覆盖已恢复的档位。
 - 流式终止错误区分 `response.failed`、`response.incomplete` 与 `error`，仅展示白名单内的错误码／未完成原因；服务端原始 message、param、未知 code/reason 均不回显。`invalid_request` 提示检查模型支持的思考档位和请求参数；`max_output_tokens` 表示输出截断，`content_filter` 表示内容过滤。失败不自动重试、不降级协议、不提交未完成的回答，也不执行该批次工具。
 
 ## Verification
@@ -464,7 +439,7 @@ cargo fmt --check
 
 新增搜索工具另经真实构建产物与临时 loopback provider 验证：全后端、仅系统 fallback、rg/find、grep/fd、两组均缺失五种 PATH 组合分别运行 Completion/Responses，确认动态 description、原生命令结果、无匹配成功、非法正则 stderr、带空格路径与 CLI 标签一致。另两次 bash smoke 保留原标签、500 行截断及超时行为。实际 100×30 PTY 观察到 grep 青色／find 普通卡片、紧凑 JSON argv 标题、结束前实时输出及非法正则失败状态；Ctrl-C 退出为 0 并恢复 termios。全部使用隔离 HOME／配置／工作目录，未访问个人凭证；临时脚本已删除。
 
-回归测试使用回环 HTTP、真实子进程、独立临时 HOME 下的全局 JSONC 配置及临时工作目录； they do not modify the test process environment or access external model services. Both APIs cover ordered tool dependencies, cross-turn history, tool-error correction, invalid batches without partial writes, request limits, timeouts, error redaction, and no automatic retries. Responses-specific cases cover omitted/explicit protocol selection, text aggregation/refusal, encrypted reasoning and complete output replay, optional function-call status, reset preserving instructions, rejected response/item statuses, and recovery without invalid output entering history. Configuration cases cover composite provider/model routing, default ordering, model aliases containing `/`, scoped uniqueness, strict protocol/URL/field types, full validation of unselected providers, removed protocol rejection, and no environment fallback. HTTP regressions include non-JSON 302/401/429/500 errors without redirects or exposed bodies.
+回归测试使用回环 HTTP、真实子进程、独立临时 HOME 下的全局 YAML 配置及临时工作目录； they do not modify the test process environment or access external model services. Both APIs cover ordered tool dependencies, cross-turn history, tool-error correction, invalid batches without partial writes, request limits, timeouts, error redaction, and no automatic retries. Responses-specific cases cover omitted/explicit protocol selection, text aggregation/refusal, encrypted reasoning and complete output replay, optional function-call status, reset preserving instructions, rejected response/item statuses, and recovery without invalid output entering history. Configuration cases cover composite provider/model routing, default ordering, model aliases containing `/`, scoped uniqueness, strict protocol/URL/field types, full validation of unselected providers, removed protocol rejection, and no environment fallback. HTTP regressions include non-JSON 302/401/429/500 errors without redirects or exposed bodies.
 
 Unix regressions additionally drive the TUI through a real PTY (100×30, `TERM=xterm-256color`), restoring the visible screen via vt100: multi-line input, drafts while waiting, paste without sending, real write/read, session history, protocol-error recovery, confirmed reset, unavailable configuration, and Ctrl-C while busy. After exit, termios flags, alternate screen, bracketed paste, mouse protocol mode/encoding, and cursor restoration are checked; the original pipe regressions remain. An SGR mouse-wheel scenario verifies scrolling through a 60-line streamed answer, stable history and CJK draft during incoming output, bottom clamping, and restored following on the next response. Physical mouse wheels and touchpads in specific terminal emulators have not been manually verified. Run alone: `cargo test --locked --test cli_agent tui:: -- --nocapture`.
 
@@ -500,7 +475,7 @@ Session recovery was independently smoke-tested against a disposable Python stan
 BIN="$PWD/target/debug/pp"
 WORK="$(mktemp -d)"
 mkdir -p "$WORK/home/.pp/agent"
-cp ~/.pp/agent/settings.jsonc ~/.pp/agent/models.jsonc "$WORK/home/.pp/agent/"
+cp ~/.pp/agent/settings.yml ~/.pp/agent/models.yml "$WORK/home/.pp/agent/"
 (
   cd "$WORK" || exit 1
   export HOME="$WORK/home"

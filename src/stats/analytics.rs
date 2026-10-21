@@ -2,12 +2,11 @@ use super::{COLUMNS, Range, RequestRow, Store, row};
 use anyhow::Result;
 use chrono::{Local, TimeZone, Timelike};
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs, path::Path};
+use std::collections::BTreeMap;
 
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Serialize)]
 pub(super) struct Price {
     input: f64,
     cached_input: f64,
@@ -20,32 +19,36 @@ pub(super) struct Pricing {
 }
 impl Pricing {
     pub fn load(store: &Store) -> Self {
-        let Some(path) = store.conn.path().and_then(|p| Path::new(p).parent()) else {
-            return Self::default();
-        };
-        match fs::read(path.join("pricing.json")) {
-            Ok(bytes) => match serde_json::from_slice::<BTreeMap<String, Price>>(&bytes) {
-                Ok(rates)
-                    if rates.iter().all(|(key, p)| {
-                        key.split_once('/')
-                            .is_some_and(|(a, b)| !a.trim().is_empty() && !b.trim().is_empty())
-                            && [p.input, p.cached_input, p.output]
-                                .iter()
-                                .all(|v| v.is_finite() && *v >= 0.0)
-                    }) =>
-                {
-                    Self { rates, error: None }
+        match crate::models::load_models(&store.models_path) {
+            Ok(providers) => {
+                let mut rates = BTreeMap::new();
+                for provider in providers {
+                    for model in provider.models {
+                        if let Some(cost) = model.cost {
+                            rates.insert(
+                                format!("{}/{}", provider.id, model.id),
+                                Price {
+                                    input: cost.input,
+                                    cached_input: cost.cache_read,
+                                    output: cost.output,
+                                },
+                            );
+                        }
+                    }
                 }
-                _ => Self {
-                    error: Some(
-                        "Invalid pricing.json: use provider/model keys and non-negative input, cached_input and output USD rates per million tokens.",
-                    ),
-                    ..Self::default()
-                },
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+                Self { rates, error: None }
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Self::default()
+            }
             Err(_) => Self {
-                error: Some("Unable to read pricing.json."),
+                error: Some(
+                    "无法从 ~/.pp/agent/models.yml 读取价格：请检查模型配置及 cost.input、cost.cacheRead、cost.output 单价（USD／百万 Token）。",
+                ),
                 ..Self::default()
             },
         }
@@ -288,7 +291,7 @@ impl Store {
             })
             .collect();
         Ok(
-            json!({"summary":all.totals.value(),"buckets":series(&all.buckets),"daily":series(&all.daily),"hours":all.value()["hours"],"models":model_values,"providers":provider_values,"active_days":all.daily.len(),"pricing_error":pricing.error,"pricing_source":"pricing.json · USD per million tokens · current configured rates","range":range.label(),"updated_at":now}),
+            json!({"summary":all.totals.value(),"buckets":series(&all.buckets),"daily":series(&all.daily),"hours":all.value()["hours"],"models":model_values,"providers":provider_values,"active_days":all.daily.len(),"pricing_error":pricing.error,"pricing_source":"~/.pp/agent/models.yml · cost · USD per million tokens · current configured rates","range":range.label(),"updated_at":now}),
         )
     }
 }

@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, ensure};
-use jsonc_parser::cst::{CstInputValue, CstRootNode};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -8,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{jsonc, models};
+use crate::{models, yaml};
 
 // Deliberately not Debug: this owns the API credential.
 pub(crate) struct Config {
@@ -354,9 +353,9 @@ fn default_auto_compact_threshold_percent() -> u8 {
 impl ModelCatalog {
     pub(crate) fn from_files(settings_path: &Path, models_path: &Path) -> Result<Self> {
         let settings: Settings = read_settings(settings_path)?;
-        settings.validate().with_context(|| {
-            format!("loading JSONC settings config {}", settings_path.display())
-        })?;
+        settings
+            .validate()
+            .with_context(|| format!("loading YAML settings config {}", settings_path.display()))?;
         let providers = models::load_models(models_path)?;
         let first_reference = format!("{}/{}", providers[0].id, providers[0].models[0].id);
         let default_reference = match settings.default_model.as_deref() {
@@ -394,13 +393,16 @@ impl ModelCatalog {
 
     pub(crate) fn save_default_think_level(&self, level: ThinkLevel) -> Result<()> {
         update_settings(&self.settings_path, |_| {
-            Ok(("think_level", CstInputValue::String(level.as_str().into())))
+            Ok((
+                "think_level",
+                serde_yaml::Value::String(level.as_str().into()),
+            ))
         })
     }
 
     pub(crate) fn save_default_model(&self, reference: &str) -> Result<()> {
         update_settings(&self.settings_path, |_| {
-            Ok(("default_model", CstInputValue::String(reference.into())))
+            Ok(("default_model", serde_yaml::Value::String(reference.into())))
         })
     }
 
@@ -457,29 +459,19 @@ impl ModelCatalog {
 
 pub(crate) fn update_settings(
     path: &Path,
-    update: impl FnOnce(Settings) -> Result<(&'static str, CstInputValue)>,
+    update: impl FnOnce(Settings) -> Result<(&'static str, serde_yaml::Value)>,
 ) -> Result<()> {
     let read = || match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).context("Failed to read settings.jsonc"),
+        Err(error) => Err(error).context("Failed to read settings.yml"),
     };
     let original = read()?;
-    let settings: Settings = jsonc::parse(original.as_deref().unwrap_or("{}"), "settings")?;
+    let settings: Settings = yaml::parse(original.as_deref().unwrap_or("{}"), "settings")?;
     settings.validate()?;
     let (name, value) = update(settings)?;
-    let root = CstRootNode::parse(original.as_deref().unwrap_or("{}\n"), &jsonc::options())
-        .map_err(|_| anyhow::anyhow!("Cannot update invalid settings.jsonc"))?;
-    let object = root
-        .object_value()
-        .context("settings.jsonc must be an object")?;
-    if let Some(property) = object.get(name) {
-        property.set_value(value);
-    } else {
-        object.append(name, value);
-    }
-    let updated = root.to_string();
-    let settings: Settings = jsonc::parse(&updated, "settings")?;
+    let updated = yaml::update_field(original.as_deref().unwrap_or("{}\n"), name, value)?;
+    let settings: Settings = yaml::parse(&updated, "settings")?;
     settings.validate()?;
     let parent = path
         .parent()
@@ -511,18 +503,17 @@ pub(crate) fn update_settings(
 
 pub(crate) fn read_settings(path: &Path) -> Result<Settings> {
     match fs::read_to_string(path) {
-        // A missing settings.jsonc is not fatal: defaults apply. Other read
-        // errors (e.g. a directory or invalid UTF-8) still fail startup.
+        // 缺少 settings.yml 时使用默认值；目录或无效 UTF-8 等其他读取错误仍会阻止加载。
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(default_settings()),
         result => {
             let text = result
-                .with_context(|| format!("reading JSONC settings config {}", path.display()))?;
-            jsonc::parse::<Settings>(&text, "settings")
+                .with_context(|| format!("reading YAML settings config {}", path.display()))?;
+            yaml::parse::<Settings>(&text, "settings")
                 .and_then(|settings| {
                     settings.validate()?;
                     Ok(settings)
                 })
-                .with_context(|| format!("loading JSONC settings config {}", path.display()))
+                .with_context(|| format!("loading YAML settings config {}", path.display()))
         }
     }
 }
@@ -562,19 +553,19 @@ mod tests {
             rejection(
                 Some(&json!({"notification_timeout_seconds":value}).to_string()),
                 Some(VALID_MODELS),
-                &["settings.jsonc"],
+                &["settings.yml"],
             );
         }
         rejection(
             Some(r#"{"notification_timeout_seconds":18446744073709551616}"#),
             Some(VALID_MODELS),
-            &["settings.jsonc"],
+            &["settings.yml"],
         );
         for value in [json!(0), json!(null), json!("secret-marker")] {
             rejection(
                 Some(&json!({"notification_show_countdown":value}).to_string()),
                 Some(VALID_MODELS),
-                &["settings.jsonc"],
+                &["settings.yml"],
             );
         }
     }
@@ -607,7 +598,7 @@ mod tests {
                 json!("secret-marker-invalid"),
             ] {
                 let settings = json!({field:value}).to_string();
-                rejection(Some(&settings), Some(VALID_MODELS), &["settings.jsonc"]);
+                rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
             }
         }
     }
@@ -618,10 +609,39 @@ mod tests {
         "models":[{"id":"primary","model":"fixture-model"}]
     }]}"#;
 
+    #[test]
+    fn model_cost_accepts_existing_rates_and_rejects_invalid_unselected_models() {
+        let mut models: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
+        models["providers"][0]["models"][0]["cost"] =
+            json!({"input":0.8,"output":2.8,"cacheRead":0.23});
+        let configured = catalog(None, Some(&models.to_string())).unwrap();
+        let cost = configured.providers[0].models[0].cost.unwrap();
+        assert_eq!(cost.input, 0.8);
+        assert_eq!(cost.output, 2.8);
+        assert_eq!(cost.cache_read, 0.23);
+        for invalid in [
+            json!(null),
+            json!({"input":-1,"output":1,"cacheRead":0}),
+            json!({"input":1,"output":1}),
+            json!({"input":"secret-marker","output":1,"cacheRead":0}),
+            json!({"input":1,"output":1,"cacheRead":0,"typo":0}),
+        ] {
+            models["providers"][0]["models"]
+                .as_array_mut()
+                .unwrap()
+                .truncate(1);
+            models["providers"][0]["models"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"id":"unselected","model":"fixture-model","cost":invalid}));
+            rejection(None, Some(&models.to_string()), &["models.yml"]);
+        }
+    }
+
     fn catalog(settings: Option<&str>, models: Option<&str>) -> Result<ModelCatalog> {
         let dir = tempfile::tempdir().unwrap();
-        let settings_path = dir.path().join("settings.jsonc");
-        let models_path = dir.path().join("models.jsonc");
+        let settings_path = dir.path().join("settings.yml");
+        let models_path = dir.path().join("models.yml");
         if let Some(settings) = settings {
             fs::write(&settings_path, settings).unwrap();
         }
@@ -682,7 +702,7 @@ mod tests {
             rejection(
                 Some(&json!({"think_level":value}).to_string()),
                 Some(VALID_MODELS),
-                &["settings.jsonc"],
+                &["settings.yml"],
             );
         }
         assert_eq!(
@@ -785,7 +805,7 @@ mod tests {
         }
         for thinking in invalid {
             let models = make(thinking);
-            rejection(None, Some(&models.to_string()), &["models.jsonc"]);
+            rejection(None, Some(&models.to_string()), &["models.yml"]);
             let mut unselected: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
             let mut model = models["providers"][0]["models"][0].clone();
             model["id"] = json!("unselected");
@@ -793,18 +813,18 @@ mod tests {
                 .as_array_mut()
                 .unwrap()
                 .push(model);
-            rejection(None, Some(&unselected.to_string()), &["models.jsonc"]);
+            rejection(None, Some(&unselected.to_string()), &["models.yml"]);
         }
         let error = rejection(
             None,
             Some(&make(json!({"efforts":["none"]})).to_string()),
-            &["models.jsonc"],
+            &["models.yml"],
         );
         assert!(error.contains("thinking.efforts must contain only low, medium, high, xhigh, max"));
         let error = rejection(
             None,
             Some(&make(json!({"efforts":["low"],"defaultLevel":"high"})).to_string()),
-            &["models.jsonc"],
+            &["models.yml"],
         );
         assert!(error.contains("thinking.defaultLevel must be included in thinking.efforts"));
     }
@@ -828,7 +848,7 @@ mod tests {
             assert_eq!(config.base_url.as_str(), "https://a.example/v1");
             assert_eq!(config.protocol, models::Protocol::Completion);
         }
-        rejection(None, None, &["models.jsonc"]);
+        rejection(None, None, &["models.yml"]);
     }
 
     #[test]
@@ -884,7 +904,7 @@ mod tests {
             json!({"secret-marker": true}),
         ] {
             let settings = json!({"edit": value}).to_string();
-            rejection(Some(&settings), Some(VALID_MODELS), &["settings.jsonc"]);
+            rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
         }
     }
 
@@ -917,33 +937,24 @@ mod tests {
     }
 
     #[test]
-    fn jsonc_comments_and_trailing_commas_preserve_string_contents() {
+    fn yaml_comments_and_multiline_strings_preserve_string_contents() {
         let config = load(
+            Some("# 应用设置\ndefault_model: fixture/primary\n"),
             Some(
-                r#"{
-                    // App settings, not JSON5.
-                    "default_model": "fixture/primary", /* trailing comma below */
-                }"#,
-            ),
-            Some(
-                r#"{
-                    // Provider credentials are shared by their models.
-                    "providers": [
-                        {
-                            "id": "fixture",
-                            "api_key": "key//with/*literal*/\"quote",
-                            /* comments may span lines */
-                            "base_url": "http://localhost:8080/custom/v1/",
-                            "models": [
-                                {"id": "primary", "model": "tool-model",},
-                            ],
-                        },
-                    ],
-                }"#,
+                r#"# 同一供应商的模型共享凭证
+providers:
+  - id: fixture
+    api_key: |-
+      key//with/*literal*/"quote # literal
+    base_url: http://localhost:8080/custom/v1/ # 行尾注释
+    models:
+      - id: primary
+        model: tool-model
+"#,
             ),
         )
         .unwrap();
-        assert_eq!(config.api_key, "key//with/*literal*/\"quote");
+        assert_eq!(config.api_key, "key//with/*literal*/\"quote # literal");
         assert_eq!(config.model, "tool-model");
         assert_eq!(config.base_url.as_str(), "http://localhost:8080/custom/v1");
     }
@@ -963,7 +974,7 @@ mod tests {
             "secret-marker/ \t",
         ] {
             let settings = json!({"default_model": reference}).to_string();
-            rejection(Some(&settings), Some(VALID_MODELS), &["settings.jsonc"]);
+            rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
         }
     }
 
@@ -1063,7 +1074,7 @@ mod tests {
             rejection(
                 Some(VALID_SETTINGS),
                 Some(&models.to_string()),
-                &["models.jsonc"],
+                &["models.yml"],
             );
         }
     }
@@ -1083,7 +1094,7 @@ mod tests {
             for field in ["max_model_requests", "request_timeout_seconds"] {
                 let settings =
                     format!(r#"{{"default_model":"fixture/primary","{field}":{value}}}"#);
-                rejection(Some(&settings), Some(VALID_MODELS), &["settings.jsonc"]);
+                rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
             }
         }
     }
@@ -1095,7 +1106,7 @@ mod tests {
             r#"{"default_model":"fixture/primary","api_key":"secret-marker"}"#,
             r#"{"default_model":"fixture/primary","models":["secret-marker"]}"#,
         ] {
-            rejection(Some(settings), Some(VALID_MODELS), &["settings.jsonc"]);
+            rejection(Some(settings), Some(VALID_MODELS), &["settings.yml"]);
         }
         let valid: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
         let mut cases = vec![
@@ -1126,7 +1137,7 @@ mod tests {
             rejection(
                 Some(VALID_SETTINGS),
                 Some(&models.to_string()),
-                &["models.jsonc"],
+                &["models.yml"],
             );
         }
     }
@@ -1149,7 +1160,7 @@ mod tests {
                 rejection(
                     Some(VALID_SETTINGS),
                     Some(&invalid.to_string()),
-                    &["models.jsonc"],
+                    &["models.yml"],
                 );
             }
         }
@@ -1171,7 +1182,7 @@ mod tests {
             rejection(
                 Some(VALID_SETTINGS),
                 Some(&invalid.to_string()),
-                &["models.jsonc"],
+                &["models.yml"],
             );
         }
     }
@@ -1185,17 +1196,16 @@ mod tests {
             r#"{"providers":[{"id":"fixture","api_key":"secret-marker","base_url":"","models":[{"id":"primary","model":"m"}]}]}"#,
             r#"{"providers":[{"id":"fixture","api_key":"secret-marker","base_url":"ftp://secret-marker","models":[{"id":"primary","model":"m"}]}]}"#,
             r#"{"providers":[{"id":"fixture","api_key":"secret-marker" "models":[{"id":"primary","model":"m"}]}]}"#,
-            r#"{"providers":[{"id":"fixture","api_key":'secret-marker',"models":[{"id":"primary","model":"m"}]}]}"#,
             r#"{"providers":[{"id":"fixture","api_key":"secret-marker", /* unterminated"#,
         ] {
-            rejection(Some(VALID_SETTINGS), Some(models), &["models.jsonc"]);
+            rejection(Some(VALID_SETTINGS), Some(models), &["models.yml"]);
         }
         for settings in [
             r#"{"default_model":["secret-marker"]}"#,
             r#"{"default_model":true,"secret-marker":1}"#,
             r#"{"default_model" "secret-marker"}"#,
         ] {
-            rejection(Some(settings), Some(VALID_MODELS), &["settings.jsonc"]);
+            rejection(Some(settings), Some(VALID_MODELS), &["settings.yml"]);
         }
     }
 
@@ -1242,11 +1252,7 @@ mod tests {
                 VALID_SETTINGS,
                 r#"{"default_model":"secret-marker/missing"}"#,
             ] {
-                rejection(
-                    Some(settings),
-                    Some(&invalid.to_string()),
-                    &["models.jsonc"],
-                );
+                rejection(Some(settings), Some(&invalid.to_string()), &["models.yml"]);
             }
         }
         for model in [
@@ -1262,7 +1268,7 @@ mod tests {
             rejection(
                 Some(VALID_SETTINGS),
                 Some(&invalid.to_string()),
-                &["models.jsonc"],
+                &["models.yml"],
             );
         }
     }
@@ -1286,21 +1292,21 @@ mod tests {
                 Some(r#"{"default_model":"anthropic/primary"}"#),
                 Some(r#"{"default_model":"anthropic/secret-marker"}"#),
             ] {
-                rejection(settings, Some(&models), &["models.jsonc"]);
+                rejection(settings, Some(&models), &["models.yml"]);
             }
         }
     }
 
     #[test]
     fn missing_and_unparseable_files_are_reported_per_file() {
-        rejection(Some(VALID_SETTINGS), None, &["models.jsonc"]);
+        rejection(Some(VALID_SETTINGS), None, &["models.yml"]);
         for settings in ["{", "{\"default_model\" \"secret-marker\"}", ""] {
-            let chain = rejection(Some(settings), Some(VALID_MODELS), &["settings.jsonc"]);
-            assert!(chain.contains("invalid JSONC settings config"), "{chain}");
+            let chain = rejection(Some(settings), Some(VALID_MODELS), &["settings.yml"]);
+            assert!(chain.contains("invalid YAML settings config"), "{chain}");
         }
         for models in ["{", "{\"providers\": \"secret-marker\"", ""] {
-            let chain = rejection(Some(VALID_SETTINGS), Some(models), &["models.jsonc"]);
-            assert!(chain.contains("invalid JSONC models config"), "{chain}");
+            let chain = rejection(Some(VALID_SETTINGS), Some(models), &["models.yml"]);
+            assert!(chain.contains("invalid YAML models config"), "{chain}");
         }
     }
     #[test]
@@ -1327,7 +1333,7 @@ mod tests {
                 rejection(
                     Some(&json!({field:value}).to_string()),
                     Some(VALID_MODELS),
-                    &["settings.jsonc"],
+                    &["settings.yml"],
                 );
             }
         }
@@ -1412,14 +1418,14 @@ mod tests {
             let selected = format!(
                 r#"{{"providers":[{{"id":"fixture","api_key":"fixture-key","models":[{{"id":"primary","model":"m","context_window":{value}}}]}}]}}"#
             );
-            rejection(Some(VALID_SETTINGS), Some(&selected), &["models.jsonc"]);
+            rejection(Some(VALID_SETTINGS), Some(&selected), &["models.yml"]);
             let unselected_model = format!(
                 r#"{{"providers":[{{"id":"fixture","api_key":"fixture-key","models":[{{"id":"primary","model":"m"}},{{"id":"other","model":"m","context_window":{value}}}]}}]}}"#
             );
             rejection(
                 Some(VALID_SETTINGS),
                 Some(&unselected_model),
-                &["models.jsonc"],
+                &["models.yml"],
             );
             let unselected_provider = format!(
                 r#"{{"providers":[{{"id":"fixture","api_key":"fixture-key","models":[{{"id":"primary","model":"m"}}]}},{{"id":"other","api_key":"fixture-key","models":[{{"id":"primary","model":"m","context_window":{value}}}]}}]}}"#
@@ -1427,13 +1433,13 @@ mod tests {
             rejection(
                 Some(VALID_SETTINGS),
                 Some(&unselected_provider),
-                &["models.jsonc"],
+                &["models.yml"],
             );
         }
         // Zero reaches semantic validation, so the fixed diagnostic names it.
         let models = r#"{"providers":[{"id":"fixture","api_key":"fixture-key",
             "models":[{"id":"primary","model":"m","context_window":0}]}]}"#;
-        let chain = rejection(Some(VALID_SETTINGS), Some(models), &["models.jsonc"]);
+        let chain = rejection(Some(VALID_SETTINGS), Some(models), &["models.yml"]);
         assert!(
             chain.contains("context_window must be a positive integer"),
             "{chain}"
@@ -1479,16 +1485,15 @@ mod tests {
             "18446744073709551616",
         ] {
             let settings = format!(r#"{{"auto_compact_threshold_percent":{value}}}"#);
-            rejection(Some(&settings), Some(VALID_MODELS), &["settings.jsonc"]);
+            rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
         }
         for value in ["\"secret-marker\"", "null", "0", "1"] {
             let settings = format!(r#"{{"auto_compact":{value}}}"#);
-            rejection(Some(&settings), Some(VALID_MODELS), &["settings.jsonc"]);
+            rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
         }
-        // The out-of-range u8 value reaches semantic validation with a fixed
-        // diagnostic; type errors are redacted by the JSONC parser.
+        // u8 范围内的无效值返回固定语义校验提示，类型错误由 YAML 解析器统一脱敏。
         let settings = r#"{"auto_compact_threshold_percent":100}"#;
-        let chain = rejection(Some(settings), Some(VALID_MODELS), &["settings.jsonc"]);
+        let chain = rejection(Some(settings), Some(VALID_MODELS), &["settings.yml"]);
         assert!(
             chain.contains("auto_compact_threshold_percent must be between 1 and 99"),
             "{chain}"

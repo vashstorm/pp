@@ -405,7 +405,7 @@ fn tree_tui_cross_protocol_navigation_keeps_current_model_and_effort() {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             fixture_settings(),
         )
         .unwrap();
@@ -414,7 +414,7 @@ fn tree_tui_cross_protocol_navigation_keeps_current_model_and_effort() {
             slash_provider(&server, "other", target, json!([{"id":"target","model":"target-model"}]))
         ]});
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             providers.to_string(),
         )
         .unwrap();

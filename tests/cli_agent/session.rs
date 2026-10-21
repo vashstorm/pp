@@ -229,8 +229,8 @@ fn sessions_dir(home: &Path) -> PathBuf {
 }
 
 fn configure(home: &Path, settings: &str, models: &str) {
-    std::fs::write(config_path(home, "settings.jsonc"), settings).unwrap();
-    std::fs::write(config_path(home, "models.jsonc"), models).unwrap();
+    std::fs::write(config_path(home, "settings.yml"), settings).unwrap();
+    std::fs::write(config_path(home, "models.yml"), models).unwrap();
 }
 
 fn command(home: &Path, cwd: &Path, args: &[&str]) -> Command {
@@ -876,7 +876,7 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         let cwd = tempfile::tempdir().unwrap();
-        configure(home.path(), fixture_settings(), "{ not valid jsonc");
+        configure(home.path(), fixture_settings(), "{ not valid yaml");
         let mut cli = start(home.path(), cwd.path(), &[]);
         cli.wait_for(Pipe::Err, "Configuration unavailable");
         cli.input("/quit\n");

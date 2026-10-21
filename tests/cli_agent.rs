@@ -38,8 +38,8 @@ impl Cli {
         settings: &str,
         models: &str,
     ) -> Self {
-        std::fs::write(config_path(cwd, "settings.jsonc"), settings).unwrap();
-        std::fs::write(config_path(cwd, "models.jsonc"), models).unwrap();
+        std::fs::write(config_path(cwd, "settings.yml"), settings).unwrap();
+        std::fs::write(config_path(cwd, "models.yml"), models).unwrap();
         Self::start_with_existing_files(cwd, prompt)
     }
     fn start_with_existing_files(cwd: &std::path::Path, prompt: Option<&str>) -> Self {
@@ -105,12 +105,12 @@ impl Drop for Cli {
 }
 
 fn fixture_settings() -> &'static str {
-    "{\n  // App behavior for this process only.\n  \"default_model\": \"fixture/primary\",\n}\n"
+    "# 此测试进程的应用设置\ndefault_model: fixture/primary\n"
 }
 
 fn fixture_models(server: &Server) -> String {
     format!(
-        "{{\n// Loopback provider for this process only.\n\"providers\":[{{\"id\":\"fixture\",\"protocol\":\"completion\",\"api_key\":\"fixture-key\",\"base_url\":\"http://{}/v1\",\"models\":[{{\"id\":\"primary\",\"model\":\"fixture-model\"}}]}}],\n}}\n",
+        "# 此测试进程的回环服务\nproviders:\n  - id: fixture\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      - id: primary\n        model: fixture-model\n",
         server.server_addr()
     )
 }
@@ -1047,11 +1047,11 @@ fn model_switch_failure_is_atomic_and_catalog_is_a_read_only_startup_snapshot() 
     let system = body["messages"][0].clone();
     // The first request proves startup loading finished before files change.
     assert_eq!(
-        std::fs::read(config_path(dir.path(), "models.jsonc")).unwrap(),
+        std::fs::read(config_path(dir.path(), "models.yml")).unwrap(),
         models.as_bytes()
     );
     assert_eq!(
-        std::fs::read(config_path(dir.path(), "settings.jsonc")).unwrap(),
+        std::fs::read(config_path(dir.path(), "settings.yml")).unwrap(),
         settings.as_bytes()
     );
     let replacement_settings = r#"{"default_model":"replacement/new"}"#;
@@ -1062,11 +1062,11 @@ fn model_switch_failure_is_atomic_and_catalog_is_a_read_only_startup_snapshot() 
     ]})
     .to_string();
     std::fs::write(
-        config_path(dir.path(), "settings.jsonc"),
+        config_path(dir.path(), "settings.yml"),
         replacement_settings,
     )
     .unwrap();
-    std::fs::write(config_path(dir.path(), "models.jsonc"), &replacement_models).unwrap();
+    std::fs::write(config_path(dir.path(), "models.yml"), &replacement_models).unwrap();
     let calls = json!([
         call(
             "atomic-write",
@@ -1141,11 +1141,11 @@ fn model_switch_failure_is_atomic_and_catalog_is_a_read_only_startup_snapshot() 
         assert!(!stderr.contains(secret), "leaked {secret}: {stderr}");
     }
     assert_eq!(
-        std::fs::read(config_path(dir.path(), "models.jsonc")).unwrap(),
+        std::fs::read(config_path(dir.path(), "models.yml")).unwrap(),
         replacement_models.as_bytes()
     );
     assert_eq!(
-        std::fs::read(config_path(dir.path(), "settings.jsonc")).unwrap(),
+        std::fs::read(config_path(dir.path(), "settings.yml")).unwrap(),
         replacement_settings.as_bytes()
     );
     assert_eq!(
@@ -1953,16 +1953,53 @@ fn provider_errors_are_redacted_and_never_retried_on_either_protocol() {
 }
 
 #[test]
+fn yaml_block_configs_drive_both_protocols() {
+    for (protocol, path) in [
+        ("completion", "/v1/chat/completions"),
+        ("response", "/v1/responses"),
+    ] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let models = format!(
+            "# 模型配置\nproviders:\n  - id: fixture\n    protocol: {protocol}\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      - id: primary\n        model: yaml-model\n        cost:\n          input: 2.0\n          cacheRead: 0.2\n          output: 8.0\n",
+            server.server_addr()
+        );
+        let cli = Cli::start_with(
+            home.path(),
+            Some("hello"),
+            "think_level: low # 启动档位\ndebug: false\n",
+            &models,
+        );
+        let (request, body) = receive_at(&server, path);
+        assert_eq!(body["model"], "yaml-model");
+        assert_eq!(authorization(&request), "Bearer fixture-key");
+        if protocol == "completion" {
+            final_reply(request, "yaml loaded");
+        } else {
+            response_final(request, "yaml loaded");
+        }
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"yaml loaded\n");
+        no_more(&server);
+    }
+}
+
+#[test]
 fn file_configs_override_provider_environment() {
     let server = server();
     let work = tempfile::tempdir().unwrap();
     std::fs::write(
-        config_path(work.path(), "settings.jsonc"),
-        "{ /* app settings with a comment */ \"default_model\": \"chosen/primary\", }",
+        config_path(work.path(), "settings.yml"),
+        "# 应用设置\ndefault_model: chosen/primary\n",
     )
     .unwrap();
-    std::fs::write(config_path(work.path(), "models.jsonc"), format!(
-        "{{ /* loopback provider */ \"providers\":[{{ \"id\": \"chosen\", \"protocol\": \"completion\", \"api_key\": \"file-key\", \"base_url\": \"http://{}/v1\", \"models\":[{{ \"id\": \"primary\", \"model\": \"file-model\", }}], }}], }}",
+    std::fs::write(config_path(work.path(), "models.yml"), format!(
+        "# 回环服务\nproviders:\n  - id: chosen\n    protocol: completion\n    api_key: file-key\n    base_url: http://{}/v1\n    models:\n      - id: primary\n        model: file-model\n",
         server.server_addr()
     ))
     .unwrap();
@@ -2026,8 +2063,8 @@ fn missing_settings_uses_first_provider_first_model_and_defaults() {
     })
     .to_string();
     let dir = tempfile::tempdir().unwrap();
-    // No settings.jsonc: defaults select the first provider's first model.
-    std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
+    // 缺少 settings.yml 时，默认使用首个供应商的首个模型。
+    std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
     let cli = Cli::start_with_existing_files(dir.path(), Some("hello"));
     // finish() waits for exit, so the loopback reply must come first.
     let (request, body) = receive(&server);
@@ -2065,9 +2102,9 @@ fn unmatched_default_model_falls_back_to_first_provider_first_model() {
     })
     .to_string();
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
+    std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
     std::fs::write(
-        config_path(dir.path(), "settings.jsonc"),
+        config_path(dir.path(), "settings.yml"),
         r#"{"default_model": "missing/nope"}"#,
     )
     .unwrap();
@@ -2125,7 +2162,7 @@ fn unselected_anthropic_refuses_both_cli_modes_without_requests_or_tools() {
         let error = String::from_utf8(output.stderr).unwrap();
         assert_eq!(output.status.success(), interactive, "{error}");
         assert!(output.stdout.is_empty());
-        assert!(error.contains("models.jsonc"), "{error}");
+        assert!(error.contains("models.yml"), "{error}");
         assert!(!error.contains("secret-marker"), "{error}");
         assert!(!dir.path().join("must-not-exist").exists());
         no_more(&anthropic);
@@ -2160,9 +2197,9 @@ fn selected_anthropic_refuses_both_cli_modes_without_requests_or_tools() {
     for settings in [None, Some(r#"{"default_model":"anthropic/primary"}"#)] {
         for interactive in [false, true] {
             let dir = tempfile::tempdir().unwrap();
-            std::fs::write(config_path(dir.path(), "models.jsonc"), &models).unwrap();
+            std::fs::write(config_path(dir.path(), "models.yml"), &models).unwrap();
             if let Some(settings) = settings {
-                std::fs::write(config_path(dir.path(), "settings.jsonc"), settings).unwrap();
+                std::fs::write(config_path(dir.path(), "settings.yml"), settings).unwrap();
             }
             let mut cli = Cli::start_with_existing_files(
                 dir.path(),
@@ -2179,7 +2216,7 @@ fn selected_anthropic_refuses_both_cli_modes_without_requests_or_tools() {
             let error = String::from_utf8(output.stderr).unwrap();
             assert_eq!(output.status.success(), interactive, "{error}");
             assert!(output.stdout.is_empty());
-            assert!(error.contains("models.jsonc"), "{error}");
+            assert!(error.contains("models.yml"), "{error}");
             assert!(!error.contains("secret-marker"), "{error}");
             assert!(!dir.path().join("must-not-exist").exists());
             no_more(&anthropic);
@@ -2202,16 +2239,16 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
     });
     let valid_models = valid.to_string();
     let mut cases = vec![
-        (Some(fixture_settings().to_owned()), None, "models.jsonc"),
+        (Some(fixture_settings().to_owned()), None, "models.yml"),
         (
             Some("{ broken secret-marker settings".to_owned()),
             Some(valid_models.clone()),
-            "settings.jsonc",
+            "settings.yml",
         ),
         (
             Some(fixture_settings().to_owned()),
             Some(r#"{"providers":["secret-marker""#.to_owned()),
-            "models.jsonc",
+            "models.yml",
         ),
     ];
     for settings in [
@@ -2227,7 +2264,7 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
         cases.push((
             Some(settings.to_string()),
             Some(valid_models.clone()),
-            "settings.jsonc",
+            "settings.yml",
         ));
     }
     let mut invalid_models = vec![
@@ -2312,7 +2349,7 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
         cases.push((
             Some(fixture_settings().to_owned()),
             Some(models.to_string()),
-            "models.jsonc",
+            "models.yml",
         ));
     }
     // A non-blank selected key reaches the existing client header boundary.
@@ -2326,10 +2363,10 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
     for (settings, models, failing) in cases {
         let dir = tempfile::tempdir().unwrap();
         if let Some(settings) = settings {
-            std::fs::write(config_path(dir.path(), "settings.jsonc"), settings).unwrap();
+            std::fs::write(config_path(dir.path(), "settings.yml"), settings).unwrap();
         }
         if let Some(models) = models {
-            std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
+            std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
         }
         let mut cli = Cli::start_with_existing_files(dir.path(), None);
         cli.input("\n/new\ncreate must-not-exist file\n/quit\n");
@@ -2346,14 +2383,10 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
 
 #[test]
 fn interactive_unreadable_configs_do_not_prevent_quit() {
-    for failing in ["settings.jsonc", "models.jsonc"] {
+    for failing in ["settings.yml", "models.yml"] {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            config_path(dir.path(), "settings.jsonc"),
-            fixture_settings(),
-        )
-        .unwrap();
-        if failing == "settings.jsonc" {
+        std::fs::write(config_path(dir.path(), "settings.yml"), fixture_settings()).unwrap();
+        if failing == "settings.yml" {
             std::fs::remove_file(config_path(dir.path(), failing)).unwrap();
             std::fs::create_dir(config_path(dir.path(), failing)).unwrap();
         } else {
@@ -2374,18 +2407,18 @@ fn missing_or_malformed_config_fails_without_environment_fallback_or_secret_leak
     let valid_settings = fixture_settings();
     let valid_models = "{\n\"providers\":[{\"id\":\"fixture\",\"protocol\":\"completion\",\"api_key\":\"secret-marker\",\"models\":[{\"id\":\"primary\",\"model\":\"fixture-model\"}]}],\n}\n";
     let cases = [
-        (Some(valid_settings), None, "models.jsonc"),
+        (Some(valid_settings), None, "models.yml"),
         (
             Some("{ broken secret-marker settings"),
             Some(valid_models),
-            "settings.jsonc",
+            "settings.yml",
         ),
         (
             Some(valid_settings),
             Some(
                 "{\"providers\": [{\"id\": [\"secret-marker\"], \"api_key\": \"secret-marker\", \"models\": [{\"id\":\"primary\", \"model\":\"m\"}]}]}",
             ),
-            "models.jsonc",
+            "models.yml",
         ),
     ];
     for (settings, models, failing) in cases {
@@ -2397,10 +2430,10 @@ fn missing_or_malformed_config_fails_without_environment_fallback_or_secret_leak
         )
         .unwrap();
         if let Some(settings) = settings {
-            std::fs::write(config_path(dir.path(), "settings.jsonc"), settings).unwrap();
+            std::fs::write(config_path(dir.path(), "settings.yml"), settings).unwrap();
         }
         if let Some(models) = models {
-            std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
+            std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
         }
         let cli = Cli::spawn(
             dir.path(),
@@ -2480,8 +2513,8 @@ mod tui {
 
     impl Pty {
         fn start(server: &Server, cwd: &Path) -> Self {
-            std::fs::write(config_path(cwd, "settings.jsonc"), fixture_settings()).unwrap();
-            std::fs::write(config_path(cwd, "models.jsonc"), fixture_models(server)).unwrap();
+            std::fs::write(config_path(cwd, "settings.yml"), fixture_settings()).unwrap();
+            std::fs::write(config_path(cwd, "models.yml"), fixture_models(server)).unwrap();
             Self::start_with_existing_files(cwd)
         }
 
@@ -2904,12 +2937,12 @@ mod tui {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             fixture_models(&server),
         )
         .unwrap();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             r#"{"default_model":"fixture/primary","notification_timeout_seconds":2}"#,
         )
         .unwrap();
@@ -3043,8 +3076,8 @@ mod tui {
             },
         );
         pty.ready_effort("no think");
-        let saved = std::fs::read_to_string(config_path(home.path(), "settings.jsonc")).unwrap();
-        assert!(saved.contains("\"think_level\": \"low\""));
+        let saved = std::fs::read_to_string(config_path(home.path(), "settings.yml")).unwrap();
+        assert!(saved.contains("think_level: low"));
         pty.input("草稿🙂");
         pty.draft("草稿🙂");
         let cursor = pty.parser.screen().cursor_position();
@@ -3096,7 +3129,7 @@ mod tui {
             ),
         ] {
             let home = tempfile::tempdir().unwrap();
-            std::fs::write(config_path(home.path(), "settings.jsonc"), settings).unwrap();
+            std::fs::write(config_path(home.path(), "settings.yml"), settings).unwrap();
             let mut pty = Pty::start_with_existing_files(home.path());
             pty.wait_for(
                 "模型不可用时仍按通知设置显示启动错误",
@@ -3104,7 +3137,7 @@ mod tui {
                     let text = screen.contents();
                     notification_bounds(screen, "Error", red).is_some()
                         && text.contains(if label == Some(" 10s ") {
-                            "invalid JSONC settings"
+                            "invalid YAML settings"
                         } else {
                             "Configuration unavailable"
                         })
@@ -3136,12 +3169,12 @@ mod tui {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             fixture_models(&server),
         )
         .unwrap();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             r#"{"skill_dirs":["./bad-root"]}"#,
         )
         .unwrap();
@@ -3445,13 +3478,9 @@ mod tui {
         for protocol in ["completion", "response"] {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
+            std::fs::write(config_path(dir.path(), "settings.yml"), fixture_settings()).unwrap();
             std::fs::write(
-                config_path(dir.path(), "settings.jsonc"),
-                fixture_settings(),
-            )
-            .unwrap();
-            std::fs::write(
-                config_path(dir.path(), "models.jsonc"),
+                config_path(dir.path(), "models.yml"),
                 response_models(&server, Some(protocol)),
             )
             .unwrap();
@@ -3491,8 +3520,8 @@ mod tui {
                 {"id":"secondary","model":"second-model"}
             ]))]})
             .to_string();
-            std::fs::write(config_path(dir.path(), "settings.jsonc"), settings).unwrap();
-            std::fs::write(config_path(dir.path(), "models.jsonc"), &models).unwrap();
+            std::fs::write(config_path(dir.path(), "settings.yml"), settings).unwrap();
+            std::fs::write(config_path(dir.path(), "models.yml"), &models).unwrap();
             let mut pty = Pty::start_with_existing_files(dir.path());
             pty.ready_effort("high");
             pty.input("草稿🙂\x1b[Z");
@@ -3559,7 +3588,7 @@ mod tui {
             pty.input("\x03");
             pty.finish();
             assert_eq!(
-                std::fs::read_to_string(config_path(dir.path(), "settings.jsonc")).unwrap(),
+                std::fs::read_to_string(config_path(dir.path(), "settings.yml")).unwrap(),
                 settings
             );
             no_more(&server);
@@ -3687,13 +3716,9 @@ mod tui {
     fn tui_mouse_wheel_scrolls_history_and_resumes_following() {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(dir.path(), "settings.yml"), fixture_settings()).unwrap();
         std::fs::write(
-            config_path(dir.path(), "settings.jsonc"),
-            fixture_settings(),
-        )
-        .unwrap();
-        std::fs::write(
-            config_path(dir.path(), "models.jsonc"),
+            config_path(dir.path(), "models.yml"),
             response_models(&server, Some("completion")),
         )
         .unwrap();
@@ -3765,12 +3790,12 @@ mod tui {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(
-                config_path(dir.path(), "settings.jsonc"),
+                config_path(dir.path(), "settings.yml"),
                 r#"{"think_level":"high"}"#,
             )
             .unwrap();
             std::fs::write(
-                config_path(dir.path(), "models.jsonc"),
+                config_path(dir.path(), "models.yml"),
                 response_models(&server, Some(protocol)),
             )
             .unwrap();
@@ -3876,13 +3901,9 @@ mod tui {
         for protocol in ["completion", "response"] {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
+            std::fs::write(config_path(dir.path(), "settings.yml"), fixture_settings()).unwrap();
             std::fs::write(
-                config_path(dir.path(), "settings.jsonc"),
-                fixture_settings(),
-            )
-            .unwrap();
-            std::fs::write(
-                config_path(dir.path(), "models.jsonc"),
+                config_path(dir.path(), "models.yml"),
                 response_models(&server, Some(protocol)),
             )
             .unwrap();
@@ -4025,13 +4046,10 @@ mod tui {
             for ending in ["eof", "json", "failed"] {
                 let server = server();
                 let dir = tempfile::tempdir().unwrap();
+                std::fs::write(config_path(dir.path(), "settings.yml"), fixture_settings())
+                    .unwrap();
                 std::fs::write(
-                    config_path(dir.path(), "settings.jsonc"),
-                    fixture_settings(),
-                )
-                .unwrap();
-                std::fs::write(
-                    config_path(dir.path(), "models.jsonc"),
+                    config_path(dir.path(), "models.yml"),
                     response_models(&server, Some(protocol)),
                 )
                 .unwrap();
@@ -4111,11 +4129,11 @@ mod tui {
         ]})
         .to_string();
         std::fs::write(
-            config_path(dir.path(), "settings.jsonc"),
+            config_path(dir.path(), "settings.yml"),
             r#"{"default_model":"a/primary"}"#,
         )
         .unwrap();
-        std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
+        std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
         let mut pty = Pty::start_with_existing_files(dir.path());
         pty.ready_model("vendor-a");
         pty.input("remember picker alpha\r");
@@ -4365,13 +4383,9 @@ mod tui {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
-            fixture_settings(),
-        )
-        .unwrap();
-        std::fs::write(
-            config_path(home.path(), "models.jsonc"),
+            config_path(home.path(), "models.yml"),
             fixture_models(&server),
         )
         .unwrap();
@@ -4548,11 +4562,11 @@ mod tui {
         ]})
         .to_string();
         std::fs::write(
-            config_path(dir.path(), "settings.jsonc"),
+            config_path(dir.path(), "settings.yml"),
             r#"{"default_model":"a/primary"}"#,
         )
         .unwrap();
-        std::fs::write(config_path(dir.path(), "models.jsonc"), models).unwrap();
+        std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
         let mut pty = Pty::start_with_existing_files(dir.path());
         pty.ready_model("vendor-a");
         pty.input("hold busy history\r");
@@ -4878,7 +4892,7 @@ mod tui {
         let server = server();
         let unavailable = tempfile::tempdir().unwrap();
         std::fs::write(
-            config_path(unavailable.path(), "settings.jsonc"),
+            config_path(unavailable.path(), "settings.yml"),
             fixture_settings(),
         )
         .unwrap();
@@ -4887,7 +4901,7 @@ mod tui {
             "配置错误显示为红色弹窗并保留欢迎页",
             |screen| {
                 notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
-                    && screen.contents().contains("models.jsonc")
+                    && screen.contents().contains("models.yml")
                     && screen.contents().contains("█▀▀█  █▀▀█")
             },
         );
@@ -4900,7 +4914,7 @@ mod tui {
         pty.input(&"\x7f".repeat(task.chars().count()));
         pty.input("/new\r");
         pty.text("/new");
-        pty.text("models.jsonc");
+        pty.text("models.yml");
         no_more(&server);
         assert!(!unavailable.path().join("must-not-exist").exists());
         pty.input("\x7f\x7f\x7f\x7f/quit\r");
@@ -4933,7 +4947,7 @@ mod tui {
         pty.input("\x1b");
         pty.ready();
         assert!(
-            !std::fs::read_to_string(config_path(home.path(), "settings.jsonc"))
+            !std::fs::read_to_string(config_path(home.path(), "settings.yml"))
                 .unwrap()
                 .contains("disabled_skills")
         );
@@ -4941,7 +4955,7 @@ mod tui {
         pty.text("[x] rust");
         pty.input(" \r");
         pty.ready();
-        let settings = std::fs::read_to_string(config_path(home.path(), "settings.jsonc")).unwrap();
+        let settings = std::fs::read_to_string(config_path(home.path(), "settings.yml")).unwrap();
         assert!(settings.contains("disabled_skills"));
         assert!(settings.contains("rust"));
         pty.input("\x03");
@@ -4953,16 +4967,16 @@ mod tui {
         super::skills::install(home.path(), "second", "second");
         pty.input("r");
         pty.text("[x] second");
-        std::fs::write(config_path(home.path(), "settings.jsonc"), "invalid jsonc").unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), "invalid yaml").unwrap();
         pty.input("\r");
-        pty.text("invalid JSONC");
+        pty.text("invalid YAML");
         pty.text("Skills");
         assert_eq!(
-            std::fs::read_to_string(config_path(home.path(), "settings.jsonc")).unwrap(),
-            "invalid jsonc"
+            std::fs::read_to_string(config_path(home.path(), "settings.yml")).unwrap(),
+            "invalid yaml"
         );
         std::fs::write(
-            config_path(home.path(), "settings.jsonc"),
+            config_path(home.path(), "settings.yml"),
             "{\"skill_dirs\":[]}",
         )
         .unwrap();
@@ -4973,10 +4987,10 @@ mod tui {
         pty.text("Skills");
         pty.input("\x03");
         pty.finish();
-        std::fs::write(config_path(home.path(), "settings.jsonc"), "{}").unwrap();
-        std::fs::remove_file(config_path(home.path(), "models.jsonc")).unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), "{}").unwrap();
+        std::fs::remove_file(config_path(home.path(), "models.yml")).unwrap();
         let mut pty = Pty::start_with_existing_files(home.path());
-        pty.text("models.jsonc");
+        pty.text("models.yml");
         pty.input("/skills\r");
         pty.text("[x] rust");
         pty.input("\x03");
@@ -4990,9 +5004,9 @@ mod tui {
             let server = server();
             let home = tempfile::tempdir().unwrap();
             super::skills::install(home.path(), "rust", "中文技能");
-            std::fs::write(config_path(home.path(), "settings.jsonc"), "{}").unwrap();
+            std::fs::write(config_path(home.path(), "settings.yml"), "{}").unwrap();
             std::fs::write(
-                config_path(home.path(), "models.jsonc"),
+                config_path(home.path(), "models.yml"),
                 response_models(&server, Some(protocol)),
             )
             .unwrap();
@@ -5070,9 +5084,9 @@ mod tui {
 
     // 驱动一个带 bash+read 工具批次与会话，退出后返回保存的 session ID。
     fn create_tool_session(server: &Server, home: &Path, protocol: &str) -> String {
-        std::fs::write(config_path(home, "settings.jsonc"), fixture_settings()).unwrap();
+        std::fs::write(config_path(home, "settings.yml"), fixture_settings()).unwrap();
         std::fs::write(
-            config_path(home, "models.jsonc"),
+            config_path(home, "models.yml"),
             response_models(server, Some(protocol)),
         )
         .unwrap();
@@ -5221,12 +5235,12 @@ mod tui {
             // partial assistant turn may become native request history.
             let interrupted_home = tempfile::tempdir().unwrap();
             std::fs::write(
-                config_path(interrupted_home.path(), "settings.jsonc"),
+                config_path(interrupted_home.path(), "settings.yml"),
                 fixture_settings(),
             )
             .unwrap();
             std::fs::write(
-                config_path(interrupted_home.path(), "models.jsonc"),
+                config_path(interrupted_home.path(), "models.yml"),
                 response_models(&server, Some(protocol)),
             )
             .unwrap();

@@ -13,7 +13,14 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("sample.txt"), "fixture contents").unwrap();
-    let cli = Cli::start(&server, dir.path(), Some("private input marker"));
+    let mut models: Value = serde_yaml::from_str(&fixture_models(&server)).unwrap();
+    models["providers"][0]["models"][0]["cost"] = json!({"input":2,"cacheRead":0.2,"output":8});
+    let cli = Cli::start_with(
+        dir.path(),
+        Some("private input marker"),
+        fixture_settings(),
+        &serde_yaml::to_string(&models).unwrap(),
+    );
     let (request, _) = receive(&server);
     calls_reply(
         request,
@@ -65,6 +72,37 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
         .collect::<String>();
     assert!(!payloads.contains("private input marker"));
     assert!(!payloads.contains("fixture-key"));
+    std::fs::write(
+        dir.path().join(".pp/stats/pricing.json"),
+        "invalid ignored file",
+    )
+    .unwrap();
+    let (_stats, address) = start_stats_server(dir.path());
+    for endpoint in ["overview", "requests", "models", "providers", "costs"] {
+        let (status, body) = http(
+            &address,
+            &format!("/api/stats/{endpoint}?range=all"),
+            &address,
+        );
+        assert_eq!(status, 200);
+        assert!(!body.contains("fixture-key"));
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert!(value["pricing_error"].is_null());
+        if endpoint != "requests" {
+            assert_eq!(value["summary"]["priced"], 1);
+            assert!((value["summary"]["cost"].as_f64().unwrap() - 0.00018).abs() < 1e-10);
+        }
+    }
+    models["providers"][0]["models"][0]["cost"] = json!({"input":4,"cacheRead":0.4,"output":16});
+    std::fs::write(config_path(dir.path(), "models.yml"), models.to_string()).unwrap();
+    let (status, body) = http(
+        &address,
+        &format!("/api/stats/requests/{}", last["id"]),
+        &address,
+    );
+    assert_eq!(status, 200);
+    let detail: Value = serde_json::from_str(&body).unwrap();
+    assert!((detail["request"]["cost"].as_f64().unwrap() - 0.00036).abs() < 1e-10);
 }
 
 #[test]
@@ -184,7 +222,7 @@ fn http(address: &str, path: &str, host: &str) -> (u16, String) {
         .unwrap();
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n"
     )
     .unwrap();
     let mut text = String::new();
@@ -196,11 +234,9 @@ fn http(address: &str, path: &str, host: &str) -> (u16, String) {
     )
 }
 
-#[test]
-fn stats_server_starts_without_models_and_rejects_foreign_hosts() {
+fn start_stats_server(dir: &std::path::Path) -> (Cli, String) {
     use std::io::BufRead;
-    let dir = tempfile::tempdir().unwrap();
-    let mut cli = Cli::spawn(dir.path(), &["stats", "--port", "0"], &[]);
+    let mut cli = Cli::spawn(dir, &["stats", "--port", "0"], &[]);
     let stdout = cli.0.as_mut().unwrap().stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     thread::spawn(move || {
@@ -219,7 +255,16 @@ fn stats_server_starts_without_models_and_rejects_foreign_hosts() {
         .unwrap()
         .split('/')
         .next()
-        .unwrap();
+        .unwrap()
+        .to_owned();
+    (cli, address)
+}
+
+#[test]
+fn stats_server_starts_without_models_and_rejects_foreign_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_cli, address) = start_stats_server(dir.path());
+    let address = address.as_str();
     let (status, body) = http(address, "/api/stats/overview?range=24h", address);
     assert_eq!(status, 200);
     assert_eq!(

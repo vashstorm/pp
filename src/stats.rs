@@ -117,9 +117,13 @@ pub(crate) fn database_path() -> Result<PathBuf> {
 
 pub(crate) struct Store {
     pub conn: Connection,
+    models_path: PathBuf,
 }
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with_models(path, crate::config::global_dir()?.join("models.yml"))
+    }
+    fn open_with_models(path: &Path, models_path: PathBuf) -> Result<Self> {
         let dir = path.parent().context("statistics directory unavailable")?;
         DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
         ensure!(
@@ -164,7 +168,7 @@ impl Store {
             PRAGMA user_version=1;")?;
             tx.commit()?;
         }
-        Ok(Self { conn })
+        Ok(Self { conn, models_path })
     }
     pub fn insert(&mut self, record: &RequestRow, output: &Value) -> Result<()> {
         let tx = self.conn.transaction()?;
@@ -367,6 +371,14 @@ pub(crate) fn link(key: &str, file: &Path, entries: &[Value]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn open_store(path: &Path) -> Result<Store> {
+        Store::open_with_models(path, path.with_file_name("models.yml"))
+    }
+    fn models_with_cost(cost: Value) -> String {
+        json!({"providers":[{"id":"fixture","api_key":"secret-marker-fixture-key",
+            "models":[{"id":"primary","model":"fixture-model","cost":cost}]}]})
+        .to_string()
+    }
     fn fixture(key: &str, timestamp: i64) -> RequestRow {
         RequestRow {
             id: 0,
@@ -394,8 +406,28 @@ mod tests {
     #[test]
     fn stats_analytics_groups_all_rows_and_prices_cached_input_once() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(&dir.path().join("stats.db")).unwrap();
-        fs::write(dir.path().join("pricing.json"), r#"{"fixture/primary":{"input":2,"cached_input":0.2,"output":8},"other/primary":{"input":0,"cached_input":0,"output":0}}"#).unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        fs::write(
+            dir.path().join("models.yml"),
+            r#"# 价格与普通模型配置共用
+providers:
+  - id: fixture
+    api_key: secret-marker-fixture-key
+    models:
+      - id: primary
+        model: fixture-model
+        cost: {input: 2, cacheRead: 0.2, output: 8}
+      - id: unpriced
+        model: fixture-model
+  - id: other
+    api_key: secret-marker-other-key
+    models:
+      - id: primary
+        model: fixture-model
+        cost: {input: 0, cacheRead: 0, output: 0}
+"#,
+        )
+        .unwrap();
         let now = 1_800_000_000_000;
         for n in 0..2005 {
             store
@@ -416,6 +448,9 @@ mod tests {
             .insert(&fixture("outside", now + 1), &Value::Null)
             .unwrap();
         let pricing = analytics::Pricing::load(&store);
+        let mut unpriced_alias = fixture("alias", now);
+        unpriced_alias.model_reference = "fixture/unpriced".into();
+        assert!(pricing.cost(&unpriced_alias).is_none());
         let result = store.analytics(Range::Day, now, &pricing).unwrap();
         let s = &result["summary"];
         assert_eq!(s["requests"], 2007);
@@ -450,25 +485,47 @@ mod tests {
     #[test]
     fn stats_pricing_preserves_unknown_and_reloads_validated_rates() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&dir.path().join("stats.db")).unwrap();
+        let store = open_store(&dir.path().join("stats.db")).unwrap();
         let mut record = fixture("one", 1000);
         assert!(analytics::Pricing::load(&store).cost(&record).is_none());
-        let path = dir.path().join("pricing.json");
+        fs::write(
+            dir.path().join("pricing.json"),
+            r#"{"fixture/primary":{"input":0,"cached_input":0,"output":0}}"#,
+        )
+        .unwrap();
+        assert!(analytics::Pricing::load(&store).cost(&record).is_none());
+        let path = dir.path().join("models.yml");
         for invalid in [
-            r#"{"fixture/primary":{"input":-1,"cached_input":0,"output":1}}"#,
-            r#"{"fixture/primary":{"input":1,"output":1}}"#,
-            r#"{"fixture/primary":{"input":1,"cached_input":0,"output":1,"typo":0}}"#,
-            "invalid",
+            models_with_cost(json!({"input":-1,"cacheRead":0,"output":1})),
+            models_with_cost(json!({"input":1,"output":1})),
+            models_with_cost(json!({"input":1,"cacheRead":0,"output":1,"typo":"secret-marker"})),
+            "invalid secret-marker".into(),
         ] {
             fs::write(&path, invalid).unwrap();
             let pricing = analytics::Pricing::load(&store);
             assert!(pricing.error.is_some());
+            assert!(!pricing.error.unwrap().contains("secret-marker"));
             assert!(pricing.cost(&record).is_none());
             assert!(store.overview(Range::All, 2000).is_ok());
         }
         fs::write(
             &path,
-            r#"{"fixture/primary":{"input":0,"cached_input":0,"output":0}}"#,
+            models_with_cost(json!({"input":2,"cacheRead":0.2,"output":8})),
+        )
+        .unwrap();
+        let priced = store.overview(Range::All, 2000).unwrap();
+        assert!(priced["pricing_error"].is_null());
+        assert!(
+            (analytics::Pricing::load(&store).request(&record).unwrap()["cost"]
+                .as_f64()
+                .unwrap()
+                - 0.000216)
+                .abs()
+                < 1e-10
+        );
+        fs::write(
+            &path,
+            models_with_cost(json!({"input":0,"cacheRead":0,"output":0})),
         )
         .unwrap();
         let pricing = analytics::Pricing::load(&store);
@@ -488,7 +545,7 @@ mod tests {
     #[test]
     fn stats_analytics_api_validates_ranges_and_omits_payloads() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(&dir.path().join("stats.db")).unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
         store
             .insert(
                 &fixture("one", chrono::Utc::now().timestamp_millis()),
@@ -524,13 +581,13 @@ mod tests {
     fn stats_creation_reopen_dedup_and_snapshot_are_transactional() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stats/stats.db");
-        let mut store = Store::open(&path).unwrap();
+        let mut store = open_store(&path).unwrap();
         let record = fixture("one", 1000);
         store.insert(&record, &json!({"text":"hello"})).unwrap();
         store.insert(&record, &json!({"text":"wrong"})).unwrap();
         store.link("one",Path::new("/tmp/session.jsonl"),&[json!({"id":"entry","type":"message","message":{"role":"assistant","content":"hello"}})]).unwrap();
         drop(store);
-        let store = Store::open(&path).unwrap();
+        let store = open_store(&path).unwrap();
         assert_eq!(store.latest(0, 2000, 500).unwrap().len(), 1);
         let detail = store.detail(1).unwrap().unwrap();
         assert_eq!(detail["output_message"]["text"], "hello");
@@ -566,7 +623,7 @@ mod tests {
     #[test]
     fn stats_ranges_include_boundaries_and_preserve_unknown_usage() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(&dir.path().join("stats.db")).unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
         let now = 10_000_000;
         store
             .insert(&fixture("boundary", now - 3600000), &Value::Null)
@@ -607,12 +664,12 @@ mod tests {
     fn stats_multiple_connections_read_during_write_and_bound_lock_wait() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stats.db");
-        Store::open(&path).unwrap();
+        open_store(&path).unwrap();
         std::thread::scope(|scope| {
             for i in 0..4 {
                 let path = &path;
                 scope.spawn(move || {
-                    let mut store = Store::open(path).unwrap();
+                    let mut store = open_store(path).unwrap();
                     for j in 0..15 {
                         store
                             .insert(&fixture(&format!("{i}-{j}"), 1000), &Value::Null)
@@ -621,8 +678,8 @@ mod tests {
                 });
             }
         });
-        let mut writer = Store::open(&path).unwrap();
-        let mut reader = Store::open(&path).unwrap();
+        let mut writer = open_store(&path).unwrap();
+        let mut reader = open_store(&path).unwrap();
         assert_eq!(reader.latest(0, 2000, 500).unwrap().len(), 60);
         let tx = writer
             .conn
@@ -646,7 +703,7 @@ mod tests {
     #[test]
     fn stats_api_rejects_invalid_queries_and_keeps_payloads_out_of_lists() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(&dir.path().join("stats.db")).unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
         store
             .insert(
                 &fixture("test", chrono::Utc::now().timestamp_millis()),
@@ -682,12 +739,12 @@ mod tests {
     fn stats_future_schema_and_symlinks_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stats.db");
-        let store = Store::open(&path).unwrap();
+        let store = open_store(&path).unwrap();
         store.conn.pragma_update(None, "user_version", 999).unwrap();
         drop(store);
-        assert!(Store::open(&path).is_err());
+        assert!(open_store(&path).is_err());
         let link = dir.path().join("link.db");
         std::os::unix::fs::symlink(&path, &link).unwrap();
-        assert!(Store::open(&link).is_err());
+        assert!(open_store(&link).is_err());
     }
 }
