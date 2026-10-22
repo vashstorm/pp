@@ -10,7 +10,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-pub(super) const HINT: &str = "↑/↓ step  ←/→ user turns  f filter  󰌑 rewind  󱊷 cancel";
+pub(super) const HINT: &str = "↑/↓ step  ←/→ user turns  f filter  b branches  󰌑 rewind  󱊷 cancel";
 
 pub(super) enum Action {
     None,
@@ -34,6 +34,7 @@ pub(super) struct Panel {
     active: Vec<bool>,
     selected: Option<usize>,
     filter: usize,
+    all_branches: bool,
     preview: Transcript,
     blocks: Vec<TreeBlock>,
     reveal: bool,
@@ -50,6 +51,7 @@ impl Panel {
             active: Vec::new(),
             selected: None,
             filter: 0,
+            all_branches: false,
             preview: Transcript::new(),
             blocks: Vec::new(),
             reveal: true,
@@ -142,17 +144,18 @@ impl Panel {
     }
 
     fn label(&self, row: Row) -> Line<'static> {
-        // Compress only the branch label. Message bodies always retain their full width.
-        let shift = row.depth.saturating_sub(6);
-        let mut prefix = vec![' '; row.depth.saturating_sub(shift) * 3];
-        if row.connector && row.depth > shift {
+        // 只压缩全部分支视图的标签；消息正文始终保持完整宽度。
+        let depth = if self.all_branches { row.depth } else { 0 };
+        let shift = depth.saturating_sub(6);
+        let mut prefix = vec![' '; depth.saturating_sub(shift) * 3];
+        if row.connector && depth > shift {
             let at = (row.depth - shift - 1) * 3;
             prefix[at] = if row.last { '└' } else { '├' };
             prefix[at + 1] = '─';
-        } else if row.depth > shift && !row.last {
+        } else if depth > shift && !row.last {
             prefix[(row.depth - shift - 1) * 3] = '│';
         }
-        let mut ancestor = row.branch_parent;
+        let mut ancestor = self.all_branches.then_some(row.branch_parent).flatten();
         while let Some(i) = ancestor {
             let a = self.rows[i];
             if a.depth > shift && a.depth < row.depth && !a.last {
@@ -185,6 +188,9 @@ impl Panel {
     }
 
     fn shown(&self, index: usize) -> bool {
+        if !self.all_branches && !self.active[index] {
+            return false;
+        }
         match self.filter {
             1 => self.tree.nodes[index].kind != Kind::Tools,
             2 => self.tree.nodes[index].kind == Kind::User,
@@ -252,6 +258,20 @@ impl Panel {
                 self.refilter();
                 return Action::None;
             }
+            KeyCode::Char('b') if key.kind == KeyEventKind::Press => {
+                self.all_branches = !self.all_branches;
+                if self.selected.is_none() {
+                    self.selected = self
+                        .tree
+                        .leaf
+                        .or_else(|| self.rows.first().map(|row| row.index));
+                }
+                for row in &self.rows {
+                    self.blocks[row.index].label = self.label(*row);
+                }
+                self.refilter();
+                return Action::None;
+            }
             KeyCode::Up => position.map(|i| i.saturating_sub(1)),
             KeyCode::Down => position.map(|i| (i + 1).min(self.visible.len().saturating_sub(1))),
             KeyCode::Left => position.and_then(|i| {
@@ -303,7 +323,12 @@ impl Panel {
             "Switching branch…".into()
         } else {
             format!(
-                "[{}] {}/{}",
+                "[{}] [{}] {}/{}",
+                if self.all_branches {
+                    "branches"
+                } else {
+                    "current"
+                },
                 ["all", "no-tools", "user"][self.filter],
                 self.selected
                     .and_then(|selected| self.visible.iter().position(|&i| i == selected))
@@ -319,14 +344,25 @@ impl Panel {
             return;
         }
         let height = area.height.saturating_sub(1);
-        self.preview.draw_tree(
-            frame,
-            Rect::new(area.x, area.y, area.width, height),
-            &self.blocks,
-            &self.visible,
-            self.selected,
-            self.reveal,
-        );
+        let body = Rect::new(area.x, area.y, area.width, height);
+        if !self.all_branches && self.tree.leaf.is_none() {
+            frame.render_widget(
+                Line::styled(
+                    "No messages on current branch. Press b to show history branches.",
+                    Style::default().fg(MUTED),
+                ),
+                body,
+            );
+        } else {
+            self.preview.draw_tree(
+                frame,
+                body,
+                &self.blocks,
+                &self.visible,
+                self.selected,
+                self.reveal,
+            );
+        }
         if height > 0 {
             self.reveal = false;
         }
@@ -408,8 +444,34 @@ mod tests {
     }
 
     #[test]
+    fn tree_defaults_to_current_path_and_branch_scope_preserves_role_filter() {
+        let mut panel = panel();
+        assert_eq!(panel.visible, [0, 1, 4, 5]);
+        let screen = contents(&draw(&mut panel, 80, 30));
+        assert!(screen.contains("[current] [all] 4/4"));
+        assert!(screen.contains("当前回答"));
+        assert!(!screen.contains("旧分支"));
+        assert!(!screen.contains("read, bash"));
+        panel.key(key(KeyCode::End));
+        panel.key(key(KeyCode::Down));
+        assert_eq!(panel.selected, Some(5));
+        panel.key(key(KeyCode::Char('f')));
+        panel.key(key(KeyCode::Char('f')));
+        assert_eq!(panel.visible, [0, 4]);
+        panel.key(key(KeyCode::Char('b')));
+        assert_eq!(panel.visible, [0, 4, 2]);
+        panel.key(key(KeyCode::End));
+        assert_eq!(panel.selected, Some(2));
+        panel.key(key(KeyCode::Char('b')));
+        assert_eq!(panel.visible, [0, 4]);
+        assert_eq!(panel.selected, Some(4));
+        assert!(!contents(&draw(&mut panel, 80, 30)).contains("旧分支"));
+    }
+
+    #[test]
     fn tree_navigation_clamps_steps_jumps_users_and_preserves_filter_identity() {
         let mut panel = panel();
+        panel.key(key(KeyCode::Char('b')));
         assert_eq!(panel.selected, Some(5));
         assert_eq!(panel.visible, vec![0, 1, 4, 5, 2, 3]);
         panel.key(key(KeyCode::Home));
@@ -441,7 +503,7 @@ mod tests {
         assert_eq!(panel.selected, Some(4));
     }
     #[test]
-    fn tree_root_rewind_still_opens_with_a_selectable_first_node() {
+    fn tree_root_rewind_hides_abandoned_nodes_until_all_branches_are_requested() {
         let mut panel = Panel::new();
         panel.set_tree(view(
             &[
@@ -450,6 +512,11 @@ mod tests {
             ],
             None,
         ));
+        assert!(panel.visible.is_empty());
+        assert_eq!(panel.selected, None);
+        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+        assert!(contents(&draw(&mut panel, 80, 12)).contains("Press b to show history branches"));
+        panel.key(key(KeyCode::Char('b')));
         assert_eq!(panel.selected, Some(0));
         assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Navigate(id) if id == "node-0"));
     }
@@ -508,6 +575,7 @@ mod tests {
         }
         let mut panel = Panel::new();
         panel.set_tree(view(&fixture, Some(fixture.len() - 1)));
+        panel.key(key(KeyCode::Char('b')));
         let screen = contents(&draw(&mut panel, 40, 12));
         assert!(screen.contains('…'));
         assert!(screen.contains("深层🙂中文"), "{screen}");

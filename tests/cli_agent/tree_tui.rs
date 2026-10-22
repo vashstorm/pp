@@ -128,8 +128,8 @@ fn tree_tui_branches_switch_without_requests_and_resume_both_protocols() {
         pty.text("tree-branch-answer");
         pty.ready();
         tree_tui_open(&mut pty, "tree-branch-answer");
-        // DFS：u1 a1 u3 a3(leaf) u2 a2；旧分支 a2 在 leaf 后两步。
-        tree_tui_rewind(&mut pty, &[TREE_TUI_DOWN, TREE_TUI_DOWN], "tree-second-answer");
+        // 显式显示全部分支后，旧分支 a2 在 leaf 后两步。
+        tree_tui_rewind(&mut pty, &["b", TREE_TUI_DOWN, TREE_TUI_DOWN], "tree-second-answer");
         context_tui_paste(&mut pty, "tree-after-return");
         pty.input("\r");
         let (request, body) = pty.request_at(&server, api_path(protocol));
@@ -156,10 +156,10 @@ fn tree_tui_branches_switch_without_requests_and_resume_both_protocols() {
         let mut pty = Pty::start_with_args(home.path(), home.path(), &["--resume", &ids[0]]);
         pty.ready();
         tree_tui_open(&mut pty, "tree-return-answer");
-        // DFS：u1 a1 u2 a2 u4 a4(leaf) u3 a3；旧分支 a3 在 leaf 后两步。
+        // 恢复后默认仍只显示当前路径；按 b 才能返回旧分支。
         tree_tui_rewind(
             &mut pty,
-            &[TREE_TUI_DOWN, TREE_TUI_DOWN],
+            &["b", TREE_TUI_DOWN, TREE_TUI_DOWN],
             "tree-branch-answer",
         );
         context_tui_paste(&mut pty, "tree-after-restart");
@@ -180,6 +180,77 @@ fn tree_tui_branches_switch_without_requests_and_resume_both_protocols() {
             response_final(request, "tree-restored-answer");
         }
         pty.text("tree-restored-answer");
+        pty.ready();
+        pty.input("/quit\r");
+        pty.finish();
+        no_more(&server);
+    }
+}
+
+#[test]
+fn tree_tui_repeated_rewinds_hide_abandoned_messages_by_default_and_after_resume() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let (home, mut pty) = context_tui_start(&server, protocol, 100_000, 80);
+        pty.resize(50, 100);
+        context_tui_exchange(
+            &mut pty,
+            &server,
+            protocol,
+            "tree-kept-question",
+            "tree-kept-answer",
+        );
+        for index in 0..3 {
+            let question = format!("tree-attempt-{index}-question");
+            let answer = format!("tree-attempt-{index}-answer");
+            context_tui_exchange(&mut pty, &server, protocol, &question, &answer);
+            tree_tui_open(&mut pty, &answer);
+            pty.text("[current] [all] 4/4");
+            for old in 0..index {
+                assert!(
+                    !pty.parser.screen().contents().contains(&format!("tree-attempt-{old}")),
+                    "默认视图不应包含已放弃的消息"
+                );
+            }
+            if index < 2 {
+                tree_tui_rewind(&mut pty, &[TREE_TUI_UP], &question);
+                pty.draft(&question);
+                pty.input("\x01\x0b");
+                pty.draft("");
+            }
+        }
+        // 全部分支只在显式切换后出现；关闭再打开恢复默认范围。
+        pty.input("b");
+        pty.text("[branches] [all] 4/8");
+        tree_tui_select(&mut pty, &[TREE_TUI_END], "tree-attempt-1-answer");
+        pty.input("\x1b");
+        pty.ready();
+        tree_tui_open(&mut pty, "tree-attempt-2-answer");
+        pty.text("[current] [all] 4/4");
+        assert!(!pty.parser.screen().contents().contains("tree-attempt-0"));
+        assert!(!pty.parser.screen().contents().contains("tree-attempt-1"));
+        pty.input("\x1b");
+        pty.ready();
+        let ids = resume_boundary_session_ids(home.path());
+        pty.input("/quit\r");
+        pty.finish();
+        let mut pty = Pty::start_with_args(home.path(), home.path(), &["--resume", &ids[0]]);
+        pty.resize(50, 100);
+        pty.ready();
+        tree_tui_open(&mut pty, "tree-attempt-2-answer");
+        pty.text("[current] [all] 4/4");
+        assert!(!pty.parser.screen().contents().contains("tree-attempt-0"));
+        assert!(!pty.parser.screen().contents().contains("tree-attempt-1"));
+        pty.input("\x1b");
+        pty.ready();
+        pty.input("tree-after-repeated-rewinds\r");
+        let (request, body) = pty.request_at(&server, api_path(protocol));
+        assert_eq!(
+            cancel_user_messages(&body, protocol),
+            ["tree-kept-question", "tree-attempt-2-question", "tree-after-repeated-rewinds"]
+        );
+        context_tui_final(request, protocol, "tree-repeated-rewinds-done");
+        pty.text("tree-repeated-rewinds-done");
         pty.ready();
         pty.input("/quit\r");
         pty.finish();
