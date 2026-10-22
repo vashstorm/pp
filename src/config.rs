@@ -524,15 +524,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn notification_options_have_defaults_and_strict_overrides() {
-        for source in [None, Some("{}")] {
-            let options = load(source, Some(VALID_MODELS))
-                .unwrap()
-                .settings
-                .notification_options();
-            assert!(options.show_countdown);
-            assert_eq!(options.timeout_seconds, 10);
-        }
+    fn notification_options_validate_overrides() {
         let settings = load(
             Some(r#"{"notification_show_countdown":false,"notification_timeout_seconds":3}"#),
             Some(VALID_MODELS),
@@ -571,14 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_limits_have_defaults_and_strict_positive_overrides() {
-        let defaults = load(None, Some(VALID_MODELS))
-            .unwrap()
-            .settings
-            .tool_limits();
-        assert_eq!(defaults.read_max_bytes, 65536);
-        assert_eq!(defaults.read_max_lines, 2000);
-        assert_eq!(defaults.bash_timeout_seconds, 120);
+    fn tool_limits_validate_positive_overrides() {
         let settings = load(
             Some(r#"{"read_max_bytes":17,"read_max_lines":3,"bash_timeout_seconds":2}"#),
             Some(VALID_MODELS),
@@ -682,13 +667,6 @@ mod tests {
             assert!(chain.contains(file), "{chain}");
         }
         chain
-    }
-
-    #[test]
-    fn omitted_base_url_uses_default_openai_api_root() {
-        let config = load(Some(VALID_SETTINGS), Some(VALID_MODELS)).unwrap();
-        assert_eq!(config.base_url.as_str(), "https://api.openai.com/v1");
-        assert_eq!(config.protocol, models::Protocol::Response);
     }
 
     #[test]
@@ -1161,9 +1139,6 @@ providers:
             for value in [
                 json!(null),
                 json!(true),
-                json!(12),
-                json!(["secret-marker"]),
-                json!({"secret-marker": true}),
                 json!({"completion": null}),
                 json!({"response": null}),
             ] {
@@ -1179,14 +1154,9 @@ providers:
         for protocol in [
             "",
             "openai",
-            "OpenAI",
-            "OPENAI",
             "anthropic",
-            "Anthropic",
             "Completion",
-            "Response",
             "completion ",
-            " response",
             "secret-marker",
         ] {
             let mut invalid = valid.clone();

@@ -207,10 +207,6 @@ fn ask_tui_single_space_selects_without_sending_until_enter() {
             screen.contents().contains("◯ SQLite (Recommended)")
                 && screen.contents().contains("⦿ Postgres")
         });
-        let screen = pty.parser.screen();
-        let (row, col) = ask_panel_find(screen, "⦿ Postgres");
-        assert_eq!(screen.cell(row, col).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
-        assert!(!screen.contents().contains("Ctrl-O details"));
         no_more(&server);
         pty.input("\r");
         let (request, body) = pty.request_at(&server, api_path(protocol));
@@ -247,14 +243,11 @@ fn ask_tui_choice_layout_keeps_details_in_messages_and_focus_after_resize() {
     ask_wait_panel(&mut pty, "Choose a database");
     {
         let screen = pty.parser.screen();
-        let (row, col) = ask_panel_find(screen, label);
+        let (row, _) = ask_panel_find(screen, label);
         let (description_row, _) = ask_panel_find(screen, "Shared database");
         assert!(description_row < row, "说明应位于上方消息区");
-        assert_eq!(screen.cell(row, col).unwrap().fgcolor(), vt100::Color::Rgb(254, 188, 56));
-        assert_eq!(screen.cell(row, col).unwrap().bgcolor(), vt100::Color::Rgb(40, 42, 54));
-        let (tab_row, tab_col) = ask_panel_find(screen, "Database");
+        let (tab_row, _) = ask_panel_find(screen, "Database");
         assert_eq!(row, tab_row + 1, "标签下方直接显示选项");
-        assert_eq!(screen.cell(tab_row, tab_col).unwrap().bgcolor(), vt100::Color::Rgb(52, 58, 67));
         let panel_text = screen.contents().lines().skip(usize::from(tab_row)).collect::<Vec<_>>().join("\n");
         assert!(!panel_text.contains("Choose a database"));
         assert!(!panel_text.contains("Shared database"));

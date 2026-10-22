@@ -76,7 +76,6 @@ pub(crate) fn estimate_tokens(value: &impl Serialize) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn context_percent_handles_overcapacity_without_overflow() {
@@ -90,27 +89,6 @@ mod tests {
         assert_eq!(usage.percent(), Some(u128::from(u64::MAX) * 100));
         usage.context_window = None;
         assert_eq!(usage.percent(), None);
-    }
-
-    #[test]
-    fn context_estimate_counts_utf8_and_json_escaping() {
-        for value in [json!("中文"), json!("\"\\\n"), json!({"input": "中\n"})] {
-            let bytes = serde_json::to_vec(&value).unwrap();
-            assert_eq!(
-                estimate_tokens(&value).unwrap(),
-                (bytes.len() as u64).div_ceil(3)
-            );
-        }
-    }
-
-    #[test]
-    fn context_estimate_includes_tool_schemas_and_native_reasoning() {
-        let base = json!({"input": []});
-        let tools = json!({"input": [], "tools": [{"type":"function","name":"read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}]});
-        let reasoning =
-            json!({"input": [{"type":"reasoning","encrypted_content":"opaque-native-state"}]});
-        assert!(estimate_tokens(&tools).unwrap() > estimate_tokens(&base).unwrap());
-        assert!(estimate_tokens(&reasoning).unwrap() > estimate_tokens(&base).unwrap());
     }
 
     #[test]

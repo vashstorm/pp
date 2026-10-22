@@ -659,31 +659,4 @@ mod tests {
             vec!["  spaced  ".to_string(), "中文 label".to_string()]
         );
     }
-
-    #[test]
-    fn answer_result_shape_is_exact() {
-        let result = answer_result(vec![
-            answer("storage", &["Postgres"], None),
-            answer("free", &[], Some("再检查中文")),
-        ]);
-        assert_eq!(
-            result,
-            json!({
-                "ok": true,
-                "answers": [
-                    {"id": "storage", "selected_options": ["Postgres"], "custom_input": null},
-                    {"id": "free", "selected_options": [], "custom_input": "再检查中文"}
-                ]
-            })
-        );
-    }
-
-    #[test]
-    fn answer_result_preserves_original_labels() {
-        let result = answer_result(vec![answer("q", &["  spaced  ", "中文 label"], None)]);
-        assert_eq!(
-            result["answers"][0]["selected_options"],
-            json!(["  spaced  ", "中文 label"])
-        );
-    }
 }

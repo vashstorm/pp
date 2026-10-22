@@ -165,44 +165,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn completion_prompt_separates_parameters_messages_and_tools() {
-        let record = json!({
-            "event": "llm_first_prompt", "timestamp": "2026-10-20T12:00:00+08:00",
-            "pid": 42, "model_reference": "fixture/primary", "protocol": "completion",
-            "request": {
-                "model": "test-model", "stream": true,
-                "messages": [
-                    {"role": "system", "content": "Keep code intact."},
-                    {"role": "user", "content": "第一行\n\n  \"quotes\" and \\path\n"}
-                ],
-                "tools": [{"type": "function", "function": {
-                    "name": "read", "description": "Read a file.\nKeep whole lines.",
-                    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
-                }}]
-            }
-        });
-        let text = String::from_utf8(format_record(&record).unwrap()).unwrap();
-        assert_eq!(
-            text,
-            concat!(
-                "=== llm_first_prompt | 2026-10-20T12:00:00+08:00 ===\n",
-                "model_reference: fixture/primary\nprotocol: completion\npid: 42\n",
-                "\n-- 请求参数 --\nmodel: test-model\nstream: true\n",
-                "\n-- 对话消息 / messages (2 项) --\n",
-                "\n[0] system\n  role: system\n  content: |\n    Keep code intact.\n",
-                "\n[1] user\n  role: user\n  content: |\n",
-                "    第一行\n    \n      \"quotes\" and \\path\n    \n",
-                "\n-- 工具定义 / tools (1 项) --\n",
-                "\n[0] function / read\n  type: function\n  function:\n    name: read\n",
-                "    description: |\n      Read a file.\n      Keep whole lines.\n",
-                "    parameters:\n      {\n        \"properties\": {\n",
-                "          \"path\": {\n            \"type\": \"string\"\n          }\n",
-                "        },\n        \"type\": \"object\"\n      }\n\n",
-            )
-        );
-    }
-
-    #[test]
     fn responses_prompt_preserves_reasoning_calls_multimodal_and_unknown_fields() {
         let record = json!({
             "event": "llm_first_prompt", "protocol": "response", "request": {

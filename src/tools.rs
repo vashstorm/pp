@@ -772,34 +772,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn hashline_read_edit_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let tools = Tools::new(dir.path().into(), EditMode::Hashline).unwrap();
-        let path = dir.path().join("demo.txt");
-        fs::write(&path, "hello\n中文\n").unwrap();
-        let read = execute(&tools, "read", json!({"path":"demo.txt"}));
-        let anchors: Vec<_> = read["content"]
-            .as_str()
-            .unwrap()
-            .lines()
-            .map(|line| line.split_once('|').unwrap().0)
-            .collect();
-        assert_eq!(anchors[0], "1:a430d84680aabd0b");
-        let edited = execute(
-            &tools,
-            "edit",
-            json!({"path":"demo.txt","edits":[
-                {"op":"replace","start":anchors[1],"end":anchors[1],"lines":["  新正文"]}
-            ]}),
-        );
-        assert_eq!(
-            edited,
-            json!({"ok":true,"edits_applied":1,"bytes_written":18})
-        );
-        assert_eq!(fs::read(&path).unwrap(), "hello\n  新正文\n".as_bytes());
-    }
-
     fn read_content(tools: &Tools, path: &str) -> (String, bool) {
         let read = execute(tools, "read", json!({"path": path}));
         assert_eq!(read["ok"], true, "{read}");

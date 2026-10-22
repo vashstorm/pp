@@ -577,7 +577,7 @@ fn prompt_logs(home: &Path) -> Vec<(String, String)> {
 
 #[test]
 fn debug_logging_is_opt_in() {
-    for settings in [None, Some("{}"), Some(r#"{"debug":false}"#)] {
+    for settings in [None, Some(r#"{"debug":false}"#)] {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         fs::write(

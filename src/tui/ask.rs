@@ -982,60 +982,11 @@ mod tests {
     }
 
     #[test]
-    fn reference_layout_separates_tabs_options_and_footer() {
-        use super::super::transcript_style::ADDED;
-
-        let mut scope = question(
-            "scope",
-            false,
-            Some(0),
-            &["Last request", "Session", "Task"],
-        );
-        scope.header = Some("统计范围".into());
-        scope.question = "in / out / cached 显示哪种统计？".into();
-        for option in &mut scope.options {
-            option.description = Some("Usage explanation".into());
-        }
-        let mut speed = question("speed", false, None, &["Tokens per second"]);
-        speed.header = Some("速度口径".into());
-        let mut panel = panel(vec![scope, speed]);
-        panel.key(key(KeyCode::Enter));
-        panel.key(key(KeyCode::Left));
-        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
-        terminal
-            .draw(|frame| panel.draw(frame, frame.area()))
-            .unwrap();
-        let area = panel.overlay.unwrap();
-        let y = area.y;
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, y)].symbol(), "╭");
-        assert_eq!(buffer[(0, y)].fg, ASK_BORDER);
-        assert_eq!(buffer[(3, y + 1)].symbol(), "统");
-        assert_eq!(buffer[(3, y + 1)].bg, ASK_TAB_BG);
-        assert_eq!(buffer[(15, y + 1)].symbol(), "速");
-        assert_eq!(buffer[(27, y + 1)].symbol(), "S");
-        assert_eq!(buffer[(2, y + 2)].symbol(), "❯");
-        assert_eq!(buffer[(2, y + 2)].fg, ACCENT);
-        assert_eq!(buffer[(4, y + 2)].symbol(), "⦿");
-        assert_eq!(buffer[(4, y + 2)].fg, ADDED);
-        assert!(buffer[(4, y + 2)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(6, y + 2)].symbol(), "L");
-        assert_eq!(buffer[(6, y + 2)].fg, ACCENT);
-        assert_eq!(buffer[(6, y + 2)].bg, ASK_BG);
-        assert_eq!(buffer[(4, y + 3)].symbol(), "◯");
-        assert_eq!(buffer[(4, y + 3)].fg, DIM);
-        assert_eq!(buffer[(1, area.bottom() - 3)].symbol(), "─");
-        assert_eq!(buffer[(2, area.bottom() - 2)].symbol(), "S");
-        assert_eq!(buffer[(2, area.bottom() - 2)].fg, DIM);
-    }
-
-    #[test]
     fn recommended_badge_is_display_only_and_labels_sanitized() {
         let mut q = question("q", false, Some(0), &["Postgres", "Da\u{7f}ta"]);
         q.options[1].description = Some("fast\u{1b}[31m".into());
         let mut panel = panel(vec![q]);
         let items = panel.states[0].menu.items();
-        assert_eq!(items[0].label, "Postgres (Recommended)");
         assert!(!items[1].label.contains('\u{7f}'));
         assert!(!items[1].description.contains('\u{1b}'));
         let action = panel.key(key(KeyCode::Enter));

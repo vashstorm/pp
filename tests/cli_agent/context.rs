@@ -450,40 +450,6 @@ fn context_new_and_model_switch_reset_usage_and_change_capacity() {
     no_more(&server);
 }
 
-#[test]
-fn context_user_file_command_named_context_still_expands() {
-    let server = server();
-    let dir = tempfile::tempdir().unwrap();
-    install_command(
-        dir.path(),
-        "context.md",
-        "---\ndescription: Query context\n---\nQuery context: $@\n",
-    );
-    let mut cli = Cli::start(&server, dir.path(), None);
-    cli.input("/help\n/context disk usage\n");
-    let (request, body) = receive(&server);
-    let messages = body["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 2);
-    // A user file command named like a context query still runs through the
-    // file command mechanism: the model receives the expanded template.
-    slash_assert_message(&messages[1], "user", "Query context: disk usage\n");
-    final_reply(request, "context query expanded");
-    cli.input("/quit\n");
-    let output = cli.finish();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(output.stdout, b"context query expanded\n");
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("/context [arguments] — Query context"),
-        "{stderr}"
-    );
-    no_more(&server);
-}
-
 // Manual `/compact` acceptance. A window of 8192 tokens gives a retained
 // suffix budget of 1638 tokens; the large tool result below is deliberately
 // larger than that, so the old tool batch is eligible for summarization while

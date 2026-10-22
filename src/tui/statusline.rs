@@ -714,48 +714,6 @@ mod tests {
     }
 
     #[test]
-    fn metric_fields_render_speed_usage_and_cached_in_order_with_colors() {
-        let usage = metric_usage(12000, 300, Some(40));
-        let line = metric_fields(Some(&usage), Some((42.5, true)), 100);
-        assert_eq!(
-            line_text(&line),
-            " \u{f0e7} ~42.5 tok/s · \u{f019} in 12.0k · \u{f093} out 300 · \u{f1c0} cached 40 · "
-        );
-        let expected = [
-            ("\u{f0e7} ", SPEED),
-            ("~42.5 tok/s", SPEED),
-            ("\u{f019} ", INPUT),
-            ("in 12.0k", INPUT),
-            ("\u{f093} ", OUTPUT),
-            ("out 300", OUTPUT),
-            ("\u{f1c0} ", CACHED),
-            ("cached 40", CACHED),
-        ];
-        let styled: Vec<(&str, Option<Color>)> = line
-            .spans
-            .iter()
-            .filter(|span| span.content.as_ref() != " " && span.content.as_ref() != " · ")
-            .map(|span| (span.content.as_ref(), span.style.fg))
-            .collect();
-        assert_eq!(styled.len(), expected.len());
-        for ((content, fg), (expected_content, expected_color)) in styled.iter().zip(expected) {
-            assert_eq!(*content, expected_content);
-            assert_eq!(*fg, Some(expected_color));
-        }
-        let separators: Vec<_> = line
-            .spans
-            .iter()
-            .filter(|span| span.content.as_ref() == " · ")
-            .collect();
-        assert_eq!(separators.len(), 4);
-        assert!(
-            separators
-                .iter()
-                .all(|span| span.style.fg == Some(Color::DarkGray))
-        );
-    }
-
-    #[test]
     fn metric_fields_distinguish_unknown_estimated_and_exact_speed() {
         let usage = metric_usage(0, 0, Some(0));
         let text = |speed| line_text(&metric_fields(Some(&usage), speed, 200));

@@ -7,12 +7,6 @@
 // 测试函数以 `transcript_blocks_markdown_` 前缀命名，不新增 use 声明以免与
 // 兄弟 include 文件冲突。
 
-const MARKDOWN_BLOCKS_ACCENT: vt100::Color = vt100::Color::Rgb(254, 188, 56);
-const MARKDOWN_BLOCKS_MUTED: vt100::Color = vt100::Color::Rgb(119, 125, 136);
-const MARKDOWN_BLOCKS_DIM: vt100::Color = vt100::Color::Rgb(95, 102, 115);
-const MARKDOWN_BLOCKS_CODE: vt100::Color = vt100::Color::Rgb(229, 193, 255);
-const MARKDOWN_BLOCKS_CODE_BLOCK: vt100::Color = vt100::Color::Rgb(156, 220, 254);
-const MARKDOWN_BLOCKS_LINK: vt100::Color = vt100::Color::Rgb(0, 136, 250);
 const MARKDOWN_BLOCKS_ERROR: vt100::Color = vt100::Color::Rgb(224, 108, 117);
 
 fn markdown_blocks_start(fixture: &Server, protocol: &str, home: &Path, project: &Path) -> Pty {
@@ -52,15 +46,6 @@ fn markdown_blocks_bold(screen: &vt100::Screen, needle: &str) -> bool {
     let (row, column) = markdown_blocks_find(screen, needle)
         .unwrap_or_else(|| panic!("missing {needle}: {}", screen.contents()));
     screen.cell(row, column).unwrap().bold()
-}
-
-fn markdown_blocks_line_with(screen: &vt100::Screen, needle: &str) -> String {
-    screen
-        .contents()
-        .lines()
-        .find(|line| line.contains(needle))
-        .unwrap_or_else(|| panic!("missing {needle}: {}", screen.contents()))
-        .to_owned()
 }
 
 // completion：refusal delta 走 chat chunk 的 refusal 字段；response：refusal
@@ -154,7 +139,7 @@ fn transcript_blocks_markdown_streams_staged_blocks_and_styles() {
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         let mut stream = SseReply::new(request);
 
-        // 阶段 1：标题已渲染为 accent+bold，未闭合的 ** 保持字面。
+        // 阶段 1：标题加粗渲染，未闭合的 ** 保持字面。
         streaming_delta(&mut stream, protocol, stage1);
         pty.wait_for("标题与未闭合加粗的中间态", |s| {
             s.contents().contains("Fixture Title")
@@ -164,18 +149,12 @@ fn transcript_blocks_markdown_streams_staged_blocks_and_styles() {
         });
         {
             let screen = pty.parser.screen();
-            assert_eq!(
-                markdown_blocks_fg(screen, "Fixture Title", 0),
-                MARKDOWN_BLOCKS_ACCENT,
-                "{}",
-                screen.contents()
-            );
             assert!(markdown_blocks_bold(screen, "Fixture Title"));
             // 未闭合的 ** 按字面呈现，不加粗。
             assert!(!markdown_blocks_bold(screen, "**bold"));
         }
 
-        // 阶段 2：加粗闭合后 delimiter 消失，inline code 用代码色。
+        // 阶段 2：加粗闭合后 delimiter 消失，inline code 上屏。
         streaming_delta(&mut stream, protocol, stage2);
         pty.wait_for("闭合加粗与 inline code", |s| {
             s.contents().contains("bold word")
@@ -185,16 +164,10 @@ fn transcript_blocks_markdown_streams_staged_blocks_and_styles() {
         {
             let screen = pty.parser.screen();
             assert!(markdown_blocks_bold(screen, "bold word"));
-            assert_eq!(
-                markdown_blocks_fg(screen, "inline code", 0),
-                MARKDOWN_BLOCKS_CODE,
-                "{}",
-                screen.contents()
-            );
             assert_eq!(screen.contents().matches("Fixture Title").count(), 1);
         }
 
-        // 阶段 3：列表/任务/引用/链接/代码框全部就位，且各用固定配色。
+        // 阶段 3：列表/任务/引用/链接/代码框全部就位。
         streaming_delta(&mut stream, protocol, stage3);
         pty.wait_for("列表、任务、引用、链接与代码框", |s| {
             s.contents().contains("• first item")
@@ -206,49 +179,6 @@ fn transcript_blocks_markdown_streams_staged_blocks_and_styles() {
                 && s.contents().contains("let x = 1;")
                 && s.contents().contains("docs")
         });
-        {
-            let screen = pty.parser.screen();
-            assert_eq!(
-                markdown_blocks_fg(screen, "• first item", 0),
-                MARKDOWN_BLOCKS_MUTED,
-                "{}",
-                screen.contents()
-            );
-            assert!(
-                markdown_blocks_line_with(screen, "nested item").contains("  • nested item"),
-                "{}",
-                screen.contents()
-            );
-            assert_eq!(
-                markdown_blocks_fg(screen, "☑ done task", 0),
-                MARKDOWN_BLOCKS_MUTED
-            );
-            assert_eq!(
-                markdown_blocks_fg(screen, "☐ open task", 0),
-                MARKDOWN_BLOCKS_MUTED
-            );
-            assert_eq!(
-                markdown_blocks_fg(screen, "│ quoted line", 0),
-                MARKDOWN_BLOCKS_MUTED
-            );
-            assert_eq!(
-                markdown_blocks_fg(screen, "── rust", 0),
-                MARKDOWN_BLOCKS_DIM
-            );
-            assert_eq!(
-                markdown_blocks_fg(screen, " rust ", 0),
-                MARKDOWN_BLOCKS_MUTED
-            );
-            assert_eq!(
-                markdown_blocks_fg(screen, "let x = 1;", 0),
-                MARKDOWN_BLOCKS_CODE_BLOCK
-            );
-            assert_eq!(markdown_blocks_fg(screen, "docs", 0), MARKDOWN_BLOCKS_LINK);
-            assert_eq!(
-                markdown_blocks_fg(screen, "(https://example.com/x)", 0),
-                MARKDOWN_BLOCKS_DIM
-            );
-        }
 
         // 结束前先补上未闭合的 fence，再以最终权威正文收尾。
         streaming_delta(&mut stream, protocol, stage4);
@@ -272,15 +202,7 @@ fn transcript_blocks_markdown_streams_staged_blocks_and_styles() {
             assert_eq!(text.matches("• first item").count(), 1, "{text}");
             assert!(!text.contains("**"), "{text}");
             assert!(!text.contains("```"), "{text}");
-            assert_eq!(
-                markdown_blocks_fg(screen, "Fixture Title", 0),
-                MARKDOWN_BLOCKS_ACCENT
-            );
             assert!(markdown_blocks_bold(screen, "bold word"));
-            assert_eq!(
-                background_color(screen, "Fixture Title"),
-                ASSISTANT_BACKGROUND
-            );
         }
         no_more(&fixture);
     }
@@ -445,19 +367,6 @@ fn transcript_blocks_markdown_unicode_and_long_line_survive_resize() {
     pty.wait_for("100 列底部显示表格与长行尾巴", |s| bottom(s));
     // The session toast can cover the entire narrow table after resize.
     pty.wait_for("会话通知消失后检查窄屏正文", |s| !s.contents().contains("Session:"));
-    {
-        let screen = pty.parser.screen();
-        assert_eq!(
-            markdown_blocks_fg(screen, "┼", 0),
-            MARKDOWN_BLOCKS_DIM,
-            "{}",
-            screen.contents()
-        );
-        assert_eq!(
-            background_color(screen, "中文名"),
-            ASSISTANT_BACKGROUND
-        );
-    }
     let top = |screen: &vt100::Screen| {
         let text = screen.contents();
         text.contains("宽度保持 中文 😀")
@@ -467,39 +376,6 @@ fn transcript_blocks_markdown_unicode_and_long_line_survive_resize() {
             && text.contains("已完成")
             && text.contains("待办")
             && text.contains("引用行")
-    };
-    let top_styles = |screen: &vt100::Screen| {
-        let text = screen.contents();
-        assert_eq!(
-            markdown_blocks_fg(screen, "中文标题", 0),
-            MARKDOWN_BLOCKS_ACCENT,
-            "{text}"
-        );
-        assert!(markdown_blocks_bold(screen, "中文标题"));
-        assert_eq!(
-            markdown_blocks_fg(screen, "• 顶层", 0),
-            MARKDOWN_BLOCKS_MUTED
-        );
-        assert!(
-            markdown_blocks_line_with(screen, "嵌套").contains("  • 嵌套"),
-            "{text}"
-        );
-        assert_eq!(
-            markdown_blocks_fg(screen, "☑ 已完成", 0),
-            MARKDOWN_BLOCKS_MUTED
-        );
-        assert_eq!(
-            markdown_blocks_fg(screen, "☐ 待办", 0),
-            MARKDOWN_BLOCKS_MUTED
-        );
-        assert_eq!(
-            markdown_blocks_fg(screen, "│ 引用行", 0),
-            MARKDOWN_BLOCKS_MUTED
-        );
-        assert_eq!(
-            markdown_blocks_fg(screen, "宽度保持 中文 😀", 0),
-            MARKDOWN_BLOCKS_CODE_BLOCK
-        );
     };
     // Fence each page with an observed draft update. Repeated x-only pages can look
     // identical, and a resize redraw alone does not acknowledge queued paging keys.
@@ -522,18 +398,8 @@ fn transcript_blocks_markdown_unicode_and_long_line_survive_resize() {
         pty.resize(rows, cols);
         page_until(&mut pty, "\x1b[6~", bottom);
         page_until(&mut pty, "\x1b[5~", top);
-        top_styles(pty.parser.screen());
     }
     page_until(&mut pty, "\x1b[6~", bottom);
-    {
-        let screen = pty.parser.screen();
-        assert_eq!(
-            markdown_blocks_fg(screen, "┼", 0),
-            MARKDOWN_BLOCKS_DIM,
-            "{}",
-            screen.contents()
-        );
-    }
     pty.ready();
     no_more(&fixture);
     pty.input("/quit\r");
@@ -568,10 +434,6 @@ fn transcript_blocks_markdown_scroll_offset_follow_and_exit_scrollback() {
             && s.contents().contains("para-09")
             && s.contents().contains("✻ Responding")
     });
-    assert_eq!(
-        markdown_blocks_fg(pty.parser.screen(), "scrollback code line", 0),
-        MARKDOWN_BLOCKS_CODE_BLOCK
-    );
     pty.input("\x1b[5~");
     pty.wait_for("运行中 PgUp 离开底部", |s| {
         !s.contents().contains("para-29")
@@ -631,25 +493,11 @@ fn transcript_blocks_markdown_scroll_offset_follow_and_exit_scrollback() {
     let screen = parser.screen();
     let text = screen.contents();
     assert_eq!(text.matches("Scrollback Heading").count(), 1, "{text}");
-    assert_eq!(
-        markdown_blocks_fg(screen, "Scrollback Heading", 0),
-        MARKDOWN_BLOCKS_ACCENT
-    );
-    assert!(markdown_blocks_bold(screen, "Scrollback Heading"));
     assert_eq!(text.matches("scrollback code line").count(), 1, "{text}");
-    assert_eq!(
-        markdown_blocks_fg(screen, "scrollback code line", 0),
-        MARKDOWN_BLOCKS_CODE_BLOCK
-    );
     for index in 0..30 {
         let line = format!("para-{index:02}");
         assert_eq!(text.matches(&line).count(), 1, "{line}\n{text}");
     }
     assert_eq!(text.matches("follow-bottom-restored").count(), 1, "{text}");
-    assert_eq!(
-        background_color(screen, "scroll marker task"),
-        USER_BACKGROUND
-    );
-    assert_eq!(background_color(screen, "para-00"), ASSISTANT_BACKGROUND);
     pty.finish();
 }

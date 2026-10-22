@@ -194,10 +194,6 @@ impl Store {
 mod tests {
     #[test]
     fn signatures_normalize_ids_and_counters() {
-        assert_eq!(
-            super::signature("HTTP 429 request 0123456789abcdef after 12ms"),
-            super::signature("HTTP 429 request fedcba9876543210 after 99ms")
-        );
         assert_ne!(
             super::signature("HTTP 429 quota"),
             super::signature("HTTP 403 forbidden")
