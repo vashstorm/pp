@@ -5,7 +5,7 @@ function resetInsights() {
   insightSort = "cost";
 }
 const toolCoverage = (g) => `${number(g.priced)} priced · ${number(g.unpriced)} unpriced calls`;
-const insightTrend = (g) => `<td class="trend">${sparkline(fillBuckets(g.buckets).map((b) => b.requests ?? 0), colors[0])}</td>`;
+const insightTrend = (g) => `<td class="trend">${sparkline(fillBuckets(g.buckets).map((b) => b.requests ?? 0), colors[0], "Calls", fillBuckets(g.buckets).map((b) => b.timestamp))}</td>`;
 function insightRecent(rows, full = true) {
   if (full) return overviewTable(rows);
   return analyticsTable(["Invoking request", "Model", "When", "Request status"], rows.map((r) =>
@@ -24,7 +24,7 @@ function toolModels(tool, scope = "breakdown") {
   return analyticsTable(["Model", "Calls", "Arguments", "Attr. tokens", "Attr. cost", "Last used"],
     [...tool.models].sort((a, b) => b.calls - a.calls).map((g) => groupRow(
       {...g, key: JSON.stringify([scope, tool.key, g.key]), description: `${g.provider} · ${g.key}`}, "tool-model",
-      numericCells([number(g.calls), `${short(g.args_chars)} chars`, short(g.tokens), money(g.cost), relative(g.last_seen)]),
+      numericCells([number(g.calls), `${detailed(g.args_chars)} chars`, detailed(g.tokens), detailed(g.cost, money(g.cost), " USD"), `<span title="${h(localTime(g.last_seen))}">${relative(g.last_seen)}</span>`]),
       () => toolModelDetails(g), 6,
     )).join(""));
 }
@@ -41,7 +41,7 @@ function toolsPage() {
     <section class="panel analytics-panel"><div class="requests-heading panel-heading"><div><h2>By tool</h2><p class="panel-description">Select a row to expand model usage, coverage and recent requests.</p></div>${activitySearch("Search tools", "Tool or model…")}</div>${analyticsTable(
       ["Tool", "Calls", "Share", "Arguments", "Attr. tokens", "Attr. cost", "Last used", "Trend"],
       rows.slice(0, visible).map((g) => groupRow({...g, label:g.tool, description:`${g.models.length} model${g.models.length === 1 ? "" : "s"}`}, "tool",
-        numericCells([number(g.calls), percent(g.calls, s.calls), `${short(g.args_chars)} chars`, short(g.tokens), money(g.cost), relative(g.last_seen)]) + insightTrend(g),
+        numericCells([number(g.calls), percent(g.calls, s.calls), `${detailed(g.args_chars)} chars`, detailed(g.tokens), detailed(g.cost, money(g.cost), " USD"), `<span title="${h(localTime(g.last_seen))}">${relative(g.last_seen)}</span>`]) + insightTrend(g),
         () => `<div class="group-details">${detailsGrid([["Average arguments", `${short(Math.round(g.args_chars / g.calls))} chars / call`], ["Usage coverage", `${number(g.usage_known)} / ${number(g.calls)} calls`], ["Pricing coverage", toolCoverage(g)], ["Tool errors / results / duration", "Not recorded"]])}<h2>By model · select a model for recent requests</h2>${toolModels(g, "expanded")}</div>`, 8)).join(""),
     )}${activityFooter(rows)}</section>
     <section class="panel analytics-panel"><div class="requests-heading panel-heading"><div><h2>By tool and model</h2><p class="panel-description">Expand a model row to inspect the requests that emitted its calls.</p></div><select class="insight-select" id="tool-filter" aria-label="Filter by tool"><option value="">All tools</option>${tools.map((g) => `<option value="${h(g.key)}"${g.key === toolFilter ? " selected" : ""}>${h(g.tool)}</option>`).join("")}</select></div>${(selected ? [selected] : rows).map((g) => `<div class="tool-model-group"><h3>${h(g.tool)}</h3>${toolModels(g)}</div>`).join("") || '<div class="empty">No matching tools</div>'}</section>
@@ -61,7 +61,7 @@ function projectDetails(g) {
   ])}${tokenMix(g)}<h2>Models · select a row for usage and latency</h2>${analyticsTable(["Model", "Requests", "Tokens", "Cost", "Cache rate", "Errors"],
     [...g.models].sort((a, b) => b.requests - a.requests).map((m) => groupRow(
       {...m, key: JSON.stringify([g.key, m.key]), description:`${m.provider} · ${m.key}`}, "project-model",
-      numericCells([number(m.requests), short(m.tokens), money(m.cost), cacheRate(m), percent(m.failed, m.requests)]),
+      numericCells([number(m.requests), detailed(m.tokens), detailed(m.cost, money(m.cost), " USD"), cacheRate(m), percent(m.failed, m.requests)]),
       () => `<div class="group-details">${detailsGrid([["Avg duration", duration(m.avg_duration_ms)], ["Avg TTFT", duration(m.avg_ttft_ms)], ["Pricing coverage", costNote(m)], ["Aborted", number(m.aborted)]])}${tokenMix(m)}</div>`, 6,
     )).join(""))}<h2>Latest requests · up to 10 in this range</h2>${insightRecent(g.recent)}</div>`;
 }
@@ -75,7 +75,7 @@ function projectsPage() {
     <section class="panel analytics-panel"><div class="requests-heading panel-heading"><div><h2>Folders</h2><p class="panel-description">${number(rows.length)} folders · select a row for tokens, models and recent requests</p></div><div class="trace-controls">${activitySearch("Search folders", "Folder, path or model…")}<select class="insight-select" id="insight-sort" aria-label="Sort folders">${[["cost","Cost"],["requests","Requests"],["tokens","Tokens"],["last_seen","Last active"]].map(([key,label]) => `<option value="${key}"${key === insightSort ? " selected" : ""}>${label}</option>`).join("")}</select></div></div>${analyticsTable(
       ["Folder", "Requests", "Cost", "Tokens", "Cache rate", "Errors", "Avg duration", "Last active"],
       rows.slice(0, visible).map((g) => groupRow({...g, label:g.project || g.key || "Unknown directory", description:g.key}, "project",
-        numericCells([number(g.requests), money(g.cost), short(g.tokens), cacheRate(g), percent(g.failed, g.requests), duration(g.avg_duration_ms), relative(g.last_seen)]),
+        numericCells([number(g.requests), detailed(g.cost, money(g.cost), " USD"), detailed(g.tokens), cacheRate(g), percent(g.failed, g.requests), detailed(g.avg_duration_ms, duration(g.avg_duration_ms), " ms"), `<span title="${h(localTime(g.last_seen))}">${relative(g.last_seen)}</span>`]),
         () => projectDetails(g), 8)).join(""),
     )}${activityFooter(rows)}</section><p class="load-note">Folders are grouped by the full recorded working directory. Different paths with the same folder name stay separate. All summaries cover every request in the selected range.</p>${pricingNotice()}`;
 }

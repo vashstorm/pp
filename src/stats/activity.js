@@ -42,7 +42,7 @@ function failureTable(rows) {
           .slice(0, visible)
           .map(
             (r) =>
-              `<tr tabindex="0" data-id="${r.id}" aria-label="View failed ${h(r.model)} request ${r.id}"><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td><div class="model-name">${h(r.model)}</div><div class="provider">${h(r.provider)}</div></td><td><div class="failure-message" title="${h(r.error_message)}">${h(r.error_message || "Unknown error")}</div></td><td class="project" title="${h(r.cwd)}">${h(r.project)}</td><td class="right num">${short(total(r))}</td><td class="right num">${money(r.cost)}</td></tr>`,
+              `<tr tabindex="0" data-id="${r.id}" aria-label="View failed ${h(r.model)} request ${r.id}"><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td><div class="model-name">${h(r.model)}</div><div class="provider">${h(r.provider)}</div></td><td><div class="failure-message" title="${h(r.error_message)}">${h(r.error_message || "Unknown error")}</div></td><td class="project" title="${h(r.cwd)}">${h(r.project)}</td><td class="right num">${detailed(total(r))}</td><td class="right num">${money(r.cost)}</td></tr>`,
           )
           .join("")
       : '<tr><td colspan="6"><div class="empty">No matching failures</div></td></tr>'
@@ -104,7 +104,7 @@ function tracesPage() {
       .slice(0, visible)
       .map(
         (s) =>
-          `<tr tabindex="0" data-trace="${s.id}" aria-label="Open session ${h(sessionTitle(s))}"><td><div class="session-name" title="${h(s.session_file || sessionTitle(s))}">${icon("chevron", 12)} ${h(sessionTitle(s))}</div><div class="provider">${h(s.project)}</div></td><td title="${h(s.models.map((m) => m.key).join(", "))}">${h(s.models[0]?.model)}${s.models.length > 1 ? ` +${s.models.length - 1}` : ""}</td><td title="${h(localTime(s.first_seen))}">${relative(s.first_seen)}</td><td class="right num">${duration(s.wall_ms)}</td><td class="right num">${number(s.requests)}</td><td class="right num ${s.failed ? "failure-count" : ""}">${number(s.failed)}</td><td class="right num">${short(s.tokens)}</td><td class="right num" title="${s.unpriced} unpriced">${money(s.cost)}</td></tr>`,
+          `<tr tabindex="0" data-trace="${s.id}" aria-label="Open session ${h(sessionTitle(s))}"><td><div class="session-name" title="${h(s.session_file || sessionTitle(s))}">${icon("chevron", 12)} ${h(sessionTitle(s))}</div><div class="provider">${h(s.project)}</div></td><td title="${h(s.models.map((m) => m.key).join(", "))}">${h(s.models[0]?.model)}${s.models.length > 1 ? ` +${s.models.length - 1}` : ""}</td><td title="${h(localTime(s.first_seen))}">${relative(s.first_seen)}</td><td class="right num">${detailed(s.wall_ms, duration(s.wall_ms), " ms")}</td><td class="right num">${number(s.requests)}</td><td class="right num ${s.failed ? "failure-count" : ""}">${number(s.failed)}</td><td class="right num">${detailed(s.tokens)}</td><td class="right num" title="${s.unpriced} unpriced">${money(s.cost)}</td></tr>`,
       )
       .join("") ||
     '<tr><td colspan="8"><div class="empty">No matching sessions</div></td></tr>'

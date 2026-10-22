@@ -4,6 +4,30 @@
   font-weight: 100 900;
   font-display: swap;
 }
+#stats-tooltip {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  max-width: min(420px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: hidden;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 4px 20px #0002;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.chart-hit { fill: transparent; pointer-events: all; }
+.chart-hit:hover, .chart-hit:focus-visible {
+  fill: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: none;
+}
 .insight-path {
   max-width: 380px;
   overflow: hidden;

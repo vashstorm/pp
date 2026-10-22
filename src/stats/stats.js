@@ -133,6 +133,88 @@ const localTime = (ms) =>
     second: "2-digit",
     hour12: false,
   });
+// 详情统一使用纯文本，避免模型名、目录或错误消息被解释为 HTML。
+const detailed = (value, display = short(value), unit = "") =>
+  `<span title="${h(value == null ? "Not reported" : `${Number(value).toLocaleString("en-US", { maximumSignificantDigits: 21 })}${unit}`)}">${display}</span>`;
+const chartHit = (x, y, width, height, text) =>
+  `<rect class="chart-hit" x="${x}" y="${y}" width="${width}" height="${height}" tabindex="0" role="graphics-symbol" aria-label="${h(text)}" data-tooltip="${h(text)}"/>`;
+const tooltip = document.createElement("div");
+tooltip.id = "stats-tooltip";
+tooltip.role = "tooltip";
+tooltip.hidden = true;
+document.body.append(tooltip);
+let tooltipTarget = null;
+function hideTooltip() {
+  tooltipTarget?.removeAttribute("aria-describedby");
+  tooltipTarget = null;
+  tooltip.hidden = true;
+}
+function showTooltip(target, x, y) {
+  if (tooltipTarget !== target) {
+    hideTooltip();
+    tooltipTarget = target;
+    tooltip.textContent = target.dataset.tooltip;
+    target.setAttribute("aria-describedby", tooltip.id);
+    tooltip.hidden = false;
+  }
+  const box = tooltip.getBoundingClientRect();
+  tooltip.style.left = `${Math.max(8, Math.min(x + 12, innerWidth - box.width - 8))}px`;
+  tooltip.style.top = `${Math.max(8, y + 16 + box.height > innerHeight - 8 ? y - box.height - 12 : y + 16)}px`;
+}
+function prepareDetails() {
+  hideTooltip();
+  const root = $("page");
+  for (const title of root.querySelectorAll("svg title")) {
+    title.parentElement.dataset.tooltip = title.textContent;
+    title.remove();
+  }
+  for (const el of root.querySelectorAll("[title]")) {
+    el.dataset.tooltip = el.title;
+    el.removeAttribute("title");
+  }
+  const meanings = {
+    Tokens: "Total input (including cache reads) + output tokens",
+    "Cache rate": "Cache reads / (uncached input + cache reads)",
+    "Tokens/s": "Output tokens / request duration in seconds",
+    TTFT: "Time from request start to the first output token",
+    Cost: "API-equivalent estimate in USD; excludes unpriced requests",
+    "Attr. tokens": "Invoking request tokens split evenly across its tool calls",
+    "Attr. cost": "Invoking request estimate split evenly across its tool calls",
+  };
+  // 覆盖所有表格（包括展开的嵌套表格），保留已有的精确数值和完整路径。
+  for (const cell of root.querySelectorAll("th,td:not([colspan])")) {
+    if (cell.querySelector("table")) continue;
+    const header = cell.closest("table").tHead?.rows[0]?.cells[cell.cellIndex];
+    const values = [...cell.querySelectorAll("[data-tooltip]:not(.chart-hit)")]
+      .map((el) => el.dataset.tooltip);
+    const text = cell.tagName === "TH" && meanings[cell.textContent.trim()]
+      || (cell.querySelector("svg.sparkline")
+        ? "Move across the trend or focus a time bucket to inspect values."
+        : [...new Set([cell.innerText.trim(), ...values].filter(Boolean))].join("\n"));
+    cell.dataset.tooltip = `${header?.textContent.trim() || "Details"}\n${cell.dataset.tooltip || text || "Not reported"}`;
+    if (!cell.hasAttribute("tabindex")) cell.tabIndex = 0;
+  }
+}
+$("page").addEventListener("pointermove", (e) => {
+  if (e.pointerType === "touch") return;
+  const target = e.target.closest("[data-tooltip]");
+  if (target) showTooltip(target, e.clientX, e.clientY);
+  else hideTooltip();
+});
+$("page").addEventListener("pointerleave", hideTooltip);
+$("page").addEventListener("focusin", (e) => {
+  const target = e.target.closest("[data-tooltip]");
+  if (!target) return;
+  const box = target.getBoundingClientRect();
+  showTooltip(target, box.left, box.bottom);
+});
+$("page").addEventListener("focusout", hideTooltip);
+$("page").addEventListener("pointerdown", hideTooltip);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideTooltip();
+});
+document.addEventListener("scroll", hideTooltip, true);
+window.addEventListener("resize", hideTooltip);
 let page = "overview",
   range = "24h",
   data = null,
@@ -287,6 +369,7 @@ function updateLive() {
 }
 $("live").onclick = refresh;
 function onRoute() {
+  hideTooltip();
   const url = new URL(
     location.hash.slice(1) || "/overview?range=24h",
     "http://localhost",
@@ -319,9 +402,9 @@ function onRoute() {
 }
 window.addEventListener("hashchange", onRoute);
 function metric(label, value, note = "", spark = "", color = "var(--accent)") {
-  return `<div class="metric"><div class="metric-label">${h(label)}</div><div class="metric-value" title="${h(value)}">${h(value)}</div>${note ? `<div class="metric-note">${h(note)}</div>` : ""}${sparkline(spark, color)}</div>`;
+  return `<div class="metric"><div class="metric-label">${h(label)}</div><div class="metric-value" title="${h(value)}">${h(value)}</div>${note ? `<div class="metric-note">${h(note)}</div>` : ""}${sparkline(spark, color, label, fillBuckets(data?.buckets || []).map((b) => b.timestamp))}</div>`;
 }
-function sparkline(values, color) {
+function sparkline(values, color, label = "Requests", timestamps = []) {
   if (!Array.isArray(values)) return "";
   if (!values.length) return '<div class="sparkline"></div>';
   const max = Math.max(...values, 1),
@@ -331,7 +414,7 @@ function sparkline(values, color) {
           `${values.length === 1 ? 100 : (i * 260) / (values.length - 1)},${35 - (v / max) * 30}`,
       )
       .join(" ");
-  return `<svg class="sparkline" viewBox="0 0 260 38" preserveAspectRatio="none" aria-hidden="true"><polygon points="0,38 ${points} 260,38" fill="${color}" opacity=".12"/><polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.6"/></svg>`;
+  return `<svg class="sparkline" viewBox="0 0 260 38" preserveAspectRatio="none"><polygon points="0,38 ${points} 260,38" fill="${color}" opacity=".12"/><polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.6"/>${values.map((v, i) => chartHit(i * 260 / values.length, 0, 260 / values.length, 38, `${timestamps[i] == null ? `Bucket ${i + 1}` : localTime(timestamps[i])}\n${label}: ${label.includes("cost") ? money(v) : label === "Error rate" ? percent(v, 1) : number(v)}`)).join("")}</svg>`;
 }
 function statusBadge(r, compact = false) {
   const label =
@@ -341,7 +424,7 @@ function statusBadge(r, compact = false) {
     : `<div class="status-text ${h(r.status)}"><i></i><div>${label}<div class="stop">${h(r.stop_reason || "")}</div></div></div>`;
 }
 function overviewTable(rows) {
-  return `<div class="table-wrap"><table><thead><tr>${["Model", "When", "Tokens", "Cost", "Duration", "Status"].map((s, i) => `<th${i > 1 ? ' class="right"' : ""}>${s}</th>`).join("")}</tr></thead><tbody>${rows.length ? rows.map((r) => `<tr tabindex="0" data-id="${r.id}" aria-label="View ${h(r.model)} request ${r.id}"><td><div class="model-name">${h(r.model)}</div><div class="provider">${h(r.provider)}</div></td><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td class="right num">${number(total(r))}</td><td class="right num">${money(r.cost)}</td><td class="right num">${duration(r.duration_ms)}</td><td class="right">${statusBadge(r, true)}</td></tr>`).join("") : '<tr><td colspan="6"><div class="empty">No requests in this range</div></td></tr>'}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr>${["Model", "When", "Tokens", "Cost", "Duration", "Status"].map((s, i) => `<th${i > 1 ? ' class="right"' : ""}>${s}</th>`).join("")}</tr></thead><tbody>${rows.length ? rows.map((r) => `<tr tabindex="0" data-id="${r.id}" aria-label="View ${h(r.model)} request ${r.id}"><td><div class="model-name">${h(r.model)}</div><div class="provider">${h(r.provider)}</div></td><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td class="right num">${number(total(r))}</td><td class="right num">${detailed(r.cost, money(r.cost), " USD")}</td><td class="right num">${detailed(r.duration_ms, duration(r.duration_ms), " ms")}</td><td class="right">${statusBadge(r, true)}</td></tr>`).join("") : '<tr><td colspan="6"><div class="empty">No requests in this range</div></td></tr>'}</tbody></table></div>`;
 }
 function fillBuckets(buckets) {
   if (!buckets.length) return [];
@@ -417,7 +500,8 @@ function chart(buckets, mode = activity) {
           ? { hour: "2-digit", minute: "2-digit", hour12: false }
           : { month: "short", day: "numeric" },
       );
-      return `<rect x="${x}" y="${y}" width="${bar}" height="${bh}" fill="var(--accent)"><title>${h(localTime(b.timestamp))}: ${h(formatted(value))} ${h(label)}</title></rect>${mode === "requests" && b.failed ? `<rect x="${x}" y="${y}" width="${bar}" height="${(b.failed / max) * plotH}" fill="var(--red)"/>` : ""}${i % labelEvery === 0 ? `<text x="${x + bar / 2}" y="${height - 12}" text-anchor="middle">${h(bucketLabel)}</text>` : ""}`;
+      const detail = `${localTime(b.timestamp)}\n${label}: ${b[mode] == null ? "Not reported" : formatted(value)}${mode === "requests" ? `\nFailed: ${number(b.failed)}` : ""}`;
+      return `<rect x="${x}" y="${y}" width="${bar}" height="${bh}" fill="var(--accent)"/>${mode === "requests" && b.failed ? `<rect x="${x}" y="${y}" width="${bar}" height="${(b.failed / max) * plotH}" fill="var(--red)"/>` : ""}${chartHit(left + step * i, top, step, plotH, detail)}${i % labelEvery === 0 ? `<text x="${x + bar / 2}" y="${height - 12}" text-anchor="middle">${h(bucketLabel)}</text>` : ""}`;
     })
     .join("")}</svg>`;
 }
@@ -578,7 +662,7 @@ function stackedChart(groups, metric, share = false, daily = false) {
   const series = visibleGroups.map(
     (g) =>
       new Map(
-        (daily ? g.daily : g.buckets).map((b) => [b.timestamp, b[metric] ?? 0]),
+        (daily ? g.daily : g.buckets).map((b) => [b.timestamp, b[metric]]),
       ),
   );
   const totals = timeline.map((b) =>
@@ -612,6 +696,16 @@ function stackedChart(groups, metric, share = false, daily = false) {
       svg += `<rect x="${left + step * (i + 0.5) - bar / 2}" y="${top + plotH - offset - bh}" width="${bar}" height="${bh}" fill="${color}"><title>${h(g.label)} · ${daily ? new Date(b.timestamp).toISOString().slice(0, 10) : h(localTime(b.timestamp))}: ${h(metric === "cost" ? money(raw) : number(raw))}${share ? ` · ${format(value)}` : ""}</title></rect>`;
       offset += bh;
     });
+    const bucketTime = daily
+      ? `${new Date(b.timestamp).toISOString().slice(0, 10)} UTC`
+      : localTime(b.timestamp);
+    const details = visibleGroups.map((g, j) => {
+      const raw = series[j].has(b.timestamp) ? series[j].get(b.timestamp) : 0;
+      return `${g.label}: ${raw == null ? "Not reported" : metric === "cost" ? money(raw) : number(raw)}${share && raw != null ? ` · ${totals[i] ? percent(raw, totals[i]) : "0%"}` : ""}`;
+    });
+    const partial = series.some((s) => s.has(b.timestamp) && s.get(b.timestamp) == null);
+    svg += chartHit(left + step * i, top, step, plotH,
+      [bucketTime, ...details, `Total${partial ? " (known)" : ""}: ${metric === "cost" ? money(totals[i]) : number(totals[i])}`].join("\n"));
     if (i % Math.max(1, Math.ceil(timeline.length / 10)) === 0) {
       const label = new Date(b.timestamp).toLocaleString(
         "en-US",
@@ -754,16 +848,18 @@ function modelsPage() {
           "model",
           numericCells([
             number(g.requests),
-            money(g.cost),
-            short(g.tokens),
+            detailed(g.cost, money(g.cost), " USD"),
+            detailed(g.tokens),
             cacheRate(g),
             percent(g.failed, g.requests),
             averageSpeed(g.tokens_per_second),
-            duration(g.avg_ttft_ms),
+            detailed(g.avg_ttft_ms, duration(g.avg_ttft_ms), " ms"),
           ]) +
             `<td class="trend">${sparkline(
               fillBuckets(g.buckets).map((b) => b.requests ?? 0),
               colors[0],
+              "Requests",
+              fillBuckets(g.buckets).map((b) => b.timestamp),
             )}</td>`,
           (key) => modelDetails(g, key),
           9,
@@ -776,7 +872,7 @@ function peakChart() {
   const g = data.providers.find((p) => p.key === peakProvider),
     hours = g?.hours || data.hours,
     max = Math.max(...hours.map((b) => b.tokens ?? 0), 1);
-  return `<div class="chart peak-chart"><svg viewBox="0 0 900 220" preserveAspectRatio="none" role="img" aria-label="Tokens by local hour of day">${hours.map((b, i) => `<rect x="${42 + i * 35}" y="${185 - ((b.tokens ?? 0) / max) * 165}" width="23" height="${((b.tokens ?? 0) / max) * 165}" fill="var(--accent)"><title>${String(i).padStart(2, "0")}:00 · ${number(b.tokens)} tokens</title></rect>${i % 2 === 0 ? `<text x="${54 + i * 35}" y="210" text-anchor="middle">${i}:00</text>` : ""}`).join("")}</svg></div>`;
+  return `<div class="chart peak-chart"><svg viewBox="0 0 900 220" preserveAspectRatio="none" role="img" aria-label="Tokens by local hour of day">${hours.map((b, i) => `<rect x="${42 + i * 35}" y="${185 - ((b.tokens ?? 0) / max) * 165}" width="23" height="${((b.tokens ?? 0) / max) * 165}" fill="var(--accent)"/>${chartHit(36 + i * 35, 20, 35, 165, `${g?.provider || "All providers"}\n${String(i).padStart(2, "0")}:00 · ${number(b.tokens)} tokens`)}${i % 2 === 0 ? `<text x="${54 + i * 35}" y="210" text-anchor="middle">${i}:00</text>` : ""}`).join("")}</svg></div>`;
 }
 function providersPage() {
   if (!data) return '<div class="loading">Loading statistics…</div>';
@@ -805,9 +901,9 @@ function providersPage() {
             number(g.requests),
             percent(g.failed, g.requests),
             number(g.models),
-            short(g.tokens),
+            detailed(g.tokens),
             percent(g.tokens, s.tokens),
-            money(g.cost),
+            detailed(g.cost, money(g.cost), " USD"),
             averageSpeed(g.tokens_per_second),
           ]),
           () =>
@@ -823,7 +919,7 @@ function providersPage() {
                 .sort((a, b) => b.requests - a.requests)
                 .map(
                   (m) =>
-                    `<tr><td>${h(m.model)}<div class="provider">${h(m.key)}</div></td>${numericCells([number(m.requests), short(m.tokens), money(m.cost)])}</tr>`,
+                    `<tr><td>${h(m.model)}<div class="provider">${h(m.key)}</div></td>${numericCells([number(m.requests), detailed(m.tokens), detailed(m.cost, money(m.cost), " USD")])}</tr>`,
                 )
                 .join(""),
             )}</div>`,
@@ -899,14 +995,14 @@ function costsPage() {
           "cost",
           numericCells([
             number(g.requests),
-            money(g.cost),
+            detailed(g.cost, money(g.cost), " USD"),
             percent(g.cost, s.cost),
           ]) +
             `<td>${splitBar(g)}</td>` +
             numericCells([
-              money(g.cost_components?.input),
-              money(g.cost_components?.output),
-              money(g.cost_components?.cache_read),
+              detailed(g.cost_components?.input, money(g.cost_components?.input), " USD"),
+              detailed(g.cost_components?.output, money(g.cost_components?.output), " USD"),
+              detailed(g.cost_components?.cache_read, money(g.cost_components?.cache_read), " USD"),
               costPerRequest(g),
               number(g.unpriced),
             ]),
@@ -992,7 +1088,7 @@ function requestTable(rows) {
           .slice(0, visible)
           .map(
             (r) =>
-              `<tr tabindex="0" data-id="${r.id}" aria-label="View ${h(r.model)} request ${r.id}"><td><div class="model-name">${h(r.model)}</div><div class="provider">${h(r.provider)}</div></td><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td class="project" title="${h(r.cwd)}">${h(r.project)}</td><td class="right num" title="${h(`Total input: ${number(r.input_tokens)}; uncached: ${number(uncached(r))}`)}">${short(uncached(r))}</td><td class="right num" title="Cache write: not reported">${short(r.cached_tokens)}</td><td class="right num">${short(r.output_tokens)}</td><td class="right num">${money(r.cost)}</td><td class="right num">${duration(r.duration_ms)}</td><td class="right num">${duration(r.ttft_ms)}</td><td>${statusBadge(r)}</td></tr>`,
+              `<tr tabindex="0" data-id="${r.id}" aria-label="View ${h(r.model)} request ${r.id}"><td><div class="model-name">${h(r.model)}</div><div class="provider">${h(r.provider)}</div></td><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td class="project" title="${h(r.cwd)}">${h(r.project)}</td><td class="right num" title="${h(`Total input: ${number(r.input_tokens)}; uncached: ${number(uncached(r))}`)}">${short(uncached(r))}</td><td class="right num" title="Cache read: ${number(r.cached_tokens)}; Cache write: not reported">${detailed(r.cached_tokens)}</td><td class="right num">${detailed(r.output_tokens)}</td><td class="right num">${detailed(r.cost, money(r.cost), " USD")}</td><td class="right num">${detailed(r.duration_ms, duration(r.duration_ms), " ms")}</td><td class="right num">${detailed(r.ttft_ms, duration(r.ttft_ms), " ms")}</td><td>${statusBadge(r)}</td></tr>`,
           )
           .join("")
       : '<tr><td colspan="10"><div class="empty">No matching requests</div></td></tr>'
@@ -1055,6 +1151,12 @@ function render() {
   const focusValue = focusControl && focused.dataset[focusControl];
   const focusMode = focused?.dataset?.mode;
   const label = pages.find((p) => p[0] === page)?.[1] || page;
+  const cell = focused?.closest("th,td");
+  const cellPosition = cell && [
+    [...$("page").querySelectorAll("table")].indexOf(cell.closest("table")),
+    cell.parentElement.rowIndex,
+    cell.cellIndex,
+  ];
   $("page").innerHTML =
     page === "overview"
       ? overview()
@@ -1073,7 +1175,12 @@ function render() {
                   projects: projectsPage,
                 }[page]()
               : `<h1>${h(label)}</h1><p class="subtitle">${h(label)} across your sessions in the ${descriptions[range]}.</p><section class="panel placeholder"><div class="empty">${h(label)} is coming soon.</div></section>`;
-  if (focusedSection) {
+  prepareDetails();
+  if (cellPosition) {
+    const [table, row, column] = cellPosition;
+    $("page").querySelectorAll("table")[table]?.rows[row]?.cells[column]
+      ?.focus({ preventScroll: true });
+  } else if (focusedSection) {
     [...$("page").querySelectorAll("details[data-trace-section]")]
       .find((el) => el.dataset.traceSection === focusedSection)
       ?.querySelector("summary")
@@ -1181,16 +1288,13 @@ $("page").addEventListener("click", (e) => {
   }
 });
 $("page").addEventListener("keydown", (e) => {
+  const action = e.target.closest("th[data-sort],tr[data-id],tr[data-expand],tr[data-error-signature],tr[data-trace]");
   if (
     (e.key === "Enter" || e.key === " ") &&
-    (e.target.matches("tr[data-id]") ||
-      e.target.matches("th[data-sort]") ||
-      e.target.matches("tr[data-expand]") ||
-      e.target.matches("tr[data-error-signature]") ||
-      e.target.matches("tr[data-trace]"))
+    action && !e.target.closest("button,a,input,select,textarea")
   ) {
     e.preventDefault();
-    e.target.click();
+    action.click();
   }
 });
 $("page").addEventListener(
@@ -1262,6 +1366,7 @@ function drawerContent(detail) {
   ])}<div class="detail-title">Session file</div><div class="session-path">${h(r.session_file || "Not recorded for this request.")}</div>${payload("Output message", "output", detail.output_message, true)}${payload("Session entry", "entry", detail.session_entry)}${payload("Stats row", "stats", r)}</div>`;
 }
 async function openDrawer(id, element) {
+  hideTooltip();
   returnFocus = element;
   selectedId = id;
   const token = ++detailGeneration;
