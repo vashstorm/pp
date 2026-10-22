@@ -36,9 +36,9 @@ portable-pty = "0.9.0"
 vt100 = "0.16.2"
 
 [profile.dev]
-opt-level = 3
-# debug = "line-tables-only"
-incremental = false
+# opt-level = 2
+debug = "line-tables-only"
+#incremental = false
 
 [profile.release]
 opt-level = "z"
