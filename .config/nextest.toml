@@ -1,0 +1,3 @@
+[profile.default]
+# Collect failures across unit and integration tests instead of stopping early.
+fail-fast = false

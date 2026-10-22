@@ -194,7 +194,7 @@ mcp_servers:
 MCP 服务按当前用户权限执行，能够访问工作目录之外的资源。服务 stderr 被丢弃，协议错误不输出原始响应体、命令参数或环境变量；成功的工具结果按数据展示和回填模型，服务应自行避免在结果中返回凭证。
 
 ```sh
-cargo test --locked --test cli_agent mcp_ -- --test-threads=1
+cargo nextest run --locked --test cli_agent mcp_ --test-threads=1
 ```
 
 ## 运行诊断日志
@@ -426,6 +426,34 @@ Both APIs validate the entire batch before saving assistant output or executing 
 
 ## Verification
 
+本地开发与未来 CI 的默认测试运行器为 [cargo-nextest](https://nexte.st/docs/running/)。未安装时先执行 `cargo install cargo-nextest --locked`，不回退到 `cargo test`。
+
+```sh
+cargo nextest run --locked
+```
+
+`.config/nextest.toml` 的默认 profile 设置 `fail-fast = false`，失败后继续运行其他测试并统一报告；保留 nextest 默认的 CPU 数并发与零重试，不排除已有失败。`--test-threads=1` 直接传给 nextest，不放在 `--` 后。需要查看成功测试输出时使用 `--success-output immediate`；`--no-capture` 会强制串行，不能用它衡量默认并发收益。
+
+nextest 不运行 doctest；当前 crate 只有 binary target，没有 library doctest。以后新增 library target 时，须另行运行 `cargo test --locked --doc`，不能用 nextest 替代。仓库目前没有 CI 配置或独立测试脚本，默认入口由本节与 `AGENTS.md` 约定，不修改 Cargo 内置的 `cargo test` 行为。
+
+### cargo-nextest 切换实测
+
+2026-10-22，macOS arm64、14 个逻辑 CPU、24 GiB 内存，rustc/cargo 1.99.1、cargo-nextest 0.9.149。先完成一次构建预热，再交替执行三轮；每次完整运行同一组 679 项测试（433 单元 + 246 集成、2 个 binary），不改测试源码、不跳过、不重试，使用默认并发。旧入口原样执行会在单元测试失败后停止，因此公平基线使用 `cargo test --locked --no-fail-fast`，切换后使用 `cargo nextest run --locked`。时间来自 `/usr/bin/time`，包含 Cargo/runner 启动与热缓存构建检查，不包含首次编译成本；两种运行器未同时运行。
+
+| 指标 | Cargo 基线 | nextest 默认入口 |
+|---|---:|---:|
+| 第 1 轮墙钟 | 51.27 s | 40.99 s |
+| 第 2 轮墙钟 | 49.33 s | 41.06 s |
+| 第 3 轮墙钟 | 49.81 s | 41.48 s |
+| 墙钟中位数 | 49.81 s | 41.06 s |
+| CPU 时间中位数（user + sys） | 48.00 s | 51.18 s |
+| 各轮失败数 | 8 / 5 / 5 | 6 / 9 / 7 |
+| 各轮跳过数 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+本次墙钟中位数减少 **8.75 s（17.6%，约 1.21×）**，但 CPU 时间增加 **6.6%**。nextest 能[跨 binary 调度测试并统一汇总失败](https://nexte.st/docs/design/how-it-works/)，并[逐测试进程隔离](https://nexte.st/docs/design/why-process-per-test/)；进程启动也有成本，不能推导所有测试或冷构建都会更快。失败项与超时会影响本次耗时，以上只是当前失败测试集的观测值，不是全绿测试集的稳定加速保证。
+
+两种运行器均保留两个已有失败：`tui::tests::context_usage_is_right_aligned_on_input_top_without_changing_draft` 与 `tui::tests::context_token_metrics_keep_ctx_and_draft_at_every_width`。PTY 集成测试另有输出断言／等待超时，失败集合随轮次和运行器变化；**全套没有通过，也未证实稳定性改善**。未用重试、过滤或放宽断言掩盖失败。另已实际执行并通过 nextest 的流式双协议输出用例（`--success-output immediate`）及 MCP 多服务用例（`--test-threads=1`），验证迁移后的定向参数有效。`cargo test --locked --doc` 实际返回 `no library targets found`，与当前 binary-only 结构一致。未在 Linux 上测量。
+
 Default replace example after reading `hello`:
 
 ```json
@@ -439,26 +467,25 @@ With `"edit":"hashline"`, after reading `1:a430d84680aabd0b|hello`:
 ```
 
 ```sh
-cargo test --locked context_ -- --test-threads=1
-cargo test --locked --test cli_agent context_ -- --test-threads=1
-cargo test --locked --test cli_agent session:: -- --nocapture
-cargo test --locked --test cli_agent tui_session_ -- --nocapture
-cargo test --locked slash_
-cargo test --locked file_command_ -- --nocapture
-cargo test --locked --test cli_agent tui::tui_slash_file_command_menu_and_submission -- --nocapture
-cargo test --locked --test cli_agent session::session_file_command_expansion_survives_resume -- --nocapture
-cargo test --locked model_switch
-cargo test --locked model_thinking -- --nocapture
-cargo test --locked llm::
-cargo test --locked --test cli_agent default_reasoning_rejection_allows_manual_effort_recovery_without_committing_failure
-cargo test --locked streaming_ -- --nocapture
-cargo test --locked replace_ -- --nocapture
-cargo test --locked --test cli_agent edit_mode_survives_model_switch -- --nocapture
-cargo test --locked hashline_ -- --nocapture
-cargo test --locked drains_both_large_pipes_without_deadlock
-cargo test --locked responses_invalid_batches_never_write_and_repl_recovers
-cargo test --locked --test cli_agent tui:: -- --nocapture
-cargo test --locked
+cargo nextest run --locked context_ --test-threads=1
+cargo nextest run --locked --test cli_agent context_ --test-threads=1
+cargo nextest run --locked --test cli_agent session:: --success-output immediate
+cargo nextest run --locked --test cli_agent tui_session_ --success-output immediate
+cargo nextest run --locked slash_
+cargo nextest run --locked file_command_ --success-output immediate
+cargo nextest run --locked --test cli_agent tui::tui_slash_file_command_menu_and_submission --success-output immediate
+cargo nextest run --locked --test cli_agent session::session_file_command_expansion_survives_resume --success-output immediate
+cargo nextest run --locked model_switch
+cargo nextest run --locked model_thinking --success-output immediate
+cargo nextest run --locked llm::
+cargo nextest run --locked --test cli_agent default_reasoning_rejection_allows_manual_effort_recovery_without_committing_failure
+cargo nextest run --locked streaming_ --success-output immediate
+cargo nextest run --locked replace_ --success-output immediate
+cargo nextest run --locked --test cli_agent edit_mode_survives_model_switch --success-output immediate
+cargo nextest run --locked hashline_ --success-output immediate
+cargo nextest run --locked drains_both_large_pipes_without_deadlock
+cargo nextest run --locked responses_invalid_batches_never_write_and_repl_recovers
+cargo nextest run --locked --test cli_agent tui:: --success-output immediate
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
@@ -475,7 +502,7 @@ cargo fmt --check
 
 回归测试使用回环 HTTP、真实子进程、独立临时 HOME 下的全局 YAML 配置及临时工作目录； they do not modify the test process environment or access external model services. Both APIs cover ordered tool dependencies, cross-turn history, tool-error correction, invalid batches without partial writes, request limits, timeouts, error redaction, and no automatic retries. Responses-specific cases cover omitted/explicit protocol selection, text aggregation/refusal, encrypted reasoning and complete output replay, optional function-call status, reset preserving instructions, rejected response/item statuses, and recovery without invalid output entering history. Configuration cases cover composite provider/model routing, default ordering, model aliases containing `/`, scoped uniqueness, strict protocol/URL/field types, full validation of unselected providers, removed protocol rejection, and no environment fallback. HTTP regressions include non-JSON 302/401/429/500 errors without redirects or exposed bodies.
 
-Unix regressions additionally drive the TUI through a real PTY (100×30, `TERM=xterm-256color`), restoring the visible screen via vt100: multi-line input, drafts while waiting, paste without sending, real write/read, session history, protocol-error recovery, confirmed reset, unavailable configuration, and Ctrl-C while busy. After exit, termios flags, alternate screen, bracketed paste, mouse protocol mode/encoding, and cursor restoration are checked; the original pipe regressions remain. An SGR mouse-wheel scenario verifies scrolling through a 60-line streamed answer, stable history and CJK draft during incoming output, bottom clamping, and restored following on the next response. Physical mouse wheels and touchpads in specific terminal emulators have not been manually verified. Run alone: `cargo test --locked --test cli_agent tui:: -- --nocapture`.
+Unix regressions additionally drive the TUI through a real PTY (100×30, `TERM=xterm-256color`), restoring the visible screen via vt100: multi-line input, drafts while waiting, paste without sending, real write/read, session history, protocol-error recovery, confirmed reset, unavailable configuration, and Ctrl-C while busy. After exit, termios flags, alternate screen, bracketed paste, mouse protocol mode/encoding, and cursor restoration are checked; the original pipe regressions remain. An SGR mouse-wheel scenario verifies scrolling through a 60-line streamed answer, stable history and CJK draft during incoming output, bottom clamping, and restored following on the next response. Physical mouse wheels and touchpads in specific terminal emulators have not been manually verified. Run alone: `cargo nextest run --locked --test cli_agent tui:: --success-output immediate`.
 
 Streaming regressions gate SSE completion on observed child output, covering both APIs' first deltas, uncompleted call fragments, atomic invalid batches, completed-only text/refusal precedence, missing-tail reconciliation, failed streams and redaction. Bash gates prove both pipes are visible before newline/exit; unit cases cover fragmented/invalid UTF-8 and exact byte caps. Ratatui TestBackend covers all five display categories, while real PTY cells verify User/Bash/Data colors. Paging while streaming preserves the old viewport and draft; resizing and Ctrl-C preserve the terminal restoration contract.
 
@@ -495,7 +522,7 @@ Slash/model regressions exercise local commands without HTTP, alias routing and 
 
 A standalone Python standard-library fixture also exercised the actual binary through Completion A → Responses B → Completion A. All three requests carried the expected model/authorization and complete prior dialogue; slash commands made no requests. Stdout was exactly `alpha`, `alpha via b`, and `alpha via a`, one per line, exit code 0; both configuration files were byte-identical afterward. No external service or personal configuration was used.
 
-Session 新格式已在 macOS arm64 验证：13 项 session 行为测试、3 项专用真实 PTY 测试、9 项 persistence 单测通过；`cargo test --locked -- --test-threads=1` 全套 236 项通过，`cargo build --locked` 通过。默认并发全套曾有 1 项 session 惰性创建用例在 5 秒内未收到 CLI 请求；串行全套通过，未放宽 deadline 或断言。覆盖原工作目录、保存的 edit/read/bash 限制优先级、完整原生上下文、链/版本/旧格式拒绝、残尾/锁/符号链接边界，以及真实文件大小限制注入的持久化失败。PTY 还覆盖未结束 SSE 文本 delta 后强杀并 `-r`：保留部分文本、显示中断提示、无恢复 HTTP、无部分原生 assistant 提交。Linux 尚未实机验证。
+Session 新格式已在 macOS arm64 验证：13 项 session 行为测试、3 项专用真实 PTY 测试、9 项 persistence 单测通过；当时的 `cargo test --locked -- --test-threads=1` 全套 236 项通过，`cargo build --locked` 通过。默认并发全套曾有 1 项 session 惰性创建用例在 5 秒内未收到 CLI 请求；串行全套通过，未放宽 deadline 或断言。覆盖原工作目录、保存的 edit/read/bash 限制优先级、完整原生上下文、链/版本/旧格式拒绝、残尾/锁/符号链接边界，以及真实文件大小限制注入的持久化失败。PTY 还覆盖未结束 SSE 文本 delta 后强杀并 `-r`：保留部分文本、显示中断提示、无恢复 HTTP、无部分原生 assistant 提交。Linux 尚未实机验证。
 
 新格式另经一次性 Python 标准库 SSE 服务与构建后的 CLI 独立冒烟：Completion/Responses 分别使用隔离 HOME、项目 A 与启动目录 B，验证 HTTP 打开前不创建 session、stdout 只有回答、header/version 3 与线性链正确、普通消息内容正确；`-r` 无 HTTP 且日志字节不变，`-c` 精确发送保存的原生请求、不加用户消息、保留首次 assistant，并以原 cwd 连接旧链追加同一个文件。每个协议共 2 次 HTTP。此验证不代表真实供应商兼容性。
 
