@@ -5,7 +5,7 @@ pub(super) fn database(home: &std::path::Path) -> Connection {
     Connection::open(home.join(".pp/stats/stats.db")).unwrap()
 }
 fn rows(home: &std::path::Path) -> Vec<Value> {
-    database(home).prepare("SELECT r.id,r.status,r.input_tokens,r.output_tokens,r.cached_tokens,r.ttft_ms,r.purpose,r.entry_id,r.session_file,p.output_json,p.session_entry_json,r.error_message FROM requests r JOIN request_payloads p ON p.request_id=r.id ORDER BY r.id").unwrap().query_map([],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"input":r.get::<_,Option<i64>>(2)?,"output":r.get::<_,Option<i64>>(3)?,"cache":r.get::<_,Option<i64>>(4)?,"ttft":r.get::<_,Option<f64>>(5)?,"purpose":r.get::<_,String>(6)?,"entry_id":r.get::<_,Option<String>>(7)?,"session_file":r.get::<_,Option<String>>(8)?,"payload":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap(),"entry":r.get::<_,Option<String>>(10)?.map(|s|serde_json::from_str::<Value>(&s).unwrap()),"error":r.get::<_,Option<String>>(11)?}))).unwrap().collect::<Result<_,_>>().unwrap()
+    database(home).prepare("SELECT r.id,r.status,r.input_tokens,r.output_tokens,r.cached_tokens,r.ttft_ms,r.purpose,r.entry_id,r.session_file,p.output_json,p.session_entry_json,r.error_message,r.cache_write_tokens FROM requests r JOIN request_payloads p ON p.request_id=r.id ORDER BY r.id").unwrap().query_map([],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"input":r.get::<_,Option<i64>>(2)?,"output":r.get::<_,Option<i64>>(3)?,"cache":r.get::<_,Option<i64>>(4)?,"ttft":r.get::<_,Option<f64>>(5)?,"purpose":r.get::<_,String>(6)?,"entry_id":r.get::<_,Option<String>>(7)?,"session_file":r.get::<_,Option<String>>(8)?,"payload":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap(),"entry":r.get::<_,Option<String>>(10)?.map(|s|serde_json::from_str::<Value>(&s).unwrap()),"error":r.get::<_,Option<String>>(11)?,"cache_write":r.get::<_,Option<i64>>(12)?}))).unwrap().collect::<Result<_,_>>().unwrap()
 }
 
 #[test]
@@ -14,7 +14,8 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("sample.txt"), "fixture contents").unwrap();
     let mut models: Value = serde_yaml::from_str(&fixture_models(&server)).unwrap();
-    models["providers"][0]["models"][0]["cost"] = json!({"input":2,"cacheRead":0.2,"output":8});
+    models["providers"][0]["models"][0]["cost"] =
+        json!({"input":2,"cacheRead":0.2,"cacheWrite":2.5,"output":8});
     let cli = Cli::start_with(
         dir.path(),
         Some("private input marker"),
@@ -33,7 +34,7 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
         None,
     ));
     stream.event(chat_chunk(json!({}), Some("stop")));
-    stream.event(json!({"id":"usage","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":15,"total_tokens":135,"prompt_tokens_details":{"cached_tokens":100}}}));
+    stream.event(json!({"id":"usage","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":15,"total_tokens":135,"prompt_tokens_details":{"cached_tokens":100,"cache_write_tokens":10}}}));
     stream.frame("[DONE]");
     stream.finish();
     let output = cli.finish();
@@ -49,6 +50,7 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     assert_eq!(last["input"], 120);
     assert_eq!(last["output"], 15);
     assert_eq!(last["cache"], 100);
+    assert_eq!(last["cache_write"], 10);
     assert!(last["ttft"].is_number());
     assert_eq!(last["payload"]["thinking"], "verified reasoning");
     assert_eq!(last["entry"][0]["id"], last["entry_id"]);
@@ -112,10 +114,20 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
         assert!(value["pricing_error"].is_null());
         if endpoint != "requests" {
             assert_eq!(value["summary"]["priced"], 1);
-            assert!((value["summary"]["cost"].as_f64().unwrap() - 0.00018).abs() < 1e-10);
+            assert_eq!(value["summary"]["cache_write_tokens"], 10);
+            assert!(
+                (value["summary"]["cost_components"]["cache_write"]
+                    .as_f64()
+                    .unwrap()
+                    - 0.000025)
+                    .abs()
+                    < 1e-10
+            );
+            assert!((value["summary"]["cost"].as_f64().unwrap() - 0.000185).abs() < 1e-10);
         }
     }
-    models["providers"][0]["models"][0]["cost"] = json!({"input":4,"cacheRead":0.4,"output":16});
+    models["providers"][0]["models"][0]["cost"] =
+        json!({"input":4,"cacheRead":0.4,"cacheWrite":5,"output":16});
     std::fs::write(config_path(dir.path(), "models.yml"), models.to_string()).unwrap();
     let (status, body) = http(
         &address,
@@ -124,12 +136,17 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     );
     assert_eq!(status, 200);
     let detail: Value = serde_json::from_str(&body).unwrap();
-    assert!((detail["request"]["cost"].as_f64().unwrap() - 0.00036).abs() < 1e-10);
+    assert!((detail["request"]["cost"].as_f64().unwrap() - 0.00037).abs() < 1e-10);
 }
 
 #[test]
 fn stats_responses_captures_real_usage_and_keeps_unknown_cache_unknown() {
-    for cached in [Some(40), None] {
+    for (cached, written) in [
+        (Some(40), Some(5)),
+        (Some(40), Some(0)),
+        (Some(40), None),
+        (None, None),
+    ] {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
         let cli = Cli::start_with(
@@ -146,6 +163,9 @@ fn stats_responses_captures_real_usage_and_keeps_unknown_cache_unknown() {
         let mut body = response_body(output);
         if let Some(value) = cached {
             body["usage"] = json!({"input_tokens":50,"output_tokens":10,"total_tokens":60,"input_tokens_details":{"cached_tokens":value},"output_tokens_details":{"reasoning_tokens":0}});
+            if let Some(written) = written {
+                body["usage"]["input_tokens_details"]["cache_write_tokens"] = json!(written);
+            }
         }
         let mut stream = SseReply::new(request);
         stream.event(json!({"type":"response.output_text.delta","sequence_number":0,"item_id":"msg-stats","output_index":0,"content_index":0,"delta":"response done","logprobs":[]}));
@@ -160,6 +180,7 @@ fn stats_responses_captures_real_usage_and_keeps_unknown_cache_unknown() {
         let records = rows(dir.path());
         assert_eq!(records.len(), 1);
         assert_eq!(records[0]["cache"], json!(cached));
+        assert_eq!(records[0]["cache_write"], json!(written));
         assert_eq!(
             records[0]["input"],
             if cached.is_some() {
@@ -366,7 +387,7 @@ fn stats_truncated_chat_preserves_reported_usage() {
         None,
     ));
     stream.event(chat_chunk(json!({}), Some("length")));
-    stream.event(json!({"id":"usage","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":15,"total_tokens":135,"prompt_tokens_details":{"cached_tokens":100}}}));
+    stream.event(json!({"id":"usage","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":15,"total_tokens":135,"prompt_tokens_details":{"cached_tokens":100,"cache_write_tokens":10}}}));
     stream.frame("[DONE]");
     stream.finish();
     assert!(!cli.finish().status.success());
@@ -375,6 +396,74 @@ fn stats_truncated_chat_preserves_reported_usage() {
     assert_eq!(records[0]["input"], 120);
     assert_eq!(records[0]["output"], 15);
     assert_eq!(records[0]["cache"], 100);
+    assert_eq!(records[0]["cache_write"], 10);
     assert_eq!(records[0]["payload"]["native"]["finish_reason"], "length");
     assert!(records[0]["entry"].is_null());
+}
+
+#[test]
+fn stats_cache_write_extensions_preserve_unknown_zero_and_failed_usage() {
+    for protocol in ["completion", "response"] {
+        for (extension, expected) in [
+            (json!({"cache_write_tokens":0}), Some(0)),
+            (json!({"cache_write_tokens":5}), Some(5)),
+            (json!({"cache_creation_input_tokens":5}), Some(5)),
+            (json!({}), None),
+            (json!({"cache_write_tokens":-1}), None),
+            (json!({"cache_write_tokens":"5"}), None),
+        ] {
+            let server = server();
+            let dir = tempfile::tempdir().unwrap();
+            let cli = Cli::start_with(
+                dir.path(),
+                Some("cache write failure"),
+                fixture_settings(),
+                &response_models(&server, Some(protocol)),
+            );
+            let (request, _) = receive_at(
+                &server,
+                if protocol == "completion" {
+                    "/v1/chat/completions"
+                } else {
+                    "/v1/responses"
+                },
+            );
+            let mut stream = SseReply::new(request);
+            if protocol == "completion" {
+                stream.event(chat_chunk(
+                    json!({"role":"assistant","content":"truncated"}),
+                    None,
+                ));
+                stream.event(chat_chunk(json!({}), Some("length")));
+                let mut usage = json!({"prompt_tokens":50,"completion_tokens":10,"total_tokens":60,"prompt_tokens_details":{"cached_tokens":40}});
+                usage
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(extension.as_object().unwrap().clone());
+                stream.event(json!({"id":"usage","object":"chat.completion.chunk","created":1,"model":"fixture","choices":[],"usage":usage}));
+                stream.frame("[DONE]");
+            } else {
+                let mut body = response_body(json!([]));
+                body["status"] = json!("incomplete");
+                body["incomplete_details"] = json!({"reason":"max_output_tokens"});
+                let mut usage = json!({"input_tokens":50,"output_tokens":10,"total_tokens":60,"input_tokens_details":{"cached_tokens":40},"output_tokens_details":{"reasoning_tokens":0}});
+                usage
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(extension.as_object().unwrap().clone());
+                body["usage"] = usage;
+                stream.event(
+                    json!({"type":"response.incomplete","sequence_number":0,"response":body}),
+                );
+            }
+            stream.finish();
+            assert!(!cli.finish().status.success());
+            let records = rows(dir.path());
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0]["status"], "failed");
+            assert_eq!(records[0]["input"], 50);
+            assert_eq!(records[0]["cache_write"], json!(expected));
+            assert!(records[0]["entry"].is_null());
+        }
+    }
 }

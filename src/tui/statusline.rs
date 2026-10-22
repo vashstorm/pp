@@ -702,6 +702,7 @@ mod tests {
             input_tokens,
             output_tokens,
             cached_tokens,
+            cache_write_tokens: None,
         }
     }
 

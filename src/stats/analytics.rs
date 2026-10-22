@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 pub(super) struct Price {
     input: f64,
     cached_input: f64,
+    cache_write: Option<f64>,
     output: f64,
 }
 #[derive(Default)]
@@ -30,6 +31,7 @@ impl Pricing {
                                 Price {
                                     input: cost.input,
                                     cached_input: cost.cache_read,
+                                    cache_write: cost.cache_write,
                                     output: cost.output,
                                 },
                             );
@@ -47,7 +49,7 @@ impl Pricing {
             }
             Err(_) => Self {
                 error: Some(
-                    "无法从 ~/.pp/agent/models.yml 读取价格：请检查模型配置及 cost.input、cost.cacheRead、cost.output 单价（USD／百万 Token）。",
+                    "无法从 ~/.pp/agent/models.yml 读取价格：请检查模型配置及 cost.input、cost.cacheRead、cost.cacheWrite、cost.output 单价（USD／百万 Token）。",
                 ),
                 ..Self::default()
             },
@@ -58,11 +60,23 @@ impl Pricing {
         let input = r.input_tokens?;
         let output = r.output_tokens?;
         let cached = r.cached_tokens?;
-        if input < 0 || output < 0 || cached < 0 || cached > input {
+        let written = r.cache_write_tokens?;
+        if input < 0
+            || output < 0
+            || cached < 0
+            || written < 0
+            || cached > input
+            || written > input - cached
+        {
             return None;
         }
         let cost = Cost {
-            input: (input - cached) as f64 * (p.input / 1e6),
+            input: (input - cached - written) as f64 * (p.input / 1e6),
+            cache_write: if written == 0 {
+                0.0
+            } else {
+                written as f64 * (p.cache_write? / 1e6)
+            },
             cache_read: cached as f64 * (p.cached_input / 1e6),
             output: output as f64 * (p.output / 1e6),
         };
@@ -80,11 +94,12 @@ impl Pricing {
 pub(super) struct Cost {
     input: f64,
     cache_read: f64,
+    cache_write: f64,
     output: f64,
 }
 impl Cost {
     pub(super) fn total(&self) -> f64 {
-        self.input + self.cache_read + self.output
+        self.input + self.cache_read + self.cache_write + self.output
     }
 }
 #[derive(Default)]
@@ -96,6 +111,8 @@ pub(super) struct Aggregate {
     input: Option<i64>,
     output: Option<i64>,
     cached: Option<i64>,
+    cache_write: Option<i64>,
+    cache_write_known: u64,
     uncached: Option<i64>,
     tokens: Option<i64>,
     usage_known: u64,
@@ -124,6 +141,8 @@ impl Aggregate {
         add(&mut self.input, r.input_tokens);
         add(&mut self.output, r.output_tokens);
         add(&mut self.cached, r.cached_tokens);
+        add(&mut self.cache_write, r.cache_write_tokens);
+        self.cache_write_known += u64::from(r.cache_write_tokens.is_some());
         add(
             &mut self.tokens,
             r.input_tokens.zip(r.output_tokens).map(|(i, o)| i + o),
@@ -132,8 +151,9 @@ impl Aggregate {
             &mut self.uncached,
             r.input_tokens
                 .zip(r.cached_tokens)
-                .filter(|(i, c)| c <= i)
-                .map(|(i, c)| i - c),
+                .zip(r.cache_write_tokens)
+                .filter(|((i, c), w)| *c >= 0 && *w >= 0 && c <= i && *w <= i - c)
+                .map(|((i, c), w)| i - c - w),
         );
         self.usage_known += u64::from(r.input_tokens.is_some() && r.output_tokens.is_some());
         self.cache_known += u64::from(r.cached_tokens.is_some());
@@ -152,6 +172,7 @@ impl Aggregate {
             self.priced += 1;
             self.components.input += c.input;
             self.components.cache_read += c.cache_read;
+            self.components.cache_write += c.cache_write;
             self.components.output += c.output;
         }
     }
@@ -167,7 +188,7 @@ impl Aggregate {
         json!({
             "requests":self.requests,"ok":self.ok,"failed":self.failed,"aborted":self.aborted,
             "input_tokens":tokens(self.input),"output_tokens":tokens(self.output),"cached_tokens":tokens(self.cached),"uncached_tokens":tokens(self.uncached),"tokens":tokens(self.tokens),
-            "usage_known":self.usage_known,"cache_known":self.cache_known,
+            "usage_known":self.usage_known,"cache_known":self.cache_known,"cache_write_known":self.cache_write_known,"cache_write_tokens":tokens(self.cache_write),
             "avg_duration_ms":avg(self.duration,self.requests),"avg_ttft_ms":avg(self.ttft,self.ttft_count),"tokens_per_second":avg(self.speed,self.speed_count),
             "first_seen":self.first,"last_seen":self.last,
             "priced":self.priced,"unpriced":self.requests-self.priced,

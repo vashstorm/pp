@@ -169,7 +169,12 @@ impl OpenAiClient {
             if record {
                 snapshot = output.stats_snapshot();
             }
-            into_completion_turn(std::mem::take(&mut output).finish()?)
+            let written = output.cache_write_tokens;
+            let mut turn = into_completion_turn(std::mem::take(&mut output).finish()?)?;
+            if let Some(usage) = &mut turn.usage {
+                usage.cache_write_tokens = written;
+            }
+            Ok(turn)
         });
         let elapsed_ms = elapsed_millis(started_at);
         if record {
@@ -187,6 +192,8 @@ impl OpenAiClient {
                         input_tokens: usage["prompt_tokens"].as_u64()?,
                         output_tokens: usage["completion_tokens"].as_u64()?,
                         cached_tokens: usage["prompt_tokens_details"]["cached_tokens"].as_u64(),
+                        cache_write_tokens: usage["prompt_tokens_details"]["cache_write_tokens"]
+                            .as_u64(),
                     })
                 });
             observation.output = snapshot;
@@ -260,7 +267,7 @@ impl OpenAiClient {
                         bail!("Responses protocol: stream ended before response.completed")
                     }
                     Some(Some(event)) => {
-                        let event = event.map_err(|error| redacted_error(error, "Responses"))?.0;
+                        let ResponseEvent(event, written) = event.map_err(|error| redacted_error(error, "Responses"))?;
                         if record {
                             use async_openai::types::responses::ResponseStreamEvent;
                             let response = match &event {
@@ -274,6 +281,7 @@ impl OpenAiClient {
                                 reported_usage = response.usage.as_ref().map(|usage| TokenUsage {
                                     input_tokens: u64::from(usage.input_tokens),
                                     output_tokens: u64::from(usage.output_tokens),
+                                    cache_write_tokens: written,
                                     cached_tokens: Some(u64::from(usage.input_tokens_details.cached_tokens)),
                                 });
                                 stop_reason = Some(if response.status != Status::Completed {
@@ -286,7 +294,10 @@ impl OpenAiClient {
                                 tool_deltas.push(serde_json::json!({"item_id":delta.item_id,"delta":delta.delta}));
                             }
                         }
-                        if let Some(turn) = output.push(event, &mut progress)? {
+                        if let Some(mut turn) = output.push(event, &mut progress)? {
+                            if let Some(usage) = &mut turn.usage {
+                                usage.cache_write_tokens = written;
+                            }
                             // response.completed is authoritative; do not wait for HTTP EOF.
                             return Ok(turn);
                         }
@@ -384,6 +395,7 @@ fn into_completion_turn(response: CreateChatCompletionResponse) -> Result<Comple
     let usage = response.usage.map(|usage| TokenUsage {
         input_tokens: u64::from(usage.prompt_tokens),
         output_tokens: u64::from(usage.completion_tokens),
+        cache_write_tokens: None,
         cached_tokens: usage
             .prompt_tokens_details
             .and_then(|details| details.cached_tokens)
@@ -507,6 +519,7 @@ fn into_response_turn(response: Response) -> Result<ResponseTurn> {
     let usage = response.usage.map(|usage| TokenUsage {
         input_tokens: u64::from(usage.input_tokens),
         output_tokens: u64::from(usage.output_tokens),
+        cache_write_tokens: None,
         cached_tokens: Some(u64::from(usage.input_tokens_details.cached_tokens)),
     });
     let has_text = |output: &[OutputItem]| {
@@ -943,7 +956,8 @@ mod tests {
                 Some(TokenUsage {
                     input_tokens: 12000,
                     output_tokens: 300,
-                    cached_tokens: expected
+                    cache_write_tokens: None,
+                    cached_tokens: expected,
                 })
             );
         }
@@ -1005,6 +1019,7 @@ mod tests {
                 Some(TokenUsage {
                     input_tokens: 12000,
                     output_tokens: 300,
+                    cache_write_tokens: None,
                     cached_tokens: None,
                 })
             );
@@ -1103,6 +1118,7 @@ mod tests {
                 Some(TokenUsage {
                     input_tokens: 12000,
                     output_tokens: 300,
+                    cache_write_tokens: None,
                     cached_tokens: Some(40),
                 })
             );

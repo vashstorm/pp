@@ -25,9 +25,11 @@ Tools 展示模型发出的工具调用数量、趋势、参数字符数及归�
 
 Projects 按完整 cwd 聚合，保留同名不同路径的独立目录，展示费用／请求排行、搜索和排序；点击目录行或排行可展开 Token、会话计数、模型用量和范围内最近 10 条请求，模型行还可继续展开延迟和 Token 明细。两个页面的汇总覆盖范围内全部请求，自动刷新保留搜索、筛选及展开状态，行支持 Enter／空格展开；请求正文和工具参数原文只在原有请求详情中按需加载。
 
-统计口径：以请求开始时间筛选，UTC 毫秒落盘、本地时间展示；总输入 Token 已包含缓存读取，Conversation tokens 为总输入加输出，Uncached input 为总输入减缓存读取。缺失的 usage／缓存明细保持未知，不用估算值填充。TTFT 是发起调用至首个非空正文、思考、拒绝或工具参数增量的时间；Tokens/s 为输出 Token 除以请求总耗时。用户取消记为 Aborted，服务或协议错误记为 Failed；发送前取消和本地校验失败不计入。缓存写入、Premium requests 和订阅额度没有采集数据，保持未知。
+统计口径：以请求开始时间筛选，UTC 毫秒落盘、本地时间展示；总输入 Token 已包含缓存读取和写入，Conversation tokens 为总输入加输出，Uncached input 为总输入减缓存读取和写入。缺失的 usage／缓存明细保持未知，不用估算值填充。TTFT 是发起调用至首个非空正文、思考、拒绝或工具参数增量的时间；Tokens/s 为输出 Token 除以请求总耗时。用户取消记为 Aborted，服务或协议错误记为 Failed；发送前取消和本地校验失败不计入。
 
-费用直接使用 `~/.pp/agent/models.yml` 中各模型的 `cost` 配置，按调用时保存的 `model_reference`（`provider/model` 配置引用，并非供应商模型名）精确匹配。无需另建价格文件。`cost` 可省略，省略时该模型未定价；配置时三个字段都必填且必须为非负有限数，单位为 **USD／百万 Token**，`0` 表示已知免费。例如在 `providers[].models[]` 的模型条目中填写：
+缓存写入从 Chat 的 `usage.prompt_tokens_details.cache_write_tokens`、Responses 的 `usage.input_tokens_details.cache_write_tokens` 采集，也兼容 usage 顶层的 `cache_write_tokens`／`cache_creation_input_tokens` 扩展；遵循这两种协议的总输入已包含缓存读写的口径，不额外叠加缓存 Token。不支持原生 Anthropic Messages 协议。未上报写入量保持未知，明确上报 `0` 才表示无写入。SQLite 自动升级到 v2，旧记录的写入量保留 NULL，不回填估算。Premium requests 和订阅额度没有采集数据，保持未知。
+
+费用直接使用 `~/.pp/agent/models.yml` 中各模型的 `cost` 配置，按调用时保存的 `model_reference`（`provider/model` 配置引用，并非供应商模型名）精确匹配。无需另建价格文件。`cost` 可省略，省略时该模型未定价；配置时 `input`、`cacheRead`、`output` 必填，新增 `cacheWrite` 可省略以兼容旧配置；所有已配置单价都必须为非负有限数，单位为 **USD／百万 Token**，`0` 表示已知免费。例如在 `providers[].models[]` 的模型条目中填写：
 
 ```yaml
 id: primary
@@ -35,10 +37,11 @@ model: vendor-model-one
 cost:
   input: 2.0
   cacheRead: 0.2
+  cacheWrite: 2.5
   output: 8.0
 ```
 
-费用公式为 `(总输入 - 缓存读取) × cost.input + 缓存读取 × cost.cacheRead + 输出 × cost.output`，最后除以一百万。每次统计查询重新读取模型配置，修改后历史估算按当前单价重算，不代表历史账单或订阅实际支出。缺少价格、完整 usage 或缓存读取数量，以及缓存数量异常的请求都计入 Unpriced 并从估算中排除；全未定价显示 `—`，混合数据只合计已定价部分并标示覆盖数量。空范围的费用为 `$0`。模型配置不存在时全部未定价；文件损坏、字段错误或无法读取时，页面提示问题并保留其余统计，不返回配置原文或密钥。统计服务仍可在没有模型配置时启动。Overview、Requests 及请求详情沿用相同计价规则。每日费用按 UTC 日聚合，Average per day 以有请求的 UTC 日数为分母。模型按完整配置引用分组，同名跨供应商或同供应商不同别名不会混在一起。
+费用公式为 `(总输入 - 缓存读取 - 缓存写入) × cost.input + 缓存读取 × cost.cacheRead + 缓存写入 × cost.cacheWrite + 输出 × cost.output`，最后除以一百万。每次统计查询重新读取模型配置，修改后历史估算按当前单价重算，不代表历史账单或订阅实际支出。缺少价格、完整 usage 或缓存读写数量，以及缓存读写之和超过总输入等异常的请求都计入 Unpriced 并从估算中排除；写入量大于 0 时必须配置 `cacheWrite`；明确为 0 时无需写入单价。旧数据写入量未知也计入 Unpriced。全未定价显示 `—`，混合数据只合计已定价部分并标示覆盖数量。空范围的费用为 `$0`。模型配置不存在时全部未定价；文件损坏、字段错误或无法读取时，页面提示问题并保留其余统计，不返回配置原文或密钥。统计服务仍可在没有模型配置时启动。Overview、Requests 及请求详情沿用相同计价规则。每日费用按 UTC 日聚合，Average per day 以有请求的 UTC 日数为分母。模型按完整配置引用分组，同名跨供应商或同供应商不同别名不会混在一起。
 
 数据库保存模型输出（含可获得的思考、工具参数）、请求指标和已提交的对应会话条目快照；不额外保存完整输入上下文、请求头或认证配置。摘要和未提交输出没有会话条目时明确显示未记录。统计文件可能包含代码和模型输出，应按个人会话数据保管；首版不会自动清理。目录权限为 `0700`、数据库为 `0600`，SQLite 使用 WAL 支持多进程写入；存储不可用只提示，不中断模型任务。
 

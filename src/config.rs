@@ -619,12 +619,24 @@ mod tests {
         assert_eq!(cost.input, 0.8);
         assert_eq!(cost.output, 2.8);
         assert_eq!(cost.cache_read, 0.23);
+        assert_eq!(cost.cache_write, None);
+        models["providers"][0]["models"][0]["cost"]["cacheWrite"] = json!(1.25);
+        assert_eq!(
+            catalog(None, Some(&models.to_string())).unwrap().providers[0].models[0]
+                .cost
+                .unwrap()
+                .cache_write,
+            Some(1.25)
+        );
         for invalid in [
             json!(null),
             json!({"input":-1,"output":1,"cacheRead":0}),
             json!({"input":1,"output":1}),
             json!({"input":"secret-marker","output":1,"cacheRead":0}),
             json!({"input":1,"output":1,"cacheRead":0,"typo":0}),
+            json!({"input":1,"output":1,"cacheRead":0,"cacheWrite":-1}),
+            json!({"input":1,"output":1,"cacheRead":0,"cacheWrite":null}),
+            json!({"input":1,"output":1,"cacheRead":0,"cacheWrite":"secret-marker"}),
         ] {
             models["providers"][0]["models"]
                 .as_array_mut()

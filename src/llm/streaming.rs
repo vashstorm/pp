@@ -16,13 +16,37 @@ use serde::{Deserialize, Deserializer, de::Error};
 use std::collections::BTreeMap;
 
 // 正常分片直接交给 SDK；仅在缺少可兼容字段时构造补齐所需的 JSON 树。
-pub(super) struct ResponseEvent(pub(super) ResponseStreamEvent);
+pub(super) struct ResponseEvent(pub(super) ResponseStreamEvent, pub(super) Option<u64>);
+
+// 在 SDK 丢弃未知扩展前保留缓存写入量；不从输入余量推算。
+fn cache_write_tokens(usage: &serde_json::Value, details: &str) -> Option<u64> {
+    usage[details]["cache_write_tokens"]
+        .as_u64()
+        .or_else(|| usage["cache_write_tokens"].as_u64())
+        .or_else(|| usage["cache_creation_input_tokens"].as_u64())
+}
+
+#[derive(Deserialize)]
+struct ResponseUsage<'a> {
+    #[serde(borrow)]
+    response: Option<RawUsage<'a>>,
+}
+#[derive(Deserialize)]
+struct RawUsage<'a> {
+    #[serde(borrow)]
+    usage: Option<&'a serde_json::value::RawValue>,
+}
 
 impl<'de> Deserialize<'de> for ResponseEvent {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
+        let written = serde_json::from_str::<ResponseUsage<'_>>(raw.get())
+            .ok()
+            .and_then(|event| event.response?.usage)
+            .and_then(|usage| serde_json::from_str::<serde_json::Value>(usage.get()).ok())
+            .and_then(|usage| cache_write_tokens(&usage, "input_tokens_details"));
         match serde_json::from_str(raw.get()) {
-            Ok(event) => return Ok(Self(event)),
+            Ok(event) => return Ok(Self(event, written)),
             Err(error)
                 if error.is_data()
                     && (error.to_string().starts_with("missing field `annotations`")
@@ -57,7 +81,7 @@ impl<'de> Deserialize<'de> for ResponseEvent {
             }
         }
         serde_json::from_value(value)
-            .map(Self)
+            .map(|event| Self(event, written))
             .map_err(D::Error::custom)
     }
 }
@@ -91,6 +115,7 @@ fn default_output_text_annotations(part: &mut serde_json::Value) {
 pub(super) struct ChatChunk {
     native: CreateChatCompletionStreamResponse,
     thinking: String,
+    cache_write_tokens: Option<u64>,
 }
 
 impl<'de> Deserialize<'de> for ChatChunk {
@@ -107,8 +132,13 @@ impl<'de> Deserialize<'de> for ChatChunk {
                     .or_else(|| choice["delta"]["reasoning"].as_str())
             })
             .collect::<String>();
+        let cache_write_tokens = cache_write_tokens(&value["usage"], "prompt_tokens_details");
         let native = serde_json::from_value(value).map_err(D::Error::custom)?;
-        Ok(Self { native, thinking })
+        Ok(Self {
+            native,
+            thinking,
+            cache_write_tokens,
+        })
     }
 }
 
@@ -120,12 +150,17 @@ pub(super) struct ChatStream {
     calls: BTreeMap<u32, ChatCompletionMessageToolCall>,
     finish_reason: Option<FinishReason>,
     usage: Option<CompletionUsage>,
+    pub(super) cache_write_tokens: Option<u64>,
     output_bytes: u64,
 }
 
 impl ChatStream {
     pub(super) fn stats_snapshot(&self) -> serde_json::Value {
-        serde_json::json!({"role":self.role,"content":self.content,"refusal":self.refusal,"tool_calls":self.calls.values().collect::<Vec<_>>(),"finish_reason":self.finish_reason,"usage":self.usage})
+        let mut value = serde_json::json!({"role":self.role,"content":self.content,"refusal":self.refusal,"tool_calls":self.calls.values().collect::<Vec<_>>(),"finish_reason":self.finish_reason,"usage":self.usage});
+        if let Some(written) = self.cache_write_tokens {
+            value["usage"]["prompt_tokens_details"]["cache_write_tokens"] = written.into();
+        }
+        value
     }
 
     #[allow(deprecated)] // Reject legacy function_call rather than silently dropping it.
@@ -141,6 +176,7 @@ impl ChatStream {
         // streams with include_usage end with a usage-only chunk.
         if chunk.native.usage.is_some() {
             self.usage = chunk.native.usage;
+            self.cache_write_tokens = chunk.cache_write_tokens;
         }
         if !chunk.thinking.is_empty() {
             ensure!(
@@ -1088,6 +1124,7 @@ mod tests {
             Some(TokenUsage {
                 input_tokens: 12000,
                 output_tokens: 300,
+                cache_write_tokens: None,
                 cached_tokens: Some(40),
             })
         );
@@ -1115,6 +1152,7 @@ mod tests {
             Some(TokenUsage {
                 input_tokens: 12000,
                 output_tokens: 300,
+                cache_write_tokens: None,
                 cached_tokens: Some(40),
             })
         );

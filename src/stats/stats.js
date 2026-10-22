@@ -99,8 +99,12 @@ const total = (r) =>
 const uncached = (r) =>
   r.input_tokens != null &&
   r.cached_tokens != null &&
-  r.cached_tokens <= r.input_tokens
-    ? r.input_tokens - r.cached_tokens
+  r.cache_write_tokens != null &&
+  r.cached_tokens >= 0 &&
+  r.cache_write_tokens >= 0 &&
+  r.cached_tokens <= r.input_tokens &&
+  r.cache_write_tokens <= r.input_tokens - r.cached_tokens
+    ? r.input_tokens - r.cached_tokens - r.cache_write_tokens
     : null;
 const sum = (values) => {
   const known = values.filter((v) => v != null);
@@ -173,8 +177,8 @@ function prepareDetails() {
     el.removeAttribute("title");
   }
   const meanings = {
-    Tokens: "Total input (including cache reads) + output tokens",
-    "Cache rate": "Cache reads / (uncached input + cache reads)",
+    Tokens: "Total input (including cache reads and writes) + output tokens",
+    "Cache rate": "Cache reads / total input",
     "Tokens/s": "Output tokens / request duration in seconds",
     TTFT: "Time from request start to the first output token",
     Cost: "API-equivalent estimate in USD; excludes unpriced requests",
@@ -516,7 +520,7 @@ function overview() {
   const mix = [
     ["Uncached input", s.uncached_tokens, "var(--blue)"],
     ["Cache read", s.cached_tokens, "var(--accent)"],
-    ["Cache write", null, "var(--yellow)"],
+    ["Cache write", s.cache_write_tokens, "var(--yellow)"],
     ["Output", s.output_tokens, "var(--pink)"],
   ];
   const mixTotal = sum(mix.map((m) => m[1]));
@@ -536,7 +540,7 @@ function overview() {
     short(tokenTotal),
     `${short(s.output_tokens)} output`,
     buckets.map((b) => b.tokens ?? 0),
-  )}${metric("Cache rate", percent(s.cached_tokens, s.cached_tokens == null || s.uncached_tokens == null ? 0 : s.cached_tokens + s.uncached_tokens), "— saved")}${metric(
+  )}${metric("Cache rate", cacheRate(s), "— saved")}${metric(
     "Error rate",
     s.requests ? percent(s.failed, s.requests) : "0.0%",
     `${number(s.ok)} succeeded`,
@@ -545,7 +549,7 @@ function overview() {
   )}</div><div class="panel metrics small-metrics">${[
     ["Uncached input", short(s.uncached_tokens)],
     ["Cache read", short(s.cached_tokens)],
-    ["Cache write", "—"],
+    ["Cache write", short(s.cache_write_tokens)],
     ["Output", short(s.output_tokens)],
     ["Premium requests", "—"],
     [
@@ -558,7 +562,7 @@ function overview() {
     .map(([label, value]) => metric(label, value))
     .join(
       "",
-    )}</div><div class="graphs"><section class="panel graph"><div class="panel-heading"><div><h2>Activity</h2><p class="panel-description">${range === "1h" ? "Per 5 minutes" : range === "24h" ? "Per hour" : "Per day"}</p></div><div class="segmented" role="radiogroup" aria-label="Activity metric">${["requests", "tokens", "cost"].map((v) => `<button role="radio" aria-checked="${activity === v}" data-activity="${v}">${v[0].toUpperCase() + v.slice(1)}</button>`).join("")}</div></div><div class="chart">${chart(buckets)}</div></section><section class="panel graph"><h2>Token mix</h2><p class="panel-description">Where conversation tokens went</p><div class="token-bar">${mix.map((m) => `<span style="width:${mixTotal ? (100 * (m[1] ?? 0)) / mixTotal : 0}%;background:${m[2]}" title="${h(m[0])}: ${number(m[1])}"></span>`).join("")}</div><div class="legend">${mix.map((m) => `<span><i class="dot" style="background:${m[2]}"></i>${m[0]} ${m[1] == null ? "—" : mixTotal ? `${Math.round((100 * m[1]) / mixTotal)}%` : "—"}</span>`).join("")}</div>${s.usage_known < s.requests ? '<div class="unavailable">Some requests did not report token usage.</div>' : ""}<div class="agent-label">By agent</div><div class="token-bar"><span style="width:${s.requests ? 100 : 0}%;background:var(--accent)"></span></div><div class="agent-row"><i class="dot" style="background:var(--accent)"></i>Main agent <span class="muted num">${number(s.requests)} req</span><span class="num">${short(tokenTotal)}</span><span class="percentage">${s.requests ? "100%" : "—"}</span></div><div class="agent-row"><i class="dot" style="background:var(--pink)"></i>Subagents <span class="muted num">0 req</span><span class="num">0</span><span class="percentage">${s.requests ? "0%" : "—"}</span></div></section></div><section class="panel"><div class="requests-heading panel-heading"><div><h2><i class="live-dot"></i> &nbsp;Latest requests</h2><p class="panel-description">Most recent model calls across every session</p></div><a class="all-requests" href="#/requests?range=${range}">All requests ${icon("arrow")}</a></div>${overviewTable(data.latest)}</section>${pricingNotice()}`;
+    )}</div><div class="graphs"><section class="panel graph"><div class="panel-heading"><div><h2>Activity</h2><p class="panel-description">${range === "1h" ? "Per 5 minutes" : range === "24h" ? "Per hour" : "Per day"}</p></div><div class="segmented" role="radiogroup" aria-label="Activity metric">${["requests", "tokens", "cost"].map((v) => `<button role="radio" aria-checked="${activity === v}" data-activity="${v}">${v[0].toUpperCase() + v.slice(1)}</button>`).join("")}</div></div><div class="chart">${chart(buckets)}</div></section><section class="panel graph"><h2>Token mix</h2><p class="panel-description">Where conversation tokens went</p><div class="token-bar">${mix.map((m) => `<span style="width:${mixTotal ? (100 * (m[1] ?? 0)) / mixTotal : 0}%;background:${m[2]}" title="${h(m[0])}: ${number(m[1])}"></span>`).join("")}</div><div class="legend">${mix.map((m) => `<span><i class="dot" style="background:${m[2]}"></i>${m[0]} ${m[1] == null ? "—" : mixTotal ? `${Math.round((100 * m[1]) / mixTotal)}%` : "—"}</span>`).join("")}</div>${s.usage_known < s.requests || s.cache_known < s.requests || s.cache_write_known < s.requests ? '<div class="unavailable">Some requests did not report token or cache usage.</div>' : ""}<div class="agent-label">By agent</div><div class="token-bar"><span style="width:${s.requests ? 100 : 0}%;background:var(--accent)"></span></div><div class="agent-row"><i class="dot" style="background:var(--accent)"></i>Main agent <span class="muted num">${number(s.requests)} req</span><span class="num">${short(tokenTotal)}</span><span class="percentage">${s.requests ? "100%" : "—"}</span></div><div class="agent-row"><i class="dot" style="background:var(--pink)"></i>Subagents <span class="muted num">0 req</span><span class="num">0</span><span class="percentage">${s.requests ? "0%" : "—"}</span></div></section></div><section class="panel"><div class="requests-heading panel-heading"><div><h2><i class="live-dot"></i> &nbsp;Latest requests</h2><p class="panel-description">Most recent model calls across every session</p></div><a class="all-requests" href="#/requests?range=${range}">All requests ${icon("arrow")}</a></div>${overviewTable(data.latest)}</section>${pricingNotice()}`;
 }
 const money = (n) =>
   n == null
@@ -586,9 +590,7 @@ const averageSpeed = (n) => (n == null ? "—" : n.toFixed(1));
 const cacheRate = (g) =>
   percent(
     g.cached_tokens,
-    g.cached_tokens == null || g.uncached_tokens == null
-      ? 0
-      : g.cached_tokens + g.uncached_tokens,
+    g.input_tokens,
   );
 const costNote = (g) =>
   `${number(g.priced)} priced · ${number(g.unpriced)} unpriced`;
@@ -597,10 +599,11 @@ const groupKey = (kind, key) => encodeURIComponent(`${kind}:${key}`);
 const componentNames = [
   ["input", "Input", colors[2]],
   ["cache_read", "Cache read", colors[0]],
+  ["cache_write", "Cache write", colors[3]],
   ["output", "Output", colors[1]],
 ];
 function pricingNotice(stats = data) {
-  return `<div class="pricing-note" role="note">${stats?.pricing_error ? `<span class="pricing-error">${h(stats.pricing_error)}</span> ` : ""}Estimates use each model’s cost configuration in <code>~/.pp/agent/models.yml</code> (USD / million tokens). Unpriced requests are excluded; missing prices or usage are never treated as free. Cache writes and subscription quotas are not reported by pp.</div>`;
+  return `<div class="pricing-note" role="note">${stats?.pricing_error ? `<span class="pricing-error">${h(stats.pricing_error)}</span> ` : ""}Estimates use each model’s cost configuration in <code>~/.pp/agent/models.yml</code> (USD / million tokens). Unpriced requests are excluded; missing prices or usage are never treated as free. Cache writes require reported usage and a configured cacheWrite rate when nonzero. Subscription quotas are not reported by pp.</div>`;
 }
 function segmentControls(key, options, selected, label) {
   return `<div class="segmented" role="radiogroup" aria-label="${h(label)}">${options.map(([id, name]) => `<button role="radio" aria-checked="${id === selected}" data-${key}="${id}">${h(name)}</button>`).join("")}</div>`;
@@ -612,16 +615,17 @@ function tokenMix(g) {
   const parts = [
     ["Uncached input", g.uncached_tokens, colors[2]],
     ["Cache read", g.cached_tokens, colors[0]],
+    ["Cache write", g.cache_write_tokens, colors[3]],
     ["Output", g.output_tokens, colors[1]],
   ];
   const known = sum(parts.map((p) => p[1]));
-  return `<div class="token-bar">${parts.map(([name, value, color]) => `<span style="width:${known ? (100 * (value ?? 0)) / known : 0}%;background:${color}" title="${h(name)}: ${number(value)}"></span>`).join("")}</div><div class="legend">${parts.map(([name, value, color]) => `<span><i class="dot" style="background:${color}"></i>${h(name)} ${short(value)} · ${percent(value, known)}</span>`).join("")}</div><p class="panel-description">${g.usage_known < g.requests || g.cache_known < g.requests ? "Some token or cache usage is unknown. " : ""}Cache writes: not reported.</p>`;
+  return `<div class="token-bar">${parts.map(([name, value, color]) => `<span style="width:${known ? (100 * (value ?? 0)) / known : 0}%;background:${color}" title="${h(name)}: ${number(value)}"></span>`).join("")}</div><div class="legend">${parts.map(([name, value, color]) => `<span><i class="dot" style="background:${color}"></i>${h(name)} ${short(value)} · ${percent(value, known)}</span>`).join("")}</div><p class="panel-description">${g.usage_known < g.requests || g.cache_known < g.requests || g.cache_write_known < g.requests ? "Some token or cache usage is unknown. " : ""}</p>`;
 }
 function splitBar(g) {
-  return `<div class="cost-split" title="Input · cache read · output">${componentNames.map(([key, name, color]) => `<span style="width:${g.cost ? (100 * (g.cost_components?.[key] ?? 0)) / g.cost : 0}%;background:${color}" title="${name}: ${money(g.cost_components?.[key])}"></span>`).join("")}</div>`;
+  return `<div class="cost-split" title="Input · cache read · cache write · output">${componentNames.map(([key, name, color]) => `<span style="width:${g.cost ? (100 * (g.cost_components?.[key] ?? 0)) / g.cost : 0}%;background:${color}" title="${name}: ${money(g.cost_components?.[key])}"></span>`).join("")}</div>`;
 }
 function breakdown(g) {
-  return `<div class="component-list">${componentNames.map(([key, name, color]) => `<div><span><i class="dot" style="background:${color}"></i>${name}</span><b class="num">${money(g.cost_components?.[key])}</b><span class="num muted">${percent(g.cost_components?.[key], g.cost)}</span></div>`).join("")}<div><span>Total</span><b class="num">${money(g.cost)}</b><span></span></div></div>${splitBar(g)}<p class="panel-description">${costNote(g)} · Cache write cost: not reported</p>`;
+  return `<div class="component-list">${componentNames.map(([key, name, color]) => `<div><span><i class="dot" style="background:${color}"></i>${name}</span><b class="num">${money(g.cost_components?.[key])}</b><span class="num muted">${percent(g.cost_components?.[key], g.cost)}</span></div>`).join("")}<div><span>Total</span><b class="num">${money(g.cost)}</b><span></span></div></div>${splitBar(g)}<p class="panel-description">${costNote(g)}</p>`;
 }
 function stackedChart(groups, metric, share = false, daily = false) {
   if (!groups.length) return '<div class="empty">No data in this range</div>';
@@ -774,7 +778,7 @@ function modelDetails(g, key) {
   ])}</div><div><h2>Tokens</h2>${detailsGrid([
     ["Uncached input", number(g.uncached_tokens)],
     ["Cache read", number(g.cached_tokens)],
-    ["Cache write", "—"],
+    ["Cache write", number(g.cache_write_tokens)],
     ["Output", number(g.output_tokens)],
   ])}</div></div><p class="panel-description">First seen ${h(localTime(g.first_seen))} · Last seen ${h(localTime(g.last_seen))}</p><div class="panel-heading performance-heading"><h2>Performance per active ${range === "1h" ? "5 minutes" : range === "24h" ? "hour" : "day"}</h2><div class="segmented" role="radiogroup" aria-label="Performance metric">${[
     ["tokens_per_second", "Tokens/s"],
@@ -985,6 +989,7 @@ function costsPage() {
       "Input",
       "Output",
       "Cache read",
+      "Cache write",
       "Per request",
       "Unpriced",
     ],
@@ -1003,6 +1008,7 @@ function costsPage() {
               detailed(g.cost_components?.input, money(g.cost_components?.input), " USD"),
               detailed(g.cost_components?.output, money(g.cost_components?.output), " USD"),
               detailed(g.cost_components?.cache_read, money(g.cost_components?.cache_read), " USD"),
+              detailed(g.cost_components?.cache_write, money(g.cost_components?.cache_write), " USD"),
               costPerRequest(g),
               number(g.unpriced),
             ]),
@@ -1011,11 +1017,12 @@ function costsPage() {
               [
                 ["Uncached input", money(g.rates?.input)],
                 ["Cache read", money(g.rates?.cached_input)],
+                ["Cache write", money(g.rates?.cache_write)],
                 ["Output", money(g.rates?.output)],
                 ["Pricing coverage", costNote(g)],
               ],
             )}${tokenMix(g)}${breakdown(g)}</div>`,
-          10,
+          11,
         ),
       )
       .join(""),
@@ -1028,6 +1035,7 @@ const columns = [
   ["project", "Project"],
   ["input", "Input"],
   ["cached_tokens", "Cache read"],
+  ["cache_write_tokens", "Cache write"],
   ["output_tokens", "Output"],
   ["cost", "Cost"],
   ["duration_ms", "Duration"],
@@ -1082,16 +1090,16 @@ function requestSummary(rows) {
   };
 }
 function requestTable(rows) {
-  return `<div class="table-wrap"><table><thead><tr>${columns.map(([key, label], i) => `<th tabindex="0" class="sortable ${i > 2 && i < 9 ? "right" : ""}" data-sort="${key}" ${sortKey === key ? `aria-sort="${sortDirection < 0 ? "descending" : "ascending"}"` : ""}>${label}${sortKey === key ? `<span class="sort-arrow">${sortDirection < 0 ? "↓" : "↑"}</span>` : ""}</th>`).join("")}</tr></thead><tbody>${
+  return `<div class="table-wrap"><table><thead><tr>${columns.map(([key, label], i) => `<th tabindex="0" class="sortable ${i > 2 && i < 10 ? "right" : ""}" data-sort="${key}" ${sortKey === key ? `aria-sort="${sortDirection < 0 ? "descending" : "ascending"}"` : ""}>${label}${sortKey === key ? `<span class="sort-arrow">${sortDirection < 0 ? "↓" : "↑"}</span>` : ""}</th>`).join("")}</tr></thead><tbody>${
     rows.length
       ? rows
           .slice(0, visible)
           .map(
             (r) =>
-              `<tr tabindex="0" data-id="${r.id}" aria-label="View ${h(r.model)} request ${r.id}"><td><div class="model-name">${h(r.model)}</div><div class="provider">${h(r.provider)}</div></td><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td class="project" title="${h(r.cwd)}">${h(r.project)}</td><td class="right num" title="${h(`Total input: ${number(r.input_tokens)}; uncached: ${number(uncached(r))}`)}">${short(uncached(r))}</td><td class="right num" title="Cache read: ${number(r.cached_tokens)}; Cache write: not reported">${detailed(r.cached_tokens)}</td><td class="right num">${detailed(r.output_tokens)}</td><td class="right num">${detailed(r.cost, money(r.cost), " USD")}</td><td class="right num">${detailed(r.duration_ms, duration(r.duration_ms), " ms")}</td><td class="right num">${detailed(r.ttft_ms, duration(r.ttft_ms), " ms")}</td><td>${statusBadge(r)}</td></tr>`,
+              `<tr tabindex="0" data-id="${r.id}" aria-label="View ${h(r.model)} request ${r.id}"><td><div class="model-name">${h(r.model)}</div><div class="provider">${h(r.provider)}</div></td><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td class="project" title="${h(r.cwd)}">${h(r.project)}</td><td class="right num" title="${h(`Total input: ${number(r.input_tokens)}; uncached: ${number(uncached(r))}`)}">${short(uncached(r))}</td><td class="right num" title="Cache read: ${number(r.cached_tokens)}">${detailed(r.cached_tokens)}</td><td class="right num">${detailed(r.cache_write_tokens)}</td><td class="right num">${detailed(r.output_tokens)}</td><td class="right num">${detailed(r.cost, money(r.cost), " USD")}</td><td class="right num">${detailed(r.duration_ms, duration(r.duration_ms), " ms")}</td><td class="right num">${detailed(r.ttft_ms, duration(r.ttft_ms), " ms")}</td><td>${statusBadge(r)}</td></tr>`,
           )
           .join("")
-      : '<tr><td colspan="10"><div class="empty">No matching requests</div></td></tr>'
+      : '<tr><td colspan="11"><div class="empty">No matching requests</div></td></tr>'
   }</tbody></table></div>`;
 }
 function requests() {
@@ -1345,7 +1353,7 @@ function drawerContent(detail) {
   )}<div class="detail-title">Tokens</div>${detailsGrid([
     ["Uncached input", number(uncached(r))],
     ["Cache read", number(r.cached_tokens)],
-    ["Cache write", "—"],
+    ["Cache write", number(r.cache_write_tokens)],
     ["Output", number(r.output_tokens)],
     ["Total", number(total(r))],
     ["Premium requests", "—"],
@@ -1353,7 +1361,7 @@ function drawerContent(detail) {
     ["Total", money(r.cost)],
     ["Input", money(r.cost_components?.input)],
     ["Cache read", money(r.cost_components?.cache_read)],
-    ["Cache write", "—"],
+    ["Cache write", money(r.cost_components?.cache_write)],
     ["Output", money(r.cost_components?.output)],
   ])}<div class="detail-title">Identity</div>${detailsGrid([
     ["Request id", r.id],

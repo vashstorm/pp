@@ -8,6 +8,8 @@ pub(crate) struct TokenUsage {
     pub(crate) output_tokens: u64,
     #[serde(default)]
     pub(crate) cached_tokens: Option<u64>,
+    #[serde(default)]
+    pub(crate) cache_write_tokens: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

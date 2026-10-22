@@ -208,8 +208,8 @@ impl Store {
         let rows = statement.query_map(params![range.since(now), now], |r| {
             Ok((
                 row(r)?,
-                r.get::<_, String>(20)?,
-                r.get::<_, Option<String>>(21)?,
+                r.get::<_, String>("output_json")?,
+                r.get::<_, Option<String>>("session_entry_json")?,
             ))
         })?;
         let mut all = Tool::default();

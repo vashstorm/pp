@@ -203,7 +203,20 @@ pub(crate) struct ModelCost {
     pub(crate) input: f64,
     #[serde(rename = "cacheRead")]
     pub(crate) cache_read: f64,
+    #[serde(
+        rename = "cacheWrite",
+        default,
+        deserialize_with = "deserialize_optional_rate"
+    )]
+    pub(crate) cache_write: Option<f64>,
     pub(crate) output: f64,
+}
+
+fn deserialize_optional_rate<'de, D>(deserializer: D) -> std::result::Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    f64::deserialize(deserializer).map(Some)
 }
 
 fn deserialize_optional_cost<'de, D>(
@@ -213,9 +226,15 @@ where
     D: serde::Deserializer<'de>,
 {
     let cost = ModelCost::deserialize(deserializer)?;
-    if [cost.input, cost.cache_read, cost.output]
-        .iter()
-        .any(|rate| !rate.is_finite() || *rate < 0.0)
+    if [
+        Some(cost.input),
+        Some(cost.cache_read),
+        cost.cache_write,
+        Some(cost.output),
+    ]
+    .iter()
+    .flatten()
+    .any(|rate| !rate.is_finite() || *rate < 0.0)
     {
         return Err(serde::de::Error::custom(
             "cost must contain non-negative finite rates",

@@ -4387,6 +4387,7 @@ mod tests {
         let usage = crate::context::TokenUsage {
             input_tokens: 12000,
             output_tokens: 300,
+            cache_write_tokens: None,
             cached_tokens: Some(40),
         };
         for event in [
@@ -4419,6 +4420,7 @@ mod tests {
         let usage = crate::context::TokenUsage {
             input_tokens: 12000,
             output_tokens: 300,
+            cache_write_tokens: None,
             cached_tokens: Some(40),
         };
         app.usage = Some(crate::context::ContextUsage {
@@ -4519,6 +4521,7 @@ mod tests {
             last_request: Some(crate::context::TokenUsage {
                 input_tokens: 12000,
                 output_tokens: 300,
+                cache_write_tokens: None,
                 cached_tokens: Some(40),
             }),
             auto_compact: false,

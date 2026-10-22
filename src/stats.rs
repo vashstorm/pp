@@ -78,12 +78,13 @@ pub(crate) struct RequestRow {
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub cached_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
     pub status: String,
     pub stop_reason: Option<String>,
     pub error_message: Option<String>,
 }
 
-const COLUMNS: &str = "id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,entry_id,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message";
+const COLUMNS: &str = "id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,entry_id,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens";
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
     Ok(RequestRow {
         id: r.get(0)?,
@@ -106,6 +107,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
         status: r.get(17)?,
         stop_reason: r.get(18)?,
         error_message: r.get(19)?,
+        cache_write_tokens: r.get(20)?,
     })
 }
 
@@ -149,12 +151,15 @@ impl Store {
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_millis(250))?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 1, "unsupported statistics database version");
+        ensure!(version <= 2, "unsupported statistics database version");
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        if version == 0 {
+        if version < 2 {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            tx.execute_batch("CREATE TABLE IF NOT EXISTS requests (
+            let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+            ensure!(version <= 2, "unsupported statistics database version");
+            if version == 0 {
+                tx.execute_batch("CREATE TABLE IF NOT EXISTS requests (
                 id INTEGER PRIMARY KEY, request_key TEXT NOT NULL UNIQUE, timestamp INTEGER NOT NULL,
                 model TEXT NOT NULL, provider TEXT NOT NULL, model_reference TEXT NOT NULL, api TEXT NOT NULL,
                 project TEXT NOT NULL, cwd TEXT NOT NULL, purpose TEXT NOT NULL,
@@ -168,13 +173,17 @@ impl Store {
                 session_entry_json TEXT
             );
             PRAGMA user_version=1;")?;
+            }
+            if version < 2 {
+                tx.execute_batch("ALTER TABLE requests ADD COLUMN cache_write_tokens INTEGER; PRAGMA user_version=2;")?;
+            }
             tx.commit()?;
         }
         Ok(Self { conn, models_path })
     }
     pub fn insert(&mut self, record: &RequestRow, output: &Value) -> Result<()> {
         let tx = self.conn.transaction()?;
-        let inserted = tx.execute("INSERT INTO requests (request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18) ON CONFLICT(request_key) DO NOTHING",params![record.request_key,record.timestamp,record.model,record.provider,record.model_reference,record.api,record.project,record.cwd,record.purpose,record.session_file,record.duration_ms,record.ttft_ms,record.input_tokens,record.output_tokens,record.cached_tokens,record.status,record.stop_reason,record.error_message])?;
+        let inserted = tx.execute("INSERT INTO requests (request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19) ON CONFLICT(request_key) DO NOTHING",params![record.request_key,record.timestamp,record.model,record.provider,record.model_reference,record.api,record.project,record.cwd,record.purpose,record.session_file,record.duration_ms,record.ttft_ms,record.input_tokens,record.output_tokens,record.cached_tokens,record.status,record.stop_reason,record.error_message,record.cache_write_tokens])?;
         if inserted != 0 {
             tx.execute(
                 "INSERT INTO request_payloads(request_id,output_json) VALUES (?1,?2)",
@@ -348,6 +357,11 @@ pub(crate) fn save(
                 .and_then(|u| u.cached_tokens)
                 .map(i64::try_from)
                 .transpose()?,
+            cache_write_tokens: observation
+                .usage
+                .and_then(|u| u.cache_write_tokens)
+                .map(i64::try_from)
+                .transpose()?,
             status: status.into(),
             stop_reason: observation.stop_reason,
             error_message: outcome.as_ref().err().map(|e| format!("{e:#}")),
@@ -400,6 +414,7 @@ mod tests {
             input_tokens: Some(100),
             output_tokens: Some(20),
             cached_tokens: Some(80),
+            cache_write_tokens: Some(0),
             status: "ok".into(),
             stop_reason: Some("stop".into()),
             error_message: None,
@@ -484,6 +499,113 @@ providers:
         assert_eq!(result["summary"]["avg_ttft_ms"], 500.0);
         assert_eq!(result["models"][0]["buckets"][0]["tokens_per_second"], 10.0);
     }
+    #[test]
+    fn stats_cache_write_migrates_v1_without_inventing_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.db");
+        let mut store = open_store(&path).unwrap();
+        store
+            .insert(&fixture("old", 1000), &json!({"text":"retained"}))
+            .unwrap();
+        store
+            .conn
+            .execute_batch(
+                "ALTER TABLE requests DROP COLUMN cache_write_tokens; PRAGMA user_version=1;",
+            )
+            .unwrap();
+        drop(store);
+        let mut store = open_store(&path).unwrap();
+        let old = store.detail(1).unwrap().unwrap();
+        assert_eq!(old["request"]["cached_tokens"], 80);
+        assert!(old["request"]["cache_write_tokens"].is_null());
+        assert_eq!(old["output_message"]["text"], "retained");
+        let mut new = fixture("new", 1001);
+        new.cache_write_tokens = Some(10);
+        store.insert(&new, &Value::Null).unwrap();
+        drop(store);
+        let store = open_store(&path).unwrap();
+        assert_eq!(
+            store.latest(0, 2000, 500).unwrap()[0].cache_write_tokens,
+            Some(10)
+        );
+        assert_eq!(
+            store
+                .conn
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn stats_cache_write_cost_and_aggregates_preserve_unknown_zero_and_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let path = dir.path().join("models.yml");
+        fs::write(
+            &path,
+            models_with_cost(json!({"input":2,"cacheRead":0.2,"cacheWrite":2.5,"output":8})),
+        )
+        .unwrap();
+        let pricing = analytics::Pricing::load(&store);
+        let mut record = fixture("written", 1000);
+        record.cache_write_tokens = Some(10);
+        let cost = pricing.request(&record).unwrap();
+        assert_eq!(cost["cost_components"]["cache_write"], 0.000025);
+        assert!((cost["cost"].as_f64().unwrap() - 0.000221).abs() < 1e-10);
+        store.insert(&record, &Value::Null).unwrap();
+        record.request_key = "zero".into();
+        record.cache_write_tokens = Some(0);
+        store.insert(&record, &Value::Null).unwrap();
+        record.request_key = "unknown".into();
+        record.cache_write_tokens = None;
+        store.insert(&record, &Value::Null).unwrap();
+        assert!(pricing.cost(&record).is_none());
+        for written in [-1, 21, i64::MAX] {
+            record.cache_write_tokens = Some(written);
+            assert!(pricing.cost(&record).is_none());
+        }
+        let result = store.analytics(Range::All, 2000, &pricing).unwrap();
+        for group in [
+            result["summary"].clone(),
+            result["models"][0].clone(),
+            result["providers"][0].clone(),
+            result["buckets"][0].clone(),
+            result["daily"][0].clone(),
+        ] {
+            assert_eq!(group["cache_write_tokens"], 10);
+            assert_eq!(group["cache_write_known"], 2);
+            assert_eq!(group["uncached_tokens"], 30);
+            assert_eq!(group["tokens"], 360);
+            assert_eq!(group["priced"], 2);
+            assert_eq!(group["unpriced"], 1);
+            assert_eq!(group["cost_components"]["cache_write"], 0.000025);
+            assert!((group["cost"].as_f64().unwrap() - 0.000437).abs() < 1e-10);
+        }
+        fs::write(
+            &path,
+            models_with_cost(json!({"input":2,"cacheRead":0.2,"output":8})),
+        )
+        .unwrap();
+        let pricing = analytics::Pricing::load(&store);
+        record.cache_write_tokens = Some(10);
+        assert!(pricing.cost(&record).is_none());
+        record.cache_write_tokens = Some(0);
+        assert!(pricing.cost(&record).is_some());
+        fs::write(
+            &path,
+            models_with_cost(json!({"input":0,"cacheRead":0,"cacheWrite":0,"output":0})),
+        )
+        .unwrap();
+        record.cache_write_tokens = Some(10);
+        assert_eq!(
+            analytics::Pricing::load(&store).request(&record).unwrap()["cost"],
+            0.0
+        );
+        let empty = store.analytics(Range::Hour, 10_000_000, &pricing).unwrap();
+        assert_eq!(empty["summary"]["cache_write_tokens"], 0);
+    }
+
     #[test]
     fn stats_pricing_preserves_unknown_and_reloads_validated_rates() {
         let dir = tempfile::tempdir().unwrap();
@@ -791,7 +913,7 @@ providers:
                 .conn
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            1
+            2
         );
     }
     #[test]
@@ -809,6 +931,7 @@ providers:
         missing.input_tokens = None;
         missing.output_tokens = None;
         missing.cached_tokens = None;
+        missing.cache_write_tokens = None;
         missing.ttft_ms = None;
         missing.status = "aborted".into();
         store.insert(&missing, &Value::Null).unwrap();
