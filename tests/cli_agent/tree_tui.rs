@@ -68,7 +68,7 @@ fn tree_tui_row(screen: &vt100::Screen, needle: &str) -> String {
         .to_string()
 }
 
-// 显式按键序列选择候选（按 active-first DFS 推导），确认虚线框内出现期望
+// 显式按键序列选择候选（按线性有效历史顺序推导），确认虚线框内出现期望
 // 文本；不粘贴搜索串。
 fn tree_tui_select(pty: &mut Pty, keys: &[&str], expected: &str) {
     for key in keys {
@@ -88,101 +88,175 @@ fn tree_tui_rewind(pty: &mut Pty, keys: &[&str], expected: &str) {
     });
 }
 
+// 生成已回退会话 fixture：A、B 两轮后回退到 B 用户消息之前（有效历史只剩
+// A），导航 state 同步提交后立即退出，期间不发任何模型请求。返回 HOME 与
+// 唯一会话 ID，供重启、/resume 与 -c 恢复类测试复用。
+fn tree_tui_rewound_session(server: &Server, protocol: &str) -> (tempfile::TempDir, String) {
+    let (home, mut pty) = context_tui_start(server, protocol, 100_000, 80);
+    context_tui_exchange(
+        &mut pty,
+        server,
+        protocol,
+        "tree-rewind-first-question",
+        "tree-rewind-first-answer",
+    );
+    context_tui_exchange(
+        &mut pty,
+        server,
+        protocol,
+        "tree-rewind-second-question",
+        "tree-rewind-second-answer",
+    );
+    tree_tui_open(&mut pty, "tree-rewind-second-answer");
+    tree_tui_rewind(&mut pty, &[TREE_TUI_UP], "tree-rewind-second-question");
+    // 回退已同步提交完整 state；确认后立即退出，不发跟进请求。
+    no_more(server);
+    pty.input("\x03");
+    pty.finish();
+    let ids = resume_boundary_session_ids(home.path());
+    assert_eq!(ids.len(), 1, "expected exactly one session: {ids:?}");
+    (home, ids.into_iter().next().unwrap())
+}
+
+fn tree_tui_assert_abandoned_invisible(screen: &vt100::Screen, abandoned: &[&str]) {
+    let text = screen.contents();
+    for marker in abandoned {
+        assert!(
+            !text.contains(marker),
+            "abandoned message {marker} must not be visible:\n{text}"
+        );
+    }
+}
+
 #[test]
-fn tree_tui_branches_switch_without_requests_and_resume_both_protocols() {
+fn tree_tui_rewind_immediately_invalidates_abandoned_messages_after_restart_both_protocols() {
     for protocol in ["completion", "response"] {
         let server = Server::http("127.0.0.1:0").unwrap();
-        let (home, mut pty) = context_tui_start(&server, protocol, 100_000, 80);
-        context_tui_exchange(
-            &mut pty,
-            &server,
-            protocol,
-            "tree-original-question",
-            "tree-original-answer",
-        );
-        context_tui_exchange(
-            &mut pty,
-            &server,
-            protocol,
-            "tree-second-question",
-            "tree-second-answer",
-        );
-        tree_tui_open(&mut pty, "tree-second-answer");
-        // active-first DFS：u1 a1 u2 a2(leaf)。leaf 上一步即第二个 user。
-        tree_tui_rewind(&mut pty, &[TREE_TUI_UP], "tree-second-question");
-        pty.draft("tree-second-question");
-        pty.input("\x01\x0b");
-        context_tui_paste(&mut pty, "tree-branch-question");
+        let (home, id) = tree_tui_rewound_session(&server, protocol);
+        let abandoned = ["tree-rewind-second-question", "tree-rewind-second-answer"];
+
+        // 回退后立即重启：不发送新请求也只恢复有效历史 A。
+        let mut pty = Pty::start_with_args(home.path(), home.path(), &["--resume", &id]);
+        pty.ready();
+        {
+            let text = pty.parser.screen().contents();
+            assert!(text.contains("tree-rewind-first-question"));
+            assert!(text.contains("tree-rewind-first-answer"));
+        }
+        tree_tui_assert_abandoned_invisible(pty.parser.screen(), &abandoned);
+        tree_tui_open(&mut pty, "tree-rewind-first-answer");
+        pty.text("[current] [all] 2/2");
+        tree_tui_assert_abandoned_invisible(pty.parser.screen(), &abandoned);
+        // b 不再切换到旧分支；Home/End/用户跳转只能落在有效链内。
+        tree_tui_select(&mut pty, &["b", TREE_TUI_HOME], "tree-rewind-first-question");
+        pty.text("[current] [all] 1/2");
+        tree_tui_assert_abandoned_invisible(pty.parser.screen(), &abandoned);
+        tree_tui_select(&mut pty, &["b", TREE_TUI_END], "tree-rewind-first-answer");
+        pty.text("[current] [all] 2/2");
+        tree_tui_assert_abandoned_invisible(pty.parser.screen(), &abandoned);
+        pty.input("\x1b");
+        pty.ready();
+        // 提交 C：实际请求用户序列精确为 [A, C]，废弃 B 不进入请求。
+        context_tui_paste(&mut pty, "tree-rewind-third-question");
         pty.input("\r");
         let (request, body) = pty.request_at(&server, api_path(protocol));
         assert_eq!(
             cancel_user_messages(&body, protocol),
-            ["tree-original-question", "tree-branch-question"]
+            ["tree-rewind-first-question", "tree-rewind-third-question"]
         );
-        assert!(!body.to_string().contains("tree-second-answer"));
+        assert!(!body.to_string().contains("tree-rewind-second"));
         if protocol == "completion" {
-            final_reply(request, "tree-branch-answer");
+            final_reply(request, "tree-rewind-third-answer");
         } else {
-            response_final(request, "tree-branch-answer");
+            response_final(request, "tree-rewind-third-answer");
         }
-        pty.text("tree-branch-answer");
+        pty.text("tree-rewind-third-answer");
         pty.ready();
-        tree_tui_open(&mut pty, "tree-branch-answer");
-        // 显式显示全部分支后，旧分支 a2 在 leaf 后两步。
-        tree_tui_rewind(&mut pty, &["b", TREE_TUI_DOWN, TREE_TUI_DOWN], "tree-second-answer");
-        context_tui_paste(&mut pty, "tree-after-return");
-        pty.input("\r");
-        let (request, body) = pty.request_at(&server, api_path(protocol));
-        assert_eq!(
-            cancel_user_messages(&body, protocol),
-            [
-                "tree-original-question",
-                "tree-second-question",
-                "tree-after-return"
-            ]
-        );
-        assert!(!body.to_string().contains("tree-branch-question"));
-        if protocol == "completion" {
-            final_reply(request, "tree-return-answer");
-        } else {
-            response_final(request, "tree-return-answer");
-        }
-        pty.text("tree-return-answer");
-        pty.ready();
-        let ids = resume_boundary_session_ids(home.path());
-        assert_eq!(ids.len(), 1);
-        pty.input("/quit\r");
-        pty.finish();
-        let mut pty = Pty::start_with_args(home.path(), home.path(), &["--resume", &ids[0]]);
-        pty.ready();
-        tree_tui_open(&mut pty, "tree-return-answer");
-        // 恢复后默认仍只显示当前路径；按 b 才能返回旧分支。
-        tree_tui_rewind(
-            &mut pty,
-            &["b", TREE_TUI_DOWN, TREE_TUI_DOWN],
-            "tree-branch-answer",
-        );
-        context_tui_paste(&mut pty, "tree-after-restart");
-        pty.input("\r");
-        let (request, body) = pty.request_at(&server, api_path(protocol));
-        assert_eq!(
-            cancel_user_messages(&body, protocol),
-            [
-                "tree-original-question",
-                "tree-branch-question",
-                "tree-after-restart"
-            ]
-        );
-        assert!(!body.to_string().contains("tree-second-answer"));
-        if protocol == "completion" {
-            final_reply(request, "tree-restored-answer");
-        } else {
-            response_final(request, "tree-restored-answer");
-        }
-        pty.text("tree-restored-answer");
+        // 再打开树：只有 A/C 有效链，b 与跳转仍不能显露 B。
+        tree_tui_open(&mut pty, "tree-rewind-third-answer");
+        pty.text("[current] [all] 4/4");
+        tree_tui_assert_abandoned_invisible(pty.parser.screen(), &abandoned);
+        tree_tui_select(&mut pty, &["b", TREE_TUI_HOME], "tree-rewind-first-question");
+        tree_tui_assert_abandoned_invisible(pty.parser.screen(), &abandoned);
+        pty.input("\x1b");
         pty.ready();
         pty.input("/quit\r");
         pty.finish();
+        no_more(&server);
+    }
+}
+
+#[test]
+fn tree_tui_slash_resume_after_rewind_restores_only_valid_history_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let (home, id) = tree_tui_rewound_session(&server, protocol);
+        let abandoned = ["tree-rewind-second-question", "tree-rewind-second-answer"];
+
+        let mut pty = Pty::start_with_args(home.path(), home.path(), &[]);
+        pty.ready();
+        resume_boundary_open(&mut pty);
+        pty.text("tree-rewind-first-question");
+        pty.input("\r");
+        resume_history_wait_resumed(
+            &mut pty,
+            &id,
+            &["tree-rewind-first-question", "tree-rewind-first-answer"],
+        );
+        tree_tui_assert_abandoned_invisible(pty.parser.screen(), &abandoned);
+        // TUI /resume 恢复本身不请求模型。
+        no_more(&server);
+        tree_tui_open(&mut pty, "tree-rewind-first-answer");
+        pty.text("[current] [all] 2/2");
+        tree_tui_assert_abandoned_invisible(pty.parser.screen(), &abandoned);
+        tree_tui_select(&mut pty, &["b", TREE_TUI_HOME], "tree-rewind-first-question");
+        tree_tui_assert_abandoned_invisible(pty.parser.screen(), &abandoned);
+        pty.input("\x1b");
+        pty.ready();
+        // 恢复后的实际请求只携带有效历史 A 与新消息 C。
+        context_tui_paste(&mut pty, "tree-resume-third-question");
+        pty.input("\r");
+        let (request, body) = pty.request_at(&server, api_path(protocol));
+        assert_eq!(
+            cancel_user_messages(&body, protocol),
+            ["tree-rewind-first-question", "tree-resume-third-question"]
+        );
+        assert!(!body.to_string().contains("tree-rewind-second"));
+        context_tui_final(request, protocol, "tree-resume-third-answer");
+        pty.text("tree-resume-third-answer");
+        pty.ready();
+        pty.input("/quit\r");
+        pty.finish();
+        no_more(&server);
+    }
+}
+
+#[test]
+fn tree_tui_cli_continue_after_rewind_requests_only_valid_history_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let (home, id) = tree_tui_rewound_session(&server, protocol);
+
+        // -c 不输入新问题：恢复后立即发出的实际请求只含有效历史 A。
+        let cli = Cli::spawn(home.path(), &["-c", &id], &[]);
+        let (request, body) = receive_at(&server, api_path(protocol));
+        assert_eq!(
+            cancel_user_messages(&body, protocol),
+            ["tree-rewind-first-question"]
+        );
+        assert!(!body.to_string().contains("tree-rewind-second"));
+        if protocol == "completion" {
+            final_reply(request, "tree-continue-answer");
+        } else {
+            response_final(request, "tree-continue-answer");
+        }
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"tree-continue-answer\n");
         no_more(&server);
     }
 }
@@ -209,7 +283,7 @@ fn tree_tui_repeated_rewinds_hide_abandoned_messages_by_default_and_after_resume
             for old in 0..index {
                 assert!(
                     !pty.parser.screen().contents().contains(&format!("tree-attempt-{old}")),
-                    "默认视图不应包含已放弃的消息"
+                    "当前有效历史不应包含已放弃的消息"
                 );
             }
             if index < 2 {
@@ -219,13 +293,35 @@ fn tree_tui_repeated_rewinds_hide_abandoned_messages_by_default_and_after_resume
                 pty.draft("");
             }
         }
-        // 全部分支只在显式切换后出现；关闭再打开恢复默认范围。
-        pty.input("b");
-        pty.text("[branches] [all] 4/8");
-        tree_tui_select(&mut pty, &[TREE_TUI_END], "tree-attempt-1-answer");
+        // b 不再暴露旧分支；Home/End/用户跳转只能在有效链 kept + attempt-2
+        // 内移动，废弃的 attempt-0/1 不可见也不可选。
+        for (keys, expected, status) in [
+            (&["b", TREE_TUI_HOME][..], "tree-kept-question", "[current] [all] 1/4"),
+            (&["b", TREE_TUI_END][..], "tree-attempt-2-answer", "[current] [all] 4/4"),
+            (&[TREE_TUI_LEFT][..], "tree-attempt-2-question", "[current] [all] 3/4"),
+            (&[TREE_TUI_RIGHT][..], "tree-attempt-2-question", "[current] [all] 3/4"),
+        ] {
+            tree_tui_select(&mut pty, keys, expected);
+            pty.text(status);
+            assert!(
+                !pty.parser.screen().contents().contains("tree-attempt-0"),
+                "b 与跳转不应显露 attempt-0"
+            );
+            assert!(
+                !pty.parser.screen().contents().contains("tree-attempt-1"),
+                "b 与跳转不应显露 attempt-1"
+            );
+        }
         pty.input("\x1b");
         pty.ready();
+        // 关闭再打开仍是同一有效链；b 与跳转依旧不能找回旧尝试。
         tree_tui_open(&mut pty, "tree-attempt-2-answer");
+        pty.text("[current] [all] 4/4");
+        tree_tui_select(
+            &mut pty,
+            &["b", TREE_TUI_HOME, "b", TREE_TUI_END],
+            "tree-attempt-2-answer",
+        );
         pty.text("[current] [all] 4/4");
         assert!(!pty.parser.screen().contents().contains("tree-attempt-0"));
         assert!(!pty.parser.screen().contents().contains("tree-attempt-1"));
@@ -234,6 +330,7 @@ fn tree_tui_repeated_rewinds_hide_abandoned_messages_by_default_and_after_resume
         let ids = resume_boundary_session_ids(home.path());
         pty.input("/quit\r");
         pty.finish();
+        // 重启恢复后同样：旧尝试不可见，b/Home/End/用户跳转也调不出。
         let mut pty = Pty::start_with_args(home.path(), home.path(), &["--resume", &ids[0]]);
         pty.resize(50, 100);
         pty.ready();
@@ -241,6 +338,11 @@ fn tree_tui_repeated_rewinds_hide_abandoned_messages_by_default_and_after_resume
         pty.text("[current] [all] 4/4");
         assert!(!pty.parser.screen().contents().contains("tree-attempt-0"));
         assert!(!pty.parser.screen().contents().contains("tree-attempt-1"));
+        tree_tui_select(&mut pty, &["b", TREE_TUI_HOME], "tree-kept-question");
+        pty.text("[current] [all] 1/4");
+        assert!(!pty.parser.screen().contents().contains("tree-attempt-0"));
+        assert!(!pty.parser.screen().contents().contains("tree-attempt-1"));
+        tree_tui_select(&mut pty, &[TREE_TUI_END], "tree-attempt-2-answer");
         pty.input("\x1b");
         pty.ready();
         pty.input("tree-after-repeated-rewinds\r");
@@ -326,7 +428,7 @@ fn tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft() {
     pty.text("[user] 1/1");
     pty.input("f");
     pty.text("[all] 1/2");
-    // ← 按 DFS 顺序跳到严格更早的 user；→ 之后没有更晚的 user，候选不动。
+    // ← 按有效历史顺序跳到严格更早的 user；→ 之后没有更晚的 user，候选不动。
     tree_tui_select(&mut pty, &[TREE_TUI_END, TREE_TUI_LEFT], "tree-seed");
     tree_tui_select(&mut pty, &[TREE_TUI_RIGHT], "tree-seed");
     // 窄屏 resize 后外框与候选仍在。
@@ -382,25 +484,26 @@ fn tree_tui_tool_batch_stays_paired_and_never_reexecutes_both_protocols() {
                 ),
             );
         } else {
-            response_reply(
-                request,
-                Value::Array(
-                    tools
-                        .iter()
-                        .map(|(id, name, args)| response_call(id, name, args.clone()))
-                        .collect(),
-                ),
-            );
+            let mut batch = vec![json!({
+                "type": "reasoning",
+                "id": "tree-tool-reasoning",
+                "summary": [],
+                "encrypted_content": "tree-opaque-tool-state",
+                "status": "completed"
+            })];
+            batch.extend(tools.iter().map(|(id, name, args)| response_call(id, name, args.clone())));
+            response_reply(request, Value::Array(batch));
         }
         let (request, body) = pty.request_at(&server, api_path(protocol));
+        let native_input = body["input"].clone();
         let outputs = cancel_tool_outputs(&body, protocol);
         assert_eq!(outputs.len(), 2);
         context_tui_final(request, protocol, "tree-tools-finished");
         pty.text("tree-tools-finished");
         pty.ready();
         tree_tui_open(&mut pty, "tree-tools-finished");
-        // DFS：user tools assistant(leaf)。先 Home 对齐组首再一步到 tools 组，
-        // 确认整批工具卡都在同一虚线框内后才回车。
+        // 线性有效历史：user tools assistant(leaf)。先 Home 对齐组首再一步到
+        // tools 组，确认整批工具卡都在同一虚线框内后才回车。
         tree_tui_select(&mut pty, &[TREE_TUI_HOME, TREE_TUI_DOWN], "tree-counter");
         pty.wait_for("工具批次整体框选", |screen| {
             let selected = tree_tui_selected_text(screen);
@@ -414,6 +517,11 @@ fn tree_tui_tool_batch_stays_paired_and_never_reexecutes_both_protocols() {
         pty.input("tree-after-tools\r");
         let (request, body) = pty.request_at(&server, api_path(protocol));
         assert_eq!(cancel_tool_outputs(&body, protocol), outputs);
+        if protocol == "response" {
+            let original = native_input.as_array().unwrap();
+            assert_eq!(&body["input"].as_array().unwrap()[..original.len()], original);
+            assert!(body.to_string().contains("tree-opaque-tool-state"));
+        }
         assert!(!body.to_string().contains("tree-tools-finished"));
         assert_eq!(
             std::fs::read_to_string(home.path().join("tree-counter")).unwrap(),
@@ -422,6 +530,29 @@ fn tree_tui_tool_batch_stays_paired_and_never_reexecutes_both_protocols() {
         context_tui_final(request, protocol, "tree-tools-returned");
         pty.text("tree-tools-returned");
         pty.ready();
+        tree_tui_open(&mut pty, "tree-tools-returned");
+        tree_tui_rewind(&mut pty, &[TREE_TUI_HOME], "tree-run-tools");
+        pty.draft("tree-run-tools");
+        pty.input("\x01\x0b");
+        pty.draft("");
+        pty.input("tree-without-tools\r");
+        let (request, body) = pty.request_at(&server, api_path(protocol));
+        assert_eq!(cancel_user_messages(&body, protocol), ["tree-without-tools"]);
+        assert!(cancel_tool_outputs(&body, protocol).is_empty());
+        for marker in ["tree-bash", "tree-read", "tree-opaque-tool-state", "tree-tools-returned"] {
+            assert!(!body.to_string().contains(marker));
+        }
+        assert_eq!(std::fs::read_to_string(home.path().join("tree-counter")).unwrap(), "x");
+        pty.input("/model ");
+        context_tui_final(request, protocol, "tree-tools-discarded");
+        pty.text("tree-tools-discarded");
+        pty.text("fixture/primary");
+        pty.input("\x01\x0b");
+        pty.draft("");
+        tree_tui_open(&mut pty, "tree-tools-discarded");
+        assert!(!pty.parser.screen().contents().contains("tree-counter"));
+        pty.input("\x1b");
+        pty.wait_for("discarded tool preview closed", |screen| input_is_ready(screen) && !screen.contents().contains("user turns"));
         pty.input("/quit\r");
         pty.finish();
         no_more(&server);
@@ -443,7 +574,7 @@ fn tree_tui_navigation_before_compaction_restores_native_history_both_protocols(
         pty.input("\x01\x0b");
         pty.draft("");
         tree_tui_open(&mut pty, "noted context-recent-keep");
-        // DFS：u1 a1 u2 a2 u3 a3(leaf)；单链上三步到 u2。候选组高于
+        // 线性有效历史：u1 a1 u2 a2 u3 a3(leaf)；单链上三步到 u2。候选组高于
         // viewport 时对齐组首，首行 filler 可见。
         tree_tui_rewind(
             &mut pty,
@@ -510,7 +641,7 @@ fn tree_tui_cross_protocol_navigation_keeps_current_model_and_effort() {
         pty.input("/effort high\r");
         pty.ready_effort("high");
         tree_tui_open(&mut pty, "tree-cross-second-answer");
-        // DFS：u1 a1 u2 a2(leaf)；两步到第一轮助手节点。
+        // 线性有效历史：u1 a1 u2 a2(leaf)；两步到第一轮助手节点。
         tree_tui_rewind(
             &mut pty,
             &[TREE_TUI_UP, TREE_TUI_UP],
@@ -640,7 +771,7 @@ fn tree_tui_inline_cancel_restores_viewport_and_draft() {
     };
     tree_tui_open(&mut pty, "noted context-recent-keep");
     // 在预览里移动候选、过滤并滚动预览行，全程不应产生模型请求。
-    // DFS：u1 a1 u2 a2 u3 a3(leaf)；三步到 u2。
+    // 线性有效历史：u1 a1 u2 a2 u3 a3(leaf)；三步到 u2。
     tree_tui_select(
         &mut pty,
         &[TREE_TUI_UP, TREE_TUI_UP, TREE_TUI_UP],

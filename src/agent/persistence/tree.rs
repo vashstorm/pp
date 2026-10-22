@@ -297,7 +297,20 @@ impl Tree {
             }
         }
         tree.pending = (start, offset);
+        tree.retain_active_path();
         Ok(tree)
+    }
+
+    fn retain_active_path(&mut self) {
+        let path = self.path(self.leaf);
+        // Parents precede children in the log, so moving a retained node forward
+        // cannot displace another node that has yet to be retained.
+        for (index, &old) in path.iter().enumerate() {
+            self.nodes.swap(index, old);
+            self.nodes[index].parent = index.checked_sub(1);
+        }
+        self.nodes.truncate(path.len());
+        self.leaf = self.nodes.len().checked_sub(1);
     }
 
     pub(super) fn replay(
@@ -492,18 +505,79 @@ mod tests {
         serde_json::to_string(session).unwrap()
     }
 
+    fn metadata(dir: &std::path::Path) -> Metadata<'_> {
+        Metadata {
+            cwd: dir,
+            model_reference: "fixture/model",
+            think_level: ThinkLevel::None,
+            edit_mode: EditMode::Replace,
+            tool_limits: ToolLimits::default(),
+            base_system: "system",
+        }
+    }
+
+    fn users(records: &[ReplayRecord]) -> Vec<&str> {
+        records
+            .iter()
+            .filter_map(|record| match record {
+                ReplayRecord::User(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn answers(records: &[ReplayRecord]) -> Vec<&str> {
+        records
+            .iter()
+            .filter_map(|record| match record {
+                ReplayRecord::Event(AgentEvent::AssistantFinished { text }) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn assert_unknown_target(journal: &mut SessionJournal, id: &str) {
+        assert_eq!(
+            journal.prepare_tree(id).err().unwrap().to_string(),
+            "unknown session tree target"
+        );
+    }
+
+    fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    /// Data payload of the last appended `pp.session_state` record.
+    fn last_tree_state(bytes: &[u8]) -> serde_json::Value {
+        let mut state = None;
+        for line in bytes.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let entry: serde_json::Value = serde_json::from_slice(line).unwrap();
+            if entry["customType"] == "pp.session_state" {
+                state = Some(entry["data"].clone());
+            }
+        }
+        state.expect("appended pp.session_state record")
+    }
+
+    fn native_messages(state: &serde_json::Value) -> String {
+        let request = &state["session"]["request"];
+        let messages = request["messages"]
+            .as_array()
+            .or_else(|| request["input"].as_array())
+            .expect("native session history");
+        serde_json::to_string(messages).unwrap()
+    }
+
     #[test]
-    fn tree_branches_keep_native_batches_replay_and_resume_both_protocols() {
+    fn tree_rewind_invalidates_discarded_nodes_durably_both_protocols() {
         for protocol in [Protocol::Completion, Protocol::Response] {
             let dir = tempfile::tempdir().unwrap();
-            let metadata = Metadata {
-                cwd: dir.path(),
-                model_reference: "fixture/model",
-                think_level: ThinkLevel::None,
-                edit_mode: EditMode::Replace,
-                tool_limits: ToolLimits::default(),
-                base_system: "system",
-            };
+            let metadata = metadata(dir.path());
             let mut journal = SessionJournal::new(dir.path().into());
             let mut session =
                 Session::new("model".into(), protocol, "system".into(), EditMode::Replace);
@@ -521,14 +595,19 @@ mod tests {
                 &metadata,
                 "question-b",
                 "answer-b",
-                true,
+                false,
             );
             let tree = journal.tree().unwrap();
-            assert_eq!(tree.nodes.len(), 4);
-            assert_eq!(tree.nodes[3].kind, Kind::Tools);
-            let batch = tree.nodes[3].id.clone();
+            assert_eq!(tree.path(tree.leaf), vec![0, 1, 2, 3]);
+            let answer_a = tree.nodes[1].id.clone();
             let user_b = tree.nodes[2].id.clone();
-            let original_len = SessionRef::from(&session).len();
+            let answer_b = tree.nodes[3].id.clone();
+            let path = dir.path().join(format!("{}.jsonl", journal.id().unwrap()));
+            let before = std::fs::read(&path).unwrap();
+
+            // Rewinding to before B's user message is a durable append-only
+            // commit: the old records stay on disk as a byte prefix, and the
+            // appended full state carries only the effective history.
             let Prepared {
                 session: candidate,
                 replay,
@@ -539,13 +618,69 @@ mod tests {
             assert_eq!(draft.as_deref(), Some("question-b"));
             assert!(!text(&candidate).contains("question-b"));
             assert!(text(&candidate).contains("answer-a"));
-            assert_eq!(
-                replay
-                    .iter()
-                    .filter(|r| matches!(r, ReplayRecord::User(_)))
-                    .count(),
-                1
+            assert_eq!(users(&replay), ["question-a"]);
+            journal
+                .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
+                .unwrap();
+            let after = std::fs::read(&path).unwrap();
+            assert!(after.starts_with(&before));
+            assert!(bytes_contain(&after, b"question-b"));
+            let state = last_tree_state(&after);
+            assert_eq!(state["tree"]["leaf"], serde_json::Value::String(answer_a));
+            let native = native_messages(&state);
+            assert!(!native.contains("question-b"));
+            assert!(!native.contains("answer-b"));
+
+            // Every consumer now sees only the effective A path.
+            let tree = journal.tree().unwrap();
+            assert_eq!(tree.nodes.len(), 2);
+            assert_eq!(tree.nodes[1].parent, Some(0));
+            let view = journal.tree_view().unwrap();
+            assert_eq!(view.records.len(), 2);
+            assert_eq!(users(&view.records[0]), ["question-a"]);
+            assert_eq!(answers(&view.records[1]), ["answer-a"]);
+            let before_reject = std::fs::read(&path).unwrap();
+            for id in [&user_b, &answer_b] {
+                assert_unknown_target(&mut journal, id);
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), before_reject);
+
+            // Resuming immediately after the commit must not resurrect B.
+            let id = journal.id().unwrap().to_owned();
+            drop(journal);
+            let mut restored = load(dir.path(), Some(&id), true).unwrap();
+            let checkpoint = text(&restored.checkpoint.session);
+            assert!(!checkpoint.contains("question-b"));
+            assert!(!checkpoint.contains("answer-b"));
+            assert!(checkpoint.contains("answer-a"));
+            assert_eq!(users(&restored.replay), ["question-a"]);
+            for id in [&user_b, &answer_b] {
+                assert_unknown_target(&mut restored.journal, id);
+            }
+            let listing = list(dir.path()).unwrap();
+            assert_eq!(listing.sessions[0].summary, "question-a");
+            assert_eq!(listing.sessions[0].preview, "answer-a");
+
+            // A later C turn is discarded the same way, while a same-text
+            // retry of B gets fresh IDs on the effective path.
+            let mut journal = restored.journal;
+            let mut session = restored.checkpoint.session;
+            turn(
+                &mut journal,
+                &mut session,
+                &metadata,
+                "question-c",
+                "answer-c",
+                false,
             );
+            let tree = journal.tree().unwrap();
+            let user_c = tree.nodes[2].id.clone();
+            let answer_c = tree.nodes[3].id.clone();
+            let Prepared {
+                session: candidate,
+                selection,
+                ..
+            } = journal.prepare_tree(&user_c).unwrap();
             journal
                 .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
                 .unwrap();
@@ -554,103 +689,55 @@ mod tests {
                 &mut journal,
                 &mut session,
                 &metadata,
-                "question-new",
-                "answer-new",
+                "question-b",
+                "answer-b",
                 false,
             );
             let tree = journal.tree().unwrap();
-            assert_eq!(tree.nodes.len(), 6);
-            assert_eq!(tree.nodes[4].parent, Some(1));
-            assert_eq!(tree.path(tree.leaf), vec![0, 1, 4, 5]);
-            let path = dir.path().join(format!("{}.jsonl", journal.id().unwrap()));
-            let before = std::fs::read(&path).unwrap();
-            let view = journal.tree_view().unwrap();
-            assert_eq!(std::fs::read(&path).unwrap(), before);
-            assert_eq!(view.records.len(), 6);
-            for (index, records) in view.records.iter().enumerate() {
-                let users: Vec<_> = records
-                    .iter()
-                    .filter_map(|record| match record {
-                        ReplayRecord::User(text) => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                let answers: Vec<_> = records
-                    .iter()
-                    .filter_map(|record| match record {
-                        ReplayRecord::Event(AgentEvent::AssistantFinished { text }) => {
-                            Some(text.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                match index {
-                    0 => assert_eq!(users, ["question-a"]),
-                    2 => assert_eq!(users, ["question-b"]),
-                    4 => assert_eq!(users, ["question-new"]),
-                    _ => assert!(users.is_empty()),
-                }
-                match index {
-                    1 => assert_eq!(answers, ["answer-a"]),
-                    3 => assert_eq!(answers, ["answer-b"]),
-                    5 => assert_eq!(answers, ["answer-new"]),
-                    _ => assert!(answers.is_empty()),
-                }
+            assert_eq!(tree.nodes.len(), 4);
+            assert_eq!(tree.nodes[2].text, "question-b");
+            assert_ne!(tree.nodes[2].id, user_b);
+            assert_ne!(tree.nodes[3].id, answer_b);
+            assert_eq!(tree.nodes[2].parent, Some(1));
+            assert_eq!(tree.nodes[3].parent, Some(2));
+            assert_eq!(tree.path(tree.leaf), vec![0, 1, 2, 3]);
+            for id in [&user_b, &answer_b, &user_c, &answer_c] {
+                assert_unknown_target(&mut journal, id);
             }
             let Prepared {
                 session: candidate,
                 replay,
-                selection,
+                draft,
                 ..
-            } = journal.prepare_tree(&batch).unwrap();
-            assert_eq!(SessionRef::from(&candidate).len(), original_len);
-            assert!(text(&candidate).contains("call-a"));
-            assert!(text(&candidate).contains("call-b"));
-            assert!(!text(&candidate).contains("question-new"));
-            assert_eq!(
-                replay
-                    .iter()
-                    .filter(|r| matches!(r, ReplayRecord::User(_)))
-                    .count(),
-                2
-            );
-            journal
-                .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
-                .unwrap();
-            let id = journal.id().unwrap().to_owned();
-            drop(journal);
-            let restored = load(dir.path(), Some(&id), true).unwrap();
-            assert_eq!(text(&restored.checkpoint.session), text(&candidate));
-            assert_eq!(
-                restored
-                    .replay
-                    .iter()
-                    .filter(|r| matches!(r, ReplayRecord::User(_)))
-                    .count(),
-                2
-            );
-            let listing = list(dir.path()).unwrap();
-            assert_eq!(listing.sessions[0].summary, "question-a");
-            assert_eq!(listing.sessions[0].preview, "answer-a");
-            assert!(!listing.sessions[0].done);
-            let tree = Tree::read(&restored.journal.active.as_ref().unwrap().file).unwrap();
-            assert_eq!(tree.nodes.len(), 6);
-            assert_eq!(tree.path(tree.leaf), vec![0, 1, 2, 3]);
+            } = journal.prepare_tree(&tree.nodes[2].id).unwrap();
+            assert_eq!(draft.as_deref(), Some("question-b"));
+            assert!(!text(&candidate).contains("question-b"));
+            assert!(!text(&candidate).contains("answer-c"));
+            assert_eq!(users(&replay), ["question-a"]);
+            let Prepared {
+                session: candidate, ..
+            } = journal.prepare_tree(&tree.nodes[3].id).unwrap();
+            let native = text(&candidate);
+            assert!(native.contains("question-b"));
+            assert!(native.contains("answer-b"));
+            assert!(!native.contains("question-c"));
+            assert!(!native.contains("answer-c"));
+            let view = journal.tree_view().unwrap();
+            assert_eq!(view.records.len(), 4);
+            assert_eq!(users(&view.records[2]), ["question-b"]);
+            assert_eq!(answers(&view.records[3]), ["answer-b"]);
+            for records in &view.records {
+                assert!(!users(records).contains(&"question-c"));
+                assert!(!answers(records).contains(&"answer-c"));
+            }
         }
     }
 
     #[test]
-    fn tree_view_keeps_duplicate_text_branches_and_tool_events_separate() {
+    fn tree_view_keeps_duplicate_text_attempts_and_tool_events_separate() {
         for protocol in [Protocol::Completion, Protocol::Response] {
             let dir = tempfile::tempdir().unwrap();
-            let metadata = Metadata {
-                cwd: dir.path(),
-                model_reference: "fixture/model",
-                think_level: ThinkLevel::None,
-                edit_mode: EditMode::Replace,
-                tool_limits: ToolLimits::default(),
-                base_system: "system",
-            };
+            let metadata = metadata(dir.path());
             let mut journal = SessionJournal::new(dir.path().into());
             let mut session =
                 Session::new("model".into(), protocol, "system".into(), EditMode::Replace);
@@ -662,23 +749,29 @@ mod tests {
                 "same answer",
                 true,
             );
-            let first = journal.tree().unwrap().nodes[0].id.clone();
+            let tree = journal.tree().unwrap();
+            assert_eq!(tree.nodes[1].kind, Kind::Tools);
+            let first_user = tree.nodes[0].id.clone();
+            let first_tools = tree.nodes[1].id.clone();
             let Prepared {
                 session: candidate,
                 selection,
                 ..
-            } = journal.prepare_tree(&first).unwrap();
+            } = journal.prepare_tree(&first_user).unwrap();
+            assert_eq!(selection.leaf, None);
             journal
                 .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
                 .unwrap();
             session = candidate;
+            // Retrying the identical turn keeps the tools on the new effective
+            // attempt with fresh IDs; the discarded attempt is gone for good.
             turn(
                 &mut journal,
                 &mut session,
                 &metadata,
                 "same question",
                 "same answer",
-                false,
+                true,
             );
             journal.event(&AgentEvent::AssistantStarted);
             journal.event(&AgentEvent::AssistantFinished {
@@ -688,43 +781,66 @@ mod tests {
             let before = std::fs::read(&path).unwrap();
             let view = journal.tree_view().unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), before);
-            assert_eq!(view.tree.nodes[0].text, view.tree.nodes[2].text);
-            assert_ne!(view.tree.nodes[0].id, view.tree.nodes[2].id);
-            assert_eq!(view.tree.nodes[2].parent, None);
-            assert_eq!(view.records.len(), 4);
-            let replay = view
+            assert_eq!(view.tree.nodes.len(), 2);
+            assert_eq!(view.tree.nodes[0].text, "same question");
+            assert_eq!(view.tree.nodes[1].kind, Kind::Tools);
+            assert_ne!(view.tree.nodes[0].id, first_user);
+            assert_ne!(view.tree.nodes[1].id, first_tools);
+            assert_eq!(view.tree.nodes[1].parent, Some(0));
+            assert_eq!(view.records.len(), 2);
+            assert_unknown_target(&mut journal, &first_user);
+            assert_unknown_target(&mut journal, &first_tools);
+            let Prepared { draft, .. } = journal.prepare_tree(&view.tree.nodes[0].id).unwrap();
+            assert_eq!(draft.as_deref(), Some("same question"));
+            // Retained tool results replay completely, by call ID and in order.
+            let tools: Vec<_> = view.records[1]
+                .iter()
+                .filter_map(|r| match r {
+                    ReplayRecord::Event(AgentEvent::ToolFinished { id, result }) => {
+                        Some((id.as_str(), result["content"].as_str().unwrap()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                tools,
+                [
+                    ("call-a", "result for call-a"),
+                    ("call-b", "result for call-b")
+                ]
+            );
+            assert_eq!(users(&view.records[0]), ["same question"]);
+            assert_eq!(answers(&view.records[1]), ["same answer"]);
+            // Pending display events only enter replay, never completed Views.
+            for records in &view.records {
+                assert!(!records.iter().any(|record| matches!(
+                    record,
+                    ReplayRecord::Event(AgentEvent::AssistantFinished { text })
+                        if text == "pending answer"
+                )));
+            }
+            let replay_pending = view
                 .tree
                 .replay(&journal.active.as_ref().unwrap().file, view.tree.leaf, true)
                 .unwrap();
-            assert!(replay.iter().any(|record| matches!(record,ReplayRecord::Event(AgentEvent::AssistantFinished {text}) if text == "pending answer")));
-            for (index, records) in view.records.iter().enumerate() {
-                assert!(!records.iter().any(|record| matches!(record,ReplayRecord::Event(AgentEvent::AssistantFinished {text}) if text == "pending answer")));
-                let users = records
-                    .iter()
-                    .filter(|r| matches!(r, ReplayRecord::User(_)))
-                    .count();
-                assert_eq!(users, usize::from(index % 2 == 0));
-                let tools: Vec<_> = records
-                    .iter()
-                    .filter_map(|r| match r {
-                        ReplayRecord::Event(AgentEvent::ToolFinished { id, result }) => {
-                            Some((id.as_str(), result["content"].as_str().unwrap()))
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                if index == 1 {
-                    assert_eq!(
-                        tools,
-                        [
-                            ("call-a", "result for call-a"),
-                            ("call-b", "result for call-b")
-                        ]
-                    );
-                } else {
-                    assert!(tools.is_empty());
-                }
-            }
+            assert!(replay_pending.iter().any(|record| matches!(
+                record,
+                ReplayRecord::Event(AgentEvent::AssistantFinished { text })
+                    if text == "pending answer"
+            )));
+            let replay_committed = view
+                .tree
+                .replay(
+                    &journal.active.as_ref().unwrap().file,
+                    view.tree.leaf,
+                    false,
+                )
+                .unwrap();
+            assert!(!replay_committed.iter().any(|record| matches!(
+                record,
+                ReplayRecord::Event(AgentEvent::AssistantFinished { text })
+                    if text == "pending answer"
+            )));
             // Read failure must reject the whole View, not return the earlier valid nodes.
             let tree = journal.tree().unwrap();
             journal
@@ -778,13 +894,52 @@ mod tests {
                 .unwrap();
             let id = journal.id().unwrap().to_owned();
             drop(journal);
-            let restored = load(dir.path(), Some(&id), true).unwrap();
+            let mut restored = load(dir.path(), Some(&id), true).unwrap();
             assert!(restored.replay.is_empty());
+            let view = restored.journal.tree_view().unwrap();
+            assert!(view.tree.nodes.is_empty());
+            assert!(view.records.is_empty());
+            for node in &tree.nodes {
+                assert_eq!(
+                    restored
+                        .journal
+                        .prepare_tree(&node.id)
+                        .err()
+                        .unwrap()
+                        .to_string(),
+                    "unknown session tree target"
+                );
+            }
             assert!(!text(&restored.checkpoint.session).contains("first-answer"));
             assert_eq!(
                 list(dir.path()).unwrap().sessions[0].summary,
                 "Untitled session"
             );
+            // New input continues from the empty effective history only; the
+            // discarded turn never returns and the session keeps its identity.
+            let mut journal = restored.journal;
+            let mut session = restored.checkpoint.session;
+            turn(
+                &mut journal,
+                &mut session,
+                &metadata,
+                "next-question",
+                "next-answer",
+                false,
+            );
+            for node in &tree.nodes {
+                assert_unknown_target(&mut journal, &node.id);
+            }
+            let active = journal.tree().unwrap();
+            assert_eq!(active.nodes.len(), 2);
+            assert_eq!(active.nodes[0].parent, None);
+            assert_eq!(active.nodes[0].text, "next-question");
+            assert_eq!(active.path(active.leaf), vec![0, 1]);
+            let listing = list(dir.path()).unwrap();
+            assert_eq!(listing.sessions.len(), 1);
+            assert_eq!(listing.sessions[0].id, id);
+            assert_eq!(listing.sessions[0].summary, "next-question");
+            assert_eq!(listing.sessions[0].preview, "next-answer");
         }
     }
     #[test]
@@ -836,6 +991,10 @@ mod tests {
             } = journal.prepare_tree(&user).unwrap();
             assert!(text(&candidate).contains("answer-before-summary"));
             assert!(!text(&candidate).contains("compacted system"));
+            // Compaction must not discard nodes that are still effective.
+            let tree = journal.tree().unwrap();
+            assert_eq!(tree.nodes.len(), 4);
+            assert_eq!(tree.path(tree.leaf), vec![0, 1, 2, 3]);
             let id = journal.id().unwrap().to_owned();
             let path = dir.path().join(format!("{id}.jsonl"));
             let before = std::fs::read(&path).unwrap();
@@ -848,8 +1007,120 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), before);
             assert!(journal.check().is_err());
             drop(journal);
-            let restored = load(dir.path(), Some(&id), true).unwrap();
+            let mut restored = load(dir.path(), Some(&id), true).unwrap();
             assert_eq!(text(&restored.checkpoint.session), text(&compacted));
+            // The failed navigation must not invalidate the effective nodes.
+            let tree = restored.journal.tree().unwrap();
+            assert_eq!(tree.nodes.len(), 4);
+            assert_eq!(tree.path(tree.leaf), vec![0, 1, 2, 3]);
+            let view = restored.journal.tree_view().unwrap();
+            assert_eq!(view.records.len(), 4);
+            let Prepared {
+                session: candidate, ..
+            } = restored.journal.prepare_tree(&user).unwrap();
+            assert!(text(&candidate).contains("answer-before-summary"));
+            assert!(!text(&candidate).contains("compacted system"));
+        }
+    }
+
+    #[test]
+    fn tree_legacy_reselection_log_resolves_final_committed_path_both_protocols() {
+        for protocol in [Protocol::Completion, Protocol::Response] {
+            let dir = tempfile::tempdir().unwrap();
+            let metadata = metadata(dir.path());
+            let mut journal = SessionJournal::new(dir.path().into());
+            let mut session =
+                Session::new("model".into(), protocol, "system".into(), EditMode::Replace);
+            turn(
+                &mut journal,
+                &mut session,
+                &metadata,
+                "question-a",
+                "answer-a",
+                false,
+            );
+            turn(
+                &mut journal,
+                &mut session,
+                &metadata,
+                "question-b",
+                "answer-b",
+                false,
+            );
+            let tree = journal.tree().unwrap();
+            let a_answer = tree.nodes[1].id.clone();
+            let b_answer = tree.nodes[3].id.clone();
+
+            // Simulate an old client: it caches its prepared selection of the
+            // B answer node before rewinding, rewinds to A, appends a C
+            // branch, then writes the cached B selection back as a full state.
+            let cached = journal.prepare_tree(&b_answer).unwrap();
+            let Prepared {
+                session: candidate,
+                selection,
+                ..
+            } = journal.prepare_tree(&a_answer).unwrap();
+            assert!(text(&candidate).contains("answer-a"));
+            assert!(!text(&candidate).contains("question-b"));
+            journal
+                .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
+                .unwrap();
+            session = candidate;
+            turn(
+                &mut journal,
+                &mut session,
+                &metadata,
+                "question-c",
+                "answer-c",
+                false,
+            );
+            let tree = journal.tree().unwrap();
+            assert_eq!(tree.nodes.len(), 4);
+            let user_c = tree.nodes[2].id.clone();
+            let answer_c = tree.nodes[3].id.clone();
+            journal
+                .write_tree_state(&metadata, (&cached.session).into(), Some(&cached.selection))
+                .unwrap();
+
+            // The new reader resolves the whole log to the final committed
+            // path A→B and rejects C instead of failing midway with unknown
+            // targets. Reading must not modify the file.
+            let path = dir.path().join(format!("{}.jsonl", journal.id().unwrap()));
+            let before_bytes = std::fs::read(&path).unwrap();
+            let before_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+            let tree = journal.tree().unwrap();
+            assert_eq!(tree.nodes.len(), 4);
+            assert_eq!(tree.nodes[0].text, "question-a");
+            assert_eq!(tree.nodes[1].text, "answer-a");
+            assert_eq!(tree.nodes[2].text, "question-b");
+            assert_eq!(tree.nodes[3].text, "answer-b");
+            assert_eq!(tree.nodes[3].parent, Some(2));
+            assert_eq!(tree.path(tree.leaf), vec![0, 1, 2, 3]);
+            for id in [&user_c, &answer_c] {
+                assert_unknown_target(&mut journal, id);
+            }
+            let view = journal.tree_view().unwrap();
+            assert_eq!(view.records.len(), 4);
+            for records in &view.records {
+                assert!(!users(records).contains(&"question-c"));
+                assert!(!answers(records).contains(&"answer-c"));
+            }
+            let listing = list(dir.path()).unwrap();
+            assert_eq!(listing.sessions[0].summary, "question-a");
+            assert_eq!(listing.sessions[0].preview, "answer-a");
+            assert!(listing.sessions[0].done);
+            assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().modified().unwrap(),
+                before_mtime
+            );
+
+            let id = journal.id().unwrap().to_owned();
+            drop(journal);
+            let restored = load(dir.path(), Some(&id), true).unwrap();
+            assert_eq!(text(&restored.checkpoint.session), text(&cached.session));
+            assert!(!text(&restored.checkpoint.session).contains("question-c"));
+            assert_eq!(users(&restored.replay), ["question-a", "question-b"]);
         }
     }
 }

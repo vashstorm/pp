@@ -58,7 +58,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/tree",
         icon: "⑂",
         usage: "/tree",
-        description: "Browse session branches and continue from an earlier point (TUI)",
+        description: "Browse current history and rewind to an earlier point (TUI)",
     },
     CommandSpec {
         name: "/skills",
