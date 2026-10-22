@@ -8,6 +8,149 @@ fn rows(home: &std::path::Path) -> Vec<Value> {
     database(home).prepare("SELECT r.id,r.status,r.input_tokens,r.output_tokens,r.cached_tokens,r.ttft_ms,r.purpose,r.entry_id,r.session_file,p.output_json,p.session_entry_json,r.error_message,r.cache_write_tokens FROM requests r JOIN request_payloads p ON p.request_id=r.id ORDER BY r.id").unwrap().query_map([],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"input":r.get::<_,Option<i64>>(2)?,"output":r.get::<_,Option<i64>>(3)?,"cache":r.get::<_,Option<i64>>(4)?,"ttft":r.get::<_,Option<f64>>(5)?,"purpose":r.get::<_,String>(6)?,"entry_id":r.get::<_,Option<String>>(7)?,"session_file":r.get::<_,Option<String>>(8)?,"payload":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap(),"entry":r.get::<_,Option<String>>(10)?.map(|s|serde_json::from_str::<Value>(&s).unwrap()),"error":r.get::<_,Option<String>>(11)?,"cache_write":r.get::<_,Option<i64>>(12)?}))).unwrap().collect::<Result<_,_>>().unwrap()
 }
 
+fn gc_counts(output: &Output) -> Vec<Vec<u64>> {
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| {
+            line.split(|character: char| !character.is_ascii_digit())
+                .filter(|field| !field.is_empty())
+                .map(|field| field.parse().unwrap())
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn gc_removes_expired_logs_and_sqlite_snapshots_without_models() {
+    use chrono::{Days, Local, Utc};
+    use std::{fs, os::unix::fs::symlink};
+
+    let home = tempfile::tempdir().unwrap();
+    let (_server, _address) = start_stats_server(home.path());
+    let db = database(home.path());
+    let cutoff = Utc::now().timestamp_millis() - 90 * 24 * 60 * 60 * 1000;
+    for (id, timestamp) in [
+        (1, cutoff - 60_000),
+        (2, cutoff + 60_000),
+        (3, cutoff + 91 * 24 * 60 * 60 * 1000),
+    ] {
+        db.execute("INSERT INTO requests(id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,duration_ms,status) VALUES (?1,?1,?2,'m','p','p/m','completion','project','/project','task',1,'ok')", rusqlite::params![id, timestamp]).unwrap();
+        db.execute("INSERT INTO request_payloads(request_id,output_json,session_entry_json) VALUES (?1,?2,'[]')", rusqlite::params![id, if id == 1 { format!("\"{}\"", "x".repeat(1024 * 1024)) } else { "{}".to_owned() }]).unwrap();
+    }
+    let pages_before: i64 = db
+        .pragma_query_value(None, "page_count", |r| r.get(0))
+        .unwrap();
+    let logs = home.path().join(".pp/logs");
+    let day = Local::now()
+        .date_naive()
+        .checked_sub_days(Days::new(90))
+        .unwrap();
+    let old = day.pred_opt().unwrap();
+    let old_names = [
+        format!("pp.{old}.1.log"),
+        format!("debug.{old}.0001"),
+        format!("prompt-debug.{old}T12-00-00-{}", "ab".repeat(16)),
+    ];
+    let kept_names = [
+        format!("pp.{day}.1.log"),
+        format!("debug.{day}.0001"),
+        format!("prompt-debug.{day}T12-00-00-{}", "ab".repeat(16)),
+        format!("pp.{old}.01.log"),
+        "unrelated.log".to_owned(),
+    ];
+    for name in old_names.iter().chain(&kept_names) {
+        fs::write(logs.join(name), b"fixture").unwrap();
+    }
+    let sentinel = home.path().join("sentinel");
+    fs::write(&sentinel, b"keep").unwrap();
+    let link = logs.join(format!("pp.{old}.2.log"));
+    symlink(&sentinel, &link).unwrap();
+    let directory = logs.join(format!("pp.{old}.3.log"));
+    fs::create_dir(&directory).unwrap();
+    let sessions = home.path().join(".pp/agent/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let session = sessions.join(format!("{old}T12-00-00-{}.jsonl", "ab".repeat(16)));
+    fs::write(&session, b"saved session").unwrap();
+
+    let output = Cli::spawn(home.path(), &["gc"], &[]).finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Three expired and three boundary logs, plus the server's current log.
+    // Foreign names, symlinks, directories, and snapshots are not extra inventory.
+    assert_eq!(gc_counts(&output), [vec![7, 3, 4], vec![3, 1, 2]]);
+    for name in old_names {
+        assert!(!logs.join(name).exists());
+    }
+    for name in kept_names {
+        assert_eq!(fs::read(logs.join(name)).unwrap(), b"fixture");
+    }
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(directory.is_dir());
+    assert_eq!(fs::read(&sentinel).unwrap(), b"keep");
+    assert_eq!(fs::read(&session).unwrap(), b"saved session");
+    let remaining: Vec<i64> = db
+        .prepare("SELECT id FROM requests ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(remaining, [2, 3]);
+    let payload_ids: Vec<i64> = db
+        .prepare("SELECT request_id FROM request_payloads ORDER BY request_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(payload_ids, [2, 3]);
+    let pages_after: i64 = db
+        .pragma_query_value(None, "page_count", |r| r.get(0))
+        .unwrap();
+    assert!(
+        pages_after < pages_before,
+        "VACUUM must reclaim expired payload pages"
+    );
+    assert_eq!(
+        db.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    let second = Cli::spawn(home.path(), &["gc"], &[]).finish();
+    assert!(second.status.success());
+    assert_eq!(gc_counts(&second), [vec![4, 0, 4], vec![2, 0, 2]]);
+}
+
+#[test]
+fn gc_empty_home_does_not_create_storage_and_rejects_symlink_database() {
+    use std::{fs, os::unix::fs::symlink};
+    let home = tempfile::tempdir().unwrap();
+    let output = Cli::spawn(home.path(), &["gc"], &[]).finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(gc_counts(&output), [vec![0, 0, 0], vec![0, 0, 0]]);
+    assert!(!home.path().join(".pp").exists());
+    let stats = home.path().join(".pp/stats");
+    fs::create_dir_all(&stats).unwrap();
+    let sentinel = home.path().join("sentinel");
+    fs::write(&sentinel, b"keep").unwrap();
+    symlink(&sentinel, stats.join("stats.db")).unwrap();
+    let output = Cli::spawn(home.path(), &["gc"], &[]).finish();
+    assert!(!output.status.success());
+    assert_eq!(fs::read(&sentinel).unwrap(), b"keep");
+}
+
 #[test]
 fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     let server = server();

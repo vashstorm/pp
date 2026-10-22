@@ -119,6 +119,34 @@ pub(crate) fn database_path() -> Result<PathBuf> {
         .join("stats/stats.db"))
 }
 
+/// Returns (total requests before cleanup, removed), counted in the same transaction.
+/// Delete request snapshots before their parents, then reclaim the freed pages.
+pub(crate) fn gc(cutoff: i64) -> Result<(u64, u64)> {
+    let path = database_path()?;
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => ensure!(metadata.is_file(), "statistics database must be a file"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(error) => return Err(error.into()),
+    }
+    let mut store = Store::open(&path)?;
+    let tx = store
+        .conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let total = tx.query_row("SELECT COUNT(*) FROM requests", [], |row| {
+        row.get::<_, i64>(0)
+    })? as u64;
+    tx.execute(
+        "DELETE FROM request_payloads WHERE request_id IN (SELECT id FROM requests WHERE timestamp < ?1)",
+        [cutoff],
+    )?;
+    let removed = tx.execute("DELETE FROM requests WHERE timestamp < ?1", [cutoff])? as u64;
+    tx.commit()?;
+    if removed > 0 {
+        store.conn.execute_batch("VACUUM;")?;
+    }
+    Ok((total, removed))
+}
+
 pub(crate) struct Store {
     pub conn: Connection,
     models_path: PathBuf,

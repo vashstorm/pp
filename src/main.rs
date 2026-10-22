@@ -25,13 +25,20 @@ use std::{
 
 #[derive(Parser)]
 #[command(
+    name = "pp",
     version,
+    disable_version_flag = true,
     args_conflicts_with_subcommands = true,
-    about = "Minimal coding agent using OpenAI-compatible Responses or Chat Completions"
+    about = "Minimal coding agent using OpenAI-compatible Responses or Chat Completions",
+    after_help = "Modes:\n  pp -p 'task'          run one task and exit\n  pp -c [SESSION_ID]    continue a saved session\n  pp                    interactive session (TUI on a terminal, line mode otherwise)\n\nUse `pp stats --help` for the stats subcommand, or `pp gc` to remove data older than 90 days."
 )]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
+
+    /// Print version information
+    #[arg(short = 'v', short_alias = 'V', long, action = clap::ArgAction::Version)]
+    version: (),
 
     /// Run one complete task and exit; omit for an interactive session
     #[arg(short, long)]
@@ -59,7 +66,9 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// 启动本地统计页面
+    /// Remove logs and SQLite request data older than 90 days
+    Gc,
+    /// Start the local stats page server
     Stats {
         #[arg(long, default_value_t = 3848)]
         port: u16,
@@ -68,11 +77,16 @@ enum Command {
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    let logging = match logging::init() {
-        Ok(guard) => Some(guard),
-        Err(_) => {
-            let _ = writeln!(io::stderr().lock(), "warning: file logging unavailable");
-            None
+    // gc reports the existing inventory without creating its own diagnostic log.
+    let logging = if matches!(args.command, Some(Command::Gc)) {
+        None
+    } else {
+        match logging::init() {
+            Ok(guard) => Some(guard),
+            Err(_) => {
+                let _ = writeln!(io::stderr().lock(), "warning: file logging unavailable");
+                None
+            }
         }
     };
     let started = std::time::Instant::now();
@@ -118,9 +132,33 @@ fn main() -> ExitCode {
     }
 }
 
+fn run_gc() -> Result<()> {
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(90);
+    let (requests_total, requests_removed) =
+        stats::gc(cutoff.timestamp_millis()).context("cleaning statistics database")?;
+    // Logs encode local calendar dates, not precise creation timestamps.
+    let (logs_total, logs_removed) = logging::gc(cutoff.with_timezone(&chrono::Local).date_naive())
+        .context("cleaning log files")?;
+    let mut stdout = io::stdout().lock();
+    writeln!(
+        stdout,
+        "Logs: total={logs_total}, removed={logs_removed}, remaining={}",
+        logs_total - logs_removed
+    )?;
+    writeln!(
+        stdout,
+        "SQLite requests: total={requests_total}, removed={requests_removed}, remaining={}",
+        requests_total - requests_removed
+    )?;
+    Ok(())
+}
+
 fn run(args: Args) -> Result<()> {
-    if let Some(Command::Stats { port }) = args.command {
-        return stats::server::run(port);
+    if let Some(command) = args.command {
+        return match command {
+            Command::Gc => run_gc(),
+            Command::Stats { port } => stats::server::run(port),
+        };
     }
     if let Some(prompt) = &args.prompt {
         ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
