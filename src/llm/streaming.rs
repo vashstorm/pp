@@ -40,11 +40,22 @@ struct RawUsage<'a> {
 impl<'de> Deserialize<'de> for ResponseEvent {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
-        let written = serde_json::from_str::<ResponseUsage<'_>>(raw.get())
-            .ok()
-            .and_then(|event| event.response?.usage)
-            .and_then(|usage| serde_json::from_str::<serde_json::Value>(usage.get()).ok())
-            .and_then(|usage| cache_write_tokens(&usage, "input_tokens_details"));
+        // usage 只随 response.* 生命周期事件出现；先用子串探测短路，
+        // 让占绝大多数的 delta 分片免去一次全文 JSON 扫描。
+        // 探测按带引号的字段名匹配，与空白写法无关；误报只多一次解析，结果不变。
+        let written = raw
+            .get()
+            .contains("\"response\"")
+            .then(|| {
+                serde_json::from_str::<ResponseUsage<'_>>(raw.get())
+                    .ok()
+                    .and_then(|event| event.response?.usage)
+                    .and_then(|usage| {
+                        serde_json::from_str::<serde_json::Value>(usage.get()).ok()
+                    })
+                    .and_then(|usage| cache_write_tokens(&usage, "input_tokens_details"))
+            })
+            .flatten();
         match serde_json::from_str(raw.get()) {
             Ok(event) => return Ok(Self(event, written)),
             Err(error)
