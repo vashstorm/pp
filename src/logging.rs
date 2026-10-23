@@ -83,9 +83,9 @@ pub(crate) fn gc(cutoff: NaiveDate) -> anyhow::Result<(u64, u64)> {
         let entry = entry?;
         let name = entry.file_name();
         let date = name.to_str().and_then(|name| {
-            parse_name(name)
-                .or_else(|| parse_debug_name(name))
-                .map(|(date, _)| date)
+            Namespace::ALL
+                .iter()
+                .find_map(|namespace| namespace.parse_file_name(name).map(|(date, _)| date))
                 .or_else(|| parse_prompt_name(name))
         });
         if let Some(date) = date
@@ -413,6 +413,9 @@ enum Namespace {
 }
 
 impl Namespace {
+    // gc 等按名字扫描的路径遍历全部 namespace，新增变体自动纳入。
+    const ALL: [Namespace; 2] = [Self::Pp, Self::Debug];
+
     fn file_name(self, date: NaiveDate, number: u64) -> String {
         match self {
             Self::Pp => format!("pp.{date}.{number}.log"),
