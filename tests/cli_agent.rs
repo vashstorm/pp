@@ -2453,6 +2453,57 @@ fn missing_or_malformed_config_fails_without_environment_fallback_or_secret_leak
     }
 }
 
+const PROCESS_DEADLINE: Duration = Duration::from_secs(10);
+
+// 等待 bash 写出 PID marker 文件：进入执行阶段的确定性栅栏。
+// CLI 与 TUI 测试共用，后台与取消路径都以它为进程级屏障。
+fn cancel_wait_pid_files(project: &std::path::Path, names: &[&str]) {
+    let deadline = Instant::now() + PROCESS_DEADLINE;
+    loop {
+        if names.iter().all(|name| project.join(name).is_file()) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "bash PID marker 未出现：{names:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn cancel_wait_pid_dead(path: &std::path::Path) {
+    let pid: i32 = std::fs::read_to_string(path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let pid = rustix::process::Pid::from_raw(pid).unwrap();
+    let deadline = Instant::now() + PROCESS_DEADLINE;
+    while rustix::process::test_kill_process(pid).is_ok() {
+        assert!(Instant::now() < deadline, "进程 {pid:?} 仍在运行");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+// bash scratch 目录建在任务 cwd 下；结束或取消收尾必须清理干净。
+fn cancel_assert_no_scratch(project: &std::path::Path) {
+    let deadline = Instant::now() + PROCESS_DEADLINE;
+    loop {
+        let leftover: Vec<_> = std::fs::read_dir(project)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".pp-tmp-"))
+            .collect();
+        if leftover.is_empty() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "bash scratch 目录未清理：{leftover:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
 #[cfg(unix)]
 mod tui {
     use super::*;
@@ -2666,7 +2717,18 @@ mod tui {
         }
 
         fn ready(&mut self) {
-            self.wait_for("空闲输入框", input_is_ready);
+            self.wait_for("空闲输入框", |screen| {
+                input_is_ready(screen)
+                    && !screen.contents().lines().any(|line| {
+                        line.trim_start().starts_with("✻ ") && !line.contains(" · done ")
+                    })
+            });
+        }
+
+        fn completed(&mut self) {
+            self.wait_for("task completion committed", |screen| {
+                input_is_ready(screen) && screen.contents().contains("✻ Completed")
+            });
         }
 
         fn ready_effort(&mut self, expected: &str) {
@@ -3848,7 +3910,7 @@ mod tui {
             }
             stream.finish();
             pty.text("inspected");
-            pty.ready();
+            pty.completed();
             pty.input("run bash\r");
             let (request, _) = receive_at(&server, path);
             let command = "for i in {0..13}; do printf 'output-%02d\\n' \"$i\"; done";
@@ -4142,6 +4204,7 @@ mod tui {
         let system = body["messages"][0].clone();
         final_reply(request, "picker alpha retained");
         pty.text("picker alpha retained");
+        pty.completed();
         pty.ready_model("vendor-a");
 
         pty.input("/");
@@ -4194,6 +4257,7 @@ mod tui {
         let history = messages.clone();
         final_reply(request, "picker beta retained");
         pty.text("picker beta retained");
+        pty.completed();
         pty.ready_model("vendor-b");
 
         // 默认选中当前模型，直接确认不能误选第一项。
@@ -4664,7 +4728,7 @@ mod tui {
         let (request, _) = pty.request(&server);
         final_reply(request, "history-first-ok");
         pty.text("history-first-ok");
-        pty.ready();
+        pty.completed();
 
         pty.input("alpha\x0a中🙂trash\x01\x01\x1b[C\x1b[C\x0b-kept\x05\x05\r");
         let (request, body) = pty.request(&server);
@@ -4688,7 +4752,7 @@ mod tui {
         no_more(&server);
         final_reply(request, "history-second-ok");
         pty.text("history-second-ok");
-        pty.ready();
+        pty.completed();
 
         pty.input("\x1b[A\x01\x0bcopied\r");
         let (request, body) = pty.request(&server);

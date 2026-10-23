@@ -653,6 +653,16 @@ fn run_cli_task(
                 );
             }
             AgentEvent::ToolFinished { id, result } => {
+                if let (Some(task_id), Some(status)) =
+                    (result["task_id"].as_str(), result["status"].as_str())
+                {
+                    cli_write(
+                        stderr,
+                        &format!("task {task_id}: {status}\n"),
+                        &mut err_broken,
+                        &mut first_error,
+                    );
+                }
                 if let Some((current_id, name)) = current_tool.take()
                     && current_id == id
                 {

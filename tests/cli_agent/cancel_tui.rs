@@ -3,7 +3,8 @@
 // 以及取消收尾持久化失败优先显示 persisting session。全部通过真实 PTY、本地
 // loopback HTTP、原始 TCP fixture、进程/文件 marker 作栅栏观察行为，不用 sleep
 // 猜测阶段。辅助项均以 `cancel_` 前缀命名，不新增 use 声明，避免与兄弟 include
-// 文件冲突。
+// 文件冲突。文件后半为 `background_` 前缀的后台任务 PTY 场景：Esc 取消清理、
+// Ctrl-C 退出闭环与 status/stop 生命周期展示。
 
 const CANCEL_NOTE: &str = "Task cancelled. File changes were not rolled back.";
 const CANCEL_SETTINGS: &str = "{\"default_model\":\"fixture/primary\",\"request_timeout_seconds\":120,\"notification_timeout_seconds\":2}";
@@ -134,56 +135,14 @@ fn cancel_assert_no_request(fixture: &Server) {
     );
 }
 
-// 等待 bash 写出 PID marker 文件：进入执行阶段的确定性栅栏。
-fn cancel_wait_pid_files(project: &Path, names: &[&str]) {
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        if names.iter().all(|name| project.join(name).is_file()) {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "bash PID marker 未出现：{names:?}"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn cancel_wait_pid_dead(path: &Path) {
-    let pid: i32 = std::fs::read_to_string(path).unwrap().trim().parse().unwrap();
-    let pid = rustix::process::Pid::from_raw(pid).unwrap();
-    let deadline = Instant::now() + DEADLINE;
-    while rustix::process::test_kill_process(pid).is_ok() {
-        assert!(
-            Instant::now() < deadline,
-            "取消后进程 {pid:?} 仍在运行"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-// bash scratch 目录建在任务 cwd 下；取消收尾必须清理干净。
-fn cancel_assert_no_scratch(project: &Path) {
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        let leftover: Vec<_> = std::fs::read_dir(project)
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".pp-tmp-"))
-            .collect();
-        if leftover.is_empty() {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "取消后 bash scratch 目录未清理：{leftover:?}"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
 // 驱动 write→bash→write 批次并等到 bash 进入等待阶段。
-fn cancel_drive_batch(pty: &mut Pty, fixture: &Server, protocol: &str, prompt: &str, project: &Path) {
+fn cancel_drive_batch(
+    pty: &mut Pty,
+    fixture: &Server,
+    protocol: &str,
+    prompt: &str,
+    project: &Path,
+) {
     pty.input(&format!("{prompt}\r"));
     let (request, _) = pty.request_at(fixture, api_path(protocol));
     let batch = [
@@ -192,7 +151,11 @@ fn cancel_drive_batch(pty: &mut Pty, fixture: &Server, protocol: &str, prompt: &
             "write",
             json!({"path":"kept.txt","content":"kept"}),
         ),
-        ("batch-bash", "bash", json!({"command":CANCEL_BATCH_COMMAND})),
+        (
+            "batch-bash",
+            "bash",
+            json!({"command":CANCEL_BATCH_COMMAND}),
+        ),
         (
             "batch-skip",
             "write",
@@ -238,7 +201,10 @@ fn cancel_assert_batch_stopped(project: &Path) {
 fn cancel_assert_paired_results(body: &Value, protocol: &str) {
     let outputs = cancel_tool_outputs(body, protocol);
     assert_eq!(
-        outputs.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        outputs
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
         ["batch-kept", "batch-bash", "batch-skip"],
         "三个 tool result 必须与原 call_id 按序配对"
     );
@@ -270,8 +236,14 @@ enum CancelRawEvent {
 
 enum CancelRawCommand {
     Hold,
-    Delta { protocol: &'static str, text: String },
-    Final { protocol: &'static str, text: String },
+    Delta {
+        protocol: &'static str,
+        text: String,
+    },
+    Final {
+        protocol: &'static str,
+        text: String,
+    },
 }
 
 struct CancelRawModel {
@@ -401,9 +373,7 @@ fn cancel_raw_serve(
         while running.load(std::sync::atomic::Ordering::Relaxed) {
             match control.recv_timeout(Duration::from_millis(5)) {
                 Ok(CancelRawCommand::Hold) => {}
-                Ok(CancelRawCommand::Delta { protocol, text }) => {
-                    connection.delta(protocol, &text)
-                }
+                Ok(CancelRawCommand::Delta { protocol, text }) => connection.delta(protocol, &text),
                 Ok(CancelRawCommand::Final { protocol, text }) => {
                     connection.final_reply(protocol, &text);
                     break;
@@ -422,9 +392,7 @@ fn cancel_raw_serve(
 // 读取完整 Content-Length 请求；header 之后不再消费对端数据，只用于检测关闭。
 fn cancel_raw_read_request(stream: &mut std::net::TcpStream) -> Option<(String, Value)> {
     stream.set_nonblocking(false).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
     let header_end = loop {
@@ -498,9 +466,7 @@ impl CancelRawStream {
     fn delta(&mut self, protocol: &str, text: &str) {
         self.open();
         if protocol == "completion" {
-            self.frame(
-                &chat_chunk(json!({"role":"assistant","content":text}), None).to_string(),
-            );
+            self.frame(&chat_chunk(json!({"role":"assistant","content":text}), None).to_string());
         } else {
             self.frame(
                 &json!({
@@ -517,9 +483,7 @@ impl CancelRawStream {
     fn final_reply(&mut self, protocol: &str, text: &str) {
         self.open();
         if protocol == "completion" {
-            self.frame(
-                &chat_chunk(json!({"role":"assistant","content":text}), None).to_string(),
-            );
+            self.frame(&chat_chunk(json!({"role":"assistant","content":text}), None).to_string());
             self.frame(&chat_chunk(json!({}), Some("stop")).to_string());
             self.frame("[DONE]");
         } else {
@@ -564,11 +528,7 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
             let raw = CancelRawModel::start();
             let home = tempfile::tempdir().unwrap();
             std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
-            std::fs::write(
-                config_path(home.path(), "models.yml"),
-                raw.models(protocol),
-            )
-            .unwrap();
+            std::fs::write(config_path(home.path(), "models.yml"), raw.models(protocol)).unwrap();
             let mut pty = Pty::start_with_existing_files(home.path());
             pty.ready();
             pty.input("cancel idle prompt\r");
@@ -613,9 +573,18 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
             );
             if protocol == "completion" {
                 let messages = body["messages"].as_array().unwrap();
-                assert_eq!(messages.iter().filter(|item| item["role"] == "user").count(), 2);
                 assert_eq!(
-                    messages.iter().filter(|item| item["role"] == "assistant").count(),
+                    messages
+                        .iter()
+                        .filter(|item| item["role"] == "user")
+                        .count(),
+                    2
+                );
+                assert_eq!(
+                    messages
+                        .iter()
+                        .filter(|item| item["role"] == "assistant")
+                        .count(),
                     0
                 );
                 assert_eq!(messages[1]["content"], "cancel idle prompt");
@@ -634,9 +603,21 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
             pty.finish();
             raw.assert_silent();
             let database = super::stats::database(home.path());
-            let statuses: Vec<String> = database.prepare("SELECT status FROM requests ORDER BY id").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+            let statuses: Vec<String> = database
+                .prepare("SELECT status FROM requests ORDER BY id")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
             assert_eq!(statuses, ["aborted", "ok"]);
-            let ttft: Option<f64> = database.query_row("SELECT ttft_ms FROM requests WHERE status='aborted'",[],|r|r.get(0)).unwrap();
+            let ttft: Option<f64> = database
+                .query_row(
+                    "SELECT ttft_ms FROM requests WHERE status='aborted'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(ttft.is_some(), phase == "sse");
         }
     }
@@ -715,11 +696,7 @@ fn tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_l
         Tools,
     }
     for protocol in ["completion", "response"] {
-        for phase in [
-            CancelPhase::Headers,
-            CancelPhase::Sse,
-            CancelPhase::Tools,
-        ] {
+        for phase in [CancelPhase::Headers, CancelPhase::Sse, CancelPhase::Tools] {
             let fixture = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
@@ -787,10 +764,13 @@ fn tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_l
 
             // 交互式 -r 恢复：Note 恰好一次，不出现假 interrupted 横幅。
             let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
-            resumed.wait_for("恢复取消会话：持久记录与唯一取消 Note", |screen| {
-                screen.contents().contains("persist cancel prompt")
-                    && cancel_count_normalized(screen, CANCEL_NOTE) == 1
-            });
+            resumed.wait_for(
+                "恢复取消会话：持久记录与唯一取消 Note",
+                |screen| {
+                    screen.contents().contains("persist cancel prompt")
+                        && cancel_count_normalized(screen, CANCEL_NOTE) == 1
+                },
+            );
             assert!(
                 !cancel_normalize(resumed.parser.screen())
                     .contains("Previousrequestwasinterrupted."),
@@ -897,11 +877,7 @@ fn tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_l
             cancel_assert_no_request(&fixture);
 
             // 行模式 -c ID：发送保存的原生请求，历史仍合法、旧工具不执行。
-            let cli = Cli::spawn(
-                project.path(),
-                &["-c", id.as_str()],
-                &[("HOME", home_path)],
-            );
+            let cli = Cli::spawn(project.path(), &["-c", id.as_str()], &[("HOME", home_path)]);
             let (request, body) = receive_at(&fixture, path);
             assert_eq!(
                 cancel_user_messages(&body, protocol),
@@ -967,7 +943,8 @@ fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
         pty.input("overflow cancel batch\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         let big = "A".repeat(400_000);
-        let command = "printf 'overflow-ready\\n'; printf '%s' \"$$\" > overflow-bash.pid; sleep 30";
+        let command =
+            "printf 'overflow-ready\\n'; printf '%s' \"$$\" > overflow-bash.pid; sleep 30";
         if protocol == "completion" {
             reply(
                 request,
@@ -988,10 +965,13 @@ fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
         // PID marker 是进入 bash 执行阶段的栅栏。
         cancel_wait_pid_files(project.path(), &["overflow-bash.pid"]);
         pty.input("\x1b");
-        pty.wait_for("取消收尾提交失败显示 persisting session 红色弹窗", |screen| {
-            notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
-                && cancel_normalize(screen).contains("persistingsession")
-        });
+        pty.wait_for(
+            "取消收尾提交失败显示 persisting session 红色弹窗",
+            |screen| {
+                notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
+                    && cancel_normalize(screen).contains("persistingsession")
+            },
+        );
         // 不声称成功取消。
         assert_eq!(
             cancel_count_normalized(pty.parser.screen(), CANCEL_NOTE),
@@ -1016,5 +996,291 @@ fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
             !journal.contains("pp.cancelled"),
             "取消终态提交失败时不得写 pp.cancelled"
         );
+    }
+}
+
+// —— 后台任务 PTY 场景（计划 TUI 部分）：真实受管进程、PID 文件栅栏、
+// 可见屏幕断言，不测静态标题文案。 ——
+
+// 受管理的后台命令：父 shell 忽略 TERM，父子 PID 写入 marker 文件，
+// 停止路径必须用 grace 后的 KILL 回收整个进程组。
+fn background_hold_command(parent_marker: &str, child_marker: &str, log: Option<&str>) -> String {
+    let mut command = String::from("trap '' TERM; ");
+    if let Some(log) = log {
+        command.push_str(&format!("printf '{log}\\n'; "));
+    }
+    command.push_str(&format!(
+        "printf '%s' \"$$\" > {parent_marker}; sleep 30 & child=$!; printf '%s' \"$child\" > {child_marker}; wait \"$child\""
+    ));
+    command
+}
+
+// 按协议回复单个工具调用。
+fn background_reply_call(request: Request, protocol: &str, id: &str, name: &str, args: Value) {
+    if protocol == "completion" {
+        calls_reply(request, json!([call(id, name, args)]));
+    } else {
+        response_reply(request, json!([response_call(id, name, args)]));
+    }
+}
+
+// 断言请求中的工具结果与 call_id 恰好配对一次，返回其结果快照。
+fn background_paired_snapshot(body: &Value, protocol: &str, call_id: &str) -> Value {
+    let outputs = cancel_tool_outputs(body, protocol);
+    assert_eq!(
+        outputs
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        [call_id],
+        "后台调用必须与原 call_id 恰好一次配对"
+    );
+    outputs[0].1.clone()
+}
+
+// 启动受管后台任务：PID marker 证明 bash 父子真正运行；启动后的下一次模型请求
+// 携带启动结果并被持有（模型停在等待响应阶段）；屏幕必须显示 task_id 与 running，
+// start 的完成不能被当作服务已退出。返回 (task_id, 启动快照, 持有的请求)。
+fn background_start_and_wait(
+    pty: &mut Pty,
+    fixture: &Server,
+    protocol: &str,
+    project: &Path,
+    start: &BackgroundStart<'_>,
+) -> (String, Value, Request) {
+    let [parent, child] = start.markers else {
+        panic!("后台启动需要恰好两个 PID marker");
+    };
+    let command = background_hold_command(parent, child, start.log);
+    pty.input(&format!("{}\r", start.prompt));
+    let (request, _) = pty.request_at(fixture, api_path(protocol));
+    background_reply_call(
+        request,
+        protocol,
+        start.call_id,
+        "bash",
+        json!({"command": command, "mode": "background"}),
+    );
+    cancel_wait_pid_files(project, start.markers);
+    let (request, body) = pty.request_at(fixture, api_path(protocol));
+    let snapshot = background_paired_snapshot(&body, protocol, start.call_id);
+    let task_id = snapshot["task_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("启动结果缺少 task_id：{snapshot}"))
+        .to_owned();
+    assert_eq!(snapshot["ok"], true);
+    assert_eq!(snapshot["status"], "running");
+    pty.wait_for("屏幕显示后台 task_id 与 running 状态", |screen| {
+        cancel_normalize(screen).contains(&format!("Task{task_id}:running"))
+    });
+    (task_id, snapshot, request)
+}
+
+// 一次后台启动的输入：marker 列表同时用于生成命令与进程级栅栏。
+struct BackgroundStart<'a> {
+    prompt: &'a str,
+    call_id: &'a str,
+    markers: &'a [&'a str],
+    log: Option<&'a str>,
+}
+
+// 两协议先启动后台任务并把下一模型请求停在等待响应阶段。Esc 后必须先清理
+// 父子 PID 与 scratch，再回到 Ready 且恰好一条取消 Note；下一用户任务正常执行，
+// 不重放旧启动调用。
+#[test]
+fn background_esc_cancels_managed_tasks_and_cleans_before_ready_without_replay() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&fixture, Some(protocol)),
+        )
+        .unwrap();
+        let path = api_path(protocol);
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready();
+        let start = BackgroundStart {
+            prompt: "background esc prompt",
+            call_id: "bg-esc-start",
+            markers: &["bg-esc-parent.pid", "bg-esc-child.pid"],
+            log: None,
+        };
+        let (task_id, _snapshot, held) =
+            background_start_and_wait(&mut pty, &fixture, protocol, project.path(), &start);
+        let parent_before = std::fs::read(project.path().join("bg-esc-parent.pid")).unwrap();
+        let child_before = std::fs::read(project.path().join("bg-esc-child.pid")).unwrap();
+        pty.input("\x1b");
+        // 先验证后台父子 PID 与 scratch 已清理，再观察 Ready 与唯一取消 Note。
+        cancel_wait_pid_dead(&project.path().join("bg-esc-parent.pid"));
+        cancel_wait_pid_dead(&project.path().join("bg-esc-child.pid"));
+        cancel_assert_no_scratch(project.path());
+        cancel_wait_cancelled_ready(&mut pty);
+        drop(held);
+        // 取消收尾不触发任何模型请求。
+        cancel_assert_no_request(&fixture);
+        // 下一用户任务正常执行，且旧启动调用不重放。
+        pty.input("background esc next\r");
+        let (request, body) = pty.request_at(&fixture, path);
+        assert_eq!(
+            cancel_user_messages(&body, protocol),
+            ["background esc prompt", "background esc next"]
+        );
+        assert_eq!(cancel_called_ids(&body, protocol), ["bg-esc-start"]);
+        let replayed = background_paired_snapshot(&body, protocol, "bg-esc-start");
+        assert_eq!(replayed["task_id"], task_id.as_str());
+        let text = serde_json::to_string(&body).unwrap();
+        assert!(!text.contains("pp.cancelled"), "pp.cancelled 不得进入请求");
+        if protocol == "completion" {
+            final_reply(request, "background esc recovered");
+        } else {
+            response_final(request, "background esc recovered");
+        }
+        pty.text("background esc recovered");
+        pty.ready();
+        pty.input("/quit\r");
+        pty.finish();
+        cancel_assert_no_request(&fixture);
+        // 旧工具从未被重放：PID marker 保持取消后的字节，进程保持停止，无新 scratch。
+        assert_eq!(
+            std::fs::read(project.path().join("bg-esc-parent.pid")).unwrap(),
+            parent_before
+        );
+        assert_eq!(
+            std::fs::read(project.path().join("bg-esc-child.pid")).unwrap(),
+            child_before
+        );
+        cancel_assert_no_scratch(project.path());
+    }
+}
+
+// 后台任务存活且模型请求挂起（request_timeout_seconds=120）时按 Ctrl-C：PTY 必须
+// 完成退出并恢复终端（finish 的 5 秒截止即证据，不等待整个 detached agent
+// worker/HTTP），父子 PID 与 scratch 全部清理。
+#[test]
+fn background_ctrl_c_exits_and_cleans_tasks_while_model_request_is_pending() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&fixture, Some(protocol)),
+        )
+        .unwrap();
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready();
+        let start = BackgroundStart {
+            prompt: "background ctrl-c prompt",
+            call_id: "bg-cc-start",
+            markers: &["bg-cc-parent.pid", "bg-cc-child.pid"],
+            log: None,
+        };
+        let (_task_id, _snapshot, held) =
+            background_start_and_wait(&mut pty, &fixture, protocol, project.path(), &start);
+        pty.input("\x03");
+        // 不杀掉 CLI 本身：退出由 Ctrl-C 键触发，finish 校验退出码、终端模式恢复。
+        pty.finish();
+        drop(held);
+        cancel_wait_pid_dead(&project.path().join("bg-cc-parent.pid"));
+        cancel_wait_pid_dead(&project.path().join("bg-cc-child.pid"));
+        cancel_assert_no_scratch(project.path());
+        cancel_assert_no_request(&fixture);
+    }
+}
+
+// 同一后台生命周期的 status/stop 展示真实状态与累计日志；停止是正常路径，
+// 不把 exit_code null 冒充为 Exit code 显示；前台卡片保留现有 Exit code/Wall。
+#[test]
+fn background_status_stop_lifecycle_displays_states_and_keeps_foreground_footer() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&fixture, Some(protocol)),
+        )
+        .unwrap();
+        let path = api_path(protocol);
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready();
+        let start = BackgroundStart {
+            prompt: "background lifecycle prompt",
+            call_id: "bg-life-start",
+            markers: &["bg-life-parent.pid", "bg-life-child.pid"],
+            log: Some("bg-lifecycle-log"),
+        };
+        let (task_id, _snapshot, request) =
+            background_start_and_wait(&mut pty, &fixture, protocol, project.path(), &start);
+        // status：卡片显示调用（action · task_id）、running 状态与累计日志。
+        background_reply_call(
+            request,
+            protocol,
+            "bg-life-status",
+            "bash_task",
+            json!({"task_id": task_id.as_str(), "action": "status"}),
+        );
+        let (request, _) = pty.request_at(&fixture, path);
+        pty.wait_for(
+            "status 卡片显示任务 ID、running 与累计日志",
+            |screen| {
+                let text = cancel_normalize(screen);
+                text.contains(&format!("bash_task·status·{task_id}"))
+                    && text.contains("bg-lifecycle-log")
+                    && text.contains(&format!("Task{task_id}:running"))
+            },
+        );
+        // stop：同步等待进程/scratch 回收后返回，卡片显示真实 stopped 终态。
+        background_reply_call(
+            request,
+            protocol,
+            "bg-life-stop",
+            "bash_task",
+            json!({"task_id": task_id.as_str(), "action": "stop"}),
+        );
+        let (request, _) = pty.request_at(&fixture, path);
+        cancel_wait_pid_dead(&project.path().join("bg-life-parent.pid"));
+        cancel_wait_pid_dead(&project.path().join("bg-life-child.pid"));
+        cancel_assert_no_scratch(project.path());
+        pty.wait_for("stop 卡片显示 stopped 终态与调用标题", |screen| {
+            let text = cancel_normalize(screen);
+            text.contains(&format!("Task{task_id}:stopped"))
+                && text.contains(&format!("bash_task·stop·{task_id}"))
+        });
+        // 信号停止是 stop 的预期结果：不得显示 Exit code: null 冒充已结束。
+        assert!(
+            !cancel_normalize(pty.parser.screen()).contains("Exitcode:null"),
+            "stop 卡片不得显示 Exit code: null"
+        );
+        // 前台卡片仍保持现有 Exit code/Wall footer。
+        background_reply_call(
+            request,
+            protocol,
+            "bg-life-foreground",
+            "bash",
+            json!({"command": "printf 'fg-visible-marker'", "mode": "foreground"}),
+        );
+        let (request, _) = pty.request_at(&fixture, path);
+        pty.wait_for("前台卡片保留 Exit code 与 Wall footer", |screen| {
+            screen.contents().lines().any(|line| {
+                let line = line.split_whitespace().collect::<String>();
+                line.contains("Wall:") && line.contains("Exitcode:0")
+            }) && cancel_normalize(screen).contains("fg-visible-marker")
+        });
+        if protocol == "completion" {
+            final_reply(request, "background lifecycle answer");
+        } else {
+            response_final(request, "background lifecycle answer");
+        }
+        pty.text("background lifecycle answer");
+        pty.ready();
+        pty.input("/quit\r");
+        pty.finish();
+        cancel_assert_no_request(&fixture);
     }
 }

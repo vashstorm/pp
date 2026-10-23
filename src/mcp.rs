@@ -1,4 +1,4 @@
-use crate::cancellation::{self, CancellationCleanupError, CancellationToken, Cancelled};
+use crate::cancellation::{self, CancellationToken, Cancelled, CleanupError};
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
 use rustix::{
@@ -250,7 +250,7 @@ impl Registry {
         let discovered = match discover(&mut client, server, cancellation) {
             Ok(tools) => tools,
             Err(error) => {
-                if error.is::<CancellationCleanupError>() {
+                if error.is::<CleanupError>() {
                     state.restart_after_cancel = false;
                     return Err(error);
                 }
@@ -259,7 +259,7 @@ impl Registry {
                     // 停止失败升级为 typed 清理错误，不被固定文案吞掉。
                     if let Err(stop_error) = client.stop() {
                         state.restart_after_cancel = false;
-                        return Err(CancellationCleanupError(stop_error).into());
+                        return Err(CleanupError(stop_error).into());
                     }
                     return Err(error);
                 }
@@ -521,9 +521,7 @@ impl Client {
                 let cancelled = error.downcast_ref::<Cancelled>().is_some();
                 match self.stop() {
                     Ok(()) => Err(error),
-                    Err(stop_error) if cancelled => {
-                        Err(CancellationCleanupError(stop_error).into())
-                    }
+                    Err(stop_error) if cancelled => Err(CleanupError(stop_error).into()),
                     Err(_) => Err(error),
                 }
             }

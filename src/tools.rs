@@ -1,4 +1,4 @@
-use crate::cancellation::{CancellationCleanupError, CancellationToken, Cancelled};
+use crate::cancellation::{CancellationToken, Cancelled, CleanupError};
 use crate::config::{EditMode, ToolLimits};
 use crate::events::{AgentEvent, OutputStream};
 use anyhow::{Context, Result, ensure};
@@ -13,6 +13,7 @@ use std::{
 };
 
 mod bash;
+pub(crate) use bash::BackgroundCleanup;
 mod diff;
 mod hashline;
 mod read;
@@ -33,11 +34,12 @@ pub(crate) struct Tools {
     edit_mode: EditMode,
     workspace: save::Workspace,
     search: search::SearchTools,
+    background_tasks: bash::TaskManager,
     pub(crate) limits: ToolLimits,
 }
 
-/// Separates a tool's serialized result from a cancellation-time stop failure:
-/// only a failed termination of an already cancelled tool sets `stop_error`.
+/// Separates a tool's serialized result from a process cleanup failure that
+/// must stop the agent rather than be treated as an ordinary command failure.
 pub(crate) struct ToolExecution {
     pub(crate) output: String,
     pub(crate) stop_error: Option<anyhow::Error>,
@@ -86,6 +88,27 @@ struct WriteArgs {
 #[serde(deny_unknown_fields)]
 struct BashArgs {
     command: String,
+    #[serde(default)]
+    mode: BashMode,
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum BashMode {
+    #[default]
+    Foreground,
+    Background,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BashTaskArgs {
+    task_id: String,
+    action: BashTaskAction,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum BashTaskAction {
+    Status,
+    Stop,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -106,9 +129,18 @@ impl Tools {
             edit_mode,
             workspace,
             search,
+            background_tasks: Default::default(),
             limits: ToolLimits::default(),
         })
     }
+    pub(crate) fn stop_background_tasks(&self) -> Result<()> {
+        self.background_tasks.stop_all()
+    }
+
+    pub(crate) fn background_cleanup(&self) -> BackgroundCleanup {
+        self.background_tasks.cleanup()
+    }
+
     pub(crate) fn cwd(&self) -> &Path {
         &self.cwd
     }
@@ -200,8 +232,14 @@ impl Tools {
             },
             FunctionObject {
                 name: "bash".into(),
-                description: Some("Run a finite foreground bash command in startup cwd with configured bash_timeout_seconds. On timeout the process group is terminated; prior shell changes are not rolled back. No filesystem sandbox: paths outside cwd remain accessible. stdout and stderr retain at most 500 lines combined and at most 65536 bytes each; excess output is truncated.".into()),
-                parameters: Some(json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false})),
+                description: Some("Run bash in startup cwd. Default foreground mode uses configured bash_timeout_seconds. Background mode returns a managed task_id, survives tool calls without a fixed deadline, and is stopped at the end of this user task. Running does not mean ready: use subsequent requests to verify the service, bash_task status for cumulative logs, and stop after verification. Process groups are cleaned up; shell side effects are not rolled back, and deliberately detached descendants are not covered. No filesystem sandbox. stdout/stderr retain at most 500 lines combined and 65536 bytes each.".into()),
+                parameters: Some(json!({"type":"object","properties":{"command":{"type":"string"},"mode":{"type":"string","enum":["foreground","background"]}},"required":["command"],"additionalProperties":false})),
+                ..Default::default()
+            },
+            FunctionObject {
+                name: "bash_task".into(),
+                description: Some("Inspect cumulative output and current status of a managed background task, or stop it and wait for process and temporary-directory cleanup. Only task IDs from this user task are valid. Stop is idempotent; it does not cancel the user task.".into()),
+                parameters: Some(json!({"type":"object","properties":{"task_id":{"type":"string","minLength":1},"action":{"type":"string","enum":["status","stop"]}},"required":["task_id","action"],"additionalProperties":false})),
                 ..Default::default()
             },
         ]
@@ -224,6 +262,7 @@ impl Tools {
             "edit" => "edit",
             "write" => "write",
             "bash" => "bash",
+            "bash_task" => "bash_task",
             "grep" => "grep",
             "find" => "find",
             _ => "external",
@@ -243,9 +282,7 @@ impl Tools {
             match self.execute_inner(name, arguments, call_id, cancellation, emit) {
                 Ok(result) => result,
                 Err(error) => {
-                    let cleanup_failure = error
-                        .chain()
-                        .any(|cause| cause.is::<CancellationCleanupError>());
+                    let cleanup_failure = error.chain().any(|cause| cause.is::<CleanupError>());
                     let cancelled = error.chain().any(|cause| cause.is::<Cancelled>());
                     let message = format!("{error:#}");
                     if cleanup_failure {
@@ -415,15 +452,38 @@ impl Tools {
                     serde_json::from_str(arguments).context("invalid bash arguments")?;
                 ensure!(!args.command.trim().is_empty(), "command must not be blank");
                 let cache = self.workspace.cache_dir()?;
-                bash::run(
-                    &self.cwd,
-                    &cache,
-                    &args.command,
-                    self.limits.bash_timeout_seconds,
-                    call_id,
-                    cancellation,
-                    emit,
-                )
+                match args.mode {
+                    BashMode::Foreground => bash::run(
+                        &self.cwd,
+                        &cache,
+                        &args.command,
+                        self.limits.bash_timeout_seconds,
+                        call_id,
+                        cancellation,
+                        emit,
+                    ),
+                    BashMode::Background => {
+                        let snapshot = self.background_tasks.start(
+                            &self.cwd,
+                            &cache,
+                            &args.command,
+                            cancellation,
+                        )?;
+                        emit_background_snapshot(call_id, &snapshot, emit);
+                        Ok(snapshot)
+                    }
+                }
+            }
+            "bash_task" => {
+                let args: BashTaskArgs =
+                    serde_json::from_str(arguments).context("invalid bash_task arguments")?;
+                ensure!(!args.task_id.trim().is_empty(), "task_id must not be blank");
+                let snapshot = match args.action {
+                    BashTaskAction::Status => self.background_tasks.status(&args.task_id)?,
+                    BashTaskAction::Stop => self.background_tasks.stop(&args.task_id)?,
+                };
+                emit_background_snapshot(call_id, &snapshot, emit);
+                Ok(snapshot)
             }
             "grep" | "find" => {
                 let args: SearchArgs = serde_json::from_str(arguments)
@@ -463,6 +523,17 @@ impl Tools {
         ensure!(!path.trim().is_empty(), "path must not be blank");
         // PathBuf::join preserves an absolute path. cwd is not a sandbox.
         Ok(self.cwd.join(path))
+    }
+}
+
+fn emit_background_snapshot(call_id: &str, snapshot: &Value, emit: &mut dyn FnMut(AgentEvent)) {
+    for (key, stream) in [
+        ("stdout", OutputStream::Stdout),
+        ("stderr", OutputStream::Stderr),
+    ] {
+        if let Some(text) = snapshot[key].as_str() {
+            emit_output(call_id, stream, text.to_owned(), emit);
+        }
     }
 }
 
@@ -1223,6 +1294,285 @@ mod tests {
         );
         assert_eq!(wrong_mode["ok"], false, "{wrong_mode}");
         assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    fn background_wait(tools: &Tools, id: &str, ready: impl Fn(&Value) -> bool) -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let snapshot = execute(tools, "bash_task", json!({"task_id":id,"action":"status"}));
+            if ready(&snapshot) {
+                return snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background task did not reach expected state: {snapshot}"
+            );
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn background_marker(path: &Path) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(text) = fs::read_to_string(path)
+                && !text.is_empty()
+            {
+                return text;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "missing marker: {}",
+                path.display()
+            );
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn background_natural_exit_cancellation_and_tools_drop_reap_descendants() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let natural = execute(
+            &tools,
+            "bash",
+            json!({"mode":"background","command":"sleep 60 & child=$!; printf '%s' \"$child\" > natural.pid; printf retained; exit 7"}),
+        );
+        let terminal = background_wait(&tools, natural["task_id"].as_str().unwrap(), |value| {
+            value["status"] != "running"
+        });
+        assert_eq!(terminal["status"], "failed");
+        assert_eq!(terminal["exit_code"], 7);
+        assert_eq!(terminal["stdout"], "retained");
+        wait_until_gone(
+            background_marker(&dir.path().join("natural.pid"))
+                .parse()
+                .unwrap(),
+            "natural-exit descendant",
+        );
+        let token = CancellationToken::new();
+        let execution = tools.execute("bash", &json!({"mode":"background","command":"trap '' TERM; sleep 60 & child=$!; printf '%s\\n%s' \"$$\" \"$child\" > cancelled.pending; mv cancelled.pending cancelled.pid; printf cancelled-output; wait \"$child\""}).to_string(), "cancel-start", &token, &mut |_| {});
+        let started: Value = serde_json::from_str(&execution.output).unwrap();
+        let pids = background_marker(&dir.path().join("cancelled.pid"));
+        let other = execute(
+            &tools,
+            "bash",
+            json!({"mode":"background","command":"printf '%s\\n%s' \"$$\" \"$TMPDIR\" > drop.pending; mv drop.pending drop.marker; exec sleep 60"}),
+        );
+        let drop_marker = background_marker(&dir.path().join("drop.marker"));
+        token.cancel();
+        let cancelled = background_wait(&tools, started["task_id"].as_str().unwrap(), |value| {
+            value["status"] != "running"
+        });
+        assert_eq!(cancelled["status"], "cancelled");
+        assert_eq!(cancelled["ok"], false);
+        assert_eq!(cancelled["stdout"], "cancelled-output");
+        assert_eq!(
+            cancelled["error"],
+            "Background task cancelled; side effects were not rolled back."
+        );
+        for pid in pids.lines() {
+            wait_until_gone(pid.parse().unwrap(), "cancelled background");
+        }
+        assert_eq!(
+            execute(
+                &tools,
+                "bash_task",
+                json!({"task_id":other["task_id"],"action":"status"})
+            )["status"],
+            "running"
+        );
+        drop(tools);
+        let (pid, scratch) = drop_marker.split_once('\n').unwrap();
+        wait_until_gone(pid.parse().unwrap(), "Tools drop background");
+        assert!(!Path::new(scratch).exists());
+    }
+
+    #[test]
+    fn background_survives_foreground_deadline_and_stops_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        tools.limits.bash_timeout_seconds = 1;
+        let started = execute(
+            &tools,
+            "bash",
+            json!({"mode":"background","command":"trap '' TERM; printf '%s' \"$$\" > parent.pid; sleep 60 & child=$!; printf '%s' \"$child\" > child.pid; printf '%s' \"$TMPDIR\" > scratch.path; printf ready; wait \"$child\""}),
+        );
+        let id = started["task_id"].as_str().unwrap();
+        let parent = background_marker(&dir.path().join("parent.pid"));
+        let child = background_marker(&dir.path().join("child.pid"));
+        let scratch = background_marker(&dir.path().join("scratch.path"));
+        thread::sleep(std::time::Duration::from_millis(2200));
+        let alive = execute(
+            &tools,
+            "bash",
+            json!({"command":format!("kill -0 {parent} && kill -0 {child} && printf alive")}),
+        );
+        assert_eq!(alive["stdout"], "alive");
+        assert_eq!(alive["exit_code"], 0);
+        let running = background_wait(&tools, id, |value| value["stdout"] == "ready");
+        assert_eq!(running["status"], "running");
+        assert!(Path::new(&scratch).exists());
+        let stopped = execute(&tools, "bash_task", json!({"task_id":id,"action":"stop"}));
+        assert_eq!(stopped["status"], "stopped");
+        assert_eq!(stopped["ok"], true);
+        wait_until_gone(parent.parse().unwrap(), "background parent");
+        wait_until_gone(child.parse().unwrap(), "background child");
+        assert!(!Path::new(&scratch).exists());
+        assert_eq!(
+            execute(&tools, "bash_task", json!({"task_id":id,"action":"stop"})),
+            stopped
+        );
+        let next = execute(&tools, "bash", json!({"command":"printf next"}));
+        assert_eq!(next["stdout"], "next");
+    }
+
+    #[test]
+    fn background_output_is_bounded_without_blocking_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        for (command, lines) in [
+            (
+                "printf '%70000s' ''; printf '%70000s' '' >&2; printf done > completed; exit 7",
+                false,
+            ),
+            (
+                "for ((i=0;i<10000;i++)); do printf 'out\\n'; printf 'err\\n' >&2; done; printf done > completed; exit 7",
+                true,
+            ),
+        ] {
+            let started = execute(
+                &tools,
+                "bash",
+                json!({"mode":"background","command":command}),
+            );
+            let id = started["task_id"].as_str().unwrap();
+            let terminal = background_wait(&tools, id, |value| value["status"] != "running");
+            assert_eq!(terminal["exit_code"], 7, "{terminal}");
+            assert_eq!(terminal["stdout_truncated"], true);
+            assert_eq!(terminal["stderr_truncated"], true);
+            let stdout = terminal["stdout"].as_str().unwrap();
+            let stderr = terminal["stderr"].as_str().unwrap();
+            if lines {
+                assert_eq!(stdout.lines().count() + stderr.lines().count(), 500);
+                assert!(stdout.lines().all(|line| line == "out"));
+                assert!(stderr.lines().all(|line| line == "err"));
+            } else {
+                assert_eq!(stdout, " ".repeat(OUTPUT_LIMIT));
+                assert_eq!(stderr, " ".repeat(OUTPUT_LIMIT));
+            }
+            assert_eq!(
+                fs::read_to_string(dir.path().join("completed")).unwrap(),
+                "done"
+            );
+            fs::remove_file(dir.path().join("completed")).unwrap();
+        }
+        // Byte accounting precedes line accounting. An unterminated retained
+        // line keeps its allowance across arbitrary pipe reads.
+        for count in [OUTPUT_LIMIT, OUTPUT_LIMIT + 1] {
+            let started = execute(
+                &tools,
+                "bash",
+                json!({"mode":"background","command":format!("printf '%{count}s' ''")}),
+            );
+            let terminal = background_wait(&tools, started["task_id"].as_str().unwrap(), |value| {
+                value["status"] != "running"
+            });
+            assert_eq!(terminal["stdout"], " ".repeat(OUTPUT_LIMIT));
+            assert_eq!(terminal["stdout_truncated"], count > OUTPUT_LIMIT);
+            assert_eq!(terminal["stderr_truncated"], false);
+        }
+        for count in [500, 501] {
+            let started = execute(
+                &tools,
+                "bash",
+                json!({"mode":"background","command":format!("for ((i=0;i<{count};i++)); do printf 'line\\n'; done")}),
+            );
+            let terminal = background_wait(&tools, started["task_id"].as_str().unwrap(), |value| {
+                value["status"] != "running"
+            });
+            assert_eq!(terminal["stdout"], "line\n".repeat(500));
+            assert_eq!(terminal["stdout_truncated"], count > 500);
+        }
+        let started = execute(
+            &tools,
+            "bash",
+            json!({"mode":"background","command":"printf '\\344'; printf first >&2; while [ ! -f release ]; do sleep 0.01; done; printf '\\270\\255-tail\\360\\237'; printf second >&2; sleep 60"}),
+        );
+        let id = started["task_id"].as_str().unwrap();
+        let partial = background_wait(&tools, id, |value| value["stderr"] == "first");
+        assert_eq!(partial["stdout"], "");
+        fs::write(dir.path().join("release"), "go").unwrap();
+        let complete = background_wait(&tools, id, |value| {
+            value["stderr"] == "firstsecond" && value["stdout"] == "中-tail"
+        });
+        assert_eq!(complete["stdout"], "中-tail");
+        let stopped = execute(&tools, "bash_task", json!({"task_id":id,"action":"stop"}));
+        assert_eq!(stopped["stdout"], "中-tail�");
+        assert_eq!(stopped["stdout_truncated"], false);
+    }
+
+    #[test]
+    fn background_terminal_status_retains_output_and_unknown_ids_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let mut ids = Vec::new();
+        for code in [7, 0] {
+            let started = execute(
+                &tools,
+                "bash",
+                json!({"command":format!("printf out; printf err >&2; exit {code}"),"mode":"background"}),
+            );
+            let id = started["task_id"].as_str().unwrap().to_owned();
+            let terminal = background_wait(&tools, &id, |value| value["status"] != "running");
+            assert_eq!(
+                terminal["status"],
+                if code == 0 { "exited" } else { "failed" }
+            );
+            assert_eq!(terminal["exit_code"], code);
+            assert_eq!(terminal["stdout"], "out");
+            assert_eq!(terminal["stderr"], "err");
+            assert_eq!(
+                execute(&tools, "bash_task", json!({"task_id":id,"action":"stop"})),
+                terminal
+            );
+            assert_eq!(
+                execute(&tools, "bash_task", json!({"task_id":id,"action":"status"})),
+                terminal
+            );
+            ids.push(id);
+        }
+        assert_ne!(ids[0], ids[1]);
+        tools.background_tasks.stop_all().unwrap();
+        for id in [&ids[0], &"bg-unknown".to_owned()] {
+            let unknown = execute(&tools, "bash_task", json!({"task_id":id,"action":"status"}));
+            assert_eq!(unknown["ok"], false);
+            assert_eq!(unknown["error"], format!("Unknown background task: {id}"));
+        }
+        for args in [
+            json!({"command":"touch leaked","mode":"unknown"}),
+            json!({"command":"touch leaked","mode":null}),
+            json!({"command":"touch leaked","mode":"background","extra":true}),
+            json!({"command":"   ","mode":"background"}),
+        ] {
+            assert_eq!(execute(&tools, "bash", args)["ok"], false);
+        }
+        for args in [
+            json!({"task_id":"","action":"status"}),
+            json!({"task_id":"  ","action":"stop"}),
+            json!({"task_id":null,"action":"status"}),
+            json!({"task_id":"bg-1","action":null}),
+            json!({"task_id":"bg-1","action":"restart"}),
+            json!({"task_id":"bg-1","action":"status","extra":true}),
+        ] {
+            assert_eq!(execute(&tools, "bash_task", args)["ok"], false);
+        }
+        assert!(!dir.path().join("leaked").exists());
+        let next = execute(
+            &tools,
+            "bash",
+            json!({"command":"exit 0","mode":"background"}),
+        );
+        assert!(!ids.contains(&next["task_id"].as_str().unwrap().to_owned()));
     }
 
     #[test]

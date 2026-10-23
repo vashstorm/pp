@@ -1033,7 +1033,7 @@ impl Transcript {
                     })?
                     .as_str()
                 });
-                let kind = if name == "bash" {
+                let kind = if matches!(name.as_str(), "bash" | "bash_task") {
                     EntryKind::Bash
                 } else if name == "grep" {
                     EntryKind::Grep
@@ -1051,7 +1051,16 @@ impl Transcript {
                     .and_then(|args| args.get("args"))
                     .and_then(Value::as_array)
                     .filter(|args| args.iter().all(Value::is_string));
-                let title = if matches!(name.as_str(), "grep" | "find") {
+                let title = if name == "bash_task" {
+                    let args = arguments.as_ref();
+                    format!(
+                        "bash_task · {} · {}",
+                        args.and_then(|args| args["action"].as_str())
+                            .unwrap_or("unknown"),
+                        args.and_then(|args| args["task_id"].as_str())
+                            .unwrap_or("unknown")
+                    )
+                } else if matches!(name.as_str(), "grep" | "find") {
                     search_args.map_or_else(
                         || name.clone(),
                         |args| {
@@ -1146,16 +1155,18 @@ impl Transcript {
                         };
                     }
                     if entry.kind == EntryKind::Bash {
-                        let status = result.get("exit_code").map_or_else(
-                            || {
-                                if entry.status == EntryStatus::Failed {
-                                    "failed".into()
-                                } else {
-                                    "ok".into()
-                                }
-                            },
-                            |code| format!("Exit code: {code}"),
-                        );
+                        let status = background_status(&result).unwrap_or_else(|| {
+                            result.get("exit_code").map_or_else(
+                                || {
+                                    if entry.status == EntryStatus::Failed {
+                                        "failed".into()
+                                    } else {
+                                        "ok".into()
+                                    }
+                                },
+                                |code| format!("Exit code: {code}"),
+                            )
+                        });
                         entry.footer = if self.replaying {
                             format!("⟨{status}⟩")
                         } else {
@@ -1841,9 +1852,20 @@ fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Line<'static>
     rows
 }
 
+fn background_status(result: &Value) -> Option<String> {
+    Some(format!(
+        "Task {}: {}",
+        result["task_id"].as_str()?,
+        result["status"].as_str()?
+    ))
+}
+
 fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
     if kind == EntryKind::Bash || matches!(name, "grep" | "find") {
         let mut lines = Vec::new();
+        if let Some(status) = background_status(result) {
+            lines.push(status);
+        }
         for (field, label) in [("stdout", "stdout"), ("stderr", "stderr")] {
             if let Some(text) = result
                 .get(field)
@@ -1870,6 +1892,9 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
                     .as_str()
                     .map_or_else(|| error.to_string(), str::to_owned),
             );
+        }
+        if let Some(warning) = result.get("warning").and_then(Value::as_str) {
+            lines.push(format!("Warning: {warning}"));
         }
         return lines.join("\n");
     }

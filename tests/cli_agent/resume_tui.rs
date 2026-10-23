@@ -262,7 +262,7 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
                 response_final(request, "resume-history A1");
             }
             pty.text("resume-history A1");
-            pty.ready();
+            pty.completed();
             pty.input("resume-history U2 ask\r");
             let (request, _) = pty.request_at(&server, path);
             if protocol == "completion" {
@@ -271,7 +271,7 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
                 response_final(request, "resume-history A2");
             }
             pty.text("resume-history A2");
-            pty.ready();
+            pty.completed();
             pty.input("/quit\r");
             pty.finish();
         }
@@ -704,7 +704,7 @@ fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_
                 response_final(request, "matrix old answer");
             }
             saved.text("matrix old answer");
-            saved.ready();
+            saved.completed();
             saved.input("/quit\r");
             saved.finish();
             let id = saved_session_id(home.path());
@@ -756,7 +756,7 @@ fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_
                 response_final(request, "matrix new answer");
             }
             pty.text("matrix new answer");
-            pty.ready();
+            pty.completed();
             pty.input("/quit\r");
             pty.finish();
 

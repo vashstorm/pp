@@ -767,7 +767,7 @@ fn context_tui_auto_compact_cancel_keeps_draft_and_recovers_accepted_history() {
         )
         .unwrap();
         let mut resumed = Pty::start_with_args(home.path(), home.path(), &["-c", &id]);
-        resumed.ready();
+        resumed.wait_for("auto-continue keeps input editable", input_is_ready);
         let (request, body) = resumed.request_at(&fixture, api_path(protocol));
         let text = serde_json::to_string(&body).unwrap();
         assert!(text.contains("context auto cancel prompt"));
@@ -1183,7 +1183,11 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
         pty.text("context-metrics-recount-partial");
         pty.wait_for("新请求重新显示估算速度", context_tui_estimated_speed);
         pty.input("\x1b");
-        cancel_wait_cancelled_ready(&mut pty);
+        pty.wait_for("second task cancellation committed", |screen| {
+            input_is_ready(screen)
+                && screen.contents().contains("✻ Cancelled")
+                && cancel_count_normalized(screen, CANCEL_NOTE) == 2
+        });
         drop(stream);
         pty.wait_for("本轮取消清空速度而非上一轮取消提示", |screen| {
             screen.contents().contains("— tok/s") && context_tui_speed(screen).is_none()
