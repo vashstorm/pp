@@ -791,7 +791,7 @@ fn ask_tui_schema_survives_new_model_switch_and_resume() {
     assert!(ask_schema_offered_tui(&body, "completion"), "{body}");
     final_reply(request, "schema answer one");
     pty.text("schema answer one");
-    pty.ready();
+    pty.completed();
     pty.input("/new\r");
     pty.wait_for("reset clears the transcript", |screen| {
         input_is_ready(screen) && !screen.contents().contains("schema answer one")
@@ -801,7 +801,7 @@ fn ask_tui_schema_survives_new_model_switch_and_resume() {
     assert!(ask_schema_offered_tui(&body, "completion"), "{body}");
     final_reply(request, "schema answer two");
     pty.text("schema answer two");
-    pty.ready();
+    pty.completed();
     pty.input("/model gateway/secondary\r");
     pty.ready_model("vendor-b");
     pty.input("ask schema task three\r");
@@ -809,7 +809,7 @@ fn ask_tui_schema_survives_new_model_switch_and_resume() {
     assert!(ask_schema_offered_tui(&body, "response"), "{body}");
     response_final(request, "schema answer three");
     pty.text("schema answer three");
-    pty.ready();
+    pty.completed();
     pty.input("\x03");
     pty.finish();
     no_more(&server);
@@ -824,7 +824,7 @@ fn ask_tui_schema_survives_new_model_switch_and_resume() {
     assert!(ask_schema_offered_tui(&body, "response"), "{body}");
     response_final(request, "resume seed answer");
     saved.text("resume seed answer");
-    saved.ready();
+    saved.completed();
     saved.input("\x03");
     saved.finish();
     let id = saved_session_id(home.path());
@@ -838,7 +838,7 @@ fn ask_tui_schema_survives_new_model_switch_and_resume() {
     assert!(ask_schema_offered_tui(&body, "response"), "{body}");
     response_final(request, "after resume answer");
     resumed.text("after resume answer");
-    resumed.ready();
+    resumed.completed();
     resumed.input("\x03");
     resumed.finish();
     no_more(&server);

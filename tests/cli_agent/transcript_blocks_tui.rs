@@ -365,7 +365,9 @@ fn transcript_blocks_markdown_unicode_and_long_line_survive_resize() {
             && text.contains("😀")
     };
     pty.wait_for("100 列底部显示表格与长行尾巴", |s| bottom(s));
-    // The session toast can cover the entire narrow table after resize.
+    // Text can arrive before Completed and the session notice. Observe task
+    // completion before waiting for the notice to disappear.
+    pty.completed();
     pty.wait_for("会话通知消失后检查窄屏正文", |s| !s.contents().contains("Session:"));
     let top = |screen: &vt100::Screen| {
         let text = screen.contents();
@@ -435,9 +437,10 @@ fn transcript_blocks_markdown_scroll_offset_follow_and_exit_scrollback() {
             && s.contents().contains("✻ Responding")
     });
     pty.input("\x1b[5~");
-    pty.wait_for("运行中 PgUp 离开底部", |s| {
-        !s.contents().contains("para-29")
-    });
+    context_tui_paste(&mut pty, "page-fence");
+    pty.draft("page-fence");
+    pty.input("\x01\x0b");
+    pty.draft("");
     let old_view: Vec<String> = pty
         .parser
         .screen()
@@ -468,6 +471,7 @@ fn transcript_blocks_markdown_scroll_offset_follow_and_exit_scrollback() {
         pty.input("\x1b[6~");
     }
     pty.text("para-29");
+    pty.completed();
     pty.input("follow bottom task\r");
     let (request, _) = pty.request_at(&fixture, api_path("completion"));
     let mut stream = SseReply::new(request);

@@ -17,14 +17,14 @@ impl std::fmt::Display for Cancelled {
 impl std::error::Error for Cancelled {}
 
 #[derive(Debug)]
-pub(crate) struct CancellationCleanupError(pub(crate) anyhow::Error);
+pub(crate) struct CleanupError(pub(crate) anyhow::Error);
 
-impl std::fmt::Display for CancellationCleanupError {
+impl std::fmt::Display for CleanupError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Failed to stop cancelled tool: {:#}", self.0)
+        write!(f, "Failed to stop: {:#}", self.0)
     }
 }
-impl std::error::Error for CancellationCleanupError {
+impl std::error::Error for CleanupError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.0.as_ref())
     }

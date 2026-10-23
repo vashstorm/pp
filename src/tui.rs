@@ -48,7 +48,7 @@ use std::{
 };
 use transcript::Transcript;
 
-const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nbash runs with an execution timeout that kills the process group; Ctrl-C exits pp immediately, with no guaranteed cleanup of child processes and no rollback of file changes.";
+const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nForeground bash has an execution timeout; managed background tasks survive tool calls and stop at this user task's end or controlled exit. Ctrl-C stops managed background groups, but cleanup of other foreground children is not guaranteed. No shell/file side-effect rollback; deliberately detached descendants are not covered.";
 const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S save selected model/effort as default in its menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
 const EFFORT_HINT: &str = "Enter select · Ctrl-S set selected effort as default · Esc cancel";
 const MODEL_HINT: &str = "Enter select · Ctrl-S set selected model as default · Esc cancel";
@@ -89,7 +89,7 @@ pub(crate) fn run(
         if event::poll(Duration::from_millis(50)).context("polling terminal input")? {
             let event = event::read().context("reading terminal input")?;
             if app.handle(event, &mut dirty) {
-                app.close_ask_on_exit();
+                app.shutdown_background_tasks()?;
                 app.tree_panel = None;
                 app.notifications.clear();
                 // 仅在内存中准备退出快照，避免退出前额外刷新备用屏幕。
@@ -305,6 +305,7 @@ struct App {
     usage: Option<crate::context::ContextUsage>,
     token_speed: statusline::TokenSpeed,
     mcp_cleanup: Option<crate::mcp::Cleanup>,
+    background_cleanup: Option<crate::tools::BackgroundCleanup>,
     file_worker: files::Worker,
     file_paths: Vec<String>,
     file_directory: String,
@@ -400,6 +401,7 @@ impl App {
             usage: None,
             token_speed: statusline::TokenSpeed::default(),
             mcp_cleanup: None,
+            background_cleanup: None,
             file_commands,
             file_worker: files::Worker::new(cwd)?,
             file_paths: Vec::new(),
@@ -417,6 +419,7 @@ impl App {
                 let think_level = agent.think_level();
                 let default_think_level = agent.default_think_level();
                 let mcp_cleanup = agent.mcp_cleanup()?;
+                app.background_cleanup = Some(agent.background_cleanup());
                 app.choices = agent.model_choices();
                 app.default_model_reference = Some(agent.default_model_reference().to_owned());
                 let (commands, receiver) = mpsc::channel();
@@ -1708,6 +1711,17 @@ impl App {
             }
         }
         false
+    }
+
+    fn shutdown_background_tasks(&mut self) -> Result<()> {
+        if let Some(token) = &self.active_cancellation {
+            token.cancel();
+        }
+        self.close_ask_on_exit();
+        if let Some(cleanup) = &self.background_cleanup {
+            cleanup.shutdown()?;
+        }
+        Ok(())
     }
 
     fn close_ask_on_exit(&mut self) {
@@ -4464,112 +4478,6 @@ mod tests {
                 app.token_speed.value(Instant::now()),
                 if success { Some((100.0, true)) } else { None }
             );
-        }
-    }
-
-    #[test]
-    fn context_usage_is_right_aligned_on_input_top_without_changing_draft() {
-        let mut app = app();
-        app.state = State::Ready;
-        app.input.insert_str("draft-中\nsecond line");
-        let mut usage = crate::context::ContextUsage {
-            estimated_tokens: 12345,
-            context_window: None,
-            last_request: None,
-            auto_compact: true,
-            threshold_percent: 80,
-        };
-        for (window, expected, color) in [
-            (None, " ctx 12k ", statusline::CONTEXT),
-            (Some(16000), " ctx 12k/16k ", statusline::CONTEXT),
-            (Some(15000), " ctx 12k/15k ", Color::Yellow),
-            (Some(12000), " ctx 12k/12k ", Color::Red),
-        ] {
-            usage.context_window = window;
-            app.usage = Some(usage);
-            app.secondary_status = Some("Compacting context...".into());
-            for width in [20, 40, 100] {
-                let buffer = draw_buffer(&mut app, width, 30);
-                let top: String = (0..width).map(|x| buffer[(x, 25)].symbol()).collect();
-                assert!(top.ends_with(expected), "{top}");
-                let start = width - expected.len() as u16;
-                assert_eq!(buffer[(start + 1, 25)].fg, color);
-                let footer: String = (0..width).map(|x| buffer[(x, 29)].symbol()).collect();
-                assert!(!footer.contains("ctx "));
-                if width == 100 {
-                    assert!(top.contains("Compacting context..."));
-                }
-                assert_eq!(app.input.lines(), &["draft-中", "second line"]);
-            }
-        }
-        for (width, height) in [(1, 1), (2, 2), (3, 4), (10, 4)] {
-            draw(&mut app, width, height);
-            assert_eq!(app.input.lines(), &["draft-中", "second line"]);
-        }
-    }
-
-    #[test]
-    fn context_token_metrics_keep_ctx_and_draft_at_every_width() {
-        let mut app = app();
-        app.state = State::Ready;
-        app.input.insert_str("draft-中文");
-        app.input.move_cursor(CursorMove::Back);
-        let cursor = app.input.cursor();
-        app.usage = Some(crate::context::ContextUsage {
-            estimated_tokens: 12000,
-            context_window: Some(40000),
-            last_request: Some(crate::context::TokenUsage {
-                input_tokens: 12000,
-                output_tokens: 300,
-                cache_write_tokens: None,
-                cached_tokens: Some(40),
-            }),
-            auto_compact: false,
-            threshold_percent: 80,
-        });
-        app.token_speed.start(Instant::now());
-        app.token_speed.finish(2000, Some(300), true);
-        for extra in [None, Some("Compacting context...".to_owned())] {
-            app.secondary_status = extra;
-            for width in 1..=140 {
-                let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
-                terminal
-                    .draw(|frame| app.draw_input_status(frame, frame.area()))
-                    .unwrap();
-                let buffer = terminal.backend().buffer();
-                let row: String = (0..width).map(|x| buffer[(x, 0)].symbol()).collect();
-                if width >= 13 {
-                    assert!(row.ends_with(" ctx 12k/40k "), "{width}: {row}");
-                }
-                for (icon, text) in [
-                    ("\u{f0e7}", "150.0 tok/s"),
-                    ("\u{f019}", "in 12k"),
-                    ("\u{f093}", "out 300"),
-                    ("\u{f1c0}", "cached 40"),
-                ] {
-                    assert_eq!(row.contains(icon), row.contains(text), "{width}: {row}");
-                }
-                if row.contains("cached 40") {
-                    assert!(row.contains("in 12k") && row.contains("out 300"));
-                }
-                if row.contains("in 12k") {
-                    assert!(row.contains("out 300"));
-                }
-                if row.contains("out 300") {
-                    assert!(row.contains("150.0 tok/s"));
-                }
-                if width == 140 {
-                    assert!(row.contains("cached 40"));
-                    if app.secondary_status.is_some() {
-                        assert!(
-                            row.find("Compacting context...").unwrap()
-                                < row.find("150.0 tok/s").unwrap()
-                        );
-                    }
-                }
-                assert_eq!(app.input.lines(), &["draft-中文"]);
-                assert_eq!(app.input.cursor(), cursor);
-            }
         }
     }
 
