@@ -1,6 +1,7 @@
 pub(crate) mod context;
 mod debug;
 mod history;
+pub(crate) mod input;
 pub(crate) mod persistence;
 
 use crate::{
@@ -28,8 +29,11 @@ use async_openai::types::{
         ToolChoiceParam,
     },
 };
+use input::{InputQueue, PendingInput};
 use persistence::{Metadata, SessionJournal, SessionRef};
-use std::{cell::RefCell, path::PathBuf};
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::path::PathBuf;
 
 // Keep each API's native history, including reasoning items required by Responses.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -715,6 +719,7 @@ impl Agent {
         &mut self,
         prompt: &str,
         cancellation: &CancellationToken,
+        input: Option<&InputQueue>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
         tracing::info!(
@@ -727,34 +732,16 @@ impl Agent {
             ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
             self.refresh_instructions()?;
             self.publish_context(emit)?;
-            match &mut self.session {
-                Session::Completion(request) => request.messages.push(
-                    ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-                        content: prompt.into(),
-                        ..Default::default()
-                    }),
-                ),
-                Session::Response(request) => {
-                    response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
-                        role: Role::User,
-                        content: prompt.into(),
-                        ..Default::default()
-                    }))
-                }
-            }
-            self.run_loop(Some(prompt), cancellation, emit)
+            self.append_user(prompt);
+            self.run_loop(Some(prompt), input, cancellation, emit)
         })();
-        let result = self.finish_run(result, cancellation);
-        if !matches!(&result, Ok(RunOutcome::Completed)) {
-            self.publish_context(emit)?;
-        }
-        log_task_finished("run", started, &result);
-        result
+        self.finish_task("run", started, result, cancellation, input, emit)
     }
 
     pub(crate) fn continue_session(
         &mut self,
         cancellation: &CancellationToken,
+        input: Option<&InputQueue>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
         tracing::info!(
@@ -763,13 +750,62 @@ impl Agent {
             operation = "continue"
         );
         let started = std::time::Instant::now();
-        let result = self.run_loop(None, cancellation, emit);
+        let result = self.run_loop(None, input, cancellation, emit);
+        self.finish_task("continue", started, result, cancellation, input, emit)
+    }
+
+    // run 与 continue_session 共用的任务收尾：关闭输入队列；上下文发布失败
+    // 不得掩盖取消或真实任务错误。
+    fn finish_task(
+        &mut self,
+        operation: &str,
+        started: std::time::Instant,
+        result: Result<()>,
+        cancellation: &CancellationToken,
+        input: Option<&InputQueue>,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<RunOutcome> {
         let result = self.finish_run(result, cancellation);
+        let result = self.close_queue(input, result);
         if !matches!(&result, Ok(RunOutcome::Completed)) {
-            self.publish_context(emit)?;
+            let _ = self.publish_context(emit);
         }
-        log_task_finished("continue", started, &result);
+        log_task_finished(operation, started, &result);
         result
+    }
+
+    // 每条退出路径都关闭队列；关闭失败只在任务本身成功时成为主错误。
+    fn close_queue(
+        &self,
+        input: Option<&InputQueue>,
+        result: Result<RunOutcome>,
+    ) -> Result<RunOutcome> {
+        match input {
+            None => result,
+            Some(queue) => match (result, queue.close()) {
+                (result, Ok(())) => result,
+                (Ok(_), Err(error)) => Err(error),
+                (Err(original), Err(_)) => Err(original),
+            },
+        }
+    }
+
+    fn append_user(&mut self, prompt: &str) {
+        match &mut self.session {
+            Session::Completion(request) => request.messages.push(
+                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                    content: prompt.into(),
+                    ..Default::default()
+                }),
+            ),
+            Session::Response(request) => {
+                response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
+                    role: Role::User,
+                    content: prompt.into(),
+                    ..Default::default()
+                }))
+            }
+        }
     }
 
     fn finish_run(
@@ -829,17 +865,32 @@ impl Agent {
     fn run_loop(
         &mut self,
         mut user: Option<&str>,
+        input: Option<&InputQueue>,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<()> {
         let mut requests_used = 0;
-        while requests_used < self.max_model_requests {
+        let mut claim_boundary = true;
+        loop {
+            // 额度耗尽时不领取补充：待处理消息留在队列，由退出路径关闭留给后续调度。
+            if requests_used >= self.max_model_requests {
+                bail!("{} model request limit reached", self.max_model_requests);
+            }
             self.journal.check()?;
             if cancellation.is_cancelled() {
                 self.persist_pending_input(user.take())?;
                 return Err(Cancelled.into());
             }
             self.refresh_instructions()?;
+            // 补充边界：仅首次普通请求前，以及上一轮完整回复/整批工具结果成功提交之后。
+            let claimed = match (input, claim_boundary) {
+                (Some(queue), true) => queue.claim_steering(false)?,
+                _ => VecDeque::new(),
+            };
+            claim_boundary = true;
+            if !claimed.is_empty() {
+                self.apply_pending(claimed, input, &mut user, cancellation, emit)?;
+            }
             let usage = self.context_usage()?;
             emit(AgentEvent::ContextUpdated { usage });
             let should_compact = usage.auto_compact
@@ -909,11 +960,96 @@ impl Agent {
             self.journal.commit((&self.session).into())?;
             self.publish_context(emit)?;
             if finished {
+                // 原子“领取或关闭”：最终回复与新补充仅在这个短锁内仲裁。
+                if let Some(queue) = input {
+                    let batch = queue.claim_steering(true)?;
+                    if !batch.is_empty() {
+                        if requests_used >= self.max_model_requests {
+                            queue.restore_front(batch)?;
+                            bail!("{} model request limit reached", self.max_model_requests);
+                        }
+                        self.apply_pending(batch, input, &mut user, cancellation, emit)?;
+                        // 本边界只消费固定批次；确认期间新到达的消息等下一边界。
+                        claim_boundary = false;
+                        continue;
+                    }
+                }
                 return Ok(());
             }
             cancellation::check(cancellation)?;
         }
-        bail!("{} model request limit reached", self.max_model_requests)
+    }
+
+    // 在提交边界应用一批补充：先记账尚未持久化的初始输入，再逐条 append、
+    // 持久化并确认。已确认项永不归还；取消或持久化失败时归还未应用项——
+    // 归还只在唯一出口执行，失败路径不必各自维护 push_front 配对。
+    fn apply_pending(
+        &mut self,
+        mut batch: VecDeque<PendingInput>,
+        input: Option<&InputQueue>,
+        user: &mut Option<&str>,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<()> {
+        let result = (|| -> Result<()> {
+            if user.is_some()
+                && let Err(error) = self.persist_pending_input(user.take())
+            {
+                return Err(error);
+            }
+            while !batch.is_empty() {
+                if cancellation.is_cancelled() {
+                    return Err(Cancelled.into());
+                }
+                let item = batch.front().expect("batch is non-empty");
+                self.append_user(item.prompt());
+                if let Err(error) = self.persist_pending_input(Some(item.prompt())) {
+                    self.remove_last_user();
+                    return Err(error);
+                }
+                let item = batch.pop_front().expect("batch is non-empty");
+                emit(AgentEvent::UserInputAccepted {
+                    id: item.id,
+                    text: item.into_display(),
+                });
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.restore_pending(input, batch);
+        }
+        result
+    }
+
+    fn restore_pending(&self, input: Option<&InputQueue>, batch: VecDeque<PendingInput>) {
+        if let Some(queue) = input
+            && let Err(error) = queue.restore_front(batch)
+        {
+            tracing::error!(event = "queue_restore_failed", error = format!("{error:#}"));
+        }
+    }
+
+    // 回退尚未持久化的内存 user append；只移除确认属于用户身份的末条消息。
+    fn remove_last_user(&mut self) {
+        match &mut self.session {
+            Session::Completion(request) => {
+                if matches!(
+                    request.messages.last(),
+                    Some(ChatCompletionRequestMessage::User(_))
+                ) {
+                    request.messages.pop();
+                }
+            }
+            Session::Response(request) => {
+                let input = response_input(request);
+                if matches!(
+                    input.last(),
+                    Some(InputItem::EasyMessage(message)) if matches!(message.role, Role::User)
+                ) {
+                    input.pop();
+                }
+            }
+        }
     }
 }
 
@@ -1228,7 +1364,7 @@ fn response_input(request: &mut CreateResponse) -> &mut Vec<InputItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     #[test]
     fn resume_preparation_preserves_current_session_and_releases_failed_candidate() {
@@ -1336,7 +1472,7 @@ mod tests {
             let cancellation = CancellationToken::new();
             cancellation.cancel();
             let outcome = agent
-                .run("accepted input", &cancellation, &mut |event| {
+                .run("accepted input", &cancellation, None, &mut |event| {
                     assert!(
                         !matches!(
                             event,
@@ -1373,14 +1509,8 @@ mod tests {
     #[test]
     fn background_finish_run_reclaims_processes_for_every_outcome() {
         let dir = tempfile::tempdir().unwrap();
-        let models = dir.path().join("models.yml");
-        std::fs::write(&models, json!({"providers":[{"id":"local","api_key":"fixture","models":[{"id":"one","model":"one"}]}]}).to_string()).unwrap();
-        let mut agent = Agent::new(
-            ModelCatalog::from_files(&dir.path().join("settings.yml"), &models).unwrap(),
-            Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
-            dir.path().join("sessions"),
-        )
-        .unwrap();
+        // 不发真实请求，仅借共享 fixture 构造 Agent；地址占位即可。
+        let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
         let mut previous = None;
         for outcome in [0, 1, 2] {
             let token = CancellationToken::new();
@@ -1498,5 +1628,627 @@ mod tests {
             serde_json::to_value(request).unwrap()["instructions"],
             expected["instructions"]
         );
+    }
+
+    fn runtime_input_agent(
+        dir: &std::path::Path,
+        protocol: &str,
+        server_addr: &str,
+        settings_extra: &str,
+    ) -> Agent {
+        let settings = dir.join("settings.yml");
+        let models = dir.join("models.yml");
+        std::fs::write(
+            &settings,
+            format!("# 测试设置\ndefault_model: fixture/one\n{settings_extra}"),
+        )
+        .unwrap();
+        let model = json!({"id":"one","model":"one"});
+        std::fs::write(
+            &models,
+            json!({"providers":[{
+                "id":"fixture",
+                "api_key":"fixture-key",
+                "protocol":protocol,
+                "base_url":format!("http://{server_addr}/v1"),
+                "models":[model]
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        Agent::new(
+            ModelCatalog::from_files(&settings, &models).unwrap(),
+            Tools::new(dir.to_owned(), EditMode::Replace).unwrap(),
+            dir.join("sessions"),
+        )
+        .unwrap()
+    }
+
+    fn sse_stream(request: tiny_http::Request, events: &[Value]) {
+        use std::io::Write as _;
+        let mut writer = request.into_writer();
+        writer
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                  Transfer-Encoding: chunked\r\n\r\n",
+            )
+            .unwrap();
+        for event in events {
+            let frame = match event {
+                Value::String(text) => format!("data: {text}\n\n"),
+                event => format!("data: {event}\n\n"),
+            };
+            write!(writer, "{:x}\r\n{}\r\n", frame.len(), frame).unwrap();
+        }
+        writer.write_all(b"0\r\n\r\n").unwrap();
+        writer.flush().unwrap();
+    }
+
+    fn completion_stream(request: tiny_http::Request, message: Value, finish: &str) {
+        let chunk = |delta: Value, finish: Option<&str>| {
+            json!({
+                "id":"chatcmpl-fixture", "object":"chat.completion.chunk",
+                "created":1, "model":"one",
+                "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
+            })
+        };
+        sse_stream(
+            request,
+            &[
+                chunk(message, None),
+                chunk(json!({}), Some(finish)),
+                Value::String("[DONE]".into()),
+            ],
+        );
+    }
+
+    fn response_stream(request: tiny_http::Request, output: &[Value]) {
+        let mut events = Vec::new();
+        let mut sequence = 0u64;
+        for (output_index, item) in output.iter().enumerate() {
+            if let Some(parts) = item["content"].as_array() {
+                for (content_index, part) in parts.iter().enumerate() {
+                    let (event_type, text) = match part["type"].as_str() {
+                        Some("output_text") => {
+                            ("response.output_text.delta", part["text"].as_str())
+                        }
+                        Some("refusal") => ("response.refusal.delta", part["refusal"].as_str()),
+                        _ => continue,
+                    };
+                    events.push(json!({
+                        "type":event_type, "sequence_number":sequence,
+                        "item_id":item["id"], "output_index":output_index,
+                        "content_index":content_index, "delta":text.unwrap(),
+                        "logprobs":[]
+                    }));
+                    sequence += 1;
+                    events.push(json!({
+                        "type":"response.content_part.done", "sequence_number":sequence,
+                        "item_id":item["id"], "output_index":output_index,
+                        "content_index":content_index, "part":part
+                    }));
+                    sequence += 1;
+                }
+            }
+            events.push(json!({
+                "type":"response.output_item.done", "sequence_number":sequence,
+                "output_index":output_index, "item":item
+            }));
+            sequence += 1;
+        }
+        events.push(json!({
+            "type":"response.completed", "sequence_number":sequence,
+            "response":{
+                "id":"resp-fixture", "object":"response", "created_at":1,
+                "model":"one", "status":"completed", "output":output
+            }
+        }));
+        sse_stream(request, &events);
+    }
+
+    fn final_for(protocol: &str, request: tiny_http::Request, text: &str) {
+        match protocol {
+            "completion" => {
+                completion_stream(request, json!({"role":"assistant","content":text}), "stop")
+            }
+            _ => response_stream(
+                request,
+                std::slice::from_ref(&json!({
+                    "type":"message", "id":"msg-final", "role":"assistant",
+                    "phase":"final_answer", "status":"completed",
+                    "content":[{"type":"output_text","text":text,
+                                "annotations":[],"logprobs":null}]
+                })),
+            ),
+        }
+    }
+
+    fn tool_call_for(protocol: &str, request: tiny_http::Request, name: &str, arguments: &str) {
+        match protocol {
+            "completion" => completion_stream(
+                request,
+                json!({"role":"assistant","content":null,"tool_calls":[{
+                    "id":"call-1", "type":"function", "index":0,
+                    "function":{"name":name,"arguments":arguments}
+                }]}),
+                "tool_calls",
+            ),
+            _ => response_stream(
+                request,
+                std::slice::from_ref(&json!({
+                    "type":"function_call", "id":"fc-1", "call_id":"call-1",
+                    "name":name, "arguments":arguments, "status":"completed"
+                })),
+            ),
+        }
+    }
+
+    fn message_text(item: &Value) -> String {
+        match &item["content"] {
+            Value::String(text) => text.clone(),
+            Value::Array(parts) => parts
+                .iter()
+                .map(|part| match part["type"].as_str().unwrap() {
+                    "input_text" | "output_text" => part["text"].as_str().unwrap(),
+                    other => panic!("unexpected content type {other}"),
+                })
+                .collect(),
+            content => panic!("unexpected message content {content}"),
+        }
+    }
+
+    fn user_messages(protocol: &str, body: &Value) -> Vec<String> {
+        let entries = match protocol {
+            "completion" => body["messages"].as_array().unwrap(),
+            _ => body["input"].as_array().unwrap(),
+        };
+        entries
+            .iter()
+            .filter(|entry| entry["role"] == "user")
+            .map(message_text)
+            .collect()
+    }
+
+    #[test]
+    fn runtime_input_steering_applies_at_committed_boundary_and_replays_once() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let mut agent =
+                runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+            let queue = InputQueue::default();
+            queue.begin_run().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel::<Value>();
+            let serving = protocol.to_owned();
+            let server_thread = std::thread::spawn(move || {
+                // 第一轮：最终回复结束；补充在请求进行中入队，须在完整提交边界后消费。
+                for text in ["first reply", "second reply", "resumed reply"] {
+                    let mut request = server
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .unwrap()
+                        .unwrap();
+                    let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                    tx.send(body).unwrap();
+                    final_for(&serving, request, text);
+                }
+            });
+            let mut enqueued = false;
+            let mut accepted = Vec::new();
+            let outcome = agent
+                .run(
+                    "initial prompt",
+                    &CancellationToken::new(),
+                    Some(&queue),
+                    &mut |event| match event {
+                        AgentEvent::ModelRequestStarted if !enqueued => {
+                            enqueued = true;
+                            queue
+                                .enqueue(
+                                    input::PendingKind::Steering,
+                                    "steer once".into(),
+                                    None,
+                                    false,
+                                )
+                                .unwrap();
+                        }
+                        AgentEvent::UserInputAccepted { id, text } => accepted.push((id, text)),
+                        _ => {}
+                    },
+                )
+                .unwrap();
+            assert_eq!(outcome, RunOutcome::Completed);
+            assert_eq!(accepted, vec![(1, "steer once".to_owned())]);
+            let first = rx.recv().unwrap();
+            let second = rx.recv().unwrap();
+            assert_eq!(user_messages(protocol, &first), ["initial prompt"]);
+            assert_eq!(
+                user_messages(protocol, &second),
+                ["initial prompt", "steer once"]
+            );
+            assert!(
+                second.to_string().contains("first reply"),
+                "follow-on request must replay the committed native history"
+            );
+            assert_eq!(queue.snapshot_since(None).unwrap().unwrap().steering(), 0);
+            // 任务结束已关闭队列：此后入队的补充不得被 continue_session 领取。
+            queue
+                .enqueue(
+                    input::PendingKind::Steering,
+                    "left pending".into(),
+                    None,
+                    false,
+                )
+                .unwrap();
+            let outcome = agent
+                .continue_session(&CancellationToken::new(), Some(&queue), &mut |event| {
+                    if let AgentEvent::UserInputAccepted { .. } = event {
+                        panic!("closed queue must not be claimed by a new session")
+                    }
+                })
+                .unwrap();
+            assert_eq!(outcome, RunOutcome::Completed);
+            let third = rx.recv().unwrap();
+            assert_eq!(
+                user_messages(protocol, &third),
+                ["initial prompt", "steer once"]
+            );
+            assert_eq!(queue.snapshot_since(None).unwrap().unwrap().steering(), 1);
+            server_thread.join().unwrap();
+            // 已应用的输入各以普通 User 记录持久化一次，事件不入 journal。
+            let id = agent.session_id().unwrap().to_owned();
+            drop(agent);
+            let restored =
+                persistence::load(&dir.path().join("sessions"), Some(&id), true).unwrap();
+            let users = restored
+                .replay
+                .iter()
+                .filter_map(|record| match record {
+                    persistence::ReplayRecord::User(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(users, vec!["initial prompt", "steer once"]);
+        }
+    }
+
+    #[test]
+    fn runtime_input_acceptance_arrivals_wait_for_the_next_committed_boundary() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let mut agent =
+                runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+            let queue = InputQueue::default();
+            queue.begin_run().unwrap();
+            let serving = protocol.to_owned();
+            let handle = std::thread::spawn(move || {
+                let mut bodies = Vec::new();
+                for text in ["first", "second", "third"] {
+                    let mut request = server
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap()
+                        .unwrap();
+                    bodies.push(serde_json::from_reader::<_, Value>(request.as_reader()).unwrap());
+                    final_for(&serving, request, text);
+                }
+                bodies
+            });
+            let mut initial_started = false;
+            agent
+                .run(
+                    "initial",
+                    &CancellationToken::new(),
+                    Some(&queue),
+                    &mut |event| match event {
+                        AgentEvent::AssistantStarted if !initial_started => {
+                            initial_started = true;
+                            queue
+                                .enqueue(input::PendingKind::Steering, "S1".into(), None, false)
+                                .unwrap();
+                        }
+                        AgentEvent::UserInputAccepted { text, .. } if text == "S1" => {
+                            queue
+                                .enqueue(input::PendingKind::Steering, "S2".into(), None, false)
+                                .unwrap();
+                        }
+                        _ => {}
+                    },
+                )
+                .unwrap();
+            let bodies = handle.join().unwrap();
+            assert_eq!(user_messages(protocol, &bodies[0]), ["initial"]);
+            assert_eq!(user_messages(protocol, &bodies[1]), ["initial", "S1"]);
+            assert_eq!(user_messages(protocol, &bodies[2]), ["initial", "S1", "S2"]);
+        }
+    }
+
+    #[test]
+    fn runtime_input_claimed_batch_cancel_restores_only_unaccepted_items() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+            let queue = InputQueue::default();
+            queue.begin_run().unwrap();
+            for text in ["accepted", "unaccepted one", "unaccepted two"] {
+                queue
+                    .enqueue(input::PendingKind::Steering, text.into(), None, false)
+                    .unwrap();
+            }
+            agent.append_user("initial");
+            let mut initial = Some("initial");
+            let cancellation = CancellationToken::new();
+            let mut accepted = Vec::new();
+            let error = agent
+                .apply_pending(
+                    queue.claim_steering(false).unwrap(),
+                    Some(&queue),
+                    &mut initial,
+                    &cancellation,
+                    &mut |event| {
+                        if let AgentEvent::UserInputAccepted { text, .. } = event {
+                            accepted.push(text);
+                            cancellation.cancel();
+                        }
+                    },
+                )
+                .unwrap_err();
+            assert!(error.is::<Cancelled>());
+            assert!(initial.is_none());
+            assert_eq!(accepted, ["accepted"]);
+            assert_eq!(
+                queue.claim_next().unwrap().unwrap().source,
+                "unaccepted one"
+            );
+            assert_eq!(
+                queue.claim_next().unwrap().unwrap().source,
+                "unaccepted two"
+            );
+            assert!(queue.claim_next().unwrap().is_none());
+            let id = agent.session_id().unwrap().to_owned();
+            drop(agent);
+            let restored =
+                persistence::load(&dir.path().join("sessions"), Some(&id), true).unwrap();
+            let users: Vec<_> = restored
+                .replay
+                .iter()
+                .filter_map(|record| match record {
+                    persistence::ReplayRecord::User(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(users, ["initial", "accepted"]);
+        }
+    }
+
+    #[test]
+    fn runtime_input_persistence_failure_rolls_back_append_and_restores_batch() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+            // A real filesystem failure at journal creation, without changing process limits.
+            std::fs::write(dir.path().join("sessions"), "not a directory").unwrap();
+            let before = serde_json::to_value(&agent.session).unwrap();
+            let queue = InputQueue::default();
+            queue.begin_run().unwrap();
+            for text in ["one", "two"] {
+                queue
+                    .enqueue(input::PendingKind::Steering, text.into(), None, false)
+                    .unwrap();
+            }
+            let mut accepted = Vec::new();
+            let error = agent
+                .apply_pending(
+                    queue.claim_steering(false).unwrap(),
+                    Some(&queue),
+                    &mut None,
+                    &CancellationToken::new(),
+                    &mut |event| {
+                        if let AgentEvent::UserInputAccepted { text, .. } = event {
+                            accepted.push(text);
+                        }
+                    },
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("persisting session"));
+            assert_eq!(serde_json::to_value(&agent.session).unwrap(), before);
+            assert!(accepted.is_empty());
+            assert!(agent.journal.check().is_err());
+            assert_eq!(queue.claim_next().unwrap().unwrap().source, "one");
+            assert_eq!(queue.claim_next().unwrap().unwrap().source, "two");
+            assert!(queue.claim_next().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn runtime_input_limit_preserves_pending_steering() {
+        for protocol in ["completion", "response"] {
+            for mode in ["finished_at_limit", "tool_round_at_limit"] {
+                let dir = tempfile::tempdir().unwrap();
+                let server = std::sync::Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+                let mut agent = runtime_input_agent(
+                    dir.path(),
+                    protocol,
+                    &server.server_addr().to_string(),
+                    "max_model_requests: 1\n",
+                );
+                let queue = InputQueue::default();
+                queue.begin_run().unwrap();
+                let serving = (protocol.to_owned(), mode.to_owned());
+                let server_thread = {
+                    let server = server.clone();
+                    std::thread::spawn(move || {
+                        let mut request = server
+                            .recv_timeout(std::time::Duration::from_secs(10))
+                            .unwrap()
+                            .unwrap();
+                        let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                        assert!(!body.to_string().contains("held steering"));
+                        if serving.1 == "finished_at_limit" {
+                            final_for(&serving.0, request, "only round");
+                        } else {
+                            tool_call_for(&serving.0, request, "bash", r#"{"command":"true"}"#);
+                        }
+                    })
+                };
+                let mut enqueued = false;
+                let result = agent.run(
+                    "initial prompt",
+                    &CancellationToken::new(),
+                    Some(&queue),
+                    &mut |event| match event {
+                        AgentEvent::ModelRequestStarted if !enqueued => {
+                            enqueued = true;
+                            queue
+                                .enqueue(
+                                    input::PendingKind::Steering,
+                                    "held steering".into(),
+                                    None,
+                                    false,
+                                )
+                                .unwrap();
+                        }
+                        AgentEvent::UserInputAccepted { .. } => {
+                            panic!("quota-exhausted run must not apply pending steering")
+                        }
+                        _ => {}
+                    },
+                );
+                server_thread.join().unwrap();
+                // 计划 step2.2：额度耗尽时即使本轮已完成也报额度错误，补充保留待处理。
+                match result {
+                    Err(error) => assert!(
+                        error.to_string().contains("model request limit reached"),
+                        "{error:#}"
+                    ),
+                    Ok(_) => panic!("limit-exhausted run must error, not complete"),
+                }
+                // 额度耗尽后没有第二次请求，补充仍待处理。
+                assert!(
+                    server
+                        .recv_timeout(std::time::Duration::from_millis(150))
+                        .unwrap()
+                        .is_none()
+                );
+                let snapshot = queue.snapshot_since(None).unwrap().unwrap();
+                assert_eq!((snapshot.steering(), snapshot.follow_up()), (1, 0));
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_input_queued_during_summary_waits_for_next_normal_request() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let mut agent = runtime_input_agent(
+                dir.path(),
+                protocol,
+                &server.server_addr().to_string(),
+                "max_model_requests: 5\n",
+            );
+            // 首个完整交换是可压缩内容；最后的完整交换与待回复后缀必须保留。
+            let big = "filler ".repeat(20000);
+            seed_exchange(&mut agent, &big, "ack");
+            seed_exchange(&mut agent, "warmup", "ready");
+            // 压缩后用量 = 会话减去首个交换加摘要，必须低于阈值且留出余量。
+            let total_bytes = serde_json::to_value(&agent.session)
+                .unwrap()
+                .to_string()
+                .len() as u64;
+            let big_bytes = serde_json::to_string(&big).unwrap().len() as u64;
+            assert!(
+                total_bytes / 4 < big_bytes,
+                "test needs a dominant compactable exchange"
+            );
+            let prompt_bytes = serde_json::to_string("final question").unwrap().len() as u64;
+            let pre_tokens = (total_bytes + prompt_bytes).div_ceil(3);
+            // 摘要请求本身加输出上限必须放进窗口，且阈值仍要触发压缩。
+            let window = pre_tokens + 5120;
+            agent.current_model.context_window = Some(window);
+            let queue = InputQueue::default();
+            queue.begin_run().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel::<Value>();
+            let serving = protocol.to_owned();
+            let server_thread = std::thread::spawn(move || {
+                // 请求 1：临时摘要请求，不得包含摘要期间入队的补充。
+                let mut request = server
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap()
+                    .unwrap();
+                let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                assert!(
+                    !body.to_string().contains("after summary"),
+                    "summary request consumed queued input"
+                );
+                tx.send(body).unwrap();
+                final_for(&serving, request, "compact summary");
+                // 请求 2：摘要后的普通请求，补充在该边界应用。
+                let mut request = server
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap()
+                    .unwrap();
+                let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                tx.send(body).unwrap();
+                final_for(&serving, request, "final answer");
+            });
+            let mut accepted = Vec::new();
+            let outcome = agent
+                .run(
+                    "final question",
+                    &CancellationToken::new(),
+                    Some(&queue),
+                    &mut |event| match event {
+                        AgentEvent::CompactionStarted { automatic: true } => {
+                            queue
+                                .enqueue(
+                                    input::PendingKind::Steering,
+                                    "after summary".into(),
+                                    None,
+                                    false,
+                                )
+                                .unwrap();
+                        }
+                        AgentEvent::UserInputAccepted { id, text } => accepted.push((id, text)),
+                        _ => {}
+                    },
+                )
+                .unwrap();
+            assert_eq!(outcome, RunOutcome::Completed);
+            server_thread.join().unwrap();
+            drop(rx.recv().unwrap());
+            let normal = rx.recv().unwrap();
+            assert_eq!(
+                user_messages(protocol, &normal).last().map(String::as_str),
+                Some("after summary")
+            );
+            assert_eq!(accepted, vec![(1, "after summary".to_owned())]);
+            let snapshot = queue.snapshot_since(None).unwrap().unwrap();
+            assert_eq!((snapshot.steering(), snapshot.follow_up()), (0, 0));
+        }
+    }
+
+    fn seed_exchange(agent: &mut Agent, user: &str, assistant: &str) {
+        agent.append_user(user);
+        match &mut agent.session {
+            Session::Completion(request) => {
+                request.messages.push(ChatCompletionRequestMessage::Assistant(
+                    async_openai::types::chat::ChatCompletionRequestAssistantMessage {
+                        content: Some(
+                            async_openai::types::chat::ChatCompletionRequestAssistantMessageContent::Text(
+                                assistant.into(),
+                            ),
+                        ),
+                        ..Default::default()
+                    },
+                ));
+            }
+            Session::Response(request) => {
+                response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
+                    role: Role::Assistant,
+                    content: assistant.into(),
+                    ..Default::default()
+                }));
+            }
+        }
     }
 }

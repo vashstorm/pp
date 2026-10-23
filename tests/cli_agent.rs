@@ -2519,6 +2519,7 @@ mod tui {
     include!("cli_agent/transcript_blocks_tui.rs");
     include!("cli_agent/ask_tui.rs");
     include!("cli_agent/tree_tui.rs");
+    include!("cli_agent/runtime_input_tui.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
     use std::{
         io::Read,
@@ -2531,12 +2532,7 @@ mod tui {
     static PTY_SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn input_is_ready(screen: &vt100::Screen) -> bool {
-        screen
-            .contents()
-            .lines()
-            .collect::<Vec<_>>()
-            .windows(2)
-            .any(|lines| lines[0].starts_with('─') && lines[1].starts_with('❯'))
+        screen.contents().lines().any(|line| line.starts_with('❯'))
     }
 
     struct Pty {
@@ -3344,6 +3340,7 @@ mod tui {
         assert_eq!(body["messages"][1]["content"], "startup draft");
         final_reply(request, "startup answer");
         pty.text("startup answer");
+        pty.completed();
         assert!(!pty.parser.screen().contents().contains("█▀▀█"));
         pty.input("/new\r");
         pty.text("█▀▀█  █▀▀█");
@@ -4377,16 +4374,20 @@ mod tui {
         // The transcript echoes the expanded prompt, not the slash input.
         pty.text("Review auth. Focus: error handling tests.");
 
-        // While the reply is pending a second command is neither sent nor
-        // echoed, and the draft survives.
+        // Running Enter expands and queues the template once, without an early
+        // transcript echo or request; the committed boundary applies it.
         pty.input("/review pending\r");
-        pty.draft("/review pending");
+        pty.draft("");
+        pty.text("Steering: 1");
+        assert!(
+            !pty.parser
+                .screen()
+                .contents()
+                .contains("Review pending. Focus: .")
+        );
         no_more(&server);
         final_reply(request, "review done");
         pty.text("review done");
-        pty.ready();
-        // Once idle the preserved draft submits normally.
-        pty.input("\r");
         let (request, body) = pty.request(&server);
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 4);
@@ -4836,7 +4837,7 @@ mod tui {
         assert_eq!(body["model"], "fixture-model");
         assert_eq!(body["messages"][1]["content"], "line one\nline two");
 
-        pty.input("next draft\r!");
+        pty.input("next draft!");
         pty.draft("next draft!");
         pty.input("\x7f");
         pty.draft("next draft");

@@ -55,6 +55,10 @@ pub(crate) enum AgentEvent {
         before_tokens: u64,
         after_tokens: u64,
     },
+    UserInputAccepted {
+        id: u64,
+        text: String,
+    },
     ModelRequestStarted,
     ModelOutputProgress {
         output_bytes: u64,

@@ -13,7 +13,11 @@ mod tree;
 mod welcome;
 
 use crate::{
-    agent::{Agent, context::CompactionOutcome},
+    agent::{
+        Agent,
+        context::CompactionOutcome,
+        input::{InputQueue, PendingKind, QueueSnapshot},
+    },
     cancellation::{CancellationToken, RunOutcome},
     commands::{self, COMMANDS, Command},
     config::{ModelChoice, NotificationOptions, ThinkLevel},
@@ -49,7 +53,10 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nForeground bash has an execution timeout; managed background tasks survive tool calls and stop at this user task's end or controlled exit. Ctrl-C stops managed background groups, but cleanup of other foreground children is not guaranteed. No shell/file side-effect rollback; deliberately detached descendants are not covered.";
-const SHORTCUTS: &str = "Enter send · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S save selected model/effort as default in its menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
+// 运行中状态栏、欢迎页 KEYS 与 F1 帮助三处共享同一段提示，避免文案各自漂移。
+const STEERING_HINT: &str =
+    "Enter steer · Alt-Enter queue · Ctrl-Q pending messages · Ctrl-R resume queue";
+const SHORTCUTS_TAIL: &str = " · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S save selected model/effort as default in its menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
 const EFFORT_HINT: &str = "Enter select · Ctrl-S set selected effort as default · Esc cancel";
 const MODEL_HINT: &str = "Enter select · Ctrl-S set selected model as default · Esc cancel";
 const MOUSE_SCROLL_LINES: usize = 3;
@@ -126,9 +133,11 @@ enum WorkerCommand {
     Run {
         prompt: String,
         cancellation: CancellationToken,
+        input: InputQueue,
     },
     Continue {
         cancellation: CancellationToken,
+        input: InputQueue,
     },
     Compact {
         cancellation: CancellationToken,
@@ -239,6 +248,7 @@ enum MenuAction {
     File(usize),
     FileDirectory(usize),
     FileParent,
+    PendingInput(u64),
 }
 
 struct ModelPickerDraft {
@@ -280,6 +290,11 @@ struct App {
     history_draft: Option<TextArea<'static>>,
     state: State,
     active_cancellation: Option<CancellationToken>,
+    input_queue: InputQueue,
+    queue_paused: bool,
+    queue_menu: bool,
+    queue_menu_revision: Option<u64>,
+    queue_snapshot: Option<QueueSnapshot>,
     ask_panel: Option<ask::Panel>,
     ask_reply: Option<mpsc::SyncSender<Vec<crate::interaction::AskAnswer>>>,
     commands: Option<Sender<WorkerCommand>>,
@@ -377,6 +392,11 @@ impl App {
             history_draft: None,
             state: State::Unavailable,
             active_cancellation: None,
+            input_queue: InputQueue::default(),
+            queue_paused: false,
+            queue_menu: false,
+            queue_menu_revision: None,
+            queue_snapshot: None,
             ask_panel: None,
             ask_reply: None,
             commands: None,
@@ -444,13 +464,17 @@ impl App {
                                 WorkerCommand::Run {
                                     prompt,
                                     cancellation,
+                                    input,
                                 } => WorkerEvent::completed(
                                     started,
-                                    agent.run(&prompt, &cancellation, &mut emit),
+                                    agent.run(&prompt, &cancellation, Some(&input), &mut emit),
                                 ),
-                                WorkerCommand::Continue { cancellation } => WorkerEvent::completed(
+                                WorkerCommand::Continue {
+                                    cancellation,
+                                    input,
+                                } => WorkerEvent::completed(
                                     started,
-                                    agent.continue_session(&cancellation, &mut emit),
+                                    agent.continue_session(&cancellation, Some(&input), &mut emit),
                                 ),
                                 WorkerCommand::Compact { cancellation } => {
                                     let result = agent.compact(&cancellation, &mut emit);
@@ -661,6 +685,8 @@ impl App {
         }
         let message = "Execution unavailable: agent worker channel closed; restart pp.";
         self.state = State::Unavailable;
+        self.queue_paused = true;
+        let _ = self.input_queue.close();
         self.active_cancellation = None;
         self.secondary_status = None;
         self.commands = None;
@@ -741,6 +767,7 @@ impl App {
                     {
                         self.menu = None;
                         self.menu_dismissed = true;
+                        self.queue_menu = false;
                         self.ask_panel = Some(ask::Panel::new(request));
                         self.ask_reply = Some(reply);
                         self.conversation.waiting_for_input();
@@ -773,6 +800,10 @@ impl App {
                             self.token_speed.clear();
                             self.conversation.progress(event);
                         }
+                        // 输入确认由 App 直接回显；不进 Transcript progress，不重复记录历史。
+                        AgentEvent::UserInputAccepted { text, .. } => {
+                            self.append("You", &text);
+                        }
                         event => self.conversation.progress(event),
                     }
                     changed = true;
@@ -793,6 +824,10 @@ impl App {
                     self.ask_reply = None;
                     self.ask_panel = None;
                     self.active_cancellation = None;
+                    let succeeded = matches!(&result, Ok(RunOutcome::Completed));
+                    if !succeeded {
+                        self.queue_paused = self.has_pending();
+                    }
                     let label = match result {
                         Ok(RunOutcome::Completed) => "Completed",
                         Ok(RunOutcome::Cancelled) => {
@@ -1037,6 +1072,8 @@ impl App {
                 }
             }
         }
+        changed |= self.refresh_queue();
+        changed |= self.dispatch_next();
         if changed {
             self.escape_tap.reset();
             self.refresh_candidates(false);
@@ -1045,6 +1082,10 @@ impl App {
     }
 
     fn refresh_candidates(&mut self, edited: bool) {
+        if self.queue_menu {
+            self.refresh_pending_menu();
+            return;
+        }
         if edited {
             self.menu_dismissed = false;
         }
@@ -1335,15 +1376,193 @@ impl App {
         }
     }
 
+    fn close_pending_menu(&mut self) {
+        self.queue_menu = false;
+        self.queue_menu_revision = None;
+        self.menu = None;
+        self.menu_dismissed = true;
+    }
+
+    fn refresh_pending_menu(&mut self) {
+        self.refresh_queue();
+        let Some(snapshot) = &self.queue_snapshot else {
+            return;
+        };
+        if self.queue_menu_revision == Some(snapshot.revision) && self.menu.is_some() {
+            return;
+        }
+        self.queue_menu_revision = Some(snapshot.revision);
+        let selected = self.menu.as_ref().and_then(|menu| {
+            menu.selected_index()
+                .map(|index| (menu.items()[index].value, index))
+        });
+        let items: Vec<_> = snapshot
+            .items
+            .iter()
+            .filter(|item| item.kind == PendingKind::Steering)
+            .chain(
+                snapshot
+                    .items
+                    .iter()
+                    .filter(|item| item.kind == PendingKind::FollowUp),
+            )
+            .map(|item| MenuItem {
+                value: MenuAction::PendingInput(item.id),
+                label: format!(
+                    "{} #{}",
+                    if item.kind == PendingKind::Steering {
+                        "Steer"
+                    } else {
+                        "Queued"
+                    },
+                    item.id
+                ),
+                description: transcript_style::display_text(&item.preview).replace('\t', " "),
+                icon: None,
+                current: false,
+            })
+            .collect();
+        if items.is_empty() {
+            self.close_pending_menu();
+        } else if self.menu.as_ref().is_none_or(|menu| menu.items() != items) {
+            let preferred = selected
+                .and_then(|(value, index)| {
+                    items
+                        .iter()
+                        .position(|item| item.value == value)
+                        .or(Some(index.min(items.len() - 1)))
+                })
+                .unwrap_or(0);
+            self.menu = Some(
+                SelectionMenu::new(items, preferred)
+                    .with_hint("Enter recall · Ctrl-R resume queue · Esc close"),
+            );
+        }
+    }
+
+    fn toggle_pending_menu(&mut self) {
+        if self.queue_menu {
+            self.close_pending_menu();
+        } else if self.has_pending() {
+            self.queue_menu = true;
+            self.file_query = None;
+            self.menu = None;
+            self.refresh_pending_menu();
+        } else {
+            self.notify(Level::Normal, "No pending messages.".into());
+        }
+    }
+
+    fn recall_pending(&mut self, id: u64) {
+        if !self.input.lines().iter().all(String::is_empty) {
+            self.notify(
+                Level::Error,
+                "Clear the draft before recalling a pending message.".into(),
+            );
+            return;
+        }
+        match self.input_queue.recall(id) {
+            Ok(Some(message)) => {
+                self.close_pending_menu();
+                self.clear_input();
+                self.input.insert_str(message.source);
+                if !self.has_pending() {
+                    self.queue_paused = false;
+                }
+            }
+            Ok(None) => {
+                self.refresh_pending_menu();
+                self.notify(Level::Normal, "Message is already being applied.".into());
+            }
+            Err(error) => self.notify(Level::Error, error.to_string()),
+        }
+    }
+
+    fn resume_queue(&mut self) {
+        if matches!(self.state, State::Ready) && self.queue_paused && self.has_pending() {
+            self.close_pending_menu();
+            self.queue_paused = false;
+            self.dispatch_next();
+        }
+    }
+
+    fn refresh_queue(&mut self) -> bool {
+        let revision = self
+            .queue_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.revision);
+        match self.input_queue.snapshot_since(revision) {
+            Ok(Some(snapshot)) => {
+                self.queue_snapshot = Some(snapshot);
+                true
+            }
+            Ok(None) => false,
+            Err(error) => {
+                self.queue_paused = true;
+                self.notify(Level::Error, error.to_string());
+                false
+            }
+        }
+    }
+
+    fn has_pending(&mut self) -> bool {
+        self.refresh_queue();
+        self.queue_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.items.is_empty())
+    }
+
+    /// 派发下一条待处理消息；返回是否真的派发（状态离开 Ready）。
+    fn dispatch_next(&mut self) -> bool {
+        if !matches!(self.state, State::Ready)
+            || self.queue_paused
+            || self.ask_panel.is_some()
+            || self.skill_panel.is_some()
+            || self.skills_pending
+            || self.session_panel.is_some()
+            || self.tree_panel.is_some()
+            || self.model_picker_draft.is_some()
+        {
+            return false;
+        }
+        let message = match self.input_queue.claim_next() {
+            Ok(Some(message)) => message,
+            Ok(None) => return false,
+            Err(error) => {
+                self.queue_paused = true;
+                self.notify(Level::Error, error.to_string());
+                return false;
+            }
+        };
+        let dispatched = self.send_task(Some(message.prompt().to_owned()));
+        if dispatched {
+            self.append("You", &message.into_display());
+        } else {
+            if let Err(error) = self.input_queue.restore_front([message].into()) {
+                self.notify(Level::Error, error.to_string());
+            }
+            self.queue_paused = true;
+        }
+        self.refresh_queue();
+        !matches!(self.state, State::Ready)
+    }
+
     fn send_task(&mut self, prompt: Option<String>) -> bool {
+        if let Err(error) = self.input_queue.begin_run() {
+            self.queue_paused = true;
+            self.notify(Level::Error, error.to_string());
+            return false;
+        }
         let cancellation = CancellationToken::new();
         let command = match prompt {
             Some(prompt) => WorkerCommand::Run {
                 prompt,
                 cancellation: cancellation.clone(),
+                input: self.input_queue.clone(),
             },
             None => WorkerCommand::Continue {
                 cancellation: cancellation.clone(),
+                input: self.input_queue.clone(),
             },
         };
         if self.send(command, State::Running) {
@@ -1351,6 +1570,7 @@ impl App {
             self.conversation.begin_run();
             true
         } else {
+            let _ = self.input_queue.close();
             false
         }
     }
@@ -1380,8 +1600,23 @@ impl App {
         }
     }
 
+    // 有待处理消息时禁止改动会话历史；/tree 与 submit 的 New/Resume/Tree 入口共用。
+    fn pending_blocks_session_change(&mut self) -> bool {
+        if !self.has_pending() {
+            return false;
+        }
+        self.notify(
+            Level::Error,
+            "Recall pending messages before changing session history.".into(),
+        );
+        true
+    }
+
     fn open_tree(&mut self) {
         self.escape_tap.reset();
+        if self.pending_blocks_session_change() {
+            return;
+        }
         if !matches!(self.state, State::Ready)
             || self.skills_pending
             || self.skill_panel.is_some()
@@ -1408,7 +1643,7 @@ impl App {
                 ),
             );
         }
-        self.append("Tips", SHORTCUTS);
+        self.append("Tips", &format!("{STEERING_HINT}{SHORTCUTS_TAIL}"));
         self.append("Help", WARNING);
     }
 
@@ -1473,7 +1708,12 @@ impl App {
         }
     }
 
-    fn submit(&mut self) -> bool {
+    // /init 回显用户命令本身；其余展开命令回显展开正文。
+    fn echoes_source(prompt: &str) -> bool {
+        prompt.trim() == "/init"
+    }
+
+    fn submit(&mut self, kind: PendingKind) -> bool {
         if self.skills_pending || self.skill_panel.is_some() {
             return false;
         }
@@ -1514,6 +1754,37 @@ impl App {
                 Some((name, enabled)) => skills::Request::Save(vec![(name.to_owned(), enabled)]),
             };
             self.request_skills(request);
+            return false;
+        }
+        if matches!(
+            &command,
+            Some(Command::New | Command::Resume | Command::Tree)
+        ) && self.pending_blocks_session_change()
+        {
+            return false;
+        }
+        let pending = self.has_pending();
+        let model_message = matches!(&command, None | Some(Command::Prompt(_)));
+        if model_message
+            && (matches!(self.state, State::Running)
+                || (matches!(self.state, State::Ready) && pending))
+        {
+            let expansion = match command {
+                Some(Command::Prompt(expanded)) => Some(expanded),
+                _ => None,
+            };
+            let echo_source = Self::echoes_source(&prompt);
+            match self
+                .input_queue
+                .enqueue(kind, prompt, expansion, echo_source)
+            {
+                Ok(_) => {
+                    self.remember_input();
+                    self.clear_input();
+                    self.dispatch_next();
+                }
+                Err(error) => self.notify(Level::Error, error.to_string()),
+            }
             return false;
         }
         match self.state {
@@ -1578,6 +1849,7 @@ impl App {
                     self.refresh_candidates(true);
                 }
                 None => {
+                    self.queue_paused = false;
                     if self.send_task(Some(prompt.clone())) {
                         self.remember_input();
                         self.append("You", &prompt);
@@ -1585,12 +1857,13 @@ impl App {
                     }
                 }
                 Some(Command::Prompt(expanded)) => {
+                    self.queue_paused = false;
                     // /init 回显用户命令；文件命令继续回显展开正文，输入历史均保留原文。
                     if self.send_task(Some(expanded.clone())) {
                         self.remember_input();
                         self.append(
                             "You",
-                            if prompt.trim() == "/init" {
+                            if Self::echoes_source(&prompt) {
                                 &prompt
                             } else {
                                 &expanded
@@ -1636,6 +1909,11 @@ impl App {
             return false;
         }
         match action {
+            MenuAction::PendingInput(id) => {
+                if confirm {
+                    self.recall_pending(id);
+                }
+            }
             MenuAction::FileDirectory(index) => {
                 if let Some(path) = self.file_paths.get(index)
                     && let Some((directory, true)) = files::child(path, &self.file_directory)
@@ -1671,14 +1949,14 @@ impl App {
                 self.input = editor();
                 self.input.insert_str(COMMANDS[index].name);
                 self.refresh_candidates(true);
-                return confirm && self.submit();
+                return confirm && self.submit(PendingKind::Steering);
             }
             MenuAction::FileCommand(index) => {
                 self.input = editor();
                 self.input
                     .insert_str(self.file_commands.entries[index].name.as_str());
                 self.refresh_candidates(true);
-                return confirm && self.submit();
+                return confirm && self.submit(PendingKind::Steering);
             }
             MenuAction::Model(index) if confirm => {
                 let choice = &self.choices[index];
@@ -1854,6 +2132,55 @@ impl App {
                     }
                     return false;
                 }
+                if key.modifiers == KeyModifiers::CONTROL
+                    && matches!(key.code, KeyCode::Char('q' | 'r'))
+                {
+                    if key.kind == KeyEventKind::Press
+                        && self.model_picker_draft.is_none()
+                        && !self.skills_pending
+                    {
+                        if key.code == KeyCode::Char('r') {
+                            self.resume_queue();
+                        } else if matches!(
+                            self.state,
+                            State::Running | State::Ready | State::Cancelling | State::Unavailable
+                        ) {
+                            self.toggle_pending_menu();
+                        }
+                    }
+                    return false;
+                }
+                if self.queue_menu {
+                    if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
+                        return false;
+                    }
+                    if key.code == KeyCode::Enter && !key.modifiers.is_empty() {
+                        return false;
+                    }
+                    if let Some(menu) = &mut self.menu {
+                        match menu.handle_key(key) {
+                            MenuEvent::Cancel => {
+                                self.close_pending_menu();
+                                return false;
+                            }
+                            MenuEvent::Confirm(MenuAction::PendingInput(id)) => {
+                                self.recall_pending(id);
+                                return false;
+                            }
+                            MenuEvent::Handled | MenuEvent::Complete(_) | MenuEvent::Confirm(_) => {
+                                return false;
+                            }
+                            MenuEvent::Ignored => {}
+                        }
+                    }
+                    // Normal editing closes the list before following the existing editor path.
+                    self.close_pending_menu();
+                }
+                if key.code == KeyCode::Enter
+                    && !matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::ALT)
+                {
+                    return false;
+                }
                 if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::CONTROL {
                     if key.kind == KeyEventKind::Press
                         && let Some(action) = self.menu.as_ref().and_then(|menu| {
@@ -1994,6 +2321,7 @@ impl App {
                         && let Some(cancellation) = &self.active_cancellation
                     {
                         cancellation.cancel();
+                        self.queue_paused = true;
                         if matches!(self.state, State::Compacting) {
                             self.secondary_status = Some("Cancelling context...".into());
                         } else {
@@ -2016,7 +2344,14 @@ impl App {
                 }
                 match key.code {
                     KeyCode::Enter => {
-                        if key.kind == KeyEventKind::Press && self.submit() {
+                        if key.kind == KeyEventKind::Press
+                            && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::ALT)
+                            && self.submit(if key.modifiers == KeyModifiers::ALT {
+                                PendingKind::FollowUp
+                            } else {
+                                PendingKind::Steering
+                            })
+                        {
                             return true;
                         }
                     }
@@ -2101,6 +2436,9 @@ impl App {
                 }
             }
             Event::Paste(text) => {
+                if self.queue_menu {
+                    self.close_pending_menu();
+                }
                 self.input
                     .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
                 self.refresh_candidates(true);
@@ -2326,20 +2664,49 @@ impl App {
                 .unwrap_or(u16::MAX)
                 .min((right - area.x).min(area.width / 2))
         });
+        let mut left = area.x;
+        if let Some(snapshot) = &self.queue_snapshot
+            && !snapshot.items.is_empty()
+        {
+            let paused = if self.queue_paused {
+                " · Paused · Ctrl-R resume"
+            } else {
+                ""
+            };
+            let line = Line::styled(
+                format!(
+                    " Steering: {} · Queued: {}{paused} ",
+                    snapshot.steering(), snapshot.follow_up()
+                ),
+                Style::default().fg(Color::DarkGray),
+            );
+            let width = u16::try_from(line.width())
+                .unwrap_or(u16::MAX)
+                .min((right - left).saturating_sub(extra_width));
+            frame.render_widget(line, Rect::new(left, area.y, width, 1));
+            left += width;
+        }
         if let Some(usage) = self.usage.as_ref() {
             let metrics = statusline::metric_fields(
                 usage.last_request.as_ref(),
                 self.token_speed.value(Instant::now()),
-                (right - area.x).saturating_sub(extra_width),
+                (right - left).saturating_sub(extra_width),
             );
             let width = u16::try_from(metrics.width()).unwrap_or(u16::MAX);
             right -= width;
             frame.render_widget(metrics, Rect::new(right, area.y, width, 1));
         }
         if let Some(extra) = extra {
+            right -= extra_width;
+            frame.render_widget(extra, Rect::new(right, area.y, extra_width, 1));
+        }
+        if matches!(self.state, State::Running) && left == area.x && right > left {
             frame.render_widget(
-                extra,
-                Rect::new(right - extra_width, area.y, extra_width, 1),
+                Line::styled(
+                    format!(" {STEERING_HINT}"),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Rect::new(left, area.y, right - left, 1),
             );
         }
     }
@@ -3482,7 +3849,8 @@ mod tests {
         for (state, text) in [
             (State::Ready, "  "),
             (State::Ready, "/unknown"),
-            (State::Running, "busy draft"),
+            (State::Running, "/new"),
+            (State::Cancelling, "cancelling draft"),
             (State::Unavailable, "unavailable draft"),
         ] {
             app.state = state;
@@ -3519,6 +3887,242 @@ mod tests {
         app.handle(key(KeyCode::Down), &mut dirty);
         app.handle(key(KeyCode::Down), &mut dirty);
         assert_eq!(app.input.lines(), &[""]);
+    }
+
+    #[test]
+    fn runtime_input_pending_recall_protects_draft_and_never_reuses_claimed_text() {
+        let (mut app, _requests) = file_commands_app(commands::FileCommands::default());
+        app.state = State::Running;
+        app.input_queue.begin_run().unwrap();
+        let id = app
+            .input_queue
+            .enqueue(
+                PendingKind::FollowUp,
+                "/review 原文\n".into(),
+                Some("expanded once".into()),
+                false,
+            )
+            .unwrap();
+        app.input.insert_str(" ");
+        let cursor = app.input.cursor();
+        let mut dirty = false;
+        app.handle(control('q'), &mut dirty);
+        assert!(app.queue_menu);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert_eq!(app.input.lines(), &[" "]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert!(app.has_pending());
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert!(app.has_pending());
+        app.input = editor();
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert_eq!(app.input.lines(), &["/review 原文", ""]);
+        assert!(!app.queue_menu);
+        assert!(!app.has_pending());
+        assert!(app.input_history.is_empty());
+        assert!(app.input_queue.recall(id).unwrap().is_none());
+        app.input = editor();
+        let id = app
+            .input_queue
+            .enqueue(PendingKind::Steering, "claimed".into(), None, false)
+            .unwrap();
+        app.toggle_pending_menu();
+        let claimed = app.input_queue.claim_steering(false).unwrap();
+        app.recall_pending(id);
+        assert!(app.input.is_empty());
+        assert!(!app.queue_menu);
+        assert_eq!(claimed.front().unwrap().source, "claimed");
+    }
+
+    #[test]
+    fn runtime_input_pending_menu_preserves_selection_and_escape_does_not_cancel() {
+        let (mut app, _requests) = file_commands_app(commands::FileCommands::default());
+        app.state = State::Running;
+        let token = CancellationToken::new();
+        app.active_cancellation = Some(token.clone());
+        for text in ["first", "界\u{1b}[31m\tpreview", "last"] {
+            app.input_queue
+                .enqueue(PendingKind::FollowUp, text.into(), None, false)
+                .unwrap();
+        }
+        let mut dirty = false;
+        app.handle(control('q'), &mut dirty);
+        app.handle(key(KeyCode::Down), &mut dirty);
+        let selected = app.menu.as_ref().unwrap().items()[1].value;
+        app.input_queue
+            .enqueue(PendingKind::Steering, "priority".into(), None, false)
+            .unwrap();
+        app.receive();
+        let menu = app.menu.as_ref().unwrap();
+        assert_eq!(menu.items()[menu.selected_index().unwrap()].value, selected);
+        for (width, height) in [(100, 30), (40, 10)] {
+            let screen = draw(&mut app, width, height);
+            assert!(screen.contains("Steer #"));
+            assert!(!screen.contains('\u{1b}'));
+        }
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(!app.queue_menu);
+        assert!(!token.is_cancelled());
+        assert!(!app.queue_paused);
+        app.handle(control('q'), &mut dirty);
+        app.handle(Event::Paste("新草稿".into()), &mut dirty);
+        assert!(!app.queue_menu);
+        assert_eq!(app.input.lines(), &["新草稿"]);
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn runtime_input_explicit_resume_preserves_draft_and_only_ready_dispatches() {
+        let (mut app, requests) = file_commands_app(commands::FileCommands::default());
+        app.input_queue
+            .enqueue(PendingKind::FollowUp, "next task".into(), None, false)
+            .unwrap();
+        app.queue_paused = true;
+        app.input.insert_str("草稿");
+        let cursor = app.input.cursor();
+        let mut dirty = false;
+        for state in [State::Running, State::Cancelling, State::Unavailable] {
+            app.state = state;
+            app.handle(control('r'), &mut dirty);
+            assert!(app.queue_paused);
+            assert!(requests.try_recv().is_err());
+        }
+        app.state = State::Ready;
+        app.handle(control('q'), &mut dirty);
+        app.handle(control('r'), &mut dirty);
+        assert!(!app.queue_paused);
+        assert!(!app.queue_menu);
+        assert!(
+            matches!(requests.try_recv().unwrap(), WorkerCommand::Run { prompt, .. } if prompt == "next task")
+        );
+        assert_eq!(app.input.lines(), &["草稿"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert!(app.input_history.is_empty());
+    }
+
+    #[test]
+    fn runtime_input_scheduler_prioritizes_steering_and_pauses_on_cancel_race() {
+        let (mut app, requests) = file_commands_app(commands::FileCommands::default());
+        let (events, receiver) = mpsc::channel();
+        app.events = Some(receiver);
+        let mut dirty = false;
+        app.input.insert_str("initial");
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        let WorkerCommand::Run {
+            cancellation: initial,
+            ..
+        } = requests.try_recv().unwrap()
+        else {
+            panic!()
+        };
+        app.input.insert_str("queued");
+        app.handle(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)),
+            &mut dirty,
+        );
+        app.input.insert_str("steer");
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(app.input.is_empty());
+        assert_eq!(app.input_history, ["initial", "queued", "steer"]);
+        assert!(requests.try_recv().is_err());
+        app.input.insert_str("草稿\nline");
+        let cursor = app.input.cursor();
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(initial.is_cancelled());
+        // A committed final reply can win cancellation, but must not resume the queue.
+        events
+            .send(WorkerEvent::completed(
+                Instant::now(),
+                Ok(RunOutcome::Completed),
+            ))
+            .unwrap();
+        app.receive();
+        assert!(matches!(app.state, State::Ready));
+        assert!(app.queue_paused);
+        assert!(requests.try_recv().is_err());
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(app.input.lines(), &["草稿", "line"]);
+        app.queue_paused = false;
+        app.dispatch_next();
+        let WorkerCommand::Run {
+            prompt,
+            cancellation: next,
+            ..
+        } = requests.try_recv().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(prompt, "steer");
+        assert!(!next.is_cancelled());
+        assert_eq!(app.input.cursor(), cursor);
+        events
+            .send(WorkerEvent::completed(
+                Instant::now(),
+                Ok(RunOutcome::Completed),
+            ))
+            .unwrap();
+        app.receive();
+        assert!(
+            matches!(requests.try_recv().unwrap(), WorkerCommand::Run { prompt, .. } if prompt == "queued")
+        );
+        assert_eq!(app.input.lines(), &["草稿", "line"]);
+        assert_eq!(app.input_history, ["initial", "queued", "steer"]);
+    }
+
+    #[test]
+    fn runtime_input_modified_and_repeated_enter_preserve_draft_and_history_guard() {
+        let (mut app, requests) = file_commands_app(commands::FileCommands::default());
+        app.state = State::Running;
+        let mut dirty = false;
+        app.input.insert_str("one");
+        for modifiers in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::SHIFT,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ] {
+            app.handle(
+                Event::Key(KeyEvent::new(KeyCode::Enter, modifiers)),
+                &mut dirty,
+            );
+        }
+        app.handle(
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+                KeyEventKind::Repeat,
+            )),
+            &mut dirty,
+        );
+        assert_eq!(app.input.lines(), &["one"]);
+        assert!(app.input_history.is_empty());
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert_eq!(app.input_history, ["one"]);
+        assert_eq!(
+            app.input_queue
+                .snapshot_since(None)
+                .unwrap()
+                .unwrap()
+                .steering(),
+            1
+        );
+        app.state = State::Ready;
+        app.queue_paused = true;
+        for command in ["/new", "/resume", "/tree"] {
+            app.input = editor();
+            app.input.insert_str(command);
+            let cursor = app.input.cursor();
+            app.submit(PendingKind::Steering);
+            assert_eq!(app.input.lines(), &[command]);
+            assert_eq!(app.input.cursor(), cursor);
+            assert!(matches!(app.state, State::Ready));
+            assert!(requests.try_recv().is_err());
+        }
+        app.input = editor();
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.tree_panel.is_none());
+        assert!(requests.try_recv().is_err());
     }
 
     #[test]
@@ -4172,7 +4776,7 @@ mod tests {
         app.show_welcome = true;
         app.input.insert_str("/bogus");
         let cursor = app.input.cursor();
-        app.submit();
+        app.submit(PendingKind::Steering);
         assert_notification(&mut app, Color::Rgb(224, 108, 117));
         assert_eq!(app.input.lines(), &["/bogus"]);
         assert_eq!(app.input.cursor(), cursor);
@@ -4298,8 +4902,17 @@ mod tests {
         assert_eq!(app.input.lines(), &["/review auth"]);
         app.input = editor();
         app.refresh_candidates(true);
-        // 忙碌与配置不可用时不发送、不回显、不清草稿。
-        for state in [State::Running, State::Unavailable] {
+        // 忙碌时展开一次入队，原始历史不丢失；未应用前不回显。
+        app.handle(Event::Paste("/review later".into()), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(app.input.is_empty());
+        assert_eq!(app.input_history.last().unwrap(), "/review later");
+        let queued = app.input_queue.claim_next().unwrap().unwrap();
+        assert_eq!(queued.source, "/review later");
+        assert_eq!(queued.prompt(), "Review later now.");
+        assert!(!draw(&mut app, 100, 30).contains("Review later now."));
+        // 配置不可用和取消收尾仍保护草稿。
+        for state in [State::Unavailable, State::Cancelling] {
             app.state = state;
             app.handle(Event::Paste("/review later".into()), &mut dirty);
             app.handle(key(KeyCode::Enter), &mut dirty);
@@ -4486,18 +5099,6 @@ mod tests {
         let mut app = app();
         app.state = State::Ready;
         app.input.insert_str("draft-中\nsecond line");
-        for state in [
-            State::Ready,
-            State::Running,
-            State::Resetting,
-            State::SwitchingModel,
-            State::SettingThinkLevel,
-            State::Unavailable,
-        ] {
-            app.state = state;
-            let screen = draw(&mut app, 100, 30);
-            assert_eq!(screen.lines().nth(25).unwrap(), "─".repeat(100));
-        }
         let screen = draw(&mut app, 100, 30);
         let lines: Vec<_> = screen.lines().collect();
         assert!(lines[26].starts_with("❯ draft-中"));
@@ -4735,7 +5336,7 @@ mod tests {
         app.input = editor();
         app.input.insert_str("/skills");
         app.state = State::Running;
-        assert!(!app.submit());
+        assert!(!app.submit(PendingKind::Steering));
         assert!(!app.skills_pending);
         assert_eq!(app.input.lines(), &["/skills"]);
     }

@@ -547,6 +547,7 @@ impl SessionJournal {
             AgentEvent::ContextUpdated { .. }
                 | AgentEvent::CompactionStarted { .. }
                 | AgentEvent::CompactionFinished { .. }
+                | AgentEvent::UserInputAccepted { .. }
                 | AgentEvent::ModelRequestStarted
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. }
@@ -1869,7 +1870,11 @@ mod tests {
             assert_eq!(serde_json::to_value(&agent.session).unwrap(), native);
             assert_eq!(
                 agent
-                    .continue_session(&crate::cancellation::CancellationToken::new(), &mut |_| {})
+                    .continue_session(
+                        &crate::cancellation::CancellationToken::new(),
+                        None,
+                        &mut |_| {},
+                    )
                     .unwrap_err()
                     .to_string(),
                 error

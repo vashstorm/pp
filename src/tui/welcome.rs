@@ -15,8 +15,7 @@ const LOGO: [&str; 5] = [
     "▀     ▀   ",
 ];
 const TIP: &str = "/help for commands · /model to choose a model · /effort to set thinking";
-const KEYS: &str =
-    "Enter send · Shift-Tab thinking · Ctrl-P model · F1 help · Ctrl-J newline · Ctrl-C quit";
+const KEYS_TAIL: &str = " · Shift-Tab thinking · Ctrl-P model · F1 help · Ctrl-J newline · Ctrl-C quit";
 
 pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
     if area.width == 0 || area.height == 0 {
@@ -42,7 +41,10 @@ pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
         Span::styled("Tip: ", Style::default().fg(ACCENT)),
         Span::styled(TIP, Style::default().fg(Color::DarkGray)),
     ]));
-    lines.push(Line::styled(KEYS, Style::default().fg(Color::DarkGray)));
+    lines.push(Line::styled(
+        format!("{}{KEYS_TAIL}", super::STEERING_HINT),
+        Style::default().fg(Color::DarkGray),
+    ));
 
     let width = area.width.min(76);
     let content = Paragraph::new(lines).centered().wrap(Wrap { trim: false });

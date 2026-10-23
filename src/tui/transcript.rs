@@ -940,6 +940,8 @@ impl Transcript {
                 AgentEvent::ContextUpdated { .. } => {}
                 AgentEvent::CompactionStarted { .. } => activity.phase("Compacting context"),
                 AgentEvent::CompactionFinished { .. } => {}
+                // 用户输入确认由 App 消费；不重置活动阶段、不产生重复卡片。
+                AgentEvent::UserInputAccepted { .. } => {}
             }
         }
         match event {
@@ -949,6 +951,8 @@ impl Transcript {
             AgentEvent::ModelRequestStarted
             | AgentEvent::ModelOutputProgress { .. }
             | AgentEvent::ModelRequestFinished { .. } => {}
+            // 已接受的补充输入由 App 直接追加，不生成重复用户卡。
+            AgentEvent::UserInputAccepted { .. } => {}
             AgentEvent::CompactionStarted { .. } => {}
             AgentEvent::CompactionFinished {
                 before_tokens,

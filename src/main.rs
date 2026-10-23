@@ -574,6 +574,7 @@ fn run_cli_task(
             AgentEvent::ModelRequestStarted
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. }
+                | AgentEvent::UserInputAccepted { .. }
         ) {
             return;
         }
@@ -677,13 +678,14 @@ fn run_cli_task(
             }
             AgentEvent::ModelRequestStarted
             | AgentEvent::ModelOutputProgress { .. }
-            | AgentEvent::ModelRequestFinished { .. } => {}
+            | AgentEvent::ModelRequestFinished { .. }
+            | AgentEvent::UserInputAccepted { .. } => {}
         }
     };
     let cancellation = cancellation::CancellationToken::new();
     let result = match prompt {
-        Some(prompt) => agent.run(prompt, &cancellation, &mut emit),
-        None => agent.continue_session(&cancellation, &mut emit),
+        Some(prompt) => agent.run(prompt, &cancellation, None, &mut emit),
+        None => agent.continue_session(&cancellation, None, &mut emit),
     }
     .map(|_| ());
     if !thinking_newline {
