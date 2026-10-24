@@ -420,7 +420,7 @@ fn slash_tips_stays_local_without_creating_a_session() {
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(
             stderr.contains(
-                "Tips:\n  /help       for commands\n  /model      to choose a model\n  /effort     to set thinking\n"
+                "Tips:\n  /help       for commands\n  Esc         cancel task\n  /model      to choose a model\n  /new        to reset session\n"
             ),
             "{stderr}"
         );
@@ -3488,10 +3488,14 @@ mod tui {
         assert_eq!(lines[7].trim(), concat!("v", env!("CARGO_PKG_VERSION")));
         assert_eq!(lines[9], "  Tips:");
         for (row, (left, right)) in [
-            ("/help       for commands", "Ctrl-P      model"),
-            ("/model      to choose a model", "F1          help"),
-            ("/effort     to set thinking", "Ctrl-J      newline"),
-            ("Shift-Tab   thinking", "Ctrl-C      quit"),
+            ("/help       for commands", "/effort     to set thinking"),
+            ("Esc         cancel task", "/init       write AGENTS.md"),
+            ("/model      to choose a model", "/skills     manage skills"),
+            ("/new        to reset session", "Shift-Tab   thinking"),
+            ("/resume     to reopen sessions", "Ctrl-P      model"),
+            ("/plan       research first", "F1          help"),
+            ("/compact    shrink context", "Ctrl-J      newline"),
+            ("/tree       rewind history", "Ctrl-C      quit"),
         ]
         .into_iter()
         .enumerate()
@@ -3532,7 +3536,7 @@ mod tui {
             |screen| {
                 let text = screen.contents();
                 text.lines().nth(10) == Some("  /help       for commands")
-                    && text.lines().nth(17) == Some("  Ctrl-C      quit")
+                    && text.lines().nth(25) == Some("  Ctrl-C      quit")
                     && text.contains("startup draft")
             },
         );
@@ -3591,11 +3595,11 @@ mod tui {
             let tips = startup
                 .lines()
                 .skip(10)
-                .take(4)
+                .take(8)
                 .flat_map(|line| [&line[..52], &line[52..]])
                 .map(|tip| tip.split_whitespace().collect::<Vec<_>>().join(" "))
                 .collect::<Vec<_>>();
-            assert_eq!(tips.len(), 8);
+            assert_eq!(tips.len(), 16);
             for removed in ["Enter", "Alt-Enter", "Ctrl-Q", "Ctrl-R"] {
                 assert!(!tips.iter().any(|tip| tip.starts_with(removed)));
             }
@@ -3623,13 +3627,14 @@ mod tui {
                     .lines()
                     .nth(1)
                     .unwrap()
-                    .contains("Ctrl-P      model")
+                    .contains("/effort     to set thinking")
             );
             pty.resize(30, 60);
             pty.wait_for("本地提示随窗口切换为完整单列", |screen| {
                 let text = screen.contents();
                 text.lines().nth(1) == Some("│ /help       for commands")
-                    && text.lines().nth(8) == Some("│ Ctrl-C      quit")
+                    && text.lines().nth(8) == Some("│ /tree       rewind history")
+                    && text.lines().nth(16) == Some("│ Ctrl-C      quit")
             });
             pty.resize(30, 100);
             assert!(!home.path().join(".pp/agent/sessions").exists());
