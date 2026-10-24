@@ -1,22 +1,22 @@
 // 按使用重要性降序排列：宽屏双列布局取中点分左右两列，前半为左列；
-// Ctrl-C quit 固定末位（测试依赖）。
+// 每条说明不超过 24 列，确保最窄双列布局（76 列）仍能对齐。
 pub(crate) const TIPS: &[&str] = &[
-    "/help for commands",
-    "Esc cancel task",
-    "/model to choose a model",
-    "/new to reset session",
-    "/resume to reopen sessions",
-    "/plan research first",
-    "/compact shrink context",
-    "/tree rewind history",
-    "/effort to set thinking",
-    "/init write AGENTS.md",
-    "/skills manage skills",
-    "Shift-Tab thinking",
-    "Ctrl-P model",
-    "F1 help",
-    "Ctrl-J newline",
-    "Ctrl-C quit",
+    "/help list commands and usage",
+    "Esc cancel the running task",
+    "/model switch model, keep chat",
+    "/new clear chat, keep model",
+    "/resume reopen a saved session",
+    "/plan plan, then approve edits",
+    "/compact summarize older context",
+    "/tree browse & rewind history",
+    "/effort set model thinking level",
+    "/init create/update AGENTS.md",
+    "/skills enable or disable skills",
+    "Shift-Tab cycle thinking levels",
+    "Ctrl-P open the model picker",
+    "F1 show commands and usage",
+    "Ctrl-J insert a newline",
+    "Ctrl-C quit pp",
 ];
 
 pub(crate) fn text() -> String {
