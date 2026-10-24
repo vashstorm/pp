@@ -12,12 +12,12 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Padding},
 };
 use ratatui_textarea::TextArea;
 
 use super::menu::{MenuEvent, MenuItem, SelectionMenu};
-use super::transcript_style::{ACCENT, ASK_BG, ASK_BORDER, ASK_TAB_BG, DIM, REMOVED, display_text};
+use super::transcript_style::{ACCENT, ASK_BG, ASK_BORDER, DIM, REMOVED, display_text};
 use crate::interaction::{AskAnswer, AskArgs, AskRequest};
 
 const OTHER_LABEL: &str = "Other (type your own)";
@@ -122,6 +122,13 @@ impl Panel {
     }
 
     pub(super) fn paste(&mut self, text: &str) -> Action {
+        if self.editor.is_none()
+            && let Page::Question(index) = self.page
+            && self.states[index].menu.selected_index()
+                == Some(self.questions.questions[index].options.len())
+        {
+            self.confirm(index, self.questions.questions[index].options.len());
+        }
         if let Some((_, editor)) = self.editor.as_mut() {
             insert_custom_text(editor, text);
         }
@@ -180,7 +187,10 @@ impl Panel {
             self.draw_compact(frame, area);
             return;
         }
-        let title = Line::from(Span::styled(" Ask ", Style::default().fg(ACCENT)));
+        let title = Line::from(Span::styled(
+            format!(" {} ", self.title()),
+            Style::default().fg(ACCENT),
+        ));
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -193,14 +203,11 @@ impl Panel {
                 0,
             ))
             .title(title);
-        let mut inner = block.inner(area);
+        let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
             return;
         }
-        self.draw_tabs(frame, Rect { height: 1, ..inner });
-        inner.y += 1;
-        inner.height -= 1;
         match self.page {
             Page::Question(index) => self.draw_question(frame, inner, index),
             Page::Review => self.draw_review(frame, inner),
@@ -269,6 +276,13 @@ impl Panel {
             KeyCode::Right | KeyCode::Tab => {
                 self.step_page(1);
                 Action::None
+            }
+            KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete
+                if focused == option_count
+                    && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT) =>
+            {
+                self.confirm(index, focused);
+                self.editor_key(key)
             }
             KeyCode::Char(' ')
                 if key.kind == KeyEventKind::Press
@@ -344,6 +358,8 @@ impl Panel {
         let option_count = self.questions.questions[index].options.len();
         if item == option_count {
             let mut editor = super::editor();
+            editor.set_placeholder_text(OTHER_LABEL);
+            editor.set_style(Style::default().bg(ASK_BG));
             insert_custom_text(&mut editor, &self.states[index].custom);
             self.editor = Some((index, editor));
             self.error = None;
@@ -451,26 +467,19 @@ impl Panel {
             };
             item.icon = Some(selection_icon(question.multi, selected));
             item.current = selected;
+            if item.value == question.options.len() {
+                item.description = menu_text(&state.custom);
+            }
         }
     }
 
-    fn chip(&self) -> String {
+    fn title(&self) -> String {
         match self.page {
-            Page::Question(index) => {
-                let question = &self.questions.questions[index];
-                let base = question
-                    .header
-                    .as_deref()
-                    .filter(|header| !header.trim().is_empty())
-                    .unwrap_or(&question.id);
-                let mut chip = menu_text(base);
-                let total = self.questions.questions.len();
-                if total > 1 {
-                    chip.push_str(&format!(" · {}/{total}", index + 1));
-                }
-                chip
+            Page::Question(index) if self.questions.questions.len() > 1 => {
+                format!("Ask · {}/{}", index + 1, self.questions.questions.len())
             }
-            Page::Review => "Review".into(),
+            Page::Question(_) => "Ask".into(),
+            Page::Review => "Ask · Submit".into(),
         }
     }
 
@@ -508,53 +517,6 @@ impl Panel {
 
     // ---- 布局与绘制 ----
 
-    fn draw_tabs(&self, frame: &mut Frame, area: Rect) {
-        let mut spans = Vec::new();
-        let mut column = 0;
-        let mut active_start = 0;
-        let mut active_end = 0;
-        let labels = self.questions.questions.iter().map(|question| {
-            menu_text(
-                question
-                    .header
-                    .as_deref()
-                    .filter(|header| !header.trim().is_empty())
-                    .unwrap_or(&question.id),
-            )
-        });
-        for (index, label) in labels
-            .chain(self.has_review().then(|| "Submit".to_string()))
-            .enumerate()
-        {
-            let active = match self.page {
-                Page::Question(current) => index == current,
-                Page::Review => index == self.questions.questions.len(),
-            };
-            let label = format!(" {label} ");
-            let width = Span::raw(&label).width();
-            if active {
-                active_start = column;
-                active_end = column + width;
-            }
-            spans.push(Span::styled(
-                label,
-                if active {
-                    Style::default().bg(ASK_TAB_BG)
-                } else {
-                    Style::default().fg(DIM)
-                },
-            ));
-            spans.push(Span::raw("  "));
-            column += width + 2;
-        }
-        // 窄屏横向平移标签栏，始终让当前题目或提交标签可见。
-        let scroll = active_end
-            .saturating_sub(usize::from(area.width))
-            .min(active_start)
-            .min(usize::from(u16::MAX)) as u16;
-        frame.render_widget(Paragraph::new(Line::from(spans)).scroll((0, scroll)), area);
-    }
-
     fn draw_separator(&self, frame: &mut Frame, y: u16) {
         if let Some(area) = self.overlay {
             frame.render_widget(
@@ -585,8 +547,8 @@ impl Panel {
         } else {
             0
         };
-        // 边框、标签栏、底部分隔线、快捷键与校验消息预留空间，翻页时高度稳定。
-        let need = content_height.max(review_height).saturating_add(6);
+        // 边框、底部分隔线、快捷键与校验消息预留空间，编辑与翻页不移动外框。
+        let need = content_height.max(review_height).saturating_add(5).max(7);
         if available.height < 5 {
             return available.height;
         }
@@ -601,11 +563,25 @@ impl Panel {
         }
         frame.render_widget(
             Line::from(Span::styled(
-                self.chip(),
+                self.title(),
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             )),
             Rect { height: 1, ..area },
         );
+        if self.editor.is_some()
+            && let Page::Question(index) = self.page
+        {
+            self.draw_question(
+                frame,
+                Rect {
+                    y: area.y + 1,
+                    height: area.height - 1,
+                    ..area
+                },
+                index,
+            );
+            return;
+        }
         frame.render_widget(
             Line::from(self.selection_summary()),
             Rect {
@@ -656,54 +632,40 @@ impl Panel {
             ..inner
         };
 
-        if let Some((owner, editor)) = self.editor.as_mut()
-            && *owner == index
+        let editor_height = self
+            .editor
+            .as_ref()
+            .filter(|(owner, _)| *owner == index)
+            .map(|(_, editor)| editor.lines().len().clamp(1, 5) as u16);
+        let editor_area = self.states[index]
+            .menu
+            .draw_choices(frame, content_area, editor_height);
+        if let Some((_, editor)) = self.editor.as_mut()
+            && let Some(editor_area) = editor_area
+            && !editor_area.is_empty()
         {
-            let header_h = 1.min(content_h);
-            frame.render_widget(
-                Line::from(vec![
-                    Span::styled(
-                        "custom answer",
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" · write your response", Style::default().fg(DIM)),
-                ]),
-                Rect {
-                    height: header_h,
-                    ..content_area
-                },
-            );
-            let editor_area = Rect {
-                y: content_area.y + header_h,
-                height: content_h - header_h,
-                ..content_area
-            };
-            if editor_area.width > 0 && editor_area.height > 0 {
-                frame.render_widget(&*editor, editor_area);
-                for y in editor_area.y..editor_area.bottom() {
-                    for x in editor_area.x..editor_area.right() {
-                        let cell = &mut frame.buffer_mut()[(x, y)];
-                        if let std::borrow::Cow::Owned(safe) = display_text(cell.symbol()) {
-                            cell.set_symbol(&safe);
-                        }
+            frame.render_widget(&*editor, editor_area);
+            for y in editor_area.y..editor_area.bottom() {
+                for x in editor_area.x..editor_area.right() {
+                    let cell = &mut frame.buffer_mut()[(x, y)];
+                    if let std::borrow::Cow::Owned(safe) = display_text(cell.symbol()) {
+                        cell.set_symbol(&safe);
                     }
                 }
-                let cursor = editor.screen_cursor();
-                let (top, left) = editor.scroll_offset();
-                if let (Some(row), Some(column)) = (
-                    cursor.row.checked_sub(usize::from(top)),
-                    cursor.col.checked_sub(usize::from(left)),
-                ) && row < usize::from(editor_area.height)
-                    && column < usize::from(editor_area.width)
-                {
-                    frame.set_cursor_position((
-                        editor_area.x + column as u16,
-                        editor_area.y + row as u16,
-                    ));
-                }
             }
-        } else {
-            self.states[index].menu.draw_choices(frame, content_area);
+            let cursor = editor.screen_cursor();
+            let (top, left) = editor.scroll_offset();
+            if let (Some(row), Some(column)) = (
+                cursor.row.checked_sub(usize::from(top)),
+                cursor.col.checked_sub(usize::from(left)),
+            ) && row < usize::from(editor_area.height)
+                && column < usize::from(editor_area.width)
+            {
+                frame.set_cursor_position((
+                    editor_area.x + column as u16,
+                    editor_area.y + row as u16,
+                ));
+            }
         }
 
         if let Some(error) = error {
@@ -886,7 +848,11 @@ fn menu_items(
         items.push(MenuItem {
             value: index,
             label,
-            description: String::new(),
+            description: option
+                .description
+                .as_deref()
+                .map(menu_text)
+                .unwrap_or_default(),
             icon: Some(icon),
             current: chosen,
         });
@@ -1190,7 +1156,7 @@ mod tests {
     }
 
     #[test]
-    fn picker_only_shows_options_and_survives_resize() {
+    fn picker_shows_descriptions_and_keeps_previews_in_messages() {
         let mut q = question("q", false, Some(0), &["A"]);
         q.options[0].description = Some("Option description".into());
         q.options[0].preview = Some("# Head\n\ntext".into());
@@ -1199,7 +1165,9 @@ mod tests {
             let screen = render(&mut panel, width, height);
             assert!(screen.contains("◯ A"), "应显示选项：{screen}");
             assert!(!screen.contains("Choose for q?"));
-            assert!(!screen.contains("Option description"));
+            if width >= 40 {
+                assert!(screen.contains("Option description"));
+            }
             assert!(!screen.contains("Head"));
             assert!(!screen.contains("text"));
         }
@@ -1212,7 +1180,8 @@ mod tests {
     fn compact_mode_renders_without_border() {
         let mut panel = panel(vec![question("db", false, None, &["A", "B"])]);
         let screen = render(&mut panel, 30, 3);
-        assert!(screen.contains("db"), "chip missing in compact mode");
+        assert!(screen.contains("Ask"), "紧凑模式应显示 Ask 标题");
+        assert!(!screen.contains("db"), "紧凑模式不应显示内部题目 ID");
         let screen = render(&mut panel, 30, 1);
         assert!(
             screen.starts_with('A'),
@@ -1239,6 +1208,58 @@ mod tests {
         let mut panel = panel(vec![question("q", false, None, &["A"])]);
         assert!(matches!(panel.paste("hello"), Action::None));
         assert!(panel.states[0].custom.is_empty());
+    }
+
+    #[test]
+    fn custom_option_accepts_direct_typing_and_paste_without_leaving_list() {
+        for paste in [false, true] {
+            let mut panel = panel(vec![question("q", false, None, &["SQLite"])]);
+            panel.key(key(KeyCode::End));
+            render(&mut panel, 80, 24);
+            let before = panel.overlay;
+            if paste {
+                panel.paste("answer");
+            } else {
+                for character in "answer".chars() {
+                    panel.key(key(KeyCode::Char(character)));
+                }
+            }
+            let screen = render(&mut panel, 80, 24);
+            assert_eq!(panel.overlay, before, "进入 Other 不应改变外框位置和高度");
+            assert!(screen.contains("◯ SQLite"));
+            assert!(screen.contains("◯ answer"));
+            assert!(!screen.contains("custom answer"));
+            panel.key(ctrl('j'));
+            panel.paste("second line");
+            render(&mut panel, 80, 24);
+            assert_eq!(panel.overlay, before, "输入与换行不应改变外框位置和高度");
+            let compact = render(&mut panel, 40, 8);
+            assert!(
+                compact.contains("second line"),
+                "紧凑屏幕也应显示正在编辑的答案：{compact}"
+            );
+            panel.key(key(KeyCode::Esc));
+            assert!(panel.states[0].custom.is_empty());
+            assert!(render(&mut panel, 80, 24).contains(OTHER_LABEL));
+            panel.paste("accepted");
+            let Action::Submit(answers) = panel.key(key(KeyCode::Enter)) else {
+                panic!("原位输入应可提交");
+            };
+            assert_eq!(answers[0].custom_input.as_deref(), Some("accepted"));
+        }
+    }
+
+    #[test]
+    fn picker_omits_question_header_and_id_below_title() {
+        let mut q = question("confirm_commit", false, None, &["yes", "no"]);
+        q.header = Some("Commit confirmation".into());
+        let mut panel = panel(vec![q]);
+        let screen = render(&mut panel, 80, 24);
+        assert!(!screen.contains("confirm_commit"));
+        assert!(!screen.contains("Commit confirmation"));
+        let rows: Vec<_> = screen.lines().collect();
+        let title = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
+        assert!(rows[title + 1].contains("◯ yes"), "标题下方应直接显示选项");
     }
 
     #[test]

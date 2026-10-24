@@ -133,7 +133,7 @@ fn ask_wait_review(pty: &mut Pty) {
 
 fn ask_wait_editor(pty: &mut Pty) {
     pty.wait_for("ask custom editor opened", |screen| {
-        screen.contents().contains("custom answer")
+        screen.contents().contains("Enter accept · Ctrl + J newline · Esc discard")
     });
 }
 
@@ -155,9 +155,8 @@ fn ask_panel_find(screen: &vt100::Screen, needle: &str) -> (u16, u16) {
     panic!("面板未显示 {needle}: {}", screen.contents());
 }
 
-fn ask_tab_active(screen: &vt100::Screen, label: &str) -> bool {
-    let (row, col) = ask_panel_find(screen, label);
-    screen.cell(row, col).unwrap().bgcolor() == vt100::Color::Rgb(52, 58, 67)
+fn ask_page_active(screen: &vt100::Screen, index: usize, total: usize) -> bool {
+    screen.contents().contains(&format!("╭ Ask · {index}/{total} "))
 }
 
 fn ask_clear_draft(pty: &mut Pty) {
@@ -224,7 +223,7 @@ fn ask_tui_single_space_selects_without_sending_until_enter() {
 }
 
 #[test]
-fn ask_tui_choice_layout_keeps_details_in_messages_and_focus_after_resize() {
+fn ask_tui_choice_descriptions_and_inline_editor_survive_resize() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
@@ -245,13 +244,16 @@ fn ask_tui_choice_layout_keeps_details_in_messages_and_focus_after_resize() {
         let screen = pty.parser.screen();
         let (row, _) = ask_panel_find(screen, label);
         let (description_row, _) = ask_panel_find(screen, "Shared database");
-        assert!(description_row < row, "说明应位于上方消息区");
-        let (tab_row, _) = ask_panel_find(screen, "Database");
-        assert_eq!(row, tab_row + 1, "标签下方直接显示选项");
-        let panel_text = screen.contents().lines().skip(usize::from(tab_row)).collect::<Vec<_>>().join("\n");
+        assert_eq!(description_row, row + 1, "说明应紧接对应选项显示");
+        let (title_row, _) = ask_panel_find(screen, "╭ Ask");
+        assert_eq!(row, title_row + 1, "标题下方直接显示选项");
+        let (next_row, _) = ask_panel_find(screen, "SQLite");
+        assert_eq!(next_row, row + 2, "下一选项应紧接说明，不插入空行");
+        let panel_text = screen.contents().lines().skip(usize::from(title_row)).collect::<Vec<_>>().join("\n");
         assert!(!panel_text.contains("Choose a database"));
-        assert!(!panel_text.contains("Shared database"));
-        assert!(!panel_text.contains("Embedded storage"));
+        assert!(!panel_text.contains("Database"), "面板不应重复显示题目标签");
+        assert!(panel_text.contains("Shared database"));
+        assert!(panel_text.contains("Embedded storage"));
         assert!(screen.contents().contains("☐ PostgreSQL"), "推荐不自动勾选");
     }
     pty.input(" \x1b[B");
@@ -265,14 +267,44 @@ fn ask_tui_choice_layout_keeps_details_in_messages_and_focus_after_resize() {
             && screen.contents().contains("☑ PostgreSQL")
             && screen.contents().contains("❯ ☐ SQLite")
     });
+    {
+        let screen = pty.parser.screen();
+        let (row, _) = ask_panel_find(screen, "PostgreSQL");
+        let (next_row, _) = ask_panel_find(screen, "SQLite");
+        assert_eq!(next_row, row + 4, "两行名称与两行说明之后直接显示下一选项");
+    }
     pty.input("\x1b[F");
     pty.wait_for("last choice remains reachable", |screen| {
         screen.contents().contains("❯ ☐ Other")
     });
     pty.resize(30, 100);
-    pty.input("\r");
-    ask_wait_editor(&mut pty);
+    pty.wait_for("返回宽屏后准备原位编辑", |screen| screen.size().1 == 100);
+    let (title_before, _) = ask_panel_find(pty.parser.screen(), "╭ Ask");
+    let (first_before, _) = ask_panel_find(pty.parser.screen(), label);
+    let (other_before, _) = ask_panel_find(pty.parser.screen(), "Other (type your own)");
+    let (bottom_before, _) = ask_panel_find(pty.parser.screen(), "╰");
     pty.input("custom layout answer");
+    ask_wait_editor(&mut pty);
+    pty.wait_for("自定义选项原位编辑且其他选项仍可见", |screen| {
+        let text = screen.contents();
+        text.contains("custom layout answer") && text.contains("☑ PostgreSQL")
+            && text.contains("☐ SQLite") && !text.contains("custom answer · write")
+    });
+    {
+        let screen = pty.parser.screen();
+        let (row, column) = ask_panel_find(screen, "custom layout answer");
+        assert_eq!(ask_panel_find(screen, "╭ Ask").0, title_before, "开始编辑不应移动外框");
+        assert_eq!(ask_panel_find(screen, label).0, first_before, "开始编辑不应移动其他选项");
+        assert_eq!(row, other_before, "编辑位置应保留在原选项行");
+        assert_eq!(ask_panel_find(screen, "╰").0, bottom_before, "开始编辑不应改变外框高度");
+        assert_eq!(screen.cursor_position(), (row, column + 20), "输入光标应位于选项原位");
+    }
+    pty.resize(30, 40);
+    pty.wait_for("编辑中缩放仍保留其他选项和当前输入", |screen| {
+        screen.size().1 == 40 && screen.contents().contains("custom layout answer")
+            && screen.contents().contains("☑ PostgreSQL")
+    });
+    pty.resize(30, 100);
     pty.input("\r");
     ask_wait_review(&mut pty);
     pty.input("\r");
@@ -311,15 +343,15 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
                 "recommendation must be a display badge only\n{text}"
             );
             assert!(
-                text.contains("Storage") && text.contains("Checks") && text.contains("Submit"),
-                "标签栏必须同时显示题目和提交入口\n{text}"
+                text.contains("╭ Ask · 1/2 "),
+                "多题进度应显示在 Ask 标题中\n{text}"
             );
         }
 
         // Q1：焦点移到 Postgres 后 Enter 选中并前进。
         pty.input("\x1b[B\r");
         pty.wait_for("second question page", |screen| {
-            ask_tab_active(screen, "Checks")
+            ask_page_active(screen, 2, 2)
         });
         // Q2：Space 只勾选，Enter 只前进。
         pty.input(" ");
@@ -349,7 +381,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         // Review 回题修改：Q1 保持 Postgres 选中、SQLite 仍未选。
         pty.input("\t");
         pty.wait_for("back to first question", |screen| {
-            ask_tab_active(screen, "Storage")
+            ask_page_active(screen, 1, 2)
         });
         {
             let text = pty.parser.screen().contents();
@@ -363,7 +395,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         }
         pty.input("\t");
         pty.wait_for("back to second question", |screen| {
-            ask_tab_active(screen, "Checks")
+            ask_page_active(screen, 2, 2)
         });
         // 焦点仍在 lint：Space 先取消再重新勾选，提交前可以反复修改。
         pty.input(" ");
@@ -379,7 +411,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         // Q2 添加自定义回答：Enter 打开编辑器，Ctrl-J 换行，Enter 接受非空白。
         pty.input("\t\t");
         pty.wait_for("back to second question again", |screen| {
-            ask_tab_active(screen, "Checks")
+            ask_page_active(screen, 2, 2)
         });
         pty.input("\x1b[B\x1b[B\r");
         ask_wait_editor(&mut pty);

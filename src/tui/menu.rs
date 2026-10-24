@@ -175,40 +175,60 @@ impl<T: Copy> SelectionMenu<T> {
             .unwrap_or(0)
     }
 
-    pub(super) fn draw_choices(&mut self, frame: &mut Frame, area: Rect) {
+    /// 返回正在编辑的末项文字区域，供 ask 原位绘制输入框。
+    pub(super) fn draw_choices(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        editor_height: Option<u16>,
+    ) -> Option<Rect> {
         use super::transcript_style::{ACCENT, ADDED, DIM};
 
         if area.is_empty() {
-            return;
+            return None;
         }
         let compact = area.height < 3;
-        self.page_size = usize::from(area.height / if compact { 1 } else { 2 }).max(1);
+        self.page_size = usize::from(area.height).max(1);
         let prefix_width = self.choice_prefix_width();
         let focused = self.selected_index();
-        let rows = self.items.iter().enumerate().map(|(index, item)| {
-            let active = focused == Some(index);
-            let label_style = if active {
-                Style::default().fg(ACCENT)
-            } else {
-                Style::default()
-            };
-            let mut lines =
-                choice_lines(item, area.width.saturating_sub(prefix_width), label_style);
-            if compact {
-                lines.truncate(1);
-            }
-            let height = (lines.len() as u16).min(area.height);
-            Row::new([
-                Cell::from(if active { "❯" } else { " " }).style(Style::default().fg(ACCENT)),
-                Cell::from(item.icon.unwrap_or_default()).style(
+        let mut heights = Vec::with_capacity(self.items.len());
+        let rows: Vec<_> = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let active = focused == Some(index);
+                let label_style = if active {
+                    Style::default().fg(ACCENT)
+                } else {
                     Style::default()
-                        .fg(if item.current { ADDED } else { DIM })
-                        .add_modifier(ratatui::style::Modifier::BOLD),
-                ),
-                Cell::from(Text::from(lines)),
-            ])
-            .height(height)
-        });
+                };
+                let mut lines =
+                    choice_lines(item, area.width.saturating_sub(prefix_width), label_style);
+                if compact {
+                    lines.truncate(1);
+                }
+                let editing = editor_height.filter(|_| index + 1 == self.items.len());
+                let height = editing
+                    .unwrap_or(0)
+                    .max(lines.len() as u16)
+                    .min(area.height);
+                if editing.is_some() {
+                    lines.clear();
+                }
+                heights.push(height);
+                Row::new([
+                    Cell::from(if active { "❯" } else { " " }).style(Style::default().fg(ACCENT)),
+                    Cell::from(item.icon.unwrap_or_default()).style(
+                        Style::default()
+                            .fg(if item.current { ADDED } else { DIM })
+                            .add_modifier(ratatui::style::Modifier::BOLD),
+                    ),
+                    Cell::from(Text::from(lines)),
+                ])
+                .height(height)
+            })
+            .collect();
         let table = Table::new(
             rows,
             [
@@ -219,6 +239,17 @@ impl<T: Copy> SelectionMenu<T> {
         )
         .column_spacing(1);
         frame.render_stateful_widget(table, area, &mut self.selection);
+        editor_height?;
+        let last = heights.len().checked_sub(1)?;
+        let y = heights[self.selection.offset()..last]
+            .iter()
+            .fold(area.y, |y, height| y.saturating_add(*height));
+        Some(Rect::new(
+            area.x + prefix_width.min(area.width),
+            y.min(area.bottom()),
+            area.width.saturating_sub(prefix_width),
+            heights[last].min(area.bottom().saturating_sub(y)),
+        ))
     }
 }
 
