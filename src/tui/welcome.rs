@@ -1,4 +1,3 @@
-use super::statusline::ACCENT;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -7,26 +6,45 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-const LOGO: [&str; 5] = [
-    "█▀▀█  █▀▀█",
-    "█  █  █  █",
-    "█▀▀▀  █▀▀▀",
-    "█     █   ",
-    "▀     ▀   ",
+const FIRST: Color = Color::Rgb(215, 175, 95);
+const SECOND: Color = Color::Rgb(122, 162, 247);
+const LOGO: [(&str, &str); 5] = [
+    ("  ▄▀▀▄", "  ▄▀▀▄"),
+    (" ▐▌ ▐▌", " ▐▌ ▐▌"),
+    (" ▟▛▀▀ ", " ▐▛▀▀ "),
+    ("▐▌    ", " ▐▌   "),
+    ("▀▘    ", " ▀▘   "),
 ];
+
 pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
     if area.width == 0 || area.height == 0 {
         return area;
     }
     let compact = area.width < 28 || area.height < 11;
     let mut lines = if compact {
-        vec![Line::from(Span::styled(
-            "pp",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ))]
+        vec![Line::from(vec![
+            Span::styled(
+                "P",
+                Style::default()
+                    .fg(FIRST)
+                    .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+            ),
+            Span::styled(
+                "P",
+                Style::default()
+                    .fg(SECOND)
+                    .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+            ),
+        ])]
     } else {
         LOGO.into_iter()
-            .map(|text| Line::styled(text, Style::default().fg(ACCENT)))
+            .map(|(first, second)| {
+                Line::from(vec![
+                    Span::styled(first, Style::default().fg(FIRST)),
+                    Span::raw("  "),
+                    Span::styled(second, Style::default().fg(SECOND)),
+                ])
+            })
             .collect::<Vec<_>>()
     };
     lines.push(Line::styled(
@@ -39,17 +57,10 @@ pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
     let brand_height = u16::try_from(brand.line_count(width))
         .unwrap_or(u16::MAX)
         .min(area.height);
-    let tips = Paragraph::new(
-        std::iter::once(Line::styled("Tips:", Style::default().fg(ACCENT)))
-            .chain(
-                crate::tips::TIPS
-                    .iter()
-                    .map(|&tip| Line::styled(tip, Style::default().fg(Color::DarkGray))),
-            )
-            .collect::<Vec<_>>(),
-    )
-    .wrap(Wrap { trim: false });
-    let tips_height = u16::try_from(tips.line_count(area.width))
+    let inset = if area.width >= 40 { 2 } else { 0 };
+    let tips_width = area.width - inset * 2;
+    let tips = Paragraph::new(super::tips::lines(tips_width)).wrap(Wrap { trim: false });
+    let tips_height = u16::try_from(tips.line_count(tips_width))
         .unwrap_or(u16::MAX)
         .min(area.height.saturating_sub(brand_height));
     let height = brand_height + tips_height;
@@ -66,7 +77,12 @@ pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
     );
     frame.render_widget(
         tips,
-        Rect::new(area.x, area.y + top + brand_height, area.width, tips_height),
+        Rect::new(
+            area.x + inset,
+            area.y + top + brand_height,
+            tips_width,
+            tips_height,
+        ),
     );
 
     // 欢迎内容下方仍可显示重置提示，输入区始终由主布局固定在底部。

@@ -420,12 +420,18 @@ fn slash_tips_stays_local_without_creating_a_session() {
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(
             stderr.contains(
-                "/help for commands\n/model to choose a model\n/effort to set thinking\n"
+                "Tips:\n  /help       for commands\n  /model      to choose a model\n  /effort     to set thinking\n"
             ),
             "{stderr}"
         );
-        assert!(stderr.contains("Ctrl-J newline\nCtrl-C quit\n"), "{stderr}");
+        assert!(
+            stderr.contains("  Ctrl-J      newline\n  Ctrl-C      quit\n"),
+            "{stderr}"
+        );
         assert!(stderr.contains("usage: /tips"), "{stderr}");
+        for removed in ["steer", "Alt-Enter", "Ctrl-Q", "Ctrl-R"] {
+            assert!(!stderr.contains(removed), "{stderr}");
+        }
         assert!(!dir.path().join(".pp/agent/sessions").exists());
     }
     no_more(&server);
@@ -3189,7 +3195,7 @@ mod tui {
         .unwrap();
         let mut pty = Pty::start_with_existing_files(home.path());
         pty.ready_effort("no think");
-        pty.text("█▀▀█  █▀▀█");
+        pty.text("▄▀▀▄    ▄▀▀▄");
         let background: Vec<_> = (0..26)
             .map(|row| {
                 (0..100)
@@ -3330,7 +3336,7 @@ mod tui {
                 !text.contains("Default thinking effort saved:")
                     && !text.contains("Note")
                     && !text.contains("│ Note")
-                    && text.contains("█▀▀█  █▀▀█")
+                    && text.contains("▄▀▀▄    ▄▀▀▄")
             },
         );
         pty.draft("草稿🙂");
@@ -3428,7 +3434,7 @@ mod tui {
                 let text = screen.contents();
                 notification_bounds(screen, "Important", yellow).is_some()
                     && text.contains("Skill scan issues: 1. Use /skills for details.")
-                    && text.contains("█▀▀█  █▀▀█")
+                    && text.contains("▄▀▀▄    ▄▀▀▄")
                     && input_is_ready(screen)
             },
         );
@@ -3441,7 +3447,7 @@ mod tui {
         pty.input("警告时草稿🙂");
         pty.draft("警告时草稿🙂");
         assert!(!pty.parser.screen().hide_cursor());
-        assert!(pty.parser.screen().contents().contains("█▀▀█  █▀▀█"));
+        assert!(pty.parser.screen().contents().contains("▄▀▀▄    ▄▀▀▄"));
         pty.input("\x01\x0b/skills\r");
         pty.text("Skills");
         pty.wait_for(
@@ -3477,28 +3483,21 @@ mod tui {
         let screen = pty.parser.screen();
         let text = screen.contents();
         let lines: Vec<_> = text.lines().collect();
-        assert_eq!(lines[2].trim(), "█▀▀█  █▀▀█");
-        assert_eq!(lines[2].find('█'), Some(45));
+        assert_eq!(lines[2].trim(), "▄▀▀▄    ▄▀▀▄");
+        assert_eq!(lines[2].find('▄'), Some(45));
         assert_eq!(lines[7].trim(), concat!("v", env!("CARGO_PKG_VERSION")));
-        assert_eq!(lines[9], "Tips:");
-        for (row, tip) in [
-            "/help for commands",
-            "/model to choose a model",
-            "/effort to set thinking",
-            "Enter steer",
-            "Alt-Enter queue",
-            "Ctrl-Q pending messages",
-            "Ctrl-R resume queue",
-            "Shift-Tab thinking",
-            "Ctrl-P model",
-            "F1 help",
-            "Ctrl-J newline",
-            "Ctrl-C quit",
+        assert_eq!(lines[9], "  Tips:");
+        for (row, (left, right)) in [
+            ("/help       for commands", "Ctrl-P      model"),
+            ("/model      to choose a model", "F1          help"),
+            ("/effort     to set thinking", "Ctrl-J      newline"),
+            ("Shift-Tab   thinking", "Ctrl-C      quit"),
         ]
         .into_iter()
         .enumerate()
         {
-            assert_eq!(lines[10 + row], tip);
+            assert_eq!(lines[10 + row].find(left), Some(2));
+            assert_eq!(lines[10 + row].find(right), Some(52));
         }
         let context_start = lines[26].find(" ctx ").expect("用量显示在输入栏上沿");
         assert!(!lines[26][context_start..].contains('/'));
@@ -3511,7 +3510,10 @@ mod tui {
         assert!(lines[29].contains("off"));
         assert!(!text.contains("│ Note"));
         for (row, col, color) in [
-            (2, 45, vt100::Color::Rgb(127, 166, 106)),
+            (2, 45, vt100::Color::Rgb(215, 175, 95)),
+            (2, 53, vt100::Color::Rgb(122, 162, 247)),
+            (10, 2, vt100::Color::Rgb(127, 166, 106)),
+            (10, 14, vt100::Color::Idx(7)),
             (26, 0, vt100::Color::Rgb(127, 166, 106)),
             (29, 1, vt100::Color::Rgb(127, 166, 106)),
         ] {
@@ -3524,10 +3526,20 @@ mod tui {
 
         pty.input("startup draft");
         pty.draft("startup draft");
+        pty.resize(30, 60);
+        pty.wait_for(
+            "窄屏提示切换为单列并保留全部条目",
+            |screen| {
+                let text = screen.contents();
+                text.lines().nth(10) == Some("  /help       for commands")
+                    && text.lines().nth(17) == Some("  Ctrl-C      quit")
+                    && text.contains("startup draft")
+            },
+        );
         pty.resize(12, 40);
         pty.wait_for("小窗口显示紧凑欢迎页并保留草稿", |screen| {
             let text = screen.contents();
-            text.lines().next().is_some_and(|line| line.trim() == "pp")
+            text.lines().next().is_some_and(|line| line.trim() == "PP")
                 && text.contains("startup draft")
                 // 窄屏仍在输入栏上沿右端显示上下文字段。
                 && text
@@ -3535,8 +3547,21 @@ mod tui {
                     .nth(8)
                     .is_some_and(|line| line.contains("ctx "))
         });
+        let compact = pty.parser.screen();
+        assert_eq!(
+            compact.cell(0, 19).unwrap().fgcolor(),
+            vt100::Color::Rgb(215, 175, 95)
+        );
+        assert!(compact.cell(0, 19).unwrap().bold());
+        assert!(compact.cell(0, 19).unwrap().italic());
+        assert_eq!(
+            compact.cell(0, 20).unwrap().fgcolor(),
+            vt100::Color::Rgb(122, 162, 247)
+        );
+        assert!(compact.cell(0, 20).unwrap().italic());
+        assert!(compact.cell(0, 20).unwrap().bold());
         pty.resize(30, 100);
-        pty.text("█▀▀█  █▀▀█");
+        pty.text("▄▀▀▄    ▄▀▀▄");
         pty.draft("startup draft");
         pty.input("\r");
         let (request, body) = pty.request(&server);
@@ -3544,13 +3569,13 @@ mod tui {
         final_reply(request, "startup answer");
         pty.text("startup answer");
         pty.completed();
-        assert!(!pty.parser.screen().contents().contains("█▀▀█"));
+        assert!(!pty.parser.screen().contents().contains("▄▀▀▄"));
         pty.input("/new\r");
-        pty.text("█▀▀█  █▀▀█");
+        pty.text("▄▀▀▄    ▄▀▀▄");
         assert!(!pty.parser.screen().contents().contains("Session reset."));
         pty.input("/help\r");
         pty.text("bash has no directory isolation");
-        assert!(!pty.parser.screen().contents().contains("█▀▀█"));
+        assert!(!pty.parser.screen().contents().contains("▄▀▀▄"));
         pty.input("/quit\r");
         pty.finish();
         no_more(&server);
@@ -3566,15 +3591,47 @@ mod tui {
             let tips = startup
                 .lines()
                 .skip(10)
-                .take(12)
-                .map(str::to_owned)
+                .take(4)
+                .flat_map(|line| [&line[..52], &line[52..]])
+                .map(|tip| tip.split_whitespace().collect::<Vec<_>>().join(" "))
                 .collect::<Vec<_>>();
+            assert_eq!(tips.len(), 8);
+            for removed in ["Enter", "Alt-Enter", "Ctrl-Q", "Ctrl-R"] {
+                assert!(!tips.iter().any(|tip| tip.starts_with(removed)));
+            }
             assert_eq!(tips.last().unwrap(), "Ctrl-C quit");
             pty.input("/tips\r");
             pty.wait_for("本地提示展示完成", |screen| {
                 let text = screen.contents();
-                !text.contains("█▀▀█") && tips.iter().all(|tip| text.contains(tip))
+                !text.contains("▄▀▀▄")
+                    && tips.iter().all(|tip| {
+                        let (key, description) = tip.split_once(' ').unwrap();
+                        text.lines()
+                            .any(|line| line.contains(key) && line.contains(description))
+                    })
             });
+            let screen = pty.parser.screen();
+            assert_eq!(
+                screen.cell(1, 2).unwrap().fgcolor(),
+                vt100::Color::Rgb(127, 166, 106)
+            );
+            assert!(screen.cell(1, 2).unwrap().bold());
+            assert_eq!(screen.cell(1, 14).unwrap().fgcolor(), vt100::Color::Idx(7));
+            assert!(
+                screen
+                    .contents()
+                    .lines()
+                    .nth(1)
+                    .unwrap()
+                    .contains("Ctrl-P      model")
+            );
+            pty.resize(30, 60);
+            pty.wait_for("本地提示随窗口切换为完整单列", |screen| {
+                let text = screen.contents();
+                text.lines().nth(1) == Some("│ /help       for commands")
+                    && text.lines().nth(8) == Some("│ Ctrl-C      quit")
+            });
+            pty.resize(30, 100);
             assert!(!home.path().join(".pp/agent/sessions").exists());
             context_tui_exchange(
                 &mut pty,
@@ -3590,7 +3647,7 @@ mod tui {
             pty.input("/tips");
             pty.draft("/tips");
             pty.input("\r");
-            pty.text("/help for commands");
+            pty.text("/help       for commands");
             pty.draft("");
             assert_eq!(std::fs::read(&files[0]).unwrap(), before);
             pty.input("tips-next-task\r");
@@ -5186,7 +5243,7 @@ mod tui {
         pty.input("/new\r");
         pty.wait_for("acknowledged reset", |screen| {
             let text = screen.contents();
-            text.contains("█▀▀█  █▀▀█")
+            text.contains("▄▀▀▄    ▄▀▀▄")
                 && input_is_ready(screen)
                 && !text.contains("Session reset")
                 && !text.contains("recovered-answer")
@@ -5223,7 +5280,7 @@ mod tui {
             |screen| {
                 notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
                     && screen.contents().contains("models.yml")
-                    && screen.contents().contains("█▀▀█  █▀▀█")
+                    && screen.contents().contains("▄▀▀▄    ▄▀▀▄")
             },
         );
         let task = "create must-not-exist";
@@ -5479,7 +5536,7 @@ mod tui {
             });
             // 无欢迎页；工具卡片重放保存的退出状态，不伪造 wall duration。
             let text = pty.parser.screen().contents();
-            assert!(!text.contains("█▀▀█"));
+            assert!(!text.contains("▄▀▀▄"));
             assert!(text.contains("$ printf"));
             assert!(text.contains("read · tui-read.txt"));
             assert!(text.contains("tool-out"));

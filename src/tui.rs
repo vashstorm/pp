@@ -8,6 +8,7 @@ mod scrollback;
 mod sessions;
 mod skills;
 mod statusline;
+mod tips;
 mod transcript;
 mod transcript_style;
 mod tree;
@@ -2570,7 +2571,8 @@ impl App {
                 return false;
             }
             Some(Command::Tips) => {
-                self.append("Tips", &crate::tips::text());
+                self.show_welcome = false;
+                self.conversation.append_tips();
                 self.remember_input();
                 self.clear_input();
                 return false;
@@ -4382,7 +4384,7 @@ mod tests {
         app.notifications
             .tick(Instant::now() + Duration::from_millis(10000));
         let screen = draw(&mut app, 100, 30);
-        assert!(screen.contains("█▀▀█  █▀▀█"));
+        assert!(screen.contains("▄▀▀▄    ▄▀▀▄"));
         assert!(!screen.contains("configuration unavailable"));
         assert!(!screen.contains("channel closed"));
         assert_eq!(app.input.lines(), &["草稿"]);
@@ -4858,7 +4860,7 @@ mod tests {
         assert!(matches!(app.state, State::Ready));
         assert_eq!(app.input.lines(), &[""]);
         let screen = draw(&mut app, 100, 30);
-        assert!(screen.contains("█▀▀█  █▀▀█"));
+        assert!(screen.contains("▄▀▀▄    ▄▀▀▄"));
         assert!(!screen.contains("Session reset."));
         assert!(!screen.contains("stale session feedback"));
         assert!(!screen.contains("╭"));

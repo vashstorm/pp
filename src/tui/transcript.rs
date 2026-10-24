@@ -115,6 +115,7 @@ impl LayoutLine {
 
 enum EntryBody {
     Plain,
+    Tips,
     Markdown(super::markdown::MarkdownDocument),
     Diff(FileDiff),
     Ask(AskBlock),
@@ -455,14 +456,24 @@ impl TranscriptEntry {
                         height: 1,
                     }),
             );
-        } else if !self.kind.hides_title() && !skill {
+        } else if !self.kind.hides_title() && !skill && !matches!(self.body, EntryBody::Tips) {
             self.add_lines(Source::Title, &mut lines);
         }
         if bash {
             lines.push(border(Source::Divider));
         }
         let output_start = lines.len();
-        if let EntryBody::Markdown(document) = &self.body {
+        if matches!(self.body, EntryBody::Tips) {
+            lines.extend(
+                super::tips::lines(width)
+                    .into_iter()
+                    .flat_map(|line| wrap_block(line, width, ""))
+                    .map(|line| LayoutLine {
+                        content: LayoutContent::Styled(line),
+                        height: 1,
+                    }),
+            );
+        } else if let EntryBody::Markdown(document) = &self.body {
             lines.extend(document.layout(width).into_iter().map(|line| LayoutLine {
                 content: LayoutContent::Styled(line),
                 height: 1,
@@ -766,6 +777,13 @@ impl Transcript {
         };
         self.entries
             .push(TranscriptEntry::new(kind, title, text.into(), None));
+    }
+
+    pub(super) fn append_tips(&mut self) {
+        let mut entry =
+            TranscriptEntry::new(EntryKind::Data, String::new(), crate::tips::text(), None);
+        entry.body = EntryBody::Tips;
+        self.entries.push(entry);
     }
 
     pub(super) fn begin_run(&mut self) {

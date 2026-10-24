@@ -2,10 +2,6 @@ pub(crate) const TIPS: &[&str] = &[
     "/help for commands",
     "/model to choose a model",
     "/effort to set thinking",
-    "Enter steer",
-    "Alt-Enter queue",
-    "Ctrl-Q pending messages",
-    "Ctrl-R resume queue",
     "Shift-Tab thinking",
     "Ctrl-P model",
     "F1 help",
@@ -14,5 +10,11 @@ pub(crate) const TIPS: &[&str] = &[
 ];
 
 pub(crate) fn text() -> String {
-    TIPS.join("\n")
+    std::iter::once("Tips:".to_owned())
+        .chain(TIPS.iter().map(|tip| {
+            let (key, description) = tip.split_once(' ').unwrap_or((tip, ""));
+            format!("  {key:<12}{description}")
+        }))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
