@@ -26,7 +26,8 @@ pub(super) const CONTEXT: Color = Color::Rgb(122, 162, 247);
 const SPEED: Color = Color::Rgb(224, 175, 104);
 const INPUT: Color = Color::Rgb(125, 207, 255);
 const OUTPUT: Color = Color::Rgb(158, 206, 106);
-const CACHED: Color = Color::Rgb(187, 154, 247);
+const CACHE_READ: Color = Color::Rgb(187, 154, 247);
+const CACHE_WRITE: Color = Color::Rgb(255, 158, 100);
 // 与 omp 的 Nerd Font 图标一致；图标后保留一列空白，容纳字形右侧伸展。
 // Paper Plane 的首字母与应用名 pp 对应。
 const APP_ICON: &str = "\u{f1d8}";
@@ -38,7 +39,7 @@ const GIT_ICON: &str = "\u{f126}";
 const SPEED_ICON: &str = "\u{f0e7}";
 const INPUT_ICON: &str = "\u{f019}";
 const OUTPUT_ICON: &str = "\u{f093}";
-const CACHED_ICON: &str = "\u{f1c0}";
+const CACHE_ICON: &str = "\u{f1c0}";
 const ICON_WIDTH: usize = 2;
 // 分隔符与图标列在宽度预算中的固定开销。
 const SEPARATOR_WIDTH: usize = 3;
@@ -84,8 +85,8 @@ pub(super) fn context_field(usage: &ContextUsage) -> (String, Color) {
     (text, color)
 }
 
-/// 输入栏上沿的 token 指标：速度 → 输入 → 输出 → 缓存，末尾留分隔符以衔接 ctx。
-/// 空间不足时按 cached → in → out → speed 的整字段顺序降级，绝不切开图标或文字。
+/// 输入栏上沿的 token 指标：速度 → 输入 → 输出 → 缓存读 → 缓存写，末尾衔接 ctx。
+/// 空间不足时按 CWrite → CRead → in → out → speed 整字段降级，不切开图标或文字。
 pub(super) fn metric_fields(
     usage: Option<&TokenUsage>,
     speed: Option<(f64, bool)>,
@@ -96,14 +97,24 @@ pub(super) fn metric_fields(
         |(rate, _)| format!("{} tok/s", abbreviate_metric(rate)),
     );
     // 缺失用量显示 —，显式的 0 仍显示 0。
-    let (input_text, output_text, cached_text) = usage.map_or_else(
-        || ("—".to_owned(), "—".to_owned(), "—".to_owned()),
+    let (input_text, output_text, read_text, write_text) = usage.map_or_else(
+        || {
+            (
+                "—".to_owned(),
+                "—".to_owned(),
+                "—".to_owned(),
+                "—".to_owned(),
+            )
+        },
         |usage| {
             (
                 abbreviate_tokens(usage.input_tokens),
                 abbreviate_tokens(usage.output_tokens),
                 usage
                     .cached_tokens
+                    .map_or_else(|| "—".to_owned(), abbreviate_tokens),
+                usage
+                    .cache_write_tokens
                     .map_or_else(|| "—".to_owned(), abbreviate_tokens),
             )
         },
@@ -112,10 +123,11 @@ pub(super) fn metric_fields(
         (SPEED_ICON, SPEED, speed_text),
         (INPUT_ICON, INPUT, format!("in {input_text}")),
         (OUTPUT_ICON, OUTPUT, format!("out {output_text}")),
-        (CACHED_ICON, CACHED, format!("cached {cached_text}")),
+        (CACHE_ICON, CACHE_READ, format!("CRead {read_text}")),
+        (CACHE_ICON, CACHE_WRITE, format!("CWrite {write_text}")),
     ];
     let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
-    let mut spans = Vec::with_capacity(13);
+    let mut spans = Vec::with_capacity(1 + fields.len() * 3);
     spans.push(Span::raw(" "));
     for (icon, color, text) in fields {
         let style = Style::default().fg(color);
@@ -124,12 +136,12 @@ pub(super) fn metric_fields(
         spans.push(separator());
     }
     let mut line = Line::from(spans);
-    let mut keep = [true; 4];
-    for remove in [3, 1, 2, 0] {
+    let mut keep = [true; 5];
+    for remove in [4, 3, 1, 2, 0] {
         if line.width() <= usize::from(width) {
             return line;
         }
-        // Each complete field owns its icon, value and following separator.
+        // 每个完整字段包含自己的图标、数值和后续分隔符。
         let start = 1 + keep[..remove].iter().filter(|&&kept| kept).count() * 3;
         line.spans.drain(start..start + 3);
         keep[remove] = false;
@@ -736,12 +748,13 @@ mod tests {
         input_tokens: u64,
         output_tokens: u64,
         cached_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
     ) -> TokenUsage {
         TokenUsage {
             input_tokens,
             output_tokens,
             cached_tokens,
-            cache_write_tokens: None,
+            cache_write_tokens,
         }
     }
 
@@ -754,7 +767,7 @@ mod tests {
 
     #[test]
     fn metric_fields_hide_estimate_marker_and_preserve_unknown_speed() {
-        let usage = metric_usage(0, 0, Some(0));
+        let usage = metric_usage(0, 0, Some(0), Some(0));
         let text = |speed| line_text(&metric_fields(Some(&usage), speed, 200));
         assert!(text(None).contains(" \u{f0e7} — tok/s · "));
         assert!(!text(None).contains('~'));
@@ -775,46 +788,84 @@ mod tests {
         let missing = line_text(&metric_fields(None, Some((12.0, false)), 200));
         assert!(missing.contains("in —"));
         assert!(missing.contains("out —"));
-        assert!(missing.contains("cached —"));
+        assert!(missing.contains("CRead —"));
+        assert!(missing.contains("CWrite —"));
         assert!(!missing.contains("in 0"));
 
-        let absent_cached = metric_usage(0, 0, None);
+        let absent_cached = metric_usage(0, 0, None, None);
         let text = line_text(&metric_fields(Some(&absent_cached), None, 200));
         assert!(text.contains("in 0"));
         assert!(text.contains("out 0"));
-        assert!(text.contains("cached —"));
+        assert!(text.contains("CRead —"));
+        assert!(text.contains("CWrite —"));
 
-        let zero_cached = metric_usage(1000, 9999, Some(0));
+        let zero_cached = metric_usage(1000, 9999, Some(0), Some(0));
         let text = line_text(&metric_fields(Some(&zero_cached), None, 200));
         assert!(text.contains("in 1.0k"));
         assert!(text.contains("out 10.0k"));
-        assert!(text.contains("cached 0"));
+        assert!(text.contains("CRead 0"));
+        assert!(text.contains("CWrite 0"));
 
-        let abbreviated = metric_usage(12000, 10800, Some(10000));
+        let abbreviated = metric_usage(12000, 10800, Some(10000), Some(1500));
         let text = line_text(&metric_fields(Some(&abbreviated), Some((1.0, false)), 200));
         assert!(text.contains("in 12.0k"));
         assert!(text.contains("out 10.8k"));
-        assert!(text.contains("cached 10.0k"));
+        assert!(text.contains("CRead 10.0k"));
+        assert!(text.contains("CWrite 1.5k"));
 
-        let millions = metric_usage(1_280_000, 1_000_000, Some(1_240_000));
+        let millions = metric_usage(2_280_000, 1_000_000, Some(1_240_000), Some(1_000_000));
         let text = line_text(&metric_fields(Some(&millions), None, 200));
-        assert!(text.contains("in 1.3m"));
+        assert!(text.contains("in 2.3m"));
         assert!(text.contains("out 1.0m"));
-        assert!(text.contains("cached 1.2m"));
+        assert!(text.contains("CRead 1.2m"));
+        assert!(text.contains("CWrite 1.0m"));
     }
 
     #[test]
-    fn metric_fields_drop_whole_fields_cached_then_in_then_out_then_speed() {
-        let usage = metric_usage(12000, 300, Some(40));
+    fn metric_fields_keep_cache_read_and_write_independent() {
+        for (read, write, expected_read, expected_write) in [
+            (Some(40), Some(120), "CRead 40", "CWrite 120"),
+            (None, Some(0), "CRead —", "CWrite 0"),
+            (Some(0), None, "CRead 0", "CWrite —"),
+        ] {
+            let usage = metric_usage(12000, 300, read, write);
+            let line = metric_fields(Some(&usage), None, 200);
+            for (label, color) in [
+                (expected_read, Color::Rgb(187, 154, 247)),
+                (expected_write, Color::Rgb(255, 158, 100)),
+            ] {
+                let index = line
+                    .spans
+                    .iter()
+                    .position(|span| span.content == label)
+                    .unwrap();
+                assert_eq!(line.spans[index].style.fg, Some(color));
+                assert_eq!(line.spans[index - 1].content, format!("{CACHE_ICON} "));
+                assert_eq!(line.spans[index - 1].style.fg, Some(color));
+            }
+        }
+    }
+
+    #[test]
+    fn metric_fields_drop_whole_fields_cache_write_then_read_then_in_then_out_then_speed() {
+        let usage = metric_usage(12000, 300, Some(40), Some(120));
         let speed = Some((150.0, false));
         let fields = [
             ("\u{f0e7}", "150.0 tok/s"),
             ("\u{f019}", "in 12.0k"),
             ("\u{f093}", "out 300"),
-            ("\u{f1c0}", "cached 40"),
+            ("\u{f1c0}", "CRead 40"),
+            ("\u{f1c0}", "CWrite 120"),
         ];
-        // 移除顺序 cached → in → out → speed；任何宽度下都只能是这些完整的行形态。
-        let kept_states = [vec![0, 1, 2, 3], vec![0, 1, 2], vec![0, 2], vec![0], vec![]];
+        // 移除顺序 CWrite → CRead → in → out → speed；所有宽度均保留完整字段。
+        let kept_states = [
+            vec![0, 1, 2, 3, 4],
+            vec![0, 1, 2, 3],
+            vec![0, 1, 2],
+            vec![0, 2],
+            vec![0],
+            vec![],
+        ];
         let candidates: Vec<String> = kept_states
             .iter()
             .map(|kept| {
@@ -857,7 +908,7 @@ mod tests {
 
     #[test]
     fn metric_fields_fit_display_columns_not_utf8_bytes() {
-        let usage = metric_usage(12000, 300, Some(40));
+        let usage = metric_usage(12000, 300, Some(40), Some(120));
         let speed = Some((150.0, false));
         let full = metric_fields(Some(&usage), speed, u16::MAX);
         let text = line_text(&full);
@@ -868,13 +919,14 @@ mod tests {
         let width = u16::try_from(full.width()).unwrap();
         assert_eq!(line_text(&metric_fields(Some(&usage), speed, width)), text);
         let narrower = line_text(&metric_fields(Some(&usage), speed, width - 1));
-        assert!(!narrower.contains("cached 40"), "{narrower}");
+        assert!(!narrower.contains("CWrite 120"), "{narrower}");
+        assert!(narrower.contains("CRead 40"), "{narrower}");
         assert!(Line::from(narrower.as_str()).width() < full.width());
     }
 
     #[test]
     fn metric_fields_are_empty_when_no_field_fits() {
-        let usage = metric_usage(12000, 300, Some(40));
+        let usage = metric_usage(12000, 300, Some(40), Some(120));
         let first = (0..=200)
             .find(|width| !metric_fields(Some(&usage), None, *width).spans.is_empty())
             .unwrap();
