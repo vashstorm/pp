@@ -559,7 +559,8 @@ impl TranscriptEntry {
             let omitted = count - BASH_PREVIEW_LINES;
             lines.drain(output_start..output_start + omitted);
             self.elision = format!(
-                "… ({omitted} earlier lines, showing {BASH_PREVIEW_LINES} of {count}) (Ctrl+O: Expand)"
+                "… ({omitted} earlier lines, showing {BASH_PREVIEW_LINES} of {count}) {}",
+                crate::shortcuts::platform_text("(⌥ + O: Expand)", "(Ctrl + O: Expand)")
             );
             lines.insert(
                 output_start,
@@ -576,7 +577,10 @@ impl TranscriptEntry {
         if skill && !self.expanded && count > BASH_PREVIEW_LINES {
             let omitted = count - BASH_PREVIEW_LINES;
             lines.truncate(output_start + BASH_PREVIEW_LINES);
-            self.elision = format!("… {omitted} more lines (Ctrl-O to expand)");
+            self.elision = format!(
+                "… {omitted} more lines {}",
+                crate::shortcuts::platform_text("(⌥ + O to expand)", "(Ctrl + O to expand)")
+            );
             lines.push(LayoutLine {
                 content: LayoutContent::Source {
                     source: Source::Elision,
@@ -1866,7 +1870,11 @@ fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Line<'static>
     if shown < total {
         rows.extend(wrap_block(
             block_line(
-                format!("… {} more lines (Ctrl-O to expand)", total - shown),
+                format!(
+                    "… {} more lines {}",
+                    total - shown,
+                    crate::shortcuts::platform_text("(⌥ + O to expand)", "(Ctrl + O to expand)")
+                ),
                 Style::default().fg(palette::DIM),
             ),
             width,
@@ -2643,7 +2651,11 @@ mod tests {
             "$ git diff",
             "├─ Output ─",
             "14 earlier lines, showing 10 of 24",
-            "Ctrl+O: Expand",
+            if cfg!(target_os = "macos") {
+                "⌥ + O: Expand"
+            } else {
+                "Ctrl + O: Expand"
+            },
             "line-14",
             "line-23",
             "Wall:",
@@ -3006,7 +3018,11 @@ mod tests {
         let collapsed = screen(&render(&mut transcript, 70, 40));
         assert!(collapsed.contains("skill-body-00"));
         assert!(!collapsed.contains("skill-body-19"));
-        assert!(collapsed.contains("Ctrl-O"));
+        assert!(collapsed.contains(if cfg!(target_os = "macos") {
+            "⌥ + O"
+        } else {
+            "Ctrl + O"
+        }));
         assert_eq!(transcript.entries[0].status, EntryStatus::Complete);
         transcript.toggle_tool_output();
         assert!(screen(&render(&mut transcript, 70, 40)).contains("skill-body-19"));

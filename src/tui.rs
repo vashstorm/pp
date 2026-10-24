@@ -28,6 +28,7 @@ use crate::{
         ExecutionContext, PlanReview, PlanReviewReport, PlanStatus, ReviewToken, WorkMode,
         WorkflowState,
     },
+    shortcuts::{FUNCTION_MODIFIER, platform_text},
 };
 use anyhow::{Context, Result};
 use crossterm::{
@@ -58,13 +59,24 @@ use std::{
 };
 use transcript::Transcript;
 
-const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nForeground bash has an execution timeout; managed background tasks survive tool calls and stop at this user task's end or controlled exit. Ctrl-C stops managed background groups, but cleanup of other foreground children is not guaranteed. No shell/file side-effect rollback; deliberately detached descendants are not covered.";
+const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nForeground bash has an execution timeout; managed background tasks survive tool calls and stop at this user task's end or controlled exit. Ctrl + C stops managed background groups, but cleanup of other foreground children is not guaranteed. No shell/file side-effect rollback; deliberately detached descendants are not covered.";
 // 运行中状态栏与 F1 帮助共享同一段队列提示。
-const STEERING_HINT: &str =
-    "Enter steer · Alt-Enter queue · Ctrl-Q pending messages · Ctrl-R resume queue";
-const SHORTCUTS_TAIL: &str = " · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S save selected model/effort as default in its menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
-const EFFORT_HINT: &str = "Enter select · Ctrl-S set selected effort as default · Esc cancel";
-const MODEL_HINT: &str = "Enter select · Ctrl-S set selected model as default · Esc cancel";
+const STEERING_HINT: &str = platform_text(
+    "Enter steer · ⌥ + Enter queue · ⌥ + Q pending messages · ⌥ + R resume queue",
+    "Enter steer · Alt + Enter queue · Ctrl + Q pending messages · Ctrl + R resume queue",
+);
+const SHORTCUTS_TAIL: &str = platform_text(
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · ⌥ + S save selected model/effort as default in its menu · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · ⌥ + O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+);
+const EFFORT_HINT: &str = platform_text(
+    "Enter select · ⌥ + S set selected effort as default · Esc cancel",
+    "Enter select · Ctrl + S set selected effort as default · Esc cancel",
+);
+const MODEL_HINT: &str = platform_text(
+    "Enter select · ⌥ + S set selected model as default · Esc cancel",
+    "Enter select · Ctrl + S set selected model as default · Esc cancel",
+);
 const MOUSE_SCROLL_LINES: usize = 3;
 
 pub(crate) fn run(
@@ -1296,7 +1308,7 @@ impl App {
             .is_some_and(|plan| plan.revision >= 1)
     }
 
-    /// Plan/Ready：待审阅的计划会暂停自动派发，需要显式审阅或 Ctrl-R 继续。
+    /// Plan/Ready：待审阅的计划会暂停自动派发，需要显式审阅或恢复队列后继续。
     fn plan_awaiting_review(&self) -> bool {
         self.workflow.mode == WorkMode::Plan
             && self
@@ -2228,8 +2240,10 @@ impl App {
                 })
                 .unwrap_or(0);
             self.menu = Some(
-                SelectionMenu::new(items, preferred)
-                    .with_hint("Enter recall · Ctrl-R resume queue · Esc close"),
+                SelectionMenu::new(items, preferred).with_hint(platform_text(
+                    "Enter recall · ⌥ + R resume queue · Esc close",
+                    "Enter recall · Ctrl + R resume queue · Esc close",
+                )),
             );
         }
     }
@@ -2276,7 +2290,7 @@ impl App {
         if !matches!(self.state, State::Ready) || !self.has_pending() {
             return;
         }
-        // Plan/Ready 暂停了自动派发；Ctrl-R 是显式继续，后端会把 Ready 降为 Draft。
+        // Plan/Ready 暂停了自动派发；恢复队列操作是显式继续，后端会把 Ready 降为 Draft。
         if !self.queue_paused && !self.plan_awaiting_review() {
             return;
         }
@@ -2312,7 +2326,7 @@ impl App {
     }
 
     /// 派发下一条待处理消息；返回是否真的派发（状态离开 Ready）。
-    /// Plan/Ready 自动派发直接拒绝；显式提交/Ctrl-R 仍可派发（后端先降 Draft）。
+    /// Plan/Ready 自动派发直接拒绝；显式提交/恢复队列操作仍可派发（后端先降 Draft）。
     fn dispatch_next(&mut self, explicit: bool) -> bool {
         if !matches!(self.state, State::Ready)
             || self.queue_paused
@@ -3033,7 +3047,7 @@ impl App {
                     }
                     return false;
                 }
-                if key.modifiers == KeyModifiers::CONTROL
+                if key.modifiers == FUNCTION_MODIFIER
                     && matches!(key.code, KeyCode::Char('q' | 'r'))
                 {
                     if key.kind == KeyEventKind::Press
@@ -3082,7 +3096,7 @@ impl App {
                 {
                     return false;
                 }
-                if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::CONTROL {
+                if key.code == KeyCode::Char('s') && key.modifiers == FUNCTION_MODIFIER {
                     if key.kind == KeyEventKind::Press
                         && let Some(action) = self.menu.as_ref().and_then(|menu| {
                             menu.selected_index().map(|index| menu.items()[index].value)
@@ -3132,7 +3146,7 @@ impl App {
                     }
                     return false;
                 }
-                if key.code == KeyCode::Char('p') && key.modifiers == KeyModifiers::CONTROL {
+                if key.code == KeyCode::Char('p') && key.modifiers == FUNCTION_MODIFIER {
                     if key.kind == KeyEventKind::Press {
                         self.open_model_picker();
                     }
@@ -3165,13 +3179,18 @@ impl App {
                     self.refresh_candidates(true);
                     return false;
                 }
+                if key.code == KeyCode::Char('o')
+                    && key
+                        .modifiers
+                        .intersection(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        == FUNCTION_MODIFIER
+                {
+                    self.active_transcript().toggle_tool_output();
+                    return false;
+                }
                 if control && !key.modifiers.contains(KeyModifiers::ALT) {
                     let ratatui_textarea::DataCursor(row, column) = self.input.cursor();
                     match key.code {
-                        KeyCode::Char('o') => {
-                            self.active_transcript().toggle_tool_output();
-                            return false;
-                        }
                         KeyCode::Char('a') => {
                             if column > 0 {
                                 self.input.move_cursor(CursorMove::Head);
@@ -3641,7 +3660,7 @@ impl App {
             && !snapshot.items.is_empty()
         {
             let paused = if self.queue_paused {
-                " · Paused · Ctrl-R resume"
+                platform_text(" · Paused · ⌥ + R resume", " · Paused · Ctrl + R resume")
             } else {
                 ""
             };
@@ -3913,7 +3932,7 @@ mod tests {
         ));
         assert!(draw(&mut app, 100, 30).contains("Loading saved sessions…"));
         app.handle(Event::Paste("must not enter editor".into()), &mut dirty);
-        app.handle(control('p'), &mut dirty);
+        app.handle(function_key('p'), &mut dirty);
         app.handle(key(KeyCode::F(1)), &mut dirty);
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert!(draw(&mut app, 100, 30).contains("original conversation"));
@@ -4038,7 +4057,7 @@ mod tests {
         let cursor = app.input.cursor();
         let (answers, token) = ask_fixture(&mut app);
         let mut dirty = false;
-        app.handle(control('p'), &mut dirty);
+        app.handle(function_key('p'), &mut dirty);
         app.handle(key(KeyCode::F(1)), &mut dirty);
         app.handle(Event::Paste("must stay inside panel".into()), &mut dirty);
         app.handle(Event::Resize(24, 10), &mut dirty);
@@ -4241,7 +4260,7 @@ mod tests {
         app.handle(key(KeyCode::Esc), &mut dirty);
         app.handle(key(KeyCode::Enter), &mut dirty);
         app.handle(
-            Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)),
+            Event::Key(KeyEvent::new(KeyCode::Char('p'), FUNCTION_MODIFIER)),
             &mut dirty,
         );
         app.handle(key(KeyCode::BackTab), &mut dirty);
@@ -4731,7 +4750,7 @@ mod tests {
         app.clear_input();
         app.handle(Event::Paste("@".into()), &mut dirty);
         scans.try_recv().unwrap();
-        app.handle(control('p'), &mut dirty);
+        app.handle(function_key('p'), &mut dirty);
         assert!(app.file_query.is_none());
         replies.send(Ok(vec!["src/main.rs".into()])).unwrap();
         app.receive();
@@ -4766,6 +4785,19 @@ mod tests {
             KeyCode::Char(character),
             KeyModifiers::CONTROL,
         ))
+    }
+
+    fn function_key(character: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(character), FUNCTION_MODIFIER))
+    }
+
+    fn opposite_function_key(character: char) -> Event {
+        let modifiers = if cfg!(target_os = "macos") {
+            KeyModifiers::CONTROL
+        } else {
+            KeyModifiers::ALT
+        };
+        Event::Key(KeyEvent::new(KeyCode::Char(character), modifiers))
     }
 
     #[test]
@@ -4893,7 +4925,7 @@ mod tests {
         app.input.insert_str(" ");
         let cursor = app.input.cursor();
         let mut dirty = false;
-        app.handle(control('q'), &mut dirty);
+        app.handle(function_key('q'), &mut dirty);
         assert!(app.queue_menu);
         app.handle(key(KeyCode::Enter), &mut dirty);
         assert_eq!(app.input.lines(), &[" "]);
@@ -4933,7 +4965,9 @@ mod tests {
                 .unwrap();
         }
         let mut dirty = false;
-        app.handle(control('q'), &mut dirty);
+        app.handle(opposite_function_key('q'), &mut dirty);
+        assert!(!app.queue_menu);
+        app.handle(function_key('q'), &mut dirty);
         app.handle(key(KeyCode::Down), &mut dirty);
         let selected = app.menu.as_ref().unwrap().items()[1].value;
         app.input_queue
@@ -4951,7 +4985,7 @@ mod tests {
         assert!(!app.queue_menu);
         assert!(!token.is_cancelled());
         assert!(!app.queue_paused);
-        app.handle(control('q'), &mut dirty);
+        app.handle(function_key('q'), &mut dirty);
         app.handle(Event::Paste("新草稿".into()), &mut dirty);
         assert!(!app.queue_menu);
         assert_eq!(app.input.lines(), &["新草稿"]);
@@ -4965,18 +4999,22 @@ mod tests {
             .enqueue(PendingKind::FollowUp, "next task".into(), None, false)
             .unwrap();
         app.queue_paused = true;
+        app.state = State::Ready;
+        let mut dirty = false;
+        app.handle(opposite_function_key('r'), &mut dirty);
+        assert!(app.queue_paused);
+        assert!(requests.try_recv().is_err());
         app.input.insert_str("草稿");
         let cursor = app.input.cursor();
-        let mut dirty = false;
         for state in [State::Running, State::Cancelling, State::Unavailable] {
             app.state = state;
-            app.handle(control('r'), &mut dirty);
+            app.handle(function_key('r'), &mut dirty);
             assert!(app.queue_paused);
             assert!(requests.try_recv().is_err());
         }
         app.state = State::Ready;
-        app.handle(control('q'), &mut dirty);
-        app.handle(control('r'), &mut dirty);
+        app.handle(function_key('q'), &mut dirty);
+        app.handle(function_key('r'), &mut dirty);
         assert!(!app.queue_paused);
         assert!(!app.queue_menu);
         assert!(
@@ -5509,9 +5547,9 @@ mod tests {
         app.input_history.push("旧任务".into());
         app.navigate_history(true);
         let mut dirty = false;
-        app.handle(control('p'), &mut dirty);
+        app.handle(function_key('p'), &mut dirty);
         assert_eq!(app.input.lines(), &["/model "]);
-        app.handle(control('p'), &mut dirty);
+        app.handle(function_key('p'), &mut dirty);
         app.handle(key(KeyCode::Tab), &mut dirty);
         assert_eq!(app.input.lines(), &["/model fixture/first"]);
         app.handle(key(KeyCode::Esc), &mut dirty);
@@ -5522,12 +5560,12 @@ mod tests {
         assert_eq!(app.input.cursor(), cursor);
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
 
-        app.handle(control('p'), &mut dirty);
+        app.handle(function_key('p'), &mut dirty);
         app.handle(key(KeyCode::Enter), &mut dirty);
         assert_eq!(app.input.lines(), &["草稿", "🙂结尾"]);
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
         for succeeds in [false, true] {
-            app.handle(control('p'), &mut dirty);
+            app.handle(function_key('p'), &mut dirty);
             app.handle(key(KeyCode::Down), &mut dirty);
             app.handle(key(KeyCode::Enter), &mut dirty);
             assert!(
@@ -5584,18 +5622,18 @@ mod tests {
         ] {
             app.state = state;
             app.handle(key(KeyCode::BackTab), &mut dirty);
-            app.handle(control('p'), &mut dirty);
+            app.handle(function_key('p'), &mut dirty);
             assert_eq!(app.input.lines(), &["草稿🙂"]);
             assert!(app.model_picker_draft.is_none());
         }
         app.state = State::Ready;
         app.skills_pending = true;
         app.handle(key(KeyCode::BackTab), &mut dirty);
-        app.handle(control('p'), &mut dirty);
+        app.handle(function_key('p'), &mut dirty);
         app.skills_pending = false;
         for mut key in [
             KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('p'), FUNCTION_MODIFIER),
             KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE),
         ] {
             key.kind = KeyEventKind::Repeat;
@@ -5629,17 +5667,21 @@ mod tests {
         app.state = State::Running;
         app.handle(key(KeyCode::F(1)), &mut dirty);
         let screen = draw(&mut app, 180, 40);
-        assert!(screen.contains("Shift-Tab"));
-        assert!(screen.contains("Ctrl-P"));
+        assert!(screen.contains("Shift + Tab"));
+        assert!(screen.contains(if cfg!(target_os = "macos") {
+            "⌥ + P"
+        } else {
+            "Ctrl + P"
+        }));
         assert_eq!(app.input.lines(), &["未发送🙂"]);
         assert_eq!(app.input.cursor(), cursor);
         app.state = State::Ready;
-        app.handle(control('p'), &mut dirty);
+        app.handle(function_key('p'), &mut dirty);
         app.handle(Event::Paste("missing".into()), &mut dirty);
         assert!(app.menu.is_none());
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert_eq!(app.input.lines(), &["未发送🙂"]);
-        app.handle(control('p'), &mut dirty);
+        app.handle(function_key('p'), &mut dirty);
         app.input = editor();
         app.handle(Event::Paste("/effort high".into()), &mut dirty);
         assert!(app.menu.is_none());
@@ -5663,17 +5705,19 @@ mod tests {
         let mut dirty = false;
         app.handle(Event::Paste("/effort ".into()), &mut dirty);
         app.handle(key(KeyCode::Down), &mut dirty);
-        let mut repeat = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        let mut repeat = KeyEvent::new(KeyCode::Char('s'), FUNCTION_MODIFIER);
         repeat.kind = KeyEventKind::Repeat;
         app.handle(Event::Key(repeat), &mut dirty);
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
-        app.handle(control('s'), &mut dirty);
+        app.handle(opposite_function_key('s'), &mut dirty);
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+        app.handle(function_key('s'), &mut dirty);
         assert!(matches!(
             requests.try_recv(),
             Ok(WorkerCommand::SaveDefaultThinkLevel(ThinkLevel::Xhigh))
         ));
         assert_eq!(app.think_level, ThinkLevel::High);
-        app.handle(control('s'), &mut dirty);
+        app.handle(function_key('s'), &mut dirty);
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
         app.handle(Event::Paste("新草稿".into()), &mut dirty);
         events
@@ -5702,8 +5746,48 @@ mod tests {
         assert_eq!(draw(&mut app, 100, 30), baseline);
         assert_eq!(app.input.lines(), &["新草稿"]);
         assert_eq!(app.think_level, ThinkLevel::High);
-        app.handle(control('s'), &mut dirty);
+        app.handle(function_key('s'), &mut dirty);
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn shortcuts_platform_function_modifier_preserves_editor_bindings() {
+        let mut other = app();
+        let mut app = app();
+        let mut dirty = false;
+        app.state = State::Ready;
+        app.input.insert_str("draft-中");
+        app.input.move_cursor(CursorMove::Back);
+        let cursor = app.input.cursor();
+        app.handle(function_key('p'), &mut dirty);
+        assert_eq!(app.input.lines(), &["/model "]);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.model_picker_draft.is_none());
+        assert_eq!(app.input.lines(), &["draft-中"]);
+        assert_eq!(app.input.cursor(), cursor);
+
+        other.state = State::Ready;
+        other.input.insert_str("draft-中");
+        other.handle(opposite_function_key('p'), &mut dirty);
+        assert!(other.model_picker_draft.is_none());
+        assert_eq!(other.input.lines(), &["draft-中"]);
+
+        app.input.move_cursor(CursorMove::Forward);
+        app.handle(control('j'), &mut dirty);
+        assert_eq!(app.input.lines(), &["draft-中", ""]);
+        app.handle(control('a'), &mut dirty);
+        app.handle(control('e'), &mut dirty);
+        app.handle(control('k'), &mut dirty);
+        assert_eq!(app.input.lines(), &["draft-中", ""]);
+        app.handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT)),
+            &mut dirty,
+        );
+        assert_eq!(app.input.lines(), &["draft-中", ""]);
+        app.handle(key(KeyCode::Char('π')), &mut dirty);
+        assert_eq!(app.input.lines(), &["draft-中", "π"]);
+        assert!(app.model_picker_draft.is_none());
+        assert!(app.handle(control('c'), &mut dirty));
     }
 
     #[test]

@@ -26,7 +26,7 @@ const ACTIONS: [&str; 4] = [
 const DEFAULT_ACTION: usize = 1;
 const HINT: &str = "Tab focus actions · ↑↓ select · Enter run · ←/→ tab · Esc close";
 const READONLY_HINT: &str = "Read-only view · most recently synced version · Esc close";
-const DISCUSS_HINT: &str = "Enter send · Ctrl-J newline · Esc discard";
+const DISCUSS_HINT: &str = "Enter send · Ctrl + J newline · Esc discard";
 
 /// 按字符数截断纯显示文本，超宽时以省略号结尾。
 /// Highlighted choice/tab chip shared by the confirm dialog and the panel.

@@ -11,6 +11,7 @@ mod mcp;
 mod models;
 mod plan;
 mod project_instructions;
+mod shortcuts;
 mod skills;
 mod stats;
 mod tips;
@@ -283,7 +284,7 @@ fn run(args: Args) -> Result<()> {
     )?;
     writeln!(
         stderr,
-        "bash runs with an execution timeout that kills the process group; Ctrl-C exits the whole program."
+        "bash runs with an execution timeout that kills the process group; Ctrl + C exits the whole program."
     )?;
     for diagnostic in &skills
         .lock()

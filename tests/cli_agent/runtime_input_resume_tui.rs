@@ -3,7 +3,7 @@
 // 队列与未提交草稿并退出；-r 恢复只回放已应用历史各一份，不恢复内存队列，
 // 新任务请求恰好包含旧 Steering 一次且不含未应用消息与草稿，旧 write 副作用
 // 不重做（请求只回放旧工具结果）。场景 7a：max_model_requests=1 时首轮完成后
-// 运行中排入的 Steering 触发额度错误并暂停保留，Ctrl-R 之前不发第二个 HTTP，
+// 运行中排入的 Steering 触发额度错误并暂停保留，功能键 R 之前不发第二个 HTTP，
 // 恢复后才以新任务执行该 Steering。场景 7b：显式 context_window 的自动摘要被
 // 服务端握住时排入 Steering；摘要请求不含它，摘要后的普通请求包含它且工具
 // 批次继续完整，write 副作用真实落盘。全部用真实终端、loopback HTTP 与文件
@@ -31,8 +31,8 @@ fn tui_runtime_input_quota_holds_pending_until_resume_both_protocols() {
         });
         runtime_input_counts(&mut pty, 1, 0, true);
         no_more(&fixture);
-        // Ctrl-R 显式恢复：Steering 以新任务执行，历史恰好 [U, S]。
-        pty.input("\x12");
+        // 功能键 R 显式恢复：Steering 以新任务执行，历史恰好 [U, S]。
+        pty.function_key('r');
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert_eq!(
             cancel_user_messages(&body, protocol),

@@ -4,8 +4,8 @@ use ratatui::{
     text::{Line, Span},
 };
 
-fn tip_spans(tip: &'static str, aligned: bool) -> Vec<Span<'static>> {
-    let (key, description) = tip.split_once(' ').unwrap_or((tip, ""));
+fn tip_spans(tip: (&'static str, &'static str), aligned: bool) -> Vec<Span<'static>> {
+    let (key, description) = tip;
     vec![
         Span::styled(
             if aligned {

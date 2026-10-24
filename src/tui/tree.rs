@@ -362,7 +362,10 @@ mod tests {
         for c in ['b', 'x', 'o', '文'] {
             panel.key(key(KeyCode::Char(c)));
         }
-        panel.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        panel.key(KeyEvent::new(
+            KeyCode::Char('o'),
+            crate::shortcuts::FUNCTION_MODIFIER,
+        ));
         let mut repeated_filter = key(KeyCode::Char('f'));
         repeated_filter.kind = KeyEventKind::Repeat;
         panel.key(repeated_filter);

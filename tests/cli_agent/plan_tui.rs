@@ -919,7 +919,7 @@ fn plan_tui_pending_input_never_crosses_review_into_execute() {
             !screen.contents().contains("Execute (keep context)")
                 && cancel_cursor_on_input_row(screen)
         });
-        pty.input("\x12");
+        pty.function_key('r');
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert_eq!(
             cancel_user_messages(&body, protocol).last().unwrap(),

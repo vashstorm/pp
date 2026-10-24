@@ -26,7 +26,7 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         assert!(!pty.parser.screen().contents().contains("gateway/team/secondary (default)"));
         pty.input("\x01\x0b/model second");
         pty.text("gateway/team/secondary");
-        pty.input("\x13");
+        pty.function_key('s');
         pty.text("Default model saved: gateway/team/secondary");
         pty.ready_model("first-model");
         pty.ready_effort("high");
@@ -65,9 +65,10 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         restarted.input("草稿🙂");
         restarted.draft("草稿🙂");
         let cursor = restarted.parser.screen().cursor_position();
-        restarted.input("\x10");
+        restarted.function_key('p');
         restarted.text("fixture/primary");
-        restarted.input("\x1b[A\x13");
+        restarted.input("\x1b[A");
+        restarted.function_key('s');
         restarted.text("Default model saved: fixture/primary");
         restarted.ready_model("second-model");
         restarted.text("fixture/primary (default)");
@@ -80,16 +81,16 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         assert!(std::fs::read_to_string(&path).unwrap().contains("default_model: fixture/primary"));
         let invalid = "{ broken secret-marker-config }";
         std::fs::write(&path, invalid).unwrap();
-        restarted.input("\x10");
+        restarted.function_key('p');
         restarted.text("fixture/primary (default)");
         assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary (default)"));
-        restarted.input("\x13");
+        restarted.function_key('s');
         restarted.text("Failed to save default model");
         restarted.draft("/model");
         restarted.text("fixture/primary (default)");
         restarted.input("\x1b");
         restarted.draft("草稿🙂");
-        restarted.input("\x10");
+        restarted.function_key('p');
         restarted.text("fixture/primary (default)");
         assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary (default)"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
@@ -109,7 +110,7 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     pty.ready_model("fixture-model");
     pty.input("/model\r");
     pty.text("fixture/primary (default)");
-    pty.input("\x13");
+    pty.function_key('s');
     pty.text("Default model saved: fixture/primary");
     pty.ready_model("fixture-model");
     pty.draft("/model");
@@ -120,9 +121,10 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
 
     let invalid = "{ broken secret-marker-config }";
     std::fs::write(&path, invalid).unwrap();
-    pty.input("draft after failure\x10");
+    pty.input("draft after failure");
+    pty.function_key('p');
     pty.text("fixture/primary");
-    pty.input("\x13");
+    pty.function_key('s');
     pty.text("Failed to save default model");
     pty.ready_model("fixture-model");
     pty.draft("/model");
@@ -152,9 +154,14 @@ fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
         let mut pty = Pty::start_with_existing_files(home.path());
         pty.ready_effort("high");
         pty.input("/effort ");
-        pty.text("Ctrl-S");
+        pty.text(if cfg!(target_os = "macos") {
+            "⌥ + S"
+        } else {
+            "Ctrl + S"
+        });
         pty.text("high (default)");
-        pty.input("\x1b[B\x13");
+        pty.input("\x1b[B");
+        pty.function_key('s');
         pty.wait_for("xhigh 保存结果可见且输入恢复", |screen| {
             effort_save_popup(screen, "Default thinking effort saved: xhigh")
         });
@@ -192,8 +199,12 @@ fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
         super::think::finish_request(request, protocol);
         restarted.ready_effort("xhigh");
         restarted.input("/effort n");
-        restarted.text("Ctrl-S");
-        restarted.input("\x13");
+        restarted.text(if cfg!(target_os = "macos") {
+            "⌥ + S"
+        } else {
+            "Ctrl + S"
+        });
+        restarted.function_key('s');
         restarted.wait_for("重启后 no think 保存结果可见且输入恢复", |screen| {
             effort_save_popup(screen, "Default thinking effort saved: no think")
         });
@@ -225,8 +236,12 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
     pty.input("\x01\x0b");
     pty.draft("");
     pty.input("/effort low");
-    pty.text("Ctrl-S");
-    pty.input("\x13");
+    pty.text(if cfg!(target_os = "macos") {
+        "⌥ + S"
+    } else {
+        "Ctrl + S"
+    });
+    pty.function_key('s');
     pty.wait_for("新建设置后 low 保存结果可见且输入恢复", |screen| {
         effort_save_popup(screen, "Default thinking effort saved: low")
     });
@@ -237,8 +252,12 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
     let invalid = "{ broken secret-marker-config }";
     std::fs::write(&path, invalid).unwrap();
     pty.input("/effort max");
-    pty.text("Ctrl-S");
-    pty.input("\x13");
+    pty.text(if cfg!(target_os = "macos") {
+        "⌥ + S"
+    } else {
+        "Ctrl + S"
+    });
+    pty.function_key('s');
     pty.wait_for("保存失败弹框可见且输入恢复", |screen| {
         effort_save_popup(screen, "Failed to save default thinking effort")
     });
@@ -353,8 +372,8 @@ fn model_thinking_tui_effort_menu_follows_model_policy_across_switches() {
     pty.draft("");
     pty.ready_effort("high");
 
-    // Ctrl-P 切到 B：显式默认 medium 覆盖当前档位。
-    pty.input("\x10");
+    // 功能键 P 切到 B：显式默认 medium 覆盖当前档位。
+    pty.function_key('p');
     pty.text("fixture/b");
     pty.input("\x1b[B\t");
     pty.draft("/model fixture/b");
@@ -423,7 +442,7 @@ fn model_thinking_tui_effort_menu_follows_model_policy_across_switches() {
     pty.ready_effort("medium");
 
     // 切回 A：显式默认 high 覆盖当前档位（而非回退到最低允许档 low）。
-    pty.input("\x10");
+    pty.function_key('p');
     pty.text("fixture/a");
     pty.input("\x1b[A\t");
     pty.draft("/model fixture/a");
@@ -443,7 +462,7 @@ fn model_thinking_tui_single_effort_shift_tab_retains_level_and_draft() {
     pty.ready_effort("high");
 
     // 切到单档模型 C：当前 high 与全局 max 都不受支持，回退到唯一允许档 medium。
-    pty.input("\x10");
+    pty.function_key('p');
     pty.text("fixture/c");
     pty.input("\x1b[B\x1b[B\t");
     pty.draft("/model fixture/c");
@@ -508,10 +527,11 @@ fn model_thinking_tui_ctrl_s_saves_global_without_overriding_model_default() {
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready_effort("high");
 
-    // 菜单内高亮 low 并 Ctrl-S：仅保存全局默认，会话档位保持 high。
+    // 菜单内高亮 low 并按功能键 S：仅保存全局默认，会话档位保持 high。
     pty.input("/effort ");
     pty.text("high (default)");
-    pty.input("\x1b[A\x13");
+    pty.input("\x1b[A");
+    pty.function_key('s');
     pty.wait_for("low 全局默认保存结果可见且输入恢复", |screen| {
         effort_save_popup(screen, "Default thinking effort saved: low")
     });

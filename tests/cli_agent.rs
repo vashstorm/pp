@@ -420,9 +420,6 @@ fn slash_tips_stays_local_without_creating_a_session() {
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(stderr.contains("Tips:\n"), "{stderr}");
         assert!(stderr.contains("usage: /tips"), "{stderr}");
-        for removed in ["steer", "Alt-Enter", "Ctrl-Q", "Ctrl-R"] {
-            assert!(!stderr.contains(removed), "{stderr}");
-        }
         assert!(!dir.path().join(".pp/agent/sessions").exists());
     }
     no_more(&server);
@@ -2843,6 +2840,32 @@ mod tui {
             writer.flush().unwrap();
         }
 
+        /// Platform function-key bytes for the five functional shortcuts
+        /// (P/S/O/Q/R): macOS sends ESC+letter (Alt/Option), other platforms
+        /// send the legacy control byte.
+        fn function_key(&mut self, character: char) {
+            let bytes: &str = if cfg!(target_os = "macos") {
+                match character {
+                    'p' => "\x1bp",
+                    's' => "\x1bs",
+                    'o' => "\x1bo",
+                    'q' => "\x1bq",
+                    'r' => "\x1br",
+                    _ => panic!("unsupported function key character: {character}"),
+                }
+            } else {
+                match character {
+                    'p' => "\x10",
+                    's' => "\x13",
+                    'o' => "\x0f",
+                    'q' => "\x11",
+                    'r' => "\x12",
+                    _ => panic!("unsupported function key character: {character}"),
+                }
+            };
+            self.input(bytes);
+        }
+
         fn resize(&mut self, rows: u16, cols: u16) {
             self.drain();
             let previous_output = self.raw.len();
@@ -3301,8 +3324,12 @@ mod tui {
         pty.ready_effort("no think");
 
         pty.input("\x01\x0b/effort low");
-        pty.text("Ctrl-S");
-        pty.input("\x13");
+        pty.text(if cfg!(target_os = "macos") {
+            "⌥ + S"
+        } else {
+            "Ctrl + S"
+        });
+        pty.function_key('s');
         let green = vt100::Color::Rgb(127, 166, 106);
         pty.wait_for(
             "full green save notification above the input at the right edge",
@@ -3464,6 +3491,52 @@ mod tui {
         no_more(&server);
     }
 
+    fn tip_columns(screen: &vt100::Screen, row: u16, columns: std::ops::Range<u16>) -> String {
+        columns
+            .map(|col| {
+                let contents = screen.cell(row, col).unwrap().contents();
+                if contents.is_empty() { " " } else { contents }
+            })
+            .collect()
+    }
+
+    fn assert_tip_key(screen: &vt100::Screen, row: u16, columns: std::ops::Range<u16>, key: &str) {
+        let accent = vt100::Color::Rgb(127, 166, 106);
+        for (offset, character) in key.chars().enumerate() {
+            let col = columns.start + u16::try_from(offset).unwrap();
+            let cell = screen.cell(row, col).unwrap();
+            assert_eq!(
+                cell.contents(),
+                character.to_string(),
+                "row {row}, col {col}"
+            );
+            assert_eq!(cell.fgcolor(), accent, "row {row}, col {col}");
+            assert!(cell.bold(), "row {row}, col {col}");
+            assert_eq!(cell.bgcolor(), vt100::Color::Default);
+        }
+        assert_eq!(
+            tip_columns(screen, row, columns.start..columns.start + 12),
+            format!("{key:<12}"),
+        );
+        let description_start = columns.start + 12;
+        assert!(
+            !screen
+                .cell(row, description_start)
+                .unwrap()
+                .contents()
+                .trim()
+                .is_empty(),
+            "description must start after the 12-column key region",
+        );
+        for col in description_start..columns.end {
+            let cell = screen.cell(row, col).unwrap();
+            if !cell.contents().trim().is_empty() {
+                assert_eq!(cell.fgcolor(), vt100::Color::Idx(7), "row {row}, col {col}");
+                assert!(!cell.bold(), "row {row}, col {col}");
+            }
+        }
+    }
+
     #[test]
     fn tui_startup_centers_brand_and_keeps_footer_colors() {
         let server = server();
@@ -3478,21 +3551,27 @@ mod tui {
         assert_eq!(lines[2].find('▄'), Some(45));
         assert_eq!(lines[7].trim(), concat!("v", env!("CARGO_PKG_VERSION")));
         assert_eq!(lines[9], "  Tips:");
+        let model_key = if cfg!(target_os = "macos") {
+            "⌥ + P"
+        } else {
+            "Ctrl + P"
+        };
         for (row, (left, right)) in [
             ("/help", "/effort"),
             ("Esc", "/init"),
             ("/model", "/skills"),
-            ("/new", "Shift-Tab"),
-            ("/resume", "Ctrl-P"),
+            ("/new", "Shift + Tab"),
+            ("/resume", model_key),
             ("/plan", "F1"),
-            ("/compact", "Ctrl-J"),
-            ("/tree", "Ctrl-C"),
+            ("/compact", "Ctrl + J"),
+            ("/tree", "Ctrl + C"),
         ]
         .into_iter()
         .enumerate()
         {
-            assert_eq!(lines[10 + row].find(left), Some(2));
-            assert_eq!(lines[10 + row].find(right), Some(52));
+            let row = 10 + u16::try_from(row).unwrap();
+            assert_tip_key(screen, row, 2..52, left);
+            assert_tip_key(screen, row, 52..100, right);
         }
         let context_start = lines[26].find(" ctx ").expect("用量显示在输入栏上沿");
         assert!(!lines[26][context_start..].contains('/'));
@@ -3532,10 +3611,18 @@ mod tui {
                     && text
                         .lines()
                         .nth(25)
-                        .is_some_and(|line| line.starts_with("  Ctrl-C      "))
+                        .is_some_and(|line| line.starts_with(&format!("  {:<12}", "Ctrl + C")))
                     && text.contains("startup draft")
             },
         );
+        for (row, key) in [
+            (21, "Shift + Tab"),
+            (22, model_key),
+            (24, "Ctrl + J"),
+            (25, "Ctrl + C"),
+        ] {
+            assert_tip_key(pty.parser.screen(), row, 2..60, key);
+        }
         pty.resize(12, 40);
         pty.wait_for("小窗口显示紧凑欢迎页并保留草稿", |screen| {
             let text = screen.contents();
@@ -3587,28 +3674,40 @@ mod tui {
             let server = server();
             let (home, mut pty) = context_tui_start(&server, protocol, 100_000, 80);
             pty.text("Tips:");
-            let startup = pty.parser.screen().contents();
-            let tips = startup
-                .lines()
-                .skip(10)
-                .take(8)
-                .flat_map(|line| [&line[..52], &line[52..]])
+            let startup = pty.parser.screen();
+            let tips = (10..18)
+                .flat_map(|row| {
+                    [
+                        tip_columns(startup, row, 2..52),
+                        tip_columns(startup, row, 52..100),
+                    ]
+                })
                 .map(|tip| tip.split_whitespace().collect::<Vec<_>>().join(" "))
                 .collect::<Vec<_>>();
             assert_eq!(tips.len(), 16);
-            for removed in ["Enter", "Alt-Enter", "Ctrl-Q", "Ctrl-R"] {
-                assert!(!tips.iter().any(|tip| tip.starts_with(removed)));
-            }
-            assert!(tips.last().unwrap().starts_with("Ctrl-C "));
+            assert!(tips.last().unwrap().starts_with("Ctrl + C "));
+            let model_key = if cfg!(target_os = "macos") {
+                "⌥ + P"
+            } else {
+                "Ctrl + P"
+            };
+            let shortcut_keys = [
+                (4, 12, "Shift + Tab"),
+                (5, 13, model_key),
+                (7, 15, "Ctrl + J"),
+                (8, 16, "Ctrl + C"),
+            ];
             pty.input("/tips\r");
             pty.wait_for("本地提示展示完成", |screen| {
                 let text = screen.contents();
+                let lines = text
+                    .lines()
+                    .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .collect::<Vec<_>>();
                 !text.contains("▄▀▀▄")
-                    && tips.iter().all(|tip| {
-                        let (key, description) = tip.split_once(' ').unwrap();
-                        text.lines()
-                            .any(|line| line.contains(key) && line.contains(description))
-                    })
+                    && tips
+                        .iter()
+                        .all(|tip| lines.iter().any(|line| line.contains(tip)))
             });
             let screen = pty.parser.screen();
             assert_eq!(
@@ -3617,6 +3716,10 @@ mod tui {
             );
             assert!(screen.cell(1, 2).unwrap().bold());
             assert_eq!(screen.cell(1, 14).unwrap().fgcolor(), vt100::Color::Idx(7));
+            for (wide_row, _, key) in shortcut_keys {
+                // Transcript content is 98 columns wide, with its own two-column prefix.
+                assert_tip_key(screen, wide_row, 53..100, key);
+            }
             assert!(
                 screen
                     .contents()
@@ -3628,14 +3731,24 @@ mod tui {
             pty.resize(30, 60);
             pty.wait_for("本地提示随窗口切换为完整单列", |screen| {
                 let text = screen.contents();
-                [(1, "/help"), (8, "/tree"), (16, "Ctrl-C")]
+                let lines = text
+                    .lines()
+                    .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .collect::<Vec<_>>();
+                [(1, "/help"), (8, "/tree"), (16, "Ctrl + C")]
                     .into_iter()
                     .all(|(row, key)| {
                         text.lines()
                             .nth(row)
                             .is_some_and(|line| line.starts_with(&format!("│ {key:<12}")))
                     })
+                    && tips
+                        .iter()
+                        .all(|tip| lines.iter().any(|line| line.contains(tip)))
             });
+            for (_, narrow_row, key) in shortcut_keys {
+                assert_tip_key(pty.parser.screen(), narrow_row, 2..60, key);
+            }
             pty.resize(30, 100);
             assert!(!home.path().join(".pp/agent/sessions").exists());
             context_tui_exchange(
@@ -3909,7 +4022,7 @@ mod tui {
             pty.draft("草稿🙂");
             assert!(!pty.parser.screen().contents().contains("Thinking level:"));
 
-            pty.input("\x10");
+            pty.function_key('p');
             pty.text("fixture/secondary");
             pty.draft("/model");
             pty.input("\x1b[B\t");
@@ -3918,7 +4031,7 @@ mod tui {
             pty.ready_model("second-model");
             pty.draft("草稿🙂");
             pty.input("\x1bOP");
-            pty.text("Shift-Tab");
+            pty.text("Shift + Tab");
             pty.draft("草稿🙂");
             assert!(server.try_recv().unwrap().is_none());
 
@@ -3941,7 +4054,9 @@ mod tui {
                 "user",
                 "草稿🙂",
             );
-            pty.input("busy-中\x1b[Z\x10!");
+            pty.input("busy-中\x1b[Z");
+            pty.function_key('p');
+            pty.input("!");
             pty.draft("busy-中!");
             pty.wait_for("快捷键在忙碌时拒绝执行", |screen| {
                 input_is_ready(screen)
@@ -4254,10 +4369,21 @@ mod tui {
             );
             pty.input("draft-中");
             pty.draft("draft-中");
-            pty.input("\x0f");
+            // Opposite modifier must not expand the collapsed bash output.
+            pty.input(if cfg!(target_os = "macos") {
+                "\x0f"
+            } else {
+                "\x1bo"
+            });
+            pty.input("!");
+            pty.draft("draft-中!");
+            assert!(!pty.parser.screen().contents().contains("output-00"));
+            pty.input("\x7f");
+            pty.draft("draft-中");
+            pty.function_key('o');
             pty.text("output-00");
             pty.draft("draft-中");
-            pty.input("\x0f");
+            pty.function_key('o');
             pty.text("4 earlier lines");
             pty.draft("draft-中");
             pty.resize(4, 20);
@@ -5421,7 +5547,7 @@ mod tui {
             assert_eq!(screen.cell(row, 0).unwrap().contents(), "╭");
             assert_eq!(screen.cell(row, 0).unwrap().fgcolor(), vt100::Color::Idx(5));
             assert!(!screen.contents().contains("secret-skill-line-19"));
-            pty.input("\x0f");
+            pty.function_key('o');
             pty.text("secret-skill-line-19");
             pty.resize(4, 20);
             pty.resize(30, 100);

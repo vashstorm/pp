@@ -1,5 +1,5 @@
 // 运行中消息排队的真实二进制场景（计划验证项 3、4、5）：FIFO follow-up 与多行
-// Unicode 草稿、取消/供应商错误后暂停并等待 Ctrl-R、取消收尾忙碌期拒绝入队、
+// Unicode 草稿、取消/供应商错误后暂停并等待功能键 R、取消收尾忙碌期拒绝入队、
 // Esc 与已提交回复的竞争不自动续跑、取回原始模板 slash 且只执行编辑后的新值、
 // 非空草稿阻止取回且光标不变、Tab 不取回、Esc 只关菜单不取消任务、100×30 与
 // 40×10 下队列列表/草稿/原生光标不被覆盖。全部用真实 PTY、tiny_http 与屏幕/
@@ -161,7 +161,7 @@ fn tui_runtime_input_followup_fifo_and_draft_both_protocols() {
 }
 
 // 场景 4a：真实 Esc 取消（先 SSE 打开、后 bash gate 工具批次）两次暂停队列；
-// 取消收尾忙碌期 Enter/AltEnter 不入队；Ctrl-R 先 Steering 后 FollowUp，
+// 取消收尾忙碌期 Enter/AltEnter 不入队；功能键 R 先 Steering 后 FollowUp，
 // 草稿保持，取消本身不触发任何 HTTP。
 #[test]
 fn tui_runtime_input_cancel_pauses_queue_and_rejects_busy_cleanup() {
@@ -184,7 +184,7 @@ fn tui_runtime_input_cancel_pauses_queue_and_rejects_busy_cleanup() {
         pty.draft("草稿d");
         no_more(&server);
 
-        pty.input("\x12");
+        pty.function_key('r');
         let (request, body) = pty.request_at(&server, api_path(protocol));
         assert_eq!(
             cancel_user_messages(&body, protocol),
@@ -212,7 +212,7 @@ fn tui_runtime_input_cancel_pauses_queue_and_rejects_busy_cleanup() {
         pty.draft("草稿dXY");
         no_more(&server);
 
-        pty.input("\x12");
+        pty.function_key('r');
         let (request, body) = pty.request_at(&server, api_path(protocol));
         assert_eq!(
             cancel_user_messages(&body, protocol),
@@ -236,7 +236,7 @@ fn tui_runtime_input_cancel_pauses_queue_and_rejects_busy_cleanup() {
 }
 
 // 场景 4b：provider 错误终态（既有 fixture 格式的 SSE error 事件）暂停队列；
-// Ctrl-R 前无任何请求，恢复后先 Steering 再 FollowUp，草稿保持。
+// 功能键 R 前无任何请求，恢复后先 Steering 再 FollowUp，草稿保持。
 #[test]
 fn tui_runtime_input_provider_error_pauses_queue_until_resume() {
     for protocol in ["completion", "response"] {
@@ -266,7 +266,7 @@ fn tui_runtime_input_provider_error_pauses_queue_until_resume() {
         pty.draft("errdraft");
         no_more(&server);
 
-        pty.input("\x12");
+        pty.function_key('r');
         let (request, body) = pty.request_at(&server, api_path(protocol));
         assert_eq!(
             cancel_user_messages(&body, protocol),
@@ -298,7 +298,7 @@ fn tui_runtime_input_provider_error_pauses_queue_until_resume() {
     }
 }
 
-// 场景 5：Ctrl-Q 列表、Tab 不取回、Esc 只关菜单不取消任务、非空草稿阻止取回
+// 场景 5：功能键 Q 列表、Tab 不取回、Esc 只关菜单不取消任务、非空草稿阻止取回
 // 且光标与队列不变；取回模板命令回显原始 slash，编辑后重提交只执行新展开值，
 // 旧展开值从不进入任何请求。
 #[test]
@@ -314,7 +314,7 @@ fn tui_runtime_input_recall_template_and_resubmit_new_value() {
         pty.input("/qcmd original-arg\x1b\r");
         runtime_input_counts(&mut pty, 0, 2, false);
 
-        pty.input("\x11");
+        pty.function_key('q');
         runtime_input_menu_visible(
             &mut pty,
             &[
@@ -322,7 +322,11 @@ fn tui_runtime_input_recall_template_and_resubmit_new_value() {
                 "Queued #2",
                 "queued-old-value",
                 "/qcmd original-arg",
-                "Enter recall · Ctrl-R resume queue · Esc close",
+                if cfg!(target_os = "macos") {
+                    "Enter recall · ⌥ + R resume queue · Esc close"
+                } else {
+                    "Enter recall · Ctrl + R resume queue · Esc close"
+                },
             ],
         );
 
@@ -331,7 +335,11 @@ fn tui_runtime_input_recall_template_and_resubmit_new_value() {
             &mut pty,
             &[
                 "Queued #1",
-                "Enter recall · Ctrl-R resume queue · Esc close",
+                if cfg!(target_os = "macos") {
+                    "Enter recall · ⌥ + R resume queue · Esc close"
+                } else {
+                    "Enter recall · Ctrl + R resume queue · Esc close"
+                },
             ],
         );
         runtime_input_empty_editor(&mut pty);
@@ -345,7 +353,7 @@ fn tui_runtime_input_recall_template_and_resubmit_new_value() {
 
         pty.input("draft-block");
         pty.draft("draft-block");
-        pty.input("\x11");
+        pty.function_key('q');
         runtime_input_menu_visible(&mut pty, &["Queued #1", "Queued #2"]);
         let cursor = pty.parser.screen().cursor_position();
         pty.input("\r");
@@ -367,7 +375,7 @@ fn tui_runtime_input_recall_template_and_resubmit_new_value() {
         pty.input("\x01\x0b");
         runtime_input_empty_editor(&mut pty);
 
-        pty.input("\x11");
+        pty.function_key('q');
         runtime_input_menu_visible(&mut pty, &["Queued #1", "Queued #2"]);
         pty.input("\x1b[B");
         pty.input("\r");
@@ -418,7 +426,7 @@ fn tui_runtime_input_recall_template_and_resubmit_new_value() {
     }
 }
 
-// 场景 5 补充：100×30 与 40×10 下 Ctrl-Q 队列列表可见、菜单 Esc 只关列表不取消
+// 场景 5 补充：100×30 与 40×10 下功能键 Q 队列列表可见、菜单 Esc 只关列表不取消
 // 任务、resize 后草稿与原生光标列不被覆盖；队列按 Steering → FollowUp 消化。
 #[test]
 fn tui_runtime_input_pending_menu_tab_esc_resize_both_protocols() {
@@ -435,7 +443,7 @@ fn tui_runtime_input_pending_menu_tab_esc_resize_both_protocols() {
         pty.draft("resize草稿");
         let column = runtime_input_cursor_on(&mut pty, "resize草稿");
 
-        pty.input("\x11");
+        pty.function_key('q');
         runtime_input_menu_visible(
             &mut pty,
             &[
@@ -443,7 +451,11 @@ fn tui_runtime_input_pending_menu_tab_esc_resize_both_protocols() {
                 "Queued #2",
                 "steer-item",
                 "queued-item",
-                "Enter recall · Ctrl-R resume queue · Esc close",
+                if cfg!(target_os = "macos") {
+                    "Enter recall · ⌥ + R resume queue · Esc close"
+                } else {
+                    "Enter recall · Ctrl + R resume queue · Esc close"
+                },
             ],
         );
 
@@ -455,7 +467,7 @@ fn tui_runtime_input_pending_menu_tab_esc_resize_both_protocols() {
         runtime_input_cursor_kept(&mut pty, "resize草稿", column);
         no_more(&server);
 
-        pty.input("\x11");
+        pty.function_key('q');
         runtime_input_menu_visible(&mut pty, &["Steer #1", "Queued #2"]);
         pty.resize(30, 100);
         runtime_input_menu_visible(&mut pty, &["Steer #1", "Queued #2"]);
@@ -497,7 +509,7 @@ fn tui_runtime_input_pending_menu_tab_esc_resize_both_protocols() {
 
 // 场景 4 补充：Esc 与已提交最终回复的竞争。以 journal 文件确认回复已提交（终局
 // 为 Completed）后再按 Esc；暂停意图必须让积压 Steering 留在队列，不自动发请求，
-// Ctrl-R 才执行它。
+// 功能键 R 才执行它。
 #[test]
 fn tui_runtime_input_esc_committed_reply_race_keeps_queue_paused() {
     for protocol in ["completion", "response"] {
@@ -535,13 +547,13 @@ fn tui_runtime_input_esc_committed_reply_race_keeps_queue_paused() {
         runtime_input_counts(&mut pty, 0, 1, true);
         no_more(&server);
 
-        pty.input("\x12");
+        pty.function_key('r');
         let (request, body) = pty.request_at(&server, api_path(protocol));
         assert_eq!(
             cancel_user_messages(&body, protocol),
             ["race-task-U", "race-steer"],
             "{protocol}: Esc before the Completed event must keep the steering \
-             message pending until Ctrl-R"
+             message pending until explicit queue resume"
         );
         runtime_input_final(request, protocol, "race-resumed-final");
         pty.text("race-resumed-final");

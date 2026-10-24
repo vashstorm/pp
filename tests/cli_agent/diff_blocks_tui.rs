@@ -1,7 +1,7 @@
 // Diff 块级渲染 PTY 回归：两种 edit 模式／两协议的真实提交 diff（磁盘落盘 + 屏幕
 // 红/绿与行号 + 统计）、write 新建/覆盖/同内容/空文件、CRLF→LF／末尾换行删除／BOM
 // /非 UTF-8 的 unavailable 回退、无读权限文件的 write 不被快照失败阻断、失败 edit
-// 不伪造 diff、超过 10 行的默认折叠与 Ctrl-O 展开/收起、退出 scrollback 完整展开
+// 不伪造 diff、超过 10 行的默认折叠与功能键 O 展开/收起、退出 scrollback 完整展开
 // 保留颜色，以及 /resume 与启动恢复重放相同 diff 且不重新执行旧工具、缺 FileChanged
 // 的旧日志正常加载。全部通过真实 PTY、loopback HTTP 与磁盘文件观察，不用 sleep 猜
 // 测阶段；辅助函数一律使用 `diff_blocks_` 前缀，测试函数使用 `transcript_blocks_`
@@ -550,7 +550,7 @@ fn transcript_blocks_diff_failed_edits_have_no_fabricated_diff() {
     }
 }
 
-// 超过 10 行的 diff 默认折叠，Ctrl-O 展开/收起，退出 scrollback 展开全部并保留颜色。
+// 超过 10 行的 diff 默认折叠，功能键 O 展开/收起，退出 scrollback 展开全部并保留颜色。
 #[test]
 fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
     for protocol in ["completion", "response"] {
@@ -599,23 +599,35 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
                 && text.contains(" 10 - 10")
                 && !text.contains(" 11 - 11")
                 && !text.contains("  1 + A")
-                && text.contains("… 15 more lines (Ctrl-O to expand)")
+                && text.contains(if cfg!(target_os = "macos") {
+                    "… 15 more lines (⌥ + O to expand)"
+                } else {
+                    "… 15 more lines (Ctrl + O to expand)"
+                })
         });
-        pty.input("\x0f");
+        pty.function_key('o');
         pty.wait_for("long diff expanded", |screen| {
             let text = screen.contents();
             text.contains("  1 + A")
                 && text.contains(" 12 - 12")
                 && text.contains(" 12 + L")
                 && text.contains(" 13   keep")
-                && !text.contains("(Ctrl-O to expand)")
+                && !text.contains(if cfg!(target_os = "macos") {
+                    "(⌥ + O to expand)"
+                } else {
+                    "(Ctrl + O to expand)"
+                })
         });
-        pty.input("\x0f");
+        pty.function_key('o');
         pty.wait_for("long diff folded again", |screen| {
             let text = screen.contents();
             !text.contains("  1 + A")
                 && text.contains("  1 - 1")
-                && text.contains("… 15 more lines (Ctrl-O to expand)")
+                && text.contains(if cfg!(target_os = "macos") {
+                    "… 15 more lines (⌥ + O to expand)"
+                } else {
+                    "… 15 more lines (Ctrl + O to expand)"
+                })
         });
         let (request, _) = pty.request_at(&server, path);
         diff_blocks_final(request, protocol, "diff-blocks long done");
@@ -625,7 +637,14 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
         for expected in ["  1 - 1", "  1 + A", " 12 - 12", " 12 + L", " 13   keep"] {
             assert!(scrollback.contains(expected), "{expected}\n{scrollback}");
         }
-        assert!(!scrollback.contains("(Ctrl-O to expand)"), "{scrollback}");
+        assert!(
+            !scrollback.contains(if cfg!(target_os = "macos") {
+                "(⌥ + O to expand)"
+            } else {
+                "(Ctrl + O to expand)"
+            }),
+            "{scrollback}"
+        );
         let mut parser = vt100::Parser::new(600, 100, 0);
         parser.process(&raw);
         assert!(
