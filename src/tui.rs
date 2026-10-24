@@ -6096,7 +6096,7 @@ mod tests {
         assert!(lines[27].starts_with("  second line"));
         assert_eq!(lines[28], "─".repeat(100));
         assert!(
-            lines[29].starts_with(" pp · EXEC · \u{ec19} — · \u{f0766} off · \u{f07c} fixture-cwd")
+            lines[29].starts_with(" \u{f1d8} · \u{ec19} — · \u{f0766} off · \u{f07c} fixture-cwd")
         );
 
         app.secondary_status = Some("extra info".into());

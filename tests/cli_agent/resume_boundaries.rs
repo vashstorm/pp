@@ -238,7 +238,7 @@ fn tui_slash_resume_lists_all_directories_sorted_by_mtime() {
     pty.input("\x1b");
     pty.wait_for("Esc 关闭面板回到欢迎页", |screen| {
         !screen.contents().contains("Resume session")
-            && screen.contents().contains("█▀▀█")
+            && screen.contents().contains("▄▀▀▄")
             && input_is_ready(screen)
     });
     no_more(&server);
@@ -423,7 +423,7 @@ fn tui_slash_resume_empty_state_without_sessions_directory() {
     pty.input("\x1b");
     pty.wait_for("Esc 关闭面板回到欢迎页", |screen| {
         !screen.contents().contains("Resume session")
-            && screen.contents().contains("█▀▀█")
+            && screen.contents().contains("▄▀▀▄")
             && input_is_ready(screen)
     });
     no_more(&server);
