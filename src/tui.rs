@@ -618,7 +618,9 @@ impl App {
                     request_ask(&ask_events, request, cancellation)
                 }));
                 let usage = agent.context_usage().ok();
-                app.workflow = agent.workflow().clone();
+                // 经 set_workflow 走统一入口：恢复的计划正文必须同步种子进度缓存，
+                // 否则 /plan view 正文未变时不重算，标题停留 0/0。
+                app.set_workflow(agent.workflow().clone());
                 // Deliberately detached: quitting must not wait for HTTP or foreground tools.
                 thread::Builder::new()
                     .name("pp-agent".into())
