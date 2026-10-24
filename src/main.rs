@@ -13,6 +13,7 @@ mod plan;
 mod project_instructions;
 mod skills;
 mod stats;
+mod tips;
 mod tools;
 mod tui;
 mod yaml;
@@ -369,6 +370,10 @@ fn run(args: Args) -> Result<()> {
                 writeln!(stderr, "{}", commands::help(&file_commands))?;
                 continue;
             }
+            Some(commands::Command::Tips) => {
+                writeln!(stderr, "{}", tips::text())?;
+                continue;
+            }
             // 行模式没有会话选择界面；按 ID 恢复仍用启动参数。
             Some(commands::Command::Resume) => {
                 writeln!(
@@ -454,6 +459,7 @@ fn run(args: Args) -> Result<()> {
             }
             Some(
                 commands::Command::Help
+                | commands::Command::Tips
                 | commands::Command::Quit
                 | commands::Command::Skills(_)
                 | commands::Command::Resume

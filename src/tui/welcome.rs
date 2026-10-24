@@ -14,10 +14,6 @@ const LOGO: [&str; 5] = [
     "█     █   ",
     "▀     ▀   ",
 ];
-const TIP: &str = "/help for commands · /model to choose a model · /effort to set thinking";
-const KEYS_TAIL: &str =
-    " · Shift-Tab thinking · Ctrl-P model · F1 help · Ctrl-J newline · Ctrl-C quit";
-
 pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
     if area.width == 0 || area.height == 0 {
         return area;
@@ -38,30 +34,39 @@ pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
         Style::default().fg(Color::DarkGray),
     ));
     lines.push(Line::default());
-    lines.push(Line::from(vec![
-        Span::styled("Tip: ", Style::default().fg(ACCENT)),
-        Span::styled(TIP, Style::default().fg(Color::DarkGray)),
-    ]));
-    lines.push(Line::styled(
-        format!("{}{KEYS_TAIL}", super::STEERING_HINT),
-        Style::default().fg(Color::DarkGray),
-    ));
-
     let width = area.width.min(76);
-    let content = Paragraph::new(lines).centered().wrap(Wrap { trim: false });
-    let height = u16::try_from(content.line_count(width))
+    let brand = Paragraph::new(lines).centered().wrap(Wrap { trim: false });
+    let brand_height = u16::try_from(brand.line_count(width))
         .unwrap_or(u16::MAX)
         .min(area.height);
+    let tips = Paragraph::new(
+        std::iter::once(Line::styled("Tips:", Style::default().fg(ACCENT)))
+            .chain(
+                crate::tips::TIPS
+                    .iter()
+                    .map(|&tip| Line::styled(tip, Style::default().fg(Color::DarkGray))),
+            )
+            .collect::<Vec<_>>(),
+    )
+    .wrap(Wrap { trim: false });
+    let tips_height = u16::try_from(tips.line_count(area.width))
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(brand_height));
+    let height = brand_height + tips_height;
     let top = if compact { 0 } else { (area.height / 8).min(2) };
     let top = top.min(area.height.saturating_sub(height));
     frame.render_widget(
-        content,
+        brand,
         Rect::new(
             area.x + (area.width - width) / 2,
             area.y + top,
             width,
-            height,
+            brand_height,
         ),
+    );
+    frame.render_widget(
+        tips,
+        Rect::new(area.x, area.y + top + brand_height, area.width, tips_height),
     );
 
     // 欢迎内容下方仍可显示重置提示，输入区始终由主布局固定在底部。

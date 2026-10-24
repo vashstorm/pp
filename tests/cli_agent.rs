@@ -403,6 +403,35 @@ fn slash_assert_portable(input: &[Value]) {
 }
 
 #[test]
+fn slash_tips_stays_local_without_creating_a_session() {
+    let server = server();
+    for available in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let models = if available {
+            fixture_models(&server)
+        } else {
+            "{}".into()
+        };
+        let mut cli = Cli::start_with(dir.path(), None, fixture_settings(), &models);
+        cli.input("/tips\n/tips extra\n/quit\n");
+        let output = cli.finish();
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains(
+                "/help for commands\n/model to choose a model\n/effort to set thinking\n"
+            ),
+            "{stderr}"
+        );
+        assert!(stderr.contains("Ctrl-J newline\nCtrl-C quit\n"), "{stderr}");
+        assert!(stderr.contains("usage: /tips"), "{stderr}");
+        assert!(!dir.path().join(".pp/agent/sessions").exists());
+    }
+    no_more(&server);
+}
+
+#[test]
 fn slash_local_commands_and_unavailable_help_never_request_models() {
     let a = server();
     let b = server();
@@ -3444,13 +3473,33 @@ mod tui {
         let dir = tempfile::tempdir().unwrap();
         let mut pty = Pty::start(&server, dir.path());
         pty.ready();
-        pty.text("Tip:");
+        pty.text("Tips:");
         let screen = pty.parser.screen();
         let text = screen.contents();
         let lines: Vec<_> = text.lines().collect();
         assert_eq!(lines[2].trim(), "█▀▀█  █▀▀█");
         assert_eq!(lines[2].find('█'), Some(45));
         assert_eq!(lines[7].trim(), concat!("v", env!("CARGO_PKG_VERSION")));
+        assert_eq!(lines[9], "Tips:");
+        for (row, tip) in [
+            "/help for commands",
+            "/model to choose a model",
+            "/effort to set thinking",
+            "Enter steer",
+            "Alt-Enter queue",
+            "Ctrl-Q pending messages",
+            "Ctrl-R resume queue",
+            "Shift-Tab thinking",
+            "Ctrl-P model",
+            "F1 help",
+            "Ctrl-J newline",
+            "Ctrl-C quit",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(lines[10 + row], tip);
+        }
         let context_start = lines[26].find(" ctx ").expect("用量显示在输入栏上沿");
         assert!(!lines[26][context_start..].contains('/'));
         assert!(!lines[26][context_start..].contains('%'));
@@ -3505,6 +3554,63 @@ mod tui {
         pty.input("/quit\r");
         pty.finish();
         no_more(&server);
+    }
+
+    #[test]
+    fn tui_tips_matches_startup_and_leaves_active_jsonl_unchanged() {
+        for protocol in ["completion", "response"] {
+            let server = server();
+            let (home, mut pty) = context_tui_start(&server, protocol, 100_000, 80);
+            pty.text("Tips:");
+            let startup = pty.parser.screen().contents();
+            let tips = startup
+                .lines()
+                .skip(10)
+                .take(12)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            assert_eq!(tips.last().unwrap(), "Ctrl-C quit");
+            pty.input("/tips\r");
+            pty.wait_for("本地提示展示完成", |screen| {
+                let text = screen.contents();
+                !text.contains("█▀▀█") && tips.iter().all(|tip| text.contains(tip))
+            });
+            assert!(!home.path().join(".pp/agent/sessions").exists());
+            context_tui_exchange(
+                &mut pty,
+                &server,
+                protocol,
+                "tips-first-task",
+                "tips-first-answer",
+            );
+            let files = resume_history_session_files(home.path());
+            assert_eq!(files.len(), 1);
+            let before = std::fs::read(&files[0]).unwrap();
+            // 先确认命令草稿可见，再以清空输入作为本次命令的处理栅栏。
+            pty.input("/tips");
+            pty.draft("/tips");
+            pty.input("\r");
+            pty.text("/help for commands");
+            pty.draft("");
+            assert_eq!(std::fs::read(&files[0]).unwrap(), before);
+            pty.input("tips-next-task\r");
+            let (request, body) = pty.request_at(&server, api_path(protocol));
+            assert_eq!(
+                cancel_user_messages(&body, protocol),
+                ["tips-first-task", "tips-next-task"]
+            );
+            assert!(!body.to_string().contains("/help for commands"));
+            if protocol == "completion" {
+                final_reply(request, "tips-next-answer");
+            } else {
+                response_final(request, "tips-next-answer");
+            }
+            pty.text("tips-next-answer");
+            pty.completed();
+            pty.input("/quit\r");
+            pty.finish();
+            no_more(&server);
+        }
     }
 
     #[test]
@@ -4355,8 +4461,9 @@ mod tui {
         pty.completed();
         pty.ready_model("vendor-a");
 
-        pty.input("/");
-        pty.draft("/");
+        // 用前缀锁定模型命令，避免依赖内置命令的固定排列位置。
+        pty.input("/m");
+        pty.draft("/m");
         pty.input("\x1b[B");
         pty.resize(4, 20);
         pty.resize(30, 100);

@@ -19,6 +19,12 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Show available commands",
     },
     CommandSpec {
+        name: "/tips",
+        icon: "\u{f0eb}",
+        usage: "/tips",
+        description: "Show startup tips without recording session history",
+    },
+    CommandSpec {
         name: "/model",
         icon: "\u{ec19}",
         usage: "/model [provider/model]",
@@ -91,6 +97,7 @@ pub(crate) enum PlanCommand {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command<'a> {
     Help,
+    Tips,
     New,
     Compact,
     Resume,
@@ -113,6 +120,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         .map_or((input, ""), |(name, argument)| (name, argument.trim()));
     let command = match name {
         "/help" => Command::Help,
+        "/tips" => Command::Tips,
         "/new" => Command::New,
         "/init" => Command::Prompt(crate::project_instructions::INIT_PROMPT.to_owned()),
         "/compact" => Command::Compact,
@@ -201,6 +209,7 @@ mod tests {
     fn slash_valid_commands_and_model_reference_boundaries() {
         for (input, expected) in [
             (" /help \n", Command::Help),
+            (" /tips ", Command::Tips),
             ("\t/new ", Command::New),
             (" /compact ", Command::Compact),
             (
@@ -235,7 +244,7 @@ mod tests {
             );
         }
         for command in [
-            "/help", "/new", "/init", "/compact", "/resume", "/tree", "/quit",
+            "/help", "/tips", "/new", "/init", "/compact", "/resume", "/tree", "/quit",
         ] {
             assert_eq!(
                 parse(&format!("{command} extra"), &FileCommands::default())

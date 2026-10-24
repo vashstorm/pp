@@ -58,7 +58,7 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nForeground bash has an execution timeout; managed background tasks survive tool calls and stop at this user task's end or controlled exit. Ctrl-C stops managed background groups, but cleanup of other foreground children is not guaranteed. No shell/file side-effect rollback; deliberately detached descendants are not covered.";
-// 运行中状态栏、欢迎页 KEYS 与 F1 帮助三处共享同一段提示，避免文案各自漂移。
+// 运行中状态栏与 F1 帮助共享同一段队列提示。
 const STEERING_HINT: &str =
     "Enter steer · Alt-Enter queue · Ctrl-Q pending messages · Ctrl-R resume queue";
 const SHORTCUTS_TAIL: &str = " · ↑↓ move/history/menu · Shift-Tab cycle thinking · Ctrl-S save selected model/effort as default in its menu · Ctrl-P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl-A/E line start/end · Ctrl-K delete to end of line · Ctrl-J newline · Ctrl-O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl-C quit";
@@ -2538,9 +2538,9 @@ impl App {
         }
         if matches!(self.state, State::ReviewingPlan) {
             match command {
-                // 退出与帮助不经过 worker；其余提交（含 steering/followup）
+                // 退出、帮助与提示不经过 worker；其余提交（含 steering/followup）
                 // 一律拒绝，草稿原样保留。
-                Some(Command::Quit) | Some(Command::Help) => {}
+                Some(Command::Quit | Command::Help | Command::Tips) => {}
                 _ => {
                     self.notify(
                         Level::Error,
@@ -2565,6 +2565,12 @@ impl App {
             }
             Some(Command::Help) => {
                 self.show_help();
+                self.remember_input();
+                self.clear_input();
+                return false;
+            }
+            Some(Command::Tips) => {
+                self.append("Tips", &crate::tips::text());
                 self.remember_input();
                 self.clear_input();
                 return false;
@@ -2702,7 +2708,7 @@ impl App {
                         self.clear_input();
                     }
                 }
-                Some(Command::Help | Command::Quit | Command::Skills(_)) => {
+                Some(Command::Help | Command::Tips | Command::Quit | Command::Skills(_)) => {
                     unreachable!()
                 }
                 // Plan 子命令在状态检查前已处理。
@@ -5232,7 +5238,11 @@ mod tests {
         let mut dirty = false;
         app.input.insert_str("/model");
         app.refresh_candidates(true);
-        assert_eq!(menu_values(&app), vec![MenuAction::Command(1)]);
+        let model_command = commands::COMMANDS
+            .iter()
+            .position(|spec| spec.name == "/model")
+            .unwrap();
+        assert_eq!(menu_values(&app), vec![MenuAction::Command(model_command)]);
         app.handle(key(KeyCode::Char(' ')), &mut dirty);
         let screen = draw(&mut app, 100, 30);
         assert!(screen.find("❯ /model").unwrap() < screen.find("fixture/model-0").unwrap());
