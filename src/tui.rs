@@ -1882,7 +1882,10 @@ impl App {
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
             || self.menu_dismissed
-            || !matches!(self.state, State::Ready | State::Unavailable)
+            || !matches!(
+                self.state,
+                State::Ready | State::Unavailable | State::SavingDefaultModel
+            )
         {
             self.file_query = None;
             self.menu = None;
@@ -1935,7 +1938,9 @@ impl App {
                 preferred = items.iter().position(|item| item.current).unwrap_or(0);
                 items
             }
-            Some(("/model", argument)) if matches!(self.state, State::Ready) => {
+            Some(("/model", argument))
+                if matches!(self.state, State::Ready | State::SavingDefaultModel) =>
+            {
                 let prefix = argument.trim();
                 let items: Vec<_> = self
                     .choices
@@ -1961,10 +1966,18 @@ impl App {
                             .is_some_and(|current| current.reference == choice.reference),
                     })
                     .collect();
+                let selected =
+                    self.menu.as_ref().filter(|_| !edited).and_then(|menu| {
+                        menu.selected_index().map(|index| menu.items()[index].value)
+                    });
                 preferred = items
                     .iter()
-                    .position(|item| {
-                        matches!(item.value, MenuAction::Model(index) if self.choices[index].reference == prefix)
+                    .position(|item| Some(item.value) == selected)
+                    .or_else(|| {
+                        items.iter().position(|item| match item.value {
+                            MenuAction::Model(index) => self.choices[index].reference == prefix,
+                            _ => false,
+                        })
                     })
                     .or_else(|| items.iter().position(|item| item.current))
                     .unwrap_or(0);
@@ -3091,12 +3104,9 @@ impl App {
                         };
                         if let Some((command, state)) = request
                             && self.send(command, state)
+                            && matches!(action, MenuAction::Effort(_))
                         {
-                            if self.model_picker_draft.is_some() {
-                                self.restore_model_picker_draft();
-                            } else {
-                                self.clear_input();
-                            }
+                            self.clear_input();
                         }
                     }
                     return false;

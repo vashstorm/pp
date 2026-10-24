@@ -5,7 +5,7 @@ fn effort_save_popup(screen: &vt100::Screen, message: &str) -> bool {
 }
 
 #[test]
-fn tui_model_ctrl_s_saves_selection_for_next_startup_and_restores_picker_draft() {
+fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();
@@ -33,8 +33,7 @@ fn tui_model_ctrl_s_saves_selection_for_next_startup_and_restores_picker_draft()
         pty.text("Default model saved: gateway/team/secondary");
         pty.ready_model("first-model");
         pty.ready_effort("high");
-        pty.draft("");
-        pty.input("/model ");
+        pty.draft("/model second");
         pty.text("gateway/team/secondary (default)");
         assert!(!pty.parser.screen().contents().contains("fixture/primary (default)"));
         pty.input("\x01\x0b");
@@ -74,6 +73,11 @@ fn tui_model_ctrl_s_saves_selection_for_next_startup_and_restores_picker_draft()
         restarted.input("\x1b[A\x13");
         restarted.text("Default model saved: fixture/primary");
         restarted.ready_model("second-model");
+        restarted.text("fixture/primary (default)");
+        restarted.draft("/model");
+        restarted.input("\t");
+        restarted.draft("/model fixture/primary");
+        restarted.input("\x1b");
         restarted.draft("草稿🙂");
         assert_eq!(restarted.parser.screen().cursor_position(), cursor);
         assert!(std::fs::read_to_string(&path).unwrap().contains("default_model: fixture/primary"));
@@ -84,6 +88,9 @@ fn tui_model_ctrl_s_saves_selection_for_next_startup_and_restores_picker_draft()
         assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary (default)"));
         restarted.input("\x13");
         restarted.text("Failed to save default model");
+        restarted.draft("/model");
+        restarted.text("fixture/primary (default)");
+        restarted.input("\x1b");
         restarted.draft("草稿🙂");
         restarted.input("\x10");
         restarted.text("fixture/primary (default)");
@@ -108,6 +115,9 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     pty.input("\x13");
     pty.text("Default model saved: fixture/primary");
     pty.ready_model("fixture-model");
+    pty.draft("/model");
+    pty.text("fixture/primary (default)");
+    pty.input("\x01\x0b");
     pty.draft("");
     assert!(std::fs::read_to_string(&path).unwrap().contains("default_model: fixture/primary"));
 
@@ -118,6 +128,9 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     pty.input("\x13");
     pty.text("Failed to save default model");
     pty.ready_model("fixture-model");
+    pty.draft("/model");
+    pty.text("fixture/primary (default)");
+    pty.input("\x1b");
     pty.draft("draft after failure");
     assert!(!pty.parser.screen().contents().contains("secret-marker-config"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
