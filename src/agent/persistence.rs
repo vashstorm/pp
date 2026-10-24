@@ -5,6 +5,7 @@ use super::Session;
 use crate::{
     config::{EditMode, ThinkLevel, ToolLimits},
     events::AgentEvent,
+    plan::{WorkMode, WorkflowState},
 };
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::{
@@ -14,7 +15,7 @@ use async_openai::types::{
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, SecondsFormat};
 use format::{
     Custom, CustomRef, Entry, EntryRef, Header, HeaderRef, Message, NativeAppend, NativeAppendRef,
-    Payload, PayloadRef, SavedMessage, StateRef,
+    Payload, PayloadRef, SavedMessage, StateRef, WorkflowRef,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -46,6 +47,9 @@ impl RestoredSession {
     pub(crate) fn edit_mode(&self) -> EditMode {
         self.checkpoint.edit_mode
     }
+    pub(crate) fn work_mode(&self) -> WorkMode {
+        self.checkpoint.workflow.mode
+    }
 }
 
 pub(super) struct Checkpoint {
@@ -59,6 +63,7 @@ pub(super) struct Checkpoint {
     pub(super) tool_limits: ToolLimits,
     pub(super) base_system: String,
     pub(super) session: Session,
+    pub(super) workflow: WorkflowState,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -266,6 +271,7 @@ impl SessionJournal {
         &mut self,
         metadata: &Metadata<'_>,
         session: SessionRef<'_>,
+        workflow: &WorkflowState,
     ) -> Result<()> {
         self.check()?;
         let Some(active) = &self.active else {
@@ -304,7 +310,7 @@ impl SessionJournal {
                 false,
             )?;
         }
-        self.write_state(metadata, session)?;
+        self.write_state(metadata, session, workflow)?;
         if first {
             self.record(
                 PayloadRef::ModelChange {
@@ -323,6 +329,7 @@ impl SessionJournal {
         &mut self,
         metadata: &Metadata<'_>,
         session: SessionRef<'_>,
+        workflow: &WorkflowState,
     ) -> Result<()> {
         self.check()?;
         ensure!(
@@ -331,55 +338,197 @@ impl SessionJournal {
                 .is_some_and(|active| active.header_written),
             "persisting session: missing session checkpoint"
         );
-        self.write_state(metadata, session)
+        self.write_state(metadata, session, workflow)
     }
 
-    fn write_state(&mut self, metadata: &Metadata<'_>, session: SessionRef<'_>) -> Result<()> {
-        self.write_tree_state(metadata, session, None)
+    fn write_state(
+        &mut self,
+        metadata: &Metadata<'_>,
+        session: SessionRef<'_>,
+        workflow: &WorkflowState,
+    ) -> Result<()> {
+        self.write_tree_state(metadata, session, workflow, None)
     }
 
     pub(super) fn write_tree_state(
         &mut self,
         metadata: &Metadata<'_>,
         session: SessionRef<'_>,
+        workflow: &WorkflowState,
         tree: Option<&tree::Selection>,
     ) -> Result<()> {
-        let mut state = StateRef::new(metadata, session);
+        let mut state = StateRef::new(metadata, session, workflow);
         state.tree = tree;
         // 导航失败时保留此前完整提交，避免半条或未同步的 state 在恢复时生效。
-        let rollback = if tree.is_some() {
-            self.active
-                .as_ref()
-                .map(|active| {
-                    active
-                        .file
-                        .metadata()
-                        .map(|m| active.truncate_to.unwrap_or(m.len()))
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        if let Err(error) = self.custom(CustomRef::State(state), true) {
-            if let Some(offset) = rollback
-                && let Some(active) = &mut self.active
-                && let Err(rollback) = active
-                    .file
-                    .set_len(offset)
-                    .and_then(|()| active.file.sync_data())
-            {
-                return Err(error.context(format!(
-                    "rolling back failed session tree navigation: {rollback}"
-                )));
-            }
-            return Err(error);
-        }
+        self.synced_custom(CustomRef::State(state))?;
         self.committed = session.len();
         self.model_reference.clear();
         self.model_reference.push_str(metadata.model_reference);
         self.capture_thinking = matches!(session, SessionRef::Completion(_));
         self.thinking.clear();
         self.pending_checkpoint = false;
+        Ok(())
+    }
+
+    /// Offset to truncate back to if a synced write group fails mid-way.
+    fn rollback_offset(&self) -> Result<Option<u64>> {
+        self.active
+            .as_ref()
+            .map(|active| {
+                active
+                    .file
+                    .metadata()
+                    .map(|m| active.truncate_to.unwrap_or(m.len()))
+            })
+            .transpose()
+            .context("reading session rollback boundary")
+    }
+
+    fn rollback_group(&mut self, offset: Option<u64>, error: anyhow::Error) -> anyhow::Error {
+        if let Some(offset) = offset
+            && let Some(active) = &mut self.active
+            && let Err(rollback) = active
+                .file
+                .set_len(offset)
+                .and_then(|()| active.file.sync_data())
+        {
+            // 回滚失败不改变已登记的持久化错误：重复失败必须返回同一信息。
+            eprintln!("Failed to roll back failed session state write: {rollback}");
+        }
+        error
+    }
+
+    /// Synced custom record commit: on failure truncate back to the previous
+    /// length and sync so no half-written or unsynced state can restore.
+    fn synced_custom(&mut self, custom: CustomRef<'_>) -> Result<()> {
+        let rollback = self.rollback_offset()?;
+        if let Err(error) = self.custom(custom, true) {
+            return Err(self.rollback_group(rollback, error));
+        }
+        Ok(())
+    }
+
+    /// Persist a workflow-only update (mode changes, approvals, revisions).
+    /// This is the transactional boundary for every permission grant.
+    pub(super) fn write_workflow(&mut self, workflow: &WorkflowState) -> Result<()> {
+        self.check()?;
+        if self.active.is_none() {
+            return Ok(());
+        }
+        self.synced_custom(CustomRef::Workflow(WorkflowRef {
+            version: 1,
+            workflow,
+        }))
+    }
+
+    /// A blank journal for a fresh-context execution; only the sessions
+    /// directory is shared with the planning session.
+    pub(super) fn fork_empty(&self) -> Self {
+        Self::new(self.dir.clone())
+    }
+
+    /// Test-only fault injection: swap the active descriptor for a read-only
+    /// one so subsequent synced writes fail deterministically, even as root.
+    #[cfg(test)]
+    pub(super) fn use_read_only_file(&mut self, path: &Path) {
+        self.active.as_mut().expect("active journal").file = File::open(path).unwrap();
+    }
+
+    /// Commit the approved plan execution handoff: the user projection and the
+    /// native state (which already contains the user message) form one atomic
+    /// group. Failure rolls both back and never reports a running task.
+    pub(super) fn commit_plan_execution(
+        &mut self,
+        metadata: &Metadata<'_>,
+        session: SessionRef<'_>,
+        workflow: &WorkflowState,
+        prompt: &str,
+    ) -> Result<()> {
+        self.check()?;
+        self.ensure_active()?;
+        let rollback = self.rollback_offset()?;
+        let result = (|| -> Result<()> {
+            let first = !self
+                .active
+                .as_ref()
+                .expect("active journal after ensure_active")
+                .header_written;
+            if first {
+                let active = self.active.as_ref().expect("active journal checked");
+                let timestamp = timestamp(active.created_at_ms)?;
+                self.buffer.clear();
+                let serialized = serde_json::to_writer(
+                    &mut self.buffer,
+                    &HeaderRef {
+                        kind: "session",
+                        version: 3,
+                        id: &active.id,
+                        timestamp: &timestamp,
+                        cwd: metadata.cwd,
+                    },
+                );
+                self.append_serialized(serialized, false)?;
+                self.active
+                    .as_mut()
+                    .expect("active journal checked")
+                    .header_written = true;
+            }
+            let timestamp = now_ms()?;
+            self.record(
+                PayloadRef::Message {
+                    message: &Message::User {
+                        content: prompt,
+                        timestamp,
+                    },
+                },
+                true,
+            )?;
+            self.write_state(metadata, session, workflow)?;
+            if first {
+                self.record(
+                    PayloadRef::ModelChange {
+                        model: metadata.model_reference,
+                        role: "default",
+                    },
+                    false,
+                )?;
+                self.think(metadata.think_level)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            return Err(self.rollback_group(rollback, error));
+        }
+        Ok(())
+    }
+
+    fn ensure_active(&mut self) -> Result<()> {
+        if self.active.is_some() {
+            return Ok(());
+        }
+        let created = (|| {
+            let created_at_ms = now_ms()?;
+            DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&self.dir)
+                .context("creating session directory")?;
+            create(&self.dir, created_at_ms, || {
+                let mut random = [0; 16];
+                getrandom::fill(&mut random)
+                    .map_err(|_| anyhow::anyhow!("session OS random source failed"))?;
+                Ok(random)
+            })
+        })();
+        self.active = Some(match created {
+            Ok(active) => active,
+            Err(error) => {
+                let message = format!("persisting session: {error:#}");
+                self.first_error = Some(message.clone());
+                bail!("{message}");
+            }
+        });
+        self.notice = self.id().map(str::to_owned);
         Ok(())
     }
 
@@ -413,37 +562,19 @@ impl SessionJournal {
         &mut self,
         metadata: &Metadata<'_>,
         session: SessionRef<'_>,
+        workflow: &WorkflowState,
         user: Option<&str>,
         instructions: Option<&str>,
     ) -> Result<()> {
         self.check()?;
-        if self.active.is_none() {
-            let created = (|| {
-                let created_at_ms = now_ms()?;
-                DirBuilder::new()
-                    .recursive(true)
-                    .mode(0o700)
-                    .create(&self.dir)
-                    .context("creating session directory")?;
-                create(&self.dir, created_at_ms, || {
-                    let mut random = [0; 16];
-                    getrandom::fill(&mut random)
-                        .map_err(|_| anyhow::anyhow!("session OS random source failed"))?;
-                    Ok(random)
-                })
-            })();
-            self.active = Some(match created {
-                Ok(active) => active,
-                Err(error) => {
-                    let message = format!("persisting session: {error:#}");
-                    self.first_error = Some(message.clone());
-                    bail!("{message}");
-                }
-            });
-            self.notice = self.id().map(str::to_owned);
-            self.checkpoint(metadata, session)?;
-        } else if self.pending_checkpoint {
-            self.checkpoint(metadata, session)?;
+        self.ensure_active()?;
+        let first = !self
+            .active
+            .as_ref()
+            .expect("active journal after ensure_active")
+            .header_written;
+        if self.pending_checkpoint || first {
+            self.checkpoint(metadata, session, workflow)?;
         } else {
             if let Some(system) = instructions {
                 self.custom(CustomRef::Instructions { system }, false)?;
@@ -545,6 +676,7 @@ impl SessionJournal {
         if matches!(
             event,
             AgentEvent::ContextUpdated { .. }
+                | AgentEvent::PlanProgressUpdated { .. }
                 | AgentEvent::CompactionStarted { .. }
                 | AgentEvent::CompactionFinished { .. }
                 | AgentEvent::UserInputAccepted { .. }
@@ -1082,9 +1214,20 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
                         tool_limits: state.tool_limits,
                         base_system: state.base_system,
                         session: state.session,
+                        workflow: state.workflow,
                     };
                     validate_checkpoint(&saved, &id)?;
                     checkpoint = Some(saved);
+                }
+                Payload::Custom {
+                    custom: Custom::Workflow(record),
+                } => {
+                    ensure!(record.version == 1, "unsupported saved workflow version");
+                    record.workflow.validate()?;
+                    let state = checkpoint
+                        .as_mut()
+                        .context("state change before pp session state")?;
+                    state.workflow = record.workflow;
                 }
                 Payload::Custom {
                     custom: Custom::Instructions { system },
@@ -1245,6 +1388,7 @@ fn validate_checkpoint(saved: &Checkpoint, id: &str) -> Result<()> {
         "invalid saved model reference"
     );
     saved.tool_limits.validate()?;
+    saved.workflow.validate()?;
     match &saved.session {
         Session::Completion(request) => {
             ensure!(!request.model.is_empty(), "missing native model");
@@ -1546,7 +1690,13 @@ mod tests {
             };
             let mut journal = SessionJournal::new(dir.path().to_owned());
             journal
-                .sent(&metadata, (&session).into(), Some("user"), None)
+                .sent(
+                    &metadata,
+                    (&session).into(),
+                    &WorkflowState::default(),
+                    Some("user"),
+                    None,
+                )
                 .unwrap();
             let id = journal.id().unwrap().to_owned();
             let path = dir.path().join(format!("{id}.jsonl"));
@@ -1596,7 +1746,13 @@ mod tests {
             };
             let mut journal = SessionJournal::new(dir.path().to_owned());
             journal
-                .sent(&metadata, (&session).into(), Some("user"), None)
+                .sent(
+                    &metadata,
+                    (&session).into(),
+                    &WorkflowState::default(),
+                    Some("user"),
+                    None,
+                )
                 .unwrap();
             journal
                 .record(
@@ -1726,7 +1882,13 @@ mod tests {
             };
             agent
                 .journal
-                .sent(&metadata, (&agent.session).into(), None, None)
+                .sent(
+                    &metadata,
+                    (&agent.session).into(),
+                    &WorkflowState::default(),
+                    None,
+                    None,
+                )
                 .unwrap();
             let id = agent.session_id().unwrap().to_owned();
             let path = agent.journal.dir.join(format!("{id}.jsonl"));
@@ -1838,7 +2000,13 @@ mod tests {
             };
             agent
                 .journal
-                .sent(&metadata, (&agent.session).into(), None, None)
+                .sent(
+                    &metadata,
+                    (&agent.session).into(),
+                    &WorkflowState::default(),
+                    None,
+                    None,
+                )
                 .unwrap();
             let path = agent
                 .journal
@@ -1914,7 +2082,13 @@ mod tests {
         };
         let mut journal = SessionJournal::new(blocked.clone());
         let error = journal
-            .sent(&metadata, (&session).into(), Some("task"), None)
+            .sent(
+                &metadata,
+                (&session).into(),
+                &WorkflowState::default(),
+                Some("task"),
+                None,
+            )
             .unwrap_err()
             .to_string();
         assert!(error.contains("persisting session"));
@@ -1942,7 +2116,13 @@ mod tests {
         };
         let mut journal = SessionJournal::new(dir.path().to_owned());
         journal
-            .sent(&metadata, (&session).into(), None, None)
+            .sent(
+                &metadata,
+                (&session).into(),
+                &WorkflowState::default(),
+                None,
+                None,
+            )
             .unwrap();
         let id = journal.id().unwrap().to_owned();
         assert!(
@@ -1968,5 +2148,434 @@ mod tests {
             .unwrap();
         let error = load(dir.path(), Some(&id), false).err().unwrap();
         assert!(format!("{error:#}").contains(&format!("line {next_line}")));
+    }
+
+    fn plan_workflow() -> WorkflowState {
+        WorkflowState {
+            mode: WorkMode::Plan,
+            plan: Some(crate::plan::PlanDocument {
+                id: "0123456789abcdef0123456789abcdef".into(),
+                revision: 1,
+                title: "Create file".into(),
+                content: "- [ ] Create hello.txt; done when bytes match.\n".into(),
+                status: crate::plan::PlanStatus::Ready,
+                origin_prompt: "Create hello.txt".into(),
+            }),
+            review: None,
+        }
+    }
+
+    fn test_metadata(dir: &std::path::Path) -> Metadata<'_> {
+        Metadata {
+            cwd: dir,
+            model_reference: "fixture/primary",
+            think_level: ThinkLevel::None,
+            edit_mode: EditMode::Replace,
+            tool_limits: ToolLimits::default(),
+            base_system: "system",
+        }
+    }
+
+    fn rewrite_records(path: &Path, mutate: impl Fn(&mut serde_json::Value)) {
+        let mut out = String::new();
+        for line in fs::read_to_string(path).unwrap().lines() {
+            let mut record: serde_json::Value = serde_json::from_str(line).unwrap();
+            mutate(&mut record);
+            if record.is_null() {
+                continue;
+            }
+            out.push_str(&record.to_string());
+            out.push('\n');
+        }
+        fs::write(path, out).unwrap();
+    }
+
+    fn read_only(path: &Path, journal: &mut SessionJournal) {
+        journal.use_read_only_file(path);
+    }
+
+    #[test]
+    fn workflow_state_survives_restore_without_moving_native_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = test_metadata(dir.path());
+        let mut session = Session::new(
+            "fixture".into(),
+            Protocol::Response,
+            "system".into(),
+            EditMode::Replace,
+        );
+        session.set_think_level(ThinkLevel::None);
+        super::super::response_input(match &mut session {
+            Session::Response(request) => request,
+            _ => unreachable!(),
+        })
+        .push(
+            serde_json::from_value(serde_json::json!({"role":"user","content":"plan task"}))
+                .unwrap(),
+        );
+        let workflow = plan_workflow();
+        let mut journal = SessionJournal::new(dir.path().to_owned());
+        journal
+            .sent(
+                &metadata,
+                (&session).into(),
+                &workflow,
+                Some("plan task"),
+                None,
+            )
+            .unwrap();
+        let id = journal.id().unwrap().to_owned();
+        let path = dir.path().join(format!("{id}.jsonl"));
+        let before = fs::read(&path).unwrap();
+        let nodes_before = journal.tree().unwrap().nodes.len();
+
+        // Workflow-only updates append their own strict versioned record and
+        // never touch native history or the logical tree.
+        let mut updated = workflow.clone();
+        updated.plan.as_mut().unwrap().revision = 2;
+        updated.plan.as_mut().unwrap().content = "- [x] Create hello.txt\n".into();
+        journal.write_workflow(&updated).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""customType":"pp.workflow""#));
+        assert!(text.contains(r#""version":1"#));
+        assert!(fs::read(&path).unwrap().starts_with(&before));
+        assert_eq!(journal.tree().unwrap().nodes.len(), nodes_before);
+        drop(journal);
+
+        let restored = load(dir.path(), Some(&id), true).unwrap();
+        assert_eq!(restored.work_mode(), WorkMode::Plan);
+        assert_eq!(restored.checkpoint.workflow, updated);
+        assert!(
+            matches!(restored.replay.as_slice(), [ReplayRecord::User(text)] if text == "plan task")
+        );
+        // The workflow record is not a replay action and does not move the
+        // native cursor or the restore checkpoint's native history.
+        assert_eq!(
+            serde_json::to_value(&restored.checkpoint.session).unwrap(),
+            serde_json::to_value(&session).unwrap()
+        );
+        assert_eq!(
+            restored.journal.committed,
+            SessionRef::from(&restored.checkpoint.session).len()
+        );
+
+        drop(restored);
+        // A state record without a workflow field restores as Execute/None.
+        rewrite_records(&path, |record| {
+            if record["customType"] == "pp.session_state" {
+                record["data"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("workflow")
+                    .expect("state embeds workflow");
+            }
+            if record["customType"] == "pp.workflow" {
+                *record = serde_json::Value::Null;
+            }
+        });
+        let restored = load(dir.path(), Some(&id), false).unwrap();
+        assert_eq!(restored.checkpoint.workflow, WorkflowState::default());
+        assert_eq!(restored.work_mode(), WorkMode::Execute);
+    }
+
+    #[test]
+    fn workflow_records_fail_closed_on_version_unknown_fields_and_privilege() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = test_metadata(dir.path());
+        let session = Session::new(
+            "fixture".into(),
+            Protocol::Completion,
+            "system".into(),
+            EditMode::Replace,
+        );
+        let mut journal = SessionJournal::new(dir.path().to_owned());
+        journal
+            .sent(
+                &metadata,
+                (&session).into(),
+                &WorkflowState::default(),
+                None,
+                None,
+            )
+            .unwrap();
+        let id = journal.id().unwrap().to_owned();
+        let path = dir.path().join(format!("{id}.jsonl"));
+        drop(journal);
+
+        let mut ready = plan_workflow();
+        ready.plan.as_mut().unwrap().content = "sensitive-plan-body".into();
+        let ready_json = serde_json::to_value(&ready).unwrap();
+        let base = fs::read_to_string(&path).unwrap();
+        let records = [
+            (
+                serde_json::json!({"type":"custom", "customType":"pp.workflow",
+                    "data":{"version":2, "workflow":{"mode":"execute", "plan":null, "review":null}}}),
+                ("unsupported saved workflow version", None),
+            ),
+            (
+                serde_json::json!({"type":"custom", "customType":"pp.workflow",
+                    "data":{"version":1, "workflow":{"mode":"plan", "plan":null, "review":null}, "extra":1}}),
+                ("invalid session record", None),
+            ),
+            (
+                serde_json::json!({"type":"custom", "customType":"pp.workflow",
+                    "data":{"version":1, "workflow":{"mode":"admin", "plan":null, "review":null}}}),
+                ("invalid session record", None),
+            ),
+            (
+                serde_json::json!({"type":"custom", "customType":"pp.workflow",
+                    "data":{"version":1, "workflow":{"mode":"execute", "plan":ready_json["plan"], "review":null}}}),
+                ("Invalid saved workflow state.", Some("sensitive-plan-body")),
+            ),
+        ];
+        for (mut record, (expected, secret)) in records {
+            let entries: Vec<serde_json::Value> = base
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            record["id"] = serde_json::json!("workflow-corruption");
+            record["parentId"] = entries.last().unwrap()["id"].clone();
+            record["timestamp"] = entries[0]["timestamp"].clone();
+            fs::write(&path, format!("{base}{record}\n")).unwrap();
+            let error = format!("{:#}", load(dir.path(), Some(&id), false).err().unwrap());
+            assert!(error.contains(expected), "{expected}: {error}");
+            if let Some(secret) = secret {
+                assert!(!error.contains(secret), "leaked saved content: {error}");
+            }
+        }
+
+        // Corrupted embedded workflow inside pp.session_state also fails closed.
+        rewrite_records(&path, |record| {
+            if record["customType"] == "pp.session_state" {
+                record["data"]["workflow"] = serde_json::json!({"mode":"admin"});
+            }
+            if record["customType"] == "pp.workflow" {
+                *record = serde_json::Value::Null;
+            }
+        });
+        let error = format!("{:#}", load(dir.path(), Some(&id), false).err().unwrap());
+        assert!(error.contains("invalid session record"), "{error}");
+    }
+
+    #[test]
+    fn failed_workflow_sync_rolls_back_and_blocks_until_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = test_metadata(dir.path());
+        let session = Session::new(
+            "fixture".into(),
+            Protocol::Completion,
+            "system".into(),
+            EditMode::Replace,
+        );
+        let mut journal = SessionJournal::new(dir.path().to_owned());
+        journal
+            .sent(
+                &metadata,
+                (&session).into(),
+                &WorkflowState::default(),
+                None,
+                None,
+            )
+            .unwrap();
+        let path = dir.path().join(format!("{}.jsonl", journal.id().unwrap()));
+        let id = journal.id().unwrap().to_owned();
+        let mut updated = plan_workflow();
+        updated.plan.as_mut().unwrap().revision = 3;
+        journal.write_workflow(&updated).unwrap();
+        let mut next = plan_workflow();
+        next.plan.as_mut().unwrap().revision = 4;
+        let before = fs::read(&path).unwrap();
+
+        // A read-only descriptor deterministically rejects writes even as root;
+        // the failed sync must neither grant the newer revision nor corrupt the
+        // file, and the last successfully synced state still restores.
+        read_only(&path, &mut journal);
+        let error = journal.write_workflow(&next).unwrap_err().to_string();
+        assert!(error.contains("persisting session"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(journal.check().is_err());
+        drop(journal);
+        let restored = load(dir.path(), Some(&id), false).unwrap();
+        assert_eq!(restored.work_mode(), WorkMode::Plan);
+        assert_eq!(
+            restored.checkpoint.workflow.plan.as_ref().unwrap().revision,
+            3
+        );
+    }
+
+    #[test]
+    fn commit_plan_execution_commits_projection_and_state_atomically() {
+        for protocol in [Protocol::Completion, Protocol::Response] {
+            let dir = tempfile::tempdir().unwrap();
+            let metadata = test_metadata(dir.path());
+            let workflow = plan_workflow();
+            let mut session = Session::new(
+                "fixture".into(),
+                protocol,
+                "system".into(),
+                EditMode::Replace,
+            );
+            match &mut session {
+                Session::Completion(request) => request.messages.push(
+                    serde_json::from_value(serde_json::json!(
+                        {"role":"user", "content":"implement the approved plan"}
+                    ))
+                    .unwrap(),
+                ),
+                Session::Response(request) => {
+                    let input = super::super::response_input(request);
+                    input.push(
+                        serde_json::from_value(serde_json::json!(
+                            {"role":"user", "content":"implement the approved plan"}
+                        ))
+                        .unwrap(),
+                    );
+                }
+            }
+            session.set_think_level(ThinkLevel::None);
+            let mut journal = SessionJournal::new(dir.path().to_owned());
+            journal
+                .commit_plan_execution(
+                    &metadata,
+                    (&session).into(),
+                    &workflow,
+                    "implement the approved plan",
+                )
+                .unwrap();
+            let id = journal.id().unwrap().to_owned();
+            assert_eq!(journal.take_notice().as_deref(), Some(id.as_str()));
+            let path = dir.path().join(format!("{id}.jsonl"));
+            let text = fs::read_to_string(&path).unwrap();
+            let first: serde_json::Value =
+                serde_json::from_str(text.lines().next().unwrap()).unwrap();
+            assert_eq!(first["type"], "session");
+            drop(journal);
+            let restored = load(dir.path(), Some(&id), true).unwrap();
+            assert_eq!(restored.work_mode(), WorkMode::Plan);
+            assert_eq!(restored.checkpoint.workflow, workflow);
+            // The user projection appears exactly once; the native history
+            // already contains the same message at the sync commit point.
+            assert!(
+                matches!(restored.replay.as_slice(), [ReplayRecord::User(text)] if text == "implement the approved plan")
+            );
+            assert_eq!(
+                serde_json::to_value(&restored.checkpoint.session).unwrap(),
+                serde_json::to_value(&session).unwrap()
+            );
+            assert_eq!(
+                restored.journal.committed,
+                SessionRef::from(&restored.checkpoint.session).len()
+            );
+
+            // fork_empty shares only the sessions directory.
+            let mut planner = SessionJournal::new(dir.path().to_owned());
+            planner
+                .sent(
+                    &metadata,
+                    (&session).into(),
+                    &WorkflowState::default(),
+                    None,
+                    None,
+                )
+                .unwrap();
+            let planned_id = planner.id().unwrap().to_owned();
+            let planned_path = dir.path().join(format!("{planned_id}.jsonl"));
+            let planned_before = fs::read(&planned_path).unwrap();
+            let mut forked = planner.fork_empty();
+            assert!(forked.id().is_none());
+            forked
+                .commit_plan_execution(
+                    &metadata,
+                    (&session).into(),
+                    &workflow,
+                    "implement the approved plan",
+                )
+                .unwrap();
+            let forked_id = forked.id().unwrap().to_owned();
+            assert_ne!(forked_id, planned_id);
+            drop(forked);
+            // The planning journal and its file are untouched by the fork.
+            assert_eq!(fs::read(&planned_path).unwrap(), planned_before);
+        }
+    }
+
+    #[test]
+    fn commit_plan_execution_failure_rolls_back_the_whole_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = test_metadata(dir.path());
+        let mut session = Session::new(
+            "fixture".into(),
+            Protocol::Response,
+            "system".into(),
+            EditMode::Replace,
+        );
+        let mut journal = SessionJournal::new(dir.path().to_owned());
+        journal
+            .sent(
+                &metadata,
+                (&session).into(),
+                &WorkflowState::default(),
+                Some("first"),
+                None,
+            )
+            .unwrap();
+        let path = dir.path().join(format!("{}.jsonl", journal.id().unwrap()));
+        let id = journal.id().unwrap().to_owned();
+        if let Session::Response(request) = &mut session {
+            super::super::response_input(request).push(
+                serde_json::from_value(
+                    serde_json::json!({"role":"user", "content":"implement the approved plan"}),
+                )
+                .unwrap(),
+            );
+        }
+        let before = fs::read(&path).unwrap();
+        read_only(&path, &mut journal);
+        let error = journal
+            .commit_plan_execution(
+                &metadata,
+                (&session).into(),
+                &plan_workflow(),
+                "implement the approved plan",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("persisting session"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(journal.check().is_err());
+        drop(journal);
+        let restored = load(dir.path(), Some(&id), true).unwrap();
+        // Neither the execution projection nor the workflow grant survived.
+        assert!(
+            matches!(restored.replay.as_slice(), [ReplayRecord::User(text)] if text == "first")
+        );
+        assert_eq!(restored.work_mode(), WorkMode::Execute);
+        assert!(restored.checkpoint.workflow.plan.is_none());
+    }
+
+    #[test]
+    fn commit_plan_execution_creation_failure_is_latched_without_a_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("sessions");
+        fs::write(&blocked, "not a directory").unwrap();
+        let session = Session::new(
+            "fixture".into(),
+            Protocol::Response,
+            "system".into(),
+            EditMode::Replace,
+        );
+        let mut journal = SessionJournal::new(blocked.clone());
+        let error = journal
+            .commit_plan_execution(
+                &test_metadata(dir.path()),
+                (&session).into(),
+                &plan_workflow(),
+                "implement the approved plan",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("persisting session"), "{error}");
+        assert!(journal.id().is_none());
+        assert_eq!(fs::read_to_string(blocked).unwrap(), "not a directory");
     }
 }

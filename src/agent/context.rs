@@ -14,6 +14,7 @@ use crate::{
     context::estimate_tokens,
     events::AgentEvent,
     llm::{CompletionTurn, OpenAiClient, ResponseTurn},
+    plan::WorkflowState,
 };
 use anyhow::{Result, bail, ensure};
 use async_openai::types::{
@@ -421,6 +422,7 @@ fn compact_completion(
     client: &mut OpenAiClient,
     request: &mut CreateChatCompletionRequest,
     journal: &mut SessionJournal,
+    workflow: &WorkflowState,
     metadata: &Metadata<'_>,
     spec: &SummarySpec<'_>,
     cancellation: &CancellationToken,
@@ -487,7 +489,9 @@ fn compact_completion(
         }
         return Ok(CompactionOutcome::Unchanged);
     }
-    if let Err(error) = journal.replace_history(metadata, SessionRef::Completion(&*request)) {
+    if let Err(error) =
+        journal.replace_history(metadata, SessionRef::Completion(&*request), workflow)
+    {
         rollback_completion(request, prefix);
         return Err(error);
     }
@@ -504,6 +508,7 @@ fn compact_response(
     client: &mut OpenAiClient,
     request: &mut CreateResponse,
     journal: &mut SessionJournal,
+    workflow: &WorkflowState,
     metadata: &Metadata<'_>,
     spec: &SummarySpec<'_>,
     cancellation: &CancellationToken,
@@ -569,7 +574,8 @@ fn compact_response(
         }
         return Ok(CompactionOutcome::Unchanged);
     }
-    if let Err(error) = journal.replace_history(metadata, SessionRef::Response(&*request)) {
+    if let Err(error) = journal.replace_history(metadata, SessionRef::Response(&*request), workflow)
+    {
         rollback_response(request, prefix);
         return Err(error);
     }
@@ -665,6 +671,7 @@ impl Agent {
                 &mut self.client,
                 request,
                 &mut self.journal,
+                &self.workflow,
                 &metadata,
                 &spec,
                 cancellation,
@@ -673,6 +680,7 @@ impl Agent {
                 &mut self.client,
                 request,
                 &mut self.journal,
+                &self.workflow,
                 &metadata,
                 &spec,
                 cancellation,

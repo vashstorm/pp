@@ -45,6 +45,11 @@ pub(crate) enum DiffLineKind {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentEvent {
+    PlanProgressUpdated {
+        plan_id: String,
+        revision: u64,
+        content: String,
+    },
     ContextUpdated {
         usage: crate::context::ContextUsage,
     },

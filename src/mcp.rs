@@ -137,17 +137,55 @@ impl Registry {
         Ok(Cleanup { processes })
     }
 
-    pub(crate) fn connect(configs: &BTreeMap<String, ServerConfig>, cwd: &Path) -> Result<Self> {
+    // 连接可被调用方的 token 取消：每次 spawn 前和 discovery 全程检查；
+    // 取消不自动重试，由调用方决定是否再次 connect。
+    pub(crate) fn connect(
+        configs: &BTreeMap<String, ServerConfig>,
+        cwd: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<Self> {
         validate_config(configs)?;
         let mut registry = Self::default();
-        // 启动连接不属于任何任务，使用新建未触发 token。
-        let cancellation = CancellationToken::new();
         for (name, config) in configs {
-            registry
-                .add_server(name, config, cwd, &cancellation)
-                .with_context(|| format!("connecting MCP server {name}"))?;
+            if let Err(error) = registry
+                .add_server(name, config, cwd, cancellation)
+                .with_context(|| format!("connecting MCP server {name}"))
+            {
+                return match registry.shutdown() {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => {
+                        Err(cleanup.context(format!("Connection also failed: {error:#}")))
+                    }
+                };
+            }
         }
         Ok(registry)
+    }
+
+    // 显式停止全部服务：逐一 stop 并检查结果，任何失败都保留 registry/slot
+    // 并返回聚合的 typed 清理错误；全部确认回收后才清空 registry，
+    // 保证 Cleanup 快照始终覆盖当前真实进程。
+    pub(crate) fn shutdown(&mut self) -> Result<()> {
+        let mut failures = 0usize;
+        let mut detail = String::new();
+        for (name, state) in &self.servers {
+            let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+            if let Err(error) = state.client.stop() {
+                failures += 1;
+                if !detail.is_empty() {
+                    detail.push_str("; ");
+                }
+                detail.push_str(name);
+                detail.push_str(": ");
+                detail.push_str(&format!("{error:#}"));
+            }
+        }
+        if failures == 0 {
+            self.servers.clear();
+            self.tools.clear();
+            return Ok(());
+        }
+        Err(CleanupError(anyhow::anyhow!("{detail}")).into())
     }
 
     fn add_server(
@@ -157,12 +195,26 @@ impl Registry {
         cwd: &Path,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        cancellation::check(cancellation)?;
         let process: SharedProcess = Arc::new(Mutex::new(ProcessSlot {
             child: None,
             closing: false,
         }));
         let mut client = Client::spawn(config, cwd, process)?;
-        let tools = discover(&mut client, server, cancellation)?;
+        let tools = match discover(&mut client, server, cancellation) {
+            Ok(tools) => tools,
+            Err(error) => {
+                // 初始化失败不依赖 Drop 的尽力回收：显式停止；停止失败时合并
+                // 原始错误；任何停止失败均升级为 typed 清理错误。
+                return Err(match client.stop() {
+                    Ok(()) => error,
+                    Err(stop_error) => CleanupError(
+                        stop_error.context(format!("Initialization also failed: {error:#}")),
+                    )
+                    .into(),
+                });
+            }
+        };
         for name in tools.keys() {
             ensure!(!self.tools.contains_key(name), "duplicate MCP tool name");
         }
@@ -598,8 +650,12 @@ impl Client {
     fn stop(&mut self) -> Result<()> {
         if !self.stopped {
             self.input.take();
+            // 仅在确认回收成功后置 stopped；失败保留 slot 供重试，
+            // 避免 shutdown 重试或退出清理误报成功。
             let result = stop_process(&self.process);
-            self.stopped = true;
+            if result.is_ok() {
+                self.stopped = true;
+            }
             result
         } else {
             Ok(())
@@ -746,5 +802,169 @@ mod tests {
         assert_eq!(format!("{error:#}"), "MCP process is still running");
         stop_process(&process).unwrap();
         assert!(process.lock().unwrap().child.is_none());
+    }
+
+    fn plan_server_config(args: &[&str]) -> ServerConfig {
+        ServerConfig {
+            command: "bash".into(),
+            args: args.iter().map(|arg| (*arg).into()).collect(),
+            env: BTreeMap::new(),
+            timeout_seconds: 1,
+        }
+    }
+
+    fn plan_spawn_registry_client(config: &ServerConfig) -> (Client, SharedProcess) {
+        let process: SharedProcess = Arc::new(Mutex::new(ProcessSlot {
+            child: None,
+            closing: false,
+        }));
+        let client = Client::spawn(config, Path::new("."), process.clone()).unwrap();
+        (client, process)
+    }
+
+    fn plan_register(registry: &mut Registry, name: &str, client: Client) {
+        registry.servers.insert(
+            name.into(),
+            Mutex::new(ServerState {
+                config: plan_server_config(&["-c", "true"]),
+                cwd: PathBuf::from("."),
+                client,
+                restart_after_cancel: false,
+            }),
+        );
+        registry.tools.insert(
+            format!("mcp__{name}__tool"),
+            RemoteTool {
+                server: name.into(),
+                original_name: "tool".into(),
+                definition: FunctionObject {
+                    name: format!("mcp__{name}__tool"),
+                    description: None,
+                    parameters: None,
+                    strict: Some(false),
+                },
+            },
+        );
+    }
+
+    #[test]
+    fn plan_mcp_shutdown_stops_all_clients_and_clears_registry() {
+        let mut registry = Registry::default();
+        let mut processes = Vec::new();
+        for name in ["a", "b"] {
+            let (client, process) =
+                plan_spawn_registry_client(&plan_server_config(&["-c", "sleep 30"]));
+            plan_register(&mut registry, name, client);
+            processes.push(process);
+        }
+        registry.shutdown().unwrap();
+        assert!(registry.servers.is_empty() && registry.tools.is_empty());
+        for process in &processes {
+            // 全部进程组已被回收，slot 不再持有句柄。
+            assert!(process.lock().unwrap().child.is_none());
+        }
+        // 清空后重复 shutdown 仍是成功，不误报。
+        registry.shutdown().unwrap();
+    }
+
+    #[test]
+    fn plan_mcp_shutdown_failure_retains_registry_and_retry_does_not_fake_success() {
+        let mut registry = Registry::default();
+        let (healthy, healthy_process) =
+            plan_spawn_registry_client(&plan_server_config(&["-c", "sleep 30"]));
+        plan_register(&mut registry, "a", healthy);
+        let (faulty, faulty_process) =
+            plan_spawn_registry_client(&plan_server_config(&["-c", "true"]));
+        plan_register(&mut registry, "b", faulty);
+
+        // 故障注入：外部先回收子进程，使后续 kill/wait 无法确认回收。
+        let pid = faulty_process.lock().unwrap().child.as_ref().unwrap().id() as i32;
+        waitid(
+            WaitId::Pid(Pid::from_raw(pid).expect("test child has a pid")),
+            WaitIdOptions::EXITED,
+        )
+        .unwrap();
+        assert!(faulty_process.lock().unwrap().child.is_some());
+
+        let error = registry.shutdown().err().unwrap();
+        // 聚合错误保持 typed CleanupError，且逐服务保留明细。
+        assert!(error.downcast_ref::<CleanupError>().is_some());
+        assert!(format!("{error:#}").contains("b: stopping MCP process failed"));
+        // 任一失败保留整个 registry/slot。
+        assert_eq!(registry.servers.len(), 2);
+        assert_eq!(registry.tools.len(), 2);
+        assert_eq!(registry.cleanup().unwrap().processes.len(), 2);
+        // 重试不假成功：故障未清除前 shutdown 仍失败。
+        assert!(registry.shutdown().is_err());
+        assert!(!registry.servers.is_empty() && !registry.tools.is_empty());
+
+        // 故障清除后（句柄回收完成）重试才真正成功并清空 registry。
+        faulty_process.lock().unwrap().child.take();
+        registry.shutdown().unwrap();
+        assert!(registry.servers.is_empty() && registry.tools.is_empty());
+        assert!(healthy_process.lock().unwrap().child.is_none());
+    }
+
+    #[test]
+    fn plan_mcp_client_stop_stays_unstopped_until_reclaim_succeeds() {
+        let (mut client, process) =
+            plan_spawn_registry_client(&plan_server_config(&["-c", "true"]));
+        let pid = process.lock().unwrap().child.as_ref().unwrap().id() as i32;
+        waitid(
+            WaitId::Pid(Pid::from_raw(pid).expect("test child has a pid")),
+            WaitIdOptions::EXITED,
+        )
+        .unwrap();
+        assert!(client.stop().is_err());
+        assert!(!client.stopped);
+        // 停止失败保留未回收句柄，重试不假成功。
+        assert!(process.lock().unwrap().child.is_some());
+        assert!(client.stop().is_err());
+
+        // 回收成功后 stopped 才置位，重复 stop 幂等成功。
+        process.lock().unwrap().child.take();
+        client.stop().unwrap();
+        assert!(client.stopped);
+        assert!(client.stop().is_ok());
+    }
+
+    #[test]
+    fn plan_mcp_connect_cancelled_before_spawn_does_not_spawn() {
+        let marker = std::env::temp_dir().join(format!("pp_mcp_no_spawn_{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let config =
+            plan_server_config(&["-c", &format!("touch {} && sleep 30", marker.display())]);
+        let mut configs = BTreeMap::new();
+        configs.insert("never".into(), config);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let error = Registry::connect(&configs, Path::new("."), &cancellation)
+            .err()
+            .unwrap();
+        assert!(error.downcast_ref::<Cancelled>().is_some());
+        assert!(format!("{error:#}").contains("connecting MCP server never"));
+        // spawn 前已检查取消，fixture 进程从未启动。
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn plan_mcp_connect_cancelled_during_discovery_reclaims_process() {
+        let cancellation = CancellationToken::new();
+        let canceller = cancellation.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            canceller.cancel();
+        });
+        let mut configs = BTreeMap::new();
+        // 超时远大于取消时机，确保失败来自取消而非请求超时。
+        let mut config = plan_server_config(&["-c", "sleep 30"]);
+        config.timeout_seconds = 30;
+        configs.insert("slow".into(), config);
+        let error = Registry::connect(&configs, Path::new("."), &cancellation)
+            .err()
+            .unwrap();
+        // discovery 取消且显式回收成功：错误保持 Cancelled，
+        // 若停止失败会被升级为 CleanupError 而非 Cancelled。
+        assert!(error.downcast_ref::<Cancelled>().is_some());
     }
 }

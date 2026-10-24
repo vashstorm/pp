@@ -104,6 +104,26 @@ impl Drop for Cli {
     }
 }
 
+#[test]
+fn plan_line_commands_never_request_model() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cli = Cli::start(&server, dir.path(), None);
+    cli.input("/plan\n/plan view\n/plan new\n/plan off\n/plan invalid\n/quit\n");
+    let output = cli.finish();
+    assert!(output.status.success());
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        error
+            .matches("/plan requires the TUI; run pp in a terminal.")
+            .count(),
+        4
+    );
+    assert!(error.contains("usage: /plan [view|new|off]"), "{error}");
+    assert!(server.try_recv().unwrap().is_none());
+    assert!(!dir.path().join(".pp/plans").exists());
+}
+
 fn fixture_settings() -> &'static str {
     "# 此测试进程的应用设置\ndefault_model: fixture/primary\n"
 }
@@ -2518,6 +2538,8 @@ mod tui {
     include!("cli_agent/diff_blocks_tui.rs");
     include!("cli_agent/transcript_blocks_tui.rs");
     include!("cli_agent/ask_tui.rs");
+    include!("cli_agent/plan_tui.rs");
+    include!("cli_agent/plan_review_tui.rs");
     include!("cli_agent/tree_tui.rs");
     include!("cli_agent/runtime_input_tui.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};

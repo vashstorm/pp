@@ -3,6 +3,8 @@ mod debug;
 mod history;
 pub(crate) mod input;
 pub(crate) mod persistence;
+mod plan_review;
+mod plan_workflow;
 
 use crate::{
     cancellation::{self, CancellationToken, Cancelled, RunOutcome},
@@ -59,6 +61,22 @@ pub(crate) struct Agent {
     journal: persistence::SessionJournal,
     replay: Vec<persistence::ReplayRecord>,
     debug: Option<debug::DebugState>,
+    workflow: crate::plan::WorkflowState,
+    /// Fail-closed gate set when stopping MCP for Plan mode failed; blocked
+    /// run/continue until a successful `/plan` retry clears it.
+    plan_cleanup_error: Option<String>,
+}
+
+/// Everything the UI must adopt after a mode transition that replaced the
+/// managed MCP registry: the worker publishes this, installs nothing itself,
+/// and waits for the UI's `ExecutionPrepared` acknowledgement before any
+/// model request. `replay` is `None` for keep-context/off transitions,
+/// `Some(empty)` for a fresh session, and `Some(replay)` for a resume.
+pub(crate) struct ExecutionPreparation {
+    pub(crate) workflow: crate::plan::WorkflowState,
+    pub(crate) session_id: Option<String>,
+    pub(crate) replay: Option<Vec<persistence::ReplayRecord>>,
+    pub(crate) cleanup: crate::mcp::Cleanup,
 }
 
 pub(crate) struct TreeNavigation {
@@ -186,7 +204,11 @@ impl Agent {
         let config = catalog.resolve(catalog.default_reference())?;
         tools.limits = config.settings.tool_limits();
         let client = OpenAiClient::new(&config)?;
-        tools.mcp = crate::mcp::Registry::connect(&config.settings.mcp_servers, tools.cwd())?;
+        tools.mcp = crate::mcp::Registry::connect(
+            &config.settings.mcp_servers,
+            tools.cwd(),
+            &CancellationToken::new(),
+        )?;
         let current_model = ModelChoice {
             reference: catalog.default_reference().to_owned(),
             model: config.model.clone(),
@@ -228,7 +250,7 @@ impl Agent {
                 .summary(),
         );
         let mut session = Session::new(config.model, config.protocol, initial_system, edit_mode);
-        session.set_tools(tools.all_definitions());
+        session.set_tools(tools.all_definitions(crate::plan::WorkMode::Execute));
         session.set_think_level(think_level);
         Ok(Self {
             client,
@@ -246,12 +268,15 @@ impl Agent {
             journal: SessionJournal::new(sessions_dir),
             replay: Vec::new(),
             debug: debug::DebugState::new(config.settings.debug, false),
+            workflow: crate::plan::WorkflowState::default(),
+            plan_cleanup_error: None,
         })
     }
 
     pub(crate) fn set_ask_handler(&mut self, handler: crate::interaction::AskHandler) {
         self.tools.ask_handler = Some(handler);
-        self.session.set_tools(self.tools.all_definitions());
+        self.session
+            .set_tools(self.tools.all_definitions(self.workflow.mode));
     }
 
     pub(crate) fn restore(
@@ -283,8 +308,17 @@ impl Agent {
         );
         let client = OpenAiClient::new(&config)?;
         tools.limits = checkpoint.tool_limits;
-        tools.mcp = crate::mcp::Registry::connect(&config.settings.mcp_servers, tools.cwd())?;
-        checkpoint.session.set_tools(tools.all_definitions());
+        if checkpoint.workflow.mode == crate::plan::WorkMode::Execute {
+            // A restored Plan session never connects MCP; only Execute does.
+            tools.mcp = crate::mcp::Registry::connect(
+                &config.settings.mcp_servers,
+                tools.cwd(),
+                &CancellationToken::new(),
+            )?;
+        }
+        checkpoint
+            .session
+            .set_tools(tools.all_definitions(checkpoint.workflow.mode));
         if let Session::Completion(request) = &mut checkpoint.session {
             request.stream_options = Some(async_openai::types::chat::ChatCompletionStreamOptions {
                 include_usage: Some(true),
@@ -313,6 +347,8 @@ impl Agent {
             journal,
             replay,
             debug: debug::DebugState::new(config.settings.debug, true),
+            workflow: checkpoint.workflow,
+            plan_cleanup_error: None,
         })
     }
 
@@ -345,17 +381,7 @@ impl Agent {
                 self.tools.edit_mode(),
             )?
         };
-        let system = project_instructions::compose(
-            &self.base_system,
-            self.tools.cwd(),
-            "",
-            &self
-                .tools
-                .skills
-                .lock()
-                .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
-                .summary(),
-        );
+        let system = self.compose_system(&restored.checkpoint.workflow)?;
         let mut session = Session::new(
             self.current_model.model.clone(),
             self.current_model.protocol,
@@ -375,24 +401,13 @@ impl Agent {
             (Session::Response(target), Session::Response(source)) => target.input = source.input,
             _ => unreachable!("history converted to the current protocol"),
         }
-        session.set_tools(self.tools.all_definitions());
+        session.set_tools(
+            self.tools
+                .all_definitions(restored.checkpoint.workflow.mode),
+        );
         session.set_think_level(self.think_level);
         restored.checkpoint.session = session;
         Ok(restored)
-    }
-
-    pub(crate) fn resume(&mut self, id: &str) -> Result<()> {
-        let mut restored = self.prepare_resume(id)?;
-        restored.journal.history_replaced();
-        self.session = restored.checkpoint.session;
-        self.journal = restored.journal;
-        self.replay = restored.replay;
-        if let Some(debug) = &mut self.debug {
-            debug.set_prompt_recorded(true);
-        }
-        self.last_request = None;
-        self.pending_instructions = None;
-        Ok(())
     }
 
     pub(crate) fn session_id(&self) -> Option<&str> {
@@ -429,18 +444,7 @@ impl Agent {
                 self.tools.edit_mode(),
             )?
         };
-        let project = project_instructions::load(self.tools.cwd())?;
-        let system = project_instructions::compose(
-            &self.base_system,
-            self.tools.cwd(),
-            &project,
-            &self
-                .tools
-                .skills
-                .lock()
-                .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
-                .summary(),
-        );
+        let system = self.compose_system(&self.workflow)?;
         let mut session = Session::new(
             self.current_model.model.clone(),
             self.current_model.protocol,
@@ -460,7 +464,7 @@ impl Agent {
             (Session::Response(target), Session::Response(source)) => target.input = source.input,
             _ => unreachable!("tree history converted to current protocol"),
         }
-        session.set_tools(self.tools.all_definitions());
+        session.set_tools(self.tools.all_definitions(self.workflow.mode));
         session.set_think_level(self.think_level);
         let metadata = Metadata {
             cwd: self.tools.cwd(),
@@ -470,8 +474,23 @@ impl Agent {
             tool_limits: self.tools.limits,
             base_system: &self.base_system,
         };
-        self.journal
-            .write_tree_state(&metadata, (&session).into(), Some(&selection))?;
+        let old_status = self.workflow.plan.as_ref().map(|plan| plan.status);
+        if let Some(plan) = &mut self.workflow.plan
+            && plan.status == crate::plan::PlanStatus::Ready
+        {
+            plan.status = crate::plan::PlanStatus::Draft;
+        }
+        if let Err(error) = self.journal.write_tree_state(
+            &metadata,
+            (&session).into(),
+            &self.workflow,
+            Some(&selection),
+        ) {
+            if let (Some(plan), Some(status)) = (&mut self.workflow.plan, old_status) {
+                plan.status = status;
+            }
+            return Err(error);
+        }
         self.session = session;
         self.last_request = None;
         self.pending_instructions = None;
@@ -490,18 +509,7 @@ impl Agent {
     }
 
     fn refresh_instructions(&mut self) -> Result<()> {
-        let project = project_instructions::load(self.tools.cwd())?;
-        let system = project_instructions::compose(
-            &self.base_system,
-            self.tools.cwd(),
-            &project,
-            &self
-                .tools
-                .skills
-                .lock()
-                .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
-                .summary(),
-        );
+        let system = self.compose_system(&self.workflow)?;
         let unchanged = match &self.session {
             Session::Completion(request) => {
                 matches!(request.messages.first(), Some(ChatCompletionRequestMessage::System(message)) if matches!(&message.content, async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(text) if text == &system))
@@ -661,9 +669,10 @@ impl Agent {
             base_system: &self.base_system,
         };
         if let Some(mut session) = converted {
-            session.set_tools(self.tools.all_definitions());
+            session.set_tools(self.tools.all_definitions(self.workflow.mode));
             session.set_think_level(target_level);
-            self.journal.checkpoint(&metadata, (&session).into())?;
+            self.journal
+                .checkpoint(&metadata, (&session).into(), &self.workflow)?;
             self.session = session;
         } else {
             // Move only the fields being changed; retain the full native reasoning
@@ -681,7 +690,10 @@ impl Agent {
                 ),
             };
             self.session.set_think_level(target_level);
-            if let Err(error) = self.journal.checkpoint(&metadata, (&self.session).into()) {
+            if let Err(error) =
+                self.journal
+                    .checkpoint(&metadata, (&self.session).into(), &self.workflow)
+            {
                 match &mut self.session {
                     Session::Completion(request) => {
                         request.model = old_model.expect("completion model is always present");
@@ -703,6 +715,8 @@ impl Agent {
     }
 
     pub(crate) fn reset(&mut self) {
+        self.workflow.plan = None;
+        self.workflow.review = None;
         self.journal.reset();
         if let Some(debug) = &mut self.debug {
             debug.set_prompt_recorded(false);
@@ -713,6 +727,51 @@ impl Agent {
             Session::Completion(request) => request.messages.truncate(1),
             Session::Response(request) => response_input(request).clear(),
         }
+    }
+
+    pub(crate) fn workflow(&self) -> &crate::plan::WorkflowState {
+        &self.workflow
+    }
+
+    fn prepare_plan_task(&mut self, prompt: &str) -> Result<()> {
+        if self.workflow.mode != crate::plan::WorkMode::Plan {
+            return Ok(());
+        }
+        self.journal.check()?;
+        let created = self.workflow.plan.is_none();
+        if created {
+            self.workflow.plan = Some(crate::plan::PlanDocument::new()?);
+        }
+        let plan = self.workflow.plan.as_mut().expect("plan allocated");
+        ensure!(
+            !matches!(
+                plan.status,
+                crate::plan::PlanStatus::Executed | crate::plan::PlanStatus::Abandoned
+            ),
+            "This plan has already been handed off; use /plan new."
+        );
+        let old_status = plan.status;
+        let set_origin = plan.origin_prompt.is_empty() && !prompt.trim().is_empty();
+        if set_origin {
+            plan.origin_prompt = prompt.to_owned();
+        }
+        if plan.status == crate::plan::PlanStatus::Ready {
+            plan.status = crate::plan::PlanStatus::Draft;
+        }
+        if (created || set_origin || old_status == crate::plan::PlanStatus::Ready)
+            && let Err(error) = self.journal.write_workflow(&self.workflow)
+        {
+            if created {
+                self.workflow.plan = None;
+            } else if let Some(plan) = &mut self.workflow.plan {
+                plan.status = old_status;
+                if set_origin {
+                    plan.origin_prompt.clear();
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(crate) fn run(
@@ -728,8 +787,12 @@ impl Agent {
             operation = "run"
         );
         let started = std::time::Instant::now();
-        let result = (|| -> Result<()> {
+        let result = (|| -> Result<RunOutcome> {
+            if let Some(error) = &self.plan_cleanup_error {
+                bail!("{error}");
+            }
             ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
+            self.prepare_plan_task(prompt)?;
             self.refresh_instructions()?;
             self.publish_context(emit)?;
             self.append_user(prompt);
@@ -750,7 +813,13 @@ impl Agent {
             operation = "continue"
         );
         let started = std::time::Instant::now();
-        let result = self.run_loop(None, input, cancellation, emit);
+        let result = (|| -> Result<RunOutcome> {
+            if let Some(error) = &self.plan_cleanup_error {
+                bail!("{error}");
+            }
+            self.prepare_plan_task("")?;
+            self.run_loop(None, input, cancellation, emit)
+        })();
         self.finish_task("continue", started, result, cancellation, input, emit)
     }
 
@@ -760,13 +829,24 @@ impl Agent {
         &mut self,
         operation: &str,
         started: std::time::Instant,
-        result: Result<()>,
+        result: Result<RunOutcome>,
         cancellation: &CancellationToken,
         input: Option<&InputQueue>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
-        let result = self.finish_run(result, cancellation);
         let result = self.close_queue(input, result);
+        let mut result = self.finish_run(result, cancellation);
+        if let Err(error) = self.refresh_plan_progress(emit) {
+            let error = match result {
+                Err(original) => error.context(format!("Task also failed: {original:#}")),
+                Ok(RunOutcome::Cancelled) => {
+                    error.context("Task was cancelled; file changes were not rolled back.")
+                }
+                _ => error,
+            };
+            self.journal.error(&format!("{error:#}"));
+            result = Err(error);
+        }
         if !matches!(&result, Ok(RunOutcome::Completed)) {
             let _ = self.publish_context(emit);
         }
@@ -791,26 +871,12 @@ impl Agent {
     }
 
     fn append_user(&mut self, prompt: &str) {
-        match &mut self.session {
-            Session::Completion(request) => request.messages.push(
-                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-                    content: prompt.into(),
-                    ..Default::default()
-                }),
-            ),
-            Session::Response(request) => {
-                response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
-                    role: Role::User,
-                    content: prompt.into(),
-                    ..Default::default()
-                }))
-            }
-        }
+        append_user_to(&mut self.session, prompt);
     }
 
     fn finish_run(
         &mut self,
-        result: Result<()>,
+        result: Result<RunOutcome>,
         cancellation: &CancellationToken,
     ) -> Result<RunOutcome> {
         if cancellation.is_cancelled() {
@@ -836,9 +902,9 @@ impl Agent {
                 self.journal.check()?;
                 Err(error)
             }
-            Ok(()) => {
+            Ok(outcome) => {
                 self.journal.check()?;
-                Ok(RunOutcome::Completed)
+                Ok(outcome)
             }
         }
     }
@@ -855,6 +921,7 @@ impl Agent {
         self.journal.sent(
             &metadata,
             (&self.session).into(),
+            &self.workflow,
             user,
             self.pending_instructions.as_deref(),
         )?;
@@ -868,7 +935,7 @@ impl Agent {
         input: Option<&InputQueue>,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
-    ) -> Result<()> {
+    ) -> Result<RunOutcome> {
         let mut requests_used = 0;
         let mut claim_boundary = true;
         loop {
@@ -942,11 +1009,16 @@ impl Agent {
                 instructions: self.pending_instructions.as_deref(),
                 debug: &mut self.debug,
             };
+            let before_revision = self.workflow.plan.as_ref().map(|plan| plan.revision);
+            let mut plan_dirty = false;
             let resources = TurnResources {
                 client: &mut self.client,
                 last_request: &mut self.last_request,
                 tools: &self.tools,
                 journal: &mut self.journal,
+                workflow: &mut self.workflow,
+                input,
+                plan_dirty: &mut plan_dirty,
             };
             let finished = match &mut self.session {
                 Session::Completion(request) => {
@@ -958,8 +1030,30 @@ impl Agent {
             };
             self.pending_instructions = None;
             self.journal.commit((&self.session).into())?;
+            if plan_dirty {
+                self.refresh_plan_progress(emit)?;
+            }
             self.publish_context(emit)?;
-            if finished {
+            if matches!(finished, TurnOutcome::PlanSubmitted) {
+                self.workflow
+                    .plan
+                    .as_mut()
+                    .expect("submitted plan exists")
+                    .status = crate::plan::PlanStatus::Ready;
+                if let Err(error) = self.journal.write_workflow(&self.workflow) {
+                    self.workflow
+                        .plan
+                        .as_mut()
+                        .expect("submitted plan exists")
+                        .status = crate::plan::PlanStatus::Draft;
+                    return Err(error);
+                }
+                return Ok(RunOutcome::AwaitingPlanReview);
+            }
+            if before_revision != self.workflow.plan.as_ref().map(|plan| plan.revision) {
+                self.journal.write_workflow(&self.workflow)?;
+            }
+            if matches!(finished, TurnOutcome::Completed) {
                 // 原子“领取或关闭”：最终回复与新补充仅在这个短锁内仲裁。
                 if let Some(queue) = input {
                     let batch = queue.claim_steering(true)?;
@@ -974,7 +1068,7 @@ impl Agent {
                         continue;
                     }
                 }
-                return Ok(());
+                return Ok(RunOutcome::Completed);
             }
             cancellation::check(cancellation)?;
         }
@@ -1081,6 +1175,13 @@ fn log_task_finished(operation: &str, started: std::time::Instant, result: &Resu
             status = "ok",
             elapsed_ms
         ),
+        Ok(RunOutcome::AwaitingPlanReview) => tracing::info!(
+            event = "task_finished",
+            pid,
+            operation,
+            status = "awaiting_plan_review",
+            elapsed_ms
+        ),
         Ok(RunOutcome::Cancelled) => tracing::info!(
             event = "task_finished",
             pid,
@@ -1136,6 +1237,83 @@ struct TurnResources<'a> {
     last_request: &'a mut Option<TokenUsage>,
     tools: &'a Tools,
     journal: &'a mut SessionJournal,
+    workflow: &'a mut crate::plan::WorkflowState,
+    input: Option<&'a InputQueue>,
+    plan_dirty: &'a mut bool,
+}
+
+fn tool_policy<'a>(
+    workflow: &'a crate::plan::WorkflowState,
+    sealed: bool,
+    input: Option<&'a InputQueue>,
+) -> Result<crate::tools::ToolPolicy<'a>> {
+    Ok(match workflow.mode {
+        crate::plan::WorkMode::Execute => crate::tools::ToolPolicy::Execute,
+        crate::plan::WorkMode::Plan => crate::tools::ToolPolicy::Plan {
+            document: workflow
+                .plan
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("No current plan."))?,
+            sealed,
+            input,
+        },
+    })
+}
+
+enum TurnOutcome {
+    Continue,
+    Completed,
+    PlanSubmitted,
+}
+
+/// Plan file tracked during execution: only an Execute-mode run with a bound
+/// plan watches `FileChanged` events for plan-progress refreshes. An owned
+/// copy keeps the progress callback independent of the workflow borrow.
+fn tracked_plan_id(workflow: &crate::plan::WorkflowState) -> Option<String> {
+    if workflow.mode == crate::plan::WorkMode::Execute {
+        workflow.plan.as_ref().map(|plan| plan.id.clone())
+    } else {
+        None
+    }
+}
+
+/// Whether one progress event touches the tracked plan file.
+fn plan_file_touched(tools: &Tools, plan_id: &Option<String>, event: &AgentEvent) -> bool {
+    match (event, plan_id) {
+        (AgentEvent::FileChanged { path, .. }, Some(id)) => tools.is_plan_path(path, id),
+        _ => false,
+    }
+}
+
+fn apply_plan_change(
+    workflow: &mut crate::plan::WorkflowState,
+    sealed: &mut bool,
+    change: Option<crate::tools::PlanChange>,
+) -> Result<()> {
+    let Some(change) = change else {
+        return Ok(());
+    };
+    ensure!(
+        workflow.mode == crate::plan::WorkMode::Plan && !*sealed,
+        "Invalid plan tool transition."
+    );
+    let plan = workflow
+        .plan
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No current plan."))?;
+    match change {
+        crate::tools::PlanChange::Written { title, content } => {
+            plan.revision = plan
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("Plan revision limit reached."))?;
+            plan.title = title;
+            plan.content = content;
+            plan.status = crate::plan::PlanStatus::Draft;
+        }
+        crate::tools::PlanChange::Submitted => *sealed = true,
+    }
+    Ok(())
 }
 
 fn completion_turn(
@@ -1145,12 +1323,15 @@ fn completion_turn(
     mut update: RequestUpdate<'_>,
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
-) -> Result<bool> {
+) -> Result<TurnOutcome> {
     let TurnResources {
         client,
         last_request,
         tools,
         journal,
+        workflow,
+        input: queue,
+        plan_dirty,
     } = resources;
     tracing::info!(
         event = "model_request_started",
@@ -1165,6 +1346,7 @@ fn completion_turn(
             journal.sent(
                 metadata,
                 SessionRef::Completion(request),
+                workflow,
                 update.user,
                 update.instructions,
             )?;
@@ -1191,7 +1373,11 @@ fn completion_turn(
     cancellation::check(cancellation)?;
     let usage = response.usage;
     let response = response.message;
+    let progress_plan_id = tracked_plan_id(workflow);
     let mut progress = |event| {
+        if plan_file_touched(tools, &progress_plan_id, &event) {
+            *plan_dirty = true;
+        }
         journal.event(&event);
         emit(event);
     };
@@ -1207,7 +1393,7 @@ fn completion_turn(
             .messages
             .push(ChatCompletionRequestMessage::Assistant(response));
         *last_request = usage;
-        return Ok(true);
+        return Ok(TurnOutcome::Completed);
     }
     let count = calls.len();
     let assistant_index = request.messages.len();
@@ -1215,6 +1401,7 @@ fn completion_turn(
         .messages
         .push(ChatCompletionRequestMessage::Assistant(response));
     let mut stop_error = None;
+    let mut sealed = false;
     for index in 0..count {
         let ChatCompletionRequestMessage::Assistant(response) = &request.messages[assistant_index]
         else {
@@ -1231,9 +1418,11 @@ fn completion_turn(
             &call.function.name,
             &call.function.arguments,
             &call.id,
+            tool_policy(workflow, sealed, queue)?,
             cancellation,
             emit,
         );
+        apply_plan_change(workflow, &mut sealed, content.plan_change)?;
         if stop_error.is_none() {
             stop_error = content.stop_error;
         }
@@ -1250,7 +1439,11 @@ fn completion_turn(
         journal.commit(SessionRef::Completion(request))?;
         return Err(error);
     }
-    Ok(false)
+    Ok(if sealed {
+        TurnOutcome::PlanSubmitted
+    } else {
+        TurnOutcome::Continue
+    })
 }
 
 fn response_turn(
@@ -1260,12 +1453,15 @@ fn response_turn(
     mut update: RequestUpdate<'_>,
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
-) -> Result<bool> {
+) -> Result<TurnOutcome> {
     let TurnResources {
         client,
         last_request,
         tools,
         journal,
+        workflow,
+        input: queue,
+        plan_dirty,
     } = resources;
     tracing::info!(
         event = "model_request_started",
@@ -1280,6 +1476,7 @@ fn response_turn(
             journal.sent(
                 metadata,
                 SessionRef::Response(request),
+                workflow,
                 update.user,
                 update.instructions,
             )?;
@@ -1304,7 +1501,11 @@ fn response_turn(
         outcome?
     };
     cancellation::check(cancellation)?;
+    let progress_plan_id = tracked_plan_id(workflow);
     let mut progress = |event| {
+        if plan_file_touched(tools, &progress_plan_id, &event) {
+            *plan_dirty = true;
+        }
         journal.event(&event);
         emit(event);
     };
@@ -1315,10 +1516,11 @@ fn response_turn(
     input.extend(turn.output.into_iter().map(InputItem::from));
     if !turn.has_calls {
         *last_request = turn.usage;
-        return Ok(true);
+        return Ok(TurnOutcome::Completed);
     }
     let end = input.len();
     let mut stop_error = None;
+    let mut sealed = false;
     for index in start..end {
         let InputItem::Item(Item::FunctionCall(call)) = &input[index] else {
             continue;
@@ -1327,9 +1529,11 @@ fn response_turn(
             &call.name,
             &call.arguments,
             &call.call_id,
+            tool_policy(workflow, sealed, queue)?,
             cancellation,
             emit,
         );
+        apply_plan_change(workflow, &mut sealed, output.plan_change)?;
         if stop_error.is_none() {
             stop_error = output.stop_error;
         }
@@ -1351,7 +1555,31 @@ fn response_turn(
         journal.commit(SessionRef::Response(request))?;
         return Err(error);
     }
-    Ok(false)
+    Ok(if sealed {
+        TurnOutcome::PlanSubmitted
+    } else {
+        TurnOutcome::Continue
+    })
+}
+
+/// Append a user message to either protocol's native history; shared by the
+/// agent loop and the fresh-context execution candidate session.
+fn append_user_to(session: &mut Session, prompt: &str) {
+    match session {
+        Session::Completion(request) => request.messages.push(ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessage {
+                content: prompt.into(),
+                ..Default::default()
+            },
+        )),
+        Session::Response(request) => {
+            response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
+                role: Role::User,
+                content: prompt.into(),
+                ..Default::default()
+            }))
+        }
+    }
 }
 
 fn response_input(request: &mut CreateResponse) -> &mut Vec<InputItem> {
@@ -1416,7 +1644,13 @@ mod tests {
             };
             agent
                 .journal
-                .sent(&metadata, (&agent.session).into(), Some(name), None)
+                .sent(
+                    &metadata,
+                    (&agent.session).into(),
+                    &agent.workflow,
+                    Some(name),
+                    None,
+                )
                 .unwrap();
             ids.push(agent.session_id().unwrap().to_owned());
             agents.push(agent);
@@ -1514,7 +1748,7 @@ mod tests {
         let mut previous = None;
         for outcome in [0, 1, 2] {
             let token = CancellationToken::new();
-            let started = agent.tools.execute("bash", &json!({"command":"printf '%s\\n%s' \"$$\" \"$TMPDIR\" > marker.pending; mv marker.pending marker; exec sleep 60","mode":"background"}).to_string(), "start", &token, &mut |_| {});
+            let started = agent.tools.execute("bash", &json!({"command":"printf '%s\\n%s' \"$$\" \"$TMPDIR\" > marker.pending; mv marker.pending marker; exec sleep 60","mode":"background"}).to_string(), "start", crate::tools::ToolPolicy::Execute, &token, &mut |_| {});
             let snapshot: serde_json::Value = serde_json::from_str(&started.output).unwrap();
             let id = snapshot["task_id"].as_str().unwrap().to_owned();
             assert_ne!(previous.as_ref(), Some(&id));
@@ -1527,7 +1761,7 @@ mod tests {
             let (pid, scratch) = marker.split_once('\n').unwrap();
             let pid = rustix::process::Pid::from_raw(pid.parse().unwrap()).unwrap();
             let result = match outcome {
-                0 => Ok(()),
+                0 => Ok(RunOutcome::Completed),
                 1 => Err(anyhow::anyhow!("provider failed")),
                 _ => {
                     token.cancel();
@@ -1554,6 +1788,7 @@ mod tests {
                 "bash_task",
                 &json!({"task_id":id,"action":"status"}).to_string(),
                 "status",
+                crate::tools::ToolPolicy::Execute,
                 &CancellationToken::new(),
                 &mut |_| {},
             );
@@ -1630,7 +1865,7 @@ mod tests {
         );
     }
 
-    fn runtime_input_agent(
+    pub(super) fn runtime_input_agent(
         dir: &std::path::Path,
         protocol: &str,
         server_addr: &str,
@@ -1662,6 +1897,93 @@ mod tests {
             dir.join("sessions"),
         )
         .unwrap()
+    }
+
+    // --- shared Plan-mode test fixtures (plan_review / plan_workflow) ---
+
+    pub(super) const PLAN_CONTENT: &str =
+        "# Create hello\n\n- [ ] Create hello.txt and read back hello.\n";
+    pub(super) const ORIGIN: &str = "ORIGIN-MARKER create hello with newline question";
+    pub(super) const EXPLORATION: &str = "EXPLORATION-MARKER planning chat";
+
+    pub(super) fn seed_session(agent: &mut Agent, user: &str) {
+        // A real task appends the user message natively before the journal
+        // records the projection and state.
+        super::append_user_to(&mut agent.session, user);
+        agent
+            .session
+            .set_tools(agent.tools.all_definitions(agent.workflow.mode));
+        let metadata = Metadata {
+            cwd: agent.tools.cwd(),
+            model_reference: &agent.current_model.reference,
+            think_level: agent.think_level,
+            edit_mode: agent.tools.edit_mode(),
+            tool_limits: agent.tools.limits,
+            base_system: &agent.base_system,
+        };
+        agent
+            .journal
+            .sent(
+                &metadata,
+                (&agent.session).into(),
+                &agent.workflow,
+                Some(user),
+                None,
+            )
+            .unwrap();
+    }
+
+    pub(super) fn plan_workflow(
+        content: &str,
+        origin: &str,
+        status: crate::plan::PlanStatus,
+    ) -> crate::plan::WorkflowState {
+        let mut document = crate::plan::PlanDocument::new().unwrap();
+        if !content.is_empty() {
+            document.revision = 1;
+            document.title = "Create hello".into();
+            document.content = content.into();
+        }
+        document.origin_prompt = origin.into();
+        document.status = status;
+        crate::plan::WorkflowState {
+            mode: crate::plan::WorkMode::Plan,
+            plan: Some(document),
+            review: None,
+        }
+    }
+
+    pub(super) fn write_plan_file(agent: &Agent, content: &str) {
+        let document = agent.workflow.plan.as_ref().unwrap();
+        let path = agent.tools.cwd().join(document.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// Latest persisted workflow record, read directly from the JSONL journal
+    /// without taking the session's exclusive flock (the agent holds it).
+    pub(super) fn journal_workflow(dir: &std::path::Path, id: &str) -> crate::plan::WorkflowState {
+        let path = dir.join("sessions").join(format!("{id}.jsonl"));
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut latest = None;
+        for line in text.lines() {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            if matches!(
+                record["customType"].as_str(),
+                Some("pp.workflow" | "pp.session_state")
+            ) {
+                latest = Some(serde_json::from_value(record["data"]["workflow"].clone()).unwrap());
+            }
+        }
+        latest.expect("workflow record persisted")
+    }
+
+    /// Error text for result types without a `Debug` implementation.
+    pub(super) fn err_message<T>(result: Result<T>) -> String {
+        match result {
+            Ok(_) => panic!("expected an error"),
+            Err(error) => error.to_string(),
+        }
     }
 
     fn sse_stream(request: tiny_http::Request, events: &[Value]) {
@@ -1807,6 +2129,192 @@ mod tests {
             .filter(|entry| entry["role"] == "user")
             .map(message_text)
             .collect()
+    }
+
+    #[test]
+    fn plan_submit_seals_batch_without_another_model_request() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let mut agent =
+                runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+            agent.workflow.mode = crate::plan::WorkMode::Plan;
+            agent.workflow.plan = Some(crate::plan::PlanDocument::new().unwrap());
+            agent
+                .session
+                .set_tools(agent.tools.all_definitions(agent.workflow.mode));
+            let content = "# Create hello\n\n- [ ] Create hello.txt and read back hello.\n";
+            let serving = protocol.to_owned();
+            let worker = std::thread::spawn(move || {
+                let mut request = server
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let _: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                tool_call_for(
+                    &serving,
+                    request,
+                    "plan_write",
+                    &json!({"title":"Create hello","content":content,"expected_revision":0})
+                        .to_string(),
+                );
+                let mut request = server
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let _: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                let calls = [
+                    ("submit", "plan_submit", json!({"expected_revision":1})),
+                    ("shell", "bash", json!({"command":"touch forbidden"})),
+                    (
+                        "rewrite",
+                        "plan_write",
+                        json!({"title":"Wrong","content":"- [ ] wrong","expected_revision":1}),
+                    ),
+                ];
+                if serving == "completion" {
+                    let calls: Vec<_> = calls.into_iter().enumerate().map(|(index,(id,name,args))| json!({"id":id,"type":"function","index":index,"function":{"name":name,"arguments":args.to_string()}})).collect();
+                    completion_stream(
+                        request,
+                        json!({"role":"assistant","content":null,"tool_calls":calls}),
+                        "tool_calls",
+                    );
+                } else {
+                    let calls: Vec<_> = calls.into_iter().map(|(id,name,args)| json!({"type":"function_call","id":format!("fc-{id}"),"call_id":id,"name":name,"arguments":args.to_string(),"status":"completed"})).collect();
+                    response_stream(request, &calls);
+                }
+                server
+            });
+            let queue = InputQueue::default();
+            queue.begin_run().unwrap();
+            let mut results = Vec::new();
+            let outcome = agent
+                .run(
+                    "Plan hello",
+                    &CancellationToken::new(),
+                    Some(&queue),
+                    &mut |event| {
+                        if let AgentEvent::ToolFinished { id, result } = event {
+                            results.push((id, result));
+                        }
+                    },
+                )
+                .unwrap();
+            let server = worker.join().unwrap();
+            assert_eq!(outcome, RunOutcome::AwaitingPlanReview);
+            assert!(server.try_recv().unwrap().is_none());
+            assert_eq!(results.len(), 4);
+            assert_eq!(results[1].0, "submit");
+            assert_eq!(results[1].1["ok"], true);
+            for (id, result) in &results[2..] {
+                assert!(matches!(id.as_str(), "shell" | "rewrite"));
+                assert_eq!(result["error"], "Not executed: plan submitted for review.");
+            }
+            let plan = agent.workflow.plan.as_ref().unwrap();
+            assert_eq!(plan.revision, 1);
+            assert_eq!(plan.status, crate::plan::PlanStatus::Ready);
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join(plan.path())).unwrap(),
+                content
+            );
+            assert!(!dir.path().join("forbidden").exists());
+            let saved: Value = serde_json::to_value(&agent.session).unwrap();
+            let history = &saved["request"][if protocol == "completion" {
+                "messages"
+            } else {
+                "input"
+            }];
+            let outputs = history
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["role"] == "tool" || item["type"] == "function_call_output")
+                .count();
+            assert_eq!(outputs, 4);
+            let id = agent.session_id().unwrap().to_owned();
+            let expected = agent.workflow.clone();
+            drop(agent);
+            let restored =
+                persistence::load(&dir.path().join("sessions"), Some(&id), true).unwrap();
+            assert_eq!(restored.checkpoint.workflow, expected);
+            assert!(server.try_recv().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn plan_protocols_deny_side_effects_and_continue_reading() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("canary"), "original\n").unwrap();
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let mut agent =
+                runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+            let mut document = crate::plan::PlanDocument::new().unwrap();
+            document.origin_prompt = "Research canary".into();
+            agent.workflow.mode = crate::plan::WorkMode::Plan;
+            agent.workflow.plan = Some(document);
+            agent
+                .session
+                .set_tools(agent.tools.all_definitions(agent.workflow.mode));
+            let serving = protocol.to_owned();
+            let worker = std::thread::spawn(move || {
+                for (name, args) in [
+                    ("write", json!({"path":"canary","content":"changed"})),
+                    (
+                        "edit",
+                        json!({"path":"canary","edits":[{"oldText":"original","newText":"changed"}]}),
+                    ),
+                    ("bash", json!({"command":"touch marker"})),
+                    (
+                        "bash",
+                        json!({"command":"touch marker","mode":"background"}),
+                    ),
+                    ("bash_task", json!({"task_id":"unknown","action":"status"})),
+                    ("grep", json!({"args":["original","canary"]})),
+                    ("find", json!({"args":[".","-exec","touch","marker",";"]})),
+                    ("mcp__unseen__write", json!({})),
+                    ("read", json!({"path":"canary"})),
+                ] {
+                    let mut request = server
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap()
+                        .unwrap();
+                    let _: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                    tool_call_for(&serving, request, name, &args.to_string());
+                }
+                let request = server
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                final_for(&serving, request, "Read-only research completed");
+            });
+            let mut results = Vec::new();
+            let result = agent.run(
+                "Research canary",
+                &CancellationToken::new(),
+                None,
+                &mut |event| {
+                    if let AgentEvent::ToolFinished { result, .. } = event {
+                        results.push(result);
+                    }
+                },
+            );
+            assert_eq!(result.unwrap(), RunOutcome::Completed);
+            worker.join().unwrap();
+            assert_eq!(results.len(), 9);
+            for result in &results[..8] {
+                assert_eq!(
+                    *result,
+                    json!({"ok":false,"error":"Tool is not available in Plan mode."})
+                );
+            }
+            assert_eq!(results[8]["content"], "original\n");
+            assert_eq!(
+                std::fs::read(dir.path().join("canary")).unwrap(),
+                b"original\n"
+            );
+            assert!(!dir.path().join("marker").exists());
+        }
     }
 
     #[test]

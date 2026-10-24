@@ -445,7 +445,13 @@ mod tests {
                 .push(serde_json::from_value(json!({"role":"user","content":user})).unwrap()),
         }
         journal
-            .sent(metadata, (&*session).into(), Some(user), None)
+            .sent(
+                metadata,
+                (&*session).into(),
+                &WorkflowState::default(),
+                Some(user),
+                None,
+            )
             .unwrap();
         journal.event(&AgentEvent::AssistantStarted);
         journal.event(&AgentEvent::AssistantFinished {
@@ -620,7 +626,12 @@ mod tests {
             assert!(text(&candidate).contains("answer-a"));
             assert_eq!(users(&replay), ["question-a"]);
             journal
-                .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
+                .write_tree_state(
+                    &metadata,
+                    (&candidate).into(),
+                    &WorkflowState::default(),
+                    Some(&selection),
+                )
                 .unwrap();
             let after = std::fs::read(&path).unwrap();
             assert!(after.starts_with(&before));
@@ -682,7 +693,12 @@ mod tests {
                 ..
             } = journal.prepare_tree(&user_c).unwrap();
             journal
-                .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
+                .write_tree_state(
+                    &metadata,
+                    (&candidate).into(),
+                    &WorkflowState::default(),
+                    Some(&selection),
+                )
                 .unwrap();
             session = candidate;
             turn(
@@ -760,7 +776,12 @@ mod tests {
             } = journal.prepare_tree(&first_user).unwrap();
             assert_eq!(selection.leaf, None);
             journal
-                .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
+                .write_tree_state(
+                    &metadata,
+                    (&candidate).into(),
+                    &WorkflowState::default(),
+                    Some(&selection),
+                )
                 .unwrap();
             session = candidate;
             // Retrying the identical turn keeps the tools on the new effective
@@ -890,7 +911,12 @@ mod tests {
             assert!(!text(&candidate).contains("first-question"));
             assert_eq!(selection.leaf, None);
             journal
-                .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
+                .write_tree_state(
+                    &metadata,
+                    (&candidate).into(),
+                    &WorkflowState::default(),
+                    Some(&selection),
+                )
                 .unwrap();
             let id = journal.id().unwrap().to_owned();
             drop(journal);
@@ -982,7 +1008,7 @@ mod tests {
                 EditMode::Replace,
             );
             journal
-                .replace_history(&metadata, (&compacted).into())
+                .replace_history(&metadata, (&compacted).into(), &WorkflowState::default())
                 .unwrap();
             let Prepared {
                 session: candidate,
@@ -1001,7 +1027,12 @@ mod tests {
             journal.active.as_mut().unwrap().file = File::open(&path).unwrap();
             assert!(
                 journal
-                    .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
+                    .write_tree_state(
+                        &metadata,
+                        (&candidate).into(),
+                        &WorkflowState::default(),
+                        Some(&selection),
+                    )
                     .is_err()
             );
             assert_eq!(std::fs::read(&path).unwrap(), before);
@@ -1063,7 +1094,12 @@ mod tests {
             assert!(text(&candidate).contains("answer-a"));
             assert!(!text(&candidate).contains("question-b"));
             journal
-                .write_tree_state(&metadata, (&candidate).into(), Some(&selection))
+                .write_tree_state(
+                    &metadata,
+                    (&candidate).into(),
+                    &WorkflowState::default(),
+                    Some(&selection),
+                )
                 .unwrap();
             session = candidate;
             turn(
@@ -1079,7 +1115,12 @@ mod tests {
             let user_c = tree.nodes[2].id.clone();
             let answer_c = tree.nodes[3].id.clone();
             journal
-                .write_tree_state(&metadata, (&cached.session).into(), Some(&cached.selection))
+                .write_tree_state(
+                    &metadata,
+                    (&cached.session).into(),
+                    &WorkflowState::default(),
+                    Some(&cached.selection),
+                )
                 .unwrap();
 
             // The new reader resolves the whole log to the final committed

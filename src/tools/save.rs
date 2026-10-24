@@ -47,7 +47,7 @@ impl Workspace {
         })
     }
 
-    fn components(&self, path: &Path) -> Result<Vec<OsString>> {
+    pub(super) fn components(&self, path: &Path) -> Result<Vec<OsString>> {
         let relative = if path.is_absolute() {
             path.strip_prefix(&self.original)
                 .or_else(|_| path.strip_prefix(&self.path))
@@ -154,15 +154,18 @@ impl Target {
     }
 
     pub(super) fn save(&self, content: &[u8]) -> Result<Option<String>> {
-        self.save_with(content, &SystemSave)
+        self.save_with(content, &SystemSave, false)
     }
 
-    fn save_with(
-        &self,
-        content: &[u8],
-        operations: &impl SaveOperations,
-    ) -> Result<Option<String>> {
-        let (temporary, mut file) = loop {
+    /// Atomically creates the target only when it does not already exist.
+    /// A concurrent or pre-existing target is never overwritten; `EEXIST`
+    /// becomes the exact plan-collision error so callers stay in Plan mode.
+    pub(super) fn save_new(&self, content: &[u8]) -> Result<Option<String>> {
+        self.save_with(content, &SystemSave, true)
+    }
+
+    fn create_temporary(&self) -> Result<(String, File)> {
+        loop {
             let name = format!(
                 ".pp-save-{}-{}",
                 std::process::id(),
@@ -175,11 +178,22 @@ impl Target {
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 mode,
             ) {
-                Ok(fd) => break (name, File::from(fd)),
+                Ok(fd) => return Ok((name, File::from(fd))),
                 Err(Errno::EXIST) => continue,
                 Err(error) => return Err(error).context("creating atomic save file"),
             }
-        };
+        }
+    }
+
+    /// Shared atomic-commit path. `new_only` publishes via `linkat` and fails
+    /// on an existing target instead of renaming over it.
+    fn save_with(
+        &self,
+        content: &[u8],
+        operations: &impl SaveOperations,
+        new_only: bool,
+    ) -> Result<Option<String>> {
+        let (temporary, mut file) = self.create_temporary()?;
         let cleanup = Temporary {
             parent: &self.parent,
             name: &temporary,
@@ -187,21 +201,54 @@ impl Target {
         operations
             .write(&mut file, content)
             .context("writing atomic save file; target unchanged")?;
-        if let Some(mode) = self.mode {
+        if !new_only && let Some(mode) = self.mode {
             fs::fchmod(&file, mode).context("preserving target permissions; target unchanged")?;
         }
         operations
             .sync_file(&file)
             .context("syncing atomic save file; target unchanged")?;
-        operations
-            .commit(&self.parent, OsStr::new(&temporary), &self.name)
-            .context("committing atomic save; target unchanged")?;
-        // 重命名已经提交，后续错误只能作为持久化警告，不能伪装成未修改。
-        std::mem::forget(cleanup);
+        let committed = if new_only {
+            operations.commit_new(&self.parent, OsStr::new(&temporary), &self.name)
+        } else {
+            operations.commit(&self.parent, OsStr::new(&temporary), &self.name)
+        };
+        if let Err(error) = committed {
+            if new_only && error.kind() == io::ErrorKind::AlreadyExists {
+                anyhow::bail!("Plan path already exists; use /plan new.");
+            }
+            return Err(error).context("committing atomic save; target unchanged");
+        }
+        if new_only {
+            // linkat 已提交且目标名持有同一 inode；删掉临时名，目标不受影响。
+            drop(cleanup);
+        } else {
+            // 重命名已经提交，后续错误只能作为持久化警告，不能伪装成未修改。
+            std::mem::forget(cleanup);
+        }
         Ok(operations
             .sync_directory(&self.parent)
             .err()
             .map(|error| format!("file committed, but syncing parent directory failed: {error}")))
+    }
+
+    /// Bounded read through the safe NOFOLLOW handle: a regular-file check
+    /// first, then at most `max_bytes + 1` bytes so callers can detect
+    /// oversize files without allocating unbounded memory. FIFOs, directories
+    /// and symlink targets are real errors, never partial reads.
+    pub(super) fn read_bounded(&self, max_bytes: usize) -> Result<Vec<u8>> {
+        let mut file = self
+            .open_read()
+            .context("opening plan file without symlinks")?;
+        ensure!(
+            file.metadata()?.is_file(),
+            "plan file must be a regular file"
+        );
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(max_bytes as u64 + 1)
+            .read_to_end(&mut bytes)
+            .context("reading plan file")?;
+        Ok(bytes)
     }
 }
 
@@ -234,6 +281,18 @@ trait SaveOperations {
     fn commit(&self, parent: &File, temporary: &OsStr, target: &OsStr) -> io::Result<()> {
         Ok(fs::renameat(parent, temporary, parent, target)?)
     }
+    /// Publishes the temporary file under the target name only when the
+    /// target does not exist yet; without AT_SYMLINK_FOLLOW an existing
+    /// target fails with `EEXIST` instead of being replaced.
+    fn commit_new(&self, parent: &File, temporary: &OsStr, target: &OsStr) -> io::Result<()> {
+        Ok(fs::linkat(
+            parent,
+            temporary,
+            parent,
+            target,
+            AtFlags::empty(),
+        )?)
+    }
     fn sync_directory(&self, parent: &File) -> io::Result<()> {
         parent.sync_all()
     }
@@ -246,11 +305,12 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
-    #[derive(Clone, Copy)]
+    #[derive(Debug, Clone, Copy)]
     enum Fault {
         Write,
         Sync,
         Commit,
+        CommitNew,
         Directory,
     }
     struct FaultSave(Fault);
@@ -277,6 +337,12 @@ mod tests {
             }
             SystemSave.commit(parent, temporary, target)
         }
+        fn commit_new(&self, parent: &File, temporary: &OsStr, target: &OsStr) -> io::Result<()> {
+            if matches!(self.0, Fault::CommitNew) {
+                return Err(failure());
+            }
+            SystemSave.commit_new(parent, temporary, target)
+        }
         fn sync_directory(&self, parent: &File) -> io::Result<()> {
             if matches!(self.0, Fault::Directory) {
                 return Err(failure());
@@ -296,7 +362,11 @@ mod tests {
                 }
                 let workspace = Workspace::open(dir.path()).unwrap();
                 let target = workspace.target(Path::new("target"), true).unwrap();
-                assert!(target.save_with(b"replacement", &FaultSave(fault)).is_err());
+                assert!(
+                    target
+                        .save_with(b"replacement", &FaultSave(fault), false)
+                        .is_err()
+                );
                 if existing {
                     assert_eq!(std::fs::read(&path).unwrap(), b"original\r\n\xe4\xb8\xad");
                 } else {
@@ -319,7 +389,7 @@ mod tests {
         let workspace = Workspace::open(dir.path()).unwrap();
         let target = workspace.target(Path::new("script"), false).unwrap();
         let warning = target
-            .save_with(b"new", &FaultSave(Fault::Directory))
+            .save_with(b"new", &FaultSave(Fault::Directory), false)
             .unwrap();
         assert!(warning.unwrap().contains("file committed"));
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
@@ -421,5 +491,112 @@ mod tests {
         assert!(target.read_optional().is_err());
         assert!(target.read().is_err());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[test]
+    fn save_new_creates_target_once_and_collision_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let target = workspace
+            .target(Path::new(".pp/plans/abcdef.md"), true)
+            .unwrap();
+        assert_eq!(target.save_new(b"first").unwrap(), None);
+        assert_eq!(
+            std::fs::read(dir.path().join(".pp/plans/abcdef.md")).unwrap(),
+            b"first"
+        );
+        // Neither the success nor a later collision may leave temporaries.
+        assert_eq!(
+            std::fs::read_dir(dir.path().join(".pp/plans"))
+                .unwrap()
+                .count(),
+            1
+        );
+
+        // A pre-existing or raced target is never overwritten.
+        std::fs::write(dir.path().join(".pp/plans/abcdef.md"), b"external").unwrap();
+        let error = target.save_new(b"second").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Plan path already exists; use /plan new."
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(".pp/plans/abcdef.md")).unwrap(),
+            b"external"
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path().join(".pp/plans"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn save_new_faults_leave_no_target_or_temporaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".pp/plans/abcdef.md");
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let target = workspace
+            .target(Path::new(".pp/plans/abcdef.md"), true)
+            .unwrap();
+        for fault in [Fault::Write, Fault::Sync, Fault::CommitNew] {
+            assert!(
+                target
+                    .save_with(b"content", &FaultSave(fault), true)
+                    .is_err(),
+                "{fault:?}"
+            );
+            assert!(!path.exists());
+            assert_eq!(
+                std::fs::read_dir(dir.path().join(".pp/plans"))
+                    .unwrap()
+                    .count(),
+                0,
+                "{fault:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_bounded_caps_bytes_and_rejects_special_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        std::fs::write(dir.path().join("exact.bin"), vec![b'a'; 4096]).unwrap();
+        let exact = workspace.target(Path::new("exact.bin"), false).unwrap();
+        assert_eq!(exact.read_bounded(4096).unwrap().len(), 4096);
+
+        // One byte over the cap reads max+1 so callers detect oversize.
+        std::fs::write(dir.path().join("over.bin"), vec![b'b'; 4097]).unwrap();
+        let over = workspace.target(Path::new("over.bin"), false).unwrap();
+        assert_eq!(over.read_bounded(4096).unwrap().len(), 4097);
+
+        // Much larger files still read at most max+1 bytes.
+        std::fs::write(dir.path().join("huge.bin"), vec![b'c'; 100_000]).unwrap();
+        let huge = workspace.target(Path::new("huge.bin"), false).unwrap();
+        assert_eq!(huge.read_bounded(4096).unwrap().len(), 4097);
+
+        assert!(
+            workspace
+                .target(Path::new("missing.bin"), false)
+                .unwrap()
+                .read_bounded(16)
+                .is_err()
+        );
+
+        // Symlinks are refused before any read.
+        symlink("exact.bin", dir.path().join("link.bin")).unwrap();
+        assert!(workspace.target(Path::new("link.bin"), false).is_err());
+
+        // FIFO targets must not hang on open and are rejected outright.
+        std::process::Command::new("mkfifo")
+            .arg(dir.path().join("pipe"))
+            .status()
+            .unwrap();
+        assert!(workspace.target(Path::new("pipe"), false).is_err());
+
+        // Directories are rejected as non-regular targets.
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        assert!(workspace.target(Path::new("subdir"), false).is_err());
     }
 }

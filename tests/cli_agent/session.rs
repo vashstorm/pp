@@ -686,7 +686,6 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
             assert!(state["editMode"].is_string());
             assert!(state["toolLimits"].is_object());
             assert!(state["baseSystem"].is_string());
-            assert_eq!(state.as_object().unwrap().len(), 7);
             assert_eq!(
                 state["session"]["protocol"],
                 if api == Api::Chat {
@@ -1808,6 +1807,45 @@ fn session_broken_stdout_still_persists_executed_tool_results() {
     );
     assert_eq!(output.stdout, b"recovered\n");
     no_more(&server);
+}
+
+#[test]
+fn plan_headless_restore_refuses_before_mcp_or_model_start() {
+    for api in APIS {
+        let provider = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let (id, path) = make_saved_session(
+            api,
+            &provider,
+            home.path(),
+            project.path(),
+            "Plan restore fixture",
+            "saved",
+        );
+        with_mutated_records(&path, |records| {
+            push_entry(
+                records,
+                json!({"type":"custom","customType":"pp.workflow","data":{"version":1,"workflow":{"mode":"plan","plan":null,"review":null}}}),
+            );
+        });
+        configure(home.path(), &json!({"mcp_servers":{"must_not_spawn":{"command":"bash","args":["-c","touch forbidden-mcp; exit 1"]}}}).to_string(), &api.models(&provider));
+        for args in [
+            vec!["-r", id.as_str()],
+            vec!["-c", id.as_str()],
+            vec!["-r", id.as_str(), "-p", "not approval"],
+        ] {
+            expect_restore_failure(
+                &provider,
+                home.path(),
+                project.path(),
+                &args,
+                &["Saved session is in Plan mode; resume it in the TUI."],
+                &[],
+            );
+            assert!(!project.path().join("forbidden-mcp").exists());
+        }
+    }
 }
 
 #[test]

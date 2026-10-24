@@ -1,7 +1,9 @@
+use crate::agent::input::InputQueue;
 use crate::cancellation::{CancellationToken, Cancelled, CleanupError};
 use crate::config::{EditMode, ToolLimits};
 use crate::events::{AgentEvent, OutputStream};
-use anyhow::{Context, Result, ensure};
+use crate::plan::{PlanDocument, WorkMode};
+use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -16,6 +18,9 @@ mod bash;
 pub(crate) use bash::BackgroundCleanup;
 mod diff;
 mod hashline;
+mod plan;
+pub(crate) use plan::PlanChange;
+mod plan_search;
 mod read;
 mod replace;
 mod save;
@@ -43,7 +48,45 @@ pub(crate) struct Tools {
 pub(crate) struct ToolExecution {
     pub(crate) output: String,
     pub(crate) stop_error: Option<anyhow::Error>,
+    /// Outcome of the dedicated plan tools for this single call; the caller
+    /// applies it to the shared workflow state at the batch commit boundary.
+    pub(crate) plan_change: Option<PlanChange>,
 }
+
+/// Per-call tool authorization, borrowed from the agent's current workflow
+/// for every batch. The execution-layer gate inside `execute` is
+/// authoritative; hidden tool schemas never are.
+pub(crate) enum ToolPolicy<'a> {
+    /// Normal execution with the full toolset.
+    Execute,
+    /// Independent plan review: read-only investigation tools only; no ask,
+    /// no plan writes, no shell, no MCP.
+    Review,
+    /// Plan mode: whitelisted research tools plus the dedicated plan tools.
+    Plan {
+        document: &'a PlanDocument,
+        /// Set once this batch has successfully submitted the plan; every
+        /// later call in the batch is refused with a per-call result.
+        sealed: bool,
+        /// Running input queue for the plan-submit boundary; `None` only in
+        /// isolated tool unit tests.
+        input: Option<&'a InputQueue>,
+    },
+}
+
+fn is_plan_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "plan_search" | "plan_find" | "plan_write" | "plan_submit"
+    )
+}
+
+// Single source of truth for the Plan/review toolsets: the execution gate and
+// the schema builders below must stay in sync by construction.
+/// Research tools Plan mode keeps from the ordinary Execute list.
+const PLAN_BASE_TOOLS: &[&str] = &["read", "load_skill"];
+/// The independent reviewer's full toolset: Plan base plus in-process search.
+const REVIEW_TOOLS: &[&str] = &["read", "load_skill", "plan_search", "plan_find"];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,14 +191,88 @@ impl Tools {
         self.edit_mode
     }
 
-    pub(crate) fn all_definitions(&self) -> Vec<FunctionObject> {
-        let mut definitions = Self::definitions(self.edit_mode);
-        if self.ask_handler.is_some() {
-            definitions.push(crate::interaction::definition());
+    /// Safe read of the current plan file through the NOFOLLOW workspace
+    /// handle. Oversize, non-UTF-8, symlink, missing and special-type targets
+    /// are errors; a logged snapshot is never substituted for the file.
+    pub(crate) fn read_plan(&self, id: &str) -> Result<String> {
+        plan::read_plan(&self.workspace, id)
+    }
+
+    /// True only when the workspace-normalized path is exactly the current
+    /// plan's fixed `.pp/plans/<id>.md` file.
+    pub(crate) fn is_plan_path(&self, path: &str, id: &str) -> bool {
+        plan::is_plan_path(&self.workspace, path, id)
+    }
+
+    pub(crate) fn all_definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
+        match mode {
+            WorkMode::Execute => {
+                let mut definitions = Self::definitions(self.edit_mode);
+                if self.ask_handler.is_some() {
+                    definitions.push(crate::interaction::definition());
+                }
+                definitions.extend(self.search.definitions());
+                definitions.extend(self.mcp.definitions());
+                definitions
+            }
+            WorkMode::Plan => {
+                // PLAN_BASE_TOOLS reuse the Execute schemas verbatim;
+                // plan_search/plan_find come from the in-process search
+                // module and plan_write/plan_submit are defined here.
+                let mut definitions: Vec<_> = Self::definitions(self.edit_mode)
+                    .into_iter()
+                    .filter(|definition| PLAN_BASE_TOOLS.contains(&definition.name.as_str()))
+                    .collect();
+                if self.ask_handler.is_some() {
+                    definitions.push(crate::interaction::definition());
+                }
+                definitions.extend(plan_search::definitions());
+                definitions.extend(Self::plan_definitions());
+                definitions
+            }
         }
-        definitions.extend(self.search.definitions());
-        definitions.extend(self.mcp.definitions());
-        definitions
+    }
+
+    /// Read-only definitions for the independent plan reviewer: a subset of
+    /// the Plan list without ask or the plan-writing tools.
+    pub(crate) fn review_definitions(&self) -> Vec<FunctionObject> {
+        self.all_definitions(WorkMode::Plan)
+            .into_iter()
+            .filter(|definition| REVIEW_TOOLS.contains(&definition.name.as_str()))
+            .collect()
+    }
+
+    fn plan_definitions() -> Vec<FunctionObject> {
+        vec![
+            FunctionObject {
+                name: "plan_write".into(),
+                description: Some("Create or replace the plan document for this task. content is the complete Markdown plan; implementation steps must be standard Markdown task list items (- [ ]) with a clear action and completion condition each. expected_revision must equal the current plan revision. The write fails if the plan file was changed externally.".into()),
+                parameters: Some(json!({
+                    "type":"object",
+                    "properties":{
+                        "title":{"type":"string","minLength":1},
+                        "content":{"type":"string","minLength":1},
+                        "expected_revision":{"type":"integer","minimum":0}
+                    },
+                    "required":["title","content","expected_revision"],
+                    "additionalProperties":false
+                })),
+                ..Default::default()
+            },
+            FunctionObject {
+                name: "plan_submit".into(),
+                description: Some("Submit the current plan for user review and approval. expected_revision must equal the current plan revision. After a successful submission no further tools run in this batch; the user reviews the plan before any execution starts. Never ask the user to approve in chat; only plan_submit requests review.".into()),
+                parameters: Some(json!({
+                    "type":"object",
+                    "properties":{
+                        "expected_revision":{"type":"integer","minimum":1}
+                    },
+                    "required":["expected_revision"],
+                    "additionalProperties":false
+                })),
+                ..Default::default()
+            },
+        ]
     }
 
     pub(crate) fn definitions(edit_mode: EditMode) -> Vec<FunctionObject> {
@@ -250,6 +367,7 @@ impl Tools {
         name: &str,
         arguments: &str,
         call_id: &str,
+        policy: ToolPolicy<'_>,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> ToolExecution {
@@ -265,6 +383,7 @@ impl Tools {
             "bash_task" => "bash_task",
             "grep" => "grep",
             "find" => "find",
+            "plan_search" | "plan_find" | "plan_write" | "plan_submit" => "plan_tool",
             _ => "external",
         };
         tracing::info!(event = "tool_started", pid, tool);
@@ -276,11 +395,15 @@ impl Tools {
         // The cancellation check runs after ToolStarted and before any argument
         // parsing, file access or process creation.
         let mut stop_error = None;
+        let mut plan_change = None;
         let value = if cancellation.is_cancelled() {
             json!({"ok":false,"cancelled":true,"error":"Not executed: task cancelled."})
         } else {
-            match self.execute_inner(name, arguments, call_id, cancellation, emit) {
-                Ok(result) => result,
+            match self.execute_inner(name, arguments, call_id, policy, cancellation, emit) {
+                Ok((result, change)) => {
+                    plan_change = change;
+                    result
+                }
                 Err(error) => {
                     let cleanup_failure = error.chain().any(|cause| cause.is::<CleanupError>());
                     let cancelled = error.chain().any(|cause| cause.is::<Cancelled>());
@@ -319,6 +442,7 @@ impl Tools {
         ToolExecution {
             output: serialized,
             stop_error,
+            plan_change,
         }
     }
 
@@ -327,9 +451,39 @@ impl Tools {
         name: &str,
         arguments: &str,
         call_id: &str,
+        policy: ToolPolicy<'_>,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
-    ) -> Result<Value> {
+    ) -> Result<(Value, Option<PlanChange>)> {
+        // A sealed batch (plan already submitted) refuses every call before
+        // any parsing or dispatch, while still producing one result per call
+        // ID through the ordinary ToolStarted/ToolFinished path.
+        if let ToolPolicy::Plan { sealed: true, .. } = policy {
+            bail!("Not executed: plan submitted for review.");
+        }
+        // Execution-layer policy gate. It runs before argument parsing, file
+        // access, process creation and MCP dispatch, so denied tools have no
+        // side effects even with malformed arguments, and unknown names
+        // (including unseen MCP tools) cannot bypass it via the fallback.
+        let allowed = match &policy {
+            ToolPolicy::Execute => !is_plan_tool(name),
+            ToolPolicy::Review => REVIEW_TOOLS.contains(&name),
+            ToolPolicy::Plan { .. } => {
+                PLAN_BASE_TOOLS.contains(&name)
+                    || is_plan_tool(name)
+                    || name == "ask" && self.ask_handler.is_some()
+            }
+        };
+        if !allowed {
+            bail!(
+                "{}",
+                match &policy {
+                    ToolPolicy::Execute => format!("{name} is only available in Plan mode."),
+                    ToolPolicy::Review => "Tool is not available during Plan review.".to_owned(),
+                    ToolPolicy::Plan { .. } => "Tool is not available in Plan mode.".to_owned(),
+                }
+            );
+        }
         match name {
             "ask" => {
                 let handler = self
@@ -515,8 +669,23 @@ impl Tools {
                 }
                 Ok(result)
             }
+            "plan_search" | "plan_find" => {
+                plan_search::run(&self.cwd, &self.limits, name, arguments, cancellation)
+            }
+            "plan_write" | "plan_submit" => {
+                // Only ToolPolicy::Plan passes the gate for plan tools; the
+                // outcome is reported to the caller instead of mutating any
+                // workflow state here.
+                let ToolPolicy::Plan {
+                    document, input, ..
+                } = policy
+                else {
+                    unreachable!("plan tools are gated to ToolPolicy::Plan");
+                };
+                return plan::run(&self.workspace, document, input, name, arguments);
+            }
             _ => self.mcp.call(name, arguments, cancellation),
-        }
+        }.map(|value| (value, None))
     }
 
     fn path(&self, path: &str) -> Result<PathBuf> {
@@ -660,7 +829,14 @@ mod tests {
 
     fn execute(tools: &Tools, name: &str, args: Value) -> Value {
         let token = CancellationToken::new();
-        let execution = tools.execute(name, &args.to_string(), "test-call", &token, &mut |_| {});
+        let execution = tools.execute(
+            name,
+            &args.to_string(),
+            "test-call",
+            ToolPolicy::Execute,
+            &token,
+            &mut |_| {},
+        );
         assert!(
             execution.stop_error.is_none(),
             "unexpected cleanup failure: {:?}",
@@ -814,8 +990,14 @@ mod tests {
                     token.cancel();
                 })
             });
-            let execution =
-                tools.execute("grep", "{\"args\":[]}", "search-stop", &token, &mut |_| {});
+            let execution = tools.execute(
+                "grep",
+                "{\"args\":[]}",
+                "search-stop",
+                ToolPolicy::Execute,
+                &token,
+                &mut |_| {},
+            );
             assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
             let result: Value = serde_json::from_str(&execution.output).unwrap();
             assert_eq!(result["ok"], false, "{result}");
@@ -1350,7 +1532,7 @@ mod tests {
             "natural-exit descendant",
         );
         let token = CancellationToken::new();
-        let execution = tools.execute("bash", &json!({"mode":"background","command":"trap '' TERM; sleep 60 & child=$!; printf '%s\\n%s' \"$$\" \"$child\" > cancelled.pending; mv cancelled.pending cancelled.pid; printf cancelled-output; wait \"$child\""}).to_string(), "cancel-start", &token, &mut |_| {});
+        let execution = tools.execute("bash", &json!({"mode":"background","command":"trap '' TERM; sleep 60 & child=$!; printf '%s\\n%s' \"$$\" \"$child\" > cancelled.pending; mv cancelled.pending cancelled.pid; printf cancelled-output; wait \"$child\""}).to_string(), "cancel-start", ToolPolicy::Execute, &token, &mut |_| {});
         let started: Value = serde_json::from_str(&execution.output).unwrap();
         let pids = background_marker(&dir.path().join("cancelled.pid"));
         let other = execute(
@@ -1603,6 +1785,7 @@ mod tests {
             "bash",
             &json!({"command":"for ((i=0;i<10000;i++)); do printf 'out\\n'; printf 'err\\n' >&2; done; printf done > completed; exit 7"}).to_string(),
             "line-limit",
+            ToolPolicy::Execute,
             &token,
             &mut |event| {
                 if let AgentEvent::ToolOutput { stream, text, .. } = event {
@@ -1813,6 +1996,7 @@ mod tests {
             &json!({"command":"trap '' TERM; printf ready; sleep 3; printf late > late"})
                 .to_string(),
             "call",
+            ToolPolicy::Execute,
             &token,
             &mut |event| {
                 if matches!(event, AgentEvent::ToolOutput { .. }) && !blocked {
@@ -1884,6 +2068,7 @@ mod tests {
             "bash",
             &json!({"command":"trap '' TERM; printf 'cancel-ready\\n'; printf '%s' \"$$\" > bash.pid; sleep 30 & child=$!; printf '%s' \"$child\" > bash-child.pid; wait \"$child\""}).to_string(),
             "cancel-call",
+            ToolPolicy::Execute,
             &token,
             &mut |_| {},
         );
@@ -1927,6 +2112,7 @@ mod tests {
                 "edit",
                 &json!({"path":"demo.txt","edits":[{"oldText":"old","newText":"new"}]}).to_string(),
                 "edit-1",
+                ToolPolicy::Execute,
                 &token,
                 &mut |event| {
                     if matches!(event, AgentEvent::FileChanged { .. }) {
@@ -1964,6 +2150,7 @@ mod tests {
             "edit",
             &json!({"path":"demo.txt","edits":[{"oldText":"missing","newText":"bad"}]}).to_string(),
             "edit-fail",
+            ToolPolicy::Execute,
             &token,
             &mut |event| events.push(event),
         );
@@ -1979,6 +2166,7 @@ mod tests {
                 "write",
                 &json!({"path":"binary.txt","content":"text\n"}).to_string(),
                 "write-binary",
+                ToolPolicy::Execute,
                 &token,
                 &mut |event| events.push(event),
             )
@@ -2011,6 +2199,7 @@ mod tests {
                 "write",
                 &json!({"path":"unreadable.txt","content":"new"}).to_string(),
                 "unreadable",
+                ToolPolicy::Execute,
                 &CancellationToken::new(),
                 &mut |event| events.push(event),
             )
@@ -2034,6 +2223,7 @@ mod tests {
             "write",
             &json!({"path":"skipped.txt","content":"must-not-exist"}).to_string(),
             "skip-call",
+            ToolPolicy::Execute,
             &token,
             &mut |event| match event {
                 AgentEvent::ToolStarted { .. } | AgentEvent::ToolFinished { .. } => events += 1,
@@ -2049,6 +2239,374 @@ mod tests {
         );
         assert!(!dir.path().join("skipped.txt").exists());
         assert!(!dir.path().join("skipped").exists());
+    }
+
+    fn plan_document() -> crate::plan::PlanDocument {
+        crate::plan::PlanDocument::new().unwrap()
+    }
+
+    fn assert_started_finished_pairs(events: &[AgentEvent], expected_calls: usize) {
+        let mut started = Vec::new();
+        let mut finished = Vec::new();
+        for event in events {
+            match event {
+                AgentEvent::ToolStarted { id, .. } => started.push(id.clone()),
+                AgentEvent::ToolFinished { id, .. } => finished.push(id.clone()),
+                _ => panic!("unexpected event during denied tool call"),
+            }
+        }
+        assert_eq!(started.len(), expected_calls, "{started:?}");
+        assert_eq!(started, finished);
+    }
+
+    #[test]
+    fn plan_policy_denies_side_effects_unknown_names_and_malformed_args() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("canary.txt"), b"unchanged\n").unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let document = plan_document();
+        let cases: Vec<(&str, String)> = vec![
+            (
+                "bash",
+                json!({"command":"printf side-effect > marker"}).to_string(),
+            ),
+            // Malformed arguments must not change the denial or execute.
+            ("bash", "{not json".to_owned()),
+            (
+                "write",
+                json!({"path":"canary.txt","content":"overwritten"}).to_string(),
+            ),
+            ("edit", "not json".to_owned()),
+            (
+                "grep",
+                json!({"args":["-n","-e","needle","canary.txt"]}).to_string(),
+            ),
+            ("find", json!({"args":[".","-name","*.txt"]}).to_string()),
+            (
+                "bash_task",
+                json!({"task_id":"x","action":"stop"}).to_string(),
+            ),
+            // Unknown names must not reach MCP dispatch.
+            ("mcp_unknown", "{}".to_owned()),
+            // ask is whitelisted only with an installed handler.
+            ("ask", "{}".to_owned()),
+        ];
+        let mut events = Vec::new();
+        for (name, arguments) in &cases {
+            let execution = tools.execute(
+                name,
+                arguments,
+                "gate-call",
+                ToolPolicy::Plan {
+                    document: &document,
+                    sealed: false,
+                    input: None,
+                },
+                &CancellationToken::new(),
+                &mut |event| events.push(event),
+            );
+            assert!(
+                execution.stop_error.is_none(),
+                "{name}: {:?}",
+                execution.stop_error
+            );
+            let result: Value = serde_json::from_str(&execution.output).unwrap();
+            assert_eq!(
+                result,
+                json!({"ok":false,"error":"Tool is not available in Plan mode."}),
+                "{name}: {result}"
+            );
+        }
+        assert_started_finished_pairs(&events, cases.len());
+        assert_eq!(
+            fs::read(dir.path().join("canary.txt")).unwrap(),
+            b"unchanged\n"
+        );
+        assert!(!dir.path().join("marker").exists());
+    }
+
+    #[test]
+    fn plan_policy_allows_read_and_sealed_batch_rejects_every_call() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("notes.txt"), b"hello\n").unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let document = plan_document();
+        let read = tools.execute(
+            "read",
+            &json!({"path":"notes.txt"}).to_string(),
+            "plan-read",
+            ToolPolicy::Plan {
+                document: &document,
+                sealed: false,
+                input: None,
+            },
+            &CancellationToken::new(),
+            &mut |_| {},
+        );
+        assert!(read.stop_error.is_none(), "{:?}", read.stop_error);
+        let result: Value = serde_json::from_str(&read.output).unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["content"], "hello\n");
+
+        for (name, arguments) in [
+            ("read", json!({"path":"notes.txt"}).to_string()),
+            ("bash", json!({"command":"echo hi"}).to_string()),
+        ] {
+            let execution = tools.execute(
+                name,
+                &arguments,
+                "sealed-call",
+                ToolPolicy::Plan {
+                    document: &document,
+                    sealed: true,
+                    input: None,
+                },
+                &CancellationToken::new(),
+                &mut |_| {},
+            );
+            assert!(
+                execution.stop_error.is_none(),
+                "{name}: {:?}",
+                execution.stop_error
+            );
+            let result: Value = serde_json::from_str(&execution.output).unwrap();
+            assert_eq!(
+                result,
+                json!({"ok":false,"error":"Not executed: plan submitted for review."}),
+                "{name}: {result}"
+            );
+        }
+        assert_eq!(fs::read(dir.path().join("notes.txt")).unwrap(), b"hello\n");
+    }
+
+    #[test]
+    fn review_policy_is_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("src.txt"), b"evidence\n").unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let cases: Vec<(&str, String)> = vec![
+            ("ask", "{}".to_owned()),
+            ("write", json!({"path":"out.txt","content":"x"}).to_string()),
+            ("edit", "{}".to_owned()),
+            ("bash", json!({"command":"echo hi"}).to_string()),
+            (
+                "plan_write",
+                json!({"title":"t","content":"c","expected_revision":0}).to_string(),
+            ),
+            ("plan_submit", json!({"expected_revision":1}).to_string()),
+            ("unknown_mcp", "{}".to_owned()),
+        ];
+        for (name, arguments) in &cases {
+            let execution = tools.execute(
+                name,
+                arguments,
+                "review-call",
+                ToolPolicy::Review,
+                &CancellationToken::new(),
+                &mut |_| {},
+            );
+            assert!(
+                execution.stop_error.is_none(),
+                "{name}: {:?}",
+                execution.stop_error
+            );
+            let result: Value = serde_json::from_str(&execution.output).unwrap();
+            assert_eq!(
+                result,
+                json!({"ok":false,"error":"Tool is not available during Plan review."}),
+                "{name}: {result}"
+            );
+        }
+        let read = tools.execute(
+            "read",
+            &json!({"path":"src.txt"}).to_string(),
+            "review-read",
+            ToolPolicy::Review,
+            &CancellationToken::new(),
+            &mut |_| {},
+        );
+        let result: Value = serde_json::from_str(&read.output).unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["content"], "evidence\n");
+        assert!(!dir.path().join("out.txt").exists());
+    }
+
+    #[test]
+    fn execute_policy_rejects_dedicated_plan_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        for name in ["plan_search", "plan_find", "plan_write", "plan_submit"] {
+            let execution = tools.execute(
+                name,
+                "{}",
+                "exec-call",
+                ToolPolicy::Execute,
+                &CancellationToken::new(),
+                &mut |_| {},
+            );
+            assert!(
+                execution.stop_error.is_none(),
+                "{name}: {:?}",
+                execution.stop_error
+            );
+            let result: Value = serde_json::from_str(&execution.output).unwrap();
+            assert_eq!(
+                result,
+                json!({"ok":false,"error":format!("{name} is only available in Plan mode.")}),
+                "{name}: {result}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_tools_report_changes_through_execute_and_seal_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let content = "- [ ] task\n";
+        let mut document = plan_document();
+
+        // First write creates the fixed plan path and reports Written.
+        let execution = tools.execute(
+            "plan_write",
+            &json!({"title":"Plan","content":content,"expected_revision":0}).to_string(),
+            "write-call",
+            ToolPolicy::Plan {
+                document: &document,
+                sealed: false,
+                input: None,
+            },
+            &CancellationToken::new(),
+            &mut |_| {},
+        );
+        assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(result["path"].as_str(), Some(document.path().as_str()));
+        assert_eq!(result["revision"], 1);
+        assert!(matches!(
+            execution.plan_change,
+            Some(PlanChange::Written { .. })
+        ));
+        assert_eq!(
+            std::fs::read(
+                dir.path()
+                    .join(".pp/plans")
+                    .join(format!("{}.md", document.id))
+            )
+            .unwrap(),
+            content.as_bytes()
+        );
+
+        // Mirror the caller applying the change to its workflow snapshot.
+        document.revision = 1;
+        document.title = "Plan".into();
+        document.content = content.to_owned();
+
+        // Identical title/content is a no-op without a change or bump.
+        let execution = tools.execute(
+            "plan_write",
+            &json!({"title":"Plan","content":content,"expected_revision":1}).to_string(),
+            "noop-call",
+            ToolPolicy::Plan {
+                document: &document,
+                sealed: false,
+                input: None,
+            },
+            &CancellationToken::new(),
+            &mut |_| {},
+        );
+        assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(
+            result,
+            json!({"ok":true,"path":document.path(),"revision":1})
+        );
+        assert!(execution.plan_change.is_none());
+
+        // Pending steering input defers the submission with an exact error.
+        let queue = InputQueue::default();
+        queue.begin_run().unwrap();
+        queue
+            .enqueue(
+                crate::agent::input::PendingKind::Steering,
+                "steer".into(),
+                None,
+                false,
+            )
+            .unwrap();
+        let arguments = json!({"expected_revision":1}).to_string();
+        let execution = tools.execute(
+            "plan_submit",
+            &arguments,
+            "submit-call",
+            ToolPolicy::Plan {
+                document: &document,
+                sealed: false,
+                input: Some(&queue),
+            },
+            &CancellationToken::new(),
+            &mut |_| {},
+        );
+        assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(
+            result,
+            json!({"ok":false,"error":"Apply pending input before submitting the plan."})
+        );
+        assert!(execution.plan_change.is_none());
+        assert_eq!(
+            queue.claim_steering(false).unwrap().len(),
+            1,
+            "deferred submission must not consume steering input"
+        );
+
+        // Without pending steering the submission seals and reports Submitted.
+        let execution = tools.execute(
+            "plan_submit",
+            &arguments,
+            "submit-call",
+            ToolPolicy::Plan {
+                document: &document,
+                sealed: false,
+                input: Some(&queue),
+            },
+            &CancellationToken::new(),
+            &mut |_| {},
+        );
+        assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(result, json!({"ok":true,"revision":1}));
+        assert!(matches!(execution.plan_change, Some(PlanChange::Submitted)));
+        // The file content is untouched by submission.
+        assert_eq!(
+            std::fs::read(
+                dir.path()
+                    .join(".pp/plans")
+                    .join(format!("{}.md", document.id))
+            )
+            .unwrap(),
+            content.as_bytes()
+        );
+    }
+
+    #[test]
+    fn plan_file_isolation_and_is_plan_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let document = plan_document();
+        std::fs::create_dir_all(dir.path().join(".pp/plans")).unwrap();
+        let plan_path = format!(".pp/plans/{}.md", document.id);
+        std::fs::write(dir.path().join(&plan_path), b"- [ ] task\n").unwrap();
+        assert!(tools.is_plan_path(&plan_path, &document.id));
+        assert!(!tools.is_plan_path("canary.txt", &document.id));
+        assert_eq!(tools.read_plan(&document.id).unwrap(), "- [ ] task\n");
+        // Only the fixed plan path is ever touched by plan IO.
+        std::fs::write(dir.path().join("canary.txt"), b"unchanged\n").unwrap();
+        let error = tools.read_plan(&"0".repeat(32)).unwrap_err();
+        assert!(!error.to_string().is_empty());
+        assert_eq!(
+            std::fs::read(dir.path().join("canary.txt")).unwrap(),
+            b"unchanged\n"
+        );
     }
 
     struct ChunkedReader<'a> {
@@ -2166,6 +2724,7 @@ mod tests {
             "bash",
             &args,
             "live-call",
+            ToolPolicy::Execute,
             &token,
             &mut |event| match event {
                 AgentEvent::ToolStarted {

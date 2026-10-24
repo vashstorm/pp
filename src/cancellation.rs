@@ -3,6 +3,7 @@ pub(crate) use tokio_util::sync::CancellationToken;
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RunOutcome {
     Completed,
+    AwaitingPlanReview,
     Cancelled,
 }
 

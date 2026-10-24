@@ -952,28 +952,17 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
         pty.input("/quit\r");
         pty.finish();
 
-        // 失败的 state 以 EFBIG 结束在文件大小上限，尾行不是完整 JSON。
+        // 同步失败回滚候选，已接受的用户输入与旧 native 历史逐字节保留。
         let failed = std::fs::read(&path).unwrap();
-        assert_eq!(
-            failed.len() as u64,
-            limit,
-            "rejected state write must stop at the file-size limit"
-        );
-        assert_ne!(failed.last(), Some(&b'\n'), "expected a partial final record");
-        let cut = failed
-            .iter()
-            .rposition(|byte| *byte == b'\n')
-            .map(|index| index + 1)
-            .expect("previous complete checkpoint line");
-        assert!(cut < failed.len());
-        let complete = String::from_utf8_lossy(&failed[..cut]);
+        assert_eq!(failed, sent_bytes, "failed compaction must preserve the prior committed journal");
+        let complete = String::from_utf8_lossy(&failed);
         assert!(
             !complete.contains("[Context summary]"),
             "失败候选不得成为已提交快照"
         );
         assert!(!complete.contains(CONTEXT_TUI_SUMMARY));
 
-        // 不继续任务，只恢复：读到此前完整快照，不把 partial tail 当成功。
+        // 不继续任务，只恢复：读到此前完整快照，不把失败候选当成功。
         let mut resumed = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
         resumed.ready();
         assert!(

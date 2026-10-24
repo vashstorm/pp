@@ -3,6 +3,7 @@ mod files;
 mod markdown;
 mod menu;
 mod notification;
+mod plan;
 mod scrollback;
 mod sessions;
 mod skills;
@@ -14,14 +15,15 @@ mod welcome;
 
 use crate::{
     agent::{
-        Agent,
+        Agent, ExecutionPreparation,
         context::CompactionOutcome,
         input::{InputQueue, PendingKind, QueueSnapshot},
     },
     cancellation::{CancellationToken, RunOutcome},
-    commands::{self, COMMANDS, Command},
+    commands::{self, COMMANDS, Command, PlanCommand},
     config::{ModelChoice, NotificationOptions, ThinkLevel},
     events::AgentEvent,
+    plan::{ExecutionContext, PlanReview, PlanReviewReport, PlanStatus, WorkMode, WorkflowState},
 };
 use anyhow::{Context, Result};
 use crossterm::{
@@ -76,8 +78,20 @@ pub(crate) fn run(
         .context("enabling terminal input modes")?;
     let mut app = App::new_with_skills(agent, skills, file_commands, cwd, notification_options)?;
     if auto_continue && matches!(app.state, State::Ready) {
-        // -c: replay is already loaded; resend the saved request without touching the editor.
-        app.send_task(None);
+        // -c：Execute 保持原继续行为；Plan/Draft 提示继续输入；Plan/Ready 进入审阅。
+        match (
+            &app.workflow.mode,
+            app.workflow.plan.as_ref().map(|plan| plan.status),
+        ) {
+            (WorkMode::Plan, Some(PlanStatus::Ready)) => app.request_plan_read(),
+            (WorkMode::Plan, _) => app.notify(
+                Level::Normal,
+                "Plan mode is active; describe the next research or discussion input.".into(),
+            ),
+            (WorkMode::Execute, _) => {
+                app.send_task(None);
+            }
+        }
     }
     let mut workspace = WorkspaceStatus::new(cwd)?;
     let mut dirty = true;
@@ -86,6 +100,7 @@ pub(crate) fn run(
         dirty |= workspace.receive();
         dirty |= app.notifications.tick(Instant::now());
         dirty |= app.conversation.tick(Instant::now());
+        dirty |= app.review_transcript_tick(Instant::now());
         dirty |= app.token_speed.tick(Instant::now());
         if dirty {
             terminal
@@ -149,9 +164,34 @@ enum WorkerCommand {
     SaveDefaultModel(String),
     ListSessions,
     DeleteSession(String),
-    Resume(String),
+    Resume {
+        id: String,
+        cancellation: CancellationToken,
+    },
     ReadTree,
     NavigateTree(String),
+    EnterPlan {
+        cancellation: CancellationToken,
+    },
+    NewPlan {
+        cancellation: CancellationToken,
+    },
+    ReadPlan,
+    LeavePlan {
+        cancellation: CancellationToken,
+    },
+    ApprovePlan {
+        token: crate::plan::ReviewToken,
+        context: ExecutionContext,
+        cancellation: CancellationToken,
+        input: InputQueue,
+    },
+    // 独立 reviewer：进度经 ReviewProgress 事件回流，终态为 PlanReviewed。
+    ReviewPlan {
+        token: crate::plan::ReviewToken,
+        cancellation: CancellationToken,
+        input: InputQueue,
+    },
 }
 enum WorkerEvent {
     Ask {
@@ -177,6 +217,67 @@ enum WorkerEvent {
     SessionResumed(Result<ResumeState>),
     TreeRead(Result<crate::agent::persistence::tree::View>),
     TreeNavigated(Result<crate::agent::TreeNavigation>),
+    // 计划模式转换结果；Err 时 worker 会紧随一份真实 workflow 快照，
+    // 避免 UI 在“持久化成功但 MCP 关闭失败”的失败中显示 EXEC。
+    WorkflowChanged(Result<WorkflowState>),
+    PlanRead(Result<PlanReview>),
+    // 审查进度：只进独立 review transcript，不进主对话、用量或派发。
+    ReviewProgress(AgentEvent),
+    // reviewer 终态：成功携带最终报告；失败/取消保留上次完整报告。
+    PlanReviewed(Result<PlanReviewReport>),
+    // 无专属结果事件的动作（普通运行/压缩/切换模型/树导航）之后发布的快照。
+    Workflow(WorkflowState),
+    // 转换失败后重取当前 registry 的退出清理句柄；覆盖被保留的 prepared registry。
+    Cleanup(crate::mcp::Cleanup),
+    // 执行准备一次性交接：UI 安装清理句柄并经 reply 确认后 worker 才继续。
+    ExecutionPrepared {
+        workflow: WorkflowState,
+        session_id: Option<String>,
+        replay: Option<Vec<crate::agent::persistence::ReplayRecord>>,
+        cleanup: crate::mcp::Cleanup,
+        reply: mpsc::SyncSender<()>,
+    },
+}
+
+/// 发布 ExecutionPrepared 并等待 UI 安装清理句柄后的 ACK。
+/// ACK 失败或取消时返回错误；事件随通道消失时其 Cleanup Drop 会关闭新 slots。
+/// 转换失败后的纠正快照：发布真实 workflow，并刷新退出清理句柄以覆盖
+/// 可能被保留的 registry；所有 Plan 转换失败路径共用。
+fn publish_transition_failure(agent: &Agent, snapshots: &mut Vec<WorkerEvent>) {
+    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
+    if let Ok(cleanup) = agent.mcp_cleanup() {
+        snapshots.push(WorkerEvent::Cleanup(cleanup));
+    }
+}
+
+fn publish_prepared(
+    events: &mpsc::SyncSender<WorkerEvent>,
+    preparation: ExecutionPreparation,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let (reply, ack) = mpsc::sync_channel(1);
+    let event = WorkerEvent::ExecutionPrepared {
+        workflow: preparation.workflow,
+        session_id: preparation.session_id,
+        replay: preparation.replay,
+        cleanup: preparation.cleanup,
+        reply,
+    };
+    if events.send(event).is_err() {
+        cancellation.cancel();
+        return Err(crate::cancellation::Cancelled.into());
+    }
+    loop {
+        crate::cancellation::check(cancellation)?;
+        match ack.recv_timeout(Duration::from_millis(50)) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                cancellation.cancel();
+                return Err(crate::cancellation::Cancelled.into());
+            }
+        }
+    }
 }
 
 fn request_ask(
@@ -217,9 +318,9 @@ impl WorkerEvent {
 }
 
 /// 由 worker 一次性准备好的会话切换产物；全部就绪后才替换 UI 状态。
+/// 历史 replay 通过 ExecutionPrepared 交接，这里只保留会话 ID。
 struct ResumeState {
     id: String,
-    replay: Vec<crate::agent::persistence::ReplayRecord>,
 }
 
 #[derive(Clone, Copy)]
@@ -237,6 +338,11 @@ enum State {
     ReadingTree,
     NavigatingTree,
     Unavailable,
+    ChangingPlan,
+    ReadingPlan,
+    PreparingExecution,
+    // 独立 reviewer 运行中：审批/派发/命令全部暂停，草稿仍可编辑。
+    ReviewingPlan,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,6 +433,22 @@ struct App {
     file_query: Option<files::Query>,
     files_pending: bool,
     file_commands: commands::FileCommands,
+    // worker 发布的 workflow 快照；UI 不是权限权威，只用于展示与派发守卫。
+    workflow: WorkflowState,
+    plan_panel: Option<plan::Panel>,
+    plan_confirm: Option<plan::Confirm>,
+    // 仅在正文变化时重算的 (completed, total) 进度缓存。
+    plan_progress: (usize, usize),
+    // ExecutionPrepared 中 replay 重绘产生的显示错误，等待 SessionResumed 一并通知。
+    resume_note: Option<String>,
+    // EnterPlan 因 MCP 清理失败而 Err：下一次 /plan 优先重发 EnterPlan 重试。
+    plan_retry_enter: bool,
+    // /plan 的打开意图在 EnterPlan 成功后兑现（有正文则打开审阅）。
+    plan_open_after_enter: bool,
+    // 独立审查页的临时 transcript；审查进度不进主对话、不更新用量。
+    review_transcript: Option<Transcript>,
+    // 审查成功后待下一次 ReadPlan 消费的最终报告（刷新面板或降级展示）。
+    plan_review_pending: Option<PlanReviewReport>,
 }
 
 // worker 内部把 Agent 用量快照包装为进度事件；估算失败时跳过，不中断命令。
@@ -352,6 +474,17 @@ fn editor() -> TextArea<'static> {
     editor.set_cursor_line_style(Style::default());
     editor.set_cursor_style(Style::default());
     editor
+}
+
+impl App {
+    #[cfg(test)]
+    fn receive_event_for_test(&mut self, event: WorkerEvent) {
+        let (events, receiver) = mpsc::channel();
+        events.send(event).expect("test channel");
+        let original = self.events.replace(receiver);
+        self.receive();
+        self.events = original;
+    }
 }
 
 impl App {
@@ -428,6 +561,15 @@ impl App {
             file_directory: String::new(),
             file_query: None,
             files_pending: false,
+            workflow: WorkflowState::default(),
+            plan_panel: None,
+            plan_confirm: None,
+            plan_progress: (0, 0),
+            resume_note: None,
+            plan_retry_enter: false,
+            plan_open_after_enter: false,
+            review_transcript: None,
+            plan_review_pending: None,
         };
         let mut startup_notice = None;
         match agent {
@@ -449,6 +591,7 @@ impl App {
                     request_ask(&ask_events, request, cancellation)
                 }));
                 let usage = agent.context_usage().ok();
+                app.workflow = agent.workflow().clone();
                 // Deliberately detached: quitting must not wait for HTTP or foreground tools.
                 thread::Builder::new()
                     .name("pp-agent".into())
@@ -459,44 +602,58 @@ impl App {
                                 let _ = sender.send(WorkerEvent::Progress(event));
                             };
                             // 状态切换成功后紧随一份新用量快照，与动作保持 FIFO 顺序。
-                            let mut snapshot = None;
+                            let mut snapshots: Vec<WorkerEvent> = Vec::new();
                             let event = match command {
                                 WorkerCommand::Run {
                                     prompt,
                                     cancellation,
                                     input,
-                                } => WorkerEvent::completed(
-                                    started,
-                                    agent.run(&prompt, &cancellation, Some(&input), &mut emit),
-                                ),
+                                } => {
+                                    let outcome =
+                                        agent.run(&prompt, &cancellation, Some(&input), &mut emit);
+                                    // 计划工具可能修改 workflow；终态后同步一份快照。
+                                    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
+                                    WorkerEvent::completed(started, outcome)
+                                }
                                 WorkerCommand::Continue {
                                     cancellation,
                                     input,
-                                } => WorkerEvent::completed(
-                                    started,
-                                    agent.continue_session(&cancellation, Some(&input), &mut emit),
-                                ),
+                                } => {
+                                    let outcome = agent.continue_session(
+                                        &cancellation,
+                                        Some(&input),
+                                        &mut emit,
+                                    );
+                                    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
+                                    WorkerEvent::completed(started, outcome)
+                                }
                                 WorkerCommand::Compact { cancellation } => {
                                     let result = agent.compact(&cancellation, &mut emit);
                                     // 终态事件之前先发布最终用量快照；
                                     // 成功、失败、取消、未变化都会刷新状态栏。
-                                    if let Some(event) = usage_snapshot(&agent)
-                                        && sender.send(event).is_err()
-                                    {
-                                        break;
+                                    if let Some(event) = usage_snapshot(&agent) {
+                                        snapshots.push(event);
                                     }
+                                    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
                                     WorkerEvent::Compacted(result)
                                 }
                                 WorkerCommand::Reset => {
                                     agent.reset();
-                                    snapshot = usage_snapshot(&agent);
+                                    if let Some(event) = usage_snapshot(&agent) {
+                                        snapshots.push(event);
+                                    }
+                                    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
                                     WorkerEvent::Reset
                                 }
                                 WorkerCommand::SetThinkLevel(level) => {
                                     let result =
                                         agent.set_think_level(level).map(|()| agent.think_level());
                                     if result.is_ok() {
-                                        snapshot = usage_snapshot(&agent);
+                                        if let Some(event) = usage_snapshot(&agent) {
+                                            snapshots.push(event);
+                                        }
+                                        snapshots
+                                            .push(WorkerEvent::Workflow(agent.workflow().clone()));
                                     }
                                     WorkerEvent::ThinkLevelSet(result)
                                 }
@@ -515,7 +672,11 @@ impl App {
                                         (agent.current_model().clone(), agent.think_level())
                                     });
                                     if result.is_ok() {
-                                        snapshot = usage_snapshot(&agent);
+                                        if let Some(event) = usage_snapshot(&agent) {
+                                            snapshots.push(event);
+                                        }
+                                        snapshots
+                                            .push(WorkerEvent::Workflow(agent.workflow().clone()));
                                     }
                                     WorkerEvent::ModelSwitched(result)
                                 }
@@ -525,7 +686,11 @@ impl App {
                                 WorkerCommand::NavigateTree(id) => {
                                     let result = agent.navigate_tree(&id);
                                     if result.is_ok() {
-                                        snapshot = usage_snapshot(&agent);
+                                        if let Some(event) = usage_snapshot(&agent) {
+                                            snapshots.push(event);
+                                        }
+                                        snapshots
+                                            .push(WorkerEvent::Workflow(agent.workflow().clone()));
                                     }
                                     WorkerEvent::TreeNavigated(result)
                                 }
@@ -542,15 +707,133 @@ impl App {
                                         });
                                     WorkerEvent::SessionDeleted(id, result)
                                 }
-                                WorkerCommand::Resume(id) => {
-                                    let result = agent.resume(&id).map(|()| ResumeState {
-                                        id,
-                                        replay: agent.take_replay(),
-                                    });
-                                    if result.is_ok() {
-                                        snapshot = usage_snapshot(&agent);
+                                WorkerCommand::Resume { id, cancellation } => {
+                                    let result = agent.resume(&id, &cancellation);
+                                    match result {
+                                        Ok(preparation) => {
+                                            // 先交接清理句柄并等待 UI 确认，再补会话通知。
+                                            let prepared = publish_prepared(
+                                                &sender,
+                                                preparation,
+                                                &cancellation,
+                                            );
+                                            WorkerEvent::SessionResumed(match prepared {
+                                                Ok(()) => Ok(ResumeState { id }),
+                                                Err(error) => Err(error),
+                                            })
+                                        }
+                                        Err(error) => WorkerEvent::SessionResumed(Err(error)),
                                     }
-                                    WorkerEvent::SessionResumed(result)
+                                }
+                                WorkerCommand::EnterPlan { cancellation } => {
+                                    let result = agent.enter_plan(&cancellation);
+                                    if result.is_ok() {
+                                        if let Some(event) = usage_snapshot(&agent) {
+                                            snapshots.push(event);
+                                        }
+                                    } else {
+                                        // 转换失败也可能已持久化 Plan；发布真实模式避免假 EXEC，
+                                        // 并刷新退出清理句柄以覆盖可能被保留的 registry。
+                                        publish_transition_failure(&agent, &mut snapshots);
+                                    }
+                                    WorkerEvent::WorkflowChanged(result)
+                                }
+                                WorkerCommand::NewPlan { cancellation } => {
+                                    let result = agent.new_plan(&cancellation);
+                                    if result.is_ok() {
+                                        if let Some(event) = usage_snapshot(&agent) {
+                                            snapshots.push(event);
+                                        }
+                                    } else {
+                                        publish_transition_failure(&agent, &mut snapshots);
+                                    }
+                                    WorkerEvent::WorkflowChanged(result)
+                                }
+                                WorkerCommand::ReadPlan => WorkerEvent::PlanRead(agent.read_plan()),
+                                WorkerCommand::LeavePlan { cancellation } => {
+                                    match agent.leave_plan(&cancellation) {
+                                        Ok(preparation) => {
+                                            match publish_prepared(
+                                                &sender,
+                                                preparation,
+                                                &cancellation,
+                                            ) {
+                                                Ok(()) => WorkerEvent::WorkflowChanged(Ok(agent
+                                                    .workflow()
+                                                    .clone())),
+                                                Err(error) => {
+                                                    publish_transition_failure(
+                                                        &agent,
+                                                        &mut snapshots,
+                                                    );
+                                                    WorkerEvent::WorkflowChanged(Err(error))
+                                                }
+                                            }
+                                        }
+                                        Err(error) => {
+                                            publish_transition_failure(&agent, &mut snapshots);
+                                            WorkerEvent::WorkflowChanged(Err(error))
+                                        }
+                                    }
+                                }
+                                WorkerCommand::ApprovePlan {
+                                    token,
+                                    context,
+                                    cancellation,
+                                    input,
+                                } => {
+                                    match agent.approve_plan(token, context, &input, &cancellation)
+                                    {
+                                        Ok(preparation) => {
+                                            match publish_prepared(
+                                                &sender,
+                                                preparation,
+                                                &cancellation,
+                                            ) {
+                                                // UI 确认后才启动模型执行。
+                                                Ok(()) => WorkerEvent::completed(
+                                                    started,
+                                                    agent.continue_session(
+                                                        &cancellation,
+                                                        Some(&input),
+                                                        &mut emit,
+                                                    ),
+                                                ),
+                                                Err(error) => {
+                                                    publish_transition_failure(
+                                                        &agent,
+                                                        &mut snapshots,
+                                                    );
+                                                    WorkerEvent::WorkflowChanged(Err(error))
+                                                }
+                                            }
+                                        }
+                                        Err(error) => {
+                                            // 审批失败可能已在 worker 内导入新修订（计划变更）。
+                                            publish_transition_failure(&agent, &mut snapshots);
+                                            WorkerEvent::WorkflowChanged(Err(error))
+                                        }
+                                    }
+                                }
+                                WorkerCommand::ReviewPlan {
+                                    token,
+                                    cancellation,
+                                    input,
+                                } => {
+                                    // 审查进度走独立事件流；不发布普通 Progress/用量快照。
+                                    let mut review_emit = |event| {
+                                        let _ = sender.send(WorkerEvent::ReviewProgress(event));
+                                    };
+                                    let result = agent.review_plan(
+                                        token,
+                                        &input,
+                                        &cancellation,
+                                        &mut review_emit,
+                                    );
+                                    // 成功时报告已由 write_workflow 登记；
+                                    // 失败/取消保留旧报告。快照纠正显示不引入新权限。
+                                    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
+                                    WorkerEvent::PlanReviewed(result)
                                 }
                             };
                             // Report new IDs even on task failure, before Completed.
@@ -562,10 +845,10 @@ impl App {
                             if sender.send(event).is_err() {
                                 break;
                             }
-                            if let Some(event) = snapshot
-                                && sender.send(event).is_err()
-                            {
-                                break;
+                            for event in snapshots {
+                                if sender.send(event).is_err() {
+                                    break;
+                                }
                             }
                         }
                     })
@@ -693,11 +976,370 @@ impl App {
         self.events = None;
         self.unavailable = Some(message.into());
         self.tree_panel = None;
+        self.plan_panel = None;
+        self.plan_confirm = None;
+        self.review_transcript = None;
+        self.plan_review_pending = None;
         self.escape_tap.reset();
         // worker 已死时不再等待恢复回复，会话面板不能继续吞掉按键。
         self.session_panel = None;
         self.conversation.fail();
         self.notify(Level::Error, message.into());
+    }
+
+    /// 应用 worker 发布的 workflow 快照；仅在正文变化时重算进度。
+    fn set_workflow(&mut self, workflow: WorkflowState) {
+        if let Some(document) = &workflow.plan {
+            self.update_plan_progress_cache(document);
+        }
+        self.workflow = workflow;
+        if let (Some(panel), Some(document)) = (&mut self.plan_panel, &self.workflow.plan) {
+            panel.sync_document(document);
+        }
+    }
+
+    /// 进度 (completed, total) 只随正文变化重算；所有调用点都在把
+    /// `document` 写入 `self.workflow.plan` 之前，因此直接与当前绑定比较。
+    fn update_plan_progress_cache(&mut self, document: &crate::plan::PlanDocument) {
+        if self
+            .workflow
+            .plan
+            .as_ref()
+            .is_none_or(|plan| plan.content != document.content)
+        {
+            self.plan_progress = crate::plan::task_progress(&document.content);
+        }
+    }
+
+    /// 执行期进度事件：更新匹配计划的快照与只读面板，不追加 Transcript。
+    fn apply_plan_progress(&mut self, plan_id: &str, revision: u64, content: &str) {
+        let Some(document) = self.workflow.plan.clone() else {
+            return;
+        };
+        if document.id != plan_id || (document.revision == revision && document.content == content)
+        {
+            return;
+        }
+        let mut document = document;
+        document.revision = revision;
+        document.content = content.to_owned();
+        self.update_plan_progress_cache(&document);
+        if let Some(panel) = &mut self.plan_panel {
+            panel.set_progress(&document);
+        }
+        self.workflow.plan = Some(document);
+    }
+
+    fn open_plan_panel(&mut self, review: PlanReview) {
+        // ReadPlan 的登记结果是权威快照；同步 workflow 中的文档与报告字段。
+        let PlanReview {
+            token: _,
+            document,
+            report,
+        } = &review;
+        self.update_plan_progress_cache(document);
+        self.workflow.plan = Some(document.clone());
+        self.workflow.review = report.clone();
+        match &mut self.plan_panel {
+            Some(panel) => panel.set_review(review),
+            None => self.plan_panel = Some(plan::Panel::review(review)),
+        }
+        self.menu = None;
+        self.menu_dismissed = true;
+        self.file_query = None;
+    }
+
+    /// Execute 运行中的只读进度视图：使用 UI 已缓存的最后同步正文，不发 worker 命令。
+    fn open_plan_progress_view(&mut self) {
+        let Some(document) = self.workflow.plan.clone() else {
+            self.notify(Level::Normal, "No saved plan.".into());
+            return;
+        };
+        if document.content.is_empty() {
+            self.notify(Level::Normal, "No saved plan.".into());
+            return;
+        }
+        match &mut self.plan_panel {
+            Some(panel) if panel.document().id == document.id => panel.set_progress(&document),
+            _ => self.plan_panel = Some(plan::Panel::progress(document)),
+        }
+    }
+
+    fn request_plan_read(&mut self) {
+        if !matches!(self.state, State::Ready) {
+            return;
+        }
+        self.send(WorkerCommand::ReadPlan, State::ReadingPlan);
+    }
+
+    fn append_execution_echo(&mut self) {
+        let text = match &self.workflow.plan {
+            Some(plan) => {
+                format!(
+                    "Execute the approved plan {} (r{}).",
+                    plan.path(),
+                    plan.revision
+                )
+            }
+            None => "Execute the approved plan.".to_owned(),
+        };
+        self.append("You", &text);
+    }
+
+    /// 模式切换/审批仅允许 Ready、无 pending、无其它 modal；忙碌明确报错，不排队。
+    fn plan_transition_ready(&mut self, pending_message: &str) -> bool {
+        if !matches!(self.state, State::Ready) {
+            self.notify(
+                Level::Error,
+                "Cancel the current task before changing Plan mode.".into(),
+            );
+            return false;
+        }
+        if self.has_pending() {
+            self.notify(Level::Error, pending_message.into());
+            return false;
+        }
+        if self.ask_panel.is_some()
+            || self.skill_panel.is_some()
+            || self.skills_pending
+            || self.session_panel.is_some()
+            || self.tree_panel.is_some()
+            || self.model_picker_draft.is_some()
+            || self.queue_menu
+        {
+            self.notify(
+                Level::Error,
+                "Close the open panel before changing Plan mode.".into(),
+            );
+            return false;
+        }
+        true
+    }
+
+    fn start_plan_transition(
+        &mut self,
+        command: impl FnOnce(CancellationToken) -> WorkerCommand,
+        state: State,
+    ) {
+        let cancellation = CancellationToken::new();
+        if self.send(command(cancellation.clone()), state) {
+            self.active_cancellation = Some(cancellation);
+        }
+    }
+
+    fn apply_plan_command(&mut self, command: PlanCommand) {
+        const PENDING_MODE: &str = "Apply pending input before changing Plan mode.";
+        match command {
+            PlanCommand::Open => {
+                if !self.plan_transition_ready(PENDING_MODE) {
+                    return;
+                }
+                match self.workflow.mode {
+                    WorkMode::Execute => {
+                        self.plan_open_after_enter = true;
+                        self.start_plan_transition(
+                            |cancellation| WorkerCommand::EnterPlan { cancellation },
+                            State::ChangingPlan,
+                        );
+                    }
+                    WorkMode::Plan if self.plan_retry_enter => {
+                        // 上一次进入失败（MCP 清理残留）：重发 EnterPlan 重试。
+                        self.plan_open_after_enter = true;
+                        self.start_plan_transition(
+                            |cancellation| WorkerCommand::EnterPlan { cancellation },
+                            State::ChangingPlan,
+                        );
+                    }
+                    WorkMode::Plan => self.request_plan_read_or_hint(),
+                }
+            }
+            PlanCommand::View => {
+                if matches!(self.state, State::Running | State::Cancelling) {
+                    // 运行中特许：只读进度视图，不向执行中的 worker 发阻塞读取。
+                    self.open_plan_progress_view();
+                    return;
+                }
+                if !self.plan_transition_ready(PENDING_MODE) {
+                    return;
+                }
+                if self.has_saved_plan() {
+                    self.request_plan_read();
+                } else {
+                    self.notify(Level::Normal, "No saved plan.".into());
+                }
+            }
+            PlanCommand::New => {
+                if !self.plan_transition_ready(PENDING_MODE) {
+                    return;
+                }
+                let confirm = self.workflow.mode == WorkMode::Plan
+                    && self.workflow.plan.as_ref().is_some_and(|plan| {
+                        plan.revision >= 1
+                            && matches!(plan.status, PlanStatus::Draft | PlanStatus::Ready)
+                    });
+                if confirm {
+                    self.plan_confirm = Some(plan::Confirm::new(plan::ConfirmKind::New));
+                } else {
+                    self.start_plan_transition(
+                        |cancellation| WorkerCommand::NewPlan { cancellation },
+                        State::ChangingPlan,
+                    );
+                }
+            }
+            PlanCommand::Off => {
+                if self.workflow.mode == WorkMode::Execute {
+                    self.notify(Level::Normal, "Plan mode is off.".into());
+                    return;
+                }
+                if !self.plan_transition_ready(PENDING_MODE) {
+                    return;
+                }
+                self.plan_confirm = Some(plan::Confirm::new(plan::ConfirmKind::Off));
+            }
+        }
+    }
+
+    /// 审批动作：仅在 Ready、无 pending、文档 Ready 时发送；失败经 ReadPlan 安全刷新。
+    fn approve_plan(&mut self, context: ExecutionContext) {
+        if !matches!(self.state, State::Ready) {
+            self.notify(
+                Level::Error,
+                "Cancel the current task before changing Plan mode.".into(),
+            );
+            return;
+        }
+        if self.has_pending() {
+            self.notify(
+                Level::Error,
+                "Apply pending input before executing the plan.".into(),
+            );
+            return;
+        }
+        let Some(panel) = self.plan_panel.as_ref() else {
+            return;
+        };
+        let Some(token) = panel.token().cloned() else {
+            return;
+        };
+        if panel.document().status != PlanStatus::Ready {
+            return;
+        }
+        if let Err(error) = self.input_queue.begin_run() {
+            self.queue_paused = true;
+            self.notify(Level::Error, error.to_string());
+            return;
+        }
+        let cancellation = CancellationToken::new();
+        if self.send(
+            WorkerCommand::ApprovePlan {
+                token,
+                context,
+                cancellation: cancellation.clone(),
+                input: self.input_queue.clone(),
+            },
+            State::PreparingExecution,
+        ) {
+            self.active_cancellation = Some(cancellation);
+            self.secondary_status = Some("Preparing execution...".into());
+        } else {
+            let _ = self.input_queue.close();
+        }
+    }
+
+    /// 第 4 项：独立上下文 reviewer。仅 Ready、无 pending、文档 Ready 时发送；
+    /// 进度只进独立 review transcript；完成或取消后经 ReadPlan 安全刷新回菜单。
+    fn review_plan(&mut self) {
+        if !matches!(self.state, State::Ready) {
+            self.notify(
+                Level::Error,
+                "Cancel the current task before reviewing the plan.".into(),
+            );
+            return;
+        }
+        if self.has_pending() {
+            self.notify(
+                Level::Error,
+                "Apply pending input before reviewing the plan.".into(),
+            );
+            return;
+        }
+        let Some(panel) = self.plan_panel.as_ref() else {
+            return;
+        };
+        if panel.document().status != PlanStatus::Ready {
+            return;
+        }
+        let Some(token) = panel.token().cloned() else {
+            return;
+        };
+        if let Err(error) = self.input_queue.begin_run() {
+            self.queue_paused = true;
+            self.notify(Level::Error, error.to_string());
+            return;
+        }
+        let cancellation = CancellationToken::new();
+        if self.send(
+            WorkerCommand::ReviewPlan {
+                token,
+                cancellation: cancellation.clone(),
+                input: self.input_queue.clone(),
+            },
+            State::ReviewingPlan,
+        ) {
+            self.active_cancellation = Some(cancellation);
+            // 独立审查页替代审阅面板；主草稿、历史与会话保持不变。
+            self.plan_panel = None;
+            self.menu_dismissed = true;
+            self.secondary_status = Some("Reviewing plan...".into());
+            let mut review = Transcript::new();
+            review.begin_run();
+            self.review_transcript = Some(review);
+        } else {
+            let _ = self.input_queue.close();
+        }
+    }
+
+    fn review_transcript_tick(&mut self, now: Instant) -> bool {
+        self.review_transcript
+            .as_mut()
+            .is_some_and(|review| review.tick(now))
+    }
+
+    /// 已登记至少一个修订的计划：/plan 打开审阅的前提条件。
+    fn has_saved_plan(&self) -> bool {
+        self.workflow
+            .plan
+            .as_ref()
+            .is_some_and(|plan| plan.revision >= 1)
+    }
+
+    /// Plan/Ready：待审阅的计划会暂停自动派发，需要显式审阅或 Ctrl-R 继续。
+    fn plan_awaiting_review(&self) -> bool {
+        self.workflow.mode == WorkMode::Plan
+            && self
+                .workflow
+                .plan
+                .as_ref()
+                .is_some_and(|plan| plan.status == PlanStatus::Ready)
+    }
+
+    /// 有已保存计划则安全读取并打开审阅；否则提示直接输入研究任务。
+    fn request_plan_read_or_hint(&mut self) {
+        if self.has_saved_plan() {
+            self.request_plan_read();
+        } else {
+            self.notify(
+                Level::Normal,
+                "Plan mode is active. Describe the task to research and plan.".into(),
+            );
+        }
+    }
+
+    /// 当前显示的转录：独立审查页优先于主对话。
+    fn active_transcript(&mut self) -> &mut Transcript {
+        self.review_transcript
+            .as_mut()
+            .unwrap_or(&mut self.conversation)
     }
 
     fn receive(&mut self) -> bool {
@@ -768,6 +1410,8 @@ impl App {
                         self.menu = None;
                         self.menu_dismissed = true;
                         self.queue_menu = false;
+                        // 进度视图不能挡住 ask 的键盘路由；先让位给 ask 面板。
+                        self.plan_panel = None;
                         self.ask_panel = Some(ask::Panel::new(request));
                         self.ask_reply = Some(reply);
                         self.conversation.waiting_for_input();
@@ -804,6 +1448,12 @@ impl App {
                         AgentEvent::UserInputAccepted { text, .. } => {
                             self.append("You", &text);
                         }
+                        // 执行期计划进度：只更新缓存与只读面板，不追加整篇正文到 Transcript。
+                        AgentEvent::PlanProgressUpdated {
+                            plan_id,
+                            revision,
+                            content,
+                        } => self.apply_plan_progress(&plan_id, revision, &content),
                         event => self.conversation.progress(event),
                     }
                     changed = true;
@@ -828,8 +1478,10 @@ impl App {
                     if !succeeded {
                         self.queue_paused = self.has_pending();
                     }
+                    let awaiting_review = matches!(&result, Ok(RunOutcome::AwaitingPlanReview));
                     let label = match result {
                         Ok(RunOutcome::Completed) => "Completed",
+                        Ok(RunOutcome::AwaitingPlanReview) => "Plan ready",
                         Ok(RunOutcome::Cancelled) => {
                             self.conversation.cancel();
                             "Cancelled"
@@ -842,6 +1494,10 @@ impl App {
                     };
                     self.conversation.finish_run(label, elapsed, finished_at);
                     self.state = State::Ready;
+                    if awaiting_review {
+                        // 模型提交后自动打开审阅；worker 此时已空闲，安全读取磁盘。
+                        self.request_plan_read();
+                    }
                     changed = true;
                 }
                 Ok(WorkerEvent::Compacted(result)) => {
@@ -869,6 +1525,9 @@ impl App {
                     self.show_welcome = true;
                     self.state = State::Ready;
                     self.session_id = None;
+                    // /new 清掉计划绑定资格；旧计划文件保留，面板不再指向它。
+                    self.plan_panel = None;
+                    self.plan_confirm = None;
                     // 新快照紧随其后；先丢弃旧会话用量，避免短暂显示旧占比。
                     self.usage = None;
                     self.token_speed.clear();
@@ -1035,21 +1694,20 @@ impl App {
                     self.state = State::Ready;
                     match result {
                         Ok(state) => {
-                            let id = state.id;
-                            let error = self.adopt_history(state.replay);
-                            self.session_id = Some(id.clone());
+                            self.session_id = Some(state.id.clone());
                             self.session_panel = None;
-                            // 恢复只重新估算当前请求；不沿用上一会话的用量。
+                            // 历史/清理句柄已由 ExecutionPrepared 接管；这里只补通知。
                             self.usage = None;
                             self.token_speed.clear();
-                            match error {
+                            match self.resume_note.take() {
                                 Some(error) => self.notify(
                                     Level::Error,
-                                    format!("Resumed session: {id}\n{error}"),
+                                    format!("Resumed session: {}\n{error}", state.id),
                                 ),
-                                None => {
-                                    self.notify(Level::Normal, format!("Resumed session: {id}"))
-                                }
+                                None => self.notify(
+                                    Level::Normal,
+                                    format!("Resumed session: {}", state.id),
+                                ),
                             }
                         }
                         Err(error) => {
@@ -1065,6 +1723,136 @@ impl App {
                     }
                     changed = true;
                 }
+                Ok(WorkerEvent::WorkflowChanged(result)) => {
+                    let from_approval = matches!(self.state, State::PreparingExecution);
+                    let from_enter = matches!(self.state, State::ChangingPlan);
+                    self.state = State::Ready;
+                    match result {
+                        Ok(workflow) => {
+                            self.plan_retry_enter = false;
+                            self.set_workflow(workflow);
+                            if self.plan_open_after_enter {
+                                self.plan_open_after_enter = false;
+                                self.request_plan_read_or_hint();
+                            }
+                        }
+                        Err(error) => {
+                            self.notify(Level::Error, format!("{error:#}"));
+                            // 失败也可能已持久化 Plan（随后的 Workflow 快照纠正显示）；
+                            // EnterPlan 失败时下一次 /plan 优先重试关闭 MCP。
+                            if from_enter {
+                                self.plan_retry_enter = true;
+                            }
+                            if from_approval {
+                                // 审批失败绝不执行；先安全刷新正文与新 token。
+                                self.request_plan_read();
+                            }
+                        }
+                    }
+                    changed = true;
+                }
+                Ok(WorkerEvent::PlanRead(result)) => {
+                    self.state = State::Ready;
+                    match result {
+                        Ok(review) => {
+                            let reviewed = self.plan_review_pending.take().is_some();
+                            self.open_plan_panel(review);
+                            // 审查完成后的刷新：焦点落在正文 Review 标签；
+                            // 外部修订则面板标注旧版报告。绝不自动启动执行。
+                            if reviewed && let Some(panel) = &mut self.plan_panel {
+                                panel.focus_review_body();
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(report) = self.plan_review_pending.take() {
+                                // 报告已生成但安全读取失败：展示最终报告与错误；
+                                // 无 token 的只读面板禁用旧执行 token，直到再次安全读取成功。
+                                if let Some(document) = self.workflow.plan.clone() {
+                                    self.plan_panel = Some(plan::Panel::degraded(document, report));
+                                }
+                            }
+                            self.notify(Level::Error, format!("{error:#}"));
+                        }
+                    }
+                    changed = true;
+                }
+                Ok(WorkerEvent::ReviewProgress(event)) => {
+                    // 审查进度只进独立 review transcript：不更新用量/主对话/派发。
+                    if let Some(review) = &mut self.review_transcript {
+                        review.progress(event);
+                    }
+                    changed = true;
+                }
+                Ok(WorkerEvent::PlanReviewed(result)) => {
+                    // 审查终态：无论成败都保持 Plan/Ready 并回四项菜单；
+                    // 报告只在成功时替换，失败/取消保留上次完整报告。
+                    self.state = State::Ready;
+                    self.active_cancellation = None;
+                    self.secondary_status = None;
+                    self.review_transcript = None;
+                    let _ = self.input_queue.close();
+                    match result {
+                        Ok(report) => {
+                            // 报告先入 UI 快照，随后 ReadPlan 安全刷新正文/token/报告绑定。
+                            self.workflow.review = Some(report.clone());
+                            self.plan_review_pending = Some(report);
+                            self.request_plan_read();
+                        }
+                        Err(error) => {
+                            self.notify(Level::Error, format!("{error:#}"));
+                            self.request_plan_read();
+                        }
+                    }
+                    changed = true;
+                }
+                Ok(WorkerEvent::Workflow(workflow)) => {
+                    self.set_workflow(workflow);
+                    changed = true;
+                }
+                Ok(WorkerEvent::Cleanup(cleanup)) => {
+                    // 错误路径上 registry 可能被保留/部分更新；刷新退出清理句柄。
+                    self.mcp_cleanup = Some(cleanup);
+                    changed = true;
+                }
+                Ok(WorkerEvent::ExecutionPrepared {
+                    workflow,
+                    session_id,
+                    replay,
+                    cleanup,
+                    reply,
+                }) => {
+                    // 一次性交接：先安装退出清理句柄并更新模式/会话，再 ACK；
+                    // ACK 后 worker 才允许 continue_session。
+                    self.mcp_cleanup = Some(cleanup);
+                    self.plan_panel = None;
+                    self.plan_confirm = None;
+                    self.set_workflow(workflow);
+                    let mut note = None;
+                    if let Some(records) = replay {
+                        // None：Keep/off 不重绘；Some(空)：Fresh 新会话；Some(records)：恢复。
+                        note = self.adopt_history(records);
+                    }
+                    self.session_id = session_id;
+                    self.usage = None;
+                    self.token_speed.clear();
+                    let confirmed = reply.send(()).is_ok();
+                    match self.state {
+                        State::PreparingExecution if confirmed => {
+                            self.secondary_status = None;
+                            self.state = State::Running;
+                            self.conversation.begin_run();
+                            self.append_execution_echo();
+                        }
+                        State::Resuming => {
+                            self.resume_note = note;
+                            self.state = State::Ready;
+                        }
+                        _ => {
+                            self.state = State::Ready;
+                        }
+                    }
+                    changed = true;
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.fail_worker();
@@ -1073,7 +1861,7 @@ impl App {
             }
         }
         changed |= self.refresh_queue();
-        changed |= self.dispatch_next();
+        changed |= self.dispatch_next(false);
         if changed {
             self.escape_tap.reset();
             self.refresh_candidates(false);
@@ -1479,11 +2267,16 @@ impl App {
     }
 
     fn resume_queue(&mut self) {
-        if matches!(self.state, State::Ready) && self.queue_paused && self.has_pending() {
-            self.close_pending_menu();
-            self.queue_paused = false;
-            self.dispatch_next();
+        if !matches!(self.state, State::Ready) || !self.has_pending() {
+            return;
         }
+        // Plan/Ready 暂停了自动派发；Ctrl-R 是显式继续，后端会把 Ready 降为 Draft。
+        if !self.queue_paused && !self.plan_awaiting_review() {
+            return;
+        }
+        self.close_pending_menu();
+        self.queue_paused = false;
+        self.dispatch_next(true);
     }
 
     fn refresh_queue(&mut self) -> bool {
@@ -1513,7 +2306,8 @@ impl App {
     }
 
     /// 派发下一条待处理消息；返回是否真的派发（状态离开 Ready）。
-    fn dispatch_next(&mut self) -> bool {
+    /// Plan/Ready 自动派发直接拒绝；显式提交/Ctrl-R 仍可派发（后端先降 Draft）。
+    fn dispatch_next(&mut self, explicit: bool) -> bool {
         if !matches!(self.state, State::Ready)
             || self.queue_paused
             || self.ask_panel.is_some()
@@ -1521,8 +2315,12 @@ impl App {
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
+            || self.plan_panel.is_some()
             || self.model_picker_draft.is_some()
         {
+            return false;
+        }
+        if !explicit && self.plan_awaiting_review() {
             return false;
         }
         let message = match self.input_queue.claim_next() {
@@ -1735,8 +2533,33 @@ impl App {
             );
             return false;
         }
+        if matches!(self.state, State::ReviewingPlan) {
+            match command {
+                // 退出与帮助不经过 worker；其余提交（含 steering/followup）
+                // 一律拒绝，草稿原样保留。
+                Some(Command::Quit) | Some(Command::Help) => {}
+                _ => {
+                    self.notify(
+                        Level::Error,
+                        "Plan review is running; press Esc to cancel it.".into(),
+                    );
+                    return false;
+                }
+            }
+        }
         match command {
             Some(Command::Quit) => return true,
+            Some(Command::Plan(sub)) => {
+                let consumed = matches!(self.state, State::Ready) && !self.has_pending()
+                    || sub == PlanCommand::View
+                        && matches!(self.state, State::Running | State::Cancelling);
+                self.apply_plan_command(sub);
+                if consumed {
+                    self.remember_input();
+                    self.clear_input();
+                }
+                return false;
+            }
             Some(Command::Help) => {
                 self.show_help();
                 self.remember_input();
@@ -1781,7 +2604,7 @@ impl App {
                 Ok(_) => {
                     self.remember_input();
                     self.clear_input();
-                    self.dispatch_next();
+                    self.dispatch_next(true);
                 }
                 Err(error) => self.notify(Level::Error, error.to_string()),
             }
@@ -1798,7 +2621,11 @@ impl App {
             | State::ListingSessions
             | State::Resuming
             | State::ReadingTree
-            | State::NavigatingTree => {}
+            | State::NavigatingTree
+            | State::ChangingPlan
+            | State::ReadingPlan
+            | State::PreparingExecution
+            | State::ReviewingPlan => {}
             State::Unavailable => {
                 if let Some(error) = self.unavailable.take() {
                     self.notify(Level::Error, error.clone());
@@ -1872,7 +2699,11 @@ impl App {
                         self.clear_input();
                     }
                 }
-                Some(Command::Help | Command::Quit | Command::Skills(_)) => unreachable!(),
+                Some(Command::Help | Command::Quit | Command::Skills(_)) => {
+                    unreachable!()
+                }
+                // Plan 子命令在状态检查前已处理。
+                Some(Command::Plan(_)) => unreachable!("handled before the state match"),
             },
         }
         false
@@ -2056,6 +2887,28 @@ impl App {
                     return key.kind == KeyEventKind::Press;
                 }
                 *dirty = true;
+                // 本地确认框（/plan new、/plan off）优先于一切其它输入；默认取消。
+                if let Some(confirm) = &mut self.plan_confirm {
+                    self.escape_tap.reset();
+                    match confirm.key(key) {
+                        plan::ConfirmAction::None => {}
+                        plan::ConfirmAction::Cancel => self.plan_confirm = None,
+                        plan::ConfirmAction::Proceed => {
+                            let confirm = self.plan_confirm.take().expect("checked confirm");
+                            match confirm.kind() {
+                                plan::ConfirmKind::Off => self.start_plan_transition(
+                                    |cancellation| WorkerCommand::LeavePlan { cancellation },
+                                    State::ChangingPlan,
+                                ),
+                                plan::ConfirmKind::New => self.start_plan_transition(
+                                    |cancellation| WorkerCommand::NewPlan { cancellation },
+                                    State::ChangingPlan,
+                                ),
+                            }
+                        }
+                    }
+                    return false;
+                }
                 if let Some(panel) = &mut self.tree_panel {
                     let action = panel.key(key);
                     self.escape_tap.reset();
@@ -2068,6 +2921,32 @@ impl App {
                         tree::Action::Navigate(id) => {
                             self.send(WorkerCommand::NavigateTree(id), State::NavigatingTree);
                         }
+                    }
+                    return false;
+                }
+                if let Some(panel) = &mut self.plan_panel {
+                    self.escape_tap.reset();
+                    match panel.key(key) {
+                        plan::Action::None => {}
+                        plan::Action::Close => {
+                            // Esc 仅关闭面板：保留模式、正文与 pending 暂停。
+                            self.plan_panel = None;
+                            self.menu_dismissed = true;
+                        }
+                        plan::Action::Approve(context) => self.approve_plan(context),
+                        plan::Action::Discuss(text) => {
+                            // 讨论经普通 Plan run 送回原上下文；主草稿与光标保留。
+                            self.plan_panel = None;
+                            self.menu_dismissed = true;
+                            self.queue_paused = false;
+                            if self.send_task(Some(text.clone())) {
+                                self.append("You", &text);
+                                self.input_history.push(text);
+                                self.history_index = None;
+                                self.history_draft = None;
+                            }
+                        }
+                        plan::Action::Review => self.review_plan(),
                     }
                     return false;
                 }
@@ -2114,8 +2993,17 @@ impl App {
                                 self.close_session_panel();
                             } else {
                                 panel.restore_started();
-                                if !self.send(WorkerCommand::Resume(id), State::Resuming) {
+                                let cancellation = CancellationToken::new();
+                                if !self.send(
+                                    WorkerCommand::Resume {
+                                        id,
+                                        cancellation: cancellation.clone(),
+                                    },
+                                    State::Resuming,
+                                ) {
                                     self.session_panel = None;
+                                } else {
+                                    self.active_cancellation = Some(cancellation);
                                 }
                             }
                         }
@@ -2271,7 +3159,7 @@ impl App {
                     let ratatui_textarea::DataCursor(row, column) = self.input.cursor();
                     match key.code {
                         KeyCode::Char('o') => {
-                            self.conversation.toggle_tool_output();
+                            self.active_transcript().toggle_tool_output();
                             return false;
                         }
                         KeyCode::Char('a') => {
@@ -2317,17 +3205,31 @@ impl App {
                 }
                 if key.code == KeyCode::Esc && key.modifiers.is_empty() {
                     if key.kind == KeyEventKind::Press
-                        && matches!(self.state, State::Running | State::Compacting)
+                        && matches!(
+                            self.state,
+                            State::Running | State::Compacting | State::ReviewingPlan
+                        )
                         && let Some(cancellation) = &self.active_cancellation
                     {
                         cancellation.cancel();
                         self.queue_paused = true;
-                        if matches!(self.state, State::Compacting) {
-                            self.secondary_status = Some("Cancelling context...".into());
-                        } else {
-                            self.conversation.cancelling();
+                        match self.state {
+                            State::Compacting => {
+                                self.secondary_status = Some("Cancelling context...".into());
+                            }
+                            State::ReviewingPlan => {
+                                // 取消 reviewer；保持 ReviewingPlan，等待 worker
+                                // 的 PlanReviewed 受控收尾后回四项菜单。
+                                if let Some(review) = &mut self.review_transcript {
+                                    review.cancelling();
+                                }
+                                self.secondary_status = Some("Cancelling review...".into());
+                            }
+                            _ => self.conversation.cancelling(),
                         }
-                        self.state = State::Cancelling;
+                        if !matches!(self.state, State::ReviewingPlan) {
+                            self.state = State::Cancelling;
+                        }
                         self.escape_tap.reset();
                     } else if key.kind == KeyEventKind::Press
                         && matches!(self.state, State::Ready)
@@ -2355,8 +3257,8 @@ impl App {
                             return true;
                         }
                     }
-                    KeyCode::PageUp => self.conversation.page_up(),
-                    KeyCode::PageDown => self.conversation.page_down(),
+                    KeyCode::PageUp => self.active_transcript().page_up(),
+                    KeyCode::PageDown => self.active_transcript().page_down(),
                     KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => {
                         let cursor = self.input.cursor();
                         self.input.input(key);
@@ -2387,6 +3289,32 @@ impl App {
                     );
                     *dirty = true;
                 }
+            }
+            Event::Paste(text) if self.plan_panel.is_some() => {
+                self.plan_panel
+                    .as_mut()
+                    .expect("active plan panel")
+                    .paste(&text);
+                *dirty = true;
+            }
+            Event::Mouse(mouse) if self.plan_panel.is_some() => {
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) {
+                    let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
+                    self.plan_panel
+                        .as_mut()
+                        .expect("active plan panel")
+                        .wheel(up, MOUSE_SCROLL_LINES);
+                    *dirty = true;
+                }
+            }
+            Event::Paste(_) if self.plan_confirm.is_some() => {
+                *dirty = true;
+            }
+            Event::Mouse(_) if self.plan_confirm.is_some() => {
+                *dirty = true;
             }
             Event::Paste(text) if self.ask_panel.is_some() => {
                 let action = self
@@ -2446,11 +3374,11 @@ impl App {
             }
             Event::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::ScrollUp => {
-                    self.conversation.scroll_up(MOUSE_SCROLL_LINES);
+                    self.active_transcript().scroll_up(MOUSE_SCROLL_LINES);
                     *dirty = true;
                 }
                 MouseEventKind::ScrollDown => {
-                    self.conversation.scroll_down(MOUSE_SCROLL_LINES);
+                    self.active_transcript().scroll_down(MOUSE_SCROLL_LINES);
                     *dirty = true;
                 }
                 _ => {}
@@ -2498,6 +3426,34 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
+                    self.workflow.mode,
+                    context,
+                    area.width,
+                ),
+                Rect::new(area.x, area.bottom() - 1, area.width, 1),
+            );
+            self.notifications.draw(
+                frame,
+                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
+            );
+            return;
+        }
+        if let Some(panel) = &mut self.plan_panel {
+            // 全屏审阅/进度视图：底部保留状态栏；Esc 由面板处理，只关闭面板。
+            let available = area.height.saturating_sub(1);
+            panel.draw(
+                frame,
+                Rect::new(area.x, area.y, area.width, available),
+                self.plan_progress,
+            );
+            if let Some(confirm) = &self.plan_confirm {
+                confirm.draw(frame, area);
+            }
+            frame.render_widget(
+                statusline::primary(
+                    self.current_model.as_ref(),
+                    self.think_level,
+                    self.workflow.mode,
                     context,
                     area.width,
                 ),
@@ -2536,7 +3492,8 @@ impl App {
         } else {
             conversation
         };
-        self.conversation.draw(frame, conversation);
+        // 独立审查页优先渲染：底部输入与状态栏照常可用，草稿可继续编辑但提交被拒。
+        self.active_transcript().draw(frame, conversation);
         if let Some(panel) = &self.tree_panel {
             if input.height > 0 {
                 panel.draw_status(frame, Rect::new(input.x, input.y, input.width, 1));
@@ -2552,6 +3509,7 @@ impl App {
                     statusline::primary(
                         self.current_model.as_ref(),
                         self.think_level,
+                        self.workflow.mode,
                         context,
                         status.width,
                     ),
@@ -2620,6 +3578,7 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
+                    self.workflow.mode,
                     context,
                     status.width,
                 ),
@@ -2631,6 +3590,9 @@ impl App {
                 frame,
                 Rect::new(area.x, area.y, area.width, input.y.saturating_sub(area.y)),
             );
+        }
+        if let Some(confirm) = &self.plan_confirm {
+            confirm.draw(frame, area);
         }
         self.notifications.draw(
             frame,
@@ -2676,7 +3638,8 @@ impl App {
             let line = Line::styled(
                 format!(
                     " Steering: {} · Queued: {}{paused} ",
-                    snapshot.steering(), snapshot.follow_up()
+                    snapshot.steering(),
+                    snapshot.follow_up()
                 ),
                 Style::default().fg(Color::DarkGray),
             );
@@ -2699,6 +3662,20 @@ impl App {
         if let Some(extra) = extra {
             right -= extra_width;
             frame.render_widget(extra, Rect::new(right, area.y, extra_width, 1));
+        }
+        if matches!(self.state, State::Ready)
+            && self.plan_awaiting_review()
+            && left == area.x
+            && right > left
+        {
+            // 权限状态不能只靠颜色表达：Ready 提示显式审阅入口。
+            frame.render_widget(
+                Line::styled(
+                    " Plan ready · /plan to review",
+                    Style::default().fg(statusline::ACCENT),
+                ),
+                Rect::new(left, area.y, right - left, 1),
+            );
         }
         if matches!(self.state, State::Running) && left == area.x && right > left {
             frame.render_widget(
@@ -4043,7 +5020,7 @@ mod tests {
         assert_eq!(app.input.cursor(), cursor);
         assert_eq!(app.input.lines(), &["草稿", "line"]);
         app.queue_paused = false;
-        app.dispatch_next();
+        app.dispatch_next(true);
         let WorkerCommand::Run {
             prompt,
             cancellation: next,
@@ -5005,9 +5982,9 @@ mod tests {
         app.usage = Some(crate::context::ContextUsage {
             estimated_tokens: 100,
             context_window: Some(40000),
-            last_request: None,
             auto_compact: false,
             threshold_percent: 80,
+            last_request: None,
         });
         let (events, receiver) = mpsc::channel();
         app.events = Some(receiver);
@@ -5104,7 +6081,9 @@ mod tests {
         assert!(lines[26].starts_with("❯ draft-中"));
         assert!(lines[27].starts_with("  second line"));
         assert_eq!(lines[28], "─".repeat(100));
-        assert!(lines[29].starts_with(" pp · \u{ec19} — · \u{f0766} off · \u{f07c} fixture-cwd"));
+        assert!(
+            lines[29].starts_with(" pp · EXEC · \u{ec19} — · \u{f0766} off · \u{f07c} fixture-cwd")
+        );
 
         app.secondary_status = Some("extra info".into());
         let screen = draw(&mut app, 100, 30);
@@ -5339,5 +6318,417 @@ mod tests {
         assert!(!app.submit(PendingKind::Steering));
         assert!(!app.skills_pending);
         assert_eq!(app.input.lines(), &["/skills"]);
+    }
+
+    fn plan_app() -> (
+        App,
+        mpsc::Receiver<WorkerCommand>,
+        mpsc::Sender<WorkerEvent>,
+    ) {
+        let mut app = app();
+        app.state = State::Ready;
+        let (commands, requests) = mpsc::channel();
+        let (events, replies) = mpsc::channel();
+        app.commands = Some(commands);
+        app.events = Some(replies);
+        (app, requests, events)
+    }
+
+    fn ready_plan_workflow() -> WorkflowState {
+        WorkflowState {
+            mode: WorkMode::Plan,
+            plan: Some(crate::plan::PlanDocument {
+                id: "0123456789abcdef0123456789abcdef".into(),
+                revision: 2,
+                title: "Plan".into(),
+                content: "# Plan\n\n- [ ] step one\n- [ ] step two\n".into(),
+                status: PlanStatus::Ready,
+                origin_prompt: "original task".into(),
+            }),
+            review: None,
+        }
+    }
+
+    fn plan_review_fixture(status: PlanStatus) -> PlanReview {
+        let document = crate::plan::PlanDocument {
+            id: "0123456789abcdef0123456789abcdef".into(),
+            revision: 2,
+            title: "Plan".into(),
+            content: "- [ ] step one\n- [ ] step two\n".into(),
+            status,
+            origin_prompt: "original task".into(),
+        };
+        PlanReview {
+            token: crate::plan::ReviewToken {
+                session_id: "session".into(),
+                plan_id: document.id.clone(),
+                revision: document.revision,
+                content: document.content.clone(),
+            },
+            document,
+            report: None,
+        }
+    }
+
+    #[test]
+    fn plan_commands_are_busy_refused_while_running() {
+        let (mut app, requests, _events) = plan_app();
+        app.state = State::Running;
+        // Plan 模式下三个子命令都必须被忙碌拒绝；Execute 的 /plan off 只显示模式。
+        app.workflow = WorkflowState {
+            mode: WorkMode::Plan,
+            plan: None,
+            review: None,
+        };
+        for command in ["/plan", "/plan new", "/plan off"] {
+            app.input.insert_str(command);
+            app.submit(PendingKind::Steering);
+            app.input = editor();
+        }
+        assert!(requests.try_recv().is_err());
+        assert_notification(&mut app, Color::Rgb(224, 108, 117));
+    }
+
+    #[test]
+    fn plan_ready_refuses_auto_dispatch_but_ctrl_r_explicitly_resumes() {
+        let (mut app, requests, _events) = plan_app();
+        app.workflow = ready_plan_workflow();
+        app.queue_paused = false;
+        // 模拟 pending：直接通过输入队列入队。
+        app.input_queue
+            .enqueue(PendingKind::Steering, "follow up".to_string(), None, false)
+            .unwrap();
+        assert!(!app.dispatch_next(false));
+        assert!(requests.try_recv().is_err());
+        app.resume_queue();
+        assert!(matches!(requests.try_recv(), Ok(WorkerCommand::Run { .. })));
+    }
+
+    #[test]
+    fn read_plan_opens_panel_and_execute_keep_sends_token() {
+        let (mut app, requests, _events) = plan_app();
+        app.receive_event_for_test(WorkerEvent::PlanRead(Ok(plan_review_fixture(
+            PlanStatus::Ready,
+        ))));
+        assert!(app.plan_panel.is_some());
+        assert_eq!(app.plan_progress, (0, 2));
+        // Tab 到操作区，默认第 2 项 Enter → ApprovePlan(Keep) 且携带 token。
+        app.handle(key(KeyCode::Tab), &mut false);
+        app.handle(key(KeyCode::Enter), &mut false);
+        let command = requests.try_recv().unwrap();
+        let WorkerCommand::ApprovePlan { token, context, .. } = command else {
+            panic!("expected ApprovePlan command");
+        };
+        assert_eq!(token.revision, 2);
+        assert_eq!(context, ExecutionContext::Keep);
+        assert!(matches!(app.state, State::PreparingExecution));
+        assert_eq!(
+            app.secondary_status.as_deref(),
+            Some("Preparing execution...")
+        );
+    }
+
+    #[test]
+    fn execution_prepared_installs_cleanup_and_acks_before_running() {
+        let (mut app, _requests, events) = plan_app();
+        app.state = State::PreparingExecution;
+        let (reply, ack) = mpsc::sync_channel(1);
+        let registry = crate::mcp::Registry::connect(
+            &Default::default(),
+            Path::new("."),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let cleanup = registry.cleanup().unwrap();
+        let workflow = WorkflowState {
+            mode: WorkMode::Execute,
+            plan: Some(crate::plan::PlanDocument {
+                status: PlanStatus::Executed,
+                ..ready_plan_workflow().plan.expect("plan")
+            }),
+            review: None,
+        };
+        events
+            .send(WorkerEvent::ExecutionPrepared {
+                workflow: workflow.clone(),
+                session_id: Some("next".into()),
+                replay: None,
+                cleanup,
+                reply,
+            })
+            .unwrap();
+        app.receive();
+        assert!(ack.try_recv().is_ok());
+        assert!(app.mcp_cleanup.is_some());
+        assert_eq!(app.workflow, workflow);
+        assert_eq!(app.session_id.as_deref(), Some("next"));
+        assert!(matches!(app.state, State::Running));
+        assert!(!app.show_welcome);
+    }
+
+    #[test]
+    fn awaiting_review_completion_requests_plan_read() {
+        let (mut app, requests, events) = plan_app();
+        events
+            .send(WorkerEvent::completed(
+                Instant::now(),
+                Ok(RunOutcome::AwaitingPlanReview),
+            ))
+            .unwrap();
+        app.receive();
+        assert!(matches!(requests.try_recv(), Ok(WorkerCommand::ReadPlan)));
+        assert!(matches!(app.state, State::ReadingPlan));
+    }
+
+    #[test]
+    fn progress_view_during_running_is_readonly_and_cached() {
+        let (mut app, requests, _events) = plan_app();
+        app.workflow = ready_plan_workflow();
+        app.state = State::Running;
+        app.input.insert_str("/plan view");
+        app.submit(PendingKind::Steering);
+        assert!(requests.try_recv().is_err());
+        let panel = app.plan_panel.as_ref().expect("progress view");
+        assert!(panel.token().is_none());
+        for index in 0..4 {
+            assert!(!panel.action_enabled(index));
+        }
+        // Esc 只关闭面板，不取消任务。
+        app.handle(key(KeyCode::Esc), &mut false);
+        assert!(app.plan_panel.is_none());
+        assert!(matches!(app.state, State::Running));
+    }
+
+    #[test]
+    fn plan_progress_event_updates_cache_and_panel_without_transcript() {
+        let (mut app, _requests, _events) = plan_app();
+        app.receive_event_for_test(WorkerEvent::PlanRead(Ok(plan_review_fixture(
+            PlanStatus::Executed,
+        ))));
+        app.receive_event_for_test(WorkerEvent::Progress(AgentEvent::PlanProgressUpdated {
+            plan_id: "0123456789abcdef0123456789abcdef".into(),
+            revision: 3,
+            content: "- [x] step one\n- [ ] step two\n".into(),
+        }));
+        assert_eq!(app.plan_progress, (1, 2));
+        assert_eq!(app.workflow.plan.as_ref().expect("plan").revision, 3);
+    }
+
+    #[test]
+    fn plan_off_confirm_defaults_to_cancel() {
+        let (mut app, requests, _events) = plan_app();
+        app.workflow = ready_plan_workflow();
+        app.input.insert_str("/plan off");
+        app.submit(PendingKind::Steering);
+        assert!(app.plan_confirm.is_some());
+        app.handle(key(KeyCode::Enter), &mut false);
+        assert!(app.plan_confirm.is_none());
+        assert!(requests.try_recv().is_err());
+        assert!(matches!(app.state, State::Ready));
+    }
+
+    /// 打开审阅面板并通过操作区第 4 项启动独立 reviewer；返回 ReviewPlan 命令。
+    fn start_review(app: &mut App, requests: &mpsc::Receiver<WorkerCommand>) -> WorkerCommand {
+        let mut review = plan_review_fixture(PlanStatus::Ready);
+        review.report = app.workflow.review.clone();
+        app.receive_event_for_test(WorkerEvent::PlanRead(Ok(review)));
+        app.handle(key(KeyCode::Tab), &mut false);
+        for _ in 0..3 {
+            app.handle(key(KeyCode::Down), &mut false);
+        }
+        app.handle(key(KeyCode::Enter), &mut false);
+        let command = requests.try_recv().unwrap();
+        let WorkerCommand::ReviewPlan { token, .. } = &command else {
+            panic!("expected ReviewPlan command");
+        };
+        assert_eq!(token.revision, 2);
+        assert!(matches!(app.state, State::ReviewingPlan));
+        assert!(app.plan_panel.is_none());
+        assert!(app.review_transcript.is_some());
+        command
+    }
+
+    #[test]
+    fn review_action_refuses_pending_input() {
+        let (mut app, requests, _events) = plan_app();
+        app.workflow = ready_plan_workflow();
+        app.input_queue
+            .enqueue(PendingKind::Steering, "pending".into(), None, false)
+            .unwrap();
+        app.receive_event_for_test(WorkerEvent::PlanRead(Ok(plan_review_fixture(
+            PlanStatus::Ready,
+        ))));
+        app.handle(key(KeyCode::Tab), &mut false);
+        for _ in 0..3 {
+            app.handle(key(KeyCode::Down), &mut false);
+        }
+        app.handle(key(KeyCode::Enter), &mut false);
+        assert!(requests.try_recv().is_err());
+        assert!(app.plan_panel.is_some());
+        assert!(matches!(app.state, State::Ready));
+    }
+
+    #[test]
+    fn review_page_routes_progress_only_to_review_transcript_and_keeps_draft() {
+        let (mut app, requests, _events) = plan_app();
+        app.workflow = ready_plan_workflow();
+        start_review(&mut app, &requests);
+        app.usage = Some(crate::context::ContextUsage {
+            estimated_tokens: 100,
+            context_window: Some(40000),
+            auto_compact: false,
+            threshold_percent: 80,
+            last_request: None,
+        });
+        app.receive_event_for_test(WorkerEvent::ReviewProgress(AgentEvent::AssistantDelta {
+            text: "review finding".into(),
+            refusal: false,
+        }));
+        app.receive_event_for_test(WorkerEvent::ReviewProgress(AgentEvent::ContextUpdated {
+            usage: crate::context::ContextUsage {
+                estimated_tokens: 999,
+                context_window: Some(40000),
+                auto_compact: false,
+                threshold_percent: 80,
+                last_request: None,
+            },
+        }));
+        // 主用量与派发不受审查影响；屏幕只显示审查流。
+        assert_eq!(app.usage.as_ref().unwrap().estimated_tokens, 100);
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("review finding"));
+
+        // steering/followup/命令提交全部被拒，草稿不丢失。
+        app.input.insert_str("draft during review");
+        app.handle(key(KeyCode::Enter), &mut false);
+        assert_eq!(app.input.lines(), &["draft during review"]);
+        assert!(requests.try_recv().is_err());
+        app.handle(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)),
+            &mut false,
+        );
+        assert_eq!(app.input.lines(), &["draft during review"]);
+        assert!(requests.try_recv().is_err());
+        app.input = editor();
+        app.input.insert_str("/plan off");
+        app.handle(key(KeyCode::Enter), &mut false);
+        assert_eq!(app.input.lines(), &["/plan off"]);
+        assert!(requests.try_recv().is_err());
+        assert!(matches!(app.state, State::ReviewingPlan));
+    }
+
+    #[test]
+    fn esc_cancels_reviewer_and_returns_to_menu_on_controlled_finish() {
+        let (mut app, requests, _events) = plan_app();
+        app.workflow = ready_plan_workflow();
+        app.workflow.review = Some(PlanReviewReport {
+            plan_id: "0123456789abcdef0123456789abcdef".into(),
+            revision: 2,
+            model_reference: "provider/model".into(),
+            content: "old findings".into(),
+        });
+        let WorkerCommand::ReviewPlan { cancellation, .. } = start_review(&mut app, &requests)
+        else {
+            panic!("expected ReviewPlan command");
+        };
+        app.handle(key(KeyCode::Esc), &mut false);
+        // 收尾前保持审查态；迟到的 pending 不派发。
+        assert!(cancellation.is_cancelled());
+        assert!(matches!(app.state, State::ReviewingPlan));
+        app.input_queue
+            .enqueue(PendingKind::Steering, "late".into(), None, false)
+            .unwrap();
+        app.resume_queue();
+        assert!(requests.try_recv().is_err());
+
+        app.receive_event_for_test(WorkerEvent::PlanReviewed(Err(anyhow::anyhow!(
+            "review cancelled"
+        ))));
+        // 回四项菜单的读取中；旧完整报告与 Plan 模式保留。
+        assert!(app.review_transcript.is_none());
+        assert!(matches!(app.state, State::ReadingPlan));
+        assert!(matches!(requests.try_recv(), Ok(WorkerCommand::ReadPlan)));
+        assert_eq!(app.workflow.mode, WorkMode::Plan);
+        assert_eq!(
+            app.workflow
+                .review
+                .as_ref()
+                .map(|report| report.content.as_str()),
+            Some("old findings")
+        );
+        app.receive_event_for_test(WorkerEvent::PlanRead(Ok(plan_review_fixture(
+            PlanStatus::Ready,
+        ))));
+        let panel = app.plan_panel.as_ref().expect("menu panel");
+        assert!(panel.action_enabled(1));
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn review_success_focuses_report_and_never_autostarts_execution() {
+        let (mut app, requests, _events) = plan_app();
+        app.workflow = ready_plan_workflow();
+        start_review(&mut app, &requests);
+        app.receive_event_for_test(WorkerEvent::PlanReviewed(Ok(PlanReviewReport {
+            plan_id: "0123456789abcdef0123456789abcdef".into(),
+            revision: 2,
+            model_reference: "provider/model-x".into(),
+            content: "final findings".into(),
+        })));
+        assert!(matches!(requests.try_recv(), Ok(WorkerCommand::ReadPlan)));
+        assert_eq!(
+            app.workflow
+                .review
+                .as_ref()
+                .map(|report| report.content.as_str()),
+            Some("final findings")
+        );
+
+        // 外部编辑期间产生新修订：刷新返回 r3 与针对 r2 的旧报告。
+        let mut review = plan_review_fixture(PlanStatus::Ready);
+        review.document.revision = 3;
+        review.document.content = "- [ ] step one\n- [ ] step two\n- [ ] step three\n".into();
+        review.token.revision = 3;
+        review.report = Some(PlanReviewReport {
+            plan_id: review.document.id.clone(),
+            revision: 2,
+            model_reference: "provider/model-x".into(),
+            content: "stale findings".into(),
+        });
+        app.receive_event_for_test(WorkerEvent::PlanRead(Ok(review)));
+        let panel = app.plan_panel.as_ref().expect("report panel");
+        assert!(panel.on_review_body());
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("outdated"));
+        assert!(screen.contains("stale findings"));
+        // 报告只是辅助材料：不产生实施请求，也不重新进入审查。
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn failed_read_after_review_shows_report_without_execution_token() {
+        let (mut app, requests, _events) = plan_app();
+        app.workflow = ready_plan_workflow();
+        start_review(&mut app, &requests);
+        app.receive_event_for_test(WorkerEvent::PlanReviewed(Ok(PlanReviewReport {
+            plan_id: "0123456789abcdef0123456789abcdef".into(),
+            revision: 2,
+            model_reference: "provider/model-x".into(),
+            content: "final findings".into(),
+        })));
+        assert!(matches!(requests.try_recv(), Ok(WorkerCommand::ReadPlan)));
+        app.receive_event_for_test(WorkerEvent::PlanRead(Err(anyhow::anyhow!(
+            "plan file vanished"
+        ))));
+        // 报告展示但旧执行 token 失效：只读面板禁用全部动作。
+        let panel = app.plan_panel.as_ref().expect("degraded panel");
+        assert!(panel.token().is_none());
+        for index in 0..4 {
+            assert!(!panel.action_enabled(index));
+        }
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("final findings"));
+        assert!(screen.contains("plan file vanished"));
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
     }
 }

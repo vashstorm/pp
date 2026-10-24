@@ -9,6 +9,7 @@ mod llm;
 mod logging;
 mod mcp;
 mod models;
+mod plan;
 mod project_instructions;
 mod skills;
 mod stats;
@@ -207,6 +208,13 @@ fn run(args: Args) -> Result<()> {
     } else {
         None
     };
+    if !use_tui
+        && restored
+            .as_ref()
+            .is_some_and(|session| session.work_mode() == plan::WorkMode::Plan)
+    {
+        anyhow::bail!("Saved session is in Plan mode; resume it in the TUI.");
+    }
     let cwd = match &restored {
         Some(session) => {
             std::env::set_current_dir(session.cwd())
@@ -373,6 +381,10 @@ fn run(args: Args) -> Result<()> {
                 writeln!(stderr, "/tree requires the TUI; run pp in a terminal.")?;
                 continue;
             }
+            Some(commands::Command::Plan(_)) => {
+                writeln!(stderr, "/plan requires the TUI; run pp in a terminal.")?;
+                continue;
+            }
             _ => {}
         }
         let agent = match &mut agent {
@@ -445,7 +457,8 @@ fn run(args: Args) -> Result<()> {
                 | commands::Command::Quit
                 | commands::Command::Skills(_)
                 | commands::Command::Resume
-                | commands::Command::Tree,
+                | commands::Command::Tree
+                | commands::Command::Plan(_),
             ) => unreachable!(),
             Some(commands::Command::Prompt(prompt)) => {
                 if let Err(error) = run_cli_task(agent, Some(&prompt), &mut stdout, &mut stderr) {
@@ -575,6 +588,7 @@ fn run_cli_task(
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. }
                 | AgentEvent::UserInputAccepted { .. }
+                | AgentEvent::PlanProgressUpdated { .. }
         ) {
             return;
         }
@@ -679,7 +693,8 @@ fn run_cli_task(
             AgentEvent::ModelRequestStarted
             | AgentEvent::ModelOutputProgress { .. }
             | AgentEvent::ModelRequestFinished { .. }
-            | AgentEvent::UserInputAccepted { .. } => {}
+            | AgentEvent::UserInputAccepted { .. }
+            | AgentEvent::PlanProgressUpdated { .. } => {}
         }
     };
     let cancellation = cancellation::CancellationToken::new();

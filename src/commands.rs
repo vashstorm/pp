@@ -55,6 +55,12 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "View or set the thinking effort level, keeping session history",
     },
     CommandSpec {
+        name: "/plan",
+        icon: "◇",
+        usage: "/plan [view|new|off]",
+        description: "Plan a task with read-only research, then explicitly approve execution (TUI)",
+    },
+    CommandSpec {
         name: "/tree",
         icon: "⑂",
         usage: "/tree",
@@ -74,6 +80,14 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanCommand {
+    Open,
+    View,
+    New,
+    Off,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command<'a> {
     Help,
@@ -81,6 +95,7 @@ pub(crate) enum Command<'a> {
     Compact,
     Resume,
     Tree,
+    Plan(PlanCommand),
     Quit,
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
@@ -103,6 +118,15 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/compact" => Command::Compact,
         "/resume" => Command::Resume,
         "/tree" => Command::Tree,
+        "/plan" => {
+            return Ok(Some(Command::Plan(match argument {
+                "" => PlanCommand::Open,
+                "view" => PlanCommand::View,
+                "new" => PlanCommand::New,
+                "off" => PlanCommand::Off,
+                _ => anyhow::bail!("usage: /plan [view|new|off]"),
+            })));
+        }
         "/quit" => Command::Quit,
         "/model" => {
             return Ok(Some(Command::Model(

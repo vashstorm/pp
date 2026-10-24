@@ -3,6 +3,7 @@ use super::{Metadata, Session, SessionRef};
 use crate::{
     config::{EditMode, ThinkLevel, ToolLimits},
     events::AgentEvent,
+    plan::WorkflowState,
 };
 use async_openai::types::{chat as c, responses as r};
 use serde::{Deserialize, Serialize};
@@ -64,12 +65,28 @@ pub(super) enum PayloadRef<'a> {
 }
 
 #[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkflowRef<'a> {
+    pub version: u32,
+    pub workflow: &'a WorkflowState,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Workflow {
+    pub version: u32,
+    pub workflow: WorkflowState,
+}
+
+#[derive(Serialize)]
 #[serde(tag = "customType", content = "data")]
 pub(super) enum CustomRef<'a> {
     #[serde(rename = "pp.session_state")]
     State(StateRef<'a>),
     #[serde(rename = "pp.native_append")]
     NativeAppend(NativeAppendRef<'a>),
+    #[serde(rename = "pp.workflow")]
+    Workflow(WorkflowRef<'a>),
     #[serde(rename = "pp.instructions")]
     Instructions { system: &'a str },
     #[serde(rename = "pp.event")]
@@ -92,9 +109,14 @@ pub(super) struct StateRef<'a> {
     pub tool_limits: ToolLimits,
     pub base_system: &'a str,
     pub session: SessionRef<'a>,
+    pub workflow: &'a WorkflowState,
 }
 impl<'a> StateRef<'a> {
-    pub fn new(metadata: &'a Metadata<'a>, session: SessionRef<'a>) -> Self {
+    pub fn new(
+        metadata: &'a Metadata<'a>,
+        session: SessionRef<'a>,
+        workflow: &'a WorkflowState,
+    ) -> Self {
         Self {
             tree: None,
             version: 1,
@@ -104,6 +126,7 @@ impl<'a> StateRef<'a> {
             tool_limits: metadata.tool_limits,
             base_system: metadata.base_system,
             session,
+            workflow,
         }
     }
 }
@@ -184,6 +207,8 @@ pub(super) enum Custom {
     State(Box<State>),
     #[serde(rename = "pp.native_append")]
     NativeAppend(NativeAppend),
+    #[serde(rename = "pp.workflow")]
+    Workflow(Workflow),
     #[serde(rename = "pp.instructions")]
     Instructions { system: String },
     #[serde(rename = "pp.event")]
@@ -205,6 +230,8 @@ pub(super) struct State {
     pub tool_limits: ToolLimits,
     pub base_system: String,
     pub session: Session,
+    #[serde(default)]
+    pub workflow: WorkflowState,
 }
 #[derive(Deserialize)]
 #[serde(tag = "protocol", rename_all = "lowercase")]

@@ -15,7 +15,8 @@ const LOGO: [&str; 5] = [
     "▀     ▀   ",
 ];
 const TIP: &str = "/help for commands · /model to choose a model · /effort to set thinking";
-const KEYS_TAIL: &str = " · Shift-Tab thinking · Ctrl-P model · F1 help · Ctrl-J newline · Ctrl-C quit";
+const KEYS_TAIL: &str =
+    " · Shift-Tab thinking · Ctrl-P model · F1 help · Ctrl-J newline · Ctrl-C quit";
 
 pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
     if area.width == 0 || area.height == 0 {

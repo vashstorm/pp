@@ -123,6 +123,32 @@ impl InputQueue {
         Ok(())
     }
 
+    /// Atomically arbitrates plan submission against pending steering input.
+    ///
+    /// Returns `false` when steering input is queued, leaving the queue and
+    /// revision untouched; otherwise seals steering so late arrivals stay
+    /// pending until the next [`InputQueue::begin_run`]. Follow-up input is
+    /// never taken or dropped here.
+    pub(crate) fn seal_for_plan_review(&self) -> Result<bool> {
+        let mut state = self.lock()?;
+        if state
+            .inputs
+            .iter()
+            .any(|input| input.kind == PendingKind::Steering)
+        {
+            return Ok(false);
+        }
+        if state.steering_open {
+            state.steering_open = false;
+            state.changed();
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn is_empty(&self) -> Result<bool> {
+        Ok(self.lock()?.inputs.is_empty())
+    }
+
     pub(crate) fn claim_steering(&self, finish_if_empty: bool) -> Result<VecDeque<PendingInput>> {
         let mut state = self.lock()?;
         let mut batch = VecDeque::new();
@@ -286,6 +312,91 @@ mod tests {
             assert!(batch.is_empty());
             assert!(queue.claim_next().unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn plan_review_seal_arbitrates_both_arrival_orders() {
+        for enqueue_first in [false, true] {
+            let queue = InputQueue::default();
+            queue.begin_run().unwrap();
+            let initial = queue.snapshot_since(None).unwrap().unwrap().revision;
+            let worker = queue.clone();
+            let barrier = Arc::new(Barrier::new(2));
+            let worker_barrier = barrier.clone();
+            let (enqueued_tx, enqueued_rx) = mpsc::channel();
+            let (sealed_tx, sealed_rx) = mpsc::channel();
+            let handle = thread::spawn(move || {
+                worker_barrier.wait();
+                if enqueue_first {
+                    enqueued_rx.recv().unwrap();
+                }
+                let sealed = worker.seal_for_plan_review();
+                sealed_tx.send(()).unwrap();
+                sealed
+            });
+            barrier.wait();
+            if !enqueue_first {
+                sealed_rx.recv().unwrap();
+            }
+            enqueue(&queue, PendingKind::Steering, "S");
+            enqueue(&queue, PendingKind::FollowUp, "Q");
+            if enqueue_first {
+                enqueued_tx.send(()).unwrap();
+            }
+            let sealed = handle.join().unwrap().unwrap();
+            assert!(!queue.is_empty().unwrap());
+            if enqueue_first {
+                assert!(!sealed);
+                // A lost race leaves the exact inputs, order, and revision intact.
+                assert_eq!(
+                    queue.snapshot_since(None).unwrap().unwrap().revision,
+                    initial + 2
+                );
+                let snapshot = queue.snapshot_since(Some(initial)).unwrap().unwrap();
+                assert_eq!((snapshot.steering(), snapshot.follow_up()), (1, 1));
+                assert_eq!(
+                    queue
+                        .claim_steering(false)
+                        .unwrap()
+                        .pop_front()
+                        .unwrap()
+                        .source,
+                    "S"
+                );
+                assert_eq!(queue.claim_next().unwrap().unwrap().source, "Q");
+            } else {
+                assert!(sealed);
+                // Late arrivals stay pending while steering is sealed.
+                assert!(queue.claim_steering(false).unwrap().is_empty());
+                let snapshot = queue.snapshot_since(Some(initial)).unwrap().unwrap();
+                assert_eq!((snapshot.steering(), snapshot.follow_up()), (1, 1));
+                // Only begin_run reopens steering consumption.
+                queue.begin_run().unwrap();
+                assert_eq!(
+                    queue
+                        .claim_steering(false)
+                        .unwrap()
+                        .pop_front()
+                        .unwrap()
+                        .source,
+                    "S"
+                );
+                assert_eq!(queue.claim_next().unwrap().unwrap().source, "Q");
+            }
+            assert!(queue.is_empty().unwrap());
+        }
+    }
+
+    #[test]
+    fn plan_review_seal_keeps_follow_up_pending_without_steering() {
+        let queue = InputQueue::default();
+        queue.begin_run().unwrap();
+        enqueue(&queue, PendingKind::FollowUp, "Q");
+        assert!(queue.seal_for_plan_review().unwrap());
+        assert!(!queue.is_empty().unwrap());
+        assert!(queue.claim_steering(false).unwrap().is_empty());
+        assert_eq!(queue.claim_next().unwrap().unwrap().source, "Q");
+        assert!(queue.is_empty().unwrap());
     }
 
     #[test]

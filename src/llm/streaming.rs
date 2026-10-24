@@ -50,9 +50,7 @@ impl<'de> Deserialize<'de> for ResponseEvent {
                 serde_json::from_str::<ResponseUsage<'_>>(raw.get())
                     .ok()
                     .and_then(|event| event.response?.usage)
-                    .and_then(|usage| {
-                        serde_json::from_str::<serde_json::Value>(usage.get()).ok()
-                    })
+                    .and_then(|usage| serde_json::from_str::<serde_json::Value>(usage.get()).ok())
                     .and_then(|usage| cache_write_tokens(&usage, "input_tokens_details"))
             })
             .flatten();
