@@ -59,14 +59,30 @@ fn plan_wait_mode(pty: &mut Pty, mode: &str) {
             .contents()
             .lines()
             .last()
-            .is_some_and(|line| line.contains(mode))
+            .is_some_and(|line| {
+                ["off", "low", "med", "hig", "xhi", "max"].iter().any(|effort| {
+                    line.contains(&format!("{effort} · \u{f0132} {mode} · "))
+                })
+            })
+    });
+}
+
+fn plan_wait_execute(pty: &mut Pty) {
+    pty.wait_for("执行模式隐藏模式标签", |screen| {
+        screen.contents().lines().last().is_some_and(|line| {
+            line.trim_start().starts_with("\u{f1d8} · ")
+                && !line.contains('\u{f0132}')
+                && !line.contains(" · EXEC · ")
+                && !line.contains(" · E · ")
+        })
     });
 }
 
 fn plan_enter(pty: &mut Pty, server: &Server) {
     pty.ready();
+    plan_wait_execute(pty);
     pty.input("/plan\r");
-    plan_wait_mode(pty, "PLAN");
+    plan_wait_mode(pty, "Plan");
     no_more(server);
 }
 
@@ -298,7 +314,7 @@ fn plan_tui_approval_uses_reviewed_bytes_and_tracks_only_verified_progress() {
                 let text = screen.contents();
                 text.contains("1/2") && text.contains('☑') && text.contains('☐')
             });
-            plan_wait_mode(&mut pty, "EXEC");
+            plan_wait_execute(&mut pty);
             no_more(&fixture);
             pty.input("\x1b");
             plan_calls(
@@ -349,7 +365,7 @@ fn plan_tui_approval_uses_reviewed_bytes_and_tracks_only_verified_progress() {
             let mut resumed =
                 Pty::start_with_args(project.path(), home.path(), &["-r", &execution_id]);
             resumed.ready();
-            plan_wait_mode(&mut resumed, "EXEC");
+            plan_wait_execute(&mut resumed);
             resumed.input("/plan view\r");
             resumed.wait_for("restored partial execution progress", |screen| {
                 screen.contents().contains("1/2")
@@ -503,7 +519,7 @@ fn plan_tui_rejects_real_side_effects_but_reads_searches_and_asks() {
         );
         plan_final(request, protocol, "Research done, no saved plan yet");
         pty.ready();
-        plan_wait_mode(&mut pty, "PLAN");
+        plan_wait_mode(&mut pty, "Plan");
         pty.input("/quit\r");
         pty.finish();
         no_more(&fixture);
@@ -556,19 +572,19 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
             &[TREE_TUI_HOME],
             "Execute history before entering Plan",
         );
-        plan_wait_mode(&mut pty, "PLAN");
+        plan_wait_mode(&mut pty, "Plan");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), PLAN_TUI_BODY);
         pty.input("\x01\x0b/new\r");
         pty.wait_for("new session welcome after reset", |screen| {
             screen.contents().contains("█▀▀█  █▀▀█") && input_is_ready(screen)
         });
-        plan_wait_mode(&mut pty, "PLAN");
+        plan_wait_mode(&mut pty, "Plan");
         pty.input("/plan view\r");
         pty.text("No saved plan.");
         no_more(&fixture);
         pty.input("/model second/primary\r");
         pty.ready_model("second-model");
-        plan_wait_mode(&mut pty, "PLAN");
+        plan_wait_mode(&mut pty, "Plan");
         pty.input("Research after model change\r");
         let (request, body) = pty.request_at(&fixture, api_path(other));
         assert!(body.to_string().contains("PLAN MODE"));
@@ -608,7 +624,7 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
             screen.contents().contains("Context compacted:")
         });
         pty.ready();
-        plan_wait_mode(&mut pty, "PLAN");
+        plan_wait_mode(&mut pty, "Plan");
         pty.input("Research after compaction\r");
         let (request, body) = pty.request_at(&fixture, api_path(other));
         assert!(body.to_string().contains("PLAN MODE"));
@@ -679,7 +695,7 @@ fn plan_tui_mcp_is_stopped_in_plan_and_cleanup_tracks_execute_reconnection() {
             pty.finish();
             let mut pty = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
             pty.ready();
-            plan_wait_mode(&mut pty, "PLAN");
+            plan_wait_mode(&mut pty, "Plan");
             no_more(&fixture);
             pty.input("/plan\r");
             plan_wait_review(&mut pty, 1);
@@ -703,7 +719,7 @@ fn plan_tui_mcp_is_stopped_in_plan_and_cleanup_tracks_execute_reconnection() {
                         .contains("Leave Plan mode without executing this plan?")
                 });
                 pty.input("\r");
-                plan_wait_mode(&mut pty, "PLAN");
+                plan_wait_mode(&mut pty, "Plan");
                 no_more(&fixture);
                 pty.input("/plan off\r");
                 pty.wait_for("local leave confirmation again", |screen| {
@@ -712,7 +728,7 @@ fn plan_tui_mcp_is_stopped_in_plan_and_cleanup_tracks_execute_reconnection() {
                         .contains("Leave Plan mode without executing this plan?")
                 });
                 pty.input("\x1b[B\r");
-                plan_wait_mode(&mut pty, "EXEC");
+                plan_wait_execute(&mut pty);
                 no_more(&fixture);
                 pty.input("Explicit normal execution after leaving Plan\r");
             } else {
@@ -811,7 +827,7 @@ fn plan_tui_external_file_errors_never_restore_or_execute_snapshot_bytes() {
             plan_choose(&mut pty, 1);
             pty.wait_for("file validation failure keeps planning", |screen| {
                 let text = cancel_normalize(screen);
-                text.contains("PLAN")
+                text.contains("Plan")
                     && (text.contains("UTF-8")
                         || text.contains("regularfile")
                         || text.contains("Nosuchfile")
@@ -927,7 +943,7 @@ fn plan_tui_pending_input_never_crosses_review_into_execute() {
         );
         plan_final(request, protocol, "Followup researched without execution");
         pty.ready();
-        plan_wait_mode(&mut pty, "PLAN");
+        plan_wait_mode(&mut pty, "Plan");
         assert!(!project.path().join("canary.txt").exists());
         pty.input("\x03");
         pty.finish();
@@ -987,7 +1003,7 @@ fn plan_tui_discussion_preserves_main_draft_and_does_not_force_a_rewrite() {
         );
         pty.ready();
         pty.draft("preserved main draft");
-        plan_wait_mode(&mut pty, "PLAN");
+        plan_wait_mode(&mut pty, "Plan");
         assert_eq!(
             std::fs::read_to_string(plan_path(project.path())).unwrap(),
             PLAN_TUI_BODY
@@ -1040,7 +1056,7 @@ fn plan_tui_submission_requires_deliberate_action_and_survives_resize_and_resume
         no_more(&fixture);
         pty.resize(4, 20);
         pty.wait_for("narrow mode indicator", |screen| {
-            screen.contents().contains("PLAN")
+            screen.contents().contains("Plan")
                 || screen
                     .contents()
                     .lines()
@@ -1050,7 +1066,7 @@ fn plan_tui_submission_requires_deliberate_action_and_survives_resize_and_resume
         pty.resize(30, 100);
         plan_wait_review(&mut pty, 1);
         pty.input("\x1b");
-        plan_wait_mode(&mut pty, "PLAN");
+        plan_wait_mode(&mut pty, "Plan");
         pty.input("开始吧\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert!(
@@ -1062,14 +1078,14 @@ fn plan_tui_submission_requires_deliberate_action_and_survives_resize_and_resume
         plan_final(request, protocol, "Still discussing, not executing");
         pty.ready();
         assert!(!project.path().join("canary.txt").exists());
-        plan_wait_mode(&mut pty, "PLAN");
+        plan_wait_mode(&mut pty, "Plan");
         let id = saved_session_id(home.path());
         pty.input("\x03");
         pty.finish();
         for flag in ["-r", "-c"] {
             let mut resumed = Pty::start_with_args(project.path(), home.path(), &[flag, &id]);
             resumed.ready();
-            plan_wait_mode(&mut resumed, "PLAN");
+            plan_wait_mode(&mut resumed, "Plan");
             no_more(&fixture);
             resumed.input("/quit\r");
             resumed.finish();

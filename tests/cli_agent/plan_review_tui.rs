@@ -140,7 +140,7 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
             assert!(!project.path().join("review-forbidden").exists());
             plan_final(request, protocol, PLAN_REVIEW_REPORT);
             plan_wait_report(&mut pty, "Major", false);
-            plan_wait_mode(&mut pty, "PLAN");
+            plan_wait_mode(&mut pty, "Plan");
             no_more(&fixture);
             assert_eq!(std::fs::read(&path).unwrap(), original);
             plan_choose(&mut pty, action);
@@ -163,7 +163,7 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                     "Discussing the advisory finding without changing the plan",
                 );
                 pty.ready();
-                plan_wait_mode(&mut pty, "PLAN");
+                plan_wait_mode(&mut pty, "Plan");
                 assert_eq!(std::fs::read(&path).unwrap(), original);
             } else {
                 plan_calls(
@@ -206,7 +206,7 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                     "Executed despite the advisory Major finding",
                 );
                 pty.ready();
-                plan_wait_mode(&mut pty, "EXEC");
+                plan_wait_execute(&mut pty);
                 assert_eq!(
                     std::fs::read(project.path().join("canary.txt")).unwrap(),
                     b"approved bytes"
@@ -281,7 +281,7 @@ fn plan_review_tui_binds_reports_to_revision_and_restores_without_replaying() {
         pty.finish();
         let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
         resumed.ready();
-        plan_wait_mode(&mut resumed, "PLAN");
+        plan_wait_mode(&mut resumed, "Plan");
         no_more(&fixture);
         resumed.input("/plan view\r");
         plan_wait_review(&mut resumed, 2);

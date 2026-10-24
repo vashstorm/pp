@@ -14,9 +14,9 @@ use std::{
 };
 
 pub(super) const ACCENT: Color = Color::Rgb(127, 166, 106);
-// PLAN 模式标签：与 transcript 高亮一致的琥珀色，EXEC 用暗灰弱化。
+// Plan 模式标签：与 transcript 高亮一致的琥珀色。
 const PLAN_MODE: Color = Color::Rgb(254, 188, 56);
-// 模式标签之后仍需可容纳的最小字段空间（图标+至少一个字符）。
+// 模式标签之外仍需可容纳的最小字段空间（图标+至少一个字符）。
 const MIN_AFTER_MODE: usize = FIELD_ICON_WIDTH + 1;
 const MODEL: Color = Color::Rgb(223, 167, 209);
 const DIRECTORY: Color = Color::Rgb(36, 174, 181);
@@ -27,8 +27,11 @@ const INPUT: Color = Color::Rgb(125, 207, 255);
 const OUTPUT: Color = Color::Rgb(158, 206, 106);
 const CACHED: Color = Color::Rgb(187, 154, 247);
 // 与 omp 的 Nerd Font 图标一致；图标后保留一列空白，容纳字形右侧伸展。
+// Paper Plane 的首字母与应用名 pp 对应。
+const APP_ICON: &str = "\u{f1d8}";
 const MODEL_ICON: &str = "\u{ec19}";
 const THINK_ICON: &str = "\u{f0766}";
+const PLAN_ICON: &str = "\u{f0132}";
 const DIRECTORY_ICON: &str = "\u{f07c}";
 const GIT_ICON: &str = "\u{f126}";
 const SPEED_ICON: &str = "\u{f0e7}";
@@ -396,7 +399,7 @@ fn compact(text: &str, width: usize, keep_end: bool) -> String {
 }
 
 // 放不下时依次降级：缩短 cwd → 隐藏 git → 缩短模型 → 仅显示模型前缀。
-// 模式标签优先级最高：预算不足时先压缩其它字段，再缩为单字母，最后只留模式。
+// 仅 Plan 显示模式标签：预算不足时先压缩其它字段，再缩为单字母，最后只留模式。
 pub(super) fn primary(
     model: Option<&ModelChoice>,
     think_level: ThinkLevel,
@@ -406,30 +409,24 @@ pub(super) fn primary(
 ) -> Line<'static> {
     use crate::plan::WorkMode as Mode;
     let width = usize::from(width);
-    let (mode_full, mode_short) = match mode {
-        Mode::Plan => ("PLAN", "P"),
-        Mode::Execute => ("EXEC", "E"),
-    };
-    let mode_color = match mode {
-        Mode::Plan => PLAN_MODE,
-        Mode::Execute => Color::DarkGray,
-    };
     let mode_span = |text: &'static str| {
         Span::styled(
             text,
-            Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+            Style::default().fg(PLAN_MODE).add_modifier(Modifier::BOLD),
         )
     };
-    let mode_slot = |text: &str| SEPARATOR_WIDTH + Line::from(text).width();
+    let mode_slot = |text: &str| SEPARATOR_WIDTH + FIELD_ICON_WIDTH + Line::from(text).width();
     let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
-    // 头部 " pp" 固定占 3 列；模式标签紧随其后，放不下全称时缩为单字母。
-    let budget_total = width.saturating_sub(3);
-    let (mode_text, budget) = if budget_total >= mode_slot(mode_full) + MIN_AFTER_MODE {
-        (mode_full, budget_total - mode_slot(mode_full))
-    } else if budget_total >= mode_slot(mode_short) + MIN_AFTER_MODE {
-        (mode_short, budget_total - mode_slot(mode_short))
-    } else if budget_total >= mode_slot(mode_short) {
-        (mode_short, 0)
+    // 头部为空白加纸飞机图标；为 effort 后的模式图标与标签预留空间。
+    let budget_total = width.saturating_sub(1 + ICON_WIDTH);
+    let (mode_text, budget) = if mode == Mode::Execute {
+        ("", budget_total)
+    } else if budget_total >= mode_slot("Plan") + MIN_AFTER_MODE {
+        ("Plan", budget_total - mode_slot("Plan"))
+    } else if budget_total >= mode_slot("P") + MIN_AFTER_MODE {
+        ("P", budget_total - mode_slot("P"))
+    } else if budget_total >= mode_slot("P") {
+        ("P", 0)
     } else {
         ("", budget_total)
     };
@@ -487,16 +484,18 @@ pub(super) fn primary(
                 false,
             );
             if budget < model_field(&model_text) + effort_width + dir_fixed {
-                // 4) 仍不足：仅显示（模式+）模型前缀；模式标签始终优先保留。
-                let mut spans = Vec::new();
-                if !mode_text.is_empty() {
-                    spans.push(mode_span(mode_text));
-                    spans.push(separator());
-                }
-                spans.push(Span::styled(
-                    compact(model_src, budget_total, false),
+                // 4) 仍不足：仅显示模型前缀与模式；模式图标和标签优先保留。
+                let mut spans = vec![Span::styled(
+                    compact(model_src, budget, false),
                     Style::default().fg(MODEL).add_modifier(Modifier::BOLD),
-                ));
+                )];
+                if !mode_text.is_empty() {
+                    if budget > 0 {
+                        spans.push(separator());
+                    }
+                    spans.push(icon(PLAN_ICON, PLAN_MODE));
+                    spans.push(mode_span(mode_text));
+                }
                 return Line::from(spans);
             }
             cwd_slot = budget.saturating_sub(model_field(&model_text) + effort_width + dir_fixed);
@@ -508,14 +507,10 @@ pub(super) fn primary(
     let mut spans = vec![
         Span::raw(" "),
         Span::styled(
-            "pp",
+            APP_ICON,
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
     ];
-    if !mode_text.is_empty() {
-        spans.push(separator());
-        spans.push(mode_span(mode_text));
-    }
     spans.push(separator());
     spans.push(icon(MODEL_ICON, MODEL));
     spans.push(Span::styled(model_text, model_text_style));
@@ -523,6 +518,11 @@ pub(super) fn primary(
     // off 表示显式发送 none，请求关闭思考。
     spans.push(icon(think_icon, MODEL));
     spans.push(Span::styled(think, model_text_style));
+    if !mode_text.is_empty() {
+        spans.push(separator());
+        spans.push(icon(PLAN_ICON, PLAN_MODE));
+        spans.push(mode_span(mode_text));
+    }
     spans.push(separator());
     spans.push(icon(DIRECTORY_ICON, DIRECTORY));
     spans.push(Span::styled(workdir_text, Style::default().fg(DIRECTORY)));
