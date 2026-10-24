@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, ensure};
 use reqwest::Url;
 use serde::Deserialize;
-use std::{collections::HashSet, fs, path::Path};
+use std::{fs, path::Path};
 
 use crate::{config::ThinkLevel, yaml};
 
@@ -111,7 +111,40 @@ impl ThinkingEntry {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ModelsFile {
-    providers: Vec<ProviderEntry>,
+    #[serde(deserialize_with = "deserialize_named_entries")]
+    providers: Vec<(String, ProviderEntry)>,
+}
+
+// 映射按文件顺序收集，避免改变默认模型和菜单顺序。
+fn deserialize_named_entries<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Vec<(String, T)>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct EntriesVisitor<T>(std::marker::PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for EntriesVisitor<T> {
+        type Value = Vec<(String, T)>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a mapping of ids to entries")
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(
+            self,
+            mut map: M,
+        ) -> std::result::Result<Self::Value, M::Error> {
+            let mut entries = Vec::with_capacity(map.size_hint().unwrap_or(0));
+            while let Some(entry) = map.next_entry()? {
+                entries.push(entry);
+            }
+            Ok(entries)
+        }
+    }
+
+    deserializer.deserialize_map(EntriesVisitor(std::marker::PhantomData))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -164,13 +197,13 @@ impl<'de> Deserialize<'de> for Protocol {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderEntry {
-    id: String,
     #[serde(default)]
     protocol: Protocol,
     api_key: String,
     #[serde(default, deserialize_with = "deserialize_optional_base_url")]
     base_url: Option<String>,
-    models: Vec<ModelEntry>,
+    #[serde(deserialize_with = "deserialize_named_entries")]
+    models: Vec<(String, ModelEntry)>,
 }
 
 fn deserialize_optional_base_url<'de, D>(
@@ -185,7 +218,6 @@ where
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ModelEntry {
-    id: String,
     model: String,
     #[serde(default, deserialize_with = "deserialize_optional_cost")]
     cost: Option<ModelCost>,
@@ -279,24 +311,15 @@ pub(crate) fn load_models(path: &Path) -> Result<Vec<ValidatedProvider>> {
         .with_context(|| format!("loading YAML models config {}", path.display()))
 }
 
-fn validate_providers(providers: Vec<ProviderEntry>) -> Result<Vec<ValidatedProvider>> {
+fn validate_providers(providers: Vec<(String, ProviderEntry)>) -> Result<Vec<ValidatedProvider>> {
     ensure!(!providers.is_empty(), "providers must not be empty");
-    let mut ids = HashSet::with_capacity(providers.len());
-    for provider in &providers {
-        ensure!(
-            !provider.id.trim().is_empty(),
-            "provider id must not be blank"
-        );
-        ensure!(
-            !provider.id.contains('/'),
-            "provider id must not contain '/'"
-        );
-        ensure!(ids.insert(provider.id.as_str()), "duplicate provider id");
+    for (id, _) in &providers {
+        ensure!(!id.trim().is_empty(), "provider id must not be blank");
+        ensure!(!id.contains('/'), "provider id must not contain '/'");
     }
-    drop(ids);
     providers
         .into_iter()
-        .map(|provider| {
+        .map(|(id, provider)| {
             ensure!(
                 !provider.api_key.trim().is_empty(),
                 "api_key must not be blank"
@@ -307,10 +330,8 @@ fn validate_providers(providers: Vec<ProviderEntry>) -> Result<Vec<ValidatedProv
                 .map(parse_base_url)
                 .transpose()?;
             ensure!(!provider.models.is_empty(), "models must not be empty");
-            let mut ids = HashSet::with_capacity(provider.models.len());
-            for model in &provider.models {
-                ensure!(!model.id.trim().is_empty(), "model id must not be blank");
-                ensure!(ids.insert(model.id.as_str()), "duplicate model id");
+            for (id, model) in &provider.models {
+                ensure!(!id.trim().is_empty(), "model id must not be blank");
                 ensure!(!model.model.trim().is_empty(), "model must not be blank");
                 if let Some(context_window) = model.context_window {
                     ensure!(
@@ -319,18 +340,17 @@ fn validate_providers(providers: Vec<ProviderEntry>) -> Result<Vec<ValidatedProv
                     );
                 }
             }
-            drop(ids);
             Ok(ValidatedProvider {
-                id: provider.id,
+                id,
                 protocol: provider.protocol,
                 api_key: provider.api_key,
                 base_url,
                 models: provider
                     .models
                     .into_iter()
-                    .map(|model| {
+                    .map(|(id, model)| {
                         Ok(ValidatedModel {
-                            id: model.id,
+                            id,
                             model: model.model,
                             cost: model.cost,
                             thinking: model.thinking.validate()?,

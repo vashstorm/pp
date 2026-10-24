@@ -607,11 +607,7 @@ fn debug_logging_separates_initial_prompts_per_session_across_tasks_and_models()
         serde_json::from_str(&response_models(&server, Some("completion"))).unwrap();
     let mut response_provider: Value =
         serde_json::from_str(&response_models(&server, None)).unwrap();
-    response_provider["providers"][0]["id"] = json!("responses");
-    models["providers"]
-        .as_array_mut()
-        .unwrap()
-        .push(response_provider["providers"][0].take());
+    models["providers"]["responses"] = response_provider["providers"]["fixture"].take();
     fs::write(home.path().join("debug-source.txt"), "tool result marker").unwrap();
     let mut cli = Cli::start_with(
         home.path(),

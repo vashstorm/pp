@@ -611,10 +611,9 @@ fn tree_tui_cross_protocol_navigation_keeps_current_model_and_effort() {
             fixture_settings(),
         )
         .unwrap();
-        let providers = json!({"providers":[
-            slash_provider(&server, "fixture", source, json!([{"id":"primary","model":"fixture-model"}])),
-            slash_provider(&server, "other", target, json!([{"id":"target","model":"target-model"}]))
-        ]});
+        let providers = json!({"providers":{
+            "fixture": slash_provider(&server, "fixture", source, json!({"primary": {"model":"fixture-model"}})),
+            "other": slash_provider(&server, "other", target, json!({"target": {"model":"target-model"}}))}});
         std::fs::write(
             config_path(home.path(), "models.yml"),
             providers.to_string(),

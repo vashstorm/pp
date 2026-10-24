@@ -26,24 +26,23 @@ impl Protocol {
     }
 
     fn models(self, server: &Server, windows: &[(&str, Option<u64>)]) -> String {
-        let models: Vec<Value> = windows
+        let models: serde_json::Map<String, Value> = windows
             .iter()
             .map(|(id, window)| {
-                let mut model = json!({"id": id, "model": format!("fixture-{id}")});
+                let mut model = json!({"model": format!("fixture-{id}")});
                 if let Some(window) = window {
                     model["context_window"] = json!(window);
                 }
-                model
+                (id.to_string(), model)
             })
             .collect();
         json!({
-            "providers": [{
-                "id": "fixture",
+            "providers": {"fixture": {
                 "protocol": self.name(),
                 "api_key": "fixture-key",
                 "base_url": format!("http://{}/v1", server.server_addr()),
                 "models": models,
-            }]
+            }}
         })
         .to_string()
     }

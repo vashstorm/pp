@@ -65,10 +65,9 @@ fn think_level_settings_reach_both_apis_including_none_and_default_alias() {
 fn think_commands_preserve_history_and_level_across_model_switch_and_new() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
-    let models = json!({"providers":[
-        slash_provider(&server, "a", "completion", json!([{"id":"m","model":"a"}])),
-        slash_provider(&server, "b", "response", json!([{"id":"m","model":"b"}]))
-    ]})
+    let models = json!({"providers":{
+        "a": slash_provider(&server, "a", "completion", json!({"m": {"model":"a"}})),
+        "b": slash_provider(&server, "b", "response", json!({"m": {"model":"b"}}))}})
     .to_string();
     let settings = r#"{"think_level":"low"}"#;
     let mut cli = Cli::start_with(dir.path(), None, settings, &models);
@@ -152,8 +151,8 @@ fn think_level_runtime_changes_do_not_override_startup_settings_after_restart() 
     }
 }
 
-fn thinking_model(id: &str, model: &str, efforts: Value, default_level: Option<&str>) -> Value {
-    let mut entry = json!({"id": id, "model": model, "thinking": {"efforts": efforts}});
+fn thinking_model(model: &str, efforts: Value, default_level: Option<&str>) -> Value {
+    let mut entry = json!({"model": model, "thinking": {"efforts": efforts}});
     if let Some(level) = default_level {
         entry["thinking"]["defaultLevel"] = json!(level);
     }
@@ -178,17 +177,16 @@ fn model_thinking_startup_default_and_whitelist_enforced_for_both_protocols() {
         } else {
             "/v1/chat/completions"
         };
-        let models = json!({"providers":[slash_provider(
+        let models = json!({"providers":{"fixture": slash_provider(
             &server,
             "fixture",
             protocol,
-            json!([thinking_model(
-                "primary",
+            json!({"primary": thinking_model(
                 "fixture-model",
                 json!(["low", "high"]),
                 Some("high")
-            )])
-        )]})
+            )})
+        )}})
         .to_string();
         let mut cli = Cli::start_with(dir.path(), None, r#"{"think_level":"max"}"#, &models);
         // The explicit model default beats the global setting on startup.
@@ -270,12 +268,12 @@ fn model_thinking_without_explicit_default_uses_global_then_lowest_allowed() {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
             let settings = json!({"think_level": global}).to_string();
-            let models = json!({"providers":[slash_provider(
+            let models = json!({"providers":{"fixture": slash_provider(
                 &server,
                 "fixture",
                 protocol,
-                json!([thinking_model("primary", "fixture-model", efforts, None)])
-            )]})
+                json!({"primary": thinking_model("fixture-model", efforts, None)})
+            )}})
             .to_string();
             let cli = Cli::start_with(dir.path(), Some("test"), &settings, &models);
             let (request, body) = receive_at(&server, path);
@@ -293,12 +291,12 @@ fn model_thinking_without_explicit_default_uses_global_then_lowest_allowed() {
         // An empty efforts list keeps every global level selectable.
         let server = server();
         let dir = tempfile::tempdir().unwrap();
-        let models = json!({"providers":[slash_provider(
+        let models = json!({"providers":{"fixture": slash_provider(
             &server,
             "fixture",
             protocol,
-            json!([thinking_model("primary", "fixture-model", json!([]), None)])
-        )]})
+            json!({"primary": thinking_model("fixture-model", json!([]), None)})
+        )}})
         .to_string();
         let mut cli = Cli::start_with(dir.path(), None, r#"{"think_level":"max"}"#, &models);
         cli.input("/effort\n/effort none\ntask\n");
@@ -326,21 +324,21 @@ fn model_thinking_without_explicit_default_uses_global_then_lowest_allowed() {
 fn model_thinking_switch_same_protocol_applies_destination_policy() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
-    let models = json!({"providers":[
-        slash_provider(&server, "a", "completion", json!([thinking_model(
-            "m", "vendor-a", json!(["low", "high"]), Some("high")
-        )])),
-        slash_provider(&server, "b", "completion", json!([
-            thinking_model("keep", "vendor-keep", json!(["low", "medium", "high"]), None),
-            thinking_model("lowest", "vendor-lowest", json!(["xhigh", "medium"]), None)
-        ])),
-        slash_provider(&server, "c", "completion", json!([thinking_model(
-            "override", "vendor-override", json!(["low", "medium", "high"]), Some("low")
-        )])),
-        slash_provider(&server, "d", "completion", json!([thinking_model(
-            "global", "vendor-global", json!(["low", "max"]), None
-        )]))
-    ]})
+    let models = json!({"providers": {
+        "a": slash_provider(&server, "a", "completion", json!({
+            "m": thinking_model("vendor-a", json!(["low", "high"]), Some("high"))
+        })),
+        "b": slash_provider(&server, "b", "completion", json!({
+            "keep": thinking_model("vendor-keep", json!(["low", "medium", "high"]), None),
+            "lowest": thinking_model("vendor-lowest", json!(["xhigh", "medium"]), None)
+        })),
+        "c": slash_provider(&server, "c", "completion", json!({
+            "override": thinking_model("vendor-override", json!(["low", "medium", "high"]), Some("low"))
+        })),
+        "d": slash_provider(&server, "d", "completion", json!({
+            "global": thinking_model("vendor-global", json!(["low", "max"]), None)
+        }))
+    }})
     .to_string();
     let mut cli = Cli::start_with(dir.path(), None, r#"{"think_level":"max"}"#, &models);
     cli.input("first\n");
@@ -412,18 +410,23 @@ fn model_thinking_switch_same_protocol_applies_destination_policy() {
 fn model_thinking_switch_cross_protocol_applies_destination_policy() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
-    let models = json!({"providers":[
-        slash_provider(&server, "a", "completion", json!([
-            thinking_model("m", "vendor-a", json!(["low", "high"]), Some("high")),
-            thinking_model("keep", "vendor-a-keep", json!(["low", "medium", "high"]), None)
-        ])),
-        slash_provider(&server, "b", "response", json!([
-            thinking_model("override", "vendor-b-override", json!(["low", "medium", "high"]), Some("medium")),
-            thinking_model("lowest", "vendor-b-lowest", json!(["xhigh", "low"]), None)
-        ]))
-    ]})
+    let models = json!({"providers": {
+        "a": slash_provider(&server, "a", "completion", json!({
+            "m": thinking_model("vendor-a", json!(["low", "high"]), Some("high")),
+            "keep": thinking_model("vendor-a-keep", json!(["low", "medium", "high"]), None)
+        })),
+        "b": slash_provider(&server, "b", "response", json!({
+            "override": thinking_model("vendor-b-override", json!(["low", "medium", "high"]), Some("medium")),
+            "lowest": thinking_model("vendor-b-lowest", json!(["xhigh", "low"]), None)
+        }))
+    }})
     .to_string();
-    let mut cli = Cli::start_with(dir.path(), None, r#"{"think_level":"max"}"#, &models);
+    let mut cli = Cli::start_with(
+        dir.path(),
+        None,
+        r#"{"think_level":"max","default_model":"a/m"}"#,
+        &models,
+    );
     cli.input("first\n");
     let (request, body) = receive(&server);
     assert_eq!(body["model"], "vendor-a");

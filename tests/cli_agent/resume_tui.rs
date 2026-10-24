@@ -497,12 +497,11 @@ fn tui_slash_resume_history_keeps_current_cwd_status_files_model_and_effort() {
     let launch = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("project-only.txt"), "project marker").unwrap();
     std::fs::write(launch.path().join("launch-only.txt"), "launch marker").unwrap();
-    let models = json!({"providers": [
-        slash_provider(&server, "fixture", "response",
-            json!([{"id": "primary", "model": "vendor-primary"}])),
-        slash_provider(&server, "fixture2", "completion",
-            json!([{"id": "other", "model": "vendor-other"}]))
-    ]})
+    let models = json!({"providers": {
+        "fixture": slash_provider(&server, "fixture", "response",
+            json!({"primary": { "model": "vendor-primary"}})),
+        "fixture2": slash_provider(&server, "fixture2", "completion",
+            json!({"other": { "model": "vendor-other"}}))}})
     .to_string();
     std::fs::write(config_path(home.path(), "models.yml"), &models).unwrap();
     std::fs::write(
@@ -534,8 +533,8 @@ fn tui_slash_resume_history_keeps_current_cwd_status_files_model_and_effort() {
     // 删除旧 provider，当前模型改用另一协议；恢复不再依赖保存时的模型配置。
     std::fs::write(
         config_path(home.path(), "models.yml"),
-        json!({"providers": [slash_provider(&server, "fixture2", "completion",
-            json!([{"id": "other", "model": "vendor-other"}]))]}).to_string(),
+        json!({"providers": {"fixture2": slash_provider(&server, "fixture2", "completion",
+            json!({"other": { "model": "vendor-other"}}))}}).to_string(),
     ).unwrap();
     std::fs::write(
         config_path(home.path(), "settings.yml"),
@@ -681,10 +680,10 @@ fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_
             let models = config_path(home.path(), "models.yml");
             std::fs::write(&settings,
                 r#"{"default_model":"fixture/primary","think_level":"high","edit":"hashline","notification_timeout_seconds":1}"#).unwrap();
-            std::fs::write(&models, json!({"providers": [slash_provider(
+            std::fs::write(&models, json!({"providers": {"fixture": slash_provider(
                 &server, "fixture", saved_protocol,
-                json!([{"id":"primary","model":"vendor-old"}])
-            )]}).to_string()).unwrap();
+                json!({"primary": {"model":"vendor-old"}})
+            )}}).to_string()).unwrap();
 
             // 保存含工具调用和推理输出的历史，随后删除旧模型配置。
             let mut saved = Pty::start_with_args(project.path(), home.path(), &[]);
@@ -711,12 +710,11 @@ fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_
             let journal = resume_history_journal_dir(home.path()).join(format!("{id}.jsonl"));
             let original = std::fs::read(&journal).unwrap();
 
-            let current_models = json!({"providers": [slash_provider(
-                &server, "fixture", current_protocol, json!([
-                    {"id":"primary","model":"vendor-default"},
-                    {"id":"selected","model":"vendor-current"}
-                ])
-            )]}).to_string();
+            let current_models = json!({"providers": {"fixture": slash_provider(
+                &server, "fixture", current_protocol, json!({
+                    "primary": {"model":"vendor-default"},
+                    "selected": {"model":"vendor-current"}})
+            )}}).to_string();
             std::fs::write(&models, &current_models).unwrap();
             std::fs::write(&settings,
                 r#"{"default_model":"fixture/primary","edit":"replace","notification_timeout_seconds":1}"#).unwrap();

@@ -180,10 +180,9 @@ fn skills_survive_protocol_switch_and_manual_enable() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     install(home.path(), "rust", "rust");
-    let models = json!({"providers":[
-        slash_provider(&server, "a", "completion", json!([{"id":"m","model":"a"}])),
-        slash_provider(&server, "b", "response", json!([{"id":"m","model":"b"}]))
-    ]})
+    let models = json!({"providers":{
+        "a": slash_provider(&server, "a", "completion", json!({"m": {"model":"a"}})),
+        "b": slash_provider(&server, "b", "response", json!({"m": {"model":"b"}}))}})
     .to_string();
     let mut cli = Cli::start_with(
         home.path(),

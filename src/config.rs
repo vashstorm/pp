@@ -589,15 +589,14 @@ mod tests {
     }
 
     const VALID_SETTINGS: &str = r#"{"default_model":"fixture/primary"}"#;
-    const VALID_MODELS: &str = r#"{"providers":[{
-        "id":"fixture","api_key":"secret-marker-fixture-key",
-        "models":[{"id":"primary","model":"fixture-model"}]
-    }]}"#;
+    const VALID_MODELS: &str = r#"{"providers":{"fixture": {"api_key":"secret-marker-fixture-key",
+        "models":{"primary": {"model":"fixture-model"}}
+    }}}"#;
 
     #[test]
     fn model_cost_accepts_existing_rates_and_rejects_invalid_unselected_models() {
         let mut models: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
-        models["providers"][0]["models"][0]["cost"] =
+        models["providers"]["fixture"]["models"]["primary"]["cost"] =
             json!({"input":0.8,"output":2.8,"cacheRead":0.23});
         let configured = catalog(None, Some(&models.to_string())).unwrap();
         let cost = configured.providers[0].models[0].cost.unwrap();
@@ -605,7 +604,7 @@ mod tests {
         assert_eq!(cost.output, 2.8);
         assert_eq!(cost.cache_read, 0.23);
         assert_eq!(cost.cache_write, None);
-        models["providers"][0]["models"][0]["cost"]["cacheWrite"] = json!(1.25);
+        models["providers"]["fixture"]["models"]["primary"]["cost"]["cacheWrite"] = json!(1.25);
         assert_eq!(
             catalog(None, Some(&models.to_string())).unwrap().providers[0].models[0]
                 .cost
@@ -623,14 +622,8 @@ mod tests {
             json!({"input":1,"output":1,"cacheRead":0,"cacheWrite":null}),
             json!({"input":1,"output":1,"cacheRead":0,"cacheWrite":"secret-marker"}),
         ] {
-            models["providers"][0]["models"]
-                .as_array_mut()
-                .unwrap()
-                .truncate(1);
-            models["providers"][0]["models"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({"id":"unselected","model":"fixture-model","cost":invalid}));
+            models["providers"]["fixture"]["models"]["unselected"] =
+                json!({"model":"fixture-model","cost":invalid});
             rejection(None, Some(&models.to_string()), &["models.yml"]);
         }
     }
@@ -712,7 +705,7 @@ mod tests {
     fn model_thinking_validates_sets_defaults_and_unselected_models() {
         let make = |thinking: serde_json::Value| {
             let mut models: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
-            models["providers"][0]["models"][0]["thinking"] = thinking;
+            models["providers"]["fixture"]["models"]["primary"]["thinking"] = thinking;
             models
         };
         for thinking in [
@@ -797,12 +790,8 @@ mod tests {
             let models = make(thinking);
             rejection(None, Some(&models.to_string()), &["models.yml"]);
             let mut unselected: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
-            let mut model = models["providers"][0]["models"][0].clone();
-            model["id"] = json!("unselected");
-            unselected["providers"][0]["models"]
-                .as_array_mut()
-                .unwrap()
-                .push(model);
+            unselected["providers"]["fixture"]["models"]["unselected"] =
+                models["providers"]["fixture"]["models"]["primary"].clone();
             rejection(None, Some(&unselected.to_string()), &["models.yml"]);
         }
         let error = rejection(
@@ -821,15 +810,12 @@ mod tests {
 
     #[test]
     fn missing_or_empty_settings_default_to_first_provider_first_model() {
-        let providers = r#"{"providers":[
-            {"id":"z-first","protocol":"completion","api_key":"first-key","base_url":"https://a.example/v1","models":[
-                {"id":"z-first","model":"first-model"},
-                {"id":"a-second","model":"not-selected"}
-            ]},
-            {"id":"a-second","api_key":"second-key","models":[
-                {"id":"primary","model":"also-not-selected"}
-            ]}
-        ]}"#;
+        let providers = r#"{"providers":{
+            "z-first": {"protocol":"completion","api_key":"first-key","base_url":"https://a.example/v1","models":{
+                "z-first": {"model":"first-model"},
+                "a-second": {"model":"not-selected"}}},
+            "a-second": {"api_key":"second-key","models":{
+                "primary": {"model":"also-not-selected"}}}}}"#;
         for settings in [None, Some("{}"), Some(r#"{"max_model_requests":5}"#)] {
             let config = load(settings, Some(providers)).unwrap();
             assert_eq!(config.settings.edit, EditMode::Replace);
@@ -846,16 +832,13 @@ mod tests {
         let config = load(
             Some(r#"{"default_model":"second/secondary","max_model_requests":3,"request_timeout_seconds":7}"#),
             Some(
-                r#"{"providers":[
-                    {"id":"first","protocol":"response","api_key":"first-key","base_url":"https://a.example/v1","models":[
-                        {"id":"primary","model":"first-primary"},
-                        {"id":"secondary","model":"first-secondary"}
-                    ]},
-                    {"id":"second","protocol":"completion","api_key":"second-key","base_url":"http://localhost:8080/custom/v1/","models":[
-                        {"id":"primary","model":"second-primary"},
-                        {"id":"secondary","model":"second-secondary"}
-                    ]}
-                ]}"#,
+                r#"{"providers":{
+                    "first": {"protocol":"response","api_key":"first-key","base_url":"https://a.example/v1","models":{
+                        "primary": {"model":"first-primary"},
+                        "secondary": {"model":"first-secondary"}}},
+                    "second": {"protocol":"completion","api_key":"second-key","base_url":"http://localhost:8080/custom/v1/","models":{
+                        "primary": {"model":"second-primary"},
+                        "secondary": {"model":"second-secondary"}}}}}"#,
             ),
         )
         .unwrap();
@@ -901,17 +884,13 @@ mod tests {
     #[test]
     fn protocol_defaults_and_explicit_values_follow_selected_provider() {
         assert_eq!(models::Protocol::default(), models::Protocol::Response);
-        let providers = r#"{"providers":[
-            {"id":"completion","protocol":"completion","api_key":"completion-key","models":[
-                {"id":"primary","model":"shared-model"}
-            ]},
-            {"id":"default","api_key":"default-key","models":[
-                {"id":"primary","model":"shared-model"}
-            ]},
-            {"id":"response","protocol":"response","api_key":"response-key","models":[
-                {"id":"primary","model":"shared-model"}
-            ]}
-        ]}"#;
+        let providers = r#"{"providers":{
+            "completion": {"protocol":"completion","api_key":"completion-key","models":{
+                "primary": {"model":"shared-model"}}},
+            "default": {"api_key":"default-key","models":{
+                "primary": {"model":"shared-model"}}},
+            "response": {"protocol":"response","api_key":"response-key","models":{
+                "primary": {"model":"shared-model"}}}}}"#;
         for (provider, expected) in [
             ("completion", models::Protocol::Completion),
             ("default", models::Protocol::Response),
@@ -933,12 +912,12 @@ mod tests {
             Some(
                 r#"# 同一供应商的模型共享凭证
 providers:
-  - id: fixture
+  fixture:
     api_key: |-
       key//with/*literal*/"quote # literal
     base_url: http://localhost:8080/custom/v1/ # 行尾注释
     models:
-      - id: primary
+      primary:
         model: tool-model
 "#,
             ),
@@ -970,14 +949,11 @@ providers:
 
     #[test]
     fn unmatched_composite_references_fall_back_to_first_provider_first_model() {
-        let models = r#"{"providers":[
-            {"id":"first","api_key":"first-key","models":[
-                {"id":"primary","model":"first-model"}
-            ]},
-            {"id":"second","api_key":"second-key","models":[
-                {"id":"secondary","model":"second-model"}
-            ]}
-        ]}"#;
+        let models = r#"{"providers":{
+            "first": {"api_key":"first-key","models":{
+                "primary": {"model":"first-model"}}},
+            "second": {"api_key":"second-key","models":{
+                "secondary": {"model":"second-model"}}}}}"#;
         for reference in [
             "secret-marker/primary",
             "first/secret-marker",
@@ -992,20 +968,16 @@ providers:
 
     #[test]
     fn provider_and_model_ids_match_exactly_and_split_only_at_first_slash() {
-        let models = r#"{"providers":[
-            {"id":" Fixture","api_key":"secret-marker","models":[
-                {"id":" Primary","model":"spaced"},
-                {"id":"team/model","model":"slashed"}
-            ]},
-            {"id":"fixture","api_key":"secret-marker","models":[
-                {"id":"primary","model":"lowercase"}
-            ]},
-            {"id":"Fixture","api_key":"secret-marker","models":[
-                {"id":"primary","model":"mixed-case-provider"},
-                {"id":" primary","model":"spaced-model"},
-                {"id":"PRIMARY","model":"uppercase-model"}
-            ]}
-        ]}"#;
+        let models = r#"{"providers":{
+            " Fixture": {"api_key":"secret-marker","models":{
+                " Primary": {"model":"spaced"},
+                "team/model": {"model":"slashed"}}},
+            "fixture": {"api_key":"secret-marker","models":{
+                "primary": {"model":"lowercase"}}},
+            "Fixture": {"api_key":"secret-marker","models":{
+                "primary": {"model":"mixed-case-provider"},
+                " primary": {"model":"spaced-model"},
+                "PRIMARY": {"model":"uppercase-model"}}}}}"#;
         for (reference, expected) in [
             (" Fixture/ Primary", "spaced"),
             (" Fixture/team/model", "slashed"),
@@ -1035,30 +1007,25 @@ providers:
     #[test]
     fn provider_and_model_scope_constraints_reject_whole_configuration() {
         let provider = json!({
-            "id": "fixture", "api_key": "secret-marker",
-            "models": [{"id": "primary", "model": "m"}]
+            "api_key": "secret-marker",
+            "models": {"primary": { "model": "m"}}
         });
         let mut cases = vec![
-            json!({"providers": []}),
-            json!({"providers": [provider.clone(), provider.clone()]}),
+            json!({"providers": {}}),
+            json!({"providers": {"fixture": provider.clone()}, "id": "secret-marker"}),
         ];
         for id in ["", " \t", "secret-marker/provider"] {
-            let mut invalid = provider.clone();
-            invalid["id"] = json!(id);
-            cases.push(json!({"providers": [invalid]}));
+            cases.push(json!({"providers": {id: provider.clone()}}));
         }
         for models in [
             json!([]),
-            json!([{"id": "", "model": "secret-marker"}]),
-            json!([{"id": " \t", "model": "secret-marker"}]),
-            json!([
-                {"id": "primary", "model": "secret-marker-first"},
-                {"id": "primary", "model": "secret-marker-second"}
-            ]),
+            json!({}),
+            json!({"": {"model": "secret-marker"}}),
+            json!({" \t": {"model": "secret-marker"}}),
         ] {
             let mut invalid = provider.clone();
             invalid["models"] = models;
-            cases.push(json!({"providers": [invalid]}));
+            cases.push(json!({"providers": {"fixture": invalid}}));
         }
         for models in cases {
             rejection(
@@ -1101,14 +1068,14 @@ providers:
         let valid: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
         let mut cases = vec![
             // The removed flat format is intentionally accepted nowhere.
-            json!({"models": [{"id": "primary", "api_key": "secret-marker", "model": "m"}]}),
+            json!({"models": {"primary": { "api_key": "secret-marker", "model": "m"}}}),
         ];
         for level in 0..3 {
             let mut invalid = valid.clone();
             let object = match level {
                 0 => &mut invalid,
-                1 => &mut invalid["providers"][0],
-                _ => &mut invalid["providers"][0]["models"][0],
+                1 => &mut invalid["providers"]["fixture"],
+                _ => &mut invalid["providers"]["fixture"]["models"]["primary"],
             };
             object["secret-marker"] = json!(true);
             cases.push(invalid);
@@ -1120,7 +1087,7 @@ providers:
             ("max_model_requests", json!(2)),
         ] {
             let mut invalid = valid.clone();
-            invalid["providers"][0]["models"][0][field] = value;
+            invalid["providers"]["fixture"]["models"]["primary"][field] = value;
             cases.push(invalid);
         }
         for models in cases {
@@ -1143,7 +1110,7 @@ providers:
                 json!({"response": null}),
             ] {
                 let mut invalid = valid.clone();
-                invalid["providers"][0][field] = value;
+                invalid["providers"]["fixture"][field] = value;
                 rejection(
                     Some(VALID_SETTINGS),
                     Some(&invalid.to_string()),
@@ -1160,7 +1127,7 @@ providers:
             "secret-marker",
         ] {
             let mut invalid = valid.clone();
-            invalid["providers"][0]["protocol"] = json!(protocol);
+            invalid["providers"]["fixture"]["protocol"] = json!(protocol);
             rejection(
                 Some(VALID_SETTINGS),
                 Some(&invalid.to_string()),
@@ -1172,12 +1139,12 @@ providers:
     #[test]
     fn syntax_type_and_semantic_errors_do_not_disclose_values() {
         for models in [
-            r#"{"providers":[{"id":"fixture","api_key":["secret-marker"],"models":[{"id":"primary","model":"m"}]}]}"#,
-            r#"{"providers":[{"id":"fixture","api_key":"secret-marker","models":[{"id":"primary","model":""}]}]}"#,
-            r#"{"providers":[{"id":"fixture","api_key":" ","models":[{"id":"primary","model":"secret-marker"}]}]}"#,
-            r#"{"providers":[{"id":"fixture","api_key":"secret-marker","base_url":"","models":[{"id":"primary","model":"m"}]}]}"#,
-            r#"{"providers":[{"id":"fixture","api_key":"secret-marker","base_url":"ftp://secret-marker","models":[{"id":"primary","model":"m"}]}]}"#,
-            r#"{"providers":[{"id":"fixture","api_key":"secret-marker" "models":[{"id":"primary","model":"m"}]}]}"#,
+            r#"{"providers":{"fixture": {"api_key":["secret-marker"],"models":{"primary": {"model":"m"}}}}}"#,
+            r#"{"providers":{"fixture": {"api_key":"secret-marker","models":{"primary": {"model":""}}}}}"#,
+            r#"{"providers":{"fixture": {"api_key":" ","models":{"primary": {"model":"secret-marker"}}}}}"#,
+            r#"{"providers":{"fixture": {"api_key":"secret-marker","base_url":"","models":{"primary": {"model":"m"}}}}}"#,
+            r#"{"providers":{"fixture": {"api_key":"secret-marker","base_url":"ftp://secret-marker","models":{"primary": {"model":"m"}}}}}"#,
+            r#"{"providers":{"fixture": {"api_key":"secret-marker" "models":{"primary": {"model":"m"}}}}}"#,
             r#"{"providers":[{"id":"fixture","api_key":"secret-marker", /* unterminated"#,
         ] {
             rejection(Some(VALID_SETTINGS), Some(models), &["models.yml"]);
@@ -1195,8 +1162,8 @@ providers:
     fn unselected_providers_and_models_are_validated_before_selection() {
         let valid: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
         let other = json!({
-            "id": "other", "api_key": "secret-marker",
-            "models": [{"id": "primary", "model": "other-model"}]
+            "api_key": "secret-marker",
+            "models": {"primary": { "model": "other-model"}}
         });
         let mut invalid_providers = Vec::new();
         for (field, value) in [
@@ -1214,14 +1181,8 @@ providers:
             ),
             ("id", json!("")),
             ("models", json!([])),
-            ("models", json!([{"id": "primary", "model": " \t"}])),
-            (
-                "models",
-                json!([
-                    {"id": "primary", "model": "secret-marker"},
-                    {"id": "primary", "model": "duplicate"}
-                ]),
-            ),
+            ("models", json!({"primary": {"model": " \t"}})),
+            ("models", json!({"": {"model": "secret-marker"}})),
         ] {
             let mut invalid = other.clone();
             invalid[field] = value;
@@ -1229,7 +1190,7 @@ providers:
         }
         for provider in invalid_providers {
             let mut invalid = valid.clone();
-            invalid["providers"].as_array_mut().unwrap().push(provider);
+            invalid["providers"]["other"] = provider;
             for settings in [
                 VALID_SETTINGS,
                 r#"{"default_model":"secret-marker/missing"}"#,
@@ -1238,15 +1199,11 @@ providers:
             }
         }
         for model in [
-            json!({"id": "other", "model": " \t"}),
-            json!({"id": "", "model": "secret-marker"}),
-            json!({"id": "primary", "model": "secret-marker"}),
+            json!({"model": " \t"}),
+            json!({"id": "other", "model": "secret-marker"}),
         ] {
             let mut invalid = valid.clone();
-            invalid["providers"][0]["models"]
-                .as_array_mut()
-                .unwrap()
-                .push(model);
+            invalid["providers"]["fixture"]["models"]["other"] = model;
             rejection(
                 Some(VALID_SETTINGS),
                 Some(&invalid.to_string()),
@@ -1259,14 +1216,14 @@ providers:
     fn anthropic_is_rejected_whether_selected_or_not() {
         for base_url in [None, Some("https://secret-marker.example/custom")] {
             let mut anthropic = json!({
-                "id": "anthropic", "protocol": "anthropic", "api_key": "secret-marker",
-                "models": [{"id": "primary", "model": "secret-marker-model"}]
+                "protocol": "anthropic", "api_key": "secret-marker",
+                "models": {"primary": { "model": "secret-marker-model"}}
             });
             if let Some(base_url) = base_url {
                 anthropic["base_url"] = json!(base_url);
             }
             let valid: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
-            let models = json!({"providers": [anthropic, valid["providers"][0]]}).to_string();
+            let models = json!({"providers": {"anthropic": anthropic, "fixture": valid["providers"]["fixture"]}}).to_string();
             for settings in [
                 None,
                 Some("{}"),
@@ -1337,13 +1294,11 @@ providers:
                 .iter()
                 .all(|choice| choice.context_window.is_none())
         );
-        let models = r#"{"providers":[{
-            "id":"fixture","api_key":"fixture-key",
-            "models":[
-                {"id":"primary","model":"primary-model","context_window":32768},
-                {"id":"secondary","model":"secondary-model"}
-            ]
-        }]}"#;
+        let models = r#"{"providers":{"fixture": {"api_key":"fixture-key",
+            "models":{
+                "primary": {"model":"primary-model","context_window":32768},
+                "secondary": {"model":"secondary-model"}}
+        }}}"#;
         let catalog = catalog(
             Some(r#"{"default_model":"fixture/secondary"}"#),
             Some(models),
@@ -1372,8 +1327,8 @@ providers:
         };
         assert_eq!(window("fixture/primary"), Some(32768));
         assert_eq!(window("fixture/secondary"), None);
-        let models = r#"{"providers":[{"id":"fixture","api_key":"fixture-key",
-            "models":[{"id":"primary","model":"m","context_window":18446744073709551615}]}]}"#;
+        let models = r#"{"providers":{"fixture": {"api_key":"fixture-key",
+            "models":{"primary": {"model":"m","context_window":18446744073709551615}}}}}"#;
         assert_eq!(
             load(Some(VALID_SETTINGS), Some(models))
                 .unwrap()
@@ -1398,11 +1353,11 @@ providers:
             "18446744073709551616",
         ] {
             let selected = format!(
-                r#"{{"providers":[{{"id":"fixture","api_key":"fixture-key","models":[{{"id":"primary","model":"m","context_window":{value}}}]}}]}}"#
+                r#"{{"providers":{{"fixture": {{"api_key":"fixture-key","models":{{"primary": {{"model":"m","context_window":{value}}}}}}}}}}}"#
             );
             rejection(Some(VALID_SETTINGS), Some(&selected), &["models.yml"]);
             let unselected_model = format!(
-                r#"{{"providers":[{{"id":"fixture","api_key":"fixture-key","models":[{{"id":"primary","model":"m"}},{{"id":"other","model":"m","context_window":{value}}}]}}]}}"#
+                r#"{{"providers":{{"fixture": {{"api_key":"fixture-key","models":{{"primary": {{"model":"m"}},"other": {{"model":"m","context_window":{value}}}}}}}}}}}"#
             );
             rejection(
                 Some(VALID_SETTINGS),
@@ -1410,7 +1365,7 @@ providers:
                 &["models.yml"],
             );
             let unselected_provider = format!(
-                r#"{{"providers":[{{"id":"fixture","api_key":"fixture-key","models":[{{"id":"primary","model":"m"}}]}},{{"id":"other","api_key":"fixture-key","models":[{{"id":"primary","model":"m","context_window":{value}}}]}}]}}"#
+                r#"{{"providers":{{"fixture": {{"api_key":"fixture-key","models":{{"primary": {{"model":"m"}}}}}},"other": {{"api_key":"fixture-key","models":{{"primary": {{"model":"m","context_window":{value}}}}}}}}}}}"#
             );
             rejection(
                 Some(VALID_SETTINGS),
@@ -1419,8 +1374,8 @@ providers:
             );
         }
         // Zero reaches semantic validation, so the fixed diagnostic names it.
-        let models = r#"{"providers":[{"id":"fixture","api_key":"fixture-key",
-            "models":[{"id":"primary","model":"m","context_window":0}]}]}"#;
+        let models = r#"{"providers":{"fixture": {"api_key":"fixture-key",
+            "models":{"primary": {"model":"m","context_window":0}}}}}"#;
         let chain = rejection(Some(VALID_SETTINGS), Some(models), &["models.yml"]);
         assert!(
             chain.contains("context_window must be a positive integer"),

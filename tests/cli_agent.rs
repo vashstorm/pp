@@ -130,7 +130,7 @@ fn fixture_settings() -> &'static str {
 
 fn fixture_models(server: &Server) -> String {
     format!(
-        "# 此测试进程的回环服务\nproviders:\n  - id: fixture\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      - id: primary\n        model: fixture-model\n",
+        "# 此测试进程的回环服务\nproviders:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        model: fixture-model\n",
         server.server_addr()
     )
 }
@@ -240,15 +240,14 @@ fn authorization(request: &Request) -> String {
 
 fn response_models(server: &Server, protocol: Option<&str>) -> String {
     let mut provider = json!({
-        "id": "fixture",
         "api_key": "fixture-key",
         "base_url": format!("http://{}/v1", server.server_addr()),
-        "models": [{"id": "primary", "model": "fixture-model"}]
+        "models": {"primary": { "model": "fixture-model"}}
     });
     if let Some(protocol) = protocol {
         provider["protocol"] = json!(protocol);
     }
-    json!({"providers": [provider]}).to_string()
+    json!({"providers": {"fixture": provider}}).to_string()
 }
 
 fn response_body(output: Value) -> Value {
@@ -356,7 +355,6 @@ fn response_user(item: &Value, expected: &str) {
 
 fn slash_provider(server: &Server, id: &str, protocol: &str, models: Value) -> Value {
     json!({
-        "id": id,
         "protocol": protocol,
         "api_key": format!("{id}-key"),
         "base_url": format!("http://{}/v1", server.server_addr()),
@@ -409,14 +407,11 @@ fn slash_local_commands_and_unavailable_help_never_request_models() {
     let a = server();
     let b = server();
     let dir = tempfile::tempdir().unwrap();
-    let models = json!({"providers": [
-        slash_provider(&a, "a", "completion", json!([
-            {"id": "primary", "model": "vendor-a"}
-        ])),
-        slash_provider(&b, "gateway", "response", json!([
-            {"id": "team/secondary", "model": "vendor-b"}
-        ]))
-    ]})
+    let models = json!({"providers": {
+        "a": slash_provider(&a, "a", "completion", json!({
+            "primary": { "model": "vendor-a"}})),
+        "gateway": slash_provider(&b, "gateway", "response", json!({
+            "team/secondary": { "model": "vendor-b"}}))}})
     .to_string();
     let mut cli = Cli::start_with(
         dir.path(),
@@ -475,14 +470,11 @@ fn model_switch_completion_alias_routing_preserves_tools_and_reset_selection() {
     let a = server();
     let b = server();
     let dir = tempfile::tempdir().unwrap();
-    let models = json!({"providers": [
-        slash_provider(&a, "a", "completion", json!([
-            {"id": "primary", "model": "vendor-a"}
-        ])),
-        slash_provider(&b, "gateway", "completion", json!([
-            {"id": "team/secondary", "model": "vendor-b"}
-        ]))
-    ]})
+    let models = json!({"providers": {
+        "a": slash_provider(&a, "a", "completion", json!({
+            "primary": { "model": "vendor-a"}})),
+        "gateway": slash_provider(&b, "gateway", "completion", json!({
+            "team/secondary": { "model": "vendor-b"}}))}})
     .to_string();
     let mut cli = Cli::start_with(
         dir.path(),
@@ -630,10 +622,9 @@ fn model_switch_completion_response_completion_preserves_full_tool_batches() {
     let a = server();
     let b = server();
     let dir = tempfile::tempdir().unwrap();
-    let models = json!({"providers": [
-        slash_provider(&a, "a", "completion", json!([{"id":"primary","model":"vendor-a"}])),
-        slash_provider(&b, "b", "response", json!([{"id":"secondary","model":"vendor-b"}]))
-    ]})
+    let models = json!({"providers": {
+        "a": slash_provider(&a, "a", "completion", json!({"primary": {"model":"vendor-a"}})),
+        "b": slash_provider(&b, "b", "response", json!({"secondary": {"model":"vendor-b"}}))}})
     .to_string();
     let mut cli = Cli::start_with(
         dir.path(),
@@ -768,10 +759,9 @@ fn model_switch_responses_first_round_trip_keeps_text_reasoning_and_tools() {
     let a = server();
     let b = server();
     let dir = tempfile::tempdir().unwrap();
-    let models = json!({"providers": [
-        slash_provider(&a, "a", "response", json!([{"id":"primary","model":"vendor-a"}])),
-        slash_provider(&b, "b", "completion", json!([{"id":"secondary","model":"vendor-b"}]))
-    ]})
+    let models = json!({"providers": {
+        "a": slash_provider(&a, "a", "response", json!({"primary": {"model":"vendor-a"}})),
+        "b": slash_provider(&b, "b", "completion", json!({"secondary": {"model":"vendor-b"}}))}})
     .to_string();
     let mut cli = Cli::start_with(
         dir.path(),
@@ -923,13 +913,11 @@ fn model_switch_responses_native_replay_and_cross_provider_portability() {
     let a = server();
     let b = server();
     let dir = tempfile::tempdir().unwrap();
-    let models = json!({"providers": [
-        slash_provider(&a, "a", "response", json!([
-            {"id":"primary","model":"vendor-a"},
-            {"id":"second","model":"vendor-a-second"}
-        ])),
-        slash_provider(&b, "b", "response", json!([{"id":"secondary","model":"vendor-b"}]))
-    ]})
+    let models = json!({"providers": {
+        "a": slash_provider(&a, "a", "response", json!({
+            "primary": {"model":"vendor-a"},
+            "second": {"model":"vendor-a-second"}})),
+        "b": slash_provider(&b, "b", "response", json!({"secondary": {"model":"vendor-b"}}))}})
     .to_string();
     let mut cli = Cli::start_with(
         dir.path(),
@@ -1048,16 +1036,15 @@ fn model_switch_failure_is_atomic_and_catalog_is_a_read_only_startup_snapshot() 
         &bad,
         "bad",
         "response",
-        json!([{"id":"broken","model":"vendor-broken"}]),
+        json!({"broken":{"model":"vendor-broken"}}),
     );
     invalid_header["api_key"] = json!("switch-secret-marker\ninvalid-header");
-    let models = json!({"providers": [
-        slash_provider(&a, "a", "completion", json!([{"id":"primary","model":"vendor-a"}])),
-        slash_provider(&b, "gateway", "completion", json!([
-            {"id":"team/secondary","model":"vendor-b"}
-        ])),
-        invalid_header
-    ]})
+    let models = json!({"providers": {
+        "a": slash_provider(&a, "a", "completion", json!({"primary": {"model":"vendor-a"}})),
+        "gateway": slash_provider(&b, "gateway", "completion", json!({
+            "team/secondary": {"model":"vendor-b"}})),
+        "bad": invalid_header
+    }})
     .to_string();
     let settings = r#"{"default_model":"a/primary"}"#;
     let mut cli = Cli::start_with(dir.path(), None, settings, &models);
@@ -1075,11 +1062,9 @@ fn model_switch_failure_is_atomic_and_catalog_is_a_read_only_startup_snapshot() 
         settings.as_bytes()
     );
     let replacement_settings = r#"{"default_model":"replacement/new"}"#;
-    let replacement_models = json!({"providers": [
-        slash_provider(&bad, "replacement", "response", json!([
-            {"id":"new","model":"not-the-startup-model"}
-        ]))
-    ]})
+    let replacement_models = json!({"providers": {
+        "replacement": slash_provider(&bad, "replacement", "response", json!({
+            "new": {"model":"not-the-startup-model"}}))}})
     .to_string();
     std::fs::write(
         config_path(dir.path(), "settings.yml"),
@@ -1827,28 +1812,23 @@ fn provider_model_selection_routes_to_second_provider_second_model() {
     let selected = server();
     let dir = tempfile::tempdir().unwrap();
     let models = json!({
-        "providers": [
-            {
-                "id": "openai",
+        "providers": {
+            "openai": {
                 "protocol": "completion",
                 "api_key": "first-key",
                 "base_url": format!("http://{}/v1", unused.server_addr()),
-                "models": [
-                    {"id": "primary", "model": "first-primary"},
-                    {"id": "secondary", "model": "first-secondary"}
-                ]
+                "models": {
+                    "primary": { "model": "first-primary"},
+                    "secondary": { "model": "first-secondary"}}
             },
-            {
-                "id": "gateway",
+            "gateway": {
                 "protocol": "completion",
                 "api_key": "second-key",
                 "base_url": format!("http://{}/v1", selected.server_addr()),
-                "models": [
-                    {"id": "primary", "model": "second-primary"},
-                    {"id": "team/secondary", "model": "second-secondary"}
-                ]
-            }
-        ]
+                "models": {
+                    "primary": { "model": "second-primary"},
+                    "team/secondary": { "model": "second-secondary"}}
+            }}
     })
     .to_string();
     let mut cli = Cli::start_with(
@@ -1973,6 +1953,91 @@ fn provider_errors_are_redacted_and_never_retried_on_either_protocol() {
 }
 
 #[test]
+fn yaml_model_maps_preserve_file_order_and_default_selection() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let models = format!(
+        r#"providers:
+  z-first:
+    protocol: completion
+    api_key: fixture-key
+    base_url: http://{}/v1
+    models:
+      z-first:
+        model: vendor-first
+      a-second:
+        model: vendor-second
+  a-second:
+    api_key: another-key
+    models:
+      primary:
+        model: vendor-other
+"#,
+        server.server_addr()
+    );
+    let mut cli = Cli::start_with(home.path(), None, "{}", &models);
+    cli.input("hello\n/model\n/quit\n");
+    let (request, body) = receive(&server);
+    assert_eq!(body["model"], "vendor-first");
+    assert_eq!(authorization(&request), "Bearer fixture-key");
+    final_reply(request, "ordered");
+    let output = cli.finish();
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{error}");
+    assert_eq!(output.stdout, b"ordered\n");
+    let first = error.find("z-first/z-first").unwrap();
+    let second = error.find("z-first/a-second").unwrap();
+    let third = error.find("a-second/primary").unwrap();
+    assert!(first < second && second < third, "{error}");
+    no_more(&server);
+}
+
+#[test]
+fn yaml_model_maps_reject_invalid_keys_duplicates_and_legacy_entries() {
+    // 使用原始 YAML 保留重复键，避免测试构造时被 map 覆盖。
+    let provider = "{api_key: secret-marker, models: {primary: {model: m}}}";
+    let mut cases = vec![
+        format!("providers:\n  fixture: {provider}\n  fixture: {provider}\n"),
+        "providers: [{id: fixture, api_key: secret-marker, models: [{id: primary, model: m}]}]"
+            .into(),
+        format!(
+            "providers: {{fixture: {provider}, unused: {{api_key: secret-marker, models: {{same: {{model: m}}, same: {{model: n}}}}}}}}"
+        ),
+    ];
+    for key in ["''", "'  '", "null", "true", "123", "[secret-marker]"] {
+        cases.push(format!("providers: {{{key}: {provider}}}"));
+        cases.push(format!(
+            "providers: {{fixture: {{api_key: secret-marker, models: {{{key}: {{model: m}}}}}}}}"
+        ));
+    }
+    cases.push(format!(
+        "providers: {{'secret-marker/provider': {provider}}}"
+    ));
+    for value in ["null", "[]", "{}", "secret-marker", "123"] {
+        cases.push(format!("providers: {value}"));
+        cases.push(format!(
+            "providers: {{fixture: {{api_key: secret-marker, models: {value}}}}}"
+        ));
+    }
+    for entry in [
+        "{id: fixture, api_key: secret-marker, models: {primary: {model: m}}}",
+        "{api_key: secret-marker, models: [{id: primary, model: m}]}",
+        "{api_key: secret-marker, models: {primary: {id: primary, model: m}}}",
+    ] {
+        cases.push(format!("providers: {{fixture: {entry}}}"));
+    }
+    for models in cases {
+        let home = tempfile::tempdir().unwrap();
+        let output = Cli::start_with(home.path(), Some("hello"), "{}", &models).finish();
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(!output.status.success(), "{models}");
+        assert!(output.stdout.is_empty());
+        assert!(error.contains("models.yml"), "{error}");
+        assert!(!error.contains("secret-marker"), "{error}");
+    }
+}
+
+#[test]
 fn yaml_block_configs_drive_both_protocols() {
     for (protocol, path) in [
         ("completion", "/v1/chat/completions"),
@@ -1981,7 +2046,7 @@ fn yaml_block_configs_drive_both_protocols() {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         let models = format!(
-            "# 模型配置\nproviders:\n  - id: fixture\n    protocol: {protocol}\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      - id: primary\n        model: yaml-model\n        cost:\n          input: 2.0\n          cacheRead: 0.2\n          output: 8.0\n",
+            "# 模型配置\nproviders:\n  fixture:\n    protocol: {protocol}\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        model: yaml-model\n        cost:\n          input: 2.0\n          cacheRead: 0.2\n          output: 8.0\n",
             server.server_addr()
         );
         let cli = Cli::start_with(
@@ -2019,7 +2084,7 @@ fn file_configs_override_provider_environment() {
     )
     .unwrap();
     std::fs::write(config_path(work.path(), "models.yml"), format!(
-        "# 回环服务\nproviders:\n  - id: chosen\n    protocol: completion\n    api_key: file-key\n    base_url: http://{}/v1\n    models:\n      - id: primary\n        model: file-model\n",
+        "# 回环服务\nproviders:\n  chosen:\n    protocol: completion\n    api_key: file-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        model: file-model\n",
         server.server_addr()
     ))
     .unwrap();
@@ -2061,25 +2126,21 @@ fn missing_settings_uses_first_provider_first_model_and_defaults() {
     let unused = server();
     let server = server();
     let models = json!({
-        "providers": [
-            {
-                "id": "first",
+        "providers": {
+            "first": {
                 "protocol": "completion",
                 "api_key": "first-key",
                 "base_url": format!("http://{}/v1", server.server_addr()),
-                "models": [
-                    {"id": "primary", "model": "first-primary"},
-                    {"id": "secondary", "model": "first-secondary"}
-                ]
+                "models": {
+                    "primary": { "model": "first-primary"},
+                    "secondary": { "model": "first-secondary"}}
             },
-            {
-                "id": "second",
+            "second": {
                 "protocol": "completion",
                 "api_key": "second-key",
                 "base_url": format!("http://{}/v1", unused.server_addr()),
-                "models": [{"id": "primary", "model": "second-primary"}]
-            }
-        ]
+                "models": {"primary": { "model": "second-primary"}}
+            }}
     })
     .to_string();
     let dir = tempfile::tempdir().unwrap();
@@ -2103,22 +2164,19 @@ fn unmatched_default_model_falls_back_to_first_provider_first_model() {
     let unused = server();
     let server = server();
     let models = json!({
-        "providers": [
-            {
-                "id": "first",
+        "providers": {
+            "first": {
                 "protocol": "completion",
                 "api_key": "first-key",
                 "base_url": format!("http://{}/v1", server.server_addr()),
-                "models": [{"id": "primary", "model": "first-primary"}]
+                "models": {"primary": { "model": "first-primary"}}
             },
-            {
-                "id": "second",
+            "second": {
                 "protocol": "completion",
                 "api_key": "second-key",
                 "base_url": format!("http://{}/v1", unused.server_addr()),
-                "models": [{"id": "primary", "model": "second-primary"}]
-            }
-        ]
+                "models": {"primary": { "model": "second-primary"}}
+            }}
     })
     .to_string();
     let dir = tempfile::tempdir().unwrap();
@@ -2146,22 +2204,19 @@ fn unselected_anthropic_refuses_both_cli_modes_without_requests_or_tools() {
     let openai = server();
     let dir = tempfile::tempdir().unwrap();
     let models = json!({
-        "providers": [
-            {
-                "id": "anthropic",
+        "providers": {
+            "anthropic": {
                 "protocol": "anthropic",
                 "api_key": "secret-marker-anthropic",
                 "base_url": format!("http://{}/v1", anthropic.server_addr()),
-                "models": [{"id": "primary", "model": "anthropic-model"}]
+                "models": {"primary": { "model": "anthropic-model"}}
             },
-            {
-                "id": "openai",
+            "openai": {
                 "protocol": "completion",
                 "api_key": "secret-marker-openai",
                 "base_url": format!("http://{}/v1", openai.server_addr()),
-                "models": [{"id": "primary", "model": "openai-model"}]
-            }
-        ]
+                "models": {"primary": { "model": "openai-model"}}
+            }}
     })
     .to_string();
     for interactive in [false, true] {
@@ -2195,22 +2250,19 @@ fn selected_anthropic_refuses_both_cli_modes_without_requests_or_tools() {
     let anthropic = server();
     let openai = server();
     let models = json!({
-        "providers": [
-            {
-                "id": "anthropic",
+        "providers": {
+            "anthropic": {
                 "protocol": "anthropic",
                 "api_key": "secret-marker-anthropic",
                 "base_url": format!("http://{}/v1", anthropic.server_addr()),
-                "models": [{"id": "primary", "model": "anthropic-model"}]
+                "models": {"primary": { "model": "anthropic-model"}}
             },
-            {
-                "id": "openai",
+            "openai": {
                 "protocol": "completion",
                 "api_key": "secret-marker-openai",
                 "base_url": format!("http://{}/v1", openai.server_addr()),
-                "models": [{"id": "primary", "model": "openai-model"}]
-            }
-        ]
+                "models": {"primary": { "model": "openai-model"}}
+            }}
     })
     .to_string();
     // Missing settings must not skip the unsupported first provider.
@@ -2249,13 +2301,12 @@ fn selected_anthropic_refuses_both_cli_modes_without_requests_or_tools() {
 fn interactive_config_errors_keep_session_available_without_model_requests() {
     let server = server();
     let valid = json!({
-        "providers": [{
-            "id": "fixture",
+        "providers": {"fixture": {
             "protocol": "completion",
             "api_key": "secret-marker",
             "base_url": format!("http://{}/v1", server.server_addr()),
-            "models": [{"id": "primary", "model": "fixture-model"}]
-        }]
+            "models": {"primary": { "model": "fixture-model"}}
+        }}
     });
     let valid_models = valid.to_string();
     let mut cases = vec![
@@ -2288,9 +2339,9 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
         ));
     }
     let mut invalid_models = vec![
-        json!({"providers": []}),
+        json!({"providers": {}}),
         // The old flat format is deliberately rejected, not a valid fallback.
-        json!({"models": [{"id": "fixture", "api_key": "secret-marker", "model": "m"}]}),
+        json!({"models": {"fixture": { "api_key": "secret-marker", "model": "m"}}}),
     ];
     for (field, value) in [
         ("id", json!(["secret-marker"])),
@@ -2307,21 +2358,9 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
         ("models", json!([])),
     ] {
         let mut invalid = valid.clone();
-        invalid["providers"][0][field] = value;
+        invalid["providers"]["fixture"][field] = value;
         invalid_models.push(invalid);
     }
-    let mut duplicate_provider = valid.clone();
-    duplicate_provider["providers"]
-        .as_array_mut()
-        .unwrap()
-        .push(valid["providers"][0].clone());
-    invalid_models.push(duplicate_provider);
-    let mut duplicate_model = valid.clone();
-    duplicate_model["providers"][0]["models"]
-        .as_array_mut()
-        .unwrap()
-        .push(valid["providers"][0]["models"][0].clone());
-    invalid_models.push(duplicate_model);
     for (field, value) in [
         ("id", json!(" ")),
         ("model", json!(" ")),
@@ -2330,40 +2369,31 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
         ("protocol", json!("completion")),
     ] {
         let mut invalid = valid.clone();
-        invalid["providers"][0]["models"][0][field] = value;
+        invalid["providers"]["fixture"]["models"]["primary"][field] = value;
         invalid_models.push(invalid);
     }
     for invalid_provider in [
         json!({
-            "id": "unused",
-            "api_key": "secret-marker",
+                "api_key": "secret-marker",
             "base_url": "secret-marker",
-            "models": [{"id": "primary", "model": "unused-model"}]
+            "models": {"primary": { "model": "unused-model"}}
         }),
         json!({
-            "id": "unused",
-            "api_key": "secret-marker",
-            "models": []
+                "api_key": "secret-marker",
+            "models": {}
         }),
         json!({
-            "id": "unused",
-            "protocol": "anthropic",
+                "protocol": "anthropic",
             "api_key": "secret-marker",
-            "models": [{"id": "primary", "model": " "}]
+            "models": {"primary": { "model": " "}}
         }),
     ] {
         let mut invalid = valid.clone();
-        invalid["providers"]
-            .as_array_mut()
-            .unwrap()
-            .push(invalid_provider);
+        invalid["providers"]["unused"] = invalid_provider;
         invalid_models.push(invalid);
     }
     let mut invalid_unselected_model = valid.clone();
-    invalid_unselected_model["providers"][0]["models"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({"id": "unused", "model": " "}));
+    invalid_unselected_model["providers"]["fixture"]["models"]["unused"] = json!({"model": " "});
     invalid_models.push(invalid_unselected_model);
     for models in invalid_models {
         cases.push((
@@ -2374,7 +2404,7 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
     }
     // A non-blank selected key reaches the existing client header boundary.
     let mut invalid_header = valid.clone();
-    invalid_header["providers"][0]["api_key"] = json!("secret-marker\n");
+    invalid_header["providers"]["fixture"]["api_key"] = json!("secret-marker\n");
     cases.push((
         Some(fixture_settings().to_owned()),
         Some(invalid_header.to_string()),
@@ -3596,11 +3626,11 @@ mod tui {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
             let settings = r#"{"think_level":"high"}"#;
-            let models = json!({"providers":[slash_provider(&server, "fixture", protocol, json!([
-                {"id":"primary","model":"first-model"},
-                {"id":"secondary","model":"second-model"}
-            ]))]})
-            .to_string();
+            let models =
+                json!({"providers":{"fixture": slash_provider(&server, "fixture", protocol, json!({
+                "primary": {"model":"first-model"},
+                "secondary": {"model":"second-model"}}))}})
+                .to_string();
             std::fs::write(config_path(dir.path(), "settings.yml"), settings).unwrap();
             std::fs::write(config_path(dir.path(), "models.yml"), &models).unwrap();
             let mut pty = Pty::start_with_existing_files(dir.path());
@@ -4200,14 +4230,11 @@ mod tui {
         let a = server();
         let b = server();
         let dir = tempfile::tempdir().unwrap();
-        let models = json!({"providers": [
-            slash_provider(&a, "a", "completion", json!([
-                {"id":"primary","model":"vendor-a"}
-            ])),
-            slash_provider(&b, "gateway", "completion", json!([
-                {"id":"team/secondary","model":"vendor-b"}
-            ]))
-        ]})
+        let models = json!({"providers": {
+            "a": slash_provider(&a, "a", "completion", json!({
+                "primary": {"model":"vendor-a"}})),
+            "gateway": slash_provider(&b, "gateway", "completion", json!({
+                "team/secondary": {"model":"vendor-b"}}))}})
         .to_string();
         std::fs::write(
             config_path(dir.path(), "settings.yml"),
@@ -4635,18 +4662,16 @@ mod tui {
             &bad,
             "bad",
             "response",
-            json!([{"id":"broken","model":"vendor-broken"}]),
+            json!({"broken":{"model":"vendor-broken"}}),
         );
         broken["api_key"] = json!("tui-secret-marker\ninvalid-header");
-        let models = json!({"providers": [
-            slash_provider(&a, "a", "completion", json!([
-                {"id":"primary","model":"vendor-a"}
-            ])),
-            slash_provider(&b, "gateway", "completion", json!([
-                {"id":"team/secondary","model":"vendor-b"}
-            ])),
-            broken
-        ]})
+        let models = json!({"providers": {
+            "a": slash_provider(&a, "a", "completion", json!({
+                "primary": {"model":"vendor-a"}})),
+            "gateway": slash_provider(&b, "gateway", "completion", json!({
+                "team/secondary": {"model":"vendor-b"}})),
+            "bad": broken
+        }})
         .to_string();
         std::fs::write(
             config_path(dir.path(), "settings.yml"),

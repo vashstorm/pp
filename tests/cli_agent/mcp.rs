@@ -262,10 +262,9 @@ fn mcp_config_rejects_invalid_fields_types_and_values_without_leaking_secrets() 
 fn mcp_connections_survive_model_switch_and_reset_and_refresh_on_resume() {
     let provider = server();
     let home = tempfile::tempdir().unwrap();
-    let models = json!({"providers":[
-        slash_provider(&provider,"a","completion",json!([{"id":"m","model":"a"}])),
-        slash_provider(&provider,"b","response",json!([{"id":"m","model":"b"}]))
-    ]})
+    let models = json!({"providers":{
+        "a": slash_provider(&provider,"a","completion",json!({"m": {"model":"a"}})),
+        "b": slash_provider(&provider,"b","response",json!({"m": {"model":"b"}}))}})
     .to_string();
     let mut cli = Cli::start_with(home.path(), None, &settings("").to_string(), &models);
     for (index, command) in [

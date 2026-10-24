@@ -2225,22 +2225,22 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
         );
         let variants = [
             // Reference gone from the catalog.
-            json!({"providers":[slash_provider(
+            json!({"providers":{"other": slash_provider(
                 &server, "other", "completion",
-                json!([{"id":"primary","model":"fixture-model"}])
-            )]})
+                json!({"primary": {"model":"fixture-model"}})
+            )}})
             .to_string(),
             // Same reference, different model string.
-            json!({"providers":[slash_provider(
+            json!({"providers":{"fixture": slash_provider(
                 &server, "fixture", "completion",
-                json!([{"id":"primary","model":"changed-model"}])
-            )]})
+                json!({"primary": {"model":"changed-model"}})
+            )}})
             .to_string(),
             // Same reference, different protocol.
-            json!({"providers":[slash_provider(
+            json!({"providers":{"fixture": slash_provider(
                 &server, "fixture", "response",
-                json!([{"id":"primary","model":"fixture-model"}])
-            )]})
+                json!({"primary": {"model":"fixture-model"}})
+            )}})
             .to_string(),
         ];
         for models in variants {
@@ -2399,12 +2399,10 @@ fn session_settings_persist_across_model_switch_and_restore() {
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     let launch = tempfile::tempdir().unwrap();
-    let models = json!({"providers":[
-        slash_provider(&server, "a", "completion", json!([
-            {"id":"primary","model":"a-one"},{"id":"secondary","model":"a-two"}
-        ])),
-        slash_provider(&server, "b", "response", json!([{"id":"primary","model":"b-one"}]))
-    ]})
+    let models = json!({"providers":{
+        "a": slash_provider(&server, "a", "completion", json!({
+            "primary": {"model":"a-one"},"secondary": {"model":"a-two"}})),
+        "b": slash_provider(&server, "b", "response", json!({"primary": {"model":"b-one"}}))}})
     .to_string();
     configure(home.path(), r#"{"default_model":"a/primary"}"#, &models);
 
@@ -2584,14 +2582,12 @@ fn model_thinking_session_restore_preserves_saved_level_across_config_changes() 
             Api::Responses => "response",
         };
         let configured_models = |default_level: &str, efforts: Value| {
-            json!({"providers":[
-                slash_provider(&server, "p", protocol, json!([
-                    {"id":"plain","model":"m-plain"},
-                    {"id":"cfg","model":"m-cfg","thinking":{
-                        "efforts":efforts,"defaultLevel":default_level
-                    }}
-                ]))
-            ]})
+            json!({"providers":{
+            "p": slash_provider(&server, "p", protocol, json!({
+                "plain": {"model":"m-plain"},
+                "cfg": {"model":"m-cfg","thinking":{
+                    "efforts":efforts,"defaultLevel":default_level
+                }}}))}})
             .to_string()
         };
         let settings = r#"{"default_model":"p/plain","think_level":"low"}"#;

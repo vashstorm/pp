@@ -1613,7 +1613,7 @@ mod tests {
         std::fs::create_dir_all(&global).unwrap();
         let models = global.join("models.yml");
         let settings = global.join("settings.yml");
-        let configuration = json!({"providers":[{"id":"fixture","api_key":"fixture","models":[{"id":"one","model":"one"}]}]}).to_string();
+        let configuration = json!({"providers":{"fixture": {"api_key":"fixture","models":{"one": {"model":"one"}}}}}).to_string();
         std::fs::write(&models, &configuration).unwrap();
         let mut ids = Vec::new();
         let mut agents = Vec::new();
@@ -1690,10 +1690,9 @@ mod tests {
             let sessions = dir.path().join("sessions");
             std::fs::write(
                 &models,
-                json!({"providers":[{
-                    "id":"fixture", "api_key":"fixture-key", "protocol":protocol,
-                    "base_url":"http://127.0.0.1:1/v1", "models":[{"id":"one","model":"one"}]
-                }]})
+                json!({"providers":{"fixture": { "api_key":"fixture-key", "protocol":protocol,
+                    "base_url":"http://127.0.0.1:1/v1", "models":{"one": {"model":"one"}}
+                }}})
                 .to_string(),
             )
             .unwrap();
@@ -1805,14 +1804,11 @@ mod tests {
         let models = dir.path().join("models.yml");
         std::fs::write(
             &models,
-            json!({"providers": [
-                {"id":"a", "api_key":"fixture-key", "models":[
-                    {"id":"one","model":"one"}, {"id":"two","model":"two"}
-                ]},
-                {"id":"bad", "api_key":"secret-marker\ninvalid", "models":[
-                    {"id":"one","model":"bad"}
-                ]}
-            ]})
+            json!({"providers": {
+                "a": { "api_key":"fixture-key", "models":{
+                    "one": {"model":"one"}, "two": {"model":"two"}}},
+                "bad": { "api_key":"secret-marker\ninvalid", "models":{
+                    "one": {"model":"bad"}}}}})
             .to_string(),
         )
         .unwrap();
@@ -1878,16 +1874,15 @@ mod tests {
             format!("# 测试设置\ndefault_model: fixture/one\n{settings_extra}"),
         )
         .unwrap();
-        let model = json!({"id":"one","model":"one"});
+        let model = json!({"model":"one"});
         std::fs::write(
             &models,
-            json!({"providers":[{
-                "id":"fixture",
+            json!({"providers":{"fixture": {
                 "api_key":"fixture-key",
                 "protocol":protocol,
                 "base_url":format!("http://{server_addr}/v1"),
-                "models":[model]
-            }]})
+                "models":{"one":model}
+            }}})
             .to_string(),
         )
         .unwrap();

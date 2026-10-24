@@ -543,10 +543,9 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
             r#"{"default_model":"first/primary","notification_timeout_seconds":1}"#,
         )
         .unwrap();
-        std::fs::write(config_path(home.path(),"models.yml"),json!({"providers":[
-            {"id":"first","protocol":protocol,"api_key":"fixture-key","base_url":base,"models":[{"id":"primary","model":"first-model"}]},
-            {"id":"second","protocol":other,"api_key":"fixture-key","base_url":base,"models":[{"id":"primary","model":"second-model"}]}
-        ]}).to_string()).unwrap();
+        std::fs::write(config_path(home.path(),"models.yml"),json!({"providers":{
+            "first": {"protocol":protocol,"api_key":"fixture-key","base_url":base,"models":{"primary": {"model":"first-model"}}},
+            "second": {"protocol":other,"api_key":"fixture-key","base_url":base,"models":{"primary": {"model":"second-model"}}}}}).to_string()).unwrap();
         let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
         pty.ready();
         pty.input("Execute history before entering Plan\r");

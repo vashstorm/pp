@@ -773,14 +773,11 @@ fn ask_tui_schema_survives_new_model_switch_and_resume() {
     // 第一段：同一 TUI 内 /new 与跨协议 /model。
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
-    let models = json!({"providers": [
-        slash_provider(&server, "fixture", "completion", json!([
-            {"id":"primary","model":"vendor-a"}
-        ])),
-        slash_provider(&server, "gateway", "response", json!([
-            {"id":"secondary","model":"vendor-b"}
-        ]))
-    ]})
+    let models = json!({"providers": {
+        "fixture": slash_provider(&server, "fixture", "completion", json!({
+            "primary": {"model":"vendor-a"}})),
+        "gateway": slash_provider(&server, "gateway", "response", json!({
+            "secondary": {"model":"vendor-b"}}))}})
     .to_string();
     std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
     std::fs::write(config_path(home.path(), "models.yml"), models).unwrap();

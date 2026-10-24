@@ -23,14 +23,13 @@ fn context_tui_settings(auto_compact: bool, threshold_percent: u8) -> String {
 
 fn context_tui_models(server: &Server, protocol: &str, window: u64) -> String {
     json!({
-        "providers": [{
-            "id": "fixture",
+        "providers": {"fixture": {
             "protocol": protocol,
             "api_key": "fixture-key",
             "base_url": format!("http://{}/v1", server.server_addr()),
-            "models": [{"id": "primary", "model": "fixture-model",
-                        "context_window": window}]
-        }]
+            "models": {"primary": { "model": "fixture-model",
+                        "context_window": window}}
+        }}
     })
     .to_string()
 }

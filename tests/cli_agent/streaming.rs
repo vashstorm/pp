@@ -1539,10 +1539,9 @@ fn edit_mode_survives_model_switch() {
         let dir = tempfile::tempdir().unwrap();
         let demo = dir.path().join("demo.txt");
         std::fs::write(&demo, "one\n").unwrap();
-        let models = json!({"providers": [
-            slash_provider(&a, "a", "completion", json!([{"id":"primary","model":"vendor-a"}])),
-            slash_provider(&b, "b", "response", json!([{"id":"secondary","model":"vendor-b"}]))
-        ]})
+        let models = json!({"providers": {
+            "a": slash_provider(&a, "a", "completion", json!({"primary": {"model":"vendor-a"}})),
+            "b": slash_provider(&b, "b", "response", json!({"secondary": {"model":"vendor-b"}}))}})
         .to_string();
         let settings = if replace {
             r#"{"default_model":"a/primary","edit":"replace"}"#
@@ -1703,10 +1702,9 @@ fn tool_limits_remain_startup_snapshots_across_model_switch_and_new() {
     let b = server();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("demo"), "one\ntwo\n").unwrap();
-    let models = json!({"providers":[
-        slash_provider(&a, "a", "completion", json!([{"id":"primary","model":"vendor-a"}])),
-        slash_provider(&b, "b", "response", json!([{"id":"secondary","model":"vendor-b"}]))
-    ]})
+    let models = json!({"providers":{
+        "a": slash_provider(&a, "a", "completion", json!({"primary": {"model":"vendor-a"}})),
+        "b": slash_provider(&b, "b", "response", json!({"secondary": {"model":"vendor-b"}}))}})
     .to_string();
     let settings = r#"{"read_max_bytes":4,"read_max_lines":1,"bash_timeout_seconds":1}"#;
     let mut cli = Cli::start_with(dir.path(), None, settings, &models);

@@ -419,8 +419,8 @@ mod tests {
         Store::open_with_models(path, path.with_file_name("models.yml"))
     }
     fn models_with_cost(cost: Value) -> String {
-        json!({"providers":[{"id":"fixture","api_key":"secret-marker-fixture-key",
-            "models":[{"id":"primary","model":"fixture-model","cost":cost}]}]})
+        json!({"providers":{"fixture": {"api_key":"secret-marker-fixture-key",
+            "models":{"primary": {"model":"fixture-model","cost":cost}}}}})
         .to_string()
     }
     fn fixture(key: &str, timestamp: i64) -> RequestRow {
@@ -456,18 +456,18 @@ mod tests {
             dir.path().join("models.yml"),
             r#"# 价格与普通模型配置共用
 providers:
-  - id: fixture
+  fixture:
     api_key: secret-marker-fixture-key
     models:
-      - id: primary
+      primary:
         model: fixture-model
         cost: {input: 2, cacheRead: 0.2, output: 8}
-      - id: unpriced
+      unpriced:
         model: fixture-model
-  - id: other
+  other:
     api_key: secret-marker-other-key
     models:
-      - id: primary
+      primary:
         model: fixture-model
         cost: {input: 0, cacheRead: 0, output: 0}
 "#,

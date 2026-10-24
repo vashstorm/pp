@@ -29,10 +29,9 @@ Projects 按完整 cwd 聚合，保留同名不同路径的独立目录，展示
 
 缓存写入从 Chat 的 `usage.prompt_tokens_details.cache_write_tokens`、Responses 的 `usage.input_tokens_details.cache_write_tokens` 采集，也兼容 usage 顶层的 `cache_write_tokens`／`cache_creation_input_tokens` 扩展；遵循这两种协议的总输入已包含缓存读写的口径，不额外叠加缓存 Token。不支持原生 Anthropic Messages 协议。未上报写入量保持未知，明确上报 `0` 才表示无写入。SQLite 自动升级到 v2，旧记录的写入量保留 NULL，不回填估算。Premium requests 和订阅额度没有采集数据，保持未知。
 
-费用直接使用 `~/.pp/agent/models.yml` 中各模型的 `cost` 配置，按调用时保存的 `model_reference`（`provider/model` 配置引用，并非供应商模型名）精确匹配。无需另建价格文件。`cost` 可省略，省略时该模型未定价；配置时 `input`、`cacheRead`、`output` 必填，新增 `cacheWrite` 可省略以兼容旧配置；所有已配置单价都必须为非负有限数，单位为 **USD／百万 Token**，`0` 表示已知免费。例如在 `providers[].models[]` 的模型条目中填写：
+费用直接使用 `~/.pp/agent/models.yml` 中各模型的 `cost` 配置，按调用时保存的 `model_reference`（`provider/model` 配置引用，并非供应商模型名）精确匹配。无需另建价格文件。`cost` 可省略，省略时该模型未定价；配置时 `input`、`cacheRead`、`output` 必填，新增 `cacheWrite` 可省略以兼容旧配置；所有已配置单价都必须为非负有限数，单位为 **USD／百万 Token**，`0` 表示已知免费。例如在 `providers.<provider_id>.models.<model_id>` 的模型条目中填写：
 
 ```yaml
-id: primary
 model: vendor-model-one
 cost:
   input: 2.0
@@ -114,29 +113,31 @@ bash_timeout_seconds: 120
 ```yaml
 # models.yml
 providers:
-  - id: openai # 供应商别名，全局唯一且不能含 /
+  openai: # 供应商别名，全局唯一且不能含 /
     # 省略 protocol 时默认使用 response（Responses API）
     api_key: your-key
     base_url: https://api.openai.com/v1 # 可省略，默认使用此地址
     models:
-      - id: primary # 供应商内的模型别名
+      primary: # 供应商内的模型别名
         model: vendor-model-one # 发送给供应商的实际模型名
         context_window: 32768 # 仅为示例，应按实际容量填写或省略
         thinking:
           efforts: [low, high, xhigh]
           defaultLevel: high
-      - id: secondary
+      secondary:
         model: vendor-model-two
-  - id: gateway
+  gateway:
     protocol: completion # Chat Completions API
     api_key: another-key
     base_url: https://example.com/custom/v1
     models:
-      - id: primary
+      primary:
         model: gateway-model-one
-      - id: secondary
+      secondary:
         model: gateway-model-two
 ```
+
+`providers` 和每个供应商的 `models` 都是 map，key 分别是供应商 ID 和模型配置 ID；条目内部不再填写 `id`。`model` 保留为发送给供应商的实际模型 ID。两层均按文件书写顺序排列，用于模型菜单及默认模型选择。旧数组格式不再接受：迁移时将每个 `- id: name` 改成 `name:`，保留其余字段及原有顺序；`provider/model` 引用不变。
 
 配置文件名和目录固定；`settings.yml` 可以缺省，缺少 `models.yml` 时模型不可用。通过 HOME 定位用户目录，不读取项目配置。新会话的工具以启动目录为工作目录；恢复会话使用日志保存的原工作目录。旧版本用户需将 JSONC 内容转换为 YAML，保存为上述两个 `.yml` 文件；仅重命名含 `//` 或 `/* ... */` 注释的文件无效。程序不再读取旧文件，也不会自动迁移含密钥的配置。
 

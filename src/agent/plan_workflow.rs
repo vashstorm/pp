@@ -1334,10 +1334,9 @@ mod tests {
         std::fs::write(&settings, "default_model: fixture/one\n").unwrap();
         std::fs::write(
             &models,
-            json!({"providers":[{
-                "id":"fixture", "api_key":"fixture-key", "protocol":protocol,
-                "models":[{"id":"one","model":"one"}]
-            }]})
+            json!({"providers":{"fixture": { "api_key":"fixture-key", "protocol":protocol,
+                "models":{"one": {"model":"one"}}
+            }}})
             .to_string(),
         )
         .unwrap();

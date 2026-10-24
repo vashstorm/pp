@@ -12,14 +12,11 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         let path = config_path(home.path(), "settings.yml");
         let original = "# 保留默认模型之外的设置\nthink_level: high\nedit: hashline\ndefault_model: fixture/primary # 默认模型说明\n";
         std::fs::write(&path, original).unwrap();
-        let models = json!({"providers":[
-            slash_provider(&server, "fixture", protocol, json!([
-                {"id":"primary","model":"first-model"}
-            ])),
-            slash_provider(&server, "gateway", protocol, json!([
-                {"id":"team/secondary","model":"second-model"}
-            ]))
-        ]}).to_string();
+        let models = json!({"providers":{
+            "fixture": slash_provider(&server, "fixture", protocol, json!({
+                "primary": {"model":"first-model"}})),
+            "gateway": slash_provider(&server, "gateway", protocol, json!({
+                "team/secondary": {"model":"second-model"}}))}}).to_string();
         let models_path = config_path(home.path(), "models.yml");
         std::fs::write(&models_path, &models).unwrap();
         let mut pty = Pty::start_with_existing_files(home.path());
@@ -280,11 +277,10 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
 // 每模型 thinking 策略的真实 PTY 回归：A 仅 low/high 且显式默认 high，
 // B 仅 medium/max 且显式默认 medium，C 单档 medium，全局 think_level 为 max。
 fn model_thinking_models(server: &Server) -> String {
-    json!({"providers":[slash_provider(server, "fixture", "completion", json!([
-        {"id":"a","model":"model-a","thinking":{"efforts":["low","high"],"defaultLevel":"high"}},
-        {"id":"b","model":"model-b","thinking":{"efforts":["medium","max"],"defaultLevel":"medium"}},
-        {"id":"c","model":"model-c","thinking":{"efforts":["medium"]}}
-    ]))]})
+    json!({"providers":{"fixture": slash_provider(server, "fixture", "completion", json!({
+        "a": {"model":"model-a","thinking":{"efforts":["low","high"],"defaultLevel":"high"}},
+        "b": {"model":"model-b","thinking":{"efforts":["medium","max"],"defaultLevel":"medium"}},
+        "c": {"model":"model-c","thinking":{"efforts":["medium"]}}}))}})
     .to_string()
 }
 

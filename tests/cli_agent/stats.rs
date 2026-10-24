@@ -157,7 +157,7 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("sample.txt"), "fixture contents").unwrap();
     let mut models: Value = serde_yaml::from_str(&fixture_models(&server)).unwrap();
-    models["providers"][0]["models"][0]["cost"] =
+    models["providers"]["fixture"]["models"]["primary"]["cost"] =
         json!({"input":2,"cacheRead":0.2,"cacheWrite":2.5,"output":8});
     let cli = Cli::start_with(
         dir.path(),
@@ -269,7 +269,7 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
             assert!((value["summary"]["cost"].as_f64().unwrap() - 0.000185).abs() < 1e-10);
         }
     }
-    models["providers"][0]["models"][0]["cost"] =
+    models["providers"]["fixture"]["models"]["primary"]["cost"] =
         json!({"input":4,"cacheRead":0.4,"cacheWrite":5,"output":16});
     std::fs::write(config_path(dir.path(), "models.yml"), models.to_string()).unwrap();
     let (status, body) = http(

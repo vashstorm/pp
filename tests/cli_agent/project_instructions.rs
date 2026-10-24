@@ -415,10 +415,9 @@ fn agents_load_errors_recover_in_same_process_and_block_after_tools_both_protoco
 fn agents_new_and_protocol_switch_use_current_rules() {
     let server = server();
     let cwd = tempfile::tempdir().unwrap();
-    let models = json!({"providers":[
-        slash_provider(&server, "a", "completion", json!([{"id":"m","model":"a"}])),
-        slash_provider(&server, "b", "response", json!([{"id":"m","model":"b"}]))
-    ]})
+    let models = json!({"providers":{
+        "a": slash_provider(&server, "a", "completion", json!({"m": {"model":"a"}})),
+        "b": slash_provider(&server, "b", "response", json!({"m": {"model":"b"}}))}})
     .to_string();
     let mut cli = LiveCli::new(Cli::start_with(cwd.path(), None, "{}", &models));
     fs::write(cwd.path().join("AGENTS.md"), "first-project-rule").unwrap();
@@ -509,7 +508,7 @@ fn agents_manual_and_auto_compaction_refresh_before_summary_and_followup_both_pr
             let cwd = tempfile::tempdir().unwrap();
             let mut models: Value =
                 serde_json::from_str(&response_models(&server, Some(protocol))).unwrap();
-            models["providers"][0]["models"][0]["context_window"] = json!(80000);
+            models["providers"]["fixture"]["models"]["primary"]["context_window"] = json!(80000);
             let settings =
                 json!({"auto_compact":automatic,"auto_compact_threshold_percent":50}).to_string();
             let mut cli = LiveCli::new(Cli::start_with(
@@ -570,7 +569,7 @@ fn agents_growing_during_auto_summary_rechecks_capacity_before_followup_both_pro
         let cwd = tempfile::tempdir().unwrap();
         let mut models: Value =
             serde_json::from_str(&response_models(&server, Some(protocol))).unwrap();
-        models["providers"][0]["models"][0]["context_window"] = json!(80000);
+        models["providers"]["fixture"]["models"]["primary"]["context_window"] = json!(80000);
         let mut cli = LiveCli::new(Cli::start_with(
             cwd.path(),
             None,

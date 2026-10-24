@@ -1838,7 +1838,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
             let models = dir.path().join("models.yml");
-            fs::write(&models, json!({"providers":[{"id":"fixture","protocol":protocol,"api_key":"fixture-key","base_url":format!("http://{}/v1",server.server_addr()),"models":[{"id":"primary","model":"fixture-model"}]}]}).to_string()).unwrap();
+            fs::write(&models, json!({"providers":{"fixture": {"protocol":protocol,"api_key":"fixture-key","base_url":format!("http://{}/v1",server.server_addr()),"models":{"primary": {"model":"fixture-model"}}}}}).to_string()).unwrap();
             let catalog =
                 ModelCatalog::from_files(&dir.path().join("settings.yml"), &models).unwrap();
             let mut agent = Agent::new(
@@ -1960,11 +1960,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let models = dir.path().join("models.yml");
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        fs::write(&models, serde_json::json!({"providers":[
-            {"id":"a","protocol":"completion","api_key":"fixture", "base_url":format!("http://{}/v1", server.server_addr()),
-             "models":[{"id":"one","model":"one"},{"id":"two","model":"two","thinking":{"defaultLevel":"max"}}]},
-            {"id":"b","protocol":"response","api_key":"fixture", "models":[{"id":"one","model":"other","thinking":{"defaultLevel":"high"}},{"id":"two","model":"two","thinking":{"defaultLevel":"max"}}]}
-        ]}).to_string()).unwrap();
+        fs::write(&models, serde_json::json!({"providers":{
+            "a": {"protocol":"completion","api_key":"fixture", "base_url":format!("http://{}/v1", server.server_addr()),
+             "models":{"one": {"model":"one"},"two": {"model":"two","thinking":{"defaultLevel":"max"}}}},
+            "b": {"protocol":"response","api_key":"fixture", "models":{"one": {"model":"other","thinking":{"defaultLevel":"high"}},"two": {"model":"two","thinking":{"defaultLevel":"max"}}}}}}).to_string()).unwrap();
         for (source, target) in [
             ("a/one", "a/two"),
             ("a/one", "b/one"),

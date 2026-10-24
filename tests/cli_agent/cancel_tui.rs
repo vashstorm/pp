@@ -277,9 +277,9 @@ impl CancelRawModel {
 
     fn models(&self, protocol: &str) -> String {
         json!({
-            "providers":[{"id":"fixture","protocol":protocol,"api_key":"fixture-key",
+            "providers":{"fixture": {"protocol":protocol,"api_key":"fixture-key",
                 "base_url":format!("http://{}/v1", self.address),
-                "models":[{"id":"primary","model":"fixture-model"}]}]
+                "models":{"primary": {"model":"fixture-model"}}}}
         })
         .to_string()
     }
