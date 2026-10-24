@@ -23,10 +23,11 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         pty.ready_model("first-model");
         pty.input("/model ");
         pty.text("fixture/primary (default)");
+        pty.text("Ctrl + S set selected model as default");
         assert!(!pty.parser.screen().contents().contains("gateway/team/secondary (default)"));
         pty.input("\x01\x0b/model second");
         pty.text("gateway/team/secondary");
-        pty.function_key('s');
+        pty.input("\x13");
         pty.text("Default model saved: gateway/team/secondary");
         pty.ready_model("first-model");
         pty.ready_effort("high");
@@ -68,7 +69,7 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         restarted.function_key('p');
         restarted.text("fixture/primary");
         restarted.input("\x1b[A");
-        restarted.function_key('s');
+        restarted.input("\x13");
         restarted.text("Default model saved: fixture/primary");
         restarted.ready_model("second-model");
         restarted.text("fixture/primary (default)");
@@ -84,7 +85,7 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         restarted.function_key('p');
         restarted.text("fixture/primary (default)");
         assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary (default)"));
-        restarted.function_key('s');
+        restarted.input("\x13");
         restarted.text("Failed to save default model");
         restarted.draft("/model");
         restarted.text("fixture/primary (default)");
@@ -110,7 +111,7 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     pty.ready_model("fixture-model");
     pty.input("/model\r");
     pty.text("fixture/primary (default)");
-    pty.function_key('s');
+    pty.input("\x13");
     pty.text("Default model saved: fixture/primary");
     pty.ready_model("fixture-model");
     pty.draft("/model");
@@ -124,7 +125,7 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     pty.input("draft after failure");
     pty.function_key('p');
     pty.text("fixture/primary");
-    pty.function_key('s');
+    pty.input("\x13");
     pty.text("Failed to save default model");
     pty.ready_model("fixture-model");
     pty.draft("/model");

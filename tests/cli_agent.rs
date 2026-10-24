@@ -3573,13 +3573,13 @@ mod tui {
             assert_tip_key(screen, row, 2..52, left);
             assert_tip_key(screen, row, 52..100, right);
         }
-        let context_start = lines[26].find(" ctx ").expect("用量显示在输入栏上沿");
+        let context_start = lines[26].find(" Ctx ").expect("用量显示在输入栏上沿");
         assert!(!lines[26][context_start..].contains('/'));
         assert!(!lines[26][context_start..].contains('%'));
         assert!(lines[27].starts_with('❯'));
         assert_eq!(lines[28], "─".repeat(100));
         // 上沿右端显示用量，底部保留模型与思考级别。
-        assert!(!lines[29].contains("ctx "));
+        assert!(!lines[29].contains("Ctx "));
         assert!(lines[29].contains("fixture-model"));
         assert!(lines[29].contains("off"));
         assert!(!text.contains("│ Note"));
@@ -3632,7 +3632,7 @@ mod tui {
                 && text
                     .lines()
                     .nth(8)
-                    .is_some_and(|line| line.contains("ctx "))
+                    .is_some_and(|line| line.contains("Ctx "))
         });
         let compact = pty.parser.screen();
         assert_eq!(

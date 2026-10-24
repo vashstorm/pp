@@ -66,17 +66,14 @@ const STEERING_HINT: &str = platform_text(
     "Enter steer · Alt + Enter queue · Ctrl + Q pending messages · Ctrl + R resume queue",
 );
 const SHORTCUTS_TAIL: &str = platform_text(
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · ⌥ + S save selected model/effort as default in its menu · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · ⌥ + O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · ⌥ + O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
     " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
 );
 const EFFORT_HINT: &str = platform_text(
     "Enter select · ⌥ + S set selected effort as default · Esc cancel",
     "Enter select · Ctrl + S set selected effort as default · Esc cancel",
 );
-const MODEL_HINT: &str = platform_text(
-    "Enter select · ⌥ + S set selected model as default · Esc cancel",
-    "Enter select · Ctrl + S set selected model as default · Esc cancel",
-);
+const MODEL_HINT: &str = "Enter select · Ctrl + S set selected model as default · Esc cancel";
 const MOUSE_SCROLL_LINES: usize = 3;
 
 pub(crate) fn run(
@@ -3096,7 +3093,10 @@ impl App {
                 {
                     return false;
                 }
-                if key.code == KeyCode::Char('s') && key.modifiers == FUNCTION_MODIFIER {
+                if key.code == KeyCode::Char('s')
+                    && (key.modifiers == KeyModifiers::CONTROL
+                        || key.modifiers == FUNCTION_MODIFIER)
+                {
                     if key.kind == KeyEventKind::Press
                         && let Some(action) = self.menu.as_ref().and_then(|menu| {
                             menu.selected_index().map(|index| menu.items()[index].value)
@@ -3104,16 +3104,20 @@ impl App {
                         && self.shortcut_ready()
                     {
                         let request = match action {
-                            MenuAction::Effort(level) => Some((
-                                WorkerCommand::SaveDefaultThinkLevel(level),
-                                State::SettingThinkLevel,
-                            )),
-                            MenuAction::Model(index) => Some((
-                                WorkerCommand::SaveDefaultModel(
-                                    self.choices[index].reference.clone(),
-                                ),
-                                State::SavingDefaultModel,
-                            )),
+                            MenuAction::Effort(level) if key.modifiers == FUNCTION_MODIFIER => {
+                                Some((
+                                    WorkerCommand::SaveDefaultThinkLevel(level),
+                                    State::SettingThinkLevel,
+                                ))
+                            }
+                            MenuAction::Model(index) if key.modifiers == KeyModifiers::CONTROL => {
+                                Some((
+                                    WorkerCommand::SaveDefaultModel(
+                                        self.choices[index].reference.clone(),
+                                    ),
+                                    State::SavingDefaultModel,
+                                ))
+                            }
                             _ => None,
                         };
                         if let Some((command, state)) = request
@@ -5691,6 +5695,38 @@ mod tests {
         assert_eq!(app.input.lines(), &["未发送🙂"]);
         assert!(app.input_history.is_empty());
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn model_default_uses_ctrl_s_and_ignores_alt_s_and_repeats() {
+        let mut app = app();
+        app.state = State::Ready;
+        app.choices = vec![ModelChoice {
+            reference: "fixture/primary".into(),
+            model: "primary".into(),
+            protocol: crate::models::Protocol::Completion,
+            thinking: crate::models::ModelThinking::default(),
+            context_window: None,
+        }];
+        let (sender, requests) = mpsc::channel();
+        app.commands = Some(sender);
+        let mut dirty = false;
+        app.handle(Event::Paste("/model ".into()), &mut dirty);
+        app.handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT)),
+            &mut dirty,
+        );
+        let mut repeat = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        repeat.kind = KeyEventKind::Repeat;
+        app.handle(Event::Key(repeat), &mut dirty);
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+        app.handle(control('s'), &mut dirty);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::SaveDefaultModel(reference)) if reference == "fixture/primary"
+        ));
+        assert_eq!(app.input.lines(), &["/model "]);
+        assert!(app.menu.is_some());
     }
 
     #[test]

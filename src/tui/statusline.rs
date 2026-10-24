@@ -71,11 +71,11 @@ pub(super) fn context_field(usage: &ContextUsage) -> (String, Color) {
     let percent = usage.percent();
     let text = match usage.context_window {
         Some(window) => format!(
-            "ctx {}/{}",
+            "Ctx {}/{}",
             abbreviate_tokens(usage.estimated_tokens),
             abbreviate_tokens(window),
         ),
-        None => format!("ctx {}", abbreviate_tokens(usage.estimated_tokens)),
+        None => format!("Ctx {}", abbreviate_tokens(usage.estimated_tokens)),
     };
     let color = match percent {
         Some(percent) if percent >= 100 => Color::Red,
@@ -85,16 +85,16 @@ pub(super) fn context_field(usage: &ContextUsage) -> (String, Color) {
     (text, color)
 }
 
-/// 输入栏上沿的 token 指标：速度 → 输入 → 输出 → 缓存读 → 缓存写，末尾衔接 ctx。
-/// 空间不足时按 CWrite → CRead → in → out → speed 整字段降级，不切开图标或文字。
+/// 输入栏上沿的 token 指标：速度 → 输入 → 输出 → 缓存读 → 缓存写，末尾衔接 Ctx。
+/// 空间不足时按 CWrite → CRead → In → Out → speed 整字段降级，不切开图标或文字。
 pub(super) fn metric_fields(
     usage: Option<&TokenUsage>,
     speed: Option<(f64, bool)>,
     width: u16,
 ) -> Line<'static> {
     let speed_text = speed.map_or_else(
-        || "— tok/s".to_owned(),
-        |(rate, _)| format!("{} tok/s", abbreviate_metric(rate)),
+        || "— Tok/s".to_owned(),
+        |(rate, _)| format!("{} Tok/s", abbreviate_metric(rate)),
     );
     // 缺失用量显示 —，显式的 0 仍显示 0。
     let (input_text, output_text, read_text, write_text) = usage.map_or_else(
@@ -121,8 +121,8 @@ pub(super) fn metric_fields(
     );
     let fields = [
         (SPEED_ICON, SPEED, speed_text),
-        (INPUT_ICON, INPUT, format!("in {input_text}")),
-        (OUTPUT_ICON, OUTPUT, format!("out {output_text}")),
+        (INPUT_ICON, INPUT, format!("In {input_text}")),
+        (OUTPUT_ICON, OUTPUT, format!("Out {output_text}")),
         (CACHE_ICON, CACHE_READ, format!("CRead {read_text}")),
         (CACHE_ICON, CACHE_WRITE, format!("CWrite {write_text}")),
     ];
@@ -769,54 +769,54 @@ mod tests {
     fn metric_fields_hide_estimate_marker_and_preserve_unknown_speed() {
         let usage = metric_usage(0, 0, Some(0), Some(0));
         let text = |speed| line_text(&metric_fields(Some(&usage), speed, 200));
-        assert!(text(None).contains(" \u{f0e7} — tok/s · "));
+        assert!(text(None).contains(" \u{f0e7} — Tok/s · "));
         assert!(!text(None).contains('~'));
-        assert!(text(Some((0.0, false))).contains("\u{f0e7} 0.0 tok/s"));
-        assert!(text(Some((150.0, false))).contains("\u{f0e7} 150.0 tok/s"));
+        assert!(text(Some((0.0, false))).contains("\u{f0e7} 0.0 Tok/s"));
+        assert!(text(Some((150.0, false))).contains("\u{f0e7} 150.0 Tok/s"));
         assert!(!text(Some((150.0, false))).contains('~'));
-        assert!(text(Some((42.5, true))).contains("\u{f0e7} 42.5 tok/s"));
+        assert!(text(Some((42.5, true))).contains("\u{f0e7} 42.5 Tok/s"));
         assert_eq!(text(Some((42.5, true))), text(Some((42.5, false))));
-        assert!(text(Some((999.0, false))).contains("\u{f0e7} 999.0 tok/s"));
-        assert!(text(Some((1000.0, true))).contains("\u{f0e7} 1.0k tok/s"));
-        assert!(text(Some((12345.0, false))).contains("\u{f0e7} 12.3k tok/s"));
-        assert!(text(Some((1_000_000.0, false))).contains("\u{f0e7} 1.0m tok/s"));
-        assert!(text(Some((1_280_000.0, true))).contains("\u{f0e7} 1.3m tok/s"));
+        assert!(text(Some((999.0, false))).contains("\u{f0e7} 999.0 Tok/s"));
+        assert!(text(Some((1000.0, true))).contains("\u{f0e7} 1.0k Tok/s"));
+        assert!(text(Some((12345.0, false))).contains("\u{f0e7} 12.3k Tok/s"));
+        assert!(text(Some((1_000_000.0, false))).contains("\u{f0e7} 1.0m Tok/s"));
+        assert!(text(Some((1_280_000.0, true))).contains("\u{f0e7} 1.3m Tok/s"));
     }
 
     #[test]
     fn metric_fields_distinguish_missing_usage_from_zero() {
         let missing = line_text(&metric_fields(None, Some((12.0, false)), 200));
-        assert!(missing.contains("in —"));
-        assert!(missing.contains("out —"));
+        assert!(missing.contains("In —"));
+        assert!(missing.contains("Out —"));
         assert!(missing.contains("CRead —"));
         assert!(missing.contains("CWrite —"));
-        assert!(!missing.contains("in 0"));
+        assert!(!missing.contains("In 0"));
 
         let absent_cached = metric_usage(0, 0, None, None);
         let text = line_text(&metric_fields(Some(&absent_cached), None, 200));
-        assert!(text.contains("in 0"));
-        assert!(text.contains("out 0"));
+        assert!(text.contains("In 0"));
+        assert!(text.contains("Out 0"));
         assert!(text.contains("CRead —"));
         assert!(text.contains("CWrite —"));
 
         let zero_cached = metric_usage(1000, 9999, Some(0), Some(0));
         let text = line_text(&metric_fields(Some(&zero_cached), None, 200));
-        assert!(text.contains("in 1.0k"));
-        assert!(text.contains("out 10.0k"));
+        assert!(text.contains("In 1.0k"));
+        assert!(text.contains("Out 10.0k"));
         assert!(text.contains("CRead 0"));
         assert!(text.contains("CWrite 0"));
 
         let abbreviated = metric_usage(12000, 10800, Some(10000), Some(1500));
         let text = line_text(&metric_fields(Some(&abbreviated), Some((1.0, false)), 200));
-        assert!(text.contains("in 12.0k"));
-        assert!(text.contains("out 10.8k"));
+        assert!(text.contains("In 12.0k"));
+        assert!(text.contains("Out 10.8k"));
         assert!(text.contains("CRead 10.0k"));
         assert!(text.contains("CWrite 1.5k"));
 
         let millions = metric_usage(2_280_000, 1_000_000, Some(1_240_000), Some(1_000_000));
         let text = line_text(&metric_fields(Some(&millions), None, 200));
-        assert!(text.contains("in 2.3m"));
-        assert!(text.contains("out 1.0m"));
+        assert!(text.contains("In 2.3m"));
+        assert!(text.contains("Out 1.0m"));
         assert!(text.contains("CRead 1.2m"));
         assert!(text.contains("CWrite 1.0m"));
     }
@@ -851,13 +851,13 @@ mod tests {
         let usage = metric_usage(12000, 300, Some(40), Some(120));
         let speed = Some((150.0, false));
         let fields = [
-            ("\u{f0e7}", "150.0 tok/s"),
-            ("\u{f019}", "in 12.0k"),
-            ("\u{f093}", "out 300"),
+            ("\u{f0e7}", "150.0 Tok/s"),
+            ("\u{f019}", "In 12.0k"),
+            ("\u{f093}", "Out 300"),
             ("\u{f1c0}", "CRead 40"),
             ("\u{f1c0}", "CWrite 120"),
         ];
-        // 移除顺序 CWrite → CRead → in → out → speed；所有宽度均保留完整字段。
+        // 移除顺序 CWrite → CRead → In → Out → speed；所有宽度均保留完整字段。
         let kept_states = [
             vec![0, 1, 2, 3, 4],
             vec![0, 1, 2, 3],
@@ -938,6 +938,6 @@ mod tests {
         }
         let line = metric_fields(Some(&usage), None, first);
         assert_eq!(line.width(), usize::from(first));
-        assert_eq!(line_text(&line), " \u{f0e7} — tok/s · ");
+        assert_eq!(line_text(&line), " \u{f0e7} — Tok/s · ");
     }
 }
