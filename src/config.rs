@@ -217,6 +217,9 @@ pub(crate) struct Settings {
     pub(crate) max_model_requests: usize,
     #[serde(default = "default_request_timeout_seconds")]
     pub(crate) request_timeout_seconds: u64,
+    // Zero disables opening-phase 429 retries entirely.
+    #[serde(default = "default_rate_limit_retry_budget_seconds")]
+    pub(crate) rate_limit_retry_budget_seconds: u64,
     #[serde(default = "default_read_max_bytes")]
     pub(crate) read_max_bytes: usize,
     #[serde(default = "default_read_max_lines")]
@@ -326,6 +329,7 @@ fn default_settings() -> Settings {
         default_model: None,
         max_model_requests: default_max_model_requests(),
         request_timeout_seconds: default_request_timeout_seconds(),
+        rate_limit_retry_budget_seconds: default_rate_limit_retry_budget_seconds(),
         read_max_bytes: default_read_max_bytes(),
         read_max_lines: default_read_max_lines(),
         bash_timeout_seconds: default_bash_timeout_seconds(),
@@ -340,6 +344,10 @@ fn default_max_model_requests() -> usize {
 
 fn default_request_timeout_seconds() -> u64 {
     120
+}
+
+fn default_rate_limit_retry_budget_seconds() -> u64 {
+    300
 }
 
 fn default_auto_compact() -> bool {

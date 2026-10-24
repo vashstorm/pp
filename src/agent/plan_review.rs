@@ -349,8 +349,9 @@ fn set_review_system(session: &mut Session, system: &str) {
 mod tests {
     use super::*;
     use crate::agent::tests::{
-        EXPLORATION, ORIGIN, PLAN_CONTENT, err_message, journal_workflow, plan_workflow,
-        runtime_input_agent, seed_session, write_plan_file,
+        EXPLORATION, ORIGIN, PLAN_CONTENT, completion_stream, err_message, final_for,
+        journal_workflow, plan_workflow, response_stream, runtime_input_agent, seed_session,
+        write_plan_file,
     };
     use crate::plan::{PlanStatus, WorkMode};
     use serde_json::{Value, json};
@@ -384,99 +385,8 @@ mod tests {
     }
 
     // --- protocol stream fixtures ----------------------------------------
-
-    fn sse_stream(request: tiny_http::Request, events: &[Value]) {
-        use std::io::Write as _;
-        let mut writer = request.into_writer();
-        writer
-            .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-                  Transfer-Encoding: chunked\r\n\r\n",
-            )
-            .unwrap();
-        for event in events {
-            let frame = match event {
-                Value::String(text) => format!("data: {text}\n\n"),
-                event => format!("data: {event}\n\n"),
-            };
-            write!(writer, "{:x}\r\n{}\r\n", frame.len(), frame).unwrap();
-        }
-        writer.write_all(b"0\r\n\r\n").unwrap();
-        writer.flush().unwrap();
-    }
-
-    fn completion_stream(request: tiny_http::Request, message: Value, finish: &str) {
-        let chunk = |delta: Value, finish: Option<&str>| {
-            json!({
-                "id":"chatcmpl-fixture", "object":"chat.completion.chunk",
-                "created":1, "model":"one",
-                "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
-            })
-        };
-        sse_stream(
-            request,
-            &[
-                chunk(message, None),
-                chunk(json!({}), Some(finish)),
-                Value::String("[DONE]".into()),
-            ],
-        );
-    }
-
-    fn response_stream(request: tiny_http::Request, output: &[Value]) {
-        let mut events = Vec::new();
-        let mut sequence = 0u64;
-        for (output_index, item) in output.iter().enumerate() {
-            if let Some(parts) = item["content"].as_array() {
-                for (content_index, part) in parts.iter().enumerate() {
-                    let (event_type, text) = match part["type"].as_str() {
-                        Some("output_text") => {
-                            ("response.output_text.delta", part["text"].as_str())
-                        }
-                        Some("refusal") => ("response.refusal.delta", part["refusal"].as_str()),
-                        _ => continue,
-                    };
-                    events.push(json!({
-                        "type":event_type, "sequence_number":sequence,
-                        "item_id":item["id"], "output_index":output_index,
-                        "content_index":content_index, "delta":text.unwrap(),
-                        "logprobs":[]
-                    }));
-                    sequence += 1;
-                }
-            }
-            events.push(json!({
-                "type":"response.output_item.done", "sequence_number":sequence,
-                "output_index":output_index, "item":item
-            }));
-            sequence += 1;
-        }
-        events.push(json!({
-            "type":"response.completed", "sequence_number":sequence,
-            "response":{
-                "id":"resp-fixture", "object":"response", "created_at":1,
-                "model":"one", "status":"completed", "output":output
-            }
-        }));
-        sse_stream(request, &events);
-    }
-
-    fn final_for(protocol: &str, request: tiny_http::Request, text: &str) {
-        match protocol {
-            "completion" => {
-                completion_stream(request, json!({"role":"assistant","content":text}), "stop")
-            }
-            _ => response_stream(
-                request,
-                std::slice::from_ref(&json!({
-                    "type":"message", "id":"msg-final", "role":"assistant",
-                    "phase":"final_answer", "status":"completed",
-                    "content":[{"type":"output_text","text":text,
-                                "annotations":[],"logprobs":null}]
-                })),
-            ),
-        }
-    }
+    // The SSE/stream builders are shared with `crate::agent::tests`. The
+    // reviewer fixture intentionally omits `response.content_part.done`.
 
     fn refusal_for(protocol: &str, request: tiny_http::Request) {
         match protocol {
@@ -493,6 +403,7 @@ mod tests {
                     "content":[{"type":"refusal","refusal":"Cannot help",
                                 "annotations":[],"logprobs":null}]
                 })),
+                false,
             ),
         }
     }
@@ -521,7 +432,7 @@ mod tests {
                            "arguments":args.to_string(), "status":"completed"})
                 })
                 .collect();
-            response_stream(request, &calls);
+            response_stream(request, &calls, false);
         }
     }
 
@@ -790,7 +701,7 @@ mod tests {
                     .filter(|item| item["role"] == "tool" || item["type"] == "function_call_output")
                     .count();
                 assert_eq!(outputs, 7);
-                final_for(&serving, request, REPORT);
+                final_for(&serving, request, REPORT, false);
                 (server, plan_id)
             });
 
@@ -944,6 +855,7 @@ mod tests {
                             "name":"read", "arguments":"{\"path\":\"canary\"}",
                             "status":"completed"
                         })),
+                        false,
                     ),
                 }
                 server

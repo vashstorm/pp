@@ -5,7 +5,7 @@
 // 摘要包装与原生近期后缀、窄屏 resize 的上下文字段优先与 Ctrl-C 终端标志
 // 恢复、达到配置阈值时上下文字段变黄，以及 ulimit -f 下压缩 state 写入
 // 留下 partial tail 后恢复读取此前完整快照。此外覆盖输入栏上沿的实时 token
-// 指标：流中带 ~ 的估算速度、权威 usage 后的精确速度与 in/out/cached 配色、
+// 指标：流中不带前缀的估算速度、权威 usage 后的平均速度与 in/out/cached 配色、
 // 缺失 usage 与 /new 的清理、取消后的速率停止，以及 60/40/20 列下 ctx 优先
 // 与指标整块降级。辅助项与测试名均以 context_ 开头；不新增 use 声明，直接
 // 复用同模块私有 Pty 与既有 HTTP fixture。
@@ -204,7 +204,7 @@ fn context_tui_assert_metric_whole(screen: &vt100::Screen, icon: &str, text: &st
     );
 }
 
-// 速度字段的数值与是否估算：字段自身格式为 `[~]N.N[k|m] tok/s`，未知时只有 `— tok/s`。
+// 速度字段的数值与是否带前缀：字段自身格式为 `N.N[k|m] tok/s`，未知时只有 `— tok/s`。
 fn context_tui_speed(screen: &vt100::Screen) -> Option<(f64, bool)> {
     let (row, column) = context_tui_locate(screen, "tok/s")?;
     let head: String = (0..column)
@@ -241,9 +241,9 @@ fn context_tui_speed(screen: &vt100::Screen) -> Option<(f64, bool)> {
     ))
 }
 
-// 流式生成中的估算速度：带 ~ 且非零；权威 usage 到达后不再成立。
-fn context_tui_estimated_speed(screen: &vt100::Screen) -> bool {
-    context_tui_speed(screen).is_some_and(|(rate, estimated)| estimated && rate > 0.0)
+// 非零速度必须直接显示数值，不带 ~ 前缀。
+fn context_tui_positive_speed(screen: &vt100::Screen) -> bool {
+    context_tui_speed(screen).is_some_and(|(rate, marked)| !marked && rate > 0.0)
 }
 
 // 流式请求的权威收尾：Chat 用 usage-only 尾块 + DONE，Responses 用 completed
@@ -983,8 +983,8 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
     }
 }
 
-// 验证项 4（token 指标，双协议）：流式生成期间在 ctx 左侧显示带 ~ 的非零估算
-// 速度；服务端权威 usage 到达后速度去掉 ~，in/out/cached 使用最近一次已完成
+// 验证项 4（token 指标，双协议）：流式生成期间在 ctx 左侧显示不带前缀的非零估算
+// 速度；服务端权威 usage 到达后更新平均速度，in/out/cached 使用最近一次已完成
 // 普通请求（input 仍含缓存命中总数，cached 只是其中的明细）；下一轮缺失 usage
 // 时计数退回未知而估算速度冻结；/new 清空全部新指标。
 #[test]
@@ -1007,7 +1007,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         streaming_delta(&mut stream, protocol, &first);
         pty.text("context-metrics-live-one");
         // SSE 仍被服务端握住：速度只能是估算，且 in/out/cached 尚无完成请求。
-        pty.wait_for("流式生成中显示非零估算速度", context_tui_estimated_speed);
+        pty.wait_for("流式生成中显示非零估算速度", context_tui_positive_speed);
         let live = pty.parser.screen().contents();
         assert!(live.contains("in —") && live.contains("out —") && live.contains("cached —"));
         let (speed_row, speed_column) = context_tui_locate(pty.parser.screen(), "tok/s")
@@ -1020,8 +1020,8 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         streaming_delta(&mut stream, protocol, " context-metrics-live-two");
         pty.text("context-metrics-live-two");
         assert!(
-            context_tui_speed(pty.parser.screen()).is_some_and(|(_, estimated)| estimated),
-            "权威 usage 到达前必须保留 ~ 估算标记"
+            context_tui_speed(pty.parser.screen()).is_some_and(|(_, marked)| !marked),
+            "流式速度不得带 ~ 前缀"
         );
 
         context_tui_stream_usage(
@@ -1038,8 +1038,8 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         });
         pty.ready();
         let screen = pty.parser.screen();
-        let (rate, estimated) = context_tui_speed(screen).expect("完成后必须显示精确速度");
-        assert!(!estimated, "权威 usage 到达后不得保留 ~");
+        let (rate, marked) = context_tui_speed(screen).expect("完成后必须显示精确速度");
+        assert!(!marked, "权威 usage 到达后不得保留 ~");
         assert!(rate > 0.0, "完成速度必须为正：{rate}");
         let (row, ctx_column) = context_tui_locate(screen, "ctx ").expect("ctx 必须可见");
         let mut previous = context_tui_locate(screen, "tok/s")
@@ -1096,15 +1096,21 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
             vt100::Color::Rgb(122, 162, 247)
         );
 
-        // 下一轮：成功但没有 usage。计数退回未知，流式估算保留 ~ 并冻结。
+        // 下一轮：成功但没有 usage。计数退回未知，流式估算不带前缀并冻结。
         pty.input("context-metrics-missing\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         let mut stream = SseReply::new(request);
+        // 服务端暂不返回首个 delta：新请求等待期间必须保留上一笔完成速度。
+        pty.wait_for("下一请求等待首字节时速度不闪回未知", |screen| {
+            screen.contents().contains("Requesting model")
+                && context_tui_speed(screen)
+                    .is_some_and(|(current, marked)| !marked && current == rate)
+        });
         streaming_delta(&mut stream, protocol, "context-metrics-missing-answer");
         pty.text("context-metrics-missing-answer");
         pty.wait_for(
             "缺失 usage 的请求也显示估算速度",
-            context_tui_estimated_speed,
+            context_tui_positive_speed,
         );
         streaming_complete(&mut stream, protocol, "context-metrics-missing-answer");
         stream.finish();
@@ -1114,11 +1120,11 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
                 && contents.contains("out —")
                 && contents.contains("cached —")
         });
-        let (rate, estimated) =
+        let (rate, marked) =
             context_tui_speed(pty.parser.screen()).expect("流式字节必须保留最终估算速度");
         assert!(
-            estimated && rate > 0.0,
-            "缺失 usage 时速度必须保持 ~：{rate}"
+            !marked && rate > 0.0,
+            "缺失 usage 时速度也不带 ~ 前缀：{rate}"
         );
 
         pty.ready();
@@ -1149,7 +1155,7 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
         let mut stream = SseReply::new(request);
         streaming_delta(&mut stream, protocol, "context-metrics-cancel-partial");
         pty.text("context-metrics-cancel-partial");
-        pty.wait_for("取消前显示估算速度", context_tui_estimated_speed);
+        pty.wait_for("取消前显示估算速度", context_tui_positive_speed);
         pty.input("\x1b");
         cancel_wait_cancelled_ready(&mut pty);
         let cancelled = pty.parser.screen().contents();
@@ -1163,13 +1169,13 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
         );
         drop(stream);
 
-        // 下一轮请求重新计数：新请求再次出现带 ~ 的非零估算速度。
+        // 下一轮请求重新计数：新请求再次出现不带前缀的非零估算速度。
         pty.input("context-metrics-recount\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         let mut stream = SseReply::new(request);
         streaming_delta(&mut stream, protocol, "context-metrics-recount-partial");
         pty.text("context-metrics-recount-partial");
-        pty.wait_for("新请求重新显示估算速度", context_tui_estimated_speed);
+        pty.wait_for("新请求重新显示估算速度", context_tui_positive_speed);
         pty.input("\x1b");
         pty.wait_for("second task cancellation committed", |screen| {
             input_is_ready(screen)

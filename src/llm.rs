@@ -33,6 +33,7 @@ pub(crate) struct OpenAiClient {
     client: Client<OpenAIConfig>,
     runtime: Option<Runtime>,
     request_timeout: Duration,
+    rate_limit_retry_budget: Duration,
     stats_context: Option<crate::stats::RequestContext>,
     stats_key: Option<String>,
 }
@@ -67,6 +68,8 @@ impl OpenAiClient {
             anyhow::anyhow!("configuring HTTP authorization: invalid API key header")
         })?;
         let request_timeout = Duration::from_secs(config.settings.request_timeout_seconds);
+        let rate_limit_retry_budget =
+            Duration::from_secs(config.settings.rate_limit_retry_budget_seconds);
         // Explicitly override every environment-derived SDK setting.
         let sdk_config = OpenAIConfig::new()
             .with_api_key(config.api_key.clone())
@@ -82,6 +85,7 @@ impl OpenAiClient {
             client,
             runtime: Some(runtime),
             request_timeout,
+            rate_limit_retry_budget,
             stats_context: None,
             stats_key: None,
         })
@@ -139,12 +143,16 @@ impl OpenAiClient {
             .runtime
             .as_ref()
             .expect("ensure_ready leaves a runtime in place");
+        let budget = self.rate_limit_retry_budget;
         let mut output = ChatStream::default();
         let mut snapshot = serde_json::Value::Null;
         let result: Result<CompletionTurn> = runtime.block_on(async {
+            // The BYOT future borrows its resource; bind it so retries can
+            // create further futures from the same borrow.
+            let chat = client.chat();
             // BYOT serializes a borrowed request before returning the stream.
             let opened = cancellation
-                .run_until_cancelled(client.chat().create_stream_byot::<_, ChatChunk>(request))
+                .run_until_cancelled(chat.create_stream_byot::<_, ChatChunk>(request))
                 .await;
             // Persist the accepted request exactly once, before judging the
             // opening outcome; a callback failure takes precedence.
@@ -153,7 +161,15 @@ impl OpenAiClient {
                 Some(opened) => opened,
                 None => return Err(Cancelled.into()),
             };
-            let mut stream = opened.map_err(|error| redacted_error(error, "Chat Completions"))?;
+            let mut stream = open_with_rate_limit_retry(
+                cancellation,
+                budget,
+                "Chat Completions",
+                &mut progress,
+                opened,
+                || chat.create_stream_byot::<_, ChatChunk>(request),
+            )
+            .await?;
             loop {
                 match cancellation.run_until_cancelled(stream.next()).await {
                     None => return Err(Cancelled.into()),
@@ -245,12 +261,12 @@ impl OpenAiClient {
         let mut tool_deltas = Vec::new();
         let mut stop_reason = None;
         let mut reported_usage = None;
+        let budget = self.rate_limit_retry_budget;
         let result: Result<ResponseTurn> = runtime.block_on(async {
+            let responses = client.responses();
             let opened = cancellation
                 .run_until_cancelled(
-                    client
-                        .responses()
-                        .create_stream_byot::<_, ResponseEvent>(request),
+                    responses.create_stream_byot::<_, ResponseEvent>(request),
                 )
                 .await;
             on_request_sent()?;
@@ -258,7 +274,15 @@ impl OpenAiClient {
                 Some(opened) => opened,
                 None => return Err(Cancelled.into()),
             };
-            let mut stream = opened.map_err(|error| redacted_error(error, "Responses"))?;
+            let mut stream = open_with_rate_limit_retry(
+                cancellation,
+                budget,
+                "Responses",
+                &mut progress,
+                opened,
+                || responses.create_stream_byot::<_, ResponseEvent>(request),
+            )
+            .await?;
             let mut output = ResponsesStream::default();
             loop {
                 match cancellation.run_until_cancelled(stream.next()).await {
@@ -365,7 +389,7 @@ fn build_client(sdk_config: OpenAIConfig, timeout: Duration) -> Result<Client<Op
                         message: String::new(),
                         r#type: None,
                         param: None,
-                        code: None,
+                        code: retry_after_code(&response),
                         misalignment: None,
                     },
                 }))
@@ -387,6 +411,144 @@ fn redacted_error(error: OpenAIError, api: &str) -> anyhow::Error {
             anyhow::anyhow!("decoding {api} response: invalid JSON or response structure")
         }
         _ => anyhow::anyhow!("{api} HTTP request failed"),
+    }
+}
+
+/// The middleware never reads response bodies, so the integer seconds of a
+/// 429's `Retry-After` header travel through the otherwise-empty `code`
+/// field for the retry loop. `redacted_error` only prints status codes, so
+/// this marker never reaches user-visible output.
+const RETRY_AFTER_CODE_PREFIX: &str = "pp-retry-after:";
+
+/// Safety valve so a provider answering `Retry-After: 0` cannot turn the
+/// retry budget into a tight request loop.
+const RATE_LIMIT_MAX_ATTEMPTS: u32 = 10;
+
+fn retry_after_code(response: &reqwest::Response) -> Option<String> {
+    if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return None;
+    }
+    let seconds = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    Some(format!("{RETRY_AFTER_CODE_PREFIX}{seconds}"))
+}
+
+fn retry_after_seconds(error: &OpenAIError) -> Option<u64> {
+    let response = match error {
+        OpenAIError::ApiError(response) => response,
+        _ => return None,
+    };
+    if response.status_code != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return None;
+    }
+    response
+        .api_error
+        .code
+        .as_deref()?
+        .strip_prefix(RETRY_AFTER_CODE_PREFIX)?
+        .parse::<u64>()
+        .ok()
+}
+
+/// Only opening-phase HTTP 429 responses are retryable; the stream has not
+/// started, so no partial output exists.
+fn is_rate_limited(error: &OpenAIError) -> bool {
+    matches!(
+        error,
+        OpenAIError::ApiError(response)
+            if response.status_code == reqwest::StatusCode::TOO_MANY_REQUESTS
+    )
+}
+
+/// Wait before the next opening attempt of a rate-limited request: the
+/// provider's `Retry-After` seconds win when present (zero retries at
+/// once), otherwise the delay doubles per attempt starting at one second.
+/// Waits are clipped to the remaining budget; `None` means stop retrying.
+fn rate_limit_wait(
+    error: &OpenAIError,
+    waited: Duration,
+    budget: Duration,
+    attempt: u32,
+) -> Option<Duration> {
+    if !is_rate_limited(error) {
+        return None;
+    }
+    if budget.is_zero() || waited >= budget || attempt >= RATE_LIMIT_MAX_ATTEMPTS {
+        return None;
+    }
+    // The attempt guard above bounds the shift well below overflow.
+    let backoff = match retry_after_seconds(error) {
+        Some(seconds) => Duration::from_secs(seconds),
+        None => Duration::from_secs(1 << attempt),
+    };
+    Some(backoff.min(budget - waited))
+}
+
+/// Final error for a failed opening phase: anything but an exhausted 429
+/// retry budget keeps the plain redacted message, matching requests that
+/// never retried.
+fn opening_error(error: OpenAIError, api: &str, waited: Duration, retries: u32) -> anyhow::Error {
+    if !is_rate_limited(&error) || retries == 0 {
+        return redacted_error(error, api);
+    }
+    anyhow::anyhow!(
+        "{} (rate limited; gave up after {} retries and {}s of backoff)",
+        redacted_error(error, api),
+        retries,
+        waited.as_secs()
+    )
+}
+
+/// Opens a stream, retrying the opening phase while the provider answers
+/// 429 within the wait budget. Retrying is safe only before the first
+/// chunk: no partial output has been committed, and `on_request_sent` has
+/// already fired exactly once for the first attempt. Both the backoff sleep
+/// and every reopening stay cancellable.
+async fn open_with_rate_limit_retry<S, F, Fut>(
+    cancellation: &CancellationToken,
+    budget: Duration,
+    api: &str,
+    progress: &mut dyn FnMut(AgentEvent),
+    mut opened: Result<S, OpenAIError>,
+    mut reopen: F,
+) -> Result<S>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<S, OpenAIError>>,
+{
+    let mut waited = Duration::ZERO;
+    let mut retries = 0u32;
+    loop {
+        let error = match opened {
+            Ok(stream) => return Ok(stream),
+            Err(error) => error,
+        };
+        let Some(delay) = rate_limit_wait(&error, waited, budget, retries) else {
+            return Err(opening_error(error, api, waited, retries));
+        };
+        retries += 1;
+        waited += delay;
+        progress(AgentEvent::RateLimited {
+            attempt: retries,
+            wait_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+        });
+        match cancellation
+            .run_until_cancelled(tokio::time::sleep(delay))
+            .await
+        {
+            Some(()) => {}
+            None => return Err(Cancelled.into()),
+        }
+        match cancellation.run_until_cancelled(reopen()).await {
+            Some(next) => opened = next,
+            None => return Err(Cancelled.into()),
+        }
     }
 }
 
@@ -596,6 +758,10 @@ mod tests {
     }
 
     fn test_client(base_url: &str) -> OpenAiClient {
+        test_client_with_rate_limit_budget(base_url, 0)
+    }
+
+    fn test_client_with_rate_limit_budget(base_url: &str, budget_seconds: u64) -> OpenAiClient {
         OpenAiClient::new(&Config {
             api_key: "private-key".into(),
             model: "fixture".into(),
@@ -615,6 +781,7 @@ mod tests {
                 default_model: None,
                 max_model_requests: 20,
                 request_timeout_seconds: 120,
+                rate_limit_retry_budget_seconds: budget_seconds,
                 read_max_bytes: 65_536,
                 read_max_lines: 2_000,
                 bash_timeout_seconds: 120,
@@ -711,6 +878,237 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    fn api_error(status: u16, code: Option<&str>) -> OpenAIError {
+        OpenAIError::ApiError(ApiErrorResponse {
+            status_code: reqwest::StatusCode::from_u16(status).unwrap(),
+            api_error: ApiError {
+                message: String::new(),
+                r#type: None,
+                param: None,
+                code: code.map(str::to_owned),
+                misalignment: None,
+            },
+        })
+    }
+
+    #[test]
+    fn rate_limit_wait_honors_header_exponential_fallback_and_budget() {
+        let budget = Duration::from_secs(300);
+        let no_header = api_error(429, None);
+        assert_eq!(
+            rate_limit_wait(&no_header, Duration::ZERO, budget, 0),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            rate_limit_wait(&no_header, Duration::ZERO, budget, 1),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(
+            rate_limit_wait(&no_header, Duration::ZERO, budget, 3),
+            Some(Duration::from_secs(8))
+        );
+        let header = api_error(429, Some("pp-retry-after:7"));
+        assert_eq!(
+            rate_limit_wait(&header, Duration::ZERO, budget, 0),
+            Some(Duration::from_secs(7))
+        );
+        // Zero seconds means the provider allows an immediate retry.
+        assert_eq!(
+            rate_limit_wait(
+                &api_error(429, Some("pp-retry-after:0")),
+                Duration::ZERO,
+                budget,
+                5
+            ),
+            Some(Duration::ZERO)
+        );
+        // Waits are clipped to the remaining budget.
+        assert_eq!(
+            rate_limit_wait(&header, Duration::from_secs(296), budget, 0),
+            Some(Duration::from_secs(4))
+        );
+        // Budget spent, budget disabled, the attempt cap, and non-429 stop retrying.
+        assert_eq!(rate_limit_wait(&header, budget, budget, 0), None);
+        assert_eq!(
+            rate_limit_wait(&header, Duration::ZERO, Duration::ZERO, 0),
+            None
+        );
+        assert_eq!(
+            rate_limit_wait(&no_header, Duration::ZERO, budget, 10),
+            None
+        );
+        assert_eq!(
+            rate_limit_wait(&api_error(500, None), Duration::ZERO, budget, 0),
+            None
+        );
+        // Only the middleware's own marker counts as a Retry-After value.
+        assert_eq!(
+            rate_limit_wait(&api_error(429, Some("7")), Duration::ZERO, budget, 0),
+            Some(Duration::from_secs(1))
+        );
+    }
+
+    #[test]
+    fn opening_error_notes_exhausted_budget_only_after_retries() {
+        assert_eq!(
+            opening_error(api_error(429, None), "Chat Completions", Duration::ZERO, 0).to_string(),
+            "Chat Completions HTTP status 429 Too Many Requests"
+        );
+        let message = opening_error(
+            api_error(429, None),
+            "Chat Completions",
+            Duration::from_secs(3),
+            2,
+        )
+        .to_string();
+        assert!(message.contains("HTTP status 429"));
+        assert!(message.contains("gave up after 2 retries and 3s of backoff"));
+        assert_eq!(
+            opening_error(
+                api_error(500, None),
+                "Chat Completions",
+                Duration::from_secs(3),
+                2
+            )
+            .to_string(),
+            "Chat Completions HTTP status 500 Internal Server Error"
+        );
+    }
+
+    #[test]
+    fn rate_limited_opening_retries_then_finishes_the_request() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let mut client =
+            test_client_with_rate_limit_budget(&format!("http://{}", server.server_addr()), 30);
+        let token = CancellationToken::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let first = server
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                first
+                    .respond(
+                        tiny_http::Response::from_string("private-body fixture")
+                            .with_status_code(429)
+                            .with_header(
+                                tiny_http::Header::from_bytes("Retry-After", "0").unwrap(),
+                            ),
+                    )
+                    .unwrap();
+                let second = server
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                let mut writer = sse_writer(second);
+                sse_frame(
+                    &mut writer,
+                    &chat_chunk(json!({"role":"assistant","content":"recovered"}), None)
+                        .to_string(),
+                );
+                sse_frame(
+                    &mut writer,
+                    &chat_chunk(json!({}), Some("stop")).to_string(),
+                );
+                sse_frame(&mut writer, "[DONE]");
+                sse_end(writer);
+            });
+            let mut sent = 0;
+            let mut rate_limited = Vec::new();
+            let turn = client
+                .complete(
+                    &CreateChatCompletionRequest::default(),
+                    &token,
+                    &mut || {
+                        sent += 1;
+                        Ok(())
+                    },
+                    &mut |event| {
+                        if let AgentEvent::RateLimited { attempt, wait_ms } = event {
+                            rate_limited.push((attempt, wait_ms));
+                        }
+                    },
+                )
+                .unwrap();
+            assert_eq!(sent, 1);
+            assert_eq!(rate_limited, vec![(1, 0)]);
+            assert_eq!(
+                turn.message.content,
+                Some(ChatCompletionRequestAssistantMessageContent::Text(
+                    "recovered".into()
+                ))
+            );
+        });
+        assert!(
+            server
+                .recv_timeout(Duration::from_millis(50))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rate_limited_opening_gives_up_when_budget_is_spent() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        // A 1s budget without a Retry-After header: the first backoff of 1s
+        // spends it entirely, so the second 429 fails the request.
+        let mut client =
+            test_client_with_rate_limit_budget(&format!("http://{}", server.server_addr()), 1);
+        let token = CancellationToken::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..2 {
+                    let request = server
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap()
+                        .unwrap();
+                    request
+                        .respond(
+                            tiny_http::Response::from_string("private-body fixture")
+                                .with_status_code(429),
+                        )
+                        .unwrap();
+                }
+            });
+            let mut sent = 0;
+            let mut rate_limited = Vec::new();
+            let mut finished = None;
+            let error = client
+                .complete(
+                    &CreateChatCompletionRequest::default(),
+                    &token,
+                    &mut || {
+                        sent += 1;
+                        Ok(())
+                    },
+                    &mut |event| match event {
+                        AgentEvent::RateLimited { attempt, wait_ms } => {
+                            rate_limited.push((attempt, wait_ms));
+                        }
+                        AgentEvent::ModelRequestFinished { success, .. } => {
+                            finished = Some(success);
+                        }
+                        _ => {}
+                    },
+                )
+                .err()
+                .unwrap()
+                .to_string();
+            assert_eq!(sent, 1);
+            assert_eq!(rate_limited, vec![(1, 1000)]);
+            assert_eq!(finished, Some(false));
+            assert!(error.contains("HTTP status 429"));
+            assert!(error.contains("gave up after 1 retries and 1s of backoff"));
+            assert!(!error.contains("private-body"));
+        });
+        assert!(
+            server
+                .recv_timeout(Duration::from_millis(50))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

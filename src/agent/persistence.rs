@@ -279,27 +279,7 @@ impl SessionJournal {
         };
         let first = !active.header_written;
         if first {
-            let result = (|| -> Result<()> {
-                let active = self.active.as_ref().expect("active journal checked");
-                let timestamp = timestamp(active.created_at_ms)?;
-                self.buffer.clear();
-                let serialized = serde_json::to_writer(
-                    &mut self.buffer,
-                    &HeaderRef {
-                        kind: "session",
-                        version: 3,
-                        id: &active.id,
-                        timestamp: &timestamp,
-                        cwd: metadata.cwd,
-                    },
-                );
-                self.append_serialized(serialized, false)?;
-                self.active
-                    .as_mut()
-                    .expect("active journal checked")
-                    .header_written = true;
-                Ok(())
-            })();
+            let result = self.write_header(metadata);
             self.latch(result)?;
         } else {
             self.record(
@@ -312,16 +292,45 @@ impl SessionJournal {
         }
         self.write_state(metadata, session, workflow)?;
         if first {
-            self.record(
-                PayloadRef::ModelChange {
-                    model: metadata.model_reference,
-                    role: "default",
-                },
-                false,
-            )?;
-            self.think(metadata.think_level)?;
+            self.write_first_records(metadata)?;
         }
         Ok(())
+    }
+
+    /// Write the session header exactly once; callers decide how to latch a
+    /// failure (`checkpoint` latches, plan execution rolls the group back).
+    fn write_header(&mut self, metadata: &Metadata<'_>) -> Result<()> {
+        let active = self.active.as_ref().expect("active journal checked");
+        let timestamp = timestamp(active.created_at_ms)?;
+        self.buffer.clear();
+        let serialized = serde_json::to_writer(
+            &mut self.buffer,
+            &HeaderRef {
+                kind: "session",
+                version: 3,
+                id: &active.id,
+                timestamp: &timestamp,
+                cwd: metadata.cwd,
+            },
+        );
+        self.append_serialized(serialized, false)?;
+        self.active
+            .as_mut()
+            .expect("active journal checked")
+            .header_written = true;
+        Ok(())
+    }
+
+    /// The first-record audit pair that follows a freshly written header.
+    fn write_first_records(&mut self, metadata: &Metadata<'_>) -> Result<()> {
+        self.record(
+            PayloadRef::ModelChange {
+                model: metadata.model_reference,
+                role: "default",
+            },
+            false,
+        )?;
+        self.think(metadata.think_level)
     }
     /// Commit a complete native history without inventing a model-switch audit.
     /// The new state record is the logical commit point; old records remain.
@@ -454,24 +463,7 @@ impl SessionJournal {
                 .expect("active journal after ensure_active")
                 .header_written;
             if first {
-                let active = self.active.as_ref().expect("active journal checked");
-                let timestamp = timestamp(active.created_at_ms)?;
-                self.buffer.clear();
-                let serialized = serde_json::to_writer(
-                    &mut self.buffer,
-                    &HeaderRef {
-                        kind: "session",
-                        version: 3,
-                        id: &active.id,
-                        timestamp: &timestamp,
-                        cwd: metadata.cwd,
-                    },
-                );
-                self.append_serialized(serialized, false)?;
-                self.active
-                    .as_mut()
-                    .expect("active journal checked")
-                    .header_written = true;
+                self.write_header(metadata)?;
             }
             let timestamp = now_ms()?;
             self.record(
@@ -485,14 +477,7 @@ impl SessionJournal {
             )?;
             self.write_state(metadata, session, workflow)?;
             if first {
-                self.record(
-                    PayloadRef::ModelChange {
-                        model: metadata.model_reference,
-                        role: "default",
-                    },
-                    false,
-                )?;
-                self.think(metadata.think_level)?;
+                self.write_first_records(metadata)?;
             }
             Ok(())
         })();
@@ -683,6 +668,7 @@ impl SessionJournal {
                 | AgentEvent::ModelRequestStarted
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. }
+                | AgentEvent::RateLimited { .. }
         ) {
             return;
         }

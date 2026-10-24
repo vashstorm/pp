@@ -16,13 +16,13 @@ use serde_json::{Map, Value, json};
 use std::{
     borrow::Cow,
     fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-use super::OUTPUT_LIMIT;
+use super::{OUTPUT_LIMIT, resolve_path};
 
 const DEFAULT_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 500;
@@ -378,12 +378,7 @@ fn find(
 
 fn resolve_root(cwd: &Path, path_arg: Option<&str>) -> Result<(PathBuf, bool)> {
     let root = match path_arg {
-        Some(path) => {
-            ensure!(!path.trim().is_empty(), "path must not be blank");
-            // PathBuf::join preserves an absolute path. cwd is not a sandbox,
-            // matching read's path semantics.
-            cwd.join(path)
-        }
+        Some(path) => resolve_path(cwd, path)?,
         None => cwd.to_path_buf(),
     };
     let metadata = fs::symlink_metadata(&root)
@@ -517,10 +512,10 @@ fn scan_file(
                 FileFlow::Exhausted
             });
         }
-        if chunk.contains(&0) {
-            return Ok(FileFlow::Skipped("skipped: NUL byte (binary file)".into()));
-        }
-        match chunk.iter().position(|&byte| byte == b'\n') {
+        match chunk.iter().position(|&byte| byte == 0 || byte == b'\n') {
+            Some(at) if chunk[at] == 0 => {
+                return Ok(FileFlow::Skipped("skipped: NUL byte (binary file)".into()));
+            }
             Some(at) => {
                 if line.len().saturating_add(at) > max_line_bytes {
                     return Ok(FileFlow::Skipped(format!(
@@ -607,23 +602,9 @@ fn checkpoint(deadline: Instant, cancellation: &CancellationToken) -> Result<()>
     Ok(())
 }
 
-struct Counting(usize);
-
-impl Write for Counting {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0 += bytes.len();
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 fn serialized_len(value: &Value) -> usize {
-    let mut counter = Counting(0);
     // Serializing an owned Value into an infallible writer cannot fail.
-    serde_json::to_writer(&mut counter, value).expect("Value serialization is infallible");
-    counter.0
+    crate::context::serialized_len(value).expect("Value serialization is infallible")
 }
 
 /// Worst-case wrapper size (20-digit next_offset/warnings_omitted) so the

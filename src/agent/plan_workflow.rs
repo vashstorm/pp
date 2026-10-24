@@ -159,22 +159,7 @@ impl Agent {
             self.ensure_plan_mcp_shutdown(cancellation)?;
             return Ok(self.workflow.clone());
         }
-        self.journal.check()?;
-        let previous = std::mem::take(&mut self.workflow);
-        match PlanDocument::new() {
-            Ok(document) => {
-                self.workflow = WorkflowState {
-                    mode: WorkMode::Plan,
-                    plan: Some(document),
-                    review: None,
-                };
-            }
-            Err(error) => {
-                self.workflow = previous;
-                return Err(error);
-            }
-        }
-        self.commit_workflow(previous)?;
+        self.install_fresh_plan()?;
         self.ensure_plan_mcp_shutdown(cancellation)?;
         Ok(self.workflow.clone())
     }
@@ -189,6 +174,12 @@ impl Agent {
         if self.plan_cleanup_error.is_some() {
             self.ensure_plan_mcp_shutdown(cancellation)?;
         }
+        self.install_fresh_plan()?;
+        Ok(self.workflow.clone())
+    }
+
+    /// Bind a fresh revision-0 document and persist the transition atomically.
+    fn install_fresh_plan(&mut self) -> Result<()> {
         self.journal.check()?;
         let document = PlanDocument::new()?;
         let previous = std::mem::replace(
@@ -199,8 +190,7 @@ impl Agent {
                 review: None,
             },
         );
-        self.commit_workflow(previous)?;
-        Ok(self.workflow.clone())
+        self.commit_workflow(previous)
     }
 
     /// Register on-disk plan bytes as a new revision. Returns `false` when the
@@ -209,28 +199,22 @@ impl Agent {
     /// Executed/Abandoned documents remain read-only after importing progress.
     fn import_plan_revision(&mut self, content: String, new_title: &str) -> Result<bool> {
         plan::validate_content(&content)?;
-        {
+        let revision = {
             let bound = self.workflow.plan.as_ref().expect("plan bound");
             if bound.content == content {
                 return Ok(false);
             }
             if bound.revision == 0 {
                 plan::validate_title(new_title)?;
-            } else {
-                ensure!(
-                    bound.revision < u64::MAX,
-                    "Plan revision counter exhausted."
-                );
             }
-        }
+            bound.next_revision()?
+        };
         let previous = self.workflow.clone();
         let document = self.workflow.plan.as_mut().expect("plan bound");
         if document.revision == 0 {
             document.title = new_title.to_owned();
-            document.revision = 1;
-        } else {
-            document.revision += 1;
         }
+        document.revision = revision;
         let (_, total) = plan::task_progress(&content);
         document.content = content;
         if matches!(document.status, PlanStatus::Draft | PlanStatus::Ready) {
@@ -365,10 +349,7 @@ impl Agent {
         if content == document.content {
             return Ok(());
         }
-        let revision = document
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("Plan revision limit reached."))?;
+        let revision = document.next_revision()?;
         let document = self.workflow.plan.as_mut().expect("executed plan bound");
         let previous = std::mem::replace(&mut document.content, content);
         document.revision = revision;

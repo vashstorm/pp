@@ -23,7 +23,10 @@ use crate::{
     commands::{self, COMMANDS, Command, PlanCommand},
     config::{ModelChoice, NotificationOptions, ThinkLevel},
     events::AgentEvent,
-    plan::{ExecutionContext, PlanReview, PlanReviewReport, PlanStatus, WorkMode, WorkflowState},
+    plan::{
+        ExecutionContext, PlanReview, PlanReviewReport, PlanStatus, ReviewToken, WorkMode,
+        WorkflowState,
+    },
 };
 use anyhow::{Context, Result};
 use crossterm::{
@@ -244,9 +247,47 @@ enum WorkerEvent {
 /// 转换失败后的纠正快照：发布真实 workflow，并刷新退出清理句柄以覆盖
 /// 可能被保留的 registry；所有 Plan 转换失败路径共用。
 fn publish_transition_failure(agent: &Agent, snapshots: &mut Vec<WorkerEvent>) {
-    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
+    push_workflow_snapshot(agent, snapshots);
     if let Ok(cleanup) = agent.mcp_cleanup() {
         snapshots.push(WorkerEvent::Cleanup(cleanup));
+    }
+}
+
+/// Publish the workflow snapshot so the UI never keeps a stale plan/mode.
+fn push_workflow_snapshot(agent: &Agent, snapshots: &mut Vec<WorkerEvent>) {
+    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
+}
+
+/// Status-bar usage plus workflow snapshot after a task or state boundary.
+fn push_runtime_snapshot(agent: &Agent, snapshots: &mut Vec<WorkerEvent>) {
+    if let Some(event) = usage_snapshot(agent) {
+        snapshots.push(event);
+    }
+    push_workflow_snapshot(agent, snapshots);
+}
+
+/// Send one UI-bound event with a reply channel and wait for the ACK; a
+/// disconnected UI or cancellation cancels the worker.
+fn send_and_wait_ack<T: Send>(
+    events: &mpsc::SyncSender<WorkerEvent>,
+    make: impl FnOnce(mpsc::SyncSender<T>) -> WorkerEvent,
+    cancellation: &CancellationToken,
+) -> Result<T> {
+    let (reply, ack) = mpsc::sync_channel(1);
+    if events.send(make(reply)).is_err() {
+        cancellation.cancel();
+        return Err(crate::cancellation::Cancelled.into());
+    }
+    loop {
+        crate::cancellation::check(cancellation)?;
+        match ack.recv_timeout(Duration::from_millis(50)) {
+            Ok(value) => return Ok(value),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                cancellation.cancel();
+                return Err(crate::cancellation::Cancelled.into());
+            }
+        }
     }
 }
 
@@ -255,29 +296,17 @@ fn publish_prepared(
     preparation: ExecutionPreparation,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let (reply, ack) = mpsc::sync_channel(1);
-    let event = WorkerEvent::ExecutionPrepared {
-        workflow: preparation.workflow,
-        session_id: preparation.session_id,
-        replay: preparation.replay,
-        cleanup: preparation.cleanup,
-        reply,
-    };
-    if events.send(event).is_err() {
-        cancellation.cancel();
-        return Err(crate::cancellation::Cancelled.into());
-    }
-    loop {
-        crate::cancellation::check(cancellation)?;
-        match ack.recv_timeout(Duration::from_millis(50)) {
-            Ok(()) => return Ok(()),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                cancellation.cancel();
-                return Err(crate::cancellation::Cancelled.into());
-            }
-        }
-    }
+    send_and_wait_ack(
+        events,
+        |reply| WorkerEvent::ExecutionPrepared {
+            workflow: preparation.workflow,
+            session_id: preparation.session_id,
+            replay: preparation.replay,
+            cleanup: preparation.cleanup,
+            reply,
+        },
+        cancellation,
+    )
 }
 
 fn request_ask(
@@ -286,25 +315,13 @@ fn request_ask(
     cancellation: &CancellationToken,
 ) -> Result<Vec<crate::interaction::AskAnswer>> {
     crate::cancellation::check(cancellation)?;
-    let (reply, answers) = mpsc::sync_channel(1);
-    if events.send(WorkerEvent::Ask { request, reply }).is_err() {
-        cancellation.cancel();
-        return Err(crate::cancellation::Cancelled.into());
-    }
-    loop {
-        crate::cancellation::check(cancellation)?;
-        match answers.recv_timeout(Duration::from_millis(50)) {
-            Ok(answers) => {
-                crate::cancellation::check(cancellation)?;
-                return Ok(answers);
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                cancellation.cancel();
-                return Err(crate::cancellation::Cancelled.into());
-            }
-        }
-    }
+    let answers = send_and_wait_ack(
+        events,
+        |reply| WorkerEvent::Ask { request, reply },
+        cancellation,
+    )?;
+    crate::cancellation::check(cancellation)?;
+    Ok(answers)
 }
 
 impl WorkerEvent {
@@ -476,6 +493,15 @@ fn editor() -> TextArea<'static> {
     editor
 }
 
+/// 限流等待时长的展示形式：整秒不带小数，非整秒保留一位小数。
+pub(crate) fn format_wait(wait_ms: u64) -> String {
+    if wait_ms.is_multiple_of(1000) {
+        format!("{}s", wait_ms / 1000)
+    } else {
+        format!("{:.1}s", wait_ms as f64 / 1000.0)
+    }
+}
+
 impl App {
     #[cfg(test)]
     fn receive_event_for_test(&mut self, event: WorkerEvent) {
@@ -612,7 +638,7 @@ impl App {
                                     let outcome =
                                         agent.run(&prompt, &cancellation, Some(&input), &mut emit);
                                     // 计划工具可能修改 workflow；终态后同步一份快照。
-                                    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
+                                    push_workflow_snapshot(&agent, &mut snapshots);
                                     WorkerEvent::completed(started, outcome)
                                 }
                                 WorkerCommand::Continue {
@@ -624,36 +650,26 @@ impl App {
                                         Some(&input),
                                         &mut emit,
                                     );
-                                    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
+                                    push_workflow_snapshot(&agent, &mut snapshots);
                                     WorkerEvent::completed(started, outcome)
                                 }
                                 WorkerCommand::Compact { cancellation } => {
                                     let result = agent.compact(&cancellation, &mut emit);
                                     // 终态事件之前先发布最终用量快照；
                                     // 成功、失败、取消、未变化都会刷新状态栏。
-                                    if let Some(event) = usage_snapshot(&agent) {
-                                        snapshots.push(event);
-                                    }
-                                    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
+                                    push_runtime_snapshot(&agent, &mut snapshots);
                                     WorkerEvent::Compacted(result)
                                 }
                                 WorkerCommand::Reset => {
                                     agent.reset();
-                                    if let Some(event) = usage_snapshot(&agent) {
-                                        snapshots.push(event);
-                                    }
-                                    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
+                                    push_runtime_snapshot(&agent, &mut snapshots);
                                     WorkerEvent::Reset
                                 }
                                 WorkerCommand::SetThinkLevel(level) => {
                                     let result =
                                         agent.set_think_level(level).map(|()| agent.think_level());
                                     if result.is_ok() {
-                                        if let Some(event) = usage_snapshot(&agent) {
-                                            snapshots.push(event);
-                                        }
-                                        snapshots
-                                            .push(WorkerEvent::Workflow(agent.workflow().clone()));
+                                        push_runtime_snapshot(&agent, &mut snapshots);
                                     }
                                     WorkerEvent::ThinkLevelSet(result)
                                 }
@@ -672,11 +688,7 @@ impl App {
                                         (agent.current_model().clone(), agent.think_level())
                                     });
                                     if result.is_ok() {
-                                        if let Some(event) = usage_snapshot(&agent) {
-                                            snapshots.push(event);
-                                        }
-                                        snapshots
-                                            .push(WorkerEvent::Workflow(agent.workflow().clone()));
+                                        push_runtime_snapshot(&agent, &mut snapshots);
                                     }
                                     WorkerEvent::ModelSwitched(result)
                                 }
@@ -686,11 +698,7 @@ impl App {
                                 WorkerCommand::NavigateTree(id) => {
                                     let result = agent.navigate_tree(&id);
                                     if result.is_ok() {
-                                        if let Some(event) = usage_snapshot(&agent) {
-                                            snapshots.push(event);
-                                        }
-                                        snapshots
-                                            .push(WorkerEvent::Workflow(agent.workflow().clone()));
+                                        push_runtime_snapshot(&agent, &mut snapshots);
                                     }
                                     WorkerEvent::TreeNavigated(result)
                                 }
@@ -832,7 +840,7 @@ impl App {
                                     );
                                     // 成功时报告已由 write_workflow 登记；
                                     // 失败/取消保留旧报告。快照纠正显示不引入新权限。
-                                    snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
+                                    push_workflow_snapshot(&agent, &mut snapshots);
                                     WorkerEvent::PlanReviewed(result)
                                 }
                             };
@@ -1012,17 +1020,17 @@ impl App {
     }
 
     /// 执行期进度事件：更新匹配计划的快照与只读面板，不追加 Transcript。
-    fn apply_plan_progress(&mut self, plan_id: &str, revision: u64, content: &str) {
-        let Some(document) = self.workflow.plan.clone() else {
+    fn apply_plan_progress(&mut self, plan_id: &str, revision: u64, content: String) {
+        let Some(document) = self.workflow.plan.as_ref() else {
             return;
         };
         if document.id != plan_id || (document.revision == revision && document.content == content)
         {
             return;
         }
-        let mut document = document;
+        let mut document = self.workflow.plan.take().expect("plan checked above");
         document.revision = revision;
-        document.content = content.to_owned();
+        document.content = content;
         self.update_plan_progress_cache(&document);
         if let Some(panel) = &mut self.plan_panel {
             panel.set_progress(&document);
@@ -1134,23 +1142,15 @@ impl App {
                 if !self.plan_transition_ready(PENDING_MODE) {
                     return;
                 }
-                match self.workflow.mode {
-                    WorkMode::Execute => {
-                        self.plan_open_after_enter = true;
-                        self.start_plan_transition(
-                            |cancellation| WorkerCommand::EnterPlan { cancellation },
-                            State::ChangingPlan,
-                        );
-                    }
-                    WorkMode::Plan if self.plan_retry_enter => {
-                        // 上一次进入失败（MCP 清理残留）：重发 EnterPlan 重试。
-                        self.plan_open_after_enter = true;
-                        self.start_plan_transition(
-                            |cancellation| WorkerCommand::EnterPlan { cancellation },
-                            State::ChangingPlan,
-                        );
-                    }
-                    WorkMode::Plan => self.request_plan_read_or_hint(),
+                if self.workflow.mode == WorkMode::Execute || self.plan_retry_enter {
+                    // Execute 进入 Plan，或上一次进入失败（MCP 清理残留）时重试。
+                    self.plan_open_after_enter = true;
+                    self.start_plan_transition(
+                        |cancellation| WorkerCommand::EnterPlan { cancellation },
+                        State::ChangingPlan,
+                    );
+                } else {
+                    self.request_plan_read_or_hint();
                 }
             }
             PlanCommand::View => {
@@ -1199,37 +1199,43 @@ impl App {
         }
     }
 
-    /// 审批动作：仅在 Ready、无 pending、文档 Ready 时发送；失败经 ReadPlan 安全刷新。
-    fn approve_plan(&mut self, context: ExecutionContext) {
+    /// 审批/审查共用的前置条件：Ready、无 pending、文档 Ready 且持 token，
+    /// 并开启输入队列；成功返回 token 与本次操作的取消令牌。
+    fn plan_action_guard(&mut self, action: &str) -> Option<(ReviewToken, CancellationToken)> {
         if !matches!(self.state, State::Ready) {
             self.notify(
                 Level::Error,
-                "Cancel the current task before changing Plan mode.".into(),
+                format!("Cancel the current task before {action} the plan."),
             );
-            return;
+            return None;
         }
         if self.has_pending() {
             self.notify(
                 Level::Error,
-                "Apply pending input before executing the plan.".into(),
+                format!("Apply pending input before {action} the plan."),
             );
-            return;
+            return None;
         }
-        let Some(panel) = self.plan_panel.as_ref() else {
-            return;
+        let token = {
+            let panel = self.plan_panel.as_ref()?;
+            if panel.document().status != PlanStatus::Ready {
+                return None;
+            }
+            panel.token().cloned()?
         };
-        let Some(token) = panel.token().cloned() else {
-            return;
-        };
-        if panel.document().status != PlanStatus::Ready {
-            return;
-        }
         if let Err(error) = self.input_queue.begin_run() {
             self.queue_paused = true;
             self.notify(Level::Error, error.to_string());
-            return;
+            return None;
         }
-        let cancellation = CancellationToken::new();
+        Some((token, CancellationToken::new()))
+    }
+
+    /// 审批动作：仅在 Ready、无 pending、文档 Ready 时发送；失败经 ReadPlan 安全刷新。
+    fn approve_plan(&mut self, context: ExecutionContext) {
+        let Some((token, cancellation)) = self.plan_action_guard("executing") else {
+            return;
+        };
         if self.send(
             WorkerCommand::ApprovePlan {
                 token,
@@ -1249,35 +1255,9 @@ impl App {
     /// 第 4 项：独立上下文 reviewer。仅 Ready、无 pending、文档 Ready 时发送；
     /// 进度只进独立 review transcript；完成或取消后经 ReadPlan 安全刷新回菜单。
     fn review_plan(&mut self) {
-        if !matches!(self.state, State::Ready) {
-            self.notify(
-                Level::Error,
-                "Cancel the current task before reviewing the plan.".into(),
-            );
-            return;
-        }
-        if self.has_pending() {
-            self.notify(
-                Level::Error,
-                "Apply pending input before reviewing the plan.".into(),
-            );
-            return;
-        }
-        let Some(panel) = self.plan_panel.as_ref() else {
+        let Some((token, cancellation)) = self.plan_action_guard("reviewing") else {
             return;
         };
-        if panel.document().status != PlanStatus::Ready {
-            return;
-        }
-        let Some(token) = panel.token().cloned() else {
-            return;
-        };
-        if let Err(error) = self.input_queue.begin_run() {
-            self.queue_paused = true;
-            self.notify(Level::Error, error.to_string());
-            return;
-        }
-        let cancellation = CancellationToken::new();
         if self.send(
             WorkerCommand::ReviewPlan {
                 token,
@@ -1424,7 +1404,7 @@ impl App {
                         AgentEvent::ContextUpdated { usage } => self.usage = Some(usage),
                         AgentEvent::ModelRequestStarted => self.token_speed.start(Instant::now()),
                         AgentEvent::ModelOutputProgress { output_bytes } => {
-                            self.token_speed.progress(output_bytes)
+                            self.token_speed.progress(output_bytes, Instant::now())
                         }
                         AgentEvent::ModelRequestFinished {
                             elapsed_ms,
@@ -1444,6 +1424,16 @@ impl App {
                             self.token_speed.clear();
                             self.conversation.progress(event);
                         }
+                        // 限流重试只提示等待时长，不进入 Transcript。
+                        AgentEvent::RateLimited { attempt, wait_ms } => {
+                            self.notify(
+                                Level::Important,
+                                format!(
+                                    "Rate limited; retrying in {} (attempt {attempt})",
+                                    format_wait(wait_ms)
+                                ),
+                            );
+                        }
                         // 输入确认由 App 直接回显；不进 Transcript progress，不重复记录历史。
                         AgentEvent::UserInputAccepted { text, .. } => {
                             self.append("You", &text);
@@ -1453,7 +1443,7 @@ impl App {
                             plan_id,
                             revision,
                             content,
-                        } => self.apply_plan_progress(&plan_id, revision, &content),
+                        } => self.apply_plan_progress(&plan_id, revision, content),
                         event => self.conversation.progress(event),
                     }
                     changed = true;
@@ -3662,7 +3652,7 @@ impl App {
         if let Some(usage) = self.usage.as_ref() {
             let metrics = statusline::metric_fields(
                 usage.last_request.as_ref(),
-                self.token_speed.value(Instant::now()),
+                self.token_speed.value(),
                 (right - left).saturating_sub(extra_width),
             );
             let width = u16::try_from(metrics.width()).unwrap_or(u16::MAX);
@@ -6017,15 +6007,15 @@ mod tests {
         }
         app.receive();
         assert_eq!(app.usage.unwrap().last_request, Some(usage));
-        assert_eq!(app.token_speed.value(Instant::now()), Some((150.0, false)));
+        assert_eq!(app.token_speed.value(), Some((150.0, false)));
         app.fail_worker();
-        assert_eq!(app.token_speed.value(Instant::now()), Some((150.0, false)));
+        assert_eq!(app.token_speed.value(), Some((150.0, false)));
         app.events = Some(mpsc::channel().1);
         app.token_speed.start(Instant::now());
-        app.token_speed.progress(600);
+        app.token_speed.progress(600, Instant::now());
         app.fail_worker();
         assert!(!app.token_speed.is_active());
-        assert_eq!(app.token_speed.value(Instant::now()), None);
+        assert_eq!(app.token_speed.value(), None);
     }
 
     #[test]
@@ -6075,7 +6065,7 @@ mod tests {
                 if success { None } else { Some(usage) }
             );
             assert_eq!(
-                app.token_speed.value(Instant::now()),
+                app.token_speed.value(),
                 if success { Some((100.0, true)) } else { None }
             );
         }

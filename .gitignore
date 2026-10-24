@@ -16,3 +16,6 @@
 
 # Playwright MCP 运行时日志与页面快照
 /.playwright-mcp/
+
+# zcode 本地插件配置
+/.zcode/

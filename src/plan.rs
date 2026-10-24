@@ -98,11 +98,7 @@ impl PlanDocument {
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes)
             .map_err(|_| anyhow::anyhow!("Could not allocate a plan ID."))?;
-        use std::fmt::Write;
-        let mut id = String::with_capacity(32);
-        for byte in bytes {
-            write!(id, "{byte:02x}").expect("writing to String");
-        }
+        let id = format!("{:032x}", u128::from_be_bytes(bytes));
         Ok(Self {
             id,
             revision: 0,
@@ -114,8 +110,19 @@ impl PlanDocument {
     }
 
     pub(crate) fn path(&self) -> String {
-        format!(".pp/plans/{}.md", self.id)
+        path_for(&self.id)
     }
+
+    /// The next registered revision, rejecting counter overflow in one place.
+    pub(crate) fn next_revision(&self) -> Result<u64> {
+        self.revision
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Plan revision limit reached."))
+    }
+}
+
+pub(crate) fn path_for(id: &str) -> String {
+    format!(".pp/plans/{id}.md")
 }
 
 pub(crate) fn valid_id(id: &str) -> bool {

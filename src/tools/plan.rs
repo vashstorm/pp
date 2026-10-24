@@ -84,10 +84,7 @@ fn write(
     if title == document.title && args.content == document.content {
         return Ok((success(&path, document.revision, None), None));
     }
-    let revision = document
-        .revision
-        .checked_add(1)
-        .context("Plan revision limit reached.")?;
+    let revision = document.next_revision()?;
     let warning = target.save(args.content.as_bytes())?;
     Ok((
         success(&path, revision, warning),
@@ -156,7 +153,7 @@ fn verified_target(workspace: &save::Workspace, document: &PlanDocument) -> Resu
 /// never a fallback to the logged snapshot.
 pub(crate) fn read_plan(workspace: &save::Workspace, id: &str) -> Result<String> {
     ensure!(plan::valid_id(id), "Invalid plan ID.");
-    let path = format!(".pp/plans/{id}.md");
+    let path = plan::path_for(id);
     let target = workspace.target(Path::new(&path), false)?;
     let bytes = target.read_bounded(PLAN_MAX_BYTES)?;
     ensure!(bytes.len() <= PLAN_MAX_BYTES, "Plan file is too large.");
@@ -170,7 +167,7 @@ pub(crate) fn read_plan(workspace: &save::Workspace, id: &str) -> Result<String>
 /// fixed `.pp/plans/<id>.md` file; used to react to plan-file edits without
 /// canonicalizing in the UI.
 pub(crate) fn is_plan_path(workspace: &save::Workspace, path: &str, id: &str) -> bool {
-    let plan_path = format!(".pp/plans/{id}.md");
+    let plan_path = plan::path_for(id);
     match (
         workspace.components(Path::new(path)),
         workspace.components(Path::new(&plan_path)),

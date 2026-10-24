@@ -752,24 +752,17 @@ impl Agent {
         );
         let old_status = plan.status;
         let set_origin = plan.origin_prompt.is_empty() && !prompt.trim().is_empty();
+        let persist = created || set_origin || old_status == crate::plan::PlanStatus::Ready;
+        let previous = persist.then(|| self.workflow.clone());
+        let plan = self.workflow.plan.as_mut().expect("plan allocated");
         if set_origin {
             plan.origin_prompt = prompt.to_owned();
         }
         if plan.status == crate::plan::PlanStatus::Ready {
             plan.status = crate::plan::PlanStatus::Draft;
         }
-        if (created || set_origin || old_status == crate::plan::PlanStatus::Ready)
-            && let Err(error) = self.journal.write_workflow(&self.workflow)
-        {
-            if created {
-                self.workflow.plan = None;
-            } else if let Some(plan) = &mut self.workflow.plan {
-                plan.status = old_status;
-                if set_origin {
-                    plan.origin_prompt.clear();
-                }
-            }
-            return Err(error);
+        if let Some(previous) = previous {
+            self.commit_workflow(previous)?;
         }
         Ok(())
     }
@@ -1303,10 +1296,7 @@ fn apply_plan_change(
         .ok_or_else(|| anyhow::anyhow!("No current plan."))?;
     match change {
         crate::tools::PlanChange::Written { title, content } => {
-            plan.revision = plan
-                .revision
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("Plan revision limit reached."))?;
+            plan.revision = plan.next_revision()?;
             plan.title = title;
             plan.content = content;
             plan.status = crate::plan::PlanStatus::Draft;
@@ -1981,7 +1971,7 @@ mod tests {
         }
     }
 
-    fn sse_stream(request: tiny_http::Request, events: &[Value]) {
+    pub(super) fn sse_stream(request: tiny_http::Request, events: &[Value]) {
         use std::io::Write as _;
         let mut writer = request.into_writer();
         writer
@@ -2001,7 +1991,7 @@ mod tests {
         writer.flush().unwrap();
     }
 
-    fn completion_stream(request: tiny_http::Request, message: Value, finish: &str) {
+    pub(super) fn completion_stream(request: tiny_http::Request, message: Value, finish: &str) {
         let chunk = |delta: Value, finish: Option<&str>| {
             json!({
                 "id":"chatcmpl-fixture", "object":"chat.completion.chunk",
@@ -2019,7 +2009,13 @@ mod tests {
         );
     }
 
-    fn response_stream(request: tiny_http::Request, output: &[Value]) {
+    /// `emit_part_done` covers both server shapes: the reviewer fixture omits
+    /// `response.content_part.done`, while the chat fixture sends it.
+    pub(super) fn response_stream(
+        request: tiny_http::Request,
+        output: &[Value],
+        emit_part_done: bool,
+    ) {
         let mut events = Vec::new();
         let mut sequence = 0u64;
         for (output_index, item) in output.iter().enumerate() {
@@ -2039,12 +2035,14 @@ mod tests {
                         "logprobs":[]
                     }));
                     sequence += 1;
-                    events.push(json!({
-                        "type":"response.content_part.done", "sequence_number":sequence,
-                        "item_id":item["id"], "output_index":output_index,
-                        "content_index":content_index, "part":part
-                    }));
-                    sequence += 1;
+                    if emit_part_done {
+                        events.push(json!({
+                            "type":"response.content_part.done", "sequence_number":sequence,
+                            "item_id":item["id"], "output_index":output_index,
+                            "content_index":content_index, "part":part
+                        }));
+                        sequence += 1;
+                    }
                 }
             }
             events.push(json!({
@@ -2063,7 +2061,12 @@ mod tests {
         sse_stream(request, &events);
     }
 
-    fn final_for(protocol: &str, request: tiny_http::Request, text: &str) {
+    pub(super) fn final_for(
+        protocol: &str,
+        request: tiny_http::Request,
+        text: &str,
+        emit_part_done: bool,
+    ) {
         match protocol {
             "completion" => {
                 completion_stream(request, json!({"role":"assistant","content":text}), "stop")
@@ -2076,6 +2079,7 @@ mod tests {
                     "content":[{"type":"output_text","text":text,
                                 "annotations":[],"logprobs":null}]
                 })),
+                emit_part_done,
             ),
         }
     }
@@ -2096,6 +2100,7 @@ mod tests {
                     "type":"function_call", "id":"fc-1", "call_id":"call-1",
                     "name":name, "arguments":arguments, "status":"completed"
                 })),
+                true,
             ),
         }
     }
@@ -2176,7 +2181,7 @@ mod tests {
                     );
                 } else {
                     let calls: Vec<_> = calls.into_iter().map(|(id,name,args)| json!({"type":"function_call","id":format!("fc-{id}"),"call_id":id,"name":name,"arguments":args.to_string(),"status":"completed"})).collect();
-                    response_stream(request, &calls);
+                    response_stream(request, &calls, true);
                 }
                 server
             });
@@ -2281,7 +2286,7 @@ mod tests {
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
-                final_for(&serving, request, "Read-only research completed");
+                final_for(&serving, request, "Read-only research completed", true);
             });
             let mut results = Vec::new();
             let result = agent.run(
@@ -2332,7 +2337,7 @@ mod tests {
                         .unwrap();
                     let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
                     tx.send(body).unwrap();
-                    final_for(&serving, request, text);
+                    final_for(&serving, request, text, true);
                 }
             });
             let mut enqueued = false;
@@ -2432,7 +2437,7 @@ mod tests {
                         .unwrap()
                         .unwrap();
                     bodies.push(serde_json::from_reader::<_, Value>(request.as_reader()).unwrap());
-                    final_for(&serving, request, text);
+                    final_for(&serving, request, text, true);
                 }
                 bodies
             });
@@ -2587,7 +2592,7 @@ mod tests {
                         let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
                         assert!(!body.to_string().contains("held steering"));
                         if serving.1 == "finished_at_limit" {
-                            final_for(&serving.0, request, "only round");
+                            final_for(&serving.0, request, "only round", true);
                         } else {
                             tool_call_for(&serving.0, request, "bash", r#"{"command":"true"}"#);
                         }
@@ -2684,7 +2689,7 @@ mod tests {
                     "summary request consumed queued input"
                 );
                 tx.send(body).unwrap();
-                final_for(&serving, request, "compact summary");
+                final_for(&serving, request, "compact summary", true);
                 // 请求 2：摘要后的普通请求，补充在该边界应用。
                 let mut request = server
                     .recv_timeout(std::time::Duration::from_secs(10))
@@ -2692,7 +2697,7 @@ mod tests {
                     .unwrap();
                 let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
                 tx.send(body).unwrap();
-                final_for(&serving, request, "final answer");
+                final_for(&serving, request, "final answer", true);
             });
             let mut accepted = Vec::new();
             let outcome = agent

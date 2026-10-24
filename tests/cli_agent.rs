@@ -5,7 +5,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tiny_http::{Request, Response, Server};
+use tiny_http::{Header, Request, Response, Server};
 
 #[path = "cli_agent/stats.rs"]
 mod stats;
@@ -1914,7 +1914,9 @@ fn provider_errors_are_redacted_and_never_retried_on_either_protocol() {
             let cli = Cli::start_with(
                 dir.path(),
                 Some("do not retry a failed request"),
-                fixture_settings(),
+                // Retries stay disabled so the matrix keeps asserting the
+                // no-retry behavior, now scoped to a zero rate-limit budget.
+                "{\n\"default_model\": \"fixture/primary\",\n\"rate_limit_retry_budget_seconds\": 0,\n}\n",
                 &models,
             );
             let (request, _) = if responses {
@@ -1949,6 +1951,106 @@ fn provider_errors_are_redacted_and_never_retried_on_either_protocol() {
             assert!(!error.contains("fixture-key"), "{error}");
             no_more(&server);
         }
+    }
+}
+
+#[test]
+fn rate_limited_opening_retries_then_finishes_on_either_protocol() {
+    for responses in [false, true] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let models = if responses {
+            response_models(&server, Some("response"))
+        } else {
+            fixture_models(&server)
+        };
+        let cli = Cli::start_with(
+            dir.path(),
+            Some("retry once"),
+            "{\n\"default_model\": \"fixture/primary\",\n\"rate_limit_retry_budget_seconds\": 30,\n}\n",
+            &models,
+        );
+        let (first, _) = if responses {
+            receive_at(&server, "/v1/responses")
+        } else {
+            receive(&server)
+        };
+        first
+            .respond(
+                Response::from_string("private-error-body fixture-key")
+                    .with_status_code(429)
+                    .with_header(Header::from_bytes(&b"Retry-After"[..], &b"0"[..]).unwrap()),
+            )
+            .unwrap();
+        let (second, _) = if responses {
+            receive_at(&server, "/v1/responses")
+        } else {
+            receive(&server)
+        };
+        // The retried request carries the same credentials.
+        assert_eq!(authorization(&second), "Bearer fixture-key");
+        if responses {
+            response_final(second, "recovered");
+        } else {
+            final_reply(second, "recovered");
+        }
+        let output = cli.finish();
+        assert!(output.status.success(), "responses={responses}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "recovered\n");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("rate limited; retrying in 0s (attempt 1)"),
+            "responses={responses}, {error}"
+        );
+        assert!(!error.contains("fixture-key"), "{error}");
+        no_more(&server);
+    }
+}
+
+#[test]
+fn rate_limited_opening_fails_once_budget_is_spent_on_either_protocol() {
+    for responses in [false, true] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let models = if responses {
+            response_models(&server, Some("response"))
+        } else {
+            fixture_models(&server)
+        };
+        // Without a Retry-After header the first backoff of 1s spends a 1s
+        // budget, so the second 429 fails the task.
+        let cli = Cli::start_with(
+            dir.path(),
+            Some("will not recover"),
+            "{\n\"default_model\": \"fixture/primary\",\n\"rate_limit_retry_budget_seconds\": 1,\n}\n",
+            &models,
+        );
+        for _ in 0..2 {
+            let (request, _) = if responses {
+                receive_at(&server, "/v1/responses")
+            } else {
+                receive(&server)
+            };
+            request
+                .respond(
+                    Response::from_string("private-error-body fixture-key").with_status_code(429),
+                )
+                .unwrap();
+        }
+        let output = cli.finish();
+        assert!(!output.status.success(), "responses={responses}");
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("rate limited; retrying in 1s (attempt 1)"),
+            "responses={responses}, {error}"
+        );
+        assert!(
+            error.contains("gave up after 1 retries and 1s of backoff"),
+            "responses={responses}, {error}"
+        );
+        assert!(!error.contains("fixture-key"), "{error}");
+        no_more(&server);
     }
 }
 

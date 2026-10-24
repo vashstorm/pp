@@ -29,6 +29,20 @@ const READONLY_HINT: &str = "Read-only view · most recently synced version · E
 const DISCUSS_HINT: &str = "Enter send · Ctrl-J newline · Esc discard";
 
 /// 按字符数截断纯显示文本，超宽时以省略号结尾。
+/// Highlighted choice/tab chip shared by the confirm dialog and the panel.
+fn choice_span(label: &str, selected: bool) -> Span<'static> {
+    Span::styled(
+        format!(" {label} "),
+        if selected {
+            Style::default()
+                .fg(ACCENT)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default().fg(MUTED)
+        },
+    )
+}
+
 fn fit_chars(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_owned();
@@ -149,23 +163,11 @@ impl Confirm {
         if inner.height < 2 {
             return;
         }
-        let option = |label: &str, selected: bool| {
-            Span::styled(
-                format!(" {label} "),
-                if selected {
-                    Style::default()
-                        .fg(ACCENT)
-                        .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-                } else {
-                    Style::default().fg(MUTED)
-                },
-            )
-        };
         frame.render_widget(
             Line::from(vec![
-                option("Cancel", self.selected == 0),
+                choice_span("Cancel", self.selected == 0),
                 Span::raw("  "),
-                option("Confirm", self.selected == 1),
+                choice_span("Confirm", self.selected == 1),
             ]),
             Rect::new(inner.x, inner.y + 1, inner.width, 1),
         );
@@ -213,7 +215,6 @@ pub(super) struct Panel {
     document: PlanDocument,
     report: Option<PlanReviewReport>,
     token: Option<ReviewToken>,
-    readonly: bool,
     tab: Tab,
     focus: Focus,
     action: usize,
@@ -230,7 +231,6 @@ impl Panel {
         let mut panel = Self::progress(review.document);
         panel.token = Some(review.token);
         panel.report = review.report;
-        panel.refresh_readonly();
         panel
     }
 
@@ -240,7 +240,6 @@ impl Panel {
             document,
             report: None,
             token: None,
-            readonly: true,
             tab: Tab::Plan,
             focus: Focus::Body,
             action: DEFAULT_ACTION,
@@ -251,8 +250,10 @@ impl Panel {
         }
     }
 
-    fn refresh_readonly(&mut self) {
-        self.readonly = !matches!(self.document.status, PlanStatus::Draft | PlanStatus::Ready);
+    /// Executed/Abandoned plans are read-only; the token presence is checked
+    /// separately by `action_enabled`.
+    fn readonly(&self) -> bool {
+        !matches!(self.document.status, PlanStatus::Draft | PlanStatus::Ready)
     }
 
     /// 审查成功但安全读取失败时的降级视图：展示最终报告，无 token、无操作区，
@@ -300,7 +301,6 @@ impl Panel {
             self.layouts[Tab::Plan.index()] = None;
         }
         self.document.status = document.status;
-        self.refresh_readonly();
         changed
     }
 
@@ -319,7 +319,6 @@ impl Panel {
         self.document = review.document;
         self.report = review.report;
         self.token = Some(review.token);
-        self.refresh_readonly();
         self.layouts[Tab::Review.index()] = None;
         if !same_revision {
             self.layouts[Tab::Plan.index()] = None;
@@ -333,7 +332,7 @@ impl Panel {
     }
 
     pub(super) fn action_enabled(&self, index: usize) -> bool {
-        if self.readonly || self.token.is_none() {
+        if self.readonly() || self.token.is_none() {
             return false;
         }
         let ready = self.document.status == PlanStatus::Ready;
@@ -577,22 +576,10 @@ impl Panel {
 
         // 报告标签行；没有报告时不占用行高。
         if self.report.is_some() && body.height > 0 {
-            let tab = |label: &str, selected: bool| {
-                Span::styled(
-                    format!(" {label} "),
-                    if selected {
-                        Style::default()
-                            .fg(ACCENT)
-                            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-                    } else {
-                        Style::default().fg(MUTED)
-                    },
-                )
-            };
             frame.render_widget(
                 Line::from(vec![
-                    tab("Plan", self.tab == Tab::Plan),
-                    tab("Review", self.tab == Tab::Review),
+                    choice_span("Plan", self.tab == Tab::Plan),
+                    choice_span("Review", self.tab == Tab::Review),
                 ]),
                 Rect::new(body.x, body.y, body.width, 1),
             );
@@ -601,7 +588,7 @@ impl Panel {
         }
 
         // 底部操作区/只读提示。
-        let footer_height = if self.readonly || self.token.is_none() {
+        let footer_height = if self.readonly() || self.token.is_none() {
             1u16
         } else {
             ACTIONS.len() as u16 + 1
@@ -633,7 +620,7 @@ impl Panel {
             } else {
                 for (row, line) in lines.iter().enumerate().skip(scroll).take(viewport) {
                     frame.render_widget(
-                        line.clone(),
+                        line,
                         Rect::new(body.x, body.y + (row - scroll) as u16, body.width, 1),
                     );
                 }
@@ -643,7 +630,7 @@ impl Panel {
         self.scroll[tab.index()] = scroll;
 
         if footer_height > 0 {
-            if self.readonly || self.token.is_none() {
+            if self.readonly() || self.token.is_none() {
                 frame.render_widget(
                     Line::styled(format!(" {READONLY_HINT}"), Style::default().fg(MUTED)),
                     footer,

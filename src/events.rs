@@ -65,6 +65,10 @@ pub(crate) enum AgentEvent {
         text: String,
     },
     ModelRequestStarted,
+    RateLimited {
+        attempt: u32,
+        wait_ms: u64,
+    },
     ModelOutputProgress {
         output_bytes: u64,
     },

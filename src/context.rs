@@ -53,24 +53,31 @@ impl ContextUsage {
     }
 }
 
-/// Fixed UTF-8/JSON heuristic, not a tokenizer. Includes native request controls,
-/// tools and opaque reasoning; never allocates a serialized copy of history.
-pub(crate) fn estimate_tokens(value: &impl Serialize) -> Result<u64> {
-    #[derive(Default)]
-    struct ByteCount(u64);
-    impl Write for ByteCount {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0 = self.0.saturating_add(bytes.len() as u64);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
+#[derive(Default)]
+struct ByteCount(u64);
+
+impl Write for ByteCount {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len() as u64);
+        Ok(bytes.len())
     }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Byte length of a value's JSON encoding, without allocating the encoding.
+pub(crate) fn serialized_len(value: &impl Serialize) -> Result<usize> {
     let mut count = ByteCount::default();
     serde_json::to_writer(&mut count, value)
         .map_err(|_| anyhow::anyhow!("estimating context usage failed"))?;
-    Ok(count.0.div_ceil(3))
+    Ok(count.0 as usize)
+}
+
+/// Fixed UTF-8/JSON heuristic, not a tokenizer. Includes native request controls,
+/// tools and opaque reasoning; never allocates a serialized copy of history.
+pub(crate) fn estimate_tokens(value: &impl Serialize) -> Result<u64> {
+    Ok((serialized_len(value)? as u64).div_ceil(3))
 }
 
 #[cfg(test)]

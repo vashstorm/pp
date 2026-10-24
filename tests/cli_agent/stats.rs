@@ -353,7 +353,9 @@ fn stats_http_errors_are_counted_once_without_response_body_or_credentials() {
         let cli = Cli::start_with(
             dir.path(),
             Some("stats failure"),
-            fixture_settings(),
+            // A zero rate-limit budget keeps this 429 from retrying, so the
+            // single stats row stays one failed request.
+            "{\n\"default_model\": \"fixture/primary\",\n\"rate_limit_retry_budget_seconds\": 0,\n}\n",
             &response_models(&server, Some(protocol)),
         );
         let (request, _) = receive_at(

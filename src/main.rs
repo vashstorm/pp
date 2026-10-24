@@ -690,6 +690,17 @@ fn run_cli_task(
                     );
                 }
             }
+            AgentEvent::RateLimited { attempt, wait_ms } => {
+                cli_write(
+                    stderr,
+                    &format!(
+                        "rate limited; retrying in {} (attempt {attempt})\n",
+                        crate::tui::format_wait(wait_ms)
+                    ),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+            }
             AgentEvent::ModelRequestStarted
             | AgentEvent::ModelOutputProgress { .. }
             | AgentEvent::ModelRequestFinished { .. }

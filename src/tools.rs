@@ -74,19 +74,16 @@ pub(crate) enum ToolPolicy<'a> {
     },
 }
 
-fn is_plan_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "plan_search" | "plan_find" | "plan_write" | "plan_submit"
-    )
-}
-
-// Single source of truth for the Plan/review toolsets: the execution gate and
-// the schema builders below must stay in sync by construction.
+/// In-process research tools; also used by the independent reviewer.
+const PLAN_SEARCH_TOOLS: &[&str] = &["plan_search", "plan_find"];
+/// Plan-mode-only tools that mutate the review boundary.
+const PLAN_WRITE_TOOLS: &[&str] = &["plan_write", "plan_submit"];
 /// Research tools Plan mode keeps from the ordinary Execute list.
 const PLAN_BASE_TOOLS: &[&str] = &["read", "load_skill"];
-/// The independent reviewer's full toolset: Plan base plus in-process search.
-const REVIEW_TOOLS: &[&str] = &["read", "load_skill", "plan_search", "plan_find"];
+
+fn is_plan_tool(name: &str) -> bool {
+    PLAN_SEARCH_TOOLS.contains(&name) || PLAN_WRITE_TOOLS.contains(&name)
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -238,7 +235,10 @@ impl Tools {
     pub(crate) fn review_definitions(&self) -> Vec<FunctionObject> {
         self.all_definitions(WorkMode::Plan)
             .into_iter()
-            .filter(|definition| REVIEW_TOOLS.contains(&definition.name.as_str()))
+            .filter(|definition| {
+                let name = definition.name.as_str();
+                PLAN_BASE_TOOLS.contains(&name) || PLAN_SEARCH_TOOLS.contains(&name)
+            })
             .collect()
     }
 
@@ -467,7 +467,9 @@ impl Tools {
         // (including unseen MCP tools) cannot bypass it via the fallback.
         let allowed = match &policy {
             ToolPolicy::Execute => !is_plan_tool(name),
-            ToolPolicy::Review => REVIEW_TOOLS.contains(&name),
+            ToolPolicy::Review => {
+                PLAN_BASE_TOOLS.contains(&name) || PLAN_SEARCH_TOOLS.contains(&name)
+            }
             ToolPolicy::Plan { .. } => {
                 PLAN_BASE_TOOLS.contains(&name)
                     || is_plan_tool(name)
@@ -689,10 +691,15 @@ impl Tools {
     }
 
     fn path(&self, path: &str) -> Result<PathBuf> {
-        ensure!(!path.trim().is_empty(), "path must not be blank");
-        // PathBuf::join preserves an absolute path. cwd is not a sandbox.
-        Ok(self.cwd.join(path))
+        resolve_path(&self.cwd, path)
     }
+}
+
+/// Shared path resolution for ordinary reads and Plan-mode search.
+fn resolve_path(cwd: &Path, path: &str) -> Result<PathBuf> {
+    ensure!(!path.trim().is_empty(), "path must not be blank");
+    // PathBuf::join preserves an absolute path. cwd is not a sandbox.
+    Ok(cwd.join(path))
 }
 
 fn emit_background_snapshot(call_id: &str, snapshot: &Value, emit: &mut dyn FnMut(AgentEvent)) {

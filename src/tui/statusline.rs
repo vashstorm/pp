@@ -6,6 +6,7 @@ use ratatui::{
     text::{Line, Span},
 };
 use std::{
+    collections::VecDeque,
     path::Path,
     process::{Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
@@ -92,13 +93,7 @@ pub(super) fn metric_fields(
 ) -> Line<'static> {
     let speed_text = speed.map_or_else(
         || "— tok/s".to_owned(),
-        |(rate, estimated)| {
-            format!(
-                "{}{} tok/s",
-                if estimated { "~" } else { "" },
-                abbreviate_metric(rate)
-            )
-        },
+        |(rate, _)| format!("{} tok/s", abbreviate_metric(rate)),
     );
     // 缺失用量显示 —，显式的 0 仍显示 0。
     let (input_text, output_text, cached_text) = usage.map_or_else(
@@ -142,15 +137,18 @@ pub(super) fn metric_fields(
     Line::default()
 }
 
-const TICK_INTERVAL: Duration = Duration::from_millis(100);
+const TICK_INTERVAL: Duration = Duration::from_millis(250);
+const SPEED_WINDOW: Duration = Duration::from_secs(2);
 
 /// 当前流式请求的输出速度：生成中按已观测字节估算，完成后用服务端 usage 校正。
 #[derive(Debug, Default)]
 pub(super) struct TokenSpeed {
     started_at: Option<Instant>,
     output_bytes: u64,
-    /// 完成后的速率（tok/s），bool 表示是否为估算值。
-    final_rate: Option<(f64, bool)>,
+    /// 显示快照只在采样或请求完成时更新，重绘不重新计算。
+    displayed_rate: Option<(f64, bool)>,
+    /// 按刷新节奏保存累计字节基线，避免每个 delta 分配样本。
+    samples: VecDeque<(Instant, u64)>,
     last_tick: Option<Instant>,
 }
 
@@ -158,15 +156,20 @@ impl TokenSpeed {
     pub(super) fn start(&mut self, now: Instant) {
         *self = Self {
             started_at: Some(now),
-            // 起点即基线：首个 tick 也要等满 100ms，而不是启动瞬间就重绘。
-            last_tick: Some(now),
+            // 等待下一轮和工具执行期间保留上一笔速度，直到有新的有效采样。
+            displayed_rate: self.displayed_rate,
             ..Self::default()
         };
     }
 
     /// 本次请求截至当前的累计输出字节数。
-    pub(super) fn progress(&mut self, output_bytes: u64) {
-        if self.started_at.is_some() {
+    pub(super) fn progress(&mut self, output_bytes: u64, now: Instant) {
+        if self.started_at.is_some() && output_bytes > self.output_bytes {
+            if self.samples.is_empty() {
+                // 从首个输出开始计时，排除建连、排队和限流等待。
+                self.samples.push_back((now, 0));
+                self.last_tick = Some(now);
+            }
             self.output_bytes = output_bytes;
         }
     }
@@ -176,12 +179,15 @@ impl TokenSpeed {
         let elapsed_secs = elapsed_ms as f64 / 1000.0;
         self.started_at = None;
         self.last_tick = None;
-        self.final_rate = if !success || elapsed_secs <= 0.0 {
+        self.samples.clear();
+        self.displayed_rate = if !success || elapsed_secs <= 0.0 {
             None
         } else if let Some(tokens) = output_tokens {
             Some((tokens as f64 / elapsed_secs, false))
         } else {
-            estimate_rate(self.output_bytes, elapsed_secs).map(|rate| (rate, true))
+            estimate_rate(self.output_bytes, elapsed_secs)
+                .map(|rate| (rate, true))
+                .or(self.displayed_rate)
         };
     }
 
@@ -189,7 +195,7 @@ impl TokenSpeed {
         *self = Self::default();
     }
 
-    /// 仅在流式请求已有输出时按 100ms 节流触发重绘。
+    /// 每 250ms 更新约两秒窗口内的估速，采样数量与 delta 频率无关。
     pub(super) fn tick(&mut self, now: Instant) -> bool {
         if self.started_at.is_none() || self.output_bytes == 0 {
             return false;
@@ -198,22 +204,27 @@ impl TokenSpeed {
             Some(last) if now.saturating_duration_since(last) < TICK_INTERVAL => false,
             _ => {
                 self.last_tick = Some(now);
-                true
+                let cutoff = now.checked_sub(SPEED_WINDOW).unwrap_or(now);
+                while self.samples.len() > 1 && self.samples[1].0 <= cutoff {
+                    self.samples.pop_front();
+                }
+                let Some(&(baseline, bytes)) = self.samples.front() else {
+                    return false;
+                };
+                let elapsed = now.saturating_duration_since(baseline).as_secs_f64();
+                let rate = (self.output_bytes.saturating_sub(bytes) as f64 / 3.0) / elapsed;
+                self.samples.push_back((now, self.output_bytes));
+                let next = Some((rate, true));
+                let changed = self.displayed_rate != next;
+                self.displayed_rate = next;
+                changed
             }
         }
     }
 
-    /// 活跃时返回实时估算，结束后返回最终速率；`bool` 表示是否为估算值。
-    pub(super) fn value(&self, now: Instant) -> Option<(f64, bool)> {
-        if let Some(rate) = self.final_rate {
-            return Some(rate);
-        }
-        let started_at = self.started_at?;
-        estimate_rate(
-            self.output_bytes,
-            now.saturating_duration_since(started_at).as_secs_f64(),
-        )
-        .map(|rate| (rate, true))
+    /// 返回缓存速率；`bool` 表示是否为估算值。
+    pub(super) fn value(&self) -> Option<(f64, bool)> {
+        self.displayed_rate
     }
 
     pub(super) fn is_active(&self) -> bool {
@@ -606,65 +617,80 @@ mod tests {
     }
 
     #[test]
-    fn token_speed_estimates_from_streamed_bytes() {
+    fn token_speed_samples_from_first_output_and_caches_between_ticks() {
         let base = Instant::now();
         let mut speed = TokenSpeed::default();
-        assert_eq!(speed.value(base), None);
         speed.start(base);
-        assert!(speed.is_active());
-        // 还没有可见输出时不显示速度，而不是显示 0。
-        assert_eq!(speed.value(base + Duration::from_secs(2)), None);
-        speed.progress(600);
+        let first = base + Duration::from_secs(10);
+        assert!(!speed.tick(first));
+        assert_eq!(speed.value(), None);
+        speed.progress(75, first);
+        assert!(!speed.tick(first + Duration::from_millis(249)));
+        assert!(speed.tick(first + TICK_INTERVAL));
+        assert_eq!(speed.value(), Some((100.0, true)), "不计首字节等待");
+        speed.progress(150, first + Duration::from_millis(300));
+        speed.progress(90, first + Duration::from_millis(310));
+        assert_eq!(speed.value(), Some((100.0, true)), "delta 不改变显示快照");
+        assert!(!speed.tick(first + Duration::from_millis(400)));
+        speed.tick(first + Duration::from_millis(500));
+        assert_eq!(speed.value(), Some((100.0, true)), "累计字节不能倒退");
+    }
+
+    #[test]
+    fn token_speed_window_tracks_recent_output_and_bounds_samples() {
+        let base = Instant::now();
+        let mut speed = TokenSpeed::default();
+        speed.start(base);
+        for i in 0..=40 {
+            let now = base + TICK_INTERVAL * i;
+            // 前两秒每秒 100 token，之后每秒 200 token。
+            let bytes = if i <= 8 {
+                75 * (i + 1)
+            } else {
+                675 + 150 * (i - 8)
+            };
+            speed.progress(u64::from(bytes), now);
+            speed.tick(now);
+            assert!(speed.samples.len() <= 10, "窗口样本必须有界");
+        }
+        assert_eq!(speed.value(), Some((200.0, true)), "旧速率退出窗口");
+        let stopped = base + Duration::from_secs(10);
+        for i in 1..=9 {
+            speed.tick(stopped + TICK_INTERVAL * i);
+        }
         assert_eq!(
-            speed.value(base + Duration::from_secs(2)),
-            Some((100.0, true)),
-            "600 bytes / 3 / 2s 应为估算 100 tok/s"
-        );
-        // progress 收到的是累计字节数。
-        speed.progress(300);
-        assert_eq!(
-            speed.value(base + Duration::from_secs(1)),
-            Some((100.0, true))
+            speed.value(),
+            Some((0.0, true)),
+            "停流后显示零，不能悬挂旧速率"
         );
     }
 
     #[test]
-    fn token_speed_finish_uses_authoritative_usage() {
+    fn token_speed_finish_uses_authoritative_usage_and_stops_ticks() {
         let base = Instant::now();
         let mut speed = TokenSpeed::default();
         speed.start(base);
-        speed.progress(600);
+        speed.progress(600, base);
         speed.finish(2000, Some(300), true);
         assert!(!speed.is_active());
-        assert_eq!(
-            speed.value(base + Duration::from_secs(9)),
-            Some((150.0, false)),
-            "完成后以服务端 output tokens 与整段耗时为准"
-        );
-        // 完成后继续前进的时钟不再改变结果。
-        assert_eq!(
-            speed.value(base + Duration::from_secs(60)),
-            Some((150.0, false))
-        );
+        assert_eq!(speed.value(), Some((150.0, false)));
+        assert!(!speed.tick(base + Duration::from_secs(60)));
+        assert_eq!(speed.value(), Some((150.0, false)));
     }
 
     #[test]
-    fn token_speed_finish_without_usage_keeps_estimate() {
+    fn token_speed_short_request_without_usage_keeps_final_estimate() {
         let base = Instant::now();
         let mut speed = TokenSpeed::default();
         speed.start(base);
-        speed.progress(600);
+        speed.progress(600, base);
         speed.finish(2000, None, true);
         assert!(!speed.is_active());
-        assert_eq!(
-            speed.value(base + Duration::from_secs(3)),
-            Some((100.0, true))
-        );
-
-        // 没有流式字节就没有可冻结的估算。
+        assert_eq!(speed.value(), Some((100.0, true)));
+        // 没有新数据的成功请求不抹掉上一笔速度。
         speed.start(base);
         speed.finish(2000, None, true);
-        assert_eq!(speed.value(base + Duration::from_secs(3)), None);
+        assert_eq!(speed.value(), Some((100.0, true)));
     }
 
     #[test]
@@ -672,66 +698,38 @@ mod tests {
         let base = Instant::now();
         let mut speed = TokenSpeed::default();
         speed.start(base);
-        speed.progress(600);
-        assert_eq!(speed.value(base), None, "零耗时不产生 inf/NaN");
+        speed.progress(600, base);
+        assert_eq!(speed.value(), None, "零耗时不产生 inf/NaN");
         speed.finish(0, Some(300), true);
         assert!(!speed.is_active());
-        assert_eq!(speed.value(base + Duration::from_secs(1)), None);
-
+        assert_eq!(speed.value(), None);
         speed.start(base);
-        speed.progress(600);
+        speed.progress(600, base);
+        speed.tick(base + TICK_INTERVAL);
         speed.finish(500, Some(300), false);
         assert!(!speed.is_active());
-        assert_eq!(speed.value(base + Duration::from_secs(1)), None);
+        assert_eq!(speed.value(), None);
     }
 
     #[test]
-    fn token_speed_start_resets_previous_request() {
+    fn token_speed_next_request_retains_display_but_resets_samples() {
         let base = Instant::now();
         let mut speed = TokenSpeed::default();
         speed.start(base);
-        speed.progress(600);
+        speed.progress(600, base);
         speed.finish(2000, Some(300), true);
-        assert_eq!(speed.value(base), Some((150.0, false)));
-
         let second = base + Duration::from_secs(5);
         speed.start(second);
-        assert_eq!(
-            speed.value(second + Duration::from_secs(1)),
-            None,
-            "新请求不能沿用上一请求的字节数与最终速率"
-        );
-        speed.progress(90);
-        assert_eq!(
-            speed.value(second + Duration::from_secs(1)),
-            Some((30.0, true))
-        );
-
+        assert!(speed.is_active());
+        assert!(!speed.tick(second + Duration::from_secs(1)));
+        assert_eq!(speed.value(), Some((150.0, false)), "等待时保留上一笔速度");
+        speed.progress(75, second + Duration::from_secs(2));
+        assert_eq!(speed.value(), Some((150.0, false)), "采样未满时不闪回未知");
+        speed.tick(second + Duration::from_millis(2250));
+        assert_eq!(speed.value(), Some((100.0, true)), "仅计算当前请求字节");
         speed.clear();
         assert!(!speed.is_active());
-        assert_eq!(speed.value(second + Duration::from_secs(2)), None);
-    }
-
-    #[test]
-    fn token_speed_ticks_only_while_streaming() {
-        let base = Instant::now();
-        let mut speed = TokenSpeed::default();
-        assert!(!speed.tick(base), "空闲时不触发重绘");
-        speed.start(base);
-        assert!(!speed.tick(base), "没有输出字节时不触发重绘");
-        speed.progress(90);
-        assert!(
-            !speed.tick(base + Duration::from_millis(99)),
-            "起点才算基线，首个 tick 也要等满 100ms"
-        );
-        assert!(speed.tick(base + Duration::from_millis(100)));
-        assert!(!speed.tick(base + Duration::from_millis(150)));
-        assert!(speed.tick(base + Duration::from_millis(200)));
-        speed.finish(100, Some(30), true);
-        assert!(
-            !speed.tick(base + Duration::from_secs(1)),
-            "结束后停止 tick"
-        );
+        assert_eq!(speed.value(), None);
     }
 
     fn metric_usage(
@@ -755,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn metric_fields_distinguish_unknown_estimated_and_exact_speed() {
+    fn metric_fields_hide_estimate_marker_and_preserve_unknown_speed() {
         let usage = metric_usage(0, 0, Some(0));
         let text = |speed| line_text(&metric_fields(Some(&usage), speed, 200));
         assert!(text(None).contains(" \u{f0e7} — tok/s · "));
@@ -763,12 +761,13 @@ mod tests {
         assert!(text(Some((0.0, false))).contains("\u{f0e7} 0.0 tok/s"));
         assert!(text(Some((150.0, false))).contains("\u{f0e7} 150.0 tok/s"));
         assert!(!text(Some((150.0, false))).contains('~'));
-        assert!(text(Some((42.5, true))).contains("\u{f0e7} ~42.5 tok/s"));
+        assert!(text(Some((42.5, true))).contains("\u{f0e7} 42.5 tok/s"));
+        assert_eq!(text(Some((42.5, true))), text(Some((42.5, false))));
         assert!(text(Some((999.0, false))).contains("\u{f0e7} 999.0 tok/s"));
-        assert!(text(Some((1000.0, true))).contains("\u{f0e7} ~1.0k tok/s"));
+        assert!(text(Some((1000.0, true))).contains("\u{f0e7} 1.0k tok/s"));
         assert!(text(Some((12345.0, false))).contains("\u{f0e7} 12.3k tok/s"));
         assert!(text(Some((1_000_000.0, false))).contains("\u{f0e7} 1.0m tok/s"));
-        assert!(text(Some((1_280_000.0, true))).contains("\u{f0e7} ~1.3m tok/s"));
+        assert!(text(Some((1_280_000.0, true))).contains("\u{f0e7} 1.3m tok/s"));
     }
 
     #[test]
