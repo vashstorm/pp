@@ -3855,7 +3855,7 @@ mod tui {
     }
 
     #[test]
-    fn tui_activity_is_single_live_muted_and_cleared_by_new() {
+    fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
         let mut pty = Pty::start(&server, dir.path());
@@ -3877,12 +3877,17 @@ mod tui {
                 text.contains("✻ Requesting model · 1s") && text.matches('✻').count() == 1
             });
             final_reply(request, &format!("answer {turn}"));
-            pty.wait_for("每轮完成提示与灰色样式", |screen| {
+            pty.wait_for("每轮完成提示与明亮加粗样式", |screen| {
                 let text = screen.contents();
                 text.matches('✻').count() == 1
                     && text.contains("✻ Completed ·")
                     && text.contains(" · done ")
-                    && label_color(screen, "✻ Completed ·") == vt100::Color::Rgb(110, 117, 129)
+                    && label_color(screen, "✻ Completed ·") == vt100::Color::Rgb(190, 198, 212)
+                    && (0..30).any(|row| {
+                        screen
+                            .cell(row, 4)
+                            .is_some_and(|cell| cell.contents() == "C" && cell.bold())
+                    })
                     && input_is_ready(screen)
             });
             let text = pty.parser.screen().contents();

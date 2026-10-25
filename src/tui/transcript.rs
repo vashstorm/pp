@@ -350,7 +350,12 @@ impl TranscriptEntry {
             std::borrow::Cow::Borrowed(text)
         };
         if self.kind == EntryKind::Activity {
-            return Line::styled(text, Style::default().fg(MUTED_TEXT));
+            return Line::styled(
+                text,
+                Style::default()
+                    .fg(palette::ACTIVITY)
+                    .add_modifier(Modifier::BOLD),
+            );
         }
         if self.kind == EntryKind::Bash {
             let color = if matches!(source, Source::Title) {
