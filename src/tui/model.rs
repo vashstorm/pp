@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, Clear},
 };
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
@@ -15,6 +15,35 @@ use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 const MAX_HEIGHT: u16 = 15;
 const LIST_ROWS: usize = 11;
 const HINT: &str = "Enter select · Esc cancel · ↑↓/PgUp/PgDn/Wheel · Tab complete · Ctrl + F favorite · Ctrl + S default";
+
+fn hint(width: u16) -> Line<'static> {
+    let mut legend = Vec::new();
+    for (index, (icon, description)) in [("", "favorite"), ("", "default"), ("", "current")]
+        .into_iter()
+        .enumerate()
+    {
+        if index > 0 {
+            legend.push(Span::raw(" · "));
+        }
+        legend.push(Span::styled(icon, super::menu::model_icon_style(icon)));
+        legend.push(Span::raw(format!(" {description}")));
+    }
+    let legend_width = legend.iter().map(Span::width).sum::<usize>();
+    let actions = [
+        HINT,
+        "Enter/Esc · ↑↓/Pg/Wheel · Tab · Ctrl + F/Ctrl + S",
+        "Enter/Esc · Ctrl + F/Ctrl + S",
+    ]
+    .into_iter()
+    .find(|actions| Line::from(*actions).width() + 3 + legend_width <= usize::from(width));
+    let mut spans = Vec::new();
+    if let Some(actions) = actions {
+        spans.push(Span::raw(actions));
+        spans.push(Span::raw(" · "));
+    }
+    spans.extend(legend);
+    Line::from(spans)
+}
 
 pub(super) struct Panel {
     pub(super) search: TextArea<'static>,
@@ -64,11 +93,7 @@ impl Panel {
             })
             .map(|(index, choice)| MenuItem {
                 value: MenuAction::Model(index),
-                label: if default == Some(choice.reference.as_str()) {
-                    format!("{} (default)", choice.reference)
-                } else {
-                    choice.reference.clone()
-                },
+                label: choice.reference.clone(),
                 description: String::new(),
                 icon: None,
                 current: current == Some(choice.reference.as_str()),
@@ -81,9 +106,20 @@ impl Panel {
         let suffixes: Vec<_> = items
             .iter()
             .map(|item| match item.value {
-                MenuAction::Model(index) if favorites.contains(&choices[index].reference) => {
-                    Some(" ")
-                }
+                MenuAction::Model(index) => match (
+                    favorites.contains(&choices[index].reference),
+                    default == Some(choices[index].reference.as_str()),
+                    item.current,
+                ) {
+                    (true, true, true) => Some("   "),
+                    (true, true, false) => Some("  "),
+                    (true, false, true) => Some("  "),
+                    (true, false, false) => Some(" "),
+                    (false, true, true) => Some("  "),
+                    (false, true, false) => Some(" "),
+                    (false, false, true) => Some(" "),
+                    (false, false, false) => None,
+                },
                 _ => None,
             })
             .collect();
@@ -260,6 +296,7 @@ impl Panel {
             area.width,
             area.height - search_height,
         );
+        self.menu.set_hint(hint(rows.width));
         self.menu.draw(frame, rows);
     }
 }

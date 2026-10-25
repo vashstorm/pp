@@ -16,11 +16,24 @@ const MODEL_LABEL: Color = Color::Rgb(224, 230, 240);
 const MODEL_DETAIL: Color = Color::Rgb(170, 182, 200);
 const MODEL_SELECTED: Color = Color::Rgb(130, 200, 255);
 const FAVORITE: Color = Color::Rgb(254, 188, 56);
+const DEFAULT_MODEL: Color = Color::Rgb(187, 154, 247);
+const CURRENT_MODEL: Color = Color::Rgb(158, 206, 106);
+
+pub(super) fn model_icon_style(icon: &str) -> Style {
+    let color = match icon {
+        "" => FAVORITE,
+        "" => DEFAULT_MODEL,
+        "" => CURRENT_MODEL,
+        _ => MODEL_DETAIL,
+    };
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
 
 struct MenuStyle {
     label: Color,
     detail: Color,
     selected: Modifier,
+    current_suffix: &'static str,
 }
 
 impl Default for MenuStyle {
@@ -29,6 +42,7 @@ impl Default for MenuStyle {
             label: Color::DarkGray,
             detail: Color::DarkGray,
             selected: Modifier::empty(),
+            current_suffix: " (current)",
         }
     }
 }
@@ -46,7 +60,7 @@ pub(super) struct SelectionMenu<T> {
     items: Vec<MenuItem<T>>,
     selection: TableState,
     page_size: usize,
-    hint: Option<&'static str>,
+    hint: Option<Line<'static>>,
     accent: Color,
     style: MenuStyle,
     label_suffixes: Vec<Option<&'static str>>,
@@ -112,6 +126,7 @@ impl<T: Copy> SelectionMenu<T> {
             label: MODEL_LABEL,
             detail: MODEL_DETAIL,
             selected: Modifier::BOLD,
+            current_suffix: "",
         };
         self
     }
@@ -130,9 +145,13 @@ impl<T: Copy> SelectionMenu<T> {
         self
     }
 
-    pub(super) fn with_hint(mut self, hint: &'static str) -> Self {
-        self.hint = Some(hint);
+    pub(super) fn with_hint(mut self, hint: impl Into<Line<'static>>) -> Self {
+        self.set_hint(hint);
         self
+    }
+
+    pub(super) fn set_hint(&mut self, hint: impl Into<Line<'static>>) {
+        self.hint = Some(hint.into());
     }
 
     pub(super) fn items_mut(&mut self) -> &mut [MenuItem<T>] {
@@ -206,10 +225,10 @@ impl<T: Copy> SelectionMenu<T> {
         let mut rows_area = Rect::new(area.x, area.y, area.width, area.height - hint_height);
         if hint_height > 0 {
             frame.render_widget(
-                Line::styled(
-                    self.hint.unwrap_or_default(),
-                    Style::default().fg(self.style.detail),
-                ),
+                self.hint
+                    .clone()
+                    .unwrap_or_default()
+                    .style(Style::default().fg(self.style.detail)),
                 Rect::new(area.x, rows_area.bottom(), area.width, hint_height),
             );
         }
@@ -283,14 +302,19 @@ impl<T: Copy> SelectionMenu<T> {
                     fit_label(&item.label, name_width),
                     label_style,
                 ));
-                label.push(Span::styled(
-                    suffix,
-                    Style::default().fg(FAVORITE).add_modifier(Modifier::BOLD),
-                ));
+                label.extend(
+                    suffix
+                        .split_whitespace()
+                        .map(|icon| Span::styled(format!(" {icon}"), model_icon_style(icon))),
+                );
             } else {
                 label.push(Span::styled(item.label.as_str(), label_style));
             }
-            let current = if item.current { " (current)" } else { "" };
+            let current = if item.current {
+                self.style.current_suffix
+            } else {
+                ""
+            };
             Row::new([
                 Cell::from(Line::from(label)),
                 Cell::from(format!("{}{current}", item.description)).style(detail_style),
@@ -547,10 +571,10 @@ mod tests {
     }
 
     #[test]
-    fn model_style_renders_bright_labels_yellow_suffixes_and_empty_results() {
+    fn model_style_renders_bright_labels_colored_icons_and_empty_results() {
         let mut menu = SelectionMenu::new(items(2), 1)
             .with_model_style()
-            .with_label_suffixes(vec![Some(" "), Some(" ")])
+            .with_label_suffixes(vec![Some("   "), Some("   ")])
             .with_hint("Search: type")
             .with_empty_message("No matching models");
         let mut terminal = Terminal::new(TestBackend::new(100, 3)).unwrap();
@@ -562,10 +586,20 @@ mod tests {
         assert_eq!(buffer[(4, 1)].fg, MODEL_SELECTED);
         assert!(buffer[(4, 1)].modifier.contains(Modifier::BOLD));
         for y in 0..2 {
-            let star = (0..100).find(|x| buffer[(*x, y)].symbol() == "").unwrap();
-            assert_eq!(buffer[(star, y)].fg, FAVORITE);
-            assert!(buffer[(star, y)].modifier.contains(Modifier::BOLD));
+            for (icon, color) in [
+                ("", Color::Rgb(254, 188, 56)),
+                ("", Color::Rgb(187, 154, 247)),
+                ("", Color::Rgb(158, 206, 106)),
+            ] {
+                let x = (0..100).find(|x| buffer[(*x, y)].symbol() == icon).unwrap();
+                assert_eq!(buffer[(x, y)].fg, color);
+                assert!(buffer[(x, y)].modifier.contains(Modifier::BOLD));
+            }
         }
+        let row: String = (0..100).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(row.contains("item-0   "));
+        let row: String = (0..100).map(|x| buffer[(x, 1)].symbol()).collect();
+        assert!(!row.contains("(current)"));
         assert_eq!(buffer[(0, 2)].fg, MODEL_DETAIL);
         menu.items_mut()[0].label = "模型名称很长-long-model-name".into();
         menu.items_mut()[0].icon = None;

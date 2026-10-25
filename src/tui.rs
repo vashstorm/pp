@@ -5953,11 +5953,33 @@ mod tests {
         assert!(!screen.contains("❯ /model"));
         assert!(screen.contains("❯ fixture/model-2"));
         assert!(
-            screen.replace(' ', "").contains("fixture/model-2(current)"),
+            screen.replace(' ', "").contains("fixture/model-2"),
             "{screen}"
         );
         assert!(screen.contains("fixture/vendor-2"), "{screen}");
         assert!(!screen.contains('┌'));
+        for width in [100, 180, 60] {
+            let buffer = draw_buffer(&mut app, width, 30);
+            let y = (0..30)
+                .find(|y| {
+                    (0..width)
+                        .map(|x| buffer[(x, *y)].symbol())
+                        .collect::<String>()
+                        .contains(" favorite ·  default ·  current")
+                })
+                .unwrap();
+            for (icon, color) in [
+                ("", Color::Rgb(254, 188, 56)),
+                ("", Color::Rgb(187, 154, 247)),
+                ("", Color::Rgb(158, 206, 106)),
+            ] {
+                let x = (0..width)
+                    .find(|x| buffer[(*x, y)].symbol() == icon)
+                    .unwrap();
+                assert_eq!(buffer[(x, y)].fg, color);
+            }
+        }
+        draw(&mut app, 100, 30);
         assert_eq!(app.model_panel.as_ref().unwrap().height(30), 15);
         app.handle(key(KeyCode::PageDown), &mut dirty);
         assert_eq!(active_menu(&app).selected_index(), Some(13));
@@ -6779,7 +6801,7 @@ mod tests {
         app.receive();
         assert_eq!(model_query(&app), "ENDOR-gA");
         assert_eq!(active_menu(&app).items()[0].value, MenuAction::Model(2));
-        assert!(active_menu(&app).items()[0].label.ends_with("(default)"));
+        assert_eq!(active_menu(&app).label_suffixes()[0], Some(" "));
         assert_eq!(
             app.current_model.as_ref().unwrap().reference,
             app.choices[0].reference

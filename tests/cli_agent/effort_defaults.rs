@@ -22,9 +22,22 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         let mut pty = Pty::start_with_existing_files(home.path());
         pty.ready_model("first-model");
         pty.input("/model ");
-        pty.text("fixture/primary (default)");
-        pty.text("Ctrl + S default");
-        assert!(!pty.parser.screen().contents().contains("gateway/team/secondary (default)"));
+        pty.text("fixture/primary  ");
+        for (icon, color) in [
+            ("", vt100::Color::Rgb(187, 154, 247)),
+            ("", vt100::Color::Rgb(158, 206, 106)),
+        ] {
+            let screen = pty.parser.screen();
+            let (rows, columns) = screen.size();
+            assert!((0..rows).any(|row| (0..columns).any(|column| {
+                screen.cell(row, column).is_some_and(|cell| {
+                    cell.contents() == icon && cell.fgcolor() == color
+                })
+            })));
+        }
+        pty.text("Ctrl + F/Ctrl + S");
+        pty.text(" favorite ·  default ·  current");
+        assert!(!pty.parser.screen().contents().contains("gateway/team/secondary "));
         pty.input("\x01\x0bsecond");
         pty.text("gateway/team/secondary");
         pty.input("\x13");
@@ -32,8 +45,8 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         pty.ready_model("first-model");
         pty.ready_effort("high");
         pty.model_search("second");
-        pty.text("gateway/team/secondary (default)");
-        assert!(!pty.parser.screen().contents().contains("fixture/primary (default)"));
+        pty.text("gateway/team/secondary ");
+        assert!(!pty.parser.screen().contents().contains("fixture/primary "));
         pty.input("\x1b");
         pty.draft("");
         let saved = std::fs::read_to_string(&path).unwrap();
@@ -56,7 +69,7 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         let mut restarted = Pty::start_with_existing_files(home.path());
         restarted.ready_model("second-model");
         restarted.input("/model ");
-        restarted.text("gateway/team/secondary (default)");
+        restarted.text("gateway/team/secondary  ");
         restarted.input("\x1b");
         restarted.draft("");
         restarted.input("verify startup model\r");
@@ -74,7 +87,7 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         restarted.input("\x13");
         restarted.text("Default model saved: fixture/primary");
         restarted.ready_model("second-model");
-        restarted.text("fixture/primary (default)");
+        restarted.text("fixture/primary ");
         restarted.model_search("");
         restarted.input("\t");
         restarted.model_search("fixture/primary");
@@ -85,17 +98,17 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         let invalid = "{ broken secret-marker-config }";
         std::fs::write(&path, invalid).unwrap();
         restarted.function_key('p');
-        restarted.text("fixture/primary (default)");
-        assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary (default)"));
+        restarted.text("fixture/primary ");
+        assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary "));
         restarted.input("\x13");
         restarted.text("Failed to save default model");
         restarted.model_search("");
-        restarted.text("fixture/primary (default)");
+        restarted.text("fixture/primary ");
         restarted.input("\x1b");
         restarted.draft("草稿🙂");
         restarted.function_key('p');
-        restarted.text("fixture/primary (default)");
-        assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary (default)"));
+        restarted.text("fixture/primary ");
+        assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary "));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
         restarted.input("\x03");
         restarted.finish();
@@ -112,12 +125,12 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready_model("fixture-model");
     pty.input("/model\r");
-    pty.text("fixture/primary (default)");
+    pty.text("fixture/primary ");
     pty.input("\x13");
     pty.text("Default model saved: fixture/primary");
     pty.ready_model("fixture-model");
     pty.model_search("");
-    pty.text("fixture/primary (default)");
+    pty.text("fixture/primary ");
     pty.input("\x1b");
     pty.draft("");
     assert!(std::fs::read_to_string(&path).unwrap().contains("default_model: fixture/primary"));
@@ -131,7 +144,7 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     pty.text("Failed to save default model");
     pty.ready_model("fixture-model");
     pty.model_search("");
-    pty.text("fixture/primary (default)");
+    pty.text("fixture/primary ");
     pty.input("\x1b");
     pty.draft("draft after failure");
     assert!(!pty.parser.screen().contents().contains("secret-marker-config"));
@@ -582,7 +595,7 @@ fn tui_model_favorites_search_persist_and_restore_drafts_without_requests() {
         pty.draft("草稿🙂");
         let cursor = pty.parser.screen().cursor_position();
         pty.function_key('p');
-        pty.text("Ctrl + F favorite");
+        pty.text("Ctrl + F/Ctrl + S");
         pty.input("ECoNd");
         pty.text("gateway/team/secondary");
         pty.wait_for("包含搜索过滤其他模型", |screen| !screen.contents().contains("fixture/primary"));
@@ -602,7 +615,7 @@ fn tui_model_favorites_search_persist_and_restore_drafts_without_requests() {
         pty.input("\x01\x0b");
         pty.wait_for("收藏模型排在最前", |screen| {
             let text = screen.contents();
-            text.find("gateway/team/secondary ").zip(text.find("fixture/primary (default)")).is_some_and(|(favorite, other)| favorite < other)
+            text.find("gateway/team/secondary ").zip(text.find("fixture/primary ")).is_some_and(|(favorite, other)| favorite < other)
         });
         pty.input("\x1b");
         pty.draft("草稿🙂");
@@ -623,14 +636,14 @@ fn tui_model_favorites_search_persist_and_restore_drafts_without_requests() {
         restarted.input("\x01\x0bWaY/TeAm");
         restarted.text("❯ gateway/team/secondary ");
         restarted.input("\x06");
-        restarted.wait_for("取消收藏后移除星标", |screen| !screen.contents().contains(''));
+        restarted.wait_for("取消收藏后移除星标", |screen| !screen.contents().contains("gateway/team/secondary "));
         assert!(!std::fs::read_to_string(&path).unwrap().contains("gateway/team/secondary"));
         let invalid = "favorite_models: secret-marker";
         std::fs::write(&path, invalid).unwrap();
         restarted.input("\x06");
         restarted.text("Failed to save favorite models");
         assert!(!restarted.parser.screen().contents().contains("secret-marker"));
-        assert!(!restarted.parser.screen().contents().contains(''));
+        assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary "));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
         assert_eq!(std::fs::read_to_string(&models_path).unwrap(), models);
         no_more(&server);

@@ -4756,7 +4756,9 @@ mod tui {
                 && !text.contains("[completion]")
                 && text.find('').unwrap() < text.find("a/primary").unwrap()
                 && !text.contains("❯ /model")
-                && text.contains("(current)")
+                && text.contains("a/primary  ")
+                && !text.contains("(current)")
+                && !text.contains("(default)")
                 && !screen.hide_cursor()
                 && cursor_col == 2
                 && text
