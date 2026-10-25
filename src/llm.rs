@@ -780,6 +780,7 @@ mod tests {
                 think_level: crate::config::ThinkLevel::None,
                 edit: crate::config::EditMode::Replace,
                 default_model: None,
+                favorite_models: Vec::new(),
                 max_model_requests: 20,
                 request_timeout_seconds: 120,
                 rate_limit_retry_budget_seconds: budget_seconds,

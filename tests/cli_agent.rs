@@ -2897,6 +2897,13 @@ mod tui {
             self.wait_for("preserved input draft", |screen| {
                 let text = screen.contents();
                 let lines: Vec<_> = text.lines().collect();
+                // 主输入框的空白不能误判为搜索面板已关闭，须等待焦点恢复。
+                if lines
+                    .get(usize::from(screen.cursor_position().0))
+                    .is_some_and(|line| line.starts_with(''))
+                {
+                    return false;
+                }
                 // 上方菜单也使用箭头，最后一个提示符才是主输入框。
                 let Some(start) = lines.iter().rposition(|line| line.starts_with('❯')) else {
                     return false;
@@ -2905,6 +2912,19 @@ mod tui {
                     .iter()
                     .take_while(|line| !line.starts_with('─'))
                     .any(|line| line.trim_start_matches('❯').trim() == expected)
+            });
+        }
+
+        fn model_search(&mut self, expected: &str) {
+            self.wait_for("独立模型搜索框内容和焦点", |screen| {
+                let text = screen.contents();
+                let (row, _) = screen.cursor_position();
+                !screen.hide_cursor()
+                    && text
+                        .lines()
+                        .nth(usize::from(row))
+                        .is_some_and(|line| line.trim_end() == format!(" {expected}").trim_end())
+                    && text.lines().any(|line| line.trim_end() == "❯")
             });
         }
 
@@ -4096,9 +4116,9 @@ mod tui {
 
             pty.function_key('p');
             pty.text("fixture/secondary");
-            pty.draft("/model");
+            pty.model_search("");
             pty.input("\x1b[B\t");
-            pty.draft("/model fixture/secondary");
+            pty.model_search("fixture/secondary");
             pty.input("\r");
             pty.ready_model("second-model");
             pty.draft("草稿🙂");
@@ -4732,16 +4752,17 @@ mod tui {
             let (cursor_row, cursor_col) = screen.cursor_position();
             text.contains("a/primary")
                 && text.contains("gateway/team/secondary")
-                && text.contains("vendor-b")
-                && text.contains("completion")
-                && text.find("a/primary").unwrap() < text.rfind("❯ /model").unwrap()
+                && !text.contains("vendor-b")
+                && !text.contains("[completion]")
+                && text.find('').unwrap() < text.find("a/primary").unwrap()
+                && !text.contains("❯ /model")
                 && text.contains("(current)")
                 && !screen.hide_cursor()
-                && cursor_col == 9
+                && cursor_col == 2
                 && text
                     .lines()
                     .nth(usize::from(cursor_row))
-                    .is_some_and(|line| line.starts_with("❯ /model"))
+                    .is_some_and(|line| line.starts_with(''))
         });
         // 确认前检查首尾导航、翻页以及窗口缩放。
         pty.input("\x1b[H\x1b[5~\x1b[A\x1b[F\x1b[6~\x1b[B");
@@ -4772,7 +4793,7 @@ mod tui {
 
         // 默认选中当前模型，直接确认不能误选第一项。
         pty.input("/model\r");
-        pty.text("vendor-a");
+        pty.text("a/primary");
         pty.input("\r");
         pty.wait_for("current model confirmation closes picker", |screen| {
             let text = screen.contents();
@@ -4788,13 +4809,12 @@ mod tui {
         no_more(&b);
 
         pty.input("/model\r");
-        pty.text("vendor-a");
+        pty.text("a/primary");
         pty.input("\x1b[A\x1b");
-        pty.draft("/model");
+        pty.draft("");
         pty.ready_model("vendor-b");
         no_more(&a);
         no_more(&b);
-        pty.input("\x7f\x7f\x7f\x7f\x7f\x7f\x7f");
         pty.input("/model a/primary\r");
         pty.ready_model("vendor-a");
         pty.input("direct model recall\r");
@@ -4841,6 +4861,97 @@ mod tui {
         pty.finish();
         no_more(&a);
         no_more(&b);
+    }
+
+    #[test]
+    fn tui_model_panel_search_focus_height_and_scroll_keep_query_out_of_history() {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let models: serde_json::Map<String, Value> = (0..25)
+            .map(|index| {
+                (
+                    format!("model-{index:02}"),
+                    json!({"model": format!("vendor-{index:02}")}),
+                )
+            })
+            .collect();
+        let config = json!({"providers": {
+            "catalog": slash_provider(&server, "catalog", "completion", Value::Object(models))
+        }});
+        std::fs::write(config_path(dir.path(), "models.yml"), config.to_string()).unwrap();
+        let mut pty = Pty::start_with_existing_files(dir.path());
+        pty.ready_model("vendor-00");
+        pty.input("/model ");
+        pty.wait_for("独立搜索框聚焦且列表最多十一行", |screen| {
+            let text = screen.contents();
+            let (row, column) = screen.cursor_position();
+            column == 2
+                && !screen.hide_cursor()
+                && text
+                    .lines()
+                    .nth(usize::from(row))
+                    .is_some_and(|line| line.starts_with(''))
+                && text
+                    .lines()
+                    .filter(|line| line.contains("catalog/model-"))
+                    .count()
+                    == 11
+                && !text.contains("❯ /model")
+                && text.contains("catalog/model-10")
+                && !text.contains("catalog/model-11")
+        });
+        let search_row = pty.parser.screen().cursor_position().0;
+        pty.input("\x1b[F");
+        pty.text("❯ catalog/model-24");
+        pty.wait_for(
+            "滚动后仍显示十一项并保留末项选择",
+            |screen| {
+                let text = screen.contents();
+                text.lines()
+                    .filter(|line| line.contains("catalog/model-"))
+                    .count()
+                    == 11
+                    && text.contains("❯ catalog/model-24")
+                    && !text.contains("catalog/model-00")
+            },
+        );
+        pty.input("\x1b[200~MoDeL-17\x1b[201~");
+        pty.wait_for("搜索仅更新独立输入框与模型候选", |screen| {
+            let text = screen.contents();
+            let (row, column) = screen.cursor_position();
+            row == search_row
+                && column == 10
+                && text
+                    .lines()
+                    .nth(usize::from(row))
+                    .is_some_and(|line| line.trim_end() == " MoDeL-17")
+                && text.contains("❯ catalog/model-17")
+                && !text.contains("catalog/model-24")
+                && text.lines().any(|line| line.trim_end() == "❯")
+        });
+        pty.input("\t");
+        pty.text(" catalog/model-17");
+        no_more(&server);
+        pty.resize(6, 20);
+        pty.resize(30, 100);
+        pty.text(" catalog/model-17");
+        assert_eq!(pty.parser.screen().cursor_position().0, search_row);
+        pty.input("\r");
+        pty.ready_model("vendor-17");
+        pty.draft("");
+        no_more(&server);
+        pty.input("verify selected model\r");
+        let (request, body) = pty.request(&server);
+        assert_eq!(body["model"], "vendor-17");
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        slash_assert_message(&messages[1], "user", "verify selected model");
+        final_reply(request, "selection verified");
+        pty.text("selection verified");
+        pty.ready_model("vendor-17");
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
     }
 
     #[test]
@@ -5159,7 +5270,7 @@ mod tui {
         pty.text("busy history retained");
         pty.completed();
         pty.ready_model("vendor-a");
-        pty.draft("/model gateway/team/secondary");
+        pty.model_search("gateway/team/secondary");
         no_more(&a);
         no_more(&b);
 

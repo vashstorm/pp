@@ -1,9 +1,9 @@
 <h1 align="center">✈ pp</h1>
 
-<p align="center"><a href="README.md">English</a> | <strong>简体中文</strong></p>
+<p align="center"><a href="README.md">英文</a> | <strong>简体中文</strong></p>
 
-<p align="center"><strong>paper plane · 终端里的编程助手</strong></p>
-<p align="center">Rust · macOS / Linux · OpenAI-compatible Responses / Chat Completions</p>
+<p align="center"><strong>纸飞机 · 终端里的编程助手</strong></p>
+<p align="center">Rust · macOS / Linux · 兼容 OpenAI 的响应接口与聊天补全接口</p>
 
 <p align="center">
   <a href="#快速开始">快速开始</a> ·
@@ -14,35 +14,35 @@
 
 ---
 
-pp 是用 Rust 编写的 Pi 风格终端 coding agent。让模型直接阅读项目、编辑文件、搜索代码和执行命令，在终端中完成多轮开发任务。
+pp 是用 Rust 编写的 Pi 风格终端编程助手。让模型直接阅读项目、编辑文件、搜索代码和执行命令，在终端中完成多轮开发任务。
 
 ## 功能一览
 
 | 功能 | 说明 |
 | --- | --- |
-| **终端交互** | 流式正文、思考与工具输出，支持 TUI、单次任务和管道输入 |
-| **规划与执行** | Plan 调研、计划审阅与显式批准，ask 面板收集关键选择 |
+| **终端交互** | 流式正文、思考与工具输出，支持终端界面、单次任务和管道输入 |
+| **规划与执行** | 计划调研、审阅与显式批准，通过询问面板收集关键选择 |
 | **任务控制** | 运行中补充需求、排队后续任务，Esc 取消当前任务 |
-| **会话与变更** | 自动保存与恢复、会话树回退、最近任务 diff 与安全撤销 |
-| **按需扩展** | 项目 `AGENTS.md`、技能、Markdown 提示词命令、本地 stdio MCP |
-| **用量可见** | 上下文估算与压缩，本地请求、Token、费用和耗时统计 |
+| **会话与变更** | 自动保存与恢复、会话树回退、最近任务差异与安全撤销 |
+| **按需扩展** | 项目 `AGENTS.md`、技能、Markdown 提示词命令、基于本地标准输入输出的 MCP 工具 |
+| **用量可见** | 上下文估算与压缩，本地请求、词元、费用和耗时统计 |
 
 ## 快速开始
 
 ### 1. 构建
 
-需要支持 **Edition 2024** 的 Rust 工具链，以及 PATH 中的 `bash`。
+需要支持 **2024 版语言规范**的 Rust 工具链，以及可在命令搜索路径中找到的 `bash`。
 
 ```sh
 cargo build --release --locked
 mkdir -p ~/.pp/agent
 ```
 
-搜索推荐安装 `rg` 和 `fd`，缺失时回退到系统 `grep` 和 `find`。TUI 图标需要 Nerd Font；macOS 使用 Option 快捷键时，终端需启用 Alt/Meta。
+搜索推荐安装 `rg` 和 `fd`，缺失时回退到系统 `grep` 和 `find`。终端界面图标需要 Nerd Font 字体；macOS 使用 Option 快捷键时，终端需启用 Alt/Meta。
 
 ### 2. 配置模型
 
-创建 `~/.pp/agent/models.yml`，替换密钥和实际模型 ID：
+创建 `~/.pp/agent/models.yml`，替换密钥和实际模型标识：
 
 ```yaml
 providers:
@@ -55,8 +55,8 @@ providers:
         model: your-model-id
 ```
 
-- `protocol`：`response` 使用 Responses API（默认）；`completion` 使用 Chat Completions API。
-- `base_url`：填写供应商的 API 根地址，程序按协议追加端点，不自动补 `/v1`。
+- `protocol`：`response` 使用响应接口（默认）；`completion` 使用聊天补全接口。
+- `base_url`：填写供应商的接口根地址，程序按协议追加端点，不自动补 `/v1`。
 - 支持多个供应商与模型；未设置默认模型时，使用文件中的第一个模型。
 
 <details>
@@ -86,31 +86,33 @@ chmod 600 ~/.pp/agent/models.yml
 ./target/release/pp
 ```
 
-标准输入和输出均为终端时自动进入 TUI，否则使用行模式。将构建产物放入 PATH 后，可直接使用下文的 `pp`。
+标准输入和输出均为终端时自动进入终端界面，否则使用行模式。将构建产物放入命令搜索路径后，可直接使用下文的 `pp`。
 
 ```sh
 pp -p '阅读当前项目并说明结构，不修改文件。'
 printf '说明当前项目的构建方式\n' | pp
 ```
 
-> **权限与数据**：API 密钥明文保存在模型配置中。read、shell、搜索与 MCP 按当前用户权限运行，没有文件系统沙箱或逐次操作确认；write/edit 的保存层限制在工作目录内并拒绝符号链接。会话与统计可能包含源码和对话，请按敏感数据保管。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
+> **权限与数据**：接口密钥明文保存在模型配置中。读取、命令执行、搜索与 MCP 工具按当前用户权限运行，没有文件系统沙箱或逐次操作确认；写入与编辑工具的保存层限制在工作目录内并拒绝符号链接。会话与统计可能包含源码和对话，请按敏感数据保管。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
 
 ## 日常使用
 
-`/help` 查看完整帮助，`/tips` 查看操作提示。以下 slash 命令在交互模式使用；`-p` 中的内容始终作为普通提示词发送。
+终端界面进入模型选择后清空主输入框，自动聚焦列表上方的独立搜索框。面板打开时按模型总数确定高度，后续筛选保持高度不变；整个面板最多 15 行（搜索框 3 行、列表最多 11 行、提示 1 行），超过后可通过方向键、翻页键或面板内滚轮滚动，并显示滚动条。搜索支持输入即筛选，忽略大小写并匹配 `provider/model` 或实际模型名的任意片段。Ctrl + F 收藏／取消收藏高亮模型，收藏项显示纯金黄色 Nerd Font 实心星标 `` 并优先排列，同组保持配置顺序；收藏保存到全局 `settings.yml` 的 `favorite_models` 列表，重启后保留。Ctrl + S 保存默认模型。无匹配结果时显示提示，Enter、Tab 不执行操作。
+
+`/help` 查看完整帮助，`/tips` 查看操作提示。以下斜杠命令在交互模式使用；`-p` 中的内容始终作为普通提示词发送。
 
 | 命令 | 用途 |
 | --- | --- |
 | `/model`、`/effort` | 切换模型与思考档位，保留历史 |
 | `/init` | 创建或更新当前项目的 `AGENTS.md` |
-| `/plan` | 调研、审阅计划，批准后执行（仅 TUI） |
+| `/plan` | 调研、审阅计划，批准后执行（仅终端界面） |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |
-| `/resume`、`/tree` | 恢复会话，或回退当前历史（仅 TUI） |
-| `/changes` | 查看最近任务的 edit/write 变更并逐文件撤销（仅 TUI） |
+| `/resume`、`/tree` | 恢复会话，或回退当前历史（仅终端界面） |
+| `/changes` | 查看最近任务的编辑与写入变更并逐文件撤销（仅终端界面） |
 | `/skills`、`/quit` | 管理技能，或退出 |
 
 <details>
-<summary><strong>TUI 常用快捷键</strong></summary>
+<summary><strong>终端界面常用快捷键</strong></summary>
 
 | 操作 | macOS | Linux |
 | --- | --- | --- |
@@ -118,6 +120,7 @@ printf '说明当前项目的构建方式\n' | pp
 | 排队为独立后续任务 | ⌥ + Enter | Alt + Enter |
 | 换行 | Ctrl + J | Ctrl + J |
 | 模型菜单 | ⌥ + P | Ctrl + P |
+| 收藏／取消收藏高亮模型 | Ctrl + F | Ctrl + F |
 | 循环思考档位 | Shift + Tab | Shift + Tab |
 | 展开／折叠工具输出 | Ctrl + O | Ctrl + O |
 | 查看待处理输入 | ⌥ + Q | Ctrl + Q |
@@ -129,7 +132,7 @@ printf '说明当前项目的构建方式\n' | pp
 
 </details>
 
-会话自动保存在 `~/.pp/agent/sessions/`。按完整 ID 恢复，或打开本地统计页面：
+会话自动保存在 `~/.pp/agent/sessions/`。按完整标识恢复，或打开本地统计页面：
 
 ```sh
 pp -r SESSION_ID
@@ -145,7 +148,7 @@ pp stats
 | [项目指令](docs/guide.md#项目级-agentsmd) | 当前工作目录的 `AGENTS.md` | 每次模型请求前刷新项目规则 |
 | [技能](docs/guide.md#技能支持) | `~/.pp/agent/skills/` | 按需加载 `SKILL.md`，通过 `/skills` 管理 |
 | [提示词命令](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | 将 Markdown 模板展开为 `/命令 参数` |
-| [MCP 工具](docs/guide.md#mcp-工具) | `settings.yml` 的 `mcp_servers` | 连接本地 stdio 服务并发现工具 |
+| [MCP 工具](docs/guide.md#mcp-工具) | `settings.yml` 的 `mcp_servers` | 连接基于本地标准输入输出的服务并发现工具 |
 
 ## 开发
 

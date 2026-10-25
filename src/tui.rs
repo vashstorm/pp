@@ -3,6 +3,7 @@ mod changes;
 mod files;
 mod markdown;
 mod menu;
+mod model;
 mod notification;
 mod plan;
 mod scrollback;
@@ -68,14 +69,13 @@ const STEERING_HINT: &str = platform_text(
     "Enter steer · Alt + Enter queue · Ctrl + Q pending messages · Ctrl + R resume queue",
 );
 const SHORTCUTS_TAIL: &str = platform_text(
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
 );
 const EFFORT_HINT: &str = platform_text(
     "Enter select · ⌥ + S set selected effort as default · Esc cancel",
     "Enter select · Ctrl + S set selected effort as default · Esc cancel",
 );
-const MODEL_HINT: &str = "Enter select · Ctrl + S set selected model as default · Esc cancel";
 const MOUSE_SCROLL_LINES: usize = 3;
 
 pub(crate) fn run(
@@ -178,6 +178,7 @@ enum WorkerCommand {
     SetThinkLevel(ThinkLevel),
     SaveDefaultThinkLevel(ThinkLevel),
     SaveDefaultModel(String),
+    ToggleFavoriteModel(String),
     ListSessions,
     DeleteSession(String),
     Resume {
@@ -230,6 +231,7 @@ enum WorkerEvent {
     ThinkLevelSet(Result<ThinkLevel>),
     DefaultThinkLevelSaved(Result<ThinkLevel>),
     DefaultModelSaved(Result<String>),
+    FavoriteModelsSaved(Result<Vec<String>>),
     SessionsListed(Result<crate::agent::persistence::SessionListing>),
     SessionDeleted(String, Result<()>),
     SessionResumed(Result<ResumeState>),
@@ -365,7 +367,7 @@ enum State {
     Compacting,
     Resetting,
     SwitchingModel,
-    SavingDefaultModel,
+    SavingModelSettings,
     SettingThinkLevel,
     ListingSessions,
     Resuming,
@@ -445,11 +447,13 @@ struct App {
     choices: Vec<ModelChoice>,
     current_model: Option<ModelChoice>,
     default_model_reference: Option<String>,
+    favorite_models: Vec<String>,
     think_level: ThinkLevel,
     default_think_level: ThinkLevel,
     menu: Option<SelectionMenu<MenuAction>>,
     menu_dismissed: bool,
     model_picker_draft: Option<ModelPickerDraft>,
+    model_panel: Option<model::Panel>,
     secondary_status: Option<String>,
     skill_worker: skills::Worker,
     skill_panel: Option<skills::Panel>,
@@ -584,11 +588,13 @@ impl App {
             choices: Vec::new(),
             current_model: None,
             default_model_reference: None,
+            favorite_models: Vec::new(),
             think_level: ThinkLevel::None,
             default_think_level: ThinkLevel::default(),
             menu: None,
             menu_dismissed: false,
             model_picker_draft: None,
+            model_panel: None,
             secondary_status: None,
             skill_worker: skills::Worker::new(skills)?,
             skill_panel: None,
@@ -630,6 +636,7 @@ impl App {
                 let mcp_cleanup = agent.mcp_cleanup()?;
                 app.background_cleanup = Some(agent.background_cleanup());
                 app.choices = agent.model_choices();
+                app.favorite_models = agent.favorite_models().to_vec();
                 app.default_model_reference = Some(agent.default_model_reference().to_owned());
                 let (commands, receiver) = mpsc::channel();
                 let (sender, events) = mpsc::sync_channel(256);
@@ -704,6 +711,11 @@ impl App {
                                 WorkerCommand::SaveDefaultModel(reference) => {
                                     WorkerEvent::DefaultModelSaved(
                                         agent.save_default_model(&reference).map(|()| reference),
+                                    )
+                                }
+                                WorkerCommand::ToggleFavoriteModel(reference) => {
+                                    WorkerEvent::FavoriteModelsSaved(
+                                        agent.toggle_favorite_model(&reference),
                                     )
                                 }
                                 WorkerCommand::SwitchModel(reference) => {
@@ -992,6 +1004,7 @@ impl App {
         self.history_index = None;
         self.history_draft = None;
         self.model_picker_draft = None;
+        self.model_panel = None;
         self.file_paths.clear();
         self.file_directory.clear();
         self.file_query = None;
@@ -1025,6 +1038,7 @@ impl App {
         self.escape_tap.reset();
         // worker 已死时不再等待恢复回复，会话面板不能继续吞掉按键。
         self.session_panel = None;
+        self.close_model_panel();
         self.conversation.fail();
         self.notify(Level::Error, message.into());
     }
@@ -1147,7 +1161,7 @@ impl App {
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
             || self.changes_panel.is_some()
-            || self.model_picker_draft.is_some()
+            || self.model_panel.is_some()
             || self.queue_menu
         {
             self.notify(
@@ -1615,6 +1629,17 @@ impl App {
                     self.state = State::Ready;
                     changed = true;
                 }
+                Ok(WorkerEvent::FavoriteModelsSaved(result)) => {
+                    match result {
+                        Ok(favorites) => self.favorite_models = favorites,
+                        Err(error) => self.notify(
+                            Level::Error,
+                            format!("Failed to save favorite models: {error:#}"),
+                        ),
+                    }
+                    self.state = State::Ready;
+                    changed = true;
+                }
                 Ok(WorkerEvent::DefaultModelSaved(result)) => {
                     match result {
                         Ok(reference) => {
@@ -1934,6 +1959,18 @@ impl App {
     }
 
     fn refresh_candidates(&mut self, edited: bool) {
+        if let Some(panel) = &mut self.model_panel {
+            panel.refresh(
+                &self.choices,
+                self.current_model
+                    .as_ref()
+                    .map(|choice| choice.reference.as_str()),
+                self.default_model_reference.as_deref(),
+                &self.favorite_models,
+                edited,
+            );
+            return;
+        }
         if self.queue_menu {
             self.refresh_pending_menu();
             return;
@@ -1949,7 +1986,7 @@ impl App {
             || self.menu_dismissed
             || !matches!(
                 self.state,
-                State::Ready | State::Unavailable | State::SavingDefaultModel
+                State::Ready | State::Unavailable | State::SavingModelSettings
             )
         {
             self.file_query = None;
@@ -1963,9 +2000,11 @@ impl App {
             ""
         };
         let argument = input.split_once(char::is_whitespace);
-        if self.model_picker_draft.is_some() && !matches!(argument, Some(("/model", _))) {
-            self.file_query = None;
-            self.menu = None;
+        if let Some(("/model", query)) = argument
+            && matches!(self.state, State::Ready)
+        {
+            let query = query.to_owned();
+            self.open_model_panel(&query, false);
             return;
         }
         let mut preferred = 0;
@@ -2001,51 +2040,6 @@ impl App {
                     })
                     .collect();
                 preferred = items.iter().position(|item| item.current).unwrap_or(0);
-                items
-            }
-            Some(("/model", argument))
-                if matches!(self.state, State::Ready | State::SavingDefaultModel) =>
-            {
-                let prefix = argument.trim();
-                let items: Vec<_> = self
-                    .choices
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, choice)| {
-                        choice.reference.starts_with(prefix) || choice.model.starts_with(prefix)
-                    })
-                    .map(|(index, choice)| MenuItem {
-                        value: MenuAction::Model(index),
-                        label: if self.default_model_reference.as_deref()
-                            == Some(choice.reference.as_str())
-                        {
-                            format!("{} (default)", choice.reference)
-                        } else {
-                            choice.reference.clone()
-                        },
-                        description: format!("{} [{}]", choice.model, choice.protocol),
-                        icon: None,
-                        current: self
-                            .current_model
-                            .as_ref()
-                            .is_some_and(|current| current.reference == choice.reference),
-                    })
-                    .collect();
-                let selected =
-                    self.menu.as_ref().filter(|_| !edited).and_then(|menu| {
-                        menu.selected_index().map(|index| menu.items()[index].value)
-                    });
-                preferred = items
-                    .iter()
-                    .position(|item| Some(item.value) == selected)
-                    .or_else(|| {
-                        items.iter().position(|item| match item.value {
-                            MenuAction::Model(index) => self.choices[index].reference == prefix,
-                            _ => false,
-                        })
-                    })
-                    .or_else(|| items.iter().position(|item| item.current))
-                    .unwrap_or(0);
                 items
             }
             None if input.trim().starts_with('/') => COMMANDS
@@ -2113,17 +2107,17 @@ impl App {
         if items.is_empty() {
             self.menu = None;
         } else if edited || self.menu.as_ref().is_none_or(|menu| menu.items() != items) {
-            let hint = match items.first().map(|item| item.value) {
-                Some(MenuAction::Effort(_)) => Some(EFFORT_HINT),
-                Some(MenuAction::Model(_)) => Some(MODEL_HINT),
-                _ => None,
-            };
             let menu = SelectionMenu::new(items, preferred);
-            self.menu = Some(if let Some(hint) = hint {
-                menu.with_hint(hint)
-            } else {
-                menu
-            });
+            self.menu = Some(
+                if matches!(
+                    menu.items().first().map(|item| item.value),
+                    Some(MenuAction::Effort(_))
+                ) {
+                    menu.with_hint(EFFORT_HINT)
+                } else {
+                    menu
+                },
+            );
         }
     }
 
@@ -2397,7 +2391,7 @@ impl App {
             || self.tree_panel.is_some()
             || self.changes_panel.is_some()
             || self.plan_panel.is_some()
-            || self.model_picker_draft.is_some()
+            || self.model_panel.is_some()
         {
             return false;
         }
@@ -2523,7 +2517,7 @@ impl App {
             || self.changes_panel.is_some()
             || self.plan_panel.is_some()
             || self.plan_confirm.is_some()
-            || self.model_picker_draft.is_some()
+            || self.model_panel.is_some()
         {
             return;
         }
@@ -2588,18 +2582,70 @@ impl App {
     }
 
     fn open_model_picker(&mut self) {
-        if self.model_picker_draft.is_some() || !self.shortcut_ready() {
+        self.open_model_panel("", true);
+    }
+
+    fn open_model_panel(&mut self, query: &str, preserve_draft: bool) {
+        if self.model_panel.is_some() || !self.shortcut_ready() {
             return;
         }
-        self.model_picker_draft = Some(ModelPickerDraft {
-            input: std::mem::replace(&mut self.input, editor()),
-            history_index: self.history_index.take(),
-            history_draft: self.history_draft.take(),
-            menu: self.menu.take(),
-            menu_dismissed: self.menu_dismissed,
-        });
-        self.input.insert_str("/model ");
+        if preserve_draft {
+            self.model_picker_draft = Some(ModelPickerDraft {
+                input: std::mem::replace(&mut self.input, editor()),
+                history_index: self.history_index.take(),
+                history_draft: self.history_draft.take(),
+                menu: self.menu.take(),
+                menu_dismissed: self.menu_dismissed,
+            });
+        } else {
+            self.input = editor();
+            self.history_index = None;
+            self.history_draft = None;
+        }
+        self.menu = None;
+        self.file_query = None;
+        self.menu_dismissed = true;
+        self.model_panel = Some(model::Panel::new(query, self.choices.len()));
         self.refresh_candidates(true);
+    }
+
+    fn close_model_panel(&mut self) {
+        if self.model_panel.take().is_none() {
+            return;
+        }
+        self.menu = None;
+        self.menu_dismissed = true;
+        self.restore_model_picker_draft();
+    }
+
+    fn apply_model_action(&mut self, action: model::Action) {
+        match action {
+            model::Action::Cancel => self.close_model_panel(),
+            model::Action::Select(index) if matches!(self.state, State::Ready) => {
+                let reference = self.choices[index].reference.clone();
+                let current = self
+                    .current_model
+                    .as_ref()
+                    .is_some_and(|choice| choice.reference == reference);
+                if !current {
+                    self.send(WorkerCommand::SwitchModel(reference), State::SwitchingModel);
+                }
+                self.close_model_panel();
+            }
+            model::Action::Favorite(index) if matches!(self.state, State::Ready) => {
+                self.send(
+                    WorkerCommand::ToggleFavoriteModel(self.choices[index].reference.clone()),
+                    State::SavingModelSettings,
+                );
+            }
+            model::Action::Default(index) if matches!(self.state, State::Ready) => {
+                self.send(
+                    WorkerCommand::SaveDefaultModel(self.choices[index].reference.clone()),
+                    State::SavingModelSettings,
+                );
+            }
+            _ => {}
+        }
     }
 
     fn restore_model_picker_draft(&mut self) {
@@ -2614,11 +2660,7 @@ impl App {
     }
 
     fn switch_model(&mut self, reference: String) {
-        if self.model_picker_draft.is_some() {
-            self.send(WorkerCommand::SwitchModel(reference), State::SwitchingModel);
-            self.restore_model_picker_draft();
-        } else if self.send_submission(WorkerCommand::SwitchModel(reference), State::SwitchingModel)
-        {
+        if self.send_submission(WorkerCommand::SwitchModel(reference), State::SwitchingModel) {
             self.clear_input();
         }
     }
@@ -2638,7 +2680,11 @@ impl App {
     }
 
     fn submit(&mut self, kind: PendingKind) -> bool {
-        if self.skills_pending || self.skill_panel.is_some() || self.changes_panel.is_some() {
+        if self.skills_pending
+            || self.skill_panel.is_some()
+            || self.changes_panel.is_some()
+            || self.model_panel.is_some()
+        {
             return false;
         }
         let prompt = self.input.lines().join("\n");
@@ -2658,13 +2704,6 @@ impl App {
             self.notify(
                 Level::Error,
                 "Finish or cancel the current task before opening /changes.".into(),
-            );
-            return false;
-        }
-        if self.model_picker_draft.is_some() && !matches!(command, Some(Command::Model(_))) {
-            self.notify(
-                Level::Error,
-                "The model picker only accepts /model; press Esc to restore your draft.".into(),
             );
             return false;
         }
@@ -2764,7 +2803,7 @@ impl App {
             | State::Compacting
             | State::Resetting
             | State::SwitchingModel
-            | State::SavingDefaultModel
+            | State::SavingModelSettings
             | State::SettingThinkLevel
             | State::ListingSessions
             | State::Resuming
@@ -2825,11 +2864,7 @@ impl App {
                     }
                 }
                 Some(Command::Model(Some(reference))) => self.switch_model(reference.to_owned()),
-                Some(Command::Model(None)) => {
-                    self.input = editor();
-                    self.input.insert_str("/model ");
-                    self.refresh_candidates(true);
-                }
+                Some(Command::Model(None)) => self.open_model_panel("", false),
                 None => {
                     self.queue_paused = false;
                     if self.send_task(Some(prompt.clone())) {
@@ -2886,6 +2921,10 @@ impl App {
     }
 
     fn apply_menu_action(&mut self, action: MenuAction, confirm: bool) -> bool {
+        if confirm && matches!(action, MenuAction::Model(_)) && !matches!(self.state, State::Ready)
+        {
+            return false;
+        }
         if matches!(
             action,
             MenuAction::File(_) | MenuAction::FileDirectory(_) | MenuAction::FileParent
@@ -2945,28 +2984,12 @@ impl App {
                 return confirm && self.submit(PendingKind::Steering);
             }
             MenuAction::Model(index) if confirm => {
-                let choice = &self.choices[index];
-                if self
-                    .current_model
-                    .as_ref()
-                    .is_some_and(|current| current.reference == choice.reference)
-                {
-                    if self.model_picker_draft.is_some() {
-                        self.restore_model_picker_draft();
-                    } else {
-                        self.remember_input();
-                        self.clear_input();
-                    }
-                } else {
-                    self.switch_model(choice.reference.clone());
-                }
+                self.apply_model_action(model::Action::Select(index))
             }
             MenuAction::Effort(level) if confirm => self.set_think_level(level),
             MenuAction::Model(index) => {
-                self.input = editor();
-                self.input
-                    .insert_str(format!("/model {}", self.choices[index].reference));
-                self.refresh_candidates(true);
+                let reference = self.choices[index].reference.clone();
+                self.open_model_panel(&reference, false);
             }
             MenuAction::Effort(level) => {
                 self.input = editor();
@@ -3116,7 +3139,7 @@ impl App {
                     || self.skill_panel.is_some()
                     || self.session_panel.is_some()
                     || self.menu.is_some()
-                    || self.model_picker_draft.is_some()
+                    || self.model_panel.is_some()
                     || self.file_query.is_some()
                 {
                     self.escape_tap.reset();
@@ -3196,6 +3219,14 @@ impl App {
                     }
                     return false;
                 }
+                if let Some(panel) = &mut self.model_panel {
+                    let (action, edited) = panel.key(key, &self.choices);
+                    self.apply_model_action(action);
+                    if self.model_panel.is_some() {
+                        self.refresh_candidates(edited);
+                    }
+                    return false;
+                }
                 if key.modifiers == FUNCTION_MODIFIER
                     && matches!(key.code, KeyCode::Char('q' | 'r'))
                 {
@@ -3267,7 +3298,7 @@ impl App {
                                     WorkerCommand::SaveDefaultModel(
                                         self.choices[index].reference.clone(),
                                     ),
-                                    State::SavingDefaultModel,
+                                    State::SavingModelSettings,
                                 ))
                             }
                             _ => None,
@@ -3324,10 +3355,6 @@ impl App {
                     && self.file_query.is_some()
                     && matches!(key.code, KeyCode::Enter | KeyCode::Tab)
                 {
-                    return false;
-                }
-                if key.code == KeyCode::Esc && self.model_picker_draft.is_some() {
-                    self.restore_model_picker_draft();
                     return false;
                 }
                 if control && key.code == KeyCode::Char('j') {
@@ -3557,6 +3584,22 @@ impl App {
                     *dirty = true;
                 }
             }
+            Event::Paste(text) if self.model_panel.is_some() => {
+                self.model_panel
+                    .as_mut()
+                    .expect("active model panel")
+                    .paste(&text);
+                self.refresh_candidates(true);
+                *dirty = true;
+            }
+            Event::Mouse(mouse)
+                if self
+                    .model_panel
+                    .as_mut()
+                    .is_some_and(|panel| panel.wheel(mouse, MOUSE_SCROLL_LINES)) =>
+            {
+                *dirty = true;
+            }
             Event::Paste(text) => {
                 if self.queue_menu {
                     self.close_pending_menu();
@@ -3695,7 +3738,12 @@ impl App {
         let menu_height = self
             .menu
             .as_ref()
-            .map_or(0, |menu| menu.height(conversation_height));
+            .map_or(0, |menu| menu.height(conversation_height))
+            .max(
+                self.model_panel
+                    .as_ref()
+                    .map_or(0, |panel| panel.height(conversation_height)),
+            );
         let menu_area = Rect::new(
             area.x,
             area.y + conversation_height - menu_height,
@@ -3779,6 +3827,7 @@ impl App {
                 cursor.row.checked_sub(usize::from(top)),
                 cursor.col.checked_sub(usize::from(left)),
             ) && self.ask_panel.is_none()
+                && self.model_panel.is_none()
                 && row < usize::from(editor_area.height)
                 && column < usize::from(editor_area.width)
             {
@@ -3792,6 +3841,9 @@ impl App {
             && let Some(menu) = &mut self.menu
         {
             menu.draw(frame, menu_area);
+        }
+        if let Some(panel) = &mut self.model_panel {
+            panel.draw(frame, menu_area);
         }
         if status.height > 0 {
             frame.render_widget(
@@ -3822,10 +3874,11 @@ impl App {
 
     fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
         // 上下文固定在右端；压缩等临时状态显示在它左侧，空间不足时优先保留上下文。
+        let usage_style = Style::default().bg(Color::Rgb(26, 27, 38));
         let mut right = area.right();
         if let Some(usage) = self.usage.as_ref() {
             let (text, color) = statusline::context_field(usage);
-            let line = Line::styled(format!(" {text} "), Style::default().fg(color))
+            let line = Line::styled(format!(" {text} "), usage_style.fg(color))
                 .alignment(Alignment::Right);
             let width = u16::try_from(line.width())
                 .unwrap_or(u16::MAX)
@@ -3874,7 +3927,8 @@ impl App {
                 usage.last_request.as_ref(),
                 self.token_speed.value(),
                 (right - left).saturating_sub(extra_width),
-            );
+            )
+            .style(usage_style);
             let width = u16::try_from(metrics.width()).unwrap_or(u16::MAX);
             right -= width;
             frame.render_widget(metrics, Rect::new(right, area.y, width, 1));
@@ -4985,10 +5039,26 @@ mod tests {
         assert_eq!(app.input.lines(), &["草稿"]);
     }
 
+    fn active_menu(app: &App) -> &SelectionMenu<MenuAction> {
+        app.model_panel
+            .as_ref()
+            .map(|panel| &panel.menu)
+            .or(app.menu.as_ref())
+            .unwrap()
+    }
+
+    fn model_query(app: &App) -> &str {
+        &app.model_panel.as_ref().unwrap().search.lines()[0]
+    }
+
     fn menu_values(app: &App) -> Vec<MenuAction> {
-        app.menu.as_ref().map_or_else(Vec::new, |menu| {
-            menu.items().iter().map(|item| item.value).collect()
-        })
+        app.model_panel
+            .as_ref()
+            .map(|panel| &panel.menu)
+            .or(app.menu.as_ref())
+            .map_or_else(Vec::new, |menu| {
+                menu.items().iter().map(|item| item.value).collect()
+            })
     }
 
     #[test]
@@ -5321,6 +5391,7 @@ mod tests {
         app.handle(Event::Paste("/model @".into()), &mut dirty);
         assert!(app.file_query.is_none());
         assert!(scans.try_recv().is_err());
+        app.handle(key(KeyCode::Esc), &mut dirty);
         app.clear_input();
         app.handle(Event::Paste("@".into()), &mut dirty);
         scans.try_recv().unwrap();
@@ -5328,7 +5399,8 @@ mod tests {
         assert!(app.file_query.is_none());
         replies.send(Ok(vec!["src/main.rs".into()])).unwrap();
         app.receive();
-        assert_eq!(app.input.lines(), &["/model "]);
+        assert_eq!(app.input.lines(), &[""]);
+        assert!(app.model_panel.is_some());
         assert!(app.file_query.is_none());
     }
 
@@ -5837,7 +5909,7 @@ mod tests {
     fn model_space_menu_renders_above_input_and_preserves_selection_on_resize() {
         let mut app = app();
         app.state = State::Ready;
-        app.choices = (0..12)
+        app.choices = (0..25)
             .map(|index| ModelChoice {
                 reference: format!("fixture/model-{index}"),
                 model: format!("vendor-{index}"),
@@ -5861,7 +5933,8 @@ mod tests {
         assert_eq!(menu_values(&app), vec![MenuAction::Command(model_command)]);
         app.handle(key(KeyCode::Char(' ')), &mut dirty);
         let screen = draw(&mut app, 100, 30);
-        assert!(screen.find("fixture/model-0").unwrap() < screen.rfind("❯ /model").unwrap());
+        assert!(screen.find(" ").unwrap() < screen.find("fixture/model-0").unwrap());
+        assert!(!screen.contains("❯ /model"));
         assert!(screen.contains("❯ fixture/model-2"));
         assert!(
             screen
@@ -5869,19 +5942,20 @@ mod tests {
                 .contains("vendor-2[response](current)")
         );
         assert!(!screen.contains('┌'));
+        assert_eq!(app.model_panel.as_ref().unwrap().height(30), 15);
         app.handle(key(KeyCode::PageDown), &mut dirty);
-        assert_eq!(app.menu.as_ref().unwrap().selected_index(), Some(10));
+        assert_eq!(active_menu(&app).selected_index(), Some(13));
         for (width, height) in [(20, 6), (1, 1), (100, 30)] {
             draw(&mut app, width, height);
-            assert_eq!(app.input.lines(), &["/model "]);
-            assert_eq!(app.menu.as_ref().unwrap().selected_index(), Some(10));
+            assert_eq!(app.input.lines(), &[""]);
+            assert_eq!(active_menu(&app).selected_index(), Some(13));
         }
         app.handle(key(KeyCode::End), &mut dirty);
-        assert!(draw(&mut app, 100, 30).contains("❯ fixture/model-11"));
+        assert!(draw(&mut app, 100, 30).contains("❯ fixture/model-24"));
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
         app.handle(key(KeyCode::Enter), &mut dirty);
         assert!(
-            matches!(requests.try_recv(), Ok(WorkerCommand::SwitchModel(reference)) if reference == "fixture/model-11")
+            matches!(requests.try_recv(), Ok(WorkerCommand::SwitchModel(reference)) if reference == "fixture/model-24")
         );
         assert_eq!(
             app.current_model.as_ref().unwrap().reference,
@@ -5891,16 +5965,312 @@ mod tests {
         app.input.insert_str("后续草稿");
         events
             .send(WorkerEvent::ModelSwitched(Ok((
-                app.choices[11].clone(),
+                app.choices[24].clone(),
                 app.think_level,
             ))))
             .unwrap();
         app.receive();
         assert_eq!(
             app.current_model.as_ref().unwrap().reference,
-            "fixture/model-11"
+            "fixture/model-24"
         );
         assert_eq!(app.input.lines(), &["后续草稿"]);
+    }
+
+    fn favorite_model_choices() -> Vec<ModelChoice> {
+        ["Alpha", "Beta", "Gamma", "Delta"]
+            .into_iter()
+            .map(|name| ModelChoice {
+                reference: format!("gateway/team/{name}"),
+                model: format!("vendor-{name}"),
+                protocol: crate::models::Protocol::Completion,
+                thinking: crate::models::ModelThinking::default(),
+                context_window: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn model_panel_search_is_independent_single_line_and_never_submits_tasks() {
+        let (mut app, requests, _events) = plan_app();
+        app.choices = favorite_model_choices();
+        let mut dirty = false;
+        app.handle(Event::Paste("/model".into()), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert_eq!(app.input.lines(), &[""]);
+        assert_eq!(model_query(&app), "");
+        app.handle(
+            Event::Paste("模型🙂\nsecond\r\nthird\rfourth".into()),
+            &mut dirty,
+        );
+        assert_eq!(model_query(&app), "模型🙂 second third fourth");
+        app.handle(control('a'), &mut dirty);
+        app.handle(control('k'), &mut dirty);
+        app.handle(control('j'), &mut dirty);
+        app.handle(key(KeyCode::BackTab), &mut dirty);
+        assert_eq!(model_query(&app), "");
+        let query = "模型🙂".repeat(30);
+        app.handle(Event::Paste(query.clone()), &mut dirty);
+        let mut terminal = Terminal::new(TestBackend::new(20, 12)).unwrap();
+        terminal
+            .draw(|frame| app.draw(frame, &StatusContext::default()))
+            .unwrap();
+        let cursor = terminal.backend().cursor_position();
+        assert!(cursor.x < 20 && cursor.y < 8);
+        assert_eq!(model_query(&app), query);
+        app.handle(control('a'), &mut dirty);
+        app.handle(control('k'), &mut dirty);
+        app.handle(Event::Paste("aMm".into()), &mut dirty);
+        assert_eq!(menu_values(&app), [MenuAction::Model(2)]);
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(model_query(&app), "gateway/team/Gamma");
+        assert_eq!(app.input.lines(), &[""]);
+        assert!(requests.try_recv().is_err());
+        assert!(app.input_history.is_empty());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.model_panel.is_none());
+        assert_eq!(app.input.lines(), &[""]);
+    }
+
+    #[test]
+    fn model_panel_caps_height_and_routes_wheel_without_scrolling_conversation() {
+        let (mut app, requests, _events) = plan_app();
+        app.show_welcome = false;
+        app.choices = (0..25)
+            .map(|index| ModelChoice {
+                reference: format!("fixture/model-{index:02}"),
+                model: format!("vendor-{index:02}"),
+                protocol: crate::models::Protocol::Response,
+                thinking: crate::models::ModelThinking::default(),
+                context_window: None,
+            })
+            .collect();
+        for index in 0..40 {
+            app.append("Assistant", &format!("history-{index:02}"));
+        }
+        let mut dirty = false;
+        app.handle(Event::Paste("/model ".into()), &mut dirty);
+        let before = draw_buffer(&mut app, 100, 30);
+        assert_eq!(app.model_panel.as_ref().unwrap().height(30), 15);
+        let model_rows = |buffer: &ratatui::buffer::Buffer| -> Vec<u16> {
+            (0..30)
+                .filter(|y| {
+                    (0..99)
+                        .map(|x| buffer[(x, *y)].symbol())
+                        .collect::<String>()
+                        .contains("fixture/model-")
+                })
+                .collect()
+        };
+        assert_eq!(model_rows(&before), (14..25).collect::<Vec<_>>());
+        assert_eq!(before[(99, 14)].symbol(), "█");
+        let wheel = |kind, row| {
+            Event::Mouse(MouseEvent {
+                kind,
+                column: 50,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        app.handle(wheel(MouseEventKind::ScrollDown, 15), &mut dirty);
+        assert_eq!(active_menu(&app).selected_index(), Some(3));
+        app.handle(key(KeyCode::End), &mut dirty);
+        let end = draw_buffer(&mut app, 100, 30);
+        assert_eq!(model_rows(&end).len(), 11);
+        assert_eq!(end[(99, 24)].symbol(), "█");
+        for y in (0..11).chain(26..30) {
+            for x in 0..100 {
+                assert_eq!(before[(x, y)], end[(x, y)]);
+            }
+        }
+        app.handle(wheel(MouseEventKind::ScrollDown, 15), &mut dirty);
+        assert_eq!(active_menu(&app).selected_index(), Some(24));
+        app.handle(wheel(MouseEventKind::ScrollUp, 15), &mut dirty);
+        assert_eq!(active_menu(&app).selected_index(), Some(21));
+        app.handle(wheel(MouseEventKind::ScrollUp, 0), &mut dirty);
+        let scrolled = draw_buffer(&mut app, 100, 30);
+        assert_eq!(active_menu(&app).selected_index(), Some(21));
+        assert!((0..11).any(|y| (0..100).any(|x| before[(x, y)] != scrolled[(x, y)])));
+        app.handle(key(KeyCode::Home), &mut dirty);
+        app.handle(wheel(MouseEventKind::ScrollUp, 15), &mut dirty);
+        assert_eq!(active_menu(&app).selected_index(), Some(0));
+        app.handle(Event::Paste("model-24".into()), &mut dirty);
+        assert_eq!(app.model_panel.as_ref().unwrap().height(30), 15);
+        let filtered = draw_buffer(&mut app, 100, 30);
+        assert_eq!(filtered[(0, 12)].symbol(), before[(0, 12)].symbol());
+        assert_eq!(model_rows(&filtered), [14]);
+        app.handle(control('a'), &mut dirty);
+        app.handle(control('k'), &mut dirty);
+        app.handle(Event::Paste("missing".into()), &mut dirty);
+        assert_eq!(app.model_panel.as_ref().unwrap().height(30), 15);
+        assert!(
+            draw(&mut app, 100, 30)
+                .lines()
+                .nth(14)
+                .unwrap()
+                .contains("No matching models")
+        );
+        app.handle(control('a'), &mut dirty);
+        app.handle(control('k'), &mut dirty);
+        assert_eq!(model_rows(&draw_buffer(&mut app, 100, 30)).len(), 11);
+        app.handle(Event::Paste("model-24".into()), &mut dirty);
+        for (width, height) in [(20, 6), (1, 1), (1, 8), (100, 30)] {
+            draw(&mut app, width, height);
+            assert_eq!(model_query(&app), "model-24");
+            assert_eq!(active_menu(&app).items()[0].value, MenuAction::Model(24));
+        }
+        assert!(draw(&mut app, 100, 30).contains(" model-24"));
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn model_favorites_commit_before_reorder_preserve_focus_and_reject_repeats() {
+        let (mut app, requests, events) = plan_app();
+        app.choices = favorite_model_choices();
+        app.current_model = Some(app.choices[0].clone());
+        app.default_model_reference = Some(app.choices[0].reference.clone());
+        app.favorite_models = vec![
+            app.choices[3].reference.clone(),
+            app.choices[1].reference.clone(),
+        ];
+        let mut dirty = false;
+        app.input.insert_str("/model ");
+        app.refresh_candidates(true);
+        assert_eq!(
+            menu_values(&app),
+            vec![
+                MenuAction::Model(1),
+                MenuAction::Model(3),
+                MenuAction::Model(0),
+                MenuAction::Model(2)
+            ]
+        );
+        app.handle(key(KeyCode::End), &mut dirty);
+        for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+            app.handle(
+                Event::Key(KeyEvent {
+                    kind,
+                    ..KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL)
+                }),
+                &mut dirty,
+            );
+        }
+        assert!(requests.try_recv().is_err());
+        app.handle(control('f'), &mut dirty);
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkerCommand::ToggleFavoriteModel(reference)) if reference == app.choices[2].reference)
+        );
+        assert_eq!(app.favorite_models.len(), 2);
+        assert_eq!(menu_values(&app).last(), Some(&MenuAction::Model(2)));
+        for event in [control('f'), control('s'), key(KeyCode::Enter)] {
+            app.handle(event, &mut dirty);
+        }
+        assert!(requests.try_recv().is_err());
+        events
+            .send(WorkerEvent::FavoriteModelsSaved(Ok(vec![
+                app.choices[1].reference.clone(),
+                app.choices[2].reference.clone(),
+                app.choices[3].reference.clone(),
+            ])))
+            .unwrap();
+        app.receive();
+        assert_eq!(
+            menu_values(&app),
+            vec![
+                MenuAction::Model(1),
+                MenuAction::Model(2),
+                MenuAction::Model(3),
+                MenuAction::Model(0)
+            ]
+        );
+        assert_eq!(active_menu(&app).selected_index(), Some(1));
+        assert!(draw(&mut app, 130, 30).contains("❯ gateway/team/Gamma "));
+        app.handle(control('f'), &mut dirty);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::ToggleFavoriteModel(_))
+        ));
+        events
+            .send(WorkerEvent::FavoriteModelsSaved(Err(anyhow::anyhow!(
+                "fixture save failure"
+            ))))
+            .unwrap();
+        app.receive();
+        assert_eq!(app.favorite_models.len(), 3);
+        assert_eq!(active_menu(&app).selected_index(), Some(1));
+        assert!(draw(&mut app, 130, 30).contains("fixture save failure"));
+        app.handle(control('f'), &mut dirty);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::ToggleFavoriteModel(_))
+        ));
+        events
+            .send(WorkerEvent::FavoriteModelsSaved(Ok(vec![
+                app.choices[1].reference.clone(),
+                app.choices[3].reference.clone(),
+            ])))
+            .unwrap();
+        app.receive();
+        assert_eq!(active_menu(&app).selected_index(), Some(3));
+        assert_eq!(
+            app.current_model.as_ref().unwrap().reference,
+            app.choices[0].reference
+        );
+        assert_eq!(
+            app.default_model_reference.as_deref(),
+            Some(app.choices[0].reference.as_str())
+        );
+    }
+
+    #[test]
+    fn model_search_matches_substrings_case_insensitively_and_handles_no_results() {
+        let (mut app, requests, _events) = plan_app();
+        app.choices = favorite_model_choices();
+        app.favorite_models = vec![app.choices[2].reference.clone()];
+        let mut dirty = false;
+        for (query, expected) in [
+            ("  WaY/TeAm  ", vec![2, 0, 1, 3]),
+            ("ENDOR-gA", vec![2]),
+            ("eTa", vec![1]),
+            ("", vec![2, 0, 1, 3]),
+            ("missing", vec![]),
+        ] {
+            app.close_model_panel();
+            app.input = editor();
+            app.handle(Event::Paste(format!("/model {query}")), &mut dirty);
+            assert_eq!(app.model_panel.as_ref().unwrap().height(30), 8);
+            assert_eq!(
+                menu_values(&app),
+                expected
+                    .into_iter()
+                    .map(MenuAction::Model)
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert!(draw(&mut app, 100, 30).contains("No matching models"));
+        for event in [
+            key(KeyCode::Enter),
+            key(KeyCode::Tab),
+            control('f'),
+            control('s'),
+        ] {
+            app.handle(event, &mut dirty);
+        }
+        assert!(requests.try_recv().is_err());
+        assert_eq!(app.input.lines(), &[""]);
+        assert_eq!(model_query(&app), "missing");
+        for _ in 0..7 {
+            app.handle(key(KeyCode::Backspace), &mut dirty);
+        }
+        assert_eq!(menu_values(&app).len(), 4);
+        app.handle(Event::Paste("aMm".into()), &mut dirty);
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(app.input.lines(), &[""]);
+        assert_eq!(model_query(&app), "gateway/team/Gamma");
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkerCommand::SwitchModel(reference)) if reference == "gateway/team/Gamma")
+        );
     }
 
     #[test]
@@ -5918,28 +6288,27 @@ mod tests {
         app.handle(Event::Paste("/model vendor".into()), &mut dirty);
         assert_eq!(menu_values(&app), vec![MenuAction::Model(0)]);
         app.handle(key(KeyCode::Tab), &mut dirty);
-        assert_eq!(
-            app.input.lines(),
-            &["/model gateway/team/model with spaces"]
-        );
+        assert_eq!(app.input.lines(), &[""]);
+        assert_eq!(model_query(&app), "gateway/team/model with spaces");
         app.handle(key(KeyCode::Esc), &mut dirty);
-        assert!(app.menu.is_none());
+        assert!(app.model_panel.is_none());
         app.refresh_candidates(false);
         assert!(app.menu.is_none());
         app.handle(key(KeyCode::Backspace), &mut dirty);
-        assert!(app.menu.is_some());
-        app.handle(Event::Paste("\nnext".into()), &mut dirty);
-        assert!(app.menu.is_none());
+        assert!(app.model_panel.is_none());
         app.input = editor();
         app.input.insert_str("/model missing");
         app.refresh_candidates(true);
-        assert!(app.menu.is_none());
+        assert!(active_menu(&app).items().is_empty());
+        assert!(draw(&mut app, 100, 30).contains("No matching models"));
+        app.close_model_panel();
         app.input = editor();
         app.input.insert_str("/model ");
         for state in [State::Running, State::SwitchingModel, State::Unavailable] {
             app.state = state;
             app.refresh_candidates(true);
             assert!(app.menu.is_none());
+            assert!(app.model_panel.is_none());
         }
     }
 
@@ -5961,13 +6330,13 @@ mod tests {
         app.default_model_reference = Some(app.choices[0].reference.clone());
         let mut dirty = false;
         app.handle(Event::Paste("/model a/".into()), &mut dirty);
-        assert_eq!(app.menu.as_ref().unwrap().selected_index(), Some(1));
+        assert_eq!(active_menu(&app).selected_index(), Some(1));
         app.handle(key(KeyCode::Char('m')), &mut dirty);
         assert_eq!(
             menu_values(&app),
             vec![MenuAction::Model(0), MenuAction::Model(1)]
         );
-        assert_eq!(app.menu.as_ref().unwrap().selected_index(), Some(0));
+        assert_eq!(active_menu(&app).selected_index(), Some(0));
     }
 
     #[test]
@@ -6189,10 +6558,11 @@ mod tests {
         app.navigate_history(true);
         let mut dirty = false;
         app.handle(function_key('p'), &mut dirty);
-        assert_eq!(app.input.lines(), &["/model "]);
+        assert_eq!(app.input.lines(), &[""]);
         app.handle(function_key('p'), &mut dirty);
         app.handle(key(KeyCode::Tab), &mut dirty);
-        assert_eq!(app.input.lines(), &["/model fixture/first"]);
+        assert_eq!(app.input.lines(), &[""]);
+        assert_eq!(model_query(&app), "fixture/first");
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert_eq!(app.input.lines(), &["旧任务"]);
         assert_eq!(app.history_index, Some(0));
@@ -6319,7 +6689,7 @@ mod tests {
         app.state = State::Ready;
         app.handle(function_key('p'), &mut dirty);
         app.handle(Event::Paste("missing".into()), &mut dirty);
-        assert!(app.menu.is_none());
+        assert!(active_menu(&app).items().is_empty());
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert_eq!(app.input.lines(), &["未发送🙂"]);
         app.handle(function_key('p'), &mut dirty);
@@ -6362,8 +6732,60 @@ mod tests {
             requests.try_recv(),
             Ok(WorkerCommand::SaveDefaultModel(reference)) if reference == "fixture/primary"
         ));
-        assert_eq!(app.input.lines(), &["/model "]);
-        assert!(app.menu.is_some());
+        assert_eq!(app.input.lines(), &[""]);
+        assert!(app.model_panel.is_some());
+    }
+
+    #[test]
+    fn model_default_ack_keeps_search_selection_and_current_model() {
+        let (mut app, requests, events) = plan_app();
+        app.choices = favorite_model_choices();
+        app.current_model = Some(app.choices[0].clone());
+        app.default_model_reference = Some(app.choices[0].reference.clone());
+        let mut dirty = false;
+        app.handle(Event::Paste("/model ENDOR-gA".into()), &mut dirty);
+        app.handle(control('s'), &mut dirty);
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkerCommand::SaveDefaultModel(reference)) if reference == app.choices[2].reference)
+        );
+        assert_eq!(
+            app.default_model_reference.as_deref(),
+            Some(app.choices[0].reference.as_str())
+        );
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        app.handle(control('s'), &mut dirty);
+        assert!(requests.try_recv().is_err());
+        events
+            .send(WorkerEvent::DefaultModelSaved(Ok(app.choices[2]
+                .reference
+                .clone())))
+            .unwrap();
+        app.receive();
+        assert_eq!(model_query(&app), "ENDOR-gA");
+        assert_eq!(active_menu(&app).items()[0].value, MenuAction::Model(2));
+        assert!(active_menu(&app).items()[0].label.ends_with("(default)"));
+        assert_eq!(
+            app.current_model.as_ref().unwrap().reference,
+            app.choices[0].reference
+        );
+        app.handle(control('s'), &mut dirty);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::SaveDefaultModel(_))
+        ));
+        events
+            .send(WorkerEvent::DefaultModelSaved(Err(anyhow::anyhow!(
+                "fixture save failure"
+            ))))
+            .unwrap();
+        app.receive();
+        assert_eq!(model_query(&app), "ENDOR-gA");
+        assert_eq!(
+            app.default_model_reference.as_deref(),
+            Some(app.choices[2].reference.as_str())
+        );
+        assert_eq!(app.input.lines(), &[""]);
+        assert!(app.input_history.is_empty());
     }
 
     #[test]
@@ -6433,7 +6855,7 @@ mod tests {
         app.input.move_cursor(CursorMove::Back);
         let cursor = app.input.cursor();
         app.handle(function_key('p'), &mut dirty);
-        assert_eq!(app.input.lines(), &["/model "]);
+        assert_eq!(app.input.lines(), &[""]);
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert!(app.model_picker_draft.is_none());
         assert_eq!(app.input.lines(), &["draft-中"]);

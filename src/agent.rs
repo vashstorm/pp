@@ -606,6 +606,14 @@ impl Agent {
         self.catalog.save_default_model(reference)
     }
 
+    pub(crate) fn favorite_models(&self) -> &[String] {
+        self.catalog.favorite_models()
+    }
+
+    pub(crate) fn toggle_favorite_model(&mut self, reference: &str) -> Result<Vec<String>> {
+        self.catalog.toggle_favorite_model(reference)
+    }
+
     pub(crate) fn set_think_level(&mut self, level: ThinkLevel) -> Result<()> {
         if !self.current_model.thinking.supports(level) {
             let mut message =

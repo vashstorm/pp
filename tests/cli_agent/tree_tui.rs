@@ -370,8 +370,9 @@ fn tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft() {
     final_reply(request, "tree-answer with a reasonably long reply body so the assistant card wraps across several physical rows in the preview");
     // Match a visible row, not a logical string that spans terminal wrapping.
     pty.text("tree-answer with a reasonably");
+    pty.model_search("");
     pty.text("fixture/primary");
-    pty.input("\x01\x0b");
+    pty.input("\x1b");
     pty.draft("");
     // 连续两个完整 Escape 输入，真实事件解码不借助计时 sleep。
     pty.drain();
@@ -546,8 +547,9 @@ fn tree_tui_tool_batch_stays_paired_and_never_reexecutes_both_protocols() {
         pty.input("/model ");
         context_tui_final(request, protocol, "tree-tools-discarded");
         pty.text("tree-tools-discarded");
+        pty.model_search("");
         pty.text("fixture/primary");
-        pty.input("\x01\x0b");
+        pty.input("\x1b");
         pty.draft("");
         tree_tui_open(&mut pty, "tree-tools-discarded");
         assert!(!pty.parser.screen().contents().contains("tree-counter"));
@@ -569,10 +571,11 @@ fn tree_tui_navigation_before_compaction_restores_native_history_both_protocols(
         let (request, _) = pty.request_at(&server, api_path(protocol));
         pty.input("/model ");
         context_tui_final(request, protocol, "tree-summary-after-compaction");
-        pty.text("Context compacted:");
+        pty.model_search("");
         pty.text("fixture/primary");
-        pty.input("\x01\x0b");
+        pty.input("\x1b");
         pty.draft("");
+        pty.text("Context compacted:");
         tree_tui_open(&mut pty, "noted context-recent-keep");
         // 线性有效历史：u1 a1 u2 a2 u3 a3(leaf)；单链上三步到 u2。候选组高于
         // viewport 时对齐组首，首行 filler 可见。

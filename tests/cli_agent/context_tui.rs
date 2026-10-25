@@ -104,7 +104,7 @@ fn context_tui_exchange(
     context_tui_paste(pty, prompt);
     pty.input("\r");
     let (request, _) = pty.request_at(server, api_path(protocol));
-    // Model candidates only become visible after the worker's terminal event.
+    // 模型面板只在 worker 的终结事件后出现，用它作为完成栅栏。
     pty.input("/model ");
     let answer = format!("{answer} {}", prompt.split_whitespace().next().unwrap());
     if protocol == "completion" {
@@ -112,10 +112,11 @@ fn context_tui_exchange(
     } else {
         response_final(request, &answer);
     }
-    pty.text(&answer);
+    pty.model_search("");
     pty.text("fixture/primary");
-    pty.input("\x01\x0b");
+    pty.input("\x1b");
     pty.draft("");
+    pty.text(&answer);
 }
 
 // 从输入栏上沿的 `Ctx N/W` 读取简写后的估算 token 数。
@@ -584,10 +585,11 @@ fn context_tui_compact_success_keeps_dialogue_drops_usage_and_survives_narrow_re
         } else {
             response_final(request, CONTEXT_TUI_SUMMARY);
         }
-        pty.text("Context compacted:");
+        pty.model_search("");
         pty.text("fixture/primary");
-        pty.input("\x01\x0b");
+        pty.input("\x1b");
         pty.draft("");
+        pty.text("Context compacted:");
         let after = context_tui_ctx_tokens(pty.parser.screen());
         assert!(
             after < before,

@@ -215,6 +215,8 @@ pub(crate) struct Settings {
     // None means "use the first provider's first model".
     #[serde(default)]
     pub(crate) default_model: Option<String>,
+    #[serde(default)]
+    pub(crate) favorite_models: Vec<String>,
     #[serde(default = "default_max_model_requests")]
     pub(crate) max_model_requests: usize,
     #[serde(default = "default_request_timeout_seconds")]
@@ -274,6 +276,14 @@ impl Settings {
                 .all(|name| !name.trim().is_empty()),
             "disabled_skills must contain non-blank names"
         );
+        ensure!(
+            self.favorite_models.iter().all(|reference| {
+                reference.split_once('/').is_some_and(|(provider, model)| {
+                    !provider.trim().is_empty() && !model.trim().is_empty()
+                })
+            }),
+            "favorite_models must use provider/model"
+        );
         if let Some(default_model) = &self.default_model {
             ensure!(
                 !default_model.trim().is_empty(),
@@ -330,6 +340,7 @@ fn default_settings() -> Settings {
         think_level: ThinkLevel::None,
         edit: EditMode::Replace,
         default_model: None,
+        favorite_models: Vec::new(),
         max_model_requests: default_max_model_requests(),
         request_timeout_seconds: default_request_timeout_seconds(),
         rate_limit_retry_budget_seconds: default_rate_limit_retry_budget_seconds(),
@@ -415,6 +426,31 @@ impl ModelCatalog {
         update_settings(&self.settings_path, |_| {
             Ok(("default_model", serde_yaml::Value::String(reference.into())))
         })
+    }
+
+    pub(crate) fn favorite_models(&self) -> &[String] {
+        &self.settings.favorite_models
+    }
+
+    pub(crate) fn toggle_favorite_model(&mut self, reference: &str) -> Result<Vec<String>> {
+        ensure!(
+            self.choices()
+                .iter()
+                .any(|choice| choice.reference == reference),
+            "Cannot favorite an unavailable model"
+        );
+        let mut favorites = Vec::new();
+        update_settings(&self.settings_path, |settings| {
+            favorites = settings.favorite_models;
+            if favorites.iter().any(|item| item == reference) {
+                favorites.retain(|item| item != reference);
+            } else {
+                favorites.push(reference.to_owned());
+            }
+            Ok(("favorite_models", serde_yaml::to_value(&favorites)?))
+        })?;
+        self.settings.favorite_models = favorites.clone();
+        Ok(favorites)
     }
 
     pub(crate) fn default_reference(&self) -> &str {
@@ -542,6 +578,91 @@ pub(crate) fn read_settings(path: &Path) -> Result<Settings> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn favorite_models_default_validate_and_preserve_unavailable_references() {
+        for settings in [None, Some("{}"), Some("default_model: fixture/primary")] {
+            assert!(
+                load(settings, Some(VALID_MODELS))
+                    .unwrap()
+                    .settings
+                    .favorite_models
+                    .is_empty()
+            );
+        }
+        let config = load(
+            Some("favorite_models: [removed/team/model, fixture/primary]"),
+            Some(VALID_MODELS),
+        )
+        .unwrap();
+        assert_eq!(
+            config.settings.favorite_models,
+            ["removed/team/model", "fixture/primary"]
+        );
+        for value in [
+            json!(null),
+            json!(true),
+            json!("secret-marker"),
+            json!([1]),
+            json!([""]),
+            json!(["secret-marker"]),
+            json!(["/secret-marker"]),
+            json!(["secret-marker/"]),
+        ] {
+            rejection(
+                Some(&json!({"favorite_models": value}).to_string()),
+                Some(VALID_MODELS),
+                &["settings.yml"],
+            );
+        }
+    }
+
+    #[test]
+    fn favorite_models_save_reload_toggle_and_fail_without_changing_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.yml");
+        let models_path = dir.path().join("models.yml");
+        fs::write(&models_path, VALID_MODELS).unwrap();
+        let mut catalog = ModelCatalog::from_files(&settings_path, &models_path).unwrap();
+        assert_eq!(
+            catalog.toggle_favorite_model("fixture/primary").unwrap(),
+            ["fixture/primary"]
+        );
+        assert!(settings_path.is_file());
+        assert_eq!(
+            ModelCatalog::from_files(&settings_path, &models_path)
+                .unwrap()
+                .favorite_models(),
+            ["fixture/primary"]
+        );
+        let original = "# 保留注释
+edit: hashline
+favorite_models: [removed/team/model, fixture/primary]
+";
+        fs::write(&settings_path, original).unwrap();
+        assert_eq!(
+            catalog.toggle_favorite_model("fixture/primary").unwrap(),
+            ["removed/team/model"]
+        );
+        let saved = fs::read_to_string(&settings_path).unwrap();
+        assert!(saved.contains("# 保留注释"));
+        assert!(saved.contains("edit: hashline"));
+        assert!(catalog.toggle_favorite_model("unknown/model").is_err());
+        assert_eq!(fs::read_to_string(&settings_path).unwrap(), saved);
+        let invalid = "favorite_models: secret-marker";
+        fs::write(&settings_path, invalid).unwrap();
+        let error = catalog
+            .toggle_favorite_model("fixture/primary")
+            .unwrap_err();
+        assert!(!format!("{error:#}").contains("secret-marker"));
+        assert_eq!(fs::read_to_string(&settings_path).unwrap(), invalid);
+        assert_eq!(catalog.favorite_models(), ["removed/team/model"]);
+        fs::remove_file(&settings_path).unwrap();
+        fs::create_dir(&settings_path).unwrap();
+        assert!(catalog.toggle_favorite_model("fixture/primary").is_err());
+        assert_eq!(catalog.favorite_models(), ["removed/team/model"]);
+        assert_eq!(fs::read_to_string(&models_path).unwrap(), VALID_MODELS);
+    }
 
     #[test]
     fn notification_options_validate_overrides() {

@@ -1,6 +1,6 @@
 <h1 align="center">✈ pp</h1>
 
-<p align="center"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
+<p align="center"><strong>English</strong> | <a href="README.zh-CN.md">Simplified Chinese</a></p>
 
 <p align="center"><strong>paper plane · Your coding agent in the terminal</strong></p>
 <p align="center">Rust · macOS / Linux · OpenAI-compatible Responses / Chat Completions</p>
@@ -66,6 +66,7 @@ Create `~/.pp/agent/settings.yml`, or omit it to use the defaults.
 
 ```yaml
 default_model: openai/main
+favorite_models: []
 think_level: none
 edit: replace
 max_model_requests: 20
@@ -97,6 +98,8 @@ printf 'Explain how to build the current project\n' | pp
 
 ## Everyday use
 
+Opening the model picker in the TUI clears the main input and focuses a separate search field above the list. The panel height is set from the total model count when opened and stays fixed while filtering. The panel uses at most 15 rows: 3 for search, up to 11 for the list, and 1 for hints. Longer lists show a scrollbar and support arrow keys, page keys, and mouse-wheel scrolling inside the panel. Search filters as you type, matching any part of `provider/model` or the actual model name, case-insensitively. Ctrl + F toggles the highlighted model's favorite status. Favorites show a solid gold Nerd Font star `` and appear first, with configuration order preserved within each group. Favorites are saved in the global `settings.yml` under `favorite_models` and persist across restarts. Ctrl + S saves the default model. When no models match, the panel shows a message, and Enter and Tab do nothing.
+
 Use `/help` for full help and `/tips` for usage tips. The following slash commands work in interactive modes; content passed through `-p` is always sent as a regular prompt.
 
 | Command | Purpose |
@@ -118,6 +121,7 @@ Use `/help` for full help and `/tips` for usage tips. The following slash comman
 | Queue an independent follow-up task | ⌥ + Enter | Alt + Enter |
 | Insert a newline | Ctrl + J | Ctrl + J |
 | Open the model menu | ⌥ + P | Ctrl + P |
+| Toggle favorite for the highlighted model | Ctrl + F | Ctrl + F |
 | Cycle reasoning levels | Shift + Tab | Shift + Tab |
 | Expand / collapse tool output | Ctrl + O | Ctrl + O |
 | View pending input | ⌥ + Q | Ctrl + Q |

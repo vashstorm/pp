@@ -23,18 +23,18 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         pty.ready_model("first-model");
         pty.input("/model ");
         pty.text("fixture/primary (default)");
-        pty.text("Ctrl + S set selected model as default");
+        pty.text("Ctrl + S default");
         assert!(!pty.parser.screen().contents().contains("gateway/team/secondary (default)"));
-        pty.input("\x01\x0b/model second");
+        pty.input("\x01\x0bsecond");
         pty.text("gateway/team/secondary");
         pty.input("\x13");
         pty.text("Default model saved: gateway/team/secondary");
         pty.ready_model("first-model");
         pty.ready_effort("high");
-        pty.draft("/model second");
+        pty.model_search("second");
         pty.text("gateway/team/secondary (default)");
         assert!(!pty.parser.screen().contents().contains("fixture/primary (default)"));
-        pty.input("\x01\x0b");
+        pty.input("\x1b");
         pty.draft("");
         let saved = std::fs::read_to_string(&path).unwrap();
         assert!(saved.contains("# 保留默认模型之外的设置"));
@@ -57,7 +57,9 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         restarted.ready_model("second-model");
         restarted.input("/model ");
         restarted.text("gateway/team/secondary (default)");
-        restarted.input("\x01\x0bverify startup model\r");
+        restarted.input("\x1b");
+        restarted.draft("");
+        restarted.input("verify startup model\r");
         let (request, body) = receive_at(&server, api_path(protocol));
         assert_eq!(body["model"], "second-model");
         super::think::finish_request(request, protocol);
@@ -73,9 +75,9 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         restarted.text("Default model saved: fixture/primary");
         restarted.ready_model("second-model");
         restarted.text("fixture/primary (default)");
-        restarted.draft("/model");
+        restarted.model_search("");
         restarted.input("\t");
-        restarted.draft("/model fixture/primary");
+        restarted.model_search("fixture/primary");
         restarted.input("\x1b");
         restarted.draft("草稿🙂");
         assert_eq!(restarted.parser.screen().cursor_position(), cursor);
@@ -87,7 +89,7 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary (default)"));
         restarted.input("\x13");
         restarted.text("Failed to save default model");
-        restarted.draft("/model");
+        restarted.model_search("");
         restarted.text("fixture/primary (default)");
         restarted.input("\x1b");
         restarted.draft("草稿🙂");
@@ -114,9 +116,9 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     pty.input("\x13");
     pty.text("Default model saved: fixture/primary");
     pty.ready_model("fixture-model");
-    pty.draft("/model");
+    pty.model_search("");
     pty.text("fixture/primary (default)");
-    pty.input("\x01\x0b");
+    pty.input("\x1b");
     pty.draft("");
     assert!(std::fs::read_to_string(&path).unwrap().contains("default_model: fixture/primary"));
 
@@ -128,7 +130,7 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     pty.input("\x13");
     pty.text("Failed to save default model");
     pty.ready_model("fixture-model");
-    pty.draft("/model");
+    pty.model_search("");
     pty.text("fixture/primary (default)");
     pty.input("\x1b");
     pty.draft("draft after failure");
@@ -377,7 +379,7 @@ fn model_thinking_tui_effort_menu_follows_model_policy_across_switches() {
     pty.function_key('p');
     pty.text("fixture/b");
     pty.input("\x1b[B\t");
-    pty.draft("/model fixture/b");
+    pty.model_search("fixture/b");
     pty.input("\r");
     pty.ready_model("model-b");
     pty.ready_effort("medium");
@@ -446,7 +448,7 @@ fn model_thinking_tui_effort_menu_follows_model_policy_across_switches() {
     pty.function_key('p');
     pty.text("fixture/a");
     pty.input("\x1b[A\t");
-    pty.draft("/model fixture/a");
+    pty.model_search("fixture/a");
     pty.input("\r");
     pty.ready_model("model-a");
     pty.ready_effort("high");
@@ -466,7 +468,7 @@ fn model_thinking_tui_single_effort_shift_tab_retains_level_and_draft() {
     pty.function_key('p');
     pty.text("fixture/c");
     pty.input("\x1b[B\x1b[B\t");
-    pty.draft("/model fixture/c");
+    pty.model_search("fixture/c");
     pty.input("\r");
     pty.ready_model("model-c");
     pty.ready_effort("medium");
@@ -557,4 +559,91 @@ fn model_thinking_tui_ctrl_s_saves_global_without_overriding_model_default() {
     pty.input("\x03");
     pty.finish();
     no_more(&server);
+}
+
+#[test]
+fn tui_model_favorites_search_persist_and_restore_drafts_without_requests() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let path = config_path(home.path(), "settings.yml");
+        let original = "# 保留应用设置\nthink_level: none\nedit: hashline\n";
+        std::fs::write(&path, original).unwrap();
+        let models = json!({"providers":{
+            "fixture": slash_provider(&server, "fixture", protocol, json!({
+                "primary": {"model":"first-model"}})),
+            "gateway": slash_provider(&server, "gateway", protocol, json!({
+                "team/secondary": {"model":"second-model"}}))}}).to_string();
+        let models_path = config_path(home.path(), "models.yml");
+        std::fs::write(&models_path, &models).unwrap();
+        let mut pty = Pty::start_with_existing_files(home.path());
+        pty.ready_model("first-model");
+        pty.input("草稿🙂");
+        pty.draft("草稿🙂");
+        let cursor = pty.parser.screen().cursor_position();
+        pty.function_key('p');
+        pty.text("Ctrl + F favorite");
+        pty.input("ECoNd");
+        pty.text("gateway/team/secondary");
+        pty.wait_for("包含搜索过滤其他模型", |screen| !screen.contents().contains("fixture/primary"));
+        pty.input("\x06");
+        pty.text("gateway/team/secondary ");
+        pty.wait_for("收藏星标显示为黄色", |screen| {
+            let (rows, columns) = screen.size();
+            (0..rows).any(|row| (0..columns).any(|column| {
+                screen.cell(row, column).is_some_and(|cell| cell.contents() == "" && cell.fgcolor() == vt100::Color::Rgb(254, 188, 56))
+            }))
+        });
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("favorite_models:"));
+        assert!(saved.contains("gateway/team/secondary"));
+        assert!(saved.contains("# 保留应用设置"));
+        assert!(saved.contains("edit: hashline"));
+        pty.input("\x01\x0b");
+        pty.wait_for("收藏模型排在最前", |screen| {
+            let text = screen.contents();
+            text.find("gateway/team/secondary ").zip(text.find("fixture/primary (default)")).is_some_and(|(favorite, other)| favorite < other)
+        });
+        pty.input("\x1b");
+        pty.draft("草稿🙂");
+        assert_eq!(pty.parser.screen().cursor_position(), cursor);
+        no_more(&server);
+        pty.input("\x03");
+        pty.finish();
+
+        let mut restarted = Pty::start_with_existing_files(home.path());
+        restarted.ready_model("first-model");
+        restarted.function_key('p');
+        restarted.text("gateway/team/secondary ");
+        restarted.input("mIsSiNg");
+        restarted.text("No matching models");
+        restarted.input("\r\t\x06");
+        restarted.model_search("mIsSiNg");
+        no_more(&server);
+        restarted.input("\x01\x0bWaY/TeAm");
+        restarted.text("❯ gateway/team/secondary ");
+        restarted.input("\x06");
+        restarted.wait_for("取消收藏后移除星标", |screen| !screen.contents().contains(''));
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("gateway/team/secondary"));
+        let invalid = "favorite_models: secret-marker";
+        std::fs::write(&path, invalid).unwrap();
+        restarted.input("\x06");
+        restarted.text("Failed to save favorite models");
+        assert!(!restarted.parser.screen().contents().contains("secret-marker"));
+        assert!(!restarted.parser.screen().contents().contains(''));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        assert_eq!(std::fs::read_to_string(&models_path).unwrap(), models);
+        no_more(&server);
+        restarted.input("\r");
+        restarted.ready_model("second-model");
+        no_more(&server);
+        restarted.input("verify selected model\r");
+        let (request, body) = receive_at(&server, api_path(protocol));
+        assert_eq!(body["model"], "second-model");
+        super::think::finish_request(request, protocol);
+        restarted.ready_model("second-model");
+        restarted.input("\x03");
+        restarted.finish();
+        no_more(&server);
+    }
 }

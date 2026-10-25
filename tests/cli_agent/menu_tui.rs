@@ -44,10 +44,11 @@ fn tui_menu_overlay_keeps_input_cursor_and_history_anchored() {
     pty.draft("/mo");
 
     pty.function_key('p');
-    pty.wait_for("模型菜单在固定输入行上方显示", |screen| {
+    pty.wait_for("模型菜单在输入框上方显示且光标进入搜索框", |screen| {
         screen.contents().contains("(current)")
             && screen.contents().contains("Ctrl + S")
-            && screen.cursor_position().0 == 27
+            && screen.cursor_position() == (22, 2)
+            && screen.cell(27, 0).unwrap().contents() == "❯"
     });
     pty.input("\x1b");
     pty.draft("/mo");
