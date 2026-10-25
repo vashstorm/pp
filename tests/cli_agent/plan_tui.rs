@@ -575,7 +575,7 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), PLAN_TUI_BODY);
         pty.input("\x01\x0b/new\r");
         pty.wait_for("new session welcome after reset", |screen| {
-            screen.contents().contains("▄▀▀▄    ▄▀▀▄") && input_is_ready(screen)
+            screen.contents().contains("▄▄▄██▀▀██") && input_is_ready(screen)
         });
         plan_wait_mode(&mut pty, "Plan");
         pty.input("/plan view\r");

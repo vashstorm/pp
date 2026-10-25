@@ -3208,7 +3208,7 @@ mod tui {
         .unwrap();
         let mut pty = Pty::start_with_existing_files(home.path());
         pty.ready_effort("no think");
-        pty.text("▄▀▀▄    ▄▀▀▄");
+        pty.text("▄▄▄██▀▀██");
         let background: Vec<_> = (0..26)
             .map(|row| {
                 (0..100)
@@ -3353,7 +3353,7 @@ mod tui {
                 !text.contains("Default thinking effort saved:")
                     && !text.contains("Note")
                     && !text.contains("│ Note")
-                    && text.contains("▄▀▀▄    ▄▀▀▄")
+                    && text.contains("▄▄▄██▀▀██")
             },
         );
         pty.draft("草稿🙂");
@@ -3451,7 +3451,7 @@ mod tui {
                 let text = screen.contents();
                 notification_bounds(screen, "Important", yellow).is_some()
                     && text.contains("Skill scan issues: 1. Use /skills for details.")
-                    && text.contains("▄▀▀▄    ▄▀▀▄")
+                    && text.contains("▄▄▄██▀▀██")
                     && input_is_ready(screen)
             },
         );
@@ -3464,7 +3464,7 @@ mod tui {
         pty.input("警告时草稿🙂");
         pty.draft("警告时草稿🙂");
         assert!(!pty.parser.screen().hide_cursor());
-        assert!(pty.parser.screen().contents().contains("▄▀▀▄    ▄▀▀▄"));
+        assert!(pty.parser.screen().contents().contains("▄▄▄██▀▀██"));
         pty.input("\x01\x0b/skills\r");
         pty.text("Skills");
         pty.wait_for(
@@ -3546,10 +3546,12 @@ mod tui {
         let screen = pty.parser.screen();
         let text = screen.contents();
         let lines: Vec<_> = text.lines().collect();
-        assert_eq!(lines[2].trim(), "▄▀▀▄    ▄▀▀▄");
-        assert_eq!(lines[2].find('▄'), Some(45));
-        assert_eq!(lines[7].trim(), concat!("v", env!("CARGO_PKG_VERSION")));
-        assert_eq!(lines[9], "  Tips:");
+        assert_eq!(lines[2].trim(), "▄▄▄█");
+        assert_eq!(lines[2].find('▄'), Some(53));
+        assert_eq!(lines[5].trim(), "▀▀█████▀  ▄████");
+        assert_eq!(lines[8].trim(), "▀█▀      pp");
+        assert_eq!(lines[9].trim(), concat!("v", env!("CARGO_PKG_VERSION")));
+        assert_eq!(lines[11], "  Tips:");
         let model_key = if cfg!(target_os = "macos") {
             "⌥ + P"
         } else {
@@ -3568,7 +3570,7 @@ mod tui {
         .into_iter()
         .enumerate()
         {
-            let row = 10 + u16::try_from(row).unwrap();
+            let row = 12 + u16::try_from(row).unwrap();
             assert_tip_key(screen, row, 2..52, left);
             assert_tip_key(screen, row, 52..100, right);
         }
@@ -3583,10 +3585,11 @@ mod tui {
         assert!(lines[29].contains("off"));
         assert!(!text.contains("│ Note"));
         for (row, col, color) in [
-            (2, 45, vt100::Color::Rgb(215, 175, 95)),
-            (2, 53, vt100::Color::Rgb(122, 162, 247)),
-            (10, 2, vt100::Color::Rgb(127, 166, 106)),
-            (10, 14, vt100::Color::Idx(7)),
+            (2, 53, vt100::Color::Rgb(215, 175, 95)),
+            (5, 50, vt100::Color::Rgb(122, 162, 247)),
+            (8, 60, vt100::Color::Rgb(122, 162, 247)),
+            (12, 2, vt100::Color::Rgb(127, 166, 106)),
+            (12, 14, vt100::Color::Idx(7)),
             (26, 0, vt100::Color::Rgb(127, 166, 106)),
             (29, 1, vt100::Color::Rgb(127, 166, 106)),
         ] {
@@ -3625,7 +3628,7 @@ mod tui {
         pty.resize(12, 40);
         pty.wait_for("小窗口显示紧凑欢迎页并保留草稿", |screen| {
             let text = screen.contents();
-            text.lines().next().is_some_and(|line| line.trim() == "PP")
+            text.lines().next().is_some_and(|line| line.trim() == "  pp")
                 && text.contains("startup draft")
                 // 窄屏仍在输入栏上沿右端显示上下文字段。
                 && text
@@ -3635,19 +3638,17 @@ mod tui {
         });
         let compact = pty.parser.screen();
         assert_eq!(
-            compact.cell(0, 19).unwrap().fgcolor(),
+            compact.cell(0, 18).unwrap().fgcolor(),
             vt100::Color::Rgb(215, 175, 95)
         );
-        assert!(compact.cell(0, 19).unwrap().bold());
-        assert!(compact.cell(0, 19).unwrap().italic());
         assert_eq!(
-            compact.cell(0, 20).unwrap().fgcolor(),
+            compact.cell(0, 21).unwrap().fgcolor(),
             vt100::Color::Rgb(122, 162, 247)
         );
-        assert!(compact.cell(0, 20).unwrap().italic());
-        assert!(compact.cell(0, 20).unwrap().bold());
+        assert!(!compact.cell(0, 21).unwrap().bold());
+        assert!(!compact.cell(0, 21).unwrap().italic());
         pty.resize(30, 100);
-        pty.text("▄▀▀▄    ▄▀▀▄");
+        pty.text("▄▄▄██▀▀██");
         pty.draft("startup draft");
         pty.input("\r");
         let (request, body) = pty.request(&server);
@@ -3655,13 +3656,13 @@ mod tui {
         final_reply(request, "startup answer");
         pty.text("startup answer");
         pty.completed();
-        assert!(!pty.parser.screen().contents().contains("▄▀▀▄"));
+        assert!(!pty.parser.screen().contents().contains("▄▄▄██▀▀██"));
         pty.input("/new\r");
-        pty.text("▄▀▀▄    ▄▀▀▄");
+        pty.text("▄▄▄██▀▀██");
         assert!(!pty.parser.screen().contents().contains("Session reset."));
         pty.input("/help\r");
         pty.text("bash has no directory isolation");
-        assert!(!pty.parser.screen().contents().contains("▄▀▀▄"));
+        assert!(!pty.parser.screen().contents().contains("▄▄▄██▀▀██"));
         pty.input("/quit\r");
         pty.finish();
         no_more(&server);
@@ -3674,7 +3675,7 @@ mod tui {
             let (home, mut pty) = context_tui_start(&server, protocol, 100_000, 80);
             pty.text("Tips:");
             let startup = pty.parser.screen();
-            let tips = (10..18)
+            let tips = (12..20)
                 .flat_map(|row| {
                     [
                         tip_columns(startup, row, 2..52),
@@ -3703,7 +3704,7 @@ mod tui {
                     .lines()
                     .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
                     .collect::<Vec<_>>();
-                !text.contains("▄▀▀▄")
+                !text.contains("▄▄▄██▀▀██")
                     && tips
                         .iter()
                         .all(|tip| lines.iter().any(|line| line.contains(tip)))
@@ -5370,7 +5371,7 @@ mod tui {
         pty.input("/new\r");
         pty.wait_for("acknowledged reset", |screen| {
             let text = screen.contents();
-            text.contains("▄▀▀▄    ▄▀▀▄")
+            text.contains("▄▄▄██▀▀██")
                 && input_is_ready(screen)
                 && !text.contains("Session reset")
                 && !text.contains("recovered-answer")
@@ -5407,7 +5408,7 @@ mod tui {
             |screen| {
                 notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
                     && screen.contents().contains("models.yml")
-                    && screen.contents().contains("▄▀▀▄    ▄▀▀▄")
+                    && screen.contents().contains("▄▄▄██▀▀██")
             },
         );
         let task = "create must-not-exist";
@@ -5663,7 +5664,7 @@ mod tui {
             });
             // 无欢迎页；工具卡片重放保存的退出状态，不伪造 wall duration。
             let text = pty.parser.screen().contents();
-            assert!(!text.contains("▄▀▀▄"));
+            assert!(!text.contains("▄▄▄██▀▀██"));
             assert!(text.contains("$ printf"));
             assert!(text.contains("read · tui-read.txt"));
             assert!(text.contains("tool-out"));

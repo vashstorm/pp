@@ -1,19 +1,21 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
 
 const FIRST: Color = Color::Rgb(215, 175, 95);
 const SECOND: Color = Color::Rgb(122, 162, 247);
-const LOGO: [(&str, &str); 5] = [
-    ("  ▄▀▀▄", "  ▄▀▀▄"),
-    (" ▐▌ ▐▌", " ▐▌ ▐▌"),
-    (" ▟▛▀▀ ", " ▐▛▀▀ "),
-    ("▐▌    ", " ▐▌   "),
-    ("▀▘    ", " ▀▘   "),
+const LOGO: [(&str, &str); 7] = [
+    ("              ▄▄", "▄█"),
+    ("        ▄▄▄██▀▀", "██"),
+    ("  ▄▄▄██████▀ ", "▄███"),
+    (" ▀▀█████▀  ", "▄████"),
+    ("     ▀█  ", "▄█████▀"),
+    ("      █▀ ", "▀█████"),
+    ("            ", "▀█▀"),
 ];
 
 pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
@@ -23,26 +25,22 @@ pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
     let compact = area.width < 28 || area.height < 11;
     let mut lines = if compact {
         vec![Line::from(vec![
-            Span::styled(
-                "P",
-                Style::default()
-                    .fg(FIRST)
-                    .add_modifier(Modifier::BOLD | Modifier::ITALIC),
-            ),
-            Span::styled(
-                "P",
-                Style::default()
-                    .fg(SECOND)
-                    .add_modifier(Modifier::BOLD | Modifier::ITALIC),
-            ),
+            Span::styled("", Style::default().fg(FIRST)),
+            Span::raw("  "),
+            Span::styled("pp", Style::default().fg(SECOND)),
         ])]
     } else {
         LOGO.into_iter()
-            .map(|(first, second)| {
+            .enumerate()
+            .map(|(row, (first, second))| {
                 Line::from(vec![
                     Span::styled(first, Style::default().fg(FIRST)),
-                    Span::raw("  "),
                     Span::styled(second, Style::default().fg(SECOND)),
+                    Span::raw(" ".repeat(21 - first.chars().count() - second.chars().count())),
+                    Span::styled(
+                        if row == LOGO.len() - 1 { "pp" } else { "  " },
+                        Style::default().fg(SECOND),
+                    ),
                 ])
             })
             .collect::<Vec<_>>()

@@ -4959,7 +4959,7 @@ mod tests {
         app.notifications
             .tick(Instant::now() + Duration::from_millis(10000));
         let screen = draw(&mut app, 100, 30);
-        assert!(screen.contains("▄▀▀▄    ▄▀▀▄"));
+        assert!(screen.contains("▄▄▄██▀▀██"));
         assert!(!screen.contains("configuration unavailable"));
         assert!(!screen.contains("channel closed"));
         assert_eq!(app.input.lines(), &["草稿"]);
@@ -5448,7 +5448,7 @@ mod tests {
         assert!(matches!(app.state, State::Ready));
         assert_eq!(app.input.lines(), &[""]);
         let screen = draw(&mut app, 100, 30);
-        assert!(screen.contains("▄▀▀▄    ▄▀▀▄"));
+        assert!(screen.contains("▄▄▄██▀▀██"));
         assert!(!screen.contains("Session reset."));
         assert!(!screen.contains("stale session feedback"));
         assert!(!screen.contains("╭"));
