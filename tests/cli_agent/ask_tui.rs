@@ -25,6 +25,92 @@ fn ask_single_arguments() -> Value {
     ]})
 }
 
+// 真实终端中同时切换多个已完成工具，并在 ask 持有焦点时保留选择和主草稿。
+#[test]
+fn tool_folding_ctrl_o_globally_toggles_during_ask_and_new_tools_inherit() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        for name in ["first", "second", "third"] {
+            let body = (0..20).map(|i| format!("fold-{name}-{i:02}"))
+                .collect::<Vec<_>>().join("\n");
+            std::fs::write(project.path().join(name), body).unwrap();
+        }
+        let mut pty = ask_tui_start(&server, home.path(), project.path(), protocol);
+        pty.ready();
+        pty.resize(110, 100);
+        pty.input("global tool folding\r");
+        let (request, _) = pty.request_at(&server, api_path(protocol));
+        pty.input("保留草稿");
+        pty.draft("保留草稿");
+        let mk_call = |id: &str, name: &str, args| {
+            if protocol == "completion" { call(id, name, args) }
+            else { response_call(id, name, args) }
+        };
+        ask_reply_calls(request, protocol, json!([
+            mk_call("first", "read", json!({"path":"first"})),
+            mk_call("second", "read", json!({"path":"second"})),
+            mk_call("bash", "bash", json!({"command":"for i in {0..19}; do printf 'fold-bash-%02d\\n' \"$i\"; done"})),
+            ask_call_json(protocol, "fold-ask", ask_single_arguments())
+        ]));
+        ask_wait_panel(&mut pty, "Which database should the project use?");
+        pty.wait_for("多个工具默认折叠为十五行", |screen| {
+            let text = screen.contents();
+            text.matches("Ctrl + O to expand").count() == 3
+                && text.contains("fold-first-14") && text.contains("fold-second-14")
+                && text.contains("fold-bash-05") && !text.contains("fold-bash-00")
+                && !text.contains("fold-first-19") && !text.contains("fold-second-19")
+        });
+        pty.input("\x1b[B ");
+        pty.wait_for("选择答案后保持面板", |screen| screen.contents().contains("⦿ Postgres"));
+        pty.input("\x0f");
+        pty.wait_for("ask 焦点下全局展开", |screen| {
+            let text = screen.contents();
+            text.contains("fold-first-19") && text.contains("fold-second-19")
+                && text.contains("fold-bash-00") && !text.contains("to expand")
+                && text.contains("⦿ Postgres") && text.contains("保留草稿")
+        });
+        pty.input("\x0f");
+        pty.wait_for("ask 焦点下全局收起", |screen| {
+            let text = screen.contents();
+            text.matches("Ctrl + O to expand").count() == 3
+                && !text.contains("fold-first-19") && !text.contains("fold-second-19")
+                && !text.contains("fold-bash-00") && text.contains("⦿ Postgres")
+        });
+        pty.input("\x0f");
+        pty.text("fold-first-19");
+        pty.input("\r");
+        let (request, body) = pty.request_at(&server, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        assert_eq!(outputs.len(), 4);
+        assert!(outputs[0].1["content"].as_str().unwrap().contains("fold-first-19"));
+        assert!(outputs[1].1["content"].as_str().unwrap().contains("fold-second-19"));
+        assert!(outputs[2].1["stdout"].as_str().unwrap().contains("fold-bash-00"));
+        assert_eq!(outputs[3].1["answers"][0]["selected_options"], json!(["Postgres"]));
+        ask_reply_calls(request, protocol, json!([
+            mk_call("third", "read", json!({"path":"third"}))
+        ]));
+        let (request, _) = pty.request_at(&server, api_path(protocol));
+        pty.wait_for("后续工具继承展开状态", |screen| {
+            let text = screen.contents();
+            text.contains("fold-third-19") && !text.contains("to expand")
+        });
+        ask_final_reply(request, protocol, "global folding done");
+        pty.text("global folding done");
+        pty.ready();
+        pty.draft("保留草稿");
+        ask_assert_cursor_at_draft_end(&pty);
+        pty.input("\x0f");
+        pty.wait_for("任务结束后仍可全局折叠", |screen| {
+            screen.contents().matches("Ctrl + O to expand").count() == 4
+        });
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
+}
+
 fn ask_call_json(protocol: &str, id: &str, arguments: Value) -> Value {
     if protocol == "completion" {
         call(id, "ask", arguments)

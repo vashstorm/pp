@@ -339,8 +339,7 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
             "replayed turns are out of order for {protocol}"
         );
 
-        // Bash output replays folded; function key O expands its head and folds it
-        // back without touching the input. Read output remains fully visible.
+        // 工具输出恢复为折叠状态；Ctrl+O 全局展开和折叠，保留输入。
         for _ in 0..80 {
             pty.drain();
             if pty.parser.screen().contents().contains("$ printf") {
@@ -359,9 +358,9 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
             "the long bash result must replay folded\n{}",
             pty.diagnostics()
         );
-        pty.function_key('o');
+        pty.input("\x0f");
         pty.text("resume-history-bash-001");
-        pty.function_key('o');
+        pty.input("\x0f");
         pty.wait_for("tool output folds again", |screen| {
             !screen.contents().contains("resume-history-bash-001")
         });

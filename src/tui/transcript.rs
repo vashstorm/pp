@@ -21,7 +21,7 @@ const BASH_BORDER: Color = Color::Rgb(76, 85, 98);
 const MUTED_TEXT: Color = Color::Rgb(110, 117, 129);
 const USER_BACKGROUND: Color = Color::Rgb(48, 42, 63);
 const ASSISTANT_BACKGROUND: Color = Color::Rgb(35, 39, 50);
-const BASH_PREVIEW_LINES: usize = 10;
+const TOOL_PREVIEW_LINES: usize = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EntryKind {
@@ -276,6 +276,10 @@ struct TranscriptEntry {
 }
 
 impl TranscriptEntry {
+    fn is_collapsible_tool(&self) -> bool {
+        self.tool.is_some() && self.kind != EntryKind::Ask
+    }
+
     fn new(kind: EntryKind, title: String, text: String, tool: Option<String>) -> Self {
         Self {
             kind,
@@ -393,7 +397,9 @@ impl TranscriptEntry {
             }
             Line::from(spans)
         } else {
-            let style = if self.tool.is_some() {
+            let style = if self.kind == EntryKind::Diff {
+                Style::default().fg(palette::MUTED)
+            } else if self.tool.is_some() {
                 Style::default().add_modifier(Modifier::DIM)
             } else {
                 Style::default()
@@ -524,7 +530,7 @@ impl TranscriptEntry {
                 );
             }
         } else if !self.visible_text().is_empty() {
-            if matches!(self.kind, EntryKind::Diff | EntryKind::Ask) {
+            if self.kind == EntryKind::Ask {
                 lines.extend(
                     wrap_block(
                         block_line(
@@ -554,41 +560,8 @@ impl TranscriptEntry {
             self.add_lines(Source::StderrLabel, &mut lines);
             self.add_lines(Source::Stderr, &mut lines);
         }
-        let count = lines.len() - output_start;
-        if bash && !self.expanded && count > BASH_PREVIEW_LINES {
-            let omitted = count - BASH_PREVIEW_LINES;
-            lines.drain(output_start..output_start + omitted);
-            self.elision = format!(
-                "… ({omitted} earlier lines, showing {BASH_PREVIEW_LINES} of {count}) {}",
-                crate::shortcuts::platform_text("(⌥ + O: Expand)", "(Ctrl + O: Expand)")
-            );
-            lines.insert(
-                output_start,
-                LayoutLine {
-                    content: LayoutContent::Source {
-                        source: Source::Elision,
-                        range: 0..self.elision.len(),
-                        title_end: false,
-                    },
-                    height: 0,
-                },
-            );
-        }
-        if skill && !self.expanded && count > BASH_PREVIEW_LINES {
-            let omitted = count - BASH_PREVIEW_LINES;
-            lines.truncate(output_start + BASH_PREVIEW_LINES);
-            self.elision = format!(
-                "… {omitted} more lines {}",
-                crate::shortcuts::platform_text("(⌥ + O to expand)", "(Ctrl + O to expand)")
-            );
-            lines.push(LayoutLine {
-                content: LayoutContent::Source {
-                    source: Source::Elision,
-                    range: 0..self.elision.len(),
-                    title_end: false,
-                },
-                height: 0,
-            });
+        if self.is_collapsible_tool() && !self.expanded {
+            self.fold_output(&mut lines, output_start);
         }
         if skill {
             self.footer = match self.status {
@@ -629,6 +602,71 @@ impl TranscriptEntry {
             height,
             lines,
         });
+    }
+
+    fn fold_output(&mut self, lines: &mut Vec<LayoutLine>, output_start: usize) {
+        // 超长逻辑行可能被拆成多个 Paragraph；预览额度不按这些分片或换行后的屏幕行计算。
+        let starts: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .skip(output_start)
+            .filter_map(|(index, line)| match &line.content {
+                LayoutContent::Source { source, range, .. }
+                    if matches!(source, Source::Text | Source::Stdout | Source::Stderr)
+                        && (range.start == 0
+                            || self.source(*source).as_bytes()[range.start - 1] == b'\n') =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect();
+        let count = starts.len();
+        if count <= TOOL_PREVIEW_LINES {
+            return;
+        }
+        let omitted = count - TOOL_PREVIEW_LINES;
+        let bash = self.kind == EntryKind::Bash;
+        if bash {
+            let mut first = starts[omitted];
+            if first > output_start
+                && matches!(
+                    lines[first - 1].source(),
+                    Some(Source::StdoutLabel | Source::StderrLabel)
+                )
+            {
+                first -= 1;
+            }
+            lines.drain(output_start..first);
+            self.elision = format!(
+                "… ({omitted} earlier lines, showing {TOOL_PREVIEW_LINES} of {count}) (Ctrl + O to expand)"
+            );
+        } else {
+            let mut end = starts[TOOL_PREVIEW_LINES];
+            if end > output_start
+                && matches!(
+                    lines[end - 1].source(),
+                    Some(Source::StdoutLabel | Source::StderrLabel)
+                )
+            {
+                end -= 1;
+            }
+            lines.truncate(end);
+            self.elision = format!("… {omitted} more lines (Ctrl + O to expand)");
+        }
+        let elision = LayoutLine {
+            content: LayoutContent::Source {
+                source: Source::Elision,
+                range: 0..self.elision.len(),
+                title_end: false,
+            },
+            height: 0,
+        };
+        if bash {
+            lines.insert(output_start, elision);
+        } else {
+            lines.push(elision);
+        }
     }
 
     fn add_lines(&self, source: Source, lines: &mut Vec<LayoutLine>) {
@@ -758,8 +796,10 @@ pub(super) struct Transcript {
     offset: usize,
     total: usize,
     viewport_height: usize,
+    viewport_width: u16,
     viewport_bottom: u16,
     follow_bottom: bool,
+    tools_expanded: bool,
     // 重放恢复时不伪造 bash 卡片的 wall duration。
     replaying: bool,
     tree_layout: Option<TreeLayout>,
@@ -882,6 +922,15 @@ impl Transcript {
     ) -> Range<usize> {
         let start = self.entries.len();
         self.replay(records, &mut Vec::new());
+        // 树预览保留原有展示范围，不引入普通工具的新折叠规则。
+        for entry in &mut self.entries[start..] {
+            if !matches!(
+                entry.kind,
+                EntryKind::Bash | EntryKind::Skill | EntryKind::Diff
+            ) {
+                entry.expanded = true;
+            }
+        }
         // Empty assistant records have no physical rows. Give every safe node a target.
         if self.entries[start..].iter().all(|entry| {
             entry.text.trim().is_empty()
@@ -912,11 +961,7 @@ impl Transcript {
         let footer_y = self.viewport_bottom;
         // 退出时回放完整输出，不把折叠预览当作终端历史。
         for entry in &mut self.entries {
-            if matches!(
-                entry.kind,
-                EntryKind::Bash | EntryKind::Skill | EntryKind::Diff
-            ) && !entry.expanded
-            {
+            if entry.is_collapsible_tool() && !entry.expanded {
                 entry.expanded = true;
                 entry.layout = None;
             }
@@ -1115,6 +1160,7 @@ impl Transcript {
                     title
                 };
                 let mut entry = TranscriptEntry::new(kind, title, String::new(), Some(name));
+                entry.expanded = self.tools_expanded;
                 if let Some(args) = ask_args {
                     entry.body = EntryBody::Ask(AskBlock::new(args));
                 }
@@ -1269,29 +1315,47 @@ impl Transcript {
     }
 
     pub(super) fn toggle_tool_output(&mut self) {
-        if let Some(entry) = self.entries.iter_mut().rev().find(|entry| {
-            if !matches!(
-                entry.kind,
-                EntryKind::Bash | EntryKind::Skill | EntryKind::Diff
-            ) {
-                return false;
-            }
-            entry.expanded
-                || match &entry.body {
-                    EntryBody::Diff(FileDiff::Text { hunks, .. }) => {
-                        hunks.iter().map(|hunk| hunk.lines.len()).sum::<usize>()
-                            > BASH_PREVIEW_LINES
-                    }
-                    _ => entry.layout.as_ref().is_some_and(|layout| {
-                        layout
-                            .lines
-                            .iter()
-                            .any(|line| matches!(line.source(), Some(Source::Elision)))
-                    }),
+        // 锚定卡片而不是整个会话的绝对行号，避免前面卡片高度变化将浏览位置推走。
+        let anchor = if !self.follow_bottom && self.viewport_width > 0 {
+            self.prepare_layout(self.viewport_width);
+            let mut row = self.offset;
+            self.entries.iter().enumerate().find_map(|(index, entry)| {
+                let height = entry.layout.as_ref()?.height;
+                if height == 0 {
+                    return None;
                 }
-        }) {
-            entry.expanded = !entry.expanded;
-            entry.layout = None;
+                if row <= height {
+                    Some((index, row))
+                } else {
+                    row -= height + 1;
+                    None
+                }
+            })
+        } else {
+            None
+        };
+        self.tools_expanded = !self.tools_expanded;
+        for entry in &mut self.entries {
+            if entry.is_collapsible_tool() {
+                entry.expanded = self.tools_expanded;
+                entry.layout = None;
+            }
+        }
+        if let Some((index, row)) = anchor {
+            self.prepare_layout(self.viewport_width);
+            self.offset = self.entries[..index]
+                .iter()
+                .filter_map(|entry| entry.layout.as_ref())
+                .filter(|layout| layout.height > 0)
+                .map(|layout| layout.height + 1)
+                .sum::<usize>()
+                + row.min(
+                    self.entries[index]
+                        .layout
+                        .as_ref()
+                        .expect("layout initialized")
+                        .height,
+                );
         }
     }
 
@@ -1311,6 +1375,7 @@ impl Transcript {
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        self.viewport_width = area.width;
         self.viewport_bottom = area.bottom();
         self.viewport_height = usize::from(area.height);
         if area.width == 0 || area.height == 0 {
@@ -1779,7 +1844,7 @@ fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Line<'static>
     let continuation = " ".repeat(gutter + 3);
     let mut shown = 0;
     for (hunk_index, hunk) in hunks.iter().enumerate() {
-        if !expanded && shown >= BASH_PREVIEW_LINES {
+        if !expanded && shown >= TOOL_PREVIEW_LINES {
             break;
         }
         if hunk_index > 0 {
@@ -1827,7 +1892,7 @@ fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Line<'static>
             start = end;
         }
         for (index, line) in hunk.lines.iter().enumerate() {
-            if !expanded && shown >= BASH_PREVIEW_LINES {
+            if !expanded && shown >= TOOL_PREVIEW_LINES {
                 break;
             }
             shown += 1;
@@ -1870,11 +1935,7 @@ fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Line<'static>
     if shown < total {
         rows.extend(wrap_block(
             block_line(
-                format!(
-                    "… {} more lines {}",
-                    total - shown,
-                    crate::shortcuts::platform_text("(⌥ + O to expand)", "(Ctrl + O to expand)")
-                ),
+                format!("… {} more lines (Ctrl + O to expand)", total - shown),
                 Style::default().fg(palette::DIM),
             ),
             width,
@@ -1965,6 +2026,185 @@ mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
     use serde_json::json;
+
+    fn entry_text(entry: &mut TranscriptEntry, width: u16) -> String {
+        entry.ensure_layout(width);
+        entry
+            .layout
+            .as_ref()
+            .unwrap()
+            .lines
+            .iter()
+            .map(|line| entry.line(line).to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn tool_folding_is_global_without_layout_and_future_output_inherits_it() {
+        let mut transcript = Transcript::new();
+        for name in [
+            "bash",
+            "bash_task",
+            "read",
+            "grep",
+            "find",
+            "load_skill",
+            "mcp__server__tool",
+        ] {
+            tool(&mut transcript, name, name, json!({}));
+            transcript.entries.last_mut().unwrap().text = (0..20)
+                .map(|i| format!("{name}-{i:02}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        // 尚未绘制时也可切换；不会依赖旧布局中的省略提示。
+        transcript.toggle_tool_output();
+        for entry in &mut transcript.entries {
+            let name = entry.tool.clone().unwrap();
+            let text = entry_text(entry, 100);
+            assert!(text.contains(&format!("{name}-00")));
+            assert!(text.contains(&format!("{name}-19")));
+            assert!(!text.contains("to expand"));
+        }
+        tool(&mut transcript, "live", "bash", json!({"command":"live"}));
+        transcript.progress(AgentEvent::ToolOutput {
+            id: "live".into(),
+            stream: OutputStream::Stdout,
+            text: (0..20).map(|i| format!("live-{i:02}\n")).collect(),
+        });
+        assert!(entry_text(transcript.entries.last_mut().unwrap(), 100).contains("live-00"));
+        transcript.toggle_tool_output();
+        for entry in &mut transcript.entries {
+            let text = entry_text(entry, 100);
+            assert!(text.contains("5 "), "{text}");
+            let tail = entry.kind == EntryKind::Bash;
+            let name = entry.tool.as_deref().unwrap();
+            let name = if entry.stdout.is_empty() {
+                name
+            } else {
+                "live"
+            };
+            assert_eq!(text.contains(&format!("{name}-00")), !tail, "{text}");
+            assert_eq!(text.contains(&format!("{name}-19")), tail, "{text}");
+        }
+        transcript.progress(AgentEvent::ToolOutput {
+            id: "live".into(),
+            stream: OutputStream::Stdout,
+            text: "live-20\n".into(),
+        });
+        let text = entry_text(transcript.entries.last_mut().unwrap(), 100);
+        assert!(text.contains("6 earlier lines"));
+        assert!(text.contains("live-20"));
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "live".into(),
+            result: json!({"ok":false,"error":"failed\n".repeat(20)}),
+        });
+        assert_eq!(
+            transcript.entries.last().unwrap().status,
+            EntryStatus::Failed
+        );
+        assert!(entry_text(transcript.entries.last_mut().unwrap(), 100).contains("to expand"));
+    }
+
+    #[test]
+    fn tool_preview_counts_logical_lines_and_keeps_other_messages_complete() {
+        for count in [15, 16] {
+            let mut transcript = Transcript::new();
+            let text = (0..count)
+                .map(|i| format!("line-{i:02}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            tool(&mut transcript, "read", "read", json!({"path":"file"}));
+            transcript.progress(AgentEvent::ToolFinished {
+                id: "read".into(),
+                result: json!({"ok":true,"content":text}),
+            });
+            for width in [3, 80] {
+                let text = entry_text(&mut transcript.entries[0], width);
+                assert_eq!(text.contains("to expand"), count > 15, "{text}");
+                assert!(text.contains("line-14"));
+                assert!(!text.contains("line-15"));
+            }
+        }
+        let mut transcript = Transcript::new();
+        let long = format!("{}\n{}", "中😀".repeat(9000), "tail\n".repeat(13));
+        tool(&mut transcript, "long", "read", json!({}));
+        transcript.entries[0].text = long;
+        let text = entry_text(&mut transcript.entries[0], 10);
+        assert!(!text.contains("to expand"), "渲染分片不应占用逻辑行额度");
+        let body = "unchanged\n".repeat(20);
+        for label in ["You", "Assistant", "Help"] {
+            transcript.append(label, &body);
+        }
+        transcript.progress(AgentEvent::ThinkingDelta { text: body.clone() });
+        tool(
+            &mut transcript,
+            "ask",
+            "ask",
+            json!({"questions":[{
+                "id":"q", "question":body, "options":[]
+            }]}),
+        );
+        let before: Vec<_> = transcript.entries[1..]
+            .iter_mut()
+            .map(|entry| entry_text(entry, 80))
+            .collect();
+        assert!(before.iter().all(|text| !text.contains("to expand")));
+        transcript.toggle_tool_output();
+        transcript.toggle_tool_output();
+        let after: Vec<_> = transcript.entries[1..]
+            .iter_mut()
+            .map(|entry| entry_text(entry, 80))
+            .collect();
+        assert_eq!(before, after);
+        assert!(matches!(
+            transcript.entries.last().unwrap().body,
+            EntryBody::Ask(_)
+        ));
+    }
+
+    #[test]
+    fn tool_toggle_anchors_history_and_exit_scrollback_expands_all_tools() {
+        let mut transcript = Transcript::new();
+        for i in 0..3 {
+            tool(
+                &mut transcript,
+                &format!("r{i}"),
+                "read",
+                json!({"path":format!("file{i}")}),
+            );
+            transcript.progress(AgentEvent::ToolFinished {
+                id: format!("r{i}"),
+                result: json!({"ok":true,"content":(0..40).map(|j| format!("file{i}-{j:02}")).collect::<Vec<_>>().join("\n")}),
+            });
+        }
+        render(&mut transcript, 100, 10);
+        let first_height = transcript.entries[0].layout.as_ref().unwrap().height;
+        transcript.follow_bottom = false;
+        transcript.offset = first_height + 1;
+        assert!(screen(&render(&mut transcript, 100, 10)).contains("read · file1"));
+        transcript.toggle_tool_output();
+        assert!(!transcript.follow_bottom);
+        assert!(screen(&render(&mut transcript, 100, 10)).contains("read · file1"));
+        // 收起时锚点位于隐藏内容内，也必须留在同一卡片。
+        transcript.offset += 30;
+        transcript.toggle_tool_output();
+        let start = transcript.entries[0].layout.as_ref().unwrap().height + 1;
+        let end = start + transcript.entries[1].layout.as_ref().unwrap().height;
+        assert!((start..=end).contains(&transcript.offset));
+        let snapshot = render(&mut transcript, 100, 10);
+        let mut output = Vec::new();
+        transcript.write_scrollback(&mut output, &snapshot).unwrap();
+        let mut parser = vt100::Parser::new(200, 100, 0);
+        parser.process(&output);
+        let text = parser.screen().contents();
+        for i in 0..3 {
+            assert!(text.contains(&format!("file{i}-39")), "{text}");
+        }
+        assert!(!text.contains("to expand"));
+        assert!(!Transcript::new().tools_expanded);
+    }
 
     #[test]
     fn ask_details_stay_in_messages_after_answering_and_resize() {
@@ -2650,13 +2890,9 @@ mod tests {
             "╭─",
             "$ git diff",
             "├─ Output ─",
-            "14 earlier lines, showing 10 of 24",
-            if cfg!(target_os = "macos") {
-                "⌥ + O: Expand"
-            } else {
-                "Ctrl + O: Expand"
-            },
-            "line-14",
+            "9 earlier lines, showing 15 of 24",
+            "Ctrl + O to expand",
+            "line-09",
             "line-23",
             "Wall:",
             "Exit code: 0",
@@ -3018,11 +3254,7 @@ mod tests {
         let collapsed = screen(&render(&mut transcript, 70, 40));
         assert!(collapsed.contains("skill-body-00"));
         assert!(!collapsed.contains("skill-body-19"));
-        assert!(collapsed.contains(if cfg!(target_os = "macos") {
-            "⌥ + O"
-        } else {
-            "Ctrl + O"
-        }));
+        assert!(collapsed.contains("Ctrl + O"));
         assert_eq!(transcript.entries[0].status, EntryStatus::Complete);
         transcript.toggle_tool_output();
         assert!(screen(&render(&mut transcript, 70, 40)).contains("skill-body-19"));

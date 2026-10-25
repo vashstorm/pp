@@ -66,8 +66,8 @@ const STEERING_HINT: &str = platform_text(
     "Enter steer · Alt + Enter queue · Ctrl + Q pending messages · Ctrl + R resume queue",
 );
 const SHORTCUTS_TAIL: &str = platform_text(
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · ⌥ + O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse bash/skill/diff · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
 );
 const EFFORT_HINT: &str = platform_text(
     "Enter select · ⌥ + S set selected effort as default · Esc cancel",
@@ -2983,6 +2983,17 @@ impl App {
                 {
                     self.escape_tap.reset();
                 }
+                // 显示切换先于普通菜单和 ask，但不穿透全屏面板。
+                if key.code == KeyCode::Char('o')
+                    && key.modifiers == KeyModifiers::CONTROL
+                    && self.skill_panel.is_none()
+                    && self.session_panel.is_none()
+                {
+                    if key.kind == KeyEventKind::Press {
+                        self.active_transcript().toggle_tool_output();
+                    }
+                    return false;
+                }
                 if let Some(panel) = &mut self.ask_panel {
                     let action = panel.key(key);
                     self.apply_ask_action(action);
@@ -3181,15 +3192,6 @@ impl App {
                 if control && key.code == KeyCode::Char('j') {
                     self.input.insert_newline();
                     self.refresh_candidates(true);
-                    return false;
-                }
-                if key.code == KeyCode::Char('o')
-                    && key
-                        .modifiers
-                        .intersection(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                        == FUNCTION_MODIFIER
-                {
-                    self.active_transcript().toggle_tool_output();
                     return false;
                 }
                 if control && !key.modifiers.contains(KeyModifiers::ALT) {
@@ -4051,6 +4053,78 @@ mod tests {
         }));
         app.ask_reply = Some(reply);
         (answers, token)
+    }
+
+    fn folding_fixture(app: &mut App) {
+        for id in ["first", "second"] {
+            app.conversation.progress(AgentEvent::ToolStarted {
+                id: id.into(),
+                name: "read".into(),
+                arguments: format!(r#"{{"path":"{id}"}}"#),
+            });
+            app.conversation.progress(AgentEvent::ToolFinished {
+                id: id.into(),
+                result: serde_json::json!({"ok":true,"content":(0..20).map(|i| format!("{id}-{i:02}")).collect::<Vec<_>>().join("\n")}),
+            });
+        }
+    }
+
+    #[test]
+    fn ctrl_o_is_global_press_only_and_keeps_ask_and_main_draft() {
+        let mut app = app();
+        folding_fixture(&mut app);
+        app.input.insert_str("主草稿🙂");
+        app.input.move_cursor(CursorMove::Back);
+        let cursor = app.input.cursor();
+        let (answers, token) = ask_fixture(&mut app);
+        let mut dirty = false;
+        app.handle(key(KeyCode::Down), &mut dirty);
+        let collapsed = draw(&mut app, 100, 100);
+        assert!(collapsed.contains("Ctrl + O to expand"));
+        app.handle(control('o'), &mut dirty);
+        let expanded = draw(&mut app, 100, 100);
+        for expected in ["first-19", "second-19", "Postgres"] {
+            assert!(expanded.contains(expected), "{expanded}");
+        }
+        let mut repeat = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        repeat.kind = KeyEventKind::Repeat;
+        app.handle(Event::Key(repeat), &mut dirty);
+        repeat.kind = KeyEventKind::Release;
+        app.handle(Event::Key(repeat), &mut dirty);
+        assert!(!draw(&mut app, 100, 100).contains("to expand"));
+        app.handle(control('o'), &mut dirty);
+        assert!(draw(&mut app, 100, 100).contains("to expand"));
+        assert_eq!(app.input.lines(), &["主草稿🙂"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert!(app.ask_panel.is_some());
+        assert!(!token.is_cancelled());
+        assert!(matches!(answers.try_recv(), Err(TryRecvError::Empty)));
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        let response = answers.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(response[0].selected_options, ["Postgres"]);
+    }
+
+    #[test]
+    fn ctrl_o_keeps_normal_menu_and_alt_o_is_not_a_toggle() {
+        let mut app = app();
+        app.state = State::Ready;
+        folding_fixture(&mut app);
+        app.input.insert_str("/");
+        app.refresh_candidates(true);
+        let mut dirty = false;
+        app.handle(key(KeyCode::Down), &mut dirty);
+        let selected = app.menu.as_ref().unwrap().selected_index();
+        let cursor = app.input.cursor();
+        app.handle(control('o'), &mut dirty);
+        assert_eq!(app.menu.as_ref().unwrap().selected_index(), selected);
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(app.input.lines(), &["/"]);
+        assert!(!draw(&mut app, 100, 100).contains("to expand"));
+        app.handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT)),
+            &mut dirty,
+        );
+        assert!(!draw(&mut app, 100, 100).contains("to expand"));
     }
 
     #[test]

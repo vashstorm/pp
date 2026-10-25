@@ -2840,15 +2840,13 @@ mod tui {
             writer.flush().unwrap();
         }
 
-        /// Platform function-key bytes for the five functional shortcuts
-        /// (P/S/O/Q/R): macOS sends ESC+letter (Alt/Option), other platforms
-        /// send the legacy control byte.
+        /// P/S/Q/R 按平台发送 Option 或 Ctrl；O 始终使用 Ctrl。
         fn function_key(&mut self, character: char) {
             let bytes: &str = if cfg!(target_os = "macos") {
                 match character {
                     'p' => "\x1bp",
                     's' => "\x1bs",
-                    'o' => "\x1bo",
+                    'o' => "\x0f",
                     'q' => "\x1bq",
                     'r' => "\x1br",
                     _ => panic!("unsupported function key character: {character}"),
@@ -4346,7 +4344,7 @@ mod tui {
             pty.completed();
             pty.input("run bash\r");
             let (request, _) = receive_at(&server, path);
-            let command = "for i in {0..13}; do printf 'output-%02d\\n' \"$i\"; done";
+            let command = "for i in {0..18}; do printf 'output-%02d\\n' \"$i\"; done";
             if protocol == "completion" {
                 calls_reply(
                     request,
@@ -4369,12 +4367,8 @@ mod tui {
             );
             pty.input("draft-中");
             pty.draft("draft-中");
-            // Opposite modifier must not expand the collapsed bash output.
-            pty.input(if cfg!(target_os = "macos") {
-                "\x0f"
-            } else {
-                "\x1bo"
-            });
+            // Option/Alt+O 不再展开工具输出，所有平台统一使用 Ctrl+O。
+            pty.input("\x1bo");
             pty.input("!");
             pty.draft("draft-中!");
             assert!(!pty.parser.screen().contents().contains("output-00"));
@@ -4388,7 +4382,7 @@ mod tui {
             pty.draft("draft-中");
             pty.resize(4, 20);
             pty.resize(30, 100);
-            pty.text("output-13");
+            pty.text("output-18");
             pty.draft("draft-中");
             if protocol == "completion" {
                 final_reply(request, "done");
