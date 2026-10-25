@@ -633,6 +633,7 @@ impl Agent {
         self.session = session;
         self.journal = journal;
         self.workflow = candidate_workflow;
+        self.tools.clear_changes();
         self.last_request = None;
         self.pending_instructions = None;
         self.tools.mcp = registry;
@@ -687,6 +688,7 @@ impl Agent {
             .set_tools(self.tools.all_definitions(self.workflow.mode));
         self.journal = restored.journal;
         self.replay = restored.replay;
+        self.tools.clear_changes();
         if let Some(debug) = &mut self.debug {
             debug.set_prompt_recorded(true);
         }

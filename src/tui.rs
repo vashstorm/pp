@@ -1,4 +1,5 @@
 mod ask;
+mod changes;
 mod files;
 mod markdown;
 mod menu;
@@ -29,6 +30,7 @@ use crate::{
         WorkflowState,
     },
     shortcuts::{FUNCTION_MODIFIER, platform_text},
+    tools::{ChangesView, UndoResult, UndoToken},
 };
 use anyhow::{Context, Result};
 use crossterm::{
@@ -126,6 +128,7 @@ pub(crate) fn run(
             if app.handle(event, &mut dirty) {
                 app.shutdown_background_tasks()?;
                 app.tree_panel = None;
+                app.changes_panel = None;
                 app.notifications.clear();
                 // 仅在内存中准备退出快照，避免退出前额外刷新备用屏幕。
                 let snapshot = {
@@ -183,6 +186,8 @@ enum WorkerCommand {
     },
     ReadTree,
     NavigateTree(String),
+    ReadChanges,
+    UndoFile(UndoToken),
     EnterPlan {
         cancellation: CancellationToken,
     },
@@ -230,6 +235,8 @@ enum WorkerEvent {
     SessionResumed(Result<ResumeState>),
     TreeRead(Result<crate::agent::persistence::tree::View>),
     TreeNavigated(Result<crate::agent::TreeNavigation>),
+    ChangesRead(ChangesView),
+    FileUndone(Result<UndoResult>),
     // 计划模式转换结果；Err 时 worker 会紧随一份真实 workflow 快照，
     // 避免 UI 在“持久化成功但 MCP 关闭失败”的失败中显示 EXEC。
     WorkflowChanged(Result<WorkflowState>),
@@ -364,6 +371,8 @@ enum State {
     Resuming,
     ReadingTree,
     NavigatingTree,
+    ReadingChanges,
+    UndoingFile,
     Unavailable,
     ChangingPlan,
     ReadingPlan,
@@ -447,6 +456,7 @@ struct App {
     skills_pending: bool,
     session_panel: Option<sessions::Panel>,
     tree_panel: Option<tree::Panel>,
+    changes_panel: Option<changes::Panel>,
     escape_tap: EscapeTap,
     session_id: Option<String>,
     // 最近一次 ContextUpdated 快照；渲染直接使用，不逐帧重新估算。
@@ -585,6 +595,7 @@ impl App {
             skills_pending: false,
             session_panel: None,
             tree_panel: None,
+            changes_panel: None,
             escape_tap: EscapeTap::default(),
             session_id: None,
             usage: None,
@@ -703,6 +714,16 @@ impl App {
                                         push_runtime_snapshot(&agent, &mut snapshots);
                                     }
                                     WorkerEvent::ModelSwitched(result)
+                                }
+                                WorkerCommand::ReadChanges => {
+                                    WorkerEvent::ChangesRead(agent.changes())
+                                }
+                                WorkerCommand::UndoFile(token) => {
+                                    let result = agent.undo_file(&token);
+                                    if result.is_err() {
+                                        snapshots.push(WorkerEvent::ChangesRead(agent.changes()));
+                                    }
+                                    WorkerEvent::FileUndone(result)
                                 }
                                 WorkerCommand::ReadTree => {
                                     WorkerEvent::TreeRead(agent.session_tree())
@@ -996,6 +1017,7 @@ impl App {
         self.events = None;
         self.unavailable = Some(message.into());
         self.tree_panel = None;
+        self.changes_panel = None;
         self.plan_panel = None;
         self.plan_confirm = None;
         self.review_transcript = None;
@@ -1086,7 +1108,7 @@ impl App {
     }
 
     fn request_plan_read(&mut self) {
-        if !matches!(self.state, State::Ready) {
+        if !matches!(self.state, State::Ready) || self.changes_panel.is_some() {
             return;
         }
         self.send(WorkerCommand::ReadPlan, State::ReadingPlan);
@@ -1124,6 +1146,7 @@ impl App {
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
+            || self.changes_panel.is_some()
             || self.model_picker_draft.is_some()
             || self.queue_menu
         {
@@ -1630,6 +1653,34 @@ impl App {
                     }
                     changed = true;
                 }
+                Ok(WorkerEvent::ChangesRead(view)) => {
+                    self.state = State::Ready;
+                    if let Some(panel) = &mut self.changes_panel {
+                        panel.set_view(view);
+                    }
+                    changed = true;
+                }
+                Ok(WorkerEvent::FileUndone(result)) => {
+                    match result {
+                        Ok(result) => {
+                            self.state = State::Ready;
+                            if let Some(panel) = &mut self.changes_panel {
+                                panel.set_view(result.view);
+                            }
+                            if let Some(warning) = result.warning {
+                                self.notify(Level::Error, warning);
+                            }
+                        }
+                        Err(error) => {
+                            // The worker appends an authoritative ChangesRead in FIFO order.
+                            // Stay busy until that snapshot arrives; set_view keeps this error.
+                            if let Some(panel) = &mut self.changes_panel {
+                                panel.set_error(format!("{error:#}"));
+                            }
+                        }
+                    }
+                    changed = true;
+                }
                 Ok(WorkerEvent::TreeRead(result)) => {
                     self.state = State::Ready;
                     match result {
@@ -1883,6 +1934,7 @@ impl App {
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
+            || self.changes_panel.is_some()
             || self.menu_dismissed
             || !matches!(
                 self.state,
@@ -2332,6 +2384,7 @@ impl App {
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
+            || self.changes_panel.is_some()
             || self.plan_panel.is_some()
             || self.model_picker_draft.is_some()
         {
@@ -2438,6 +2491,7 @@ impl App {
             || self.session_panel.is_some()
             || self.ask_panel.is_some()
             || self.tree_panel.is_some()
+            || self.changes_panel.is_some()
         {
             return;
         }
@@ -2445,6 +2499,50 @@ impl App {
         self.file_query = None;
         self.tree_panel = Some(tree::Panel::new());
         self.send(WorkerCommand::ReadTree, State::ReadingTree);
+    }
+
+    fn open_changes(&mut self) {
+        self.escape_tap.reset();
+        if !matches!(self.state, State::Ready)
+            || self.skills_pending
+            || self.skill_panel.is_some()
+            || self.session_panel.is_some()
+            || self.ask_panel.is_some()
+            || self.tree_panel.is_some()
+            || self.changes_panel.is_some()
+            || self.plan_panel.is_some()
+            || self.plan_confirm.is_some()
+            || self.model_picker_draft.is_some()
+        {
+            return;
+        }
+        self.close_pending_menu();
+        self.menu = None;
+        self.file_query = None;
+        self.changes_panel = Some(changes::Panel::new(self.workflow.mode == WorkMode::Plan));
+        self.send(WorkerCommand::ReadChanges, State::ReadingChanges);
+    }
+
+    fn apply_changes_action(&mut self, action: changes::Action) {
+        match action {
+            changes::Action::None => {}
+            changes::Action::Close => {
+                self.changes_panel = None;
+                self.menu_dismissed = true;
+            }
+            changes::Action::Refresh if matches!(self.state, State::Ready) => {
+                self.send(WorkerCommand::ReadChanges, State::ReadingChanges);
+            }
+            changes::Action::Undo(token) if matches!(self.state, State::Ready) => {
+                self.send(WorkerCommand::UndoFile(token), State::UndoingFile);
+            }
+            changes::Action::Message(message) => {
+                if let Some(panel) = &mut self.changes_panel {
+                    panel.set_error(message);
+                }
+            }
+            changes::Action::Refresh | changes::Action::Undo(_) => {}
+        }
     }
 
     fn show_help(&mut self) {
@@ -2463,7 +2561,7 @@ impl App {
     }
 
     fn shortcut_ready(&mut self) -> bool {
-        if self.skills_pending {
+        if self.skills_pending || self.changes_panel.is_some() {
             return false;
         }
         match self.state {
@@ -2529,7 +2627,7 @@ impl App {
     }
 
     fn submit(&mut self, kind: PendingKind) -> bool {
-        if self.skills_pending || self.skill_panel.is_some() {
+        if self.skills_pending || self.skill_panel.is_some() || self.changes_panel.is_some() {
             return false;
         }
         let prompt = self.input.lines().join("\n");
@@ -2543,6 +2641,15 @@ impl App {
                 return false;
             }
         };
+        if matches!(command, Some(Command::Changes))
+            && matches!(self.state, State::Running | State::Cancelling)
+        {
+            self.notify(
+                Level::Error,
+                "Finish or cancel the current task before opening /changes.".into(),
+            );
+            return false;
+        }
         if self.model_picker_draft.is_some() && !matches!(command, Some(Command::Model(_))) {
             self.notify(
                 Level::Error,
@@ -2646,6 +2753,8 @@ impl App {
             | State::Resuming
             | State::ReadingTree
             | State::NavigatingTree
+            | State::ReadingChanges
+            | State::UndoingFile
             | State::ChangingPlan
             | State::ReadingPlan
             | State::PreparingExecution
@@ -2673,6 +2782,11 @@ impl App {
                     self.remember_input();
                     self.clear_input();
                     self.open_tree();
+                }
+                Some(Command::Changes) => {
+                    self.remember_input();
+                    self.clear_input();
+                    self.open_changes();
                 }
                 Some(Command::Resume) => {
                     if self.skill_panel.is_some() || self.skills_pending {
@@ -2847,6 +2961,7 @@ impl App {
     }
 
     fn shutdown_background_tasks(&mut self) -> Result<()> {
+        self.changes_panel = None;
         if let Some(token) = &self.active_cancellation {
             token.cancel();
         }
@@ -2911,6 +3026,12 @@ impl App {
                     return key.kind == KeyEventKind::Press;
                 }
                 *dirty = true;
+                if let Some(panel) = &mut self.changes_panel {
+                    let action = panel.key(key);
+                    self.escape_tap.reset();
+                    self.apply_changes_action(action);
+                    return false;
+                }
                 // 本地确认框（/plan new、/plan off）优先于一切其它输入；默认取消。
                 if let Some(confirm) = &mut self.plan_confirm {
                     self.escape_tap.reset();
@@ -3310,6 +3431,24 @@ impl App {
                     }
                 }
             }
+            Event::Paste(_) if self.changes_panel.is_some() => {
+                *dirty = true;
+            }
+            Event::Mouse(mouse) if self.changes_panel.is_some() => {
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) {
+                    self.changes_panel
+                        .as_mut()
+                        .expect("active changes panel")
+                        .wheel(
+                            matches!(mouse.kind, MouseEventKind::ScrollUp),
+                            MOUSE_SCROLL_LINES,
+                        );
+                    *dirty = true;
+                }
+            }
             Event::Paste(_) if self.tree_panel.is_some() => {
                 *dirty = true;
             }
@@ -3439,6 +3578,32 @@ impl App {
         }
         if let Some(panel) = &mut self.session_panel {
             panel.draw(frame, area);
+            self.notifications.draw(
+                frame,
+                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
+            );
+            return;
+        }
+        if let Some(panel) = &mut self.changes_panel {
+            let available = area.height.saturating_sub(1);
+            let height = available.saturating_sub(1);
+            panel.draw(frame, Rect::new(area.x, area.y, area.width, height));
+            if available > 0 {
+                frame.render_widget(
+                    Line::styled(changes::HINT, Style::default().fg(transcript_style::MUTED)),
+                    Rect::new(area.x, area.y + height, area.width, 1),
+                );
+            }
+            frame.render_widget(
+                statusline::primary(
+                    self.current_model.as_ref(),
+                    self.think_level,
+                    self.workflow.mode,
+                    context,
+                    area.width,
+                ),
+                Rect::new(area.x, area.bottom() - 1, area.width, 1),
+            );
             self.notifications.draw(
                 frame,
                 Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
@@ -3753,6 +3918,326 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn changes_view(blocked: bool) -> ChangesView {
+        let path = std::path::PathBuf::from("demo.txt");
+        ChangesView {
+            task_id: 1,
+            revision: 2,
+            files: vec![crate::tools::ChangedFile {
+                path: path.clone(),
+                diff: crate::events::FileDiff::Text {
+                    created: false,
+                    added: 1,
+                    removed: 1,
+                    hunks: vec![crate::events::DiffHunk {
+                        lines: vec![
+                            crate::events::DiffLine {
+                                kind: crate::events::DiffLineKind::Removed,
+                                old_line: Some(1),
+                                new_line: None,
+                                text: "user-local\n".into(),
+                            },
+                            crate::events::DiffLine {
+                                kind: crate::events::DiffLineKind::Added,
+                                old_line: None,
+                                new_line: Some(1),
+                                text: "agent-final\n".into(),
+                            },
+                        ],
+                    }],
+                },
+                undo: if blocked {
+                    Err("File changed outside this task; undo refused.".into())
+                } else {
+                    Ok(UndoToken {
+                        task_id: 1,
+                        revision: 2,
+                        path,
+                    })
+                },
+            }],
+        }
+    }
+
+    fn changes_empty_view() -> ChangesView {
+        ChangesView {
+            task_id: 1,
+            revision: 3,
+            files: vec![],
+        }
+    }
+
+    #[test]
+    fn changes_loading_escape_waits_for_reply_and_never_reopens_panel() {
+        let (mut app, requests, events) = plan_app();
+        app.input.insert_str("existing draft");
+        let cursor = app.input.cursor();
+        let before = draw(&mut app, 100, 30);
+        app.open_changes();
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::ReadChanges)
+        ));
+        let loading = draw(&mut app, 100, 30);
+        assert!(loading.contains("Latest task changes"));
+        assert!(!loading.contains("existing draft"));
+        let mut dirty = false;
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.changes_panel.is_none());
+        assert!(matches!(app.state, State::ReadingChanges));
+        app.open_model_picker();
+        app.open_tree();
+        assert!(requests.try_recv().is_err());
+        events
+            .send(WorkerEvent::ChangesRead(changes_view(false)))
+            .unwrap();
+        app.receive();
+        assert!(matches!(app.state, State::Ready));
+        assert!(app.changes_panel.is_none());
+        assert_eq!(app.input.lines(), &["existing draft"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(draw(&mut app, 100, 30), before);
+    }
+
+    #[test]
+    fn changes_panel_preserves_draft_history_viewport_and_blocks_shortcuts() {
+        let (mut app, requests, events) = plan_app();
+        for index in 0..40 {
+            app.append("You", &format!("original message {index}"));
+        }
+        app.input_history = vec!["old prompt".into()];
+        app.input.insert_str("existing draft\nsecond line");
+        app.input.move_cursor(CursorMove::Head);
+        let cursor = app.input.cursor();
+        draw(&mut app, 100, 30);
+        app.conversation.page_up();
+        let before = draw(&mut app, 100, 30);
+        app.open_changes();
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::ReadChanges)
+        ));
+        events
+            .send(WorkerEvent::ChangesRead(changes_view(false)))
+            .unwrap();
+        app.receive();
+        let panel = draw(&mut app, 100, 30);
+        assert!(panel.contains("demo.txt"));
+        assert!(panel.contains("user-local") && panel.contains("agent-final"));
+        assert!(panel.contains("fixture-cwd"));
+        assert!(!panel.contains("existing draft"));
+        let mut dirty = false;
+        for event in [
+            key(KeyCode::Up),
+            key(KeyCode::Down),
+            key(KeyCode::PageUp),
+            key(KeyCode::PageDown),
+            function_key('p'),
+            function_key('q'),
+            function_key('r'),
+            control('o'),
+            control('a'),
+            control('k'),
+            key(KeyCode::F(1)),
+            key(KeyCode::BackTab),
+            Event::Paste("must not edit".into()),
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 3,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            }),
+            Event::Resize(50, 12),
+        ] {
+            app.handle(event, &mut dirty);
+        }
+        draw(&mut app, 50, 12);
+        draw(&mut app, 100, 30);
+        assert!(requests.try_recv().is_err());
+        assert!(app.model_picker_draft.is_none());
+        assert!(!app.queue_menu);
+        assert_eq!(app.input.lines(), &["existing draft", "second line"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(app.input_history, ["old prompt"]);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert_eq!(draw(&mut app, 100, 30), before);
+    }
+
+    #[test]
+    fn changes_pending_followup_stays_queued_through_loading_view_and_confirmation() {
+        let (mut app, requests, events) = plan_app();
+        app.input_queue
+            .enqueue(PendingKind::FollowUp, "next task".into(), None, false)
+            .unwrap();
+        app.input.insert_str("/changes");
+        app.submit(PendingKind::Steering);
+        assert!(app.input.is_empty());
+        assert_eq!(app.input_history, ["/changes"]);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::ReadChanges)
+        ));
+        assert!(!app.queue_paused);
+        assert!(!app.dispatch_next(true));
+        events
+            .send(WorkerEvent::ChangesRead(changes_view(false)))
+            .unwrap();
+        app.receive();
+        assert!(app.has_pending());
+        assert!(!app.dispatch_next(false));
+        let mut dirty = false;
+        app.handle(key(KeyCode::Char('u')), &mut dirty);
+        assert!(draw(&mut app, 100, 30).contains("Undo file"));
+        app.handle(function_key('r'), &mut dirty);
+        app.handle(function_key('q'), &mut dirty);
+        assert!(!app.dispatch_next(true));
+        assert!(requests.try_recv().is_err());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.changes_panel.is_some());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.changes_panel.is_none());
+        app.receive();
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkerCommand::Run { prompt, .. }) if prompt == "next task")
+        );
+        assert!(!app.has_pending());
+    }
+
+    #[test]
+    fn changes_running_command_is_rejected_without_steering_or_history() {
+        for state in [State::Running, State::Cancelling] {
+            let (mut app, requests, _events) = plan_app();
+            app.state = state;
+            app.input_queue.begin_run().unwrap();
+            app.input.insert_str("/changes");
+            let mut dirty = false;
+            app.handle(key(KeyCode::Enter), &mut dirty);
+            assert_eq!(app.input.lines(), &["/changes"]);
+            assert!(app.input_history.is_empty());
+            assert!(!app.has_pending());
+            assert!(requests.try_recv().is_err());
+            let screen = draw(&mut app, 110, 30);
+            assert!(screen.contains("Finish or cancel the current task before opening"));
+            assert!(screen.contains("/changes."));
+        }
+    }
+
+    #[test]
+    fn changes_plan_mode_never_sends_undo_and_mode_or_tree_cannot_bypass_panel() {
+        let (mut app, requests, events) = plan_app();
+        app.workflow.mode = WorkMode::Plan;
+        app.open_changes();
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::ReadChanges)
+        ));
+        events
+            .send(WorkerEvent::ChangesRead(changes_view(false)))
+            .unwrap();
+        app.receive();
+        let mut dirty = false;
+        app.handle(key(KeyCode::Char('u')), &mut dirty);
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(draw(&mut app, 100, 30).contains("Undo is unavailable in Plan mode."));
+        assert!(!app.plan_transition_ready("pending input"));
+        app.open_tree();
+        app.open_model_picker();
+        app.request_plan_read();
+        assert!(app.tree_panel.is_none());
+        assert!(app.model_picker_draft.is_none());
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn changes_undo_error_refresh_keeps_reason_and_success_removes_file() {
+        let (mut app, requests, events) = plan_app();
+        app.open_changes();
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::ReadChanges)
+        ));
+        events
+            .send(WorkerEvent::ChangesRead(changes_view(false)))
+            .unwrap();
+        app.receive();
+        let mut dirty = false;
+        app.handle(key(KeyCode::Char('u')), &mut dirty);
+        // Confirmation starts on Cancel: Enter never dispatches an undo.
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(requests.try_recv().is_err());
+        app.handle(key(KeyCode::Char('u')), &mut dirty);
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkerCommand::UndoFile(token)) if token.path == std::path::Path::new("demo.txt"))
+        );
+        assert!(matches!(app.state, State::UndoingFile));
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        app.handle(key(KeyCode::Char('r')), &mut dirty);
+        assert!(requests.try_recv().is_err());
+        assert!(draw(&mut app, 100, 30).contains("Undoing file"));
+        events
+            .send(WorkerEvent::FileUndone(Err(anyhow::anyhow!(
+                "specific refusal reason"
+            ))))
+            .unwrap();
+        app.receive();
+        assert!(matches!(app.state, State::UndoingFile));
+        events
+            .send(WorkerEvent::ChangesRead(changes_view(true)))
+            .unwrap();
+        app.receive();
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("specific refusal reason"));
+        assert!(screen.contains("Blocked"));
+        assert!(screen.contains("demo.txt"));
+        assert!(matches!(app.state, State::Ready));
+        app.handle(key(KeyCode::Char('r')), &mut dirty);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::ReadChanges)
+        ));
+        events
+            .send(WorkerEvent::ChangesRead(changes_view(false)))
+            .unwrap();
+        app.receive();
+        assert!(!draw(&mut app, 100, 30).contains("specific refusal reason"));
+        app.handle(key(KeyCode::Char('u')), &mut dirty);
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::UndoFile(_))
+        ));
+        events
+            .send(WorkerEvent::FileUndone(Ok(UndoResult {
+                view: changes_empty_view(),
+                warning: None,
+            })))
+            .unwrap();
+        app.receive();
+        assert!(app.changes_panel.is_some());
+        assert!(draw(&mut app, 100, 30).contains("No edit/write changes in the latest task."));
+        assert!(matches!(app.state, State::Ready));
+    }
+
+    #[test]
+    fn changes_worker_disconnect_clears_panel_and_preserves_draft() {
+        let (mut app, requests, events) = plan_app();
+        app.input.insert_str("preserved draft");
+        app.open_changes();
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::ReadChanges)
+        ));
+        drop(events);
+        app.receive();
+        assert!(matches!(app.state, State::Unavailable));
+        assert!(app.changes_panel.is_none());
+        assert_eq!(app.input.lines(), &["preserved draft"]);
     }
 
     #[test]

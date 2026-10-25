@@ -2691,6 +2691,7 @@ mod tui {
     include!("cli_agent/context_tui.rs");
     include!("cli_agent/project_instructions_tui.rs");
     include!("cli_agent/diff_blocks_tui.rs");
+    include!("cli_agent/changes_tui.rs");
     include!("cli_agent/transcript_blocks_tui.rs");
     include!("cli_agent/ask_tui.rs");
     include!("cli_agent/plan_tui.rs");
@@ -5083,6 +5084,7 @@ mod tui {
         no_more(&bad);
         final_reply(pending, "busy history retained");
         pty.text("busy history retained");
+        pty.completed();
         pty.ready_model("vendor-a");
         pty.draft("/model gateway/team/secondary");
         no_more(&a);
@@ -5105,6 +5107,7 @@ mod tui {
         let history = messages.clone();
         final_reply(request, "busy switch retained");
         pty.text("busy switch retained");
+        pty.completed();
         pty.ready_model("vendor-b");
 
         pty.input("/model bad/broken\r");

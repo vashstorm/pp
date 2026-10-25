@@ -1790,7 +1790,7 @@ fn diff_line_text(text: &str) -> (&str, &'static str) {
     }
 }
 
-fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Line<'static>> {
+pub(super) fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
     let FileDiff::Text {
         created,

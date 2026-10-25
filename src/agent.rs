@@ -6,6 +6,9 @@ pub(crate) mod persistence;
 mod plan_review;
 mod plan_workflow;
 
+#[cfg(test)]
+mod changes_tests;
+
 use crate::{
     cancellation::{self, CancellationToken, Cancelled, RunOutcome},
     config::{EditMode, ModelCatalog, ModelChoice, ThinkLevel},
@@ -492,6 +495,7 @@ impl Agent {
             return Err(error);
         }
         self.session = session;
+        self.tools.clear_changes();
         self.last_request = None;
         self.pending_instructions = None;
         Ok(TreeNavigation { replay, draft })
@@ -715,6 +719,7 @@ impl Agent {
     }
 
     pub(crate) fn reset(&mut self) {
+        self.tools.clear_changes();
         self.workflow.plan = None;
         self.workflow.review = None;
         self.journal.reset();
@@ -731,6 +736,21 @@ impl Agent {
 
     pub(crate) fn workflow(&self) -> &crate::plan::WorkflowState {
         &self.workflow
+    }
+
+    pub(crate) fn changes(&self) -> crate::tools::ChangesView {
+        self.tools.changes_view()
+    }
+
+    pub(crate) fn undo_file(
+        &self,
+        token: &crate::tools::UndoToken,
+    ) -> Result<crate::tools::UndoResult> {
+        ensure!(
+            self.workflow.mode == crate::plan::WorkMode::Execute,
+            "Undo is unavailable in Plan mode."
+        );
+        self.tools.undo_file(token)
     }
 
     fn prepare_plan_task(&mut self, prompt: &str) -> Result<()> {
@@ -788,6 +808,7 @@ impl Agent {
             self.prepare_plan_task(prompt)?;
             self.refresh_instructions()?;
             self.publish_context(emit)?;
+            self.tools.begin_changes_task();
             self.append_user(prompt);
             self.run_loop(Some(prompt), input, cancellation, emit)
         })();

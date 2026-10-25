@@ -73,6 +73,12 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Browse current history and rewind to an earlier point (TUI)",
     },
     CommandSpec {
+        name: "/changes",
+        icon: "Δ",
+        usage: "/changes",
+        description: "Review latest-task edit/write changes and undo files (TUI)",
+    },
+    CommandSpec {
         name: "/skills",
         icon: "◆",
         usage: "/skills [enable NAME|disable NAME]",
@@ -102,6 +108,7 @@ pub(crate) enum Command<'a> {
     Compact,
     Resume,
     Tree,
+    Changes,
     Plan(PlanCommand),
     Quit,
     Model(Option<&'a str>),
@@ -126,6 +133,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/compact" => Command::Compact,
         "/resume" => Command::Resume,
         "/tree" => Command::Tree,
+        "/changes" => Command::Changes,
         "/plan" => {
             return Ok(Some(Command::Plan(match argument {
                 "" => PlanCommand::Open,

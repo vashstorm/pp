@@ -387,6 +387,10 @@ fn run(args: Args) -> Result<()> {
                 writeln!(stderr, "/tree requires the TUI; run pp in a terminal.")?;
                 continue;
             }
+            Some(commands::Command::Changes) => {
+                writeln!(stderr, "/changes requires the TUI; run pp in a terminal.")?;
+                continue;
+            }
             Some(commands::Command::Plan(_)) => {
                 writeln!(stderr, "/plan requires the TUI; run pp in a terminal.")?;
                 continue;
@@ -465,6 +469,7 @@ fn run(args: Args) -> Result<()> {
                 | commands::Command::Skills(_)
                 | commands::Command::Resume
                 | commands::Command::Tree
+                | commands::Command::Changes
                 | commands::Command::Plan(_),
             ) => unreachable!(),
             Some(commands::Command::Prompt(prompt)) => {
