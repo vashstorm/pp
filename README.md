@@ -1,5 +1,7 @@
 # pp
 
+pp 是 **paper plane（纸飞机）** 的缩写。
+
 用 Rust 编写的 Pi 风格终端 coding agent。通过 `async-openai` 支持 OpenAI-compatible Responses 与 Chat Completions，提供真实的文件、搜索、shell 工具和多轮会话。
 
 - 三种交互方式：单次任务、管道／行模式、Ratatui TUI，支持流式正文、思考和工具输出。
