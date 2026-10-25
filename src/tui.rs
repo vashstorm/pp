@@ -60,7 +60,7 @@ use std::{
 use transcript::Transcript;
 
 const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nForeground bash has an execution timeout; managed background tasks survive tool calls and stop at this user task's end or controlled exit. Ctrl + C stops managed background groups, but cleanup of other foreground children is not guaranteed. No shell/file side-effect rollback; deliberately detached descendants are not covered.";
-// 运行中状态栏与 F1 帮助共享同一段队列提示。
+// F1 帮助中的队列快捷键提示。
 const STEERING_HINT: &str = platform_text(
     "Enter steer · ⌥ + Enter queue · ⌥ + Q pending messages · ⌥ + R resume queue",
     "Enter steer · Alt + Enter queue · Ctrl + Q pending messages · Ctrl + R resume queue",
@@ -3708,15 +3708,6 @@ impl App {
                 Line::styled(
                     " Plan ready · /plan to review",
                     Style::default().fg(statusline::ACCENT),
-                ),
-                Rect::new(left, area.y, right - left, 1),
-            );
-        }
-        if matches!(self.state, State::Running) && left == area.x && right > left {
-            frame.render_widget(
-                Line::styled(
-                    format!(" {STEERING_HINT}"),
-                    Style::default().fg(Color::DarkGray),
                 ),
                 Rect::new(left, area.y, right - left, 1),
             );
