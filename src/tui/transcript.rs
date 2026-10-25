@@ -1164,6 +1164,7 @@ impl Transcript {
                 } else {
                     title
                 };
+                let title = format!("{} {title}", palette::tool_icon(&name));
                 let mut entry = TranscriptEntry::new(kind, title, String::new(), Some(name));
                 entry.expanded = self.tools_expanded;
                 if let Some(args) = ask_args {
@@ -2878,6 +2879,71 @@ mod tests {
     }
 
     #[test]
+    fn tool_icons_are_distinct_and_keep_two_column_prefixes_across_card_styles() {
+        let names = [
+            "read",
+            "edit",
+            "write",
+            "bash",
+            "bash_task",
+            "grep",
+            "find",
+            "load_skill",
+            "ask",
+            "plan_search",
+            "plan_find",
+            "plan_write",
+            "plan_submit",
+            "mcp__fixture__tool",
+            "unknown_tool",
+        ];
+        let mut icons = std::collections::HashSet::new();
+        for name in names {
+            let icon = palette::tool_icon(name);
+            assert!(icons.insert(icon), "工具图标应独立：{name}");
+            assert_eq!(Span::raw(icon).width(), 1, "图标应占一列：{name}");
+            let mut transcript = Transcript::new();
+            tool(
+                &mut transcript,
+                "call",
+                name,
+                json!({"path":"file", "command":"true", "name":"rust"}),
+            );
+            let prefix = format!("{icon} ");
+            let title = transcript.entries[0].title.clone();
+            assert!(title.starts_with(&prefix));
+            assert_eq!(Span::raw(&prefix).width(), 2);
+            for result in [None, Some(json!({"ok":false,"error":"fixture error"}))] {
+                if let Some(result) = result {
+                    transcript.progress(AgentEvent::ToolFinished {
+                        id: "call".into(),
+                        result,
+                    });
+                }
+                for width in [80, 20, 80] {
+                    let buffer = render(&mut transcript, width, 20);
+                    let row = (0..buffer.area.height)
+                        .find_map(|row| {
+                            (0..buffer.area.width)
+                                .find(|&column| buffer[(column, row)].symbol() == icon)
+                                .map(|column| (column, row))
+                        })
+                        .unwrap_or_else(|| {
+                            panic!("工具标题应显示图标：{name}\n{}", screen(&buffer))
+                        });
+                    assert_eq!(buffer[(row.0 + 1, row.1)].symbol(), " ");
+                    if width == 80 {
+                        assert_eq!(
+                            buffer[(row.0 + 2, row.1)].symbol(),
+                            title[prefix.len()..].chars().next().unwrap().to_string()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn bash_card_and_thinking_match_reference_and_keep_full_output() {
         let mut transcript = Transcript::new();
         tool(&mut transcript, "b", "bash", json!({"command":"git diff"}));
@@ -3244,7 +3310,7 @@ mod tests {
         assert!(
             screen(&running)
                 .replace(' ', "")
-                .contains("╭─skill·中文技能")
+                .contains("╭─\u{f02d}skill·中文技能")
         );
         assert_eq!(transcript.entries[0].status, EntryStatus::Running);
         assert_eq!(running[(0, 0)].fg, Color::Magenta);

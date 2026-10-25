@@ -17,25 +17,18 @@ fn diff_blocks_settings(mode: &str) -> String {
     )
 }
 
-// 断言 needle 出现在屏幕上且其中每个单元格的前景色都等于 color。needle 仅使用
-// ASCII，且要求匹配点之前的行前缀全是 ASCII，保证字节偏移等于终端列号。
+// 直接按终端单元格匹配 ASCII 文本及颜色，避免标题图标影响列号计算。
 fn diff_blocks_screen_colored(screen: &vt100::Screen, needle: &str, color: vt100::Color) -> bool {
     let (rows, columns) = screen.size();
     let width = needle.chars().count() as u16;
     for row in 0..rows {
-        let line: String = (0..columns)
-            .filter_map(|column| screen.cell(row, column))
-            .map(|cell| cell.contents())
-            .collect();
-        for (start, _) in line.match_indices(needle) {
-            if !line[..start].is_ascii() {
-                continue;
-            }
-            let start = start as u16;
-            if (start..start + width).all(|column| {
+        for start in 0..columns.saturating_sub(width).saturating_add(1) {
+            if needle.chars().enumerate().all(|(offset, expected)| {
                 screen
-                    .cell(row, column)
-                    .is_some_and(|cell| cell.fgcolor() == color)
+                    .cell(row, start + offset as u16)
+                    .is_some_and(|cell| {
+                        cell.contents() == expected.to_string() && cell.fgcolor() == color
+                    })
             }) {
                 return true;
             }

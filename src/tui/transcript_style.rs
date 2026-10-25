@@ -16,6 +16,27 @@ pub(super) const TOOL_ERROR_BG: Color = Color::Rgb(41, 29, 29);
 pub(super) const ASK_BG: Color = Color::Rgb(40, 42, 54);
 pub(super) const ASK_BORDER: Color = Color::Rgb(39, 135, 165);
 
+// 统一使用 Nerd Font Font Awesome 单列字形；加一列空白为图标预留两列。
+pub(super) fn tool_icon(name: &str) -> &'static str {
+    match name {
+        "read" => "\u{f15c}",
+        "edit" => "\u{f040}",
+        "write" => "\u{f0c7}",
+        "bash" => "\u{f120}",
+        "bash_task" => "\u{f085}",
+        "grep" => "\u{f002}",
+        "find" => "\u{f07b}",
+        "load_skill" => "\u{f02d}",
+        "ask" => "\u{f059}",
+        "plan_search" => "\u{f0b0}",
+        "plan_find" => "\u{f14e}",
+        "plan_write" => "\u{f0cb}",
+        "plan_submit" => "\u{f00c}",
+        name if name.starts_with("mcp__") => "\u{f1e6}",
+        _ => "\u{f12e}",
+    }
+}
+
 pub(super) fn display_text(text: &str) -> Cow<'_, str> {
     fn unsafe_control(c: char) -> bool {
         (c <= '\u{1f}' && c != '\n' && c != '\t') || c == '\u{7f}'
