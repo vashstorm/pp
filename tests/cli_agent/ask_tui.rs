@@ -55,11 +55,11 @@ fn tool_folding_ctrl_o_globally_toggles_during_ask_and_new_tools_inherit() {
             ask_call_json(protocol, "fold-ask", ask_single_arguments())
         ]));
         ask_wait_panel(&mut pty, "Which database should the project use?");
-        pty.wait_for("多个工具默认折叠为十五行", |screen| {
+        pty.wait_for("read 三行预览和 bash 十行尾部", |screen| {
             let text = screen.contents();
             text.matches("Ctrl + O to expand").count() == 3
-                && text.contains("fold-first-14") && text.contains("fold-second-14")
-                && text.contains("fold-bash-05") && !text.contains("fold-bash-00")
+                && text.contains("fold-first-02") && text.contains("fold-second-02")
+                && text.contains("fold-bash-10") && !text.contains("fold-bash-00")
                 && !text.contains("fold-first-19") && !text.contains("fold-second-19")
         });
         pty.input("\x1b[B ");
@@ -108,6 +108,155 @@ fn tool_folding_ctrl_o_globally_toggles_during_ask_and_new_tools_inherit() {
         pty.input("\x03");
         pty.finish();
         no_more(&server);
+    }
+}
+
+// 默认摘要不影响模型正文；恢复使用当前显示配置，退出回放仍包含全部内容。
+#[test]
+fn tool_folding_omp_read_default_summary_resume_and_complete_scrollback() {
+    for protocol in ["completion", "response"] {
+        let provider = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), r#"{"notification_timeout_seconds":1}"#).unwrap();
+        std::fs::write(config_path(home.path(), "models.yml"), response_models(&provider, Some(protocol))).unwrap();
+        for name in ["one", "two"] {
+            std::fs::write(project.path().join(name), (0..20).map(|i|format!("body-{name}-{i:02}\n")).collect::<String>()).unwrap();
+        }
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready();
+        pty.resize(80, 100);
+        pty.input("read summary\r");
+        let (request, _) = pty.request_at(&provider, api_path(protocol));
+        ask_reply_calls(request, protocol, json!([
+            diff_blocks_call(protocol,"one","read",json!({"path":"one"})),
+            diff_blocks_call(protocol,"two","read",json!({"path":"two","offset":2}))
+        ]));
+        let (request, body) = pty.request_at(&provider, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        assert!(outputs[0].1["content"].as_str().unwrap().contains("body-one-19"));
+        assert!(outputs[1].1["content"].as_str().unwrap().starts_with("body-two-01"));
+        pty.wait_for("默认 read 本地摘要", |screen| {
+            let text = screen.contents();
+            text.contains("Read (2)") && text.contains("one:1-20") && text.contains("two:2-20") && !text.contains("body-one-")
+        });
+        pty.input("\x0fbarrier");
+        pty.draft("barrier");
+        assert!(!pty.parser.screen().contents().contains("body-one-"));
+        ask_final_reply(request, protocol, "summary done");
+        pty.text("summary done");
+        pty.ready();
+        let (scrollback, _) = diff_blocks_exit_scrollback(&mut pty, "summary done");
+        assert!(scrollback.contains("body-one-19") && scrollback.contains("body-two-19"));
+        pty.finish();
+        let id = saved_session_id(home.path());
+        std::fs::write(config_path(home.path(), "settings.yml"), r#"{"notification_timeout_seconds":1,"read":{"toolResultPreview":true}}"#).unwrap();
+        let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
+        resumed.resize(80, 100);
+        resumed.ready();
+        resumed.wait_for("恢复后采用当前 read 预览配置", |screen| {
+            let text = screen.contents();
+            text.contains("body-one-02") && !text.contains("body-one-03") && text.contains("Ctrl + O to expand")
+        });
+        resumed.input("\x0f");
+        resumed.text("body-one-19");
+        resumed.input("\x03");
+        resumed.finish();
+        no_more(&provider);
+    }
+}
+
+#[test]
+fn tool_folding_omp_native_search_clips_long_rows_for_both_protocols() {
+    for protocol in ["completion", "response"] {
+        for name in ["grep", "find"] {
+            let provider = server();
+            let home = tempfile::tempdir().unwrap();
+            let project = tempfile::tempdir().unwrap();
+            std::fs::create_dir(project.path().join("files")).unwrap();
+            let content = (0..20).map(|i| format!("entry-{i:02}-needle-{}\n", "中😀".repeat(40))).collect::<String>();
+            std::fs::write(project.path().join("lines"), content).unwrap();
+            for i in 0..20 { std::fs::write(project.path().join("files").join(format!("path-{i:02}-{}", "x".repeat(150))), "").unwrap(); }
+            let mut pty = ask_tui_start(&provider, home.path(), project.path(), protocol);
+            pty.ready();
+            pty.resize(90, 80);
+            pty.input("search preview\r");
+            let (request, body) = pty.request_at(&provider, api_path(protocol));
+            let schema = body["tools"].as_array().unwrap().iter().map(|t| if protocol == "completion" { &t["function"] } else { t })
+                .find(|t| t["name"] == name).unwrap();
+            let args = if name == "grep" { json!({"args":["-n","-e","needle","lines"]}) }
+                else if schema["description"].as_str().unwrap().starts_with("Uses fd.") { json!({"args":[".","files"]}) }
+                else { json!({"args":["files","-type","f"]}) };
+            ask_reply_calls(request, protocol, json!([diff_blocks_call(protocol,"search",name,args)]));
+            let (request, body) = pty.request_at(&provider, api_path(protocol));
+            let outputs = cancel_tool_outputs(&body, protocol);
+            assert_eq!(outputs[0].1["ok"], true);
+            assert_eq!(outputs[0].1["stdout"].as_str().unwrap().lines().count(),20);
+            let marker = if name == "grep" { "entry-" } else { "path-" };
+            let shown = if name == "grep" { 5 } else { 8 };
+            pty.wait_for("搜索正文按额度及列宽收敛", |screen| {
+                let text = screen.contents();
+                text.matches(marker).count() == shown && text.contains("more") && text.contains("Ctrl + O")
+            });
+            pty.input("\x0fa");
+            pty.draft("a");
+            assert_eq!(pty.parser.screen().contents().matches(marker).count(),20);
+            ask_final_reply(request, protocol, "search complete");
+            pty.text("search complete");
+            pty.ready();
+            pty.input("\x0fb");
+            pty.draft("ab");
+            assert_eq!(pty.parser.screen().contents().matches(marker).count(),shown);
+            pty.input("\x03");
+            pty.finish();
+            no_more(&provider);
+        }
+    }
+}
+
+#[test]
+fn tool_folding_omp_mcp_multiline_result_and_write_preview() {
+    for protocol in ["completion", "response"] {
+        let provider = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let content = (0..20).map(|i|format!("mcp-body-{i:02}")).collect::<Vec<_>>().join("\n");
+        let encoded = serde_json::to_string(&content).unwrap();
+        let mut settings = super::mcp::settings("");
+        settings["notification_timeout_seconds"] = json!(1);
+        settings["mcp_servers"]["local"]["env"]["MCP_VALUE"] = json!(&encoded[1..encoded.len()-1]);
+        std::fs::write(config_path(home.path(), "settings.yml"), settings.to_string()).unwrap();
+        std::fs::write(config_path(home.path(), "models.yml"), response_models(&provider, Some(protocol))).unwrap();
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready();
+        pty.resize(90, 100);
+        pty.input("mcp and write\r");
+        let (request, _) = pty.request_at(&provider, api_path(protocol));
+        let written = (0..20).map(|i|format!("write-body-{i:02}")).collect::<Vec<_>>().join("\n");
+        ask_reply_calls(request, protocol, json!([
+            diff_blocks_call(protocol,"mcp","mcp__local__echo",json!({"text":"test"})),
+            diff_blocks_call(protocol,"write","write",json!({"path":"written","content":written}))
+        ]));
+        let (request, body) = pty.request_at(&provider, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        assert_eq!(outputs[0].1["result"]["content"][0]["text"],content);
+        assert_eq!(std::fs::read_to_string(project.path().join("written")).unwrap(),written);
+        pty.wait_for("MCP 四行与 write 六行预览", |screen| {
+            let text = screen.contents();
+            text.contains("mcp-body-03") && !text.contains("mcp-body-04")
+                && text.contains("write-body-05") && !text.contains("write-body-06")
+        });
+        pty.input("\x0fa"); pty.draft("a");
+        let expanded = pty.parser.screen().contents();
+        assert!(expanded.contains("mcp-body-11") && !expanded.contains("mcp-body-12"));
+        assert!(expanded.contains("write-body-19"));
+        ask_final_reply(request, protocol, "mcp write done");
+        pty.text("mcp write done"); pty.ready();
+        let (scrollback, _) = diff_blocks_exit_scrollback(&mut pty, "mcp write done");
+        assert!(scrollback.contains("mcp-body-19") && scrollback.contains("write-body-19"));
+        pty.finish();
+        no_more(&provider);
+        super::mcp::assert_stopped(project.path());
     }
 }
 
@@ -190,7 +339,7 @@ fn ask_tui_start(server: &Server, home: &Path, project: &Path, protocol: &str) -
     // 弹窗一秒淡出，避免与 5 秒栅栏竞争。
     std::fs::write(
         config_path(home, "settings.yml"),
-        r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#,
+        r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"read":{"toolResultPreview":true}}"#,
     )
     .unwrap();
     std::fs::write(

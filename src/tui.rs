@@ -11,6 +11,7 @@ mod sessions;
 mod skills;
 mod statusline;
 mod tips;
+mod tool_display;
 mod transcript;
 mod transcript_style;
 mod tree;
@@ -566,7 +567,9 @@ impl App {
             .diagnostics
             .clone();
         let mut app = Self {
-            conversation: Transcript::new(),
+            conversation: Transcript::with_read_preview(
+                agent.as_ref().is_ok_and(Agent::read_tool_result_preview),
+            ),
             notifications: Notifications::new(notification_options),
             show_welcome: true,
             input: editor(),
@@ -997,7 +1000,7 @@ impl App {
     ) -> Option<String> {
         self.close_ask_on_exit();
         self.token_speed.clear();
-        self.conversation = Transcript::new();
+        self.conversation = self.conversation.fresh();
         self.input_history = Vec::new();
         let error = self.conversation.replay(replay, &mut self.input_history);
         self.input = editor();
@@ -1320,7 +1323,7 @@ impl App {
             self.plan_panel = None;
             self.menu_dismissed = true;
             self.secondary_status = Some("Reviewing plan...".into());
-            let mut review = Transcript::new();
+            let mut review = self.conversation.fresh();
             review.begin_run();
             self.review_transcript = Some(review);
         } else {
@@ -1569,7 +1572,7 @@ impl App {
                 }
                 Ok(WorkerEvent::Reset) => {
                     self.close_ask_on_exit();
-                    self.conversation = Transcript::new();
+                    self.conversation = self.conversation.fresh();
                     self.clear_input();
                     self.notifications.clear();
                     self.show_welcome = true;
@@ -3152,6 +3155,14 @@ impl App {
                 {
                     if key.kind == KeyEventKind::Press {
                         self.active_transcript().toggle_tool_output();
+                        let enabled = self.active_transcript().tools_expanded();
+                        self.notify(
+                            Level::Normal,
+                            format!(
+                                "Tool output expansion: {}",
+                                if enabled { "enabled" } else { "disabled" }
+                            ),
+                        );
                     }
                     return false;
                 }
@@ -3627,6 +3638,10 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame, context: &StatusContext) {
+        self.conversation.set_terminal_rows(frame.area().height);
+        if let Some(review) = &mut self.review_transcript {
+            review.set_terminal_rows(frame.area().height);
+        }
         let area = frame.area();
         if area.width == 0 || area.height == 0 {
             return;
@@ -4606,6 +4621,7 @@ mod tests {
     }
 
     fn folding_fixture(app: &mut App) {
+        app.conversation = Transcript::with_read_preview(true);
         for id in ["first", "second"] {
             app.conversation.progress(AgentEvent::ToolStarted {
                 id: id.into(),
@@ -5937,10 +5953,10 @@ mod tests {
         assert!(!screen.contains("❯ /model"));
         assert!(screen.contains("❯ fixture/model-2"));
         assert!(
-            screen
-                .replace(' ', "")
-                .contains("vendor-2[response](current)")
+            screen.replace(' ', "").contains("fixture/model-2(current)"),
+            "{screen}"
         );
+        assert!(screen.contains("fixture/vendor-2"), "{screen}");
         assert!(!screen.contains('┌'));
         assert_eq!(app.model_panel.as_ref().unwrap().height(30), 15);
         app.handle(key(KeyCode::PageDown), &mut dirty);

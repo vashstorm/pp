@@ -491,7 +491,8 @@ fn changes_tui_restart_and_resume_replay_diffs_but_never_restore_undo_snapshots(
                 let text = screen.contents();
                 text.contains("  1 - agent-one")
                     && text.contains("  1 + agent-final")
-                    && text.contains("  1 + created")
+                    && text.contains("created")
+                    && text.contains("Wrote 8 bytes")
                     && diff_blocks_screen_colored(screen, "agent-one", DIFF_BLOCKS_REMOVED)
                     && diff_blocks_screen_colored(screen, "agent-final", DIFF_BLOCKS_ADDED)
             });

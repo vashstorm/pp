@@ -131,6 +131,8 @@ Use `/help` for full help and `/tips` for usage tips. The following slash comman
 
 Type `@` for project file path completion. When idle with an empty input, press Esc twice to open the session tree. Navigating back through history does not roll back files. [Full interaction guide (Chinese) →](docs/guide.md#终端交互)
 
+Tool previews follow the ANSI policies of [Oh My Pi](https://github.com/can1357/oh-my-pi/tree/0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0). File reads show local path/range summaries by default; set `read: {toolResultPreview: true}` in `settings.yml` to enable three-line content previews. Ctrl + O toggles existing and future tool output and reports the state. Search previews clip long rows, shell output keeps a bounded visual tail, and other tools have separate limits. Expanded grep and file lists remain width-clipped; MCP text still has a 12-line limit. These display limits do not change model-facing results. Session-tree previews and terminal history written on exit include the complete retained output. [Preview limits (Chinese) →](docs/guide.md#工具输出折叠)
+
 </details>
 
 Sessions are saved automatically in `~/.pp/agent/sessions/`. Restore one by its full ID, or open the local statistics page:

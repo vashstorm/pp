@@ -191,6 +191,9 @@ impl Session {
 }
 
 impl Agent {
+    pub(crate) fn read_tool_result_preview(&self) -> bool {
+        self.catalog.read_tool_result_preview()
+    }
     pub(crate) fn mcp_cleanup(&self) -> Result<crate::mcp::Cleanup> {
         self.tools.mcp.cleanup()
     }

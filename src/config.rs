@@ -191,9 +191,18 @@ impl Default for NotificationOptions {
     }
 }
 
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReadDisplaySettings {
+    #[serde(default, rename = "toolResultPreview")]
+    pub(crate) tool_result_preview: bool,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
+    #[serde(default)]
+    pub(crate) read: ReadDisplaySettings,
     #[serde(default)]
     pub(crate) debug: bool,
     #[serde(default = "default_notification_show_countdown")]
@@ -330,6 +339,7 @@ pub(crate) fn global_dir() -> Result<PathBuf> {
 
 fn default_settings() -> Settings {
     Settings {
+        read: ReadDisplaySettings::default(),
         debug: false,
         notification_show_countdown: default_notification_show_countdown(),
         notification_timeout_seconds: default_notification_timeout_seconds(),
@@ -373,6 +383,9 @@ fn default_auto_compact_threshold_percent() -> u8 {
 }
 
 impl ModelCatalog {
+    pub(crate) fn read_tool_result_preview(&self) -> bool {
+        self.settings.read.tool_result_preview
+    }
     pub(crate) fn from_files(settings_path: &Path, models_path: &Path) -> Result<Self> {
         let settings: Settings = read_settings(settings_path)?;
         settings
@@ -578,6 +591,36 @@ pub(crate) fn read_settings(path: &Path) -> Result<Settings> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn read_preview_defaults_and_strict_nested_settings() {
+        for text in ["{}", "read: {}", "read: {toolResultPreview: false}"] {
+            let settings: Settings = yaml::parse(text, "settings").unwrap();
+            assert!(!settings.read.tool_result_preview);
+        }
+        let settings: Settings =
+            yaml::parse("read: {toolResultPreview: true}", "settings").unwrap();
+        assert!(settings.read.tool_result_preview);
+        for text in [
+            "read: null",
+            "read: true",
+            "read: {toolResultPreview: null}",
+            "read: {toolResultPreview: 1}",
+            "read: {toolResultPreview: 'true'}",
+            "read: {unknown: true}",
+            "read: {toolResultPreview: true, toolResultPreview: false}",
+        ] {
+            assert!(yaml::parse::<Settings>(text, "settings").is_err(), "{text}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.yml");
+        fs::write(&path, "read:\n  toolResultPreview: true\n").unwrap();
+        update_settings(&path, |_| {
+            Ok(("think_level", serde_yaml::Value::String("high".into())))
+        })
+        .unwrap();
+        assert!(read_settings(&path).unwrap().read.tool_result_preview);
+    }
 
     #[test]
     fn favorite_models_default_validate_and_preserve_unavailable_references() {

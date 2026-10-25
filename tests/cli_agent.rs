@@ -4452,7 +4452,7 @@ mod tui {
             }
             let (request, _) = receive_at(&server, path);
             pty.text("Exit code: 0");
-            pty.text("4 earlier lines");
+            pty.text("9 earlier lines");
             pty.text("Output");
             assert!(!pty.parser.screen().contents().contains("output-00"));
             assert_eq!(
@@ -4472,7 +4472,7 @@ mod tui {
             pty.text("output-00");
             pty.draft("draft-中");
             pty.function_key('o');
-            pty.text("4 earlier lines");
+            pty.text("9 earlier lines");
             pty.draft("draft-中");
             pty.resize(4, 20);
             pty.resize(30, 100);
@@ -6007,7 +6007,7 @@ mod tui {
             let text = pty.parser.screen().contents();
             assert!(!text.contains("▄▄▄██▀▀██"));
             assert!(text.contains("$ printf"));
-            assert!(text.contains("read · tui-read.txt"));
+            assert!(text.contains("Read · tui-read.txt"));
             assert!(text.contains("tool-out"));
             assert!(text.contains("Exit code: 0"));
             assert!(!text.contains("Wall:"));

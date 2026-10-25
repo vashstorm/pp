@@ -770,6 +770,7 @@ mod tests {
             base_url: base_url.parse().unwrap(),
             context_window: None,
             settings: crate::config::Settings {
+                read: Default::default(),
                 debug: false,
                 notification_show_countdown: true,
                 notification_timeout_seconds: 10,

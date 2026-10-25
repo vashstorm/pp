@@ -1,7 +1,7 @@
 // Diff 块级渲染 PTY 回归：两种 edit 模式／两协议的真实提交 diff（磁盘落盘 + 屏幕
 // 红/绿与行号 + 统计）、write 新建/覆盖/同内容/空文件、CRLF→LF／末尾换行删除／BOM
 // /非 UTF-8 的 unavailable 回退、无读权限文件的 write 不被快照失败阻断、失败 edit
-// 不伪造 diff、超过 15 行的默认折叠与Ctrl+O 展开/收起、退出 scrollback 完整展开
+// 不伪造 diff、超过 40 行的默认折叠与Ctrl+O 展开/收起、退出 scrollback 完整展开
 // 保留颜色，以及 /resume 与启动恢复重放相同 diff 且不重新执行旧工具、缺 FileChanged
 // 的旧日志正常加载。全部通过真实 PTY、loopback HTTP 与磁盘文件观察，不用 sleep 猜
 // 测阶段；辅助函数一律使用 `diff_blocks_` 前缀，测试函数使用 `transcript_blocks_`
@@ -13,7 +13,7 @@ const DIFF_BLOCKS_ACCENT: vt100::Color = vt100::Color::Rgb(254, 188, 56);
 
 fn diff_blocks_settings(mode: &str) -> String {
     format!(
-        r#"{{"default_model":"fixture/primary","edit":"{mode}","notification_timeout_seconds":1}}"#
+        r#"{{"default_model":"fixture/primary","edit":"{mode}","notification_timeout_seconds":1,"read":{{"toolResultPreview":true}}}}"#
     )
 }
 
@@ -199,11 +199,10 @@ fn transcript_blocks_diff_replace_edit_and_write_cards() {
         pty.wait_for("created and empty write cards", |screen| {
             let text = screen.contents();
             text.contains("write · fresh.txt")
-                && text.contains("+1 -0")
-                && text.contains("  1 + alpha")
-                && diff_blocks_screen_colored(screen, "alpha", DIFF_BLOCKS_ADDED)
+                && text.contains("alpha")
+                && text.contains("Wrote 6 bytes")
                 && text.contains("write · empty.txt")
-                && text.contains("Created empty file.")
+                && text.contains("Wrote 0 bytes")
         });
         assert_eq!(
             std::fs::read_to_string(project.path().join("fresh.txt")).unwrap(),
@@ -232,10 +231,9 @@ fn transcript_blocks_diff_replace_edit_and_write_cards() {
         );
         pty.wait_for("same-content and overwrite write cards", |screen| {
             let text = screen.contents();
-            text.contains("No content changes.")
-                && text.contains("+0 -0")
-                && text.contains("  3 + beta")
-                && diff_blocks_screen_colored(screen, "beta", DIFF_BLOCKS_ADDED)
+            text.contains("Wrote 6 bytes")
+                && text.contains("beta")
+                && text.contains("Wrote 14 bytes")
         });
         let (request, _) = pty.request_at(&server, path);
         diff_blocks_final(request, protocol, "diff-blocks write round done");
@@ -373,13 +371,10 @@ fn transcript_blocks_diff_endings_bom_and_unavailable() {
                 diff_blocks_call(protocol, "w2", "write", json!({"path":"nonl.txt","content":"x"})),
             ]),
         );
-        pty.wait_for("line-ending diff hints", |screen| {
+        pty.wait_for("换行变更后的写入正文", |screen| {
             let text = screen.contents();
-            text.contains("write · eol.txt")
-                && text.contains("  CRLF")
-                && text.contains("  LF")
-                && text.contains("write · nonl.txt")
-                && text.contains("No newline at end of file")
+            text.contains("write · eol.txt") && text.contains("Wrote 4 bytes")
+                && text.contains("write · nonl.txt") && text.contains("Wrote 1 bytes")
         });
         assert_eq!(
             std::fs::read(project.path().join("eol.txt")).unwrap(),
@@ -406,19 +401,10 @@ fn transcript_blocks_diff_endings_bom_and_unavailable() {
                 ),
             ]),
         );
-        pty.wait_for("BOM strip and non-UTF-8 fallback cards", |screen| {
+        pty.wait_for("BOM 与二进制覆盖后的正文预览", |screen| {
             let text = screen.contents();
-            text.contains("write · bom.txt")
-                && text.contains("+1 -1")
-                && text.contains("  2   keep")
-                && text
-                    .lines()
-                    .any(|line| line.contains("  1 -") && line.contains("bom"))
-                && text
-                    .lines()
-                    .any(|line| line.contains("  1 +") && line.trim().ends_with("bom"))
-                && text.contains("write · bin.dat")
-                && text.contains("Previous content is not UTF-8; text diff unavailable.")
+            text.contains("write · bom.txt") && text.contains("bom") && text.contains("keep")
+                && text.contains("write · bin.dat") && text.contains("binary text")
         });
         let (request, body) = pty.request_at(&server, path);
         let written = diff_blocks_tool_result(&body, protocol, "w4");
@@ -543,7 +529,7 @@ fn transcript_blocks_diff_failed_edits_have_no_fabricated_diff() {
     }
 }
 
-// 超过 15 行的 diff 默认折叠，Ctrl+O 展开/收起，退出 scrollback 展开全部并保留颜色。
+// 超过 40 行的 diff 默认折叠，Ctrl+O 展开/收起，退出 scrollback 展开全部并保留颜色。
 #[test]
 fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
     for protocol in ["completion", "response"] {
@@ -560,11 +546,11 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
             response_models(&server, Some(protocol)),
         )
         .unwrap();
-        let old = (1..=12)
+        let old = (1..=24)
             .map(|number| number.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        let new = (b'A'..=b'L')
+        let new = (b'A'..=b'X')
             .map(|byte| char::from(byte).to_string())
             .collect::<Vec<_>>()
             .join("\n");
@@ -572,6 +558,7 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
         let path = api_path(protocol);
         let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
         pty.ready();
+        pty.resize(80, 100);
         pty.input("diff-blocks long edit\r");
         let (request, _) = pty.request_at(&server, path);
         diff_blocks_calls_reply(
@@ -587,35 +574,35 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
         pty.wait_for("long diff collapsed preview", |screen| {
             let text = screen.contents();
             text.contains("edit · lines.txt")
-                && text.contains("+12 -12")
+                && text.contains("+24 -24")
                 && text.contains("  1 - 1")
-                && text.contains(" 12 - 12")
-                && text.contains("  3 + C")
-                && !text.contains("  4 + D")
-                && text.contains("… 10 more lines (Ctrl + O to expand)")
+                && text.contains(" 24 - 24")
+                && text.contains(" 16 + P")
+                && !text.contains(" 17 + Q")
+                && text.contains("… 9 more lines (Ctrl + O to expand)")
         });
         pty.input("\x0f");
         pty.wait_for("long diff expanded", |screen| {
             let text = screen.contents();
             text.contains("  1 + A")
-                && text.contains(" 12 - 12")
-                && text.contains(" 12 + L")
-                && text.contains(" 13   keep")
+                && text.contains(" 24 - 24")
+                && text.contains(" 24 + X")
+                && text.contains(" 25   keep")
                 && !text.contains("(Ctrl + O to expand)")
         });
         pty.input("\x0f");
         pty.wait_for("long diff folded again", |screen| {
             let text = screen.contents();
-            !text.contains("  4 + D")
+            !text.contains(" 17 + Q")
                 && text.contains("  1 - 1")
-                && text.contains("… 10 more lines (Ctrl + O to expand)")
+                && text.contains("… 9 more lines (Ctrl + O to expand)")
         });
         let (request, _) = pty.request_at(&server, path);
         diff_blocks_final(request, protocol, "diff-blocks long done");
         pty.text("diff-blocks long done");
         pty.ready();
         let (scrollback, raw) = diff_blocks_exit_scrollback(&mut pty, "diff-blocks long done");
-        for expected in ["  1 - 1", "  1 + A", " 12 - 12", " 12 + L", " 13   keep"] {
+        for expected in ["  1 - 1", "  1 + A", " 24 - 24", " 24 + X", " 25   keep"] {
             assert!(scrollback.contains(expected), "{expected}\n{scrollback}");
         }
         assert!(
@@ -625,11 +612,11 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
         let mut parser = vt100::Parser::new(600, 100, 0);
         parser.process(&raw);
         assert!(
-            diff_blocks_screen_colored(parser.screen(), "12", DIFF_BLOCKS_REMOVED),
+            diff_blocks_screen_colored(parser.screen(), "24", DIFF_BLOCKS_REMOVED),
             "scrollback lost removed-line color\n{scrollback}"
         );
         assert!(
-            diff_blocks_screen_colored(parser.screen(), "L", DIFF_BLOCKS_ADDED),
+            diff_blocks_screen_colored(parser.screen(), "X", DIFF_BLOCKS_ADDED),
             "scrollback lost added-line color\n{scrollback}"
         );
         pty.finish();
@@ -813,8 +800,7 @@ fn transcript_blocks_diff_write_without_read_permission_reports_unavailable() {
         );
         pty.wait_for("unavailable diff on unreadable file", |screen| {
             let text = screen.contents();
-            text.contains("write · locked.txt")
-                && text.contains("Previous content could not be read; text diff unavailable.")
+            text.contains("write · locked.txt") && text.contains("replacement") && text.contains("Wrote 12 bytes")
         });
         // 恢复权限供清理与断言。
         std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o644))

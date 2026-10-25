@@ -10,7 +10,7 @@
 const MARKDOWN_BLOCKS_ERROR: vt100::Color = vt100::Color::Rgb(224, 108, 117);
 
 fn markdown_blocks_start(fixture: &Server, protocol: &str, home: &Path, project: &Path) -> Pty {
-    std::fs::write(config_path(home, "settings.yml"), r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#).unwrap();
+    std::fs::write(config_path(home, "settings.yml"), r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"read":{"toolResultPreview":true}}"#).unwrap();
     std::fs::write(
         config_path(home, "models.yml"),
         response_models(fixture, Some(protocol)),
@@ -321,7 +321,7 @@ fn transcript_blocks_markdown_tool_output_stays_literal() {
             assert!(!markdown_blocks_bold(screen, "# From File Heading"));
             assert!(!text.contains(" rust "), "{text}");
             assert!(!text.contains("• "), "{text}");
-            for (icon, title) in [("\u{f120}", "$ echo"), ("\u{f15c}", "read · literal.md")] {
+            for (icon, title) in [("\u{f120}", "$ echo"), ("\u{f15c}", "Read · literal.md")] {
                 let (rows, columns) = screen.size();
                 let (row, column) = (0..rows)
                     .find_map(|row| {

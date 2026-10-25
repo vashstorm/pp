@@ -130,6 +130,8 @@ printf '说明当前项目的构建方式\n' | pp
 
 `@` 打开项目文件路径补全。空闲且输入为空时，双击 Esc 打开会话树；回退历史不会回滚文件。[完整交互说明 →](docs/guide.md#终端交互)
 
+工具预览采用 [Oh My Pi](https://github.com/can1357/oh-my-pi/tree/0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0) 的 ANSI 显示规则。read 默认仅显示本地生成的路径／范围摘要；在 `settings.yml` 设置 `read: {toolResultPreview: true}` 后启用三行正文预览。Ctrl + O 全局切换已有及后续工具输出，并通知当前状态。搜索预览按列宽截断长行，shell 输出保留有限的屏幕尾部，各类工具使用独立额度；展开后的 grep 和文件列表仍按列宽截断，MCP 文本仍限制为 12 行。这些显示限制不改变模型接收的结果，会话树预览与退出时写入终端历史的内容保持完整。[各工具预览额度 →](docs/guide.md#工具输出折叠)
+
 </details>
 
 会话自动保存在 `~/.pp/agent/sessions/`。按完整标识恢复，或打开本地统计页面：
