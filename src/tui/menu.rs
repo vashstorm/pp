@@ -7,7 +7,8 @@ use ratatui::{
     widgets::{Cell, Clear, Row, Table, TableState},
 };
 
-pub(super) const SEPARATOR: Color = Color::Rgb(190, 133, 222);
+pub(super) const SEPARATOR: Color = Color::DarkGray;
+pub(super) const SELECTED: Color = Color::Rgb(153, 194, 232);
 const MAX_ROWS: usize = 8;
 
 #[derive(PartialEq, Eq)]
@@ -43,7 +44,7 @@ impl<T: Copy> SelectionMenu<T> {
             selection: TableState::default().with_selected(selected),
             page_size: 1,
             hint: None,
-            accent: Color::Yellow,
+            accent: SELECTED,
         }
     }
 
@@ -126,9 +127,21 @@ impl<T: Copy> SelectionMenu<T> {
         }
         self.page_size = usize::from(rows_area.height).max(1);
         let selected = self.selected_index();
+        // 按名称的实际显示宽度对齐说明，宽终端不额外拉大两列间距。
+        let label_width = self
+            .items
+            .iter()
+            .map(|item| {
+                2 + item.icon.map_or(0, |icon| Line::from(icon).width() + 1)
+                    + Line::from(item.label.as_str()).width()
+            })
+            .max()
+            .unwrap_or(0)
+            .min(usize::from(area.width / 2)) as u16;
         let rows = self.items.iter().enumerate().map(|(index, item)| {
             let active = selected == Some(index);
-            let label_style = Style::default().fg(if active { self.accent } else { Color::Reset });
+            let label_style =
+                Style::default().fg(if active { self.accent } else { Color::DarkGray });
             let detail_style =
                 Style::default().fg(if active { self.accent } else { Color::DarkGray });
             let mut label = vec![Span::styled(
@@ -145,11 +158,8 @@ impl<T: Copy> SelectionMenu<T> {
                 Cell::from(format!("{}{current}", item.description)).style(detail_style),
             ])
         });
-        let table = Table::new(
-            rows,
-            [Constraint::Percentage(46), Constraint::Percentage(54)],
-        )
-        .column_spacing(1);
+        let table = Table::new(rows, [Constraint::Length(label_width), Constraint::Min(0)])
+            .column_spacing(8);
         frame.render_stateful_widget(table, rows_area, &mut self.selection);
     }
 
@@ -354,13 +364,17 @@ mod tests {
         assert_eq!(buffer[(2, 0)].symbol(), "◆");
         assert_eq!(buffer[(4, 0)].symbol(), "i");
         assert_eq!(buffer[(0, 1)].symbol(), "❯");
-        assert_eq!(buffer[(2, 1)].fg, Color::Yellow);
-        assert_eq!(buffer[(47, 1)].fg, Color::Yellow);
-        assert_eq!(buffer[(47, 0)].fg, Color::DarkGray);
+        assert_eq!(buffer[(2, 1)].fg, SELECTED);
+        assert_eq!(buffer[(18, 1)].symbol(), "d");
+        assert_eq!(buffer[(18, 1)].fg, SELECTED);
+        assert_eq!(buffer[(18, 0)].fg, Color::DarkGray);
         let row: String = (0..100).map(|x| buffer[(x, 1)].symbol()).collect();
         assert!(row.replace(' ', "").contains("detail-1(current)"));
         assert_eq!(menu.height(30), 8);
         assert_eq!(menu.height(2), 2);
+        let mut wide = Terminal::new(TestBackend::new(200, 4)).unwrap();
+        wide.draw(|frame| menu.draw(frame, frame.area())).unwrap();
+        assert_eq!(wide.backend().buffer()[(18, 1)].symbol(), "d");
         menu.handle_key(press(KeyCode::End));
         terminal
             .draw(|frame| menu.draw(frame, frame.area()))

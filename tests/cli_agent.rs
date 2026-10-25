@@ -2698,6 +2698,7 @@ mod tui {
     include!("cli_agent/plan_review_tui.rs");
     include!("cli_agent/tree_tui.rs");
     include!("cli_agent/runtime_input_tui.rs");
+    include!("cli_agent/menu_tui.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
     use std::{
         io::Read,
@@ -2894,10 +2895,14 @@ mod tui {
 
         fn draft(&mut self, expected: &str) {
             self.wait_for("preserved input draft", |screen| {
-                screen
-                    .contents()
-                    .lines()
-                    .skip_while(|line| !line.starts_with('❯'))
+                let text = screen.contents();
+                let lines: Vec<_> = text.lines().collect();
+                // 上方菜单也使用箭头，最后一个提示符才是主输入框。
+                let Some(start) = lines.iter().rposition(|line| line.starts_with('❯')) else {
+                    return false;
+                };
+                lines[start..]
+                    .iter()
                     .take_while(|line| !line.starts_with('─'))
                     .any(|line| line.trim_start_matches('❯').trim() == expected)
             });
@@ -3500,7 +3505,16 @@ mod tui {
     }
 
     fn assert_tip_key(screen: &vt100::Screen, row: u16, columns: std::ops::Range<u16>, key: &str) {
-        let accent = vt100::Color::Rgb(127, 166, 106);
+        assert_colored_tip_key(screen, row, columns, key, vt100::Color::Rgb(127, 166, 106));
+    }
+
+    fn assert_colored_tip_key(
+        screen: &vt100::Screen,
+        row: u16,
+        columns: std::ops::Range<u16>,
+        key: &str,
+        accent: vt100::Color,
+    ) {
         for (offset, character) in key.chars().enumerate() {
             let col = columns.start + u16::try_from(offset).unwrap();
             let cell = screen.cell(row, col).unwrap();
@@ -3542,37 +3556,36 @@ mod tui {
         let dir = tempfile::tempdir().unwrap();
         let mut pty = Pty::start(&server, dir.path());
         pty.ready();
-        pty.text("Tips:");
+        pty.text("Session & workflow");
         let screen = pty.parser.screen();
         let text = screen.contents();
         let lines: Vec<_> = text.lines().collect();
-        assert_eq!(lines[2].trim(), "▄▄▄█");
-        assert_eq!(lines[2].find('▄'), Some(53));
-        assert_eq!(lines[5].trim(), "▀▀█████▀  ▄████");
-        assert_eq!(lines[8].trim(), "▀█▀      pp");
-        assert_eq!(lines[9].trim(), concat!("v", env!("CARGO_PKG_VERSION")));
-        assert_eq!(lines[11], "  Tips:");
-        let model_key = if cfg!(target_os = "macos") {
-            "⌥ + P"
-        } else {
-            "Ctrl + P"
-        };
+        assert_eq!(lines[2].trim(), "▄▄▄█    ██████    ██████");
+        assert_eq!(lines[2].find('▄'), Some(44));
+        assert_eq!(lines[5].trim(), "▀▀█████▀  ▄████      ██        ██");
+        assert_eq!(
+            lines[8].trim(),
+            concat!("▀█▀       v", env!("CARGO_PKG_VERSION"))
+        );
+        assert!(lines[9].trim().is_empty());
+        assert_eq!(tip_columns(screen, 10, 12..48).trim(), "Session & workflow");
+        assert_eq!(tip_columns(screen, 10, 52..88).trim(), "Keyboard");
+        assert_eq!(tip_columns(screen, 11, 12..48), "─".repeat(36));
+        assert!(lines[17].contains("/tips  All shortcuts   ·   /help  Commands"));
+        assert!(!text.contains("/compact"));
+        assert!(!text.contains("/skills"));
         for (row, (left, right)) in [
-            ("/help", "/effort"),
-            ("Esc", "/init"),
-            ("/model", "/skills"),
-            ("/new", "Shift + Tab"),
-            ("/resume", model_key),
-            ("/plan", "F1"),
-            ("/compact", "Ctrl + J"),
-            ("/tree", "Ctrl + C"),
+            ("/model", "Enter"),
+            ("/new", "Ctrl + J"),
+            ("/resume", "Esc"),
+            ("/plan", "Shift + Tab"),
         ]
         .into_iter()
         .enumerate()
         {
-            let row = 12 + u16::try_from(row).unwrap();
-            assert_tip_key(screen, row, 2..52, left);
-            assert_tip_key(screen, row, 52..100, right);
+            let row = 12 + row as u16;
+            assert_colored_tip_key(screen, row, 12..48, left, vt100::Color::Rgb(122, 162, 247));
+            assert_colored_tip_key(screen, row, 52..88, right, vt100::Color::Rgb(122, 162, 247));
         }
         let context_start = lines[26].find(" Ctx ").expect("用量显示在输入栏上沿");
         assert!(!lines[26][context_start..].contains('/'));
@@ -3585,11 +3598,15 @@ mod tui {
         assert!(lines[29].contains("off"));
         assert!(!text.contains("│ Note"));
         for (row, col, color) in [
-            (2, 53, vt100::Color::Rgb(215, 175, 95)),
-            (5, 50, vt100::Color::Rgb(122, 162, 247)),
-            (8, 60, vt100::Color::Rgb(122, 162, 247)),
-            (12, 2, vt100::Color::Rgb(127, 166, 106)),
-            (12, 14, vt100::Color::Idx(7)),
+            (2, 44, vt100::Color::Rgb(215, 175, 95)),
+            (5, 41, vt100::Color::Rgb(122, 162, 247)),
+            (2, 52, vt100::Color::Rgb(235, 235, 235)),
+            (8, 52, vt100::Color::Idx(8)),
+            (10, 12, vt100::Color::Rgb(215, 175, 95)),
+            (11, 12, vt100::Color::Rgb(62, 68, 80)),
+            (12, 12, vt100::Color::Rgb(122, 162, 247)),
+            (12, 24, vt100::Color::Idx(7)),
+            (17, 12, vt100::Color::Rgb(110, 117, 129)),
             (26, 0, vt100::Color::Rgb(127, 166, 106)),
             (29, 1, vt100::Color::Rgb(127, 166, 106)),
         ] {
@@ -3602,34 +3619,67 @@ mod tui {
 
         pty.input("startup draft");
         pty.draft("startup draft");
+        pty.resize(24, 80);
+        pty.wait_for("80 列仍显示双列且输入位置固定", |screen| {
+            let text = screen.contents();
+            tip_columns(screen, 10, 2..38).trim() == "Session & workflow"
+                && tip_columns(screen, 10, 42..78).trim() == "Keyboard"
+                && text.contains("startup draft")
+                && screen.cursor_position() == (21, 15)
+        });
         pty.resize(30, 60);
         pty.wait_for(
-            "窄屏提示切换为单列并保留全部条目",
+            "窄屏提示切换为单列并保留八项入口",
             |screen| {
                 let text = screen.contents();
-                text.lines()
-                    .nth(10)
-                    .is_some_and(|line| line.starts_with("  /help       "))
-                    && text
-                        .lines()
-                        .nth(25)
-                        .is_some_and(|line| line.starts_with(&format!("  {:<12}", "Ctrl + C")))
+                tip_columns(screen, 10, 2..58).trim() == "Session & workflow"
+                    && tip_columns(screen, 17, 2..58).trim() == "Keyboard"
                     && text.contains("startup draft")
+                    && text.contains("/tips  All shortcuts")
             },
         );
         for (row, key) in [
-            (21, "Shift + Tab"),
-            (22, model_key),
-            (24, "Ctrl + J"),
-            (25, "Ctrl + C"),
+            (12, "/model"),
+            (13, "/new"),
+            (14, "/resume"),
+            (15, "/plan"),
+            (19, "Enter"),
+            (20, "Ctrl + J"),
+            (21, "Esc"),
+            (22, "Shift + Tab"),
         ] {
-            assert_tip_key(pty.parser.screen(), row, 2..60, key);
+            assert_colored_tip_key(
+                pty.parser.screen(),
+                row,
+                2..58,
+                key,
+                vt100::Color::Rgb(122, 162, 247),
+            );
         }
+        pty.resize(30, 38);
+        pty.wait_for(
+            "宽度不足时使用紧凑品牌并保留版本号",
+            |screen| {
+                let text = screen.contents();
+                let mut lines = text.lines();
+                lines.next().is_some_and(|line| line.trim() == "  PP")
+                    && lines
+                        .next()
+                        .is_some_and(|line| line.trim() == concat!("v", env!("CARGO_PKG_VERSION")))
+                    && text.contains("startup draft")
+                    && text.contains("Shift + Tab")
+                    && text.contains("/help  Commands")
+            },
+        );
         pty.resize(12, 40);
         pty.wait_for("小窗口显示紧凑欢迎页并保留草稿", |screen| {
             let text = screen.contents();
-            text.lines().next().is_some_and(|line| line.trim() == "  pp")
+            text.lines().next().is_some_and(|line| line.trim() == "  PP")
                 && text.contains("startup draft")
+                && text.contains("/tips  All shortcuts")
+                && text.contains("/help  Commands")
+                && !text.contains("Session & workflow")
+                && !text.contains("Keyboard")
                 // 窄屏仍在输入栏上沿右端显示上下文字段。
                 && text
                     .lines()
@@ -3643,10 +3693,14 @@ mod tui {
         );
         assert_eq!(
             compact.cell(0, 21).unwrap().fgcolor(),
-            vt100::Color::Rgb(122, 162, 247)
+            vt100::Color::Rgb(235, 235, 235)
         );
         assert!(!compact.cell(0, 21).unwrap().bold());
         assert!(!compact.cell(0, 21).unwrap().italic());
+        pty.resize(6, 20);
+        pty.wait_for("极小窗口保留输入草稿和光标", |screen| {
+            screen.contents().contains("startup draft") && screen.cursor_position() == (3, 15)
+        });
         pty.resize(30, 100);
         pty.text("▄▄▄██▀▀██");
         pty.draft("startup draft");
@@ -3669,23 +3723,36 @@ mod tui {
     }
 
     #[test]
-    fn tui_tips_matches_startup_and_leaves_active_jsonl_unchanged() {
+    fn tui_tips_keeps_all_entries_and_leaves_active_jsonl_unchanged() {
         for protocol in ["completion", "response"] {
             let server = server();
             let (home, mut pty) = context_tui_start(&server, protocol, 100_000, 80);
-            pty.text("Tips:");
-            let startup = pty.parser.screen();
-            let tips = (12..20)
-                .flat_map(|row| {
-                    [
-                        tip_columns(startup, row, 2..52),
-                        tip_columns(startup, row, 52..100),
-                    ]
-                })
-                .map(|tip| tip.split_whitespace().collect::<Vec<_>>().join(" "))
-                .collect::<Vec<_>>();
-            assert_eq!(tips.len(), 16);
-            assert!(tips.last().unwrap().starts_with("Ctrl + C "));
+            pty.text("Session & workflow");
+            let startup = pty.parser.screen().contents();
+            assert!(!startup.contains("/compact"));
+            assert!(!startup.contains("/skills"));
+            let tips = [
+                "/help list commands and usage",
+                "Esc cancel the running task",
+                "/model switch model, keep chat",
+                "/new clear chat, keep model",
+                "/resume reopen a saved session",
+                "/plan plan, then approve edits",
+                "/compact summarize older context",
+                "/tree browse & rewind history",
+                "/effort set model thinking level",
+                "/init create/update AGENTS.md",
+                "/skills enable or disable skills",
+                "Shift + Tab cycle thinking levels",
+                if cfg!(target_os = "macos") {
+                    "⌥ + P open the model picker"
+                } else {
+                    "Ctrl + P open the model picker"
+                },
+                "F1 show commands and usage",
+                "Ctrl + J insert a newline",
+                "Ctrl + C quit pp",
+            ];
             let model_key = if cfg!(target_os = "macos") {
                 "⌥ + P"
             } else {
@@ -4655,14 +4722,14 @@ mod tui {
         no_more(&a);
         no_more(&b);
         pty.input(" ");
-        pty.wait_for("空格展开输入框下方模型菜单", |screen| {
+        pty.wait_for("空格展开输入框上方模型菜单", |screen| {
             let text = screen.contents();
             let (cursor_row, cursor_col) = screen.cursor_position();
             text.contains("a/primary")
                 && text.contains("gateway/team/secondary")
                 && text.contains("vendor-b")
                 && text.contains("completion")
-                && text.find("❯ /model").unwrap() < text.find("a/primary").unwrap()
+                && text.find("a/primary").unwrap() < text.rfind("❯ /model").unwrap()
                 && text.contains("(current)")
                 && !screen.hide_cursor()
                 && cursor_col == 9
@@ -4911,12 +4978,12 @@ mod tui {
         // 根菜单只显示直接子项；进入目录同步补全路径，但不发送草稿。
         pty.input("分析 @");
         pty.wait_for(
-            "输入框下方列出根目录，不平铺后代文件",
+            "输入框上方列出根目录，不平铺后代文件",
             |screen| {
                 let text = screen.contents();
                 text.find("❯ 分析 @").is_some_and(|draft| {
-                    text.find("src/").is_some_and(|directory| draft < directory)
-                        && text.find("README.md").is_some_and(|file| draft < file)
+                    text.find("src/").is_some_and(|directory| directory < draft)
+                        && text.find("README.md").is_some_and(|file| file < draft)
                 }) && text.contains("Enter/Tab open/insert")
                     && !text.contains("src/main.rs")
                     && !text.contains("src/nested/")

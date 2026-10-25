@@ -764,9 +764,16 @@ fn tree_tui_inline_cancel_restores_viewport_and_draft() {
     pty.input("\x01\x0b");
     pty.draft("");
     pty.text("context-old-one-0000");
+    // 按固定物理行列比较，避免 contents() 对行尾空白的不同序列化影响等价画面。
+    let screen_grid = |screen: &vt100::Screen| {
+        let (rows, cols) = screen.size();
+        (0..rows)
+            .map(|row| tip_columns(screen, row, 0..cols))
+            .collect::<Vec<_>>()
+    };
     let before = {
         pty.drain();
-        pty.parser.screen().contents()
+        screen_grid(pty.parser.screen())
     };
     tree_tui_open(&mut pty, "noted context-recent-keep");
     // 在预览里移动候选、过滤并滚动预览行，全程不应产生模型请求。
@@ -789,7 +796,7 @@ fn tree_tui_inline_cancel_restores_viewport_and_draft() {
     });
     let after = {
         pty.drain();
-        pty.parser.screen().contents()
+        screen_grid(pty.parser.screen())
     };
     assert_eq!(
         after, before,

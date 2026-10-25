@@ -6,7 +6,6 @@ use anyhow::{Context, Result, ensure};
 
 pub(crate) struct CommandSpec {
     pub(crate) name: &'static str,
-    pub(crate) icon: &'static str,
     pub(crate) usage: &'static str,
     pub(crate) description: &'static str,
 }
@@ -14,79 +13,66 @@ pub(crate) struct CommandSpec {
 pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/help",
-        icon: "\u{f059}",
         usage: "/help",
         description: "Show available commands",
     },
     CommandSpec {
         name: "/tips",
-        icon: "\u{f0eb}",
         usage: "/tips",
         description: "Show startup tips without recording session history",
     },
     CommandSpec {
         name: "/model",
-        icon: "\u{ec19}",
         usage: "/model [provider/model]",
         description: "List or select a configured model without clearing history",
     },
     CommandSpec {
         name: "/new",
-        icon: "\u{f021}",
         usage: "/new",
         description: "Reset the session, keeping the current model",
     },
     CommandSpec {
         name: "/init",
-        icon: "\u{f044}",
         usage: "/init",
         description: "Create or update project AGENTS.md using the current model",
     },
     CommandSpec {
         name: "/compact",
-        icon: "\u{f066}",
         usage: "/compact",
         description: "Summarize older context, preserving recent exchanges and visible history",
     },
     CommandSpec {
         name: "/resume",
-        icon: "\u{f021}",
         usage: "/resume",
         description: "List saved sessions and resume a conversation",
     },
     CommandSpec {
         name: "/effort",
-        icon: "\u{f0eb}",
         usage: "/effort [none|low|medium|high|xhigh|max]",
         description: "View or set the thinking effort level, keeping session history",
     },
     CommandSpec {
         name: "/plan",
-        icon: "◇",
         usage: "/plan [view|new|off]",
         description: "Plan a task with read-only research, then explicitly approve execution (TUI)",
     },
     CommandSpec {
         name: "/tree",
-        icon: "⑂",
         usage: "/tree",
         description: "Browse current history and rewind to an earlier point (TUI)",
     },
     CommandSpec {
         name: "/changes",
-        icon: "Δ",
         usage: "/changes",
         description: "Review latest-task edit/write changes and undo files (TUI)",
     },
     CommandSpec {
         name: "/skills",
-        icon: "◆",
         usage: "/skills [enable NAME|disable NAME]",
         description: "Manage globally enabled skills",
     },
     CommandSpec {
         name: "/quit",
-        icon: "\u{f08b}",
         usage: "/quit",
         description: "Exit pp",
     },

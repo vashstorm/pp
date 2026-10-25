@@ -2043,9 +2043,9 @@ impl App {
                 .filter(|(_, spec)| spec.name.starts_with(input.trim()))
                 .map(|(index, spec)| MenuItem {
                     value: MenuAction::Command(index),
-                    label: spec.name.trim_start_matches('/').into(),
+                    label: spec.name.into(),
                     description: spec.description.into(),
-                    icon: Some(spec.icon),
+                    icon: None,
                     current: false,
                 })
                 .chain(
@@ -2056,7 +2056,7 @@ impl App {
                         .filter(|(_, command)| command.name.starts_with(input.trim()))
                         .map(|(index, command)| MenuItem {
                             value: MenuAction::FileCommand(index),
-                            label: command.name.trim_start_matches('/').into(),
+                            label: command.name.clone(),
                             description: command.description.clone(),
                             icon: None,
                             current: false,
@@ -3670,10 +3670,18 @@ impl App {
         let bordered = available >= 3 && area.width >= 3;
         let lines = self.input.lines().len().clamp(1, 6) as u16;
         let input_height = available.min(lines.saturating_add(if bordered { 2 } else { 0 }));
-        let menu_height = self.menu.as_ref().map_or(0, |menu| {
-            menu.height(available.saturating_sub(input_height))
-        });
-        let conversation_height = available.saturating_sub(input_height + menu_height);
+        // 菜单覆盖输入框上方，候选数量不参与对话区和输入框的布局。
+        let conversation_height = available.saturating_sub(input_height);
+        let menu_height = self
+            .menu
+            .as_ref()
+            .map_or(0, |menu| menu.height(conversation_height));
+        let menu_area = Rect::new(
+            area.x,
+            area.y + conversation_height - menu_height,
+            area.width,
+            menu_height,
+        );
         let conversation = Rect::new(area.x, area.y, area.width, conversation_height);
         let input = Rect::new(
             area.x,
@@ -3681,12 +3689,7 @@ impl App {
             area.width,
             input_height,
         );
-        let status = Rect::new(
-            area.x,
-            input.bottom().saturating_add(menu_height),
-            area.width,
-            status_height,
-        );
+        let status = Rect::new(area.x, input.bottom(), area.width, status_height);
         let conversation = if self.show_welcome {
             welcome::draw(frame, conversation)
         } else {
@@ -3768,10 +3771,7 @@ impl App {
         if menu_height > 0
             && let Some(menu) = &mut self.menu
         {
-            menu.draw(
-                frame,
-                Rect::new(area.x, input.bottom(), area.width, menu_height),
-            );
+            menu.draw(frame, menu_area);
         }
         if status.height > 0 {
             frame.render_widget(
@@ -3796,7 +3796,7 @@ impl App {
         }
         self.notifications.draw(
             frame,
-            Rect::new(area.x, area.y, area.width, input.y.saturating_sub(area.y)),
+            Rect::new(area.x, area.y, area.width, menu_area.y - area.y),
         );
     }
 
@@ -5814,7 +5814,7 @@ mod tests {
     }
 
     #[test]
-    fn model_space_menu_renders_below_input_and_preserves_selection_on_resize() {
+    fn model_space_menu_renders_above_input_and_preserves_selection_on_resize() {
         let mut app = app();
         app.state = State::Ready;
         app.choices = (0..12)
@@ -5841,7 +5841,7 @@ mod tests {
         assert_eq!(menu_values(&app), vec![MenuAction::Command(model_command)]);
         app.handle(key(KeyCode::Char(' ')), &mut dirty);
         let screen = draw(&mut app, 100, 30);
-        assert!(screen.find("❯ /model").unwrap() < screen.find("fixture/model-0").unwrap());
+        assert!(screen.find("fixture/model-0").unwrap() < screen.rfind("❯ /model").unwrap());
         assert!(screen.contains("❯ fixture/model-2"));
         assert!(
             screen
@@ -5951,7 +5951,71 @@ mod tests {
     }
 
     #[test]
-    fn command_menu_renders_below_input_with_columns_and_yellow_selection() {
+    fn menu_overlay_preserves_editor_and_history_when_candidates_change() {
+        for (width, height) in [(100, 30), (40, 12), (20, 6)] {
+            for draft in ["/", "first line\n@"] {
+                for scrolled in [false, true] {
+                    let mut app = app();
+                    app.show_welcome = false;
+                    for index in 0..40 {
+                        app.append("Assistant", &format!("history-{index:02}"));
+                    }
+                    app.input.insert_str(draft);
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    let mut render = |app: &mut App| {
+                        terminal
+                            .draw(|frame| app.draw(frame, &StatusContext::default()))
+                            .unwrap();
+                        (
+                            terminal.backend().buffer().clone(),
+                            terminal.backend().cursor_position(),
+                        )
+                    };
+                    render(&mut app);
+                    if scrolled {
+                        app.conversation.page_up();
+                    }
+                    let (baseline, cursor) = render(&mut app);
+                    let input_top = height - 1 - (app.input.lines().len() as u16 + 2);
+                    for count in [12, 1, 3, 12] {
+                        app.menu = Some(
+                            SelectionMenu::new(
+                                (0..count)
+                                    .map(|index| MenuItem {
+                                        value: MenuAction::Command(index),
+                                        label: format!("/candidate-{index}"),
+                                        description: "Candidate description".into(),
+                                        icon: None,
+                                        current: false,
+                                    })
+                                    .collect(),
+                                count - 1,
+                            )
+                            .with_hint("Enter select · Esc close"),
+                        );
+                        let menu_top = input_top - app.menu.as_ref().unwrap().height(input_top);
+                        let (buffer, position) = render(&mut app);
+                        assert_eq!(position, cursor);
+                        // 覆盖区之外的对话、输入正文和状态栏必须逐格保持原位。
+                        for y in (0..menu_top).chain(input_top + 1..height) {
+                            for x in 0..width {
+                                if y == height - 2 {
+                                    assert_eq!(buffer[(x, y)].symbol(), baseline[(x, y)].symbol());
+                                } else {
+                                    assert_eq!(buffer[(x, y)], baseline[(x, y)]);
+                                }
+                            }
+                        }
+                    }
+                    app.menu = None;
+                    assert_eq!(render(&mut app), (baseline, cursor));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn command_menu_renders_above_input_with_columns_and_blue_selection() {
         let mut app = app();
         app.input.insert_str("/");
         app.refresh_candidates(true);
@@ -5962,32 +6026,35 @@ mod tests {
             .draw(|frame| app.draw(frame, &StatusContext::default()))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        // 布局随命令数量变化，按内容定位输入行与其下方的菜单。
-        let input_row = (0..30)
-            .find(|&y| buffer[(0, y)].symbol() == "❯" && buffer[(2, y)].symbol() == "/")
-            .expect("input row renders the prompt and draft");
+        let input_row = 27;
+        assert_eq!(buffer[(0, input_row)].symbol(), "❯");
+        assert_eq!(buffer[(2, input_row)].symbol(), "/");
         assert!(!buffer[(3, input_row)].modifier.contains(Modifier::REVERSED));
         assert_eq!(terminal.backend().cursor_position(), (3, input_row).into());
-        let separator_row = input_row + 1;
+        let separator_row = input_row - 1;
         for x in 0..100 {
             assert_eq!(buffer[(x, separator_row)].symbol(), "─");
-            assert_eq!(buffer[(x, separator_row)].fg, Color::Rgb(190, 133, 222));
+            assert_eq!(buffer[(x, separator_row)].fg, menu::SEPARATOR);
         }
-        let menu_top = separator_row + 1;
+        let menu_top = separator_row - 8;
         for (index, spec) in COMMANDS.iter().take(8).enumerate() {
             let y = menu_top + index as u16;
             let active = index == 1;
             assert_eq!(buffer[(0, y)].symbol(), if active { "❯" } else { " " });
-            assert_eq!(buffer[(2, y)].symbol(), spec.icon);
-            assert_eq!(buffer[(4, y)].symbol(), &spec.name[1..2]);
+            assert_eq!(buffer[(2, y)].symbol(), "/");
+            assert_eq!(buffer[(3, y)].symbol(), &spec.name[1..2]);
             assert_eq!(
-                buffer[(4, y)].fg,
-                if active { Color::Yellow } else { Color::Reset }
+                buffer[(3, y)].fg,
+                if active {
+                    menu::SELECTED
+                } else {
+                    Color::DarkGray
+                }
             );
             assert_eq!(
-                buffer[(47, y)].fg,
+                buffer[(18, y)].fg,
                 if active {
-                    Color::Yellow
+                    menu::SELECTED
                 } else {
                     Color::DarkGray
                 }
@@ -6404,7 +6471,7 @@ mod tests {
         );
         assert!(compact.contains("Deepthinking(current)"));
         assert!(screen.contains("❯ high"));
-        assert!(compact.find("❯/effort").unwrap() < compact.find("Disablethinking").unwrap());
+        assert!(compact.find("Disablethinking").unwrap() < compact.rfind("❯/effort").unwrap());
         assert!(compact.contains("Highestlevelthemodelsupports"));
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
         app.handle(key(KeyCode::Down), &mut dirty);
