@@ -489,7 +489,8 @@ impl TranscriptEntry {
                 .fg(Color::Rgb(190, 188, 139))
                 .bg(BASH_BACKGROUND);
             let mut command = tool_display::command(&self.title, self.expanded, self.display);
-            if !self.expanded
+            if self.tool.as_deref() != Some("bash")
+                && !self.expanded
                 && !self.display.full
                 && self.title.lines().count() > self.display.window()
                 && let Some(marker) = command.first_mut()
@@ -1246,7 +1247,11 @@ impl Transcript {
                 } else {
                     title
                 };
-                let title = format!("{} {title}", palette::tool_icon(&name));
+                let title = if name == "bash" {
+                    title
+                } else {
+                    format!("{} {title}", palette::tool_icon(&name))
+                };
                 let mut entry = TranscriptEntry::new(kind, title, String::new(), Some(name));
                 entry.arguments = arguments.unwrap_or(Value::Null);
                 entry.display = self.display;
@@ -3172,7 +3177,6 @@ mod tests {
             "read",
             "edit",
             "write",
-            "bash",
             "bash_task",
             "grep",
             "find",
@@ -3244,8 +3248,10 @@ mod tests {
             "bash",
             json!({"command":(0..30).map(|i|format!("command-{i:02}")).collect::<Vec<_>>().join("\n")}),
         );
-        let command = screen(&render(&mut long_command, 100, 30));
-        assert!(command.contains(palette::tool_icon("bash")) && command.contains("command-29"));
+        let command_buffer = render(&mut long_command, 100, 30);
+        let command = screen(&command_buffer);
+        assert_eq!(command_buffer[(2, 1)].symbol(), "…");
+        assert!(command.contains("command-29"));
         assert!(!command.contains("command-00"));
         let mut transcript = Transcript::new();
         tool(&mut transcript, "b", "bash", json!({"command":"git diff"}));
@@ -3259,6 +3265,7 @@ mod tests {
         });
         let buffer = render(&mut transcript, 100, 30);
         let text = screen(&buffer);
+        assert_eq!(buffer[(2, 1)].symbol(), "$");
         for expected in [
             "╭─",
             "$ git diff",
@@ -3286,7 +3293,9 @@ mod tests {
         assert_eq!(buffer[(2, think_row)].fg, MUTED_TEXT);
         assert_eq!(buffer[(2, think_row)].bg, ASSISTANT_BACKGROUND);
         transcript.toggle_tool_output();
-        let expanded = screen(&render(&mut transcript, 100, 40));
+        let expanded_buffer = render(&mut transcript, 100, 40);
+        assert_eq!(expanded_buffer[(2, 1)].symbol(), "$");
+        let expanded = screen(&expanded_buffer);
         assert!(expanded.contains("line-00"));
         assert!(!expanded.contains("earlier lines"));
         transcript.toggle_tool_output();
