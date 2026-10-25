@@ -205,6 +205,8 @@ pub(crate) struct Settings {
     #[serde(default = "default_skill_dirs")]
     pub(crate) skill_dirs: Vec<String>,
     #[serde(default)]
+    pub(crate) skill_sources: Vec<crate::skills::SkillSource>,
+    #[serde(default)]
     pub(crate) disabled_skills: Vec<String>,
     #[serde(default)]
     pub(crate) think_level: ThinkLevel,
@@ -323,6 +325,7 @@ fn default_settings() -> Settings {
         notification_timeout_seconds: default_notification_timeout_seconds(),
         mcp_servers: Default::default(),
         skill_dirs: default_skill_dirs(),
+        skill_sources: Vec::new(),
         disabled_skills: Vec::new(),
         think_level: ThinkLevel::None,
         edit: EditMode::Replace,
@@ -469,6 +472,13 @@ pub(crate) fn update_settings(
     path: &Path,
     update: impl FnOnce(Settings) -> Result<(&'static str, serde_yaml::Value)>,
 ) -> Result<()> {
+    update_settings_fields(path, |settings| Ok(vec![update(settings)?]))
+}
+
+pub(crate) fn update_settings_fields(
+    path: &Path,
+    update: impl FnOnce(Settings) -> Result<Vec<(&'static str, serde_yaml::Value)>>,
+) -> Result<()> {
     let read = || match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -477,8 +487,10 @@ pub(crate) fn update_settings(
     let original = read()?;
     let settings: Settings = yaml::parse(original.as_deref().unwrap_or("{}"), "settings")?;
     settings.validate()?;
-    let (name, value) = update(settings)?;
-    let updated = yaml::update_field(original.as_deref().unwrap_or("{}\n"), name, value)?;
+    let mut updated = original.as_deref().unwrap_or("{}\n").to_owned();
+    for (name, value) in update(settings)? {
+        updated = yaml::update_field(&updated, name, value)?;
+    }
     let settings: Settings = yaml::parse(&updated, "settings")?;
     settings.validate()?;
     let parent = path
@@ -1261,6 +1273,7 @@ providers:
         let defaults = load(None, Some(VALID_MODELS)).unwrap().settings;
         assert_eq!(defaults.skill_dirs, ["~/.pp/agent/skills"]);
         assert!(defaults.disabled_skills.is_empty());
+        assert!(defaults.skill_sources.is_empty());
         let settings = load(
             Some(r#"{"skill_dirs":[],"disabled_skills":[]}"#),
             Some(VALID_MODELS),
@@ -1268,7 +1281,7 @@ providers:
         .unwrap()
         .settings;
         assert!(settings.skill_dirs.is_empty());
-        for field in ["skill_dirs", "disabled_skills"] {
+        for field in ["skill_dirs", "disabled_skills", "skill_sources"] {
             for value in [
                 json!(null),
                 json!("secret-marker"),
@@ -1284,6 +1297,15 @@ providers:
                 );
             }
         }
+        rejection(
+            Some("skill_sources: [unknown]"),
+            Some(VALID_MODELS),
+            &["settings.yml"],
+        );
+        let settings = load(Some("skill_sources: [claude, codex]"), Some(VALID_MODELS))
+            .unwrap()
+            .settings;
+        assert_eq!(settings.skill_sources, crate::skills::SkillSource::ALL);
     }
 
     #[test]

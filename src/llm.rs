@@ -775,6 +775,7 @@ mod tests {
                 notification_timeout_seconds: 10,
                 mcp_servers: Default::default(),
                 skill_dirs: Vec::new(),
+                skill_sources: Vec::new(),
                 disabled_skills: Vec::new(),
                 think_level: crate::config::ThinkLevel::None,
                 edit: crate::config::EditMode::Replace,

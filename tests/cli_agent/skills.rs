@@ -61,6 +61,100 @@ fn system(body: &Value, protocol: &str) -> String {
         body["messages"][0]["content"].as_str().unwrap().into()
     }
 }
+
+pub(super) fn install_source(home: &std::path::Path, root: &str, name: &str) {
+    let file = home.join(root).join(name).join("SKILL.md");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        file,
+        format!("---\nname: {name}\ndescription: {name} guidance\n---\n{name} body\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn skills_sources_inherit_toggle_individually_and_restore_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let path = if protocol == "response" {
+            "/v1/responses"
+        } else {
+            "/v1/chat/completions"
+        };
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        install_source(home.path(), ".claude/skills", "claude-skill");
+        install_source(home.path(), ".agents/skills", "codex-skill");
+        install_source(home.path(), ".codex/skills", "legacy-skill");
+        let mut cli = Cli::start_with(
+            home.path(),
+            None,
+            "# 保留注释\nthink_level: high\n",
+            &response_models(&server, Some(protocol)),
+        );
+        for (command, expected) in [
+            ("/skills sources", [false, false, false]),
+            ("/skills sources enable claude", [true, false, false]),
+            ("/skills sources enable codex", [true, true, true]),
+            ("/skills disable codex-skill", [true, false, true]),
+            ("/skills sources disable codex", [true, false, false]),
+            ("/skills sources enable codex", [true, false, true]),
+        ] {
+            cli.input(&format!("{command}\ncheck\n"));
+            let (request, body) = receive_at(&server, path);
+            let summary = system(&body, protocol);
+            for (name, enabled) in ["claude-skill", "codex-skill", "legacy-skill"]
+                .into_iter()
+                .zip(expected)
+            {
+                assert_eq!(
+                    summary.contains(&format!("{name} guidance")),
+                    enabled,
+                    "{command}: {summary}"
+                );
+            }
+            finish_request(request, protocol);
+        }
+        cli.input("/quit\n");
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            std::fs::read_to_string(config_path(home.path(), "settings.yml"))
+                .unwrap()
+                .contains("# 保留注释")
+        );
+        let mut cli = Cli::start_with_existing_files(home.path(), None);
+        cli.input("restart\n");
+        let (request, body) = receive_at(&server, path);
+        let summary = system(&body, protocol);
+        assert!(summary.contains("claude-skill guidance"));
+        assert!(summary.contains("legacy-skill guidance"));
+        assert!(!summary.contains("codex-skill guidance"));
+        send_load(request, protocol, "codex-skill");
+        let (request, body) = receive_at(&server, path);
+        assert_eq!(loaded(&body, protocol)["ok"], false);
+        finish_request(request, protocol);
+        cli.input("/skills enable codex-skill\nload\n");
+        let (request, body) = receive_at(&server, path);
+        assert!(system(&body, protocol).contains("codex-skill guidance"));
+        send_load(request, protocol, "codex-skill");
+        let (request, body) = receive_at(&server, path);
+        assert!(
+            loaded(&body, protocol)["content"]
+                .as_str()
+                .unwrap()
+                .contains("codex-skill body")
+        );
+        finish_request(request, protocol);
+        cli.input("/quit\n");
+        assert!(cli.finish().status.success());
+        no_more(&server);
+    }
+}
+
 #[test]
 fn skills_missing_roots_are_silent_and_existing_roots_still_load() {
     for settings in [

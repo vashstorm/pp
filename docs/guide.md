@@ -61,9 +61,11 @@ think_level: high
 # 通知倒计时及自动消失时长，修改后重启生效
 notification_show_countdown: true
 notification_timeout_seconds: 10
-# 相对路径以 ~/.pp/agent 为基准；空列表关闭扫描
+# 相对路径以 ~/.pp/agent 为基准；空列表关闭自定义目录扫描
 skill_dirs:
   - ~/.pp/agent/skills
+# 可选 claude、codex；默认不继承其他工具的技能
+skill_sources: []
 disabled_skills: []
 # 每次用户任务最多请求数，包含自动摘要请求
 max_model_requests: 20
@@ -152,7 +154,7 @@ chmod 600 ~/.pp/agent/models.yml
 | `/new` | 清空当前会话，保留模型和思考档位 | TUI / 行模式 |
 | `/init` | 使用当前模型创建或更新项目 `AGENTS.md` | TUI / 行模式 |
 | `/compact` | 摘要较早上下文，保留近期交互和可见记录 | TUI / 行模式 |
-| `/skills` | 管理技能；行模式另支持 `enable 名称` / `disable 名称` | TUI / 行模式 |
+| `/skills` | 管理技能来源与逐项启停；另支持 `sources [enable\|disable claude\|codex]`、`enable 名称` / `disable 名称` | TUI / 行模式 |
 | `/resume` | 选择已保存会话；命令行按 ID 恢复使用 `pp -r ID` | 仅 TUI |
 | `/tree` | 浏览并回退当前有效历史，不回滚文件 | 仅 TUI |
 | `/changes` | 查看最近任务的 edit/write 净变更，逐文件安全撤销 | 仅 TUI |
@@ -181,7 +183,7 @@ chmod 600 ~/.pp/agent/models.yml
 
 ## 终端交互
 
-未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页居中显示品牌组合：左侧为保留双翼和中央折线的金蓝双色像素纸飞机，右上为白色像素 `PP`，右下为左对齐的版本号；小窗口使用纸飞机图标搭配 `PP`。首页提示区居中且最大宽度为 80 列，左右各留两列边距；以柔和金色标题和低对比度细线划分 `Session & workflow` 与 `Keyboard` 两组，浅蓝色加粗显示命令和按键，浅灰色显示说明。首页精选 `/model`、`/new`、`/resume`、`/plan` 与 Enter、Ctrl + J、Esc、Shift + Tab 八项入口；正文可用宽度达到 76 列时两组并排，否则上下排列，窄屏自动折行。高度不足时仅显示发送、换行和帮助入口，极小窗口按空间裁剪；底部提示通过 `/tips` 查看完整 16 条提示，通过 `/help` 查看命令说明。完整 `/tips` 保留原有绿色快捷键与自适应布局；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏显示估算上下文用量、实际模型、思考级别、仅在 Plan 模式显示的叠放方框图标与 Plan 标识（窄屏缩为 P）、启动工作目录和 Git 信息。`no think` 表示显式请求关闭思考。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；手动压缩时在输入框上沿显示 `Compacting context...` 或 `Cancelling context...`。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash/grep/find 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏。助手正文支持流式 Markdown，edit/write 与 ask 使用独立内容块；这些块共用原有 transcript 的滚动、恢复与退出 scrollback。
+未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页居中显示品牌组合：左侧为保留双翼和中央折线的金蓝双色像素纸飞机，右上为白色像素 `PP`，右下为左对齐的版本号；小窗口使用纸飞机图标搭配 `PP`。首页提示区居中且最大宽度为 80 列，左右各留两列边距；以柔和金色标题和低对比度细线划分 `Session & workflow` 与 `Keyboard` 两组，浅蓝色加粗显示命令和按键，浅灰色显示说明。首页精选 `/model`、`/new`、`/resume`、`/plan` 与 Enter、Ctrl + J、Esc、Shift + Tab 八项入口；正文可用宽度达到 76 列时两组并排，否则上下排列，窄屏自动折行。高度不足时仅显示发送、换行和帮助入口，极小窗口按空间裁剪；底部提示通过 `/tips` 查看完整 16 条提示，通过 `/help` 查看命令说明。完整 `/tips` 保留原有绿色快捷键与自适应布局；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏显示估算上下文用量、`provider/实际模型名`、思考级别、仅在 Plan 模式显示的叠放方框图标与 Plan 标识（窄屏缩为 P）、启动工作目录和 Git 信息。`no think` 表示显式请求关闭思考。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；手动压缩时在输入框上沿显示 `Compacting context...` 或 `Cancelling context...`。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash/grep/find 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏。助手正文支持流式 Markdown，edit/write 与 ask 使用独立内容块；这些块共用原有 transcript 的滚动、恢复与退出 scrollback。
 
 部分功能快捷键按 pp 二进制的编译目标选择：macOS 使用 Option（`⌥`），Linux 使用 Ctrl。下文并列键名均按 macOS / 其他系统排列：`⌥ + P / Ctrl + P` 打开模型选择，`Ctrl + S` 保存菜单高亮模型为默认值，`⌥ + S / Ctrl + S` 保存菜单高亮思考档位为默认值，`Ctrl + O` 在所有平台全局展开／折叠工具输出，`⌥ + Q / Ctrl + Q` 查看待处理消息，`⌥ + R / Ctrl + R` 恢复队列。默认模型保存始终使用 Ctrl + S，工具输出切换始终使用 Ctrl + O（macOS 不再使用 ⌥ + O）；使用 Option 的功能不保留 Ctrl 别名，旧组合可由编辑器正常处理。终端必须将 Option 配置为 Alt/Meta（ESC 前缀）；若产生 `π` 等普通 Unicode 文本，pp 保留文本，不猜测为快捷键。`Ctrl + C` 退出、`Ctrl + J` 换行、所有文本编辑键及会话面板键不变；`Shift + Tab` 切档，Option/Alt + Enter 排队行为不变。首页、`/tips`、帮助、菜单和折叠提示中的组合键统一以加号两侧各一个空格显示。
 
@@ -289,7 +291,16 @@ Review $1. Focus: $@[2:].
 
 ## 技能支持
 
-配置中的多个 `skill_dirs` 按顺序递归扫描，每个 skill 是包含 `SKILL.md` 的目录；发现该文件后不再扫描其附属目录。支持符号链接，并按规范路径去重、防止循环；同名定义按目录顺序及路径排序取首个，其他定义显示冲突提示。缺失目录、无效文件和元数据错误会显示诊断并跳过，不影响其他 skill。
+配置中的多个 `skill_dirs` 按顺序递归扫描，每个 skill 是包含 `SKILL.md` 的目录；发现该文件后不再扫描其附属目录。支持符号链接，并按规范路径去重、防止循环；同名定义按目录顺序及路径排序取首个，其他定义显示冲突提示。缺失目录静默跳过；不可读目录、无效文件和元数据错误会显示诊断并跳过，不影响其他 skill。
+
+`skill_sources` 控制继承哪些工具的用户级技能，默认 `[]`，通过 `/skills` 即可调整：
+
+| 来源 | 扫描目录 |
+|---|---|
+| `claude` | `~/.claude/skills` |
+| `codex` | `~/.agents/skills`、`~/.codex/skills`（兼容目录） |
+
+用户级目录参考 [Claude Code 官方文档](https://code.claude.com/docs/en/skills#choose-where-skills-load) 和 [Codex 官方文档](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)。pp 先扫描 `skill_dirs`，再按 Claude、Codex 的固定顺序扫描已选来源，不依赖勾选先后。相同文件的符号链接只加载一次；不同文件同名时仍保留先发现的定义并提示冲突。来源关闭后不再向模型提供其中的技能；单个技能的禁用选择仍保留，重新开启来源时继续生效。继承只读取这些目录中的标准 `SKILL.md`，不导入其他工具的配置、命令、插件注册或专有执行机制；项目级目录可通过 `skill_dirs` 显式添加。
 
 ```markdown
 ---
@@ -301,7 +312,9 @@ description: Rust 开发与审查指导
 
 `name` 和 `description` 必须为非空字符串，支持 YAML 多行说明和其他元数据。名称作为全局启停标识，需要唯一。默认根目录为 `~/.pp/agent/skills`；`~/` 展开为用户目录，普通相对路径以 `~/.pp/agent` 为基准。
 
-TUI 输入 `/skills` 打开全局管理面板：↑/↓ 选择、Space 勾选、Enter 保存、Esc 放弃本次选择，r 重读目录配置并扫描（会重置未保存选择），PgUp/PgDn 滚动详情及诊断。面板显示名称、说明、来源和启用状态；配置中的目录通过编辑 settings 修改。保存仅更新 `disabled_skills`，保留其他字段；常规块映射尽量保留原有注释，流式映射等特殊格式会重新排版为 YAML 块映射，使用临时文件原子提交；失败保留原运行状态与面板选择。运行任务时拒绝管理并保留草稿；缺少或无效模型配置时仍可管理 skill。行模式支持 `/skills` 查看列表，以及 `/skills enable 名称`、`/skills disable 名称`。
+TUI 输入 `/skills` 打开全局管理面板，顶部依次显示 `Sources`（来源继承）与 `Global management`（逐项启停）两个页签，默认打开 `Sources`，当前页签以底色和加粗高亮。Tab、Shift+Tab 或 ←/→ 切换页签，窄窗口缩短标签：↑/↓ 选择、Space 逐项启停技能或切换来源、Enter 统一保存、Esc 放弃本次选择。来源切换会在后台预览新列表，预览期间不改变模型可用技能；切换页或暂时关闭再开启来源都会保留尚未保存的逐项选择。r 重读配置并扫描（重置未保存选择），PgUp/PgDn 滚动详情及诊断。面板显示名称、说明、来源路径和启用状态；其他自定义目录仍通过 `skill_dirs` 配置。保存将 `skill_sources` 和 `disabled_skills` 一次性原子提交，保留其他字段及未安装技能的禁用记录；常规块映射尽量保留原有注释，流式映射等特殊格式会重新排版为 YAML 块映射。失败保留原运行状态与面板选择。运行任务时拒绝管理并保留草稿；缺少或无效模型配置时仍可管理 skill。
+
+行模式支持 `/skills` 查看来源与技能列表，`/skills enable 名称`、`/skills disable 名称` 逐项启停；`/skills sources` 查看来源，`/skills sources enable claude`、`/skills sources enable codex` 开启继承，`/skills sources disable claude` 或 `codex` 关闭继承。TUI 也支持这些参数；`/skills sources` 直接打开来源页。命令仅本地管理，不发送模型请求。
 
 模型只收到已启用 skill 的名称与说明；通过 `load_skill({"name":"rust"})` 按需读取全文，结果包含 `content`、`path` 和资源基准 `base_dir`。加载工具只接受已发现且启用的名称，不会执行 skill 内的脚本。TUI 用品红色完整边框显示加载过程，左上角加粗标题为 `skill · 名称`，并显示来源及成功／失败状态。正文默认预览前 15 行，Ctrl + O 全局展开／折叠工具输出；模型接收全文，退出回放也保留全文。
 

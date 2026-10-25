@@ -68,8 +68,8 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/skills",
-        usage: "/skills [enable NAME|disable NAME]",
-        description: "Manage globally enabled skills",
+        usage: "/skills [enable NAME|disable NAME|sources [enable|disable claude|codex]]",
+        description: "管理技能来源与逐项启停",
     },
     CommandSpec {
         name: "/quit",
@@ -87,6 +87,14 @@ pub(crate) enum PlanCommand {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SkillCommand<'a> {
+    List,
+    Toggle(&'a str, bool),
+    Sources,
+    Source(crate::skills::SkillSource, bool),
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command<'a> {
     Help,
     Tips,
@@ -99,7 +107,7 @@ pub(crate) enum Command<'a> {
     Quit,
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
-    Skills(Option<(&'a str, bool)>),
+    Skills(SkillCommand<'a>),
     Prompt(String),
 }
 
@@ -137,7 +145,28 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         }
         "/skills" => {
             if argument.is_empty() {
-                return Ok(Some(Command::Skills(None)));
+                return Ok(Some(Command::Skills(SkillCommand::List)));
+            }
+            if argument == "sources" {
+                return Ok(Some(Command::Skills(SkillCommand::Sources)));
+            }
+            if let Some(arguments) = argument
+                .strip_prefix("sources")
+                .filter(|rest| rest.starts_with(char::is_whitespace))
+            {
+                let words = arguments.split_whitespace().collect::<Vec<_>>();
+                ensure!(
+                    words.len() == 2 && matches!(words[0], "enable" | "disable"),
+                    "usage: /skills sources [enable|disable claude|codex]"
+                );
+                let source = crate::skills::SkillSource::ALL
+                    .into_iter()
+                    .find(|source| source.name() == words[1])
+                    .context("unknown skill source; use claude or codex")?;
+                return Ok(Some(Command::Skills(SkillCommand::Source(
+                    source,
+                    words[0] == "enable",
+                ))));
             }
             let (action, name) = argument
                 .split_once(char::is_whitespace)
@@ -147,10 +176,10 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
                 matches!(action, "enable" | "disable"),
                 "usage: /skills [enable NAME|disable NAME]"
             );
-            return Ok(Some(Command::Skills(Some((
+            return Ok(Some(Command::Skills(SkillCommand::Toggle(
                 name.trim(),
                 action == "enable",
-            )))));
+            ))));
         }
         "/effort" | "/think" => {
             return Ok(Some(Command::Think(
@@ -198,6 +227,41 @@ pub(crate) fn help(files: &FileCommands) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slash_skills_sources_and_individual_selection() {
+        use crate::skills::SkillSource;
+        for (input, expected) in [
+            ("/skills", SkillCommand::List),
+            ("/skills sources", SkillCommand::Sources),
+            (
+                "/skills sources enable claude",
+                SkillCommand::Source(SkillSource::Claude, true),
+            ),
+            (
+                "/skills sources\tdisable codex",
+                SkillCommand::Source(SkillSource::Codex, false),
+            ),
+            ("/skills disable rust", SkillCommand::Toggle("rust", false)),
+            (
+                "/skills enable sources",
+                SkillCommand::Toggle("sources", true),
+            ),
+        ] {
+            assert_eq!(
+                parse(input, &FileCommands::default()).unwrap(),
+                Some(Command::Skills(expected))
+            );
+        }
+        for input in [
+            "/skills sources enable",
+            "/skills sources toggle claude",
+            "/skills sources enable unknown",
+            "/skills sources enable claude extra",
+        ] {
+            assert!(parse(input, &FileCommands::default()).is_err());
+        }
+    }
 
     #[test]
     fn slash_valid_commands_and_model_reference_boundaries() {

@@ -344,8 +344,27 @@ fn run(args: Args) -> Result<()> {
                     let mut skills = skills
                         .lock()
                         .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?;
-                    if let Some((name, enabled)) = selection {
-                        skills.save_selection(&[(name.to_owned(), enabled)])?;
+                    match selection {
+                        commands::SkillCommand::List | commands::SkillCommand::Sources => {}
+                        commands::SkillCommand::Toggle(name, enabled) => {
+                            skills.save_selection(&[(name.to_owned(), enabled)])?
+                        }
+                        commands::SkillCommand::Source(source, enabled) => {
+                            skills.save_source(source, enabled)?
+                        }
+                    }
+                    for source in skills::SkillSource::ALL {
+                        writeln!(
+                            stderr,
+                            "[{}] source:{} ({})",
+                            if skills.sources.contains(&source) {
+                                "x"
+                            } else {
+                                " "
+                            },
+                            source.name(),
+                            source.roots().join(", ")
+                        )?;
                     }
                     for skill in &skills.entries {
                         writeln!(

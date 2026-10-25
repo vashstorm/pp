@@ -1363,7 +1363,18 @@ impl App {
             self.skills_pending = false;
             match reply.result {
                 Ok(snapshot) if !reply.saved => {
-                    self.skill_panel = Some(skills::Panel::new(snapshot));
+                    if reply.preview
+                        && let Some(panel) = &mut self.skill_panel
+                    {
+                        panel.apply_preview(snapshot);
+                    } else {
+                        self.skill_panel = Some(skills::Panel::new(snapshot));
+                        if reply.open_sources
+                            && let Some(panel) = &mut self.skill_panel
+                        {
+                            panel.show_sources();
+                        }
+                    }
                     self.notifications.clear();
                 }
                 Ok(_) => {
@@ -2704,8 +2715,14 @@ impl App {
                 return false;
             }
             let request = match selection {
-                None => skills::Request::Open,
-                Some((name, enabled)) => skills::Request::Save(vec![(name.to_owned(), enabled)]),
+                commands::SkillCommand::List => skills::Request::Open,
+                commands::SkillCommand::Sources => skills::Request::Sources,
+                commands::SkillCommand::Toggle(name, enabled) => {
+                    skills::Request::Toggle(name.to_owned(), enabled)
+                }
+                commands::SkillCommand::Source(source, enabled) => {
+                    skills::Request::Source(source, enabled)
+                }
             };
             self.request_skills(request);
             return false;
@@ -3131,6 +3148,9 @@ impl App {
                             self.request_skills(skills::Request::Save(selection))
                         }
                         skills::Action::Reload => self.request_skills(skills::Request::Reload),
+                        skills::Action::Preview(selection) => {
+                            self.request_skills(skills::Request::Preview(selection))
+                        }
                     }
                     return false;
                 }
@@ -7055,6 +7075,7 @@ mod tests {
         app.skill_panel = Some(skills::Panel::new(snapshot));
         app.input.insert_str("保留草稿");
         let mut dirty = false;
+        app.handle(key(KeyCode::Tab), &mut dirty);
         app.handle(key(KeyCode::Char(' ')), &mut dirty);
         assert!(!app.skill_panel.as_ref().unwrap().entries[0].enabled);
         for (width, height) in [(100, 30), (20, 4), (1, 1), (100, 30)] {

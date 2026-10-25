@@ -1,6 +1,6 @@
 use crate::config;
 use anyhow::{Context, Result, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeSet, HashSet},
@@ -10,6 +10,37 @@ use std::{
 };
 
 pub(crate) type SharedSkills = Arc<Mutex<Skills>>;
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SkillSource {
+    Claude,
+    Codex,
+}
+
+impl SkillSource {
+    pub(crate) const ALL: [Self; 2] = [Self::Claude, Self::Codex];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
+    pub(crate) fn roots(self) -> &'static [&'static str] {
+        match self {
+            Self::Claude => &["~/.claude/skills"],
+            Self::Codex => &["~/.agents/skills", "~/.codex/skills"],
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Selection {
+    pub(crate) sources: Vec<SkillSource>,
+    pub(crate) skills: Vec<(String, bool)>,
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct Skill {
@@ -23,6 +54,7 @@ pub(crate) struct Skill {
 pub(crate) struct Skills {
     pub(crate) entries: Vec<Skill>,
     pub(crate) diagnostics: Vec<String>,
+    pub(crate) sources: Vec<SkillSource>,
     settings_path: PathBuf,
     home: PathBuf,
 }
@@ -105,15 +137,33 @@ impl Skills {
 
     pub(crate) fn reload(&mut self) -> Result<()> {
         let settings = config::read_settings(&self.settings_path)?;
+        *self = self.discover(settings);
+        Ok(())
+    }
+
+    fn discover(&self, settings: config::Settings) -> Self {
         let disabled: HashSet<_> = settings.disabled_skills.into_iter().collect();
         let mut next = Self {
             settings_path: self.settings_path.clone(),
             home: self.home.clone(),
+            sources: SkillSource::ALL
+                .into_iter()
+                .filter(|source| settings.skill_sources.contains(source))
+                .collect(),
             ..Self::default()
         };
         let mut visited = HashSet::new();
         let mut files = HashSet::new();
-        for root in settings.skill_dirs {
+        let roots = settings
+            .skill_dirs
+            .into_iter()
+            .chain(
+                next.sources
+                    .iter()
+                    .flat_map(|source| source.roots().iter().map(|root| (*root).to_owned())),
+            )
+            .collect::<Vec<_>>();
+        for root in roots {
             let mut candidates = Vec::new();
             next.scan(&next.resolve(&root), &mut visited, &mut candidates);
             candidates.sort();
@@ -152,8 +202,7 @@ impl Skills {
                 }
             }
         }
-        *self = next;
-        Ok(())
+        next
     }
 
     fn scan(&mut self, path: &Path, visited: &mut HashSet<PathBuf>, files: &mut Vec<PathBuf>) {
@@ -262,6 +311,61 @@ impl Skills {
         }
         Ok(())
     }
+
+    fn apply_selection(settings: &mut config::Settings, selection: &Selection) {
+        settings.skill_sources = selection.sources.clone();
+        let mut disabled: BTreeSet<_> = settings.disabled_skills.drain(..).collect();
+        for (name, enabled) in &selection.skills {
+            if *enabled {
+                disabled.remove(name);
+            } else {
+                disabled.insert(name.clone());
+            }
+        }
+        settings.disabled_skills = disabled.into_iter().collect();
+    }
+
+    pub(crate) fn preview(&self, selection: &Selection) -> Result<Self> {
+        let mut settings = config::read_settings(&self.settings_path)?;
+        Self::apply_selection(&mut settings, selection);
+        Ok(self.discover(settings))
+    }
+
+    pub(crate) fn save_management(&mut self, selection: &Selection) -> Result<()> {
+        let mut next = None;
+        config::update_settings_fields(&self.settings_path, |mut settings| {
+            Self::apply_selection(&mut settings, selection);
+            let fields = vec![
+                (
+                    "skill_sources",
+                    serde_yaml::to_value(&settings.skill_sources)?,
+                ),
+                (
+                    "disabled_skills",
+                    serde_yaml::to_value(&settings.disabled_skills)?,
+                ),
+            ];
+            next = Some(self.discover(settings));
+            Ok(fields)
+        })?;
+        *self = next.context("Skill selection was not prepared")?;
+        Ok(())
+    }
+
+    pub(crate) fn save_source(&mut self, source: SkillSource, enabled: bool) -> Result<()> {
+        let mut next = None;
+        config::update_settings(&self.settings_path, |mut settings| {
+            settings.skill_sources.retain(|value| *value != source);
+            if enabled {
+                settings.skill_sources.push(source);
+            }
+            let value = serde_yaml::to_value(&settings.skill_sources)?;
+            next = Some(self.discover(settings));
+            Ok(("skill_sources", value))
+        })?;
+        *self = next.context("Skill source selection was not prepared")?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +384,101 @@ mod tests {
         fs::write(&path, format!("---\nname: {name}\ndescription: >\n  用于测试\n  YAML 多行说明\nextra: [one, two]\n---\n{body}\n")).unwrap();
         path
     }
+    #[test]
+    fn inherited_sources_preview_precedence_and_selection_are_transactional() {
+        let (home, dir) = fixture();
+        skill(&dir.join("skills"), "native", "same", "pp version");
+        skill(
+            &home.path().join(".claude/skills"),
+            "same",
+            "same",
+            "claude version",
+        );
+        skill(
+            &home.path().join(".claude/skills"),
+            "a",
+            "claude-only",
+            "claude body",
+        );
+        skill(
+            &home.path().join(".agents/skills"),
+            "a",
+            "codex-only",
+            "codex body",
+        );
+        skill(
+            &home.path().join(".codex/skills"),
+            "a",
+            "codex-legacy",
+            "legacy body",
+        );
+        let path = dir.join("settings.yml");
+        fs::write(
+            &path,
+            "# 保留注释\nthink_level: high\ndisabled_skills: [not-installed]\n",
+        )
+        .unwrap();
+        let mut skills = Skills::from_dir(&dir);
+        assert_eq!(skills.entries.len(), 1);
+        let selection = Selection {
+            sources: vec![SkillSource::Codex, SkillSource::Claude, SkillSource::Codex],
+            skills: vec![("claude-only".into(), false)],
+        };
+        let preview = skills.preview(&selection).unwrap();
+        assert_eq!(preview.sources, SkillSource::ALL);
+        assert_eq!(preview.entries.len(), 4);
+        assert_eq!(preview.diagnostics.len(), 1);
+        assert!(
+            preview.load("same").unwrap()["content"]
+                .as_str()
+                .unwrap()
+                .contains("pp version")
+        );
+        assert!(preview.load("claude-only").is_err());
+        assert!(preview.load("codex-only").is_ok());
+        assert!(preview.load("codex-legacy").is_ok());
+        assert_eq!(skills.entries.len(), 1);
+        assert!(!fs::read_to_string(&path).unwrap().contains("skill_sources"));
+        skills.save_management(&selection).unwrap();
+        let persisted = fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("# 保留注释"));
+        assert!(persisted.contains("think_level: high"));
+        assert!(persisted.contains("not-installed"));
+        let mut restored = Skills::from_dir(&dir);
+        assert!(restored.load("claude-only").is_err());
+        restored.save_source(SkillSource::Claude, false).unwrap();
+        assert!(
+            !restored
+                .entries
+                .iter()
+                .any(|skill| skill.name == "claude-only")
+        );
+        restored.save_source(SkillSource::Claude, true).unwrap();
+        assert!(restored.load("claude-only").is_err());
+        fs::write(&path, "invalid yaml").unwrap();
+        assert!(skills.save_management(&Selection::default()).is_err());
+        assert_eq!(skills.entries.len(), 4);
+        assert_eq!(skills.sources, SkillSource::ALL);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_symlinked_sources_share_one_definition() {
+        use std::os::unix::fs::symlink;
+        let (home, dir) = fixture();
+        skill(&home.path().join(".claude/skills"), "a", "shared", "body");
+        fs::create_dir_all(home.path().join(".agents")).unwrap();
+        symlink(
+            home.path().join(".claude/skills"),
+            home.path().join(".agents/skills"),
+        )
+        .unwrap();
+        fs::write(dir.join("settings.yml"), "skill_sources: [claude, codex]\n").unwrap();
+        let skills = Skills::from_dir(&dir);
+        assert_eq!(skills.entries.len(), 1);
+        assert!(skills.diagnostics.is_empty());
+    }
+
     #[test]
     fn discovery_defaults_metadata_duplicates_nested_roots_and_errors() {
         let (_home, dir) = fixture();
@@ -459,8 +658,14 @@ mod tests {
         let permissions = fs::metadata(&dir).unwrap().permissions();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
         let result = skills.save_selection(&[("rust".into(), false)]);
+        let management_result = skills.save_management(&Selection {
+            sources: vec![SkillSource::Claude],
+            skills: vec![("rust".into(), false)],
+        });
         fs::set_permissions(&dir, permissions).unwrap();
         assert!(result.is_err());
+        assert!(management_result.is_err());
+        assert!(skills.sources.is_empty());
         assert!(skills.entries[0].enabled);
         assert_eq!(fs::read_to_string(path).unwrap(), "{} # 原始配置\n");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);

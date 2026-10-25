@@ -471,7 +471,16 @@ pub(super) fn primary(
         ThinkLevel::Max => "\u{f0238}",
     };
     let icon = |glyph, color| Span::styled(format!("{glyph} "), Style::default().fg(color));
-    let model_src = model.map_or("—", |choice| choice.model.as_str());
+    let model_label = model.map_or_else(
+        || "—".to_owned(),
+        |choice| {
+            choice.reference.split_once('/').map_or_else(
+                || choice.model.clone(),
+                |(provider, _)| format!("{provider}/{}", choice.model),
+            )
+        },
+    );
+    let model_src = model_label.as_str();
     let think_width = Line::from(think).width();
     let effort_width = SEPARATOR_WIDTH + FIELD_ICON_WIDTH + think_width;
     let dir_fixed = SEPARATOR_WIDTH + FIELD_ICON_WIDTH;
