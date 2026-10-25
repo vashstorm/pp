@@ -1,585 +1,166 @@
-# pp
+<h1 align="center">✈ pp</h1>
 
-pp 是 **paper plane（纸飞机）** 的缩写。
+<p align="center"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 
-用 Rust 编写的 Pi 风格终端 coding agent。通过 `async-openai` 支持 OpenAI-compatible Responses 与 Chat Completions，提供真实的文件、搜索、shell 工具和多轮会话。
+<p align="center"><strong>paper plane · Your coding agent in the terminal</strong></p>
+<p align="center">Rust · macOS / Linux · OpenAI-compatible Responses / Chat Completions</p>
 
-- 三种交互方式：单次任务、管道／行模式、Ratatui TUI，支持流式正文、思考和工具输出。
-- TUI 提供 Plan 调研与审批、ask 问答、运行中补充／排队、会话回退，以及最近任务文件变更查看和安全撤销。
-- 支持全局技能、Markdown 提示词命令、项目 `AGENTS.md` 和本地 stdio MCP 工具。
-- 自动保存会话，提供上下文用量与压缩、本地请求统计和显式过期数据清理。
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#everyday-use">Everyday use</a> ·
+  <a href="#extensions">Extensions</a> ·
+  <a href="docs/guide.md">Full guide (Chinese)</a>
+</p>
 
-[构建与运行](#构建与运行) · [配置](#配置) · [命令与快捷键](#常用命令与快捷键) · [终端交互](#终端交互) · [会话恢复](#会话持久化与恢复) · [请求统计](#请求统计) · [开发与验证](#开发与验证)
+---
 
-## 构建与运行
+pp is a Pi-style terminal coding agent written in Rust. It lets models read projects, edit files, search code, and run commands across multiple turns, directly in your terminal.
 
-需要支持 Rust Edition 2024 的工具链，支持 macOS/Linux，并要求 `bash` 位于 PATH 中。搜索优先使用 `rg` 和 `fd`，缺失时分别使用系统 `grep` 和 `find`；TUI 图标需要 Nerd Font，macOS 的 Option 快捷键需要终端启用 Alt/Meta。
+## Features
 
-```sh
-cargo build --locked
-./target/debug/pp --help
-./target/debug/pp --version
-```
+| Feature | Description |
+| --- | --- |
+| **Terminal interaction** | Streaming text, reasoning, and tool output in a TUI, one-shot tasks, or piped input |
+| **Planning and execution** | Plan research, review, and explicit approval, with an ask panel for key decisions |
+| **Task control** | Add instructions while a task runs, queue follow-up tasks, and press Esc to cancel |
+| **Sessions and changes** | Automatic saving and restoration, session tree navigation, and recent-task diffs with safe undo |
+| **Extensions on demand** | Project `AGENTS.md`, skills, Markdown prompt commands, and local stdio MCP tools |
+| **Usage visibility** | Context estimates and compaction, plus local request, token, cost, and latency statistics |
 
-发布构建使用体积优化配置，生成 `target/release/pp`：
+## Quick start
+
+### 1. Build
+
+You need a Rust toolchain that supports **Edition 2024**, and `bash` on your PATH.
 
 ```sh
 cargo build --release --locked
-./target/release/pp --help
+mkdir -p ~/.pp/agent
 ```
 
-`release` 使用 `opt-level = "z"`、完整 LTO、单代码生成单元并剥离符号。此配置优先减小可执行文件体积，代价是更长的编译时间及潜在的运行性能取舍；保留默认 panic 展开行为。符号剥离会减少回溯信息，排查问题时可用 `CARGO_PROFILE_RELEASE_STRIP=none cargo build --release --locked` 保留符号。
+Install `rg` and `fd` for faster searches; pp falls back to the system `grep` and `find` when they are unavailable. TUI icons require a Nerd Font. On macOS, enable Alt/Meta in your terminal to use Option shortcuts.
 
-首次使用先创建 `~/.pp/agent/`，参照下一节填写必需的 `models.yml`；`settings.yml` 可省略。配置完成后运行：
+### 2. Configure a model
 
-```sh
-./target/debug/pp
-./target/debug/pp -p '阅读当前项目并说明结构，不修改文件。'
-printf '说明当前项目的构建方式\n' | ./target/debug/pp
-```
-
-不带 `-p` 时，标准输入和输出均为终端则进入 TUI，否则进入行模式；`-p` 执行单次任务后退出。下文示例中的 `pp` 指构建产物，可将其放入 PATH，或替换为 `./target/debug/pp`。
-
-## 配置
-
-配置统一保存在 `~/.pp/agent/settings.yml` 和 `~/.pp/agent/models.yml`，使用 YAML 块映射、列表和 `#` 注释。启动目录中的同名文件不再读取。`models.yml` 为必需文件：同一供应商的多个模型共享凭证、接口地址和协议。`settings.yml` 为可选的应用设置；未指定有效默认模型时，使用文件中首个供应商的首个模型。
-
-### 应用设置
+Create `~/.pp/agent/models.yml` and replace the API key and actual model ID:
 
 ```yaml
-# settings.yml
-# 省略或找不到匹配模型时，使用首个供应商的首个模型
-default_model: gateway/secondary
-# 默认关闭；开启后记录运行状态和每个 session 的初始完整 prompt
-debug: false
-# 可选 replace 或 hashline
-edit: replace
-# 可选 none、low、medium、high、xhigh、max；默认 none
-think_level: high
-# 通知倒计时及自动消失时长，修改后重启生效
-notification_show_countdown: true
-notification_timeout_seconds: 10
-# 相对路径以 ~/.pp/agent 为基准；空列表关闭扫描
-skill_dirs:
-  - ~/.pp/agent/skills
-disabled_skills: []
-# 每次用户任务最多请求数，包含自动摘要请求
-max_model_requests: 20
-# 仅当前模型显式配置 context_window 时生效
-auto_compact: true
-auto_compact_threshold_percent: 80 # 严格限制 1..=99
-request_timeout_seconds: 120
-# 建连阶段 429 限流的总重试等待预算（秒）；0 表示不重试
-rate_limit_retry_budget_seconds: 300
-read_max_bytes: 65536
-read_max_lines: 2000
-bash_timeout_seconds: 120
-```
-
-### 模型目录
-
-```yaml
-# models.yml
 providers:
-  openai: # 供应商别名，全局唯一且不能含 /
-    # 省略 protocol 时默认使用 response（Responses API）
-    api_key: your-key
-    base_url: https://api.openai.com/v1 # 可省略，默认使用此地址
+  openai:
+    api_key: your-api-key
+    base_url: https://api.openai.com/v1
+    protocol: response
     models:
-      primary: # 供应商内的模型别名
-        model: vendor-model-one # 发送给供应商的实际模型名
-        context_window: 32768 # 仅为示例，应按实际容量填写或省略
-        thinking:
-          efforts: [low, high, xhigh]
-          defaultLevel: high
-      secondary:
-        model: vendor-model-two
-  gateway:
-    protocol: completion # Chat Completions API
-    api_key: another-key
-    base_url: https://example.com/custom/v1
-    models:
-      primary:
-        model: gateway-model-one
-      secondary:
-        model: gateway-model-two
+      main:
+        model: your-model-id
 ```
 
-`providers` 和每个供应商的 `models` 都是 map，key 分别是供应商 ID 和模型配置 ID；条目内部不再填写 `id`。`model` 保留为发送给供应商的实际模型 ID。两层均按文件书写顺序排列，用于模型菜单及默认模型选择。旧数组格式不再接受：迁移时将每个 `- id: name` 改成 `name:`，保留其余字段及原有顺序；`provider/model` 引用不变。
+- `protocol`: `response` uses the Responses API (default); `completion` uses the Chat Completions API.
+- `base_url`: the provider's API root. pp appends the endpoint for the selected protocol and does not add `/v1` automatically.
+- Multiple providers and models are supported. Without a configured default, pp uses the first model in the file.
 
-配置文件名和目录固定；`settings.yml` 可以缺省，缺少 `models.yml` 时模型不可用。通过 HOME 定位用户目录，不读取项目配置。新会话的工具以启动目录为工作目录；恢复会话使用日志保存的原工作目录。旧版本用户需将 JSONC 内容转换为 YAML，保存为上述两个 `.yml` 文件；仅重命名含 `//` 或 `/* ... */` 注释的文件无效。程序不再读取旧文件，也不会自动迁移含密钥的配置。
+<details>
+<summary><strong>Optional: application settings, multiple models, and reasoning levels</strong></summary>
+
+Create `~/.pp/agent/settings.yml`, or omit it to use the defaults.
+
+```yaml
+default_model: openai/main
+think_level: none
+edit: replace
+max_model_requests: 20
+auto_compact: true
+auto_compact_threshold_percent: 80
+```
+
+Automatic compaction is enabled only when the model has an explicit `context_window`. Reasoning levels must match the provider's capabilities. Use `thinking.efforts` and `thinking.defaultLevel` in the model configuration to restrict available levels and set a default.
+
+See the [configuration guide (Chinese)](docs/guide.md#配置) for full examples and validation rules. Configuration is loaded only from `~/.pp/agent/`; project files with the same names and provider environment variables are not read.
+
+</details>
+
+### 3. Run
 
 ```sh
 chmod 600 ~/.pp/agent/models.yml
-./target/debug/pp -p 'Read the current project and explain its structure; do not modify files.'
-./target/debug/pp
+./target/release/pp
 ```
 
-**API 密钥以明文保存在 `~/.pp/agent/models.yml`。** 仓库根目录的 `models.yml`、`settings.yml` 及旧版 `models.jsonc` 已加入 `.gitignore`，避免误提交个人配置。read、bash、搜索与 MCP 无文件系统沙箱，仍可能读取敏感配置；不要让模型读取或输出含密钥文件。如果 MCP 的命令参数或环境变量含凭证，`settings.yml` 也属于敏感配置，应限制权限并避免提交。
-
-### 校验与模型选择
-
-- 每模型 `thinking.efforts` 是严格白名单：非空时仅接受 `low`、`medium`、`high`、`xhigh`、`max`，不隐式附加 `none`，也不接受 `default`。重复值去重，菜单及循环始终按 `none → low → medium → high → xhigh → max` 的允许子集排序。省略 `thinking`、`thinking: {}`、省略 `efforts` 或 `efforts: []` 均不限制原有六档。`thinking.defaultLevel` 支持六档及 `default`→`none` 别名；有非空白名单时默认值必须在其中。拒绝显式 null、错误类型、大小写/空白变体及未知字段，包括未选中的模型。
-- 普通新启动优先使用模型 `defaultLevel`，否则使用允许的全局 `settings.think_level`，全局值不允许时使用规范顺序中最低允许档。实际切入其他模型时，显式模型默认值总是优先；没有显式默认则保留目标支持的当前档位，否则回退到目标有效默认。切到当前模型引用是无操作。`/new` 保留当前模型和档位。切换模型、原生请求参数与保存档位原子提交；持久化失败不部分改变状态。
-- 白名单贯穿 `/effort`（含 `/think` 和 `default` 别名）、TUI 菜单、Shift + Tab、会话恢复与 API 请求；不支持的输入在本地拒绝，不改变档位、请求或日志。Shift + Tab 仅循环允许档，单档时保持档位与草稿。恢复精确保留仍被允许的保存档位及原生请求，修改 `defaultLevel` 不覆盖它；收窄白名单排除保存档位时拒绝恢复，不改写日志或发送请求。⌥ + S / Ctrl + S 仍只保存全局 `settings.think_level`，不写模型配置、不改变当前会话；显式模型默认值及菜单 `(default)` 标记仍优先于保存的全局值。
-
-- `think_level` 设置启动时的默认思考级别，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；省略字段或缺少配置文件时使用 `none`。界面将 `none` 显示为 `no think`。旧值 `default` 仍可读取，但作为 `none` 的兼容别名，含义变为显式关闭思考。仅接受这些小写字符串，拒绝 null 和其他值。Responses 请求显式发送 `reasoning.effort`，Chat Completions 请求显式发送 `reasoning_effort`；`none` 均传为字符串 `"none"`，Responses 同时省略 `reasoning.summary`，其他档位仍使用 `reasoning.summary: "auto"` 请求可读思考摘要。通过本地模型白名单校验的档位原样传给服务端；白名单不保证供应商实际支持，未配置白名单时仍由服务端决定，不自动降档或重试。参见 [OpenAI 官方思考级别说明](https://developers.openai.com/api/docs/guides/reasoning)。
-- TUI 输入 `/effort `（命令后加空格）即在输入框下方展开档位菜单，左侧显示档位，右侧显示说明和“当前”标记，黄色突出选中项。↑/↓ 选择，Enter 确认，Esc 取消并保留输入；⌥ + S / Ctrl + S 将当前高亮选中的档位保存为全局默认值（写入 `~/.pp/agent/settings.yml`，下次普通新启动生效），不改变当前会话档位。菜单底部显示快捷键提示；继续输入档位前缀会筛选候选，Tab 补全但不执行。菜单只包含当前模型允许的档位；未配置限制时包含 `no think` 和上述五档，关闭思考的补全值为 `none`，不显示固定 token 预算。输入 `/effort` 后按 Enter 也可展开。行模式用 `/effort` 查看当前级别及可选值；两种模式均可用 `/effort high` 直接切换、`/effort none` 关闭思考，兼容旧命令 `/think` 和旧值 `default`。切换保留历史，对后续请求生效；`/new` 保留当前级别，`/model` 按目标模型策略选择档位；未配置策略的模型仍保留当前级别。TUI 底部状态栏显示实际选择，运行中拒绝切换并保留输入草稿。命令及 Shift + Tab 不改写配置文件；已有活动 session 时会持久化选择，写入失败则保留原档位。普通新启动按模型默认值与全局 `think_level` 优先级选择，恢复 session 使用仍被允许的保存档位。
-- 缺少 `settings.yml`、省略 `default_model` 或没有匹配的 provider/model 时，使用首个 provider 的首个模型。模型请求次数默认 20，模型请求超时和前台 bash 超时分别默认 120 秒；后台 bash 不设固定 deadline，按本次用户任务生命周期收尾；read 默认最多返回 65,536 源字节且不超过 2000 个完整行。限制值必须为正整数，拒绝 null、负数、小数、字符串和数值溢出。
-- `edit` 缺省为 `replace`，只接受严格小写的 `replace`／`hashline`，拒绝 null、其他类型、大小写或空白变体。启动时固定，`/model`（含跨协议切换）和 `/new` 均保留；使用锚点编辑须显式配置 `hashline`。
-- 显式 `default_model` 必须为 `provider/model`，以第一个 `/` 分隔；两部分不能空白，匹配区分大小写且不裁剪空格。供应商 ID 不能含 `/`，模型 ID 可以：`gateway/team/model` 指 gateway 下 ID 为 `team/model` 的模型。不接受裸模型 ID，也无环境变量回退。
-- `providers` 与各供应商的 `models` 均不能为空。供应商 ID 全局唯一，模型别名只需在供应商内唯一；两类 ID、`api_key` 和实际 `model` 均不得为空白。启动时校验所有条目，包括未选中的供应商和模型。
-- 配置顶层、供应商和模型条目均拒绝未知字段。模型条目仅接受 `model`、可选的 `cost`、`thinking`、`context_window`，不接受 `id`，也不能覆盖供应商的凭据、接口地址或协议；旧顶层平铺 `models` 格式不再支持。
-- 供应商级 `protocol` 只接受 `response`（默认，`POST /responses`）和 `completion`（`POST /chat/completions`）。后者不是旧 `/completions` API。null、类型错误、旧值 `openai` 和 `anthropic` 均使配置无效，包括未选中条目；迁移旧 Chat Completions 配置时须将 `openai` 改为 `completion`，省略字段会选择 Responses。
-- Responses 流优先直接解码为 SDK 类型；仅在报告缺少 `annotations` 或 `arguments` 时构造 JSON 树，为缺少注释的 `output_text` 补 `annotations: []`，并仅为 `response.output_item.added` 中的 `function_call` 补缺失的 `arguments: ""`，随后仍由 SDK 校验。已有值（包括 `null` 或错误类型）不会被覆盖；调用结束与最终响应中的工具参数仍须完整，工具只在最终批次校验通过后执行。
-- 供应商配置只从这两个 YAML 文件读取，不使用供应商环境变量、变量替换、`.env` 或 OAuth。错误仅指出文件，不输出配置值、URL 或密钥。按服务端和模型实际支持情况选择协议，不自动回退。
-
-直接运行 `pp` 时，缺失／不可读／无效的模型配置或客户端初始化失败仍允许进入交互界面并编辑输入；错误显示在消息区或行终端。缺少 `settings.yml` 则正常使用默认值。模型不可用时，提交任务、`/compact`、`/new`、`/model` 仅显示启动错误，不发送请求或执行工具；`/help` 可用，`/quit` 正常退出，行模式也可 EOF 退出。修复模型或其他运行参数后需重启；技能目录可在 `/skills` 中按 r 重扫。`pp -p` 遇到无效配置则以非零状态退出。
-
-供应商 `base_url` 是 API 根地址：保留已有路径前缀，去掉末尾 `/`，按协议追加 `/responses` 或 `/chat/completions`，不自动补 `/v1`；缺省为 `https://api.openai.com/v1`。显式 URL 必须使用 http/https 且包含 host，拒绝 userinfo、query、fragment、空白及 null，未选中的供应商同样校验。HTTP 会明文传输凭据和会话，只用于可信服务。仅选中的密钥做 HTTP header 校验，其余密钥仅校验非空白。
-
-## 常用命令与快捷键
-
-交互模式的命令速查如下。`-p` 中的 slash 文本始终作为普通提示词发送，不执行本地命令。
-
-| 命令 | 用途 | 模式 |
-|---|---|---|
-| `/help`、`/tips` | 查看完整帮助或首页操作提示 | TUI / 行模式 |
-| `/model [provider/model]` | 选择模型，保留历史 | TUI / 行模式 |
-| `/effort [none\|low\|medium\|high\|xhigh\|max]` | 查看或切换当前模型允许的思考档位，`/think` 为别名 | TUI / 行模式 |
-| `/new` | 清空当前会话，保留模型和思考档位 | TUI / 行模式 |
-| `/init` | 使用当前模型创建或更新项目 `AGENTS.md` | TUI / 行模式 |
-| `/compact` | 摘要较早上下文，保留近期交互和可见记录 | TUI / 行模式 |
-| `/skills` | 管理技能；行模式另支持 `enable 名称` / `disable 名称` | TUI / 行模式 |
-| `/resume` | 选择已保存会话；命令行按 ID 恢复使用 `pp -r ID` | 仅 TUI |
-| `/tree` | 浏览并回退当前有效历史，不回滚文件 | 仅 TUI |
-| `/changes` | 查看最近任务的 edit/write 净变更，逐文件安全撤销 | 仅 TUI |
-| `/plan [view\|new\|off]` | 调研并保存计划，显式批准后执行 | 仅 TUI |
-| `/quit` | 退出 | TUI / 行模式 |
-
-以下快捷键用于 TUI；macOS / Linux 分列显示。
-
-| 操作 | macOS | Linux |
-|---|---|---|
-| 发送；运行中补充当前任务 | Enter | Enter |
-| 运行中排队为独立后续任务 | ⌥ + Enter | Alt + Enter |
-| 插入换行 | Ctrl + J | Ctrl + J |
-| 打开模型菜单 | ⌥ + P | Ctrl + P |
-| 保存菜单高亮模型为默认值 | Ctrl + S | Ctrl + S |
-| 保存菜单高亮思考档位为全局默认值 | ⌥ + S | Ctrl + S |
-| 循环允许的思考档位 | Shift + Tab | Shift + Tab |
-| 全局展开／折叠工具输出（ask 除外） | Ctrl + O | Ctrl + O |
-| 查看／取回待处理输入 | ⌥ + Q | Ctrl + Q |
-| 显式恢复暂停的待处理队列 | ⌥ + R | Ctrl + R |
-| 取消当前任务；空闲空输入时双击打开会话树 | Esc | Esc |
-| 查看帮助 | F1 | F1 |
-| 退出程序 | Ctrl + C | Ctrl + C |
-
-`@` 在输入框中打开项目文件补全，只插入路径引用，不读取正文。工具输出默认预览 15 行，bash 保留末尾，其余保留开头；模型始终接收完整的工具结果。
-
-## 终端交互
-
-未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页居中显示由方形像素块组成、保留双翼和中央折线的金蓝双色纸飞机、右下角的小写 `pp` 和版本号；小窗口使用纸飞机图标搭配小写 `pp`。操作提示留出两列边距，快捷键以绿色加粗突出，说明对齐并使用浅灰色；可用宽度达到 76 列时分为两栏，否则逐条单列显示，窄屏自动折行；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏显示估算上下文用量、实际模型、思考级别、仅在 Plan 模式显示的叠放方框图标与 Plan 标识（窄屏缩为 P）、启动工作目录和 Git 信息。`no think` 表示显式请求关闭思考。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；手动压缩时在输入框上沿显示 `Compacting context...` 或 `Cancelling context...`。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash/grep/find 标准输出、标准错误均在完成前实时显示，工具进度保留在对话记录中。暂不提供侧栏。助手正文支持流式 Markdown，edit/write 与 ask 使用独立内容块；这些块共用原有 transcript 的滚动、恢复与退出 scrollback。
-
-部分功能快捷键按 pp 二进制的编译目标选择：macOS 使用 Option（`⌥`），Linux 使用 Ctrl。下文并列键名均按 macOS / 其他系统排列：`⌥ + P / Ctrl + P` 打开模型选择，`Ctrl + S` 保存菜单高亮模型为默认值，`⌥ + S / Ctrl + S` 保存菜单高亮思考档位为默认值，`Ctrl + O` 在所有平台全局展开／折叠工具输出，`⌥ + Q / Ctrl + Q` 查看待处理消息，`⌥ + R / Ctrl + R` 恢复队列。默认模型保存始终使用 Ctrl + S，工具输出切换始终使用 Ctrl + O（macOS 不再使用 ⌥ + O）；使用 Option 的功能不保留 Ctrl 别名，旧组合可由编辑器正常处理。终端必须将 Option 配置为 Alt/Meta（ESC 前缀）；若产生 `π` 等普通 Unicode 文本，pp 保留文本，不猜测为快捷键。`Ctrl + C` 退出、`Ctrl + J` 换行、所有文本编辑键及会话面板键不变；`Shift + Tab` 切档，Option/Alt + Enter 排队行为不变。首页、`/tips`、帮助、菜单和折叠提示中的组合键统一以加号两侧各一个空格显示。
-
-应用自有的 TUI 文案统一使用英文，包括帮助、菜单、通知、skill 管理与加载卡片，以及这些界面接收的配置保存错误和 skill 诊断。用户输入、模型回复、文件／命令输出、外部 skill 元数据与正文，以及名称和路径保持原文；不限制 Unicode，也不强制模型使用英语。已有 session 中保存的历史工具错误忠实回放，不改写旧日志。共享生产者的配置保存错误和 skill 诊断在 CLI 中也使用英文。
-
-用户与助手保留既有角色背景；助手正文按 Markdown 渲染，read 等工具正文保持字面文本，edit/write 与 ask 使用下面说明的内容块。bash 与 think 使用下述独立样式；其他工具保留淡色正文与运行／完成／失败状态。真实 `grep` 调用使用青色卡片，`find` 使用普通数据卡片；标题显示工具名与紧凑 JSON argv，保留空格、引用和控制字符边界。搜索结果直接显示 stdout/stderr，折叠时预览开头 15 行，不使用 bash 专属计时 footer。真实 `load_skill` 调用使用品红色 skill 卡片，不按文件路径或 bash 命令猜测类别。所有工具输出（含 read、搜索、bash、skill、diff、MCP，ask 除外）共用 Ctrl + O 展开状态；默认预览 15 行逻辑正文，bash 保留末尾，其余保留开头，自动换行不额外占用额度。标题、状态和边框始终保留。当前已有卡片及后续流式／新工具输出一起切换；普通菜单和 ask 答题期间也生效，全屏面板和确认框优先消费输入。浏览历史时保留顶部卡片，底部跟随状态保持；用户消息、助手正文、思考、帮助和提示不参与折叠。`/new`、恢复与历史跳转重建消息区时恢复默认折叠；任务结束、取消和切模型不重置当前状态，独立审查页使用相同规则。展开状态不写入会话，也不改变模型接收的完整工具结果。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
-
-- 仅助手正文（包括实际可见的 refusal）解析 Markdown：标题、粗体／斜体／删除线、链接、列表／任务项、引用、代码 frame 和表格随流显示；未闭合 fence 的已到达代码立即可见。图片只显示 ALT 与 URL，HTML 按字面显示，不执行、不下载或打开链接。表格按终端列宽缩列，过窄时改为 `header: value` 竖排；中文、组合字符、emoji 与续行前缀按 grapheme 布局。用户输入、think、read/bash/搜索/MCP 输出、错误和 Note 不解析 Markdown。resize 只重新布局已解析文档，用户上翻时新内容不会拉回底部。
-- edit/write 的 diff 是**保存成功后展示，不是写入前审批**：header、`+N -N`、真实行号、红色删除／绿色新增与三行上下文反映 worker 读取的旧快照和实际提交内容，不执行 git、不在 UI 线程读取文件。默认显示前 15 条逻辑 diff 行，Ctrl + O 全局展开／折叠工具输出；退出时全部展开写入 scrollback，恢复时重新采用默认折叠。相同内容、新建空文件、缺末尾换行、LF/CRLF 与 BOM 均有明确展示。write 的旧快照不可读或非 UTF-8 时仍可按原权限保存，只显示 diff unavailable；目录 sync warning 属于已提交成功。原有启动目录／symlink 限制不变，外部并发修改仍沿用原保存语义。diff 只进入 `pp.event` 和显示记录，不改变模型工具结果 JSON；旧日志缺少 FileChanged 时仅显示原摘要，不重建 diff，CLI 不额外打印 diff。
-- 新内容块仅在显示层将除 LF/TAB 外的 C0 字符及 DEL 替换为 `�`，TAB 按四列 tab stop 展开；原始助手正文、事件、参数和用户答案保持不变。
-- 临时消息以非模态圆角弹框显示在输入框上方靠右，左右至少留一格，不挤占布局、不改变草稿、光标或历史滚动位置。普通消息为绿色，重要提示／警告为黄色，错误为红色；通过边框、标题和正文的颜色亮度实现 200ms 淡入与最后 400ms 淡出，默认总时长 10 秒，不是窗口透明度。右上角显示剩余秒数（向上取整），无需输入也会更新并自动消失；`notification_show_countdown` 默认 `true`，关闭仅隐藏秒数，`notification_timeout_seconds` 设置总时长，默认 `10`，必须为正整数且不超出计时范围。通知配置在启动时读取，即使模型不可用也生效；设置缺失或无效时使用默认通知行为，无效设置仍显示启动诊断，修改配置后需重启。鼠标停留在弹框内（含边框）时隐藏倒计时并保持完全显示，移出后重新从配置时长倒数；新消息替换旧消息，不堆叠。使用终端原生选区复制：先将鼠标移入弹框使其保持显示，再按终端要求的修饰键拖选，使用终端自身的复制快捷键；程序保留鼠标捕获以支持悬停与滚轮，不提供复制按钮或应用内选区。终端选区只能复制屏幕上可见的文字，可能包含边框；不会取得截断后未显示的内容。中文、emoji 和多行正文自动折行，最多八行，过长内容只显示开头；空间不足时隐藏弹框或倒计时，恢复尺寸后仅显示尚未到期的消息，倒计时不会覆盖标题和边框。skill 全屏管理面板中的弹框采用相同规则。
-- 界面已体现的成功变化不重复通知：模型和当前思考档位切换只更新状态栏，`/new` 直接恢复欢迎页并清空旧通知，skill 面板保存成功直接关闭。Ctrl + S 保存下次启动的默认模型、⌥ + S / Ctrl + S 保存默认思考档位以绿色弹框确认，不改变当前会话模型或档位；本地命令、切换和保存的临时错误使用红框。启动 skill 扫描的非致命诊断汇总为黄色提示，完整详情保留在 `/skills`。任务／工具失败和执行不可用仍保留原有持久错误位置；通知不进入对话记录、session 或退出滚动历史，CLI／管道输出不变。
-- 空闲时 Enter／⌥ + Enter / Alt + Enter 立即发送非空草稿；运行中 Enter 补充当前任务，⌥ + Enter / Alt + Enter 排队为后续独立任务。Ctrl + J 插入换行；粘贴保留多行且不会自动发送。输入框使用终端原生光标，为拼音等输入法提供插入位置。菜单关闭时，↑/↓ 优先在输入框的显示行间移动（包括自动折行）；到达首行后再按 ↑、到达末行后再按 ↓，才浏览本次进程中已提交的历史输入，支持继续编辑；↓ 越过最新一条会恢复浏览前的草稿和光标，历史两端不循环。运行中也可浏览输入历史，忙碌时被拒绝的提交不计入历史；`/new` 重置模型会话后仍保留本次进程的输入历史；恢复 session 时从已保存用户消息恢复输入历史，不恢复草稿或历史浏览位置。菜单展开时，↑/↓ 仍用于选择菜单项。
-- Shift + Tab 按 `no think → low → medium → high → xhigh → max → no think` 循环切换思考级别，后台确认后更新状态栏，保留草稿、光标和输入历史浏览位置。选择菜单展开时不切档。⌥ + P / Ctrl + P 打开模型菜单，临时输入 `/model ` 供筛选和 Tab 补全；Esc 取消或 Enter 确认后恢复原草稿和光标，切换失败也保留。忙碌时拒绝切档和打开模型菜单，不排队。F1 显示与 `/help` 相同的帮助，忙碌时也可使用且保留草稿。三个快捷操作均忽略长按重复事件；skill 面板优先处理自身按键。Ctrl + N、Ctrl + U、Ctrl + W 沿用编辑器既有行为。
-- 在光标所在的空白分隔 token 中输入 `@`，立即在输入框下方按目录层级浏览项目文件：只显示当前目录的直接子项，目录在前并以 `/` 结尾，Enter 或 Tab 进入目录，选择 `../` 返回上级；进入／返回目录时同步将当前 `@` 引用补全为对应的目录路径（如 `@src/tui/`），光标停在路径末尾，不添加空格、不发送消息，也不重新扫盘；返回根目录时恢复为 `@`。继续输入按当前子树内的相对路径做大小写敏感的子串筛选，匹配到深层文件时仍逐级显示其祖先目录，不再平铺后代文件。↑/↓ 选择，Enter 或 Tab 选中文件后**只插入完整的 `@文件路径`，不发送消息、不读取文件正文、不上传附件**，随后再次 Enter 才发送编辑好的原始文本。含空白、双引号或反斜线的路径使用 JSON 引号，例如 `@"docs/my file.md"`；补全目录时光标停在闭引号前，仍可继续输入筛选或选择子项。补全只替换当前引用，保留多行草稿与其他引用。邮箱、`@@foo` 和光标位于闭引号之后的 `@"…"` 不触发菜单。候选根为启动／恢复会话的工作目录，不向上扩展到 Git 根；后台枚举遵守项目内 `.ignore`、`.gitignore` 和 `.git/info/exclude`，包含未被忽略的隐藏常规文件，不列出 `.git` 或符号链接。每次重新激活时重新扫描，同一次选择中的筛选不重复扫盘；扫描期间 Enter/Tab 不提交，根目录无可选文件或无匹配时 Enter 按普通提交处理；子目录无匹配时保留 `../` 供返回上级，只有包含可选文件的目录才会列出。Esc 收起菜单并保留草稿，迟到的扫描结果不会重新打开；普通行模式和 `-p` 不提供文件菜单，`@` 文本原样发送。
-- 运行中补充（Steering）仅在首次普通请求前或完整模型回复／整批工具结果提交后应用，不打断 SSE、工具批次、ask 或临时摘要；每个边界领取固定批次，后到消息等下一边界。补充沿用当前任务的请求额度、activity 和后台服务；FollowUp 每条独立启动任务，有新额度和取消 token。同类型保持 FIFO，Steering 优先于尚未开始的 FollowUp，但不抢占已开始的任务。入队成功才清草稿并记录一次原始输入历史；对话只在真正应用后回显。⌥ + Enter / Alt + Enter 需终端发送可区分的 Alt + Enter（ESC 前缀后接 CR）；不支持的终端不会自动改键或猜测两次独立按键。
-- ⌥ + Q / Ctrl + Q 查看／关闭待处理列表，标签为 `Steer #ID`／`Queued #ID`，预览只显示原输入首行（最多 120 个 Unicode 字符）。↑/↓、Home/End、PgUp/PgDn 选择；Enter 取回原输入到编辑器末尾，要求编辑器每一行都完全为空（空格也不允许），不记录新历史、不发送、不重新展开模板。已被 worker 领取的项不能取回；Tab 不取回，Esc 只关列表，编辑／粘贴先关闭列表再修改草稿。ask、skill、session、tree 和临时模型面板优先消费按键。输入栏显示 `Steering: N · Queued: M`；窄屏优先保留 context、临时状态、队列摘要，再显示可选 token 指标。
-- 取消或失败会保留未应用队列并暂停；即使最终回复赢得与 Esc 的竞争，取消意图也不会自动启动积压任务。仅空闲时 ⌥ + R / Ctrl + R 显式恢复，保留正在编辑的草稿；暂停期间新消息继续入队，不绕过旧队列。收尾期间拒绝新模型输入，但仍可查看／取回。存在待处理消息时，`/new`、`/resume`、`/tree` 和空输入双 Esc 均被阻止，须先取回消息。空闲时模型／思考档位仍可切换，后续任务使用当前配置。队列只存在内存中，退出不执行／等待它；恢复只重放已应用的普通用户历史，不重发旧队列或草稿。行模式与 `-p` 不增加并发输入或这些快捷键。
-- Ctrl + A / Ctrl + E 分别跳到当前行首 / 行尾；Ctrl + K 删除光标到当前行尾的内容，在行尾或空行按下不删除换行。左右键、Home/End、Backspace/Delete 继续支持中文和 Unicode 文本编辑。
-- 输入框随显式换行增长，最多六行；长行自动折行，超过高度后滚动编辑视口。窄屏优先保留上下文用量，依次缩短目录、隐藏 Git、缩短模型名；短屏优先保留输入与状态，恢复尺寸不会丢失草稿。
-- bash 使用暗色圆角边框卡片：顶部为 `$ command`（管理调用为 `bash_task · action · task_id`），`Output` 横线分隔命令和灰色输出，底部前台显示耗时与退出码、后台快照显示 `Task bg-N: status`；运行中显示 running，失败保留错误和退出信息。后台卡片完成仅表示 start／status／stop 调用返回，服务可能仍在 running。超过 15 行时默认显示末尾 15 行及省略提示，Ctrl + O 全局展开或折叠工具输出，不改变输入草稿；退出时完整输出写入终端滚动历史。think 默认以无标题、无边框的灰色文本显示在独立暗色背景上，与最终回答分开。是否返回可读思考取决于服务端和模型；`/effort` 仍只控制思考级别。行模式和单次任务将思考文本写入 stderr，stdout 保持为回答正文，均不添加 ANSI 控制序列。Responses 摘要使用 [官方流式事件](https://developers.openai.com/api/reference/resources/responses/streaming-events)。
-- 滚轮每次滚动三条物理行，PgUp/PgDn 按页滚动，不移动输入光标或改变草稿，指针位于输入框时也生效。默认跟随底部；上翻后新输出不抢占视口，滚回底部恢复跟随。运行中仍可编辑草稿，派发排队任务时保留新草稿和光标。
-- 命令、模型、思考级别和文件菜单展开时，滚轮仍滚动历史，不改变菜单选择。普通点击、拖动和水平滚轮不操作消息区；指针移动用于通知悬停。TUI 捕获鼠标，绕过捕获以使用终端原生选区／滚动历史所需的修饰键取决于终端。
-- 单行 slash 命令与行模式共用注册表，具体命令见上方速查表。未知名称及内置命令的非法参数只报本地错误，不发送模型。名称区分大小写；忽略首尾空白，`/model` 参数中的内部空格和 `/` 保持原样。多行 slash 草稿作为普通任务发送。
-- `/tips` 输出与启动首页相同的操作提示：命令和快捷键旁用简短说明交代用途，例如 `/plan` 先规划再批准修改、`/compact` 摘要较早上下文、`/tree` 浏览并回退会话历史。TUI 共用快捷键高亮、说明对齐与随窗口宽度切换的双列／单列布局，支持滚动与退出 scrollback；行模式使用带标题的对齐列表。两种模式均支持；无需参数，不请求模型、不进入模型上下文，也不创建或追加会话 JSONL 日志。模型配置不可用时仍可使用。
-- 退出时仅在内存中生成最终画面，切回主屏幕与完整会话回放使用同一次终端同步更新（DEC 2026）；支持该协议的终端会隐藏中间画面，减少闪烁。退出后仍保留完整历史、草稿和状态栏；不支持同步更新的终端按原有方式显示回放。
-- 输入框下方的选择菜单（`/` 命令补全、`/model `、`/effort `、`@` 文件选择、⌥ + Q / Ctrl + Q 待处理消息）统一使用 `src/tui/menu.rs` 中的 `SelectionMenu` 组件，业务层只提供选项数据和确认动作。统一在输入框下方显示无外框的两列列表，左列占 46%、右列占 54%；选中行以黄色文字和箭头突出，其余说明与图标为灰色，当前值显示“（当前）”，输入框使用紫色分隔线。最多显示八行，窄屏截断说明，短屏随选择滚动。↑/↓、Home/End、PgUp/PgDn 导航且不循环，Tab 补全或打开目录但不提交（待处理消息列表中无操作），Enter 确认当前项；Esc 收起列表并保留草稿，普通补全菜单下次编辑时重新显示，队列列表须 ⌥ + Q / Ctrl + Q 显式打开。输入 `/` 展开命令菜单，继续输入会按命令前缀筛选，左列保留命令图标。
-- 输入 `/model `（命令后加空格）会在输入框下方展开与 `/effort ` 一致的两列菜单：左侧为 `provider/model`，实际启动默认模型附带 `(default)`；右侧为实际模型名、`completion`/`response` 及“当前”标记，默认与当前可分别标在不同模型上。Ctrl + S 保存时保持菜单、筛选内容和高亮选择，成功后更新 default 标记，失败保持原标记。黄色文字和箭头突出选中项。`/model` 后按 Enter 也能展开，默认选中当前模型。按启动配置顺序排列，最多显示八行，长列表随选择滚动；↑/↓、Home/End、PgUp/PgDn 导航，Enter 确认，Esc 收起并保留输入。继续输入按引用或实际模型名的前缀筛选，Tab 补全引用但不切换；Ctrl + S 将高亮模型保存到 `~/.pp/agent/settings.yml` 的 `default_model`，下次普通新启动生效，不切换当前会话模型、不改写 `models.yml`。保存沿用 YAML 原子更新，保留注释与其他设置，缺少设置文件时自动创建；失败显示错误并保留原配置。菜单底部显示快捷键提示；通过 ⌥ + P / Ctrl + P 打开时，保存后仍保留菜单，按 Esc 恢复原草稿和光标。多行粘贴仍作为普通任务。后台完成切换后才更新状态栏，历史和确认后新编辑的草稿均保留；忙碌时拒绝切换、不排队、不清空草稿。`/new` 仍在后台确认后清空历史和草稿。
-- 运行中按无修饰键的 Esc 取消当前任务，不退出 pp；已有面板或菜单优先消费 Esc。收尾期间显示 `Cancelling...`，仍可编辑草稿、滚动、F1/help、Ctrl + O 或退出，但不能提交／排队新任务、切换模型／思考级别或 `/new`。收尾完成后保留草稿、光标、输入历史、已完成的工具结果和文件修改，并追加 `Task cancelled. File changes were not rolled back.`；不重试、不回滚。每个任务使用独立取消 token，已提交的最终回答不会被迟到 Esc 改成取消。行模式和 `-p` 不提供取消入口。
-- `/quit` 或 Ctrl + C 退出整个 pp：先停止受管理后台进程组并等待它们收尾，正常退出码为 0；真实清理失败返回错误。恢复终端后，全部对话记录按退出时的终端宽度写入普通终端的滚动历史，保留原有颜色、缩进、分隔线、流式片段、工具输出及错误，末尾保留输入框、未提交的草稿、菜单和状态栏；可以向上滚动查看超出一屏的历史。保留长度受终端自身的滚动历史容量限制。退出不等待整个 agent worker、阻塞中的模型请求或其他前台工具；受管理后台清理不依赖 UI 事件回调。其他前台 bash 子进程仍无 Ctrl + C 清理保证，需要任务级前台受控清理时应先按 Esc 等待收尾。文件修改不会回滚。
-- `-p/--prompt` 执行一次任务后退出，不解析 slash；可与 `-r ID` 联用追加任务，不能与 `-c` 联用。stdin 或 stdout 任一不是终端时使用行模式，不启用 raw mode 或备用屏幕。行模式 `/model` 列出模型，`/model provider/model` 切换。stdout 流式输出所有可读助手正文，包括工具前文字，每个非空轮次补一个末尾换行，完成时不重复回放；无非空正文时才显示拒绝文本。帮助、命令响应、错误、工具状态和思考写 stderr，进程流使用 `[{name} stdout]`／`[{name} stderr]` 标记，不添加 ANSI。显示写入失败会在 Agent 保存历史和工具结果后返回。
-
-### Plan（仅 TUI）
-
-普通任务默认 **EXEC**。空闲时输入 `/plan` 显式进入 **PLAN**，然后提交调研任务；命令本身不请求模型。模型只能调研、询问关键产品取舍并保存计划，不能切换模式。`/plan` 再次打开当前计划；`/plan view` 只查看，未保存时显示 `No saved plan.`。`/plan new` 开始另一份计划，未执行正文存在时先本地确认；`/plan off` 本地确认后放弃计划并回 Execute，不请求模型。确认默认取消，旧 Markdown 不删除。忙碌或有 pending 输入时不能切换／批准；命令不排队成后续执行动作。
-
-Plan 的执行层白名单只有 `read`、`load_skill`、TUI `ask`、`plan_search`、`plan_find`、`plan_write`、`plan_submit`；即使模型返回隐藏的 shell、write/edit、原生 grep/find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，`/plan` 可重试清理。批准或 off 的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
-
-`plan_search` 是区分大小写的**字面行子串搜索**，`plan_find` 按搜索根的相对文件路径子串匹配，空 query 可枚举。均在进程内使用项目 ignore 规则，不运行 rg/fd/grep/find，不解析 argv，也不创建 `.pp-cache`。支持 `path`、`hidden`、`no_ignore`、从 0 开始的 `offset` 和 `limit`（默认 200，1–500）；结果有 `next_offset`、截断和跳过文件的 warnings，受 65,536 字节输出上限、读取行大小、取消与工具超时约束。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
-
-计划正文保存在项目 `.pp/plans/<随机ID>.md`，首次保存才创建目录／文件；不自动修改 `.gitignore`。正文须为非空 UTF-8、无 NUL、最多 262,144 字节，实施步骤使用标准 `- [ ]`／`- [x]` Markdown task list；代码 fence 中的 checkbox 不算任务。保存使用目录句柄、NOFOLLOW 和原子提交，拒绝符号链接／特殊文件；同名首次创建不覆盖。修订写入要求 expected revision 和已登记磁盘字节都匹配，避免覆盖外部编辑。
-
-模型 `plan_submit` 成功后补齐整批 call-ID/results、同步 native history 和 Ready workflow，然后停在审阅边界，不再发总结请求。审阅正文可 PgUp/PgDn／滚轮滚动，Tab 有意切到操作区后默认选择第 2 项；打开面板时焦点在正文，Enter 不默认执行。四项严格按以下顺序显示：
-
-1. **Execute (plan only)**：Fresh，新 session；只发送完整批准计划及固定实施／更新 TODO 规则，正常加载系统、当前项目与技能规则，不带原始需求、调研聊天、旧调用或 reviewer 报告。
-2. **Execute (keep context)**：默认 Keep，保留当前历史并追加一次完整批准快照；计划与重要历史用户要求冲突时先澄清。
-3. **Continue discussing Plan**：独立编辑器，Enter 发送、Ctrl + J 换行、Esc 丢弃未发送问题；发送后降 Draft，保留计划／TODO，重新提交才能批准。不强制立即重写文件；仅针对当前修订的 reviewer 报告随问题作为辅助材料带回。
-4. **Review Plan**：当前模型的独立只读上下文，仅原始需求＋当前计划；可读取代码和安全搜索，不可 ask／写入／提交／实施。报告按严重程度给出计划条目、代码证据、影响和建议，明确静态审查局限；不会修改计划或勾选 TODO，也不自动批准。无需先 review 或消除报告问题才可执行。
-
-Esc 只关闭审阅，不退出 Plan。外部编辑后再次安全读取可直接登记新修订并进入 Ready（须有真实 TODO），不强制模型复核；无 TODO 的正文只能 Draft 查看。批准携带 session／plan／revision／精确正文 token，worker 在准备前后再次核对文件及队列。字节变化会刷新新修订并要求重审；文件缺失、非 UTF-8、过大或不安全时绝不用日志旧正文回填。报告绑定审查修订和模型，计划改变后标记 `outdated`；审查结束不会自动实施。
-
-两种批准方式之后都保持 **EXEC**，包括成功、失败和取消；再次规划必须用户 `/plan`。`Executed` 表示已经交接，不表示全部完成。执行通过普通 edit 更新**同一份 Markdown**：只有动作及完成条件实际验证后才勾选，失败／取消／阻塞项保持未勾选；不能重写批准的目标、接口和方案或用后来新增 TODO 扩大范围。执行中 `/plan view` 显示最近成功同步的只读进度，Esc 只关闭视图，不取消任务；批次提交及收尾安全刷新正文，不监听外部文件、不自动勾选剩余项。批准时的原始快照永久保留在实施消息／checkpoint，进度不会改写审批记录。
-
-`/new` 保持模式但清掉绑定，下一次 Plan 普通任务建立新计划；切模型、跨协议及手动／自动 compact 保留 workflow。`/tree` 保持当前模式和最新计划文件，Ready 降 Draft，不恢复历史 Execute 权限。Plan 的 `-r`／`/resume` 不重放审批、review 或执行；打开审阅须重新读磁盘，`-c` 在 Draft 等输入、Ready 打开审阅，不自动续跑模型。非 TUI 恢复 Plan 明确失败，所有 `/plan` 子命令在行模式只给 TUI 提示；没有 `--plan` 或管道批准接口，`-p` 内容仍是字面 prompt。
-
-这些保证限于 pp 的工具、版本、队列、日志和托管进程生命周期；不是 OS 沙箱、逐操作授权或对实现范围的语义证明，不能停止用户独立启动／故意脱管的程序。
-
-独立实际 TUI smoke 使用临时 HOME／项目和单独 loopback provider 进程：观察 ask、批准前无 hello.txt、外部编辑使旧审批失效、Keep 写入 `hello from reviewed plan`、同文件进度 1/2、Fresh 新 session 写入 second.txt、原规划会话仍可恢复、review 不改第三份计划，以及讨论／重新提交仍需明确批准；退出后 `-r` 查看原修订报告没有新增 HTTP 或第三个文件。这只证明本地 fixture 路径，不声称真实供应商兼容。
-
-### ask（仅 TUI）
-
-模型通过显式 `ask` 工具发起一批问题，不从普通助手文字猜测选项。仅在确实需要用户决定时提问；推荐项只是初始焦点和 `(Recommended)` 标记，不会自动选中，也不授权文件写入。问题使用唯一 `id`、非空 `question` 与 `options`，选项保留原始 `label`，可带 `description`／Markdown `preview`；`header` 为可选题目 chip，`multi` 默认 false，`recommended` 是从零开始的选项下标。空 options 可自由回答；重复 id／label、空白必填文字、未知字段或越界推荐项返回普通工具错误，不打开面板。
-
-`recommended` 推荐使用题目层级的零基下标，例如 `{"questions":[{"id":"choice","question":"选哪个？","options":[{"label":"A"},{"label":"B"}],"recommended":0}]}`；也支持选项上的 `recommended:true`／`false`，true 表示推荐该选项。为兼容 provider 的参数差异，两种协议共用的入口还接受题目／选项上的数字字符串下标、旧式选项内数字下标（按数值解释，不按所在位置猜测）、纯字符串选项、`multi:null`（等同缺省 false），以及额外编码一层的 JSON 参数字符串。缺省或 null 推荐值表示不提供提示；多个有效推荐值必须指向同一选项，否则报错。归一化只处理这些明确格式，保留原始问题／选项文字、顺序及调用 ID，继续拒绝未知／重复字段、冲突或越界推荐项和畸形 JSON；错误不回显原始参数。运行中与会话恢复共用这一解析路径，答案格式保持一致。
-
-面板锚定输入框上方，不改主草稿、光标或输入历史。↑/↓、Home/End、PgUp/PgDn 导航；Tab/Shift + Tab、左右键切问题／Review。单选 Space 选中焦点项并停留当前题，不前进或发送；Enter 确认焦点项并前进，单题单选直接提交。多选 Space 勾选／取消，Enter 只前进，不顺便选中焦点项。多题和单题多选须在 Review 再按 Enter 一次提交；未答单选会定位回该题，空多选可显式提交。每题自动有 `Other (type your own)`，聚焦后可直接打字或粘贴，也可按 Enter 开始编辑；输入框原位显示在该选项的文字位置，其他选项保留可见，支持 Unicode、多行和 Ctrl + J，Enter 接受，非空白输入才可接受。单选的 custom 与选项互斥，多选可共存。
-
-面板采用深灰背景、青色圆角边框与分隔线，顶部显示 `Ask`，标题下方直接排列选项，不重复显示题目 header／id；多题进度以 `Ask · 1/2` 显示在标题中，Review 标题为 `Ask · Submit`。选择面板显示选项名称（最多两行）、名称下方缩进的说明（最多两行）、推荐标记与选择状态；相邻选项连续排列，不额外插入空行，不重复问题正文或预览；Review 只显示题目标签与答案摘要。焦点以黄色 `❯` 和黄色名称表示，单选使用 Nerd Font Material Design 的大轮廓单字形 `󰐽`／绿色 `󰐾`，多选使用同系列的 `󰄱`／绿色 `󰄲`；选中与未选中采用相同外轮廓尺寸，标记加粗，无额外括号，焦点与已选状态独立。底部独立分隔快捷键提示。单个字符的实际大小由终端字体决定。
-
-消息区的 ask 卡片完整显示问题正文、各选项说明和 Markdown 预览，沿用 transcript 滚动；提交答案、缩放及恢复后保留详情，选中项在消息中标记为 `●`。ask 卡片不参与折叠；答题期间 Ctrl + O 仍可全局切换其他工具输出，不改变答案和答题进度。面板高度只在打开／resize 时确定，进入 Other、输入与换行均不移动外框；多行输入在现有区域内滚动，最多屏幕 70%；短屏进入紧凑模式。滚轮在面板内导航，面板外继续滚 transcript。面板活跃时全局菜单、F1、切档、输入历史和主编辑器不会接收它的按键／粘贴，只有 custom 编辑器显示插入光标。custom 编辑器的 Esc 只丢弃本次编辑；picker／Review 的 Esc 取消整个任务，不提交部分答案，同批后续工具按既有取消规则跳过。Ctrl + C 仍立即退出并恢复终端，不等待回复线程。
-
-成功工具结果精确使用 `{"ok":true,"answers":[{"id":"storage","selected_options":["Postgres"],"custom_input":null}]}`：题目和多选答案分别按原题／原选项顺序排列，不包含推荐徽标；custom 有值时为原始字符串。问题与答案沿用 ToolStarted／ToolFinished 日志，恢复只重放卡片，不重开表单、不把答案放进主输入历史；中断请求显示既有 interrupted 状态。`/new`、跨协议 `/model` 和 `/resume` 后 TUI 仍提供 ask。`-p` 和管道行模式不提供 ask schema；服务端仍返回 ask 调用时固定报错 `ask requires interactive TUI mode`，不读取 stdin，不消耗下一条任务。
-
-## 项目级 AGENTS.md
-
-pp 在每次模型请求前完整读取启动目录的 UTF-8 `AGENTS.md`，并将正文、来源路径和适用目录加入系统提示词；不搜索父目录、Git 根目录或子目录。文件不存在或仅含空白时不追加项目规则，也不会自动创建文件。拒绝符号链接、目录及其他特殊文件；读取失败或 UTF-8 无效时阻止本次请求并报错，修复文件后可在当前交互会话重新提交任务。
-
-刷新覆盖普通请求、工具执行后的下一轮请求和手动／自动压缩。文档修改或删除在下一次请求生效，不重复追加旧正文。启动参数恢复会话时从恢复后的工作目录加载；TUI `/resume` 保持当前工作目录并加载该目录的规则。恢复日志里的旧规则不会覆盖当前文件。项目规则计入完整请求的上下文估算；新建空会话和 `/new` 后仍显示 `Ctx 0`。
-
-TUI 和行模式支持不带参数的 `/init`：使用当前模型和现有工具检查项目，创建或更新启动目录的 `AGENTS.md`。已有文档保留有效规则，修正过时的项目描述、命令、路径和流程。命令沿用当前会话、请求上限和工具保存限制；TUI 显示 `/init`，Esc 可取消任务，已落盘修改不回滚。`pp -p '/init'` 仍原样发送普通提示词，不解析命令。
-
-系统提示词固定要求模型在代码变更导致 AGENTS.md 过时时同步修正文档，保留仍有效的项目约束，不得仅为掩盖违反规则而改写规则。`/init` 的实际分析和修改由当前模型执行；程序不会替代模型推断项目事实或保证识别所有文档冲突。
-
-## Markdown 提示词命令
-
-将 UTF-8 Markdown 文件放在 `~/.pp/agent/commands/`，重启 pp 后即可在 TUI 和行模式使用 `/文件名 参数`。例如 `commands/review.md`：
-
-```markdown
----
-description: Review source
----
-Review $1. Focus: $@[2:].
-```
-
-输入 `/review auth "error handling" tests`，实际发送正文为 `Review auth. Focus: error handling tests.`，并保留文件正文末尾的换行。TUI 的 `/rev` 菜单显示 `review` 和说明；Tab 只补全名称，Enter 提交，Esc 收起并保留草稿。`/help` 列出成功加载的命令与说明，不展示模板正文。命令带参数后不提供额外参数菜单。
-
-- 仅扫描 `commands/` 的直接子项，不递归；只接受非隐藏、扩展名恰为 `.md` 的普通文件或指向普通文件的符号链接。目录自身也可为符号链接。名称取文件名去掉最后的 `.md`，大小写敏感，允许 Unicode 和标点，但不能含空白／控制字符。内置命令名（包括隐藏别名 `/think`）不能覆盖；重复名称保留按路径排序的首项，最终菜单／帮助按名称排序。
-- 目录缺失时不创建目录，不报错。不可读文件、无效 UTF-8、断链、非法名称、内置冲突、未闭合／非法 YAML 和空白正文会被跳过，其他命令继续可用。行模式诊断以 `command:` 写入 stderr；TUI 启动显示扫描问题摘要，`/help` 可查看完整诊断。
-- YAML frontmatter 可省略，支持文件开头 BOM 和 CRLF；只读取可选字符串 `description`，并从模型提示词中剥离整个 frontmatter。缺少、null 或空白说明时，使用正文第一条非空行的前 60 个 Unicode 字符，确有截断才追加 `...`；显式说明折叠连续空白。`name`、`argument-hint`、`model`、`allowed-tools` 等其他键均忽略，不改名、不切模型、不授权工具。
-- 参数仅以空格和 tab 分隔；单／双引号分组并去掉定界符，同一参数内的引号段可与普通文字拼接。另一种引号和反斜杠为普通字符，没有转义；未闭合引号接受到末尾，空引用参数丢弃。聚合参数以单空格拼接。
-- 支持 `$1`、`$2` 等任意连续数字的位置索引（从 1 开始），`$@`／`$ARGUMENTS` 表示聚合参数；`$@[start]` 和 `$@[start:]` 取从第 start 个到末尾，`$@[start:length]` 最多取 length 个。缺失参数、0 或越界索引、0 长度均为空；超大长度截到末尾。替换只扫描原正文一次，参数里的 `$1` 等不会再次展开。未知占位符原样保留；非法 slice 仍替换 `$@` 前缀，如 `$@[x]` 变成聚合参数加 `[x]`。`$ARGUMENTS` 不要求单词边界，`$` 没有转义语法。
-- 正文没有已识别占位符且参数非空时，去掉正文末尾空白后追加一个空行和聚合参数；无参数则保留原正文。展开为空白时报本地错误，不发送模型或修改历史。正文即使为 `/quit` 也只是模型提示词，不会递归执行命令。`{{…}}` 保持字面文本；没有 Handlebars、脚本、环境变量展开或项目级命令发现。
-- 每次交互启动只加载一次；修改、新增或删除模板需要重启，`/new` 不重载。运行中模板按所选消息类型入队，提交时只展开一次，应用后才回显展开正文（`/init` 仍回显原命令）；取回保留原 slash，重新提交才重新展开。配置不可用时仍可查看候选和帮助，但不能执行模板。未知命令仍是本地错误，多行输入仍作为普通任务；`-p` 不扫描命令目录，始终原样发送。
-- 本次进程的 ↑ 输入历史保留原始 slash 输入；对话记录和 session 保存实际发送的展开正文。`-r` 恢复后的新命令使用本次启动的模板，旧历史不随文件修改而改变；`-c` 原样重放保存的展开内容，不重新展开。
-
-## 技能支持
-
-配置中的多个 `skill_dirs` 按顺序递归扫描，每个 skill 是包含 `SKILL.md` 的目录；发现该文件后不再扫描其附属目录。支持符号链接，并按规范路径去重、防止循环；同名定义按目录顺序及路径排序取首个，其他定义显示冲突提示。缺失目录、无效文件和元数据错误会显示诊断并跳过，不影响其他 skill。
-
-```markdown
----
-name: rust
-description: Rust 开发与审查指导
----
-在修改前阅读相关实现，并运行与修改范围匹配的检查。
-```
-
-`name` 和 `description` 必须为非空字符串，支持 YAML 多行说明和其他元数据。名称作为全局启停标识，需要唯一。默认根目录为 `~/.pp/agent/skills`；`~/` 展开为用户目录，普通相对路径以 `~/.pp/agent` 为基准。
-
-TUI 输入 `/skills` 打开全局管理面板：↑/↓ 选择、Space 勾选、Enter 保存、Esc 放弃本次选择，r 重读目录配置并扫描（会重置未保存选择），PgUp/PgDn 滚动详情及诊断。面板显示名称、说明、来源和启用状态；配置中的目录通过编辑 settings 修改。保存仅更新 `disabled_skills`，保留其他字段；常规块映射尽量保留原有注释，流式映射等特殊格式会重新排版为 YAML 块映射，使用临时文件原子提交；失败保留原运行状态与面板选择。运行任务时拒绝管理并保留草稿；缺少或无效模型配置时仍可管理 skill。行模式支持 `/skills` 查看列表，以及 `/skills enable 名称`、`/skills disable 名称`。
-
-模型只收到已启用 skill 的名称与说明；通过 `load_skill({"name":"rust"})` 按需读取全文，结果包含 `content`、`path` 和资源基准 `base_dir`。加载工具只接受已发现且启用的名称，不会执行 skill 内的脚本。TUI 用品红色完整边框显示加载过程，左上角加粗标题为 `skill · 名称`，并显示来源及成功／失败状态。正文默认预览前 15 行，Ctrl + O 全局展开／折叠工具输出；模型接收全文，退出回放也保留全文。
-
-启停和重扫对后续请求生效，跨模型及协议切换保留。已加载的内容仍在当前会话历史中，`/new` 清除会话历史并保留全局启用选择。配置不会被其他运行实例自动刷新，需要重扫或重启。skill 加载日志写入 stderr，行模式 stdout 仍只有助手输出。
-
-## MCP 工具
-
-在 `~/.pp/agent/settings.yml` 中添加 `mcp_servers`，连接本地 stdio MCP 服务：
-
-```yaml
-mcp_servers:
-  local:
-    command: python3
-    args: [/absolute/path/to/mcp_server.py]
-    env:
-      APP_MODE: development
-    timeout_seconds: 30
-```
-
-`command` 必填，按 PATH 查找程序；`args` 和 `env` 默认为空，超时默认 30 秒且必须为正整数。直接传递参数，不执行 shell 展开；需要 shell 时显式使用 `bash -c`。服务继承进程环境，`env` 覆盖指定变量，工作目录为当前会话的工作目录。省略 `mcp_servers` 或设为 `{}` 时不启动服务。所有配置层均拒绝未知字段；服务名只能包含 ASCII 字母、数字、下划线和连字符，最长 24 字节，不能含 `__`。
-
-连接时按照 [MCP 初始化流程](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) 完成版本协商和 `notifications/initialized`，再分页调用 `tools/list`。支持协议版本 `2025-11-25`、`2025-06-18`、`2025-03-26` 和 `2024-11-05`。本次实现仅支持 stdio 工具发现及 `tools/call`，不支持远程 HTTP、resources、prompts、sampling、elicitation 或运行中更新工具列表；服务端 ping 会正常响应，其他服务端请求返回不支持的方法错误。
-
-工具名通常为 `mcp__服务名__工具名`，例如 `mcp__local__search`；包含特殊字符或组合名超过 64 字节时，工具部分替换为确定性的 `tool_<hash>`，调用时仍发送原始名称。重名会拒绝启动。MCP 的输入 schema 原样传给模型（`strict: false`），两种模型协议均支持调用，CLI/TUI 使用现有工具事件显示状态。结果保留 `content` 和 `structuredContent` 等字段，包装为 `{"ok":true,"result":{...}}`；`isError:true` 转为 `ok:false`，同批工具仍按顺序继续执行。
-
-初始化或发现失败时，当前配置的模型任务不可用；不完整连接会清理。每次请求的读写共享同一截止时间，通知不会延长超时；传输故障后关闭连接，后续调用返回错误，不自动重连或重试。TUI 主动取消会停止并回收当前 MCP 服务进程组，下一任务真正调用该服务时才使用同一启动配置重新初始化和发现；不重放旧调用。完整工具集合（名称、描述与 schema）必须不变，定义变化或普通重建失败会拒绝该服务直到重启 pp，其他服务与本地工具不受影响。普通超时／EOF／协议故障仍不自动重连。服务进程在会话中复用，`/model`、`/new` 不重启；恢复保存的会话时按当前全局配置重新连接和发现工具，不恢复旧凭证或过期工具定义。正常退出、TUI 的 Ctrl + C 退出及连接故障时清理服务进程组。最多连接 32 个服务、发现 256 个工具，单条协议消息最多 1 MiB。
-
-MCP 服务按当前用户权限执行，能够访问工作目录之外的资源。服务 stderr 被丢弃，协议错误不输出原始响应体、命令参数或环境变量；成功的工具结果按数据展示和回填模型，服务应自行避免在结果中返回凭证。
+pp enters the TUI when both stdin and stdout are terminals; otherwise, it uses line mode. Add the binary to your PATH to use `pp` as shown below.
 
 ```sh
-cargo nextest run --locked --test cli_agent mcp_ --test-threads=1
+pp -p 'Read the current project and explain its structure without changing files.'
+printf 'Explain how to build the current project\n' | pp
 ```
 
-## 上下文用量与压缩
+> **Permissions and data**: API keys are stored in plain text in the model configuration. Read, shell, search, and MCP tools run with your user permissions, without a filesystem sandbox or per-action confirmation. The write/edit save layer restricts paths to the working directory and rejects symbolic links. Sessions and statistics may contain source code and conversations; treat them as sensitive data. [Full permissions guide (Chinese) →](docs/guide.md#工具执行与权限)
 
-- **用量可见，不增加查询命令。** TUI 在输入栏上沿右端显示 `Ctx N/W`，未知容量时只显示 `Ctx N`；Ctx、In、Out、CRead、CWrite 小于 1000 时显示完整整数；这些字段和 Tok/s 达到 1000 时使用 k，达到 100 万时使用 m，换算后保留一位小数（如 `999`、`1.0k`、`12.3k`、`1.0m`），目前只支持 k 和 m。Tok/s 未换算时也保留一位小数。普通用量为蓝色，达到配置阈值为黄色，达到容量为红色。CLI 每个任务结束（含失败）向 stderr 输出当前模型、完整整数的 `Context: ~N / W tokens (P%, estimated)`、最近普通请求的 input/output 和自动策略；stdout 仍只有模型回答。显示用量不发网络请求。
-- **实时请求指标。** TUI 在 `Ctx` 左侧依次显示带 Nerd Font 图标的 speed（金色）、In（蓝色）、Out（绿色）、CRead（缓存读取，紫色）、CWrite（缓存写入，橙色）。流中速度使用约 2 秒滑动窗口内的输出 UTF-8 字节增量除以 3 估算，从首个输出开始采样，排除首 token 等待，每 250ms 更新一次显示快照，速度数值不带 `~` 前缀；正文刷新不会改变该快照。工具执行、请求间隙及下一请求等待期间保留上一笔速度，直到新请求产生有效采样，避免频繁闪回 `—`；停流时估速随窗口降至 0；计入可读思考、回答、拒绝及工具参数 delta，不计完成事件的重复全文、工具名或 opaque reasoning。成功完成后以服务端 output tokens / 完整请求耗时校正为平均速率并持续保留；没有 usage 时按本轮累计字节与完整请求耗时保留最终估速，没有流式字节则保留上一笔速度（无历史时为未知）。In/Out/CRead/CWrite 是最近一次已完成的普通请求，不累计任务或会话；新请求生成期间保留上一请求计数，成功但没有 usage 时变回 `—`，明确的 0 仍显示为 0。input 已包含缓存读取和写入，CRead/CWrite 只是其明细，不额外加减 input；output 包含供应商计入的 reasoning。失败或 Esc 取消清除速度但保留最近成功计数。`/new`、切模型／effort、恢复、会话树跳转和成功压缩清空指标；失败操作保留完成态。摘要流隔离，不覆盖普通请求指标。窄屏优先保留最右的 `Ctx` 和至多半行临时状态，依次整块隐藏 CWrite、CRead、In、Out、speed；不拆开图标。指标仅运行时使用，不写 session journal，不改变 CLI 输出协议。
-- **估算不是 tokenizer。** 新建空会话及 `/new` 后显示 `Ctx 0`，未发送的输入草稿不计入用量。有对话历史后，`~N` 是整份当前原生请求序列化为 UTF-8 JSON 后的字节数向上除以 3，包括 system/instructions、工具 schema、参数、结果及原生／加密 reasoning 的 JSON 开销；不保证准确率或一定不会超限。百分比向下取整，允许超过 100%。最近请求的服务端 usage 独立显示，不累计为上下文占用，也不重复计算 cached/reasoning 明细；没有 usage 时 CLI 显示 `unavailable`，TUI 计数字段显示 `—`。初始化、恢复、`/new`、切模型／effort、会话树跳转和压缩成功后清空最近 usage，摘要请求不覆盖它。
-- **容量必须显式配置。** 每模型 `context_window` 为可选的正整数 token 数；省略表示未知，拒绝 null、0、负数、小数、字符串及溢出，未选中的模型也校验。不猜测模型名，不远程探测容量。`auto_compact` 默认 true，`auto_compact_threshold_percent` 默认 80 且必须为 1..=99 的整数；修改后重启生效，无运行时开关命令。当前模型没有容量时显示 `Auto compact: inactive (context_window not configured)`，不显示虚构的百分比；明确关闭则显示 `off`。切模型只用目标模型的容量，恢复只用当前模型目录配置，不继承旧模型或日志中的容量。
-- **主动 `/compact`，自动在每次普通请求前检查。** `/compact` 不接受参数，支持 TUI 和行模式；`-p '/compact'` 仍是普通提示词。自动检查包含刚接受的用户输入及同一任务内完整工具批次的增长；用量达到阈值时先摘要，再继续任务。手动压缩不要求已知容量；空历史、只有待回复用户输入或只有一个完整 exchange 时返回 `Nothing to compact.`，不发请求、不创建空日志。TUI 仅空闲时接受命令，运行中草稿可编辑，Esc 等待实际取消终态后恢复；自动压缩仍属于当前任务，手动压缩不产生虚假的任务 Completed 或 `You: /compact`。
-- **当前模型总结旧前缀，近期交互原生保留。** 完整 assistant 回复或 assistant calls 与该批全部 tool results 构成安全 exchange；Responses 的 reasoning 与输出／calls/results 不拆开。至少保留最后一个完整 exchange 和其后待回复用户输入；后缀预算为 `min(16384, context_window / 5)`，容量未知为 16384 tokens，最后一个 exchange 超预算也整体保留。旧摘要参与再次摘要，不叠加摘要链。摘要只发送当前 system/instructions、旧原生前缀和固定摘要请求，不发送近期后缀，不配置或执行工具，不改变当前 effort。摘要目标为 `min(2048, max(1, context_window / 16))` tokens（未知容量为 2048），输出上限为目标的两倍；候选为一个 `[Context summary]` 用户消息加原生后缀。可见对话和原始日志不删除，也不减少日志磁盘占用。
-- **有限失败，不重试或裁掉最新 exchange。** 已知容量时，摘要请求的估算输入加输出上限必须不超过容量；不做分块摘要。空白、拒绝、工具调用或截断的摘要不能提交。手动候选未变小则保持原历史；自动候选还必须严格低于触发阈值，否则报 `cannot compact: retained context exceeds automatic threshold` 并停止当前任务。系统／工具 schema、当前输入或最新 exchange 太大而无可压前缀时同样有限失败。网络失败、取消或 state 写失败均恢复原生历史，不执行摘要工具，不继续普通请求，不重放已执行工具。手动取消不改写历史任务的 done/aborted 状态；自动失败／取消走当前任务的终态处理。
+## Everyday use
 
-上下文回归覆盖双协议 usage-only／completed usage、手动与任务内自动压缩、容量与额度门槛、摘要失败矩阵、连续恢复的 native append cursor、真实 PTY 的 Esc／草稿／阈值颜色／60 与 30 列 resize，以及 `ulimit -f` 残尾恢复。独立临时 Python 标准库 runner 在 loopback HTTP + 100×30 PTY 上验证两协议的手动压缩、恢复和两个只读批次后的自动摘要；未使用个人配置或真实远程供应商，Linux 未在本次环境实机验证。
+Use `/help` for full help and `/tips` for usage tips. The following slash commands work in interactive modes; content passed through `-p` is always sent as a regular prompt.
 
-## 会话树与 Esc
+| Command | Purpose |
+| --- | --- |
+| `/model`, `/effort` | Switch models and reasoning levels while keeping history |
+| `/init` | Create or update the current project's `AGENTS.md` |
+| `/plan` | Research and review a plan, then execute after approval (TUI only) |
+| `/compact`, `/new` | Compact context or start a new session |
+| `/resume`, `/tree` | Restore a session or navigate back through current history (TUI only) |
+| `/changes` | View recent-task edit/write changes and undo individual files (TUI only) |
+| `/skills`, `/quit` | Manage skills or exit |
 
-运行中按一次 Esc 中断当前任务，等待连接／受控进程回收和历史保存完成后恢复输入。空闲、输入完全为空且没有其他面板时，500ms 内连续两次 Esc 打开 `/tree`；其他输入、粘贴或任务状态变化会重置双击。关闭菜单、取消 ask 或中断任务的 Esc 不计入双击；Ctrl + C 仍退出程序。
+<details>
+<summary><strong>Common TUI shortcuts</strong></summary>
 
-TUI 空闲时提交无参数 `/tree`，在原消息区域浏览当前有效历史的完整消息卡，复用普通对话的 Markdown、工具、diff 与 ask 渲染，不另开弹窗或搜索栏。回退后放弃的消息永久退出有效历史，恢复会话和后续 `/tree` 均不可找回；`b` 不执行任何操作。进入时所有消息左右各预留一列；移动候选只移动外围虚线框，不改变正文宽度、换行或组高。标签保留当前路径圆点与角色，状态行显示 `[current]`。回退到首条问题之前时，有效历史为空，再打开 `/tree` 通知 `No entries found in session tree.` 并关闭预览。加载期间保留普通消息区域，在原输入区显示加载状态与提示。
+| Action | macOS | Linux |
+| --- | --- | --- |
+| Send / add instructions to the running task | Enter | Enter |
+| Queue an independent follow-up task | ⌥ + Enter | Alt + Enter |
+| Insert a newline | Ctrl + J | Ctrl + J |
+| Open the model menu | ⌥ + P | Ctrl + P |
+| Cycle reasoning levels | Shift + Tab | Shift + Tab |
+| Expand / collapse tool output | Ctrl + O | Ctrl + O |
+| View pending input | ⌥ + Q | Ctrl + Q |
+| Resume the paused queue | ⌥ + R | Ctrl + R |
+| Cancel the current task | Esc | Esc |
+| Exit | Ctrl + C | Ctrl + C |
 
-底部提示为 `↑/↓ step  ←/→ user turns  f filter  󰌑 rewind  󱊷 cancel`。↑/↓ 前后选择安全节点，首尾不循环；←/→ 按有效历史顺序跳到前后用户节点；Home/End 选首尾。`f` 循环全部／隐藏工具／仅用户，尽量保留节点身份；候选被隐藏时选择其后的可见节点，否则选最后一个。PgUp/PgDn 和滚轮只滚动消息物理行，不改变候选；后续方向键导航会重新显示候选。Enter 跳转，Esc 一次退出；普通输入、Ctrl + O 与粘贴只消费，不搜索也不改草稿。工具说明、整批结果与 diff 作为一个安全节点整体框选，不能在调用和结果之间截断。超高消息仅绘制真实边界，裁切处不伪造闭合边框；窄屏裁切提示而不换行，宽度不足三列时省略外框。取消后恢复原消息 viewport、草稿与输入历史；退出时只把当前分支的普通对话写入 scrollback，不写入全树预览、虚线框或提示。
+Type `@` for project file path completion. When idle with an empty input, press Esc twice to open the session tree. Navigating back through history does not roll back files. [Full interaction guide (Chinese) →](docs/guide.md#终端交互)
 
-选择用户消息会回到该问题之前，并在输入框为空时回填问题；选择助手回复或工具批次会保留该节点的完整上下文。选中当前叶子只关闭面板。回退不请求模型、不重跑工具、不回滚项目文件或 bash 副作用。模型、思考级别、当前工作目录与工具配置保持当前值；跨协议复用历史转换，不支持转换时拒绝回退并保留当前状态。项目指令按当前文件刷新。标签和历史 ask 重新作答暂未提供。
+</details>
 
-JSONL 采用逻辑失效，不删除旧行，也不添加逐条 tombstone。回退同步追加带 `data.tree.leaf` 和完整目标原生 session 的现有 `pp.session_state`；只有提交成功才替换内存历史和画面，失败保留此前历史和草稿。原始消息、native append、显示事件和旧 state 保留原字节以供审计，不承诺秘密擦除或节省磁盘；物理 `parentId` 仍连接追加末尾，不表示消息仍有效。例如 A → B → C 回退到 B 助手后，即使立即退出，恢复、回放、列表摘要及 `/tree` 也只使用 A/B；新输入 D 后是 A → B → D，C 的 ID 不可再选择。回退到首条用户消息之前提交 `leaf:null` 和空对话，列表仍保留该 `Untitled session`。恢复原生上下文使用最新完整 state 加后续 native append，不从旧普通消息补齐。
-
-树完整解析和校验旧日志后，仅输出最终已提交的根到叶路径，避免读取废弃节点的展示区间。旧 v3 线性日志及含合法历史跳转的旧日志均无需迁移；升级后只保留最终有效路径，不提供找回废弃分支的入口，也不支持手工编辑 JSONL 改变有效性。读取不改写文件字节或 mtime。行模式提示 `/tree requires the TUI`；`pp -p '/tree'` 仍是普通模型任务。
-
-## 最近任务变更与安全撤销
-
-TUI 空闲时提交无参数 `/changes`，打开 `Latest task changes` 全屏临时面板。范围是**最近一次已接受任务中，内置 replace/hashline `edit` 和 `write` 成功提交的文件净变更**，不是 Git HEAD 或整个工作区的变更；不跟踪 bash、MCP、外部编辑器和 `plan_write`。相同文件的相对路径、`./`、工作区绝对路径及不越界的 `..` 归并为一项，diff 从该任务首次成功修改前的真实字节比较到最后一次工具提交内容，不累加中间 diff，也不把后续外部修改算进工具 diff。净零修改隐藏，新建空文件仍显示。
-
-- ↑/↓ 选择文件，列表显示 Created/Modified、净 `+N/-N` 和 Ready/Blocked；详情复用完整 diff 颜色、真实行号、CRLF/BOM 与末行提示。PgUp/PgDn 和滚轮只滚动详情，`r` 通过 worker 刷新磁盘匹配状态，Esc 退出并恢复原对话 viewport。面板不修改背后的草稿和输入历史浏览位置，也不进入对话或退出 scrollback；显式提交 `/changes` 本身照常记入输入历史并清空命令。
-- `u` 打开所选 Ready 文件的确认：已存在文件恢复任务首次修改前内容，新建文件删除。按钮顺序为 `Cancel`、`Undo file`，默认 Cancel；Tab/←/→ 切换，Enter 确认，Esc 返回列表。每次只撤销一个完整文件，成功后从列表移除；保留新建父目录，不提供批量回滚、强制覆盖或自动合并。Plan 模式可查看，但不能撤销。
-- 撤销保留任务前已有的未提交工作及原始字节，包括非 UTF-8、BOM、换行和缺末尾换行；文字 diff 不可用不等于不能恢复。首次旧内容不可读时仍允许原 write，但该项不可撤销。两次工具写之间发生外部改动会永久阻止该项撤销；单纯当前磁盘与最后工具内容不匹配则可在刷新时重新判断。缺失、不可读、symlink、父目录 symlink、目录或其他特殊文件均拒绝撤销，失败不丢弃快照。
-- 快照**仅存在当前进程内存中，只保留最近一次任务**。同任务 steering、continue、切模型/思考档位和压缩保留记录；下一次真正接受的普通任务（即使未改文件）替换旧集，入口校验失败不替换。取消/失败保留已成功提交的修改。`/new`、成功 `/tree`、成功恢复会话及 Plan Fresh 切换会话后清空；Plan Keep 沿用当前任务。退出、重启或 `/resume` 不从历史 FileChanged 重建撤销资格。
-- 面板打开、加载或确认期间不自动启动 pending FollowUp，也不能切模型/会话或打开其他面板。存在 pending 输入时仍可查看；运行中或取消收尾时 `/changes` 明确拒绝，保留输入且不作为 steering 排队。加载时 Esc 可先关闭，迟到的 worker 回复不会重新打开面板。
-
-撤销通过原有目录 fd/NOFOLLOW 安全边界，在临时文件完整写入并 fsync 后、rename 前分块精确比较最后工具字节；删除前同样比较再 unlinkat。普通 edit/write 的覆盖规则不变。恢复保留当前文件权限；提交前失败保留文件和记录，提交后父目录 fsync 失败作为已成功 warning。**这不是跨进程文件系统 CAS 或排他锁**：最后比较与 rename/unlink 之间仍有极小竞态窗口，不保证抵御任意并发写入。撤销只改变磁盘和内存变更集，不裁剪模型历史或历史单次 diff；`/tree` 本身仍不恢复磁盘。
-
-行模式输出 `/changes requires the TUI; run pp in a terminal.`；`pp -p '/changes'` 仍把字面文本交给模型。
-
-## 会话持久化与恢复
-
-TUI 空闲时提交 `/resume`，打开 omp 风格的全屏 `Resume session` 面板。默认只显示当前工作目录的会话，→/← 或 Tab 切换当前目录和全部项目。顶部输入搜索词，按标题、回答预览、ID 和目录筛选，支持粘贴、Backspace 删除字符和 Ctrl + U 清空查询。每条会话展示首条用户消息摘要、首条非空助手文本预览、相对更新时间、文件大小及 `current`／`✓ done`／`■ aborted` 标记。摘要折叠空白并最多保留 80 个 Unicode 字符，预览最多 200 个，超长追加 `…`。完成状态根据最后用户／助手记录及错误判断，不调用模型生成标题。
-
-会话按文件最后修改时间倒序（相同时间按完整 ID 倒序），默认选中第一项。↑/↓、Home/End、PgUp/PgDn 导航，滚轮移动选择，Enter 恢复，Esc 取消。筛选或切换范围后重新选中第一项；窗口缩放保留选择。Delete 或空查询时的 Backspace 请求删除，面板内 Enter/y 确认、Esc/n 取消；当前会话及持锁会话不可删除。扫描、恢复和删除均在 worker 中执行。单个坏文件跳过并提示数量，未产生用户消息的日志不展示；已提交根回退的空历史仍以 `Untitled session` 展示，选中时才做完整恢复校验。浏览和搜索不加恢复锁、不改变日志字节或 mtime。
-
-加载时取消会保留旧界面，但扫描结束前 worker 仍忙碌，迟到回复不会重新打开列表；恢复或删除提交后不能取消或重复确认。选择当前 ID 仅关闭列表，不重加锁、不重放历史。
-
-`/resume` 恢复所选会话：按当前叶子的逻辑路径替换可见对话、模型上下文和用户输入历史，保留当前模型、协议、思考级别、工具限制、edit 模式和工作目录；恢复目标 workflow，按目标模式停止或重建 MCP，并在 UI 接管新清理句柄后完成交接。保存时的模型被删除或修改、原目录已不存在，也可以恢复；跨模型或跨协议时转换历史，去除绑定旧模型的 Responses 状态，同一模型则保留原生推理历史。后续输入继续追加原 JSONL 和当前分支，不重跑旧工具。失败时仍可在旧会话继续输入。行模式仅提示 `/resume requires the TUI; use pp --resume SESSION_ID.`，不支持 `/resume ID`；按 ID 启动恢复仍使用启动参数。
-
-下表的自动续跑行为适用于 Execute；Plan session 的 `-r`／`-c` 例外见上方 Plan 节。
-
-| 命令 | 启动行为 | 任务后行为 |
-|---|---|---|
-| `pp` | 新的惰性 session，不请求模型 | 原有 TUI / 行模式 |
-| `pp -p TEXT` | 发送一次新任务 | 退出 |
-| `pp -r ID` | 精确恢复，不发送 HTTP | 等待输入；行模式可 EOF 退出 |
-| `pp -r ID -p TEXT` | 恢复后追加一次 TEXT | 退出 |
-| `pp -c` | 选择全局最近修改的 session，刷新项目规则和技能摘要后发送已保存历史 | 继续交互；行模式 stdin EOF 退出 |
-| `pp -c ID` | 精确恢复，刷新项目规则和技能摘要后发送已保存历史 | 同上 |
-
-`-c` 不附加“请继续”、不重复最后一条用户消息、不回滚助手回答，也不重放旧工具调用。只能使用完整 ID：`YYYY-MM-DDTHH-MM-SS-<32位小写hex>`，例如 `2026-10-17T01-02-03-0123456789abcdef0123456789abcdef`；日期时间使用创建时的本机时区，精确到秒，随机后缀避免同秒冲突。不支持前缀或文件路径，旧的 Unix 毫秒格式 ID 不再接受。`-r` 缺 ID、`-r` 与 `-c` 同用、`-c` 与 `-p` 同用均报错。
-
-会话日志唯一位置为 `~/.pp/agent/sessions/<ID>.jsonl`。启动、草稿和本地命令不创建 session 目录或文件（运行诊断日志独立创建）；只有真实 HTTP stream 打开调用返回（收到 headers 或请求失败）后才创建。因此请求仍在等待首次 headers 时被强杀，不保证已有日志。主动 Esc 取消是例外：即使 headers 尚未到达或任务尚未发送 HTTP，也同步保存已接受的用户输入和取消终态，供后续恢复。ID 使用 16 字节 OS 随机数；新目录权限 0700，新文件 0600，不改已有目录权限。日志是敏感明文，包含完整对话和工具结果，不保存 Config、API key 或 HTTP headers；不要提交或随意共享。
-
-启动参数 `-r` / `-c` 使用原工作目录、edit 模式、工具限制、模型引用、思考级别、基础系统提示词和完整历史；请求前按当前文件刷新项目规则及技能摘要，并继续追加原文件，不分叉。原目录缺失或不可进入时报错，不回退到启动目录。模型必须仍存在于当前 catalog 且实际 model/protocol 未改变；凭据、base URL、HTTP 超时和每任务请求上限使用当前配置。启动恢复失败是非零退出，不进入禁用模型的交互兜底；运行中的 `/resume` 恢复失败保留旧会话、工作目录与列表选择，不发送模型请求。
-
-TUI 恢复可见消息、工具结果、错误和用户输入历史，输入框为空；不恢复草稿、菜单、滚动位置或布局缓存。恢复的 bash 卡片仅显示保存的退出状态，不伪造耗时。未完成展示事件显示 `Previous request was interrupted.`，不加入模型上下文。行模式不重印旧回答。恢复 ID 与首次创建 ID 分别通过 stderr / TUI Note 提示 `Resumed session: <ID>`、`Session: <ID>`；stdout 仍只有模型回答。
-
-“最新”按文件修改时间选择，时间相同按 ID 字典序降序；只查看恢复不会提高排序，不按项目过滤。session 文件必须是普通文件，不跟随符号链接；进程持有排他锁，另一进程恢复同一 ID 会报 `session is already in use`。最新文件损坏或已锁时直接报错，不换另一个文件。
-
-JSONL 使用 oh-my-pi 风格容器：首行是 `type:"session"`、`version:3` 的 header，保存现有完整 session ID、原工作目录和 UTC RFC3339 毫秒创建时间；其余条目都有 `id`、`parentId`、`timestamp`，形成线性链。正文 ID 是当前日志内唯一的 8 位小写随机 hex，首条 parent 为 null。支持的正文类型只有 `message`、`model_change`、`thinking_level_change`、`custom`；普通消息提供 `user`、`assistant`、`toolResult` 及 text/thinking/toolCall 内容，供通用阅读，不虚构 usage/cost。
-
-pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版本 1）、`pp.native_append`、`pp.instructions` 保存协议原生请求及增量；`pp.workflow`（version 1）与 native state 同步提交模式、绑定计划和审查报告，checkpoint 同样携带 workflow。缺少 workflow 的旧 v3 session 默认 Execute；未知字段／版本、非法 ID／修订／状态组合明确失败。审批与状态提交失败会截断并同步回滚到原提交边界，不先在内存发布执行权限；`pp.event`、`pp.error` 保存展示事件与错误；`pp.cancelled`（`data:{}`）同步保存主动取消终态，恢复时显示取消 Note，不误报中断，也不进入模型上下文。取消后的列表状态为 aborted，后续真实任务完成可再次标为 done。普通 assistant/toolResult 消息不反推模型上下文，也不重复渲染；TUI 仍从独立展示事件恢复。`model_change` 仅作审计，后续完整 native state 才提交模型切换。这是结构对齐，不支持直接互读上游会话文件。旧 `checkpoint` 格式明确报 `unsupported legacy session format`，不迁移、不改写；最新文件为旧格式时也直接失败，不跳过。
-
-首个 `pp.session_state`、用户原生输入、每个完整模型/工具批次及设置更改均同步落盘；流式展示事件不逐 token fsync。原生历史与展示日志分离，Responses item ID、encrypted reasoning、call_id 及工具原始结果均保留。完整工具批次在下一次请求前提交；网络错误不撤销已执行工具。写入失败锁存首次 `persisting session` 错误，当前已接受工具批次仍执行完毕，停止后续 HTTP；`/new` 或重启后才可重新发送。模型/思考级别设置写入失败保留旧内存选择。
-
-压缩通过同步追加新的完整 `pp.session_state` 提交替换后的原生历史，同时更新增量游标；不虚构 `model_change`，成功后立即退出也能恢复摘要与近期后缀。`ContextUpdated`、请求开始／输出进度／完成指标、压缩阶段／结果事件及摘要调用的 assistant/thinking 流不写 `pp.event`；恢复重新估算，不恢复旧 usage。逻辑提交点是完整 state 记录，不是文件 rename，也不承诺断电绝对原子性。
-
-仅允许忽略末尾未换行的残缺记录；恢复时提示，首次真正追加前持锁截去残尾。完整坏行、未知版本/记录、ID 不符或协议不符均报错，不覆盖旧日志。正常退出和完整批次可恢复；强杀期间的未完成回答不提交到模型历史，工具副作用不提供事务、回滚或 exactly-once 保证。
-
-`/new` 保持当前模型和思考级别，清空原生历史并释放旧日志锁，旧文件保留；下次真实模型请求才创建新 ID。
-
-## 工具执行与权限
-
-**write/edit 仅修改启动目录内文件，按单次调用原子提交。macOS/Linux 的 bash、grep、find 均无文件权限隔离，仍可修改当前用户有权限访问的目录外文件；没有逐次确认。请在可信或临时目录中运行。**
-
-- 启动时固定规范化工作目录。`read` 允许目录外读取及符号链接；`write/edit` 接受目录内的相对或绝对路径，拒绝越界路径以及写入路径上的符号链接（包括指向项目内的链接）。父目录通过目录句柄逐级打开，保存不重新按完整路径追踪链接。允许不越出工作目录的 `..`；项目规则只读取工作目录的 `AGENTS.md`，skill 仅扫描全局配置指定的目录。
-- `read(path, offset?, limit?)`：`offset` 是从 1 开始的起始行，默认 1；`limit` 默认 `read_max_lines`，必须为正整数且不超过该配置。读取普通文件，使用有界缓冲跳过前面的行；每页同时受 `read_max_bytes` 和行数限制。返回 `ok`、`content`、`truncated`、`lines_read`、`next_offset`；有后续内容时使用 `next_offset` 继续，文件结尾为 null。超出文件末尾返回空页。两种模式均只返回完整行，超长单行无法放入空页时返回错误；增大配置或使用 bash 检查有界片段。默认 replace 返回保留原始换行、无前缀的 lossy UTF-8；字节上限计算源文件内容，不包括 hashline 前缀及 JSON 编码。不会解析图片或二进制格式。
-- 默认 `edit({path, edits:[{oldText,newText}]})` 修改已有 UTF-8 文件，每项都匹配同一份原始快照，不匹配前一项替换后的内容。非空 `oldText` 在宽松归一化后也必须唯一；拒绝重复或重叠目标，允许相邻目标。用最小唯一上下文定位，在 `newText` 重复相邻内容以插入，`newText:""` 表示删除。空数组、无匹配或整批无变化均拒绝写入；允许无变化项与实际修改混合。失败后重新读取。
-- replace 先尝试 LF 归一化后的精确匹配，再尝试 NFKC → 逐行 ECMAScript `trimEnd` → 智能引号／破折号／Unicode 空格归一化，不忽略大小写、缩进或连续行内空格。宽松匹配时，仅触及行块使用归一化文字，其余行保留原内容。保留 UTF-8 BOM；内部统一 CRLF／裸 CR，输出使用源文件首个 LF 的风格（前有 CR 则用 CRLF，否则 LF；无换行时用 LF），不强制添加末尾换行。
-- 设置 `"edit":"hashline"` 后，read 显示 `N:hash|text`：N 为从 1 开始的真实文件行号，分页不重新编号；hash 为原始行正文（不含 LF/CRLF）的 16 位小写十六进制 FNV-1a 64 位哈希。显示分隔符为 LF，只为完整行生成锚点，空文件没有锚点。edit 仅接受带锚点的 `replace`（包含首尾行，`lines:[]` 表示删除）、`insert_before`、`insert_after`。新行字符串不能包含 CR/LF 或显示前缀。操作均引用原始快照；拒绝重叠替换、重复插入位置及触及替换边界的插入。锚点失效时重新读取；只检查端点，不校验内部行或整文件版本。未触及的字节保持原样，新分隔符采用源文件首个换行风格，并保留被替换末行是否带换行的状态。
-- 两种 edit 模式均先对同一份原始快照校验全部修改，再调用共用原子保存流程。空文件、缺失文件、目录、符号链接和非 UTF-8 文件不能编辑；edit 不创建文件或目录。成功返回 `edits_applied` 和最终 UTF-8 `bytes_written`。保留严格且分模式的参数校验，不增加 diff/patch 字段。
-- `write(path, content)`：创建缺失父目录，并创建或完整覆盖 UTF-8 文件，允许空内容。write/edit 均在目标所在目录排他创建临时文件，完整写入、保留原文件权限（含可执行位）、同步临时文件后，以一次原子重命名提交。创建、部分写入、同步或重命名失败均保留原文件；新建失败不会留下残缺目标，已创建的空父目录允许保留。重命名是提交点，之后父目录同步失败返回 `ok:true` 并附 `warning`，不能当作尚未修改。失败路径清理临时文件；TUI `/changes` 提供当前进程最近任务的逐文件安全撤销（见上节），不提供持久备份、跨文件事务、跨进程并发隔离或断电恢复保证。
-- `grep({"args":[...]})` 搜索文件内容，`find({"args":[...]})` 查找路径。每个 Tools 实例构造时按 PATH 固定选择 `rg → grep`、`fd → find`，工具 description 根据实际后端提供原生参数语法；优先程序可位于后面的 PATH 项。相对／空 PATH 项相对启动目录解析，只选择普通文件且有执行位的候选（允许可执行 symlink）。不运行版本探测，不自动安装，不使用 `fdfind` 别名；运行时程序删除或权限变化返回真实错误，不拿相同 argv 静默换后端。新启动／恢复构造的 Tools 会重新探测，模型切换和历史恢复通过实时 schema 提供当前后端说明。
-- 搜索只接受必填的字符串数组 `args`，不传程序名，不拼接 shell、不做展开／管道或跨后端参数转换；空数组、空字符串原样传给程序，NUL 和额外字段被拒绝。rg 示例：`{"args":["-n","--color","never","-e","PATTERN","src"]}`；system grep 示例：`{"args":["-R","-n","-E","-e","PATTERN","--","src"]}`；fd 示例：`{"args":["--color","never","--type","f","PATTERN","src"]}`；system find 示例：`{"args":["src","-type","f","-name","*.rs","-print"]}`。rg/fd 默认遵守 ignore 且跳过隐藏文件，可用 `--hidden`／`--no-ignore` 扩大范围；系统 grep/find 不自动遵守 gitignore，不能照搬快速后端的 flags。find 的路径在表达式前，`-name` 的 glob 保持单个 argv；fd 的 pattern 在目录前，默认正则，`--glob` 改用 glob。
-- 搜索复用 bash 的受控执行层：启动 cwd、关闭 stdin、独立进程组、超时／取消／正常结束后的组清理、项目内 scratch/cache、UTF-8 流式输出与下述 500 行／每流 65,536 字节限额均相同，超时沿用 `bash_timeout_seconds`。结果保留 `ok`、`exit_code`、`timed_out`、`cancelled`、两流输出及截断标记；grep 正常 exit 1 表示无匹配，返回 `ok:true` 并保留 `exit_code:1`，其他非零退出、find 非零退出、超时／取消均失败。后端缺失不阻断启动和文件工具，schema 仍存在并标明 unavailable，调用返回 `grep requires rg or grep on PATH` 或 `find requires fd or find on PATH`。原生参数可产生副作用（如 find 的 `-exec`／`-delete`），没有参数白名单或文件系统沙箱。
-- 默认前台 `bash({"command":"..."})`：以启动目录为工作目录执行 `bash -c`，关闭 stdin，并建立独立进程组。stdout/stderr 无需等待换行或进程退出即可实时显示；保留跨分块的 UTF-8 字符，无效字节采用 lossy 解码。两流合计最多保留 500 行，同时每流最多保留 65,536 个原始字节，先达到的限制生效；按 `\n` 分行，非空且没有末尾换行的片段也计一行。仅在确有超出内容时标记对应流截断；实时显示与返回输出使用相同限制，多余内容持续排空，命令继续执行。仅保证各流内部顺序，不保证跨流顺序；500 行额度按接收分块的顺序分配。返回退出码、输出、截断标记和 `timed_out`，信号退出时退出码为 null。
-- 工具参数严格校验：缺失／额外字段、非法 JSON、空白路径／命令、未知工具及文件／进程错误均返回 `ok:false`，供模型修正。bash 非零退出同样失败并保留输出。
-- 前台 bash 的 `bash_timeout_seconds` 默认 120，与模型请求超时独立，模型不能通过工具参数延长。`{"command":"..."}` 和显式 `"mode":"foreground"` 保持相同契约。独立监督线程在超时时向进程组发送 TERM，等待 1 秒后发送 KILL 并回收直接子进程；可停止的非阻塞管道读取避免后代持有管道导致无限等待。超时返回 `ok:false, timed_out:true`，保留已捕获输出，不回滚 shell 修改。正常结束也清理同一进程组的残留后代；主动脱离进程组的进程不受保证。TUI Esc 取消通过 TERM→1 秒宽限→KILL／wait 停止受控进程组，前台结果为 `ok:false, cancelled:true, timed_out:false`；正常／超时前台结果的 `cancelled` 为 false。
-- 跨工具调用验证服务时使用 `bash({"command":"exec server ...","mode":"background"})`，保存返回的 `task_id`（如 `bg-1`）。后台没有固定执行超时，但只属于当前用户任务：最终回答、拒绝、请求预算耗尽、错误、Esc 取消或 TUI 受控退出前自动停止并清理。运行中补充沿用当前任务的后台服务；独立 FollowUp 结束时单独收尾。不会跨独立任务、会话恢复或应用重启保留；历史 ID 不会复活进程。服务应保持在受管进程组内，优先 `exec server`，不要 daemonize／setsid。shell `&` 不是受管理后台模式。
-- `bash_task({"task_id":"bg-1","action":"status"})` 立即返回当前累计日志／状态，不等待就绪；`"action":"stop"` 发出本任务的停止请求并等待 TERM／KILL／wait、worker 和 scratch 收尾，不取消整个用户任务。验证完成后显式 stop；已终结任务的 status／stop 保留原终态，stop 幂等。仅接受本管理器当前任务的 ID，不接受任意 PID；上一用户任务的 ID 已清除，新 ID 不复用。mode/action 仅接受上述小写枚举，拒绝 null、额外字段和空白 command／task_id。
-- 后台 start／status／stop 共用快照：`ok`、`task_id`、`status`、真实 `exit_code`（或 null）、`stdout`／`stderr` 和两流 `*_truncated`。状态为 `running|exited|stopped|cancelled|failed`；前三者 `ok:true`，后两者 `ok:false`。自然 exit 0 为 exited，非零／信号退出为 failed；显式停止为 stopped，用户取消为 cancelled。仅实际出错时附 error／warning，无前台 timed_out 字段。真实进程清理失败会停止 agent，普通命令非零退出不会被误当作清理失败。
-- `running` 仅表示进程受管理，不表示服务 ready；通过 status 取得日志，再以后续实际 HTTP／功能请求验证，不自动探测端口、不重启。后台日志沿用共用 500 行和每流 65,536 原始字节限额，超过后持续读取并丢弃，不阻塞服务。运行中暂不显示不完整 UTF-8 尾字符，终态 lossy 解码剩余尾字节。后台 worker 不主动推送日志；每次 start／status／stop 用该次 call_id 展示累计快照，因此重复 status 可重复展示同一日志。CLI 将日志与 `task bg-N: status` 写到 stderr，stdout 仍只包含模型回答。TUI 卡片显示 `Task bg-N: status`，卡片完成仅表示本次工具调用完成，不表示服务退出。
-- bash 默认将 `TMPDIR`、`TMP`、`TEMP` 设置为项目内每个命令独立的 `.pp-tmp-*` 目录；前台调用结束后清理，后台随任务存活直到进程收尾后清理；`XDG_CACHE_HOME` 设置为项目内 `.pp-cache` 并保留缓存，二者均已加入忽略规则。这是默认位置而非权限隔离；不遵守这些变量的程序仍可能使用其他位置。清理失败通过结果中的 `warning` 报告。
-- Esc 取消会关闭本地模型连接及 SDK 后台网络任务；下一任务惰性创建新的 runtime／HTTP 连接池。流式半成品只保留展示，不进入原生历史或执行未完成工具调用。已开始的同步 read/edit/write/load_skill 操作允许完成并保留真实结果；同批剩余调用不执行，但仍按 call_id 追加取消结果。只有终止／回收成功且原生批次与终态同步保存成功才显示取消；真实清理失败或持久化错误优先报告错误。只能保证本地连接及同进程组受控工作停止，不能撤销供应商远端计算、计费、外部副作用或主动脱离进程组的进程。
-- 工具按序执行，write → read 等批内依赖按顺序可见。先保存完整模型输出，再按对应 call ID 逐项追加结果；普通工具失败不会跳过其余调用。取消和真实进程清理失败按前述规则处理。
-- `read_max_bytes`、`read_max_lines`、`bash_timeout_seconds` 均要求正整数，启动时读取并固定；`/model`、`/new` 不重新读取或放宽这些限制。
-- 每个用户任务最多 `max_model_requests` 次请求（默认 20），包含自动摘要；自动压缩须为摘要与后续普通请求保留两个名额。手动 `/compact` 独立于下一任务额度。达到额度的最后一批工具仍执行并回填历史，然后报告额度错误，不再请求或声称完成。最终回复边界仍有 steering 时同样报告额度不足，并保留队列待显式恢复。独立任务重新计数，steering 不重置。
-- 普通请求使用当前原生上下文，其中可能含压缩摘要；追加式 JSONL 与可见对话保留原消息和事件。已接受输入在自动压缩可能失败前保存。网络／协议错误不回滚文件修改，只有建连阶段 HTTP 429 在限流预算内重试；此前完整历史和工具结果仍可恢复。
-- `/model` 仅从启动时完整校验的 catalog 选择，不重载或写配置。选择当前引用无操作；解析、客户端初始化或历史转换失败保留当前模型和历史。切换不探测 HTTP、不执行工具或回退协议，兼容性由下一次实际请求验证。
-- 切模型保留用户／助手文字、系统指令、工具 call ID／参数及结果。Completion 之间保留原生消息；同一配置供应商的 Responses 之间保留含加密思考的原生输出。跨协议或跨 Responses 供应商时转换可读历史，去掉 item ID、重放元数据和不透明加密思考；可读思考转为助手文本，交错消息／调用转换为 Completion 批次。不支持的非文本或未知历史会拒绝切换，避免静默丢失记录；加密供应商状态不可移植。
-
-取消回归通过真实 loopback HTTP、PTY 和进程组验证：两协议 headers 前／SSE 空闲取消在下一任务前关闭旧连接，write→bash→write 保留已完成结果并补齐未执行调用，MCP 仅在下一任务调用时重建并拒绝 schema 变化，重建中 Ctrl + C 仍回收替换进程；取消终态可恢复为 aborted，后续完成可变为 done，持久化失败不误报取消。独立 100×30 实际 TUI smoke 使用临时 Python loopback fixture：TERM-resistant bash 两个受控 PID 均停止，中文草稿和光标保留，下一任务收到 `cancelled:true, timed_out:false` 与原 stdout 并回复 `smoke recovered`，共两次 HTTP，最后 Ctrl + C 以 0 退出并恢复终端属性。未使用真实供应商，Linux 未在本次环境实机验证。
-
-## HTTP 协议
-
-以下请求结构适用于普通任务；专用摘要请求不带工具和 tool choice。`async-openai` 以类型化 SSE 流消费两种协议，仅提供流式执行路径。Tokio runtime 连接同步 Agent 与 SDK，不在 TUI 绘制线程执行请求。每次请求使用 `request_timeout_seconds`（默认 120），禁止自动重定向。唯一重试是建连阶段 HTTP 429：在 `rate_limit_retry_budget_seconds`（默认 300，0 关闭）内优先遵循整数秒 `Retry-After`（0 立即重试），否则指数退避，等待截断至剩余预算，最多十次尝试，等待期间可取消；流内限流不重试。显式覆盖 SDK 从环境派生的凭据、API 地址、organization 和 project，仍只用文件配置。
-
-- **`response`（默认）**：发送 `model`、`instructions`、本地 `input` 历史、function `tools`、`tool_choice: auto`、`stream: true`、`store: false` 和 `include: ["reasoning.encrypted_content"]`，不使用 `previous_response_id` 或服务端 conversations。正文和拒绝按输出项及内容顺序显示；可读思考单独展示，不重复 delta／done／completed，不显示参数分片和加密思考。仅以 `response.completed.response` 提交输出和调用，收到后立即结束轮次，不等待 HTTP EOF 或 `[DONE]`。response／message／reasoning／function-call 状态须通过完成校验；原生保留消息、思考及调用顺序，结果匹配 `call_id`。`/new` 清空 input，保留 instructions。
-- **`completion`**：发送 `model`、`messages`、function `tools`、`tool_choice: auto`、`stream: true` 和 `stream_options.include_usage: true`。chunk 使用 SDK schema，只消费 choice 0；保留最后一次非空 usage，包括 choices 为空的 usage-only chunk，缺 usage 不重试或回退。必须有实际 assistant role 和 `stop`／`tool_calls` finish reason。工具片段按 index 累积，无错误结束后才校验；截断、过滤和 finish 前 EOF 均失败。SDK 内部消费 `[DONE]`，服务端省略时仍接受合法 finish 加正常结束。`/new` 只保留 system 消息。
-
-两种协议都在保存助手输出或执行工具前校验整批调用：只接受 function，ID／名称不能空白，批内 call ID 不可重复；坏批次中即使存在合法 write 也不执行。既无可读文本也无调用时视为协议错误。工具轮次也拼接全部文本，正文优先于拒绝；Responses 最终文本可补缺失后缀，与已流出的非空内容冲突则在执行工具前失败。流中断保留可见半成品并标记失败，返回脱敏错误，不提交不完整助手／工具历史，保留用户输入及此前工具结果。参数在执行时按工具类型解码。不支持旧 Chat `function_call` 或托管工具；Chat 额外读取 choice 0 的 `delta.reasoning_content`／`delta.reasoning` 字符串，仅展示思考，不并入回答。错误不输出供应商原始消息、响应体或密钥。
-
-### Responses 故障排查
-
-- 部分模型始终启用思考，不接受 `reasoning.effort: "none"`。旧配置 `think_level: default` 在当前版本是 `none` 的别名，**不是服务端默认值**。可在该模型配置 `thinking.efforts` 排除 `none`，并用 `thinking.defaultLevel` 指定支持的启动档位。若服务端仍拒绝请求，在交互模式执行允许的 `/effort low` 后重新提交任务；启动默认值在 `~/.pp/agent/settings.yml` 中改为 `think_level: low`，或选择服务端支持的其他档位。已恢复的 session 保留其保存的档位，需要执行 `/effort low`；仅修改启动设置不会覆盖已恢复的档位。
-- 流式终止错误区分 `response.failed`、`response.incomplete` 与 `error`，仅展示白名单内的错误码／未完成原因；服务端原始 message、param、未知 code/reason 均不回显。`invalid_request` 提示检查模型支持的思考档位和请求参数；`max_output_tokens` 表示输出截断，`content_filter` 表示内容过滤。失败不自动重试、不降级协议、不提交未完成的回答，也不执行该批次工具。
-
-## 请求统计
-
-所有新发起的模型调用都会自动记录到 `~/.pp/stats/stats.db`，包括工具循环及手动／自动摘要；统计页面是否运行不影响采集。不会导入此前的 pp 或 omp 日志。
+Sessions are saved automatically in `~/.pp/agent/sessions/`. Restore one by its full ID, or open the local statistics page:
 
 ```sh
+pp -r SESSION_ID
 pp stats
-pp stats --port 4000
 ```
 
-默认访问 [http://127.0.0.1:3848/#/overview?range=24h](http://127.0.0.1:3848/#/overview?range=24h)。服务在前台运行，打印网址而不自动打开浏览器，Ctrl + C 退出；无需模型配置。`stats` 与 `-p`、`--resume`、`--continue` 互斥，`--port 0` 可让系统分配可用端口。服务仅监听本机回环地址。
+Statistics are served at [127.0.0.1:3848](http://127.0.0.1:3848) by default, without model configuration, Node, or a CDN at runtime. Run `pp gc` to manually remove logs and statistics older than 90 days; original sessions and configuration are kept.
 
-Overview 展示当前时间范围内的请求、Token、缓存命中和耗时；右上角支持 1h、24h、7d、30d、90d、All。All requests 跳到保留范围的 Requests，点击请求行可查看详情、展开及复制 JSON。Requests 默认加载最新 500 条、每次显示 100 条，可扩大为最新 2,000 条；摘要针对已加载集合，搜索／状态筛选及排序也只作用于此集合。Models 展示模型请求占比、费用、缓存率、错误率、吞吐和 TTFT；点击行可展开效率、延迟、Token 及可切换的性能趋势。Providers 展示供应商总量、可展开的 Token／模型明细、可切换指标的消耗趋势和本地小时峰值。Costs 展示每日费用（按模型／计费项切换）、费用构成和可展开的模型单价明细。三个页面使用范围内全部请求，图例可点击隐藏／恢复系列，自动刷新保留展开状态。
+## Extensions
 
-Errors 按归一化的错误签名聚合失败请求，签名可展开查看完整消息并筛选失败列表，模型支持交叉筛选；点击失败行打开原有请求详情。
+The linked guides below are in Chinese.
 
-各页表格、趋势线、柱状／堆叠图、Token／费用构成及会话时间线支持悬停详情；表格单元格和图表时间桶也可通过键盘聚焦查看，Esc 隐藏提示。详情保留完整数值、时间或路径，堆叠图展示当前可见系列及合计，零值时间桶也可查看；切换页面、滚动或刷新会关闭旧提示。
+| Extension | Location | Description |
+| --- | --- | --- |
+| [Project instructions](docs/guide.md#项目级-agentsmd) | `AGENTS.md` in the working directory | Refresh project rules before each model request |
+| [Skills](docs/guide.md#技能支持) | `~/.pp/agent/skills/` | Load `SKILL.md` on demand and manage skills with `/skills` |
+| [Prompt commands](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | Expand Markdown templates with `/command arguments` |
+| [MCP tools](docs/guide.md#mcp-工具) | `mcp_servers` in `settings.yml` | Connect to local stdio servers and discover tools |
 
-Traces 按会话展示请求数量、模型、失败数、Token 和费用，点击会话查看完整已记录会话的请求时间线；时间线色块与请求项均可点击展开，正文、思考、工具参数、原生输出及会话条目可继续逐项展开，支持全部展开／收起。请求详情的 Trace 链接可直接定位并展开对应请求。Errors 汇总覆盖范围内全部失败，Traces 列表指标覆盖范围内请求；两者默认加载最新 500 条失败／会话，可扩大为 2,000，搜索只作用于已加载列表。单个会话详情不受列表范围限制，自动刷新保留展开状态。无会话记录的请求独立展示，不合并为同一会话。Traces 仅使用统计库快照，不读取原始会话文件；用户输入、工具结果／耗时及子代理跨度未采集，页面不推算这些数据。Tools 和 Projects 提供独立统计页面（见下）；Frustration 和 Gain 暂为占位。支持明暗／系统主题、数字 1–6 切换范围、G 加导航字母跳转。页面每 5 秒刷新，点击 Live 立即刷新。
+## Development
 
-Tools 展示模型发出的工具调用数量、趋势、参数字符数及归属 Token／费用；工具行和模型行可逐层展开，最近调用请求可打开原有详情，也支持搜索、按工具筛选和图例开关。调用优先从已提交会话快照提取，缺失时回退到 Completion／Responses 原生输出，同一请求不重复计数。每次模型请求的 Token／费用均分到该请求发出的全部工具调用，仅表示归属估算，不是工具独立费用。失败／取消请求的已保存调用可能不完整或未执行；工具执行结果、错误率和耗时仍为未采集。
-
-Projects 按完整 cwd 聚合，保留同名不同路径的独立目录，展示费用／请求排行、搜索和排序；点击目录行或排行可展开 Token、会话计数、模型用量和范围内最近 10 条请求，模型行还可继续展开延迟和 Token 明细。两个页面的汇总覆盖范围内全部请求，自动刷新保留搜索、筛选及展开状态，行支持 Enter／空格展开；请求正文和工具参数原文只在原有请求详情中按需加载。
-
-统计口径：以请求开始时间筛选，UTC 毫秒落盘、本地时间展示；总输入 Token 已包含缓存读取和写入，Conversation tokens 为总输入加输出，Uncached input 为总输入减缓存读取和写入。缺失的 usage／缓存明细保持未知，不用估算值填充。TTFT 是发起调用至首个非空正文、思考、拒绝或工具参数增量的时间；Tokens/s 为输出 Token 除以请求总耗时。用户取消记为 Aborted，服务或协议错误记为 Failed；发送前取消和本地校验失败不计入。
-
-缓存写入从 Chat 的 `usage.prompt_tokens_details.cache_write_tokens`、Responses 的 `usage.input_tokens_details.cache_write_tokens` 采集，也兼容 usage 顶层的 `cache_write_tokens`／`cache_creation_input_tokens` 扩展；遵循这两种协议的总输入已包含缓存读写的口径，不额外叠加缓存 Token。不支持原生 Anthropic Messages 协议。未上报写入量保持未知，明确上报 `0` 才表示无写入。SQLite 自动升级到 v2，旧记录的写入量保留 NULL，不回填估算。Premium requests 和订阅额度没有采集数据，保持未知。
-
-费用直接使用 `~/.pp/agent/models.yml` 中各模型的 `cost` 配置，按调用时保存的 `model_reference`（`provider/model` 配置引用，并非供应商模型名）精确匹配。无需另建价格文件。`cost` 可省略，省略时该模型未定价；配置时 `input`、`cacheRead`、`output` 必填，新增 `cacheWrite` 可省略以兼容旧配置；所有已配置单价都必须为非负有限数，单位为 **USD／百万 Token**，`0` 表示已知免费。例如在 `providers.<provider_id>.models.<model_id>` 的模型条目中填写：
-
-```yaml
-model: vendor-model-one
-cost:
-  input: 2.0
-  cacheRead: 0.2
-  cacheWrite: 2.5
-  output: 8.0
-```
-
-费用公式为 `(总输入 - 缓存读取 - 缓存写入) × cost.input + 缓存读取 × cost.cacheRead + 缓存写入 × cost.cacheWrite + 输出 × cost.output`，最后除以一百万。每次统计查询重新读取模型配置，修改后历史估算按当前单价重算，不代表历史账单或订阅实际支出。缺少价格、完整 usage 或缓存读写数量，以及缓存读写之和超过总输入等异常的请求都计入 Unpriced 并从估算中排除；写入量大于 0 时必须配置 `cacheWrite`；明确为 0 时无需写入单价。旧数据写入量未知也计入 Unpriced。全未定价显示 `—`，混合数据只合计已定价部分并标示覆盖数量。空范围的费用为 `$0`。模型配置不存在时全部未定价；文件损坏、字段错误或无法读取时，页面提示问题并保留其余统计，不返回配置原文或密钥。统计服务仍可在没有模型配置时启动。Overview、Requests 及请求详情沿用相同计价规则。每日费用按 UTC 日聚合，Average per day 以有请求的 UTC 日数为分母。模型按完整配置引用分组，同名跨供应商或同供应商不同别名不会混在一起。
-
-数据库保存模型输出（含可获得的思考、工具参数）、请求指标和已提交的对应会话条目快照；不额外保存完整输入上下文、请求头或认证配置。摘要和未提交输出没有会话条目时明确显示未记录。统计文件可能包含代码和模型输出，应按个人会话数据保管；不会自动清理，可运行 `pp gc` 删除超过 90 天的记录。目录权限为 `0700`、数据库为 `0600`，SQLite 使用 WAL 支持多进程写入；存储不可用只提示，不中断模型任务。
-
-前端及 Inter 字体内嵌在二进制中，运行无需 Node 或 CDN；字体许可证见 `src/stats/fonts/LICENSE.txt`。只读接口为 `/api/stats/overview?range=24h`、`/api/stats/requests?range=24h&limit=500`、`/api/stats/models?range=24h`、`/api/stats/providers?range=24h`、`/api/stats/costs?range=24h`、`/api/stats/tools?range=24h`、`/api/stats/projects?range=24h`、`/api/stats/errors?range=24h&limit=500`、`/api/stats/traces?range=24h&limit=500`、`/api/stats/traces/{request_id}` 和 `/api/stats/requests/{id}`；详情正文按需加载，不在列表接口中返回。
-
-## 运行诊断日志
-
-除 `pp gc` 外，所有运行模式在参数解析后自动向 `~/.pp/logs/pp.yyyy-mm-dd.number.log` 追加 JSON Lines；`--help`、`--version` 和参数错误不创建日志。HOME 必须非空且为绝对路径。新目录权限 0700，新日志和固定 `.lock` 文件权限 0600，不改已有父目录权限；日志目录、锁和日志文件不接受符号链接，文件必须是普通文件。
-
-按本地日期和 **10 MiB（10 × 1024 × 1024 字节）**严格分卷，编号从 1 开始、按数字递增。重启继续追加当天未满的最大分卷；不同工作目录的进程通过同一 `.lock` 的短时阻塞 flock 协调完整事件的选卷和追加，不覆盖或截断已有日志。仅支持提供可靠 flock 语义的 macOS/Linux 本地文件系统；运行中不要手动替换 `.lock`。单事件超过上限时整条拒写，不截断 JSON。
-
-不会按时间自动删除日志；启动、写入、跨日和重启均保留旧日志，没有后台清理或总容量上限。需要释放空间时运行 `pp gc`，按文件名日期清理超过 90 天的普通日志文件，不使用 mtime，并跳过其他名称、符号链接和目录。
-
-诊断事件包括应用启停（pid、启动 cwd、prompt/line/tui 模式）、配置不可用、任务、Completion/Responses 请求和工具的开始/结束、受控状态及耗时。工具类别仅为 `ask`、`load_skill`、`read`、`grep`、`find`、`edit`、`write`、`bash`、`bash_task`，其他统一为 `external`。不记录 prompt、回答/思考、工具参数/结果/输出、工具文件路径、错误原文、配置、URL 或 API key；不启用依赖库日志，也不读取 `RUST_LOG`。这些运行诊断日志与下述包含完整交互的 session 文件相互独立。
-
-初始化失败，或退出时发现写入/轮转失败，仅在 stderr 输出一次固定 `warning: file logging unavailable`，不改变应用退出码；TUI 运行中不打印日志错误。事件同步交给操作系统，无后台队列，不逐条 fsync；强杀或断电不保证最后一条完整/持久化，也不保证存在 `app_stopped`。
-
-### Debug 日志
-
-在 `~/.pp/agent/settings.yml` 中设置 `debug: true` 后，启用以下两类独立的分段文本日志（不是 JSONL）；默认 `false`，省略字段或配置文件时均不开启，只接受布尔值，修改后重启生效。只启动程序、不发送模型请求不会创建这两类日志文件。
-
-- **`~/.pp/logs/prompt-debug.SESSION_ID`**：每个新 session 一个文件，仅记录首次普通模型请求的完整原生合成 prompt（`llm_first_prompt`），包括 system/instructions、初始用户输入、工具定义、模型参数，以及对应的 session ID。后续消息、工具轮次和切模型均不追加；`/new` 后的新 session 会生成另一个文件。重启后通过 `-r`、`-c` 或 TUI `/resume` 恢复同一 session，不覆盖、不追加，也不补录中途 prompt。请求发送并完成初始连接处理、session 持久化后写入，消费响应流之前完成；供应商拒绝请求时也保留初始 prompt，临时压缩摘要请求不记录。
-- **`~/.pp/logs/debug.yyyy-mm-dd.xxxx`**：保留其他调试信息，目前为每次普通请求前的 `harness_state` / `request_ready` 快照。包含 pid、session ID（首次持久化前为 null）、provider/model 引用、协议、cwd、思考级别、edit 模式、工具限制、当前任务请求序号/上限、历史项数和工具数；不再记录 prompt 正文、回答或工具内容。`xxxx` 是从 `0001` 开始的四位最小宽度分卷编号，不带 `.log` 后缀。
-
-Prompt 文本以事件名和时间戳为标题，按「请求参数 → 系统指令 → 对话消息／输入历史 → 工具定义」分区；Completion 与 Responses 均支持。正文用 `字段: |` 独立成块，原样保留换行、空行、代码缩进、引号和反斜杠，不折行、不截断；工具参数 schema 使用格式化 JSON，其他嵌套字段缩进展开，未知字段同样保留。
-
-两类日志沿用普通日志的文件权限和跨进程锁，均不自动删除，只有 `pp gc` 会按文件名中的本地日期清理超过 90 天的文件。`debug` 按本地日期及 10 MiB 整条事件分卷；`prompt-debug` 不分卷、不追加，单个 prompt 上限为 10 MiB，新 session 首次写入不会清理旧文件。单条超限整条拒写，不截断。初始化、序列化或写入失败时停止本次进程的 debug 与 prompt-debug 记录，向普通诊断日志写入固定 `debug_logging_unavailable` 事件，不中断任务、不向 TUI 打印日志错误。
-
-**`prompt-debug` 包含完整初始 prompt，可能含敏感源码或用户数据。** 不主动序列化配置、API key、HTTP 认证头或供应商错误体；但已进入 prompt 的敏感内容会原样记录。仅在需要排查时开启，分享日志前自行检查；普通 `pp.*.log` 的内容隔离规则不变。旧 `debug.*` 文件不会迁移或改写，可能仍含此前记录的 prompt。
-
-## 清理过期数据
+Tests use [cargo-nextest](https://nexte.st/docs/running/). Install it with `cargo install cargo-nextest --locked` if needed.
 
 ```sh
-pp gc
-```
-
-无需模型配置，手动清理超过 **90 天**的数据。输出分为 `Logs`（日志文件数）和 `SQLite requests`（请求记录数）两行，每行报告清理前总量 `total`、本次清理数量 `removed` 和本批次剩余数量 `remaining`（`total - removed`）。日志总量仅统计下述三类普通文件，不含 `.lock`、无关文件、目录或符号链接；SQLite 按请求计数，关联快照不重复计数。不存在的存储各项均显示 `0`。
-
-清理范围：
-
-- `~/.pp/logs/`：仅删除严格匹配 `pp.yyyy-mm-dd.number.log`、`debug.yyyy-mm-dd.xxxx`、`prompt-debug.SESSION_ID` 的过期普通文件，按文件名中的本地日期判断，不使用 mtime；保留截止日期当天和未来日期，跳过其他文件名、符号链接和目录。使用日志已有的 `.lock` 跨进程锁。
-- `~/.pp/stats/stats.db`：按请求开始时间（UTC 毫秒）删除早于执行时刻减 90 天的请求，在同一事务中先删除关联输出及会话条目快照，再删除请求；发生删除后执行 `VACUUM` 回收数据库空间。数据库或日志目录不存在时跳过，不创建空存储。
-
-不会删除 `~/.pp/agent/sessions/` 中的原始会话或任何配置。操作不可撤销；清理后统计页面不再包含这些请求。数据库写锁竞争或文件清理失败会返回非零退出码；数据库与日志清理不属于同一个事务，已完成的清理不会回滚。`gc` 与 `-p`、`--resume`、`--continue` 互斥。
-
-普通、debug 和 prompt-debug 日志均不自动删除；启动、写入和跨日只负责追加或分卷。仅显式运行 `pp gc` 时清理超过 **90 天**的数据，保留截止日期当天的日志。`pp gc` 不初始化运行诊断日志，不会为本次命令生成新日志或影响清理总量。
-
-## 开发与验证
-
-本地开发默认使用 [cargo-nextest](https://nexte.st/docs/running/)。未安装时先执行 `cargo install cargo-nextest --locked`，不回退到 `cargo test`。
-
-```sh
-cargo build --locked
 cargo nextest run --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-按修改范围选择定向回归：
+See [development and validation (Chinese)](docs/guide.md#开发与验证) for targeted regression commands and test coverage limits.
 
-```sh
-cargo nextest run --locked context_ --test-threads=1
-cargo nextest run --locked --test cli_agent streaming_ --success-output immediate
-cargo nextest run --locked --test cli_agent plan_ --test-threads=1
-cargo nextest run --locked --test cli_agent mcp_ --test-threads=1
-cargo nextest run --locked --test cli_agent background_ --test-threads=1
-cargo nextest run --locked --test cli_agent tui:: --test-threads=1
-```
+---
 
-其他常用筛选包括 `slash_`、`file_command_`、`model_switch`、`model_thinking`、`replace_`、`hashline_`、`stats_` 和 `project_instructions`。最近任务撤销可用 `changes_`、`undo_` 筛选相关用例。
-
-`.config/nextest.toml` 的默认 profile 使用 `fail-fast = false`、CPU 数并发和零重试。`--test-threads=1` 直接传给 nextest，不放在 `--` 后；`--success-output immediate` 显示成功输出而不强制串行。PTY／进程组／超时用例在并行压力下失败时，先串行复现，不通过增加 sleep、重试或放宽断言掩盖问题。
-
-单元测试覆盖配置、协议解析、原子保存和界面布局；`tests/cli_agent.rs` 及其子模块通过真实二进制、回环 HTTP SSE 服务、临时 HOME 与项目目录验证双协议工具循环、流式输出、会话恢复、Plan、MCP、后台进程、项目指令和安全撤销。Unix 下的 PTY 测试还检查输入、滚动、缩放、取消与终端恢复。测试不访问个人密钥或真实供应商；本地 fixture 通过不代表真实服务端兼容性。
-
-nextest 不运行 doctest；当前只有 binary target，新增 library target 后须另行运行 `cargo test --locked --doc`。
-
-## 参考
-
-[Pi](https://github.com/badlogic/pi-mono) · [工具循环](https://github.com/badlogic/pi-mono/blob/main/packages/agent/README.md) · [async-openai](https://github.com/64bit/async-openai)
-
-协议实现与限制见上方 HTTP 协议；不支持供应商专有扩展协议或直接互读上游 session 文件。
+Inspired by [Pi](https://github.com/badlogic/pi-mono), with model API support provided by [async-openai](https://github.com/64bit/async-openai).
