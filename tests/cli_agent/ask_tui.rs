@@ -63,20 +63,20 @@ fn tool_folding_ctrl_o_globally_toggles_during_ask_and_new_tools_inherit() {
                 && !text.contains("fold-first-19") && !text.contains("fold-second-19")
         });
         pty.input("\x1b[B ");
-        pty.wait_for("选择答案后保持面板", |screen| screen.contents().contains("⦿ Postgres"));
+        pty.wait_for("选择答案后保持面板", |screen| screen.contents().contains("󰐾 Postgres"));
         pty.input("\x0f");
         pty.wait_for("ask 焦点下全局展开", |screen| {
             let text = screen.contents();
             text.contains("fold-first-19") && text.contains("fold-second-19")
                 && text.contains("fold-bash-00") && !text.contains("to expand")
-                && text.contains("⦿ Postgres") && text.contains("保留草稿")
+                && text.contains("󰐾 Postgres") && text.contains("保留草稿")
         });
         pty.input("\x0f");
         pty.wait_for("ask 焦点下全局收起", |screen| {
             let text = screen.contents();
             text.matches("Ctrl + O to expand").count() == 3
                 && !text.contains("fold-first-19") && !text.contains("fold-second-19")
-                && !text.contains("fold-bash-00") && text.contains("⦿ Postgres")
+                && !text.contains("fold-bash-00") && text.contains("󰐾 Postgres")
         });
         pty.input("\x0f");
         pty.text("fold-first-19");
@@ -283,14 +283,14 @@ fn ask_tui_single_space_selects_without_sending_until_enter() {
         ask_wait_panel(&mut pty, "Which database should the project use?");
         pty.input(" ");
         pty.wait_for("空格选中单选但不提交", |screen| {
-            screen.contents().contains("⦿ SQLite (Recommended)")
+            screen.contents().contains("󰐾 SQLite (Recommended)")
                 && screen.contents().contains("Space select")
         });
         no_more(&server);
         pty.input("\x1b[B ");
         pty.wait_for("再次空格改选而不提交", |screen| {
-            screen.contents().contains("◯ SQLite (Recommended)")
-                && screen.contents().contains("⦿ Postgres")
+            screen.contents().contains("󰐽 SQLite (Recommended)")
+                && screen.contents().contains("󰐾 Postgres")
         });
         no_more(&server);
         pty.input("\r");
@@ -340,18 +340,18 @@ fn ask_tui_choice_descriptions_and_inline_editor_survive_resize() {
         assert!(!panel_text.contains("Database"), "面板不应重复显示题目标签");
         assert!(panel_text.contains("Shared database"));
         assert!(panel_text.contains("Embedded storage"));
-        assert!(screen.contents().contains("☐ PostgreSQL"), "推荐不自动勾选");
+        assert!(screen.contents().contains("󰄱 PostgreSQL"), "推荐不自动勾选");
     }
     pty.input(" \x1b[B");
     pty.wait_for("selection distinct from focus", |screen| {
-        screen.contents().contains("☑ PostgreSQL")
-            && screen.contents().contains("❯ ☐ SQLite")
+        screen.contents().contains("󰄲 PostgreSQL")
+            && screen.contents().contains("❯ 󰄱 SQLite")
     });
     pty.resize(30, 40);
     pty.wait_for("narrow choice layout", |screen| {
         screen.size().1 == 40
-            && screen.contents().contains("☑ PostgreSQL")
-            && screen.contents().contains("❯ ☐ SQLite")
+            && screen.contents().contains("󰄲 PostgreSQL")
+            && screen.contents().contains("❯ 󰄱 SQLite")
     });
     {
         let screen = pty.parser.screen();
@@ -361,7 +361,7 @@ fn ask_tui_choice_descriptions_and_inline_editor_survive_resize() {
     }
     pty.input("\x1b[F");
     pty.wait_for("last choice remains reachable", |screen| {
-        screen.contents().contains("❯ ☐ Other")
+        screen.contents().contains("❯ 󰄱 Other")
     });
     pty.resize(30, 100);
     pty.wait_for("返回宽屏后准备原位编辑", |screen| screen.size().1 == 100);
@@ -373,8 +373,8 @@ fn ask_tui_choice_descriptions_and_inline_editor_survive_resize() {
     ask_wait_editor(&mut pty);
     pty.wait_for("自定义选项原位编辑且其他选项仍可见", |screen| {
         let text = screen.contents();
-        text.contains("custom layout answer") && text.contains("☑ PostgreSQL")
-            && text.contains("☐ SQLite") && !text.contains("custom answer · write")
+        text.contains("custom layout answer") && text.contains("󰄲 PostgreSQL")
+            && text.contains("󰄱 SQLite") && !text.contains("custom answer · write")
     });
     {
         let screen = pty.parser.screen();
@@ -388,7 +388,7 @@ fn ask_tui_choice_descriptions_and_inline_editor_survive_resize() {
     pty.resize(30, 40);
     pty.wait_for("编辑中缩放仍保留其他选项和当前输入", |screen| {
         screen.size().1 == 40 && screen.contents().contains("custom layout answer")
-            && screen.contents().contains("☑ PostgreSQL")
+            && screen.contents().contains("󰄲 PostgreSQL")
     });
     pty.resize(30, 100);
     pty.input("\r");
@@ -425,7 +425,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         {
             let text = pty.parser.screen().contents();
             assert!(
-                text.contains("◯ SQLite (Recommended)") && text.contains("◯ Postgres"),
+                text.contains("󰐽 SQLite (Recommended)") && text.contains("󰐽 Postgres"),
                 "recommendation must be a display badge only\n{text}"
             );
             assert!(
@@ -441,9 +441,9 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         });
         // Q2：Space 只勾选，Enter 只前进。
         pty.input(" ");
-        pty.wait_for("unit checked", |screen| screen.contents().contains("☑ unit"));
+        pty.wait_for("unit checked", |screen| screen.contents().contains("󰄲 unit"));
         pty.input("\x1b[B ");
-        pty.wait_for("lint checked", |screen| screen.contents().contains("☑ lint"));
+        pty.wait_for("lint checked", |screen| screen.contents().contains("󰄲 lint"));
 
         // 短屏 resize 不清选集：紧凑模式（去边框）仍显示选中摘要。
         pty.resize(8, 40);
@@ -452,7 +452,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         });
         pty.resize(30, 100);
         pty.wait_for("resize keeps selections", |screen| {
-            screen.contents().contains("☑ lint")
+            screen.contents().contains("󰄲 lint")
         });
         pty.input("\r");
         ask_wait_review(&mut pty);
@@ -472,11 +472,11 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         {
             let text = pty.parser.screen().contents();
             assert!(
-                text.contains("⦿ Postgres") && text.contains("◯ SQLite (Recommended)"),
+                text.contains("󰐾 Postgres") && text.contains("󰐽 SQLite (Recommended)"),
                 "selection and focus must survive page switches\n{text}"
             );
             let screen = pty.parser.screen();
-            let (row, col) = ask_panel_find(screen, "⦿ Postgres");
+            let (row, col) = ask_panel_find(screen, "󰐾 Postgres");
             assert_eq!(screen.cell(row, col).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
         }
         pty.input("\t");
@@ -485,9 +485,9 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         });
         // 焦点仍在 lint：Space 先取消再重新勾选，提交前可以反复修改。
         pty.input(" ");
-        pty.wait_for("lint unchecked", |screen| screen.contents().contains("☐ lint"));
+        pty.wait_for("lint unchecked", |screen| screen.contents().contains("󰄱 lint"));
         pty.input(" ");
-        pty.wait_for("lint rechecked", |screen| screen.contents().contains("☑ lint"));
+        pty.wait_for("lint rechecked", |screen| screen.contents().contains("󰄲 lint"));
         pty.input("\r");
         ask_wait_review(&mut pty);
         pty.wait_for("review shows both checks again", |screen| {

@@ -869,11 +869,12 @@ fn menu_items(
 }
 
 fn selection_icon(multi: bool, selected: bool) -> &'static str {
+    // 使用同系列的大轮廓配对字形，避免选中后因字体回退而缩小。
     match (multi, selected) {
-        (true, true) => "☑",
-        (true, false) => "☐",
-        (false, true) => "⦿",
-        (false, false) => "◯",
+        (true, true) => "󰄲",
+        (true, false) => "󰄱",
+        (false, true) => "󰐾",
+        (false, false) => "󰐽",
     }
 }
 
@@ -1122,7 +1123,7 @@ mod tests {
         assert_eq!(panel.states[0].selected, [1]);
         assert!(!panel.submitted);
         let before = render(&mut panel, 100, 24);
-        assert!(before.contains("⦿ B (Recommended)"));
+        assert!(before.contains("󰐾 B (Recommended)"));
         assert!(!before.contains("details"));
         assert!(matches!(panel.key(ctrl('o')), Action::None));
         assert_eq!(render(&mut panel, 100, 24), before);
@@ -1163,7 +1164,7 @@ mod tests {
         let mut panel = panel(vec![q]);
         for (width, height) in [(40, 24), (24, 12), (40, 24)] {
             let screen = render(&mut panel, width, height);
-            assert!(screen.contains("◯ A"), "应显示选项：{screen}");
+            assert!(screen.contains("󰐽 A"), "应显示选项：{screen}");
             assert!(!screen.contains("Choose for q?"));
             if width >= 40 {
                 assert!(screen.contains("Option description"));
@@ -1173,7 +1174,7 @@ mod tests {
         }
         panel.key(key(KeyCode::Char(' ')));
         let screen = render(&mut panel, 40, 24);
-        assert!(screen.contains("⦿ A"));
+        assert!(screen.contains("󰐾 A"));
     }
 
     #[test]
@@ -1226,8 +1227,8 @@ mod tests {
             }
             let screen = render(&mut panel, 80, 24);
             assert_eq!(panel.overlay, before, "进入 Other 不应改变外框位置和高度");
-            assert!(screen.contains("◯ SQLite"));
-            assert!(screen.contains("◯ answer"));
+            assert!(screen.contains("󰐽 SQLite"));
+            assert!(screen.contains("󰐽 answer"));
             assert!(!screen.contains("custom answer"));
             panel.key(ctrl('j'));
             panel.paste("second line");
@@ -1259,7 +1260,7 @@ mod tests {
         assert!(!screen.contains("Commit confirmation"));
         let rows: Vec<_> = screen.lines().collect();
         let title = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
-        assert!(rows[title + 1].contains("◯ yes"), "标题下方应直接显示选项");
+        assert!(rows[title + 1].contains("󰐽 yes"), "标题下方应直接显示选项");
     }
 
     #[test]
