@@ -350,7 +350,7 @@ TUI 输入 `/skills` 打开全局管理面板，顶部依次显示 `Sources`（�
 
 行模式支持 `/skills` 查看来源与技能列表，`/skills enable 名称`、`/skills disable 名称` 逐项启停；`/skills sources` 查看来源，`/skills sources enable claude`、`/skills sources enable codex` 开启继承，`/skills sources disable claude` 或 `codex` 关闭继承。TUI 也支持这些参数；`/skills sources` 直接打开来源页。命令仅本地管理，不发送模型请求。
 
-模型只收到已启用 skill 的名称与说明；通过 `load_skill({"name":"rust"})` 按需读取全文，结果包含 `content`、`path` 和资源基准 `base_dir`。加载工具只接受已发现且启用的名称，不会执行 skill 内的脚本。TUI 用品红色完整边框显示加载过程，左上角加粗标题为 `skill · 名称`，并显示来源及成功／失败状态。正文默认隐藏，Ctrl + O 全局展开／折叠工具输出；模型接收全文，退出回放也保留全文。
+模型只收到已启用 skill 的名称与说明；技能提示词参考 [oh-my-pi](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/prompts/system/system-prompt.md)，使用 `<skills>` 列表，并明确要求匹配任务的技能必须先加载。pp 通过 `load_skill({"name":"rust"})` 按需读取全文，结果包含 `content`、`path` 和资源基准 `base_dir`；加载仍由模型发起，不按语言自动注入正文。加载工具只接受已发现且启用的名称，不会执行 skill 内的脚本。TUI 用品红色完整边框显示加载过程，左上角加粗标题为 `skill · 名称`，并显示来源及成功／失败状态。正文默认隐藏，Ctrl + O 全局展开／折叠工具输出；模型接收全文，退出回放也保留全文。
 
 启停和重扫对后续请求生效，跨模型及协议切换保留。已加载的内容仍在当前会话历史中，`/new` 清除会话历史并保留全局启用选择。配置不会被其他运行实例自动刷新，需要重扫或重启。skill 加载日志写入 stderr，行模式 stdout 仍只有助手输出。
 
