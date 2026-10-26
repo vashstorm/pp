@@ -158,8 +158,10 @@ The linked guides below are in Chinese.
 ## Development
 
 Tests use [cargo-nextest](https://nexte.st/docs/running/). Install it with `cargo install cargo-nextest --locked` if needed.
+For local changes, select the relevant tests first; the full suite runs in parallel by default. Use `--test-threads=1` only to investigate specific failures.
 
 ```sh
+cargo nextest run --locked context_
 cargo nextest run --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --check

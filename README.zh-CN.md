@@ -155,8 +155,10 @@ pp stats
 ## 开发
 
 测试使用 [cargo-nextest](https://nexte.st/docs/running/)；未安装时先执行 `cargo install cargo-nextest --locked`。
+日常修改先运行相关定向测试，全量测试默认并行；`--test-threads=1` 仅用于排查具体失败用例。
 
 ```sh
+cargo nextest run --locked context_
 cargo nextest run --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --check

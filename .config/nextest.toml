@@ -1,3 +1,6 @@
 [profile.default]
-# Collect failures across unit and integration tests instead of stopping early.
+# 保留并行执行；串行参数仅用于定向排查失败用例。
+test-threads = "num-cpus"
+retries = 0
+# 收集全部单元与集成测试失败，不提前停止。
 fail-fast = false

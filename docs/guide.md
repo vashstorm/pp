@@ -379,7 +379,7 @@ mcp_servers:
 MCP 服务按当前用户权限执行，能够访问工作目录之外的资源。服务 stderr 被丢弃，协议错误不输出原始响应体、命令参数或环境变量；成功的工具结果按数据展示和回填模型，服务应自行避免在结果中返回凭证。
 
 ```sh
-cargo nextest run --locked --test cli_agent mcp_ --test-threads=1
+cargo nextest run --locked mcp_
 ```
 
 ## 上下文用量与压缩
@@ -608,20 +608,26 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-按修改范围选择定向回归：
+日常修改优先按范围选择定向回归，默认并行；纯文档或注释修改无需运行 Rust 测试。以下命令按任务择一或合并筛选，不要求每次全部执行：
 
 ```sh
-cargo nextest run --locked context_ --test-threads=1
+cargo nextest run --locked context_
 cargo nextest run --locked --test cli_agent streaming_ --success-output immediate
-cargo nextest run --locked --test cli_agent plan_ --test-threads=1
-cargo nextest run --locked --test cli_agent mcp_ --test-threads=1
-cargo nextest run --locked --test cli_agent background_ --test-threads=1
-cargo nextest run --locked --test cli_agent tui:: --test-threads=1
+cargo nextest run --locked plan_
+cargo nextest run --locked mcp_
+cargo nextest run --locked background_
+cargo nextest run --locked --test cli_agent tui::
+cargo nextest run --locked -E 'test(llm::) | test(streaming_)'
+cargo nextest run --locked -E 'test(tui::markdown::) | test(tui::transcript::)'
 ```
 
 其他常用筛选包括 `slash_`、`file_command_`、`model_switch`、`model_thinking`、`replace_`、`hashline_`、`stats_` 和 `project_instructions`。最近任务撤销可用 `changes_`、`undo_` 筛选相关用例。
 
-`.config/nextest.toml` 的默认 profile 使用 `fail-fast = false`、CPU 数并发和零重试。`--test-threads=1` 直接传给 nextest，不放在 `--` 后；`--success-output immediate` 显示成功输出而不强制串行。PTY／进程组／超时用例在并行压力下失败时，先串行复现，不通过增加 sleep、重试或放宽断言掩盖问题。
+筛选应覆盖受影响的单元测试和集成测试；`--test cli_agent` 只运行集成测试，适合验证 CLI 行为，不能替代相关单元测试。不确定匹配范围时先运行 `cargo nextest list --locked -E '…'`；筛选结果为空不算验证通过。多个相关范围可用 `-E 'test(pattern_a) | test(pattern_b)'` 一次运行。
+
+配置／持久化／协议边界等跨模块改动、依赖更新、公共测试设施改动或明确要求完整验证时，运行一次 `cargo nextest run --locked`。局部验证通过且没有新改动或新疑点后，无需重复全量测试、build 或 clippy；报告实际验证范围即可。
+
+`.config/nextest.toml` 的默认 profile 显式使用 `test-threads = "num-cpus"`、`retries = 0` 和 `fail-fast = false`。不要把全量串行测试作为任务默认收尾。PTY／进程组／超时用例实际失败时，才对失败用例或对应小集合加 `--test-threads=1` 判断是否受并行压力影响；参数直接传给 nextest，不放在 `--` 后。`--success-output immediate` 显示成功输出而不强制串行。不通过增加 sleep、重试或放宽断言掩盖问题。
 
 单元测试覆盖配置、协议解析、原子保存和界面布局；`tests/cli_agent.rs` 及其子模块通过真实二进制、回环 HTTP SSE 服务、临时 HOME 与项目目录验证双协议工具循环、流式输出、会话恢复、Plan、MCP、后台进程、项目指令和安全撤销。Unix 下的 PTY 测试还检查输入、滚动、缩放、取消与终端恢复。测试不访问个人密钥或真实供应商；本地 fixture 通过不代表真实服务端兼容性。
 
