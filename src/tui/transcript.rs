@@ -855,6 +855,7 @@ struct TreeLayout {
 #[derive(Default)]
 pub(super) struct Transcript {
     entries: Vec<TranscriptEntry>,
+    read_groups_key: Option<(usize, bool, bool)>,
     // 状态独立于历史条目，始终渲染在最新消息后面。
     activity: Option<Activity>,
     assistant: Option<usize>,
@@ -909,6 +910,7 @@ impl Transcript {
             "Assistant" => (EntryKind::Assistant, String::new()),
             _ => (EntryKind::Data, label.into()),
         };
+        self.read_groups_key = None;
         self.entries
             .push(TranscriptEntry::new(kind, title, text.into(), None));
     }
@@ -917,6 +919,7 @@ impl Transcript {
         let mut entry =
             TranscriptEntry::new(EntryKind::Data, String::new(), crate::tips::text(), None);
         entry.body = EntryBody::Tips;
+        self.read_groups_key = None;
         self.entries.push(entry);
     }
 
@@ -1012,6 +1015,7 @@ impl Transcript {
     ) -> Range<usize> {
         let start = self.entries.len();
         self.replay(records, &mut Vec::new());
+        self.read_groups_key = None;
         // 树预览使用完整展示，不受交互预览配置或额度影响。
         for entry in &mut self.entries[start..] {
             entry.display.full = true;
@@ -1137,6 +1141,7 @@ impl Transcript {
                     entry.text.push_str(&text);
                     entry.layout = None;
                 } else {
+                    self.read_groups_key = None;
                     self.thinking = Some(self.entries.len());
                     self.entries.push(TranscriptEntry::new(
                         EntryKind::Think,
@@ -1163,6 +1168,7 @@ impl Transcript {
             AgentEvent::AssistantFinished { text } => {
                 if text.trim().is_empty() {
                     if let Some(index) = self.assistant.take() {
+                        self.read_groups_key = None;
                         self.entries.remove(index);
                     }
                 } else {
@@ -1260,6 +1266,7 @@ impl Transcript {
                     entry.body = EntryBody::Ask(AskBlock::new(args));
                 }
                 entry.status = EntryStatus::Running;
+                self.read_groups_key = None;
                 self.running_tools.push((id, self.entries.len()));
                 self.entries.push(entry);
             }
@@ -1281,6 +1288,9 @@ impl Transcript {
                     }
                     entry.layout = None;
                     entry.display_title = None;
+                    if entry.tool.as_deref() == Some("read") {
+                        self.read_groups_key = None;
+                    }
                 }
             }
             AgentEvent::ToolFinished { id, result } => {
@@ -1348,6 +1358,9 @@ impl Transcript {
                     }
                     entry.layout = None;
                     entry.display_title = None;
+                    if entry.tool.as_deref() == Some("read") {
+                        self.read_groups_key = None;
+                    }
                     entry.result = Some(result);
                 }
             }
@@ -1362,6 +1375,7 @@ impl Transcript {
         let mut entry =
             TranscriptEntry::new(EntryKind::Assistant, String::new(), String::new(), None);
         entry.status = EntryStatus::Running;
+        self.read_groups_key = None;
         self.entries.push(entry);
         self.assistant = Some(index);
         index
@@ -1388,6 +1402,7 @@ impl Transcript {
             self.entries[index].layout = None;
         }
         for (_, index) in self.running_tools.drain(..) {
+            self.read_groups_key = None;
             self.entries[index].status = EntryStatus::Failed;
             if self.entries[index].kind == EntryKind::Bash {
                 self.entries[index].footer = "⟨failed⟩".into();
@@ -1660,6 +1675,14 @@ impl Transcript {
     }
 
     fn prepare_read_groups(&mut self) {
+        let key = (
+            self.entries.len(),
+            self.display.full,
+            self.display.read_preview,
+        );
+        if self.read_groups_key == Some(key) {
+            return;
+        }
         let mut index = 0;
         while index < self.entries.len() {
             if self.entries[index].tool.as_deref() != Some("read") {
@@ -1711,6 +1734,7 @@ impl Transcript {
             }
             index = end;
         }
+        self.read_groups_key = Some(key);
     }
 
     fn render(&self, buffer: &mut Buffer, area: Rect, skip: usize) {
@@ -2286,6 +2310,77 @@ mod tests {
             EntryStatus::Failed
         );
         assert!(entry_text(transcript.entries.last_mut().unwrap(), 100).contains("to expand"));
+    }
+
+    #[test]
+    fn read_group_cache_refreshes_status_and_failure_boundaries() {
+        let mut transcript = Transcript::new();
+        for id in ["one", "two", "three"] {
+            tool(&mut transcript, id, "read", json!({"path":id,"offset":20}));
+        }
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(
+            text.contains("Read (3)") && text.contains("three:20 · running"),
+            "{text}"
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "one".into(),
+            result: json!({"ok":true,"content":"one-body","lines_read":2}),
+        });
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(
+            text.contains("Read (3)") && text.contains("one:20-21 · ok"),
+            "{text}"
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "two".into(),
+            result: json!({"ok":false,"error":"second read failure"}),
+        });
+        let text = screen(&render(&mut transcript, 100, 30));
+        for expected in [
+            "one:20-21 · ok",
+            "two:20 · failed",
+            "second read failure",
+            "three:20 · running",
+        ] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+        assert!(!text.contains("Read ("), "{text}");
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "three".into(),
+            result: json!({"ok":true,"content":"three-body","lines_read":3,"truncated":true}),
+        });
+        let text = screen(&render(&mut transcript, 100, 30));
+        for expected in [
+            "one:20-21 · ok",
+            "second read failure",
+            "three:20-22 · ok · truncated",
+        ] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+        assert!(!text.contains("Read ("), "{text}");
+
+        let mut transcript = Transcript::new();
+        for id in ["first", "second"] {
+            tool(&mut transcript, id, "read", json!({"path":id}));
+            transcript.progress(AgentEvent::ToolOutput {
+                id: id.into(),
+                stream: OutputStream::Stdout,
+                text: format!("{id}-partial-output"),
+            });
+        }
+        assert!(screen(&render(&mut transcript, 100, 30)).contains("Read (2)"));
+        transcript.fail();
+        let text = screen(&render(&mut transcript, 100, 30));
+        for expected in [
+            "first · failed",
+            "second · failed",
+            "first-partial-output",
+            "second-partial-output",
+        ] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+        assert!(!text.contains("Read ("), "{text}");
     }
 
     #[test]

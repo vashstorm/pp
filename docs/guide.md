@@ -199,7 +199,7 @@ chmod 600 ~/.pp/agent/models.yml
 
 ### 工具输出折叠
 
-显示规则以 [Oh My Pi 0b5c27ab 的 ANSI 路径](https://github.com/can1357/oh-my-pi/tree/0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0/packages/tui/src/tools) 为基准。read 摘要由 TUI 使用现有调用／结果在本地生成，不请求模型，也不读取文件；连续成功 read 合并为 `Read (N)` 路径／范围列表，其他可见内容结束分组。失败原因始终显示。
+显示规则以 [Oh My Pi 0b5c27ab 的 ANSI 路径](https://github.com/can1357/oh-my-pi/tree/0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0/packages/tui/src/tools) 为基准。read 摘要由 TUI 使用现有调用／结果在本地生成，不请求模型，也不读取文件；连续成功 read 合并为 `Read (N)` 路径／范围列表，其他可见内容结束分组。失败原因始终显示。read 分组准备结果仅在条目增删、read 内容／状态或完整展示／预览配置改变时重建；输入草稿、计时和窗口宽度变化复用分组标题，宽度变化仍重新排版，整体布局遍历仍为 O(entries)。
 
 | 工具 | 折叠预览 | 展开 |
 |---|---|---|
