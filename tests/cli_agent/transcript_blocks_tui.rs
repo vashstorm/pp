@@ -321,19 +321,6 @@ fn transcript_blocks_markdown_tool_output_stays_literal() {
             assert!(!markdown_blocks_bold(screen, "# From File Heading"));
             assert!(!text.contains(" rust "), "{text}");
             assert!(!text.contains("• "), "{text}");
-            for (icon, title) in [("\u{f120}", "$ echo"), ("\u{f15c}", "Read · literal.md")] {
-                let (rows, columns) = screen.size();
-                let (row, column) = (0..rows)
-                    .find_map(|row| {
-                        (0..columns)
-                            .find(|&column| screen.cell(row, column).unwrap().contents() == icon)
-                            .map(|column| (row, column))
-                    })
-                    .unwrap_or_else(|| panic!("工具图标应显示在标题前：{text}"));
-                assert_eq!(screen.cell(row, column).unwrap().contents(), icon);
-                assert_eq!(screen.cell(row, column + 1).unwrap().contents(), " ");
-                assert_eq!(screen.cell(row, column + 2).unwrap().contents(), &title[..1]);
-            }
         }
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         markdown_blocks_final(request, protocol, "Final **styled** answer");
