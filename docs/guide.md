@@ -687,6 +687,14 @@ pp gc
 
 ## 开发与验证
 
+### read 模块分层
+
+`src/tools/read.rs` 保留统一入口、同步 `Read` trait、`ReadContext` 和结果类型。trait 使用关联类型 `Input`，`src/tools/read/` 下的 `FileReader`、`ImageReader`、`UrlReader` 分别接收本地文件目标、来源与图片字节、URL 目标。文件和 URL 读取识别图片后都移交同一个 `ImageReader`，通过移动字节缓冲区复用图片校验与编码，不复制完整图片。
+
+`selector` 模块统一解析真实文件名、范围、尾部读取和 raw，`text` 模块共享基于 `BufRead` 的完整行分页、续读路径与 hashline 格式化，本地文件打开由 `file` 模块负责；`url` 模块持有网页转换与会话缓存。`ReadContext` 借用当前工作目录、限制、编辑模式、取消令牌、缓存和 fetch 回调，HTTP 请求继续复用 `OpenAiClient` 内已有的同步可取消边界，不在 reader 内创建运行时。新增读取类型时增加 trait 实现并接入相应分派，继续返回现有 JSON 与图片附件；工具权限检查仍由 `Tools` 在分派前执行。
+
+### 验证命令
+
 本地开发默认使用 [cargo-nextest](https://nexte.st/docs/running/)。未安装时先执行 `cargo install cargo-nextest --locked`，不回退到 `cargo test`。
 
 ```sh
@@ -707,6 +715,7 @@ cargo nextest run --locked background_
 cargo nextest run --locked --test cli_agent tui::
 cargo nextest run --locked -E 'test(llm::) | test(streaming_)'
 cargo nextest run --locked -E 'test(tui::markdown::) | test(tui::transcript::)'
+cargo nextest run --locked -E 'test(tools::read::) | test(read_pagination_) | test(read_http_) | test(read_files_images_web_) | test(read_image_)'
 ```
 
 其他常用筛选包括 `slash_`、`file_command_`、`model_switch`、`model_thinking`、`replace_`、`hashline_`、`stats_` 和 `project_instructions`。最近任务撤销可用 `changes_`、`undo_` 筛选相关用例。
