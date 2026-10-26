@@ -526,7 +526,7 @@ impl Client {
                 cancellation,
             )?;
             loop {
-                let message = self.receive(deadline, cancellation)?;
+                let mut message = self.receive(deadline, cancellation)?;
                 ensure!(message["jsonrpc"] == "2.0", "invalid MCP JSON-RPC message");
                 if let Some(method) = message.get("method") {
                     ensure!(
@@ -562,7 +562,7 @@ impl Client {
                     return Ok(Err(anyhow::anyhow!("MCP request failed")));
                 }
                 ensure!(message["result"].is_object(), "invalid MCP result");
-                return Ok(Ok(message["result"].clone()));
+                return Ok(Ok(message["result"].take()));
             }
         })();
         match response {

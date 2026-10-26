@@ -372,7 +372,7 @@ mcp_servers:
 
 连接时按照 [MCP 初始化流程](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) 完成版本协商和 `notifications/initialized`，再分页调用 `tools/list`。支持协议版本 `2025-11-25`、`2025-06-18`、`2025-03-26` 和 `2024-11-05`。本次实现仅支持 stdio 工具发现及 `tools/call`，不支持远程 HTTP、resources、prompts、sampling、elicitation 或运行中更新工具列表；服务端 ping 会正常响应，其他服务端请求返回不支持的方法错误。
 
-工具名通常为 `mcp__服务名__工具名`，例如 `mcp__local__search`；包含特殊字符或组合名超过 64 字节时，工具部分替换为确定性的 `tool_<hash>`，调用时仍发送原始名称。重名会拒绝启动。MCP 的输入 schema 原样传给模型（`strict: false`），两种模型协议均支持调用，CLI/TUI 使用现有工具事件显示状态。结果保留 `content` 和 `structuredContent` 等字段，包装为 `{"ok":true,"result":{...}}`；`isError:true` 转为 `ok:false`，同批工具仍按顺序继续执行。
+工具名通常为 `mcp__服务名__工具名`，例如 `mcp__local__search`；包含特殊字符或组合名超过 64 字节时，工具部分替换为确定性的 `tool_<hash>`，调用时仍发送原始名称。重名会拒绝启动。MCP 的输入 schema 原样传给模型（`strict: false`），两种模型协议均支持调用，CLI/TUI 使用现有工具事件显示状态。结果保留 `content` 和 `structuredContent` 等字段，包装为 `{"ok":true,"result":{...}}`；`isError:true` 转为 `ok:false`，同批工具仍按顺序继续执行。成功响应在完成 JSON-RPC envelope、ID、result/error 互斥和 object 校验后移出已拥有的 result，不再深拷贝结果子树；协议校验与 1 MiB 消息上限不变。
 
 初始化或发现失败时，当前配置的模型任务不可用；不完整连接会清理。每次请求的读写共享同一截止时间，通知不会延长超时；传输故障后关闭连接，后续调用返回错误，不自动重连或重试。TUI 主动取消会停止并回收当前 MCP 服务进程组，下一任务真正调用该服务时才使用同一启动配置重新初始化和发现；不重放旧调用。完整工具集合（名称、描述与 schema）必须不变，定义变化或普通重建失败会拒绝该服务直到重启 pp，其他服务与本地工具不受影响。普通超时／EOF／协议故障仍不自动重连。服务进程在会话中复用，`/model`、`/new` 不重启；恢复保存的会话时按当前全局配置重新连接和发现工具，不恢复旧凭证或过期工具定义。正常退出、TUI 的 Ctrl + C 退出及连接故障时清理服务进程组。最多连接 32 个服务、发现 256 个工具，单条协议消息最多 1 MiB。
 
