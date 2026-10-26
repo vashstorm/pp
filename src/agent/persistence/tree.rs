@@ -519,6 +519,7 @@ mod tests {
             edit_mode: EditMode::Replace,
             tool_limits: ToolLimits::default(),
             base_system: "system",
+            prompt_source: None,
         }
     }
 
@@ -886,6 +887,7 @@ mod tests {
                 edit_mode: EditMode::Replace,
                 tool_limits: ToolLimits::default(),
                 base_system: "system",
+                prompt_source: None,
             };
             let mut journal = SessionJournal::new(dir.path().into());
             let mut session =
@@ -979,6 +981,7 @@ mod tests {
                 edit_mode: EditMode::Replace,
                 tool_limits: ToolLimits::default(),
                 base_system: "system",
+                prompt_source: None,
             };
             let mut journal = SessionJournal::new(dir.path().into());
             let mut session =

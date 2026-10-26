@@ -11,14 +11,23 @@ pub(crate) const INIT_PROMPT: &str = "Create or update AGENTS.md in the startup 
 
 pub(crate) fn load(cwd: &Path) -> Result<String> {
     let path = cwd.join("AGENTS.md");
+    let mut content = read_file(&path)?.unwrap_or_default();
+    if content.trim().is_empty() {
+        content.clear();
+    }
+    Ok(content)
+}
+
+/// 读取普通 UTF-8 指令文件；缺失与空正文分开表示，保留显式空覆盖。
+pub(crate) fn read_file(path: &Path) -> Result<Option<String>> {
     // 禁止跟随符号链接；非阻塞打开使 FIFO 等特殊文件不会卡住 worker。
     let fd = match fs::open(
-        &path,
+        path,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
         Mode::empty(),
     ) {
         Ok(fd) => fd,
-        Err(Errno::NOENT) => return Ok(String::new()),
+        Err(Errno::NOENT) => return Ok(None),
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("loading {} (symlinks are forbidden)", path.display()));
@@ -27,17 +36,15 @@ pub(crate) fn load(cwd: &Path) -> Result<String> {
     let mut file = File::from(fd);
     ensure!(
         file.metadata()
-            .context("reading AGENTS.md metadata")?
+            .with_context(|| format!("reading {} metadata", path.display()))?
             .is_file(),
-        "AGENTS.md must be a regular file"
+        "{} must be a regular file",
+        path.display()
     );
     let mut content = String::new();
     file.read_to_string(&mut content)
         .with_context(|| format!("reading {} as UTF-8", path.display()))?;
-    if content.trim().is_empty() {
-        content.clear();
-    }
-    Ok(content)
+    Ok(Some(content))
 }
 
 pub(crate) fn compose(base: &str, cwd: &Path, project: &str, skills: &str) -> String {

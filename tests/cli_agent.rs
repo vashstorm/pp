@@ -6288,6 +6288,8 @@ mod context;
 mod project_instructions;
 #[path = "cli_agent/streaming.rs"]
 mod streaming;
+#[path = "cli_agent/system_prompt.rs"]
+mod system_prompt;
 #[path = "cli_agent/think.rs"]
 mod think;
 

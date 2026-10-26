@@ -160,6 +160,13 @@ pub(crate) fn validate_title(title: &str) -> Result<()> {
 }
 
 impl WorkflowState {
+    pub(crate) fn mode_name(&self) -> &'static str {
+        match self.mode {
+            WorkMode::Execute => "execute",
+            WorkMode::Plan => "plan",
+        }
+    }
+
     pub(crate) fn instructions(&self) -> String {
         let mut instructions = match self.mode {
             WorkMode::Plan => PLAN_INSTRUCTIONS.to_owned(),

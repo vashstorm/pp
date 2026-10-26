@@ -14,6 +14,7 @@ mod project_instructions;
 mod shortcuts;
 mod skills;
 mod stats;
+mod system_prompt;
 mod tips;
 mod tools;
 mod tui;
@@ -46,6 +47,18 @@ struct Args {
     /// Run one complete task and exit; omit for an interactive session
     #[arg(short, long)]
     prompt: Option<String>,
+
+    /// 替换基础系统指令，参数可为正文或文件路径
+    #[arg(long, value_name = "TEXT_OR_FILE", conflicts_with_all = ["system_prompt_template", "resume", "continue_session"])]
+    system_prompt: Option<String>,
+
+    /// 从文件读取 Handlebars 基础系统指令模板
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["resume", "continue_session"])]
+    system_prompt_template: Option<String>,
+
+    /// 追加系统指令，参数可为正文或文件路径
+    #[arg(long, value_name = "TEXT_OR_FILE", conflicts_with_all = ["resume", "continue_session"])]
+    append_system_prompt: Option<String>,
 
     /// Resume a saved session by exact ID and wait for input
     #[arg(
@@ -225,6 +238,24 @@ fn run(args: Args) -> Result<()> {
         }
         None => std::env::current_dir().context("capturing startup working directory")?,
     };
+    // 提示词错误必须在交互兜底之前返回，不能静默禁用或替换用户设定。
+    let prompt_source = if restored.is_none() {
+        global_dir
+            .as_ref()
+            .ok()
+            .map(|dir| {
+                system_prompt::Snapshot::discover(
+                    &cwd,
+                    dir,
+                    args.system_prompt.as_deref(),
+                    args.system_prompt_template.as_deref(),
+                    args.append_system_prompt.as_deref(),
+                )
+            })
+            .transpose()?
+    } else {
+        None
+    };
     let skills = match &global_dir {
         Ok(dir) => skills::Skills::from_dir(dir),
         Err(error) => {
@@ -251,10 +282,22 @@ fn run(args: Args) -> Result<()> {
                 .and_then(|catalog| {
                     let mut tools = tools::Tools::new(cwd.clone(), catalog.edit_mode())?;
                     tools.skills = skills.clone();
-                    agent::Agent::new(catalog, tools, dir.join("sessions"))
+                    agent::Agent::new_with_prompt(
+                        catalog,
+                        tools,
+                        dir.join("sessions"),
+                        prompt_source.expect("global directory resolved"),
+                    )
                 })
         }),
     };
+    if agent
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.is::<system_prompt::PromptFailure>())
+    {
+        return agent.map(|_| ());
+    }
     if agent.is_err() {
         tracing::warn!(
             event = "configuration_unavailable",

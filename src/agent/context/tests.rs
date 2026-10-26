@@ -899,6 +899,7 @@ fn context_responses_retention_rejects_invalid_history() {
 #[test]
 fn context_automatic_candidate_must_shrink_and_be_strictly_below_threshold() {
     let mut spec = SummarySpec {
+        system: None,
         cutoff: 0,
         instruction: "",
         output_limit: 0,

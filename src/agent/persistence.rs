@@ -62,6 +62,7 @@ pub(super) struct Checkpoint {
     pub(super) edit_mode: EditMode,
     pub(super) tool_limits: ToolLimits,
     pub(super) base_system: String,
+    pub(super) prompt_source: Option<crate::system_prompt::Snapshot>,
     pub(super) session: Session,
     pub(super) workflow: WorkflowState,
 }
@@ -101,6 +102,7 @@ pub(super) struct Metadata<'a> {
     pub(super) edit_mode: EditMode,
     pub(super) tool_limits: ToolLimits,
     pub(super) base_system: &'a str,
+    pub(super) prompt_source: Option<&'a crate::system_prompt::Snapshot>,
 }
 
 struct Active {
@@ -1199,6 +1201,7 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
                         edit_mode: state.edit_mode,
                         tool_limits: state.tool_limits,
                         base_system: state.base_system,
+                        prompt_source: state.prompt_source,
                         session: state.session,
                         workflow: state.workflow,
                     };
@@ -1375,6 +1378,9 @@ fn validate_checkpoint(saved: &Checkpoint, id: &str) -> Result<()> {
     );
     saved.tool_limits.validate()?;
     saved.workflow.validate()?;
+    if let Some(source) = &saved.prompt_source {
+        source.validate()?;
+    }
     match &saved.session {
         Session::Completion(request) => {
             ensure!(!request.model.is_empty(), "missing native model");
@@ -1673,6 +1679,7 @@ mod tests {
                 edit_mode: EditMode::Replace,
                 tool_limits: ToolLimits::default(),
                 base_system: "system",
+                prompt_source: None,
             };
             let mut journal = SessionJournal::new(dir.path().to_owned());
             journal
@@ -1729,6 +1736,7 @@ mod tests {
                 edit_mode: EditMode::Replace,
                 tool_limits: ToolLimits::default(),
                 base_system: "system",
+                prompt_source: None,
             };
             let mut journal = SessionJournal::new(dir.path().to_owned());
             journal
@@ -1865,6 +1873,7 @@ mod tests {
                 edit_mode: agent.tools.edit_mode(),
                 tool_limits: agent.tools.limits,
                 base_system: &agent.base_system,
+                prompt_source: agent.prompt_source.as_ref(),
             };
             agent
                 .journal
@@ -1982,6 +1991,7 @@ mod tests {
                 edit_mode: agent.tools.edit_mode(),
                 tool_limits: agent.tools.limits,
                 base_system: &agent.base_system,
+                prompt_source: agent.prompt_source.as_ref(),
             };
             agent
                 .journal
@@ -2064,6 +2074,7 @@ mod tests {
             edit_mode: EditMode::Replace,
             tool_limits: ToolLimits::default(),
             base_system: "system",
+            prompt_source: None,
         };
         let mut journal = SessionJournal::new(blocked.clone());
         let error = journal
@@ -2098,6 +2109,7 @@ mod tests {
             edit_mode: EditMode::Replace,
             tool_limits: ToolLimits::default(),
             base_system: "system",
+            prompt_source: None,
         };
         let mut journal = SessionJournal::new(dir.path().to_owned());
         journal
@@ -2158,6 +2170,7 @@ mod tests {
             edit_mode: EditMode::Replace,
             tool_limits: ToolLimits::default(),
             base_system: "system",
+            prompt_source: None,
         }
     }
 

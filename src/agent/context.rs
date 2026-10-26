@@ -326,6 +326,7 @@ struct SummarySpec<'a> {
     threshold_percent: u8,
     automatic: bool,
     before_tokens: u64,
+    system: Option<&'a str>,
 }
 
 fn summarize_completion_request(
@@ -432,6 +433,16 @@ fn compact_completion(
     let tool_choice = request.tool_choice.take();
     let max_completion_tokens = request.max_completion_tokens.take();
     let max_tokens = request.max_tokens.take();
+    // 摘要请求不提供工具，模板也必须看到空工具清单；结束后还原主会话指令。
+    let original_system = if let Some(system) = spec.system {
+        let Some(ChatCompletionRequestMessage::System(message)) = request.messages.first_mut()
+        else {
+            unreachable!("validated system message")
+        };
+        Some(std::mem::replace(&mut message.content, system.into()))
+    } else {
+        None
+    };
     request.max_completion_tokens = Some(spec.output_limit);
     request.messages.push(ChatCompletionRequestMessage::User(
         ChatCompletionRequestUserMessage {
@@ -452,6 +463,13 @@ fn compact_completion(
     request.tool_choice = tool_choice;
     request.max_completion_tokens = max_completion_tokens;
     request.max_tokens = max_tokens;
+    if let Some(content) = original_system {
+        let Some(ChatCompletionRequestMessage::System(message)) = request.messages.first_mut()
+        else {
+            unreachable!("validated system message")
+        };
+        message.content = content;
+    }
     let summary = match result {
         Ok(summary) => summary,
         Err(error) => {
@@ -517,6 +535,9 @@ fn compact_response(
     let tools = request.tools.take();
     let tool_choice = request.tool_choice.take();
     let max_output_tokens = request.max_output_tokens.take();
+    let original_system = spec
+        .system
+        .map(|system| request.instructions.replace(system.to_owned()));
     request.max_output_tokens = Some(spec.output_limit);
     response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
         role: Role::User,
@@ -535,6 +556,9 @@ fn compact_response(
     request.tools = tools;
     request.tool_choice = tool_choice;
     request.max_output_tokens = max_output_tokens;
+    if let Some(instructions) = original_system {
+        request.instructions = instructions;
+    }
     let summary = match result {
         Ok(summary) => summary,
         Err(error) => {
@@ -644,6 +668,16 @@ impl Agent {
         let before_tokens = self.context_usage()?.estimated_tokens;
         let budget = summary_budget(self.current_model.context_window);
         let instruction = summary_instruction(budget);
+        let summary_system = if self.prompt_source.is_some() {
+            Some(self.compose_prompt(
+                &self.workflow.instructions(),
+                self.workflow.mode_name(),
+                &self.current_model.model,
+                Vec::new(),
+            )?)
+        } else {
+            None
+        };
         let spec = SummarySpec {
             cutoff,
             instruction: &instruction,
@@ -652,6 +686,7 @@ impl Agent {
             threshold_percent: self.auto_compact_threshold_percent,
             automatic,
             before_tokens,
+            system: summary_system.as_deref(),
         };
         emit(AgentEvent::CompactionStarted { automatic });
         let metadata = Metadata {
@@ -661,6 +696,7 @@ impl Agent {
             edit_mode: self.tools.edit_mode(),
             tool_limits: self.tools.limits,
             base_system: &self.base_system,
+            prompt_source: self.prompt_source.as_ref(),
         };
         self.client.set_stats_context(self.journal.stats_context(
             &metadata,

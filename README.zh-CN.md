@@ -75,7 +75,7 @@ auto_compact_threshold_percent: 80
 
 自动压缩仅在模型显式配置 `context_window` 时启用。思考档位须与供应商实际能力匹配，可在模型配置中使用 `thinking.efforts` 和 `thinking.defaultLevel` 限定可选档位与默认值。
 
-完整示例与校验规则见[配置指南](docs/guide.md#配置)。配置只从 `~/.pp/agent/` 加载，不读取项目同名文件或供应商环境变量。
+完整示例与校验规则见[配置指南](docs/guide.md#配置)。模型与应用设置只从 `~/.pp/agent/` 加载，不读取项目同名文件或供应商环境变量；[系统提示词](docs/guide.md#系统提示词)也可从启动目录的 `.pp/` 加载。
 
 </details>
 
@@ -149,6 +149,7 @@ pp stats
 | --- | --- | --- |
 | [项目指令](docs/guide.md#项目级-agentsmd) | 当前工作目录的 `AGENTS.md` | 每次模型请求前刷新项目规则 |
 | [技能](docs/guide.md#技能支持) | `~/.pp/agent/skills/` | 按需加载 `SKILL.md`，通过 `/skills` 管理 |
+| [系统提示词](docs/guide.md#系统提示词) | `cwd/.pp/` 或 `~/.pp/agent/` | `SYSTEM.md`／`SYSTEM_TEMPLATE.md` 替换基础指令，`APPEND_SYSTEM.md` 追加正文 |
 | [提示词命令](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | 将 Markdown 模板展开为 `/命令 参数` |
 | [MCP 工具](docs/guide.md#mcp-工具) | `settings.yml` 的 `mcp_servers` | 连接基于本地标准输入输出的服务并发现工具 |
 

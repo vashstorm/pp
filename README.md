@@ -76,7 +76,7 @@ auto_compact_threshold_percent: 80
 
 Automatic compaction is enabled only when the model has an explicit `context_window`. Reasoning levels must match the provider's capabilities. Use `thinking.efforts` and `thinking.defaultLevel` in the model configuration to restrict available levels and set a default.
 
-See the [configuration guide (Chinese)](docs/guide.md#配置) for full examples and validation rules. Configuration is loaded only from `~/.pp/agent/`; project files with the same names and provider environment variables are not read.
+See the [configuration guide (Chinese)](docs/guide.md#配置) for full examples and validation rules. Model and application settings are loaded only from `~/.pp/agent/`; project files with the same names and provider environment variables are not read. [System prompt overrides](docs/guide.md#系统提示词) can also be loaded from the startup directory's `.pp/`.
 
 </details>
 
@@ -152,6 +152,7 @@ The linked guides below are in Chinese.
 | --- | --- | --- |
 | [Project instructions](docs/guide.md#项目级-agentsmd) | `AGENTS.md` in the working directory | Refresh project rules before each model request |
 | [Skills](docs/guide.md#技能支持) | `~/.pp/agent/skills/` | Load `SKILL.md` on demand and manage skills with `/skills` |
+| [System prompts](docs/guide.md#系统提示词) | `cwd/.pp/` or `~/.pp/agent/` | Replace base instructions with `SYSTEM.md` or `SYSTEM_TEMPLATE.md`, or append with `APPEND_SYSTEM.md` |
 | [Prompt commands](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | Expand Markdown templates with `/command arguments` |
 | [MCP tools](docs/guide.md#mcp-工具) | `mcp_servers` in `settings.yml` | Connect to local stdio servers and discover tools |
 

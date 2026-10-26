@@ -78,6 +78,7 @@ impl Agent {
             edit_mode: self.tools.edit_mode(),
             tool_limits: self.tools.limits,
             base_system: &self.base_system,
+            prompt_source: self.prompt_source.as_ref(),
         };
         let mut client = OpenAiClient::new(&config)?;
         // Costs are recorded for the source session under the review purpose;
@@ -294,10 +295,16 @@ impl Agent {
     /// plus the fixed review-only rules. Plan-mode drafting rules are never
     /// mixed in; the reviewer cannot write or authorize anything.
     fn review_system(&self) -> Result<String> {
-        let mut system = self.compose_base_system()?;
-        system.push_str("\n\n");
-        system.push_str(REVIEW_INSTRUCTIONS);
-        Ok(system)
+        self.compose_prompt(
+            REVIEW_INSTRUCTIONS,
+            "review",
+            &self.current_model.model,
+            self.tools
+                .review_definitions()
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect(),
+        )
     }
 }
 

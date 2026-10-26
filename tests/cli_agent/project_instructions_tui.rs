@@ -40,6 +40,9 @@ fn agents_tui_resume_history_keeps_current_directory_rules_both_protocols() {
         let home = tempfile::tempdir().unwrap();
         let current = tempfile::tempdir().unwrap();
         std::fs::write(home.path().join("AGENTS.md"), "saved-directory-rule").unwrap();
+        system_prompt::write(home.path(), ".pp/SYSTEM.md", "saved-source-only");
+        system_prompt::write(current.path(), ".pp/SYSTEM_TEMPLATE.md", system_prompt::LIVE_TEMPLATE);
+        system_prompt::write(current.path(), ".pp/APPEND_SYSTEM.md", "current-append-only");
         let cli = Cli::start_with(home.path(), Some("agents-saved-task"), fixture_settings(), &response_models(&fixture, Some(protocol)));
         let (request, _) = project_instructions::receive_for(&fixture, protocol);
         project_instructions::finish_request(request, protocol, "agents-saved-answer");
@@ -49,6 +52,7 @@ fn agents_tui_resume_history_keeps_current_directory_rules_both_protocols() {
         std::fs::write(current.path().join("AGENTS.md"), "current-directory-rule").unwrap();
         let mut pty = Pty::start_with_args(current.path(), home.path(), &[]);
         pty.ready();
+        system_prompt::write(current.path(), ".pp/SYSTEM_TEMPLATE.md", "{{#if broken}}");
         pty.input("/resume\r");
         // 等待后台扫描结束，避免在 Loading 状态发送会被忽略的方向键。
         pty.text("No sessions in current folder.");
@@ -60,7 +64,10 @@ fn agents_tui_resume_history_keeps_current_directory_rules_both_protocols() {
         std::fs::write(current.path().join("AGENTS.md"), "current-directory-rule-refreshed").unwrap();
         pty.input("agents-resumed-task\r");
         let (request, body) = project_instructions::receive_for(&fixture, protocol);
+        system_prompt::assert_live(&body, protocol, "execute");
         let system = project_instructions::system(&body, protocol);
+        assert!(system.contains("current-append-only"));
+        assert!(!system.contains("saved-source-only"));
         assert_eq!(system.matches("current-directory-rule-refreshed").count(), 1);
         assert!(!system.contains("saved-directory-rule"));
         assert!(body.to_string().contains("agents-saved-task"));

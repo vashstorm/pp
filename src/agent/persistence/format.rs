@@ -108,6 +108,8 @@ pub(super) struct StateRef<'a> {
     pub edit_mode: EditMode,
     pub tool_limits: ToolLimits,
     pub base_system: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_source: Option<&'a crate::system_prompt::Snapshot>,
     pub session: SessionRef<'a>,
     pub workflow: &'a WorkflowState,
 }
@@ -125,6 +127,7 @@ impl<'a> StateRef<'a> {
             edit_mode: metadata.edit_mode,
             tool_limits: metadata.tool_limits,
             base_system: metadata.base_system,
+            prompt_source: metadata.prompt_source,
             session,
             workflow,
         }
@@ -229,6 +232,8 @@ pub(super) struct State {
     pub edit_mode: EditMode,
     pub tool_limits: ToolLimits,
     pub base_system: String,
+    #[serde(default)]
+    pub prompt_source: Option<crate::system_prompt::Snapshot>,
     pub session: Session,
     #[serde(default)]
     pub workflow: WorkflowState,

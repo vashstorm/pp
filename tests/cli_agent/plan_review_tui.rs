@@ -22,10 +22,13 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                 "fn planned() -> u8 { 1 }\n",
             )
             .unwrap();
+            system_prompt::write(project.path(), ".pp/SYSTEM_TEMPLATE.md", system_prompt::LIVE_TEMPLATE);
+            system_prompt::write(project.path(), ".pp/APPEND_SYSTEM.md", "plan-append-once");
             let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
             plan_enter(&mut pty, &fixture);
             pty.input("Plan creation ORIGIN_REVIEW_MARKER\r");
-            let (request, _) = pty.request_at(&fixture, api_path(protocol));
+            let (request, body) = pty.request_at(&fixture, api_path(protocol));
+            system_prompt::assert_live(&body, protocol, "plan");
             plan_final(
                 request,
                 protocol,
@@ -43,6 +46,10 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
             let original = std::fs::read(&path).unwrap();
             plan_choose(&mut pty, 3);
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
+            system_prompt::assert_live(&body, protocol, "review");
+            let system = project_instructions::system(&body, protocol);
+            assert_eq!(system.matches("plan-append-once").count(), 1);
+            assert!(system.find("plan-append-once").unwrap() < system.find("PLAN REVIEW MODE").unwrap());
             let encoded = body.to_string();
             assert!(encoded.contains("ORIGIN_REVIEW_MARKER"));
             assert!(encoded.contains("Create canary.txt"));
@@ -122,6 +129,7 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                 ),
             );
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
+            system_prompt::assert_live(&body, protocol, "review");
             let outputs = cancel_tool_outputs(&body, protocol);
             assert_eq!(outputs.len(), 11);
             for (_, result) in &outputs[..9] {
@@ -148,6 +156,7 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                 pty.input("Which failure input should item two use?\r");
             }
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
+            system_prompt::assert_live(&body, protocol, if action == 2 { "plan" } else { "execute" });
             assert!(!body.to_string().contains("review-read"));
             assert!(!body.to_string().contains("review-search"));
             assert!(body.to_string().contains("PLANNING_CHAT_ONLY_MARKER") == (action != 0));

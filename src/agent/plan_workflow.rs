@@ -31,13 +31,13 @@ const NOT_PLAN: &str = "Plan mode is not active.";
 const NO_PLAN: &str = "No saved plan.";
 const NO_ORIGIN: &str = "Enter the task before reviewing this plan.";
 
-enum SavedInstructions {
+pub(super) enum SavedInstructions {
     Completion(async_openai::types::chat::ChatCompletionRequestSystemMessageContent),
     Response(Option<String>),
 }
 
 impl SavedInstructions {
-    fn take(session: &mut Session) -> Self {
+    pub(super) fn take(session: &mut Session) -> Self {
         match session {
             Session::Completion(request) => {
                 let Some(async_openai::types::chat::ChatCompletionRequestMessage::System(message)) =
@@ -51,7 +51,7 @@ impl SavedInstructions {
         }
     }
 
-    fn restore(self, session: &mut Session) {
+    pub(super) fn restore(self, session: &mut Session) {
         match (self, session) {
             (Self::Completion(content), Session::Completion(request)) => {
                 let Some(async_openai::types::chat::ChatCompletionRequestMessage::System(message)) =
@@ -70,37 +70,63 @@ impl SavedInstructions {
 }
 
 impl Agent {
-    /// Base system prompt: current project instructions and skill summary on
-    /// top of `base_system`, without any mode rules. Shared by the ordinary
-    /// system composition and the independent reviewer.
-    pub(super) fn compose_base_system(&self) -> Result<String> {
+    /// 新来源按块渲染；旧会话继续使用不可拆分的基础指令。
+    pub(super) fn compose_prompt(
+        &self,
+        instructions: &str,
+        mode: &str,
+        model: &str,
+        tool_names: Vec<String>,
+    ) -> Result<String> {
         let project = project_instructions::load(self.tools.cwd())?;
         let summary = self
             .tools
             .skills
             .lock()
-            .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
+            .map_err(|_| anyhow!("skill registry unavailable"))?
             .summary();
-        Ok(project_instructions::compose(
-            &self.base_system,
-            self.tools.cwd(),
-            &project,
-            &summary,
-        ))
+        if let Some(source) = &self.prompt_source {
+            let context = crate::system_prompt::RenderContext::new(
+                self.tools.cwd(),
+                model,
+                self.tools.edit_mode(),
+                mode,
+                tool_names,
+            );
+            source.compose(
+                &context,
+                self.tools.limits,
+                &project,
+                &summary,
+                instructions,
+            )
+        } else {
+            let mut system = project_instructions::compose(
+                &self.base_system,
+                self.tools.cwd(),
+                &project,
+                &summary,
+            );
+            if !instructions.is_empty() {
+                system.push_str("\n\n");
+                system.push_str(instructions);
+            }
+            Ok(system)
+        }
     }
 
-    /// Full system prompt for the given workflow, including mode-aware plan
-    /// instructions. Shared by the per-request refresh, resume, tree
-    /// navigation and the fresh-context execution candidate; Plan rules are
-    /// never baked into `base_system`.
+    /// 候选会话使用目标模式的工具清单，逐请求刷新使用原生请求里的实际清单。
     pub(super) fn compose_system(&self, workflow: &WorkflowState) -> Result<String> {
-        let mut system = self.compose_base_system()?;
-        let instructions = workflow.instructions();
-        if !instructions.is_empty() {
-            system.push_str("\n\n");
-            system.push_str(&instructions);
-        }
-        Ok(system)
+        self.compose_prompt(
+            &workflow.instructions(),
+            workflow.mode_name(),
+            &self.current_model.model,
+            self.tools
+                .all_definitions(workflow.mode)
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect(),
+        )
     }
 
     /// Persist a workflow change; on failure restore the whole `previous`
@@ -525,6 +551,7 @@ impl Agent {
                 edit_mode: self.tools.edit_mode(),
                 tool_limits: self.tools.limits,
                 base_system: &self.base_system,
+                prompt_source: self.prompt_source.as_ref(),
             };
             self.journal.commit_plan_execution(
                 &metadata,
@@ -584,7 +611,14 @@ impl Agent {
         // the current model, thinking level and edit mode, never the planning
         // native history.
         let prepared = (|| -> Result<(Session, SessionJournal)> {
-            let system = self.compose_system(&candidate_workflow)?;
+            let mut definitions = self.tools.all_definitions(WorkMode::Execute);
+            definitions.extend(registry.definitions());
+            let system = self.compose_prompt(
+                &candidate_workflow.instructions(),
+                "execute",
+                &self.current_model.model,
+                definitions.iter().map(|tool| tool.name.clone()).collect(),
+            )?;
             let mut session = Session::new(
                 self.current_model.model.clone(),
                 self.current_model.protocol,
@@ -592,8 +626,6 @@ impl Agent {
                 self.tools.edit_mode(),
             );
             session.set_think_level(self.think_level);
-            let mut definitions = self.tools.all_definitions(WorkMode::Execute);
-            definitions.extend(registry.definitions());
             session.set_tools(definitions);
             super::append_user_to(&mut session, &prompt);
             let metadata = Metadata {
@@ -603,6 +635,7 @@ impl Agent {
                 edit_mode: self.tools.edit_mode(),
                 tool_limits: self.tools.limits,
                 base_system: &self.base_system,
+                prompt_source: self.prompt_source.as_ref(),
             };
             let mut journal = self.journal.fork_empty();
             journal.commit_plan_execution(

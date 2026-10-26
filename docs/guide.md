@@ -8,7 +8,7 @@
 
 - 入门：[构建与运行](#构建与运行) · [配置](#配置) · [命令与快捷键](#常用命令与快捷键)
 - 交互：[终端交互](#终端交互) · [Plan](#plan仅-tui) · [ask](#ask仅-tui)
-- 扩展：[项目指令](#项目级-agentsmd) · [提示词命令](#markdown-提示词命令) · [技能](#技能支持) · [MCP](#mcp-工具)
+- 扩展：[系统提示词](#系统提示词) · [项目指令](#项目级-agentsmd) · [提示词命令](#markdown-提示词命令) · [技能](#技能支持) · [MCP](#mcp-工具)
 - 会话：[上下文压缩](#上下文用量与压缩) · [会话树](#会话树与-esc) · [变更与撤销](#最近任务变更与安全撤销) · [保存与恢复](#会话持久化与恢复)
 - 运维：[工具权限](#工具执行与权限) · [HTTP 协议](#http-协议) · [请求统计](#请求统计) · [诊断日志](#运行诊断日志) · [数据清理](#清理过期数据)
 - 开发：[开发与验证](#开发与验证) · [参考](#参考)
@@ -44,7 +44,7 @@ printf '说明当前项目的构建方式\n' | ./target/debug/pp
 
 ## 配置
 
-配置统一保存在 `~/.pp/agent/settings.yml` 和 `~/.pp/agent/models.yml`，使用 YAML 块映射、列表和 `#` 注释。启动目录中的同名文件不再读取。`models.yml` 为必需文件：同一供应商的多个模型共享凭证、接口地址和协议。`settings.yml` 为可选的应用设置；未指定有效默认模型时，使用文件中首个供应商的首个模型。
+模型与应用设置保存在 `~/.pp/agent/settings.yml` 和 `~/.pp/agent/models.yml`，使用 YAML 块映射、列表和 `#` 注释。启动目录中的同名文件不再读取。`models.yml` 为必需文件：同一供应商的多个模型共享凭证、接口地址和协议。`settings.yml` 为可选的应用设置；未指定有效默认模型时，使用文件中首个供应商的首个模型。[系统提示词](#系统提示词)独立支持项目 `.pp/` 文件，不改变这两个 YAML 文件的加载规则。
 
 ### 应用设置
 
@@ -290,6 +290,76 @@ Esc 只关闭审阅，不退出 Plan。外部编辑后再次安全读取可直�
 消息区的 ask 卡片完整显示问题正文、各选项说明和 Markdown 预览，沿用 transcript 滚动；提交答案、缩放及恢复后保留详情，选中项在消息中标记为 `●`。ask 卡片不参与折叠；答题期间 Ctrl + O 仍可全局切换其他工具输出，不改变答案和答题进度。面板高度只在打开／resize 时确定，进入 Other、输入与换行均不移动外框；多行输入在现有区域内滚动，最多屏幕 70%；短屏进入紧凑模式。滚轮在面板内导航，面板外继续滚 transcript。面板活跃时全局菜单、F1、切档、输入历史和主编辑器不会接收它的按键／粘贴，只有 custom 编辑器显示插入光标。custom 编辑器的 Esc 只丢弃本次编辑；picker／Review 的 Esc 取消整个任务，不提交部分答案，同批后续工具按既有取消规则跳过。Ctrl + C 仍立即退出并恢复终端，不等待回复线程。
 
 成功工具结果精确使用 `{"ok":true,"answers":[{"id":"storage","selected_options":["Postgres"],"custom_input":null}]}`：题目和多选答案分别按原题／原选项顺序排列，不包含推荐徽标；custom 有值时为原始字符串。问题与答案沿用 ToolStarted／ToolFinished 日志，恢复只重放卡片，不重开表单、不把答案放进主输入历史；中断请求显示既有 interrupted 状态。`/new`、跨协议 `/model` 和 `/resume` 后 TUI 仍提供 ask。`-p` 和管道行模式不提供 ask schema；服务端仍返回 ask 调用时固定报错 `ask requires interactive TUI mode`，不读取 stdin，不消耗下一条任务。
+
+## 系统提示词
+
+pp 参考 [Oh My Pi 的加载机制](https://github.com/can1357/oh-my-pi/blob/0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0/docs/system-prompt-customization.md)，支持基础正文、基础模板和追加正文。默认只检查启动目录的 `.pp/` 与 `~/.pp/agent/`，不向父目录查找，也不读取 `.omp`、`.claude`、`.codex` 等其他工具的目录。
+
+基础来源按以下优先级选择一份，命中后不合并：
+
+1. `--system-prompt TEXT_OR_FILE` 或 `--system-prompt-template PATH`，两者互斥。
+2. `cwd/.pp/SYSTEM.md`。
+3. `cwd/.pp/SYSTEM_TEMPLATE.md`。
+4. `~/.pp/agent/SYSTEM.md`。
+5. `~/.pp/agent/SYSTEM_TEMPLATE.md`。
+6. 编译时嵌入的默认模板。
+
+追加来源独立选择：`--append-system-prompt TEXT_OR_FILE` → `cwd/.pp/APPEND_SYSTEM.md` → `~/.pp/agent/APPEND_SYSTEM.md`。项目覆盖全局，不叠加两份文件。
+
+例如，在项目 `.pp/SYSTEM.md` 中替换角色与通用行为指令：
+
+```markdown
+You are a code reviewer. Explain findings with concrete evidence.
+Prefer concise responses and cite relevant paths.
+```
+
+如果只想补充规则，在 `.pp/APPEND_SYSTEM.md` 中写：
+
+```markdown
+Use Simplified Chinese for explanations.
+Verify changes with the project's documented commands.
+```
+
+需要变量或条件时，改用 `.pp/SYSTEM_TEMPLATE.md`，并移除同级 `SYSTEM.md`，否则正文文件优先：
+
+```handlebars
+You are a coding assistant working in {{cwd}}.
+Current model: {{model}}. Current workflow: {{work_mode}}.
+{{#if tools}}
+Available tools: {{#each tools}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}.
+{{/if}}
+```
+
+用户模板第一版公开变量如下；支持 Handlebars 标准变量、条件和循环，不承诺 OMP 自定义 helper 兼容：
+
+| 变量 | 内容 |
+| --- | --- |
+| `cwd` | 当前会话工作目录 |
+| `date` | 本地日期，格式 `YYYY-MM-DD` |
+| `model` | 当前供应商实际模型标识，不是 `provider/model` 配置引用 |
+| `os`、`arch` | 程序运行平台与架构，例如 `macos`、`aarch64` |
+| `edit_mode` | `replace` 或 `hashline` |
+| `work_mode` | `execute`、`plan` 或独立审阅时的 `review` |
+| `tools` | 本次请求实际提供的工具名称数组；压缩摘要请求为空 |
+
+模板严格检查变量并关闭 HTML 转义。只有 `SYSTEM_TEMPLATE.md` 或模板参数的文件会被解析；`SYSTEM.md`、`APPEND_SYSTEM.md`、`AGENTS.md` 中的 `{{...}}` 原样保留，插入值不进行第二次模板展开。自动生成的指令块不作为用户模板变量开放。
+
+最终顺序为：**基础指令 → 工具用法与实际限制 → 项目规则与技能 → 用户追加 → Plan／Review 工作流**。替换基础指令仍保留后续自动内容，包括 edit 模式说明、工具限制和 `AGENTS.md` 维护要求；工具权限始终由执行层控制。内部指令块以空行连接后，通过原有 Completion system 消息或 Responses instructions 发送。
+
+CLI 示例：
+
+```sh
+pp --system-prompt 'You are a code reviewer.' -p 'Review the current changes.'
+pp --system-prompt-template ./review-template.md --append-system-prompt ./extra.md
+```
+
+普通 CLI 参数含换行时直接作为正文，否则先尝试读取文件；路径不存在或过长时作为正文，因此拼错的路径也可能成为模型指令。其他读取失败明确报错。模板参数始终严格读取文件，不会退化成正文。文件须为普通 UTF-8 文件，拒绝符号链接、目录和 FIFO 等特殊文件。选中来源的读取、模板语法或变量错误不回退到其他来源；启动时错误非零退出，运行时渲染错误阻止本次请求并保留当前会话。模板语法错误的诊断不打印源码片段。
+
+显式空的普通正文使用内置基础指令，并阻止继续发现其他基础文件；显式空追加关闭追加发现。自动发现的空正文／空追加同样阻止低优先级来源；选中的空模板报错。未命中的低优先级文件不读取或验证。
+
+自定义源内容在启动时读取一次，运行中修改需重启生效；`/new`、切模型和会话树跳转沿用当前来源。每次请求重新渲染当前变量，`AGENTS.md` 仍逐请求刷新。新会话保存带版本的来源快照，包括内置模板源内容、选中的正文／模板、追加正文与来源信息，不只保存渲染结果。源文件之后被修改或删除，不影响快照恢复。
+
+`pp -r/-c` 使用目标会话保存的来源，不能同时传入上述提示词参数；动态工具信息与项目规则按当前会话重新生成。TUI `/resume` 使用当前会话的提示词来源，并按目标工作流重新渲染。缺少来源快照的旧会话继续使用原 `base_system` 恢复路径，不拆分旧字符串，不改写历史文件。来源快照随原生状态一同提交，属于现有会话明文数据。
 
 ## 项目级 AGENTS.md
 
