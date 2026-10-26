@@ -111,7 +111,7 @@ fn tool_folding_ctrl_o_globally_toggles_during_ask_and_new_tools_inherit() {
     }
 }
 
-// 默认摘要不影响模型正文；恢复使用当前显示配置，退出回放仍包含全部内容。
+// 默认摘要不影响模型正文；恢复采用当前配置，原生历史保留提交时的摘要。
 #[test]
 fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
     for protocol in ["completion", "response"] {
@@ -678,9 +678,9 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
             let text = screen.contents();
             text.contains("ask roundtrip done")
                 && text.contains("Storage · Which database should the project use?")
-                && text.contains("● Postgres")
-                && text.contains("● unit")
-                && text.contains("● lint")
+                && text.contains("󰐾 Postgres")
+                && text.contains("󰄲 unit")
+                && text.contains("󰄲 lint")
                 && text.contains("Other: 再检查中文")
                 && !text.contains("Other (type your own)")
         });
@@ -1171,7 +1171,7 @@ fn ask_tui_replay_restores_cards_without_reopening() {
         resumed.ready();
         resumed.wait_for("replayed ask card shows the answers", |screen| {
             let text = screen.contents();
-            text.contains("Database · Pick one?") && text.contains("● Postgres")
+            text.contains("Database · Pick one?") && text.contains("󰐾 Postgres")
                 && text.contains("mysql-details") && text.contains("postgres-details")
                 && text.contains("Replay preview")
         });

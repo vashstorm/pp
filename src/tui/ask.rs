@@ -868,7 +868,7 @@ fn menu_items(
     items
 }
 
-fn selection_icon(multi: bool, selected: bool) -> &'static str {
+pub(super) fn selection_icon(multi: bool, selected: bool) -> &'static str {
     // 使用同系列的大轮廓配对字形，避免选中后因字体回退而缩小。
     match (multi, selected) {
         (true, true) => "󰄲",

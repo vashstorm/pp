@@ -5161,7 +5161,7 @@ mod tests {
         let snapshot = draw_buffer(&mut app, 100, 30);
         let mut scrollback = Vec::new();
         app.conversation
-            .write_scrollback(&mut scrollback, &snapshot)
+            .write_full_for_test(&mut scrollback, &snapshot)
             .unwrap();
         let history = String::from_utf8_lossy(&scrollback);
         assert!(history.contains("partial answer"));
@@ -7008,7 +7008,7 @@ mod tests {
         let snapshot = draw_buffer(&mut app, 100, 30);
         let mut scrollback = Vec::new();
         app.conversation
-            .write_scrollback(&mut scrollback, &snapshot)
+            .write_full_for_test(&mut scrollback, &snapshot)
             .unwrap();
         assert!(
             !String::from_utf8_lossy(&scrollback)
@@ -7308,7 +7308,7 @@ mod tests {
         let buffer = draw_buffer(&mut app, 100, 30);
         let mut scrollback = Vec::new();
         app.conversation
-            .write_scrollback(&mut scrollback, &buffer)
+            .write_full_for_test(&mut scrollback, &buffer)
             .unwrap();
         let text = String::from_utf8_lossy(&scrollback);
         assert!(text.contains("Review source"));

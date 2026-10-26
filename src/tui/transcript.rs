@@ -215,7 +215,11 @@ impl AskBlock {
                     answer.is_some_and(|answer| answer.selected_options.contains(&option.label));
                 rows.extend(wrap_block(
                     block_line(
-                        format!("{} {}", if selected { "●" } else { "○" }, option.label),
+                        format!(
+                            "{} {}",
+                            super::ask::selection_icon(question.multi, selected),
+                            option.label
+                        ),
                         if selected {
                             Style::default()
                         } else {
@@ -1267,15 +1271,16 @@ impl Transcript {
         start..self.entries.len()
     }
 
+    /// 仅用于验证完整查看器的投影，不是生产环境的退出输出路径。
     #[cfg(test)]
-    pub(super) fn write_scrollback(
+    pub(super) fn write_full_for_test(
         &mut self,
         writer: &mut impl Write,
         snapshot: &Buffer,
     ) -> io::Result<()> {
         let footer_y = self.viewport_bottom;
         self.display.full = true;
-        // 退出时回放完整输出，不把折叠预览当作终端历史。
+        // 完整查看器使用原始保留输出，独立于主屏幕历史的折叠快照。
         for entry in &mut self.entries {
             if entry.is_collapsible_tool() && !entry.expanded {
                 entry.expanded = true;
@@ -2732,7 +2737,9 @@ mod tests {
         let snapshot = render(&mut transcript, 100, 20);
         assert!(screen(&snapshot).contains("read failure is visible"));
         let mut output = Vec::new();
-        transcript.write_scrollback(&mut output, &snapshot).unwrap();
+        transcript
+            .write_full_for_test(&mut output, &snapshot)
+            .unwrap();
         let mut parser = vt100::Parser::new(80, 100, 0);
         parser.process(&output);
         let full = parser.screen().contents();
@@ -2815,7 +2822,9 @@ mod tests {
         assert!((start..=end).contains(&transcript.offset));
         let snapshot = render(&mut transcript, 100, 10);
         let mut output = Vec::new();
-        transcript.write_scrollback(&mut output, &snapshot).unwrap();
+        transcript
+            .write_full_for_test(&mut output, &snapshot)
+            .unwrap();
         let mut parser = vt100::Parser::new(200, 100, 0);
         parser.process(&output);
         let text = parser.screen().contents();
@@ -2847,7 +2856,7 @@ mod tests {
             .join("\n");
         for expected in [
             "Database question?",
-            "○ SQLite",
+            "󰐽 SQLite",
             "description-marker",
             "Preview",
             "preview-tail",
@@ -2868,10 +2877,10 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n");
             for expected in [
-                "● SQLite",
+                "󰐾 SQLite",
                 "description-marker",
                 "preview-tail",
-                "○ Postgres",
+                "󰐽 Postgres",
                 "other-description",
             ] {
                 assert!(text.contains(expected), "回答和缩放后仍应保留详情：{text}");
@@ -3250,7 +3259,7 @@ mod tests {
         ));
         let mut full = Vec::new();
         transcript
-            .write_scrollback(&mut full, &render(&mut Transcript::new(), 100, 20))
+            .write_full_for_test(&mut full, &render(&mut Transcript::new(), 100, 20))
             .unwrap();
         let mut parser = vt100::Parser::new(80, 100, 0);
         parser.process(&full);
@@ -3712,7 +3721,9 @@ mod tests {
         render(&mut transcript, 5, 2);
         let snapshot = render(&mut transcript, 100, 30);
         let mut replay = Vec::new();
-        transcript.write_scrollback(&mut replay, &snapshot).unwrap();
+        transcript
+            .write_full_for_test(&mut replay, &snapshot)
+            .unwrap();
         let mut parser = vt100::Parser::new(80, 100, 0);
         parser.process(&replay);
         assert!(parser.screen().contents().contains("line-00"));
@@ -4046,7 +4057,9 @@ mod tests {
         assert!(screen(&render(&mut transcript, 100, 30)).contains("skill-fourth"));
         let mut output = Vec::new();
         let snapshot = render(&mut transcript, 100, 30);
-        transcript.write_scrollback(&mut output, &snapshot).unwrap();
+        transcript
+            .write_full_for_test(&mut output, &snapshot)
+            .unwrap();
         let text = String::from_utf8_lossy(&output);
         assert!(text.contains("[file#A1B2]"));
     }

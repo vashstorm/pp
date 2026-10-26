@@ -4855,6 +4855,7 @@ mod tui {
         assert_eq!(messages.len(), 6);
         final_reply(request, "direct history retained");
         pty.text("direct history retained");
+        pty.completed();
         pty.ready_model("vendor-a");
 
         pty.input("/bogus\r");
@@ -4879,6 +4880,8 @@ mod tui {
         assert_eq!(messages.len(), 8);
         final_reply(request, "multiline slash task accepted");
         pty.text("multiline slash task accepted");
+        // 模型命令要求任务收尾完成，仅收到正文不能作为处理栅栏。
+        pty.completed();
         pty.ready_model("vendor-a");
 
         pty.input("/model\r");
