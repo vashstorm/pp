@@ -2364,7 +2364,8 @@ fn session_truncated_tail_is_ignored_and_repaired_on_first_append() {
         after.starts_with(&complete),
         "repair keeps committed records"
     );
-    assert!(!String::from_utf8_lossy(&after).contains("unfin"));
+    // 检查实际损坏记录，避免误匹配系统提示词中的 unfinished 等普通单词。
+    assert!(!after.windows(partial.len()).any(|window| window == partial));
     assert!(after.ends_with(b"\n"));
     assert_session_contract(&records(&path), &id, project.path());
 

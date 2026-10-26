@@ -5,9 +5,12 @@ pub(crate) mod input;
 pub(crate) mod persistence;
 mod plan_review;
 mod plan_workflow;
+mod tool_images;
 
 #[cfg(test)]
 mod changes_tests;
+#[cfg(test)]
+mod read_tests;
 
 use crate::{
     cancellation::{self, CancellationToken, Cancelled, RunOutcome},
@@ -1515,6 +1518,7 @@ fn completion_turn(
         .push(ChatCompletionRequestMessage::Assistant(response));
     let mut stop_error = None;
     let mut sealed = false;
+    let mut attachments = Vec::new();
     for index in 0..count {
         let ChatCompletionRequestMessage::Assistant(response) = &request.messages[assistant_index]
         else {
@@ -1527,19 +1531,21 @@ fn completion_turn(
         else {
             bail!("agent invariant: missing function call");
         };
-        let content = tools.execute(
+        let content = tools.execute_with_fetch(
             &call.function.name,
             &call.function.arguments,
             &call.id,
             tool_policy(workflow, sealed, queue)?,
             cancellation,
             emit,
+            &mut |url, token| client.fetch_read_url(url, token),
         );
         apply_plan_change(workflow, &mut sealed, content.plan_change)?;
         if stop_error.is_none() {
             stop_error = content.stop_error;
         }
         let tool_call_id = call.id.clone();
+        attachments.push((tool_call_id.clone(), content.images));
         request.messages.push(ChatCompletionRequestMessage::Tool(
             ChatCompletionRequestToolMessage {
                 tool_call_id,
@@ -1547,6 +1553,7 @@ fn completion_turn(
             },
         ));
     }
+    tool_images::append_chat(&mut request.messages, attachments);
     *last_request = usage;
     if let Some(error) = stop_error {
         journal.commit(SessionRef::Completion(request))?;
@@ -1638,13 +1645,14 @@ fn response_turn(
         let InputItem::Item(Item::FunctionCall(call)) = &input[index] else {
             continue;
         };
-        let output = tools.execute(
+        let output = tools.execute_with_fetch(
             &call.name,
             &call.arguments,
             &call.call_id,
             tool_policy(workflow, sealed, queue)?,
             cancellation,
             emit,
+            &mut |url, token| client.fetch_read_url(url, token),
         );
         apply_plan_change(workflow, &mut sealed, output.plan_change)?;
         if stop_error.is_none() {
@@ -1654,7 +1662,7 @@ fn response_turn(
         input.push(InputItem::Item(Item::FunctionCallOutput(
             FunctionCallOutputItemParam {
                 call_id,
-                output: output.output.into(),
+                output: tool_images::response_output(output.output, output.images),
                 id: None,
                 status: None,
                 name: None,

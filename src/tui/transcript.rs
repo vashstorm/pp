@@ -703,18 +703,51 @@ impl TranscriptEntry {
     }
 
     fn read_summary(&self) -> String {
-        let path = self.arguments["path"].as_str().unwrap_or_default();
+        let path = self
+            .result
+            .as_ref()
+            .and_then(|r| r["source"].as_str())
+            .or_else(|| self.arguments["path"].as_str())
+            .unwrap_or_default();
         let start = self.arguments["offset"].as_u64().unwrap_or(1);
         let count = self
             .result
             .as_ref()
             .and_then(|r| r["lines_read"].as_u64())
             .or_else(|| self.arguments["limit"].as_u64());
-        let range = match count {
-            Some(count) if count > 0 => format!(":{start}-{}", start.saturating_add(count - 1)),
-            _ if start > 1 => format!(":{start}"),
-            _ => String::new(),
+        let range = if let Some(ranges) = self.result.as_ref().and_then(|r| r["ranges"].as_array())
+        {
+            let ranges = ranges
+                .iter()
+                .filter_map(|r| Some(format!("{}-{}", r["start"].as_u64()?, r["end"].as_u64()?)))
+                .collect::<Vec<_>>()
+                .join(",");
+            if ranges.is_empty() {
+                String::new()
+            } else {
+                format!(":{ranges}")
+            }
+        } else {
+            match count {
+                Some(count) if count > 0 => format!(":{start}-{}", start.saturating_add(count - 1)),
+                _ if start > 1 => format!(":{start}"),
+                _ => String::new(),
+            }
         };
+        let image = self
+            .result
+            .as_ref()
+            .filter(|r| r["kind"] == "image")
+            .map(|r| {
+                format!(
+                    " · {} · {}×{} · {} bytes",
+                    r["mime_type"].as_str().unwrap_or("image"),
+                    r["width"],
+                    r["height"],
+                    r["bytes"]
+                )
+            })
+            .unwrap_or_default();
         let status = match self.status {
             EntryStatus::Running => "running",
             EntryStatus::Complete => "ok",
@@ -730,7 +763,7 @@ impl TranscriptEntry {
             ""
         };
         format!(
-            "{} Read · {}{range} · {status}{truncated}",
+            "{} Read · {}{range}{image} · {status}{truncated}",
             palette::tool_icon("read"),
             palette::display_text(path)
         )

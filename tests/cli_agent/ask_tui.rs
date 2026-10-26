@@ -130,7 +130,7 @@ fn tool_folding_omp_read_default_summary_resume_and_complete_scrollback() {
         let (request, _) = pty.request_at(&provider, api_path(protocol));
         ask_reply_calls(request, protocol, json!([
             diff_blocks_call(protocol,"one","read",json!({"path":"one"})),
-            diff_blocks_call(protocol,"two","read",json!({"path":"two","offset":2}))
+            diff_blocks_call(protocol,"two","read",json!({"path":"two:2"}))
         ]));
         let (request, body) = pty.request_at(&provider, api_path(protocol));
         let outputs = cancel_tool_outputs(&body, protocol);

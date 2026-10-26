@@ -148,14 +148,14 @@ impl Agent {
                     let outcome = client.complete(request, cancellation, &mut sent, emit);
                     let turn: CompletionTurn = outcome?;
                     cancellation::check(cancellation)?;
-                    self.completion_review_round(request, turn, cancellation, emit)?
+                    self.completion_review_round(client, request, turn, cancellation, emit)?
                 }
                 Session::Response(request) => {
                     let mut sent = || -> Result<()> { Ok(()) };
                     let outcome = client.respond(request, cancellation, &mut sent, emit);
                     let turn: ResponseTurn = outcome?;
                     cancellation::check(cancellation)?;
-                    self.response_review_round(request, turn, cancellation, emit)?
+                    self.response_review_round(client, request, turn, cancellation, emit)?
                 }
             };
             if let Some(text) = final_text {
@@ -169,6 +169,7 @@ impl Agent {
     /// the final report text only when the model produced no tool calls.
     fn completion_review_round(
         &self,
+        client: &mut OpenAiClient,
         request: &mut CreateChatCompletionRequest,
         turn: CompletionTurn,
         cancellation: &CancellationToken,
@@ -190,6 +191,7 @@ impl Agent {
         }
         let assistant_index = request.messages.len() - 1;
         let mut stop_error = None;
+        let mut attachments = Vec::new();
         for index in 0..count {
             let ChatCompletionRequestMessage::Assistant(message) =
                 &request.messages[assistant_index]
@@ -203,17 +205,19 @@ impl Agent {
             else {
                 bail!("plan review invariant: missing function call");
             };
-            let execution = self.tools.execute(
+            let execution = self.tools.execute_with_fetch(
                 &call.function.name,
                 &call.function.arguments,
                 &call.id,
                 ToolPolicy::Review,
                 cancellation,
                 emit,
+                &mut |url, token| client.fetch_read_url(url, token),
             );
             if stop_error.is_none() {
                 stop_error = execution.stop_error;
             }
+            attachments.push((call.id.clone(), execution.images));
             request.messages.push(ChatCompletionRequestMessage::Tool(
                 ChatCompletionRequestToolMessage {
                     tool_call_id: call.id.clone(),
@@ -221,6 +225,7 @@ impl Agent {
                 },
             ));
         }
+        super::tool_images::append_chat(&mut request.messages, attachments);
         if let Some(error) = stop_error {
             return Err(error);
         }
@@ -232,6 +237,7 @@ impl Agent {
     /// and return the final report text only when there were no calls.
     fn response_review_round(
         &self,
+        client: &mut OpenAiClient,
         request: &mut CreateResponse,
         turn: ResponseTurn,
         cancellation: &CancellationToken,
@@ -261,13 +267,14 @@ impl Agent {
             let InputItem::Item(Item::FunctionCall(call)) = &input[index] else {
                 continue;
             };
-            let execution = self.tools.execute(
+            let execution = self.tools.execute_with_fetch(
                 &call.name,
                 &call.arguments,
                 &call.call_id,
                 ToolPolicy::Review,
                 cancellation,
                 emit,
+                &mut |url, token| client.fetch_read_url(url, token),
             );
             if stop_error.is_none() {
                 stop_error = execution.stop_error;
@@ -276,7 +283,7 @@ impl Agent {
             input.push(InputItem::Item(Item::FunctionCallOutput(
                 FunctionCallOutputItemParam {
                     call_id,
-                    output: execution.output.into(),
+                    output: super::tool_images::response_output(execution.output, execution.images),
                     id: None,
                     status: None,
                     name: None,

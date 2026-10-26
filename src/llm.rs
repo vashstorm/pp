@@ -32,6 +32,7 @@ use streaming::{ChatChunk, ChatStream, ResponseEvent, ResponsesStream};
 pub(crate) struct OpenAiClient {
     client: Client<OpenAIConfig>,
     runtime: Option<Runtime>,
+    read_http: Option<reqwest::Client>,
     request_timeout: Duration,
     rate_limit_retry_budget: Duration,
     stats_context: Option<crate::stats::RequestContext>,
@@ -84,6 +85,7 @@ impl OpenAiClient {
         Ok(Self {
             client,
             runtime: Some(runtime),
+            read_http: None,
             request_timeout,
             rate_limit_retry_budget,
             stats_context: None,
@@ -105,6 +107,7 @@ impl OpenAiClient {
             .map_err(|_| anyhow::anyhow!("initializing model runtime failed"))?;
         let client = build_client(self.client.config().clone(), self.request_timeout)?;
         self.client = client;
+        self.read_http = None;
         self.runtime = Some(runtime);
         Ok(())
     }
@@ -115,9 +118,83 @@ impl OpenAiClient {
     /// connections without waiting for unstoppable blocking DNS work; the
     /// next request rebuilds everything lazily via `ensure_ready`.
     pub(crate) fn cancel_pending_io(&mut self) {
+        self.read_http = None;
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
+    }
+
+    /// 网页请求使用独立连接池，绝不复用模型认证头或限流重试策略。
+    pub(crate) fn fetch_read_url(
+        &mut self,
+        url: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::tools::read::HttpResponse> {
+        use crate::tools::read::{HttpResponse, MAX_INPUT_BYTES};
+        self.ensure_ready()?;
+        let url = reqwest::Url::parse(url).map_err(|_| anyhow::anyhow!("invalid read URL"))?;
+        anyhow::ensure!(
+            matches!(url.scheme(), "http" | "https")
+                && url.username().is_empty()
+                && url.password().is_none(),
+            "read URL requires HTTP/HTTPS without embedded credentials"
+        );
+        if self.read_http.is_none() {
+            self.read_http = Some(
+                reqwest::Client::builder()
+                    .redirect(Policy::limited(5))
+                    .timeout(Duration::from_secs(30))
+                    .build()
+                    .map_err(|_| anyhow::anyhow!("initializing read HTTP client failed"))?,
+            );
+        }
+        let client = self
+            .read_http
+            .as_ref()
+            .expect("read HTTP client initialized");
+        let runtime = self.runtime.as_ref().expect("runtime initialized");
+        runtime.block_on(async {
+            let fetch = async {
+                let mut response = client
+                    .get(url)
+                    .send()
+                    .await
+                    .map_err(|_| anyhow::anyhow!("read HTTP request failed"))?;
+                anyhow::ensure!(
+                    response.status().is_success(),
+                    "read HTTP status {}",
+                    response.status().as_u16()
+                );
+                let final_url = response.url().to_string();
+                let content_type = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_owned();
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response
+                    .chunk()
+                    .await
+                    .map_err(|_| anyhow::anyhow!("reading HTTP body failed"))?
+                {
+                    anyhow::ensure!(
+                        bytes.len().saturating_add(chunk.len()) <= MAX_INPUT_BYTES,
+                        "read HTTP body exceeds 20 MiB limit"
+                    );
+                    bytes.extend_from_slice(&chunk);
+                }
+                Ok(HttpResponse {
+                    bytes,
+                    final_url,
+                    content_type,
+                })
+            };
+            cancellation
+                .run_until_cancelled(fetch)
+                .await
+                .unwrap_or_else(|| Err(Cancelled.into()))
+        })
     }
 
     pub(crate) fn complete(
@@ -749,6 +826,196 @@ mod tests {
     use async_openai::types::chat::ChatCompletionRequestAssistantMessageContent;
     use serde_json::{Value, json};
     use std::io::Write;
+
+    #[test]
+    fn read_http_redirects_without_provider_auth_and_redacts_errors() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/first", server.server_addr());
+        let worker = std::thread::spawn(move || {
+            let request = server
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert!(!request.headers().iter().any(|h| matches!(
+                h.field.as_str().as_str().to_ascii_lowercase().as_str(),
+                "authorization" | "openai-organization" | "openai-project" | "cookie"
+            )));
+            request
+                .respond(
+                    tiny_http::Response::empty(302)
+                        .with_header(tiny_http::Header::from_bytes("Location", "/final").unwrap()),
+                )
+                .unwrap();
+            let request = server
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(request.url(), "/final");
+            request
+                .respond(tiny_http::Response::from_string("web body").with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "text/plain").unwrap(),
+                ))
+                .unwrap();
+        });
+        let mut client = test_client("http://127.0.0.1:1/v1");
+        let response = client
+            .fetch_read_url(&url, &CancellationToken::new())
+            .unwrap();
+        assert_eq!(response.bytes, b"web body");
+        assert!(response.final_url.ends_with("/final"));
+        worker.join().unwrap();
+        for url in [
+            "http://user:secret@127.0.0.1/",
+            "ftp://example.com/",
+            "bad-url-secret",
+        ] {
+            let message = client
+                .fetch_read_url(url, &CancellationToken::new())
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(!message.contains("secret") && !message.contains("private-key"));
+        }
+    }
+
+    #[test]
+    fn read_http_limits_redirects_and_response_body_without_retries() {
+        for oversize in [false, true] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/loop", server.server_addr());
+            let worker = std::thread::spawn(move || {
+                for _ in 0..if oversize { 1 } else { 6 } {
+                    let request = server
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap()
+                        .unwrap();
+                    if oversize {
+                        let _ = request.respond(tiny_http::Response::from_data(vec![
+                            b'x';
+                            crate::tools::read::MAX_INPUT_BYTES
+                                + 1
+                        ]));
+                    } else {
+                        request
+                            .respond(tiny_http::Response::empty(302).with_header(
+                                tiny_http::Header::from_bytes("Location", "/loop").unwrap(),
+                            ))
+                            .unwrap();
+                    }
+                }
+                assert!(
+                    server
+                        .recv_timeout(Duration::from_millis(100))
+                        .unwrap()
+                        .is_none()
+                );
+            });
+            let error = test_client("http://127.0.0.1:1/v1")
+                .fetch_read_url(&url, &CancellationToken::new())
+                .err()
+                .unwrap();
+            if oversize {
+                assert!(error.to_string().contains("20 MiB"));
+            }
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn read_http_gzip_limit_counts_decompressed_bytes() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/compressed", server.server_addr());
+        let worker = std::thread::spawn(move || {
+            let request = server
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            let block = [b'x'; 8192];
+            for _ in 0..(crate::tools::read::MAX_INPUT_BYTES / block.len() + 1) {
+                encoder.write_all(&block).unwrap();
+            }
+            let compressed = encoder.finish().unwrap();
+            assert!(compressed.len() < crate::tools::read::MAX_INPUT_BYTES);
+            let _ =
+                request.respond(tiny_http::Response::from_data(compressed).with_header(
+                    tiny_http::Header::from_bytes("Content-Encoding", "gzip").unwrap(),
+                ));
+        });
+        let error = test_client("http://127.0.0.1:1/v1")
+            .fetch_read_url(&url, &CancellationToken::new())
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("20 MiB"), "{error}");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn read_http_status_timeout_and_cancel_leave_no_background_fetch() {
+        for mode in ["status", "timeout", "cancel"] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/private-query", server.server_addr());
+            let cancel = CancellationToken::new();
+            let worker_cancel = cancel.clone();
+            let (done, release) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let request = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                if mode == "status" {
+                    request
+                        .respond(
+                            tiny_http::Response::from_string("secret-body").with_status_code(429),
+                        )
+                        .unwrap();
+                } else {
+                    let mut writer = request.into_writer();
+                    if mode == "cancel" {
+                        writer
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n",
+                            )
+                            .unwrap();
+                        writer.flush().unwrap();
+                        worker_cancel.cancel();
+                    }
+                    release.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                assert!(
+                    server
+                        .recv_timeout(Duration::from_millis(100))
+                        .unwrap()
+                        .is_none()
+                );
+            });
+            let mut client = test_client("http://127.0.0.1:1/v1");
+            if mode == "timeout" {
+                client.read_http = Some(
+                    reqwest::Client::builder()
+                        .timeout(Duration::from_millis(100))
+                        .build()
+                        .unwrap(),
+                );
+            }
+            let started = Instant::now();
+            let error = client.fetch_read_url(&url, &cancel).err().unwrap();
+            assert!(started.elapsed() < Duration::from_secs(2));
+            if mode == "cancel" {
+                assert!(error.is::<Cancelled>());
+            }
+            if mode == "status" {
+                assert!(error.to_string().contains("429"));
+            }
+            assert!(
+                !error.to_string().contains("secret-body")
+                    && !error.to_string().contains("private-query")
+            );
+            let _ = done.send(());
+            worker.join().unwrap();
+        }
+    }
 
     fn decode(message: Value, finish: &str) -> Result<CompletionTurn> {
         into_completion_turn(serde_json::from_value(json!({

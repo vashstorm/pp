@@ -18,6 +18,7 @@ enum PortableItem<'a> {
     Output {
         id: &'a str,
         text: Cow<'a, str>,
+        images: Vec<crate::tools::read::ToolImage>,
     },
 }
 
@@ -29,6 +30,7 @@ pub(super) fn convert(
 ) -> Result<Session> {
     match session {
         Session::Completion(source) => {
+            super::tool_images::validate_chat(&source.messages)?;
             ensure!(protocol == Protocol::Response, UNSUPPORTED);
             let first_system = source
                 .messages
@@ -52,6 +54,9 @@ pub(super) fn convert(
             };
             for (index, message) in source.messages.iter().enumerate() {
                 if Some(index) != first_system {
+                    if super::tool_images::merge_chat(input, message)? {
+                        continue;
+                    }
                     completion_items(message, input)?;
                 }
             }
@@ -82,6 +87,8 @@ pub(super) fn convert(
                         request.messages.clear();
                     }
                     let mut batch = AssistantBatch::default();
+                    let mut pending = std::collections::HashSet::new();
+                    let mut attachments = Vec::new();
                     visit_response(source, |item| {
                         match item {
                             PortableItem::Message(r::Role::Assistant, text) => batch.text(text),
@@ -90,6 +97,7 @@ pub(super) fn convert(
                                 name,
                                 arguments,
                             } => {
+                                pending.insert(id.to_owned());
                                 batch
                                     .calls
                                     .push(c::ChatCompletionMessageToolCalls::Function(
@@ -108,14 +116,22 @@ pub(super) fn convert(
                                     .messages
                                     .push(completion_message(role, text.into_owned()));
                             }
-                            PortableItem::Output { id, text } => {
+                            PortableItem::Output { id, text, images } => {
                                 batch.flush(&mut request.messages);
+                                attachments.push((id.to_owned(), images));
                                 request.messages.push(c::ChatCompletionRequestMessage::Tool(
                                     c::ChatCompletionRequestToolMessage {
                                         tool_call_id: id.to_owned(),
                                         content: text.into_owned().into(),
                                     },
                                 ));
+                                pending.remove(id);
+                                if pending.is_empty() {
+                                    super::tool_images::append_chat(
+                                        &mut request.messages,
+                                        std::mem::take(&mut attachments),
+                                    );
+                                }
                             }
                         }
                         Ok(())
@@ -153,17 +169,17 @@ fn response_item(item: PortableItem<'_>) -> r::InputItem {
             caller: None,
             r#async: None,
         })),
-        PortableItem::Output { id, text } => r::InputItem::Item(r::Item::FunctionCallOutput(
-            r::FunctionCallOutputItemParam {
+        PortableItem::Output { id, text, images } => r::InputItem::Item(
+            r::Item::FunctionCallOutput(r::FunctionCallOutputItemParam {
                 call_id: Some(id.to_owned()),
-                output: r::FunctionCallOutput::Text(text.into_owned()),
+                output: super::tool_images::response_output(text.into_owned(), images),
                 id: None,
                 status: None,
                 name: None,
                 namespace: None,
                 caller: None,
-            },
-        )),
+            }),
+        ),
     }
 }
 
@@ -277,6 +293,7 @@ fn completion_items(
             input.push(response_item(PortableItem::Output {
                 id: &message.tool_call_id,
                 text: Cow::Owned(tool_text(&message.content)),
+                images: Vec::new(),
             }));
         }
         Message::Function(_) => bail!(UNSUPPORTED),
@@ -371,11 +388,34 @@ fn visit_response(
                 let Some(id) = output.call_id.as_deref().filter(|id| !id.is_empty()) else {
                     bail!(UNSUPPORTED)
                 };
-                let text = match &output.output {
-                    r::FunctionCallOutput::Text(text) => Cow::Borrowed(text.as_str()),
-                    r::FunctionCallOutput::Content(parts) => Cow::Owned(input_text(parts)?),
+                let (text, images) = match &output.output {
+                    r::FunctionCallOutput::Text(text) => (Cow::Borrowed(text.as_str()), Vec::new()),
+                    r::FunctionCallOutput::Content(parts) => {
+                        let mut text = String::new();
+                        let mut images = Vec::new();
+                        for part in parts {
+                            match part {
+                                r::InputContent::InputText(part) => text.push_str(&part.text),
+                                r::InputContent::InputImage(part) => {
+                                    let Some(url) = part
+                                        .image_url
+                                        .as_ref()
+                                        .filter(|url| url.starts_with("data:image/"))
+                                    else {
+                                        bail!(UNSUPPORTED);
+                                    };
+                                    ensure!(part.file_id.is_none(), UNSUPPORTED);
+                                    images.push(crate::tools::read::ToolImage {
+                                        data_url: url.clone(),
+                                    });
+                                }
+                                _ => bail!(UNSUPPORTED),
+                            }
+                        }
+                        (Cow::Owned(text), images)
+                    }
                 };
-                PortableItem::Output { id, text }
+                PortableItem::Output { id, text, images }
             }
             _ => bail!(UNSUPPORTED),
         };
@@ -455,6 +495,92 @@ fn completion_message(role: r::Role, text: String) -> c::ChatCompletionRequestMe
 mod tests {
     use super::*;
 
+    #[test]
+    fn read_image_history_roundtrip_keeps_attachment_in_complete_exchange() {
+        let image_result =
+            serde_json::json!({"ok":true,"kind":"image","content":"Image fixture"}).to_string();
+        let image = response_item(PortableItem::Output {
+            id: "image",
+            text: Cow::Owned(image_result),
+            images: vec![crate::tools::read::ToolImage {
+                data_url: "data:image/png;base64,AAAA".into(),
+            }],
+        });
+        let source = response(vec![
+            easy_message(r::Role::User, "look".into()),
+            call("image"),
+            call("text"),
+            image,
+            output("text"),
+            easy_message(r::Role::Assistant, "done".into()),
+        ]);
+        let chat = convert(
+            &source,
+            "chat".into(),
+            Protocol::Completion,
+            EditMode::Hashline,
+        )
+        .unwrap();
+        let Session::Completion(request) = &chat else {
+            panic!()
+        };
+        super::super::tool_images::validate_chat(&request.messages).unwrap();
+        assert!(matches!(
+            request.messages[3],
+            c::ChatCompletionRequestMessage::Tool(_)
+        ));
+        assert!(matches!(
+            request.messages[4],
+            c::ChatCompletionRequestMessage::Tool(_)
+        ));
+        assert_eq!(
+            super::super::tool_images::chat_id(&request.messages[5]),
+            Some("image")
+        );
+        assert_eq!(
+            super::super::context::completion_boundaries(&request.messages).unwrap(),
+            vec![6, 7]
+        );
+        let roundtrip = convert(
+            &chat,
+            "response".into(),
+            Protocol::Response,
+            EditMode::Replace,
+        )
+        .unwrap();
+        let Session::Response(request) = &roundtrip else {
+            panic!()
+        };
+        let r::InputParam::Items(items) = &request.input else {
+            panic!()
+        };
+        assert_eq!(
+            super::super::context::response_boundaries(items).unwrap(),
+            vec![5, 6]
+        );
+        let r::InputItem::Item(r::Item::FunctionCallOutput(output)) = &items[3] else {
+            panic!()
+        };
+        let r::FunctionCallOutput::Content(parts) = &output.output else {
+            panic!()
+        };
+        assert!(
+            matches!(&parts[1], r::InputContent::InputImage(image) if image.image_url.as_deref() == Some("data:image/png;base64,AAAA"))
+        );
+        // 序列化恢复后仍能转换，不重新读取任何路径。
+        let restored: Session =
+            serde_json::from_str(&serde_json::to_string(&roundtrip).unwrap()).unwrap();
+        assert!(
+            convert(
+                &restored,
+                "again".into(),
+                Protocol::Completion,
+                EditMode::Replace
+            )
+            .is_ok()
+        );
+    }
+
     fn response(items: Vec<r::InputItem>) -> Session {
         let mut session = Session::new(
             "old".into(),
@@ -486,6 +612,7 @@ mod tests {
         response_item(PortableItem::Output {
             id,
             text: Cow::Borrowed("original result"),
+            images: Vec::new(),
         })
     }
 
@@ -762,7 +889,8 @@ mod tests {
             items[4],
             response_item(PortableItem::Output {
                 id: "call",
-                text: Cow::Borrowed("tool result")
+                text: Cow::Borrowed("tool result"),
+                images: Vec::new(),
             })
         );
         assert_eq!(

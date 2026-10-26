@@ -742,6 +742,16 @@ fn run_cli_task(
                 );
             }
             AgentEvent::ToolFinished { id, result } => {
+                if result["kind"] == "image"
+                    && let Some(content) = result["content"].as_str()
+                {
+                    cli_write(
+                        stderr,
+                        &format!("{content}\n"),
+                        &mut err_broken,
+                        &mut first_error,
+                    );
+                }
                 if let (Some(task_id), Some(status)) =
                     (result["task_id"].as_str(), result["status"].as_str())
                 {

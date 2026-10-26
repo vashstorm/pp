@@ -79,6 +79,8 @@ fn summary_output_limit(summary_budget: u64) -> u32 {
 pub(super) fn completion_boundaries(
     messages: &[ChatCompletionRequestMessage],
 ) -> Result<Vec<usize>> {
+    super::tool_images::validate_chat(messages)
+        .map_err(|_| anyhow::anyhow!(UNSUPPORTED_HISTORY))?;
     let mut boundaries = Vec::new();
     let mut pending: HashSet<&str> = HashSet::new();
     let mut answered: HashSet<&str> = HashSet::new();
@@ -87,6 +89,13 @@ pub(super) fn completion_boundaries(
             ChatCompletionRequestMessage::System(_) if index == 0 => {}
             ChatCompletionRequestMessage::User(_) => {
                 ensure!(pending.is_empty(), UNSUPPORTED_HISTORY);
+                if super::tool_images::chat_id(message).is_some() {
+                    // 图片是上一完整工具批次的一部分，不能落在保留后缀之外。
+                    let boundary = boundaries
+                        .last_mut()
+                        .ok_or_else(|| anyhow::anyhow!(UNSUPPORTED_HISTORY))?;
+                    *boundary = index + 1;
+                }
             }
             ChatCompletionRequestMessage::Assistant(message) => {
                 ensure!(pending.is_empty(), UNSUPPORTED_HISTORY);

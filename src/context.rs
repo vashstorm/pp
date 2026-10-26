@@ -74,15 +74,100 @@ pub(crate) fn serialized_len(value: &impl Serialize) -> Result<usize> {
     Ok(count.0 as usize)
 }
 
-/// Fixed UTF-8/JSON heuristic, not a tokenizer. Includes native request controls,
-/// tools and opaque reasoning; never allocates a serialized copy of history.
+/// 原生 JSON 文本按三字节估一 token，内嵌图片每张估 4096 token。
+/// 这只是容量启发式，既不是计费依据，也不分配完整历史的序列化副本。
 pub(crate) fn estimate_tokens(value: &impl Serialize) -> Result<u64> {
-    Ok((serialized_len(value)? as u64).div_ceil(3))
+    let mut count = EstimateCount::default();
+    serde_json::to_writer(&mut count, value)
+        .map_err(|_| anyhow::anyhow!("estimating context usage failed"))?;
+    Ok(count.bytes.div_ceil(3))
+}
+
+#[derive(Default)]
+struct EstimateCount {
+    bytes: u64,
+    string: bool,
+    escaped: bool,
+    prefix: Vec<u8>,
+    candidate: bool,
+    image: bool,
+}
+
+impl Write for EstimateCount {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        for &b in bytes {
+            if self.image {
+                if b == b'"' {
+                    self.image = false;
+                    self.string = false;
+                    self.bytes = self.bytes.saturating_add(1);
+                }
+                continue;
+            }
+            self.bytes = self.bytes.saturating_add(1);
+            if !self.string {
+                if b == b'"' {
+                    self.string = true;
+                    self.candidate = true;
+                    self.prefix.clear();
+                }
+                continue;
+            }
+            if self.escaped {
+                self.escaped = false;
+                self.candidate = false;
+                continue;
+            }
+            if b == b'\\' {
+                self.escaped = true;
+                self.candidate = false;
+                continue;
+            }
+            if b == b'"' {
+                self.string = false;
+                continue;
+            }
+            if self.candidate {
+                self.prefix.push(b);
+                let initial = b"data:image/";
+                if self.prefix.len() <= initial.len() {
+                    self.candidate = initial.starts_with(&self.prefix);
+                } else if self.prefix.ends_with(b";base64,") {
+                    self.image = true;
+                    self.bytes = self.bytes.saturating_add(4096 * 3);
+                } else if self.prefix.len() > 80 {
+                    self.candidate = false;
+                }
+            }
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_read_image_estimate_excludes_base64_without_copying_history() {
+        let text = serde_json::json!({"text":"ordinary 中文 text with \\\"quotes\\\""});
+        assert_eq!(
+            estimate_tokens(&text).unwrap(),
+            (serialized_len(&text).unwrap() as u64).div_ceil(3)
+        );
+        let small = serde_json::json!({"image_url":"data:image/png;base64,AAAA"});
+        let large = serde_json::json!({"image_url":format!("data:image/png;base64,{}", "A".repeat(100_000))});
+        assert_eq!(
+            estimate_tokens(&small).unwrap(),
+            estimate_tokens(&large).unwrap()
+        );
+        assert!(estimate_tokens(&large).unwrap() >= 4096);
+        let both = serde_json::json!([small, large]);
+        assert!(estimate_tokens(&both).unwrap() >= 8192);
+    }
 
     #[test]
     fn context_percent_handles_overcapacity_without_overflow() {
