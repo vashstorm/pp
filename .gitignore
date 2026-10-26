@@ -3,6 +3,7 @@
 /models.jsonc
 /models.yml
 /settings.yml
+/docs/research/
 
 # 工具运行时生成的项目内缓存与临时文件
 /.pp-cache/
