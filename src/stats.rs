@@ -179,13 +179,13 @@ impl Store {
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_millis(250))?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 2, "unsupported statistics database version");
+        ensure!(version <= 3, "unsupported statistics database version");
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        if version < 2 {
+        if version < 3 {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-            ensure!(version <= 2, "unsupported statistics database version");
+            ensure!(version <= 3, "unsupported statistics database version");
             if version == 0 {
                 tx.execute_batch("CREATE TABLE IF NOT EXISTS requests (
                 id INTEGER PRIMARY KEY, request_key TEXT NOT NULL UNIQUE, timestamp INTEGER NOT NULL,
@@ -204,6 +204,9 @@ impl Store {
             }
             if version < 2 {
                 tx.execute_batch("ALTER TABLE requests ADD COLUMN cache_write_tokens INTEGER; PRAGMA user_version=2;")?;
+            }
+            if version < 3 {
+                tx.execute_batch("CREATE INDEX IF NOT EXISTS requests_failed_time ON requests(timestamp DESC,id DESC) WHERE status='failed'; PRAGMA user_version=3;")?;
             }
             tx.commit()?;
         }
@@ -532,13 +535,22 @@ providers:
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stats.db");
         let mut store = open_store(&path).unwrap();
+        let mut failed = fixture("old", 1000);
+        failed.status = "failed".into();
+        failed.error_message = Some("retained failure".into());
+        store.insert(&failed, &json!({"text":"retained"})).unwrap();
+        let snapshot = json!({"id":"old-entry","type":"message","message":{"role":"assistant","content":"retained snapshot"}});
         store
-            .insert(&fixture("old", 1000), &json!({"text":"retained"}))
+            .link(
+                "old",
+                Path::new("/missing/session.jsonl"),
+                std::slice::from_ref(&snapshot),
+            )
             .unwrap();
         store
             .conn
             .execute_batch(
-                "ALTER TABLE requests DROP COLUMN cache_write_tokens; PRAGMA user_version=1;",
+                "DROP INDEX requests_failed_time; ALTER TABLE requests DROP COLUMN cache_write_tokens; PRAGMA user_version=1;",
             )
             .unwrap();
         drop(store);
@@ -547,6 +559,14 @@ providers:
         assert_eq!(old["request"]["cached_tokens"], 80);
         assert!(old["request"]["cache_write_tokens"].is_null());
         assert_eq!(old["output_message"]["text"], "retained");
+        assert_eq!(old["request"]["status"], "failed");
+        assert_eq!(old["request"]["entry_id"], "old-entry");
+        assert_eq!(old["session_entry"], json!([snapshot]));
+        let errors = store
+            .errors(Range::All, 2000, 500, &analytics::Pricing::default())
+            .unwrap();
+        assert_eq!(errors["summary"]["requests"], 1);
+        assert_eq!(errors["requests"][0]["error_message"], "retained failure");
         let mut new = fixture("new", 1001);
         new.cache_write_tokens = Some(10);
         store.insert(&new, &Value::Null).unwrap();
@@ -556,13 +576,53 @@ providers:
             store.latest(0, 2000, 500).unwrap()[0].cache_write_tokens,
             Some(10)
         );
-        assert_eq!(
+    }
+
+    #[test]
+    fn stats_failed_index_upgrade_preserves_error_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.db");
+        let mut store = open_store(&path).unwrap();
+        for (key, status) in [
+            ("failed-one", "failed"),
+            ("ok", "ok"),
+            ("aborted", "aborted"),
+            ("failed-two", "failed"),
+        ] {
+            let mut record = fixture(key, 1000);
+            record.status = status.into();
+            record.error_message = (status == "failed").then(|| format!("{key} error"));
             store
-                .conn
-                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            2
-        );
+                .insert(&record, &json!({"text":format!("{key} full output")}))
+                .unwrap();
+        }
+        store.link("failed-one", Path::new("/missing/session.jsonl"), &[json!({"id":"entry","type":"message","message":{"role":"assistant","content":"retained snapshot"}})]).unwrap();
+        store
+            .conn
+            .execute_batch("DROP INDEX requests_failed_time; PRAGMA user_version=2;")
+            .unwrap();
+        let pricing = analytics::Pricing::default();
+        let errors = store.errors(Range::All, 2000, 500, &pricing).unwrap();
+        assert_eq!(errors["summary"]["requests"], 2);
+        let latest = serde_json::to_value(store.latest(0, 2000, 500).unwrap()).unwrap();
+        let details = (1..=4)
+            .map(|id| store.detail(id).unwrap().unwrap())
+            .collect::<Vec<_>>();
+        drop(store);
+        for _ in 0..2 {
+            let store = open_store(&path).unwrap();
+            assert_eq!(
+                store.errors(Range::All, 2000, 500, &pricing).unwrap(),
+                errors
+            );
+            assert_eq!(
+                serde_json::to_value(store.latest(0, 2000, 500).unwrap()).unwrap(),
+                latest
+            );
+            for (id, detail) in (1..=4).zip(&details) {
+                assert_eq!(&store.detail(id).unwrap().unwrap(), detail);
+            }
+        }
     }
 
     #[test]
@@ -745,6 +805,44 @@ providers:
             store.trace(2, now, &pricing).unwrap().unwrap()["summary"]["requests"],
             1
         );
+        let since = Range::Day.since(now);
+        for (key, timestamp, status) in [
+            ("before-range", since - 1, "failed"),
+            ("at-lower", since, "failed"),
+            ("at-upper-one", now, "failed"),
+            ("at-upper-two", now, "failed"),
+            ("after-range", now + 1, "failed"),
+            ("in-range-ok", now - 500, "ok"),
+            ("in-range-aborted", now - 500, "aborted"),
+        ] {
+            let mut record = fixture(key, timestamp);
+            record.status = status.into();
+            record.error_message = failed.error_message.clone();
+            store.insert(&record, &Value::Null).unwrap();
+        }
+        let complete = store.errors(Range::Day, now, 2000, &pricing).unwrap();
+        let keys = complete["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["request_key"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        let expected = ["at-upper-two".to_owned(), "at-upper-one".to_owned()]
+            .into_iter()
+            .chain((0..501).rev().map(|n| format!("failure-{n}")))
+            .chain(["old-failure".to_owned(), "at-lower".to_owned()])
+            .collect::<Vec<_>>();
+        assert_eq!(keys, expected);
+        assert_eq!(complete["summary"]["requests"], 505);
+        let limited = store.errors(Range::Day, now, 500, &pricing).unwrap();
+        for field in ["summary", "signatures", "models"] {
+            assert_eq!(limited[field], complete[field]);
+        }
+        assert_eq!(
+            limited["requests"],
+            json!(&complete["requests"].as_array().unwrap()[..500])
+        );
+        assert_eq!(limited["has_more"], true);
         for endpoint in ["errors", "traces"] {
             for query in [
                 "range=bad",
@@ -935,13 +1033,6 @@ providers:
                 .pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
                 .unwrap(),
             "wal"
-        );
-        assert_eq!(
-            store
-                .conn
-                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            2
         );
     }
     #[test]

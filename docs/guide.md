@@ -536,7 +536,7 @@ Projects 按完整 cwd 聚合，保留同名不同路径的独立目录，展示
 
 统计口径：以请求开始时间筛选，UTC 毫秒落盘、本地时间展示；总输入 Token 已包含缓存读取和写入，Conversation tokens 为总输入加输出，Uncached input 为总输入减缓存读取和写入。缺失的 usage／缓存明细保持未知，不用估算值填充。TTFT 是发起调用至首个非空正文、思考、拒绝或工具参数增量的时间；Tokens/s 为输出 Token 除以请求总耗时。用户取消记为 Aborted，服务或协议错误记为 Failed；发送前取消和本地校验失败不计入。
 
-缓存写入从 Chat 的 `usage.prompt_tokens_details.cache_write_tokens`、Responses 的 `usage.input_tokens_details.cache_write_tokens` 采集，也兼容 usage 顶层的 `cache_write_tokens`／`cache_creation_input_tokens` 扩展；遵循这两种协议的总输入已包含缓存读写的口径，不额外叠加缓存 Token。不支持原生 Anthropic Messages 协议。未上报写入量保持未知，明确上报 `0` 才表示无写入。SQLite 自动升级到 v2，旧记录的写入量保留 NULL，不回填估算。Premium requests 和订阅额度没有采集数据，保持未知。
+缓存写入从 Chat 的 `usage.prompt_tokens_details.cache_write_tokens`、Responses 的 `usage.input_tokens_details.cache_write_tokens` 采集，也兼容 usage 顶层的 `cache_write_tokens`／`cache_creation_input_tokens` 扩展；遵循这两种协议的总输入已包含缓存读写的口径，不额外叠加缓存 Token。不支持原生 Anthropic Messages 协议。未上报写入量保持未知，明确上报 `0` 才表示无写入。SQLite 自动升级到 v3，旧记录的写入量保留 NULL，不回填估算。v3 在同一迁移事务中增加仅覆盖 Failed 请求的时间／ID 部分索引，保留普通时间索引；错误汇总仍覆盖完整时间范围，仅返回列表受 limit 限制。升级保留历史正文和关联快照；只支持 v2 的旧二进制不能直接打开升级后的数据库。Premium requests 和订阅额度没有采集数据，保持未知。
 
 费用直接使用 `~/.pp/agent/models.yml` 中各模型的 `cost` 配置，按调用时保存的 `model_reference`（`provider/model` 配置引用，并非供应商模型名）精确匹配。无需另建价格文件。`cost` 可省略，省略时该模型未定价；配置时 `input`、`cacheRead`、`output` 必填，新增 `cacheWrite` 可省略以兼容旧配置；所有已配置单价都必须为非负有限数，单位为 **USD／百万 Token**，`0` 表示已知免费。例如在 `providers.<provider_id>.models.<model_id>` 的模型条目中填写：
 
