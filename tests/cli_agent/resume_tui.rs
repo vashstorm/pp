@@ -110,40 +110,13 @@ fn resume_history_wait_resumed(pty: &mut Pty, id: &str, replayed: &[&str]) {
     );
 }
 
-// Exits with Ctrl-C and returns the full terminal scrollback the TUI dumps
-// after leaving the alternate screen.
+// 退出后读取运行时已提交的原生历史与最后保留的主屏幕。
 fn resume_history_exit_scrollback(pty: &mut Pty, last_answer: &str) -> String {
     pty.input("\x03");
-    pty.wait_for("leaving alternate screen", |screen| {
-        !screen.alternate_screen()
-    });
-    let marker = b"\x1b[?1049l";
-    let start = pty
-        .raw
-        .windows(marker.len())
-        .rposition(|bytes| bytes == marker)
-        .unwrap();
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        pty.drain();
-        let mut parser = vt100::Parser::new(600, 100, 0);
-        parser.process(&pty.raw[start + marker.len()..]);
-        let contents = parser.screen().contents();
-        // Leaving the alternate screen precedes the potentially large dump.
-        // Its final status line is the observable completion fence.
-        if let (Some(answer), Some(footer)) =
-            (contents.rfind(last_answer), contents.rfind("fixture-model"))
-            && footer > answer
-        {
-            return contents;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "incomplete exit scrollback\n{}",
-            pty.diagnostics()
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
+    pty.wait_for("退出后恢复输入模式", |screen| !screen.bracketed_paste());
+    let (contents, _) = pty.native_history();
+    assert!(contents.contains(last_answer), "{contents}");
+    contents
 }
 
 // First reply of the saved session: visible reasoning plus a bash+read tool

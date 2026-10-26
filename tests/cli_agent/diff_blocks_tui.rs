@@ -1,7 +1,7 @@
 // Diff 块级渲染 PTY 回归：两种 edit 模式／两协议的真实提交 diff（磁盘落盘 + 屏幕
 // 红/绿与行号 + 统计）、write 新建/覆盖/同内容/空文件、CRLF→LF／末尾换行删除／BOM
 // /非 UTF-8 的 unavailable 回退、无读权限文件的 write 不被快照失败阻断、失败 edit
-// 不伪造 diff、超过 40 行的默认折叠与Ctrl+O 展开/收起、退出 scrollback 完整展开
+// 不伪造 diff、超过 40 行的默认折叠与Ctrl+O 展开/收起、退出原生历史保持当时的折叠状态
 // 保留颜色，以及 /resume 与启动恢复重放相同 diff 且不重新执行旧工具、缺 FileChanged
 // 的旧日志正常加载。全部通过真实 PTY、loopback HTTP 与磁盘文件观察，不用 sleep 猜
 // 测阶段；辅助函数一律使用 `diff_blocks_` 前缀，测试函数使用 `transcript_blocks_`
@@ -69,39 +69,13 @@ fn diff_blocks_tool_result(body: &Value, protocol: &str, id: &str) -> Value {
         .1
 }
 
-// Ctrl-C 退出后解析真实终端 scrollback dump，返回纯文本与原始字节（用于颜色断言）。
+// Ctrl-C 退出后读取原生滚动历史及主屏幕，保留颜色用于断言。
 fn diff_blocks_exit_scrollback(pty: &mut Pty, last_answer: &str) -> (String, Vec<u8>) {
     pty.input("\x03");
-    pty.wait_for("leaving the alternate screen", |screen| {
-        !screen.alternate_screen()
-    });
-    let marker = b"\x1b[?1049l";
-    let start = pty
-        .raw
-        .windows(marker.len())
-        .rposition(|bytes| bytes == marker)
-        .unwrap();
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        pty.drain();
-        let tail = pty.raw[start + marker.len()..].to_vec();
-        let mut parser = vt100::Parser::new(600, 100, 0);
-        parser.process(&tail);
-        let contents = parser.screen().contents();
-        // 状态栏的 fixture-model 是 dump 结束的观察栅栏。
-        if let (Some(answer), Some(footer)) =
-            (contents.rfind(last_answer), contents.rfind("fixture-model"))
-            && footer > answer
-        {
-            return (contents, tail);
-        }
-        assert!(
-            Instant::now() < deadline,
-            "incomplete exit scrollback\n{}",
-            pty.diagnostics()
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
+    pty.wait_for("退出后恢复输入模式", |screen| !screen.bracketed_paste());
+    let (contents, raw) = pty.native_history();
+    assert!(contents.contains(last_answer), "{contents}");
+    (contents, raw)
 }
 
 // 复制一份真实 journal 并删除全部 FileChanged 事件行，模拟缺少 diff 事件的旧日志。
@@ -592,21 +566,21 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
         pty.text("diff-blocks long done");
         pty.ready();
         let (scrollback, raw) = diff_blocks_exit_scrollback(&mut pty, "diff-blocks long done");
-        for expected in ["  1 - 1", "  1 + A", " 24 - 24", " 24 + X", " 25   keep"] {
+        for expected in ["  1 - 1", "  1 + A"] {
             assert!(scrollback.contains(expected), "{expected}\n{scrollback}");
         }
         assert!(
-            !scrollback.contains("(Ctrl + O to expand)"),
+            scrollback.contains("(Ctrl + O to expand)") && !scrollback.contains(" 24 + X"),
             "{scrollback}"
         );
         let mut parser = vt100::Parser::new(600, 100, 0);
         parser.process(&raw);
         assert!(
-            diff_blocks_screen_colored(parser.screen(), "24", DIFF_BLOCKS_REMOVED),
+            diff_blocks_screen_colored(parser.screen(), "1", DIFF_BLOCKS_REMOVED),
             "scrollback lost removed-line color\n{scrollback}"
         );
         assert!(
-            diff_blocks_screen_colored(parser.screen(), "X", DIFF_BLOCKS_ADDED),
+            diff_blocks_screen_colored(parser.screen(), "A", DIFF_BLOCKS_ADDED),
             "scrollback lost added-line color\n{scrollback}"
         );
         pty.finish();

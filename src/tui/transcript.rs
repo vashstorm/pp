@@ -11,11 +11,32 @@ use ratatui::{
     widgets::{Paragraph, Widget, Wrap},
 };
 use serde_json::Value;
+#[cfg(test)]
+use std::io::{self, Write};
 use std::{
-    io::{self, Write},
+    collections::VecDeque,
     ops::Range,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
+
+static NEXT_NATIVE_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// 已提交的源位置与仍留在屏幕上的冻结行；不复制完整历史。
+#[derive(Clone, Default)]
+struct NativeState {
+    entry: usize,
+    row: usize,
+    retained: VecDeque<Vec<ratatui::buffer::Cell>>,
+    revision: u64,
+}
+
+pub(super) struct NativeBatch {
+    generation: u64,
+    revision: u64,
+    next: NativeState,
+    pub rows: Vec<Vec<ratatui::buffer::Cell>>,
+}
 
 const BASH_BACKGROUND: Color = Color::Rgb(22, 27, 33);
 const BASH_BORDER: Color = Color::Rgb(76, 85, 98);
@@ -862,6 +883,9 @@ struct TreeLayout {
 
 #[derive(Default)]
 pub(super) struct Transcript {
+    native_generation: u64,
+    native: NativeState,
+    native_preview: Option<NativeState>,
     entries: Vec<TranscriptEntry>,
     read_groups_key: Option<(usize, bool, bool)>,
     // 状态独立于历史条目，始终渲染在最新消息后面。
@@ -885,6 +909,7 @@ pub(super) struct Transcript {
 impl Transcript {
     pub(super) fn new() -> Self {
         Self {
+            native_generation: NEXT_NATIVE_GENERATION.fetch_add(1, Ordering::Relaxed),
             follow_bottom: true,
             ..Self::default()
         }
@@ -902,6 +927,196 @@ impl Transcript {
 
     pub(super) fn fresh(&self) -> Self {
         Self::with_read_preview(self.display.read_preview)
+    }
+
+    pub(super) fn native_generation(&self) -> u64 {
+        self.native_generation
+    }
+
+    pub(super) fn following(&self) -> bool {
+        self.follow_bottom
+    }
+
+    pub(super) fn follow(&mut self) {
+        self.follow_bottom = true;
+    }
+
+    pub(super) fn begin_browse(&mut self) {
+        self.prepare_layout(self.viewport_width);
+        self.offset = self.total.saturating_sub(self.viewport_height);
+        self.follow_bottom = true;
+    }
+
+    fn prepare_native_layout(&mut self, width: u16) {
+        self.prepare_read_groups();
+        for entry in self.entries[self.native.entry..]
+            .iter_mut()
+            .chain(self.activity.iter_mut().map(|activity| &mut activity.entry))
+        {
+            Self::layout_entry(entry, self.display, width, false);
+        }
+    }
+
+    fn native_height(&self, state: &NativeState) -> usize {
+        let mut height = 0;
+        for entry in self.entries[state.entry..]
+            .iter()
+            .chain(self.activity.iter().map(|activity| &activity.entry))
+        {
+            let rows = entry.layout.as_ref().expect("layout initialized").height;
+            if rows > 0 {
+                height += rows + 1;
+            }
+        }
+        height.saturating_sub(1).saturating_sub(state.row)
+    }
+
+    fn native_frontier(&self, exiting: bool) -> usize {
+        if exiting {
+            return self.entries.len();
+        }
+        let mut frontier = self.entries.len();
+        for index in self
+            .assistant
+            .iter()
+            .chain(self.thinking.iter())
+            .chain(self.running_tools.iter().map(|(_, index)| index))
+        {
+            frontier = frontier.min(*index);
+        }
+        // 相邻 read 还可能合并成同一摘要，整组关闭前不能冻结组首。
+        if self
+            .activity
+            .as_ref()
+            .is_some_and(|activity| activity.started.is_some())
+        {
+            let mut index = self.entries.len();
+            while index > 0 && self.entries[index - 1].tool.as_deref() == Some("read") {
+                index -= 1;
+            }
+            frontier = frontier.min(index);
+        }
+        frontier
+    }
+
+    /// 每次最多准备 64 行；调用者必须在终端输出成功后确认，才推进源游标。
+    pub(super) fn next_native_batch(
+        &mut self,
+        width: u16,
+        height: u16,
+        exiting: bool,
+    ) -> Option<NativeBatch> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        self.prepare_native_layout(width);
+        let mut next = self.native.clone();
+        let capacity = usize::from(height);
+        let mut overflow =
+            (next.retained.len() + self.native_height(&next)).saturating_sub(capacity);
+        let mut rows = Vec::new();
+        if overflow > 0 && !next.retained.is_empty() {
+            for _ in 0..overflow.min(64).min(next.retained.len()) {
+                rows.push(next.retained.pop_front().expect("retained row"));
+            }
+        } else {
+            if (overflow == 0 && next.row == 0) || next.entry >= self.native_frontier(exiting) {
+                return None;
+            }
+            let entry = &self.entries[next.entry];
+            let entry_height = entry.layout.as_ref().expect("layout initialized").height;
+            // 无正文的分组成员不产生分隔行。
+            let span = if entry_height == 0 {
+                0
+            } else {
+                entry_height
+                    + usize::from(next.entry + 1 < self.entries.len() || self.activity.is_some())
+            };
+            let count = span.saturating_sub(next.row).min(64);
+            if count > 0 {
+                let area = Rect::new(0, 0, width, count as u16);
+                let mut buffer = Buffer::empty(area);
+                Self::render_entries(std::iter::once(entry), &mut buffer, area, next.row, false);
+                for row in buffer.content.chunks(usize::from(width)) {
+                    next.retained.push_back(row.to_vec());
+                }
+                next.row += count;
+            }
+            if next.row >= span {
+                next.entry += 1;
+                next.row = 0;
+            }
+            overflow = (next.retained.len() + self.native_height(&next)).saturating_sub(capacity);
+            for _ in 0..overflow.min(next.retained.len()) {
+                rows.push(next.retained.pop_front().expect("retained row"));
+            }
+        }
+        Some(NativeBatch {
+            generation: self.native_generation,
+            revision: self.native.revision,
+            next,
+            rows,
+        })
+    }
+
+    pub(super) fn preview_native_batch(&mut self, batch: &NativeBatch) {
+        self.native_preview = Some(batch.next.clone());
+    }
+
+    pub(super) fn acknowledge_native_batch(&mut self, batch: NativeBatch) {
+        assert_eq!(
+            batch.generation, self.native_generation,
+            "历史批次来自其他会话"
+        );
+        assert_eq!(batch.revision, self.native.revision, "历史批次已过期");
+        self.native = batch.next;
+        self.native.revision += 1;
+        self.native_preview = None;
+    }
+
+    pub(super) fn draw_native(&mut self, frame: &mut Frame, area: Rect) {
+        self.viewport_width = area.width;
+        self.viewport_bottom = area.bottom();
+        self.viewport_height = usize::from(area.height);
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        self.prepare_native_layout(area.width);
+        let state = self.native_preview.as_ref().unwrap_or(&self.native);
+        let live = self.native_height(state);
+        let retained = state
+            .retained
+            .len()
+            .min(self.viewport_height.saturating_sub(live));
+        for (row, cells) in state
+            .retained
+            .iter()
+            .skip(state.retained.len() - retained)
+            .enumerate()
+        {
+            super::surface::copy_row(
+                cells,
+                frame.buffer_mut(),
+                area.x,
+                area.y + row as u16,
+                area.width,
+            );
+        }
+        let tail = Rect::new(
+            area.x,
+            area.y + retained as u16,
+            area.width,
+            area.height - retained as u16,
+        );
+        Self::render_entries(
+            self.entries[state.entry..]
+                .iter()
+                .chain(self.activity.iter().map(|activity| &activity.entry)),
+            frame.buffer_mut(),
+            tail,
+            state.row + live.saturating_sub(usize::from(tail.height)),
+            false,
+        );
     }
 
     pub(super) fn set_terminal_rows(&mut self, rows: u16) {
@@ -1052,6 +1267,7 @@ impl Transcript {
         start..self.entries.len()
     }
 
+    #[cfg(test)]
     pub(super) fn write_scrollback(
         &mut self,
         writer: &mut impl Write,
@@ -1656,28 +1872,37 @@ impl Transcript {
             .iter_mut()
             .chain(self.activity.iter_mut().map(|activity| &mut activity.entry))
         {
-            let display = DisplayContext {
-                full: self.display.full || entry.display.full,
-                ..self.display
-            };
-            if entry.display != display {
-                entry.display = display;
-                entry.layout = None;
-            }
-            let padding = if compact {
-                0
-            } else if entry.kind == EntryKind::Bash {
-                4
-            } else {
-                2
-            };
-            entry.ensure_layout(width.saturating_sub(padding).max(1));
-            let height = entry.layout.as_ref().expect("layout initialized").height;
+            let height = Self::layout_entry(entry, self.display, width, compact);
             if height > 0 {
                 self.total += height + 1;
             }
         }
         self.total = self.total.saturating_sub(1);
+    }
+
+    fn layout_entry(
+        entry: &mut TranscriptEntry,
+        context: DisplayContext,
+        width: u16,
+        compact: bool,
+    ) -> usize {
+        let display = DisplayContext {
+            full: context.full || entry.display.full,
+            ..context
+        };
+        if entry.display != display {
+            entry.display = display;
+            entry.layout = None;
+        }
+        let padding = if compact {
+            0
+        } else if entry.kind == EntryKind::Bash {
+            4
+        } else {
+            2
+        };
+        entry.ensure_layout(width.saturating_sub(padding).max(1));
+        entry.layout.as_ref().expect("layout initialized").height
     }
 
     fn prepare_read_groups(&mut self) {
@@ -2227,6 +2452,109 @@ mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
     use serde_json::json;
+
+    fn native_rows(rows: &[Vec<ratatui::buffer::Cell>]) -> String {
+        rows.iter()
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn retire_native(
+        transcript: &mut Transcript,
+        width: u16,
+        height: u16,
+        exiting: bool,
+    ) -> String {
+        let mut text = String::new();
+        while let Some(batch) = transcript.next_native_batch(width, height, exiting) {
+            assert!(batch.rows.len() <= 64);
+            text.push_str(&native_rows(&batch.rows));
+            text.push('\n');
+            transcript.acknowledge_native_batch(batch);
+        }
+        text
+    }
+
+    #[test]
+    fn native_history_requires_ack_and_keeps_only_bounded_frozen_tail() {
+        let mut transcript = Transcript::new();
+        transcript.append(
+            "You",
+            &(0..200)
+                .map(|i| format!("native-{i:03}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let batch = transcript.next_native_batch(40, 10, false).unwrap();
+        let repeated = transcript.next_native_batch(40, 10, false).unwrap();
+        assert_eq!(native_rows(&batch.rows), native_rows(&repeated.rows));
+        assert_eq!(transcript.native.entry, 0);
+        assert_eq!(transcript.native.row, 0);
+        let mut text = native_rows(&batch.rows);
+        transcript.acknowledge_native_batch(batch);
+        text.push_str(&retire_native(&mut transcript, 40, 10, false));
+        assert_eq!(text.matches("native-000").count(), 1);
+        assert_eq!(text.matches("native-100").count(), 1);
+        assert_eq!(transcript.native.entry, 1);
+        assert!(transcript.native.retained.len() <= 10);
+        assert!(
+            retire_native(&mut transcript, 40, 10, true)
+                .trim()
+                .is_empty()
+        );
+        // 完整数据仍供备用屏幕使用。
+        assert!(screen(&render(&mut transcript, 40, 230)).contains("native-000"));
+    }
+
+    #[test]
+    fn native_history_defers_streaming_and_seals_partial_output_only_on_exit() {
+        let mut transcript = Transcript::new();
+        transcript.begin_run();
+        transcript.progress(AgentEvent::AssistantStarted);
+        delta(
+            &mut transcript,
+            &(0..80)
+                .map(|i| format!("partial-{i:03}\n\n"))
+                .collect::<String>(),
+            false,
+        );
+        assert!(transcript.next_native_batch(40, 8, false).is_none());
+        let output = retire_native(&mut transcript, 40, 8, true);
+        assert!(output.contains("partial-000"));
+        assert_eq!(output.matches("partial-000").count(), 1);
+        assert!(
+            retire_native(&mut transcript, 40, 8, true)
+                .trim()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_history_freezes_tool_preview_and_waits_for_read_group_boundary() {
+        let mut transcript = Transcript::with_read_preview(false);
+        transcript.begin_run();
+        tool(&mut transcript, "read-a", "read", json!({"path":"a.rs"}));
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "read-a".into(),
+            result: json!({"ok":true,"content":"READ_HIDDEN"}),
+        });
+        assert!(transcript.next_native_batch(40, 1, false).is_none());
+        transcript.append("Assistant", "read group closed");
+        let output = retire_native(&mut transcript, 40, 1, false);
+        assert!(output.contains("a.rs"));
+        assert!(!output.contains("READ_HIDDEN"));
+        transcript.toggle_tool_output();
+        assert!(
+            retire_native(&mut transcript, 24, 1, true)
+                .trim()
+                .is_empty()
+        );
+        assert_eq!(
+            transcript.entries[0].result.as_ref().unwrap()["content"],
+            "READ_HIDDEN"
+        );
+    }
 
     fn entry_text(entry: &mut TranscriptEntry, width: u16) -> String {
         entry.ensure_layout(width);

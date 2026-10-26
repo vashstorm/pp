@@ -10,6 +10,7 @@ mod scrollback;
 mod sessions;
 mod skills;
 mod statusline;
+mod surface;
 mod tips;
 mod tool_display;
 mod transcript;
@@ -35,14 +36,7 @@ use crate::{
     tools::{ChangesView, UndoResult, UndoToken},
 };
 use anyhow::{Context, Result};
-use crossterm::{
-    SynchronizedUpdate,
-    event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
-    },
-    execute,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use menu::{MenuEvent, MenuItem, SelectionMenu};
 use notification::{Level, MouseAction, Notifications};
 use ratatui::{
@@ -87,11 +81,11 @@ pub(crate) fn run(
     auto_continue: bool,
     notification_options: NotificationOptions,
 ) -> Result<()> {
-    // Construct before try_init so partially initialized terminals are restored too.
-    let guard = TerminalGuard;
-    let mut terminal = ratatui::try_init().context("initializing terminal")?;
-    execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)
-        .context("enabling terminal input modes")?;
+    // 初始化中途失败和 panic 同样恢复终端模式。
+    let _guard = TerminalGuard;
+    surface::initialize().context("initializing terminal")?;
+    let mut surface = surface::Surface::new(io::stdout());
+    let mut canvas = ratatui::Terminal::new(ratatui::backend::TestBackend::new(1, 1))?;
     let mut app = App::new_with_skills(agent, skills, file_commands, cwd, notification_options)?;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c：Execute 保持原继续行为；Plan/Draft 提示继续输入；Plan/Ready 进入审阅。
@@ -111,6 +105,7 @@ pub(crate) fn run(
     }
     let mut workspace = WorkspaceStatus::new(cwd)?;
     let mut dirty = true;
+    let mut generation = app.conversation.native_generation();
     loop {
         dirty |= app.receive();
         dirty |= workspace.receive();
@@ -119,34 +114,40 @@ pub(crate) fn run(
         dirty |= app.review_transcript_tick(Instant::now());
         dirty |= app.token_speed.tick(Instant::now());
         if dirty {
-            terminal
-                .draw(|frame| app.draw(frame, &workspace.context))
-                .context("drawing terminal")?;
+            if generation != app.conversation.native_generation() {
+                surface.reset_history();
+                generation = app.conversation.native_generation();
+                app.history_browser = false;
+            }
+            paint_surface(
+                &mut app,
+                &workspace.context,
+                &mut canvas,
+                &mut surface,
+                false,
+            )
+            .context("drawing terminal")?;
             dirty = false;
         }
         if event::poll(Duration::from_millis(50)).context("polling terminal input")? {
             let event = event::read().context("reading terminal input")?;
             if app.handle(event, &mut dirty) {
+                if let Some(cancellation) = &app.active_cancellation {
+                    cancellation.cancel();
+                }
+                // 在资源销毁前封存已接收内容；之后不再调用 App::draw。
+                paint_surface(
+                    &mut app,
+                    &workspace.context,
+                    &mut canvas,
+                    &mut surface,
+                    true,
+                )
+                .context("finishing terminal transcript")?;
                 app.shutdown_background_tasks()?;
-                app.tree_panel = None;
-                app.changes_panel = None;
-                app.notifications.clear();
-                // 仅在内存中准备退出快照，避免退出前额外刷新备用屏幕。
-                let snapshot = {
-                    let mut frame = terminal.get_frame();
-                    app.draw(&mut frame, &workspace.context);
-                    frame.buffer_mut().clone()
-                };
-                // 屏幕切换与完整历史回放共用一次同步更新，隐藏中间画面。
-                return io::stdout()
-                    .lock()
-                    .sync_update(|stdout| {
-                        drop(terminal);
-                        drop(guard);
-                        app.conversation.write_scrollback(stdout, &snapshot)
-                    })
-                    .context("synchronizing terminal exit")?
-                    .context("writing terminal transcript");
+                return surface
+                    .finish(canvas.backend().buffer().area.height)
+                    .context("restoring shell cursor");
             }
         }
     }
@@ -155,10 +156,70 @@ pub(crate) fn run(
 struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), DisableMouseCapture);
-        let _ = execute!(io::stdout(), DisableBracketedPaste);
-        ratatui::restore();
+        surface::restore();
     }
+}
+
+fn paint_surface(
+    app: &mut App,
+    context: &StatusContext,
+    canvas: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+    surface: &mut surface::Surface<impl io::Write>,
+    exiting: bool,
+) -> Result<()> {
+    let (width, height) = crossterm::terminal::size()?;
+    let area = Rect::new(0, 0, width.max(1), height.max(1));
+    if canvas.backend().buffer().area != area {
+        canvas.backend_mut().resize(area.width, area.height);
+        canvas.resize(area)?;
+    }
+    let alternate = !exiting && app.needs_alternate();
+    app.native_render = !alternate;
+    if !alternate {
+        let available = height.saturating_sub(u16::from(height >= 2));
+        let bordered = available >= 3 && width >= 3;
+        let input = available
+            .min(app.input.lines().len().clamp(1, 6) as u16 + if bordered { 2 } else { 0 });
+        let conversation_height = available.saturating_sub(input);
+        while let Some(batch) =
+            app.conversation
+                .next_native_batch(width, conversation_height, exiting)
+        {
+            app.conversation.preview_native_batch(&batch);
+            let mut rendered = None;
+            canvas.draw(|frame| {
+                app.draw(frame, context);
+                rendered = Some(frame.buffer_mut().clone());
+            })?;
+            let buffer = if exiting {
+                app.normal_snapshot.as_ref().expect("normal frame")
+            } else {
+                rendered.as_ref().expect("rendered frame")
+            };
+            let cursor = canvas
+                .backend()
+                .cursor_visible()
+                .then(|| canvas.backend().cursor_position());
+            surface.paint(buffer, cursor, false, &batch.rows)?;
+            app.conversation.acknowledge_native_batch(batch);
+        }
+    }
+    let mut rendered = None;
+    canvas.draw(|frame| {
+        app.draw(frame, context);
+        rendered = Some(frame.buffer_mut().clone());
+    })?;
+    let cursor = canvas
+        .backend()
+        .cursor_visible()
+        .then(|| canvas.backend().cursor_position());
+    let buffer = if exiting {
+        app.normal_snapshot.as_ref().expect("normal frame")
+    } else {
+        rendered.as_ref().expect("rendered frame")
+    };
+    surface.paint(buffer, cursor, alternate, &[])?;
+    Ok(())
 }
 
 enum WorkerCommand {
@@ -427,6 +488,9 @@ impl EscapeTap {
 
 struct App {
     conversation: Transcript,
+    native_render: bool,
+    normal_snapshot: Option<ratatui::buffer::Buffer>,
+    history_browser: bool,
     notifications: Notifications,
     show_welcome: bool,
     input: TextArea<'static>,
@@ -567,6 +631,9 @@ impl App {
             .diagnostics
             .clone();
         let mut app = Self {
+            native_render: false,
+            normal_snapshot: None,
+            history_browser: false,
             conversation: Transcript::with_read_preview(
                 agent.as_ref().is_ok_and(Agent::read_tool_result_preview),
             ),
@@ -1000,6 +1067,7 @@ impl App {
     ) -> Option<String> {
         self.close_ask_on_exit();
         self.token_speed.clear();
+        self.history_browser = false;
         self.conversation = self.conversation.fresh();
         self.input_history = Vec::new();
         let error = self.conversation.replay(replay, &mut self.input_history);
@@ -1368,6 +1436,20 @@ impl App {
     }
 
     /// 当前显示的转录：独立审查页优先于主对话。
+    fn needs_alternate(&self) -> bool {
+        self.history_browser
+            || self.skill_panel.is_some()
+            || self.session_panel.is_some()
+            || self.changes_panel.is_some()
+            || self.tree_panel.is_some()
+            || self.plan_panel.is_some()
+            || self.plan_confirm.is_some()
+            || self.review_transcript.is_some()
+            || self.ask_panel.is_some()
+            || self.menu.is_some()
+            || self.model_panel.is_some()
+    }
+
     fn active_transcript(&mut self) -> &mut Transcript {
         self.review_transcript
             .as_mut()
@@ -1572,6 +1654,7 @@ impl App {
                 }
                 Ok(WorkerEvent::Reset) => {
                     self.close_ask_on_exit();
+                    self.history_browser = false;
                     self.conversation = self.conversation.fresh();
                     self.clear_input();
                     self.notifications.clear();
@@ -3154,6 +3237,12 @@ impl App {
                     && self.session_panel.is_none()
                 {
                     if key.kind == KeyEventKind::Press {
+                        if self.ask_panel.is_none() && self.review_transcript.is_none() {
+                            if !self.history_browser {
+                                self.conversation.begin_browse();
+                            }
+                            self.history_browser = true;
+                        }
                         self.active_transcript().toggle_tool_output();
                         let enabled = self.active_transcript().tools_expanded();
                         self.notify(
@@ -3418,6 +3507,12 @@ impl App {
                     }
                 }
                 if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+                    if self.history_browser {
+                        self.history_browser = false;
+                        self.conversation.follow();
+                        self.escape_tap.reset();
+                        return false;
+                    }
                     if key.kind == KeyEventKind::Press
                         && matches!(
                             self.state,
@@ -3471,8 +3566,19 @@ impl App {
                             return true;
                         }
                     }
-                    KeyCode::PageUp => self.active_transcript().page_up(),
-                    KeyCode::PageDown => self.active_transcript().page_down(),
+                    KeyCode::PageUp => {
+                        if !self.history_browser {
+                            self.active_transcript().begin_browse();
+                        }
+                        self.history_browser = true;
+                        self.active_transcript().page_up();
+                    }
+                    KeyCode::PageDown => {
+                        self.active_transcript().page_down();
+                        if self.conversation.following() {
+                            self.history_browser = false;
+                        }
+                    }
                     KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => {
                         let cursor = self.input.cursor();
                         self.input.input(key);
@@ -3622,11 +3728,18 @@ impl App {
             }
             Event::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::ScrollUp => {
+                    if !self.history_browser {
+                        self.active_transcript().begin_browse();
+                    }
+                    self.history_browser = true;
                     self.active_transcript().scroll_up(MOUSE_SCROLL_LINES);
                     *dirty = true;
                 }
                 MouseEventKind::ScrollDown => {
                     self.active_transcript().scroll_down(MOUSE_SCROLL_LINES);
+                    if self.conversation.following() {
+                        self.history_browser = false;
+                    }
                     *dirty = true;
                 }
                 _ => {}
@@ -3646,7 +3759,9 @@ impl App {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        if let Some(panel) = &mut self.skill_panel {
+        if !self.native_render
+            && let Some(panel) = &mut self.skill_panel
+        {
             panel.draw(frame, area);
             self.notifications.draw(
                 frame,
@@ -3654,7 +3769,9 @@ impl App {
             );
             return;
         }
-        if let Some(panel) = &mut self.session_panel {
+        if !self.native_render
+            && let Some(panel) = &mut self.session_panel
+        {
             panel.draw(frame, area);
             self.notifications.draw(
                 frame,
@@ -3662,7 +3779,9 @@ impl App {
             );
             return;
         }
-        if let Some(panel) = &mut self.changes_panel {
+        if !self.native_render
+            && let Some(panel) = &mut self.changes_panel
+        {
             let available = area.height.saturating_sub(1);
             let height = available.saturating_sub(1);
             panel.draw(frame, Rect::new(area.x, area.y, area.width, height));
@@ -3688,7 +3807,8 @@ impl App {
             );
             return;
         }
-        if let Some(panel) = &mut self.tree_panel
+        if !self.native_render
+            && let Some(panel) = &mut self.tree_panel
             && !panel.is_loading()
         {
             let available = area.height.saturating_sub(1);
@@ -3716,7 +3836,9 @@ impl App {
             );
             return;
         }
-        if let Some(panel) = &mut self.plan_panel {
+        if !self.native_render
+            && let Some(panel) = &mut self.plan_panel
+        {
             // 全屏审阅/进度视图：底部保留状态栏；Esc 由面板处理，只关闭面板。
             let available = area.height.saturating_sub(1);
             panel.draw(
@@ -3724,7 +3846,9 @@ impl App {
                 Rect::new(area.x, area.y, area.width, available),
                 self.plan_progress,
             );
-            if let Some(confirm) = &self.plan_confirm {
+            if !self.native_render
+                && let Some(confirm) = &self.plan_confirm
+            {
                 confirm.draw(frame, area);
             }
             frame.render_widget(
@@ -3750,15 +3874,18 @@ impl App {
         let input_height = available.min(lines.saturating_add(if bordered { 2 } else { 0 }));
         // 菜单覆盖输入框上方，候选数量不参与对话区和输入框的布局。
         let conversation_height = available.saturating_sub(input_height);
-        let menu_height = self
-            .menu
-            .as_ref()
-            .map_or(0, |menu| menu.height(conversation_height))
-            .max(
-                self.model_panel
-                    .as_ref()
-                    .map_or(0, |panel| panel.height(conversation_height)),
-            );
+        let menu_height = if self.native_render {
+            0
+        } else {
+            self.menu
+                .as_ref()
+                .map_or(0, |menu| menu.height(conversation_height))
+                .max(
+                    self.model_panel
+                        .as_ref()
+                        .map_or(0, |panel| panel.height(conversation_height)),
+                )
+        };
         let menu_area = Rect::new(
             area.x,
             area.y + conversation_height - menu_height,
@@ -3779,8 +3906,14 @@ impl App {
             conversation
         };
         // 独立审查页优先渲染：底部输入与状态栏照常可用，草稿可继续编辑但提交被拒。
-        self.active_transcript().draw(frame, conversation);
-        if let Some(panel) = &self.tree_panel {
+        if self.native_render {
+            self.conversation.draw_native(frame, conversation);
+        } else {
+            self.active_transcript().draw(frame, conversation);
+        }
+        if !self.native_render
+            && let Some(panel) = &self.tree_panel
+        {
             if input.height > 0 {
                 panel.draw_status(frame, Rect::new(input.x, input.y, input.width, 1));
             }
@@ -3857,7 +3990,9 @@ impl App {
         {
             menu.draw(frame, menu_area);
         }
-        if let Some(panel) = &mut self.model_panel {
+        if !self.native_render
+            && let Some(panel) = &mut self.model_panel
+        {
             panel.draw(frame, menu_area);
         }
         if status.height > 0 {
@@ -3872,13 +4007,20 @@ impl App {
                 status,
             );
         }
-        if let Some(panel) = &mut self.ask_panel {
+        if self.native_render {
+            self.normal_snapshot = Some(frame.buffer_mut().clone());
+        }
+        if !self.native_render
+            && let Some(panel) = &mut self.ask_panel
+        {
             panel.draw(
                 frame,
                 Rect::new(area.x, area.y, area.width, input.y.saturating_sub(area.y)),
             );
         }
-        if let Some(confirm) = &self.plan_confirm {
+        if !self.native_render
+            && let Some(confirm) = &self.plan_confirm
+        {
             confirm.draw(frame, area);
         }
         self.notifications.draw(

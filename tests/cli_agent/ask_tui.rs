@@ -113,7 +113,7 @@ fn tool_folding_ctrl_o_globally_toggles_during_ask_and_new_tools_inherit() {
 
 // 默认摘要不影响模型正文；恢复使用当前显示配置，退出回放仍包含全部内容。
 #[test]
-fn tool_folding_omp_read_default_summary_resume_and_complete_scrollback() {
+fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
     for protocol in ["completion", "response"] {
         let provider = server();
         let home = tempfile::tempdir().unwrap();
@@ -147,7 +147,8 @@ fn tool_folding_omp_read_default_summary_resume_and_complete_scrollback() {
         pty.text("summary done");
         pty.ready();
         let (scrollback, _) = diff_blocks_exit_scrollback(&mut pty, "summary done");
-        assert!(scrollback.contains("body-one-19") && scrollback.contains("body-two-19"));
+        assert!(scrollback.contains("Read (2)"));
+        assert!(!scrollback.contains("body-one-19") && !scrollback.contains("body-two-19"));
         pty.finish();
         let id = saved_session_id(home.path());
         std::fs::write(config_path(home.path(), "settings.yml"), r#"{"notification_timeout_seconds":1,"read":{"toolResultPreview":true}}"#).unwrap();
@@ -253,7 +254,8 @@ fn tool_folding_omp_mcp_multiline_result_and_write_preview() {
         ask_final_reply(request, protocol, "mcp write done");
         pty.text("mcp write done"); pty.ready();
         let (scrollback, _) = diff_blocks_exit_scrollback(&mut pty, "mcp write done");
-        assert!(scrollback.contains("mcp-body-19") && scrollback.contains("write-body-19"));
+        assert!(scrollback.contains("mcp-body-11") && scrollback.contains("write-body-19"));
+        assert!(!scrollback.contains("mcp-body-19"));
         pty.finish();
         no_more(&provider);
         super::mcp::assert_stopped(project.path());

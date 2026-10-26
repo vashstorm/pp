@@ -2699,6 +2699,7 @@ mod tui {
     include!("cli_agent/tree_tui.rs");
     include!("cli_agent/runtime_input_tui.rs");
     include!("cli_agent/menu_tui.rs");
+    include!("cli_agent/native_tui.rs");
     use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
     use std::{
         io::Read,
@@ -2723,6 +2724,7 @@ mod tui {
         output: Receiver<Vec<u8>>,
         reader: Option<thread::JoinHandle<()>>,
         parser: vt100::Parser,
+        parse_pending: Vec<u8>,
         raw: Vec<u8>,
         original_flags: [u128; 4],
     }
@@ -2814,19 +2816,17 @@ mod tui {
                 writer: Some(writer),
                 output,
                 reader: Some(reader),
-                parser: vt100::Parser::new(30, 100, 0),
+                parser: vt100::Parser::new(30, 100, 10_000),
+                parse_pending: Vec::new(),
                 raw: Vec::new(),
                 original_flags,
             };
-            pty.wait_for(
-                "alternate screen, bracketed paste, and SGR mouse capture",
-                |screen| {
-                    screen.alternate_screen()
-                        && screen.bracketed_paste()
-                        && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
-                        && screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr
-                },
-            );
+            pty.wait_for("主屏幕、括号粘贴和 SGR 鼠标模式", |screen| {
+                !screen.alternate_screen()
+                    && screen.bracketed_paste()
+                    && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+                    && screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr
+            });
             assert_ne!(
                 terminal_flags(pty.master.as_ref()),
                 pty.original_flags,
@@ -2976,9 +2976,52 @@ mod tui {
 
         fn drain(&mut self) {
             while let Ok(bytes) = self.output.try_recv() {
-                self.parser.process(&bytes);
                 self.raw.extend_from_slice(&bytes);
+                self.parse_pending.extend_from_slice(&bytes);
+                // vt100 0.16 不实现 ED3；在测试适配层补上原生历史清理语义。
+                let purge = b"\x1b[3J";
+                while let Some(index) = self
+                    .parse_pending
+                    .windows(purge.len())
+                    .position(|part| part == purge)
+                {
+                    self.parser.process(&self.parse_pending[..index]);
+                    let state = self.parser.screen().state_formatted();
+                    let (rows, columns) = self.parser.screen().size();
+                    self.parser = vt100::Parser::new(rows, columns, 10_000);
+                    self.parser.process(&state);
+                    self.parse_pending.drain(..index + purge.len());
+                }
+                let hold = (1..purge.len())
+                    .rev()
+                    .find(|count| self.parse_pending.ends_with(&purge[..*count]))
+                    .unwrap_or(0);
+                let count = self.parse_pending.len() - hold;
+                self.parser.process(&self.parse_pending[..count]);
+                self.parse_pending.drain(..count);
             }
+        }
+
+        fn native_history(&mut self) -> (String, Vec<u8>) {
+            self.drain();
+            let mut screen = self.parser.screen().clone();
+            screen.set_scrollback(usize::MAX);
+            let maximum = screen.scrollback();
+            let mut raw = Vec::new();
+            let (_, columns) = screen.size();
+            for offset in (1..=maximum).rev() {
+                screen.set_scrollback(offset);
+                raw.extend(screen.rows_formatted(0, columns).next().unwrap());
+                raw.extend_from_slice(b"\r\n");
+            }
+            screen.set_scrollback(0);
+            for row in screen.rows_formatted(0, columns) {
+                raw.extend(row);
+                raw.extend_from_slice(b"\r\n");
+            }
+            let mut parser = vt100::Parser::new(1000, columns, 0);
+            parser.process(&raw);
+            (parser.screen().contents(), raw)
         }
 
         fn diagnostics(&self) -> String {
@@ -3943,34 +3986,18 @@ mod tui {
                 pty.input("/quit");
                 pty.draft("/quit");
             }
-            let before_exit = pty.parser.screen().contents();
             let exit_start = pty.raw.len();
             pty.input(if exit == "\x03" { exit } else { "\r" });
-            pty.wait_for_raw(b"\x1b[?2026l");
+            pty.wait_for("退出已恢复输入模式", |screen| {
+                !screen.bracketed_paste()
+            });
             let output = &pty.raw[exit_start..];
-            let position = |marker: &[u8]| {
-                output
-                    .windows(marker.len())
-                    .position(|bytes| bytes == marker)
-                    .unwrap_or_else(|| panic!("缺少退出控制序列：{:?}", marker))
-            };
-            let begin = position(b"\x1b[?2026h");
-            let leave = position(b"\x1b[?1049l");
-            let end = position(b"\x1b[?2026l");
-            assert!(begin < leave && leave < end, "退出切屏必须处于同步更新内");
-            let replay = String::from_utf8_lossy(&output[leave..end]);
+            let text = String::from_utf8_lossy(output);
             assert!(
-                replay.contains("retained-answer"),
-                "历史回放必须处于同步更新内"
+                !text.contains("retained-answer"),
+                "退出不重放已有正文：{text:?}"
             );
-            assert!(
-                replay.contains("fixture-model"),
-                "状态栏回放必须处于同步更新内"
-            );
-            // 重放到切屏前一刻，确认退出没有额外绘制或清空备用屏幕。
-            let mut before_leave = vt100::Parser::new(30, 100, 0);
-            before_leave.process(&pty.raw[..exit_start + leave]);
-            assert_eq!(before_leave.screen().contents(), before_exit);
+            assert!(!text.contains("\x1b[2J") && !text.contains("\x1b[3J"));
             pty.wait_for("退出后普通屏幕保留完整对话", |screen| {
                 let text = screen.contents();
                 !screen.alternate_screen()
@@ -4030,14 +4057,10 @@ mod tui {
                 && screen.contents().contains("❯ draft-中")
                 && screen.contents().contains("fixture-model")
         });
-        let marker = b"\x1b[?1049l";
-        let start = pty
-            .raw
-            .windows(marker.len())
-            .rposition(|bytes| bytes == marker)
-            .unwrap();
-        let mut parser = vt100::Parser::new(150, 100, 0);
-        parser.process(&pty.raw[start + marker.len()..]);
+        pty.wait_for("退出模式恢复", |screen| !screen.bracketed_paste());
+        let (_, raw) = pty.native_history();
+        let mut parser = vt100::Parser::new(600, 100, 0);
+        parser.process(&raw);
         let screen = parser.screen();
         let text = screen.contents();
         assert!(text.contains("long-history"), "{text}");

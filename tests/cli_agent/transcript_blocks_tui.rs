@@ -486,16 +486,8 @@ fn transcript_blocks_markdown_scroll_offset_follow_and_exit_scrollback() {
     pty.wait_for("退出后滚动历史写入主屏", |s| {
         !s.alternate_screen() && s.contents().contains("follow-bottom-restored")
     });
-    let marker = b"\x1b[?1049l";
-    let start = pty
-        .raw
-        .windows(marker.len())
-        .rposition(|bytes| bytes == marker)
-        .unwrap();
-    let mut parser = vt100::Parser::new(150, 100, 0);
-    parser.process(&pty.raw[start + marker.len()..]);
-    let screen = parser.screen();
-    let text = screen.contents();
+    pty.wait_for("退出后恢复输入模式", |screen| !screen.bracketed_paste());
+    let (text, _) = pty.native_history();
     assert_eq!(text.matches("Scrollback Heading").count(), 1, "{text}");
     assert_eq!(text.matches("scrollback code line").count(), 1, "{text}");
     for index in 0..30 {

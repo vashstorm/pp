@@ -36,12 +36,12 @@ fn cancel_cursor_on_input_row(screen: &vt100::Screen) -> bool {
     !screen.hide_cursor() && usize::from(cursor_row) == row
 }
 
-// 取消完成后：5 秒内回到 Ready、仍在 alternate screen、恰好一条持久取消 Note，
+// 取消完成后：5 秒内回到 Ready、仍在主屏幕、恰好一条持久取消 Note，
 // 且光标已回到输入行（最终帧）。
 fn cancel_wait_cancelled_ready(pty: &mut Pty) {
     pty.wait_for("取消后回到 Ready 且仅一条持久 Note", |screen| {
         input_is_ready(screen)
-            && screen.alternate_screen()
+            && !screen.alternate_screen()
             && cancel_cursor_on_input_row(screen)
             && cancel_count_normalized(screen, CANCEL_NOTE) == 1
     });
