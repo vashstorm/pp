@@ -135,6 +135,17 @@ pub(super) fn command(text: &str, expanded: bool, context: Context) -> Vec<Strin
     lines
 }
 
+pub(super) fn is_skill_read(arguments: &Value, result: Option<&Value>) -> bool {
+    arguments["path"]
+        .as_str()
+        .is_some_and(|p| p.starts_with("skill://"))
+        || result.is_some_and(|r| {
+            r["source"]
+                .as_str()
+                .is_some_and(|p| p.starts_with("skill://"))
+        })
+}
+
 pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static>> {
     let expanded = view.expanded || view.context.full;
     let text = view.text;
@@ -157,7 +168,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     }
     match view.name {
         "read" => {
-            if !view.context.read_preview {
+            if !view.context.read_preview && !is_skill_read(view.arguments, view.result) {
                 return Vec::new();
             }
             head(
@@ -169,24 +180,6 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                 style,
                 MoreHint::Expand("lines"),
             )
-        }
-        "load_skill" => {
-            if expanded {
-                wrap(logical(text).into_iter().map(str::to_owned), width, style)
-            } else {
-                let mut rows = wrap(
-                    text.lines()
-                        .next()
-                        .filter(|line| line.starts_with("Source: "))
-                        .map(str::to_owned),
-                    width,
-                    style,
-                );
-                if text.lines().count() > 1 {
-                    rows.extend(wrap(["(Ctrl + O to expand)".into()], width, style));
-                }
-                rows
-            }
         }
         "grep" => head(
             text,

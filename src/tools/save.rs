@@ -157,25 +157,45 @@ impl Target {
     /// another copy of the file. Missing, unreadable and non-regular targets
     /// are conflicts just like a content mismatch.
     pub(super) fn ensure_matches(&self, expected: &[u8]) -> Result<()> {
-        (|| -> Result<()> {
-            let mut file = self.open_read()?;
-            ensure!(file.metadata()?.is_file(), "undo requires a regular file");
-            let mut buffer = [0_u8; 8192];
-            for chunk in expected.chunks(buffer.len()) {
-                file.read_exact(&mut buffer[..chunk.len()])?;
-                ensure!(&buffer[..chunk.len()] == chunk, "undo content mismatch");
-            }
-            match file.read_exact(&mut buffer[..1]) {
-                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(()),
-                Err(error) => Err(error.into()),
-                Ok(()) => anyhow::bail!("undo content has additional bytes"),
-            }
-        })()
-        .context("File changed outside this task; undo refused.")
+        self.compare_bytes(expected)
+            .context("File changed outside this task; undo refused.")
+    }
+
+    /// 共用精确比较；调用者负责提供操作对应的脱敏错误。
+    fn compare_bytes(&self, expected: &[u8]) -> Result<()> {
+        let mut file = self.open_read()?;
+        ensure!(file.metadata()?.is_file(), "target must be a regular file");
+        let mut buffer = [0_u8; 8192];
+        for chunk in expected.chunks(buffer.len()) {
+            file.read_exact(&mut buffer[..chunk.len()])?;
+            ensure!(&buffer[..chunk.len()] == chunk, "target content mismatch");
+        }
+        match file.read_exact(&mut buffer[..1]) {
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(()),
+            Err(error) => Err(error.into()),
+            Ok(()) => anyhow::bail!("target content has additional bytes"),
+        }
     }
 
     pub(super) fn save(&self, content: &[u8]) -> Result<Option<String>> {
         self.save_with(content, &SystemSave, false)
+    }
+
+    /// 在临时文件同步之后检查读取时的基线，再原子提交。
+    pub(super) fn save_if_unchanged(
+        &self,
+        expected: &[u8],
+        content: &[u8],
+    ) -> Result<Option<String>> {
+        self.save_checked_with(
+            content,
+            &SystemSave,
+            false,
+            Some((
+                expected,
+                "File changed since edit was staged; edit refused. Read the file again.",
+            )),
+        )
     }
 
     /// Restores the task baseline, or removes a task-created file, only after
@@ -196,7 +216,12 @@ impl Target {
         operations: &impl SaveOperations,
     ) -> Result<Option<String>> {
         if let Some(content) = original {
-            return self.save_checked_with(content, operations, false, Some(expected));
+            return self.save_checked_with(
+                content,
+                operations,
+                false,
+                Some((expected, "File changed outside this task; undo refused.")),
+            );
         }
         self.ensure_matches(expected)?;
         fs::unlinkat(&self.parent, &self.name, AtFlags::empty())
@@ -251,7 +276,7 @@ impl Target {
         content: &[u8],
         operations: &impl SaveOperations,
         new_only: bool,
-        expected: Option<&[u8]>,
+        expected: Option<(&[u8], &'static str)>,
     ) -> Result<Option<String>> {
         let (temporary, mut file) = self.create_temporary()?;
         let cleanup = Temporary {
@@ -267,11 +292,11 @@ impl Target {
         operations
             .sync_file(&file)
             .context("syncing atomic save file; target unchanged")?;
-        if let Some(expected) = expected {
+        if let Some((expected, message)) = expected {
             // Keep this after the temporary file has been fully written and
             // synced, immediately before publishing it. This narrows, but does
             // not eliminate, the comparison-to-rename race with other writers.
-            self.ensure_matches(expected)?;
+            self.compare_bytes(expected).context(message)?;
         }
         let committed = if new_only {
             operations.commit_new(&self.parent, OsStr::new(&temporary), &self.name)
@@ -957,5 +982,105 @@ mod tests {
         // Directories are rejected as non-regular targets.
         std::fs::create_dir(dir.path().join("subdir")).unwrap();
         assert!(workspace.target(Path::new("subdir"), false).is_err());
+    }
+    #[test]
+    fn hashline_edit_save_checks_after_sync_and_preserves_external_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("target");
+        std::fs::write(&path, b"read-version").unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let target = workspace.target(Path::new("target"), false).unwrap();
+        let operations = MutateAfterSync {
+            path: &path,
+            content: b"external-version",
+        };
+        let error = target
+            .save_checked_with(
+                b"edit-version",
+                &operations,
+                false,
+                Some((b"read-version", "edit refused")),
+            )
+            .unwrap_err();
+        assert_eq!(error.to_string(), "edit refused");
+        assert_eq!(std::fs::read(&path).unwrap(), b"external-version");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        for fault in [Fault::Write, Fault::Sync, Fault::Commit] {
+            std::fs::write(&path, b"read-version").unwrap();
+            assert!(
+                target
+                    .save_checked_with(
+                        b"edit-version",
+                        &FaultSave(fault),
+                        false,
+                        Some((b"read-version", "edit refused"))
+                    )
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), b"read-version");
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+        let warning = target
+            .save_checked_with(
+                b"edit-version",
+                &FaultSave(Fault::Directory),
+                false,
+                Some((b"read-version", "edit refused")),
+            )
+            .unwrap();
+        assert!(warning.is_some());
+        assert_eq!(std::fs::read(&path).unwrap(), b"edit-version");
+    }
+    #[test]
+    fn hashline_edit_save_refuses_removed_or_swapped_targets() {
+        struct Swap<'a> {
+            path: &'a Path,
+            outside: &'a Path,
+            kind: usize,
+        }
+        impl SaveOperations for Swap<'_> {
+            fn sync_file(&self, file: &File) -> io::Result<()> {
+                SystemSave.sync_file(file)?;
+                std::fs::remove_file(self.path)?;
+                match self.kind {
+                    0 => Ok(()),
+                    1 => std::fs::create_dir(self.path),
+                    _ => symlink(self.outside, self.path),
+                }
+            }
+        }
+        for kind in 0..3 {
+            let dir = tempfile::tempdir().unwrap();
+            let outside = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(outside.path(), b"outside").unwrap();
+            let path = dir.path().join("target");
+            std::fs::write(&path, b"original").unwrap();
+            let workspace = Workspace::open(dir.path()).unwrap();
+            let target = workspace.target(Path::new("target"), false).unwrap();
+            let error = target
+                .save_checked_with(
+                    b"edited",
+                    &Swap {
+                        path: &path,
+                        outside: outside.path(),
+                        kind,
+                    },
+                    false,
+                    Some((b"original", "edit refused")),
+                )
+                .unwrap_err();
+            assert_eq!(error.to_string(), "edit refused");
+            assert_eq!(std::fs::read(outside.path()).unwrap(), b"outside");
+            assert_eq!(
+                std::fs::read_dir(dir.path()).unwrap().count(),
+                usize::from(kind != 0)
+            );
+            if kind == 1 {
+                assert!(path.is_dir());
+            }
+            if kind == 2 {
+                assert!(path.is_symlink());
+            }
+        }
     }
 }

@@ -25,7 +25,6 @@ pub(super) fn tool_icon(name: &str) -> &'static str {
         "bash_task" => "\u{f085}",
         "grep" => "\u{f002}",
         "find" => "\u{f07b}",
-        "load_skill" => "\u{f02d}",
         "ask" => "\u{f059}",
         "plan_search" => "\u{f0b0}",
         "plan_find" => "\u{f14e}",

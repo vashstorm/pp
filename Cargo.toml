@@ -12,6 +12,7 @@ futures-util = "0.3"
 getrandom = "0.4"
 handlebars = { version = "6.4", default-features = false }
 ignore = "0.4"
+percent-encoding = "2.3.2"
 pulldown-cmark = { version = "0.13", default-features = false }
 similar = { version = "2.7", default-features = false, features = ["text"] }
 serde = { version = "1", features = ["derive"] }
@@ -27,6 +28,8 @@ ratatui = { version = "0.30.0", default-features = false, features = ["crossterm
 crossterm = "0.29.0"
 ratatui-textarea = "0.9.3"
 unicode-normalization = "0.1"
+unicode-segmentation = "1"
+xxhash-rust = { version = "0.8", default-features = false, features = ["xxh32"] }
 rustix = { version = "1", features = ["fs", "process"] }
 tempfile = "3"
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }

@@ -3385,8 +3385,10 @@ mod tui {
         assert_eq!(pty.parser.screen().cursor_position(), cursor);
         assert!(!pty.parser.screen().hide_cursor());
         pty.ready_effort("no think");
-        // 新会话清空通知后仍使用启动时的自定义时长。
-        pty.input("\x01\x0b/new\r");
+        // 先观察完整命令，再等待 Reset ACK 清空输入，避免把 Ctrl-K 的中间空帧当作重置完成。
+        pty.input("\x01\x0b/new");
+        pty.draft("/new");
+        pty.input("\r");
         pty.draft("");
         pty.input("/bogus\r");
         pty.wait_for("新会话保留两秒通知配置", |screen| {
@@ -5848,59 +5850,66 @@ mod tui {
     }
 
     #[test]
-    fn tui_skill_named_card_preview_expansion_busy_rejection_and_resize_for_both_apis() {
+    fn tui_skill_read_preview_busy_rejection_and_resize_for_both_apis() {
         for protocol in ["completion", "response"] {
-            let server = server();
-            let home = tempfile::tempdir().unwrap();
-            super::skills::install(home.path(), "rust", "中文技能");
-            std::fs::write(config_path(home.path(), "settings.yml"), "{}").unwrap();
-            std::fs::write(
-                config_path(home.path(), "models.yml"),
-                response_models(&server, Some(protocol)),
-            )
-            .unwrap();
-            let mut pty = Pty::start_with_existing_files(home.path());
-            pty.ready();
-            pty.input("load skill\r");
-            let path = if protocol == "response" {
-                "/v1/responses"
-            } else {
-                "/v1/chat/completions"
-            };
-            let (request, _) = receive_at(&server, path);
-            pty.input("/skills\r!");
-            pty.draft("/skills!");
-            pty.input("\x7f");
-            pty.draft("/skills");
-            assert!(input_is_ready(pty.parser.screen()));
-            super::skills::send_load(request, protocol, "中文技能");
-            let (request, body) = receive_at(&server, path);
-            assert!(body.to_string().contains("secret-skill-line-19"));
-            pty.text("skill · 中文技能");
-            pty.text("Loaded");
-            pty.drain();
-            let screen = pty.parser.screen();
-            let row = screen
-                .contents()
-                .lines()
-                .position(|line| line.contains("skill · 中文技能"))
-                .unwrap() as u16;
-            assert_eq!(screen.cell(row, 0).unwrap().contents(), "╭");
-            assert_eq!(screen.cell(row, 0).unwrap().fgcolor(), vt100::Color::Idx(5));
-            assert!(!screen.contents().contains("secret-skill-line-19"));
-            pty.function_key('o');
-            pty.text("secret-skill-line-19");
-            pty.resize(4, 20);
-            pty.resize(30, 100);
-            pty.draft("/skills");
-            if protocol == "response" {
-                response_final(request, "skill loaded");
-            } else {
-                final_reply(request, "skill loaded");
+            for preview in [true, false] {
+                let server = server();
+                let home = tempfile::tempdir().unwrap();
+                super::skills::install(home.path(), "rust", "中文技能");
+                std::fs::write(
+                    config_path(home.path(), "settings.yml"),
+                    if preview {
+                        "read: {toolResultPreview: true}\n"
+                    } else {
+                        "{}"
+                    },
+                )
+                .unwrap();
+                std::fs::write(
+                    config_path(home.path(), "models.yml"),
+                    response_models(&server, Some(protocol)),
+                )
+                .unwrap();
+                let mut pty = Pty::start_with_existing_files(home.path());
+                pty.ready();
+                pty.input("load skill\r");
+                let path = api_path(protocol);
+                let (request, _) = receive_at(&server, path);
+                pty.input("/skills\r!");
+                pty.draft("/skills!");
+                pty.input("\x7f");
+                pty.draft("/skills");
+                assert!(input_is_ready(pty.parser.screen()));
+                super::skills::send_skill_read(request, protocol, "中文技能");
+                let (request, body) = receive_at(&server, path);
+                assert!(body.to_string().contains("secret-skill-line-19"));
+                pty.text("Read · skill://");
+                pty.drain();
+                let screen = pty.parser.screen();
+                let text = screen.contents();
+                assert!(
+                    !text.contains("skill ·"),
+                    "旧技能卡片标题不应再出现: {text}"
+                );
+                assert!(!text.contains("secret-skill-line-19"));
+                assert!(
+                    text.contains("name: 中文技能"),
+                    "技能始终显示三行预览: {text}"
+                );
+                pty.function_key('o');
+                pty.text("secret-skill-line-19");
+                pty.resize(4, 20);
+                pty.resize(30, 100);
+                pty.draft("/skills");
+                if protocol == "response" {
+                    response_final(request, "skill loaded");
+                } else {
+                    final_reply(request, "skill loaded");
+                }
+                pty.text("skill loaded");
+                pty.input("\x03");
+                pty.finish();
             }
-            pty.text("skill loaded");
-            pty.input("\x03");
-            pty.finish();
         }
     }
 

@@ -53,20 +53,9 @@ fn changes_edit_arguments(
     let (request, body) = pty.request_at(server, api_path(protocol));
     let result = diff_blocks_tool_result(&body, protocol, &id);
     assert_eq!(result["ok"], true, "{result}");
-    let anchor = result["content"]
-        .as_str()
-        .unwrap()
-        .lines()
-        .next()
-        .unwrap()
-        .split_once('|')
-        .unwrap()
-        .0;
-    assert!(anchor.starts_with("1:"), "{anchor}");
-    (
-        request,
-        json!({"path":file,"edits":[{"op":"replace","start":anchor,"end":anchor,"lines":[new]}]}),
-    )
+    let header = result["content"].as_str().unwrap().lines().next().unwrap();
+    assert!(header.starts_with('['), "{header}");
+    (request, json!({"input":format!("{header}\nPUT 1.=1:\n+{new}")}))
 }
 
 fn changes_modify_twice(pty: &mut Pty, server: &Server, protocol: &str, mode: &str) {

@@ -45,38 +45,100 @@ trait Read {
 
 /// 每次调用借用运行环境，不持有独立的异步运行时或会话状态。
 struct ReadContext<'a, 'fetch> {
-    cwd: &'a Path,
     limits: ToolLimits,
     mode: EditMode,
     cache: &'a mut WebCache,
     fetch: &'a mut Fetch<'fetch>,
     cancellation: &'a CancellationToken,
+    snapshots: Option<(&'a super::save::Workspace, &'a mut super::hashline::Store)>,
 }
 
-pub(super) fn run(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_with_snapshots(
     path: &str,
     cwd: &Path,
     limits: ToolLimits,
     mode: EditMode,
+    skills: &crate::skills::SharedSkills,
     cache: &mut WebCache,
+    snapshots: Option<(&super::save::Workspace, &mut super::hashline::Store)>,
     fetch: &mut Fetch<'_>,
     cancellation: &CancellationToken,
 ) -> Result<ReadResult> {
     let target = Target::parse(path, cwd)?;
+    let skill = if target.source.starts_with("skill://") {
+        Some(
+            skills
+                .lock()
+                .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
+                .resolve_uri(&target.source)?,
+        )
+    } else {
+        None
+    };
+    let limits = if skill.is_some() {
+        ToolLimits {
+            read_max_bytes: usize::MAX,
+            read_max_lines: usize::MAX,
+            ..limits
+        }
+    } else {
+        limits
+    };
     let mut context = ReadContext {
-        cwd,
         limits,
         mode,
         cache,
         fetch,
         cancellation,
+        snapshots,
     };
-    if target.is_url() {
-        UrlReader.read(UrlInput(target), &mut context)
+    let mut result = if target.is_url() {
+        UrlReader.read(UrlInput(target), &mut context)?
     } else {
-        FileReader.read(FileInput(target), &mut context)
+        let path = skill
+            .as_ref()
+            .map_or_else(|| cwd.join(&target.source), |skill| skill.path.clone());
+        FileReader.read(
+            FileInput {
+                target,
+                path,
+                allow_directory: skill.is_some(),
+            },
+            &mut context,
+        )?
+    };
+    if let Some(skill) = skill {
+        result.value["path"] = serde_json::to_value(skill.path)?;
+        result.value["base_dir"] = serde_json::to_value(skill.base_dir)?;
     }
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run(
+    path: &str,
+    cwd: &Path,
+    limits: ToolLimits,
+    mode: EditMode,
+    skills: &crate::skills::SharedSkills,
+    cache: &mut WebCache,
+    fetch: &mut Fetch<'_>,
+    cancellation: &CancellationToken,
+) -> Result<ReadResult> {
+    run_with_snapshots(
+        path,
+        cwd,
+        limits,
+        mode,
+        skills,
+        cache,
+        None,
+        fetch,
+        cancellation,
+    )
+}

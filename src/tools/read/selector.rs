@@ -88,7 +88,7 @@ impl Target {
         ensure!(!path.trim().is_empty(), "path must not be blank");
         let web = path.starts_with("http://") || path.starts_with("https://");
         // POSIX 中包含冒号的真实文件名优先，不能误删合法路径尾部。
-        if !web && cwd.join(path).symlink_metadata().is_ok() {
+        if !web && !path.starts_with("skill://") && cwd.join(path).symlink_metadata().is_ok() {
             return Ok(Self {
                 source: path.into(),
                 ..Self::default()

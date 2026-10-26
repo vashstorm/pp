@@ -1,7 +1,8 @@
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::{borrow::Cow, ops::Range};
 use unicode_normalization::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -26,10 +27,10 @@ pub(super) fn apply(source: &str, edits: &[Edit]) -> Result<String> {
         .is_some_and(|lf| lf > 0 && body.as_bytes()[lf - 1] == b'\r');
     let original = normalize_newlines(body);
     // Also needed for conservative uniqueness, even for exact matches. Reuse once per batch.
-    let fuzzy = normalize_fuzzy(&original);
+    let mapped = MappedText::new(&original);
+    let fuzzy = &mapped.text;
     let mut replacements = Vec::with_capacity(edits.len());
-    let mut old_texts = Vec::with_capacity(edits.len());
-    let mut needs_fuzzy = false;
+
     for (index, edit) in edits.iter().enumerate() {
         let old = normalize_newlines(&edit.old_text);
         ensure!(!old.is_empty(), "edits[{index}].oldText must not be empty");
@@ -50,34 +51,13 @@ pub(super) fn apply(source: &str, edits: &[Edit]) -> Result<String> {
             let start = candidate.map(|(start, _)| start).ok_or_else(|| {
                 anyhow::anyhow!("could not find edits[{index}].oldText; read the file again")
             })?;
-            needs_fuzzy = true;
-            start..start + normalized.len()
+            mapped.original_range(start..start + normalized.len())?
         };
-        old_texts.push((old, normalized));
         replacements.push(Replacement {
             index,
             range,
             text: normalize_newlines(&edit.new_text),
         });
-    }
-    if needs_fuzzy {
-        // Once a fuzzy edit is necessary, every range must refer to the same snapshot.
-        for (replacement, (old, normalized)) in replacements.iter_mut().zip(&old_texts) {
-            let (start, len) = if let Some(start) = fuzzy.find(old.as_ref()) {
-                (start, old.len())
-            } else {
-                (
-                    fuzzy.find(normalized.as_str()).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "could not find edits[{}].oldText; read the file again",
-                            replacement.index
-                        )
-                    })?,
-                    normalized.len(),
-                )
-            };
-            replacement.range = start..start + len;
-        }
     }
     replacements.sort_unstable_by_key(|replacement| replacement.range.start);
     for pair in replacements.windows(2) {
@@ -88,19 +68,8 @@ pub(super) fn apply(source: &str, edits: &[Edit]) -> Result<String> {
             pair[1].index
         );
     }
-    let output = if needs_fuzzy {
-        preserve_lines(&original, &fuzzy, &replacements)?
-    } else {
-        let mut output = String::with_capacity(
-            original.len()
-                + replacements
-                    .iter()
-                    .map(|edit| edit.text.len().saturating_sub(edit.range.len()))
-                    .sum::<usize>(),
-        );
-        splice(&original, 0..original.len(), &replacements, &mut output);
-        output
-    };
+    let mut output = String::with_capacity(original.len());
+    splice(&original, 0..original.len(), &replacements, &mut output);
     ensure!(output != original, "edit produced no changes");
     if bom.is_empty() && !crlf {
         return Ok(output);
@@ -150,6 +119,16 @@ fn ecma_whitespace(ch: char) -> bool {
     matches!(ch, '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
 }
 
+fn fold_char(ch: char) -> char {
+    match ch {
+        '\u{2018}'..='\u{201b}' => '\'',
+        '\u{201c}'..='\u{201f}' => '"',
+        '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+        '\u{00a0}' | '\u{2002}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => ' ',
+        _ => ch,
+    }
+}
+
 fn normalize_fuzzy(text: &str) -> String {
     let nfkc: String = text.nfkc().collect();
     let mut output = String::with_capacity(nfkc.len());
@@ -158,13 +137,7 @@ fn normalize_fuzzy(text: &str) -> String {
             output.push('\n');
         }
         for ch in line.trim_end_matches(ecma_whitespace).chars() {
-            output.push(match ch {
-                '\u{2018}'..='\u{201b}' => '\'',
-                '\u{201c}'..='\u{201f}' => '"',
-                '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
-                '\u{00a0}' | '\u{2002}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => ' ',
-                _ => ch,
-            });
+            output.push(fold_char(ch));
         }
     }
     output
@@ -185,57 +158,121 @@ fn splice(
     output.push_str(&source[cursor..block.end]);
 }
 
-fn line_starts(text: &str) -> Vec<usize> {
-    std::iter::once(0)
-        .chain(text.match_indices('\n').map(|(offset, _)| offset + 1))
-        .collect()
+/// 归一化只用于定位；按 Unicode 字素保留到原文的字节映射。
+struct Mapping {
+    normalized: Range<usize>,
+    original: Range<usize>,
+    exact: bool,
 }
-
-fn preserve_lines(original: &str, fuzzy: &str, replacements: &[Replacement<'_>]) -> Result<String> {
-    let original_lines = line_starts(original);
-    let fuzzy_lines = line_starts(fuzzy);
-    ensure!(
-        original_lines.len() == fuzzy_lines.len(),
-        "cannot preserve unchanged lines: normalized line count differs"
-    );
-    let line_at = |offset| fuzzy_lines.partition_point(|start| *start <= offset) - 1;
-    let mut output = String::with_capacity(
-        original.len()
-            + replacements
-                .iter()
-                .map(|edit| edit.text.len().saturating_sub(edit.range.len()))
-                .sum::<usize>(),
-    );
-    let mut cursor = 0;
-    let mut first = 0;
-    while first < replacements.len() {
-        let start_line = line_at(replacements[first].range.start);
-        let mut end_line = line_at(replacements[first].range.end - 1);
-        let mut end = first + 1;
-        while end < replacements.len() && line_at(replacements[end].range.start) <= end_line {
-            end_line = end_line.max(line_at(replacements[end].range.end - 1));
-            end += 1;
+struct MappedText {
+    text: String,
+    spans: Vec<Mapping>,
+}
+impl MappedText {
+    fn new(original: &str) -> Self {
+        let mut mapped = Self {
+            text: String::new(),
+            spans: Vec::new(),
+        };
+        let mut source_start = 0;
+        for part in original.split_inclusive('\n') {
+            let line_start = mapped.text.len();
+            let body = part.strip_suffix('\n').unwrap_or(part);
+            for (offset, grapheme) in body.grapheme_indices(true) {
+                let range = source_start + offset..source_start + offset + grapheme.len();
+                if grapheme.is_ascii() {
+                    mapped.push(range, grapheme, true);
+                } else {
+                    let folded: String = grapheme.nfkc().map(fold_char).collect();
+                    mapped.push(range, &folded, folded == grapheme);
+                }
+            }
+            let kept = line_start
+                + mapped.text[line_start..]
+                    .trim_end_matches(ecma_whitespace)
+                    .len();
+            mapped.text.truncate(kept);
+            while mapped
+                .spans
+                .last()
+                .is_some_and(|s| s.normalized.start >= kept)
+            {
+                mapped.spans.pop();
+            }
+            if let Some(last) = mapped.spans.last_mut()
+                && last.normalized.end > kept
+            {
+                if last.exact {
+                    last.original.end -= last.normalized.end - kept;
+                } else {
+                    last.exact = false;
+                }
+                last.normalized.end = kept;
+            }
+            if part.ends_with('\n') {
+                mapped.push(
+                    source_start + body.len()..source_start + part.len(),
+                    "\n",
+                    true,
+                );
+            }
+            source_start += part.len();
         }
-        let original_end = original_lines
-            .get(end_line + 1)
-            .copied()
-            .unwrap_or(original.len());
-        let fuzzy_end = fuzzy_lines
-            .get(end_line + 1)
-            .copied()
-            .unwrap_or(fuzzy.len());
-        output.push_str(&original[cursor..original_lines[start_line]]);
-        splice(
-            fuzzy,
-            fuzzy_lines[start_line]..fuzzy_end,
-            &replacements[first..end],
-            &mut output,
-        );
-        cursor = original_end;
-        first = end;
+        mapped
     }
-    output.push_str(&original[cursor..]);
-    Ok(output)
+    fn push(&mut self, original: Range<usize>, text: &str, exact: bool) {
+        let start = self.text.len();
+        self.text.push_str(text);
+        if exact
+            && let Some(last) = self.spans.last_mut()
+            && last.exact
+            && last.original.end == original.start
+            && last.normalized.end == start
+        {
+            last.original.end = original.end;
+            last.normalized.end = self.text.len();
+            return;
+        }
+        if !text.is_empty() {
+            self.spans.push(Mapping {
+                normalized: start..self.text.len(),
+                original,
+                exact,
+            });
+        }
+    }
+    fn original_range(&self, range: Range<usize>) -> Result<Range<usize>> {
+        let start_span = self
+            .spans
+            .get(
+                self.spans
+                    .partition_point(|s| s.normalized.end <= range.start),
+            )
+            .context("cannot map fuzzy match; read the file again")?;
+        let end_index = self
+            .spans
+            .partition_point(|s| s.normalized.start < range.end);
+        let end_span = self
+            .spans
+            .get(end_index.saturating_sub(1))
+            .context("cannot map fuzzy match; read the file again")?;
+        ensure!(
+            (start_span.exact || range.start == start_span.normalized.start)
+                && (end_span.exact || range.end == end_span.normalized.end),
+            "fuzzy match splits a Unicode normalization unit; provide more context or read the file again"
+        );
+        let start = if start_span.exact {
+            start_span.original.start + range.start - start_span.normalized.start
+        } else {
+            start_span.original.start
+        };
+        let end = if end_span.exact {
+            end_span.original.start + range.end - end_span.normalized.start
+        } else {
+            end_span.original.end
+        };
+        Ok(start..end)
+    }
 }
 
 #[cfg(test)]
@@ -279,7 +316,7 @@ mod tests {
                 &[("say \"Hi\"-x", "said\nok")]
             )
             .unwrap(),
-            "keep “Ｋ”  \nsaid\nok\nend\n"
+            "keep “Ｋ”  \nsaid\nok  \nend\n"
         );
         assert_eq!(
             apply_edits(
@@ -295,7 +332,7 @@ mod tests {
                 &[("\"a\"", "A"), ("middle", "MIDDLE"), ("\"b\"", "B")]
             )
             .unwrap(),
-            "A  MIDDLE  B\nkeep  \n"
+            "A  MIDDLE  B  \nkeep  \n"
         );
         assert_eq!(
             apply_edits("“x”  \nkeep Ｋ  \n", &[("\"x\"\n", "done\n")]).unwrap(),
@@ -303,7 +340,7 @@ mod tests {
         );
         assert_eq!(
             apply_edits("keep Ｋ  \n“x”  ", &[("\"x\"", "")]).unwrap(),
-            "keep Ｋ  \n"
+            "keep Ｋ  \n  "
         );
     }
 
@@ -358,5 +395,29 @@ mod tests {
             apply_edits("say ‘hi’−Ｋ\u{a0}x\n", &[("say 'hi'-K x", "ok")]).unwrap(),
             "ok\n"
         );
+    }
+    #[test]
+    fn replace_fuzzy_preserves_same_line_bytes_and_unicode_boundaries() {
+        assert_eq!(
+            apply_edits("before Ｋ “x” Ａ  \n", &[("\"x\"", "Y")]).unwrap(),
+            "before Ｋ Y Ａ  \n"
+        );
+        assert_eq!(
+            apply_edits("prefix e\u{301} tail ﬃ Ｋ  \n", &[("é", "E"), ("ffi", "F")]).unwrap(),
+            "prefix E tail F Ｋ  \n"
+        );
+        assert_eq!(
+            apply_edits("x\n\n“a”  \n", &[("\"a\"", "A")]).unwrap(),
+            "x\n\nA  \n"
+        );
+        assert!(apply_edits("ﬃ", &[("fi", "X")]).is_err());
+        for text in [
+            "e\u{301}",
+            "\u{1100}\u{1161}\u{11a8}",
+            "a\u{315}\u{300}",
+            "“Ｋ”  \n\nＡ\t\n",
+        ] {
+            assert_eq!(MappedText::new(text).text, normalize_fuzzy(text));
+        }
     }
 }

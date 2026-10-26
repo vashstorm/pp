@@ -290,11 +290,8 @@ fn transcript_blocks_diff_hashline_edit_from_read_anchors() {
             .lines()
             .next()
             .unwrap()
-            .split_once('|')
-            .unwrap()
-            .0
             .to_owned();
-        assert!(anchor.starts_with("1:"), "{anchor}");
+        assert!(anchor.starts_with('['), "{anchor}");
         diff_blocks_calls_reply(
             request,
             protocol,
@@ -302,9 +299,7 @@ fn transcript_blocks_diff_hashline_edit_from_read_anchors() {
                 protocol,
                 "e1",
                 "edit",
-                json!({"path":"demo.txt","edits":[
-                    {"op":"replace","start":anchor,"end":anchor,"lines":["new"]}
-                ]})
+                json!({"input":format!("{anchor}\nPUT 1.=1:\n+new")})
             )]),
         );
         pty.wait_for("committed hashline edit diff card", |screen| {
@@ -465,9 +460,6 @@ fn transcript_blocks_diff_failed_edits_have_no_fabricated_diff() {
                     .lines()
                     .next()
                     .unwrap()
-                    .split_once('|')
-                    .unwrap()
-                    .0
                     .to_owned();
                 // 外部修改使锚点在 edit 执行前过期。
                 std::fs::write(project.path().join("demo.txt"), "external\nkeep\n").unwrap();
@@ -478,12 +470,10 @@ fn transcript_blocks_diff_failed_edits_have_no_fabricated_diff() {
                         protocol,
                         "e1",
                         "edit",
-                        json!({"path":"demo.txt","edits":[
-                            {"op":"replace","start":anchor,"end":anchor,"lines":["new"]}
-                        ]})
+                        json!({"input":format!("{anchor}\nPUT 1.=1:\n+new")})
                     )]),
                 );
-                "hashline mismatch at line"
+                "hashline snapshot changed"
             } else {
                 diff_blocks_calls_reply(
                     request,

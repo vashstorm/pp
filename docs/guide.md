@@ -191,11 +191,11 @@ chmod 600 ~/.pp/agent/models.yml
 
 部分功能快捷键按 pp 二进制的编译目标选择：macOS 使用 Option（`⌥`），Linux 使用 Ctrl。下文并列键名均按 macOS / 其他系统排列：`⌥ + P / Ctrl + P` 打开模型选择，`Ctrl + S` 保存菜单高亮模型为默认值，`Ctrl + F` 在所有平台收藏／取消收藏菜单高亮模型，`⌥ + S / Ctrl + S` 保存菜单高亮思考档位为默认值，`Ctrl + O` 在所有平台全局展开／折叠工具输出，`⌥ + Q / Ctrl + Q` 查看待处理消息，`⌥ + R / Ctrl + R` 恢复队列。默认模型保存始终使用 Ctrl + S，工具输出切换始终使用 Ctrl + O（macOS 不再使用 ⌥ + O）；使用 Option 的功能不保留 Ctrl 别名，旧组合可由编辑器正常处理。终端必须将 Option 配置为 Alt/Meta（ESC 前缀）；若产生 `π` 等普通 Unicode 文本，pp 保留文本，不猜测为快捷键。`Ctrl + C` 退出、`Ctrl + J` 换行、所有文本编辑键及会话面板键不变；`Shift + Tab` 切档，Option/Alt + Enter 排队行为不变。首页、`/tips`、帮助、菜单和折叠提示中的组合键统一以加号两侧各一个空格显示。
 
-应用自有的 TUI 文案统一使用英文，包括帮助、菜单、通知、skill 管理与加载卡片，以及这些界面接收的配置保存错误和 skill 诊断。用户输入、模型回复、文件／命令输出、外部 skill 元数据与正文，以及名称和路径保持原文；不限制 Unicode，也不强制模型使用英语。已有 session 中保存的历史工具错误忠实回放，不改写旧日志。共享生产者的配置保存错误和 skill 诊断在 CLI 中也使用英文。
+应用自有的 TUI 文案统一使用英文，包括帮助、菜单、通知、skill 管理与 read 摘要，以及这些界面接收的配置保存错误和 skill 诊断。用户输入、模型回复、文件／命令输出、外部 skill 元数据与正文，以及名称和路径保持原文；不限制 Unicode，也不强制模型使用英语。已有 session 中保存的历史工具错误忠实回放，不改写旧日志。共享生产者的配置保存错误和 skill 诊断在 CLI 中也使用英文。
 
-消息列表中的内置工具各有独立的 Nerd Font Font Awesome 图标（包括普通工具、bash、skill、diff、ask 和 Plan 工具）；MCP 使用插头图标，未知工具使用拼图图标。所有工具图标统一采用单列字形，并在其后保留一列空白，占位宽度固定为两列；字形的实际外观由终端所用 Nerd Font 决定。图标随标题保留于运行、完成、失败、恢复及退出滚动历史中。
+消息列表中的内置工具各有独立的 Nerd Font Font Awesome 图标（包括普通工具、bash、diff、ask 和 Plan 工具）；MCP 使用插头图标，未知工具使用拼图图标。所有工具图标统一采用单列字形，并在其后保留一列空白，占位宽度固定为两列；字形的实际外观由终端所用 Nerd Font 决定。图标随标题保留于运行、完成、失败、恢复及退出滚动历史中。
 
-用户与助手保留既有角色背景；助手正文按 Markdown 渲染，工具正文保持字面文本，edit、write 与 ask 使用各自的内容块。bash 与 think 使用独立样式；其他工具保留淡色正文与运行／完成／失败状态。真实 `grep` 调用使用青色卡片，`find` 使用普通数据卡片；标题显示工具名与紧凑 JSON argv，不使用 bash 计时 footer。真实 `load_skill` 使用品红色 skill 卡片，不按路径或命令猜测类别。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
+用户与助手保留既有角色背景；助手正文按 Markdown 渲染，工具正文保持字面文本，edit、write 与 ask 使用各自的内容块。bash 与 think 使用独立样式；其他工具保留淡色正文与运行／完成／失败状态。真实 `grep` 调用使用青色卡片，`find` 使用普通数据卡片；标题显示工具名与紧凑 JSON argv，不使用 bash 计时 footer。技能读取使用普通 `Read · skill://...` 摘要与 read 预览配置，不再使用专用技能卡片。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
 
 ### 工具输出折叠
 
@@ -203,14 +203,13 @@ chmod 600 ~/.pp/agent/models.yml
 
 | 工具 | 折叠预览 | 展开 |
 |---|---|---|
-| read | 默认只显示摘要；设置 `read: {toolResultPreview: true}` 后预览前 3 条逻辑行 | 开启正文预览时显示全文，默认配置仍仅显示摘要 |
+| read | 普通文件默认只显示摘要；`read: {toolResultPreview: true}` 启用前 3 行预览，skill URI 始终默认预览 3 行 | 有正文预览时显示全文，普通文件默认仍仅显示摘要 |
 | grep | 原生 stdout 文本回退，6 行预算包含省略提示，长行按列宽截断 | 全部已返回文本，长行仍截断 |
 | find／plan_find | 前 8 个文件及剩余数量提示，路径按列宽截断 | 全部已返回文件，路径仍截断 |
 | plan_search | 按文件组织，正文预算 6 行包含省略提示 | 正文预算 24 行，仍可显示省略标记 |
 | bash／bash_task | 最近 `min(10, max(6, H−20))` 条屏幕行及省略提示 | 完整的已保留输出 |
 | edit | 最多 8 个 hunk、40 条逻辑 diff 行，再限制为 40 条屏幕正文行 | 完整提交 diff |
 | write | 运行中显示已知正文末尾 12 条逻辑行，成功后显示前 6 条 | 完整写入正文；真实 diff 仍保留在 `/changes` 与会话事件中 |
-| load_skill | 名称、来源和状态，不显示技能正文 | 完整技能正文 |
 | MCP 文本 | 前 4 条逻辑行，长行按列宽截断 | 前 12 条逻辑行，允许自动换行 |
 | MCP JSON 文本 | 树深度 2、最多 6 行、标量宽度 60 | 树深度 6、最多 200 行、标量宽度 2000，达到限制保留省略标记 |
 | Plan 写入／提交及其他工具 | 文本前 4 行或相同额度的 JSON 树 | 文本完整展示，JSON 树仍受限时回退为完整原始文本 |
@@ -254,7 +253,7 @@ chmod 600 ~/.pp/agent/models.yml
 
 普通任务默认 **EXEC**。空闲时输入 `/plan` 显式进入 **PLAN**，然后提交调研任务；命令本身不请求模型。模型只能调研、询问关键产品取舍并保存计划，不能切换模式。`/plan` 再次打开当前计划；`/plan view` 只查看，未保存时显示 `No saved plan.`。`/plan new` 开始另一份计划，未执行正文存在时先本地确认；`/plan off` 本地确认后放弃计划并回 Execute，不请求模型。确认默认取消，旧 Markdown 不删除。忙碌或有 pending 输入时不能切换／批准；命令不排队成后续执行动作。
 
-Plan 的执行层白名单只有 `read`、`load_skill`、TUI `ask`、`plan_search`、`plan_find`、`plan_write`、`plan_submit`；即使模型返回隐藏的 shell、write/edit、原生 grep/find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，`/plan` 可重试清理。批准或 off 的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
+Plan 的执行层白名单只有 `read`、TUI `ask`、`plan_search`、`plan_find`、`plan_write`、`plan_submit`；技能同样通过 `read` 读取。即使模型返回隐藏的 shell、write/edit、原生 grep/find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，`/plan` 可重试清理。批准或 off 的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
 
 `plan_search` 是区分大小写的**字面行子串搜索**，`plan_find` 按搜索根的相对文件路径子串匹配，空 query 可枚举。均在进程内使用项目 ignore 规则，不运行 rg/fd/grep/find，不解析 argv，也不创建 `.pp-cache`。支持 `path`、`hidden`、`no_ignore`、从 0 开始的 `offset` 和 `limit`（默认 200，1–500）；结果有 `next_offset`、截断和跳过文件的 warnings，受 65,536 字节输出上限、读取行大小、取消与工具超时约束。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
 
@@ -432,9 +431,15 @@ TUI 输入 `/skills` 打开全局管理面板，顶部依次显示 `Sources`（�
 
 行模式支持 `/skills` 查看来源与技能列表，`/skills enable 名称`、`/skills disable 名称` 逐项启停；`/skills sources` 查看来源，`/skills sources enable claude`、`/skills sources enable codex` 开启继承，`/skills sources disable claude` 或 `codex` 关闭继承。TUI 也支持这些参数；`/skills sources` 直接打开来源页。命令仅本地管理，不发送模型请求。
 
-模型只收到已启用 skill 的名称与说明；技能提示词参考 [oh-my-pi](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/prompts/system/system-prompt.md)，使用 `<skills>` 列表，并明确要求匹配任务的技能必须先加载。pp 通过 `load_skill({"name":"rust"})` 按需读取全文，结果包含 `content`、`path` 和资源基准 `base_dir`；加载仍由模型发起，不按语言自动注入正文。加载工具只接受已发现且启用的名称，不会执行 skill 内的脚本。TUI 用品红色完整边框显示加载过程，左上角加粗标题为 `skill · 名称`，并显示来源及成功／失败状态。正文默认隐藏，Ctrl + O 全局展开／折叠工具输出；模型接收全文，退出回放也保留全文。
+系统只列出已启用技能的名称、说明和完整 `skill://` URI；技能提示词参考 [oh-my-pi](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/prompts/system/system-prompt.md)，保留 `<skills>` 列表，要求匹配技能时先调用 `read`。例如 `read({"path":"skill://rust"})` 读取当前磁盘上的完整 `SKILL.md`，包含 frontmatter；正文不会自动注入系统提示词，也不会执行其中脚本。成功结果保留 read 的 `source/content/ranges/lines_read/truncated/next_offset/next_path` 字段，并额外返回实际规范资源 `path` 与技能根目录 `base_dir`；正文中的相对文件和脚本引用以 `base_dir` 定位，技能指导不能覆盖系统规则。
 
-启停和重扫对后续请求生效，跨模型及协议切换保留。已加载的内容仍在当前会话历史中，`/new` 清除会话历史并保留全局启用选择。配置不会被其他运行实例自动刷新，需要重扫或重启。skill 加载日志写入 stderr，行模式 stdout 仍只有助手输出。
+裸 URI 与尾部 `/` 都读取 `SKILL.md`；追加 `/references/guide.md` 读取附属资源，`/.` 列出技能根目录。目录列表非递归，包含隐藏项，真实目录在前且名称后加 `/`，文件在后，两组分别按名称排序；symlink 仅列名称，不跟随扫描，空目录显示 `(empty directory)`。目录不生成 Hashline 编辑锚点。技能正文、附属文本和目录默认全文返回，不受普通 `read_max_lines/read_max_bytes` 限制，因此大技能会占用更多模型上下文；显式 `:2-3:raw`、多范围与 tail 仍按 read 规则精确生效。技能图片沿用 20 MiB／3200 万像素限制，不能使用选择器。
+
+名称保持大小写；发布 URI 只保留 ASCII 字母、数字和 `-._~`，其他 UTF-8 字节百分号编码一次，例如名称 `team/rust` 对应 `skill://team%2Frust`，与 `skill://team/rust` 的资源路径不混淆。冒号、百分号、空格等使用列表中发布的编码 URI；可直接读取未编码的 Unicode 名称。URI 不支持字面 query／fragment，文件名中的 `?`、`#` 须编码；非法转义、无效 UTF-8、空名称或 NUL 被拒绝。资源路径不允许绝对路径或 `..`，规范化后必须仍位于技能根目录内；目录内 symlink 可读，目录外 symlink 被拒绝。普通 read 对已知绝对文件路径的既有访问能力不变，技能启停不是文件权限沙箱。
+
+技能通过 read 显示来源及成功／失败状态，默认预览前三行正文，独立于普通文件的 `read.toolResultPreview` 设置；Ctrl + O 展开全文。技能读取不并入普通 read 概要分组。旧会话里的 `load_skill` 事件作为未知工具显示完整 Data／JSON，不重写历史，也不再提供旧执行入口。
+
+启停和重扫对后续请求生效，跨模型及协议切换保留。URI 只解析当前已发现且启用的精确名称，不触发重扫；关闭来源、禁用或未发现统一返回 `Skill does not exist or is disabled`。读取不缓存正文、不重解析 frontmatter 或复核名称：磁盘修改立即可见，文件被删除后失败，元数据由发现／重扫校验。已读取内容仍在当前会话历史中，`/new` 清除历史并保留全局启用选择。配置不会被其他运行实例自动刷新，需要重扫或重启。技能读取的 read 状态写入 stderr，行模式 stdout 仍只有助手输出。
 
 ## MCP 工具
 
@@ -552,18 +557,20 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 **write/edit 仅修改启动目录内文件，按单次调用原子提交。macOS/Linux 的 bash、grep、find 均无文件权限隔离，仍可修改当前用户有权限访问的目录外文件；没有逐次确认。请在可信或临时目录中运行。**
 
 - 启动时固定规范化工作目录。`read` 允许目录外读取及符号链接；`write/edit` 接受目录内的相对或绝对路径，拒绝越界路径以及写入路径上的符号链接（包括指向项目内的链接）。父目录通过目录句柄逐级打开，保存不重新按完整路径追踪链接。允许不越出工作目录的 `..`；项目规则只读取工作目录的 `AGENTS.md`，skill 仅扫描全局配置指定的目录。
-- `read({path})`：仅接受 `path`，范围直接写入路径，例如 `src/main.rs:20-60`。`:20` 从第 20 行开始，`:20-60` 包含两端，`:20+40` 读取 40 行，`:-30` 读取末尾 30 行，`:5-10,20-30` 读取多个区间（排序并合并重叠或相邻区间，最多 128 个）；也支持 `L20-L60`、`20..60` 和开放结尾 `20-`。所有范围精确读取，不自动增加上下文。真实存在的完整文件名优先于冒号后缀解析。
-- `:raw` 返回无锚点／前缀的文本，可组合为 `file:20-60:raw` 或 `file:raw:20-60`；其中 `file:20:raw` 只读第 20 行，`file:20-:raw` 从第 20 行续读。默认 replace 返回保留原始换行的 lossy UTF-8；hashline 只为非 raw 本地文本生成真实行号与现有 `N:hash|text` 锚点。网页和 raw 输出不能直接用于 hashline 编辑，须重新读取本地非 raw 范围。
-- 文本每页同时受 `read_max_bytes` 和 `read_max_lines` 限制，字节额度不含 hashline 前缀及 JSON 编码，所有区间共用额度，只返回完整行；空文件或超出文件末尾返回空页。超长单行无法放入空页时返回错误。结果包含 `source`、`content`、`ranges`、`lines_read`、`truncated` 和 `next_path`；截断时把 `next_path` 原样作为下次 `path`，它包含剩余区间和 raw 状态。重复裸路径不会自动翻页。`next_offset` 仅为兼容显示保留，`offset/limit` 调用参数已删除；旧会话仍可恢复和展示。
+- `read({path})`：仅接受 `path`，范围直接写入路径，例如 `src/main.rs:20-60`。`:20` 从第 20 行开始，`:20-60` 包含两端，`:20+40` 读取 40 行，`:-30` 读取末尾 30 行，`:5-10,20-30` 读取多个区间（排序并合并重叠或相邻区间，最多 128 个）；也支持 `L20-L60`、`20..60` 和开放结尾 `20-`。所有范围精确读取，不自动增加上下文。真实存在的完整本地文件名优先于冒号后缀解析，`skill://` 始终按虚拟资源处理。
+- `:raw` 返回无锚点／前缀的文本，可组合为 `file:20-60:raw` 或 `file:raw:20-60`；其中 `file:20:raw` 只读第 20 行，`file:20-:raw` 从第 20 行续读。默认 replace 返回保留原始换行的 lossy UTF-8；hashline 为可编辑的非 raw 本地 UTF-8 文件返回 `[path#TAG]` 文件头，正文使用真实 `N:text` 行号；分页不重新编号。网页、raw、图片、目录和 `skill://` 不签发可编辑标签，须重新读取工作区内的实际本地路径。
+- 普通本地和 HTTP 文本每页同时受 `read_max_bytes` 和 `read_max_lines` 限制；技能 URI 文本默认全文，显式范围仍生效。字节额度不含 hashline 前缀及 JSON 编码，所有区间共用额度，只返回完整行；空文件或超出文件末尾没有正文行（hashline 可包含版本头）。普通文本超长单行无法放入空页时返回错误。结果包含 `source`、`content`、`ranges`、`lines_read`、`truncated` 和 `next_path`；截断时把 `next_path` 原样作为下次 `path`，它包含剩余区间和 raw 状态，技能资源始终保留 URI 来源。重复裸路径不会自动翻页。`next_offset` 仅为兼容显示保留，`offset/limit` 调用参数已删除；旧会话仍可恢复和展示。
 - 图片支持 PNG、JPEG、WebP、GIF，按内容检测并校验解码；每张源数据最多 20 MiB、最多 3200 万像素，GIF 只取第一帧转 PNG（转换结果同样限 20 MiB）。本地路径和 HTTP 图片 URL 都会向模型发送真实内嵌图片，不接受 raw 或行范围。TUI／CLI 只显示格式、尺寸、字节数和来源，不绘制图片或输出 base64；不自动选择视觉模型，实际视觉支持取决于所选供应商模型。
 - HTTP/HTTPS URL 读取静态网页：HTML 先提取正文并转为可读文本，提取失败回退整页转换并附说明；纯文本、Markdown、JSON 直接读取，`:raw` 返回原始响应正文。不执行 JavaScript，不支持 PDF／办公文档转换。网页范围作用于转换后的文本，URL 选择器放在查询参数／片段之前，例如 `https://example.com/page:20-60?lang=zh`，查询参数中的冒号不作为范围。独立 HTTP 客户端不携带模型认证头；仅 GET，最多 5 次重定向、总超时 30 秒、解压后最多 20 MiB，连接与读取可取消，不自动重试。文本按 UTF-8（无效字节替换）处理。
 - 网页正文只缓存在当前会话内，最多 4 项且正文总计不超过 8 MiB，raw 与正文分开缓存；过大的单页不缓存。裸 URL 总是重新抓取，范围读取优先复用缓存；新建、恢复或导航会话清空缓存，缓存不持久化。图片保存在原生会话历史中，恢复无需重读源路径／URL。Responses 使用原生图片工具结果；Chat 在完整结果批次后附带关联工具调用的图片消息，压缩与树导航将其视为工具批次的一部分。上下文容量估算不把 base64 当文本计算，暂按每张图片 4096 token 的启发式计入；实际 usage 和费用仅使用供应商数据。
 
 - 默认 `edit({path, edits:[{oldText,newText}]})` 修改已有 UTF-8 文件，每项都匹配同一份原始快照，不匹配前一项替换后的内容。非空 `oldText` 在宽松归一化后也必须唯一；拒绝重复或重叠目标，允许相邻目标。用最小唯一上下文定位，在 `newText` 重复相邻内容以插入，`newText:""` 表示删除。空数组、无匹配或整批无变化均拒绝写入；允许无变化项与实际修改混合。失败后重新读取。
-- replace 先尝试 LF 归一化后的精确匹配，再尝试 NFKC → 逐行 ECMAScript `trimEnd` → 智能引号／破折号／Unicode 空格归一化，不忽略大小写、缩进或连续行内空格。宽松匹配时，仅触及行块使用归一化文字，其余行保留原内容。保留 UTF-8 BOM；内部统一 CRLF／裸 CR，输出使用源文件首个 LF 的风格（前有 CR 则用 CRLF，否则 LF；无换行时用 LF），不强制添加末尾换行。
-- 设置 `"edit":"hashline"` 后，read 显示 `N:hash|text`：N 为从 1 开始的真实文件行号，分页不重新编号；hash 为原始行正文（不含 LF/CRLF）的 16 位小写十六进制 FNV-1a 64 位哈希。显示分隔符为 LF，只为完整行生成锚点，空文件没有锚点。edit 仅接受带锚点的 `replace`（包含首尾行，`lines:[]` 表示删除）、`insert_before`、`insert_after`。新行字符串不能包含 CR/LF 或显示前缀。操作均引用原始快照；拒绝重叠替换、重复插入位置及触及替换边界的插入。锚点失效时重新读取；只检查端点，不校验内部行或整文件版本。未触及的字节保持原样，新分隔符采用源文件首个换行风格，并保留被替换末行是否带换行的状态。
-- 两种 edit 模式均先对同一份原始快照校验全部修改，再调用共用原子保存流程。空文件、缺失文件、目录、符号链接和非 UTF-8 文件不能编辑；edit 不创建文件或目录。成功返回 `edits_applied` 和最终 UTF-8 `bytes_written`。保留严格且分模式的参数校验，不增加 diff/patch 字段。
-- `write(path, content)`：创建缺失父目录，并创建或完整覆盖 UTF-8 文件，允许空内容。write/edit 均在目标所在目录排他创建临时文件，完整写入、保留原文件权限（含可执行位）、同步临时文件后，以一次原子重命名提交。创建、部分写入、同步或重命名失败均保留原文件；新建失败不会留下残缺目标，已创建的空父目录允许保留。重命名是提交点，之后父目录同步失败返回 `ok:true` 并附 `warning`，不能当作尚未修改。失败路径清理临时文件；TUI `/changes` 提供当前进程最近任务的逐文件安全撤销（见上节），不提供持久备份、跨文件事务、跨进程并发隔离或断电恢复保证。
+- replace 先尝试 LF 归一化后的精确匹配，再尝试 NFKC → 逐行 ECMAScript `trimEnd` → 智能引号／破折号／Unicode 空格归一化，不忽略大小写、缩进或连续行内空格。宽松匹配只在归一化文本中定位，再通过 Unicode 字素映射回原文字节范围执行替换；命中范围外的智能引号、全角字符和行尾空白保留原样。不能安全映射的 Unicode 边界会拒绝修改。保留 UTF-8 BOM；内部统一 CRLF／裸 CR，输出使用源文件首个 LF 的风格（前有 CR 则用 CRLF，否则 LF；无换行时用 LF），不强制添加末尾换行。
+- 设置 `edit: hashline` 后，edit 仅接受 `{"input":"[path#TAG]\nPUT 1.=1:\n+new text"}`。每次只能编辑一个已有文件，文件头须复制自最新非 raw 本地 read；也接受完整的 `*** Begin Patch`／`*** End Patch` 外层包裹。支持 `PUT N.=M:` 替换包含首尾的行范围、`PUT <N:`／`PUT >N:` 在行前／后插入，以及 `CUT N.=M` 删除。PUT 每条正文必须以 `+` 开头，`+` 表示空行，`++text` 表示字面 `+text`；正文不包含显示行号。暂不支持块定位、寄存器、文件移动／删除或多文件段。旧 `{path, edits}` 参数被拒绝，旧会话仍可恢复和展示，不重写日志。
+- TAG 沿用 oh-my-pi 的文件哈希：去除首个 UTF-8 BOM、CRLF／裸 CR 统一为 LF，忽略每行末尾空格、Tab 和 CR，以 seed=0 的 xxHash32 取低 16 位，显示为四位大写十六进制。每页标签来自同一次安全读取的完整文件字节，而非当前页；只有实际返回给模型的完整行登记为已读。所有操作引用该原始快照，拒绝重叠替换、重复插入位置和触及替换边界的插入，再升序拼接新内容。保留 BOM 与未触及原始字节；新行分隔符采用源文件首个换行风格，保留被替换末行的 EOF 换行状态。
+- TAG 不能单独证明内容相同：hashline 必须命中当前进程的该路径快照，精确核对当前原始字节，并验证所有目标行／插入锚点已读。版本变化、缓存缺失或已知短 TAG 冲突均拒绝，不做自动重定位；包括仅行尾空白变化。缓存最多 256 个路径、每路径最多保留 4 份用于碰撞检测的内容，总正文上限 64 MiB，按最近使用淘汰；单文件最多 4 MiB，超限仍正常分页读取，但不签发可编辑标签并返回 warning。edit／write／undo 成功后使该路径快照失效，下次 hashline 编辑必须重新 read；普通任务、模型切换与压缩保留缓存，新会话、成功恢复、树导航与 Plan Fresh 清空。独立 Review 不共享快照；缓存不持久化或从历史重建。
+- 两种 edit 模式均先对同一份原始快照校验全部修改，再调用共用原子保存流程。空文件、缺失文件、目录、符号链接和非 UTF-8 文件不能编辑；edit 不创建文件或目录。成功返回 `edits_applied` 和最终 UTF-8 `bytes_written`。保留严格且分模式的参数校验；模型结果不附加 diff，实际 diff 仅在提交后发送给展示层。两种模式整批无变化均拒绝提交，允许无变化项与有效修改混合。
+- `write(path, content)`：创建缺失父目录，并创建或完整覆盖 UTF-8 文件，允许空内容。write/edit 均在目标所在目录排他创建临时文件，完整写入、保留原文件权限（含可执行位）、同步临时文件后，以一次原子重命名提交。创建、部分写入、同步或重命名失败均保留原文件；新建失败不会留下残缺目标，已创建的空父目录允许保留。edit 在临时文件同步完成后、重命名前精确比较读取时的原始字节；目标变化、消失、不可读或变为特殊文件时拒绝覆盖并清理临时文件。这不是跨进程 CAS，比较到重命名之间仍有竞态窗口。重命名是提交点，之后父目录同步失败返回 `ok:true` 并附 `warning`，不能当作尚未修改。失败路径清理临时文件；TUI `/changes` 提供当前进程最近任务的逐文件安全撤销（见上节），不提供持久备份、跨文件事务、跨进程并发隔离或断电恢复保证。
 - `grep({"args":[...]})` 搜索文件内容，`find({"args":[...]})` 查找路径。每个 Tools 实例构造时按 PATH 固定选择 `rg → grep`、`fd → find`，工具 description 根据实际后端提供原生参数语法；优先程序可位于后面的 PATH 项。相对／空 PATH 项相对启动目录解析，只选择普通文件且有执行位的候选（允许可执行 symlink）。不运行版本探测，不自动安装，不使用 `fdfind` 别名；运行时程序删除或权限变化返回真实错误，不拿相同 argv 静默换后端。新启动／恢复构造的 Tools 会重新探测，模型切换和历史恢复通过实时 schema 提供当前后端说明。
 - 搜索只接受必填的字符串数组 `args`，不传程序名，不拼接 shell、不做展开／管道或跨后端参数转换；空数组、空字符串原样传给程序，NUL 和额外字段被拒绝。rg 示例：`{"args":["-n","--color","never","-e","PATTERN","src"]}`；system grep 示例：`{"args":["-R","-n","-E","-e","PATTERN","--","src"]}`；fd 示例：`{"args":["--color","never","--type","f","PATTERN","src"]}`；system find 示例：`{"args":["src","-type","f","-name","*.rs","-print"]}`。rg/fd 默认遵守 ignore 且跳过隐藏文件，可用 `--hidden`／`--no-ignore` 扩大范围；系统 grep/find 不自动遵守 gitignore，不能照搬快速后端的 flags。find 的路径在表达式前，`-name` 的 glob 保持单个 argv；fd 的 pattern 在目录前，默认正则，`--glob` 改用 glob。
 - 搜索复用 bash 的受控执行层：启动 cwd、关闭 stdin、独立进程组、超时／取消／正常结束后的组清理、项目内 scratch/cache、UTF-8 流式输出与下述 500 行／每流 65,536 字节限额均相同，超时沿用 `bash_timeout_seconds`。结果保留 `ok`、`exit_code`、`timed_out`、`cancelled`、两流输出及截断标记；grep 正常 exit 1 表示无匹配，返回 `ok:true` 并保留 `exit_code:1`，其他非零退出、find 非零退出、超时／取消均失败。后端缺失不阻断启动和文件工具，schema 仍存在并标明 unavailable，调用返回 `grep requires rg or grep on PATH` 或 `find requires fd or find on PATH`。原生参数可产生副作用（如 find 的 `-exec`／`-delete`），没有参数白名单或文件系统沙箱。
@@ -575,9 +582,9 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 - 后台 start／status／stop 共用快照：`ok`、`task_id`、`status`、真实 `exit_code`（或 null）、`stdout`／`stderr` 和两流 `*_truncated`。状态为 `running|exited|stopped|cancelled|failed`；前三者 `ok:true`，后两者 `ok:false`。自然 exit 0 为 exited，非零／信号退出为 failed；显式停止为 stopped，用户取消为 cancelled。仅实际出错时附 error／warning，无前台 timed_out 字段。真实进程清理失败会停止 agent，普通命令非零退出不会被误当作清理失败。
 - `running` 仅表示进程受管理，不表示服务 ready；通过 status 取得日志，再以后续实际 HTTP／功能请求验证，不自动探测端口、不重启。后台日志沿用共用 500 行和每流 65,536 原始字节限额，超过后持续读取并丢弃，不阻塞服务。运行中暂不显示不完整 UTF-8 尾字符，终态 lossy 解码剩余尾字节。后台 worker 不主动推送日志；每次 start／status／stop 用该次 call_id 展示累计快照，因此重复 status 可重复展示同一日志。CLI 将日志与 `task bg-N: status` 写到 stderr，stdout 仍只包含模型回答。TUI 卡片显示 `Task bg-N: status`，卡片完成仅表示本次工具调用完成，不表示服务退出。
 - bash 默认将 `TMPDIR`、`TMP`、`TEMP` 设置为项目内每个命令独立的 `.pp-tmp-*` 目录；前台调用结束后清理，后台随任务存活直到进程收尾后清理；`XDG_CACHE_HOME` 设置为项目内 `.pp-cache` 并保留缓存，二者均已加入忽略规则。这是默认位置而非权限隔离；不遵守这些变量的程序仍可能使用其他位置。清理失败通过结果中的 `warning` 报告。
-- Esc 取消会关闭本地模型连接及 SDK 后台网络任务；下一任务惰性创建新的 runtime／HTTP 连接池。流式半成品只保留展示，不进入原生历史或执行未完成工具调用。已开始的同步 read/edit/write/load_skill 操作允许完成并保留真实结果；同批剩余调用不执行，但仍按 call_id 追加取消结果。只有终止／回收成功且原生批次与终态同步保存成功才显示取消；真实清理失败或持久化错误优先报告错误。只能保证本地连接及同进程组受控工作停止，不能撤销供应商远端计算、计费、外部副作用或主动脱离进程组的进程。
+- Esc 取消会关闭本地模型连接及 SDK 后台网络任务；下一任务惰性创建新的 runtime／HTTP 连接池。流式半成品只保留展示，不进入原生历史或执行未完成工具调用。已开始的同步 read/edit/write 操作允许完成并保留真实结果；同批剩余调用不执行，但仍按 call_id 追加取消结果。只有终止／回收成功且原生批次与终态同步保存成功才显示取消；真实清理失败或持久化错误优先报告错误。只能保证本地连接及同进程组受控工作停止，不能撤销供应商远端计算、计费、外部副作用或主动脱离进程组的进程。
 - 工具按序执行，write → read 等批内依赖按顺序可见。先保存完整模型输出，再按对应 call ID 逐项追加结果；普通工具失败不会跳过其余调用。取消和真实进程清理失败按前述规则处理。
-- `read_max_bytes`、`read_max_lines`、`bash_timeout_seconds` 均要求正整数，启动时读取并固定；`/model`、`/new` 不重新读取或放宽这些限制。
+- `read_max_bytes`、`read_max_lines`、`bash_timeout_seconds` 均要求正整数，启动时读取并固定；`/model`、`/new` 不重新读取这些限制。技能 URI 文本使用独立的全文读取例外，不改变普通文件和 HTTP 的限额。
 - 每个用户任务最多 `max_model_requests` 次请求（默认 20），包含自动摘要；自动压缩须为摘要与后续普通请求保留两个名额。手动 `/compact` 独立于下一任务额度。达到额度的最后一批工具仍执行并回填历史，然后报告额度错误，不再请求或声称完成。最终回复边界仍有 steering 时同样报告额度不足，并保留队列待显式恢复。独立任务重新计数，steering 不重置。
 - 普通请求使用当前原生上下文，其中可能含压缩摘要；追加式 JSONL 与可见对话保留原消息和事件。已接受输入在自动压缩可能失败前保存。网络／协议错误不回滚文件修改，只有建连阶段 HTTP 429 在限流预算内重试；此前完整历史和工具结果仍可恢复。
 - `/model` 仅从启动时完整校验的 catalog 选择，不重载或写配置。选择当前引用无操作；解析、客户端初始化或历史转换失败保留当前模型和历史。切换不探测 HTTP、不执行工具或回退协议，兼容性由下一次实际请求验证。
@@ -651,7 +658,7 @@ cost:
 
 不会按时间自动删除日志；启动、写入、跨日和重启均保留旧日志，没有后台清理或总容量上限。需要释放空间时运行 `pp gc`，按文件名日期清理超过 90 天的普通日志文件，不使用 mtime，并跳过其他名称、符号链接和目录。
 
-诊断事件包括应用启停（pid、启动 cwd、prompt/line/tui 模式）、配置不可用、任务、Completion/Responses 请求和工具的开始/结束、受控状态及耗时。工具类别仅为 `ask`、`load_skill`、`read`、`grep`、`find`、`edit`、`write`、`bash`、`bash_task`，其他统一为 `external`。不记录 prompt、回答/思考、工具参数/结果/输出、工具文件路径、错误原文、配置、URL 或 API key；不启用依赖库日志，也不读取 `RUST_LOG`。这些运行诊断日志与下述包含完整交互的 session 文件相互独立。
+诊断事件包括应用启停（pid、启动 cwd、prompt/line/tui 模式）、配置不可用、任务、Completion/Responses 请求和工具的开始/结束、受控状态及耗时。技能读取归入 `read`；其他工具保留各自已知类别，未知工具统一为 `external`。不记录 prompt、回答/思考、工具参数/结果/输出、工具文件路径、错误原文、配置、URL 或 API key；不启用依赖库日志，也不读取 `RUST_LOG`。这些运行诊断日志与下述包含完整交互的 session 文件相互独立。
 
 初始化失败，或退出时发现写入/轮转失败，仅在 stderr 输出一次固定 `warning: file logging unavailable`，不改变应用退出码；TUI 运行中不打印日志错误。事件同步交给操作系统，无后台队列，不逐条 fsync；强杀或断电不保证最后一条完整/持久化，也不保证存在 `app_stopped`。
 
@@ -691,7 +698,7 @@ pp gc
 
 `src/tools/read.rs` 保留统一入口、同步 `Read` trait、`ReadContext` 和结果类型。trait 使用关联类型 `Input`，`src/tools/read/` 下的 `FileReader`、`ImageReader`、`UrlReader` 分别接收本地文件目标、来源与图片字节、URL 目标。文件和 URL 读取识别图片后都移交同一个 `ImageReader`，通过移动字节缓冲区复用图片校验与编码，不复制完整图片。
 
-`selector` 模块统一解析真实文件名、范围、尾部读取和 raw，`text` 模块共享基于 `BufRead` 的完整行分页、续读路径与 hashline 格式化，本地文件打开由 `file` 模块负责；`url` 模块持有网页转换与会话缓存。`ReadContext` 借用当前工作目录、限制、编辑模式、取消令牌、缓存和 fetch 回调，HTTP 请求继续复用 `OpenAiClient` 内已有的同步可取消边界，不在 reader 内创建运行时。新增读取类型时增加 trait 实现并接入相应分派，继续返回现有 JSON 与图片附件；工具权限检查仍由 `Tools` 在分派前执行。
+`selector` 模块统一解析真实文件名、范围、尾部读取和 raw，`text` 模块共享完整行分页与续读路径，hashline 快照使用同一份完整原始字节分页并生成文件头，本地文件打开由 `file` 模块负责；`url` 模块持有网页转换与会话缓存。`ReadContext` 借用当前工作目录、限制、编辑模式、取消令牌、缓存和 fetch 回调，HTTP 请求继续复用 `OpenAiClient` 内已有的同步可取消边界，不在 reader 内创建运行时。新增读取类型时增加 trait 实现并接入相应分派，继续返回现有 JSON 与图片附件；工具权限检查仍由 `Tools` 在分派前执行。
 
 ### 验证命令
 

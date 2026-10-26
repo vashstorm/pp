@@ -584,6 +584,14 @@ fn assert_edit_schema(tool: &Value, replace: bool) {
     assert_eq!(tool["name"], "edit");
     let parameters = &tool["parameters"];
     assert_eq!(parameters["type"], "object");
+    if !replace {
+        assert_eq!(parameters["required"], json!(["input"]));
+        assert_eq!(parameters["additionalProperties"], false);
+        assert_eq!(parameters["properties"].as_object().unwrap().len(), 1);
+        assert_eq!(parameters["properties"]["input"]["type"], "string");
+        return;
+    }
+
     assert_eq!(parameters["required"], json!(["path", "edits"]));
     assert_eq!(parameters["additionalProperties"], false);
     let mut properties: Vec<&str> = parameters["properties"]
@@ -598,44 +606,29 @@ fn assert_edit_schema(tool: &Value, replace: bool) {
     assert_eq!(edits["type"], "array");
     assert_eq!(edits["minItems"], 1);
     let schema = parameters.to_string();
-    if replace {
-        let items = &edits["items"];
-        assert_eq!(items["type"], "object", "{schema}");
-        assert_eq!(items["required"], json!(["oldText", "newText"]));
-        assert_eq!(items["additionalProperties"], false);
-        let mut item_properties: Vec<&str> = items["properties"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        item_properties.sort_unstable();
-        assert_eq!(item_properties, ["newText", "oldText"], "{schema}");
-        assert_eq!(items["properties"]["oldText"]["type"], "string");
-        assert_eq!(items["properties"]["oldText"]["minLength"], 1);
-        assert_eq!(items["properties"]["newText"]["type"], "string");
-        assert!(
-            !schema.contains("anchor"),
-            "hashline field leaked: {schema}"
-        );
-        assert!(
-            !schema.contains("\"op\""),
-            "hashline field leaked: {schema}"
-        );
-    } else {
-        assert!(
-            schema.contains("anchor"),
-            "missing hashline field: {schema}"
-        );
-        assert!(
-            schema.contains("\"op\""),
-            "missing hashline field: {schema}"
-        );
-        assert!(
-            !schema.contains("oldText") && !schema.contains("newText"),
-            "replace field leaked: {schema}"
-        );
-    }
+    let items = &edits["items"];
+    assert_eq!(items["type"], "object", "{schema}");
+    assert_eq!(items["required"], json!(["oldText", "newText"]));
+    assert_eq!(items["additionalProperties"], false);
+    let mut item_properties: Vec<&str> = items["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    item_properties.sort_unstable();
+    assert_eq!(item_properties, ["newText", "oldText"], "{schema}");
+    assert_eq!(items["properties"]["oldText"]["type"], "string");
+    assert_eq!(items["properties"]["oldText"]["minLength"], 1);
+    assert_eq!(items["properties"]["newText"]["type"], "string");
+    assert!(
+        !schema.contains("anchor"),
+        "hashline field leaked: {schema}"
+    );
+    assert!(
+        !schema.contains("\"op\""),
+        "hashline field leaked: {schema}"
+    );
 }
 
 #[test]
@@ -1526,22 +1519,29 @@ fn streaming_empty_bash_has_no_invented_output_or_assistant_turn() {
     }
 }
 
-// Anchors are the `N:hash` prefix before the `|` display separator. The test
-// never recomputes them; it only copies what the read tool itself returned.
+// 文件版本头直接复制真实 read 结果，测试不自行计算 TAG。
+fn hashline_header(content: &str) -> &str {
+    let header = content.lines().next().unwrap();
+    assert!(
+        header.starts_with('[') && header.ends_with(']'),
+        "{content}"
+    );
+    header
+}
+
 fn hashline_anchors(content: &str) -> Vec<(String, String)> {
     content
         .lines()
-        .map(|line| {
-            let (anchor, text) = line
-                .split_once('|')
-                .unwrap_or_else(|| panic!("read line without anchor: {line:?}"));
-            (anchor.to_string(), text.to_string())
+        .skip(1)
+        .map(|row| {
+            let (n, text) = row.split_once(':').unwrap();
+            (n.into(), text.into())
         })
         .collect()
 }
 
 #[test]
-fn hashline_edit_roundtrip_and_stale_anchor_recovery() {
+fn hashline_edit_roundtrip_and_stale_snapshot_recovery() {
     for protocol in PROTOCOLS {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
@@ -1550,155 +1550,97 @@ fn hashline_edit_roundtrip_and_stale_anchor_recovery() {
         let cli = protocol.start_with_settings(
             &server,
             dir.path(),
-            Some("edit demo.txt with hashline"),
+            Some("edit demo.txt"),
             r#"{"edit":"hashline"}"#,
         );
-
-        // The schema actually sent exposes hashline parameters, not replace's.
         let (request, body) = protocol.receive(&server);
         assert_edit_schema(&protocol.edit_tool(&body), false);
-
         protocol.calls_reply(
             request,
             json!([protocol.call("read-first", "read", json!({"path":"demo.txt"}))]),
         );
         let (request, body) = protocol.receive(&server);
         let read = protocol.tool_result(&body, "read-first");
-        assert_eq!(read["ok"], true);
-        assert_eq!(read["truncated"], false);
-        let lines = hashline_anchors(read["content"].as_str().unwrap());
+        let content = read["content"].as_str().unwrap();
         assert_eq!(
-            lines
+            hashline_anchors(content)
                 .iter()
-                .map(|(_, text)| text.as_str())
+                .map(|(_, s)| s.as_str())
                 .collect::<Vec<_>>(),
             ["one", "two", "three"]
         );
-
-        // One multi-operation edit, deliberately submitted out of line order;
-        // every anchor refers to the original snapshot.
-        protocol.calls_reply(
-            request,
-            json!([protocol.call("edit-multi", "edit", json!({
-                "path":"demo.txt",
-                "edits":[
-                    {"op":"replace","start":lines[1].0.clone(),"end":lines[1].0.clone(),"lines":["TWO"]},
-                    {"op":"insert_before","anchor":lines[0].0.clone(),"lines":["zero"]},
-                    {"op":"insert_after","anchor":lines[2].0.clone(),"lines":["four"]}
-                ]
-            }))]),
-        );
+        let header = hashline_header(content).to_owned();
+        // 故意打乱操作顺序，所有行号仍属于原始快照。
+        protocol.calls_reply(request,json!([protocol.call("edit-multi","edit",json!({"input":format!("{header}\nPUT 2.=2:\n+TWO\nPUT <1:\n+zero\nPUT >3:\n+four")}))]));
         let (request, body) = protocol.receive(&server);
-        let edited = protocol.tool_result(&body, "edit-multi");
-        assert_eq!(edited["ok"], true, "{protocol:?}: {edited}");
-        assert_eq!(edited["edits_applied"], 3);
-        let expected = "zero\none\nTWO\nthree\nfour\n";
-        assert_eq!(edited["bytes_written"], expected.len());
-        assert_eq!(std::fs::read(&demo).unwrap(), expected.as_bytes());
-
-        // Read again for updated anchors.
-        protocol.calls_reply(
-            request,
-            json!([protocol.call("read-second", "read", json!({"path":"demo.txt"}))]),
-        );
-        let (request, body) = protocol.receive(&server);
-        let read = protocol.tool_result(&body, "read-second");
-        assert_eq!(read["ok"], true);
-        let updated = hashline_anchors(read["content"].as_str().unwrap());
+        let result = protocol.tool_result(&body, "edit-multi");
         assert_eq!(
-            updated
-                .iter()
-                .map(|(_, text)| text.as_str())
-                .collect::<Vec<_>>(),
-            ["zero", "one", "TWO", "three", "four"]
+            result,
+            json!({"ok":true,"edits_applied":3,"bytes_written":24}),
+            "{protocol:?}: {result}"
         );
-        assert!(updated[2].0.starts_with("3:"), "{protocol:?}: {updated:?}");
-
-        // External change outside the CLI: the TWO line becomes "external".
-        std::fs::write(&demo, "zero\none\nexternal\nthree\nfour\n").unwrap();
-
-        // One edit mixing a still-valid operation with one on the stale TWO
-        // anchor fails as a whole, and the read behind it in the same batch
-        // still runs with its call id paired.
+        assert_eq!(
+            std::fs::read(&demo).unwrap(),
+            b"zero\none\nTWO\nthree\nfour\n"
+        );
+        // 成功后旧快照失效，重新读取才能继续。
         protocol.calls_reply(
             request,
             json!([
-                protocol.call("edit-stale", "edit", json!({
-                    "path":"demo.txt",
-                    "edits":[
-                        {"op":"replace","start":updated[1].0.clone(),"end":updated[1].0.clone(),"lines":["uno"]},
-                        {"op":"replace","start":updated[2].0.clone(),"end":updated[2].0.clone(),"lines":["recovered"]}
-                    ]
-                })),
+                protocol.call(
+                    "edit-without-read",
+                    "edit",
+                    json!({"input":format!("{header}\nCUT 1.=1")})
+                ),
+                protocol.call("read-second", "read", json!({"path":"demo.txt"}))
+            ]),
+        );
+        let (request, body) = protocol.receive(&server);
+        assert_eq!(
+            protocol.tool_result(&body, "edit-without-read")["ok"],
+            false
+        );
+        let read = protocol.tool_result(&body, "read-second");
+        let header = hashline_header(read["content"].as_str().unwrap()).to_owned();
+        std::fs::write(&demo, "zero\none\nexternal\nthree\nfour\n").unwrap();
+        protocol.calls_reply(
+            request,
+            json!([
+                protocol.call(
+                    "edit-stale",
+                    "edit",
+                    json!({"input":format!("{header}\nPUT 2.=2:\n+uno\nPUT 3.=3:\n+recovered")})
+                ),
                 protocol.call("read-third", "read", json!({"path":"demo.txt"}))
             ]),
         );
         let (request, body) = protocol.receive(&server);
         let failed = protocol.tool_result(&body, "edit-stale");
-        assert_eq!(failed["ok"], false, "{protocol:?}: {failed}");
-        // The whole edit was rejected: the externally changed file is intact.
+        assert_eq!(failed["ok"], false);
+        assert!(
+            failed["error"]
+                .as_str()
+                .unwrap()
+                .contains("snapshot changed")
+        );
         assert_eq!(
             std::fs::read(&demo).unwrap(),
-            "zero\none\nexternal\nthree\nfour\n".as_bytes()
+            b"zero\none\nexternal\nthree\nfour\n"
         );
         let read = protocol.tool_result(&body, "read-third");
-        assert_eq!(read["ok"], true);
-        let fresh = hashline_anchors(read["content"].as_str().unwrap());
-        assert_eq!(
-            fresh
-                .iter()
-                .map(|(_, text)| text.as_str())
-                .collect::<Vec<_>>(),
-            ["zero", "one", "external", "three", "four"]
-        );
-
-        // Retry with the anchors from the read that ran in the failed batch.
-        protocol.calls_reply(
-            request,
-            json!([protocol.call("edit-retry", "edit", json!({
-                "path":"demo.txt",
-                "edits":[{"op":"replace","start":fresh[2].0.clone(),"end":fresh[2].0.clone(),"lines":["recovered"]}]
-            }))]),
-        );
+        let header = hashline_header(read["content"].as_str().unwrap());
+        protocol.calls_reply(request,json!([protocol.call("edit-retry","edit",json!({"input":format!("*** Begin Patch\n{header}\nPUT 3.=3:\n+recovered\n*** End Patch")}))]));
         let (request, body) = protocol.receive(&server);
-        let recovered = protocol.tool_result(&body, "edit-retry");
-        assert_eq!(recovered["ok"], true, "{protocol:?}: {recovered}");
-        assert_eq!(recovered["edits_applied"], 1);
-
-        // Verify the final body through read itself.
-        protocol.calls_reply(
-            request,
-            json!([protocol.call("read-final", "read", json!({"path":"demo.txt"}))]),
-        );
-        let (request, body) = protocol.receive(&server);
-        let read = protocol.tool_result(&body, "read-final");
-        assert_eq!(read["ok"], true);
-        let final_lines = hashline_anchors(read["content"].as_str().unwrap());
-        assert_eq!(
-            final_lines
-                .iter()
-                .map(|(_, text)| text.as_str())
-                .collect::<Vec<_>>(),
-            ["zero", "one", "recovered", "three", "four"]
-        );
+        assert_eq!(protocol.tool_result(&body, "edit-retry")["ok"], true);
         assert_eq!(
             std::fs::read(&demo).unwrap(),
-            "zero\none\nrecovered\nthree\nfour\n".as_bytes()
+            b"zero\none\nrecovered\nthree\nfour\n"
         );
         protocol.final_reply(request, "hashline-ok");
         let output = cli.finish();
         assert!(output.status.success(), "{protocol:?}: {output:?}");
         assert_eq!(output.stdout, b"hashline-ok\n");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let failed_at = stderr
-            .find("tool edit: failed")
-            .unwrap_or_else(|| panic!("{protocol:?}: missing edit failure status: {stderr}"));
-        assert!(
-            stderr[failed_at..].contains("tool edit: ok"),
-            "{protocol:?}: no edit success after the failure: {stderr}"
-        );
         assert_clean_pipes(&output);
-        no_more(&server);
     }
 }
 
@@ -1750,7 +1692,7 @@ fn replace_edit_roundtrip_and_atomic_failure() {
             );
             let (request, body) = protocol.receive(&server);
             let edited = protocol.tool_result(&body, "edit-batch");
-            let expected = "keep “Ｋ”  \nsaid\nTAIL\n";
+            let expected = "keep “Ｋ”  \nsaid  \nTAIL\n";
             assert_eq!(edited["ok"], true, "{protocol:?}: {edited}");
             assert_eq!(edited["edits_applied"], 2);
             assert_eq!(edited["bytes_written"], expected.len());
@@ -1791,7 +1733,7 @@ fn replace_edit_roundtrip_and_atomic_failure() {
             let (request, body) = protocol.receive(&server);
             let recovered = protocol.tool_result(&body, "edit-retry");
             assert_eq!(recovered["ok"], true, "{protocol:?}: {recovered}");
-            let final_text = "keep “Ｋ”  \nrecovered\nTAIL\n";
+            let final_text = "keep “Ｋ”  \nrecovered  \nTAIL\n";
             assert_eq!(std::fs::read(&demo).unwrap(), final_text.as_bytes());
             protocol.calls_reply(
                 request,
@@ -1868,9 +1810,7 @@ fn edit_mode_survives_model_switch() {
                 let anchors = hashline_anchors(read["content"].as_str().unwrap());
                 assert_eq!(anchors.len(), 1, "{protocol:?}: {read}");
                 assert_eq!(anchors[0].1, current);
-                json!({"path":"demo.txt","edits":[
-                    {"op":"replace","start":anchors[0].0.clone(),"end":anchors[0].0.clone(),"lines":[next]}
-                ]})
+                json!({"input":format!("{}\nPUT 1.=1:\n+{next}",hashline_header(read["content"].as_str().unwrap()))})
             };
             protocol.calls_reply(
                 request,

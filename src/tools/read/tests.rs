@@ -7,12 +7,185 @@ fn run_text(path: &str, cwd: &Path, limits: ToolLimits, mode: EditMode) -> Value
         cwd,
         limits,
         mode,
+        &crate::skills::Skills::default().shared(),
         &mut WebCache::default(),
         &mut |_, _| unreachable!(),
         &CancellationToken::new(),
     )
     .unwrap()
     .value
+}
+
+#[test]
+fn skill_read_full_text_selectors_resources_and_live_enablement() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".pp/agent");
+    let root = dir.join("skills/rust");
+    std::fs::create_dir_all(root.join("references/empty")).unwrap();
+    let body = "---\nname: rust\ndescription: Rust guide\n---\na long single line exceeding eight bytes\nsecond\nBODY-END\n";
+    std::fs::write(root.join("SKILL.md"), body).unwrap();
+    std::fs::write(root.join("references/check.md"), body).unwrap();
+    std::fs::write(root.join(".hidden"), "hidden").unwrap();
+    std::os::unix::fs::symlink(root.join("references"), root.join("link")).unwrap();
+    ::image::DynamicImage::new_rgb8(2, 3)
+        .save(root.join("picture.png"))
+        .unwrap();
+    let skills = crate::skills::Skills::from_dir(&dir).shared();
+    // 同名真实路径不能把虚拟技能 URI 或选择器劫持为本地读取。
+    std::fs::create_dir_all(home.path().join("skill:")).unwrap();
+    std::fs::write(home.path().join("skill:/rust:2-3:raw"), "wrong local file").unwrap();
+    let limits = ToolLimits {
+        read_max_lines: 2,
+        read_max_bytes: 8,
+        ..Default::default()
+    };
+    let read = |path: &str, mode| {
+        run(
+            path,
+            home.path(),
+            limits,
+            mode,
+            &skills,
+            &mut WebCache::default(),
+            &mut |_, _| panic!("技能读取不得访问网络"),
+            &CancellationToken::new(),
+        )
+    };
+    for path in [
+        "skill://rust",
+        "skill://rust/",
+        "skill://rust/references/check.md",
+    ] {
+        let value = read(path, EditMode::Replace).unwrap().value;
+        assert_eq!(value["content"], body);
+        assert_eq!(value["source"], path);
+        assert_eq!(value["truncated"], false);
+        assert_eq!(
+            value["base_dir"],
+            root.canonicalize().unwrap().to_str().unwrap()
+        );
+        assert!(value["next_path"].is_null());
+    }
+    assert_eq!(
+        read("skill://rust:2-3:raw", EditMode::Hashline)
+            .unwrap()
+            .value["content"],
+        "name: rust\ndescription: Rust guide\n"
+    );
+    let value = read("skill://rust:2,6-7", EditMode::Hashline)
+        .unwrap()
+        .value;
+    let lines: Vec<_> = value["content"].as_str().unwrap().lines().collect();
+    for (line, expected) in lines.iter().zip(["2:", "6:", "7:"]) {
+        assert!(line.starts_with(expected));
+    }
+    assert_eq!(lines.len(), 3);
+    assert!(
+        read("skill://rust:-1", EditMode::Hashline).unwrap().value["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("7:")
+    );
+    std::fs::write(home.path().join("ordinary"), body.lines().nth(4).unwrap()).unwrap();
+    assert!(
+        read("ordinary", EditMode::Replace)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("exceeds read_max_bytes")
+    );
+    assert_eq!(
+        read("skill://rust/.", EditMode::Hashline).unwrap().value["content"],
+        "references/\n.hidden\nSKILL.md\nlink\npicture.png\n"
+    );
+    assert_eq!(
+        read("skill://rust/references", EditMode::Hashline)
+            .unwrap()
+            .value["content"],
+        "empty/\ncheck.md\n"
+    );
+    assert_eq!(
+        read("skill://rust/references/empty", EditMode::Hashline)
+            .unwrap()
+            .value["content"],
+        "(empty directory)"
+    );
+    assert!(read(root.to_str().unwrap(), EditMode::Replace).is_err());
+    let image = read("skill://rust/picture.png", EditMode::Replace).unwrap();
+    assert_eq!(image.value["kind"], "image");
+    assert_eq!(image.value["source"], "skill://rust/picture.png");
+    assert_eq!(image.images.len(), 1);
+    assert_eq!(
+        read("skill://rust/picture.png:1", EditMode::Replace)
+            .err()
+            .unwrap()
+            .to_string(),
+        "image reads do not accept selectors"
+    );
+    std::fs::write(home.path().join("canary"), "EXTERNAL-CANARY").unwrap();
+    std::os::unix::fs::symlink(home.path().join("canary"), root.join("outside")).unwrap();
+    std::os::unix::fs::symlink(root.join("references/check.md"), root.join("inside")).unwrap();
+    assert_eq!(
+        read("skill://rust/inside", EditMode::Replace)
+            .unwrap()
+            .value["content"],
+        body
+    );
+    std::fs::write(root.join("guide:2?#%.md"), "encoded resource\nlast\n").unwrap();
+    assert_eq!(
+        read(
+            "skill://rust/guide%3A2%3F%23%25.md:2:raw",
+            EditMode::Hashline
+        )
+        .unwrap()
+        .value["content"],
+        "last\n"
+    );
+    std::fs::write(root.join("%2e%2e"), "decoded only once\n").unwrap();
+    assert_eq!(
+        read("skill://rust/%252e%252e", EditMode::Replace)
+            .unwrap()
+            .value["content"],
+        "decoded only once\n"
+    );
+    for path in [
+        "skill://",
+        "skill://rust%",
+        "skill://%FF",
+        "skill://rust/%00",
+        "skill://rust/%2e%2e/canary",
+        "skill://rust/%2Fetc/passwd",
+        "skill://rust/outside",
+        "skill://rust/missing",
+        "skill://rust?query",
+    ] {
+        let error = read(path, EditMode::Replace).err().unwrap().to_string();
+        assert!(!error.contains("EXTERNAL-CANARY"), "{path}: {error}");
+    }
+    skills
+        .lock()
+        .unwrap()
+        .save_selection(&[("rust".into(), false)])
+        .unwrap();
+    assert_eq!(
+        read("skill://rust", EditMode::Replace)
+            .err()
+            .unwrap()
+            .to_string(),
+        "Skill does not exist or is disabled"
+    );
+    skills
+        .lock()
+        .unwrap()
+        .save_selection(&[("rust".into(), true)])
+        .unwrap();
+    std::fs::write(root.join("SKILL.md"), "changed without frontmatter\n").unwrap();
+    assert_eq!(
+        read("skill://rust", EditMode::Replace).unwrap().value["content"],
+        "changed without frontmatter\n"
+    );
+    std::fs::remove_file(root.join("SKILL.md")).unwrap();
+    assert!(read("skill://rust", EditMode::Replace).is_err());
 }
 
 #[test]
@@ -193,6 +366,7 @@ fn read_routes_local_and_url_images_through_the_same_validation_and_encoding() {
             dir.path(),
             ToolLimits::default(),
             EditMode::Hashline,
+            &crate::skills::Skills::default().shared(),
             &mut WebCache::default(),
             &mut |_, _| panic!("本地读取不应抓取 URL"),
             &CancellationToken::new(),
@@ -203,6 +377,7 @@ fn read_routes_local_and_url_images_through_the_same_validation_and_encoding() {
             dir.path(),
             ToolLimits::default(),
             EditMode::Hashline,
+            &crate::skills::Skills::default().shared(),
             &mut WebCache::default(),
             &mut |_, _| {
                 Ok(HttpResponse {
@@ -239,6 +414,7 @@ fn read_routes_text_and_rejects_invalid_image_hints_without_text_fallback() {
         dir.path(),
         ToolLimits::default(),
         EditMode::Hashline,
+        &crate::skills::Skills::default().shared(),
         &mut WebCache::default(),
         &mut |_, _| panic!("本地读取不应抓取 URL"),
         &CancellationToken::new(),
@@ -258,6 +434,7 @@ fn read_routes_text_and_rejects_invalid_image_hints_without_text_fallback() {
         dir.path(),
         ToolLimits::default(),
         EditMode::Hashline,
+        &crate::skills::Skills::default().shared(),
         &mut WebCache::default(),
         &mut fetch,
         &CancellationToken::new(),
@@ -274,6 +451,7 @@ fn read_routes_text_and_rejects_invalid_image_hints_without_text_fallback() {
             dir.path(),
             ToolLimits::default(),
             EditMode::Replace,
+            &crate::skills::Skills::default().shared(),
             &mut WebCache::default(),
             &mut |_, _| {
                 Ok(HttpResponse {
@@ -302,6 +480,7 @@ fn read_rejects_image_selectors_for_both_local_and_url_targets() {
                 dir.path(),
                 ToolLimits::default(),
                 EditMode::Replace,
+                &crate::skills::Skills::default().shared(),
                 &mut WebCache::default(),
                 &mut |_, _| {
                     Ok(HttpResponse {

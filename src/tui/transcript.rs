@@ -30,7 +30,6 @@ pub(super) enum EntryKind {
     Bash,
     Think,
     Grep,
-    Skill,
     Diff,
     Ask,
     Data,
@@ -45,7 +44,6 @@ impl EntryKind {
             Self::Bash => Color::Yellow,
             Self::Think | Self::Activity => MUTED_TEXT,
             Self::Grep => Color::Cyan,
-            Self::Skill => Color::Magenta,
             Self::Diff | Self::Ask => palette::ACCENT,
             Self::Data => Color::Reset,
         }
@@ -373,18 +371,6 @@ impl TranscriptEntry {
             };
             return Line::styled(text, Style::default().fg(color).bg(BASH_BACKGROUND));
         }
-        if self.kind == EntryKind::Skill {
-            return Line::styled(
-                text,
-                Style::default().fg(
-                    if matches!(source, Source::Footer) && self.status == EntryStatus::Failed {
-                        Color::Red
-                    } else {
-                        Color::Reset
-                    },
-                ),
-            );
-        }
         if self.kind == EntryKind::Think {
             return Line::styled(
                 text,
@@ -445,7 +431,6 @@ impl TranscriptEntry {
         }
         let mut lines = Vec::new();
         let bash = self.kind == EntryKind::Bash;
-        let skill = self.kind == EntryKind::Skill;
         let user = self.kind == EntryKind::User;
         let border = |source| LayoutLine {
             content: LayoutContent::Source {
@@ -455,7 +440,7 @@ impl TranscriptEntry {
             },
             height: 1,
         };
-        if bash || skill {
+        if bash {
             lines.push(border(Source::Top));
         }
         if user {
@@ -508,7 +493,7 @@ impl TranscriptEntry {
                         height: 1,
                     }),
             );
-        } else if !self.kind.hides_title() && !skill && !matches!(self.body, EntryBody::Tips) {
+        } else if !self.kind.hides_title() && !matches!(self.body, EntryBody::Tips) {
             self.add_lines(Source::Title, &mut lines);
         }
         if bash {
@@ -647,16 +632,6 @@ impl TranscriptEntry {
         if !tool_body && !self.stderr.is_empty() {
             self.add_lines(Source::StderrLabel, &mut lines);
             self.add_lines(Source::Stderr, &mut lines);
-        }
-        if skill {
-            self.footer = match self.status {
-                EntryStatus::Running => "Loading",
-                EntryStatus::Complete => "Loaded",
-                EntryStatus::Failed => "Load failed",
-            }
-            .into();
-            self.add_lines(Source::Footer, &mut lines);
-            lines.push(border(Source::Bottom));
         }
         if bash {
             if self.footer.is_empty() {
@@ -1228,17 +1203,19 @@ impl Transcript {
                 let detail = arguments.as_ref().and_then(|args| {
                     args.get(match name.as_str() {
                         "bash" => "command",
-                        "load_skill" => "name",
                         _ => "path",
-                    })?
-                    .as_str()
+                    })
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        (name == "edit")
+                            .then(|| crate::tools::edit_path(args))
+                            .flatten()
+                    })
                 });
                 let kind = if matches!(name.as_str(), "bash" | "bash_task") {
                     EntryKind::Bash
                 } else if name == "grep" {
                     EntryKind::Grep
-                } else if name == "load_skill" {
-                    EntryKind::Skill
                 } else if matches!(name.as_str(), "edit" | "write") {
                     EntryKind::Diff
                 } else if name == "ask" {
@@ -1272,10 +1249,6 @@ impl Transcript {
                     )
                 } else {
                     match detail {
-                        Some(name) if kind == EntryKind::Skill => {
-                            format!("skill · {}", name.replace(char::is_control, " "))
-                        }
-                        None if kind == EntryKind::Skill => "skill · unknown".into(),
                         Some(command) if name == "bash" => format!("$ {command}"),
                         Some(path) => format!("{name} · {path}"),
                         None => name.clone(),
@@ -1693,7 +1666,7 @@ impl Transcript {
             }
             let padding = if compact {
                 0
-            } else if matches!(entry.kind, EntryKind::Bash | EntryKind::Skill) {
+            } else if entry.kind == EntryKind::Bash {
                 4
             } else {
                 2
@@ -1718,7 +1691,12 @@ impl Transcript {
         }
         let mut index = 0;
         while index < self.entries.len() {
-            if self.entries[index].tool.as_deref() != Some("read") {
+            if self.entries[index].tool.as_deref() != Some("read")
+                || tool_display::is_skill_read(
+                    &self.entries[index].arguments,
+                    self.entries[index].result.as_ref(),
+                )
+            {
                 index += 1;
                 continue;
             }
@@ -1730,6 +1708,10 @@ impl Transcript {
             if grouped {
                 while end < self.entries.len()
                     && self.entries[end].tool.as_deref() == Some("read")
+                    && !tool_display::is_skill_read(
+                        &self.entries[end].arguments,
+                        self.entries[end].result.as_ref(),
+                    )
                     && self.entries[end].status != EntryStatus::Failed
                     && !self.entries[end].display.full
                 {
@@ -1811,7 +1793,6 @@ impl Transcript {
                 }
                 let height = (line.height - skip).min(usize::from(end - y)) as u16;
                 let bash = entry.kind == EntryKind::Bash;
-                let skill = entry.kind == EntryKind::Skill;
                 let think = entry.kind == EntryKind::Think;
                 let background = if bash {
                     Some(BASH_BACKGROUND)
@@ -1834,21 +1815,14 @@ impl Transcript {
                     if compact {
                         continue;
                     }
-                    if bash || skill {
-                        let skill_title = format!(" {} ", entry.title);
+                    if bash {
                         let (left, right, label) = match line.source() {
-                            Some(Source::Top) => {
-                                ("╭", "╮", if skill { skill_title.as_str() } else { "" })
-                            }
+                            Some(Source::Top) => ("╭", "╮", ""),
                             Some(Source::Divider) => ("├", "┤", " Output "),
                             Some(Source::Bottom) => ("╰", "╯", ""),
                             _ => ("│", "│", ""),
                         };
-                        let style = if skill {
-                            Style::default().fg(Color::Magenta)
-                        } else {
-                            Style::default().fg(BASH_BORDER).bg(BASH_BACKGROUND)
-                        };
+                        let style = Style::default().fg(BASH_BORDER).bg(BASH_BACKGROUND);
                         let horizontal = matches!(
                             line.source(),
                             Some(Source::Top | Source::Divider | Source::Bottom)
@@ -1865,13 +1839,7 @@ impl Transcript {
                         if !label.is_empty() && area.width > 4 {
                             Span::styled(
                                 label,
-                                if skill {
-                                    Style::default()
-                                        .fg(Color::Magenta)
-                                        .add_modifier(Modifier::BOLD)
-                                } else {
-                                    Style::default().fg(Color::Gray).bg(BASH_BACKGROUND)
-                                },
+                                Style::default().fg(Color::Gray).bg(BASH_BACKGROUND),
                             )
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
@@ -1882,7 +1850,7 @@ impl Transcript {
                 }
                 let padding = if compact {
                     0
-                } else if bash || skill {
+                } else if bash {
                     4
                 } else {
                     inset
@@ -2242,18 +2210,6 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
                 .as_str()
                 .map_or_else(|| error.to_string(), str::to_owned);
         }
-    } else if name == "load_skill" {
-        return format!(
-            "Source: {}\n{}",
-            result
-                .get("path")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-            result
-                .get("content")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-        );
     } else if name == "read" {
         if let Some(content) = result.get("content").and_then(Value::as_str) {
             return content.into();
@@ -2294,7 +2250,6 @@ mod tests {
             "read",
             "grep",
             "find",
-            "load_skill",
             "mcp__server__tool",
         ] {
             tool(&mut transcript, name, name, json!({}));
@@ -3235,7 +3190,7 @@ mod tests {
     fn streaming_category_colors_and_statuses_preserve_default_body() {
         for kind in [EntryKind::Grep, EntryKind::Data] {
             let mut transcript = Transcript::new();
-            let tool = matches!(kind, EntryKind::Grep | EntryKind::Skill);
+            let tool = kind == EntryKind::Grep;
             let mut entry = TranscriptEntry::new(
                 kind,
                 "title".into(),
@@ -3308,7 +3263,6 @@ mod tests {
             "bash_task",
             "grep",
             "find",
-            "load_skill",
             "ask",
             "plan_search",
             "plan_find",
@@ -3737,59 +3691,35 @@ mod tests {
         assert!(screen(&render(&mut transcript, 30, 5)).contains("tail中"));
     }
     #[test]
-    fn skill_card_has_named_magenta_border_preview_status_and_full_expansion() {
+    fn hashline_read_summary_and_skill_preview_remain_independent() {
         let mut transcript = Transcript::new();
+        tool(&mut transcript, "normal", "read", json!({"path":"file"}));
+        transcript.progress(AgentEvent::ToolFinished {id:"normal".into(),result:json!({"ok":true,"source":"file","ranges":[{"start":1,"end":2}],"lines_read":2,"content":"[file#A1B2]\n1:ordinary hidden\n2:tail\n"})});
         tool(
             &mut transcript,
-            "skill-call",
-            "load_skill",
-            serde_json::json!({"name":"中文技能"}),
-        );
-        let running = render(&mut transcript, 70, 40);
-        assert!(
-            screen(&running)
-                .replace(' ', "")
-                .contains("╭─\u{f02d}skill·中文技能")
-        );
-        assert_eq!(transcript.entries[0].status, EntryStatus::Running);
-        assert_eq!(running[(0, 0)].fg, Color::Magenta);
-        assert!(running[(2, 0)].modifier.contains(Modifier::BOLD));
-        let content = (0..20)
-            .map(|index| format!("skill-body-{index:02}\n"))
-            .collect::<String>();
-        transcript.progress(AgentEvent::ToolFinished {
-            id: "skill-call".into(),
-            result: serde_json::json!({"ok":true,"path":"/skills/test/SKILL.md","content":content}),
-        });
-        let collapsed = screen(&render(&mut transcript, 70, 40));
-        assert!(collapsed.contains("Source: /skills/test/SKILL.md"));
-        assert!(!collapsed.contains("skill-body-00"));
-        assert!(!collapsed.contains("skill-body-19"));
-        assert!(collapsed.contains("Ctrl + O"));
-        assert_eq!(transcript.entries[0].status, EntryStatus::Complete);
-        transcript.toggle_tool_output();
-        assert!(screen(&render(&mut transcript, 70, 40)).contains("skill-body-19"));
-        for width in [1, 2, 4, 20, 70] {
-            render(&mut transcript, width, 5);
-        }
-        transcript.toggle_tool_output();
-        tool(
-            &mut transcript,
-            "failed",
-            "load_skill",
-            serde_json::json!({"name":"disabled"}),
-        );
-        transcript.progress(AgentEvent::ToolFinished {
-            id: "failed".into(),
-            result: serde_json::json!({"ok":false,"error":"skill 未启用"}),
-        });
-        assert_eq!(transcript.entries[1].status, EntryStatus::Failed);
-        tool(
-            &mut transcript,
+            "skill",
             "read",
-            "read",
-            serde_json::json!({"path":"/skills/test/SKILL.md"}),
+            json!({"path":"skill://rust"}),
         );
-        assert_eq!(transcript.entries.last().unwrap().kind, EntryKind::Data);
+        transcript.progress(AgentEvent::ToolFinished {id:"skill".into(),result:json!({"ok":true,"source":"skill://rust","content":"skill-first\nskill-second\nskill-third\nskill-fourth\n"})});
+        tool(&mut transcript, "other", "read", json!({"path":"other"}));
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "other".into(),
+            result: json!({"ok":true,"source":"other","content":"other hidden"}),
+        });
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(text.contains("file:1-2"));
+        assert!(!text.contains("ordinary hidden"));
+        assert!(text.contains("skill-first") && text.contains("skill-third"));
+        assert!(!text.contains("skill-fourth"));
+        assert!(!transcript.entries[1].hidden);
+        assert!(!transcript.entries[2].hidden);
+        transcript.toggle_tool_output();
+        assert!(screen(&render(&mut transcript, 100, 30)).contains("skill-fourth"));
+        let mut output = Vec::new();
+        let snapshot = render(&mut transcript, 100, 30);
+        transcript.write_scrollback(&mut output, &snapshot).unwrap();
+        let text = String::from_utf8_lossy(&output);
+        assert!(text.contains("[file#A1B2]"));
     }
 }

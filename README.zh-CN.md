@@ -130,9 +130,12 @@ printf '说明当前项目的构建方式\n' | pp
 
 `@` 打开项目文件路径补全。空闲且输入为空时，双击 Esc 打开会话树；回退历史不会回滚文件。[完整交互说明 →](docs/guide.md#终端交互)
 
-`read` 仅接受 `path`，支持本地文本、图片和静态网页。范围直接写入路径：`src/main.rs:20-60`、`notes.md:-30`、`file.rs:5-10,20-30`，严格读取指定行，截断后使用 `next_path` 续读。`:raw` 去掉前缀，网页则返回原始响应正文。PNG／JPEG／WebP／GIF 图片作为真实视觉输入发给模型，终端只显示元信息；恢复会话和切换协议保留图片。网页提取静态 HTML 正文，不执行 JavaScript，支持取消和有界会话缓存。[读取行为和限制 →](docs/guide.md#工具执行与权限)
+`read` 仅接受 `path`，支持本地文本、图片、静态网页和已启用的 `skill://` 资源。系统列出技能名称、说明和 URI，匹配技能必须先读取，不自动注入正文；裸技能 URI 读取完整 `SKILL.md`，追加 `/<path>` 访问资源，`/.` 列出目录。技能文本不受普通文本限额限制，结果带 `path` 和 `base_dir`，显式选择器仍生效。范围直接写入路径：`src/main.rs:20-60`、`notes.md:-30`、`file.rs:5-10,20-30`，严格读取指定行，截断后使用 `next_path` 续读。`:raw` 去掉前缀，网页则返回原始响应正文。PNG／JPEG／WebP／GIF 图片作为真实视觉输入发给模型，终端只显示元信息；恢复会话和切换协议保留图片。网页提取静态 HTML 正文，不执行 JavaScript，支持取消和有界会话缓存。[读取行为和限制 →](docs/guide.md#工具执行与权限)
 
-工具预览采用 [Oh My Pi](https://github.com/can1357/oh-my-pi/tree/0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0) 的 ANSI 显示规则。read 默认仅显示本地生成的路径／范围摘要；在 `settings.yml` 设置 `read: {toolResultPreview: true}` 后启用三行正文预览。Ctrl + O 全局切换已有及后续工具输出，并通知当前状态。搜索预览按列宽截断长行，shell 输出保留有限的屏幕尾部，各类工具使用独立额度；展开后的 grep 和文件列表仍按列宽截断，MCP 文本仍限制为 12 行。这些显示限制不改变模型接收的结果，会话树预览与退出时写入终端历史的内容保持完整。[各工具预览额度 →](docs/guide.md#工具输出折叠)
+工具预览采用 [Oh My Pi](https://github.com/can1357/oh-my-pi/tree/0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0) 的 ANSI 显示规则。普通 read 默认仅显示本地生成的路径／范围摘要；在 `settings.yml` 设置 `read: {toolResultPreview: true}` 后启用三行正文预览。skill URI 始终默认显示三行正文预览，Ctrl + O 展开。Ctrl + O 全局切换已有及后续工具输出，并通知当前状态。搜索预览按列宽截断长行，shell 输出保留有限的屏幕尾部，各类工具使用独立额度；展开后的 grep 和文件列表仍按列宽截断，MCP 文本仍限制为 12 行。这些显示限制不改变模型接收的结果，会话树预览与退出时写入终端历史的内容保持完整。[各工具预览额度 →](docs/guide.md#工具输出折叠)
+
+配置 `edit: hashline` 后，本地 read 返回 `[path#TAG]` 文件版本头和 `N:text` 行号正文；通过 `edit({"input":"…"})` 提交单文件的 PUT 替换／插入或 CUT 删除。只能编辑已显示行，快照缺失或版本过期时必须重新读取；每次 edit、write 或 undo 成功后该文件快照失效。默认 replace 模式保持不变。
+
 
 </details>
 

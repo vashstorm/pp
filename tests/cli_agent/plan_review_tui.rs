@@ -66,11 +66,11 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                         .unwrap()
                 })
                 .collect();
-            assert_eq!(names.len(), 4);
+            assert_eq!(names.len(), 3);
             assert!(
                 names.iter().all(|name| matches!(
                     *name,
-                    "read" | "load_skill" | "plan_search" | "plan_find"
+                    "read" | "plan_search" | "plan_find"
                 ))
             );
             let calls = [

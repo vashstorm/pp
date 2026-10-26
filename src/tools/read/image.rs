@@ -72,8 +72,12 @@ impl Read for ImageReader {
                 ""
             }
         );
+        let mut value = json!({"ok":true,"kind":"image","content":content,"mime_type":mime,"width":width,"height":height,"bytes":bytes.len()});
+        if source.starts_with("skill://") {
+            value["source"] = source.as_str().into();
+        }
         Ok(ReadResult {
-            value: json!({"ok":true,"kind":"image","content":content,"mime_type":mime,"width":width,"height":height,"bytes":bytes.len()}),
+            value,
             images: vec![ToolImage { data_url }],
         })
     }
@@ -100,7 +104,7 @@ mod tests {
                 bytes,
             },
             &mut ReadContext {
-                cwd: Path::new("."),
+                snapshots: None,
                 limits: ToolLimits::default(),
                 mode: EditMode::Replace,
                 cache: &mut WebCache::default(),
@@ -149,6 +153,7 @@ mod tests {
                 dir.path(),
                 ToolLimits::default(),
                 EditMode::Replace,
+                &crate::skills::Skills::default().shared(),
                 &mut WebCache::default(),
                 &mut |_, _| unreachable!(),
                 &CancellationToken::new()

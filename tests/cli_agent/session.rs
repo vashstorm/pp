@@ -2770,8 +2770,8 @@ fn session_restore_keeps_saved_edit_mode_and_execution_limits() {
         assert_eq!(read["lines_read"], 1);
         assert_eq!(read["next_offset"], 2);
         let content = read["content"].as_str().unwrap();
-        assert!(content.starts_with("1:"));
-        assert!(content.trim_end().ends_with("|alpha"));
+        assert!(content.starts_with("[source.txt#"));
+        assert_eq!(content.lines().nth(1), Some("1:alpha"));
         assert!(!content.contains("beta"));
         assert_eq!(api.tool_result(&body, "byte-policy")["ok"], false);
         let bash = api.tool_result(&body, "timeout-policy");

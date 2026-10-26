@@ -125,7 +125,6 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
         names.iter().all(|name| matches!(
             *name,
             "read"
-                | "load_skill"
                 | "ask"
                 | "plan_search"
                 | "plan_find"
