@@ -630,21 +630,117 @@ fn stats_browser_fixture(dir: &std::path::Path) -> std::path::PathBuf {
     bin
 }
 
+// The real `pp stats` open path only runs on an interactive terminal, so the
+// open test drives the binary through a PTY; piped spawns cover the skip path.
+#[cfg(unix)]
+struct StatsPty {
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    // Keep the PTY pair alive for the lifetime of the server child.
+    _master: Box<dyn portable_pty::MasterPty + Send>,
+    _slave: Box<dyn portable_pty::SlavePty + Send>,
+    output: std::sync::mpsc::Receiver<Vec<u8>>,
+}
+
+#[cfg(unix)]
+impl Drop for StatsPty {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+#[cfg(unix)]
+fn spawn_stats_server_pty(dir: &std::path::Path, bin: &std::path::Path, exit: &str) -> StatsPty {
+    let spawn_guard = super::tui::PTY_SPAWN
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let pair = portable_pty::native_pty_system()
+        .openpty(portable_pty::PtySize {
+            rows: 30,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = portable_pty::CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
+    command.cwd(dir);
+    command.env("HOME", dir);
+    command.env("PATH", bin);
+    command.env("PP_STATS_OPEN_EXIT", exit);
+    command.args(["stats", "--port", "0"]);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let child = pair.slave.spawn_command(command).unwrap();
+    drop(spawn_guard);
+    let (sender, output) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        use std::io::Read;
+        let mut buffer = [0u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    if sender.send(buffer[..count].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    StatsPty {
+        child,
+        _master: pair.master,
+        _slave: pair.slave,
+        output,
+    }
+}
+
+#[cfg(unix)]
+fn pty_wait_for(
+    captured: &mut Vec<u8>,
+    output: &std::sync::mpsc::Receiver<Vec<u8>>,
+    needle: &str,
+    what: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if String::from_utf8_lossy(captured).contains(needle) {
+            return;
+        }
+        if let Ok(bytes) = output.recv_timeout(Duration::from_millis(10)) {
+            captured.extend_from_slice(&bytes);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}; output so far: {}",
+            String::from_utf8_lossy(captured)
+        );
+    }
+}
+
+#[cfg(unix)]
+fn pty_stats_address(captured: &[u8]) -> String {
+    let text = String::from_utf8_lossy(captured);
+    let marker = "pp stats: http://";
+    let start = text.find(marker).expect("stats banner missing") + marker.len();
+    let end = start + text[start..].find('/').expect("banner URL missing path");
+    text[start..end].to_owned()
+}
+
 #[test]
 #[cfg(unix)]
 fn stats_server_opens_actual_url_and_survives_browser_failure() {
-    use std::io::BufRead;
     for exit in ["0", "23"] {
         let dir = tempfile::tempdir().unwrap();
         let bin = stats_browser_fixture(dir.path());
-        let (mut cli, address) = stats_server_address(Cli::spawn(
-            dir.path(),
-            &["stats", "--port", "0"],
-            &[
-                ("PATH", bin.to_str().unwrap()),
-                ("PP_STATS_OPEN_EXIT", exit),
-            ],
-        ));
+        let mut pty = spawn_stats_server_pty(dir.path(), &bin, exit);
+        let mut captured = Vec::new();
+        pty_wait_for(
+            &mut captured,
+            &pty.output,
+            "pp stats: http://",
+            "stats banner",
+        );
+        let address = pty_stats_address(&captured);
         let expected = format!("1\nhttp://{address}/#/overview?range=24h\n");
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -662,21 +758,32 @@ fn stats_server_opens_actual_url_and_survives_browser_failure() {
             thread::sleep(Duration::from_millis(10));
         }
         if exit != "0" {
-            let stderr = cli.0.as_mut().unwrap().stderr.take().unwrap();
-            let (tx, rx) = std::sync::mpsc::channel();
-            thread::spawn(move || {
-                let mut line = String::new();
-                std::io::BufReader::new(stderr)
-                    .read_line(&mut line)
-                    .unwrap();
-                let _ = tx.send(line);
-            });
-            let warning = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            assert!(warning.contains("could not open browser"), "{warning}");
-            assert!(warning.contains(&format!("http://{address}/#/overview?range=24h")));
+            pty_wait_for(
+                &mut captured,
+                &pty.output,
+                "could not open browser",
+                "browser failure warning",
+            );
+            let text = String::from_utf8_lossy(&captured);
+            assert!(text.contains(&format!("http://{address}/#/overview?range=24h")));
         }
         assert_eq!(http(&address, "/", &address).0, 200);
+        let _ = pty.child.kill();
     }
+}
+
+#[test]
+#[cfg(unix)]
+fn stats_server_without_terminal_skips_browser() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = stats_browser_fixture(dir.path());
+    let (_cli, address) = stats_server_address(Cli::spawn(
+        dir.path(),
+        &["stats", "--port", "0"],
+        &[("PATH", bin.to_str().unwrap())],
+    ));
+    assert_eq!(http(&address, "/", &address).0, 200);
+    assert!(!dir.path().join("opened-url").exists());
 }
 
 #[test]

@@ -2677,7 +2677,7 @@ mod tui {
 
     const DEADLINE: Duration = Duration::from_secs(5);
     // portable-pty sets CLOEXEC after openpty; do not spawn another child in that window.
-    static PTY_SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) static PTY_SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn input_is_ready(screen: &vt100::Screen) -> bool {
         screen

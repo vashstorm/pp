@@ -1,7 +1,7 @@
 use super::{Range, Store, database_path};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
@@ -17,7 +17,8 @@ pub(crate) fn run(port: u16, open: bool) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}/#/overview?range=24h");
     println!("pp stats: {url}");
     std::io::stdout().flush()?;
-    if open {
+    // Auto-open only on interactive terminals; piped, agent, or CI contexts just print the URL.
+    if open && std::io::stdout().is_terminal() {
         open_browser(url);
     }
     for request in server.incoming_requests() {
