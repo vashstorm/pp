@@ -15,6 +15,8 @@ use std::{
 };
 
 pub(super) const ACCENT: Color = Color::Rgb(127, 166, 106);
+// Shell 模式：草稿以 `!` 开头时输入框上下边框的颜色，区分于普通输入。
+pub(super) const SHELL_MODE: Color = Color::Rgb(255, 121, 198);
 // Plan 模式标签：与 transcript 高亮一致的琥珀色。
 const PLAN_MODE: Color = Color::Rgb(254, 188, 56);
 // 模式标签之外仍需可容纳的最小字段空间（图标+至少一个字符）。

@@ -4052,6 +4052,14 @@ impl App {
                 .borders(Borders::TOP | Borders::BOTTOM)
                 .border_style(Style::default().fg(if self.menu.is_some() {
                     menu::SEPARATOR
+                } else if self
+                    .input
+                    .lines()
+                    .first()
+                    .is_some_and(|line| line.trim_start().starts_with('!'))
+                {
+                    // Shell 模式：与 `!command` 命令判定一致，提示草稿将作为 shell 执行。
+                    statusline::SHELL_MODE
                 } else {
                     statusline::ACCENT
                 }));
