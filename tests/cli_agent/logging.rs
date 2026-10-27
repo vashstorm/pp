@@ -612,7 +612,7 @@ fn debug_logging_separates_initial_prompts_per_session_across_tasks_and_models()
     let mut cli = Cli::start_with(
         home.path(),
         None,
-        r#"{"debug":true,"think_level":"high","max_model_requests":7}"#,
+        r#"{"debug":true,"think_level":"high","request_timeout_seconds":7}"#,
         &models.to_string(),
     );
     cli.input("首个合成 prompt\nsecond\n/model responses/primary\nthird\n/model fixture/primary\nfourth\n/model responses/primary\n/new\nfifth\n/quit\n");

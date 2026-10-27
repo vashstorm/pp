@@ -2079,7 +2079,7 @@ fn background_service_lifecycle_in_both_protocols() {
     for protocol in PROTOCOLS {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
-        let settings = r#"{"default_model":"fixture/primary","bash_timeout_seconds":1,"max_model_requests":512}"#;
+        let settings = r#"{"default_model":"fixture/primary","bash_timeout_seconds":1}"#;
         let cli =
             protocol.start_with_settings(&server, dir.path(), Some("background service"), settings);
         let service_pid = dir.path().join("service.pid");
@@ -2231,32 +2231,20 @@ fn background_service_lifecycle_in_both_protocols() {
 enum RunBoundary {
     FinalAnswer,
     ModelError,
-    RequestBudget,
 }
 
-// Every way a user task can end without an explicit stop — final answer,
-// model error, request budget exhaustion — must stop the background tasks it
-// started. The next user message in the same interactive CLI cannot address
-// the old task id, does not revive the service, and can start a fresh
-// background task with a different id.
+// Every way a user task can end without an explicit stop — final answer or
+// model error — must stop the background tasks it started. The next user
+// message in the same interactive CLI cannot address the old task id, does
+// not revive the service, and can start a fresh background task with a
+// different id.
 #[test]
 fn background_task_cleanup_at_run_boundaries() {
     for protocol in PROTOCOLS {
-        for boundary in [
-            RunBoundary::FinalAnswer,
-            RunBoundary::ModelError,
-            RunBoundary::RequestBudget,
-        ] {
+        for boundary in [RunBoundary::FinalAnswer, RunBoundary::ModelError] {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
-            let settings = match boundary {
-                RunBoundary::RequestBudget => {
-                    r#"{"default_model":"fixture/primary","max_model_requests":2}"#
-                }
-                RunBoundary::FinalAnswer | RunBoundary::ModelError => {
-                    r#"{"default_model":"fixture/primary"}"#
-                }
-            };
+            let settings = r#"{"default_model":"fixture/primary"}"#;
             std::fs::write(dir.path().join("marker"), "marker\n").unwrap();
             let service_pid = dir.path().join("service.pid");
             let second_pid = dir.path().join("second.pid");
@@ -2291,15 +2279,6 @@ fn background_task_cleanup_at_run_boundaries() {
                         json!({"error":{"message":"fixture failure","type":"server_error"}}).to_string()
                     ).with_status_code(500)).unwrap();
                     cli.wait_for(Pipe::Stderr, "error: ");
-                }
-                RunBoundary::RequestBudget => {
-                    // The second request of this run consumes the whole budget
-                    // right after the background task started.
-                    protocol.calls_reply(
-                        request,
-                        json!([protocol.call("filler", "read", json!({"path": "marker"}))]),
-                    );
-                    cli.wait_for(Pipe::Stderr, "model request limit reached");
                 }
             }
             cancel_wait_pid_dead(&service_pid);
@@ -2365,9 +2344,7 @@ fn background_task_cleanup_at_run_boundaries() {
             );
             let expected_stdout = match boundary {
                 RunBoundary::FinalAnswer => "boundary-answer\nboundary-cleanup-complete\n",
-                RunBoundary::ModelError | RunBoundary::RequestBudget => {
-                    "boundary-cleanup-complete\n"
-                }
+                RunBoundary::ModelError => "boundary-cleanup-complete\n",
             };
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout),

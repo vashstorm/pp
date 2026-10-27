@@ -68,7 +68,6 @@ providers:
 default_model: openai/main
 think_level: none
 edit: replace
-max_model_requests: 20
 auto_compact: true
 auto_compact_threshold_percent: 80
 ```

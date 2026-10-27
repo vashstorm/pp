@@ -69,7 +69,6 @@ default_model: openai/main
 favorite_models: []
 think_level: none
 edit: replace
-max_model_requests: 20
 auto_compact: true
 auto_compact_threshold_percent: 80
 ```

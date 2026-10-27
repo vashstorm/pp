@@ -1760,52 +1760,6 @@ fn invalid_batch_never_executes_even_its_first_valid_write() {
 }
 
 #[test]
-fn configured_request_limit_executes_final_batch_without_extra_request() {
-    for responses in [false, true] {
-        let server = server();
-        let dir = tempfile::tempdir().unwrap();
-        let models = if responses {
-            response_models(&server, Some("response"))
-        } else {
-            fixture_models(&server)
-        };
-        let cli = Cli::start_with(
-            dir.path(),
-            Some("loop"),
-            "{\n\"default_model\": \"fixture/primary\",\n\"max_model_requests\": 2,\n}\n",
-            &models,
-        );
-        for index in 0..2 {
-            let (request, body) = if responses {
-                receive_at(&server, "/v1/responses")
-            } else {
-                receive(&server)
-            };
-            if index > 0 {
-                let tool_result = if responses {
-                    response_result(body["input"].as_array().unwrap().last().unwrap(), "tick")
-                } else {
-                    result(body["messages"].as_array().unwrap().last().unwrap(), "tick")
-                };
-                assert_eq!(tool_result["exit_code"], 0);
-            }
-            let args = json!({"command":"printf x >> count.txt"});
-            if responses {
-                response_reply(request, json!([response_call("tick", "bash", args)]));
-            } else {
-                calls_reply(request, json!([call("tick", "bash", args)]));
-            }
-        }
-        let output = cli.finish();
-        assert!(!output.status.success());
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains("2 model request limit reached"), "{error}");
-        assert_eq!(std::fs::read(dir.path().join("count.txt")).unwrap(), b"xx");
-        no_more(&server);
-    }
-}
-
-#[test]
 fn repl_recovers_from_protocol_error_and_new_discards_history() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
@@ -2451,7 +2405,6 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
     ];
     for settings in [
         json!({"default_model": "fixture/primary", "unknown": "secret-marker"}),
-        json!({"default_model": "fixture/primary", "max_model_requests": 0}),
         json!({"default_model": "fixture/primary", "request_timeout_seconds": 0}),
         json!({"default_model": ["secret-marker"]}),
         json!({"default_model": "secret-marker"}),

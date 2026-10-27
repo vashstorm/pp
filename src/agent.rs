@@ -54,7 +54,6 @@ pub(crate) struct Agent {
     client: OpenAiClient,
     tools: Tools,
     session: Session,
-    max_model_requests: usize,
     auto_compact: bool,
     auto_compact_threshold_percent: u8,
     last_request: Option<TokenUsage>,
@@ -311,7 +310,6 @@ impl Agent {
             client,
             session,
             tools,
-            max_model_requests: config.settings.max_model_requests,
             auto_compact: config.settings.auto_compact,
             auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
             last_request: None,
@@ -385,7 +383,6 @@ impl Agent {
             client,
             tools,
             session: checkpoint.session,
-            max_model_requests: config.settings.max_model_requests,
             auto_compact: config.settings.auto_compact,
             auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
             last_request: None,
@@ -1081,13 +1078,8 @@ impl Agent {
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
-        let mut requests_used = 0;
         let mut claim_boundary = true;
         loop {
-            // 额度耗尽时不领取补充：待处理消息留在队列，由退出路径关闭留给后续调度。
-            if requests_used >= self.max_model_requests {
-                bail!("{} model request limit reached", self.max_model_requests);
-            }
             self.journal.check()?;
             if cancellation.is_cancelled() {
                 self.persist_pending_input(user.take())?;
@@ -1114,18 +1106,11 @@ impl Agent {
                 // Save accepted input exactly once before cutoff, capacity, or
                 // quota checks can fail. Never journal the temporary summary.
                 self.persist_pending_input(user.take())?;
-                ensure!(
-                    self.max_model_requests - requests_used >= 2,
-                    "{} model request limit reached",
-                    self.max_model_requests
-                );
-                requests_used += 1;
                 self.compact_impl(true, cancellation, emit)?;
                 cancellation::check(cancellation)?;
                 // 摘要期间文件也可能被修改；重新加载、估算并检查阈值后再发普通请求。
                 continue;
             }
-            requests_used += 1;
             let metadata = Metadata {
                 cwd: self.tools.cwd(),
                 model_reference: &self.current_model.reference,
@@ -1137,13 +1122,7 @@ impl Agent {
             };
             if let Some(debug) = &mut self.debug
                 && debug
-                    .request(
-                        &self.session,
-                        &metadata,
-                        self.journal.id(),
-                        requests_used,
-                        self.max_model_requests,
-                    )
+                    .request(&self.session, &metadata, self.journal.id())
                     .is_err()
             {
                 debug::DebugState::warn_unavailable();
@@ -1204,10 +1183,6 @@ impl Agent {
                 if let Some(queue) = input {
                     let batch = queue.claim_steering(true)?;
                     if !batch.is_empty() {
-                        if requests_used >= self.max_model_requests {
-                            queue.restore_front(batch)?;
-                            bail!("{} model request limit reached", self.max_model_requests);
-                        }
                         self.apply_pending(batch, input, &mut user, cancellation, emit)?;
                         // 本边界只消费固定批次；确认期间新到达的消息等下一边界。
                         claim_boundary = false;
@@ -2813,82 +2788,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_input_limit_preserves_pending_steering() {
-        for protocol in ["completion", "response"] {
-            for mode in ["finished_at_limit", "tool_round_at_limit"] {
-                let dir = tempfile::tempdir().unwrap();
-                let server = std::sync::Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
-                let mut agent = runtime_input_agent(
-                    dir.path(),
-                    protocol,
-                    &server.server_addr().to_string(),
-                    "max_model_requests: 1\n",
-                );
-                let queue = InputQueue::default();
-                queue.begin_run().unwrap();
-                let serving = (protocol.to_owned(), mode.to_owned());
-                let server_thread = {
-                    let server = server.clone();
-                    std::thread::spawn(move || {
-                        let mut request = server
-                            .recv_timeout(std::time::Duration::from_secs(10))
-                            .unwrap()
-                            .unwrap();
-                        let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
-                        assert!(!body.to_string().contains("held steering"));
-                        if serving.1 == "finished_at_limit" {
-                            final_for(&serving.0, request, "only round", true);
-                        } else {
-                            tool_call_for(&serving.0, request, "bash", r#"{"command":"true"}"#);
-                        }
-                    })
-                };
-                let mut enqueued = false;
-                let result = agent.run(
-                    "initial prompt",
-                    &CancellationToken::new(),
-                    Some(&queue),
-                    &mut |event| match event {
-                        AgentEvent::ModelRequestStarted if !enqueued => {
-                            enqueued = true;
-                            queue
-                                .enqueue(
-                                    input::PendingKind::Steering,
-                                    "held steering".into(),
-                                    None,
-                                    false,
-                                )
-                                .unwrap();
-                        }
-                        AgentEvent::UserInputAccepted { .. } => {
-                            panic!("quota-exhausted run must not apply pending steering")
-                        }
-                        _ => {}
-                    },
-                );
-                server_thread.join().unwrap();
-                // 计划 step2.2：额度耗尽时即使本轮已完成也报额度错误，补充保留待处理。
-                match result {
-                    Err(error) => assert!(
-                        error.to_string().contains("model request limit reached"),
-                        "{error:#}"
-                    ),
-                    Ok(_) => panic!("limit-exhausted run must error, not complete"),
-                }
-                // 额度耗尽后没有第二次请求，补充仍待处理。
-                assert!(
-                    server
-                        .recv_timeout(std::time::Duration::from_millis(150))
-                        .unwrap()
-                        .is_none()
-                );
-                let snapshot = queue.snapshot_since(None).unwrap().unwrap();
-                assert_eq!((snapshot.steering(), snapshot.follow_up()), (1, 0));
-            }
-        }
-    }
-
-    #[test]
     fn runtime_input_queued_during_summary_waits_for_next_normal_request() {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
@@ -2897,7 +2796,7 @@ mod tests {
                 dir.path(),
                 protocol,
                 &server.server_addr().to_string(),
-                "max_model_requests: 5\n",
+                "",
             );
             // 首个完整交换是可压缩内容；最后的完整交换与待回复后缀必须保留。
             let big = "filler ".repeat(20000);

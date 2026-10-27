@@ -7,8 +7,6 @@ const METADATA_ORDER: &[&str] = &[
     "pid",
     "session_id",
     "status",
-    "request_index",
-    "max_model_requests",
     "history_items",
     "tool_count",
     "think_level",

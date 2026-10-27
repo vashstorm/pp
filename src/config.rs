@@ -249,8 +249,6 @@ pub(crate) struct Settings {
     pub(crate) default_model: Option<String>,
     #[serde(default)]
     pub(crate) favorite_models: Vec<String>,
-    #[serde(default = "default_max_model_requests")]
-    pub(crate) max_model_requests: usize,
     #[serde(default = "default_request_timeout_seconds")]
     pub(crate) request_timeout_seconds: u64,
     // Zero disables opening-phase 429 retries entirely.
@@ -332,10 +330,6 @@ impl Settings {
             );
         }
         ensure!(
-            self.max_model_requests > 0,
-            "max_model_requests must be greater than zero"
-        );
-        ensure!(
             self.request_timeout_seconds > 0,
             "request_timeout_seconds must be greater than zero"
         );
@@ -376,7 +370,6 @@ fn default_settings() -> Settings {
         edit: EditMode::Replace,
         default_model: None,
         favorite_models: Vec::new(),
-        max_model_requests: default_max_model_requests(),
         request_timeout_seconds: default_request_timeout_seconds(),
         rate_limit_retry_budget_seconds: default_rate_limit_retry_budget_seconds(),
         read_max_bytes: default_read_max_bytes(),
@@ -385,10 +378,6 @@ fn default_settings() -> Settings {
         auto_compact: default_auto_compact(),
         auto_compact_threshold_percent: default_auto_compact_threshold_percent(),
     }
-}
-
-fn default_max_model_requests() -> usize {
-    20
 }
 
 fn default_request_timeout_seconds() -> u64 {
@@ -1062,7 +1051,7 @@ favorite_models: [removed/team/model, fixture/primary]
                 "a-second": {"model":"not-selected"}}},
             "a-second": {"api_key":"second-key","models":{
                 "primary": {"model":"also-not-selected"}}}}}"#;
-        for settings in [None, Some("{}"), Some(r#"{"max_model_requests":5}"#)] {
+        for settings in [None, Some("{}")] {
             let config = load(settings, Some(providers)).unwrap();
             assert_eq!(config.settings.edit, EditMode::Replace);
             assert_eq!(config.api_key, "first-key");
@@ -1076,7 +1065,7 @@ favorite_models: [removed/team/model, fixture/primary]
     #[test]
     fn explicit_values_select_named_provider_model() {
         let config = load(
-            Some(r#"{"default_model":"second/secondary","max_model_requests":3,"request_timeout_seconds":7}"#),
+            Some(r#"{"default_model":"second/secondary","request_timeout_seconds":7}"#),
             Some(
                 r#"{"providers":{
                     "first": {"protocol":"response","api_key":"first-key","base_url":"https://a.example/v1","models":{
@@ -1294,7 +1283,7 @@ providers:
             "1e30",
             "18446744073709551616",
         ] {
-            for field in ["max_model_requests", "request_timeout_seconds"] {
+            for field in ["request_timeout_seconds"] {
                 let settings =
                     format!(r#"{{"default_model":"fixture/primary","{field}":{value}}}"#);
                 rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
@@ -1330,7 +1319,6 @@ providers:
             ("api_key", json!("secret-marker")),
             ("base_url", json!("https://secret-marker.example/v1")),
             ("protocol", json!("completion")),
-            ("max_model_requests", json!(2)),
         ] {
             let mut invalid = valid.clone();
             invalid["providers"]["fixture"]["models"]["primary"][field] = value;

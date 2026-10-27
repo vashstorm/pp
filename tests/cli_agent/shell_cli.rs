@@ -111,12 +111,11 @@ fn wait_for_session_record(home: &std::path::Path, expected: &str) -> String {
     loop {
         let files = session_files(home);
         assert!(files.len() <= 1, "shell 与模型任务各自建了会话:{files:?}");
-        if files.len() == 1 {
-            if let Ok(text) = std::fs::read_to_string(&files[0]) {
-                if text.contains(expected) {
-                    return text;
-                }
-            }
+        if files.len() == 1
+            && let Ok(text) = std::fs::read_to_string(&files[0])
+            && text.contains(expected)
+        {
+            return text;
         }
         assert!(
             Instant::now() < deadline,

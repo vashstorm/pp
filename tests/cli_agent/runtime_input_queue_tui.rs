@@ -105,7 +105,7 @@ fn runtime_input_command_start(
 fn tui_runtime_input_followup_fifo_and_draft_both_protocols() {
     for protocol in ["completion", "response"] {
         let server = server();
-        let (_home, mut pty) = runtime_input_start(&server, protocol, "max_model_requests: 1");
+        let (_home, mut pty) = runtime_input_start(&server, protocol, "");
         let stream = runtime_input_live(&mut pty, &server, protocol, "fifo-task-U");
 
         pty.input("Q1\x1b\r");

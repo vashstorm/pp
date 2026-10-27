@@ -470,9 +470,8 @@ fn context_tui_seed_large_session(
         context_tui_models(server, protocol, 32768),
     )
     .unwrap();
-    let mut settings: Value = serde_json::from_str(&context_tui_settings(false, 80)).unwrap();
-    settings["max_model_requests"] = json!(2);
-    let cli = super::streaming::LiveCli::new(Cli::start_with(
+    let settings: Value = serde_json::from_str(&context_tui_settings(false, 80)).unwrap();
+    let mut cli = super::streaming::LiveCli::new(Cli::start_with(
         home,
         Some("context checkpoint seed prompt"),
         &settings.to_string(),
@@ -498,11 +497,23 @@ fn context_tui_seed_large_session(
         "context-checkpoint-two",
         "context-checkpoint-two.txt",
     );
+    // 模型错误终止种子任务：日志停在第 2 个完整工具批次，且不会出现
+    // 之后的普通文本交换（保留机制会丢弃两个大批次）。
+    let (request, _) = receive_at(server, api_path(protocol));
+    request
+        .respond(
+            Response::from_string(
+                json!({"error":{"message":"seed termination","type":"server_error"}}).to_string(),
+            )
+            .with_status_code(500),
+        )
+        .unwrap();
+    cli.wait_for(super::streaming::Pipe::Stderr, "error: ");
     // End at the complete second tool batch, not a later plain assistant
     // exchange that would let retention discard both large batches.
+    cli.input("/quit\n");
     let output = cli.finish();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("2 model request limit reached"));
+    let _ = output;
     no_more(server);
     let id = saved_session_id(home);
     let path = home

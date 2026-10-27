@@ -24,8 +24,6 @@ struct HarnessState<'a> {
     think_level: crate::config::ThinkLevel,
     edit_mode: crate::config::EditMode,
     tool_limits: crate::config::ToolLimits,
-    request_index: usize,
-    max_model_requests: usize,
     history_items: usize,
     tool_count: usize,
 }
@@ -78,8 +76,6 @@ impl DebugState {
         session: &Session,
         metadata: &Metadata<'_>,
         session_id: Option<&str>,
-        request_index: usize,
-        max_model_requests: usize,
     ) -> io::Result<()> {
         let (protocol, history_items, tool_count) = match session {
             Session::Completion(request) => (
@@ -108,8 +104,6 @@ impl DebugState {
             think_level: metadata.think_level,
             edit_mode: metadata.edit_mode,
             tool_limits: metadata.tool_limits,
-            request_index,
-            max_model_requests,
             history_items,
             tool_count,
         })?;

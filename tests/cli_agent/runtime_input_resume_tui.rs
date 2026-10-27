@@ -1,56 +1,12 @@
-// 运行中输入的恢复与额度/压缩边界（计划验证项 6、7）：真实 pp 二进制 PTY 场景。
+// 运行中输入的恢复与压缩边界（计划验证项 6、7）：真实 pp 二进制 PTY 场景。
 // 场景 6：已应用 Steering + 真实 write 副作用的任务完成后，再产生已暂停的未应用
 // 队列与未提交草稿并退出；-r 恢复只回放已应用历史各一份，不恢复内存队列，
 // 新任务请求恰好包含旧 Steering 一次且不含未应用消息与草稿，旧 write 副作用
-// 不重做（请求只回放旧工具结果）。场景 7a：max_model_requests=1 时首轮完成后
-// 运行中排入的 Steering 触发额度错误并暂停保留，功能键 R 之前不发第二个 HTTP，
-// 恢复后才以新任务执行该 Steering。场景 7b：显式 context_window 的自动摘要被
+// 不重做（请求只回放旧工具结果）。场景 7：显式 context_window 的自动摘要被
 // 服务端握住时排入 Steering；摘要请求不含它，摘要后的普通请求包含它且工具
 // 批次继续完整，write 副作用真实落盘。全部用真实终端、loopback HTTP 与文件
-// marker 作栅栏，不用 sleep 推测阶段；辅助命名沿用 runtime_input_ 前缀且与
+// marker 作栅栏，不用 sleep 猜测阶段；辅助命名沿用 runtime_input_ 前缀且与
 // 兄弟文件不冲突。
-
-#[test]
-fn tui_runtime_input_quota_holds_pending_until_resume_both_protocols() {
-    for protocol in ["completion", "response"] {
-        let fixture = server();
-        let (_home, mut pty) = runtime_input_start(&fixture, protocol, "max_model_requests: 1");
-        let stream = runtime_input_live(&mut pty, &fixture, protocol, "quota-live-prompt");
-        // SSE 保持打开期间排入 Steering：已计数、未暂停、草稿清空、无第二个请求。
-        pty.input("quota-steer\r");
-        runtime_input_counts(&mut pty, 1, 0, false);
-        pty.draft("");
-        no_more(&fixture);
-        runtime_input_end_live(stream, protocol);
-        // 首轮完成后的边界领取命中额度：错误终态、队列保留并暂停。
-        pty.wait_for("额度错误终态与 Failed 活动", |screen| {
-            let text = screen.contents();
-            input_is_ready(screen)
-                && text.contains("✻ Failed")
-                && text.contains("1 model request limit reached")
-        });
-        runtime_input_counts(&mut pty, 1, 0, true);
-        no_more(&fixture);
-        // 功能键 R 显式恢复：Steering 以新任务执行，历史恰好 [U, S]。
-        pty.function_key('r');
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert_eq!(
-            cancel_user_messages(&body, protocol),
-            vec!["quota-live-prompt".to_owned(), "quota-steer".to_owned()]
-        );
-        assert!(body["tools"].as_array().is_some());
-        runtime_input_final(request, protocol, "quota-resumed-answer");
-        pty.text("quota-resumed-answer");
-        pty.ready();
-        // 队列已清空：计数行不再出现。
-        pty.wait_for("恢复后队列计数消失", |screen| {
-            !screen.contents().contains("Steering:")
-        });
-        no_more(&fixture);
-        pty.input("\x03");
-        pty.finish();
-    }
-}
 
 #[test]
 fn tui_runtime_input_resume_replays_applied_history_once_both_protocols() {
