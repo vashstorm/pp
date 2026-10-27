@@ -192,9 +192,7 @@ fn bang_shell_tui_busy_and_plan_reject() {
         pty.draft("!touch forbidden");
         assert!(!forbidden.exists(), "{protocol}");
         pty.input("\x01\x0b");
-        pty.input("/plan off\r");
-        pty.text("Leave Plan mode without executing this plan?");
-        pty.input("\x1b[B\r");
+        pty.input("/plan\r");
         plan_wait_execute(&mut pty);
         cancel_assert_no_request(&server);
 

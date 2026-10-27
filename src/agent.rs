@@ -3,6 +3,8 @@ mod debug;
 mod history;
 pub(crate) mod input;
 pub(crate) mod persistence;
+pub(crate) mod plan_management;
+mod plan_open;
 mod plan_review;
 mod plan_workflow;
 mod tool_images;
@@ -71,6 +73,7 @@ pub(crate) struct Agent {
     /// Fail-closed gate set when stopping MCP for Plan mode failed; blocked
     /// run/continue until a successful `/plan` retry clears it.
     plan_cleanup_error: Option<String>,
+    plan_lease: Option<crate::tools::plan_catalog::PlanLease>,
 }
 
 /// Everything the UI must adopt after a mode transition that replaced the
@@ -326,6 +329,7 @@ impl Agent {
             debug: debug::DebugState::new(config.settings.debug, false),
             workflow: crate::plan::WorkflowState::default(),
             plan_cleanup_error: None,
+            plan_lease: None,
         })
     }
 
@@ -406,6 +410,7 @@ impl Agent {
             debug: debug::DebugState::new(config.settings.debug, true),
             workflow: checkpoint.workflow,
             plan_cleanup_error: None,
+            plan_lease: None,
         };
         if let Some(source) = &agent.prompt_source {
             let context = crate::system_prompt::RenderContext::new(
@@ -823,6 +828,7 @@ impl Agent {
     }
 
     pub(crate) fn reset(&mut self) {
+        self.plan_lease = None;
         self.tools.clear_changes();
         self.workflow.plan = None;
         self.workflow.review = None;
@@ -884,14 +890,40 @@ impl Agent {
         }
     }
 
+    fn ensure_task_plan_lease(&mut self) -> Result<()> {
+        let Some(document) = &self.workflow.plan else {
+            self.plan_lease = None;
+            return Ok(());
+        };
+        if self
+            .plan_lease
+            .as_ref()
+            .is_some_and(|lease| lease.id() == document.id)
+        {
+            return Ok(());
+        }
+        self.plan_lease = None;
+        self.plan_lease = Some(crate::tools::plan_catalog::PlanLease::acquire(
+            self.tools.plan_workspace(),
+            &document.id,
+        )?);
+        // 取得 lease 后按 ID 协调（锁顺序 lease → 登记表锁）：登记表
+        // 重命名/移位/首次登记在任务与计划写工具访问前同步到绑定。
+        self.reconcile_plan_location()
+    }
+
     fn prepare_plan_task(&mut self, prompt: &str) -> Result<()> {
         if self.workflow.mode != crate::plan::WorkMode::Plan {
             return Ok(());
         }
         self.journal.check()?;
-        let created = self.workflow.plan.is_none();
+        // 裸 /plan 只待命：首条非空任务才分配文档并绑定 origin。
+        let created = self.workflow.plan.is_none() && !prompt.trim().is_empty();
         if created {
             self.workflow.plan = Some(crate::plan::PlanDocument::new()?);
+        }
+        if self.workflow.plan.is_none() {
+            return Ok(());
         }
         let plan = self.workflow.plan.as_mut().expect("plan allocated");
         ensure!(
@@ -899,7 +931,14 @@ impl Agent {
                 plan.status,
                 crate::plan::PlanStatus::Executed | crate::plan::PlanStatus::Abandoned
             ),
-            "This plan has already been handed off; use /plan new."
+            "This plan has already been handed off; use /plan to toggle."
+        );
+        // Plan+Ready+Plans 仅用于列表预执行审阅：普通 prompt 既不能修改
+        // 也不能重启它，需切出或从 /plan-list 选择 drafts 再规划。
+        ensure!(
+            !(plan.status == crate::plan::PlanStatus::Ready
+                && plan.location == crate::plan::PlanLocation::Plans),
+            "This plan is awaiting pre-execution review; choose a draft from /plan-list to plan again."
         );
         let old_status = plan.status;
         let set_origin = plan.origin_prompt.is_empty() && !prompt.trim().is_empty();
@@ -936,7 +975,9 @@ impl Agent {
                 bail!("{error}");
             }
             ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
+            self.ensure_task_plan_lease()?;
             self.prepare_plan_task(prompt)?;
+            self.ensure_task_plan_lease()?;
             self.refresh_instructions()?;
             self.publish_context(emit)?;
             self.tools.begin_changes_task();
@@ -962,7 +1003,9 @@ impl Agent {
             if let Some(error) = &self.plan_cleanup_error {
                 bail!("{error}");
             }
+            self.ensure_task_plan_lease()?;
             self.prepare_plan_task("")?;
+            self.ensure_task_plan_lease()?;
             self.run_loop(None, input, cancellation, emit)
         })();
         self.finish_task("continue", started, result, cancellation, input, emit)
@@ -992,10 +1035,23 @@ impl Agent {
             self.journal.error(&format!("{error:#}"));
             result = Err(error);
         }
+        // 成功边界自动归档：仅当 close_queue、finish_run（含后台清理）与
+        // 进度同步全部成功、结果确为 Completed 且取消未置位时尝试；计划
+        // 未全部勾选或零任务时静默跳过（保留 Executed/Plans），任务集合
+        // 与批准集合不一致及真实 IO/登记/journal 失败把结果转为错误。
+        if matches!(&result, Ok(RunOutcome::Completed))
+            && !cancellation.is_cancelled()
+            && let Err(error) = self.archive_completed_plan(emit)
+        {
+            let error = error.context("Completed plan was not archived.");
+            self.journal.error(&format!("{error:#}"));
+            result = Err(error);
+        }
         if !matches!(&result, Ok(RunOutcome::Completed)) {
             let _ = self.publish_context(emit);
         }
         log_task_finished(operation, started, &result);
+        self.plan_lease = None;
         result
     }
 
@@ -1393,21 +1449,28 @@ enum TurnOutcome {
     PlanSubmitted,
 }
 
-/// Plan file tracked during execution: only an Execute-mode run with a bound
-/// plan watches `FileChanged` events for plan-progress refreshes. An owned
-/// copy keeps the progress callback independent of the workflow borrow.
-fn tracked_plan_id(workflow: &crate::plan::WorkflowState) -> Option<String> {
+/// Plan file tracked during execution: only an Execute-mode run with an
+/// Executed plan watches `FileChanged` events for plan-progress refreshes.
+/// The actual short path is cached so the progress callback stays independent
+/// of the workflow borrow without cloning the whole document.
+fn tracked_plan_path(workflow: &crate::plan::WorkflowState) -> Option<String> {
     if workflow.mode == crate::plan::WorkMode::Execute {
-        workflow.plan.as_ref().map(|plan| plan.id.clone())
+        workflow
+            .plan
+            .as_ref()
+            .filter(|plan| plan.status == crate::plan::PlanStatus::Executed)
+            .and_then(|plan| plan.path())
     } else {
         None
     }
 }
 
 /// Whether one progress event touches the tracked plan file.
-fn plan_file_touched(tools: &Tools, plan_id: &Option<String>, event: &AgentEvent) -> bool {
-    match (event, plan_id) {
-        (AgentEvent::FileChanged { path, .. }, Some(id)) => tools.is_plan_path(path, id),
+fn plan_file_touched(tools: &Tools, plan_path: &Option<String>, event: &AgentEvent) -> bool {
+    match (event, plan_path) {
+        (AgentEvent::FileChanged { path, .. }, Some(expected_path)) => {
+            tools.is_plan_path(path, expected_path)
+        }
         _ => false,
     }
 }
@@ -1429,9 +1492,14 @@ fn apply_plan_change(
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("No current plan."))?;
     match change {
-        crate::tools::PlanChange::Written { title, content } => {
+        crate::tools::PlanChange::Written {
+            title,
+            file_name,
+            content,
+        } => {
             plan.revision = plan.next_revision()?;
             plan.title = title;
+            plan.file_name = Some(file_name);
             plan.content = content;
             plan.status = crate::plan::PlanStatus::Draft;
         }
@@ -1498,9 +1566,9 @@ fn completion_turn(
     cancellation::check(cancellation)?;
     let usage = response.usage;
     let response = response.message;
-    let progress_plan_id = tracked_plan_id(workflow);
+    let progress_plan_path = tracked_plan_path(workflow);
     let mut progress = |event| {
-        if plan_file_touched(tools, &progress_plan_id, &event) {
+        if plan_file_touched(tools, &progress_plan_path, &event) {
             *plan_dirty = true;
         }
         journal.event(&event);
@@ -1631,9 +1699,9 @@ fn response_turn(
         outcome?
     };
     cancellation::check(cancellation)?;
-    let progress_plan_id = tracked_plan_id(workflow);
+    let progress_plan_path = tracked_plan_path(workflow);
     let mut progress = |event| {
-        if plan_file_touched(tools, &progress_plan_id, &event) {
+        if plan_file_touched(tools, &progress_plan_path, &event) {
             *plan_dirty = true;
         }
         journal.event(&event);
@@ -1930,6 +1998,118 @@ mod tests {
     }
 
     #[test]
+    fn finish_task_archives_completed_plan_only_on_success_boundary() {
+        use crate::plan::{PlanLocation, PlanStatus, plan_tasks};
+        use crate::tools::plan_catalog::{self, PlanCatalogEntry, PlanCatalogLock};
+
+        let archive_agent = |dir: &std::path::Path, protocol: &str| -> Agent {
+            let mut agent = runtime_input_agent(dir, protocol, "127.0.0.1:1", "");
+            let mut workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Executed);
+            workflow.mode = crate::plan::WorkMode::Execute;
+            {
+                let document = workflow.plan.as_mut().expect("plan bound");
+                document.file_name = Some("create-canary.md".into());
+                document.approved_tasks = Some(
+                    plan_tasks(PLAN_CONTENT)
+                        .into_iter()
+                        .map(|task| task.text)
+                        .collect(),
+                );
+            }
+            agent.workflow = workflow;
+            let workspace = agent.tools.plan_workspace();
+            let _lock = PlanCatalogLock::acquire(workspace).unwrap();
+            let snapshot = plan_catalog::load_catalog(workspace).unwrap();
+            let mut catalog = snapshot.catalog;
+            let id = agent.workflow.plan.as_ref().unwrap().id.clone();
+            catalog.entries.push(PlanCatalogEntry {
+                id,
+                file_name: "create-canary.md".into(),
+                location: PlanLocation::Plans,
+                deleted: false,
+                deleted_file_identity: None,
+            });
+            plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog).unwrap();
+            drop(_lock);
+            seed_session(&mut agent, EXPLORATION);
+            write_plan_file(&agent, &PLAN_CONTENT.replace("- [ ]", "- [x]"));
+            agent
+        };
+
+        for protocol in ["completion", "response"] {
+            // Completed 且未取消：归档到 done。
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = archive_agent(dir.path(), protocol);
+            let cancellation = CancellationToken::new();
+            let result = agent.finish_task(
+                "test",
+                std::time::Instant::now(),
+                Ok(RunOutcome::Completed),
+                &cancellation,
+                None,
+                &mut |_| {},
+            );
+            assert_eq!(result.unwrap(), RunOutcome::Completed);
+            assert!(!dir.path().join(".pp/plans/create-canary.md").exists());
+            assert!(dir.path().join(".pp/done/create-canary.md").exists());
+            let document = agent.workflow.plan.as_ref().unwrap();
+            assert_eq!(document.status, PlanStatus::Completed);
+            assert_eq!(document.location, PlanLocation::Done);
+
+            // Completed 但取消已置位：进度刷新保留，归档不发生。
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = archive_agent(dir.path(), protocol);
+            let cancellation = CancellationToken::new();
+            cancellation.cancel();
+            let result = agent.finish_task(
+                "test",
+                std::time::Instant::now(),
+                Ok(RunOutcome::Completed),
+                &cancellation,
+                None,
+                &mut |_| {},
+            );
+            assert_eq!(result.unwrap(), RunOutcome::Completed);
+            assert!(dir.path().join(".pp/plans/create-canary.md").exists());
+            assert!(!dir.path().join(".pp/done/create-canary.md").exists());
+            assert_eq!(
+                agent.workflow.plan.as_ref().unwrap().status,
+                PlanStatus::Executed
+            );
+
+            // 任务失败：不归档。
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = archive_agent(dir.path(), protocol);
+            let result = agent.finish_task(
+                "test",
+                std::time::Instant::now(),
+                Err(anyhow::anyhow!("provider failed")),
+                &CancellationToken::new(),
+                None,
+                &mut |_| {},
+            );
+            assert!(result.unwrap_err().to_string().contains("provider failed"));
+            assert!(dir.path().join(".pp/plans/create-canary.md").exists());
+            assert!(!dir.path().join(".pp/done/create-canary.md").exists());
+
+            // AwaitingPlanReview：不归档。
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = archive_agent(dir.path(), protocol);
+            let result = agent.finish_task(
+                "test",
+                std::time::Instant::now(),
+                Ok(RunOutcome::AwaitingPlanReview),
+                &CancellationToken::new(),
+                None,
+                &mut |_| {},
+            );
+            assert_eq!(result.unwrap(), RunOutcome::AwaitingPlanReview);
+            assert!(dir.path().join(".pp/plans/create-canary.md").exists());
+            assert!(!dir.path().join(".pp/done/create-canary.md").exists());
+        }
+    }
+
+    #[test]
     fn system_prompt_render_failure_preserves_native_session_and_journal() {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
@@ -2159,6 +2339,8 @@ mod tests {
         }
         document.origin_prompt = origin.into();
         document.status = status;
+        // 旧会话语义：无 AI 文件名，位于 Plans，走 <id>.md 兜底路径。
+        document.location = crate::plan::PlanLocation::Plans;
         crate::plan::WorkflowState {
             mode: crate::plan::WorkMode::Plan,
             plan: Some(document),
@@ -2168,7 +2350,10 @@ mod tests {
 
     pub(super) fn write_plan_file(agent: &Agent, content: &str) {
         let document = agent.workflow.plan.as_ref().unwrap();
-        let path = agent.tools.cwd().join(document.path());
+        let path = agent
+            .tools
+            .cwd()
+            .join(document.path().expect("fixture plan has a saved path"));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
     }
@@ -2383,7 +2568,7 @@ mod tests {
                     &serving,
                     request,
                     "plan_write",
-                    &json!({"title":"Create hello","content":content,"expected_revision":0})
+                    &json!({"title":"Create hello","file_name":"create-canary.md","content":content,"expected_revision":0})
                         .to_string(),
                 );
                 let mut request = server
@@ -2397,7 +2582,7 @@ mod tests {
                     (
                         "rewrite",
                         "plan_write",
-                        json!({"title":"Wrong","content":"- [ ] wrong","expected_revision":1}),
+                        json!({"title":"Wrong","file_name":"create-canary.md","content":"- [ ] wrong","expected_revision":1}),
                     ),
                 ];
                 if serving == "completion" {
@@ -2441,10 +2626,15 @@ mod tests {
             let plan = agent.workflow.plan.as_ref().unwrap();
             assert_eq!(plan.revision, 1);
             assert_eq!(plan.status, crate::plan::PlanStatus::Ready);
+            assert_eq!(plan.file_name.as_deref(), Some("create-canary.md"));
             assert_eq!(
-                std::fs::read_to_string(dir.path().join(plan.path())).unwrap(),
+                std::fs::read_to_string(
+                    dir.path().join(plan.path().as_deref().unwrap_or_default())
+                )
+                .unwrap(),
                 content
             );
+            assert!(dir.path().join(".pp/drafts/create-canary.md").exists());
             assert!(!dir.path().join("forbidden").exists());
             let saved: Value = serde_json::to_value(&agent.session).unwrap();
             let history = &saved["request"][if protocol == "completion" {
@@ -2467,6 +2657,28 @@ mod tests {
             assert_eq!(restored.checkpoint.workflow, expected);
             assert!(server.try_recv().unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn prepare_plan_task_allocates_only_on_first_non_blank_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+        seed_session(&mut agent, EXPLORATION);
+        agent.workflow.mode = crate::plan::WorkMode::Plan;
+        // 空待命下的空任务（continue/steering 边界）不分配文档。
+        agent.prepare_plan_task("").unwrap();
+        assert!(agent.workflow.plan.is_none());
+        // 首条非空任务建立绑定并记录 origin。
+        agent.prepare_plan_task("Research the toggle flow").unwrap();
+        let plan = agent.workflow.plan.as_ref().unwrap();
+        assert_eq!(plan.revision, 0);
+        assert_eq!(plan.origin_prompt, "Research the toggle flow");
+        // 后续空任务沿用当前绑定，不新建、不重置 origin。
+        agent.prepare_plan_task("").unwrap();
+        assert_eq!(
+            agent.workflow.plan.as_ref().unwrap().origin_prompt,
+            "Research the toggle flow"
+        );
     }
 
     #[test]
@@ -2800,12 +3012,8 @@ mod tests {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
             let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-            let mut agent = runtime_input_agent(
-                dir.path(),
-                protocol,
-                &server.server_addr().to_string(),
-                "",
-            );
+            let mut agent =
+                runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
             // 首个完整交换是可压缩内容；最后的完整交换与待回复后缀必须保留。
             let big = "filler ".repeat(20000);
             seed_exchange(&mut agent, &big, "ack");

@@ -160,7 +160,8 @@ chmod 600 ~/.pp/agent/models.yml
 | `/resume` | 选择已保存会话；命令行按 ID 恢复使用 `pp -r ID` | 仅 TUI |
 | `/tree` | 浏览并回退当前有效历史，不回滚文件 | 仅 TUI |
 | `/changes` | 查看最近任务的 edit/write 净变更，逐文件安全撤销 | 仅 TUI |
-| `/plan [view\|new\|off\|prompt]` | 进入 Plan 模式，可直接附带任务并发送，显式批准后执行 | 仅 TUI |
+| `/plan [view\|prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，显式批准后执行 | 仅 TUI |
+| `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除 | 仅 TUI |
 | `/quit` | 退出 | TUI / 行模式 |
 
 输入 `!命令` 在项目目录运行本地非交互 bash，不请求模型，命令和输出不进入模型上下文或会话文件。需要有效的 Agent 配置和 Execute 模式；Plan、忙碌或有待处理消息时不可运行。每条命令使用独立 shell，`cd` 和环境变量不跨命令保留；以当前用户权限执行，无文件系统沙箱。TUI 按 Esc 取消并等待进程回收，行模式输出写入 stderr，stdout 仍保留给模型回复。
@@ -252,13 +253,13 @@ chmod 600 ~/.pp/agent/models.yml
 
 ### Plan（仅 TUI）
 
-普通任务默认 **EXEC**。空闲时输入 `/plan` 显式进入 **PLAN**，然后提交调研任务；不带参数的命令本身不请求模型。也可输入 `/plan 调研登录流程`，成功进入 Plan 后立即将 `调研登录流程` 作为用户消息发送；已在 Plan 时直接继续当前规划，不打开审阅面板或新建计划。提示词可包含多行，输入历史保留原始命令。参数恰好为 `view`、`new`、`off` 时仍按子命令处理，其余非空正文均作为提示词。切换失败或取消时不发送提示词，输入框为空时恢复该命令，已有新草稿则保留新草稿，可从输入历史取回原命令。模型只能调研、询问关键产品取舍并保存计划，不能切换模式。`/plan` 再次打开当前计划；`/plan view` 只查看，未保存时显示 `No saved plan.`。`/plan new` 开始另一份计划，未执行正文存在时先本地确认；`/plan off` 本地确认后放弃计划并回 Execute，不请求模型。确认默认取消，旧 Markdown 不删除。忙碌或有 pending 输入时不能切换／批准；带提示词的 `/plan` 同样拒绝且保留草稿，不排队成后续执行动作。
+普通任务默认 **EXEC**。空闲时输入 `/plan` 切换到 **PLAN** 待命：只进入模式，不创建计划身份或 Markdown 文件；第一条用户任务才建立计划绑定，之后的普通输入和 steering 继续同一绑定。再输入一次 `/plan` 退出 Plan 回 **EXEC** 并解除当前计划/审阅绑定；已保存的草稿文件和目录原样保留，不标记 Abandoned、不删除、不改名。已提交任务但尚未 `plan_write` 首存（revision-0）时退出被拒绝，提示 `Save the draft with plan_write before leaving Plan mode.`；空待命可直接退出。也可输入 `/plan 调研登录流程`，先确保进入 Plan 再将 `调研登录流程` 作为用户消息发送；已在 Plan 时直接继续当前草稿，不暗中切出或新建计划。提示词可包含多行，输入历史保留原始命令。参数恰好为 `view` 时只查看当前计划，未保存时显示 `No saved plan.`；恰好为 `new` 或 `off` 时只报本地错误 `Use /plan to toggle; manage plans with /plan-list.`，不进入 Plan、不发模型请求；其余非空正文均作为提示词。切换失败或取消时不发送提示词，输入框为空时恢复该命令，已有新草稿则保留新草稿，可从输入历史取回原命令；退出失败不改变重试方向，下一次裸 `/plan` 仍执行离开。模型只能调研、询问关键产品取舍并保存计划，不能切换模式。忙碌或有 pending 输入时不能切换／批准；带提示词的 `/plan` 同样拒绝且保留草稿，不排队成后续执行动作。
 
-Plan 的执行层白名单只有 `read`、`grep`、`glob`、TUI `ask`、`plan_write`、`plan_submit`；技能同样通过 `read` 读取。即使模型返回隐藏的 shell、write/edit、旧 find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，`/plan` 可重试清理。批准或 off 的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
+Plan 的执行层白名单只有 `read`、`grep`、`glob`、TUI `ask`、`plan_write`、`plan_submit`；技能同样通过 `read` 读取。即使模型返回隐藏的 shell、write/edit、旧 find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，再次 `/plan` 优先重试进入（MCP 清理失败时裸命令先重试进入而不是退出）。批准或退出切换的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
 
 Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 支持 `path`、`hidden`、`gitignore`、`limit`，默认包含隐藏文件并遵守忽略规则；无分页，结果按修改时间排序，最多 200 项和 50 KiB。裸 `*.rs` 递归匹配，`src/*.rs` 仅匹配直接子项；五秒协作式超时返回部分结果及提示。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
 
-计划正文保存在项目 `.pp/plans/<随机ID>.md`，首次保存才创建目录／文件；不自动修改 `.gitignore`。正文须为非空 UTF-8、无 NUL、最多 262,144 字节，实施步骤使用标准 `- [ ]`／`- [x]` Markdown task list；代码 fence 中的 checkbox 不算任务。保存使用目录句柄、NOFOLLOW 和原子提交，拒绝符号链接／特殊文件；同名首次创建不覆盖。修订写入要求 expected revision 和已登记磁盘字节都匹配，避免覆盖外部编辑。
+计划正文由 AI 选定的英文 kebab-case 文件名保存在项目 `.pp/drafts/<file_name>.md`，首次保存才创建目录／文件；不自动修改 `.gitignore`。正文须为非空 UTF-8、无 NUL、最多 262,144 字节，实施步骤使用标准 `- [ ]`／`- [x]` Markdown task list；代码 fence 中的 checkbox 不算任务。保存使用目录句柄、NOFOLLOW 和原子提交，拒绝符号链接／特殊文件；同名首次创建不覆盖。修订写入要求 expected revision 和已登记磁盘字节都匹配，避免覆盖外部编辑。
 
 模型 `plan_submit` 成功后补齐整批 call-ID/results、同步 native history 和 Ready workflow，然后停在审阅边界，不再发总结请求。审阅正文可 PgUp/PgDn／滚轮滚动，Tab 有意切到操作区后默认选择第 2 项；打开面板时焦点在正文，Enter 不默认执行。四项严格按以下顺序显示：
 
@@ -271,11 +272,23 @@ Esc 只关闭审阅，不退出 Plan。外部编辑后再次安全读取可直�
 
 两种批准方式之后都保持 **EXEC**，包括成功、失败和取消；再次规划必须用户 `/plan`。`Executed` 表示已经交接，不表示全部完成。执行通过普通 edit 更新**同一份 Markdown**：只有动作及完成条件实际验证后才勾选，失败／取消／阻塞项保持未勾选；不能重写批准的目标、接口和方案或用后来新增 TODO 扩大范围。执行中 `/plan view` 显示最近成功同步的只读进度，Esc 只关闭视图，不取消任务；批次提交及收尾安全刷新正文，不监听外部文件、不自动勾选剩余项。批准时的原始快照永久保留在实施消息／checkpoint，进度不会改写审批记录。
 
-`/new` 保持模式但清掉绑定，下一次 Plan 普通任务建立新计划；切模型、跨协议及手动／自动 compact 保留 workflow。`/tree` 保持当前模式和最新计划文件，Ready 降 Draft，不恢复历史 Execute 权限。Plan 的 `-r`／`/resume` 不重放审批、review 或执行；打开审阅须重新读磁盘，`-c` 在 Draft 等输入、Ready 打开审阅，不自动续跑模型。非 TUI 恢复 Plan 明确失败，所有 `/plan` 子命令在行模式只给 TUI 提示；没有 `--plan` 或管道批准接口，`-p` 内容仍是字面 prompt。
+批准时以经过审阅 token 验证的正文冻结有序任务集合（`approved_tasks`，重复文本按序保留）；执行进度导入只更新勾选与说明，不覆盖该集合。成功收尾自动归档：仅当输入队列关闭、后台清理、进度同步全部成功、结果确为 `Completed` 且未取消时，运行时把同名计划文件从 `.pp/plans/` 原子搬迁到 `.pp/done/` 并把 workflow 提交为 `Completed`（纯路径／状态变化，不递增正文 revision，不新增完成工具或确认操作）。任务未全部勾选、零任务、取消、失败，或当前任务文本集合与批准集合不一致（删除、替换、增项、重排都算）都不归档并保留 plans，集合不匹配报 `Plan tasks changed; re-plan before completing.`。归档提交后的源链接清理／目录同步警告不撤回状态；登记已更新但会话状态提交失败时保留源链接，下一次按 ID 协调到 done。旧 Executed 记录缺少批准集合时，以当前已登记正文建立一次性迁移基线并持久化，再同步磁盘进度，不冒充原始批准快照。`Completed` 是只读历史：进度规则不再注入，`/plan view` 只读显示 N/N 与实际 done 路径，归档后正文未变化也立即更新名称／位置／状态。
+
+`/new` 保持模式但清掉绑定，下一次 Plan 普通任务建立新计划；切模型、跨协议及手动／自动 compact 保留 workflow。`/tree` 保持当前模式和最新计划文件，Ready 降 Draft，不恢复历史 Execute 权限。Plan 的 `-r`／`/resume` 不重放审批、review 或执行；打开审阅须重新读磁盘，`-c` 在 Draft 等输入、Ready 打开审阅，不自动续跑模型。非 TUI 恢复 Plan 明确失败，所有 `/plan` 命令在行模式只给 TUI 提示，`/plan new`、`/plan off` 在两种模式都只报本地拒绝错误；没有 `--plan` 或管道批准接口，`-p` 内容仍是字面 prompt。
 
 这些保证限于 pp 的工具、版本、队列、日志和托管进程生命周期；不是 OS 沙箱、逐操作授权或对实现范围的语义证明，不能停止用户独立启动／故意脱管的程序。
 
 独立实际 TUI smoke 使用临时 HOME／项目和单独 loopback provider 进程：观察 ask、批准前无 hello.txt、外部编辑使旧审批失效、Keep 写入 `hello from reviewed plan`、同文件进度 1/2、Fresh 新 session 写入 second.txt、原规划会话仍可恢复、review 不改第三份计划，以及讨论／重新提交仍需明确批准；退出后 `-r` 查看原修订报告没有新增 HTTP 或第三个文件。这只证明本地 fixture 路径，不声称真实供应商兼容。
+
+### /plan-list 管理页（仅 TUI）
+
+空闲时输入 `/plan-list` 打开项目级计划管理全屏页；运行、取消、切换或有 pending 输入时拒绝并保留输入，提示先停止当前任务。面板只扫描当前项目 `.pp/drafts/`、`.pp/plans/`、`.pp/done/` 三个目录的直接 `.md` 普通文件，缺失目录视为空；未登记的有效文件在刷新时自动分配稳定 ID 并登记，旧 Unicode 文件名保留。行显示文件名、标题（首个 H1，缺失时用文件名）、分类（草稿/待执行/已完成）、`N/M` 进度（无任务显示 `—`）与修改时间，当前绑定的计划带 `Current` 标记，不表示运行状态。非 UTF-8、超限、symlink 等无法纳管的文件显示错误条目并禁用全部操作；诊断信息显示在底部。
+
+顶部 `All / Drafts / Plans / Done` 分类，←/→ 或 Tab/Shift+Tab 切换；↑/↓/Home/End/PgUp/PgDn 导航。`/` 进入大小写无关的多词 AND 搜索（匹配标题、文件名与相对路径），仅搜索模式接收查询字符与粘贴；Enter 回到列表，Esc 退出搜索保留 query，Ctrl + U 清空；F5 刷新。Enter 安全读取后以只读视图打开预览（不签发审批 token，无执行副作用），Esc 返回列表并保留分类、搜索、选中与滚动。`n` 新建规划：关闭列表并进入 Plan 待命（复用裸 `/plan` 的防丢失门禁，未落盘草稿被拒绝），不分配 ID、不写正文、不调模型。
+
+`c` 仅草稿可用：以只携带该计划 Markdown 与当前规则的新会话继续规划，原会话与旧草稿原样保留，未输入前零模型请求。`e` 在草稿/待执行且有标准任务项时可用：打开执行前审阅，只提供 `Execute (plan only)`（固定 Fresh）、`Review Plan` 与返回列表，无保留上下文/继续讨论；必须再次本地批准才进入执行，已勾选进度原样保留。Done 只读，不提供重新执行或重开。`r` 重命名（单行输入预填文件名，Enter 提交、Esc 取消）与 `d` 删除适用于三个目录：确认框显示完整相对路径与 `Delete the plan file only; code and sessions are not rolled back.`，默认 Cancel，Tab/方向显式选择 Delete 后 Enter，Esc 取消。重命名只改文件名，不改正文、checkbox 或 ID，旧会话按 ID 找到新路径；删除先提交 tombstone 再移除文件，失败可显式重试，不回滚代码或删除会话。另一实例正在同一计划上运行任务时，重命名/删除/执行被非阻塞拒绝并提示 `Plan is in use; stop the active task before managing it.`；失败保留旧列表与输入，仅显示可见错误。
+
+列表操作令牌同时绑定 ID、当时的实际路径和精确正文；其他会话重命名或搬迁后，即使正文未变，旧令牌也会被拒绝，须刷新列表并重新选择。按 ID 重新读取仍可找到新路径，但不会沿用旧的删除或重命名确认。
 
 ### ask（仅 TUI）
 

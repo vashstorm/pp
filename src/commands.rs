@@ -2,7 +2,7 @@ mod templates;
 pub(crate) use templates::{FileCommand, FileCommands};
 
 use crate::config::ThinkLevel;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 
 pub(crate) struct CommandSpec {
     pub(crate) name: &'static str,
@@ -53,8 +53,8 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/plan",
-        usage: "/plan [view|new|off|prompt]",
-        description: "Plan a task with read-only research, then explicitly approve execution (TUI)",
+        usage: "/plan [view|prompt]",
+        description: "Toggle Plan mode, view the current plan, or send a planning task (TUI)",
     },
     CommandSpec {
         name: "/tree",
@@ -65,6 +65,11 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/changes",
         usage: "/changes",
         description: "Review latest-task edit/write changes and undo files (TUI)",
+    },
+    CommandSpec {
+        name: "/plan-list",
+        usage: "/plan-list",
+        description: "Manage saved plans: preview, continue, execute, rename, delete (TUI)",
     },
     CommandSpec {
         name: "/skills",
@@ -80,10 +85,8 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlanCommand<'a> {
-    Open,
+    Toggle,
     View,
-    New,
-    Off,
     Prompt(&'a str),
 }
 
@@ -104,6 +107,7 @@ pub(crate) enum Command<'a> {
     Resume,
     Tree,
     Changes,
+    PlanList,
     Plan(PlanCommand<'a>),
     Quit,
     Model(Option<&'a str>),
@@ -137,12 +141,18 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/resume" => Command::Resume,
         "/tree" => Command::Tree,
         "/changes" => Command::Changes,
+        "/plan-list" => {
+            ensure!(argument.is_empty(), "usage: /plan-list");
+            Command::PlanList
+        }
         "/plan" => {
             return Ok(Some(Command::Plan(match argument {
-                "" => PlanCommand::Open,
+                "" => PlanCommand::Toggle,
                 "view" => PlanCommand::View,
-                "new" => PlanCommand::New,
-                "off" => PlanCommand::Off,
+                // 旧子命令已删除：只报本地错误，不进入 Plan、不发送模型请求。
+                "new" | "off" => {
+                    bail!("Use /plan to toggle; manage plans with /plan-list.")
+                }
                 prompt => PlanCommand::Prompt(prompt),
             })));
         }
@@ -243,17 +253,36 @@ mod tests {
     #[test]
     fn slash_plan_accepts_prompt_and_preserves_subcommands() {
         for (input, expected) in [
-            (" /plan \t", PlanCommand::Open),
+            (" /plan \t", PlanCommand::Toggle),
             ("/plan view", PlanCommand::View),
-            ("/plan new", PlanCommand::New),
-            ("/plan off", PlanCommand::Off),
             ("/plan  调研登录流程  ", PlanCommand::Prompt("调研登录流程")),
-            ("/plan new API", PlanCommand::Prompt("new API")),
             ("/plan\tview logs", PlanCommand::Prompt("view logs")),
             (
                 "/plan first line\nsecond line",
                 PlanCommand::Prompt("first line\nsecond line"),
             ),
+        ] {
+            assert_eq!(
+                parse(input, &FileCommands::default()).unwrap(),
+                Some(Command::Plan(expected))
+            );
+        }
+    }
+
+    #[test]
+    fn slash_plan_old_subcommands_are_rejected_locally() {
+        for input in ["/plan new", "/plan off", " /plan new ", "/plan\toff"] {
+            assert_eq!(
+                parse(input, &FileCommands::default())
+                    .unwrap_err()
+                    .to_string(),
+                "Use /plan to toggle; manage plans with /plan-list."
+            );
+        }
+        // 仅精确子命令被拒绝；其余正文仍作为规划任务发送。
+        for (input, expected) in [
+            ("/plan new task", PlanCommand::Prompt("new task")),
+            ("/plan off switch", PlanCommand::Prompt("off switch")),
         ] {
             assert_eq!(
                 parse(input, &FileCommands::default()).unwrap(),
@@ -331,6 +360,8 @@ mod tests {
             ),
             ("/resume", Command::Resume),
             ("/tree", Command::Tree),
+            ("/plan-list", Command::PlanList),
+            (" /plan-list ", Command::PlanList),
             (" /resume ", Command::Resume),
             ("/quit", Command::Quit),
             ("/model", Command::Model(None)),
@@ -357,7 +388,15 @@ mod tests {
             );
         }
         for command in [
-            "/help", "/tips", "/new", "/init", "/compact", "/resume", "/tree", "/quit",
+            "/help",
+            "/tips",
+            "/new",
+            "/init",
+            "/compact",
+            "/resume",
+            "/tree",
+            "/quit",
+            "/plan-list",
         ] {
             assert_eq!(
                 parse(&format!("{command} extra"), &FileCommands::default())

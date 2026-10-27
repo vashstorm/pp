@@ -7,17 +7,19 @@ use std::{
     ffi::{OsStr, OsString},
     fs::File,
     io::{self, Read, Write},
+    os::unix::fs::MetadataExt,
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::SystemTime,
 };
 
-pub(super) struct Workspace {
+pub(crate) struct Workspace {
     root: File,
-    pub(super) path: PathBuf,
+    pub(crate) path: PathBuf,
     original: PathBuf,
 }
 
-pub(super) struct Target {
+pub(crate) struct Target {
     parent: File,
     name: OsString,
     mode: Option<Mode>,
@@ -25,8 +27,12 @@ pub(super) struct Target {
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
+/// `save_new` 碰撞的统一计划文案；计划正文与登记表都不得覆盖既有文件，
+/// 也不得把碰撞伪装成保存失败以外的其他错误。
+const PLAN_SAVE_NEW_CONFLICT: &str = "Plan file name already exists; choose another file_name.";
+
 impl Workspace {
-    pub(super) fn open(path: &Path) -> Result<Self> {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
         let original = if path.is_absolute() {
             path.to_owned()
         } else {
@@ -47,7 +53,7 @@ impl Workspace {
         })
     }
 
-    pub(super) fn components(&self, path: &Path) -> Result<Vec<OsString>> {
+    pub(crate) fn components(&self, path: &Path) -> Result<Vec<OsString>> {
         let relative = if path.is_absolute() {
             path.strip_prefix(&self.original)
                 .or_else(|_| path.strip_prefix(&self.path))
@@ -72,7 +78,7 @@ impl Workspace {
         Ok(parts)
     }
 
-    fn directory(&self, parts: &[OsString], create: bool) -> Result<File> {
+    pub(crate) fn directory(&self, parts: &[OsString], create: bool) -> Result<File> {
         let mut parent = self.root.try_clone()?;
         for part in parts {
             let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
@@ -96,12 +102,112 @@ impl Workspace {
         Ok(parent)
     }
 
+    /// 计划生命周期搬迁的第一步：核对源普通文件与精确字节后，用 `linkat`
+    /// 在目标位置发布同一 inode 的硬链接；绝不复制覆盖。已存在的目标仅在
+    /// 同设备/inode 时允许幂等重入（返回 `None`）；不同 inode 的同名、符号
+    /// 链接、路径逃逸与跨文件系统一律失败并保留源文件。提交后的父目录
+    /// 同步失败只作为警告返回，不撤回已发布的链接。
+    pub(crate) fn link_plan(
+        &self,
+        from: &Path,
+        to: &Path,
+        expected: &[u8],
+    ) -> Result<Option<String>> {
+        let source = self.target(from, false)?;
+        source
+            .compare_bytes(expected)
+            .context("Plan source changed during the move; the source file is kept.")?;
+        let identity = source
+            .stat_optional()?
+            .context("Plan source vanished during the move; the source file is kept.")?;
+        let destination = self.target(to, true)?;
+        match fs::linkat(
+            &source.parent,
+            &source.name,
+            &destination.parent,
+            &destination.name,
+            AtFlags::empty(),
+        ) {
+            Ok(()) => {}
+            Err(Errno::EXIST) => {
+                // 幂等重入：仅同设备/inode 的既有目标允许；字节相同的不同
+                // 文件同样冲突，绝不覆盖。
+                let current = destination.stat_optional()?;
+                ensure!(
+                    current == Some(identity),
+                    "Plan target already exists with different content; the source file is kept."
+                );
+                return Ok(None);
+            }
+            Err(error) => return Err(error).context("publishing the plan link"),
+        }
+        // 提交后核对目标身份：源名在核对与发布之间被换成符号链接时，
+        // `linkat` 会链接符号链接本身；此时移除刚创建的目标名并报错，
+        // 源文件保持原样。
+        if destination.stat_optional()? != Some(identity) {
+            let _ = fs::unlinkat(&destination.parent, &destination.name, AtFlags::empty());
+            anyhow::bail!("Plan move published an unverified link; the source file is kept.");
+        }
+        Ok(destination.parent.sync_all().err().map(|error| {
+            format!("plan link committed, but syncing parent directory failed: {error}")
+        }))
+    }
+
+    /// 计划生命周期搬迁的提交步骤：确认目标与源仍同 inode 且字节精确匹配
+    /// 后移除源名。源已缺失且目标字节正确视为已完成（幂等重入）；符号
+    /// 链接、路径逃逸与字节/身份不一致一律失败并保留现状。提交后的父
+    /// 目录同步失败只作为警告返回。
+    pub(crate) fn finish_plan_move(
+        &self,
+        from: &Path,
+        to: &Path,
+        expected: &[u8],
+    ) -> Result<Option<String>> {
+        let destination = self.target(to, true)?;
+        // `target` 对缺失的最终文件名也返回 Ok，这里用 NOFOLLOW stat 区分
+        // 源名消失（幂等完成语义）与目录缺失/符号链接等真实错误。
+        let source = match self.target(from, false) {
+            Ok(source) => source.stat_optional()?.map(|_| source),
+            Err(error) if is_missing(&error) => None,
+            Err(error) => return Err(error),
+        };
+        let Some(source) = source else {
+            // 源已消失：目标存在且字节精确匹配才算完成。
+            ensure!(
+                destination.stat_optional()?.is_some(),
+                "Plan move did not complete; neither the source nor the target exists."
+            );
+            destination.compare_bytes(expected).context(
+                "Plan target does not match the moved content; refusing to report completion.",
+            )?;
+            return Ok(None);
+        };
+        source
+            .compare_bytes(expected)
+            .context("Plan source changed during the move; both files are kept.")?;
+        let source_identity = source
+            .stat_optional()?
+            .context("Plan source vanished during the move; both files are kept.")?;
+        let destination_identity = destination
+            .stat_optional()?
+            .context("Plan target vanished during the move; the source file is kept.")?;
+        ensure!(
+            source_identity == destination_identity,
+            "Plan target does not match the source file; the source file is kept."
+        );
+        fs::unlinkat(&source.parent, &source.name, AtFlags::empty())
+            .context("removing the source plan link")?;
+        Ok(source.parent.sync_all().err().map(|error| {
+            format!("plan source removed, but syncing parent directory failed: {error}")
+        }))
+    }
+
     pub(super) fn cache_dir(&self) -> Result<PathBuf> {
         self.directory(&[OsString::from(".pp-cache")], true)?;
         Ok(self.path.join(".pp-cache"))
     }
 
-    pub(super) fn target(&self, path: &Path, create_parents: bool) -> Result<Target> {
+    pub(crate) fn target(&self, path: &Path, create_parents: bool) -> Result<Target> {
         let mut parts = self.components(path)?;
         let name = parts.pop().context("write/edit requires a file path")?;
         let parent = self.directory(&parts, create_parents)?;
@@ -134,7 +240,7 @@ impl Target {
         Ok(File::from(fd))
     }
 
-    pub(super) fn read(&self) -> Result<Vec<u8>> {
+    pub(crate) fn read(&self) -> Result<Vec<u8>> {
         let file = self
             .open_read()
             .context("opening edit target without symlinks")?;
@@ -145,7 +251,7 @@ impl Target {
     /// `None`; every other failure (permissions, IO, race with a symlink swap)
     /// is a real error so callers can fall back to `Unavailable` instead of
     /// inventing an empty baseline.
-    pub(super) fn read_optional(&self) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn read_optional(&self) -> Result<Option<Vec<u8>>> {
         match self.open_read() {
             Ok(file) => read_regular_file(file).map(Some),
             Err(Errno::NOENT) => Ok(None),
@@ -156,7 +262,7 @@ impl Target {
     /// Compares exact bytes through a fresh NOFOLLOW handle without allocating
     /// another copy of the file. Missing, unreadable and non-regular targets
     /// are conflicts just like a content mismatch.
-    pub(super) fn ensure_matches(&self, expected: &[u8]) -> Result<()> {
+    pub(crate) fn ensure_matches(&self, expected: &[u8]) -> Result<()> {
         self.compare_bytes(expected)
             .context("File changed outside this task; undo refused.")
     }
@@ -177,12 +283,12 @@ impl Target {
         }
     }
 
-    pub(super) fn save(&self, content: &[u8]) -> Result<Option<String>> {
+    pub(crate) fn save(&self, content: &[u8]) -> Result<Option<String>> {
         self.save_with(content, &SystemSave, false)
     }
 
     /// 在临时文件同步之后检查读取时的基线，再原子提交。
-    pub(super) fn save_if_unchanged(
+    pub(crate) fn save_if_unchanged(
         &self,
         expected: &[u8],
         content: &[u8],
@@ -201,7 +307,7 @@ impl Target {
     /// Restores the task baseline, or removes a task-created file, only after
     /// checking the last tool-written bytes. This is not filesystem CAS: an
     /// external writer can still race between comparison and rename/unlink.
-    pub(super) fn restore_if_unchanged(
+    pub(crate) fn restore_if_unchanged(
         &self,
         expected: &[u8],
         original: Option<&[u8]>,
@@ -235,8 +341,34 @@ impl Target {
     /// Atomically creates the target only when it does not already exist.
     /// A concurrent or pre-existing target is never overwritten; `EEXIST`
     /// becomes the exact plan-collision error so callers stay in Plan mode.
-    pub(super) fn save_new(&self, content: &[u8]) -> Result<Option<String>> {
-        self.save_with(content, &SystemSave, true)
+    pub(crate) fn save_new(&self, content: &[u8]) -> Result<Option<String>> {
+        self.save_new_with_conflict(content, PLAN_SAVE_NEW_CONFLICT)
+    }
+
+    /// 与 `save_new` 完全相同的排他创建（linkat、不覆盖），但碰撞文案由调用方
+    /// 提供；计划登记表等非正文保存用它避免误导性的计划提示。
+    pub(crate) fn save_new_with_conflict(
+        &self,
+        content: &[u8],
+        conflict: &'static str,
+    ) -> Result<Option<String>> {
+        self.save_checked_conflict(content, &SystemSave, true, None, conflict)
+    }
+
+    /// 与 `save_if_unchanged` 完全相同的基线比较保存，但冲突文案由调用方提供。
+    pub(crate) fn save_if_unchanged_custom(
+        &self,
+        expected: &[u8],
+        content: &[u8],
+        conflict: &'static str,
+    ) -> Result<Option<String>> {
+        self.save_checked_conflict(
+            content,
+            &SystemSave,
+            false,
+            Some((expected, conflict)),
+            PLAN_SAVE_NEW_CONFLICT,
+        )
     }
 
     fn create_temporary(&self) -> Result<(String, File)> {
@@ -278,6 +410,23 @@ impl Target {
         new_only: bool,
         expected: Option<(&[u8], &'static str)>,
     ) -> Result<Option<String>> {
+        self.save_checked_conflict(
+            content,
+            operations,
+            new_only,
+            expected,
+            PLAN_SAVE_NEW_CONFLICT,
+        )
+    }
+
+    fn save_checked_conflict(
+        &self,
+        content: &[u8],
+        operations: &impl SaveOperations,
+        new_only: bool,
+        expected: Option<(&[u8], &'static str)>,
+        new_only_conflict: &'static str,
+    ) -> Result<Option<String>> {
         let (temporary, mut file) = self.create_temporary()?;
         let cleanup = Temporary {
             parent: &self.parent,
@@ -305,7 +454,7 @@ impl Target {
         };
         if let Err(error) = committed {
             if new_only && error.kind() == io::ErrorKind::AlreadyExists {
-                anyhow::bail!("Plan path already exists; use /plan new.");
+                anyhow::bail!(new_only_conflict);
             }
             return Err(error).context("committing atomic save; target unchanged");
         }
@@ -326,7 +475,7 @@ impl Target {
     /// first, then at most `max_bytes + 1` bytes so callers can detect
     /// oversize files without allocating unbounded memory. FIFOs, directories
     /// and symlink targets are real errors, never partial reads.
-    pub(super) fn read_bounded(&self, max_bytes: usize) -> Result<Vec<u8>> {
+    pub(crate) fn read_bounded(&self, max_bytes: usize) -> Result<Vec<u8>> {
         let mut file = self
             .open_read()
             .context("opening plan file without symlinks")?;
@@ -341,6 +490,62 @@ impl Target {
             .context("reading plan file")?;
         Ok(bytes)
     }
+
+    /// 通过 NOFOLLOW 句柄读取目标的 device/inode；缺失返回 `None`，
+    /// 符号链接与非普通文件报错。供计划身份登记的墓碑记录与 inode 确认使用。
+    pub(crate) fn stat_optional(&self) -> Result<Option<(u64, u64)>> {
+        match self.open_read() {
+            Ok(file) => {
+                let metadata = file.metadata().context("stating plan file")?;
+                ensure!(metadata.is_file(), "plan file must be a regular file");
+                Ok(Some((metadata.dev(), metadata.ino())))
+            }
+            Err(Errno::NOENT) => Ok(None),
+            Err(error) => Err(error).context("stating plan file"),
+        }
+    }
+
+    /// 通过 NOFOLLOW 句柄读取目标身份与修改时间；缺失返回 `None`，符号
+    /// 链接与非普通文件报错。供管理页列表展示 `modified` 使用。
+    pub(crate) fn stat_optional_detailed(&self) -> Result<Option<(u64, u64, SystemTime)>> {
+        match self.open_read() {
+            Ok(file) => {
+                let metadata = file.metadata().context("stating plan file")?;
+                ensure!(metadata.is_file(), "plan file must be a regular file");
+                Ok(Some((
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.modified().context("reading plan file mtime")?,
+                )))
+            }
+            Err(Errno::NOENT) => Ok(None),
+            Err(error) => Err(error).context("stating plan file"),
+        }
+    }
+
+    /// 通过已解析的父目录句柄安全移除目标名；不跟随符号链接，仅删除普通
+    /// 文件。调用者负责先核对内容与身份（精确字节/同 inode）；缺失即报错，
+    /// 由调用方决定如何向上报告。
+    pub(crate) fn unlink(&self) -> Result<()> {
+        let file = self
+            .open_read()
+            .context("opening target for removal without symlinks")?;
+        ensure!(
+            file.metadata()
+                .context("checking target for removal")?
+                .is_file(),
+            "target must be a regular file"
+        );
+        fs::unlinkat(&self.parent, &self.name, AtFlags::empty()).context("removing target")?;
+        Ok(())
+    }
+}
+
+/// 判断错误链中是否只是“路径不存在”；搬迁源缺失属于幂等完成语义。
+fn is_missing(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<Errno>() == Some(&Errno::NOENT))
 }
 
 fn read_regular_file(file: File) -> Result<Vec<u8>> {
@@ -902,7 +1107,7 @@ mod tests {
         let error = target.save_new(b"second").unwrap_err();
         assert_eq!(
             error.to_string(),
-            "Plan path already exists; use /plan new."
+            "Plan file name already exists; choose another file_name."
         );
         assert_eq!(
             std::fs::read(dir.path().join(".pp/plans/abcdef.md")).unwrap(),
@@ -1082,5 +1287,233 @@ mod tests {
                 assert!(path.is_symlink());
             }
         }
+    }
+
+    // --- 计划生命周期搬迁原语 ---
+
+    #[test]
+    fn plan_move_preserves_bytes_and_finish_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let source = dir.path().join(".pp/drafts/fix-config.md");
+        let target = dir.path().join(".pp/plans/fix-config.md");
+        std::fs::create_dir_all(dir.path().join(".pp/drafts")).unwrap();
+        std::fs::write(&source, b"# plan\r\n\xff bytes").unwrap();
+
+        // 发布目标链接：字节精确保留，源仍存在。
+        let warning = workspace
+            .link_plan(
+                Path::new(".pp/drafts/fix-config.md"),
+                Path::new(".pp/plans/fix-config.md"),
+                b"# plan\r\n\xff bytes",
+            )
+            .unwrap();
+        assert_eq!(warning, None);
+        assert_eq!(std::fs::read(&target).unwrap(), b"# plan\r\n\xff bytes");
+        assert_eq!(std::fs::read(&source).unwrap(), b"# plan\r\n\xff bytes");
+        // 同一 inode 的硬链接，不是复制。
+        assert_eq!(
+            std::fs::metadata(&source).unwrap().ino(),
+            std::fs::metadata(&target).unwrap().ino()
+        );
+
+        // 重复发布是幂等重入；提交移除源名；再次提交同样成功。
+        assert_eq!(
+            workspace
+                .link_plan(
+                    Path::new(".pp/drafts/fix-config.md"),
+                    Path::new(".pp/plans/fix-config.md"),
+                    b"# plan\r\n\xff bytes"
+                )
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            workspace
+                .finish_plan_move(
+                    Path::new(".pp/drafts/fix-config.md"),
+                    Path::new(".pp/plans/fix-config.md"),
+                    b"# plan\r\n\xff bytes"
+                )
+                .unwrap(),
+            None
+        );
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&target).unwrap(), b"# plan\r\n\xff bytes");
+        assert_eq!(
+            workspace
+                .finish_plan_move(
+                    Path::new(".pp/drafts/fix-config.md"),
+                    Path::new(".pp/plans/fix-config.md"),
+                    b"# plan\r\n\xff bytes"
+                )
+                .unwrap(),
+            None
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"# plan\r\n\xff bytes");
+    }
+
+    #[test]
+    fn plan_move_collision_never_overwrites_and_keeps_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        std::fs::create_dir_all(dir.path().join(".pp/drafts")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".pp/plans")).unwrap();
+        std::fs::write(dir.path().join(".pp/drafts/a.md"), b"source").unwrap();
+        std::fs::write(dir.path().join(".pp/plans/a.md"), b"existing").unwrap();
+
+        // 字节相同的不同 inode 目标同样冲突；不同字节自不必说。
+        std::fs::hard_link(
+            dir.path().join(".pp/drafts/a.md"),
+            dir.path().join(".pp/plans/copy.md"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".pp/plans/same-bytes.md"), b"source").unwrap();
+        for target in ["a.md", "same-bytes.md"] {
+            let error = workspace
+                .link_plan(
+                    Path::new(".pp/drafts/a.md"),
+                    Path::new(&format!(".pp/plans/{target}")),
+                    b"source",
+                )
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("source file is kept"),
+                "{target}: {error}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join(".pp/plans/a.md")).unwrap(),
+            b"existing"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(".pp/drafts/a.md")).unwrap(),
+            b"source"
+        );
+        std::fs::remove_file(dir.path().join(".pp/plans/copy.md")).unwrap();
+        std::fs::remove_file(dir.path().join(".pp/plans/same-bytes.md")).unwrap();
+
+        // 预期字节不匹配时报错且不发布目标。
+        let error = workspace
+            .link_plan(
+                Path::new(".pp/drafts/a.md"),
+                Path::new(".pp/plans/b.md"),
+                b"other",
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("source changed"), "{error}");
+        assert!(!dir.path().join(".pp/plans/b.md").exists());
+        assert_eq!(
+            std::fs::read(dir.path().join(".pp/drafts/a.md")).unwrap(),
+            b"source"
+        );
+    }
+
+    #[test]
+    fn plan_move_refuses_symlinks_escapes_and_finish_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("peer"), b"outside").unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        std::fs::create_dir_all(dir.path().join(".pp/drafts")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".pp/plans")).unwrap();
+        std::fs::write(dir.path().join(".pp/drafts/a.md"), b"inside").unwrap();
+        symlink(
+            outside.path().join("peer"),
+            dir.path().join(".pp/plans/link.md"),
+        )
+        .unwrap();
+
+        // 符号链接目标在发布前被拒绝；符号链接源同样拒绝，源保留。
+        let error = workspace
+            .link_plan(
+                Path::new(".pp/drafts/a.md"),
+                Path::new(".pp/plans/link.md"),
+                b"inside",
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("symlinks are forbidden"),
+            "{error}"
+        );
+        assert!(
+            std::fs::symlink_metadata(dir.path().join(".pp/plans/link.md"))
+                .unwrap()
+                .is_symlink()
+        );
+        symlink(
+            dir.path().join(".pp/drafts/a.md"),
+            dir.path().join(".pp/drafts/alias.md"),
+        )
+        .unwrap();
+        assert!(
+            workspace
+                .link_plan(
+                    Path::new(".pp/drafts/alias.md"),
+                    Path::new(".pp/plans/b.md"),
+                    b"inside"
+                )
+                .is_err()
+        );
+        assert!(!dir.path().join(".pp/plans/b.md").exists());
+        assert_eq!(
+            std::fs::read(dir.path().join(".pp/drafts/a.md")).unwrap(),
+            b"inside"
+        );
+
+        // 路径逃逸（工作区外）被拒绝。
+        assert!(
+            workspace
+                .link_plan(
+                    Path::new(".pp/drafts/a.md"),
+                    &outside.path().join("escape.md"),
+                    b"inside"
+                )
+                .is_err()
+        );
+        assert!(!outside.path().join("escape.md").exists());
+
+        // 提交步骤要求源字节仍精确匹配；不匹配时两侧都保留。
+        std::fs::write(dir.path().join(".pp/drafts/a.md"), b"changed").unwrap();
+        workspace
+            .link_plan(
+                Path::new(".pp/drafts/a.md"),
+                Path::new(".pp/plans/b.md"),
+                b"changed",
+            )
+            .unwrap();
+        std::fs::write(dir.path().join(".pp/drafts/a.md"), b"tampered").unwrap();
+        let error = workspace
+            .finish_plan_move(
+                Path::new(".pp/drafts/a.md"),
+                Path::new(".pp/plans/b.md"),
+                b"changed",
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("both files are kept"), "{error}");
+        assert!(dir.path().join(".pp/drafts/a.md").exists());
+        assert!(dir.path().join(".pp/plans/b.md").exists());
+
+        // 外部换掉的符号链接源不被提交步骤跟随。
+        std::fs::remove_file(dir.path().join(".pp/drafts/a.md")).unwrap();
+        symlink(
+            outside.path().join("peer"),
+            dir.path().join(".pp/drafts/a.md"),
+        )
+        .unwrap();
+        assert!(
+            workspace
+                .finish_plan_move(
+                    Path::new(".pp/drafts/a.md"),
+                    Path::new(".pp/plans/b.md"),
+                    b"changed"
+                )
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("peer")).unwrap(),
+            b"outside"
+        );
+        assert!(dir.path().join(".pp/plans/b.md").exists());
     }
 }

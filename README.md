@@ -21,7 +21,7 @@ pp is a Pi-style terminal coding agent written in Rust. It lets models read proj
 | Feature | Description |
 | --- | --- |
 | **Terminal interaction** | Streaming text, reasoning, and tool output in a TUI, one-shot tasks, or piped input |
-| **Planning and execution** | Plan research, review, and explicit approval, with an ask panel for key decisions |
+| **Planning and execution** | Plan research, review, and explicit approval, with an ask panel for key decisions; `/plan-list` manages saved plans across drafts, plans, and done |
 | **Task control** | Add instructions while a task runs, queue follow-up tasks, and press Esc to cancel |
 | **Sessions and changes** | Automatic saving and restoration, session tree navigation, and recent-task diffs with safe undo |
 | **Extensions on demand** | Project `AGENTS.md`, skills, Markdown prompt commands, and local stdio MCP tools |
@@ -105,7 +105,8 @@ Use `/help` for full help and `/tips` for usage tips. The following slash comman
 | --- | --- |
 | `/model`, `/effort` | Switch models and reasoning levels while keeping history |
 | `/init` | Create or update the current project's `AGENTS.md` |
-| `/plan [prompt]` | Enter Plan mode and optionally send a task immediately; execute after approval (TUI only) |
+| `/plan [prompt]` | Toggle Plan mode standby; view the plan or send a planning task immediately; execute after approval (TUI only) |
+| `/plan-list` | Manage saved plans: preview, continue, execute, rename, delete (TUI only) |
 | `/compact`, `/new` | Compact context or start a new session |
 | `/resume`, `/tree` | Restore a session or navigate back through current history (TUI only) |
 | `/changes` | View recent-task edit/write changes and undo individual files (TUI only) |

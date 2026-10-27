@@ -177,10 +177,15 @@ fn plan_wait_review(pty: &mut Pty, revision: u64) {
 }
 
 fn plan_path(project: &Path) -> std::path::PathBuf {
-    let files: Vec<_> = std::fs::read_dir(project.join(".pp/plans"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+    let files: Vec<_> = ["drafts", "plans", "done"]
+        .into_iter()
+        .flat_map(|location| {
+            std::fs::read_dir(project.join(".pp").join(location))
+                .into_iter()
+                .flatten()
+                .map(|entry| entry.unwrap().path())
+        })
+        .filter(|path| path.file_name().is_some_and(|name| name == "create-canary.md"))
         .collect();
     assert_eq!(files.len(), 1, "expected one saved plan: {files:?}");
     files.into_iter().next().unwrap()
@@ -224,7 +229,7 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
                 protocol,
                 "plan-write",
                 "plan_write",
-                json!({"title":"Create canary","content":content,"expected_revision":0})
+                json!({"title":"Create canary","file_name":"create-canary.md","content":content,"expected_revision":0})
             ),
             plan_call(
                 protocol,
@@ -242,7 +247,7 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
                 protocol,
                 "sealed-write",
                 "plan_write",
-                json!({"title":"Wrong","content":"- [ ] wrong","expected_revision":1})
+                json!({"title":"Wrong","file_name":"create-canary.md","content":"- [ ] wrong","expected_revision":1})
             )
         ]),
     );
@@ -378,6 +383,8 @@ fn plan_tui_approval_uses_reviewed_bytes_and_tracks_only_verified_progress() {
                 cancel_tool_outputs(&body, protocol).last().unwrap().1["content"],
                 "reviewed bytes"
             );
+            // 批准后正文已从 drafts 移入 plans；按当前位置重新取路径。
+            let path = plan_path(project.path());
             let relative = path.strip_prefix(project.path()).unwrap().to_str().unwrap();
             plan_calls(
                 request,
@@ -775,7 +782,7 @@ fn plan_tui_mcp_is_stopped_in_plan_and_cleanup_tracks_execute_reconnection() {
             pty.ready();
             plan_wait_mode(&mut pty, "Plan");
             no_more(&fixture);
-            pty.input("/plan\r");
+            pty.input("/plan view\r");
             plan_wait_review(&mut pty, 1);
             no_more(&fixture);
             assert_eq!(
@@ -790,22 +797,8 @@ fn plan_tui_mcp_is_stopped_in_plan_and_cleanup_tracks_execute_reconnection() {
                 pty.wait_for("closing review before off", |screen| {
                     !screen.contents().contains("Execute (keep context)")
                 });
-                pty.input("/plan off\r");
-                pty.wait_for("local leave confirmation", |screen| {
-                    screen
-                        .contents()
-                        .contains("Leave Plan mode without executing this plan?")
-                });
-                pty.input("\r");
-                plan_wait_mode(&mut pty, "Plan");
-                no_more(&fixture);
-                pty.input("/plan off\r");
-                pty.wait_for("local leave confirmation again", |screen| {
-                    screen
-                        .contents()
-                        .contains("Leave Plan mode without executing this plan?")
-                });
-                pty.input("\x1b[B\r");
+                // 裸 /plan 直接切换退出：无本地确认框，已保存草稿保留在磁盘。
+                pty.input("/plan\r");
                 plan_wait_execute(&mut pty);
                 no_more(&fixture);
                 pty.input("Explicit normal execution after leaving Plan\r");
@@ -943,7 +936,7 @@ fn plan_tui_pending_input_never_crosses_review_into_execute() {
         plan_enter(&mut pty, &fixture);
         pty.input("Plan with pending input\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        pty.input("/plan off\r");
+        pty.input("/plan\r");
         pty.wait_for("busy mode switch refused", |screen| {
             cancel_normalize(screen).contains("CancelthecurrenttaskbeforechangingPlanmode.")
         });
@@ -957,7 +950,7 @@ fn plan_tui_pending_input_never_crosses_review_into_execute() {
                     protocol,
                     "pending-write",
                     "plan_write",
-                    json!({"title":"Pending","content":PLAN_TUI_BODY,"expected_revision":0})
+                    json!({"title":"Pending","file_name":"create-canary.md","content":PLAN_TUI_BODY,"expected_revision":0})
                 ),
                 plan_call(
                     protocol,
@@ -1049,7 +1042,7 @@ fn plan_tui_discussion_preserves_main_draft_and_does_not_force_a_rewrite() {
                     protocol,
                     "discuss-write",
                     "plan_write",
-                    json!({"title":"Canary","content":PLAN_TUI_BODY,"expected_revision":0})
+                    json!({"title":"Canary","file_name":"create-canary.md","content":PLAN_TUI_BODY,"expected_revision":0})
                 ),
                 plan_call(
                     protocol,
@@ -1168,5 +1161,460 @@ fn plan_tui_submission_requires_deliberate_action_and_survives_resize_and_resume
             resumed.input("/quit\r");
             resumed.finish();
         }
+    }
+}
+
+#[test]
+fn plan_ai_filename_is_stable_and_never_overwrites() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        for location in ["drafts", "plans", "done"] {
+            let directory = project.path().join(".pp").join(location);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join(format!("occupied-{location}.md")), b"external bytes")
+                .unwrap();
+        }
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        plan_enter(&mut pty, &fixture);
+        pty.input("Specify the canary change\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        let mut calls = Vec::new();
+        for location in ["drafts", "plans", "done"] {
+            calls.push(plan_call(
+                protocol,
+                &format!("collision-{location}"),
+                "plan_write",
+                json!({"title":"Canary","file_name":format!("occupied-{location}.md"),"content":PLAN_TUI_BODY,"expected_revision":0}),
+            ));
+        }
+        calls.push(plan_call(
+            protocol,
+            "bad-path",
+            "plan_write",
+            json!({"title":"Canary","file_name":"../escape.md","content":PLAN_TUI_BODY,"expected_revision":0}),
+        ));
+        calls.push(plan_call(
+            protocol,
+            "named-save",
+            "plan_write",
+            json!({"title":"Canary","file_name":"create-canary.md","content":PLAN_TUI_BODY,"expected_revision":0}),
+        ));
+        plan_calls(request, protocol, json!(calls));
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        for location in ["drafts", "plans", "done"] {
+            let output = &outputs
+                .iter()
+                .find(|(id, _)| id == &format!("collision-{location}"))
+                .unwrap()
+                .1;
+            assert_eq!(output["ok"], false);
+            assert_eq!(
+                output["error"],
+                "Plan file name already exists; choose another file_name."
+            );
+            assert_eq!(
+                std::fs::read(project.path().join(".pp").join(location).join(format!("occupied-{location}.md"))).unwrap(),
+                b"external bytes"
+            );
+        }
+        assert_eq!(outputs.iter().find(|(id, _)| id == "bad-path").unwrap().1["ok"], false);
+        let saved = &outputs.iter().find(|(id, _)| id == "named-save").unwrap().1;
+        assert_eq!(saved["path"], ".pp/drafts/create-canary.md");
+        assert_eq!(saved["revision"], 1);
+        let revised = format!("{PLAN_TUI_BODY}\nVerified design constraint.\n");
+        plan_calls(
+            request,
+            protocol,
+            json!([
+                plan_call(protocol, "stable-save", "plan_write", json!({"title":"Canary","file_name":"create-canary.md","content":revised,"expected_revision":1})),
+                plan_call(protocol, "rename-refused", "plan_write", json!({"title":"Canary","file_name":"another-name.md","content":"- [ ] wrong","expected_revision":2}))
+            ]),
+        );
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        assert_eq!(outputs.iter().find(|(id, _)| id == "stable-save").unwrap().1["revision"], 2);
+        assert_eq!(outputs.iter().find(|(id, _)| id == "rename-refused").unwrap().1["error"], "Rename plans through /plan-list.");
+        assert_eq!(std::fs::read_to_string(plan_path(project.path())).unwrap(), revised);
+        assert!(!project.path().join(".pp/drafts/another-name.md").exists());
+        plan_final(request, protocol, "Named draft saved");
+        pty.wait_for("named draft save finished", |screen| screen.contents().contains("Named draft saved"));
+        pty.ready();
+        pty.input("\x03");
+        pty.finish();
+    }
+}
+
+#[test]
+fn plan_toggle_waits_for_prompt_and_preserves_drafts() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        pty.ready();
+        plan_wait_execute(&mut pty);
+
+        // 裸 /plan 只待命：无计划绑定、无 Markdown 文件、无模型请求。
+        pty.input("/plan\r");
+        pty.wait_for("standby notification", |screen| {
+            cancel_normalize(screen).contains("Planmodeisactive.")
+        });
+        plan_wait_mode(&mut pty, "Plan");
+        no_more(&fixture);
+        for location in ["drafts", "plans", "done"] {
+            assert!(!project.path().join(".pp").join(location).join("create-canary.md").exists());
+        }
+
+        // 空待命可直接退出；再次进入仍待命。
+        pty.input("/plan\r");
+        plan_wait_execute(&mut pty);
+        no_more(&fixture);
+        pty.input("/plan\r");
+        plan_wait_mode(&mut pty, "Plan");
+        no_more(&fixture);
+
+        // 首条任务建立绑定：AI 命名首存生成 drafts/create-canary.md。
+        plan_drive_ready(
+            &mut pty,
+            &fixture,
+            protocol,
+            "Plan the canary standby task",
+            PLAN_TUI_BODY,
+        );
+        let first = plan_path(project.path());
+        assert_eq!(
+            first,
+            project.path().join(".pp/drafts/create-canary.md"),
+            "{first:?}"
+        );
+
+        // 已保存草稿退出：直接切换，无确认框，草稿文件与字节保留。
+        pty.input("\x1b");
+        pty.wait_for("closing review before toggle out", |screen| {
+            !screen.contents().contains("Execute (keep context)")
+        });
+        pty.input("/plan\r");
+        plan_wait_execute(&mut pty);
+        no_more(&fixture);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), PLAN_TUI_BODY);
+
+        // 再次进入只待命；下一条任务得到另一个计划文件，旧稿仍保留。
+        pty.input("/plan\r");
+        plan_wait_mode(&mut pty, "Plan");
+        no_more(&fixture);
+        pty.input("Plan the second standby task\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_calls(
+            request,
+            protocol,
+            json!([
+                plan_call(
+                    protocol,
+                    "second-write",
+                    "plan_write",
+                    json!({"title":"Create canary","file_name":"second-canary.md","content":PLAN_TUI_BODY,"expected_revision":0})
+                ),
+                plan_call(
+                    protocol,
+                    "second-submit",
+                    "plan_submit",
+                    json!({"expected_revision":1})
+                )
+            ]),
+        );
+        plan_wait_review(&mut pty, 1);
+        no_more(&fixture);
+        let second = project.path().join(".pp/drafts/second-canary.md");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), PLAN_TUI_BODY);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), PLAN_TUI_BODY);
+
+        // 已提交任务但 revision-0 尚未首存：退出被明确拒绝，绑定保留。
+        pty.input("\x1b");
+        pty.wait_for("closing review before unsaved exit", |screen| {
+            !screen.contents().contains("Execute (keep context)")
+        });
+        pty.input("/plan\r");
+        plan_wait_execute(&mut pty);
+        no_more(&fixture);
+        pty.input("/plan\r");
+        plan_wait_mode(&mut pty, "Plan");
+        no_more(&fixture);
+        pty.input("Research without saving anything\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_final(request, protocol, "Findings are only in chat; nothing saved yet.");
+        pty.ready();
+        pty.input("/plan\r");
+        pty.text("Save the draft with plan_write before leaving Plan mode.");
+        plan_wait_mode(&mut pty, "Plan");
+        no_more(&fixture);
+        assert!(second.exists());
+        pty.input("\x03");
+        pty.finish();
+    }
+}
+
+#[test]
+fn plan_tui_rejects_removed_new_and_off_subcommands() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        pty.ready();
+        plan_wait_execute(&mut pty);
+        // 旧子命令只报本地错误：不切换模式、不发请求、输入原样保留。
+        for command in ["/plan new", "/plan off"] {
+            pty.input(&format!("{command}\r"));
+            pty.text("Use /plan to toggle; manage plans with /plan-list.");
+            pty.draft(command);
+            // Ctrl+A/Ctrl+K 清空保留的草稿，避免拼进下一条命令。
+            pty.input("\x01\x0b");
+        }
+        plan_wait_execute(&mut pty);
+        no_more(&fixture);
+        assert!(!project.path().join(".pp").join("plans").exists());
+        assert!(!project.path().join(".pp").join("drafts").exists());
+        pty.input("\x03");
+        pty.finish();
+    }
+}
+
+#[test]
+fn plan_tui_success_archives_completed_plan() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        plan_enter(&mut pty, &fixture);
+        pty.input("Plan the canary ORIGIN_ONLY_MARKER\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_final(request, protocol, "EXPLORATION_ONLY_MARKER: verified current code");
+        pty.ready();
+        plan_drive_ready(&mut pty, &fixture, protocol, "Finalize the plan", PLAN_TUI_BODY);
+        let origin_id = saved_session_id(home.path());
+        // 本地批准 Execute (plan only)：固定 Fresh 新会话，只携带计划。
+        plan_choose(&mut pty, 0);
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        let encoded = body.to_string();
+        assert!(encoded.contains("approved bytes"), "{body}");
+        assert!(encoded.contains("[Approved Markdown snapshot]"), "{body}");
+        assert!(!encoded.contains("ORIGIN_ONLY_MARKER"), "{body}");
+        assert_eq!(cancel_user_messages(&body, protocol).len(), 1, "{body}");
+        assert!(cancel_tool_outputs(&body, protocol).is_empty());
+        let ids = resume_boundary_session_ids(home.path());
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        let execution_id = ids.iter().find(|id| **id != origin_id).unwrap().clone();
+        // 执行：真实写入 canary 并读回。
+        plan_calls(
+            request,
+            protocol,
+            json!([
+                plan_call(
+                    protocol,
+                    "execute-write",
+                    "write",
+                    json!({"path":"canary.txt","content":"approved bytes"})
+                ),
+                plan_call(
+                    protocol,
+                    "execute-read",
+                    "read",
+                    json!({"path":"canary.txt"})
+                )
+            ]),
+        );
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert_eq!(
+            std::fs::read(project.path().join("canary.txt")).unwrap(),
+            b"approved bytes"
+        );
+        assert_eq!(
+            cancel_tool_outputs(&body, protocol).last().unwrap().1["content"],
+            "approved bytes"
+        );
+        // 按批准集合逐项勾选两个任务。
+        let plan_relative = ".pp/plans/create-canary.md";
+        plan_calls(
+            request,
+            protocol,
+            json!([plan_call(
+                protocol,
+                "progress-1",
+                "edit",
+                json!({"path":plan_relative,"edits":[{"oldText":"- [ ] Create canary.txt","newText":"- [x] Create canary.txt"}]})
+            )]),
+        );
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_calls(
+            request,
+            protocol,
+            json!([plan_call(
+                protocol,
+                "progress-2",
+                "edit",
+                json!({"path":plan_relative,"edits":[{"oldText":"- [ ] Verify the failure boundary","newText":"- [x] Verify the failure boundary"}]})
+            )]),
+        );
+        // 最终成功回复：成功收尾自动归档，不再发起任何模型请求。
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_final(request, protocol, "Both tasks verified and read back.");
+        pty.completed();
+        // 同名文件进入 done，plans 源不存在，勾选进度保留。
+        assert!(!project.path().join(".pp/plans/create-canary.md").exists());
+        let archived = std::fs::read_to_string(project.path().join(".pp/done/create-canary.md"))
+            .unwrap();
+        assert!(archived.contains("- [x] Create canary.txt"), "{archived}");
+        assert!(
+            archived.contains("- [x] Verify the failure boundary"),
+            "{archived}"
+        );
+        // /plan view：Completed、2/2 与实际 done 路径。
+        pty.input("/plan view\r");
+        pty.wait_for("archived completed plan view", |screen| {
+            let text = screen.contents();
+            text.contains("2/2")
+                && text.contains("Completed")
+                && text.contains(".pp/done/create-canary.md")
+        });
+        plan_wait_execute(&mut pty);
+        no_more(&fixture);
+        pty.input("\x1b");
+        // 执行会话 journal：Completed + done 位置。
+        let workflow = plan_journal(home.path(), &execution_id)
+            .into_iter()
+            .rev()
+            .find(|record| record["customType"] == "pp.workflow")
+            .unwrap();
+        assert_eq!(workflow["data"]["workflow"]["plan"]["status"], "completed");
+        assert_eq!(workflow["data"]["workflow"]["plan"]["location"], "done");
+        // 旧源规划会话恢复：按 ID 协调到 done，只读显示同一路径。
+        pty.input("\x03");
+        pty.finish();
+        let mut resumed =
+            Pty::start_with_args(project.path(), home.path(), &["-r", &origin_id]);
+        resumed.ready();
+        resumed.input("/plan view\r");
+        resumed.wait_for("source session reads the archived plan", |screen| {
+            let text = screen.contents();
+            text.contains("2/2")
+                && text.contains("Completed")
+                && text.contains(".pp/done/create-canary.md")
+        });
+        no_more(&fixture);
+        resumed.input("\x03");
+        resumed.finish();
+    }
+}
+
+#[test]
+fn plan_completion_requires_success_and_approved_tasks() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        plan_enter(&mut pty, &fixture);
+        pty.input("Plan the canary\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_final(request, protocol, "Findings verified.");
+        pty.ready();
+        plan_drive_ready(&mut pty, &fixture, protocol, "Finalize the plan", PLAN_TUI_BODY);
+        plan_choose(&mut pty, 0);
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_calls(
+            request,
+            protocol,
+            json!([
+                plan_call(
+                    protocol,
+                    "execute-write",
+                    "write",
+                    json!({"path":"canary.txt","content":"approved bytes"})
+                ),
+                plan_call(
+                    protocol,
+                    "execute-read",
+                    "read",
+                    json!({"path":"canary.txt"})
+                )
+            ]),
+        );
+        let plan_relative = ".pp/plans/create-canary.md";
+        let tick = |old: &str| {
+            json!([plan_call(
+                protocol,
+                "progress",
+                "edit",
+                json!({"path":plan_relative,"edits":[{"oldText":old,"newText":old.replace("- [ ]","- [x]")}]})
+            )])
+        };
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_calls(request, protocol, tick("- [ ] Create canary.txt"));
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_calls(request, protocol, tick("- [ ] Verify the failure boundary"));
+        let plans_path = project.path().join(".pp/plans/create-canary.md");
+
+        // 全部勾选但最终错误：流中错误使任务失败，不归档。
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        {
+            let mut stream = SseReply::new(request);
+            if protocol == "completion" {
+                stream.event(json!({
+                    "error":{"message":"fixture stream error","type":"server_error"}
+                }));
+            } else {
+                stream.event(json!({
+                    "type":"error","sequence_number":1,"code":"server_error",
+                    "message":"fixture stream error","param":null
+                }));
+            }
+            stream.finish();
+        }
+        pty.ready();
+        assert!(plans_path.exists());
+        assert!(!project.path().join(".pp/done").join("create-canary.md").exists());
+        pty.input("/plan view\r");
+        pty.wait_for("failed task keeps executed status", |screen| {
+            let text = screen.contents();
+            text.contains("Executed") && !text.contains("Completed")
+        });
+        pty.input("\x1b");
+        no_more(&fixture);
+
+        // 全部勾选但取消：同样不归档。
+        pty.input("Final check\r");
+        let (_request, _) = pty.request_at(&fixture, api_path(protocol));
+        pty.input("\x1b");
+        cancel_wait_cancelled_ready(&mut pty);
+        assert!(plans_path.exists());
+        assert!(!project.path().join(".pp/done").join("create-canary.md").exists());
+        no_more(&fixture);
+
+        // 下一次成功收尾：正文已同步未再次变化也归档。
+        pty.input("Recovered and completed all approved tasks\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_final(request, protocol, "Recovered and completed all approved tasks.");
+        pty.completed();
+        assert!(!plans_path.exists());
+        let archived =
+            std::fs::read_to_string(project.path().join(".pp/done/create-canary.md")).unwrap();
+        assert!(archived.contains("- [x] Create canary.txt"), "{archived}");
+        assert!(
+            archived.contains("- [x] Verify the failure boundary"),
+            "{archived}"
+        );
+        pty.input("/plan view\r");
+        pty.wait_for("archived after later success", |screen| {
+            let text = screen.contents();
+            text.contains("Completed") && text.contains(".pp/done/create-canary.md")
+        });
+        plan_wait_execute(&mut pty);
+        pty.input("\x1b");
+        pty.input("\x03");
+        pty.finish();
     }
 }

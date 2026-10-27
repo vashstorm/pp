@@ -78,7 +78,7 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                 (
                     "review-plan-write",
                     "plan_write",
-                    json!({"title":"Wrong","content":"- [x] wrong","expected_revision":1}),
+                    json!({"title":"Wrong","file_name":"create-canary.md","content":"- [x] wrong","expected_revision":1}),
                 ),
                 (
                     "review-submit",

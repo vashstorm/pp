@@ -119,10 +119,18 @@ fn plan_line_commands_never_request_model() {
         error
             .matches("/plan requires the TUI; run pp in a terminal.")
             .count(),
-        5
+        3
+    );
+    // 旧子命令在解析层拒绝：只报本地错误，不发送模型请求、不改模式。
+    assert_eq!(
+        error
+            .matches("Use /plan to toggle; manage plans with /plan-list.")
+            .count(),
+        2
     );
     assert!(server.try_recv().unwrap().is_none());
     assert!(!dir.path().join(".pp/plans").exists());
+    assert!(!dir.path().join(".pp/drafts").exists());
 }
 
 fn fixture_settings() -> &'static str {
@@ -2654,6 +2662,7 @@ mod tui {
     include!("cli_agent/transcript_blocks_tui.rs");
     include!("cli_agent/ask_tui.rs");
     include!("cli_agent/plan_tui.rs");
+    include!("cli_agent/plan_list_tui.rs");
     include!("cli_agent/plan_review_tui.rs");
     include!("cli_agent/tree_tui.rs");
     include!("cli_agent/runtime_input_tui.rs");
@@ -2671,7 +2680,9 @@ mod tui {
     static PTY_SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn input_is_ready(screen: &vt100::Screen) -> bool {
-        screen.contents().lines().any(|line| line.starts_with('❯'))
+        screen
+            .rows(0, screen.size().1)
+            .any(|line| line.starts_with('❯'))
     }
 
     struct Pty {
@@ -2853,9 +2864,10 @@ mod tui {
         }
 
         fn draft(&mut self, expected: &str) {
-            self.wait_for("preserved input draft", |screen| {
-                let text = screen.contents();
-                let lines: Vec<_> = text.lines().collect();
+            self.wait_for(&format!("preserved input draft {expected:?}"), |screen| {
+                // 输入框按物理行定位；contents() 会合并软换行，resize 后
+                // 可能把正文与提示符拼在同一逻辑行，造成假超时。
+                let lines: Vec<_> = screen.rows(0, screen.size().1).collect();
                 // 主输入框的空白不能误判为搜索面板已关闭，须等待焦点恢复。
                 if lines
                     .get(usize::from(screen.cursor_position().0))

@@ -25,11 +25,16 @@ const ACTIONS: [&str; 4] = [
 /// 打开面板时焦点在正文；有意切到操作区后默认选第 2 项（keep context）。
 const DEFAULT_ACTION: usize = 1;
 const HINT: &str = "Tab focus actions · ↑↓ select · Enter run · ←/→ tab · Esc close";
+/// 列表执行审阅的受限动作集：固定 Fresh 的执行 + 独立审查；无 Keep/Discuss。
+const LIST_ACTIONS: [&str; 2] = ["1. Execute (plan only)", "2. Review Plan"];
+/// 默认项是 Review：执行必须是离开默认位置的有意选择。
+const LIST_DEFAULT_ACTION: usize = 1;
+const LIST_HINT: &str = "Tab focus actions · ↑↓ select · Enter run · Esc back to list";
 const READONLY_HINT: &str = "Read-only view · most recently synced version · Esc close";
 const DISCUSS_HINT: &str = "Enter send · Ctrl + J newline · Esc discard";
 
 /// 按字符数截断纯显示文本，超宽时以省略号结尾。
-/// Highlighted choice/tab chip shared by the confirm dialog and the panel.
+/// Highlighted choice/tab chip shared by the plan panel tabs.
 fn choice_span(label: &str, selected: bool) -> Span<'static> {
     Span::styled(
         format!(" {label} "),
@@ -59,128 +64,6 @@ pub(super) enum Action {
     Approve(ExecutionContext),
     Discuss(String),
     Review,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ConfirmKind {
-    New,
-    Off,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ConfirmAction {
-    None,
-    Cancel,
-    Proceed,
-}
-
-/// 本地确认框（/plan new、/plan off）；默认选中取消，Esc 也取消。
-pub(super) struct Confirm {
-    kind: ConfirmKind,
-    selected: usize,
-}
-
-impl Confirm {
-    pub(super) fn new(kind: ConfirmKind) -> Self {
-        Self { kind, selected: 0 }
-    }
-
-    pub(super) fn kind(&self) -> ConfirmKind {
-        self.kind
-    }
-
-    fn message(&self) -> &'static str {
-        match self.kind {
-            ConfirmKind::New => "Start a new plan? The current plan file is kept.",
-            ConfirmKind::Off => "Leave Plan mode without executing this plan?",
-        }
-    }
-
-    pub(super) fn key(&mut self, key: KeyEvent) -> ConfirmAction {
-        if key.kind == KeyEventKind::Release {
-            return ConfirmAction::None;
-        }
-        if matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
-            && matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
-        {
-            self.selected = 1 - self.selected;
-            return ConfirmAction::None;
-        }
-        if !key.modifiers.is_empty()
-            || !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
-        {
-            return ConfirmAction::None;
-        }
-        match key.code {
-            KeyCode::Esc => ConfirmAction::Cancel,
-            KeyCode::Enter => {
-                if self.selected == 0 {
-                    ConfirmAction::Cancel
-                } else {
-                    ConfirmAction::Proceed
-                }
-            }
-            KeyCode::Left | KeyCode::Up => {
-                self.selected = 0;
-                ConfirmAction::None
-            }
-            KeyCode::Right | KeyCode::Down => {
-                self.selected = 1;
-                ConfirmAction::None
-            }
-            _ => ConfirmAction::None,
-        }
-    }
-
-    pub(super) fn draw(&self, frame: &mut Frame, area: Rect) {
-        if area.width < 12 || area.height < 5 {
-            return;
-        }
-        let width = area.width.saturating_sub(4).min(64);
-        let height = area.height.saturating_sub(4).min(5);
-        let area = Rect {
-            x: area.x + (area.width - width) / 2,
-            y: area.y + (area.height - height) / 2,
-            width,
-            height,
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(ACCENT))
-            .title(Span::styled(
-                " Confirm ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        if inner.height == 0 {
-            return;
-        }
-        frame.render_widget(
-            Line::styled(self.message(), Style::default().fg(Color::White)),
-            Rect::new(inner.x, inner.y, inner.width, 1),
-        );
-        if inner.height < 2 {
-            return;
-        }
-        frame.render_widget(
-            Line::from(vec![
-                choice_span("Cancel", self.selected == 0),
-                Span::raw("  "),
-                choice_span("Confirm", self.selected == 1),
-            ]),
-            Rect::new(inner.x, inner.y + 1, inner.width, 1),
-        );
-        if inner.height > 2 {
-            frame.render_widget(
-                Line::styled(
-                    "←/→ select · Enter confirm · Esc cancel",
-                    Style::default().fg(DIM),
-                ),
-                Rect::new(inner.x, inner.y + 2, inner.width, 1),
-            );
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +98,8 @@ pub(super) struct Panel {
     document: PlanDocument,
     report: Option<PlanReviewReport>,
     token: Option<ReviewToken>,
+    /// 列表执行入口的受限审阅：动作集与提示切换到 LIST_*，无 Keep/Discuss。
+    list_execution: bool,
     tab: Tab,
     focus: Focus,
     action: usize,
@@ -240,6 +125,7 @@ impl Panel {
             document,
             report: None,
             token: None,
+            list_execution: false,
             tab: Tab::Plan,
             focus: Focus::Body,
             action: DEFAULT_ACTION,
@@ -247,6 +133,28 @@ impl Panel {
             layouts: [None, None],
             discussion: None,
             viewport: 0,
+        }
+    }
+
+    /// 列表执行入口的受限审阅面板：携带 ReviewToken，仅提供固定 Fresh 的
+    /// `Execute (plan only)`、`Review Plan` 与返回列表（Esc/Close，由调用
+    /// 方恢复列表）；不提供 Keep context/Continue discussing。已勾选的
+    /// 进度原样展示，全部勾选的文件也先审阅，打开列表本身不归档。
+    pub(super) fn for_list_execution(review: PlanReview) -> Self {
+        let mut panel = Self::progress(review.document);
+        panel.list_execution = true;
+        panel.action = LIST_DEFAULT_ACTION;
+        panel.token = Some(review.token);
+        panel.report = review.report;
+        panel
+    }
+
+    /// 当前动作集：完整审阅四项，列表执行审阅两项受限。
+    fn actions(&self) -> &'static [&'static str] {
+        if self.list_execution {
+            &LIST_ACTIONS
+        } else {
+            &ACTIONS
         }
     }
 
@@ -287,8 +195,9 @@ impl Panel {
         &self.document
     }
 
-    /// 同一份计划的最新 workflow 快照：更新状态/内容，保留滚动与焦点；
-    /// 返回正文是否变化。
+    /// 同一份计划的最新 workflow 快照：更新状态/名称/位置，保留滚动与
+    /// 焦点；返回正文是否变化。名称/位置/状态变化只影响头部与操作区
+    /// 显示，不失效正文布局缓存。
     pub(super) fn sync_document(&mut self, document: &PlanDocument) -> bool {
         if self.document.id != document.id {
             return false;
@@ -301,6 +210,9 @@ impl Panel {
             self.layouts[Tab::Plan.index()] = None;
         }
         self.document.status = document.status;
+        self.document.file_name = document.file_name.clone();
+        self.document.location = document.location;
+        self.document.approved_tasks = document.approved_tasks.clone();
         changed
     }
 
@@ -336,6 +248,13 @@ impl Panel {
             return false;
         }
         let ready = self.document.status == PlanStatus::Ready;
+        if self.list_execution {
+            return match index {
+                0 => ready,
+                1 => matches!(self.document.status, PlanStatus::Draft | PlanStatus::Ready),
+                _ => false,
+            };
+        }
         match index {
             0 | 1 | 3 => ready,
             2 => matches!(self.document.status, PlanStatus::Draft | PlanStatus::Ready),
@@ -368,7 +287,11 @@ impl Panel {
         {
             self.focus = match self.focus {
                 Focus::Body => {
-                    self.action = DEFAULT_ACTION;
+                    self.action = if self.list_execution {
+                        LIST_DEFAULT_ACTION
+                    } else {
+                        DEFAULT_ACTION
+                    };
                     Focus::Actions
                 }
                 Focus::Actions => Focus::Body,
@@ -401,25 +324,28 @@ impl Panel {
     }
 
     fn action_key(&mut self, key: KeyEvent) -> Action {
+        let actions = self.actions();
         match key.code {
             KeyCode::Up | KeyCode::Left => {
                 self.action = self.action.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Right => {
-                self.action = (self.action + 1).min(ACTIONS.len() - 1);
+                self.action = (self.action + 1).min(actions.len() - 1);
             }
             KeyCode::Enter if key.kind == KeyEventKind::Press => {
                 if !self.action_enabled(self.action) {
                     return Action::None;
                 }
-                return match self.action {
-                    0 => Action::Approve(ExecutionContext::Fresh),
-                    1 => Action::Approve(ExecutionContext::Keep),
-                    2 => {
+                return match (self.list_execution, self.action) {
+                    // 列表执行审阅的 Execute 固定走 Fresh，不带原会话上下文。
+                    (_, 0) => Action::Approve(ExecutionContext::Fresh),
+                    (true, 1) => Action::Review,
+                    (false, 1) => Action::Approve(ExecutionContext::Keep),
+                    (false, 2) => {
                         self.discussion = Some(editor());
                         Action::None
                     }
-                    3 => Action::Review,
+                    (false, 3) => Action::Review,
                     _ => Action::None,
                 };
             }
@@ -511,6 +437,7 @@ impl Panel {
             PlanStatus::Draft => ("Draft", DIM),
             PlanStatus::Ready => ("Ready", ACCENT),
             PlanStatus::Executed => ("Executed", MUTED),
+            PlanStatus::Completed => ("Completed", MUTED),
             PlanStatus::Abandoned => ("Abandoned", MUTED),
         }
     }
@@ -519,7 +446,7 @@ impl Panel {
         if area.width < 6 || area.height < 3 {
             return;
         }
-        let title = if self.token.is_none() || self.document.status == PlanStatus::Executed {
+        let title = if self.token.is_none() || self.readonly() {
             format!(" Plan · {}/{} ", progress.0, progress.1)
         } else {
             format!(" Plan · r{} ", self.document.revision)
@@ -557,10 +484,12 @@ impl Panel {
                     }
                 }
                 _ => {
-                    spans.push(Span::styled(
-                        format!(" {}", self.document.path()),
-                        Style::default().fg(MUTED),
-                    ));
+                    // 未保存的新绑定不显示假路径。
+                    let path = self
+                        .document
+                        .path()
+                        .unwrap_or_else(|| "Not saved yet".to_owned());
+                    spans.push(Span::styled(format!(" {path}"), Style::default().fg(MUTED)));
                 }
             }
             spans.push(Span::raw(" · "));
@@ -588,10 +517,11 @@ impl Panel {
         }
 
         // 底部操作区/只读提示。
+        let actions = self.actions();
         let footer_height = if self.readonly() || self.token.is_none() {
             1u16
         } else {
-            ACTIONS.len() as u16 + 1
+            actions.len() as u16 + 1
         };
         let footer_height = footer_height.min(body.height);
         let footer = Rect::new(
@@ -637,7 +567,7 @@ impl Panel {
                 );
             } else {
                 let mut height = footer.height as usize;
-                for (index, label) in ACTIONS.iter().enumerate() {
+                for (index, label) in actions.iter().enumerate() {
                     if height == 0 {
                         break;
                     }
@@ -657,9 +587,10 @@ impl Panel {
                     );
                 }
                 if height > 0 {
+                    let hint = if self.list_execution { LIST_HINT } else { HINT };
                     frame.render_widget(
-                        Line::styled(format!(" {HINT}"), Style::default().fg(DIM)),
-                        Rect::new(footer.x, footer.y + ACTIONS.len() as u16, footer.width, 1),
+                        Line::styled(format!(" {hint}"), Style::default().fg(DIM)),
+                        Rect::new(footer.x, footer.y + actions.len() as u16, footer.width, 1),
                     );
                 }
             }
@@ -723,6 +654,9 @@ mod tests {
             content: content.into(),
             status,
             origin_prompt: "original task".into(),
+            file_name: Some("create-canary.md".into()),
+            location: crate::plan::PlanLocation::Drafts,
+            approved_tasks: None,
         }
     }
 
@@ -730,6 +664,7 @@ mod tests {
         ReviewToken {
             session_id: "session".into(),
             plan_id: "0123456789abcdef0123456789abcdef".into(),
+            path: ".pp/drafts/create-canary.md".into(),
             revision: 1,
             content: "- [ ] step".into(),
         }
@@ -868,21 +803,6 @@ mod tests {
     }
 
     #[test]
-    fn confirm_defaults_to_cancel() {
-        let mut confirm = Confirm::new(ConfirmKind::Off);
-        assert_eq!(
-            confirm.key(key_event(KeyCode::Enter)),
-            ConfirmAction::Cancel
-        );
-        assert_eq!(confirm.key(key_event(KeyCode::Esc)), ConfirmAction::Cancel);
-        assert_eq!(confirm.key(key_event(KeyCode::Right)), ConfirmAction::None);
-        assert_eq!(
-            confirm.key(key_event(KeyCode::Enter)),
-            ConfirmAction::Proceed
-        );
-    }
-
-    #[test]
     fn review_action_dispatches_for_ready_documents_only() {
         let mut panel = review_panel(PlanStatus::Ready);
         panel.key(key_event(KeyCode::Tab));
@@ -957,5 +877,70 @@ mod tests {
         panel.key(key_event(KeyCode::Left));
         assert_eq!(panel.tab, Tab::Plan);
         assert_eq!(panel.scroll[0], 3);
+    }
+
+    #[test]
+    fn list_execution_panel_offers_only_fresh_execute_review_and_back() {
+        let mut panel = Panel::for_list_execution(PlanReview {
+            token: token(),
+            document: document(PlanStatus::Ready, "- [ ] step"),
+            report: None,
+        });
+        assert!(panel.list_execution);
+        assert!(panel.token().is_some());
+        // 焦点在正文时不落执行；Tab 后默认选 Review（index 1），执行必须
+        // 是有意选择。
+        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None);
+        panel.key(key_event(KeyCode::Tab));
+        assert_eq!(panel.action, LIST_DEFAULT_ACTION);
+        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::Review);
+        // 向上选 Execute：固定 Fresh，没有 keep-context 选项。
+        panel.key(key_event(KeyCode::Up));
+        assert_eq!(
+            panel.key(key_event(KeyCode::Enter)),
+            Action::Approve(ExecutionContext::Fresh)
+        );
+        // 导航被限制在两项之内；讨论编辑器永不打开。
+        panel.key(key_event(KeyCode::Down));
+        panel.key(key_event(KeyCode::Down));
+        assert_eq!(panel.action, LIST_ACTIONS.len() - 1);
+        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::Review);
+        assert!(panel.discussion.is_none());
+        assert!(!panel.action_enabled(2));
+        // Esc 返回列表（Close 由调用方映射回列表，保留分类/筛选/选中）。
+        assert_eq!(panel.key(key_event(KeyCode::Esc)), Action::Close);
+    }
+
+    #[test]
+    fn list_execution_panel_keeps_progress_and_enables_execute_only_when_ready() {
+        let mut ready = Panel::for_list_execution(PlanReview {
+            token: token(),
+            document: document(PlanStatus::Ready, "- [x] step\n- [ ] other"),
+            report: None,
+        });
+        ready.key(key_event(KeyCode::Tab));
+        assert!(ready.action_enabled(0));
+        assert!(ready.action_enabled(1));
+        assert_eq!(task_progress(&ready.document.content), (1, 2));
+
+        // 未 Ready 的文档只允许 Review；只读视图彻底没有操作区。
+        let mut draft = Panel::for_list_execution(PlanReview {
+            token: token(),
+            document: document(PlanStatus::Draft, "- [ ] step"),
+            report: None,
+        });
+        draft.key(key_event(KeyCode::Tab));
+        assert!(!draft.action_enabled(0));
+        assert!(draft.action_enabled(1));
+
+        let executed = Panel::for_list_execution(PlanReview {
+            token: token(),
+            document: document(PlanStatus::Executed, "- [x] step"),
+            report: None,
+        });
+        assert!(executed.readonly());
+        for index in 0..LIST_ACTIONS.len() {
+            assert!(!executed.action_enabled(index));
+        }
     }
 }

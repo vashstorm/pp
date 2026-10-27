@@ -333,12 +333,16 @@ fn final_report(text: &str) -> Result<String> {
 fn review_prompt(document: &PlanDocument) -> String {
     use std::fmt::Write;
     let mut prompt = String::new();
+    // reviewer 只审阅已保存（revision>=1）的计划；路径必然可解析。
+    let path = document
+        .path()
+        .expect("reviewed plan has a saved lifecycle path");
     write!(
         prompt,
         "Review the saved implementation plan below against the current code. Report findings as specified in the review instructions; do not modify anything and do not implement the plan.\n\nOriginal user task recorded for this plan:\n{}\n\nPlan ID: {}\nPath: {}\nRevision: {}\n\n[Plan Markdown snapshot]\n{}\n[/Plan Markdown snapshot]",
         document.origin_prompt,
         document.id,
-        document.path(),
+        path,
         document.revision,
         document.content
     )
@@ -761,7 +765,8 @@ mod tests {
             assert_eq!(document.status, PlanStatus::Ready);
             assert_eq!(agent.workflow.mode, WorkMode::Plan);
             assert_eq!(
-                std::fs::read_to_string(dir.path().join(document.path())).unwrap(),
+                std::fs::read_to_string(dir.path().join(document.path().expect("plan has a path")))
+                    .unwrap(),
                 PLAN_CONTENT
             );
             let id = agent.session_id().unwrap().to_owned();

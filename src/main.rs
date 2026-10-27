@@ -460,6 +460,10 @@ fn run(args: Args) -> Result<()> {
                 writeln!(stderr, "/plan requires the TUI; run pp in a terminal.")?;
                 continue;
             }
+            Some(commands::Command::PlanList) => {
+                writeln!(stderr, "/plan-list requires the TUI; run pp in a terminal.")?;
+                continue;
+            }
             _ => {}
         }
         let agent = match &mut agent {
@@ -546,6 +550,7 @@ fn run(args: Args) -> Result<()> {
                 | commands::Command::Resume
                 | commands::Command::Tree
                 | commands::Command::Changes
+                | commands::Command::PlanList
                 | commands::Command::Plan(_),
             ) => unreachable!(),
             Some(commands::Command::Prompt(prompt)) => {

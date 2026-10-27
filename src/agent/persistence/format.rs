@@ -211,7 +211,7 @@ pub(super) enum Custom {
     #[serde(rename = "pp.native_append")]
     NativeAppend(NativeAppend),
     #[serde(rename = "pp.workflow")]
-    Workflow(Workflow),
+    Workflow(Box<Workflow>),
     #[serde(rename = "pp.instructions")]
     Instructions { system: String },
     #[serde(rename = "pp.event")]

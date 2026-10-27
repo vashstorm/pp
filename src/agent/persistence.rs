@@ -461,7 +461,7 @@ impl SessionJournal {
     /// Commit the approved plan execution handoff: the user projection and the
     /// native state (which already contains the user message) form one atomic
     /// group. Failure rolls both back and never reports a running task.
-    pub(super) fn commit_plan_execution(
+    pub(super) fn commit_plan_handoff(
         &mut self,
         metadata: &Metadata<'_>,
         session: SessionRef<'_>,
@@ -2166,6 +2166,9 @@ mod tests {
             mode: WorkMode::Plan,
             plan: Some(crate::plan::PlanDocument {
                 id: "0123456789abcdef0123456789abcdef".into(),
+                file_name: None,
+                location: crate::plan::PlanLocation::Plans,
+                approved_tasks: None,
                 revision: 1,
                 title: "Create file".into(),
                 content: "- [ ] Create hello.txt; done when bytes match.\n".into(),
@@ -2467,7 +2470,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_plan_execution_commits_projection_and_state_atomically() {
+    fn commit_plan_handoff_commits_projection_and_state_atomically() {
         for protocol in [Protocol::Completion, Protocol::Response] {
             let dir = tempfile::tempdir().unwrap();
             let metadata = test_metadata(dir.path());
@@ -2498,7 +2501,7 @@ mod tests {
             session.set_think_level(ThinkLevel::None);
             let mut journal = SessionJournal::new(dir.path().to_owned());
             journal
-                .commit_plan_execution(
+                .commit_plan_handoff(
                     &metadata,
                     (&session).into(),
                     &workflow,
@@ -2547,7 +2550,7 @@ mod tests {
             let mut forked = planner.fork_empty();
             assert!(forked.id().is_none());
             forked
-                .commit_plan_execution(
+                .commit_plan_handoff(
                     &metadata,
                     (&session).into(),
                     &workflow,
@@ -2563,7 +2566,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_plan_execution_failure_rolls_back_the_whole_group() {
+    fn commit_plan_handoff_failure_rolls_back_the_whole_group() {
         let dir = tempfile::tempdir().unwrap();
         let metadata = test_metadata(dir.path());
         let mut session = Session::new(
@@ -2595,7 +2598,7 @@ mod tests {
         let before = fs::read(&path).unwrap();
         read_only(&path, &mut journal);
         let error = journal
-            .commit_plan_execution(
+            .commit_plan_handoff(
                 &metadata,
                 (&session).into(),
                 &plan_workflow(),
@@ -2617,7 +2620,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_plan_execution_creation_failure_is_latched_without_a_session() {
+    fn commit_plan_handoff_creation_failure_is_latched_without_a_session() {
         let dir = tempfile::tempdir().unwrap();
         let blocked = dir.path().join("sessions");
         fs::write(&blocked, "not a directory").unwrap();
@@ -2629,7 +2632,7 @@ mod tests {
         );
         let mut journal = SessionJournal::new(blocked.clone());
         let error = journal
-            .commit_plan_execution(
+            .commit_plan_handoff(
                 &test_metadata(dir.path()),
                 (&session).into(),
                 &plan_workflow(),

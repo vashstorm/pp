@@ -1283,11 +1283,10 @@ providers:
             "1e30",
             "18446744073709551616",
         ] {
-            for field in ["request_timeout_seconds"] {
-                let settings =
-                    format!(r#"{{"default_model":"fixture/primary","{field}":{value}}}"#);
-                rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
-            }
+            let settings = format!(
+                r#"{{"default_model":"fixture/primary","request_timeout_seconds":{value}}}"#
+            );
+            rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
         }
     }
 

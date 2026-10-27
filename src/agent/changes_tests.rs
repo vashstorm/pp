@@ -502,7 +502,7 @@ fn changes_plan_fresh_commits_clear_keep_and_failed_fresh_retain() {
             }
             let document = agent.workflow.plan.as_ref().unwrap();
             assert_eq!(
-                std::fs::read(dir.path().join(document.path())).unwrap(),
+                std::fs::read(dir.path().join(document.path().unwrap())).unwrap(),
                 PLAN_CONTENT.as_bytes()
             );
         }

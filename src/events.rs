@@ -49,6 +49,13 @@ pub(crate) enum AgentEvent {
         plan_id: String,
         revision: u64,
         content: String,
+        /// 归档等纯状态变化的当前值；旧事件缺字段时接收端保留当前值。
+        #[serde(default)]
+        file_name: Option<String>,
+        #[serde(default)]
+        location: Option<crate::plan::PlanLocation>,
+        #[serde(default)]
+        status: Option<crate::plan::PlanStatus>,
     },
     ContextUpdated {
         usage: crate::context::ContextUsage,

@@ -26,9 +26,10 @@ mod grep;
 mod hashline;
 mod plan;
 pub(crate) use plan::PlanChange;
+pub(crate) mod plan_catalog;
 pub(crate) mod read;
 mod replace;
-mod save;
+pub(crate) mod save;
 
 #[cfg(test)]
 use std::{fs, sync::mpsc::sync_channel};
@@ -195,17 +196,23 @@ impl Tools {
         self.edit_mode
     }
 
-    /// Safe read of the current plan file through the NOFOLLOW workspace
+    /// Safe read of the current plan document through the NOFOLLOW workspace
     /// handle. Oversize, non-UTF-8, symlink, missing and special-type targets
-    /// are errors; a logged snapshot is never substituted for the file.
-    pub(crate) fn read_plan(&self, id: &str) -> Result<String> {
-        plan::read_plan(&self.workspace, id)
+    /// are errors; a logged snapshot is never substituted for the file. A
+    /// document without a saved lifecycle path reports `No saved plan.`
+    pub(crate) fn read_plan(&self, document: &PlanDocument) -> Result<String> {
+        plan::read_plan(&self.workspace, document)
     }
 
-    /// True only when the workspace-normalized path is exactly the current
-    /// plan's fixed `.pp/plans/<id>.md` file.
-    pub(crate) fn is_plan_path(&self, path: &str, id: &str) -> bool {
-        plan::is_plan_path(&self.workspace, path, id)
+    /// True only when both workspace-normalized paths are exactly equal; the
+    /// expected path comes from the caller's bound plan document.
+    pub(crate) fn is_plan_path(&self, path: &str, expected_path: &str) -> bool {
+        plan::is_plan_path(&self.workspace, path, expected_path)
+    }
+
+    /// 登记表/登记事务复用的安全工作区句柄；不扩大任何文件权限。
+    pub(crate) fn plan_workspace(&self) -> &save::Workspace {
+        &self.workspace
     }
 
     pub(crate) fn all_definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
@@ -253,22 +260,23 @@ impl Tools {
         vec![
             FunctionObject {
                 name: "plan_write".into(),
-                description: Some("Create or replace the plan document for this task. content is the complete Markdown plan; implementation steps must be standard Markdown task list items (- [ ]) with a clear action and completion condition each. expected_revision must equal the current plan revision. The write fails if the plan file was changed externally.".into()),
+                description: Some("Create or replace the plan document for this task. file_name is a short, descriptive English kebab-case Markdown name you choose on the first save, such as fix-config-loading.md; the file is written under .pp/drafts/ and the same file_name must be repeated unchanged on every later write — renaming is only possible through /plan-list, and a collision refuses the write instead of overwriting. content is the complete Markdown plan; implementation steps must be standard Markdown task list items (- [ ]) with a clear action and completion condition each. expected_revision must equal the current plan revision. The write fails if the plan file was changed externally.".into()),
                 parameters: Some(json!({
                     "type":"object",
                     "properties":{
                         "title":{"type":"string","minLength":1},
+                        "file_name":{"type":"string","minLength":4,"maxLength":100,"pattern":"^[a-z0-9]+(?:-[a-z0-9]+)*\\.md$"},
                         "content":{"type":"string","minLength":1},
                         "expected_revision":{"type":"integer","minimum":0}
                     },
-                    "required":["title","content","expected_revision"],
+                    "required":["title","file_name","content","expected_revision"],
                     "additionalProperties":false
                 })),
                 ..Default::default()
             },
             FunctionObject {
                 name: "plan_submit".into(),
-                description: Some("Submit the current plan for user review and approval. expected_revision must equal the current plan revision. After a successful submission no further tools run in this batch; the user reviews the plan before any execution starts. Never ask the user to approve in chat; only plan_submit requests review.".into()),
+                description: Some("Submit the current plan for user review and approval. The submitted draft stays in .pp/drafts/; only the local review actions move it forward. expected_revision must equal the current plan revision. After a successful submission no further tools run in this batch; the user reviews the plan before any execution starts. Never ask the user to approve in chat; only plan_submit requests review.".into()),
                 parameters: Some(json!({
                     "type":"object",
                     "properties":{
@@ -2969,11 +2977,12 @@ mod tests {
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         let content = "- [ ] task\n";
         let mut document = plan_document();
+        let plan_path = ".pp/drafts/create-canary.md".to_owned();
 
-        // First write creates the fixed plan path and reports Written.
+        // First write creates the named draft path and reports Written.
         let execution = tools.execute(
             "plan_write",
-            &json!({"title":"Plan","content":content,"expected_revision":0}).to_string(),
+            &json!({"title":"Plan","file_name":"create-canary.md","content":content,"expected_revision":0}).to_string(),
             "write-call",
             ToolPolicy::Plan {
                 document: &document,
@@ -2985,31 +2994,27 @@ mod tests {
         );
         assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
         let result: Value = serde_json::from_str(&execution.output).unwrap();
-        assert_eq!(result["path"].as_str(), Some(document.path().as_str()));
+        assert_eq!(result["path"].as_str(), Some(plan_path.as_str()));
         assert_eq!(result["revision"], 1);
         assert!(matches!(
             execution.plan_change,
             Some(PlanChange::Written { .. })
         ));
         assert_eq!(
-            std::fs::read(
-                dir.path()
-                    .join(".pp/plans")
-                    .join(format!("{}.md", document.id))
-            )
-            .unwrap(),
+            std::fs::read(dir.path().join(&plan_path)).unwrap(),
             content.as_bytes()
         );
 
         // Mirror the caller applying the change to its workflow snapshot.
         document.revision = 1;
         document.title = "Plan".into();
+        document.file_name = Some("create-canary.md".into());
         document.content = content.to_owned();
 
-        // Identical title/content is a no-op without a change or bump.
+        // Identical title/name/content is a no-op without a change or bump.
         let execution = tools.execute(
             "plan_write",
-            &json!({"title":"Plan","content":content,"expected_revision":1}).to_string(),
+            &json!({"title":"Plan","file_name":"create-canary.md","content":content,"expected_revision":1}).to_string(),
             "noop-call",
             ToolPolicy::Plan {
                 document: &document,
@@ -3021,10 +3026,7 @@ mod tests {
         );
         assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
         let result: Value = serde_json::from_str(&execution.output).unwrap();
-        assert_eq!(
-            result,
-            json!({"ok":true,"path":document.path(),"revision":1})
-        );
+        assert_eq!(result, json!({"ok":true,"path":plan_path,"revision":1}));
         assert!(execution.plan_change.is_none());
 
         // Pending steering input defers the submission with an exact error.
@@ -3083,12 +3085,7 @@ mod tests {
         assert!(matches!(execution.plan_change, Some(PlanChange::Submitted)));
         // The file content is untouched by submission.
         assert_eq!(
-            std::fs::read(
-                dir.path()
-                    .join(".pp/plans")
-                    .join(format!("{}.md", document.id))
-            )
-            .unwrap(),
+            std::fs::read(dir.path().join(&plan_path)).unwrap(),
             content.as_bytes()
         );
     }
@@ -3097,17 +3094,20 @@ mod tests {
     fn plan_file_isolation_and_is_plan_path() {
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-        let document = plan_document();
-        std::fs::create_dir_all(dir.path().join(".pp/plans")).unwrap();
-        let plan_path = format!(".pp/plans/{}.md", document.id);
+        let mut document = plan_document();
+        document.revision = 1;
+        document.file_name = Some("create-canary.md".into());
+        let plan_path = ".pp/drafts/create-canary.md".to_owned();
+        std::fs::create_dir_all(dir.path().join(".pp/drafts")).unwrap();
         std::fs::write(dir.path().join(&plan_path), b"- [ ] task\n").unwrap();
-        assert!(tools.is_plan_path(&plan_path, &document.id));
-        assert!(!tools.is_plan_path("canary.txt", &document.id));
-        assert_eq!(tools.read_plan(&document.id).unwrap(), "- [ ] task\n");
-        // Only the fixed plan path is ever touched by plan IO.
+        assert!(tools.is_plan_path(&plan_path, &plan_path));
+        assert!(!tools.is_plan_path("canary.txt", &plan_path));
+        assert_eq!(tools.read_plan(&document).unwrap(), "- [ ] task\n");
+        // Only the exact plan path is ever touched by plan IO.
         std::fs::write(dir.path().join("canary.txt"), b"unchanged\n").unwrap();
-        let error = tools.read_plan(&"0".repeat(32)).unwrap_err();
-        assert!(!error.to_string().is_empty());
+        // 未保存的 revision-0 绑定没有路径。
+        let error = tools.read_plan(&plan_document()).unwrap_err();
+        assert_eq!(error.to_string(), "No saved plan.");
         assert_eq!(
             std::fs::read(dir.path().join("canary.txt")).unwrap(),
             b"unchanged\n"
