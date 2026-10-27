@@ -473,16 +473,7 @@ pub(super) fn primary(
         ThinkLevel::Max => "\u{f0238}",
     };
     let icon = |glyph, color| Span::styled(format!("{glyph} "), Style::default().fg(color));
-    let model_label = model.map_or_else(
-        || "—".to_owned(),
-        |choice| {
-            choice.reference.split_once('/').map_or_else(
-                || choice.model.clone(),
-                |(provider, _)| format!("{provider}/{}", choice.model),
-            )
-        },
-    );
-    let model_src = model_label.as_str();
+    let model_src = model.map_or("—", |choice| choice.reference.as_str());
     let think_width = Line::from(think).width();
     let effort_width = SEPARATOR_WIDTH + FIELD_ICON_WIDTH + think_width;
     let dir_fixed = SEPARATOR_WIDTH + FIELD_ICON_WIDTH;
@@ -774,6 +765,31 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    #[test]
+    fn primary_model_label_uses_configured_reference() {
+        for reference in ["ark/glm-5.3", "gateway/team/secondary"] {
+            let choice = ModelChoice {
+                reference: reference.into(),
+                model: "glm-5.3-flash".into(),
+                protocol: crate::models::Protocol::Completion,
+                thinking: crate::models::ModelThinking::default(),
+                context_window: None,
+            };
+            let text = line_text(&primary(
+                Some(&choice),
+                ThinkLevel::None,
+                crate::plan::WorkMode::Execute,
+                &StatusContext::default(),
+                100,
+            ));
+            assert!(text.contains(reference), "状态栏应与模型列表使用同一引用");
+            assert!(
+                !text.contains(&choice.model),
+                "实际请求模型名不应替代配置引用"
+            );
+        }
     }
 
     #[test]

@@ -639,7 +639,7 @@ fn tree_tui_cross_protocol_navigation_keeps_current_model_and_effort() {
             "tree-cross-second-answer",
         );
         pty.input("/model other/target\r");
-        pty.ready_model("target-model");
+        pty.ready_model("other/target");
         pty.input("/effort high\r");
         pty.ready_effort("high");
         tree_tui_open(&mut pty, "tree-cross-second-answer");
@@ -649,7 +649,7 @@ fn tree_tui_cross_protocol_navigation_keeps_current_model_and_effort() {
             &[TREE_TUI_UP, TREE_TUI_UP],
             "tree-cross-first-answer",
         );
-        pty.ready_model("target-model");
+        pty.ready_model("other/target");
         pty.ready_effort("high");
         pty.input("tree-cross-continue\r");
         let (request, body) = pty.request_at(&server, api_path(target));

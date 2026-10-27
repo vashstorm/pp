@@ -578,7 +578,7 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
         pty.text("No saved plan.");
         no_more(&fixture);
         pty.input("/model second/primary\r");
-        pty.ready_model("second-model");
+        pty.ready_model("second/primary");
         plan_wait_mode(&mut pty, "Plan");
         pty.input("Research after model change\r");
         let (request, body) = pty.request_at(&fixture, api_path(other));

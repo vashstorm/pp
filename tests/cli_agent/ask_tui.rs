@@ -1068,7 +1068,7 @@ fn ask_tui_schema_survives_new_model_switch_and_resume() {
     pty.text("schema answer two");
     pty.completed();
     pty.input("/model gateway/secondary\r");
-    pty.ready_model("vendor-b");
+    pty.ready_model("gateway/secondary");
     pty.input("ask schema task three\r");
     let (request, body) = pty.request_at(&server, "/v1/responses");
     assert!(ask_schema_offered_tui(&body, "response"), "{body}");

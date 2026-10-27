@@ -514,7 +514,7 @@ fn tui_slash_resume_history_keeps_current_cwd_status_files_model_and_effort() {
     )
     .unwrap();
     let mut pty = Pty::start_with_args(launch.path(), home.path(), &[]);
-    pty.ready_model("vendor-other");
+    pty.ready_model("fixture2/other");
     pty.ready_effort("no think");
 
     pty.input("/resume\r");
@@ -541,7 +541,7 @@ fn tui_slash_resume_history_keeps_current_cwd_status_files_model_and_effort() {
         .unwrap()
         .to_string_lossy()
         .into_owned();
-    pty.ready_model("vendor-other");
+    pty.ready_model("fixture2/other");
     pty.ready_effort("no think");
     pty.wait_for(
         "状态栏保持当前目录",
@@ -659,7 +659,7 @@ fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_
 
             // 保存含工具调用和推理输出的历史，随后删除旧模型配置。
             let mut saved = Pty::start_with_args(project.path(), home.path(), &[]);
-            saved.ready_model("vendor-old");
+            saved.ready_model("fixture/primary");
             saved.input("matrix old prompt\r");
             let (request, _) = saved.request_at(&server, api_path(saved_protocol));
             let calls = if saved_protocol == "completion" {
@@ -691,9 +691,9 @@ fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_
             std::fs::write(&settings,
                 r#"{"default_model":"fixture/primary","edit":"replace","notification_timeout_seconds":1}"#).unwrap();
             let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
-            pty.ready_model("vendor-default");
+            pty.ready_model("fixture/primary");
             pty.input("/model fixture/selected\r");
-            pty.ready_model("vendor-current");
+            pty.ready_model("fixture/selected");
             pty.input("/effort low\r");
             pty.ready_effort("low");
             // 恢复不读取磁盘配置，也不能把手动选择的模型改回默认模型。
@@ -702,7 +702,7 @@ fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_
             pty.text("matrix old prompt");
             pty.input("\r");
             resume_history_wait_resumed(&mut pty, &id, &["matrix old answer"]);
-            pty.ready_model("vendor-current");
+            pty.ready_model("fixture/selected");
             pty.ready_effort("low");
             assert_eq!(std::fs::read(&journal).unwrap(), original);
             no_more(&server);
@@ -733,7 +733,7 @@ fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_
             // 重启后再次加载，验证转换后的完整状态和后续追加没有协议或游标错位。
             std::fs::write(&models, &current_models).unwrap();
             let mut reloaded = Pty::start_with_args(project.path(), home.path(), &["--resume", &id]);
-            reloaded.ready_model("vendor-current");
+            reloaded.ready_model("fixture/selected");
             reloaded.input("matrix third prompt\r");
             let (request, body) = reloaded.request_at(&server, api_path(current_protocol));
             for expected in ["matrix old prompt", "matrix old answer", "matrix-output", "matrix new prompt", "matrix new answer", "matrix third prompt"] {

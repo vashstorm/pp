@@ -3273,7 +3273,7 @@ mod tui {
             },
         );
         pty.resize(30, 100);
-        pty.ready_model("fixture-model");
+        pty.ready_model("fixture/primary");
         pty.ready_effort("no think");
         pty.draft("草稿🙂");
         pty.wait_for(
@@ -3615,7 +3615,7 @@ mod tui {
         assert_eq!(lines[28], "─".repeat(100));
         // 上沿右端显示用量，底部保留模型与思考级别。
         assert!(!lines[29].contains("Ctx "));
-        assert!(lines[29].contains("fixture-model"));
+        assert!(lines[29].contains("fixture/primary"));
         assert!(lines[29].contains("off"));
         assert!(!text.contains("│ Note"));
         for (row, col, color) in [
@@ -3961,7 +3961,7 @@ mod tui {
                     && text.contains("retained-answer 中😀")
                     && text.contains("indented code")
                     && text.contains("✻ Completed ·")
-                    && text.contains("fixture-model")
+                    && text.contains("fixture/primary")
                     && text.contains('❯')
                     && background_color(screen, "保留提问") == USER_BACKGROUND
                     && background_color(screen, "retained-answer") == ASSISTANT_BACKGROUND
@@ -4011,7 +4011,7 @@ mod tui {
         pty.wait_for("退出后保留输入框和状态栏", |screen| {
             !screen.alternate_screen()
                 && screen.contents().contains("❯ draft-中")
-                && screen.contents().contains("fixture-model")
+                && screen.contents().contains("fixture/primary")
         });
         pty.wait_for("退出模式恢复", |screen| !screen.bracketed_paste());
         let (_, raw) = pty.native_history();
@@ -4101,7 +4101,7 @@ mod tui {
             pty.input("\x1b[B\t");
             pty.model_search("fixture/secondary");
             pty.input("\r");
-            pty.ready_model("second-model");
+            pty.ready_model("fixture/secondary");
             pty.draft("草稿🙂");
             pty.input("\x1bOP");
             pty.text("Shift + Tab");
@@ -4255,7 +4255,7 @@ mod tui {
         let mut pty = Pty::start(&server, dir.path());
         pty.wait_for("model, effort and Git footer", |screen| {
             screen.contents().lines().last().is_some_and(|line| {
-                line.contains("fixture-model")
+                line.contains("fixture/primary")
                     && line.contains("\u{f0766} off")
                     && line.contains("\u{f126} fixture *1")
             })
@@ -4707,7 +4707,7 @@ mod tui {
         .unwrap();
         std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
         let mut pty = Pty::start_with_existing_files(dir.path());
-        pty.ready_model("vendor-a");
+        pty.ready_model("a/primary");
         pty.input("remember picker alpha\r");
         let (request, body) = pty.request(&a);
         assert_eq!(body["model"], "vendor-a");
@@ -4715,7 +4715,7 @@ mod tui {
         final_reply(request, "picker alpha retained");
         pty.text("picker alpha retained");
         pty.completed();
-        pty.ready_model("vendor-a");
+        pty.ready_model("a/primary");
 
         // 用前缀锁定模型命令，避免依赖内置命令的固定排列位置。
         pty.input("/m");
@@ -4753,7 +4753,7 @@ mod tui {
         pty.resize(30, 100);
         pty.text("gateway/team/secondary");
         pty.input("\r");
-        pty.ready_model("vendor-b");
+        pty.ready_model("gateway/team/secondary");
         pty.text("picker alpha retained");
         no_more(&a);
         no_more(&b);
@@ -4772,7 +4772,7 @@ mod tui {
         final_reply(request, "picker beta retained");
         pty.text("picker beta retained");
         pty.completed();
-        pty.ready_model("vendor-b");
+        pty.ready_model("gateway/team/secondary");
 
         // 默认选中当前模型，直接确认不能误选第一项。
         pty.input("/model\r");
@@ -4784,8 +4784,8 @@ mod tui {
                 && text
                     .lines()
                     .last()
-                    .is_some_and(|line| line.contains("vendor-b"))
-                && !text.contains("vendor-a")
+                    .is_some_and(|line| line.contains("gateway/team/secondary"))
+                && !text.contains("a/primary")
         });
         pty.draft("");
         no_more(&a);
@@ -4795,11 +4795,11 @@ mod tui {
         pty.text("a/primary");
         pty.input("\x1b[A\x1b");
         pty.draft("");
-        pty.ready_model("vendor-b");
+        pty.ready_model("gateway/team/secondary");
         no_more(&a);
         no_more(&b);
         pty.input("/model a/primary\r");
-        pty.ready_model("vendor-a");
+        pty.ready_model("a/primary");
         pty.input("direct model recall\r");
         let (request, body) = pty.request(&a);
         assert_eq!(authorization(&request), "Bearer a-key");
@@ -4812,7 +4812,7 @@ mod tui {
         final_reply(request, "direct history retained");
         pty.text("direct history retained");
         pty.completed();
-        pty.ready_model("vendor-a");
+        pty.ready_model("a/primary");
 
         pty.input("/bogus\r");
         pty.text("unknown command; use /help");
@@ -4838,7 +4838,7 @@ mod tui {
         pty.text("multiline slash task accepted");
         // 模型命令要求任务收尾完成，仅收到正文不能作为处理栅栏。
         pty.completed();
-        pty.ready_model("vendor-a");
+        pty.ready_model("a/primary");
 
         pty.input("/model\r");
         pty.text("gateway/team/secondary");
@@ -4866,7 +4866,7 @@ mod tui {
         }});
         std::fs::write(config_path(dir.path(), "models.yml"), config.to_string()).unwrap();
         let mut pty = Pty::start_with_existing_files(dir.path());
-        pty.ready_model("vendor-00");
+        pty.ready_model("catalog/model-00");
         pty.input("/model ");
         pty.wait_for("独立搜索框聚焦且列表最多十一行", |screen| {
             let text = screen.contents();
@@ -4879,7 +4879,11 @@ mod tui {
                     .is_some_and(|line| line.starts_with(''))
                 && text
                     .lines()
-                    .filter(|line| line.contains("catalog/model-"))
+                    .filter(|line| {
+                        line.trim_start_matches('❯')
+                            .trim_start()
+                            .starts_with("catalog/model-")
+                    })
                     .count()
                     == 11
                 && !text.contains("❯ /model")
@@ -4894,11 +4898,19 @@ mod tui {
             |screen| {
                 let text = screen.contents();
                 text.lines()
-                    .filter(|line| line.contains("catalog/model-"))
+                    .filter(|line| {
+                        line.trim_start_matches('❯')
+                            .trim_start()
+                            .starts_with("catalog/model-")
+                    })
                     .count()
                     == 11
                     && text.contains("❯ catalog/model-24")
-                    && !text.contains("catalog/model-00")
+                    && !text.lines().any(|line| {
+                        line.trim_start_matches('❯')
+                            .trim_start()
+                            .starts_with("catalog/model-00")
+                    })
             },
         );
         pty.input("\x1b[200~MoDeL-17\x1b[201~");
@@ -4923,7 +4935,7 @@ mod tui {
         pty.text(" catalog/model-17");
         assert_eq!(pty.parser.screen().cursor_position().0, search_row);
         pty.input("\r");
-        pty.ready_model("vendor-17");
+        pty.ready_model("catalog/model-17");
         pty.draft("");
         no_more(&server);
         pty.input("verify selected model\r");
@@ -4934,7 +4946,7 @@ mod tui {
         slash_assert_message(&messages[1], "user", "verify selected model");
         final_reply(request, "selection verified");
         pty.text("selection verified");
-        pty.ready_model("vendor-17");
+        pty.ready_model("catalog/model-17");
         pty.input("\x03");
         pty.finish();
         no_more(&server);
@@ -5075,7 +5087,7 @@ mod tui {
         std::fs::write(project.path().join("src/nested/child.rs"), "nested source").unwrap();
         std::fs::write(project.path().join("README.md"), "project root").unwrap();
         let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
-        pty.ready_model("fixture-model");
+        pty.ready_model("fixture/primary");
 
         // 根菜单只显示直接子项；进入目录同步补全路径，但不发送草稿。
         pty.input("分析 @");
@@ -5148,7 +5160,7 @@ mod tui {
         slash_assert_message(messages.last().unwrap(), "user", "分析 @src/main.rs 说明");
         final_reply(request, "file picker answer");
         pty.text("file picker answer");
-        pty.ready_model("fixture-model");
+        pty.ready_model("fixture/primary");
 
         // 回复后可继续编辑；Tab 与 Enter 执行同一种插入，不发送请求。
         pty.input("\x01\x0btab @");
@@ -5241,7 +5253,7 @@ mod tui {
         .unwrap();
         std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
         let mut pty = Pty::start_with_existing_files(dir.path());
-        pty.ready_model("vendor-a");
+        pty.ready_model("a/primary");
         pty.input("hold busy history\r");
         let (pending, first) = pty.request(&a);
         pty.input("/model gateway/team/secondary\r!");
@@ -5255,14 +5267,14 @@ mod tui {
         final_reply(pending, "busy history retained");
         pty.text("busy history retained");
         pty.completed();
-        pty.ready_model("vendor-a");
+        pty.ready_model("a/primary");
         pty.model_search("gateway/team/secondary");
         no_more(&a);
         no_more(&b);
 
         // Only a fresh Enter after the held request finishes may switch models.
         pty.input("\r");
-        pty.ready_model("vendor-b");
+        pty.ready_model("gateway/team/secondary");
         no_more(&a);
         no_more(&b);
         pty.input("after busy switch\r");
@@ -5278,14 +5290,14 @@ mod tui {
         final_reply(request, "busy switch retained");
         pty.text("busy switch retained");
         pty.completed();
-        pty.ready_model("vendor-b");
+        pty.ready_model("gateway/team/secondary");
 
         pty.input("/model bad/broken\r");
         pty.wait_for("failed switch is a red local error popup", |screen| {
             notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
                 && screen.contents().to_lowercase().contains("header")
         });
-        pty.ready_model("vendor-b");
+        pty.ready_model("gateway/team/secondary");
         no_more(&a);
         no_more(&b);
         no_more(&bad);
@@ -5300,7 +5312,7 @@ mod tui {
         assert_eq!(messages.len(), 6);
         final_reply(request, "failed switch history retained");
         pty.text("failed switch history retained");
-        pty.ready_model("vendor-b");
+        pty.ready_model("gateway/team/secondary");
         for secret in [
             "tui-secret-marker",
             "invalid-header",
@@ -5441,7 +5453,7 @@ mod tui {
         let dir = tempfile::tempdir().unwrap();
         let mut pty = Pty::start(&server, dir.path());
         pty.ready();
-        pty.text("fixture-model");
+        pty.text("fixture/primary");
         pty.input("line one\x0aline two\r");
         let (request, body) = pty.request(&server);
         assert_eq!(body["model"], "fixture-model");

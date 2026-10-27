@@ -6243,7 +6243,8 @@ mod tests {
             screen.replace(' ', "").contains("fixture/model-2"),
             "{screen}"
         );
-        assert!(screen.contains("fixture/vendor-2"), "{screen}");
+        assert!(screen.lines().last().unwrap().contains("fixture/model-2"));
+        assert!(!screen.contains("fixture/vendor-2"), "{screen}");
         assert!(!screen.contains('┌'));
         for width in [100, 180, 60] {
             let buffer = draw_buffer(&mut app, width, 30);

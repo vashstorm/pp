@@ -229,7 +229,7 @@ fn tui_slash_resume_lists_all_directories_sorted_by_mtime() {
     assert!(lines[alpha_row + 1].contains("alpha answer"));
     assert!(lines[beta_row + 2].contains("ago") && lines[beta_row + 2].contains("✓ done"));
     assert!(lines[alpha_row + 2].contains("ago") && lines[alpha_row + 2].contains("✓ done"));
-    assert!(!lines.iter().any(|line| line.contains("fixture-model")), "全屏面板隐藏编辑器和状态栏");
+    assert!(!lines.iter().any(|line| line.contains("fixture/primary")), "全屏面板隐藏编辑器和状态栏");
 
     // 列表是只读的：没有模型请求。
     no_more(&server);
