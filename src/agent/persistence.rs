@@ -2192,6 +2192,75 @@ mod tests {
     }
 
     #[test]
+    fn instruction_loading_cards_journal_failure_keeps_unpublished_snapshot() {
+        for protocol in [Protocol::Completion, Protocol::Response] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut journal = SessionJournal::new(dir.path().to_owned());
+            let metadata = test_metadata(dir.path());
+            let session =
+                Session::new("model".into(), protocol, "system".into(), EditMode::Replace);
+            journal
+                .sent(
+                    &metadata,
+                    (&session).into(),
+                    &WorkflowState::default(),
+                    Some("accepted input"),
+                    None,
+                )
+                .unwrap();
+            let id = journal.id().unwrap().to_owned();
+            let path = dir.path().join(format!("{id}.jsonl"));
+            // 用只读句柄制造真实写入失败，不能把未落盘的加载报告为成功。
+            journal.active.as_mut().unwrap().file = File::open(&path).unwrap();
+            let mut pending = Some("frozen project body".to_owned());
+            let mut reported = None;
+            let mut events = Vec::new();
+            assert!(
+                super::super::publish_project_load(
+                    &mut pending,
+                    &mut reported,
+                    &mut journal,
+                    dir.path(),
+                    &mut |event| events.push(event),
+                )
+                .is_err()
+            );
+            assert!(events.is_empty());
+            assert_eq!(pending.as_deref(), Some("frozen project body"));
+            assert!(reported.is_none());
+            drop(journal);
+
+            let mut restored = load(dir.path(), Some(&id), true).unwrap();
+            assert!(!restored.replay.iter().any(|record| matches!(
+                record,
+                ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded { .. })
+            )));
+            super::super::publish_project_load(
+                &mut pending,
+                &mut reported,
+                &mut restored.journal,
+                dir.path(),
+                &mut |event| events.push(event),
+            )
+            .unwrap();
+            assert!(matches!(
+                events.as_slice(),
+                [AgentEvent::ProjectInstructionsLoaded { content, path }]
+                    if content == "frozen project body"
+                        && path == &dir.path().join("AGENTS.md").display().to_string()
+            ));
+            drop(restored);
+            let restored = load(dir.path(), Some(&id), true).unwrap();
+            assert!(matches!(
+                restored.replay.as_slice(),
+                [ReplayRecord::User(user), ReplayRecord::Event(
+                    AgentEvent::ProjectInstructionsLoaded { content, .. }
+                )] if user == "accepted input" && content == "frozen project body"
+            ));
+        }
+    }
+
+    #[test]
     fn stats_context_early_journal_does_not_consume_capture_and_restore_does_not_rearm() {
         for protocol in [Protocol::Completion, Protocol::Response] {
             let dir = tempfile::tempdir().unwrap();

@@ -100,6 +100,10 @@ pub(crate) enum AgentEvent {
         name: String,
         arguments: String,
     },
+    ProjectInstructionsLoaded {
+        path: String,
+        content: String,
+    },
     FileChanged {
         id: String,
         path: String,

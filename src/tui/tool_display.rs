@@ -7,6 +7,8 @@ use ratatui::{style::Style, text::Line};
 use serde_json::Value;
 
 const READ_LINES: usize = 3;
+// 指令卡片（自动 AGENTS 加载与技能正文读取）固定预览 10 个逻辑行。
+const INSTRUCTION_LINES: usize = 10;
 const GREP_LINES: usize = 6;
 const SEARCH_EXPANDED_LINES: usize = 24;
 const FIND_ITEMS: usize = 8;
@@ -45,6 +47,7 @@ pub(super) struct View<'a> {
     pub running: bool,
     pub failed: bool,
     pub expanded: bool,
+    pub instruction_read: bool,
     pub context: Context,
 }
 
@@ -172,6 +175,22 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     }
     match view.name {
         "read" => {
+            if view.instruction_read {
+                // 指令卡片始终展示预览，不受 read.toolResultPreview 影响。
+                return head(
+                    text,
+                    if expanded {
+                        usize::MAX
+                    } else {
+                        INSTRUCTION_LINES
+                    },
+                    false,
+                    false,
+                    width,
+                    style,
+                    MoreHint::Expand("lines"),
+                );
+            }
             if !view.context.read_preview && !is_skill_read(view.arguments, view.result) {
                 return Vec::new();
             }
@@ -669,6 +688,7 @@ mod tests {
                 running: false,
                 failed: false,
                 expanded,
+                instruction_read: false,
                 context: Context {
                     full,
                     ..Context::default()
@@ -721,6 +741,7 @@ mod tests {
             running: true,
             failed: false,
             expanded: false,
+            instruction_read: false,
             context,
         };
         let rows = body(view, 40, Style::default());
@@ -763,6 +784,7 @@ mod tests {
                     running: false,
                     failed: false,
                     expanded,
+                    instruction_read: false,
                     context: Context::default(),
                 },
                 100,
@@ -795,6 +817,51 @@ mod tests {
     }
 
     #[test]
+    fn instruction_reads_preview_ten_lines_regardless_of_config() {
+        let content = (0..15)
+            .map(|i| format!("agents-{i:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let args = json!({"path": "AGENTS.md"});
+        let view = |expanded: bool, read_preview: bool| View {
+            name: "read",
+            text: &content,
+            arguments: &args,
+            result: None,
+            running: false,
+            failed: false,
+            expanded,
+            instruction_read: true,
+            context: Context {
+                read_preview,
+                ..Context::default()
+            },
+        };
+        let collapsed = text(body(view(false, false), 100, Style::default()));
+        assert!(collapsed.contains("agents-09") && !collapsed.contains("agents-10"));
+        assert!(collapsed.contains("5 more lines (Ctrl + O to expand)"));
+        // 预览配置关闭时指令卡片仍然可见。
+        assert_eq!(
+            collapsed,
+            text(body(view(false, true), 100, Style::default()))
+        );
+        let expanded = text(body(view(true, false), 100, Style::default()));
+        assert!(expanded.contains("agents-14") && !expanded.contains("more lines"));
+        // 普通 read 在预览关闭时保持隐藏。
+        assert!(
+            body(
+                View {
+                    instruction_read: false,
+                    ..view(false, false)
+                },
+                100,
+                Style::default()
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
     fn plan_and_write_views_use_domain_budgets_without_losing_full_content() {
         let result = json!({"matches":(0..40).map(|i|json!({"path":"file.rs","line":i+1,"text":format!("hit-{i:02}")})).collect::<Vec<_>>(),"next_offset":null,"truncated":false});
         for (expanded, limit) in [(false, 6), (true, 24)] {
@@ -807,6 +874,7 @@ mod tests {
                     running: false,
                     failed: false,
                     expanded,
+                    instruction_read: false,
                     context: Context::default(),
                 },
                 100,
@@ -830,6 +898,7 @@ mod tests {
                     running,
                     failed: false,
                     expanded: false,
+                    instruction_read: false,
                     context: Context::default(),
                 },
                 100,

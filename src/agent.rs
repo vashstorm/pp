@@ -65,6 +65,8 @@ pub(crate) struct Agent {
     base_system: String,
     prompt_source: Option<crate::system_prompt::Snapshot>,
     pending_instructions: Option<String>,
+    pending_project_load: Option<String>,
+    reported_project_load: Option<String>,
     request_skills: Vec<crate::skills::SkillHeader>,
     journal: persistence::SessionJournal,
     replay: Vec<persistence::ReplayRecord>,
@@ -323,6 +325,8 @@ impl Agent {
             base_system: system,
             prompt_source: Some(prompt_source),
             pending_instructions: None,
+            pending_project_load: None,
+            reported_project_load: None,
             request_skills: Vec::new(),
             journal: SessionJournal::new(sessions_dir),
             replay: Vec::new(),
@@ -404,6 +408,8 @@ impl Agent {
             base_system: checkpoint.base_system,
             prompt_source: checkpoint.prompt_source,
             pending_instructions: None,
+            pending_project_load: None,
+            reported_project_load: reported_project_load(&replay),
             request_skills: Vec::new(),
             journal,
             replay,
@@ -577,6 +583,8 @@ impl Agent {
         self.tools.clear_changes();
         self.last_request = None;
         self.pending_instructions = None;
+        self.pending_project_load = None;
+        self.reported_project_load = reported_project_load(&replay);
         Ok(TreeNavigation { replay, draft })
     }
     pub(crate) fn take_session_notice(&mut self) -> Option<String> {
@@ -592,13 +600,21 @@ impl Agent {
     }
 
     fn refresh_instructions(&mut self) -> Result<()> {
-        let (system, skills) = self.compose_prompt_snapshot(
+        let (system, skills, project) = self.compose_prompt_snapshot(
             &self.workflow.instructions(),
             self.workflow.mode_name(),
             &self.current_model.model,
             self.session.tool_names(),
         )?;
         self.request_skills = skills;
+        if project.is_empty() {
+            self.pending_project_load = None;
+            self.reported_project_load = None;
+        } else if self.reported_project_load.as_deref() == Some(project.as_str()) {
+            self.pending_project_load = None;
+        } else {
+            self.pending_project_load = Some(project);
+        }
         let unchanged = match &self.session {
             Session::Completion(request) => {
                 matches!(request.messages.first(), Some(ChatCompletionRequestMessage::System(message)) if matches!(&message.content, async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(text) if text == &system))
@@ -838,6 +854,8 @@ impl Agent {
         }
         self.replay.clear();
         self.last_request = None;
+        self.pending_project_load = None;
+        self.reported_project_load = None;
         match &mut self.session {
             Session::Completion(request) => request.messages.truncate(1),
             Session::Response(request) => response_input(request).clear(),
@@ -1188,6 +1206,8 @@ impl Agent {
                 user: user.take(),
                 instructions: self.pending_instructions.as_deref(),
                 debug: &mut self.debug,
+                pending_project_load: &mut self.pending_project_load,
+                reported_project_load: &mut self.reported_project_load,
             };
             let before_revision = self.workflow.plan.as_ref().map(|plan| plan.revision);
             let mut plan_dirty = false;
@@ -1324,10 +1344,42 @@ impl Agent {
     }
 }
 
+fn reported_project_load(replay: &[persistence::ReplayRecord]) -> Option<String> {
+    replay.iter().rev().find_map(|record| match record {
+        persistence::ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded {
+            content, ..
+        }) => Some(content.clone()),
+        _ => None,
+    })
+}
+
+fn publish_project_load(
+    pending: &mut Option<String>,
+    reported: &mut Option<String>,
+    journal: &mut SessionJournal,
+    cwd: &std::path::Path,
+    emit: &mut dyn FnMut(AgentEvent),
+) -> Result<()> {
+    let Some(content) = pending.as_ref() else {
+        return Ok(());
+    };
+    let event = AgentEvent::ProjectInstructionsLoaded {
+        path: cwd.join("AGENTS.md").display().to_string(),
+        content: content.clone(),
+    };
+    journal.event(&event);
+    journal.check()?;
+    emit(event);
+    *reported = pending.take();
+    Ok(())
+}
+
 struct RequestUpdate<'a> {
     user: Option<&'a str>,
     instructions: Option<&'a str>,
     debug: &'a mut Option<debug::DebugState>,
+    pending_project_load: &'a mut Option<String>,
+    reported_project_load: &'a mut Option<String>,
 }
 
 impl RequestUpdate<'_> {
@@ -1529,6 +1581,7 @@ fn completion_turn(
     let request_started = std::time::Instant::now();
     let response = {
         let journal = RefCell::new(&mut *journal);
+        let emit = RefCell::new(&mut *emit);
         let mut sent = || {
             let mut journal = journal.borrow_mut();
             journal.sent(
@@ -1537,6 +1590,13 @@ fn completion_turn(
                 workflow,
                 update.user,
                 update.instructions,
+            )?;
+            publish_project_load(
+                update.pending_project_load,
+                update.reported_project_load,
+                &mut journal,
+                metadata.cwd,
+                &mut **emit.borrow_mut(),
             )?;
             update.record_prompt(
                 SessionRef::Completion(request),
@@ -1548,7 +1608,7 @@ fn completion_turn(
         };
         let mut progress = |event| {
             journal.borrow_mut().event(&event);
-            emit(event);
+            (*emit.borrow_mut())(event);
         };
         client.set_stats_context(journal.borrow().stats_context(metadata, "task", skills));
         let outcome = client.complete(request, cancellation, &mut sent, &mut progress);
@@ -1664,6 +1724,7 @@ fn response_turn(
     let request_started = std::time::Instant::now();
     let turn = {
         let journal = RefCell::new(&mut *journal);
+        let emit = RefCell::new(&mut *emit);
         let mut sent = || {
             let mut journal = journal.borrow_mut();
             journal.sent(
@@ -1672,6 +1733,13 @@ fn response_turn(
                 workflow,
                 update.user,
                 update.instructions,
+            )?;
+            publish_project_load(
+                update.pending_project_load,
+                update.reported_project_load,
+                &mut journal,
+                metadata.cwd,
+                &mut **emit.borrow_mut(),
             )?;
             update.record_prompt(
                 SessionRef::Response(request),
@@ -1683,7 +1751,7 @@ fn response_turn(
         };
         let mut progress = |event| {
             journal.borrow_mut().event(&event);
-            emit(event);
+            (*emit.borrow_mut())(event);
         };
         client.set_stats_context(journal.borrow().stats_context(metadata, "task", skills));
         let outcome = client.respond(request, cancellation, &mut sent, &mut progress);
@@ -1787,6 +1855,96 @@ fn response_input(request: &mut CreateResponse) -> &mut Vec<InputItem> {
 mod tests {
     use super::*;
     use serde_json::{Value, json};
+
+    #[test]
+    fn instruction_loading_cards_failed_requests_record_frozen_body_once() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("AGENTS.md");
+            std::fs::write(&path, "loaded-before-network-result").unwrap();
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let mut agent =
+                runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+            for (expected, next, expected_loads) in [
+                (
+                    "loaded-before-network-result",
+                    "changed-after-request-open",
+                    1,
+                ),
+                (
+                    "changed-after-request-open",
+                    "changed-after-request-open",
+                    1,
+                ),
+                (
+                    "changed-after-request-open",
+                    "changed-after-request-open",
+                    0,
+                ),
+            ] {
+                let mut events = Vec::new();
+                std::thread::scope(|scope| {
+                    scope.spawn(|| {
+                        let mut request = server
+                            .recv_timeout(std::time::Duration::from_secs(5))
+                            .unwrap()
+                            .expect("actual provider request");
+                        let mut body = String::new();
+                        request.as_reader().read_to_string(&mut body).unwrap();
+                        let body: Value = serde_json::from_str(&body).unwrap();
+                        let system = if protocol == "response" {
+                            body["instructions"].as_str().unwrap()
+                        } else {
+                            body["messages"][0]["content"].as_str().unwrap()
+                        };
+                        assert!(system.contains(expected));
+                        // 首次建连结果返回前改写磁盘；卡片必须仍使用已发送的快照。
+                        std::fs::write(&path, next).unwrap();
+                        request.respond(tiny_http::Response::empty(500)).unwrap();
+                    });
+                    assert!(
+                        agent
+                            .run(
+                                "actual request",
+                                &CancellationToken::new(),
+                                None,
+                                &mut |event| { events.push(event) }
+                            )
+                            .is_err()
+                    );
+                });
+                let loads: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        AgentEvent::ProjectInstructionsLoaded { content, .. } => {
+                            Some(content.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(loads, vec![expected; expected_loads]);
+            }
+            let id = agent.session_id().unwrap().to_owned();
+            drop(agent);
+            let restored =
+                persistence::load(&dir.path().join("sessions"), Some(&id), true).unwrap();
+            let loads: Vec<_> = restored
+                .replay
+                .iter()
+                .filter_map(|record| match record {
+                    persistence::ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded {
+                        content,
+                        ..
+                    }) => Some(content.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                loads,
+                ["loaded-before-network-result", "changed-after-request-open"]
+            );
+        }
+    }
 
     #[test]
     fn resume_preparation_preserves_current_session_and_releases_failed_candidate() {

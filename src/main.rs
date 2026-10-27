@@ -221,7 +221,8 @@ fn run(args: Args) -> Result<()> {
         Some(agent::persistence::load(
             &dir.join("sessions"),
             resume_id,
-            use_tui,
+            // 加载记录用于会话级去重，CLI 恢复同样需要有效回放。
+            true,
         )?)
     } else {
         None
@@ -316,6 +317,10 @@ fn run(args: Args) -> Result<()> {
             continue_requested,
             notification_options,
         );
+    }
+    if let Ok(agent) = &mut agent {
+        // 去重状态已从有效回放重建；CLI 不保留展示正文。
+        drop(agent.take_replay());
     }
     let resumed_id = if args.resume.is_some() || continue_requested {
         agent.as_ref().ok().and_then(|agent| agent.session_id())
@@ -775,6 +780,7 @@ fn run_cli_task(
                 | AgentEvent::ModelRequestFinished { .. }
                 | AgentEvent::UserInputAccepted { .. }
                 | AgentEvent::PlanProgressUpdated { .. }
+                | AgentEvent::ProjectInstructionsLoaded { .. }
         ) {
             return;
         }
@@ -924,6 +930,7 @@ fn run_cli_task(
             | AgentEvent::ModelOutputProgress { .. }
             | AgentEvent::ModelRequestFinished { .. }
             | AgentEvent::UserInputAccepted { .. }
+            | AgentEvent::ProjectInstructionsLoaded { .. }
             | AgentEvent::PlanProgressUpdated { .. } => {}
         }
     };

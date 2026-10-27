@@ -674,6 +674,13 @@ impl Agent {
         if self.pending_instructions.is_some() {
             self.persist_pending_input(None)?;
         }
+        super::publish_project_load(
+            &mut self.pending_project_load,
+            &mut self.reported_project_load,
+            &mut self.journal,
+            self.tools.cwd(),
+            emit,
+        )?;
         let before_tokens = self.context_usage()?.estimated_tokens;
         let budget = summary_budget(self.current_model.context_window);
         let instruction = summary_instruction(budget);

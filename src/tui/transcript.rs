@@ -51,6 +51,7 @@ pub(super) enum EntryKind {
     Bash,
     Think,
     Grep,
+    Read,
     Diff,
     Ask,
     Data,
@@ -65,6 +66,7 @@ impl EntryKind {
             Self::Bash => Color::Yellow,
             Self::Think | Self::Activity => MUTED_TEXT,
             Self::Grep => Color::Cyan,
+            Self::Read => Color::Reset,
             Self::Diff | Self::Ask => palette::ACCENT,
             Self::Data => Color::Reset,
         }
@@ -402,6 +404,23 @@ impl TranscriptEntry {
                 Style::default().fg(MUTED_TEXT).bg(ASSISTANT_BACKGROUND),
             );
         }
+        if self.kind == EntryKind::Read && matches!(source, Source::Title) {
+            let mut spans = vec![Span::styled(
+                text,
+                Style::default()
+                    .fg(self.kind.color())
+                    .add_modifier(Modifier::BOLD),
+            )];
+            if title_end {
+                let color = match self.status {
+                    EntryStatus::Running => palette::ACCENT,
+                    EntryStatus::Complete => palette::ADDED,
+                    EntryStatus::Failed => palette::REMOVED,
+                };
+                spans.push(Span::styled(" ●", Style::default().fg(color)));
+            }
+            return Line::from(spans);
+        }
         if matches!(source, Source::Title) {
             let mut spans = vec![Span::styled(
                 text,
@@ -421,6 +440,8 @@ impl TranscriptEntry {
         } else {
             let style = if self.kind == EntryKind::Diff {
                 Style::default().fg(palette::MUTED)
+            } else if self.kind == EntryKind::Read && matches!(source, Source::Footer) {
+                Style::default().fg(palette::MUTED)
             } else if self.tool.is_some() {
                 Style::default().add_modifier(Modifier::DIM)
             } else {
@@ -431,7 +452,11 @@ impl TranscriptEntry {
     }
 
     fn ensure_layout(&mut self, width: u16) {
-        if !self.hidden && self.tool.as_deref() == Some("read") && self.display_title.is_none() {
+        if !self.hidden
+            && self.tool.as_deref() == Some("read")
+            && self.kind != EntryKind::Read
+            && self.display_title.is_none()
+        {
             self.display_title = Some(self.read_summary());
         }
         if self.markdown_dirty {
@@ -457,6 +482,7 @@ impl TranscriptEntry {
         let mut lines = Vec::new();
         let bash = self.kind == EntryKind::Bash;
         let user = self.kind == EntryKind::User;
+        let read = self.kind == EntryKind::Read;
         let border = |source| LayoutLine {
             content: LayoutContent::Source {
                 source,
@@ -470,6 +496,10 @@ impl TranscriptEntry {
         }
         if user {
             lines.push(border(Source::Padding));
+        }
+        if read {
+            // 顶部边框行内嵌标题与状态圆点。
+            self.add_lines(Source::Title, &mut lines);
         }
         if matches!(self.kind, EntryKind::Diff | EntryKind::Ask) {
             let (status, color) = match self.status {
@@ -518,7 +548,7 @@ impl TranscriptEntry {
                         height: 1,
                     }),
             );
-        } else if !self.kind.hides_title() && !matches!(self.body, EntryBody::Tips) {
+        } else if !read && !self.kind.hides_title() && !matches!(self.body, EntryBody::Tips) {
             self.add_lines(Source::Title, &mut lines);
         }
         if bash {
@@ -556,6 +586,7 @@ impl TranscriptEntry {
                         running: self.status == EntryStatus::Running,
                         failed: self.status == EntryStatus::Failed,
                         expanded: self.expanded,
+                        instruction_read: self.kind == EntryKind::Read,
                         context: self.display,
                     },
                     width,
@@ -678,12 +709,21 @@ impl TranscriptEntry {
                 self.add_lines(Source::Text, &mut lines);
             }
         }
+        if read {
+            if !self.footer.is_empty() {
+                lines.push(border(Source::Divider));
+                self.add_lines(Source::Footer, &mut lines);
+            }
+            lines.push(border(Source::Bottom));
+        }
         if user {
             lines.push(border(Source::Padding));
         }
         let mut height = 0;
         for line in &mut lines {
             line.height = if self.kind == EntryKind::Activity
+                // 边框行必须保持单行，窄宽度下标题按现有规则裁剪。
+                || (read && matches!(line.source(), Some(Source::Title)))
                 || matches!(line.content, LayoutContent::Styled(_))
             {
                 1
@@ -995,7 +1035,11 @@ impl Transcript {
             .is_some_and(|activity| activity.started.is_some())
         {
             let mut index = self.entries.len();
-            while index > 0 && self.entries[index - 1].tool.as_deref() == Some("read") {
+            while index > 0
+                && self.entries[index - 1].tool.as_deref() == Some("read")
+                // 指令卡片独立成卡，不会并入 read 摘要组。
+                && self.entries[index - 1].kind != EntryKind::Read
+            {
                 index -= 1;
             }
             frontier = frontier.min(index);
@@ -1320,6 +1364,8 @@ impl Transcript {
                 }
                 AgentEvent::ToolFinished { .. } => activity.phase("Processing tool result"),
                 AgentEvent::ToolOutput { .. } | AgentEvent::FileChanged { .. } => {}
+                // 后台自动加载不改变活动阶段，不伪装成模型工具执行。
+                AgentEvent::ProjectInstructionsLoaded { .. } => {}
                 // 运行时指标只服务状态栏，不改变对话阶段。
                 AgentEvent::ModelRequestStarted
                 | AgentEvent::RateLimited { .. }
@@ -1344,6 +1390,21 @@ impl Transcript {
             // 已接受的补充输入由 App 直接追加，不生成重复用户卡。
             AgentEvent::UserInputAccepted { .. } => {}
             AgentEvent::CompactionStarted { .. } => {}
+            AgentEvent::ProjectInstructionsLoaded { path, content } => {
+                // 自动加载的 AGENTS 正文：独立完成的 Read 卡片，不注册 running_tools。
+                let mut entry = TranscriptEntry::new(
+                    EntryKind::Read,
+                    format!("{} Read · AGENTS.md", palette::tool_icon("read")),
+                    content,
+                    Some("read".into()),
+                );
+                entry.arguments = serde_json::json!({"path": "AGENTS.md"});
+                entry.footer = format!("⟨Resolved path: {}⟩", palette::display_text(&path));
+                entry.display = self.display;
+                entry.expanded = self.tools_expanded;
+                self.read_groups_key = None;
+                self.entries.push(entry);
+            }
             AgentEvent::CompactionFinished {
                 before_tokens,
                 after_tokens,
@@ -1441,6 +1502,13 @@ impl Transcript {
                     EntryKind::Diff
                 } else if name == "ask" {
                     EntryKind::Ask
+                } else if name == "read"
+                    && arguments
+                        .as_ref()
+                        .is_some_and(|args| tool_display::is_skill_read(args, None))
+                {
+                    // 技能正文读取使用独立 Read 卡片；普通文件 read 保持 Data。
+                    EntryKind::Read
                 } else {
                     EntryKind::Data
                 };
@@ -1485,11 +1553,12 @@ impl Transcript {
                 } else {
                     match detail {
                         Some(command) if name == "bash" => format!("$ {command}"),
+                        Some(path) if kind == EntryKind::Read => format!("Read · {path}"),
                         Some(path) => format!("{name} · {path}"),
                         None => name.clone(),
                     }
                 };
-                let title = if matches!(kind, EntryKind::Diff | EntryKind::Ask) {
+                let title = if matches!(kind, EntryKind::Diff | EntryKind::Ask | EntryKind::Read) {
                     palette::display_text(&title).into_owned()
                 } else {
                     title
@@ -1546,6 +1615,33 @@ impl Transcript {
                     };
                     entry.stdout.clear();
                     entry.stderr.clear();
+                    if entry.tool.as_deref() == Some("read") {
+                        // 开始时无法从参数识别的技能读取，完成后按结果来源兜底归类。
+                        if entry.kind != EntryKind::Read
+                            && tool_display::is_skill_read(&entry.arguments, Some(&result))
+                        {
+                            entry.kind = EntryKind::Read;
+                            // 此前可能作为普通 read 组成员被隐藏，归类后必须独立可见。
+                            entry.hidden = false;
+                            if let Some(source) = result["source"]
+                                .as_str()
+                                .filter(|source| !source.is_empty())
+                            {
+                                entry.title = format!(
+                                    "{} Read · {}",
+                                    palette::tool_icon("read"),
+                                    palette::display_text(source)
+                                );
+                            }
+                        }
+                        if entry.kind == EntryKind::Read
+                            && let Some(path) =
+                                result["path"].as_str().filter(|path| !path.is_empty())
+                        {
+                            entry.footer =
+                                format!("⟨Resolved path: {}⟩", palette::display_text(path));
+                        }
+                    }
                     if let EntryBody::Ask(block) = &mut entry.body {
                         if !block.finish(&result) {
                             entry.body = EntryBody::Plain;
@@ -1924,7 +2020,7 @@ impl Transcript {
         }
         let padding = if compact {
             0
-        } else if entry.kind == EntryKind::Bash {
+        } else if matches!(entry.kind, EntryKind::Bash | EntryKind::Read) {
             4
         } else {
             2
@@ -1945,6 +2041,7 @@ impl Transcript {
         let mut index = 0;
         while index < self.entries.len() {
             if self.entries[index].tool.as_deref() != Some("read")
+                || self.entries[index].kind == EntryKind::Read
                 || tool_display::is_skill_read(
                     &self.entries[index].arguments,
                     self.entries[index].result.as_ref(),
@@ -1961,6 +2058,7 @@ impl Transcript {
             if grouped {
                 while end < self.entries.len()
                     && self.entries[end].tool.as_deref() == Some("read")
+                    && self.entries[end].kind != EntryKind::Read
                     && !tool_display::is_skill_read(
                         &self.entries[end].arguments,
                         self.entries[end].result.as_ref(),
@@ -2046,6 +2144,7 @@ impl Transcript {
                 }
                 let height = (line.height - skip).min(usize::from(end - y)) as u16;
                 let bash = entry.kind == EntryKind::Bash;
+                let read = entry.kind == EntryKind::Read;
                 let think = entry.kind == EntryKind::Think;
                 let background = if bash {
                     Some(BASH_BACKGROUND)
@@ -2096,6 +2195,27 @@ impl Transcript {
                             )
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
+                    } else if read {
+                        let (left, right, horizontal, label) = match line.source() {
+                            Some(Source::Title) => ("╭", "╮", true, ""),
+                            Some(Source::Divider) => ("├", "┤", true, " Output "),
+                            Some(Source::Bottom) => ("╰", "╯", true, ""),
+                            _ => ("│", "│", false, ""),
+                        };
+                        let style = Style::default().fg(palette::MUTED);
+                        if horizontal {
+                            Span::styled("─".repeat(usize::from(area.width)), style)
+                                .render(Rect::new(area.x, row, area.width, 1), buffer);
+                        }
+                        Span::styled(left, style).render(Rect::new(area.x, row, 1, 1), buffer);
+                        if area.width > 1 {
+                            Span::styled(right, style)
+                                .render(Rect::new(area.right() - 1, row, 1, 1), buffer);
+                        }
+                        if !label.is_empty() && area.width > 4 {
+                            Span::styled(label, Style::default().fg(palette::MUTED))
+                                .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
+                        }
                     } else if !think && entry.kind != EntryKind::Activity && background.is_none() {
                         Span::styled("│", Style::default().fg(entry.kind.color()))
                             .render(Rect::new(area.x, row, 1, 1), buffer);
@@ -2103,7 +2223,7 @@ impl Transcript {
                 }
                 let padding = if compact {
                     0
-                } else if bash {
+                } else if bash || read {
                     4
                 } else {
                     inset
@@ -4068,7 +4188,7 @@ mod tests {
             "read",
             json!({"path":"skill://rust"}),
         );
-        transcript.progress(AgentEvent::ToolFinished {id:"skill".into(),result:json!({"ok":true,"source":"skill://rust","content":"skill-first\nskill-second\nskill-third\nskill-fourth\n"})});
+        transcript.progress(AgentEvent::ToolFinished {id:"skill".into(),result:json!({"ok":true,"source":"skill://rust","path":"/tmp/skills/rust/SKILL.md","content":"skill-first\nskill-second\nskill-third\nskill-fourth\n"})});
         tool(&mut transcript, "other", "read", json!({"path":"other"}));
         transcript.progress(AgentEvent::ToolFinished {
             id: "other".into(),
@@ -4077,8 +4197,14 @@ mod tests {
         let text = screen(&render(&mut transcript, 100, 30));
         assert!(text.contains("file:1-2"));
         assert!(!text.contains("ordinary hidden"));
-        assert!(text.contains("skill-first") && text.contains("skill-third"));
-        assert!(!text.contains("skill-fourth"));
+        // 技能读取是独立 Read 卡片：完整短正文直接可见，不并入普通 read 摘要。
+        assert!(
+            text.contains("skill-first") && text.contains("skill-fourth"),
+            "{text}"
+        );
+        assert!(text.contains("Read · skill://rust"));
+        assert!(text.contains("⟨Resolved path: /tmp/skills/rust/SKILL.md⟩"));
+        assert_eq!(transcript.entries[1].kind, EntryKind::Read);
         assert!(!transcript.entries[1].hidden);
         assert!(!transcript.entries[2].hidden);
         transcript.toggle_tool_output();
@@ -4090,5 +4216,226 @@ mod tests {
             .unwrap();
         let text = String::from_utf8_lossy(&output);
         assert!(text.contains("[file#A1B2]"));
+    }
+
+    #[test]
+    fn instruction_cards_preview_expand_and_stay_independent_of_read_groups() {
+        let mut transcript = Transcript::new();
+        transcript.progress(AgentEvent::ProjectInstructionsLoaded {
+            path: "/tmp/proj/AGENTS.md".into(),
+            content: (0..15)
+                .map(|i| format!("agents-{i:02}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        });
+        for id in ["a", "b"] {
+            tool(
+                &mut transcript,
+                id,
+                "read",
+                json!({"path":format!("{id}.rs")}),
+            );
+            transcript.progress(AgentEvent::ToolFinished {
+                id: id.into(),
+                result: json!({"ok":true,"content":format!("{id}-body"),"lines_read":1}),
+            });
+        }
+        tool(
+            &mut transcript,
+            "skill",
+            "read",
+            json!({"path":"skill://rust"}),
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "skill".into(),
+            result: json!({"ok":true,"source":"skill://rust","path":"/tmp/skills/rust/SKILL.md","content":(0..12).map(|i|format!("skill-{i:02}")).collect::<Vec<_>>().join("\n")}),
+        });
+        for id in ["c", "d"] {
+            tool(
+                &mut transcript,
+                id,
+                "read",
+                json!({"path":format!("{id}.rs")}),
+            );
+            transcript.progress(AgentEvent::ToolFinished {
+                id: id.into(),
+                result: json!({"ok":true,"content":format!("{id}-body"),"lines_read":1}),
+            });
+        }
+        assert_eq!(
+            transcript
+                .entries
+                .iter()
+                .map(|entry| entry.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                EntryKind::Read,
+                EntryKind::Data,
+                EntryKind::Data,
+                EntryKind::Read,
+                EntryKind::Data,
+                EntryKind::Data,
+            ]
+        );
+        let text = screen(&render(&mut transcript, 100, 60));
+        assert!(text.contains("Read · AGENTS.md"), "{text}");
+        assert!(
+            text.contains("agents-09") && !text.contains("agents-10"),
+            "{text}"
+        );
+        assert!(text.contains("5 more lines (Ctrl + O to expand)"), "{text}");
+        assert!(
+            text.contains("⟨Resolved path: /tmp/proj/AGENTS.md⟩"),
+            "{text}"
+        );
+        assert!(text.contains("Output"), "{text}");
+        assert!(text.contains("Read · skill://rust"), "{text}");
+        assert!(
+            text.contains("⟨Resolved path: /tmp/skills/rust/SKILL.md⟩"),
+            "{text}"
+        );
+        assert!(
+            text.contains("skill-09") && !text.contains("skill-10"),
+            "{text}"
+        );
+        // 连续普通读取仍然折叠成组，指令卡片不并入组内。
+        assert_eq!(text.matches("Read (2)").count(), 2, "{text}");
+        assert!(!transcript.entries[0].hidden && !transcript.entries[3].hidden);
+        // Ctrl + O 展开后两份完整正文可见，后续加载继承展开状态。
+        transcript.toggle_tool_output();
+        let text = screen(&render(&mut transcript, 100, 60));
+        assert!(text.contains("agents-14"), "{text}");
+        assert!(text.contains("skill-11"), "{text}");
+        transcript.progress(AgentEvent::ProjectInstructionsLoaded {
+            path: "/tmp/proj/AGENTS.md".into(),
+            content: (0..12)
+                .map(|i| format!("later-{i:02}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        });
+        assert!(transcript.entries.last().unwrap().expanded);
+        assert!(entry_text(transcript.entries.last_mut().unwrap(), 100).contains("later-11"));
+    }
+
+    #[test]
+    fn failed_and_fallback_skill_reads_stay_truthful() {
+        let mut transcript = Transcript::new();
+        tool(
+            &mut transcript,
+            "skill",
+            "read",
+            json!({"path":"skill://missing"}),
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "skill".into(),
+            result: json!({"ok":false,"error":"skill not found: missing"}),
+        });
+        assert_eq!(transcript.entries[0].kind, EntryKind::Read);
+        assert_eq!(transcript.entries[0].status, EntryStatus::Failed);
+        assert!(transcript.entries[0].footer.is_empty());
+        let text = screen(&render(&mut transcript, 100, 20));
+        assert!(text.contains("Read · skill://missing"), "{text}");
+        assert!(text.contains("skill not found: missing"), "{text}");
+        assert!(!text.contains("Resolved path"), "{text}");
+
+        // 参数无法识别时按完成结果来源兜底归类，并展示真实 resolved path。
+        tool(&mut transcript, "late", "read", json!({"path":"unknown"}));
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "late".into(),
+            result: json!({"ok":true,"source":"skill://late","path":"/skills/late/SKILL.md","content":"late-body"}),
+        });
+        assert_eq!(transcript.entries[1].kind, EntryKind::Read);
+        assert_eq!(transcript.entries[1].status, EntryStatus::Complete);
+        let text = screen(&render(&mut transcript, 100, 40));
+        assert!(text.contains("Read · skill://late"), "{text}");
+        assert!(
+            text.contains("⟨Resolved path: /skills/late/SKILL.md⟩"),
+            "{text}"
+        );
+        assert!(text.contains("late-body"), "{text}");
+    }
+
+    #[test]
+    fn instruction_cards_survive_narrow_widths_and_neutralize_controls() {
+        let mut transcript = Transcript::new();
+        transcript.progress(AgentEvent::ProjectInstructionsLoaded {
+            path: "/tmp/proj/AGENTS.md".into(),
+            content: "plain-line\n\u{1b}[31mred\u{1b}[0m\nlast\n".into(),
+        });
+        let text = screen(&render(&mut transcript, 8, 30));
+        assert!(text.contains('╭') && text.contains('╰'), "{text}");
+        assert!(!text.contains('\u{1b}'), "{text}");
+        assert!(text.contains('\u{fffd}'), "{text}");
+        // 折叠状态切换在窄宽度下同样安全。
+        transcript.toggle_tool_output();
+        let text = screen(&render(&mut transcript, 8, 30));
+        assert!(text.contains('╭') && text.contains('╰'), "{text}");
+        assert!(text.contains('\u{fffd}'), "{text}");
+    }
+
+    #[test]
+    fn instruction_cards_replay_tree_and_native_boundaries() {
+        // 恢复时按记录顺序重建卡片正文，不读取当前磁盘内容。
+        let mut transcript = Transcript::new();
+        let mut input_history = Vec::new();
+        let error = transcript.replay(
+            vec![
+                ReplayRecord::User("task".into()),
+                ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded {
+                    path: "/old/AGENTS.md".into(),
+                    content: "recorded-body\n".into(),
+                }),
+                ReplayRecord::Event(AgentEvent::AssistantStarted),
+                ReplayRecord::Event(AgentEvent::AssistantFinished {
+                    text: "done".into(),
+                }),
+            ],
+            &mut input_history,
+        );
+        assert!(error.is_none());
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(text.contains("Read · AGENTS.md"), "{text}");
+        assert!(text.contains("recorded-body"), "{text}");
+        assert!(text.contains("⟨Resolved path: /old/AGENTS.md⟩"), "{text}");
+
+        // 树预览完整展示卡片；极窄宽度仍不越界。
+        let mut transcript = Transcript::new();
+        let range = transcript.append_tree_node(
+            vec![ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded {
+                path: "/tree/AGENTS.md".into(),
+                content: "tree\n".into(),
+            })],
+            "",
+        );
+        assert_eq!(range, 0..1);
+        let text = entry_text(&mut transcript.entries[0], 100);
+        assert!(text.contains("tree"), "{text}");
+        let blocks = [TreeBlock {
+            entries: range,
+            label: Line::raw("node"),
+        }];
+        let wide = tree_render(&mut transcript, &blocks, &[0], Some(0), true, 60, 12);
+        let wide_text = screen(&wide);
+        assert!(wide_text.contains("tree"), "{wide_text}");
+        assert!(wide_text.contains("Read · AGENTS.md"), "{wide_text}");
+        let narrow = tree_render(&mut transcript, &blocks, &[0], Some(0), true, 2, 6);
+        assert!(screen(&narrow).contains('t'));
+
+        // 卡片进入原生历史批次一次，不重复输出。
+        let mut transcript = Transcript::new();
+        transcript.append("You", "run");
+        transcript.progress(AgentEvent::ProjectInstructionsLoaded {
+            path: "/native/AGENTS.md".into(),
+            content: "native-body\n".into(),
+        });
+        transcript.append("Assistant", &"tail-line\n\n".repeat(40));
+        let output = retire_native(&mut transcript, 60, 30, false);
+        assert!(output.contains("Read · AGENTS.md"), "{output}");
+        assert_eq!(output.matches("native-body").count(), 1, "{output}");
+        assert!(
+            retire_native(&mut transcript, 60, 30, false)
+                .trim()
+                .is_empty()
+        );
     }
 }

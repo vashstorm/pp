@@ -473,6 +473,10 @@ fn agents_resume_and_continue_refresh_from_restored_cwd_and_journal_both_protoco
         for (args, marker) in [
             (vec!["-r", id, "-p", "resumed-task"], "current-resumed-rule"),
             (vec!["-c", id], "current-continued-rule"),
+            (
+                vec!["-r", id, "-p", "unchanged-task"],
+                "current-continued-rule",
+            ),
         ] {
             fs::write(&path, marker).unwrap();
             let cli = Cli::spawn(
@@ -487,7 +491,10 @@ fn agents_resume_and_continue_refresh_from_restored_cwd_and_journal_both_protoco
             assert!(body.to_string().contains("saved-task"));
             let sent_system = system(&body, protocol).to_owned();
             finish_request(request, protocol, "resume-done");
-            assert!(cli.finish().status.success());
+            let output = cli.finish();
+            assert!(output.status.success());
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), "resume-done\n");
+            assert!(!String::from_utf8(output.stderr).unwrap().contains(marker));
             assert_eq!(journal(cwd.path()), file);
             let records = records(&file);
             let update = records
@@ -497,6 +504,21 @@ fn agents_resume_and_continue_refresh_from_restored_cwd_and_journal_both_protoco
                 .unwrap();
             assert_eq!(update["data"]["system"], sent_system);
         }
+        let records = records(&file);
+        let loads: Vec<_> = records
+            .iter()
+            .filter_map(|record| {
+                record["data"]["event"]["project_instructions_loaded"]["content"].as_str()
+            })
+            .collect();
+        assert_eq!(
+            loads,
+            [
+                "saved-project-rule",
+                "current-resumed-rule",
+                "current-continued-rule"
+            ]
+        );
     }
 }
 
@@ -558,6 +580,20 @@ fn agents_manual_and_auto_compaction_refresh_before_summary_and_followup_both_pr
                 String::from_utf8_lossy(&output.stderr)
             );
             assert!(!String::from_utf8_lossy(&output.stdout).contains("compact-summary"));
+            let records = records(&journal(cwd.path()));
+            let loads: Vec<_> = records
+                .iter()
+                .filter_map(|record| {
+                    record["data"]["event"]["project_instructions_loaded"]["content"].as_str()
+                })
+                .collect();
+            assert_eq!(
+                loads,
+                [
+                    format!("summary-project-rule\n{}", "project-fact ".repeat(5000)),
+                    "followup-project-rule".into(),
+                ]
+            );
         }
     }
 }

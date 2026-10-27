@@ -90,7 +90,7 @@ impl Agent {
         tool_names: Vec<String>,
     ) -> Result<String> {
         self.compose_prompt_snapshot(instructions, mode, model, tool_names)
-            .map(|(system, _)| system)
+            .map(|(system, _, _)| system)
     }
 
     pub(super) fn compose_prompt_snapshot(
@@ -99,7 +99,7 @@ impl Agent {
         mode: &str,
         model: &str,
         tool_names: Vec<String>,
-    ) -> Result<(String, Vec<crate::skills::SkillHeader>)> {
+    ) -> Result<(String, Vec<crate::skills::SkillHeader>, String)> {
         let project = project_instructions::load(self.tools.cwd())?;
         let skills = self
             .tools
@@ -136,7 +136,7 @@ impl Agent {
             }
             Ok(system)
         }?;
-        Ok((system, skills))
+        Ok((system, skills, project))
     }
 
     /// 候选会话使用目标模式的工具清单，逐请求刷新使用原生请求里的实际清单。
@@ -1184,6 +1184,8 @@ impl Agent {
         self.tools.clear_changes();
         self.last_request = None;
         self.pending_instructions = None;
+        self.pending_project_load = None;
+        self.reported_project_load = None;
         self.tools.mcp = registry;
         self.finish_approved_move(pending_move, token);
         Ok(ExecutionPreparation {
@@ -1243,6 +1245,8 @@ impl Agent {
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));
         self.journal = restored.journal;
+        self.pending_project_load = None;
+        self.reported_project_load = super::reported_project_load(&restored.replay);
         self.replay = restored.replay;
         self.tools.clear_changes();
         if let Some(debug) = &mut self.debug {
