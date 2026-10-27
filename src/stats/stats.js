@@ -34,6 +34,7 @@ const paths = {
   sun: "M12 3v2 M12 19v2 M3 12h2 M19 12h2 m-15-6 2 2 m10 10 2 2 M6 18l2-2 M16 8l2-2 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
   moon: "M21 13A9 9 0 0 1 11 3a9 9 0 1 0 10 10",
   system: "M3 3h18v13H3z M12 16v5 M8 21h8",
+  flag: "M5 21V4 M5 4h12l-3 4 3 4H5",
 };
 const icon = (name, size = 15) =>
   `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name] || paths.traces}"/></svg>`;
@@ -1096,7 +1097,7 @@ function requestTable(rows) {
           .slice(0, visible)
           .map(
             (r) =>
-              `<tr tabindex="0" data-id="${r.id}"${r.has_context ? ' class="first-request-row"' : ""} aria-label="View ${h(r.model)} request ${r.id}${r.has_context ? ", session first request with saved context" : ""}"><td><div class="model-name">${h(r.model)}</div><div class="request-model-meta"><span class="provider">${h(r.provider)}</span>${r.has_context ? '<span class="first-request-badge" title="Session first request · full context saved">First request</span>' : ""}</div></td><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td class="project" title="${h(r.cwd)}">${h(r.project)}</td><td class="right num" title="${h(`Total input: ${number(r.input_tokens)}; uncached: ${number(uncached(r))}`)}">${short(uncached(r))}</td><td class="right num" title="Cache read: ${number(r.cached_tokens)}">${detailed(r.cached_tokens)}</td><td class="right num">${detailed(r.cache_write_tokens)}</td><td class="right num">${detailed(r.output_tokens)}</td><td class="right num">${detailed(r.cost, money(r.cost), " USD")}</td><td class="right num">${detailed(r.duration_ms, duration(r.duration_ms), " ms")}</td><td class="right num">${detailed(r.ttft_ms, duration(r.ttft_ms), " ms")}</td><td>${statusBadge(r)}</td></tr>`,
+              `<tr tabindex="0" data-id="${r.id}"${r.has_context ? ' class="first-request-row"' : ""} aria-label="View ${h(r.model)} request ${r.id}${r.has_context ? ", session first request with saved context" : ""}"><td><div class="model-name">${h(r.model)}</div><div class="request-model-meta"><span class="provider">${h(r.provider)}</span>${r.has_context ? `<span class="first-request-mark" role="img" aria-label="Session first request" title="Session first request · full context saved">${icon("flag", 11)}</span>` : ""}</div></td><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td class="project" title="${h(r.cwd)}">${h(r.project)}</td><td class="right num" title="${h(`Total input: ${number(r.input_tokens)}; uncached: ${number(uncached(r))}`)}">${short(uncached(r))}</td><td class="right num" title="Cache read: ${number(r.cached_tokens)}">${detailed(r.cached_tokens)}</td><td class="right num">${detailed(r.cache_write_tokens)}</td><td class="right num">${detailed(r.output_tokens)}</td><td class="right num">${detailed(r.cost, money(r.cost), " USD")}</td><td class="right num">${detailed(r.duration_ms, duration(r.duration_ms), " ms")}</td><td class="right num">${detailed(r.ttft_ms, duration(r.ttft_ms), " ms")}</td><td>${statusBadge(r)}</td></tr>`,
           )
           .join("")
       : '<tr><td colspan="11"><div class="empty">No matching requests</div></td></tr>'

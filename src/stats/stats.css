@@ -618,6 +618,21 @@ tbody tr[data-id]:focus {
   border-radius: 50%;
   background: currentColor;
 }
+.first-request-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 5px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.first-request-mark svg { fill: color-mix(in srgb, currentColor 22%, transparent); }
+.first-request-row {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 45%);
+}
 .first-request-row td:first-child {
   box-shadow: inset 3px 0 var(--accent);
 }
