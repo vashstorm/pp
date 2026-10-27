@@ -160,7 +160,7 @@ function traceRequestContent(r) {
     ["Tokens", number(total(r))],
     ["Purpose", r.purpose],
     ["Cost", money(r.cost)],
-  ])}<button class="outline-button" data-id="${r.id}">Full request details ${icon("arrow", 12)}</button></div>${r.error_message ? `<div class="detail-error">${h(r.error_message)}</div>` : ""}${traceSection(r.id, "text", "Assistant output", text, true)}${traceSection(r.id, "thinking", "Thinking", thinking, true)}${calls.length ? `<div class="detail-title">Tool calls · arguments only</div>${calls.map((c, i) => traceSection(r.id, `tool-${i}`, `${h(c.name || "Tool")} · ${h(c.id || c.call_id || i + 1)}`, c.arguments)).join("")}` : ""}${traceSection(r.id, "native", "Native output JSON", output)}${traceSection(r.id, "entry", "Session entries JSON", detail.session_entry)}`;
+  ])}<div class="request-actions">${requestContextButton(detail)}<button class="outline-button" data-id="${r.id}">${icon("traces", 14)} Full request details</button><div class="request-context-state">${requestContextNote(detail)}</div></div></div>${r.error_message ? `<div class="detail-error">${h(r.error_message)}</div>` : ""}${traceSection(r.id, "text", "Assistant output", text, true)}${traceSection(r.id, "thinking", "Thinking", thinking, true)}${calls.length ? `<div class="detail-title">Tool calls · arguments only</div>${calls.map((c, i) => traceSection(r.id, `tool-${i}`, `${h(c.name || "Tool")} · ${h(c.id || c.call_id || i + 1)}`, c.arguments)).join("")}` : ""}${traceSection(r.id, "native", "Native output JSON", output)}${traceSection(r.id, "entry", "Session entries JSON", detail.session_entry)}`;
 }
 function tracePage() {
   const s = data.summary,
@@ -199,7 +199,7 @@ function tracePage() {
         return `<article class="trace-request" id="trace-request-${r.id}"><button class="trace-request-toggle" data-trace-request="${r.id}" aria-expanded="${open}" aria-controls="trace-content-${r.id}">${icon(open ? "down" : "chevron", 12)}<span class="trace-kind">model</span><span class="trace-request-name">${h(r.model)}<span class="provider">${h(r.provider)} · ${h(r.purpose)} · #${r.id}</span></span>${statusBadge(r)}<span class="num">${duration(r.duration_ms)}</span><span class="provider num">+${duration(r.timestamp - start)}</span></button><div class="trace-content" id="trace-content-${r.id}"${open ? "" : " hidden"}>${open ? traceRequestContent(r) : ""}</div></article>`;
       })
       .join("") || '<div class="empty">No matching requests</div>'
-  }</div>${activityFooter(rows)}</section><p class="load-note">This trace uses saved statistics only. User prompts, tool results, tool duration and subagent spans were not recorded.</p>${pricingNotice(data)}`;
+  }</div>${activityFooter(rows)}</section><p class="load-note">This trace uses saved statistics only. New sessions include their first request context. Tool execution results, tool duration and subagent spans are not collected separately.</p>${pricingNotice(data)}`;
 }
 async function loadTraceRequest(id) {
   if (traceCache.has(id) || tracePending.has(id)) return;

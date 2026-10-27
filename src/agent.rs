@@ -63,6 +63,7 @@ pub(crate) struct Agent {
     base_system: String,
     prompt_source: Option<crate::system_prompt::Snapshot>,
     pending_instructions: Option<String>,
+    request_skills: Vec<crate::skills::SkillHeader>,
     journal: persistence::SessionJournal,
     replay: Vec<persistence::ReplayRecord>,
     debug: Option<debug::DebugState>,
@@ -319,6 +320,7 @@ impl Agent {
             base_system: system,
             prompt_source: Some(prompt_source),
             pending_instructions: None,
+            request_skills: Vec::new(),
             journal: SessionJournal::new(sessions_dir),
             replay: Vec::new(),
             debug: debug::DebugState::new(config.settings.debug, false),
@@ -398,6 +400,7 @@ impl Agent {
             base_system: checkpoint.base_system,
             prompt_source: checkpoint.prompt_source,
             pending_instructions: None,
+            request_skills: Vec::new(),
             journal,
             replay,
             debug: debug::DebugState::new(config.settings.debug, true),
@@ -584,12 +587,13 @@ impl Agent {
     }
 
     fn refresh_instructions(&mut self) -> Result<()> {
-        let system = self.compose_prompt(
+        let (system, skills) = self.compose_prompt_snapshot(
             &self.workflow.instructions(),
             self.workflow.mode_name(),
             &self.current_model.model,
             self.session.tool_names(),
         )?;
+        self.request_skills = skills;
         let unchanged = match &self.session {
             Session::Completion(request) => {
                 matches!(request.messages.first(), Some(ChatCompletionRequestMessage::System(message)) if matches!(&message.content, async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(text) if text == &system))
@@ -1138,6 +1142,7 @@ impl Agent {
             let mut plan_dirty = false;
             let resources = TurnResources {
                 client: &mut self.client,
+                skills: &self.request_skills,
                 last_request: &mut self.last_request,
                 tools: &self.tools,
                 journal: &mut self.journal,
@@ -1354,6 +1359,7 @@ fn log_model_request_finished<T>(
 
 // 两种协议在一次模型／工具轮次中使用相同的同步依赖。
 struct TurnResources<'a> {
+    skills: &'a [crate::skills::SkillHeader],
     client: &'a mut OpenAiClient,
     last_request: &'a mut Option<TokenUsage>,
     tools: &'a Tools,
@@ -1444,6 +1450,7 @@ fn completion_turn(
 ) -> Result<TurnOutcome> {
     let TurnResources {
         client,
+        skills,
         last_request,
         tools,
         journal,
@@ -1480,7 +1487,7 @@ fn completion_turn(
             journal.borrow_mut().event(&event);
             emit(event);
         };
-        client.set_stats_context(journal.borrow().stats_context(metadata, "task"));
+        client.set_stats_context(journal.borrow().stats_context(metadata, "task", skills));
         let outcome = client.complete(request, cancellation, &mut sent, &mut progress);
         journal
             .borrow_mut()
@@ -1578,6 +1585,7 @@ fn response_turn(
 ) -> Result<TurnOutcome> {
     let TurnResources {
         client,
+        skills,
         last_request,
         tools,
         journal,
@@ -1614,7 +1622,7 @@ fn response_turn(
             journal.borrow_mut().event(&event);
             emit(event);
         };
-        client.set_stats_context(journal.borrow().stats_context(metadata, "task"));
+        client.set_stats_context(journal.borrow().stats_context(metadata, "task", skills));
         let outcome = client.respond(request, cancellation, &mut sent, &mut progress);
         journal
             .borrow_mut()

@@ -99,6 +99,7 @@ pub(super) fn dispatch(store: &Store, path: &str) -> (u16, &'static str, String)
         "/stats.js" => return (200, "text/javascript", include_str!("stats.js").into()),
         "/activity.js" => return (200, "text/javascript", include_str!("activity.js").into()),
         "/insights.js" => return (200, "text/javascript", include_str!("insights.js").into()),
+        "/context.js" => return (200, "text/javascript", include_str!("context.js").into()),
         "/icon.svg" => return (200, "image/svg+xml", include_str!("icon.svg").into()),
         _ => {}
     }
@@ -226,13 +227,17 @@ fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError
             .map_err(|_| ApiError::Database);
     }
     let rows = store
-        .latest(range.since(now), now, limit + 1)
+        .latest_with_context(range.since(now), now, limit + 1)
         .map_err(|_| ApiError::Database)?;
     let has_more = rows.len() > limit;
     let rows = rows
         .iter()
         .take(limit)
-        .map(|r| pricing.request(r))
+        .map(|(r, has_context)| {
+            let mut value = pricing.request(r)?;
+            value["has_context"] = json!(has_context);
+            Ok(value)
+        })
         .collect::<Result<Vec<_>>>()
         .map_err(|_| ApiError::Database)?;
     Ok(Some(

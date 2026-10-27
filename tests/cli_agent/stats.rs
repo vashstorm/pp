@@ -1,8 +1,25 @@
 use super::*;
 use rusqlite::Connection;
+use std::fs;
 
 pub(super) fn database(home: &std::path::Path) -> Connection {
     Connection::open(home.join(".pp/stats/stats.db")).unwrap()
+}
+pub(super) fn contexts(home: &std::path::Path) -> Vec<Value> {
+    database(home)
+        .prepare("SELECT request_json,skills_json FROM request_payloads ORDER BY request_id")
+        .unwrap()
+        .query_map([], |row| {
+            let request = row.get::<_, Option<String>>(0)?;
+            let skills = row.get::<_, Option<String>>(1)?;
+            Ok(request.map(|request| json!({
+                "request": serde_json::from_str::<Value>(&request).unwrap(),
+                "skills": serde_json::from_str::<Value>(skills.as_deref().unwrap()).unwrap(),
+            })).unwrap_or(Value::Null))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }
 fn rows(home: &std::path::Path) -> Vec<Value> {
     database(home).prepare("SELECT r.id,r.status,r.input_tokens,r.output_tokens,r.cached_tokens,r.ttft_ms,r.purpose,r.entry_id,r.session_file,p.output_json,p.session_entry_json,r.error_message,r.cache_write_tokens FROM requests r JOIN request_payloads p ON p.request_id=r.id ORDER BY r.id").unwrap().query_map([],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"input":r.get::<_,Option<i64>>(2)?,"output":r.get::<_,Option<i64>>(3)?,"cache":r.get::<_,Option<i64>>(4)?,"ttft":r.get::<_,Option<f64>>(5)?,"purpose":r.get::<_,String>(6)?,"entry_id":r.get::<_,Option<String>>(7)?,"session_file":r.get::<_,Option<String>>(8)?,"payload":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap(),"entry":r.get::<_,Option<String>>(10)?.map(|s|serde_json::from_str::<Value>(&s).unwrap()),"error":r.get::<_,Option<String>>(11)?,"cache_write":r.get::<_,Option<i64>>(12)?}))).unwrap().collect::<Result<_,_>>().unwrap()
@@ -36,6 +53,7 @@ fn gc_removes_expired_logs_and_sqlite_snapshots_without_models() {
     ] {
         db.execute("INSERT INTO requests(id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,duration_ms,status) VALUES (?1,?1,?2,'m','p','p/m','completion','project','/project','task',1,'ok')", rusqlite::params![id, timestamp]).unwrap();
         db.execute("INSERT INTO request_payloads(request_id,output_json,session_entry_json) VALUES (?1,?2,'[]')", rusqlite::params![id, if id == 1 { format!("\"{}\"", "x".repeat(1024 * 1024)) } else { "{}".to_owned() }]).unwrap();
+        db.execute(r#"UPDATE request_payloads SET request_json='{"model":"fixture","instructions":"retained context"}',skills_json='[]' WHERE request_id=?1"#, [id]).unwrap();
     }
     let pages_before: i64 = db
         .pragma_query_value(None, "page_count", |r| r.get(0))
@@ -152,6 +170,141 @@ fn gc_empty_home_does_not_create_storage_and_rejects_symlink_database() {
 }
 
 #[test]
+fn stats_context_first_request_freezes_full_body_skills_and_session_identity() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let base = format!(
+            "# Long system prompt\n{}\n<script>marker & raw</script>\n\tcode\n",
+            "完整内容 full context\n".repeat(5000)
+        );
+        fs::create_dir_all(dir.path().join(".pp")).unwrap();
+        fs::write(dir.path().join(".pp/SYSTEM.md"), &base).unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "original-project-rule").unwrap();
+        for name in ["available", "disabled"] {
+            let skill = config_path(dir.path(), "skills").join(name);
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(skill.join("SKILL.md"), format!("---\nname: {name}\ndescription: 'Header <tag> & details'\n---\nprivate skill body not yet read\n")).unwrap();
+        }
+        let mut cli = Cli::start_with(
+            dir.path(),
+            None,
+            "default_model: fixture/primary\ndisabled_skills: [disabled]\n",
+            &response_models(&server, Some(protocol)),
+        );
+        let endpoint = if protocol == "completion" {
+            "/v1/chat/completions"
+        } else {
+            "/v1/responses"
+        };
+        let finish = |request, text| {
+            if protocol == "completion" {
+                final_reply(request, text);
+            } else {
+                response_final(request, text);
+            }
+        };
+        cli.input("first user <tag> & input\n");
+        let (request, first) = receive_at(&server, endpoint);
+        let system = if protocol == "completion" {
+            &first["messages"][0]["content"]
+        } else {
+            &first["instructions"]
+        };
+        assert!(system.as_str().unwrap().starts_with(&base));
+        assert!(system.as_str().unwrap().contains("original-project-rule"));
+        assert!(system.as_str().unwrap().contains("skill://available"));
+        assert!(
+            !system
+                .as_str()
+                .unwrap()
+                .contains("private skill body not yet read")
+        );
+        finish(request, "first done");
+        fs::write(dir.path().join("AGENTS.md"), "changed-project-rule").unwrap();
+        fs::remove_dir_all(config_path(dir.path(), "skills")).unwrap();
+        cli.input("second user\n");
+        let (request, second) = receive_at(&server, endpoint);
+        assert!(second.to_string().contains("changed-project-rule"));
+        finish(request, "second done");
+        cli.input("/new\nthird user\n");
+        let (request, third) = receive_at(&server, endpoint);
+        finish(request, "third done");
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let snapshots = contexts(dir.path());
+        assert_eq!(snapshots.len(), 3);
+        assert_eq!(snapshots[0]["request"], first);
+        assert_eq!(
+            snapshots[0]["skills"],
+            json!([{"name":"available","description":"Header <tag> & details","uri":"skill://available"}])
+        );
+        assert!(snapshots[1].is_null());
+        assert_eq!(snapshots[2]["request"], third);
+        assert_eq!(snapshots[2]["skills"], snapshots[0]["skills"]);
+        let records = rows(dir.path());
+        let session = std::path::Path::new(records[0]["session_file"].as_str().unwrap())
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let cli = Cli::spawn(
+            dir.path(),
+            &["--resume", session, "-p", "resumed user"],
+            &[],
+        );
+        let (request, _) = receive_at(&server, endpoint);
+        finish(request, "resume done");
+        assert!(cli.finish().status.success());
+        assert!(contexts(dir.path())[3].is_null());
+        let (_stats, address) = start_stats_server(dir.path());
+        let (status, detail) = http(
+            &address,
+            &format!("/api/stats/requests/{}", records[0]["id"]),
+            &address,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(
+            serde_json::from_str::<Value>(&detail).unwrap()["request_context"],
+            snapshots[0]
+        );
+        for endpoint in ["requests", "traces", "overview", "tools", "projects"] {
+            let (status, body) = http(
+                &address,
+                &format!("/api/stats/{endpoint}?range=all"),
+                &address,
+            );
+            assert_eq!(status, 200);
+            assert!(!body.contains("original-project-rule"));
+            assert!(!body.contains("first user <tag>"));
+            assert!(!body.contains("request_context"));
+            if endpoint == "requests" {
+                let list: Value = serde_json::from_str(&body).unwrap();
+                for row in list["requests"].as_array().unwrap() {
+                    assert_eq!(
+                        row["has_context"],
+                        row["id"] == records[0]["id"] || row["id"] == records[2]["id"]
+                    );
+                }
+            }
+        }
+        let (status, body) = http(
+            &address,
+            &format!("/api/stats/traces/{}", records[0]["id"]),
+            &address,
+        );
+        assert_eq!(status, 200);
+        assert!(!body.contains("original-project-rule"));
+        assert!(!body.contains("request_context"));
+        no_more(&server);
+    }
+}
+
+#[test]
 fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
@@ -165,7 +318,7 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
         fixture_settings(),
         &serde_yaml::to_string(&models).unwrap(),
     );
-    let (request, _) = receive(&server);
+    let (request, first_body) = receive(&server);
     calls_reply(
         request,
         json!([call("read-one", "read", json!({"path":"sample.txt"}))]),
@@ -188,6 +341,10 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     );
     let records = rows(dir.path());
     assert_eq!(records.len(), 2);
+    assert_eq!(
+        contexts(dir.path()),
+        vec![json!({"request":first_body,"skills":[]}), Value::Null]
+    );
     let last = &records[1];
     assert_eq!(last["status"], "ok");
     assert_eq!(last["input"], 120);
@@ -298,7 +455,7 @@ fn stats_responses_captures_real_usage_and_keeps_unknown_cache_unknown() {
             fixture_settings(),
             &response_models(&server, Some("response")),
         );
-        let (request, _) = receive_at(&server, "/v1/responses");
+        let (request, first_body) = receive_at(&server, "/v1/responses");
         let output = json!([response_message(
             "msg-stats",
             json!([{"type":"output_text","text":"response done","annotations":[]}])
@@ -322,6 +479,7 @@ fn stats_responses_captures_real_usage_and_keeps_unknown_cache_unknown() {
         );
         let records = rows(dir.path());
         assert_eq!(records.len(), 1);
+        assert_eq!(contexts(dir.path())[0]["request"], first_body);
         assert_eq!(records[0]["cache"], json!(cached));
         assert_eq!(records[0]["cache_write"], json!(written));
         assert_eq!(
@@ -358,7 +516,7 @@ fn stats_http_errors_are_counted_once_without_response_body_or_credentials() {
             "{\n\"default_model\": \"fixture/primary\",\n\"rate_limit_retry_budget_seconds\": 0,\n}\n",
             &response_models(&server, Some(protocol)),
         );
-        let (request, _) = receive_at(
+        let (request, first_body) = receive_at(
             &server,
             if protocol == "completion" {
                 "/v1/chat/completions"
@@ -373,6 +531,7 @@ fn stats_http_errors_are_counted_once_without_response_body_or_credentials() {
         assert!(!output.status.success());
         let records = rows(dir.path());
         assert_eq!(records.len(), 1);
+        assert_eq!(contexts(dir.path())[0]["request"], first_body);
         assert_eq!(records[0]["status"], "failed");
         assert!(records[0]["entry"].is_null());
         let encoded = records[0].to_string();
@@ -575,7 +734,7 @@ fn stats_interrupted_streams_keep_partial_output_without_committing_session_entr
             fixture_settings(),
             &response_models(&server, Some(protocol)),
         );
-        let (request, _) = receive_at(
+        let (request, first_body) = receive_at(
             &server,
             if protocol == "completion" {
                 "/v1/chat/completions"
@@ -597,6 +756,7 @@ fn stats_interrupted_streams_keep_partial_output_without_committing_session_entr
         assert!(!output.status.success());
         let records = rows(dir.path());
         assert_eq!(records.len(), 1);
+        assert_eq!(contexts(dir.path())[0]["request"], first_body);
         assert_eq!(records[0]["status"], "failed");
         assert_eq!(records[0]["payload"]["partial"], true);
         assert_eq!(records[0]["payload"]["text"], "partial model output");

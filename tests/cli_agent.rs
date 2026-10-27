@@ -1948,7 +1948,7 @@ fn rate_limited_opening_retries_then_finishes_on_either_protocol() {
             "{\n\"default_model\": \"fixture/primary\",\n\"rate_limit_retry_budget_seconds\": 30,\n}\n",
             &models,
         );
-        let (first, _) = if responses {
+        let (first, first_body) = if responses {
             receive_at(&server, "/v1/responses")
         } else {
             receive(&server)
@@ -1960,13 +1960,14 @@ fn rate_limited_opening_retries_then_finishes_on_either_protocol() {
                     .with_header(Header::from_bytes(&b"Retry-After"[..], &b"0"[..]).unwrap()),
             )
             .unwrap();
-        let (second, _) = if responses {
+        let (second, second_body) = if responses {
             receive_at(&server, "/v1/responses")
         } else {
             receive(&server)
         };
         // The retried request carries the same credentials.
         assert_eq!(authorization(&second), "Bearer fixture-key");
+        assert_eq!(first_body, second_body);
         if responses {
             response_final(second, "recovered");
         } else {
@@ -1981,6 +1982,9 @@ fn rate_limited_opening_retries_then_finishes_on_either_protocol() {
             "responses={responses}, {error}"
         );
         assert!(!error.contains("fixture-key"), "{error}");
+        let contexts = stats::contexts(dir.path());
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0]["request"], first_body);
         no_more(&server);
     }
 }

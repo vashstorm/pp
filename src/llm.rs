@@ -223,13 +223,17 @@ impl OpenAiClient {
         let budget = self.rate_limit_retry_budget;
         let mut output = ChatStream::default();
         let mut snapshot = serde_json::Value::Null;
+        let mut attempted = false;
         let result: Result<CompletionTurn> = runtime.block_on(async {
             // The BYOT future borrows its resource; bind it so retries can
             // create further futures from the same borrow.
             let chat = client.chat();
             // BYOT serializes a borrowed request before returning the stream.
             let opened = cancellation
-                .run_until_cancelled(chat.create_stream_byot::<_, ChatChunk>(request))
+                .run_until_cancelled(async {
+                    attempted = true;
+                    chat.create_stream_byot::<_, ChatChunk>(request).await
+                })
                 .await;
             // Persist the accepted request exactly once, before judging the
             // opening outcome; a callback failure takes precedence.
@@ -291,6 +295,9 @@ impl OpenAiClient {
                 });
             observation.output = snapshot;
             if let Some(context) = &self.stats_context {
+                if attempted {
+                    observation.request_context = context.capture(request);
+                }
                 self.stats_key = crate::stats::save(
                     context,
                     &request.model,
@@ -339,12 +346,14 @@ impl OpenAiClient {
         let mut stop_reason = None;
         let mut reported_usage = None;
         let budget = self.rate_limit_retry_budget;
+        let mut attempted = false;
         let result: Result<ResponseTurn> = runtime.block_on(async {
             let responses = client.responses();
             let opened = cancellation
-                .run_until_cancelled(
-                    responses.create_stream_byot::<_, ResponseEvent>(request),
-                )
+                .run_until_cancelled(async {
+                    attempted = true;
+                    responses.create_stream_byot::<_, ResponseEvent>(request).await
+                })
                 .await;
             on_request_sent()?;
             let opened = match opened {
@@ -420,6 +429,9 @@ impl OpenAiClient {
                 snapshot
             };
             if let Some(context) = &self.stats_context {
+                if attempted {
+                    observation.request_context = context.capture(request);
+                }
                 self.stats_key = crate::stats::save(
                     context,
                     request.model.as_deref().unwrap_or_default(),

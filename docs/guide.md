@@ -622,7 +622,7 @@ Errors 按归一化的错误签名聚合失败请求，签名可展开查看完�
 
 各页表格、趋势线、柱状／堆叠图、Token／费用构成及会话时间线支持悬停详情；表格单元格和图表时间桶也可通过键盘聚焦查看，Esc 隐藏提示。详情保留完整数值、时间或路径，堆叠图展示当前可见系列及合计，零值时间桶也可查看；切换页面、滚动或刷新会关闭旧提示。
 
-Traces 按会话展示请求数量、模型、失败数、Token 和费用，点击会话查看完整已记录会话的请求时间线；时间线色块与请求项均可点击展开，正文、思考、工具参数、原生输出及会话条目可继续逐项展开，支持全部展开／收起。请求详情的 Trace 链接可直接定位并展开对应请求。Errors 汇总覆盖范围内全部失败，Traces 列表指标覆盖范围内请求；两者默认加载最新 500 条失败／会话，可扩大为 2,000，搜索只作用于已加载列表。单个会话详情不受列表范围限制，自动刷新保留展开状态。无会话记录的请求独立展示，不合并为同一会话。Traces 仅使用统计库快照，不读取原始会话文件；用户输入、工具结果／耗时及子代理跨度未采集，页面不推算这些数据。Tools 和 Projects 提供独立统计页面（见下）；Frustration 和 Gain 暂为占位。支持明暗／系统主题、数字 1–6 切换范围、G 加导航字母跳转。页面每 5 秒刷新，点击 Live 立即刷新。
+Traces 按会话展示请求数量、模型、失败数、Token 和费用，点击会话查看完整已记录会话的请求时间线；时间线色块与请求项均可点击展开，正文、思考、工具参数、原生输出及会话条目可继续逐项展开，支持全部展开／收起。请求详情的 Trace 链接可直接定位并展开对应请求。Errors 汇总覆盖范围内全部失败，Traces 列表指标覆盖范围内请求；两者默认加载最新 500 条失败／会话，可扩大为 2,000，搜索只作用于已加载列表。单个会话详情不受列表范围限制，自动刷新保留展开状态。无会话记录的请求独立展示，不合并为同一会话。Traces 仅使用统计库快照，不读取原始会话文件；新 session 的首次请求上下文包含当次输入，其余请求不额外保存完整输入。工具执行结果／耗时及子代理跨度未独立采集，页面不推算这些数据。Tools 和 Projects 提供独立统计页面（见下）；Frustration 和 Gain 暂为占位。支持明暗／系统主题、数字 1–6 切换范围、G 加导航字母跳转。页面每 5 秒刷新，点击 Live 立即刷新。
 
 Tools 展示模型发出的工具调用数量、趋势、参数字符数及归属 Token／费用；工具行和模型行可逐层展开，最近调用请求可打开原有详情，也支持搜索、按工具筛选和图例开关。调用优先从已提交会话快照提取，缺失时回退到 Completion／Responses 原生输出，同一请求不重复计数。每次模型请求的 Token／费用均分到该请求发出的全部工具调用，仅表示归属估算，不是工具独立费用。失败／取消请求的已保存调用可能不完整或未执行；工具执行结果、错误率和耗时仍为未采集。
 
@@ -630,7 +630,7 @@ Projects 按完整 cwd 聚合，保留同名不同路径的独立目录，展示
 
 统计口径：以请求开始时间筛选，UTC 毫秒落盘、本地时间展示；总输入 Token 已包含缓存读取和写入，Conversation tokens 为总输入加输出，Uncached input 为总输入减缓存读取和写入。缺失的 usage／缓存明细保持未知，不用估算值填充。TTFT 是发起调用至首个非空正文、思考、拒绝或工具参数增量的时间；Tokens/s 为输出 Token 除以请求总耗时。用户取消记为 Aborted，服务或协议错误记为 Failed；发送前取消和本地校验失败不计入。
 
-缓存写入从 Chat 的 `usage.prompt_tokens_details.cache_write_tokens`、Responses 的 `usage.input_tokens_details.cache_write_tokens` 采集，也兼容 usage 顶层的 `cache_write_tokens`／`cache_creation_input_tokens` 扩展；遵循这两种协议的总输入已包含缓存读写的口径，不额外叠加缓存 Token。不支持原生 Anthropic Messages 协议。未上报写入量保持未知，明确上报 `0` 才表示无写入。SQLite 自动升级到 v3，旧记录的写入量保留 NULL，不回填估算。v3 在同一迁移事务中增加仅覆盖 Failed 请求的时间／ID 部分索引，保留普通时间索引；错误汇总仍覆盖完整时间范围，仅返回列表受 limit 限制。升级保留历史正文和关联快照；只支持 v2 的旧二进制不能直接打开升级后的数据库。Premium requests 和订阅额度没有采集数据，保持未知。
+缓存写入从 Chat 的 `usage.prompt_tokens_details.cache_write_tokens`、Responses 的 `usage.input_tokens_details.cache_write_tokens` 采集，也兼容 usage 顶层的 `cache_write_tokens`／`cache_creation_input_tokens` 扩展；遵循这两种协议的总输入已包含缓存读写的口径，不额外叠加缓存 Token。不支持原生 Anthropic Messages 协议。未上报写入量保持未知，明确上报 `0` 才表示无写入。SQLite 自动升级到 v4，旧记录的写入量和首次请求上下文保持 NULL，不回填估算或补造历史。v3 增加仅覆盖 Failed 请求的时间／ID 部分索引；v4 增加首次请求 JSON 和技能摘要头快照。升级保留历史正文和关联快照；只支持 v3 或更早版本的旧二进制不能直接打开升级后的数据库。Premium requests 和订阅额度没有采集数据，保持未知。
 
 费用直接使用 `~/.pp/agent/models.yml` 中各模型的 `cost` 配置，按调用时保存的 `model_reference`（`provider/model` 配置引用，并非供应商模型名）精确匹配。无需另建价格文件。`cost` 可省略，省略时该模型未定价；配置时 `input`、`cacheRead`、`output` 必填，新增 `cacheWrite` 可省略以兼容旧配置；所有已配置单价都必须为非负有限数，单位为 **USD／百万 Token**，`0` 表示已知免费。例如在 `providers.<provider_id>.models.<model_id>` 的模型条目中填写：
 
@@ -645,9 +645,11 @@ cost:
 
 费用公式为 `(总输入 - 缓存读取 - 缓存写入) × cost.input + 缓存读取 × cost.cacheRead + 缓存写入 × cost.cacheWrite + 输出 × cost.output`，最后除以一百万。每次统计查询重新读取模型配置，修改后历史估算按当前单价重算，不代表历史账单或订阅实际支出。缺少价格、完整 usage 或缓存读写数量，以及缓存读写之和超过总输入等异常的请求都计入 Unpriced 并从估算中排除；写入量大于 0 时必须配置 `cacheWrite`；明确为 0 时无需写入单价。旧数据写入量未知也计入 Unpriced。全未定价显示 `—`，混合数据只合计已定价部分并标示覆盖数量。空范围的费用为 `$0`。模型配置不存在时全部未定价；文件损坏、字段错误或无法读取时，页面提示问题并保留其余统计，不返回配置原文或密钥。统计服务仍可在没有模型配置时启动。Overview、Requests 及请求详情沿用相同计价规则。每日费用按 UTC 日聚合，Average per day 以有请求的 UTC 日数为分母。模型按完整配置引用分组，同名跨供应商或同供应商不同别名不会混在一起。
 
-数据库保存模型输出（含可获得的思考、工具参数）、请求指标和已提交的对应会话条目快照；不额外保存完整输入上下文、请求头或认证配置。摘要和未提交输出没有会话条目时明确显示未记录。统计文件可能包含代码和模型输出，应按个人会话数据保管；不会自动清理，可运行 `pp gc` 删除超过 90 天的记录。目录权限为 `0700`、数据库为 `0600`，SQLite 使用 WAL 支持多进程写入；存储不可用只提示，不中断模型任务。
+数据库保存模型输出（含可获得的思考、工具参数）、请求指标和已提交的对应会话条目快照，并为每个新 session 的首次实际模型请求保存完整原生 JSON 请求体及当时注入的技能摘要头，不依赖 `debug`。快照包含完整 system prompt、用户消息及其他 `messages/input` 项、实际发送的工具定义和模型参数，不截断正文；不保存 HTTP 请求头或认证配置。首次请求失败、流中断或发送后取消仍保留快照，429 重试按同一次请求记录；发送前取消不消费首次采集资格。后续工具轮次、普通任务和切换模型不重复保存；`/new` 或 Plan Fresh 创建的新 session 重新采集，恢复已有 session 不补造快照。摘要和未提交输出没有会话条目时仍明确显示未记录。统计文件可能包含提示词、用户输入、代码和模型输出，应按个人会话数据保管；不会自动清理，可运行 `pp gc` 删除超过 90 天的记录。目录权限为 `0700`、数据库为 `0600`，SQLite 使用 WAL 支持多进程写入；存储不可用只提示，不中断模型任务。
 
-前端及 Inter 字体内嵌在二进制中，运行无需 Node 或 CDN；字体许可证见 `src/stats/fonts/LICENSE.txt`。只读接口为 `/api/stats/overview?range=24h`、`/api/stats/requests?range=24h&limit=500`、`/api/stats/models?range=24h`、`/api/stats/providers?range=24h`、`/api/stats/costs?range=24h`、`/api/stats/tools?range=24h`、`/api/stats/projects?range=24h`、`/api/stats/errors?range=24h&limit=500`、`/api/stats/traces?range=24h&limit=500`、`/api/stats/traces/{request_id}` 和 `/api/stats/requests/{id}`；详情正文按需加载，不在列表接口中返回。
+Requests 列表以 **First request** 标记及行左侧色条标识已保存首次上下文的请求，不根据当前筛选或排序猜测首次请求，旧记录不补造标记。Requests 详情顶部的 **Context** 与 **Trace** 按钮并排，Traces 展开区的 **Context** 与 **Full request details** 按钮并排；没有快照时 Context 按钮禁用并显示未记录。两处入口打开同一个桌面端上下文阅读器：Context 分类保留 system prompt、消息／输入项的原始顺序和其余请求参数；Tools 从快照中的 `tools` 展示名称、说明及完整 schema；Skills 展示本次提示词组装时冻结的技能名称、说明和 `skill://` URI，表示已提供给模型的技能摘要，不表示技能正文已读取或执行。查看时不扫描当前配置或技能目录。阅读器默认选中 system prompt，支持按名称／说明筛选、字符数、保留换行和缩进的原文高亮、自动折行、复制当前条目或完整请求 JSON；采用左右分栏布局，Esc 关闭后恢复原页面与展开状态。多模态及未知字段保留在对应条目和完整请求 JSON 中；旧记录及后续请求显示未记录。
+
+前端及 Inter 字体内嵌在二进制中，运行无需 Node 或 CDN；字体许可证见 `src/stats/fonts/LICENSE.txt`。只读接口为 `/api/stats/overview?range=24h`、`/api/stats/requests?range=24h&limit=500`、`/api/stats/models?range=24h`、`/api/stats/providers?range=24h`、`/api/stats/costs?range=24h`、`/api/stats/tools?range=24h`、`/api/stats/projects?range=24h`、`/api/stats/errors?range=24h&limit=500`、`/api/stats/traces?range=24h&limit=500`、`/api/stats/traces/{request_id}` 和 `/api/stats/requests/{id}`；详情正文按需加载，不在列表接口中返回。Requests 列表的 `has_context` 布尔字段仅表示该请求是否有已保存的首次上下文，不加载正文。请求详情新增可空的 `request_context`，存在时为包含原生 `request` 与技能摘要 `skills` 的快照对象；Trace 时间线接口仍只返回请求元数据，阅读器通过请求详情加载正文。
 
 ## 运行诊断日志
 

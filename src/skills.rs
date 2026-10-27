@@ -52,6 +52,13 @@ pub(crate) struct Skill {
     pub(crate) enabled: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct SkillHeader {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) uri: String,
+}
+
 const URI_NAME: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'.')
@@ -283,18 +290,25 @@ impl Skills {
     }
 
     pub(crate) fn summary(&self) -> String {
-        let entries = self
-            .entries
+        Self::format_summary(&self.headers())
+    }
+
+    pub(crate) fn headers(&self) -> Vec<SkillHeader> {
+        self.entries
             .iter()
             .filter(|skill| skill.enabled)
-            .map(|skill| {
-                format!(
-                    "- {} (`{}`): {}",
-                    skill.name,
-                    skill.uri(),
-                    skill.description
-                )
+            .map(|skill| SkillHeader {
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+                uri: skill.uri(),
             })
+            .collect()
+    }
+
+    pub(crate) fn format_summary(headers: &[SkillHeader]) -> String {
+        let entries = headers
+            .iter()
+            .map(|skill| format!("- {} (`{}`): {}", skill.name, skill.uri, skill.description))
             .collect::<Vec<_>>()
             .join("\n");
         if entries.is_empty() {

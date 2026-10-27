@@ -12,7 +12,10 @@ use std::{
     fs::{self, DirBuilder, OpenOptions},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -22,6 +25,32 @@ pub(crate) struct RequestContext {
     pub cwd: PathBuf,
     pub purpose: &'static str,
     pub session_file: Option<PathBuf>,
+    pub first_request: Arc<AtomicBool>,
+    pub skills: Vec<crate::skills::SkillHeader>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct RequestSnapshot {
+    pub request: Value,
+    pub skills: Vec<crate::skills::SkillHeader>,
+}
+
+impl RequestContext {
+    pub fn capture(&self, request: &impl Serialize) -> Option<RequestSnapshot> {
+        if !self.first_request.swap(false, Ordering::Relaxed) {
+            return None;
+        }
+        match serde_json::to_value(request) {
+            Ok(request) => Some(RequestSnapshot {
+                request,
+                skills: self.skills.clone(),
+            }),
+            Err(_) => {
+                warn();
+                None
+            }
+        }
+    }
 }
 
 pub(crate) struct Observation {
@@ -32,6 +61,7 @@ pub(crate) struct Observation {
     pub output: Value,
     pub stop_reason: Option<String>,
     pub usage: Option<crate::context::TokenUsage>,
+    pub request_context: Option<RequestSnapshot>,
 }
 impl Observation {
     pub fn new() -> Self {
@@ -43,6 +73,7 @@ impl Observation {
             output: Value::Null,
             stop_reason: None,
             usage: None,
+            request_context: None,
         }
     }
     pub fn event(&mut self, event: &crate::events::AgentEvent, started: Instant) {
@@ -179,13 +210,13 @@ impl Store {
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_millis(250))?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 3, "unsupported statistics database version");
+        ensure!(version <= 4, "unsupported statistics database version");
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        if version < 3 {
+        if version < 4 {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-            ensure!(version <= 3, "unsupported statistics database version");
+            ensure!(version <= 4, "unsupported statistics database version");
             if version == 0 {
                 tx.execute_batch("CREATE TABLE IF NOT EXISTS requests (
                 id INTEGER PRIMARY KEY, request_key TEXT NOT NULL UNIQUE, timestamp INTEGER NOT NULL,
@@ -208,17 +239,29 @@ impl Store {
             if version < 3 {
                 tx.execute_batch("CREATE INDEX IF NOT EXISTS requests_failed_time ON requests(timestamp DESC,id DESC) WHERE status='failed'; PRAGMA user_version=3;")?;
             }
+            if version < 4 {
+                tx.execute_batch("ALTER TABLE request_payloads ADD COLUMN request_json TEXT; ALTER TABLE request_payloads ADD COLUMN skills_json TEXT; PRAGMA user_version=4;")?;
+            }
             tx.commit()?;
         }
         Ok(Self { conn, models_path })
     }
+    #[cfg(test)]
     pub fn insert(&mut self, record: &RequestRow, output: &Value) -> Result<()> {
+        self.insert_with_context(record, output, None)
+    }
+    pub fn insert_with_context(
+        &mut self,
+        record: &RequestRow,
+        output: &Value,
+        context: Option<&RequestSnapshot>,
+    ) -> Result<()> {
         let tx = self.conn.transaction()?;
         let inserted = tx.execute("INSERT INTO requests (request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19) ON CONFLICT(request_key) DO NOTHING",params![record.request_key,record.timestamp,record.model,record.provider,record.model_reference,record.api,record.project,record.cwd,record.purpose,record.session_file,record.duration_ms,record.ttft_ms,record.input_tokens,record.output_tokens,record.cached_tokens,record.status,record.stop_reason,record.error_message,record.cache_write_tokens])?;
         if inserted != 0 {
             tx.execute(
-                "INSERT INTO request_payloads(request_id,output_json) VALUES (?1,?2)",
-                params![tx.last_insert_rowid(), serde_json::to_string(output)?],
+                "INSERT INTO request_payloads(request_id,output_json,request_json,skills_json) VALUES (?1,?2,?3,?4)",
+                params![tx.last_insert_rowid(), serde_json::to_string(output)?, context.map(|c| serde_json::to_string(&c.request)).transpose()?, context.map(|c| serde_json::to_string(&c.skills)).transpose()?],
             )?;
         }
         tx.commit()?;
@@ -235,8 +278,20 @@ impl Store {
         Ok(())
     }
     pub fn latest(&self, since: i64, until: i64, limit: usize) -> Result<Vec<RequestRow>> {
-        Ok(self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC LIMIT ?3"))?
-            .query_map(params![since,until,limit as i64], row)?.collect::<rusqlite::Result<_>>()?)
+        Ok(self
+            .latest_with_context(since, until, limit)?
+            .into_iter()
+            .map(|(row, _)| row)
+            .collect())
+    }
+    pub fn latest_with_context(
+        &self,
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> Result<Vec<(RequestRow, bool)>> {
+        Ok(self.conn.prepare(&format!("SELECT {COLUMNS},EXISTS(SELECT 1 FROM request_payloads WHERE request_id=requests.id AND request_json IS NOT NULL) FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC LIMIT ?3"))?
+            .query_map(params![since,until,limit as i64], |r| Ok((row(r)?, r.get(21)?)))?.collect::<rusqlite::Result<_>>()?)
     }
     pub fn detail(&self, id: i64) -> Result<Option<Value>> {
         let record = self
@@ -250,13 +305,24 @@ impl Store {
         let Some(record) = record else {
             return Ok(None);
         };
-        let (output, entry): (String, Option<String>) = self.conn.query_row(
-            "SELECT output_json,session_entry_json FROM request_payloads WHERE request_id=?1",
+        let (output, entry, request, skills): (String, Option<String>, Option<String>, Option<String>) = self.conn.query_row(
+            "SELECT output_json,session_entry_json,request_json,skills_json FROM request_payloads WHERE request_id=?1",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
+        let request_context = request
+            .map(|request| -> Result<RequestSnapshot> {
+                Ok(RequestSnapshot {
+                    request: serde_json::from_str(&request)?,
+                    skills: skills
+                        .map(|skills| serde_json::from_str(&skills))
+                        .transpose()?
+                        .unwrap_or_default(),
+                })
+            })
+            .transpose()?;
         Ok(Some(
-            json!({"request":analytics::Pricing::load(self).request(&record)?,"output_message":serde_json::from_str::<Value>(&output)?,"session_entry":entry.map(|s|serde_json::from_str::<Value>(&s)).transpose()?}),
+            json!({"request":analytics::Pricing::load(self).request(&record)?,"output_message":serde_json::from_str::<Value>(&output)?,"session_entry":entry.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,"request_context":request_context}),
         ))
     }
     pub fn overview(&self, range: Range, now: i64) -> Result<Value> {
@@ -398,7 +464,11 @@ pub(crate) fn save(
             error_message: outcome.as_ref().err().map(|e| format!("{e:#}")),
         };
         let output = json!({"native":observation.output,"text":observation.text,"thinking":observation.thinking,"partial":outcome.is_err()});
-        Store::open(&database_path()?)?.insert(&record, &output)?;
+        Store::open(&database_path()?)?.insert_with_context(
+            &record,
+            &output,
+            observation.request_context.as_ref(),
+        )?;
         Ok(key)
     })();
     match result {
@@ -451,6 +521,111 @@ mod tests {
             error_message: None,
         }
     }
+    #[test]
+    fn stats_context_list_marks_saved_first_requests_without_loading_bodies() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let snapshot = RequestSnapshot {
+            request: json!({"instructions":"private-system-marker","unknown":{"preserved":true}}),
+            skills: Vec::new(),
+        };
+        let mut first = fixture("first", 1000);
+        first.status = "failed".into();
+        store
+            .insert_with_context(&first, &Value::Null, Some(&snapshot))
+            .unwrap();
+        store.insert(&fixture("later", 1001), &Value::Null).unwrap();
+        store.insert(&fixture("legacy", 900), &Value::Null).unwrap();
+        let (status, _, body) = server::dispatch(&store, "/api/stats/requests?range=all");
+        assert_eq!(status, 200);
+        let list: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            list["requests"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| (
+                    r["request_key"].as_str().unwrap(),
+                    r["has_context"].as_bool().unwrap()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("later", false), ("first", true), ("legacy", false)]
+        );
+        assert!(!body.contains("private-system-marker"));
+        assert!(!body.contains("request_context"));
+        assert!(!store.latest_with_context(1001, 2000, 1).unwrap()[0].1);
+        assert!(!store.latest_with_context(0, 2000, 1).unwrap()[0].1);
+        store
+            .conn
+            .execute_batch("DELETE FROM request_payloads WHERE request_id=(SELECT id FROM requests WHERE request_key='first'); DELETE FROM requests WHERE request_key='first';")
+            .unwrap();
+        assert!(
+            store
+                .latest_with_context(0, 2000, 500)
+                .unwrap()
+                .iter()
+                .all(|(_, has_context)| !has_context)
+        );
+    }
+
+    #[test]
+    fn stats_context_v3_upgrade_roundtrips_snapshots_and_deduplicates_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.db");
+        let mut store = open_store(&path).unwrap();
+        let record = fixture("legacy", 1000);
+        store
+            .insert(&record, &json!({"text":"old output"}))
+            .unwrap();
+        store
+            .link(
+                "legacy",
+                Path::new("/missing/session.jsonl"),
+                &[json!({"id":"retained-entry"})],
+            )
+            .unwrap();
+        store.conn.execute_batch("ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json; PRAGMA user_version=3;").unwrap();
+        drop(store);
+        let mut store = open_store(&path).unwrap();
+        let old = store.detail(1).unwrap().unwrap();
+        assert_eq!(old["output_message"]["text"], "old output");
+        assert_eq!(old["session_entry"], json!([{"id":"retained-entry"}]));
+        assert!(old["request_context"].is_null());
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        let snapshot = RequestSnapshot {
+            request: json!({"instructions":"full\n\t<script>&</script>","input":[{"type":"input_image","image_url":"data:image/png;base64,AAAA","future_field":{"nested":[1,null]}}],"tools":[{"type":"function","name":"read","parameters":{"additionalProperties":false}}],"unknown":{"preserved":true}}),
+            skills: vec![crate::skills::SkillHeader {
+                name: "available".into(),
+                description: "header".into(),
+                uri: "skill://available".into(),
+            }],
+        };
+        let record = fixture("snapshot", 1001);
+        store
+            .insert_with_context(&record, &json!({"text":"new output"}), Some(&snapshot))
+            .unwrap();
+        store
+            .insert_with_context(&record, &json!({"text":"must not overwrite"}), None)
+            .unwrap();
+        assert_eq!(store.latest(0, 2000, 500).unwrap().len(), 2);
+        drop(store);
+        let store = open_store(&path).unwrap();
+        let detail = store.detail(2).unwrap().unwrap();
+        assert_eq!(
+            detail["request_context"],
+            serde_json::to_value(&snapshot).unwrap()
+        );
+        assert_eq!(detail["output_message"]["text"], "new output");
+        let (status, _, body) = server::dispatch(&store, "/api/stats/requests?range=all");
+        assert_eq!(status, 200);
+        assert!(!body.contains("request_context"));
+        assert!(!body.contains("future_field"));
+    }
+
     #[test]
     fn stats_analytics_groups_all_rows_and_prices_cached_input_once() {
         let dir = tempfile::tempdir().unwrap();
@@ -550,7 +725,7 @@ providers:
         store
             .conn
             .execute_batch(
-                "DROP INDEX requests_failed_time; ALTER TABLE requests DROP COLUMN cache_write_tokens; PRAGMA user_version=1;",
+                "DROP INDEX requests_failed_time; ALTER TABLE requests DROP COLUMN cache_write_tokens; ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json; PRAGMA user_version=1;",
             )
             .unwrap();
         drop(store);
@@ -597,10 +772,6 @@ providers:
                 .unwrap();
         }
         store.link("failed-one", Path::new("/missing/session.jsonl"), &[json!({"id":"entry","type":"message","message":{"role":"assistant","content":"retained snapshot"}})]).unwrap();
-        store
-            .conn
-            .execute_batch("DROP INDEX requests_failed_time; PRAGMA user_version=2;")
-            .unwrap();
         let pricing = analytics::Pricing::default();
         let errors = store.errors(Range::All, 2000, 500, &pricing).unwrap();
         assert_eq!(errors["summary"]["requests"], 2);
@@ -608,6 +779,7 @@ providers:
         let details = (1..=4)
             .map(|id| store.detail(id).unwrap().unwrap())
             .collect::<Vec<_>>();
+        store.conn.execute_batch("DROP INDEX requests_failed_time; ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json; PRAGMA user_version=2;").unwrap();
         drop(store);
         for _ in 0..2 {
             let store = open_store(&path).unwrap();

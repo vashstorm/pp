@@ -78,14 +78,26 @@ impl Agent {
         model: &str,
         tool_names: Vec<String>,
     ) -> Result<String> {
+        self.compose_prompt_snapshot(instructions, mode, model, tool_names)
+            .map(|(system, _)| system)
+    }
+
+    pub(super) fn compose_prompt_snapshot(
+        &self,
+        instructions: &str,
+        mode: &str,
+        model: &str,
+        tool_names: Vec<String>,
+    ) -> Result<(String, Vec<crate::skills::SkillHeader>)> {
         let project = project_instructions::load(self.tools.cwd())?;
-        let summary = self
+        let skills = self
             .tools
             .skills
             .lock()
             .map_err(|_| anyhow!("skill registry unavailable"))?
-            .summary();
-        if let Some(source) = &self.prompt_source {
+            .headers();
+        let summary = crate::skills::Skills::format_summary(&skills);
+        let system = if let Some(source) = &self.prompt_source {
             let context = crate::system_prompt::RenderContext::new(
                 self.tools.cwd(),
                 model,
@@ -112,7 +124,8 @@ impl Agent {
                 system.push_str(instructions);
             }
             Ok(system)
-        }
+        }?;
+        Ok((system, skills))
     }
 
     /// 候选会话使用目标模式的工具清单，逐请求刷新使用原生请求里的实际清单。

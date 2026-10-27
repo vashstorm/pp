@@ -1096,7 +1096,7 @@ function requestTable(rows) {
           .slice(0, visible)
           .map(
             (r) =>
-              `<tr tabindex="0" data-id="${r.id}" aria-label="View ${h(r.model)} request ${r.id}"><td><div class="model-name">${h(r.model)}</div><div class="provider">${h(r.provider)}</div></td><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td class="project" title="${h(r.cwd)}">${h(r.project)}</td><td class="right num" title="${h(`Total input: ${number(r.input_tokens)}; uncached: ${number(uncached(r))}`)}">${short(uncached(r))}</td><td class="right num" title="Cache read: ${number(r.cached_tokens)}">${detailed(r.cached_tokens)}</td><td class="right num">${detailed(r.cache_write_tokens)}</td><td class="right num">${detailed(r.output_tokens)}</td><td class="right num">${detailed(r.cost, money(r.cost), " USD")}</td><td class="right num">${detailed(r.duration_ms, duration(r.duration_ms), " ms")}</td><td class="right num">${detailed(r.ttft_ms, duration(r.ttft_ms), " ms")}</td><td>${statusBadge(r)}</td></tr>`,
+              `<tr tabindex="0" data-id="${r.id}"${r.has_context ? ' class="first-request-row"' : ""} aria-label="View ${h(r.model)} request ${r.id}${r.has_context ? ", session first request with saved context" : ""}"><td><div class="model-name">${h(r.model)}</div><div class="request-model-meta"><span class="provider">${h(r.provider)}</span>${r.has_context ? '<span class="first-request-badge" title="Session first request · full context saved">First request</span>' : ""}</div></td><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td class="project" title="${h(r.cwd)}">${h(r.project)}</td><td class="right num" title="${h(`Total input: ${number(r.input_tokens)}; uncached: ${number(uncached(r))}`)}">${short(uncached(r))}</td><td class="right num" title="Cache read: ${number(r.cached_tokens)}">${detailed(r.cached_tokens)}</td><td class="right num">${detailed(r.cache_write_tokens)}</td><td class="right num">${detailed(r.output_tokens)}</td><td class="right num">${detailed(r.cost, money(r.cost), " USD")}</td><td class="right num">${detailed(r.duration_ms, duration(r.duration_ms), " ms")}</td><td class="right num">${detailed(r.ttft_ms, duration(r.ttft_ms), " ms")}</td><td>${statusBadge(r)}</td></tr>`,
           )
           .join("")
       : '<tr><td colspan="11"><div class="empty">No matching requests</div></td></tr>'
@@ -1236,6 +1236,11 @@ $("page").addEventListener("input", (e) => {
   }
 });
 $("page").addEventListener("click", (e) => {
+  const context = e.target.closest("[data-context-id]");
+  if (context) {
+    openContextReader(traceCache.get(Number(context.dataset.contextId)), context);
+    return;
+  }
   if (insightsClick(e)) return;
   if (activityClick(e)) return;
   const expand = e.target.closest("[data-expand]");
@@ -1338,7 +1343,7 @@ function drawerContent(detail) {
     s: r.session_file || "",
     request: String(r.id),
   });
-  return `<div class="drawer-header"><div><h2>${h(r.model)}</h2><p class="panel-description">${h(r.provider)} · ${relative(r.timestamp)}</p></div><div class="drawer-actions"><a href="#/traces?${trace}">${icon("traces", 12)} Trace</a>${statusBadge(r, true)}<button class="close" aria-label="Close">${icon("close", 18)}</button></div></div><div class="drawer-body">${r.error_message ? `<div class="detail-error">${h(r.error_message)}</div>` : ""}<div class="detail-title">Timing</div>${detailsGrid(
+  return `<div class="drawer-header"><div class="drawer-heading"><div><h2>${h(r.model)}</h2><p class="panel-description">${h(r.provider)} · ${relative(r.timestamp)}</p></div><div class="drawer-actions">${statusBadge(r, true)}<button class="close" aria-label="Close">${icon("close", 18)}</button></div></div><div class="request-actions">${requestContextButton(detail)}<a class="outline-button" href="#/traces?${trace}">${icon("traces", 14)} Trace</a><div class="request-context-state">${requestContextNote(detail)}</div></div></div><div class="drawer-body">${r.error_message ? `<div class="detail-error">${h(r.error_message)}</div>` : ""}<div class="detail-title">Timing</div>${detailsGrid(
     [
       ["Started", localTime(r.timestamp)],
       ["Duration", duration(r.duration_ms)],
@@ -1396,6 +1401,7 @@ async function openDrawer(id, element) {
     );
     if (token !== detailGeneration) return;
     payloads = {};
+    drawerContextDetail = detail;
     $("drawer").innerHTML = drawerContent(detail);
     $("drawer").querySelector(".close").focus({ preventScroll: true });
   } catch (error) {
@@ -1406,6 +1412,7 @@ async function openDrawer(id, element) {
   }
 }
 function closeDrawer() {
+  closeContextReader();
   if ($("overlay").hidden) return;
   detailGeneration++;
   detailController?.abort();
@@ -1419,11 +1426,17 @@ function closeDrawer() {
   target?.focus({ preventScroll: true });
   selectedId = null;
   payloads = {};
+  drawerContextDetail = null;
 }
 $("overlay").onclick = (e) => {
   if (e.target === $("overlay") || e.target.closest(".close")) closeDrawer();
 };
 $("drawer").addEventListener("click", async (e) => {
+  const context = e.target.closest("[data-context-id]");
+  if (context) {
+    openContextReader(drawerContextDetail, context);
+    return;
+  }
   const toggle = e.target.closest("[data-payload]");
   if (toggle) {
     const open = toggle.getAttribute("aria-expanded") !== "true";
@@ -1453,6 +1466,7 @@ function toast(text) {
   toastTimer = setTimeout(() => ($("toast").hidden = true), 3500);
 }
 document.addEventListener("keydown", (e) => {
+  if (contextReaderKeydown(e)) return;
   if (!$("overlay").hidden) {
     if (e.key === "Escape") {
       e.preventDefault();

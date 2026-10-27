@@ -710,6 +710,7 @@ impl Agent {
         self.client.set_stats_context(self.journal.stats_context(
             &metadata,
             if automatic { "auto_compact" } else { "compact" },
+            &self.request_skills,
         ));
         let outcome = match &mut self.session {
             Session::Completion(request) => compact_completion(

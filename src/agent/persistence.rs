@@ -24,6 +24,10 @@ use std::{
     io::{BufRead, BufReader, Seek, SeekFrom, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -127,6 +131,7 @@ pub(super) struct SessionJournal {
     capture_thinking: bool,
     pending_checkpoint: bool,
     pending_stats: Option<String>,
+    first_request: Arc<AtomicBool>,
 }
 
 impl SessionJournal {
@@ -134,12 +139,19 @@ impl SessionJournal {
         &self,
         metadata: &Metadata<'_>,
         purpose: &'static str,
+        skills: &[crate::skills::SkillHeader],
     ) -> crate::stats::RequestContext {
         crate::stats::RequestContext {
             model_reference: metadata.model_reference.to_owned(),
             cwd: metadata.cwd.to_owned(),
             purpose,
             session_file: self.id().map(|id| self.dir.join(format!("{id}.jsonl"))),
+            first_request: self.first_request.clone(),
+            skills: if self.first_request.load(Ordering::Relaxed) {
+                skills.to_vec()
+            } else {
+                Vec::new()
+            },
         }
     }
     pub(super) fn track_stats(&mut self, key: Option<String>, success: bool) {
@@ -169,6 +181,7 @@ impl SessionJournal {
             capture_thinking: false,
             pending_checkpoint: false,
             pending_stats: None,
+            first_request: Arc::new(AtomicBool::new(true)),
         }
     }
     pub(super) fn id(&self) -> Option<&str> {
@@ -1357,6 +1370,7 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
             capture_thinking,
             pending_checkpoint: false,
             pending_stats: None,
+            first_request: Arc::new(AtomicBool::new(false)),
         },
         replay,
     })
@@ -2171,6 +2185,57 @@ mod tests {
             tool_limits: ToolLimits::default(),
             base_system: "system",
             prompt_source: None,
+        }
+    }
+
+    #[test]
+    fn stats_context_early_journal_does_not_consume_capture_and_restore_does_not_rearm() {
+        for protocol in [Protocol::Completion, Protocol::Response] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut journal = SessionJournal::new(dir.path().to_owned());
+            let metadata = test_metadata(dir.path());
+            let session =
+                Session::new("model".into(), protocol, "system".into(), EditMode::Replace);
+            journal
+                .sent(
+                    &metadata,
+                    (&session).into(),
+                    &WorkflowState::default(),
+                    Some("accepted input"),
+                    None,
+                )
+                .unwrap();
+            let context = journal.stats_context(&metadata, "task", &[]);
+            assert!(context.first_request.load(Ordering::Relaxed));
+            let native = match &session {
+                Session::Completion(request) => serde_json::to_value(request).unwrap(),
+                Session::Response(request) => serde_json::to_value(request).unwrap(),
+            };
+            assert_eq!(context.capture(&native).unwrap().request, native);
+            assert!(
+                journal
+                    .stats_context(&metadata, "task", &[])
+                    .capture(&native)
+                    .is_none()
+            );
+            let id = journal.id().unwrap().to_owned();
+            drop(journal);
+            let restored = load(dir.path(), Some(&id), false).unwrap();
+            assert!(
+                restored
+                    .journal
+                    .stats_context(&metadata, "task", &[])
+                    .capture(&native)
+                    .is_none()
+            );
+            let mut journal = restored.journal;
+            journal.reset();
+            assert!(
+                journal
+                    .stats_context(&metadata, "task", &[])
+                    .capture(&native)
+                    .is_some()
+            );
         }
     }
 

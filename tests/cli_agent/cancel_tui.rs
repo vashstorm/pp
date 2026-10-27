@@ -534,6 +534,7 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
             pty.input("cancel idle prompt\r");
             let (path, body) = raw.expect_request();
             assert_eq!(path, api_path(protocol));
+            let first_body = body.clone();
             assert_eq!(
                 cancel_user_messages(&body, protocol),
                 ["cancel idle prompt"]
@@ -611,6 +612,9 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
                 .collect::<Result<_, _>>()
                 .unwrap();
             assert_eq!(statuses, ["aborted", "ok"]);
+            let contexts = super::stats::contexts(home.path());
+            assert_eq!(contexts[0]["request"], first_body);
+            assert!(contexts[1].is_null());
             let ttft: Option<f64> = database
                 .query_row(
                     "SELECT ttft_ms FROM requests WHERE status='aborted'",

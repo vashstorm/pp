@@ -590,6 +590,37 @@ tbody tr[data-id]:focus {
   font-weight: 500;
   font-size: 12.5px;
 }
+.request-model-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+}
+.request-model-meta .provider { margin: 0; }
+.first-request-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 5px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.first-request-badge::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.first-request-row td:first-child {
+  box-shadow: inset 3px 0 var(--accent);
+}
 .provider,
 .stop {
   color: var(--muted);
@@ -766,7 +797,10 @@ td.project {
   background: var(--panel);
   border-bottom: 1px solid var(--line);
   padding: 18px 20px;
+}
+.drawer-heading {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
@@ -775,13 +809,8 @@ td.project {
 }
 .drawer-actions {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-.drawer-actions a {
-  font-size: 12px;
-  color: var(--muted);
-  white-space: nowrap;
+  align-items: center;
+  gap: 18px;
 }
 .close {
   color: var(--muted);
@@ -869,13 +898,202 @@ pre {
   bottom: 25px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 100;
+  z-index: 200;
   background: var(--text);
   color: var(--panel);
   padding: 9px 18px;
   border-radius: 8px;
   font-size: 12px;
 }
+.request-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+.request-actions .outline-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 32px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.request-actions .context-button:not(:disabled) {
+  border-color: #247688;
+  background: #247688;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2px 6px #24768833;
+}
+.request-actions .context-button:not(:disabled):hover {
+  border-color: #1c6373;
+  background: #1c6373;
+}
+.request-actions .context-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.request-context-state { margin-left: auto; }
+.context-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+#context-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--veil);
+  backdrop-filter: blur(3px);
+}
+#context-reader {
+  width: min(1500px, 100%);
+  height: calc(100dvh - 48px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 15px 60px #0003;
+  overflow: hidden;
+}
+.context-reader-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.context-reader-heading h2 { font-size: 15px; }
+.context-reader-heading > div:first-child { min-width: 0; }
+.context-reader-heading h2 span { color: var(--muted); font-weight: 400; }
+.context-reader-heading p, .context-detail-heading p {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 7px 0 0;
+}
+.context-reader-actions { display: flex; align-items: center; gap: 20px; flex-shrink: 0; }
+.context-reader-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 30%) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+}
+.context-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-right: 1px solid var(--line);
+  background: var(--bg);
+}
+.context-sidebar label {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 18px 16px 8px;
+}
+#context-search {
+  margin: 0 16px 14px;
+  min-width: 0;
+  width: calc(100% - 32px);
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+#context-tabs {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 0 12px 12px;
+  border-bottom: 1px solid var(--line);
+}
+#context-tabs button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+#context-tabs button[aria-selected="true"] {
+  color: var(--text);
+  background: var(--selected);
+}
+#context-tabs span { font-size: 10px; color: var(--muted); }
+#context-items { overflow: auto; min-height: 0; padding: 8px; }
+.context-item {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  text-align: left;
+  border-radius: 6px;
+  margin-bottom: 3px;
+}
+.context-item:hover { background: var(--hover); }
+.context-item.selected {
+  background: var(--panel);
+  box-shadow: inset 3px 0 var(--accent);
+}
+.context-item b {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.context-item span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+.context-item span:empty { display: none; }
+.context-item-detail { overflow: auto; padding: 24px; min-width: 0; }
+.context-detail-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.context-detail-heading h3 { font-size: 14px; overflow-wrap: anywhere; }
+.context-detail-heading button { flex-shrink: 0; }
+.context-code {
+  padding: 18px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+.context-original { margin-top: 20px; }
+.context-original summary { color: var(--muted); font-size: 12px; cursor: pointer; margin-bottom: 12px; }
+.context-skill-note { font-size: 12px; color: var(--muted); line-height: 1.7; margin: 0 0 16px; }
+.context-token-key, .context-token-marker { color: var(--blue); }
+.context-token-string { color: var(--green); }
+.context-token-literal { color: var(--pink); }
+.context-token-tag { color: var(--accent); }
 .unavailable {
   font-size: 11px;
   color: var(--muted);

@@ -82,7 +82,11 @@ impl Agent {
         let mut client = OpenAiClient::new(&config)?;
         // Costs are recorded for the source session under the review purpose;
         // they never become main native exchanges or context usage.
-        client.set_stats_context(self.journal.stats_context(&metadata, "plan_review"));
+        client.set_stats_context(self.journal.stats_context(
+            &metadata,
+            "plan_review",
+            &self.request_skills,
+        ));
         let mut session = Session::new(
             self.current_model.model.clone(),
             self.current_model.protocol,
@@ -826,4 +830,3 @@ mod tests {
         }
     }
 }
-
