@@ -119,9 +119,8 @@ fn plan_line_commands_never_request_model() {
         error
             .matches("/plan requires the TUI; run pp in a terminal.")
             .count(),
-        4
+        5
     );
-    assert!(error.contains("usage: /plan [view|new|off]"), "{error}");
     assert!(server.try_recv().unwrap().is_none());
     assert!(!dir.path().join(".pp/plans").exists());
 }

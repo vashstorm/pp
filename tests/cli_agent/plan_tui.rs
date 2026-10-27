@@ -86,6 +86,89 @@ fn plan_enter(pty: &mut Pty, server: &Server) {
     no_more(server);
 }
 
+#[test]
+fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut settings = super::mcp::settings("");
+        settings["notification_timeout_seconds"] = json!(1);
+        std::fs::write(
+            config_path(home.path(), "settings.yml"),
+            settings.to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&fixture, Some(protocol)),
+        )
+        .unwrap();
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready();
+        pty.input("/plan Research the login flow\r");
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        plan_wait_mode(&mut pty, "Plan");
+        cancel_mcp_assert_pid_stopped(&project.path().join("mcp-log.pid"));
+        assert_eq!(
+            cancel_user_messages(&body, protocol),
+            ["Research the login flow"]
+        );
+        let tools = body["tools"].as_array().unwrap();
+        assert!(!tools.is_empty());
+        for tool in tools {
+            let name = if protocol == "completion" {
+                &tool["function"]["name"]
+            } else {
+                &tool["name"]
+            };
+            assert!(
+                matches!(
+                    name.as_str(),
+                    Some("read" | "grep" | "glob" | "ask" | "plan_write" | "plan_submit")
+                ),
+                "{body}"
+            );
+        }
+        // 即使模型返回隐藏的写入调用，也必须已经启用 Plan 执行门禁。
+        plan_calls(
+            request,
+            protocol,
+            json!([plan_call(
+                protocol,
+                "deny-write",
+                "write",
+                json!({"path":"forbidden.txt","content":"wrong"})
+            )]),
+        );
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert_eq!(
+            cancel_tool_outputs(&body, protocol).last().unwrap().1,
+            json!({"ok":false,"error":"Tool is not available in Plan mode."})
+        );
+        assert!(!project.path().join("forbidden.txt").exists());
+        plan_final(request, protocol, "Research complete");
+        pty.wait_for("首个规划请求完成", |screen| {
+            screen.contents().contains("Research complete")
+        });
+        pty.ready();
+        pty.input("/plan Continue the research\r");
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert_eq!(
+            cancel_user_messages(&body, protocol),
+            ["Research the login flow", "Continue the research"]
+        );
+        plan_final(request, protocol, "Follow-up complete");
+        pty.wait_for("追加规划请求完成", |screen| {
+            screen.contents().contains("Follow-up complete")
+        });
+        pty.ready();
+        no_more(&fixture);
+        pty.input("\x03");
+        pty.finish();
+    }
+}
+
 fn plan_wait_review(pty: &mut Pty, revision: u64) {
     pty.wait_for("saved plan review panel", |screen| {
         let text = cancel_normalize(screen);

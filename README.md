@@ -105,7 +105,7 @@ Use `/help` for full help and `/tips` for usage tips. The following slash comman
 | --- | --- |
 | `/model`, `/effort` | Switch models and reasoning levels while keeping history |
 | `/init` | Create or update the current project's `AGENTS.md` |
-| `/plan` | Research and review a plan, then execute after approval (TUI only) |
+| `/plan [prompt]` | Enter Plan mode and optionally send a task immediately; execute after approval (TUI only) |
 | `/compact`, `/new` | Compact context or start a new session |
 | `/resume`, `/tree` | Restore a session or navigate back through current history (TUI only) |
 | `/changes` | View recent-task edit/write changes and undo individual files (TUI only) |

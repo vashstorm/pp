@@ -557,12 +557,17 @@ struct App {
     resume_note: Option<String>,
     // EnterPlan 因 MCP 清理失败而 Err：下一次 /plan 优先重发 EnterPlan 重试。
     plan_retry_enter: bool,
-    // /plan 的打开意图在 EnterPlan 成功后兑现（有正文则打开审阅）。
-    plan_open_after_enter: bool,
+    // EnterPlan 成功后再打开审阅或发送提示词，失败时不得发送。
+    plan_after_enter: Option<PlanEnterAction>,
     // 独立审查页的临时 transcript；审查进度不进主对话、不更新用量。
     review_transcript: Option<Transcript>,
     // 审查成功后待下一次 ReadPlan 消费的最终报告（刷新面板或降级展示）。
     plan_review_pending: Option<PlanReviewReport>,
+}
+
+enum PlanEnterAction {
+    Open,
+    Prompt(String),
 }
 
 // worker 内部把 Agent 用量快照包装为进度事件；估算失败时跳过，不中断命令。
@@ -699,7 +704,7 @@ impl App {
             plan_progress: (0, 0),
             resume_note: None,
             plan_retry_enter: false,
-            plan_open_after_enter: false,
+            plan_after_enter: None,
             review_transcript: None,
             plan_review_pending: None,
         };
@@ -1136,6 +1141,7 @@ impl App {
         self.changes_panel = None;
         self.plan_panel = None;
         self.plan_confirm = None;
+        self.plan_after_enter = None;
         self.review_transcript = None;
         self.plan_review_pending = None;
         self.escape_tap.reset();
@@ -1287,7 +1293,7 @@ impl App {
         }
     }
 
-    fn apply_plan_command(&mut self, command: PlanCommand) {
+    fn apply_plan_command(&mut self, command: PlanCommand<'_>) {
         const PENDING_MODE: &str = "Apply pending input before changing Plan mode.";
         match command {
             PlanCommand::Open => {
@@ -1296,7 +1302,7 @@ impl App {
                 }
                 if self.workflow.mode == WorkMode::Execute || self.plan_retry_enter {
                     // Execute 进入 Plan，或上一次进入失败（MCP 清理残留）时重试。
-                    self.plan_open_after_enter = true;
+                    self.plan_after_enter = Some(PlanEnterAction::Open);
                     self.start_plan_transition(
                         |cancellation| WorkerCommand::EnterPlan { cancellation },
                         State::ChangingPlan,
@@ -1304,6 +1310,16 @@ impl App {
                 } else {
                     self.request_plan_read_or_hint();
                 }
+            }
+            PlanCommand::Prompt(prompt) => {
+                if !self.plan_transition_ready(PENDING_MODE) {
+                    return;
+                }
+                self.plan_after_enter = Some(PlanEnterAction::Prompt(prompt.to_owned()));
+                self.start_plan_transition(
+                    |cancellation| WorkerCommand::EnterPlan { cancellation },
+                    State::ChangingPlan,
+                );
             }
             PlanCommand::View => {
                 if matches!(self.state, State::Running | State::Cancelling) {
@@ -1953,18 +1969,31 @@ impl App {
                 Ok(WorkerEvent::WorkflowChanged(result)) => {
                     let from_approval = matches!(self.state, State::PreparingExecution);
                     let from_enter = matches!(self.state, State::ChangingPlan);
+                    let after_enter = self.plan_after_enter.take();
                     self.state = State::Ready;
                     match result {
                         Ok(workflow) => {
                             self.plan_retry_enter = false;
                             self.set_workflow(workflow);
-                            if self.plan_open_after_enter {
-                                self.plan_open_after_enter = false;
-                                self.request_plan_read_or_hint();
+                            match after_enter {
+                                Some(PlanEnterAction::Open) => self.request_plan_read_or_hint(),
+                                Some(PlanEnterAction::Prompt(prompt)) => {
+                                    self.queue_paused = false;
+                                    if self.send_task(Some(prompt.clone())) {
+                                        self.append("You", &prompt);
+                                    }
+                                }
+                                None => {}
                             }
                         }
                         Err(error) => {
                             self.notify(Level::Error, format!("{error:#}"));
+                            if let Some(PlanEnterAction::Prompt(prompt)) = after_enter
+                                && self.input.is_empty()
+                            {
+                                self.input.insert_str(format!("/plan {prompt}"));
+                                self.refresh_candidates(true);
+                            }
                             // 失败也可能已持久化 Plan（随后的 Workflow 快照纠正显示）；
                             // EnterPlan 失败时下一次 /plan 优先重试关闭 MCP。
                             if from_enter {
@@ -7891,6 +7920,79 @@ mod tests {
     }
 
     #[test]
+    fn plan_prompt_waits_for_success_then_sends_once_without_opening_review() {
+        for workflow in [WorkflowState::default(), ready_plan_workflow()] {
+            let (mut app, requests, _events) = plan_app();
+            app.workflow = workflow;
+            app.input.insert_str("/plan 调研登录流程");
+            app.submit(PendingKind::Steering);
+            assert!(matches!(
+                requests.try_recv(),
+                Ok(WorkerCommand::EnterPlan { .. })
+            ));
+            assert!(requests.try_recv().is_err());
+            assert!(matches!(app.state, State::ChangingPlan));
+            assert!(app.input.is_empty());
+            assert_eq!(app.input_history.last().unwrap(), "/plan 调研登录流程");
+            // 切换期间新输入的草稿不受发送影响。
+            app.input.insert_str("新草稿");
+            app.receive_event_for_test(WorkerEvent::WorkflowChanged(Ok(ready_plan_workflow())));
+            assert!(
+                matches!(requests.try_recv(), Ok(WorkerCommand::Run { prompt, .. })
+                if prompt == "调研登录流程")
+            );
+            assert!(requests.try_recv().is_err());
+            assert!(matches!(app.state, State::Running));
+            assert!(app.plan_panel.is_none());
+            assert!(app.plan_after_enter.is_none());
+            assert_eq!(app.input.lines(), &["新草稿"]);
+        }
+    }
+
+    #[test]
+    fn plan_prompt_failure_never_sends_or_leaks_into_later_transition() {
+        for draft in ["", "新草稿"] {
+            let (mut app, requests, _events) = plan_app();
+            app.input.insert_str("/plan research");
+            app.submit(PendingKind::Steering);
+            assert!(matches!(
+                requests.try_recv(),
+                Ok(WorkerCommand::EnterPlan { .. })
+            ));
+            app.input.insert_str(draft);
+            app.receive_event_for_test(WorkerEvent::WorkflowChanged(Err(anyhow::anyhow!(
+                "清理失败"
+            ))));
+            assert!(requests.try_recv().is_err());
+            assert!(app.plan_retry_enter);
+            assert!(app.plan_after_enter.is_none());
+            assert_eq!(
+                app.input.lines(),
+                &[if draft.is_empty() {
+                    "/plan research"
+                } else {
+                    draft
+                }]
+            );
+            app.receive_event_for_test(WorkerEvent::WorkflowChanged(Ok(ready_plan_workflow())));
+            assert!(requests.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn plan_prompt_with_pending_input_preserves_draft() {
+        let (mut app, requests, _events) = plan_app();
+        app.input_queue
+            .enqueue(PendingKind::FollowUp, "pending".into(), None, false)
+            .unwrap();
+        app.input.insert_str("/plan research");
+        app.submit(PendingKind::Steering);
+        assert!(requests.try_recv().is_err());
+        assert_eq!(app.input.lines(), &["/plan research"]);
+        assert!(app.plan_after_enter.is_none());
+    }
+
+    #[test]
     fn plan_commands_are_busy_refused_while_running() {
         let (mut app, requests, _events) = plan_app();
         app.state = State::Running;
@@ -7900,9 +8002,10 @@ mod tests {
             plan: None,
             review: None,
         };
-        for command in ["/plan", "/plan new", "/plan off"] {
+        for command in ["/plan", "/plan new", "/plan off", "/plan research"] {
             app.input.insert_str(command);
             app.submit(PendingKind::Steering);
+            assert_eq!(app.input.lines(), &[command]);
             app.input = editor();
         }
         assert!(requests.try_recv().is_err());

@@ -53,7 +53,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/plan",
-        usage: "/plan [view|new|off]",
+        usage: "/plan [view|new|off|prompt]",
         description: "Plan a task with read-only research, then explicitly approve execution (TUI)",
     },
     CommandSpec {
@@ -79,11 +79,12 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlanCommand {
+pub(crate) enum PlanCommand<'a> {
     Open,
     View,
     New,
     Off,
+    Prompt(&'a str),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -103,7 +104,7 @@ pub(crate) enum Command<'a> {
     Resume,
     Tree,
     Changes,
-    Plan(PlanCommand),
+    Plan(PlanCommand<'a>),
     Quit,
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
@@ -118,12 +119,15 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         return Ok(Some(Command::Shell(command)));
     }
     let input = input.trim();
-    if !input.starts_with('/') || input.contains(['\n', '\r']) {
+    if !input.starts_with('/') {
         return Ok(None);
     }
     let (name, argument) = input
         .split_once(char::is_whitespace)
         .map_or((input, ""), |(name, argument)| (name, argument.trim()));
+    if name != "/plan" && input.contains(['\n', '\r']) {
+        return Ok(None);
+    }
     let command = match name {
         "/help" => Command::Help,
         "/tips" => Command::Tips,
@@ -139,7 +143,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
                 "view" => PlanCommand::View,
                 "new" => PlanCommand::New,
                 "off" => PlanCommand::Off,
-                _ => anyhow::bail!("usage: /plan [view|new|off]"),
+                prompt => PlanCommand::Prompt(prompt),
             })));
         }
         "/quit" => Command::Quit,
@@ -235,6 +239,28 @@ pub(crate) fn help(files: &FileCommands) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slash_plan_accepts_prompt_and_preserves_subcommands() {
+        for (input, expected) in [
+            (" /plan \t", PlanCommand::Open),
+            ("/plan view", PlanCommand::View),
+            ("/plan new", PlanCommand::New),
+            ("/plan off", PlanCommand::Off),
+            ("/plan  调研登录流程  ", PlanCommand::Prompt("调研登录流程")),
+            ("/plan new API", PlanCommand::Prompt("new API")),
+            ("/plan\tview logs", PlanCommand::Prompt("view logs")),
+            (
+                "/plan first line\nsecond line",
+                PlanCommand::Prompt("first line\nsecond line"),
+            ),
+        ] {
+            assert_eq!(
+                parse(input, &FileCommands::default()).unwrap(),
+                Some(Command::Plan(expected))
+            );
+        }
+    }
 
     #[test]
     fn bang_shell_parse_preserves_command() {
