@@ -2397,7 +2397,7 @@ fn background_status(result: &Value) -> Option<String> {
 }
 
 fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
-    if name == "grep"
+    if matches!(name, "grep" | "glob")
         && let Some(content) = result["content"].as_str()
     {
         return content.to_owned();

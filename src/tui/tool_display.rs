@@ -158,7 +158,11 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
         } else {
             text
         };
-        return wrap(logical(text).into_iter().map(str::to_owned), width, style);
+        let mut rows = wrap(logical(text).into_iter().map(str::to_owned), width, style);
+        if view.name == "glob" {
+            append_notices(&mut rows, view.result, width, style);
+        }
+        return rows;
     }
     if view.failed
         && !matches!(view.name, "bash" | "bash_task" | "grep" | "find")
@@ -215,6 +219,19 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                 style,
                 MoreHint::Expand("items"),
             )
+        }
+        "glob" => {
+            let mut rows = head(
+                text,
+                if expanded { usize::MAX } else { FIND_ITEMS },
+                false,
+                true,
+                width,
+                style,
+                MoreHint::Expand("items"),
+            );
+            append_notices(&mut rows, view.result, width, style);
+            rows
         }
         "find" => head(
             text,
@@ -396,15 +413,14 @@ fn append_notices(rows: &mut Vec<Line<'static>>, result: Option<&Value>, width: 
         }
         if let Some(warnings) = result["warnings"].as_array() {
             for warning in warnings {
-                rows.extend(wrap(
-                    [format!(
-                        "Warning: {}: {}",
+                let message = warning.as_str().map(str::to_owned).unwrap_or_else(|| {
+                    format!(
+                        "{}: {}",
                         warning["path"].as_str().unwrap_or_default(),
                         warning["reason"].as_str().unwrap_or_default()
-                    )],
-                    width,
-                    style,
-                ));
+                    )
+                });
+                rows.extend(wrap([format!("Warning: {message}")], width, style));
             }
         }
     }

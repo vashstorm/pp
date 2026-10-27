@@ -742,12 +742,11 @@ fn run_cli_task(
                 );
             }
             AgentEvent::ToolFinished { id, result } => {
-                if current_tool
-                    .as_ref()
-                    .is_some_and(|(current_id, name)| current_id == &id && name == "grep")
-                    && let Some(content) = result["content"]
-                        .as_str()
-                        .or_else(|| result["error"].as_str())
+                if current_tool.as_ref().is_some_and(|(current_id, name)| {
+                    current_id == &id && matches!(name.as_str(), "grep" | "glob")
+                }) && let Some(content) = result["content"]
+                    .as_str()
+                    .or_else(|| result["error"].as_str())
                 {
                     cli_write(
                         stderr,
@@ -755,6 +754,16 @@ fn run_cli_task(
                         &mut err_broken,
                         &mut first_error,
                     );
+                    if let Some(warnings) = result["warnings"].as_array() {
+                        for warning in warnings.iter().filter_map(serde_json::Value::as_str) {
+                            cli_write(
+                                stderr,
+                                &format!("Warning: {warning}\n"),
+                                &mut err_broken,
+                                &mut first_error,
+                            );
+                        }
+                    }
                 }
                 if result["kind"] == "image"
                     && let Some(content) = result["content"].as_str()

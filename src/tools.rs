@@ -21,15 +21,14 @@ mod changes;
 pub(crate) use changes::{ChangedFile, ChangesView, UndoResult, UndoToken};
 mod diff;
 mod edit;
+mod glob;
 mod grep;
 mod hashline;
 mod plan;
 pub(crate) use plan::PlanChange;
-mod plan_search;
 pub(crate) mod read;
 mod replace;
 mod save;
-mod search;
 
 #[cfg(test)]
 use std::{fs, sync::mpsc::sync_channel};
@@ -46,7 +45,6 @@ pub(crate) struct Tools {
     changes: RefCell<changes::TaskChanges>,
     web_cache: RefCell<read::WebCache>,
     snapshots: RefCell<hashline::Store>,
-    search: search::SearchTools,
     background_tasks: bash::TaskManager,
     pub(crate) limits: ToolLimits,
 }
@@ -84,14 +82,14 @@ pub(crate) enum ToolPolicy<'a> {
 }
 
 /// In-process research tools; also used by the independent reviewer.
-const PLAN_SEARCH_TOOLS: &[&str] = &["plan_find"];
+const PLAN_SEARCH_TOOLS: &[&str] = &["glob"];
 /// Plan-mode-only tools that mutate the review boundary.
 const PLAN_WRITE_TOOLS: &[&str] = &["plan_write", "plan_submit"];
 /// Research tools Plan mode keeps from the ordinary Execute list.
 const PLAN_BASE_TOOLS: &[&str] = &["read", "grep"];
 
 fn is_plan_tool(name: &str) -> bool {
-    PLAN_SEARCH_TOOLS.contains(&name) || PLAN_WRITE_TOOLS.contains(&name)
+    PLAN_WRITE_TOOLS.contains(&name)
 }
 
 #[derive(Deserialize)]
@@ -131,12 +129,6 @@ enum BashTaskAction {
     Status,
     Stop,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SearchArgs {
-    args: Vec<String>,
-}
-
 /// 仅提取模型参数中的显示路径，不访问文件系统。
 pub(crate) fn edit_path(arguments: &Value) -> Option<&str> {
     let input = arguments["input"].as_str()?.trim_start_matches('\n');
@@ -153,8 +145,6 @@ pub(crate) fn edit_path(arguments: &Value) -> Option<&str> {
 impl Tools {
     pub(crate) fn new(cwd: PathBuf, edit_mode: EditMode) -> Result<Self> {
         let workspace = save::Workspace::open(&cwd)?;
-        let path = std::env::var_os("PATH");
-        let search = search::SearchTools::detect(&workspace.path, path.as_deref());
         Ok(Self {
             ask_handler: None,
             mcp: Default::default(),
@@ -165,7 +155,6 @@ impl Tools {
             changes: RefCell::default(),
             web_cache: RefCell::default(),
             snapshots: RefCell::default(),
-            search,
             background_tasks: Default::default(),
             limits: ToolLimits::default(),
         })
@@ -226,15 +215,13 @@ impl Tools {
                 if self.ask_handler.is_some() {
                     definitions.push(crate::interaction::definition());
                 }
-                definitions.extend(self.search.definitions());
+                definitions.push(glob::definition());
                 definitions.push(grep::definition());
                 definitions.extend(self.mcp.definitions());
                 definitions
             }
             WorkMode::Plan => {
-                // PLAN_BASE_TOOLS reuse the Execute schemas verbatim;
-                // plan_search/plan_find come from the in-process search
-                // module and plan_write/plan_submit are defined here.
+                // Plan 和 Review 共用只读搜索工具。
                 let mut definitions: Vec<_> = Self::definitions(self.edit_mode)
                     .into_iter()
                     .filter(|definition| PLAN_BASE_TOOLS.contains(&definition.name.as_str()))
@@ -242,8 +229,7 @@ impl Tools {
                 if self.ask_handler.is_some() {
                     definitions.push(crate::interaction::definition());
                 }
-                definitions.extend(plan_search::definitions());
-                definitions.retain(|definition| definition.name != "plan_search");
+                definitions.push(glob::definition());
                 definitions.push(grep::definition());
                 definitions.extend(Self::plan_definitions());
                 definitions
@@ -399,7 +385,7 @@ impl Tools {
             "bash" => "bash",
             "bash_task" => "bash_task",
             "grep" => "grep",
-            "find" => "find",
+            "glob" => "glob",
             "plan_search" | "plan_find" | "plan_write" | "plan_submit" => "plan_tool",
             _ => "external",
         };
@@ -502,6 +488,7 @@ impl Tools {
             }
             ToolPolicy::Plan { .. } => {
                 PLAN_BASE_TOOLS.contains(&name)
+                    || PLAN_SEARCH_TOOLS.contains(&name)
                     || is_plan_tool(name)
                     || name == "ask" && self.ask_handler.is_some()
             }
@@ -691,30 +678,8 @@ impl Tools {
                 arguments,
                 cancellation,
             ),
-            "find" => {
-                let args: SearchArgs = serde_json::from_str(arguments)
-                    .with_context(|| format!("invalid {name} arguments"))?;
-                ensure!(
-                    !args.args.iter().any(|arg| arg.contains('\0')),
-                    "{name} args must not contain NUL bytes"
-                );
-                let mut command = self.search.command(name)?;
-                command.args(&args.args);
-                let backend = command.get_program().to_owned();
-                let cache = self.workspace.cache_dir()?;
-                let result = bash::run_command(
-                    &self.cwd,
-                    &cache,
-                    command,
-                    self.limits.bash_timeout_seconds,
-                    call_id,
-                    cancellation,
-                    emit,
-                )
-                .with_context(|| format!("running {}", backend.to_string_lossy()))?;
-                Ok(result)
-            }
-            "plan_find" => plan_search::run(&self.cwd, &self.limits, name, arguments, cancellation),
+            "glob" => glob::run(&self.cwd, arguments, cancellation),
+            "find" | "plan_find" => bail!("{name} is no longer available; use glob"),
             "plan_write" | "plan_submit" => {
                 // Only ToolPolicy::Plan passes the gate for plan tools; the
                 // outcome is reported to the caller instead of mutating any
@@ -731,13 +696,6 @@ impl Tools {
         }
         .map(|value| (value, None))
     }
-}
-
-/// Shared path resolution for ordinary reads and Plan-mode search.
-fn resolve_path(cwd: &Path, path: &str) -> Result<PathBuf> {
-    ensure!(!path.trim().is_empty(), "path must not be blank");
-    // PathBuf::join preserves an absolute path. cwd is not a sandbox.
-    Ok(cwd.join(path))
 }
 
 fn emit_background_snapshot(call_id: &str, snapshot: &Value, emit: &mut dyn FnMut(AgentEvent)) {
@@ -889,160 +847,6 @@ mod tests {
         );
         serde_json::from_str(&execution.output).unwrap()
     }
-    fn fallback_search_tools(dir: &Path) -> Tools {
-        use std::os::unix::fs::symlink;
-        let bin = dir.join("bin");
-        fs::create_dir(&bin).unwrap();
-        let executable = ["/usr/bin", "/bin"]
-            .into_iter()
-            .map(|base| Path::new(base).join("find"))
-            .find(|path| path.is_file())
-            .expect("system find available");
-        symlink(executable, bin.join("find")).unwrap();
-        let mut tools = Tools::new(dir.into(), EditMode::Replace).unwrap();
-        tools.search = search::SearchTools::detect(tools.cwd(), Some(bin.as_os_str()));
-        tools
-    }
-
-    #[test]
-    fn search_tools_fallback_native_results_and_literal_arguments() {
-        let dir = tempfile::tempdir().unwrap();
-        let tools = fallback_search_tools(dir.path());
-        fs::create_dir(dir.path().join("space dir")).unwrap();
-        fs::write(
-            dir.path().join("space dir/demo.txt"),
-            "needle\nother\nneedle\n",
-        )
-        .unwrap();
-        let matched = execute(
-            &tools,
-            "grep",
-            json!({"pattern":"needle","path":"space dir/demo.txt"}),
-        );
-        assert_eq!(matched["ok"], true, "{matched}");
-        assert!(matched["content"].as_str().unwrap().contains("*1|needle"));
-        let absent = execute(
-            &tools,
-            "grep",
-            json!({"pattern":"absent","path":"space dir/demo.txt"}),
-        );
-        assert_eq!(absent["content"], "No matches found");
-        let found = execute(
-            &tools,
-            "find",
-            json!({"args":["space dir","-type","f","-name","*.txt","-print"]}),
-        );
-        assert_eq!(found["ok"], true, "{found}");
-        assert_eq!(found["stdout"], "space dir/demo.txt\n");
-        let missing = execute(&tools, "find", json!({"args":["missing","-print"]}));
-        assert_eq!(missing["ok"], false, "{missing}");
-        assert!(!missing["stderr"].as_str().unwrap().is_empty());
-        for pattern in ["$(touch INJECTED)", "needle; touch INJECTED"] {
-            let result = execute(
-                &tools,
-                "grep",
-                json!({"pattern":pattern,"path":"space dir/demo.txt"}),
-            );
-            assert_eq!(result["ok"], true);
-            assert!(!dir.path().join("INJECTED").exists());
-        }
-    }
-
-    #[test]
-    fn search_tools_reject_invalid_args_and_missing_backends_without_breaking_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut tools = fallback_search_tools(dir.path());
-        for args in [
-            json!({}),
-            json!({"args":null}),
-            json!({"args":[1]}),
-            json!({"args":[],"extra":true}),
-            json!({"args":["\u{0}"]}),
-        ] {
-            let result = execute(&tools, "find", args);
-            assert_eq!(result["ok"], false, "{result}");
-        }
-        assert_eq!(execute(&tools, "grep", json!({"args":[]}))["ok"], false);
-        tools.search = search::SearchTools::detect(tools.cwd(), None);
-        let result = execute(&tools, "find", json!({"args":[]}));
-        assert_eq!(result["ok"], false);
-        assert!(result["error"].as_str().unwrap().contains("on PATH"));
-        assert_eq!(
-            execute(
-                &tools,
-                "write",
-                json!({"path":"kept","content":"available"})
-            )["ok"],
-            true
-        );
-        assert_eq!(
-            execute(&tools, "read", json!({"path":"kept"}))["content"],
-            "available"
-        );
-    }
-
-    #[test]
-    fn search_tools_timeout_and_cancel_reap_descendants() {
-        use std::os::unix::fs::PermissionsExt;
-        for cancelled in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let fixture = dir.path().join("fd");
-            fs::write(&fixture, "#!/bin/bash\ntrap 'exit 1' TERM\nprintf 'search-ready\\n'\nprintf '%s' $$ > parent.pid\n/bin/sleep 30 & child=$!\nprintf '%s' $child > child.pid\nwait $child\nexit 1\n").unwrap();
-            fs::set_permissions(&fixture, fs::Permissions::from_mode(0o755)).unwrap();
-            let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-            tools.search = search::SearchTools::detect(tools.cwd(), Some(dir.path().as_os_str()));
-            tools.limits.bash_timeout_seconds = if cancelled { 60 } else { 1 };
-            let token = CancellationToken::new();
-            let watcher = cancelled.then(|| {
-                let cwd = dir.path().to_owned();
-                let token = token.clone();
-                thread::spawn(move || {
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                    while !cwd.join("child.pid").exists() {
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "fixture never started"
-                        );
-                        thread::sleep(std::time::Duration::from_millis(5));
-                    }
-                    token.cancel();
-                })
-            });
-            let execution = tools.execute(
-                "find",
-                "{\"args\":[]}",
-                "search-stop",
-                ToolPolicy::Execute,
-                &token,
-                &mut |_| {},
-            );
-            assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
-            let result: Value = serde_json::from_str(&execution.output).unwrap();
-            assert_eq!(result["ok"], false, "{result}");
-            assert_eq!(result["timed_out"], !cancelled, "{result}");
-            assert_eq!(result["cancelled"], cancelled, "{result}");
-            assert_eq!(result["stdout"], "search-ready\n");
-            assert_eq!(result["exit_code"], 1, "{result}");
-            if let Some(watcher) = watcher {
-                watcher.join().unwrap();
-            }
-            for marker in ["parent.pid", "child.pid"] {
-                let pid = fs::read_to_string(dir.path().join(marker))
-                    .unwrap()
-                    .parse()
-                    .unwrap();
-                wait_until_gone(pid, marker);
-            }
-            assert!(!fs::read_dir(dir.path()).unwrap().any(|entry| {
-                entry
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".pp-tmp-")
-            }));
-        }
-    }
-
     fn read_content(tools: &Tools, path: &str) -> (String, bool) {
         let read = execute(tools, "read", json!({"path": path}));
         assert_eq!(read["ok"], true, "{read}");
@@ -3136,7 +2940,7 @@ mod tests {
     fn execute_policy_rejects_dedicated_plan_tools() {
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-        for name in ["plan_find", "plan_write", "plan_submit"] {
+        for name in ["plan_write", "plan_submit"] {
             let execution = tools.execute(
                 name,
                 "{}",

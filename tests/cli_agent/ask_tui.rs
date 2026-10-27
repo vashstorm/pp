@@ -170,7 +170,7 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
 #[test]
 fn tool_folding_omp_native_search_clips_long_rows_for_both_protocols() {
     for protocol in ["completion", "response"] {
-        for name in ["grep", "find"] {
+        for name in ["grep", "glob"] {
             let provider = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
@@ -183,19 +183,17 @@ fn tool_folding_omp_native_search_clips_long_rows_for_both_protocols() {
             pty.resize(90, 80);
             pty.input("search preview\r");
             let (request, body) = pty.request_at(&provider, api_path(protocol));
-            let schema = body["tools"].as_array().unwrap().iter().map(|t| if protocol == "completion" { &t["function"] } else { t })
-                .find(|t| t["name"] == name).unwrap();
+            assert!(body["tools"].as_array().unwrap().iter().map(|t| if protocol == "completion" { &t["function"] } else { t }).any(|t| t["name"] == name));
             let args = if name == "grep" { json!({"pattern":"needle","path":"lines"}) }
-                else if schema["description"].as_str().unwrap().starts_with("Uses fd.") { json!({"args":[".","files"]}) }
-                else { json!({"args":["files","-type","f"]}) };
+                else { json!({"path":"files/*"}) };
             ask_reply_calls(request, protocol, json!([diff_blocks_call(protocol,"search",name,args)]));
             let (request, body) = pty.request_at(&provider, api_path(protocol));
             let outputs = cancel_tool_outputs(&body, protocol);
             assert_eq!(outputs[0].1["ok"], true);
-            let content = if name == "grep" { &outputs[0].1["content"] } else { &outputs[0].1["stdout"] };
+            let content = &outputs[0].1["content"];
             assert!(content.as_str().unwrap().lines().count() >= 20);
             let marker = if name == "grep" { "entry-" } else { "path-" };
-            let shown = if name == "grep" { 5 } else { 8 };
+            let shown = if name == "grep" { 5 } else { 7 };
             pty.wait_for("搜索正文按额度及列宽收敛", |screen| {
                 let text = screen.contents();
                 text.matches(marker).count() == shown && text.contains("more") && text.contains("Ctrl + O")

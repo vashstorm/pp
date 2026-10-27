@@ -127,7 +127,7 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
             "read"
                 | "ask"
                 | "grep"
-                | "plan_find"
+                | "glob"
                 | "plan_write"
                 | "plan_submit"
         )),
@@ -463,8 +463,8 @@ fn plan_tui_rejects_real_side_effects_but_reads_searches_and_asks() {
             ),
             (
                 "research-find",
-                "plan_find",
-                json!({"query":"agent.rs","path":"src"}),
+                "glob",
+                json!({"path":"src/agent.rs"}),
             ),
         ];
         plan_calls(
@@ -488,7 +488,7 @@ fn plan_tui_rejects_real_side_effects_but_reads_searches_and_asks() {
         }
         assert_eq!(outputs[8].1["content"], "first\nneedle here\nlast\n");
         assert!(outputs[9].1["content"].as_str().unwrap().contains("*2|needle here"));
-        assert_eq!(outputs[10].1["paths"], json!(["agent.rs"]));
+        assert!(outputs[10].1["content"].as_str().unwrap().contains("agent.rs"));
         assert_eq!(
             std::fs::read(project.path().join("canary.txt")).unwrap(),
             b"original bytes"

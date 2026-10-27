@@ -53,9 +53,11 @@ impl ContextUsage {
     }
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct ByteCount(u64);
 
+#[cfg(test)]
 impl Write for ByteCount {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.0 = self.0.saturating_add(bytes.len() as u64);
@@ -67,6 +69,7 @@ impl Write for ByteCount {
 }
 
 /// Byte length of a value's JSON encoding, without allocating the encoding.
+#[cfg(test)]
 pub(crate) fn serialized_len(value: &impl Serialize) -> Result<usize> {
     let mut count = ByteCount::default();
     serde_json::to_writer(&mut count, value)

@@ -70,7 +70,7 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
             assert!(
                 names.iter().all(|name| matches!(
                     *name,
-                    "read" | "grep" | "plan_find"
+                    "read" | "grep" | "glob"
                 ))
             );
             let calls = [

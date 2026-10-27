@@ -1973,43 +1973,25 @@ fn tool_limits_remain_startup_snapshots_across_model_switch_and_new() {
     assert_eq!(output.stdout, b"done-0\ndone-1\ndone-2\n");
 }
 
-// The search tools must run the real fallback backends end to end: the CLI is
-// spawned with an isolated PATH holding only symlinks to the system grep and
-// find, so rg/fd are unavailable and no bash is involved. The provider drives
-// the native argv interface; results, exit codes, and call-id pairing are
-// asserted on the next request, and the CLI labels must name the actual tool.
+// 两种协议均验证进程内搜索和工具结果回填。
 #[test]
-fn search_tools_fallback_roundtrip_both_protocols() {
-    use std::os::unix::fs::symlink;
+fn glob_roundtrip_both_protocols() {
     for protocol in PROTOCOLS {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
-        let bin = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("space dir")).unwrap();
         std::fs::write(
             dir.path().join("space dir/demo.txt"),
             "needle\nother\nneedle\n",
         )
         .unwrap();
-        for name in ["grep", "find"] {
-            let executable = ["/usr/bin", "/bin"]
-                .into_iter()
-                .map(|base| std::path::Path::new(base).join(name))
-                .find(|candidate| candidate.is_file())
-                .unwrap_or_else(|| panic!("system {name} executable not found"));
-            symlink(&executable, bin.path().join(name)).unwrap();
-        }
         let models = match protocol {
             Protocol::Chat => fixture_models(&server),
             Protocol::Responses => response_models(&server, Some("response")),
         };
         std::fs::write(config_path(dir.path(), "settings.yml"), fixture_settings()).unwrap();
         std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
-        let mut cli = LiveCli::new(Cli::spawn(
-            dir.path(),
-            &["-p", "search files"],
-            &[("PATH", bin.path().to_str().unwrap())],
-        ));
+        let mut cli = LiveCli::new(Cli::spawn(dir.path(), &["-p", "search files"], &[]));
         let (request, _) = protocol.receive(&server);
         protocol.calls_reply(
             request,
@@ -2019,11 +2001,7 @@ fn search_tools_fallback_roundtrip_both_protocols() {
                     "grep",
                     json!({"pattern":"needle","path":"space dir/demo.txt"})
                 ),
-                protocol.call(
-                    "paths",
-                    "find",
-                    json!({"args":["space dir","-type","f","-name","*.txt","-print"]})
-                ),
+                protocol.call("paths", "glob", json!({"path":"space dir/*.txt"})),
                 protocol.call(
                     "absent",
                     "grep",
@@ -2043,14 +2021,9 @@ fn search_tools_fallback_roundtrip_both_protocols() {
         let matched = protocol.tool_result(&body, "match");
         assert_eq!(matched["ok"], true);
         assert!(matched["content"].as_str().unwrap().contains("*1|needle"));
-        assert_eq!(
-            protocol.tool_result(&body, "paths"),
-            json!({
-                "ok":true, "exit_code":0, "timed_out":false, "cancelled":false,
-                "stdout":"space dir/demo.txt\n", "stderr":"",
-                "stdout_truncated":false, "stderr_truncated":false
-            })
-        );
+        let found = protocol.tool_result(&body, "paths");
+        assert_eq!(found["ok"], true);
+        assert!(found["content"].as_str().unwrap().contains("demo.txt"));
         assert_eq!(
             protocol.tool_result(&body, "absent")["content"],
             "No matches found"
@@ -2066,14 +2039,11 @@ fn search_tools_fallback_roundtrip_both_protocols() {
         assert_eq!(output.stdout, b"search-complete\n");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("*1|needle"), "{stderr}");
-        assert!(
-            stderr.contains("[find stdout] space dir/demo.txt"),
-            "{stderr}"
-        );
+        assert!(stderr.contains("demo.txt"), "{stderr}");
         assert!(!stderr.contains("[bash"), "{stderr}");
         assert!(stderr.contains("tool grep: ok"), "{stderr}");
         assert!(stderr.contains("invalid grep arguments"), "{stderr}");
-        assert!(stderr.contains("tool find: ok"), "{stderr}");
+        assert!(stderr.contains("tool glob: ok"), "{stderr}");
         assert_clean_pipes(&output);
         no_more(&server);
     }

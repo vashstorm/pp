@@ -846,8 +846,8 @@ mod tests {
                     c::ChatCompletionMessageToolCall {
                         id: "call".into(),
                         function: c::FunctionCall {
-                            name: "read".into(),
-                            arguments: "{ \"path\" : \"notes\" }".into(),
+                            name: "find".into(),
+                            arguments: r#"{ "args" : ["."] }"#.into(),
                         },
                     },
                 )]),

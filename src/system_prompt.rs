@@ -244,7 +244,7 @@ impl Snapshot {
                 })?,
         };
         let mut runtime = serde_json::to_value(context)?;
-        for name in ["read", "edit", "write", "bash", "grep", "find"] {
+        for name in ["read", "edit", "write", "bash", "grep", "glob"] {
             runtime[format!("has_{name}")] = context.tools.iter().any(|tool| tool == name).into();
         }
         runtime["has_writes"] =
