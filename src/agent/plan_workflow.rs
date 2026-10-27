@@ -889,17 +889,48 @@ impl Agent {
         Ok(())
     }
 
-    /// Approve the reviewed plan and prepare one of the two execution
-    /// handoffs. The candidate MCP registry is connected cancelably before
-    /// any state commit, the token is re-verified afterwards, and on any
-    /// failure the new registry is explicitly stopped and the workflow stays
-    /// Plan/Ready — no model request ever starts from a partial handoff.
+    /// 安全核对已保存正文后保留草稿，再退出 Plan；不发起模型请求。
+    pub(crate) fn save_plan_and_leave(
+        &mut self,
+        token: ReviewToken,
+        input: &InputQueue,
+        cancellation: &CancellationToken,
+    ) -> Result<ExecutionPreparation> {
+        cancellation::check(cancellation)?;
+        ensure!(self.workflow.mode == WorkMode::Plan, "{NOT_CURRENT}");
+        ensure!(input.is_empty()?, "{PENDING}");
+        let review = self.read_plan()?;
+        ensure!(review.token == token, "{CHANGED}");
+        ensure!(
+            matches!(
+                review.document.status,
+                PlanStatus::Draft | PlanStatus::Ready
+            ),
+            "{NOT_CURRENT}"
+        );
+        let previous = self.workflow.clone();
+        self.workflow
+            .plan
+            .as_mut()
+            .expect("saved plan bound")
+            .status = PlanStatus::Draft;
+        if let Err(error) = self.journal.write_workflow(&self.workflow) {
+            self.workflow = previous;
+            return Err(error);
+        }
+        self.leave_plan(cancellation)
+    }
+
+    /// 批准已审阅计划并准备执行交接；可先在 Plan 权限下压缩上下文。
+    /// 提交前可取消地连接候选 MCP，再校验 token；失败时停止新 registry，
+    /// 保持 Plan/Ready，禁止从未完成的交接发起实施请求。
     pub(crate) fn approve_plan(
         &mut self,
         token: ReviewToken,
         context: ExecutionContext,
         input: &InputQueue,
         cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(crate::events::AgentEvent),
     ) -> Result<ExecutionPreparation> {
         cancellation::check(cancellation)?;
         ensure!(self.workflow.mode == WorkMode::Plan, "{NOT_CURRENT}");
@@ -918,6 +949,25 @@ impl Agent {
             ensure!(total > 0, "{NO_TASKS}");
         }
         self.check_plan_token_for_approval(&token, input)?;
+        if context == ExecutionContext::Compact {
+            // 压缩保持 Plan 权限；失败或取消时不交接执行。后续再次核对
+            // token 与队列，拒绝压缩期间的外部修订及补充输入。
+            let mut attempted = false;
+            let outcome = self.compact(cancellation, &mut |event| {
+                attempted |= matches!(&event, crate::events::AgentEvent::CompactionStarted { .. });
+                emit(event);
+            })?;
+            ensure!(
+                !matches!(outcome, super::context::CompactionOutcome::Cancelled),
+                "Plan execution cancelled during context compaction."
+            );
+            ensure!(
+                !attempted || !matches!(outcome, super::context::CompactionOutcome::Unchanged),
+                "Context compaction did not reduce history; review the plan before executing."
+            );
+            cancellation::check(cancellation)?;
+            self.check_plan_token_for_approval(&token, input)?;
+        }
         let config = self
             .catalog
             .resolve(&self.current_model.reference)
@@ -960,7 +1010,7 @@ impl Agent {
             }
         };
         match context {
-            ExecutionContext::Keep => {
+            ExecutionContext::Keep | ExecutionContext::Compact => {
                 self.prepare_keep_execution(&token, pending_move, registry, cleanup)
             }
             ExecutionContext::Fresh => {
@@ -1382,6 +1432,7 @@ mod tests {
                 ExecutionContext::Keep,
                 &queue,
                 &CancellationToken::new(),
+                &mut |_| {},
             ));
             assert_eq!(
                 error,
@@ -1514,6 +1565,63 @@ mod tests {
     }
 
     #[test]
+    fn plan_save_and_leave_requires_current_saved_bytes_and_preserves_failures() {
+        for protocol in ["completion", "response"] {
+            for scenario in ["ready", "draft", "changed", "pending", "readonly"] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+                agent.workflow = plan_workflow(
+                    PLAN_CONTENT,
+                    ORIGIN,
+                    if scenario == "draft" {
+                        PlanStatus::Draft
+                    } else {
+                        PlanStatus::Ready
+                    },
+                );
+                write_plan_file(&agent, PLAN_CONTENT);
+                seed_session(&mut agent, EXPLORATION);
+                let token = agent.read_plan().unwrap().token;
+                let path = dir.path().join(&token.path);
+                let queue = InputQueue::default();
+                if scenario == "changed" {
+                    std::fs::write(&path, format!("{PLAN_CONTENT}\nExternal change\n")).unwrap();
+                } else if scenario == "pending" {
+                    queue.begin_run().unwrap();
+                    queue
+                        .enqueue(
+                            crate::agent::input::PendingKind::Steering,
+                            "late question".into(),
+                            None,
+                            false,
+                        )
+                        .unwrap();
+                } else if scenario == "readonly" {
+                    let journal = dir
+                        .path()
+                        .join("sessions")
+                        .join(format!("{}.jsonl", token.session_id));
+                    agent.journal.use_read_only_file(&journal);
+                }
+                let bytes = std::fs::read(&path).unwrap();
+                let result = agent.save_plan_and_leave(token, &queue, &CancellationToken::new());
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+                if matches!(scenario, "ready" | "draft") {
+                    let preparation = result.unwrap();
+                    assert_eq!(preparation.workflow.mode, WorkMode::Execute);
+                    assert!(preparation.workflow.plan.is_none());
+                    assert!(preparation.replay.is_none());
+                } else {
+                    assert!(result.is_err(), "{scenario}");
+                    assert_eq!(agent.workflow.mode, WorkMode::Plan);
+                    assert!(agent.workflow.plan.is_some());
+                }
+                assert_eq!(user_texts(&agent).len(), 1);
+            }
+        }
+    }
+
+    #[test]
     fn plan_keep_approval_appends_one_message_and_rolls_back_on_failure() {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
@@ -1530,6 +1638,7 @@ mod tests {
                     ExecutionContext::Keep,
                     &crate::agent::input::InputQueue::default(),
                     &CancellationToken::new(),
+                    &mut |_| {},
                 )
                 .unwrap();
             assert_eq!(preparation.workflow.mode, WorkMode::Execute);
@@ -1598,6 +1707,7 @@ mod tests {
                 ExecutionContext::Keep,
                 &crate::agent::input::InputQueue::default(),
                 &CancellationToken::new(),
+                &mut |_| {},
             ));
             assert_eq!(error, NOT_CURRENT);
             assert_eq!(user_texts(&agent).len(), 2);
@@ -1617,6 +1727,7 @@ mod tests {
                 ExecutionContext::Keep,
                 &crate::agent::input::InputQueue::default(),
                 &CancellationToken::new(),
+                &mut |_| {},
             ));
             // journal 只读后审批在首次持久化点失败：workflow 保持 Plan/Ready，
             // 已发布的目标链接保留，源链接与登记/绑定状态如实保留。
@@ -1658,6 +1769,7 @@ mod tests {
                     ExecutionContext::Fresh,
                     &crate::agent::input::InputQueue::default(),
                     &CancellationToken::new(),
+                    &mut |_| {},
                 )
                 .unwrap();
             // A fresh session with an empty replay was handed over.
@@ -1718,6 +1830,7 @@ mod tests {
                 ExecutionContext::Fresh,
                 &crate::agent::input::InputQueue::default(),
                 &CancellationToken::new(),
+                &mut |_| {},
             ));
             // journal 只读后审批在首次持久化点失败：workflow 保持 Plan/Ready，
             // 已发布的目标链接保留，源规划会话未被替换。

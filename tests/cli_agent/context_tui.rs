@@ -646,18 +646,13 @@ fn context_tui_compact_success_keeps_dialogue_drops_usage_and_survives_narrow_re
         pty.text("context after answer");
         pty.ready();
         // 窄屏 resize：上下文字段优先保留，任何宽度不溢出、不 panic。
-        pty.resize(30, 60);
-        assert!(
-            pty.parser.screen().contents().lines().nth(26).unwrap().contains("Ctx "),
-            "{}",
-            pty.diagnostics()
-        );
-        pty.resize(30, 30);
-        assert!(
-            pty.parser.screen().contents().lines().nth(26).unwrap().contains("Ctx "),
-            "{}",
-            pty.diagnostics()
-        );
+        // resize 的首批字节可能来自上一帧，须以目标布局出现作为重绘栅栏。
+        for width in [60, 30] {
+            pty.resize(30, width);
+            pty.wait_for("窄屏重绘保留上下文字段", |screen| {
+                screen.contents().lines().nth(26).is_some_and(|line| line.contains("Ctx "))
+            });
+        }
         pty.input("\x03");
         pty.finish();
         no_more(&fixture);

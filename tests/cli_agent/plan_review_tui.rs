@@ -13,7 +13,7 @@ fn plan_wait_report(pty: &mut Pty, marker: &str, outdated: bool) {
 #[test]
 fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution() {
     for protocol in ["completion", "response"] {
-        for action in [0, 1, 2] {
+        for action in [0, 1, 4] {
             let fixture = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
@@ -149,16 +149,16 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
             no_more(&fixture);
             assert_eq!(std::fs::read(&path).unwrap(), original);
             plan_choose(&mut pty, action);
-            if action == 2 {
+            if action == 4 {
                 pty.input("Which failure input should item two use?\r");
             }
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
-            system_prompt::assert_live(&body, protocol, if action == 2 { "plan" } else { "execute" });
+            system_prompt::assert_live(&body, protocol, if action == 4 { "plan" } else { "execute" });
             assert!(!body.to_string().contains("review-read"));
             assert!(!body.to_string().contains("review-search"));
             assert!(body.to_string().contains("PLANNING_CHAT_ONLY_MARKER") == (action != 0));
-            assert!(body.to_string().contains("REVIEW_REPORT_ONLY_MARKER") == (action == 2));
-            if action == 2 {
+            assert!(body.to_string().contains("REVIEW_REPORT_ONLY_MARKER") == (action == 4));
+            if action == 4 {
                 let messages = cancel_user_messages(&body, protocol);
                 let last = messages.last().unwrap();
                 assert!(last.contains("Which failure input should item two use?"));

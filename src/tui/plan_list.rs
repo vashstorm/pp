@@ -14,9 +14,9 @@ use ratatui::{
 };
 use std::time::SystemTime;
 
-pub(super) const HINT: &str = "↑/↓ select · ←/→ or Tab category · Enter preview · / search · F5 refresh · n new · c continue · e execute · r rename · d delete · Esc close";
-/// 只读详情/列表执行审阅打开时显示在面板下方的同一组列表快捷键。
-pub(super) const DETAIL_HINT: &str = "Esc back to list · ↑/↓ scroll · list: / search · F5 refresh · n new · c continue · e execute · r rename · d delete";
+pub(super) const HINT: &str = "↑/↓ select · ←/→ or Tab category · Enter open · / search · F5 refresh · n new · c continue · e actions · r rename · d delete · Esc close";
+/// Done 只读详情显示返回列表的提示。
+pub(super) const DETAIL_HINT: &str = "Read-only completed plan · ↑/↓ scroll · Esc back to list";
 const SEARCH_HINT: &str = "search: Enter apply · Esc exit · Ctrl+U clear";
 const RENAME_HINT: &str = "rename: Enter submit · Esc cancel";
 const CONFIRM_HINT: &str = "Tab/arrows select · Enter confirm · Esc cancel";
@@ -51,7 +51,7 @@ pub(super) enum Action {
     None,
     Close,
     Refresh,
-    /// Enter：读取 selection 后打开只读详情。
+    /// Enter：读取 selection；Drafts/Plans 打开操作菜单，Done 只读展示。
     Preview(String),
     /// c/e：先读取 selection，再按意图打开只携带计划的新会话。
     Open(String, PlanOpenIntent),
@@ -445,9 +445,6 @@ impl Panel {
                 Some((_, _, Some(error), _, _)) => Action::Message(error),
                 Some((_, _, None, PlanLocation::Done, _)) => {
                     Action::Message("Completed plans are read-only.".into())
-                }
-                Some((_, _, None, _, 0)) => {
-                    Action::Message("This plan has no executable task items.".into())
                 }
                 Some((id, _, None, _, _)) => Action::Open(id, PlanOpenIntent::Execute),
                 None => Action::None,
@@ -1104,11 +1101,11 @@ mod tests {
             panel.key(key(KeyCode::Char('e'))),
             Action::Message(_)
         ));
-        // 零任务：e 拒绝。
+        // 零任务：仍能打开操作菜单，执行由审批门禁拒绝。
         panel.key(key(KeyCode::Down));
         assert!(matches!(
             panel.key(key(KeyCode::Char('e'))),
-            Action::Message(_)
+            Action::Open(_, PlanOpenIntent::Execute)
         ));
         // 错误条目：全部动作只产生可见提示。
         panel.key(key(KeyCode::Down));

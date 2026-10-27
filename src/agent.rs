@@ -933,13 +933,8 @@ impl Agent {
             ),
             "This plan has already been handed off; use /plan to toggle."
         );
-        // Plan+Ready+Plans 仅用于列表预执行审阅：普通 prompt 既不能修改
-        // 也不能重启它，需切出或从 /plan-list 选择 drafts 再规划。
-        ensure!(
-            !(plan.status == crate::plan::PlanStatus::Ready
-                && plan.location == crate::plan::PlanLocation::Plans),
-            "This plan is awaiting pre-execution review; choose a draft from /plan-list to plan again."
-        );
+        // 列表打开的 Plans 也可继续讨论；接受讨论后统一降为 Draft，
+        // 只开放规划工具，重新提交并明确批准前不得实施。
         let old_status = plan.status;
         let set_origin = plan.origin_prompt.is_empty() && !prompt.trim().is_empty();
         let persist = created || set_origin || old_status == crate::plan::PlanStatus::Ready;

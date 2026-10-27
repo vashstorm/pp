@@ -449,6 +449,7 @@ fn changes_plan_fresh_commits_clear_keep_and_failed_fresh_retain() {
                 context,
                 &InputQueue::default(),
                 &CancellationToken::new(),
+                &mut |_| {},
             );
             if fail_commit {
                 assert!(err_message(result).contains("persisting session"));

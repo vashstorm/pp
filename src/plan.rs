@@ -110,6 +110,7 @@ pub(crate) struct PlanReviewReport {
 pub(crate) enum ExecutionContext {
     Keep,
     Fresh,
+    Compact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,5 +1,6 @@
 /target/
 /.cargo/
+/.pp/
 /models.jsonc
 /models.yml
 /settings.yml

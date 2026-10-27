@@ -48,7 +48,7 @@ fn origin_prompt(intent: PlanOpenIntent, path: &str) -> String {
 
 impl Agent {
     /// 从列表打开计划：ContinueDraft 建立 Plan/Draft 新会话继续草稿；
-    /// Execute 建立 Plan/Ready 新会话进入执行前审阅（执行仍需本地批准，
+    /// Execute 建立新会话打开六项操作菜单，有 TODO 为 Ready，否则为 Draft（执行仍需本地批准，
     /// `validate` 显式允许 Plan+Ready+Plans 的预执行审阅状态）。
     ///
     /// 顺序：当前会话 journal.check 与当前草稿的 workflow/登记同步 → 取得
@@ -99,18 +99,16 @@ impl Agent {
             content: verified.content.clone(),
             status: match intent {
                 PlanOpenIntent::ContinueDraft => PlanStatus::Draft,
-                PlanOpenIntent::Execute => PlanStatus::Ready,
+                PlanOpenIntent::Execute if plan::task_progress(&verified.content).1 > 0 => {
+                    PlanStatus::Ready
+                }
+                PlanOpenIntent::Execute => PlanStatus::Draft,
             },
             origin_prompt: origin_prompt(intent, &verified.path),
             file_name: Some(verified.file_name.clone()),
             location: verified.location,
             approved_tasks: None,
         };
-        ensure!(
-            matches!(intent, PlanOpenIntent::ContinueDraft)
-                || plan::task_progress(&document.content).1 > 0,
-            "This plan has no Markdown tasks to execute."
-        );
         plan::validate_content(&document.content)?;
         let candidate_workflow = WorkflowState {
             mode: WorkMode::Plan,
@@ -477,10 +475,10 @@ mod tests {
     }
 
     #[test]
-    fn execute_intent_requires_tasks_and_unsaved_draft_blocks_switch() {
+    fn execute_intent_opens_prose_as_draft_and_unsaved_draft_blocks_switch() {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
-        // 无任务正文不能进入 Execute 审阅。
+        // 无任务正文也可打开菜单，但保持 Draft，执行仍被审批门禁拒绝。
         write_listed_file(&agent);
         std::fs::write(
             dir.path().join(listed_path()),
@@ -493,12 +491,18 @@ mod tests {
             path: listed_path(),
             content: "# No tasks\n\nJust prose.\n".to_owned(),
         };
-        let error = err_message(agent.open_listed_plan(
-            &no_task_selection,
-            PlanOpenIntent::Execute,
-            &CancellationToken::new(),
-        ));
-        assert!(error.contains("no Markdown tasks"), "{error}");
+        let preparation = agent
+            .open_listed_plan(
+                &no_task_selection,
+                PlanOpenIntent::Execute,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            preparation.workflow.plan.as_ref().unwrap().status,
+            PlanStatus::Draft
+        );
+        assert_eq!(preparation.workflow.mode, WorkMode::Plan);
         // 未首存的 revision-0 草稿拒绝“另开会话”，避免静默丢弃。
         let mut document = PlanDocument::new().unwrap();
         document.origin_prompt = "pending first save".to_owned();

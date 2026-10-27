@@ -256,15 +256,8 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
 }
 
 fn plan_choose(pty: &mut Pty, action: usize) {
-    pty.input("\t");
-    match action {
-        0 => pty.input("\x1b[A"),
-        1 => {}
-        2 => pty.input("\x1b[B"),
-        3 => pty.input("\x1b[B\x1b[B"),
-        _ => panic!("invalid Plan action"),
-    }
-    pty.input("\r");
+    assert!(action < 6);
+    pty.input(&format!("{}\r", action + 1));
 }
 
 #[test]
@@ -1053,7 +1046,7 @@ fn plan_tui_discussion_preserves_main_draft_and_does_not_force_a_rewrite() {
             ]),
         );
         plan_wait_review(&mut pty, 1);
-        plan_choose(&mut pty, 2);
+        plan_choose(&mut pty, 4);
         pty.input("discard this question\x1b");
         plan_wait_review(&mut pty, 1);
         no_more(&fixture);
@@ -1117,13 +1110,14 @@ fn plan_tui_submission_requires_deliberate_action_and_survives_resize_and_resume
         assert!(!project.path().join("forbidden-after-submit").exists());
         assert!(!project.path().join("canary.txt").exists());
         let text = pty.parser.screen().contents();
-        let fresh = text.find("Execute (plan only)").unwrap();
+        let fresh = text.find("Execute in a new session").unwrap();
         let keep = text.find("Execute (keep context)").unwrap();
         let discuss = text.find("Continue discussing Plan").unwrap();
         let review = text.find("Review Plan").unwrap();
-        assert!(fresh < keep && keep < discuss && discuss < review, "{text}");
+        let compact = text.find("Compact context and execute").unwrap();
+        let leave = text.find("Save draft and leave Plan mode").unwrap();
+        assert!(fresh < keep && keep < compact && compact < review && review < discuss && discuss < leave, "{text}");
         assert!(text.contains('☐'), "{text}");
-        pty.input("\r");
         no_more(&fixture);
         pty.resize(4, 20);
         pty.wait_for("narrow mode indicator", |screen| {
@@ -1616,5 +1610,131 @@ fn plan_completion_requires_success_and_approved_tasks() {
         pty.input("\x1b");
         pty.input("\x03");
         pty.finish();
+    }
+}
+
+#[test]
+fn plan_tui_ready_keeps_input_and_output_and_sends_discussion() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        plan_enter(&mut pty, &fixture);
+        plan_drive_ready(&mut pty, &fixture, protocol, "Plan the canary", PLAN_TUI_BODY);
+        pty.input("\t继续讨论具体边界");
+        pty.draft("继续讨论具体边界");
+        let text = pty.parser.screen().contents();
+        assert!(text.contains("Create canary"), "{text}");
+        assert!(text.contains("❯ Execute in a new session"), "{text}");
+        assert!(!text.contains("1. Execute"), "{text}");
+        assert!(!text.contains("1–6 select"), "{text}");
+        assert!(text.contains("Save draft and leave Plan mode"), "{text}");
+        assert!(text.contains("┌ Plan"), "{text}");
+        assert!(text.contains("╭ Actions"), "{text}");
+        assert!(!text.contains("Plan ready · /plan view to review"), "{text}");
+        assert!(cancel_cursor_on_input_row(pty.parser.screen()), "{text}");
+        pty.resize(24, 90);
+        pty.draft("继续讨论具体边界");
+        pty.input("\r");
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert_eq!(cancel_user_messages(&body, protocol).last().unwrap(), "继续讨论具体边界");
+        assert!(!body.to_string().contains("[Approved Markdown snapshot]"));
+        plan_final(request, protocol, "Discussion continued");
+        pty.ready();
+        assert_eq!(std::fs::read_to_string(plan_path(project.path())).unwrap(), PLAN_TUI_BODY);
+        assert!(!project.path().join("canary.txt").exists());
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
+fn plan_tui_save_draft_and_leave_preserves_file_without_model_request() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        plan_enter(&mut pty, &fixture);
+        plan_drive_ready(&mut pty, &fixture, protocol, "Plan the canary", PLAN_TUI_BODY);
+        let path = plan_path(project.path());
+        let id = saved_session_id(home.path());
+        plan_choose(&mut pty, 5);
+        plan_wait_execute(&mut pty);
+        pty.ready();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), PLAN_TUI_BODY);
+        assert!(path.starts_with(project.path().join(".pp/drafts")));
+        assert!(!project.path().join("canary.txt").exists());
+        let journal = plan_journal(home.path(), &id);
+        let workflows: Vec<_> = journal.iter().filter(|record| record["customType"] == "pp.workflow").collect();
+        assert_eq!(workflows.last().unwrap()["data"]["workflow"]["mode"], "execute");
+        assert!(workflows.last().unwrap()["data"]["workflow"]["plan"].is_null());
+        assert!(workflows.iter().any(|record| record["data"]["workflow"]["plan"]["status"] == "draft"));
+        no_more(&fixture);
+        pty.input("\x03");
+        pty.finish();
+    }
+}
+
+#[test]
+fn plan_tui_compact_then_execute_succeeds_or_stays_in_plan_on_failure_and_cancel() {
+    for protocol in ["completion", "response"] {
+        for outcome in ["success", "failure", "cancel", "changed", "unchanged"] {
+            let fixture = server();
+            let home = tempfile::tempdir().unwrap();
+            let project = tempfile::tempdir().unwrap();
+            let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+            plan_enter(&mut pty, &fixture);
+            pty.input("Research OLD_PLAN_CONTEXT\r");
+            let (request, _) = pty.request_at(&fixture, api_path(protocol));
+            plan_final(request, protocol, "OLD_RESEARCH_ONLY_MARKER");
+            pty.ready();
+            plan_drive_ready(&mut pty, &fixture, protocol, "Finalize the plan", PLAN_TUI_BODY);
+            let id = saved_session_id(home.path());
+            let path = plan_path(project.path());
+            plan_choose(&mut pty, 2);
+            let (request, summary) = pty.request_at(&fixture, api_path(protocol));
+            assert!(summary.to_string().contains("Summarize the preceding conversation"), "{summary}");
+            assert!(summary.get("tools").is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)), "{summary}");
+            plan_wait_mode(&mut pty, "Plan");
+            match outcome {
+                "failure" => request.respond(Response::empty(tiny_http::StatusCode(500))).unwrap(),
+                "cancel" => {
+                    pty.input("\x1b");
+                    pty.wait_for("取消压缩并恢复计划菜单", |screen| {
+                        screen.contents().contains("Plan execution cancelled")
+                            || screen.contents().contains("cancelled")
+                    });
+                    drop(request);
+                }
+                "unchanged" => plan_final(request, protocol, &"verbose summary ".repeat(500)),
+                "changed" => {
+                    std::fs::write(&path, format!("{PLAN_TUI_BODY}\nExternal revision\n")).unwrap();
+                    plan_final(request, protocol, "SUMMARY_OF_OLD_PLAN_CONTEXT");
+                }
+                _ => plan_final(request, protocol, "SUMMARY_OF_OLD_PLAN_CONTEXT"),
+            }
+            if outcome == "success" {
+                let (request, body) = pty.request_at(&fixture, api_path(protocol));
+                let encoded = body.to_string();
+                assert!(encoded.contains("SUMMARY_OF_OLD_PLAN_CONTEXT"), "{body}");
+                assert!(!encoded.contains("OLD_RESEARCH_ONLY_MARKER"), "{body}");
+                assert!(encoded.contains("[Approved Markdown snapshot]"), "{body}");
+                assert!(encoded.contains("approved bytes"), "{body}");
+                assert_eq!(saved_session_id(home.path()), id);
+                plan_final(request, protocol, "Execution finished");
+                pty.ready();
+                plan_wait_execute(&mut pty);
+            } else {
+                plan_wait_review(&mut pty, if outcome == "changed" { 2 } else { 1 });
+                plan_wait_mode(&mut pty, "Plan");
+                assert!(!project.path().join("canary.txt").exists());
+            }
+            no_more(&fixture);
+            pty.input("\x03");
+            pty.finish();
+        }
     }
 }

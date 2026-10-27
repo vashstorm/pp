@@ -12,24 +12,21 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders},
+    widgets::{Block, BorderType, Borders},
 };
 use ratatui_textarea::TextArea;
 
-const ACTIONS: [&str; 4] = [
-    "1. Execute (plan only)",
-    "2. Execute (keep context)",
-    "3. Continue discussing Plan",
-    "4. Review Plan",
+const ACTIONS: [&str; 6] = [
+    "Execute in a new session",
+    "Execute (keep context)",
+    "Compact context and execute",
+    "Review Plan",
+    "Continue discussing Plan",
+    "Save draft and leave Plan mode",
 ];
-/// 打开面板时焦点在正文；有意切到操作区后默认选第 2 项（keep context）。
-const DEFAULT_ACTION: usize = 1;
-const HINT: &str = "Tab focus actions · ↑↓ select · Enter run · ←/→ tab · Esc close";
-/// 列表执行审阅的受限动作集：固定 Fresh 的执行 + 独立审查；无 Keep/Discuss。
-const LIST_ACTIONS: [&str; 2] = ["1. Execute (plan only)", "2. Review Plan"];
-/// 默认项是 Review：执行必须是离开默认位置的有意选择。
-const LIST_DEFAULT_ACTION: usize = 1;
-const LIST_HINT: &str = "Tab focus actions · ↑↓ select · Enter run · Esc back to list";
+/// 打开完整审阅面板时直接聚焦操作区，默认选中第一项。
+const DEFAULT_ACTION: usize = 0;
+const HINT: &str = "↑↓ choose · Enter run/send · Tab actions/input/body · ←→ tabs · Esc close";
 const READONLY_HINT: &str = "Read-only view · most recently synced version · Esc close";
 const DISCUSS_HINT: &str = "Enter send · Ctrl + J newline · Esc discard";
 
@@ -64,6 +61,9 @@ pub(super) enum Action {
     Approve(ExecutionContext),
     Discuss(String),
     Review,
+    SaveAndLeave,
+    EditInput(KeyEvent),
+    DiscussInput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,14 +92,13 @@ impl Tab {
 enum Focus {
     Body,
     Actions,
+    Input,
 }
 
 pub(super) struct Panel {
     document: PlanDocument,
     report: Option<PlanReviewReport>,
     token: Option<ReviewToken>,
-    /// 列表执行入口的受限审阅：动作集与提示切换到 LIST_*，无 Keep/Discuss。
-    list_execution: bool,
     tab: Tab,
     focus: Focus,
     action: usize,
@@ -116,6 +115,7 @@ impl Panel {
         let mut panel = Self::progress(review.document);
         panel.token = Some(review.token);
         panel.report = review.report;
+        panel.focus = Focus::Actions;
         panel
     }
 
@@ -125,7 +125,6 @@ impl Panel {
             document,
             report: None,
             token: None,
-            list_execution: false,
             tab: Tab::Plan,
             focus: Focus::Body,
             action: DEFAULT_ACTION,
@@ -133,28 +132,6 @@ impl Panel {
             layouts: [None, None],
             discussion: None,
             viewport: 0,
-        }
-    }
-
-    /// 列表执行入口的受限审阅面板：携带 ReviewToken，仅提供固定 Fresh 的
-    /// `Execute (plan only)`、`Review Plan` 与返回列表（Esc/Close，由调用
-    /// 方恢复列表）；不提供 Keep context/Continue discussing。已勾选的
-    /// 进度原样展示，全部勾选的文件也先审阅，打开列表本身不归档。
-    pub(super) fn for_list_execution(review: PlanReview) -> Self {
-        let mut panel = Self::progress(review.document);
-        panel.list_execution = true;
-        panel.action = LIST_DEFAULT_ACTION;
-        panel.token = Some(review.token);
-        panel.report = review.report;
-        panel
-    }
-
-    /// 当前动作集：完整审阅四项，列表执行审阅两项受限。
-    fn actions(&self) -> &'static [&'static str] {
-        if self.list_execution {
-            &LIST_ACTIONS
-        } else {
-            &ACTIONS
         }
     }
 
@@ -173,7 +150,7 @@ impl Panel {
         panel
     }
 
-    /// 审查完成后的刷新：焦点落在正文 Review 标签；操作区默认项保持 keep 不变。
+    /// 审查完成后的刷新：焦点落在正文 Review 标签；操作区保留当前选项。
     pub(super) fn focus_review_body(&mut self) {
         if self.report.is_some() {
             self.tab = Tab::Review;
@@ -189,6 +166,18 @@ impl Panel {
 
     pub(super) fn token(&self) -> Option<&ReviewToken> {
         self.token.as_ref()
+    }
+
+    pub(super) fn input_focused(&self) -> bool {
+        self.focus == Focus::Input && self.discussion.is_none()
+    }
+
+    fn border_color(&self, focus: Focus) -> Color {
+        if self.focus == focus && self.discussion.is_none() {
+            ACCENT
+        } else {
+            MUTED
+        }
     }
 
     pub(super) fn document(&self) -> &PlanDocument {
@@ -235,7 +224,7 @@ impl Panel {
         if !same_revision {
             self.layouts[Tab::Plan.index()] = None;
             self.scroll[Tab::Plan.index()] = 0;
-            self.focus = Focus::Body;
+            self.focus = Focus::Actions;
             self.action = DEFAULT_ACTION;
         }
         if self.report.is_none() {
@@ -248,23 +237,23 @@ impl Panel {
             return false;
         }
         let ready = self.document.status == PlanStatus::Ready;
-        if self.list_execution {
-            return match index {
-                0 => ready,
-                1 => matches!(self.document.status, PlanStatus::Draft | PlanStatus::Ready),
-                _ => false,
-            };
-        }
         match index {
-            0 | 1 | 3 => ready,
-            2 => matches!(self.document.status, PlanStatus::Draft | PlanStatus::Ready),
+            0..=3 => ready,
+            4 | 5 => matches!(self.document.status, PlanStatus::Draft | PlanStatus::Ready),
             _ => false,
         }
     }
 
-    pub(super) fn paste(&mut self, text: &str) {
+    /// 返回 false 时由主输入框接收粘贴；只读面板吞掉粘贴。
+    pub(super) fn paste(&mut self, text: &str) -> bool {
         if let Some(editor) = &mut self.discussion {
             editor.insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
+            true
+        } else if self.token.is_some() && !self.readonly() {
+            self.focus = Focus::Input;
+            false
+        } else {
+            true
         }
     }
 
@@ -282,25 +271,51 @@ impl Panel {
             // Esc 仅关闭面板：不降级、不执行，保留模式与正文。
             return Action::Close;
         }
+        if self.focus != Focus::Input
+            && self.report.is_some()
+            && key.modifiers.is_empty()
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+        {
+            self.tab = self.tab.toggled();
+            return Action::None;
+        }
+        if self.focus != Focus::Input
+            && key.modifiers.is_empty()
+            && key.kind == KeyEventKind::Press
+            && let KeyCode::Char(number @ '1'..='6') = key.code
+        {
+            let index = (number as u8 - b'1') as usize;
+            if index < ACTIONS.len() {
+                self.focus = Focus::Actions;
+                self.action = index;
+            }
+            return Action::None;
+        }
         if matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
             && matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
         {
-            self.focus = match self.focus {
-                Focus::Body => {
-                    self.action = if self.list_execution {
-                        LIST_DEFAULT_ACTION
-                    } else {
-                        DEFAULT_ACTION
-                    };
-                    Focus::Actions
-                }
-                Focus::Actions => Focus::Body,
+            let with_input = self.token.is_some() && !self.readonly();
+            self.focus = match (self.focus, key.code == KeyCode::BackTab, with_input) {
+                (Focus::Actions, false, true) | (Focus::Body, true, true) => Focus::Input,
+                (Focus::Actions, _, _) | (Focus::Input, false, _) => Focus::Body,
+                _ => Focus::Actions,
             };
             return Action::None;
         }
         match self.focus {
             Focus::Body => self.body_key(key),
             Focus::Actions => self.action_key(key),
+            Focus::Input => {
+                if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+                    if key.kind == KeyEventKind::Press {
+                        Action::DiscussInput
+                    } else {
+                        Action::None
+                    }
+                } else {
+                    Action::EditInput(key)
+                }
+            }
         }
     }
 
@@ -324,7 +339,7 @@ impl Panel {
     }
 
     fn action_key(&mut self, key: KeyEvent) -> Action {
-        let actions = self.actions();
+        let actions = &ACTIONS;
         match key.code {
             KeyCode::Up | KeyCode::Left => {
                 self.action = self.action.saturating_sub(1);
@@ -336,18 +351,22 @@ impl Panel {
                 if !self.action_enabled(self.action) {
                     return Action::None;
                 }
-                return match (self.list_execution, self.action) {
-                    // 列表执行审阅的 Execute 固定走 Fresh，不带原会话上下文。
-                    (_, 0) => Action::Approve(ExecutionContext::Fresh),
-                    (true, 1) => Action::Review,
-                    (false, 1) => Action::Approve(ExecutionContext::Keep),
-                    (false, 2) => {
+                return match self.action {
+                    0 => Action::Approve(ExecutionContext::Fresh),
+                    1 => Action::Approve(ExecutionContext::Keep),
+                    2 => Action::Approve(ExecutionContext::Compact),
+                    4 => {
                         self.discussion = Some(editor());
                         Action::None
                     }
-                    (false, 3) => Action::Review,
+                    3 => Action::Review,
+                    5 => Action::SaveAndLeave,
                     _ => Action::None,
                 };
+            }
+            KeyCode::Char(_) if self.token.is_some() && !self.readonly() => {
+                self.focus = Focus::Input;
+                return Action::EditInput(key);
             }
             _ => {}
         }
@@ -381,7 +400,7 @@ impl Panel {
     }
 
     /// 只有绑定当前 plan_id 且针对当前修订的报告才作为辅助材料随讨论送回。
-    fn compose_discussion(&self, text: String) -> String {
+    pub(super) fn compose_discussion(&self, text: String) -> String {
         let mut message = text;
         if let Some(report) = &self.report
             && report.plan_id == self.document.id
@@ -446,17 +465,42 @@ impl Panel {
         if area.width < 6 || area.height < 3 {
             return;
         }
+        let has_actions = self.token.is_some() && !self.readonly();
+        let actions_height = if has_actions && area.height >= 7 {
+            (ACTIONS.len() as u16 + 3).min(area.height - 4)
+        } else {
+            0
+        };
+        let preview = Rect::new(
+            area.x,
+            area.y,
+            area.width,
+            area.height
+                .saturating_sub(actions_height + u16::from(actions_height > 0)),
+        );
+        let actions_area = Rect::new(
+            area.x,
+            area.bottom() - actions_height,
+            area.width,
+            actions_height,
+        );
         let title = if self.token.is_none() || self.readonly() {
             format!(" Plan · {}/{} ", progress.0, progress.1)
         } else {
             format!(" Plan · r{} ", self.document.revision)
         };
-        let block = Block::default().borders(Borders::ALL).title(Span::styled(
-            title,
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ));
-        let mut body = block.inner(area);
-        frame.render_widget(block, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(self.border_color(Focus::Body)))
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(self.border_color(Focus::Body))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        let mut body = block.inner(preview);
+        frame.render_widget(block, preview);
 
         // 头部：Plan 标签显示相对路径 + 状态；Review 标签显示报告修订与
         // 模型来源，旧修订报告明确标注 outdated（宽度不足时截断模型引用）。
@@ -516,14 +560,8 @@ impl Panel {
             body.height -= 1;
         }
 
-        // 底部操作区/只读提示。
-        let actions = self.actions();
-        let footer_height = if self.readonly() || self.token.is_none() {
-            1u16
-        } else {
-            actions.len() as u16 + 1
-        };
-        let footer_height = footer_height.min(body.height);
+        // 只读提示留在预览内部；六项操作在独立外框中绘制。
+        let footer_height = u16::from(!has_actions).min(body.height);
         let footer = Rect::new(
             body.x,
             body.y + body.height.saturating_sub(footer_height),
@@ -560,44 +598,63 @@ impl Panel {
         self.scroll[tab.index()] = scroll;
 
         if footer_height > 0 {
-            if self.readonly() || self.token.is_none() {
-                frame.render_widget(
-                    Line::styled(format!(" {READONLY_HINT}"), Style::default().fg(MUTED)),
-                    footer,
-                );
-            } else {
-                let mut height = footer.height as usize;
-                for (index, label) in actions.iter().enumerate() {
-                    if height == 0 {
-                        break;
-                    }
-                    height -= 1;
-                    let selected = self.focus == Focus::Actions && self.action == index;
-                    let style = if !self.action_enabled(index) {
-                        Style::default().fg(DIM)
-                    } else if selected {
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
-                    let marker = if selected { "❯ " } else { "  " };
-                    frame.render_widget(
-                        Line::from(Span::styled(format!("{marker}{label}"), style)),
-                        Rect::new(footer.x, footer.y + index as u16, footer.width, 1),
-                    );
-                }
-                if height > 0 {
-                    let hint = if self.list_execution { LIST_HINT } else { HINT };
-                    frame.render_widget(
-                        Line::styled(format!(" {hint}"), Style::default().fg(DIM)),
-                        Rect::new(footer.x, footer.y + actions.len() as u16, footer.width, 1),
-                    );
-                }
-            }
+            frame.render_widget(
+                Line::styled(format!(" {READONLY_HINT}"), Style::default().fg(MUTED)),
+                footer,
+            );
+        }
+        if actions_height > 0 {
+            self.draw_actions(frame, actions_area);
         }
 
         if self.discussion.is_some() {
             self.draw_discussion(frame, area);
+        }
+    }
+
+    fn draw_actions(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.border_color(Focus::Actions)))
+            .title(Span::styled(
+                " Actions ",
+                Style::default()
+                    .fg(self.border_color(Focus::Actions))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let show_hint = inner.height > ACTIONS.len() as u16;
+        let visible = usize::from(inner.height.saturating_sub(u16::from(show_hint)));
+        // 短窗口只显示部分操作时，仍保证当前选项处于可见范围。
+        let first = self.action.saturating_add(1).saturating_sub(visible);
+        for (row, (index, label)) in ACTIONS
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(visible)
+            .enumerate()
+        {
+            let selected = self.action == index;
+            let style = if !self.action_enabled(index) {
+                Style::default().fg(DIM)
+            } else if selected {
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let marker = if selected { "❯ " } else { "  " };
+            frame.render_widget(
+                Line::styled(format!("{marker}{label}"), style),
+                Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            );
+        }
+        if show_hint {
+            frame.render_widget(
+                Line::styled(format!(" {HINT}"), Style::default().fg(DIM)),
+                Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
+            );
         }
     }
 
@@ -682,44 +739,101 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    #[test]
-    fn focus_starts_on_body_and_actions_default_to_keep() {
-        let mut panel = review_panel(PlanStatus::Ready);
-        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None); // 正文焦点不落执行
-        assert_eq!(panel.key(key_event(KeyCode::Tab)), Action::None);
-        assert_eq!(panel.action, DEFAULT_ACTION);
-        assert_eq!(
-            panel.key(key_event(KeyCode::Enter)),
-            Action::Approve(ExecutionContext::Keep)
-        );
+    fn render_panel(panel: &mut Panel, height: u16) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, height)).unwrap();
+        terminal
+            .draw(|frame| panel.draw(frame, frame.area(), (0, 1)))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| (0..100).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
     }
 
     #[test]
-    fn draft_allows_discussion_only_and_ready_enables_execution() {
-        let mut draft = review_panel(PlanStatus::Draft);
-        draft.key(key_event(KeyCode::Tab));
-        assert_eq!(draft.key(key_event(KeyCode::Up)), Action::None);
-        assert_eq!(draft.key(key_event(KeyCode::Up)), Action::None);
-        assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::None); // Fresh 需 Ready
-        assert_eq!(draft.key(key_event(KeyCode::Down)), Action::None);
-        assert_eq!(draft.key(key_event(KeyCode::Down)), Action::None);
-        assert_eq!(draft.key(key_event(KeyCode::Down)), Action::None);
-        assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::None); // Review 禁用
-        assert_eq!(draft.key(key_event(KeyCode::Up)), Action::None); // 回到讨论项
-        match draft.key(key_event(KeyCode::Enter)) {
-            Action::None => {}
-            other => panic!("discussion opens the editor, got {other:?}"),
+    fn plan_preview_and_actions_have_separate_frames_and_spacing() {
+        let mut panel = review_panel(PlanStatus::Ready);
+        let rows = render_panel(&mut panel, 26);
+        assert!(rows[0].starts_with("┌ Plan"));
+        assert!(rows[15].starts_with('└'));
+        assert!(rows[16].trim().is_empty());
+        assert!(rows[17].starts_with("╭ Actions"));
+        assert!(rows[25].starts_with('╰'));
+        for (index, label) in ACTIONS.iter().enumerate() {
+            assert!(rows[18 + index].contains(label));
         }
-        assert!(draft.discussion.is_some());
-        assert!(!draft.action_enabled(0));
+        let mut completed = Panel::progress(document(PlanStatus::Completed, "- [x] step"));
+        let rows = render_panel(&mut completed, 26);
+        assert!(!rows.iter().any(|row| row.contains("Actions")));
+        assert!(rows[25].starts_with('└'));
+    }
 
-        let mut ready = review_panel(PlanStatus::Ready);
-        ready.key(key_event(KeyCode::Tab));
-        ready.key(key_event(KeyCode::Up));
+    #[test]
+    fn plan_short_actions_frame_keeps_the_selected_option_visible() {
+        let mut panel = review_panel(PlanStatus::Ready);
+        panel.key(key_event(KeyCode::Char('6')));
+        let rows = render_panel(&mut panel, 10);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("❯ Save draft and leave Plan mode"))
+        );
+        assert!(rows.last().unwrap().starts_with('╰'));
+    }
+
+    #[test]
+    fn plan_actions_start_focused_and_tab_reaches_input_and_body() {
+        let mut panel = review_panel(PlanStatus::Ready);
         assert_eq!(
-            ready.key(key_event(KeyCode::Enter)),
+            panel.key(key_event(KeyCode::Enter)),
             Action::Approve(ExecutionContext::Fresh)
         );
+        panel.key(key_event(KeyCode::Tab));
+        assert!(panel.input_focused());
+        assert_eq!(
+            panel.key(key_event(KeyCode::Char('1'))),
+            Action::EditInput(key_event(KeyCode::Char('1')))
+        );
+        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::DiscussInput);
+        panel.key(key_event(KeyCode::Tab));
+        assert_eq!(panel.focus, Focus::Body);
+        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None);
+        panel.key(key_event(KeyCode::Tab));
+        assert_eq!(panel.focus, Focus::Actions);
+    }
+
+    #[test]
+    fn plan_number_keys_select_all_six_actions_without_executing() {
+        for (number, expected) in [
+            ('1', Action::Approve(ExecutionContext::Fresh)),
+            ('2', Action::Approve(ExecutionContext::Keep)),
+            ('3', Action::Approve(ExecutionContext::Compact)),
+            ('4', Action::Review),
+            ('6', Action::SaveAndLeave),
+        ] {
+            let mut panel = review_panel(PlanStatus::Ready);
+            assert_eq!(panel.key(key_event(KeyCode::Char(number))), Action::None);
+            assert_eq!(panel.key(key_event(KeyCode::Enter)), expected);
+        }
+        let mut panel = review_panel(PlanStatus::Ready);
+        panel.key(key_event(KeyCode::Char('5')));
+        panel.key(key_event(KeyCode::Enter));
+        assert!(panel.discussion.is_some());
+    }
+
+    #[test]
+    fn draft_allows_discussion_and_save_but_requires_submission_to_execute() {
+        let mut draft = review_panel(PlanStatus::Draft);
+        for index in 0..4 {
+            assert!(!draft.action_enabled(index));
+        }
+        assert!(draft.action_enabled(4));
+        assert!(draft.action_enabled(5));
+        draft.key(key_event(KeyCode::Char('1')));
+        assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::None);
+        draft.key(key_event(KeyCode::Char('5')));
+        draft.key(key_event(KeyCode::Enter));
+        assert!(draft.discussion.is_some());
     }
 
     #[test]
@@ -736,8 +850,7 @@ mod tests {
     fn esc_closes_and_discard_keeps_ready_state() {
         let mut panel = review_panel(PlanStatus::Ready);
         assert_eq!(panel.key(key_event(KeyCode::Esc)), Action::Close);
-        panel.key(key_event(KeyCode::Tab));
-        panel.key(key_event(KeyCode::Down)); // 讨论项
+        panel.key(key_event(KeyCode::Char('5'))); // 讨论项
         assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None);
         assert!(panel.discussion.is_some());
         assert_eq!(panel.key(key_event(KeyCode::Esc)), Action::None);
@@ -805,19 +918,10 @@ mod tests {
     #[test]
     fn review_action_dispatches_for_ready_documents_only() {
         let mut panel = review_panel(PlanStatus::Ready);
-        panel.key(key_event(KeyCode::Tab));
-        for _ in 0..3 {
-            panel.key(key_event(KeyCode::Down));
-        }
-        assert_eq!(panel.action, 3);
+        panel.key(key_event(KeyCode::Char('4')));
         assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::Review);
-
         let mut draft = review_panel(PlanStatus::Draft);
-        draft.key(key_event(KeyCode::Tab));
-        for _ in 0..3 {
-            draft.key(key_event(KeyCode::Down));
-        }
-        assert!(!draft.action_enabled(3));
+        draft.key(key_event(KeyCode::Char('4')));
         assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::None);
     }
 
@@ -869,6 +973,7 @@ mod tests {
             model_reference: "model".into(),
             content: "report".into(),
         });
+        panel.focus = Focus::Body;
         panel.scroll[0] = 3;
         panel.scroll[1] = 5;
         panel.key(key_event(KeyCode::Right));
@@ -880,67 +985,15 @@ mod tests {
     }
 
     #[test]
-    fn list_execution_panel_offers_only_fresh_execute_review_and_back() {
-        let mut panel = Panel::for_list_execution(PlanReview {
-            token: token(),
-            document: document(PlanStatus::Ready, "- [ ] step"),
-            report: None,
-        });
-        assert!(panel.list_execution);
-        assert!(panel.token().is_some());
-        // 焦点在正文时不落执行；Tab 后默认选 Review（index 1），执行必须
-        // 是有意选择。
-        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None);
-        panel.key(key_event(KeyCode::Tab));
-        assert_eq!(panel.action, LIST_DEFAULT_ACTION);
-        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::Review);
-        // 向上选 Execute：固定 Fresh，没有 keep-context 选项。
-        panel.key(key_event(KeyCode::Up));
-        assert_eq!(
-            panel.key(key_event(KeyCode::Enter)),
-            Action::Approve(ExecutionContext::Fresh)
-        );
-        // 导航被限制在两项之内；讨论编辑器永不打开。
-        panel.key(key_event(KeyCode::Down));
-        panel.key(key_event(KeyCode::Down));
-        assert_eq!(panel.action, LIST_ACTIONS.len() - 1);
-        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::Review);
-        assert!(panel.discussion.is_none());
-        assert!(!panel.action_enabled(2));
-        // Esc 返回列表（Close 由调用方映射回列表，保留分类/筛选/选中）。
-        assert_eq!(panel.key(key_event(KeyCode::Esc)), Action::Close);
-    }
-
-    #[test]
-    fn list_execution_panel_keeps_progress_and_enables_execute_only_when_ready() {
-        let mut ready = Panel::for_list_execution(PlanReview {
-            token: token(),
-            document: document(PlanStatus::Ready, "- [x] step\n- [ ] other"),
-            report: None,
-        });
-        ready.key(key_event(KeyCode::Tab));
-        assert!(ready.action_enabled(0));
-        assert!(ready.action_enabled(1));
-        assert_eq!(task_progress(&ready.document.content), (1, 2));
-
-        // 未 Ready 的文档只允许 Review；只读视图彻底没有操作区。
-        let mut draft = Panel::for_list_execution(PlanReview {
-            token: token(),
-            document: document(PlanStatus::Draft, "- [ ] step"),
-            report: None,
-        });
-        draft.key(key_event(KeyCode::Tab));
-        assert!(!draft.action_enabled(0));
-        assert!(draft.action_enabled(1));
-
-        let executed = Panel::for_list_execution(PlanReview {
-            token: token(),
-            document: document(PlanStatus::Executed, "- [x] step"),
-            report: None,
-        });
-        assert!(executed.readonly());
-        for index in 0..LIST_ACTIONS.len() {
-            assert!(!executed.action_enabled(index));
+    fn plan_completed_view_never_enables_actions_or_accepts_input() {
+        let mut panel = Panel::progress(document(PlanStatus::Completed, "- [x] step"));
+        for index in 0..ACTIONS.len() {
+            assert!(!panel.action_enabled(index));
         }
+        panel.key(key_event(KeyCode::Char('1')));
+        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None);
+        assert!(panel.paste("ignored"));
+        assert!(!panel.input_focused());
+        assert_eq!(panel.key(key_event(KeyCode::Esc)), Action::Close);
     }
 }

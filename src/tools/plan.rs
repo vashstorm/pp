@@ -50,10 +50,11 @@ pub(crate) fn run(
         "plan_write" => {
             let args: PlanWriteArgs =
                 serde_json::from_str(arguments).context("invalid plan_write arguments")?;
-            // Plan+Ready+Plans 仅用于列表预执行审阅：模型工具不可写或
-            // 重新提交已提升到 plans 的计划。
+            // 列表中 Plans 的计划接受讨论后降为 Draft，允许修改原文件；
+            // 待审阅或已交接的 Plans 仍不可被规划工具直接修改。
             ensure!(
-                document.location != PlanLocation::Plans,
+                document.location != PlanLocation::Plans
+                    || document.status == plan::PlanStatus::Draft,
                 "This plan is awaiting pre-execution review; choose a draft from /plan-list to plan again."
             );
             write(workspace, document, args)
@@ -62,7 +63,8 @@ pub(crate) fn run(
             let args: PlanSubmitArgs =
                 serde_json::from_str(arguments).context("invalid plan_submit arguments")?;
             ensure!(
-                document.location != PlanLocation::Plans,
+                document.location != PlanLocation::Plans
+                    || document.status == plan::PlanStatus::Draft,
                 "This plan is awaiting pre-execution review; choose a draft from /plan-list to plan again."
             );
             submit(workspace, document, input, args)
@@ -691,6 +693,63 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.to_string(), MOVED_PLAN);
+    }
+
+    #[test]
+    fn plan_plans_discussion_tools_require_draft_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = save::Workspace::open(dir.path()).unwrap();
+        let mut document = plan_document(1, "Selected plan", "- [ ] task\n");
+        document.location = PlanLocation::Plans;
+        let path = document.path().unwrap();
+        std::fs::create_dir_all(dir.path().join(".pp/plans")).unwrap();
+        std::fs::write(dir.path().join(&path), &document.content).unwrap();
+        register(
+            &workspace,
+            &document.id,
+            document.file_name.as_deref().unwrap(),
+            PlanLocation::Plans,
+        );
+        let content = "- [ ] task\n\nClarified acceptance criteria.\n";
+        let arguments = serde_json::json!({
+            "title": "Selected plan", "file_name": "create-canary.md",
+            "expected_revision": 1, "content": content
+        })
+        .to_string();
+        for status in [plan::PlanStatus::Ready, plan::PlanStatus::Executed] {
+            document.status = status;
+            assert!(run(&workspace, &document, None, "plan_write", &arguments).is_err());
+            assert!(
+                run(
+                    &workspace,
+                    &document,
+                    None,
+                    "plan_submit",
+                    r#"{"expected_revision":1}"#
+                )
+                .is_err()
+            );
+        }
+        document.status = plan::PlanStatus::Draft;
+        let (result, change) = run(&workspace, &document, None, "plan_write", &arguments).unwrap();
+        assert_eq!(result["revision"], 2);
+        assert!(matches!(change, Some(PlanChange::Written { .. })));
+        document.revision = 2;
+        document.content = content.into();
+        let (result, change) = run(
+            &workspace,
+            &document,
+            None,
+            "plan_submit",
+            r#"{"expected_revision":2}"#,
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert!(matches!(change, Some(PlanChange::Submitted)));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(path)).unwrap(),
+            content
+        );
     }
 
     #[test]

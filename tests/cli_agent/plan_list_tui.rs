@@ -100,7 +100,7 @@ fn plan_list_filters_previews_and_preserves_input() {
             && !text.contains("/Completed")
     });
 
-    // 预览：Enter 只读详情（0/2 进度标题），无审批动作可运行；Esc 返回列表。
+    // Enter 打开完整操作菜单；打开本身不调模型，Esc 返回列表。
     pty.input("fix");
     pty.wait_for("选中 fix-config", |screen| {
         let text = cancel_normalize(screen);
@@ -108,9 +108,9 @@ fn plan_list_filters_previews_and_preserves_input() {
     });
     pty.input("\r");
     pty.input("\r");
-    pty.wait_for("只读预览打开且显示进度", |screen| {
+    pty.wait_for("操作菜单打开且显示正文", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("Plan·0/2")
+        text.contains("Executeinanewsession") && text.contains("SavedraftandleavePlanmode")
             && text.contains(".pp/drafts/fix-config.md")
             && text.contains("更新配置加载")
     });
@@ -130,7 +130,7 @@ fn plan_list_filters_previews_and_preserves_input() {
         cancel_normalize(screen).contains("fix-config.md")
     });
 
-    // 关闭恢复主输入；整个浏览过程零模型请求、零会话写入。
+    // 关闭恢复主输入；打开菜单已保存载入会话，但整个浏览过程零模型请求。
     pty.input("\x1b");
     plan_list_wait_closed(&mut pty);
     pty.input("kept draft");
@@ -139,10 +139,7 @@ fn plan_list_filters_previews_and_preserves_input() {
     });
     no_more(&fixture);
     let sessions = home.path().join(".pp/agent/sessions");
-    assert!(
-        !sessions.exists() || std::fs::read_dir(&sessions).unwrap().next().is_none(),
-        "listing must not create sessions"
-    );
+    assert!(std::fs::read_dir(&sessions).unwrap().next().is_some(), "opening the menu saves the selected plan session");
     pty.input("\x03");
     pty.finish();
 }
@@ -510,11 +507,11 @@ fn plan_list_execution_requires_new_local_approval() {
             cancel_normalize(screen).contains("listed-exec.md")
         });
 
-        // e 打开受限执行审阅：只读当前正文（已勾选进度原样展示），零请求。
+        // e 打开完整六项菜单；已勾选进度原样展示，打开菜单零模型请求。
         pty.input("e");
-        pty.wait_for("受限执行审阅打开", |screen| {
+        pty.wait_for("完整操作菜单打开", |screen| {
             let text = cancel_normalize(screen);
-            text.contains("Execute(planonly)")
+            text.contains("Executeinanewsession")
                 && text.contains("ReviewPlan")
                 && text.contains("Alreadyverifiedstep.")
                 && text.contains("Remainingcanarystep.")
@@ -531,14 +528,12 @@ fn plan_list_execution_requires_new_local_approval() {
         assert!(project.path().join(".pp/drafts/listed-exec.md").exists());
         pty.input("e");
         pty.wait_for("再次进入执行审阅", |screen| {
-            cancel_normalize(screen).contains("Execute(planonly)")
+            cancel_normalize(screen).contains("Executeinanewsession")
         });
 
         // 明确 Execute（固定 Fresh）：新执行会话只带选中计划，已勾选状态
         // 保留；模型请求在本地批准之后才发出。
-        pty.input("\t");
-        pty.input("\x1b[A");
-        pty.input("\r");
+        plan_choose(&mut pty, 0);
         let (request, exec_body) = pty.request_at(&fixture, api_path(protocol));
         let users = plan_list_user_texts(protocol, &exec_body);
         assert_eq!(users.len(), 1, "{exec_body}");
@@ -571,5 +566,183 @@ fn plan_list_execution_requires_new_local_approval() {
         no_more(&fixture);
         pty.input("\x03");
         pty.finish();
+    }
+}
+
+#[test]
+fn plan_list_enter_opens_six_actions_for_drafts_and_plans_and_only_displays_done() {
+    for protocol in ["completion", "response"] {
+        for location in ["drafts", "plans", "done", "prose"] {
+            let fixture = server();
+            let home = tempfile::tempdir().unwrap();
+            let project = tempfile::tempdir().unwrap();
+            let directory = if location == "prose" {
+                "drafts"
+            } else {
+                location
+            };
+            let content = if location == "prose" {
+                "# Selected plan\n\nStill discussing the approach.\n"
+            } else {
+                "# Selected plan\n\n- [x] Already verified.\n- [ ] Remaining work.\n"
+            };
+            let path = project.path().join(format!(".pp/{directory}/selected.md"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, content).unwrap();
+            let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+            pty.ready();
+            plan_list_open(&mut pty);
+            pty.wait_for("选中计划已加载", |screen| {
+                screen.contents().contains("selected.md")
+                    && !screen.contents().contains("Loading plans")
+            });
+            pty.input("\r");
+            if location == "done" {
+                pty.wait_for("Done 只展示正文", |screen| {
+                    let text = screen.contents();
+                    text.contains(".pp/done/selected.md")
+                        && text.contains("Remaining work.")
+                        && text.contains("Read-only view")
+                });
+                let text = pty.parser.screen().contents();
+                assert!(!text.contains("Execute in a new session"), "{text}");
+                assert!(!text.contains("Save draft and leave Plan mode"), "{text}");
+                for input in ["1\r", "2\r", "3\r", "4\r", "5\r", "6\r"] {
+                    pty.input(input);
+                }
+                no_more(&fixture);
+                let sessions = home.path().join(".pp/agent/sessions");
+                assert!(
+                    !sessions.exists() || std::fs::read_dir(sessions).unwrap().next().is_none()
+                );
+            } else {
+                pty.wait_for("列表 Enter 展示完整六项菜单", |screen| {
+                    let text = screen.contents();
+                    text.contains("Execute in a new session")
+                        && text.contains("Execute (keep context)")
+                        && text.contains("Compact context and execute")
+                        && text.contains("Review Plan")
+                        && text.contains("Continue discussing Plan")
+                        && text.contains("Save draft and leave Plan mode")
+                });
+                assert!(pty.parser.screen().contents().contains("Selected plan"));
+                if location == "prose" {
+                    plan_choose(&mut pty, 0);
+                    no_more(&fixture);
+                    assert!(!project.path().join("canary.txt").exists());
+                }
+            }
+            no_more(&fixture);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+            pty.input("\x1b");
+            pty.wait_for("返回列表", |screen| {
+                cancel_normalize(screen).contains("Planlist")
+            });
+            pty.input("\x03");
+            pty.finish();
+        }
+    }
+}
+
+#[test]
+fn plan_list_six_actions_use_the_selected_plan_and_leave_the_list() {
+    for protocol in ["completion", "response"] {
+        for action in [1, 2, 3, 4, 5] {
+            let fixture = server();
+            let home = tempfile::tempdir().unwrap();
+            let project = tempfile::tempdir().unwrap();
+            let location = if action % 2 == 0 { "plans" } else { "drafts" };
+            let path = project.path().join(format!(".pp/{location}/selected.md"));
+            let content = "# Selected actions\n\n- [x] Verified item.\n- [ ] Remaining item.\n";
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, content).unwrap();
+            let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+            pty.ready();
+            plan_list_open(&mut pty);
+            pty.wait_for("选中计划已加载", |screen| {
+                screen.contents().contains("selected.md")
+                    && !screen.contents().contains("Loading plans")
+            });
+            pty.input("\r");
+            pty.wait_for("菜单就绪", |screen| {
+                screen
+                    .contents()
+                    .contains("Save draft and leave Plan mode")
+            });
+            plan_choose(&mut pty, action);
+            if action == 5 {
+                plan_wait_execute(&mut pty);
+                pty.ready();
+                no_more(&fixture);
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+            } else {
+                if action == 4 {
+                    pty.input("Clarify the remaining item\r");
+                }
+                let (request, body) = pty.request_at(&fixture, api_path(protocol));
+                let encoded = body.to_string();
+                assert!(encoded.contains("Selected actions"), "{body}");
+                assert_eq!(
+                    encoded.contains("[Approved Markdown snapshot]"),
+                    action <= 2,
+                    "{body}"
+                );
+                if action == 4 {
+                    assert_eq!(
+                        cancel_user_messages(&body, protocol).last().unwrap(),
+                        "Clarify the remaining item"
+                    );
+                }
+                let request = if action == 4 {
+                    plan_calls(
+                        request,
+                        protocol,
+                        json!([plan_call(
+                            protocol,
+                            "discuss-write",
+                            "plan_write",
+                            json!({"title":"Selected actions", "file_name":"selected.md", "expected_revision":1, "content":format!("{content}\nClarified acceptance criteria.\n")})
+                        )]),
+                    );
+                    let (request, body) = pty.request_at(&fixture, api_path(protocol));
+                    assert_eq!(
+                        cancel_tool_outputs(&body, protocol).last().unwrap().1["ok"],
+                        true,
+                        "{body}"
+                    );
+                    assert!(
+                        std::fs::read_to_string(&path)
+                            .unwrap()
+                            .contains("Clarified acceptance criteria.")
+                    );
+                    request
+                } else {
+                    request
+                };
+                plan_final(
+                    request,
+                    protocol,
+                    if action == 3 {
+                        "List reviewer findings"
+                    } else {
+                        "List action finished"
+                    },
+                );
+                if action == 3 {
+                    pty.wait_for("审查结束显示报告与完整菜单", |screen| {
+                        let text = screen.contents();
+                        text.contains("List reviewer findings")
+                            && text.contains("Save draft and leave Plan mode")
+                    });
+                } else {
+                    pty.text("List action finished");
+                    pty.ready();
+                    assert!(!cancel_normalize(pty.parser.screen()).contains("Planlist"));
+                }
+            }
+            no_more(&fixture);
+            pty.input("\x03");
+            pty.finish();
+        }
     }
 }
