@@ -223,6 +223,11 @@ fn paint_surface(
 }
 
 enum WorkerCommand {
+    Shell {
+        command: String,
+        call_id: String,
+        cancellation: CancellationToken,
+    },
     Run {
         prompt: String,
         cancellation: CancellationToken,
@@ -280,6 +285,7 @@ enum WorkerEvent {
         reply: mpsc::SyncSender<Vec<crate::interaction::AskAnswer>>,
     },
     Progress(AgentEvent),
+    ShellCompleted(Result<()>),
     Completed {
         result: Result<RunOutcome>,
         elapsed: Duration,
@@ -425,6 +431,7 @@ struct ResumeState {
 enum State {
     Ready,
     Running,
+    RunningShell,
     Cancelling,
     Compacting,
     Resetting,
@@ -498,6 +505,7 @@ struct App {
     history_index: Option<usize>,
     history_draft: Option<TextArea<'static>>,
     state: State,
+    next_shell_id: u64,
     active_cancellation: Option<CancellationToken>,
     input_queue: InputQueue,
     queue_paused: bool,
@@ -644,6 +652,7 @@ impl App {
             history_index: None,
             history_draft: None,
             state: State::Unavailable,
+            next_shell_id: 0,
             active_cancellation: None,
             input_queue: InputQueue::default(),
             queue_paused: false,
@@ -730,6 +739,29 @@ impl App {
                             // 状态切换成功后紧随一份新用量快照，与动作保持 FIFO 顺序。
                             let mut snapshots: Vec<WorkerEvent> = Vec::new();
                             let event = match command {
+                                WorkerCommand::Shell {
+                                    command,
+                                    call_id,
+                                    cancellation,
+                                } => {
+                                    let result = agent.run_shell(
+                                        &command,
+                                        &call_id,
+                                        &cancellation,
+                                        &mut emit,
+                                    );
+                                    let cleanup_failed = result.as_ref().is_err_and(|error| {
+                                        error.chain().any(|cause| {
+                                            cause.is::<crate::cancellation::CleanupError>()
+                                        })
+                                    });
+                                    if sender.send(WorkerEvent::ShellCompleted(result)).is_err()
+                                        || cleanup_failed
+                                    {
+                                        break;
+                                    }
+                                    continue;
+                                }
                                 WorkerCommand::Run {
                                     prompt,
                                     cancellation,
@@ -1596,6 +1628,26 @@ impl App {
                 Ok(WorkerEvent::SessionStarted(id)) => {
                     self.notify(Level::Normal, format!("Session: {id}"));
                     self.session_id = Some(id);
+                    changed = true;
+                }
+                Ok(WorkerEvent::ShellCompleted(result)) => {
+                    self.active_cancellation = None;
+                    self.secondary_status = None;
+                    self.state = State::Ready;
+                    if let Err(error) = result {
+                        if error
+                            .chain()
+                            .any(|cause| cause.is::<crate::cancellation::CleanupError>())
+                        {
+                            self.commands = None;
+                            self.events = None;
+                            self.state = State::Unavailable;
+                            self.unavailable = Some(
+                                "Execution unavailable: shell cleanup failed; restart pp.".into(),
+                            );
+                        }
+                        self.notify(Level::Error, format!("{error:#}"));
+                    }
                     changed = true;
                 }
                 Ok(WorkerEvent::Completed {
@@ -2543,6 +2595,27 @@ impl App {
         }
     }
 
+    fn send_shell(&mut self, command: String) {
+        let cancellation = CancellationToken::new();
+        let call_id = format!("local-shell-{}", self.next_shell_id);
+        if self.send_submission(
+            WorkerCommand::Shell {
+                command,
+                call_id,
+                cancellation: cancellation.clone(),
+            },
+            State::RunningShell,
+        ) {
+            self.next_shell_id += 1;
+            self.active_cancellation = Some(cancellation);
+            self.clear_input();
+            self.show_welcome = false;
+            self.history_browser = false;
+            self.conversation.follow();
+            self.secondary_status = Some("Running shell...".into());
+        }
+    }
+
     /// 手动压缩入口：命令本身不进对话、不伪造普通任务；沿用 slash 命令的
     /// 提交语义（成功后清空初始输入），压缩期间新输入的草稿不受影响。
     fn send_compaction(&mut self) {
@@ -2835,6 +2908,31 @@ impl App {
             }
             _ => {}
         }
+        if let Some(Command::Shell(command)) = &command {
+            if matches!(self.state, State::Unavailable) {
+                if let Some(error) = self.unavailable.clone() {
+                    self.notify(Level::Error, error);
+                }
+            } else if self.workflow.mode != crate::plan::WorkMode::Execute {
+                self.notify(
+                    Level::Error,
+                    "Shell commands are unavailable in Plan mode.".into(),
+                );
+            } else if !matches!(self.state, State::Ready) {
+                self.notify(
+                    Level::Error,
+                    "Finish or cancel the current task before running a shell command.".into(),
+                );
+            } else if self.has_pending() {
+                self.notify(
+                    Level::Error,
+                    "Resolve pending messages before running a shell command.".into(),
+                );
+            } else {
+                self.send_shell((*command).to_owned());
+            }
+            return false;
+        }
         if let Some(Command::Skills(selection)) = command {
             if !matches!(self.state, State::Ready | State::Unavailable) {
                 return false;
@@ -2885,6 +2983,7 @@ impl App {
         }
         match self.state {
             State::Running
+            | State::RunningShell
             | State::Cancelling
             | State::Compacting
             | State::Resetting
@@ -2908,6 +3007,7 @@ impl App {
                 }
             }
             State::Ready => match command {
+                Some(Command::Shell(_)) => unreachable!("handled before the state match"),
                 Some(Command::Think(Some(level))) => {
                     self.set_think_level(level);
                 }
@@ -3510,6 +3610,15 @@ impl App {
                     if self.history_browser {
                         self.history_browser = false;
                         self.conversation.follow();
+                        self.escape_tap.reset();
+                        return false;
+                    }
+                    if key.kind == KeyEventKind::Press && matches!(self.state, State::RunningShell)
+                    {
+                        if let Some(cancellation) = &self.active_cancellation {
+                            cancellation.cancel();
+                            self.secondary_status = Some("Cancelling shell...".into());
+                        }
                         self.escape_tap.reset();
                         return false;
                     }
@@ -4958,6 +5067,34 @@ mod tests {
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert!(token.is_cancelled());
         assert!(matches!(app.state, State::Cancelling));
+    }
+
+    #[test]
+    fn bang_shell_cleanup_failure_disables_future_execution() {
+        let mut app = app();
+        app.state = State::RunningShell;
+        app.input.insert_str("draft remains");
+        let (commands, requests) = mpsc::channel();
+        let (events, receiver) = mpsc::channel();
+        app.commands = Some(commands);
+        app.events = Some(receiver);
+        events
+            .send(WorkerEvent::ShellCompleted(Err(
+                crate::cancellation::CleanupError(anyhow::anyhow!("process group still alive"))
+                    .into(),
+            )))
+            .unwrap();
+        drop(events);
+        app.receive();
+        assert!(matches!(app.state, State::Unavailable));
+        assert_eq!(app.input.lines(), &["draft remains"]);
+        assert_eq!(
+            app.unavailable.as_deref(),
+            Some("Execution unavailable: shell cleanup failed; restart pp.")
+        );
+        assert!(draw(&mut app, 100, 30).contains("process group still alive"));
+        app.submit(PendingKind::Steering);
+        assert!(requests.try_recv().is_err());
     }
 
     #[test]

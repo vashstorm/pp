@@ -108,10 +108,15 @@ pub(crate) enum Command<'a> {
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
     Skills(SkillCommand<'a>),
+    Shell(&'a str),
     Prompt(String),
 }
 
 pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<Command<'a>>> {
+    if let Some(command) = input.trim_start().strip_prefix('!') {
+        ensure!(!command.trim().is_empty(), "usage: !command");
+        return Ok(Some(Command::Shell(command)));
+    }
     let input = input.trim();
     if !input.starts_with('/') || input.contains(['\n', '\r']) {
         return Ok(None);
@@ -220,6 +225,9 @@ pub(crate) fn help(files: &FileCommands) -> String {
                 .iter()
                 .map(|file| format!("{} [arguments] — {}", file.name, file.description)),
         )
+        .chain(std::iter::once(
+            "!command — Run a local shell command without sending it to the model".to_owned(),
+        ))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -227,6 +235,27 @@ pub(crate) fn help(files: &FileCommands) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bang_shell_parse_preserves_command() {
+        let files = FileCommands::default();
+        for (input, command) in [
+            ("!printf x", "printf x"),
+            (" \t! printf 'x' | cat  \n", " printf 'x' | cat  \n"),
+            ("!printf one\nprintf two\n", "printf one\nprintf two\n"),
+            ("!!echo", "!echo"),
+        ] {
+            assert_eq!(parse(input, &files).unwrap(), Some(Command::Shell(command)));
+        }
+        for input in ["!", "  ! \n\t"] {
+            assert_eq!(
+                parse(input, &files).unwrap_err().to_string(),
+                "usage: !command"
+            );
+        }
+        assert_eq!(parse("text !echo", &files).unwrap(), None);
+        assert_eq!(parse("/help\nextra", &files).unwrap(), None);
+    }
 
     #[test]
     fn slash_skills_sources_and_individual_selection() {

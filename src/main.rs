@@ -373,7 +373,7 @@ fn run(args: Args) -> Result<()> {
         if prompt.is_empty() {
             continue;
         }
-        let command = match commands::parse(prompt, &file_commands) {
+        let command = match commands::parse(line.trim_end_matches(['\r', '\n']), &file_commands) {
             Ok(command) => command,
             Err(error) => {
                 writeln!(stderr, "error: {error:#}")?;
@@ -467,6 +467,17 @@ fn run(args: Args) -> Result<()> {
             }
         };
         match command {
+            Some(commands::Command::Shell(command)) => {
+                if let Err(error) = run_cli_shell(agent, command, &mut stderr) {
+                    if error
+                        .chain()
+                        .any(|cause| cause.is::<cancellation::CleanupError>())
+                    {
+                        return Err(error);
+                    }
+                    writeln!(stderr, "error: {error:#}")?;
+                }
+            }
             Some(commands::Command::Think(level)) => {
                 if let Some(level) = level
                     && let Err(error) = agent.set_think_level(level)
@@ -567,6 +578,99 @@ fn cli_write(
             *first_error = Some(error);
         }
     }
+}
+
+fn run_cli_shell(agent: &mut agent::Agent, command: &str, stderr: &mut impl Write) -> Result<()> {
+    use events::{AgentEvent, OutputStream};
+    let mut broken = false;
+    let mut first_error = None;
+    let mut newline = true;
+    let result = agent.run_shell(
+        command,
+        "local-shell-cli",
+        &cancellation::CancellationToken::new(),
+        &mut |event| match event {
+            AgentEvent::ToolStarted { .. } => {
+                cli_write(stderr, "shell: running\n", &mut broken, &mut first_error)
+            }
+            AgentEvent::ToolOutput { stream, text, .. } => {
+                let label = match stream {
+                    OutputStream::Stdout => "stdout",
+                    OutputStream::Stderr => "stderr",
+                };
+                cli_write(
+                    stderr,
+                    &format!("[shell {label}] {text}"),
+                    &mut broken,
+                    &mut first_error,
+                );
+                newline = text.ends_with('\n');
+            }
+            AgentEvent::ToolFinished { result, .. } => {
+                if !newline {
+                    cli_write(stderr, "\n", &mut broken, &mut first_error);
+                }
+                let status = if result["cancelled"] == true {
+                    "shell: cancelled".to_owned()
+                } else if result["timed_out"] == true {
+                    "shell: timed out".to_owned()
+                } else if let Some(code) = result["exit_code"].as_i64() {
+                    format!("shell: exit {code}")
+                } else {
+                    "shell: failed".to_owned()
+                };
+                cli_write(
+                    stderr,
+                    &format!("{status}\n"),
+                    &mut broken,
+                    &mut first_error,
+                );
+                for key in ["error", "warning"] {
+                    if let Some(message) = result[key].as_str() {
+                        cli_write(
+                            stderr,
+                            &format!("shell: {message}\n"),
+                            &mut broken,
+                            &mut first_error,
+                        );
+                    }
+                }
+                if let Some(warnings) = result["warnings"].as_array() {
+                    for warning in warnings.iter().filter_map(serde_json::Value::as_str) {
+                        cli_write(
+                            stderr,
+                            &format!("shell: {warning}\n"),
+                            &mut broken,
+                            &mut first_error,
+                        );
+                    }
+                }
+                if result["stdout_truncated"] == true
+                    || result["stderr_truncated"] == true
+                    || result["truncated"] == true
+                {
+                    cli_write(
+                        stderr,
+                        "shell: output truncated\n",
+                        &mut broken,
+                        &mut first_error,
+                    );
+                }
+            }
+            _ => {}
+        },
+    );
+    if result.as_ref().is_err_and(|error| {
+        error
+            .chain()
+            .any(|cause| cause.is::<cancellation::CleanupError>())
+    }) {
+        return result;
+    }
+    if let Some(error) = first_error {
+        return Err(error).context("writing shell output");
+    }
+    result
 }
 
 fn cli_context_event(

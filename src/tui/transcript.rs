@@ -1577,16 +1577,25 @@ impl Transcript {
                     }
                     if entry.kind == EntryKind::Bash {
                         let status = background_status(&result).unwrap_or_else(|| {
-                            result.get("exit_code").map_or_else(
-                                || {
-                                    if entry.status == EntryStatus::Failed {
-                                        "failed".into()
-                                    } else {
-                                        "ok".into()
-                                    }
-                                },
-                                |code| format!("Exit code: {code}"),
-                            )
+                            if result["cancelled"] == true {
+                                "cancelled".into()
+                            } else if result["timed_out"] == true {
+                                "timed out".into()
+                            } else {
+                                result
+                                    .get("exit_code")
+                                    .filter(|code| !code.is_null())
+                                    .map_or_else(
+                                        || {
+                                            if entry.status == EntryStatus::Failed {
+                                                "failed".into()
+                                            } else {
+                                                "ok".into()
+                                            }
+                                        },
+                                        |code| format!("Exit code: {code}"),
+                                    )
+                            }
                         });
                         entry.footer = if self.replaying {
                             format!("⟨{status}⟩")

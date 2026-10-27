@@ -112,6 +112,8 @@ Use `/help` for full help and `/tips` for usage tips. The following slash comman
 | `/changes` | View recent-task edit/write changes and undo individual files (TUI only) |
 | `/skills`, `/quit` | Manage skills or exit |
 
+Enter `!command` to run a local, non-interactive bash command in the project directory. Output is shown locally, not sent to the model or saved in session history. Requires a configured agent and Execute mode; commands run with your user permissions, without a sandbox. Each command starts a fresh shell. In the TUI, Esc cancels it; wait for cleanup before continuing.
+
 <details>
 <summary><strong>Common TUI shortcuts</strong></summary>
 

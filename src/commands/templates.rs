@@ -343,6 +343,7 @@ mod tests {
         use super::super::{Command, parse};
         let (_, commands) = load(&[
             ("quit-prompt.md", b"/quit"),
+            ("shell-prompt.md", b"!printf not-shell"),
             ("empty.md", b"$2"),
             ("good.md", b"Good $1"),
         ]);
@@ -357,6 +358,10 @@ mod tests {
         assert_eq!(
             parse("/quit-prompt", &commands).unwrap(),
             Some(Command::Prompt("/quit".into()))
+        );
+        assert_eq!(
+            parse("/shell-prompt", &commands).unwrap(),
+            Some(Command::Prompt("!printf not-shell".into()))
         );
         assert_eq!(
             parse("/unknown", &commands).unwrap_err().to_string(),

@@ -165,6 +165,8 @@ chmod 600 ~/.pp/agent/models.yml
 | `/plan [view\|new\|off]` | 调研并保存计划，显式批准后执行 | 仅 TUI |
 | `/quit` | 退出 | TUI / 行模式 |
 
+输入 `!命令` 在项目目录运行本地非交互 bash，不请求模型，命令和输出不进入模型上下文或会话文件。需要有效的 Agent 配置和 Execute 模式；Plan、忙碌或有待处理消息时不可运行。每条命令使用独立 shell，`cd` 和环境变量不跨命令保留；以当前用户权限执行，无文件系统沙箱。TUI 按 Esc 取消并等待进程回收，行模式输出写入 stderr，stdout 仍保留给模型回复。
+
 以下快捷键用于 TUI；macOS / Linux 分列显示。
 
 | 操作 | macOS | Linux |

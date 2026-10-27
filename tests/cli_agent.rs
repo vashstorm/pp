@@ -7,6 +7,8 @@ use std::{
 };
 use tiny_http::{Header, Request, Response, Server};
 
+#[path = "cli_agent/shell_cli.rs"]
+mod shell_cli;
 #[path = "cli_agent/stats.rs"]
 mod stats;
 
@@ -2684,6 +2686,7 @@ mod tui {
     use super::*;
     include!("cli_agent/effort_defaults.rs");
     include!("cli_agent/mcp_tui.rs");
+    include!("cli_agent/shell_tui.rs");
     include!("cli_agent/cancel_tui.rs");
     include!("cli_agent/cancel_mcp_tui.rs");
     include!("cli_agent/resume_tui.rs");

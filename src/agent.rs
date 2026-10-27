@@ -856,6 +856,33 @@ impl Agent {
         self.tools.undo_file(token)
     }
 
+    pub(crate) fn run_shell(
+        &mut self,
+        command: &str,
+        call_id: &str,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<()> {
+        ensure!(
+            self.workflow.mode == crate::plan::WorkMode::Execute,
+            "Shell commands are unavailable in Plan mode."
+        );
+        let arguments = serde_json::json!({"command": command}).to_string();
+        let result = self.tools.execute_with_fetch(
+            "bash",
+            &arguments,
+            call_id,
+            crate::tools::ToolPolicy::Execute,
+            cancellation,
+            emit,
+            &mut |url, token| self.client.fetch_read_url(url, token),
+        );
+        match result.stop_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     fn prepare_plan_task(&mut self, prompt: &str) -> Result<()> {
         if self.workflow.mode != crate::plan::WorkMode::Plan {
             return Ok(());
@@ -2066,6 +2093,39 @@ mod tests {
             dir.join("sessions"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn bang_shell_agent_is_local_and_plan_is_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:9", "");
+        let before = serde_json::to_value(&agent.session).unwrap();
+        let mut events = Vec::new();
+        agent
+            .run_shell(
+                "printf local; exit 7",
+                "local",
+                &CancellationToken::new(),
+                &mut |event| events.push(event),
+            )
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(event, AgentEvent::ToolFinished { result, .. } if result["exit_code"] == 7)));
+        assert_eq!(serde_json::to_value(&agent.session).unwrap(), before);
+        assert!(!dir.path().join("sessions").exists());
+        agent.workflow.mode = crate::plan::WorkMode::Plan;
+        let error = agent
+            .run_shell(
+                "touch forbidden",
+                "local",
+                &CancellationToken::new(),
+                &mut |_| {},
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Shell commands are unavailable in Plan mode."
+        );
+        assert!(!dir.path().join("forbidden").exists());
     }
 
     // --- shared Plan-mode test fixtures (plan_review / plan_workflow) ---
