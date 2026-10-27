@@ -2455,7 +2455,7 @@ mod tests {
                         json!({"command":"touch marker","mode":"background"}),
                     ),
                     ("bash_task", json!({"task_id":"unknown","action":"status"})),
-                    ("grep", json!({"args":["original","canary"]})),
+                    ("plan_search", json!({"query":"original","path":"canary"})),
                     ("find", json!({"args":[".","-exec","touch","marker",";"]})),
                     ("mcp__unseen__write", json!({})),
                     ("read", json!({"path":"canary"})),

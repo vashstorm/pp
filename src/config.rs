@@ -122,6 +122,26 @@ pub(crate) struct ToolLimits {
     pub(crate) read_max_bytes: usize,
     pub(crate) read_max_lines: usize,
     pub(crate) bash_timeout_seconds: u64,
+    #[serde(default)]
+    pub(crate) grep: GrepSettings,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct GrepSettings {
+    #[serde(rename = "contextBefore")]
+    pub(crate) context_before: usize,
+    #[serde(rename = "contextAfter")]
+    pub(crate) context_after: usize,
+}
+
+impl Default for GrepSettings {
+    fn default() -> Self {
+        Self {
+            context_before: 1,
+            context_after: 3,
+        }
+    }
 }
 
 impl ToolLimits {
@@ -154,6 +174,7 @@ impl Default for ToolLimits {
             read_max_bytes: default_read_max_bytes(),
             read_max_lines: default_read_max_lines(),
             bash_timeout_seconds: default_bash_timeout_seconds(),
+            grep: GrepSettings::default(),
         }
     }
 }
@@ -201,6 +222,8 @@ pub(crate) struct ReadDisplaySettings {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
+    #[serde(default)]
+    pub(crate) grep: GrepSettings,
     #[serde(default)]
     pub(crate) read: ReadDisplaySettings,
     #[serde(default)]
@@ -258,6 +281,7 @@ impl Settings {
             read_max_bytes: self.read_max_bytes,
             read_max_lines: self.read_max_lines,
             bash_timeout_seconds: self.bash_timeout_seconds,
+            grep: self.grep,
         }
     }
 
@@ -339,6 +363,7 @@ pub(crate) fn global_dir() -> Result<PathBuf> {
 
 fn default_settings() -> Settings {
     Settings {
+        grep: GrepSettings::default(),
         read: ReadDisplaySettings::default(),
         debug: false,
         notification_show_countdown: default_notification_show_countdown(),
@@ -591,6 +616,43 @@ pub(crate) fn read_settings(path: &Path) -> Result<Settings> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn grep_context_settings_are_strict_and_default_when_absent() {
+        let settings: Settings = yaml::parse("{}", "settings").unwrap();
+        assert_eq!(
+            (settings.grep.context_before, settings.grep.context_after),
+            (1, 3)
+        );
+        let settings: Settings =
+            yaml::parse("grep: {contextBefore: 0, contextAfter: 5}", "settings").unwrap();
+        assert_eq!(
+            (
+                settings.tool_limits().grep.context_before,
+                settings.tool_limits().grep.context_after
+            ),
+            (0, 5)
+        );
+        for input in [
+            "grep: null",
+            "grep: {contextBefore: -1}",
+            "grep: {contextAfter: null}",
+            "grep: {extra: 1}",
+        ] {
+            assert!(
+                yaml::parse::<Settings>(input, "settings").is_err(),
+                "{input}"
+            );
+        }
+        let limits: ToolLimits = serde_json::from_value(
+            json!({"read_max_bytes": 10, "read_max_lines": 10, "bash_timeout_seconds": 10}),
+        )
+        .unwrap();
+        assert_eq!(
+            (limits.grep.context_before, limits.grep.context_after),
+            (1, 3)
+        );
+    }
 
     #[test]
     fn read_preview_defaults_and_strict_nested_settings() {

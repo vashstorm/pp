@@ -91,7 +91,7 @@ pub(crate) fn definitions() -> Vec<FunctionObject> {
         FunctionObject {
             name: "plan_find".into(),
             description: Some(
-                "List regular files whose path relative to the search root contains a literal, case-sensitive substring (no regex, no shell, no subprocess). An empty query enumerates all files. Directories, symlinks and special files are never returned. Uses the same path/hidden/no_ignore/offset/limit parameters, pagination and warnings behavior as plan_search."
+                "List regular files whose path relative to the search root contains a literal, case-sensitive substring (no regex, no shell, no subprocess). An empty query enumerates all files. Directories, symlinks and special files are never returned. Supports path/hidden/no_ignore/offset/limit, pagination and warnings."
                     .into(),
             ),
             parameters: schema(
@@ -646,6 +646,7 @@ mod tests {
             read_max_bytes,
             read_max_lines: 1,
             bash_timeout_seconds,
+            ..Default::default()
         }
     }
 

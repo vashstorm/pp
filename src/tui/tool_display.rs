@@ -181,15 +181,41 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                 MoreHint::Expand("lines"),
             )
         }
-        "grep" => head(
-            text,
-            if expanded { usize::MAX } else { GREP_LINES },
-            true,
-            true,
-            width,
-            style,
-            MoreHint::Expand("items"),
-        ),
+        "grep" => {
+            let display = if view
+                .result
+                .is_some_and(|result| result["content"].is_string())
+            {
+                logical(text)
+                    .into_iter()
+                    .map(|line| {
+                        let split = line.find([':', '|']);
+                        match split {
+                            Some(i)
+                                if i > 1
+                                    && matches!(line.as_bytes()[0], b'*' | b' ')
+                                    && line[1..i].bytes().all(|c| c.is_ascii_digit()) =>
+                            {
+                                format!("{} │ {}", &line[..i], &line[i + 1..])
+                            }
+                            _ => line.to_owned(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                text.to_owned()
+            };
+            head(
+                &display,
+                if expanded { usize::MAX } else { GREP_LINES },
+                true,
+                true,
+                width,
+                style,
+                MoreHint::Expand("items"),
+            )
+        }
         "find" => head(
             text,
             if expanded { usize::MAX } else { FIND_ITEMS },

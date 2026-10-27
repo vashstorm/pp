@@ -1037,6 +1037,7 @@ mod tests {
             base_url: base_url.parse().unwrap(),
             context_window: None,
             settings: crate::config::Settings {
+                grep: Default::default(),
                 read: Default::default(),
                 debug: false,
                 notification_show_countdown: true,

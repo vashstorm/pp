@@ -70,7 +70,7 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
             assert!(
                 names.iter().all(|name| matches!(
                     *name,
-                    "read" | "plan_search" | "plan_find"
+                    "read" | "grep" | "plan_find"
                 ))
             );
             let calls = [
@@ -102,8 +102,8 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                 ),
                 (
                     "review-grep",
-                    "grep",
-                    json!({"args":["planned","evidence.rs"]}),
+                    "plan_search",
+                    json!({"query":"planned","path":"evidence.rs"}),
                 ),
                 (
                     "review-find",
@@ -114,8 +114,8 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                 ("review-read", "read", json!({"path":"evidence.rs"})),
                 (
                     "review-search",
-                    "plan_search",
-                    json!({"query":"planned","path":"evidence.rs"}),
+                    "grep",
+                    json!({"pattern":"planned","path":"evidence.rs"}),
                 ),
             ];
             plan_calls(
@@ -139,10 +139,7 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                 );
             }
             assert_eq!(outputs[9].1["content"], "fn planned() -> u8 { 1 }\n");
-            assert_eq!(
-                outputs[10].1["matches"],
-                json!([{"path":"evidence.rs","line":1,"text":"fn planned() -> u8 { 1 }"}])
-            );
+            assert!(outputs[10].1["content"].as_str().unwrap().contains("*1|fn planned()"));
             assert_eq!(std::fs::read(&path).unwrap(), original);
             assert!(!project.path().join("canary.txt").exists());
             assert!(!project.path().join("review-forbidden").exists());

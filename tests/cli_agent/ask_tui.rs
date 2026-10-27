@@ -185,14 +185,15 @@ fn tool_folding_omp_native_search_clips_long_rows_for_both_protocols() {
             let (request, body) = pty.request_at(&provider, api_path(protocol));
             let schema = body["tools"].as_array().unwrap().iter().map(|t| if protocol == "completion" { &t["function"] } else { t })
                 .find(|t| t["name"] == name).unwrap();
-            let args = if name == "grep" { json!({"args":["-n","-e","needle","lines"]}) }
+            let args = if name == "grep" { json!({"pattern":"needle","path":"lines"}) }
                 else if schema["description"].as_str().unwrap().starts_with("Uses fd.") { json!({"args":[".","files"]}) }
                 else { json!({"args":["files","-type","f"]}) };
             ask_reply_calls(request, protocol, json!([diff_blocks_call(protocol,"search",name,args)]));
             let (request, body) = pty.request_at(&provider, api_path(protocol));
             let outputs = cancel_tool_outputs(&body, protocol);
             assert_eq!(outputs[0].1["ok"], true);
-            assert_eq!(outputs[0].1["stdout"].as_str().unwrap().lines().count(),20);
+            let content = if name == "grep" { &outputs[0].1["content"] } else { &outputs[0].1["stdout"] };
+            assert!(content.as_str().unwrap().lines().count() >= 20);
             let marker = if name == "grep" { "entry-" } else { "path-" };
             let shown = if name == "grep" { 5 } else { 8 };
             pty.wait_for("搜索正文按额度及列宽收敛", |screen| {

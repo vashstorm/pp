@@ -1460,7 +1460,21 @@ impl Transcript {
                     )
                 } else if matches!(name.as_str(), "grep" | "find") {
                     search_args.map_or_else(
-                        || name.clone(),
+                        || {
+                            if name == "grep" {
+                                let pattern = arguments
+                                    .as_ref()
+                                    .and_then(|a| a["pattern"].as_str())
+                                    .unwrap_or("");
+                                let path = arguments
+                                    .as_ref()
+                                    .and_then(|a| a["path"].as_str())
+                                    .unwrap_or(".");
+                                format!("grep · {pattern} · {path}")
+                            } else {
+                                name.clone()
+                            }
+                        },
                         |args| {
                             format!(
                                 "{name} · {}",
@@ -2383,6 +2397,11 @@ fn background_status(result: &Value) -> Option<String> {
 }
 
 fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
+    if name == "grep"
+        && let Some(content) = result["content"].as_str()
+    {
+        return content.to_owned();
+    }
     if kind == EntryKind::Bash || matches!(name, "grep" | "find") {
         let mut lines = Vec::new();
         if let Some(status) = background_status(result) {

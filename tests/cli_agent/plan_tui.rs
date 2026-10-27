@@ -126,7 +126,7 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
             *name,
             "read"
                 | "ask"
-                | "plan_search"
+                | "grep"
                 | "plan_find"
                 | "plan_write"
                 | "plan_submit"
@@ -442,8 +442,8 @@ fn plan_tui_rejects_real_side_effects_but_reads_searches_and_asks() {
             ),
             (
                 "deny-grep",
-                "grep",
-                json!({"args":["needle","src/agent.rs"]}),
+                "plan_search",
+                json!({"query":"needle","path":"src/agent.rs"}),
             ),
             (
                 "deny-find",
@@ -458,8 +458,8 @@ fn plan_tui_rejects_real_side_effects_but_reads_searches_and_asks() {
             ("research-read", "read", json!({"path":"src/agent.rs"})),
             (
                 "research-search",
-                "plan_search",
-                json!({"query":"needle","path":"src"}),
+                "grep",
+                json!({"pattern":"needle","path":"src"}),
             ),
             (
                 "research-find",
@@ -487,10 +487,7 @@ fn plan_tui_rejects_real_side_effects_but_reads_searches_and_asks() {
             );
         }
         assert_eq!(outputs[8].1["content"], "first\nneedle here\nlast\n");
-        assert_eq!(
-            outputs[9].1["matches"],
-            json!([{"path":"agent.rs","line":2,"text":"needle here"}])
-        );
+        assert!(outputs[9].1["content"].as_str().unwrap().contains("*2|needle here"));
         assert_eq!(outputs[10].1["paths"], json!(["agent.rs"]));
         assert_eq!(
             std::fs::read(project.path().join("canary.txt")).unwrap(),

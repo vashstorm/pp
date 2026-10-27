@@ -742,6 +742,20 @@ fn run_cli_task(
                 );
             }
             AgentEvent::ToolFinished { id, result } => {
+                if current_tool
+                    .as_ref()
+                    .is_some_and(|(current_id, name)| current_id == &id && name == "grep")
+                    && let Some(content) = result["content"]
+                        .as_str()
+                        .or_else(|| result["error"].as_str())
+                {
+                    cli_write(
+                        stderr,
+                        &format!("{content}\n"),
+                        &mut err_broken,
+                        &mut first_error,
+                    );
+                }
                 if result["kind"] == "image"
                     && let Some(content) = result["content"].as_str()
                 {

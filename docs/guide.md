@@ -15,7 +15,7 @@
 
 ## 构建与运行
 
-需要支持 Rust Edition 2024 的工具链，支持 macOS/Linux，并要求 `bash` 位于 PATH 中。搜索优先使用 `rg` 和 `fd`，缺失时分别使用系统 `grep` 和 `find`；TUI 图标需要 Nerd Font，macOS 的 Option 快捷键需要终端启用 Alt/Meta。
+需要支持 Rust Edition 2024 的工具链，支持 macOS/Linux，并要求 `bash` 位于 PATH 中。grep 在进程内搜索；路径查找优先使用 `fd`，缺失时使用系统 `find`；TUI 图标需要 Nerd Font，macOS 的 Option 快捷键需要终端启用 Alt/Meta。
 
 ```sh
 cargo build --locked
@@ -195,7 +195,7 @@ chmod 600 ~/.pp/agent/models.yml
 
 消息列表中的内置工具各有独立的 Nerd Font Font Awesome 图标（包括普通工具、bash、diff、ask 和 Plan 工具）；MCP 使用插头图标，未知工具使用拼图图标。所有工具图标统一采用单列字形，并在其后保留一列空白，占位宽度固定为两列；字形的实际外观由终端所用 Nerd Font 决定。图标随标题保留于运行、完成、失败、恢复及退出滚动历史中。
 
-用户与助手保留既有角色背景；助手正文按 Markdown 渲染，工具正文保持字面文本，edit、write 与 ask 使用各自的内容块。bash 与 think 使用独立样式；其他工具保留淡色正文与运行／完成／失败状态。真实 `grep` 调用使用青色卡片，`find` 使用普通数据卡片；标题显示工具名与紧凑 JSON argv，不使用 bash 计时 footer。技能读取使用普通 `Read · skill://...` 摘要与 read 预览配置，不再使用专用技能卡片。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
+用户与助手保留既有角色背景；助手正文按 Markdown 渲染，工具正文保持字面文本，edit、write 与 ask 使用各自的内容块。bash 与 think 使用独立样式；其他工具保留淡色正文与运行／完成／失败状态。真实 `grep` 调用使用青色卡片，`find` 使用普通数据卡片；grep 标题显示模式和路径，find 标题显示工具名与紧凑 JSON argv，不使用 bash 计时 footer。技能读取使用普通 `Read · skill://...` 摘要与 read 预览配置，不再使用专用技能卡片。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
 
 成功执行 `/new` 会清理主屏幕与原生滚动历史，并恢复欢迎页；成功恢复会话、会话树回退及 Plan Fresh 交接会清理后重建有效历史。取消或失败不清理，也不删除原始会话文件。普通窗口缩放仅重排当前尾部与面板，已提交历史交由终端保留。
 
@@ -206,9 +206,8 @@ chmod 600 ~/.pp/agent/models.yml
 | 工具 | 折叠预览 | 展开 |
 |---|---|---|
 | read | 普通文件默认只显示摘要；`read: {toolResultPreview: true}` 启用前 3 行预览，skill URI 始终默认预览 3 行 | 有正文预览时显示全文，普通文件默认仍仅显示摘要 |
-| grep | 原生 stdout 文本回退，6 行预算包含省略提示，长行按列宽截断 | 全部已返回文本，长行仍截断 |
+| grep | 命中与上下文按文件展示，6 行预算包含省略提示 | 全部已返回文本，长行仍截断 |
 | find／plan_find | 前 8 个文件及剩余数量提示，路径按列宽截断 | 全部已返回文件，路径仍截断 |
-| plan_search | 按文件组织，正文预算 6 行包含省略提示 | 正文预算 24 行，仍可显示省略标记 |
 | bash／bash_task | 最近 `min(10, max(6, H−20))` 条屏幕行及省略提示 | 完整的已保留输出 |
 | edit | 最多 8 个 hunk、40 条逻辑 diff 行，再限制为 40 条屏幕正文行 | 完整提交 diff |
 | write | 运行中显示已知正文末尾 12 条逻辑行，成功后显示前 6 条 | 完整写入正文；真实 diff 仍保留在 `/changes` 与会话事件中 |
@@ -216,7 +215,7 @@ chmod 600 ~/.pp/agent/models.yml
 | MCP JSON 文本 | 树深度 2、最多 6 行、标量宽度 60 | 树深度 6、最多 200 行、标量宽度 2000，达到限制保留省略标记 |
 | Plan 写入／提交及其他工具 | 文本前 4 行或相同额度的 JSON 树 | 文本完整展示，JSON 树仍受限时回退为完整原始文本 |
 
-`H` 是整个终端的高度，未知时按 30 行计算；bash 多行命令另使用包含省略提示的 `max(6, H−20)` 条逻辑行尾窗口。MCP 文本从内容块中提取后展示，非文本结果保留 JSON 回退。pp 的 grep 支持任意原生 argv，因此使用 OMP 的无结构化元数据回退规则；不通过猜测 stdout 来统计文件／命中数。
+`H` 是整个终端的高度，未知时按 30 行计算；bash 多行命令另使用包含省略提示的 `max(6, H−20)` 条逻辑行尾窗口。MCP 文本从内容块中提取后展示，非文本结果保留 JSON 回退。grep 的计数与截断状态来自结构化结果；旧会话仍可展示原生 stdout。
 
 所有工具输出（ask 除外）共用 Ctrl + O 展开状态，并通过通知报告 `Tool output expansion: enabled/disabled`。当前全部历史卡片及后续流式／新工具一起切换；普通菜单和 ask 答题期间也生效，全屏面板和确认框优先消费输入。标题、状态和边框保留；用户消息、助手正文、思考、帮助和提示不折叠。浏览历史时保留顶部卡片及底部跟随状态。`/new`、恢复与历史跳转重建消息区时恢复默认折叠，但保留启动时的 read 预览配置；任务结束、取消和切模型不重置展开状态。
 
@@ -255,9 +254,9 @@ chmod 600 ~/.pp/agent/models.yml
 
 普通任务默认 **EXEC**。空闲时输入 `/plan` 显式进入 **PLAN**，然后提交调研任务；命令本身不请求模型。模型只能调研、询问关键产品取舍并保存计划，不能切换模式。`/plan` 再次打开当前计划；`/plan view` 只查看，未保存时显示 `No saved plan.`。`/plan new` 开始另一份计划，未执行正文存在时先本地确认；`/plan off` 本地确认后放弃计划并回 Execute，不请求模型。确认默认取消，旧 Markdown 不删除。忙碌或有 pending 输入时不能切换／批准；命令不排队成后续执行动作。
 
-Plan 的执行层白名单只有 `read`、TUI `ask`、`plan_search`、`plan_find`、`plan_write`、`plan_submit`；技能同样通过 `read` 读取。即使模型返回隐藏的 shell、write/edit、原生 grep/find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，`/plan` 可重试清理。批准或 off 的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
+Plan 的执行层白名单只有 `read`、`grep`、TUI `ask`、`plan_find`、`plan_write`、`plan_submit`；技能同样通过 `read` 读取。即使模型返回隐藏的 shell、write/edit、原生 find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，`/plan` 可重试清理。批准或 off 的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
 
-`plan_search` 是区分大小写的**字面行子串搜索**，`plan_find` 按搜索根的相对文件路径子串匹配，空 query 可枚举。均在进程内使用项目 ignore 规则，不运行 rg/fd/grep/find，不解析 argv，也不创建 `.pp-cache`。支持 `path`、`hidden`、`no_ignore`、从 0 开始的 `offset` 和 `limit`（默认 200，1–500）；结果有 `next_offset`、截断和跳过文件的 warnings，受 65,536 字节输出上限、读取行大小、取消与工具超时约束。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
+Plan／Review 共用只读原生 `grep`。`plan_find` 按搜索根的相对文件路径字面子串匹配，支持 `path`、`hidden`、`no_ignore`、`offset` 和 `limit`，空 query 可枚举；结果有 `next_offset`、截断和 warnings。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
 
 计划正文保存在项目 `.pp/plans/<随机ID>.md`，首次保存才创建目录／文件；不自动修改 `.gitignore`。正文须为非空 UTF-8、无 NUL、最多 262,144 字节，实施步骤使用标准 `- [ ]`／`- [x]` Markdown task list；代码 fence 中的 checkbox 不算任务。保存使用目录句柄、NOFOLLOW 和原子提交，拒绝符号链接／特殊文件；同名首次创建不覆盖。修订写入要求 expected revision 和已登记磁盘字节都匹配，避免覆盖外部编辑。
 
@@ -556,7 +555,7 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 
 ## 工具执行与权限
 
-**write/edit 仅修改启动目录内文件，按单次调用原子提交。macOS/Linux 的 bash、grep、find 均无文件权限隔离，仍可修改当前用户有权限访问的目录外文件；没有逐次确认。请在可信或临时目录中运行。**
+**write/edit 仅修改启动目录内文件，按单次调用原子提交。macOS/Linux 的 bash、find 无文件权限隔离，仍可修改当前用户有权限访问的目录外文件；grep 可以读取工作区外的本地文件；没有逐次确认。请在可信或临时目录中运行。**
 
 - 启动时固定规范化工作目录。`read` 允许目录外读取及符号链接；`write/edit` 接受目录内的相对或绝对路径，拒绝越界路径以及写入路径上的符号链接（包括指向项目内的链接）。父目录通过目录句柄逐级打开，保存不重新按完整路径追踪链接。允许不越出工作目录的 `..`；项目规则只读取工作目录的 `AGENTS.md`，skill 仅扫描全局配置指定的目录。
 - `read({path})`：仅接受 `path`，范围直接写入路径，例如 `src/main.rs:20-60`。`:20` 从第 20 行开始，`:20-60` 包含两端，`:20+40` 读取 40 行，`:-30` 读取末尾 30 行，`:5-10,20-30` 读取多个区间（排序并合并重叠或相邻区间，最多 128 个）；也支持 `L20-L60`、`20..60` 和开放结尾 `20-`。所有范围精确读取，不自动增加上下文。真实存在的完整本地文件名优先于冒号后缀解析，`skill://` 始终按虚拟资源处理。
@@ -573,9 +572,8 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 - TAG 不能单独证明内容相同：hashline 必须命中当前进程的该路径快照，精确核对当前原始字节，并验证所有目标行／插入锚点已读。版本变化、缓存缺失或已知短 TAG 冲突均拒绝，不做自动重定位；包括仅行尾空白变化。缓存最多 256 个路径、每路径最多保留 4 份用于碰撞检测的内容，总正文上限 64 MiB，按最近使用淘汰；单文件最多 4 MiB，超限仍正常分页读取，但不签发可编辑标签并返回 warning。edit／write／undo 成功后使该路径快照失效，下次 hashline 编辑必须重新 read；普通任务、模型切换与压缩保留缓存，新会话、成功恢复、树导航与 Plan Fresh 清空。独立 Review 不共享快照；缓存不持久化或从历史重建。
 - 两种 edit 模式均先对同一份原始快照校验全部修改，再调用共用原子保存流程。空文件、缺失文件、目录、符号链接和非 UTF-8 文件不能编辑；edit 不创建文件或目录。成功返回 `edits_applied` 和最终 UTF-8 `bytes_written`。保留严格且分模式的参数校验；模型结果不附加 diff，实际 diff 仅在提交后发送给展示层。两种模式整批无变化均拒绝提交，允许无变化项与有效修改混合。
 - `write(path, content)`：创建缺失父目录，并创建或完整覆盖 UTF-8 文件，允许空内容。write/edit 均在目标所在目录排他创建临时文件，完整写入、保留原文件权限（含可执行位）、同步临时文件后，以一次原子重命名提交。创建、部分写入、同步或重命名失败均保留原文件；新建失败不会留下残缺目标，已创建的空父目录允许保留。edit 在临时文件同步完成后、重命名前精确比较读取时的原始字节；目标变化、消失、不可读或变为特殊文件时拒绝覆盖并清理临时文件。这不是跨进程 CAS，比较到重命名之间仍有竞态窗口。重命名是提交点，之后父目录同步失败返回 `ok:true` 并附 `warning`，不能当作尚未修改。失败路径清理临时文件；TUI `/changes` 提供当前进程最近任务的逐文件安全撤销（见上节），不提供持久备份、跨文件事务、跨进程并发隔离或断电恢复保证。
-- `grep({"args":[...]})` 搜索文件内容，`find({"args":[...]})` 查找路径。每个 Tools 实例构造时按 PATH 固定选择 `rg → grep`、`fd → find`，工具 description 根据实际后端提供原生参数语法；优先程序可位于后面的 PATH 项。相对／空 PATH 项相对启动目录解析，只选择普通文件且有执行位的候选（允许可执行 symlink）。不运行版本探测，不自动安装，不使用 `fdfind` 别名；运行时程序删除或权限变化返回真实错误，不拿相同 argv 静默换后端。新启动／恢复构造的 Tools 会重新探测，模型切换和历史恢复通过实时 schema 提供当前后端说明。
-- 搜索只接受必填的字符串数组 `args`，不传程序名，不拼接 shell、不做展开／管道或跨后端参数转换；空数组、空字符串原样传给程序，NUL 和额外字段被拒绝。rg 示例：`{"args":["-n","--color","never","-e","PATTERN","src"]}`；system grep 示例：`{"args":["-R","-n","-E","-e","PATTERN","--","src"]}`；fd 示例：`{"args":["--color","never","--type","f","PATTERN","src"]}`；system find 示例：`{"args":["src","-type","f","-name","*.rs","-print"]}`。rg/fd 默认遵守 ignore 且跳过隐藏文件，可用 `--hidden`／`--no-ignore` 扩大范围；系统 grep/find 不自动遵守 gitignore，不能照搬快速后端的 flags。find 的路径在表达式前，`-name` 的 glob 保持单个 argv；fd 的 pattern 在目录前，默认正则，`--glob` 改用 glob。
-- 搜索复用 bash 的受控执行层：启动 cwd、关闭 stdin、独立进程组、超时／取消／正常结束后的组清理、项目内 scratch/cache、UTF-8 流式输出与下述 500 行／每流 65,536 字节限额均相同，超时沿用 `bash_timeout_seconds`。结果保留 `ok`、`exit_code`、`timed_out`、`cancelled`、两流输出及截断标记；grep 正常 exit 1 表示无匹配，返回 `ok:true` 并保留 `exit_code:1`，其他非零退出、find 非零退出、超时／取消均失败。后端缺失不阻断启动和文件工具，schema 仍存在并标明 unavailable，调用返回 `grep requires rg or grep on PATH` 或 `find requires fd or find on PATH`。原生参数可产生副作用（如 find 的 `-exec`／`-delete`），没有参数白名单或文件系统沙箱。
+- `grep({"pattern":"needle","path":"src/**/*.rs"})` 在进程内搜索本地文件；支持 `case`、`gitignore`、`skip`，默认区分大小写、包含隐藏文件并遵守 ignore。`path` 支持分号分隔、glob、`!` 排除及单文件行范围；不支持网页、压缩包和技能 URI。配置 `grep: {contextBefore: 1, contextAfter: 3}` 调整上下文。每页最多 20 个文件，多文件每文件最多 20 条匹配，单文件最多 200 条；正文和长行有独立上限及提示。
+- `find({"args":[...]})` 查找路径，按 PATH 固定选择 `fd → find`，透传原生参数而不执行 shell 展开；超时和输出限额沿用 bash 的受控进程层。find 原生参数可能产生副作用，没有文件系统沙箱。
 - 默认前台 `bash({"command":"..."})`：以启动目录为工作目录执行 `bash -c`，关闭 stdin，并建立独立进程组。stdout/stderr 无需等待换行或进程退出即可实时显示；保留跨分块的 UTF-8 字符，无效字节采用 lossy 解码。两流合计最多保留 500 行，同时每流最多保留 65,536 个原始字节，先达到的限制生效；按 `\n` 分行，非空且没有末尾换行的片段也计一行。仅在确有超出内容时标记对应流截断；实时显示与返回输出使用相同限制，多余内容持续排空，命令继续执行。仅保证各流内部顺序，不保证跨流顺序；500 行额度按接收分块的顺序分配。返回退出码、输出、截断标记和 `timed_out`，信号退出时退出码为 null。
 - 工具参数严格校验：缺失／额外字段、非法 JSON、空白路径／命令、未知工具及文件／进程错误均返回 `ok:false`，供模型修正。bash 非零退出同样失败并保留输出。
 - 前台 bash 的 `bash_timeout_seconds` 默认 120，与模型请求超时独立，模型不能通过工具参数延长。`{"command":"..."}` 和显式 `"mode":"foreground"` 保持相同契约。独立监督线程在超时时向进程组发送 TERM，等待 1 秒后发送 KILL 并回收直接子进程；可停止的非阻塞管道读取避免后代持有管道导致无限等待。超时返回 `ok:false, timed_out:true`，保留已捕获输出，不回滚 shell 修改。正常结束也清理同一进程组的残留后代；主动脱离进程组的进程不受保证。TUI Esc 取消通过 TERM→1 秒宽限→KILL／wait 停止受控进程组，前台结果为 `ok:false, cancelled:true, timed_out:false`；正常／超时前台结果的 `cancelled` 为 false。

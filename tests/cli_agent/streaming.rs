@@ -2017,7 +2017,7 @@ fn search_tools_fallback_roundtrip_both_protocols() {
                 protocol.call(
                     "match",
                     "grep",
-                    json!({"args":["-n","-e","needle","--","space dir/demo.txt"]})
+                    json!({"pattern":"needle","path":"space dir/demo.txt"})
                 ),
                 protocol.call(
                     "paths",
@@ -2027,26 +2027,22 @@ fn search_tools_fallback_roundtrip_both_protocols() {
                 protocol.call(
                     "absent",
                     "grep",
-                    json!({"args":["-e","absent","--","space dir/demo.txt"]})
+                    json!({"pattern":"absent","path":"space dir/demo.txt"})
                 ),
                 protocol.call(
                     "bad-regex",
                     "grep",
-                    json!({"args":["-e","[","--","space dir/demo.txt"]})
-                )
+                    json!({"pattern":"[","path":"space dir/demo.txt"})
+                ),
+                protocol.call("bad-args", "grep", json!({"args":[]}))
             ]),
         );
-        cli.wait_for(Pipe::Stderr, "1:needle");
+        cli.wait_for(Pipe::Stderr, "*1|needle");
         cli.assert_running();
         let (request, body) = protocol.receive(&server);
-        assert_eq!(
-            protocol.tool_result(&body, "match"),
-            json!({
-                "ok":true, "exit_code":0, "timed_out":false, "cancelled":false,
-                "stdout":"1:needle\n3:needle\n", "stderr":"",
-                "stdout_truncated":false, "stderr_truncated":false
-            })
-        );
+        let matched = protocol.tool_result(&body, "match");
+        assert_eq!(matched["ok"], true);
+        assert!(matched["content"].as_str().unwrap().contains("*1|needle"));
         assert_eq!(
             protocol.tool_result(&body, "paths"),
             json!({
@@ -2055,36 +2051,29 @@ fn search_tools_fallback_roundtrip_both_protocols() {
                 "stdout_truncated":false, "stderr_truncated":false
             })
         );
-        // No match is grep's exit 1, normalized to success with empty output.
         assert_eq!(
-            protocol.tool_result(&body, "absent"),
-            json!({
-                "ok":true, "exit_code":1, "timed_out":false, "cancelled":false,
-                "stdout":"", "stderr":"",
-                "stdout_truncated":false, "stderr_truncated":false
-            })
+            protocol.tool_result(&body, "absent")["content"],
+            "No matches found"
         );
-        let bad = protocol.tool_result(&body, "bad-regex");
-        assert_eq!(bad["ok"], false, "{protocol:?}: {bad}");
-        assert_ne!(bad["exit_code"], 0);
-        assert_ne!(bad["exit_code"], 1);
-        assert_eq!(bad["stdout"], "");
-        assert!(!bad["stderr"].as_str().unwrap().is_empty());
+        assert_eq!(
+            protocol.tool_result(&body, "bad-regex")["content"],
+            "No matches found"
+        );
+        assert_eq!(protocol.tool_result(&body, "bad-args")["ok"], false);
         protocol.final_reply(request, "search-complete");
         let output = cli.finish();
         assert!(output.status.success(), "{protocol:?}: {output:?}");
         assert_eq!(output.stdout, b"search-complete\n");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("[grep stdout] 1:needle"), "{stderr}");
+        assert!(stderr.contains("*1|needle"), "{stderr}");
         assert!(
             stderr.contains("[find stdout] space dir/demo.txt"),
             "{stderr}"
         );
-        assert!(stderr.contains("[grep stderr]"), "{stderr}");
         assert!(!stderr.contains("[bash"), "{stderr}");
         assert!(stderr.contains("tool grep: ok"), "{stderr}");
+        assert!(stderr.contains("invalid grep arguments"), "{stderr}");
         assert!(stderr.contains("tool find: ok"), "{stderr}");
-        assert!(stderr.contains("tool grep: failed"), "{stderr}");
         assert_clean_pipes(&output);
         no_more(&server);
     }
@@ -2427,5 +2416,71 @@ fn background_task_cleanup_at_run_boundaries() {
             assert_clean_pipes(&output);
             no_more(&server);
         }
+    }
+}
+
+#[test]
+fn grep_hashline_edit_and_pagination_roundtrip_both_protocols() {
+    for protocol in PROTOCOLS {
+        let provider = server();
+        let dir = tempfile::tempdir().unwrap();
+        for n in 0..21 {
+            std::fs::write(
+                dir.path().join(format!("{n:02}.txt")),
+                "before\nneedle\nafter\n",
+            )
+            .unwrap();
+        }
+        let cli = protocol.start_with_settings(
+            &provider,
+            dir.path(),
+            Some("search and edit"),
+            r#"{"edit":"hashline"}"#,
+        );
+        let (request, body) = protocol.receive(&provider);
+        let tool = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool.get("function").unwrap_or(tool))
+            .find(|tool| tool["name"] == "grep")
+            .unwrap();
+        assert!(tool["parameters"]["properties"]["pattern"].is_object());
+        protocol.calls_reply(
+            request,
+            json!([
+                protocol.call(
+                    "page",
+                    "grep",
+                    json!({"pattern":"needle","path":"*.txt","skip":20})
+                ),
+                protocol.call("file", "grep", json!({"pattern":"needle","path":"00.txt"}))
+            ]),
+        );
+        let (request, body) = protocol.receive(&provider);
+        assert_eq!(
+            protocol.tool_result(&body, "page")["details"]["fileCount"],
+            1
+        );
+        let result = protocol.tool_result(&body, "file");
+        let header = hashline_header(result["content"].as_str().unwrap());
+        protocol.calls_reply(
+            request,
+            json!([protocol.call(
+                "edit",
+                "edit",
+                json!({"input":format!("{header}\nPUT 2.=2:\n+changed")})
+            )]),
+        );
+        let (request, body) = protocol.receive(&provider);
+        assert_eq!(protocol.tool_result(&body, "edit")["ok"], true);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("00.txt")).unwrap(),
+            "before\nchanged\nafter\n"
+        );
+        protocol.final_reply(request, "done");
+        let result = cli.finish();
+        assert!(result.status.success());
+        no_more(&provider);
     }
 }

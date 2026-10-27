@@ -38,6 +38,12 @@ base64 = "0.22"
 dom_smoothie = "0.18"
 html2text = "0.17"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+grep-matcher = "0.1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+grep-pcre2 = "0.1"
+regex = "1"
+globset = "0.4"
 
 [dev-dependencies]
 flate2 = "1"
