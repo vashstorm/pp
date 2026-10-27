@@ -423,8 +423,11 @@ fn http(address: &str, path: &str, host: &str) -> (u16, String) {
 }
 
 fn start_stats_server(dir: &std::path::Path) -> (Cli, String) {
+    stats_server_address(Cli::spawn(dir, &["stats", "--port", "0", "--no-open"], &[]))
+}
+
+fn stats_server_address(mut cli: Cli) -> (Cli, String) {
     use std::io::BufRead;
-    let mut cli = Cli::spawn(dir, &["stats", "--port", "0"], &[]);
     let stdout = cli.0.as_mut().unwrap().stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     thread::spawn(move || {
@@ -446,6 +449,89 @@ fn start_stats_server(dir: &std::path::Path) -> (Cli, String) {
         .unwrap()
         .to_owned();
     (cli, address)
+}
+
+#[cfg(unix)]
+fn stats_browser_fixture(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let script = bin.join(program);
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$1\" > \"$HOME/opened-url\"\nexit \"${PP_STATS_OPEN_EXIT:-0}\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+#[test]
+#[cfg(unix)]
+fn stats_server_opens_actual_url_and_survives_browser_failure() {
+    use std::io::BufRead;
+    for exit in ["0", "23"] {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = stats_browser_fixture(dir.path());
+        let (mut cli, address) = stats_server_address(Cli::spawn(
+            dir.path(),
+            &["stats", "--port", "0"],
+            &[
+                ("PATH", bin.to_str().unwrap()),
+                ("PP_STATS_OPEN_EXIT", exit),
+            ],
+        ));
+        let expected = format!("1\nhttp://{address}/#/overview?range=24h\n");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if std::fs::read_to_string(dir.path().join("opened-url"))
+                .ok()
+                .as_deref()
+                == Some(expected.as_str())
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "browser did not receive {expected}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        if exit != "0" {
+            let stderr = cli.0.as_mut().unwrap().stderr.take().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            thread::spawn(move || {
+                let mut line = String::new();
+                std::io::BufReader::new(stderr)
+                    .read_line(&mut line)
+                    .unwrap();
+                let _ = tx.send(line);
+            });
+            let warning = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(warning.contains("could not open browser"), "{warning}");
+            assert!(warning.contains(&format!("http://{address}/#/overview?range=24h")));
+        }
+        assert_eq!(http(&address, "/", &address).0, 200);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn stats_server_no_open_skips_browser() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = stats_browser_fixture(dir.path());
+    let (_cli, address) = stats_server_address(Cli::spawn(
+        dir.path(),
+        &["stats", "--port", "0", "--no-open"],
+        &[("PATH", bin.to_str().unwrap())],
+    ));
+    assert_eq!(http(&address, "/", &address).0, 200);
+    assert!(!dir.path().join("opened-url").exists());
 }
 
 #[test]

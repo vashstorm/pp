@@ -2,9 +2,10 @@ use super::{Range, Store, database_path};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::io::Write;
+use std::process::{Command, Stdio};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
-pub(crate) fn run(port: u16) -> Result<()> {
+pub(crate) fn run(port: u16, open: bool) -> Result<()> {
     let store = Store::open(&database_path()?).context("opening statistics database")?;
     let server = Server::http((std::net::Ipv4Addr::LOCALHOST, port))
         .map_err(|e| anyhow::anyhow!("starting statistics server: {e}"))?;
@@ -13,8 +14,12 @@ pub(crate) fn run(port: u16) -> Result<()> {
         .to_ip()
         .context("statistics listener unavailable")?
         .port();
-    println!("pp stats: http://127.0.0.1:{port}/#/overview?range=24h");
+    let url = format!("http://127.0.0.1:{port}/#/overview?range=24h");
+    println!("pp stats: {url}");
     std::io::stdout().flush()?;
+    if open {
+        open_browser(url);
+    }
     for request in server.incoming_requests() {
         let host = request
             .headers()
@@ -60,6 +65,31 @@ pub(crate) fn run(port: u16) -> Result<()> {
         let _ = request.respond(response);
     }
     Ok(())
+}
+
+fn open_browser(url: String) {
+    let result = std::thread::Builder::new()
+        .name("stats-browser".into())
+        .spawn(move || {
+            let program = if cfg!(target_os = "macos") {
+                "open"
+            } else {
+                "xdg-open"
+            };
+            let opened = Command::new(program)
+                .arg(&url)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !opened {
+                eprintln!("warning: could not open browser; open {url} manually");
+            }
+        });
+    if result.is_err() {
+        eprintln!("warning: could not start browser opener; open the printed URL manually");
+    }
 }
 
 pub(super) fn dispatch(store: &Store, path: &str) -> (u16, &'static str, String) {

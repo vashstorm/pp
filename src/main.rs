@@ -88,6 +88,9 @@ enum Command {
     Stats {
         #[arg(long, default_value_t = 3848)]
         port: u16,
+        /// 仅启动服务，不自动打开浏览器
+        #[arg(long)]
+        no_open: bool,
     },
 }
 
@@ -173,7 +176,7 @@ fn run(args: Args) -> Result<()> {
     if let Some(command) = args.command {
         return match command {
             Command::Gc => run_gc(),
-            Command::Stats { port } => stats::server::run(port),
+            Command::Stats { port, no_open } => stats::server::run(port, !no_open),
         };
     }
     if let Some(prompt) = &args.prompt {

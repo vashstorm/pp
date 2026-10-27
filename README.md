@@ -152,7 +152,7 @@ pp -r SESSION_ID
 pp stats
 ```
 
-Statistics are served at [127.0.0.1:3848](http://127.0.0.1:3848) by default, without model configuration, Node, or a CDN at runtime. Run `pp gc` to manually remove logs and statistics older than 90 days; original sessions and configuration are kept.
+`pp stats` automatically opens the statistics page in your default browser, served at [127.0.0.1:3848](http://127.0.0.1:3848) by default. Use `pp stats --no-open` to only start the server. No model configuration, Node, or CDN is required at runtime. Run `pp gc` to manually remove logs and statistics older than 90 days; original sessions and configuration are kept.
 
 ## Extensions
 
