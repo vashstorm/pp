@@ -4787,6 +4787,24 @@ impl App {
             input_height,
         );
         let status = Rect::new(area.x, input.bottom(), area.width, status_height);
+        // ask 占用独立区域，先缩短消息 viewport，再绘制消息，避免覆盖最新内容。
+        let ask_height = if self.native_render {
+            0
+        } else {
+            self.ask_panel
+                .as_mut()
+                .map_or(0, |panel| panel.height(conversation, area.height))
+        };
+        let ask_area = Rect::new(
+            conversation.x,
+            conversation.bottom().saturating_sub(ask_height),
+            conversation.width,
+            ask_height,
+        );
+        let conversation = Rect {
+            height: conversation.height.saturating_sub(ask_height),
+            ..conversation
+        };
         let conversation = if self.show_welcome && self.plan_panel.is_none() {
             welcome::draw(frame, conversation)
         } else {
@@ -4919,14 +4937,16 @@ impl App {
         if !self.native_render
             && let Some(panel) = &mut self.ask_panel
         {
-            panel.draw(
-                frame,
-                Rect::new(area.x, area.y, area.width, input.y.saturating_sub(area.y)),
-            );
+            panel.draw(frame, ask_area);
         }
         self.notifications.draw(
             frame,
-            Rect::new(area.x, area.y, area.width, menu_area.y - area.y),
+            Rect::new(
+                area.x,
+                area.y,
+                area.width,
+                menu_area.y.min(ask_area.y).saturating_sub(area.y),
+            ),
         );
     }
 
@@ -5720,6 +5740,30 @@ mod tests {
             &mut dirty,
         );
         assert!(!draw(&mut app, 100, 100).contains("to expand"));
+    }
+
+    #[test]
+    fn ask_layout_keeps_latest_message_above_panel_on_resize() {
+        let mut app = app();
+        let (_answers, _token) = ask_fixture(&mut app);
+        for i in 0..40 {
+            app.append("Assistant", &format!("message {i}"));
+        }
+        app.append("Assistant", "latest message stays visible");
+        app.input.insert_str("main draft");
+        for (width, height) in [(100, 30), (40, 18), (100, 30)] {
+            let screen = draw(&mut app, width, height);
+            let rows: Vec<_> = screen.lines().collect();
+            let message = rows
+                .iter()
+                .position(|row| row.contains("latest message stays visible"))
+                .expect("最新消息不应被 ask 面板遮住");
+            let panel = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
+            assert!(message < panel, "消息 viewport 必须止于面板上方：{screen}");
+            let bottom = rows.iter().position(|row| row.contains('╰')).unwrap();
+            assert_eq!(bottom - panel + 1, 8, "两项选择、Other 与框架应占八行");
+            assert!(screen.contains("main draft"));
+        }
     }
 
     #[test]

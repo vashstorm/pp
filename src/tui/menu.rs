@@ -338,16 +338,22 @@ impl<T: Copy> SelectionMenu<T> {
     }
 
     /// ask 使用纵向文字布局，复用菜单焦点与滚动状态。
-    pub(super) fn choices_height(&self, width: u16) -> u16 {
+    pub(super) fn choices_height(&self, width: u16, editor_height: Option<u16>) -> u16 {
         let prefix_width = self.choice_prefix_width();
         self.items
             .iter()
-            .take(MAX_ROWS)
-            .map(|item| {
-                choice_lines(item, width.saturating_sub(prefix_width), Style::default()).len()
-                    as u16
+            .enumerate()
+            .map(|(index, item)| {
+                let height =
+                    choice_lines(item, width.saturating_sub(prefix_width), Style::default()).len()
+                        as u16;
+                if index + 1 == self.items.len() {
+                    height.max(editor_height.unwrap_or(0))
+                } else {
+                    height
+                }
             })
-            .sum::<u16>()
+            .fold(0, u16::saturating_add)
     }
 
     fn choice_prefix_width(&self) -> u16 {

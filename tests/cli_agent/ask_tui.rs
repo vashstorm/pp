@@ -486,6 +486,56 @@ fn ask_tui_single_space_selects_without_sending_until_enter() {
 }
 
 #[test]
+fn ask_tui_tabs_fit_current_page_and_keep_message_tail_above_panel() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = ask_tui_start(&server, home.path(), project.path(), protocol);
+        pty.ready();
+        pty.input("ask viewport task\r");
+        let (request, _) = pty.request_at(&server, api_path(protocol));
+        let args = json!({"questions":[
+            {"id":"long", "header":"Scope", "question":"Choose the implementation scope",
+             "options":[
+                {"label":"Full", "description":"Include every supported operation"},
+                {"label":"Core", "description":"Include the essential operations"},
+                {"label":"Small", "description":"Include one operation"}
+             ]},
+            {"id":"short", "header":"Mode", "question":"Choose the execution mode",
+             "options":[{"label":"Default", "preview":"ASK-MESSAGE-TAIL"}]}
+        ]});
+        ask_reply_calls(request, protocol, json!([ask_call_json(protocol, "ask-viewport", args)]));
+        ask_wait_panel(&mut pty, "Choose the implementation scope");
+        for (page, height, tab) in [(1, 12, "1. Scope"), (2, 7, "2. Mode")] {
+            for (rows, cols) in [(30, 100), (24, 60), (30, 100)] {
+                pty.resize(rows, cols);
+                pty.wait_for("消息尾部和当前页签可见", |screen| {
+                    screen.size() == (rows, cols)
+                        && ask_page_active(screen, page, 2)
+                        && screen.contents().contains("ASK-MESSAGE-TAIL")
+                });
+                let screen = pty.parser.screen();
+                let (top, _) = ask_panel_find(screen, "╭ Ask");
+                let (bottom, _) = ask_panel_find(screen, "╰");
+                assert_eq!(bottom - top + 1, height, "高度应随当前题变化");
+                let (tail, _) = ask_panel_find(screen, "ASK-MESSAGE-TAIL");
+                assert!(tail < top, "消息尾部必须显示在面板上方：{}", screen.contents());
+                let (row, col) = ask_panel_find(screen, tab);
+                assert_eq!(row, top + 1);
+                assert_eq!(screen.cell(row, col).unwrap().bgcolor(), vt100::Color::Rgb(254, 188, 56));
+                assert_eq!(ask_panel_find(screen, "Review").0, top + 1);
+            }
+            pty.input("\t");
+        }
+        ask_wait_review(&mut pty);
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
+}
+
+#[test]
 fn ask_tui_choice_descriptions_and_inline_editor_survive_resize() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
@@ -509,12 +559,14 @@ fn ask_tui_choice_descriptions_and_inline_editor_survive_resize() {
         let (description_row, _) = ask_panel_find(screen, "Shared database");
         assert_eq!(description_row, row + 1, "说明应紧接对应选项显示");
         let (title_row, _) = ask_panel_find(screen, "╭ Ask");
-        assert_eq!(row, title_row + 1, "标题下方直接显示选项");
+        assert_eq!(row, title_row + 2, "标题和页签下方直接显示选项");
+        assert_eq!(ask_panel_find(screen, "1. Database").0, title_row + 1);
+        assert_eq!(ask_panel_find(screen, "Review").0, title_row + 1);
         let (next_row, _) = ask_panel_find(screen, "SQLite");
         assert_eq!(next_row, row + 2, "下一选项应紧接说明，不插入空行");
         let panel_text = screen.contents().lines().skip(usize::from(title_row)).collect::<Vec<_>>().join("\n");
         assert!(!panel_text.contains("Choose a database"));
-        assert!(!panel_text.contains("Database"), "面板不应重复显示题目标签");
+        assert!(panel_text.contains("1. Database"), "页签应显示题目标签");
         assert!(panel_text.contains("Shared database"));
         assert!(panel_text.contains("Embedded storage"));
         assert!(screen.contents().contains("󰄱 PostgreSQL"), "推荐不自动勾选");

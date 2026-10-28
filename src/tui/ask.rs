@@ -75,8 +75,6 @@ pub(super) struct Panel {
     submitted: bool,
     review_scroll: usize,
     overlay: Option<Rect>,
-    layout_size: (u16, u16),
-    height: u16,
     review: Option<(u16, Vec<Line<'static>>)>,
 }
 
@@ -93,8 +91,6 @@ impl Panel {
             submitted: false,
             review_scroll: 0,
             overlay: None,
-            layout_size: (0, 0),
-            height: 1,
             review: None,
         }
     }
@@ -170,11 +166,7 @@ impl Panel {
             self.overlay = None;
             return;
         }
-        if self.layout_size != (available.width, available.height) {
-            self.height = self.compute_height(available, frame.area().height);
-            self.layout_size = (available.width, available.height);
-        }
-        let height = self.height.min(available.height).max(1);
+        let height = self.height(available, frame.area().height);
         let area = Rect {
             x: available.x,
             y: available.y + available.height - height,
@@ -183,7 +175,7 @@ impl Panel {
         };
         self.overlay = Some(area);
         frame.render_widget(Clear, area);
-        if height < 7 {
+        if height < 6 {
             self.draw_compact(frame, area);
             return;
         }
@@ -203,11 +195,14 @@ impl Panel {
                 0,
             ))
             .title(title);
-        let inner = block.inner(area);
+        let mut inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
             return;
         }
+        self.draw_tabs(frame, Rect { height: 1, ..inner });
+        inner.y += 1;
+        inner.height -= 1;
         match self.page {
             Page::Question(index) => self.draw_question(frame, inner, index),
             Page::Review => self.draw_review(frame, inner),
@@ -529,31 +524,99 @@ impl Panel {
         }
     }
 
-    fn compute_height(&self, available: Rect, screen_height: u16) -> u16 {
-        let inner_width = available.width.saturating_sub(4);
-        let content_height = self
-            .states
-            .iter()
-            .map(|state| state.menu.choices_height(inner_width))
-            .max()
-            .unwrap_or(0);
-        let review_height = if self.has_review() {
-            self.questions
-                .questions
-                .len()
-                .saturating_mul(3)
-                .saturating_sub(1)
-                .min(usize::from(u16::MAX)) as u16
-        } else {
-            0
-        };
-        // 边框、底部分隔线、快捷键与校验消息预留空间，编辑与翻页不移动外框。
-        let need = content_height.max(review_height).saturating_add(5).max(7);
-        if available.height < 5 {
-            return available.height;
+    pub(super) fn height(&mut self, available: Rect, screen_height: u16) -> u16 {
+        if available.is_empty() {
+            return 0;
         }
+        let padding = if available.width > 6 { 4 } else { 2 };
+        let inner_width = available.width.saturating_sub(padding);
+        let content_height = match self.page {
+            Page::Question(index) => self.states[index]
+                .menu
+                .choices_height(inner_width, self.editor_height(index)),
+            Page::Review => {
+                self.layout_review(inner_width);
+                self.review
+                    .as_ref()
+                    .expect("review layout initialized")
+                    .1
+                    .len()
+                    .min(usize::from(u16::MAX)) as u16
+            }
+        };
+        // 只计算当前页：边框两行、页签一行、底部分隔线和快捷键各一行。
+        let need = content_height
+            .saturating_add(5)
+            .saturating_add(u16::from(self.error.is_some()));
         let cap = (u32::from(screen_height) * 7 / 10) as u16;
         need.min(cap).min(available.height).max(1)
+    }
+
+    fn editor_height(&self, index: usize) -> Option<u16> {
+        self.editor
+            .as_ref()
+            .filter(|(owner, _)| *owner == index)
+            .map(|(_, editor)| editor.lines().len().clamp(1, 5) as u16)
+    }
+
+    fn draw_tabs(&self, frame: &mut Frame, area: Rect) {
+        let mut labels: Vec<_> = self
+            .questions
+            .questions
+            .iter()
+            .enumerate()
+            .map(|(index, question)| {
+                let label = question
+                    .header
+                    .as_deref()
+                    .filter(|header| !header.trim().is_empty());
+                match label {
+                    Some(label) => format!(" {}. {} ", index + 1, menu_text(label)),
+                    None => format!(" Question {} ", index + 1),
+                }
+            })
+            .collect();
+        if self.has_review() {
+            labels.push(" Review ".into());
+        }
+        let active = match self.page {
+            Page::Question(index) => index,
+            Page::Review => labels.len() - 1,
+        };
+        let mut start = 0;
+        // 窄屏从左侧移出较早的页签，始终让当前页签可见。
+        while start < active
+            && labels[start..=active]
+                .iter()
+                .map(|label| Line::raw(label).width() + 1)
+                .sum::<usize>()
+                .saturating_sub(1)
+                > usize::from(area.width)
+        {
+            start += 1;
+        }
+        let mut x = area.x;
+        for (index, label) in labels.iter().enumerate().skip(start) {
+            let width = Line::raw(label)
+                .width()
+                .min(usize::from(area.right().saturating_sub(x))) as u16;
+            if width == 0 {
+                break;
+            }
+            let style = if index == active {
+                Style::default()
+                    .fg(ASK_BG)
+                    .bg(ACCENT)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(DIM)
+            };
+            frame.render_widget(
+                Line::styled(label.as_str(), style),
+                Rect::new(x, area.y, width, 1),
+            );
+            x = x.saturating_add(width).saturating_add(1);
+        }
     }
 
     fn draw_compact(&mut self, frame: &mut Frame, area: Rect) {
@@ -632,11 +695,7 @@ impl Panel {
             ..inner
         };
 
-        let editor_height = self
-            .editor
-            .as_ref()
-            .filter(|(owner, _)| *owner == index)
-            .map(|(_, editor)| editor.lines().len().clamp(1, 5) as u16);
+        let editor_height = self.editor_height(index);
         let editor_area = self.states[index]
             .menu
             .draw_choices(frame, content_area, editor_height);
@@ -688,18 +747,7 @@ impl Panel {
         let separator_h = u16::from(inner.height > 2);
         let error_h = u16::from(error.is_some() && inner.height > 2);
         let content_h = inner.height - hint_h - separator_h - error_h;
-        if self
-            .review
-            .as_ref()
-            .is_none_or(|(width, _)| *width != inner.width)
-        {
-            let lines = self
-                .review_lines()
-                .into_iter()
-                .flat_map(|line| super::transcript::wrap_block(line, inner.width, ""))
-                .collect();
-            self.review = Some((inner.width, lines));
-        }
+        self.layout_review(inner.width);
         let lines = &self.review.as_ref().expect("review layout initialized").1;
         let max_scroll = lines.len().saturating_sub(usize::from(content_h.max(1)));
         self.review_scroll = self.review_scroll.min(max_scroll);
@@ -736,6 +784,21 @@ impl Panel {
                     ..inner
                 },
             );
+        }
+    }
+
+    fn layout_review(&mut self, width: u16) {
+        if self
+            .review
+            .as_ref()
+            .is_none_or(|(cached_width, _)| *cached_width != width)
+        {
+            let lines = self
+                .review_lines()
+                .into_iter()
+                .flat_map(|line| super::transcript::wrap_block(line, width, ""))
+                .collect();
+            self.review = Some((width, lines));
         }
     }
 
@@ -1233,7 +1296,10 @@ mod tests {
             panel.key(ctrl('j'));
             panel.paste("second line");
             render(&mut panel, 80, 24);
-            assert_eq!(panel.overlay, before, "输入与换行不应改变外框位置和高度");
+            let after = panel.overlay.unwrap();
+            let before = before.unwrap();
+            assert_eq!(after.height, before.height + 1, "新增输入行应扩展面板");
+            assert_eq!(after.bottom(), before.bottom(), "面板底部应保持锚定");
             let compact = render(&mut panel, 40, 8);
             assert!(
                 compact.contains("second line"),
@@ -1251,16 +1317,110 @@ mod tests {
     }
 
     #[test]
-    fn picker_omits_question_header_and_id_below_title() {
+    fn picker_shows_header_tab_without_internal_id_or_repeated_question() {
         let mut q = question("confirm_commit", false, None, &["yes", "no"]);
         q.header = Some("Commit confirmation".into());
         let mut panel = panel(vec![q]);
         let screen = render(&mut panel, 80, 24);
         assert!(!screen.contains("confirm_commit"));
-        assert!(!screen.contains("Commit confirmation"));
+        assert!(screen.contains("1. Commit confirmation"));
+        assert!(!screen.contains("Choose for"));
         let rows: Vec<_> = screen.lines().collect();
         let title = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
-        assert!(rows[title + 1].contains("󰐽 yes"), "标题下方应直接显示选项");
+        assert!(rows[title + 1].contains("1. Commit confirmation"));
+        assert!(rows[title + 2].contains("󰐽 yes"), "页签下方应直接显示选项");
+    }
+
+    #[test]
+    fn tabs_highlight_current_question_and_review_including_narrow_layout() {
+        let mut first = question("first", false, None, &["A"]);
+        first.header = Some("范围".into());
+        let mut second = question("second", true, None, &["B"]);
+        second.header = Some("模式".into());
+        let mut panel = panel(vec![first, second]);
+        for (page, label) in [(0, "1. 范围"), (1, "2. 模式"), (2, "Review")] {
+            for width in [80, 18] {
+                let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+                terminal
+                    .draw(|frame| panel.draw(frame, frame.area()))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let row = panel.overlay.unwrap().y + 1;
+                // 宽字符的后续单元格只是占位，不属于显示文本。
+                let columns = (0..width)
+                    .filter(|&x| x == 0 || Span::raw(buffer[(x - 1, row)].symbol()).width() <= 1);
+                let highlighted: String = columns
+                    .clone()
+                    .filter(|&x| buffer[(x, row)].bg == ACCENT)
+                    .map(|x| buffer[(x, row)].symbol())
+                    .collect();
+                assert!(
+                    highlighted.contains(label),
+                    "当前页签应可见且高亮：{highlighted}"
+                );
+                if width == 80 {
+                    let text: String = columns.map(|x| buffer[(x, row)].symbol()).collect();
+                    for expected in ["1. 范围", "2. 模式", "Review"] {
+                        assert!(text.contains(expected), "应显示全部页签：{text}");
+                    }
+                }
+            }
+            assert_eq!(
+                panel.page,
+                if page < 2 {
+                    Page::Question(page)
+                } else {
+                    Page::Review
+                }
+            );
+            panel.key(key(KeyCode::Tab));
+        }
+    }
+
+    #[test]
+    fn height_tracks_current_page_wrapping_editor_and_validation() {
+        let mut long = question("long", false, None, &["A", "B", "C"]);
+        for option in &mut long.options {
+            option.description =
+                Some("A detailed option description that wraps at narrow widths".into());
+        }
+        let mut panel = panel(vec![long, question("short", false, None, &["D"])]);
+        render(&mut panel, 100, 40);
+        let long_height = panel.overlay.unwrap().height;
+        assert_eq!(long_height, 12, "三项名称与说明、Other 和五行框架");
+        render(&mut panel, 32, 40);
+        assert_eq!(panel.overlay.unwrap().height, 15, "说明折行应计入实际高度");
+        panel.key(key(KeyCode::Tab));
+        render(&mut panel, 100, 40);
+        assert_eq!(panel.overlay.unwrap().height, 7, "短题不应沿用长题的高度");
+        panel.error = Some(REQUIRED_MESSAGE.into());
+        let screen = render(&mut panel, 100, 40);
+        assert_eq!(panel.overlay.unwrap().height, 8);
+        assert!(screen.contains(REQUIRED_MESSAGE));
+        panel.error = None;
+        panel.key(key(KeyCode::End));
+        panel.key(key(KeyCode::Enter));
+        panel.paste("one\ntwo\nthree");
+        let screen = render(&mut panel, 100, 40);
+        assert_eq!(panel.overlay.unwrap().height, 9);
+        assert!(screen.contains("three"));
+        panel.key(key(KeyCode::Esc));
+        render(&mut panel, 100, 40);
+        assert_eq!(panel.overlay.unwrap().height, 7, "丢弃编辑后应收回多行空间");
+        panel.states[0].custom = "very long answer ".repeat(12);
+        panel.page = Page::Review;
+        render(&mut panel, 32, 40);
+        let review_height = panel.overlay.unwrap().height;
+        assert!(review_height > 10, "Review 高度应包含答案折行");
+        assert_eq!(
+            review_height,
+            panel.review.as_ref().unwrap().1.len() as u16 + 5
+        );
+        render(&mut panel, 32, 12);
+        assert!(
+            panel.overlay.unwrap().height <= 8,
+            "面板不应超过屏幕高度的 70%"
+        );
     }
 
     #[test]
