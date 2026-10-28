@@ -1,5 +1,6 @@
 mod ask;
 mod changes;
+mod edit_diff;
 mod files;
 mod markdown;
 mod menu;

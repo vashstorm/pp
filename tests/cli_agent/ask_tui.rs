@@ -140,6 +140,23 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
             let text = screen.contents();
             text.contains("Read (2)") && text.contains("one:1-20") && text.contains("two:2-20") && !text.contains("body-one-")
         });
+        {
+            let screen = pty.parser.screen();
+            for (label, color) in [
+                ("● Read", vt100::Color::Rgb(248, 248, 243)),
+                ("(2)", vt100::Color::Rgb(96, 102, 114)),
+                ("├─", vt100::Color::Rgb(96, 102, 114)),
+                ("one:1-20", vt100::Color::Rgb(244, 191, 84)),
+                ("two:2-20", vt100::Color::Rgb(244, 191, 84)),
+            ] {
+                let (row, col) = ask_panel_find(screen, label);
+                let cell = screen.cell(row, col).unwrap();
+                assert_eq!(cell.fgcolor(), color, "{label}");
+                assert_eq!(cell.bgcolor(), vt100::Color::Rgb(40, 42, 53), "{label}");
+                assert!(!cell.bold(), "{label}");
+            }
+            assert!(!screen.contents().contains(" · ok"));
+        }
         pty.input("\x0fbarrier");
         pty.draft("barrier");
         assert!(!pty.parser.screen().contents().contains("body-one-"));
@@ -198,6 +215,16 @@ fn tool_folding_omp_native_search_clips_long_rows_for_both_protocols() {
                 let text = screen.contents();
                 text.matches(marker).count() == shown && text.contains("more") && text.contains("Ctrl + O")
             });
+            if name == "grep" {
+                let screen = pty.parser.screen();
+                let text = screen.contents();
+                assert!(text.contains("Grep: needle 20 matches · 1 file · in lines"), "{text}");
+                let row = text.lines().position(|line| line.contains("└─ *1|entry-00")).unwrap() as u16;
+                let cell = screen.cell(row, 0).unwrap();
+                assert_eq!(cell.contents(), "└");
+                assert_eq!(cell.fgcolor(), vt100::Color::Rgb(120, 125, 135));
+                assert_eq!(cell.bgcolor(), vt100::Color::Rgb(40, 42, 53));
+            }
             pty.input("\x0fa");
             pty.draft("a");
             assert_eq!(pty.parser.screen().contents().matches(marker).count(),20);

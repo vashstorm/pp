@@ -9,7 +9,6 @@
 
 const DIFF_BLOCKS_ADDED: vt100::Color = vt100::Color::Rgb(137, 210, 129);
 const DIFF_BLOCKS_REMOVED: vt100::Color = vt100::Color::Rgb(252, 58, 75);
-const DIFF_BLOCKS_ACCENT: vt100::Color = vt100::Color::Rgb(254, 188, 56);
 
 fn diff_blocks_settings(mode: &str) -> String {
     format!(
@@ -19,6 +18,12 @@ fn diff_blocks_settings(mode: &str) -> String {
 
 // 直接按终端单元格匹配 ASCII 文本及颜色，避免标题图标影响列号计算。
 fn diff_blocks_screen_colored(screen: &vt100::Screen, needle: &str, color: vt100::Color) -> bool {
+    // edit 使用参考图色板，/changes 继续使用原有 diff 色板；局部变更以背景强调。
+    let edit_color = match color {
+        DIFF_BLOCKS_ADDED => vt100::Color::Rgb(153, 208, 137),
+        DIFF_BLOCKS_REMOVED => vt100::Color::Rgb(232, 76, 82),
+        other => other,
+    };
     let (rows, columns) = screen.size();
     let width = needle.chars().count() as u16;
     for row in 0..rows {
@@ -27,7 +32,8 @@ fn diff_blocks_screen_colored(screen: &vt100::Screen, needle: &str, color: vt100
                 screen
                     .cell(row, start + offset as u16)
                     .is_some_and(|cell| {
-                        cell.contents() == expected.to_string() && cell.fgcolor() == color
+                        cell.contents() == expected.to_string()
+                            && (cell.fgcolor() == color || cell.fgcolor() == edit_color || cell.bgcolor() == edit_color)
                     })
             }) {
                 return true;
@@ -139,14 +145,14 @@ fn transcript_blocks_diff_replace_edit_and_write_cards() {
         );
         pty.wait_for("committed replace edit diff card", |screen| {
             let text = screen.contents();
-            text.contains("edit · demo.txt")
-                && text.contains("+1 -1")
-                && text.contains("  1 - old")
-                && text.contains("  1 + new")
-                && text.contains("  2   keep")
+            text.contains("Edit:") && text.contains("demo.txt")
+                && text.contains("+1/-1")
+                && text.contains("-  1│old")
+                && text.contains("+  1│new")
+                && text.contains("   2│keep")
                 && diff_blocks_screen_colored(screen, "old", DIFF_BLOCKS_REMOVED)
                 && diff_blocks_screen_colored(screen, "new", DIFF_BLOCKS_ADDED)
-                && diff_blocks_screen_colored(screen, "edit · demo.txt", DIFF_BLOCKS_ACCENT)
+                && diff_blocks_screen_colored(screen, "Edit:", vt100::Color::Rgb(244, 191, 84))
         });
         assert_eq!(
             std::fs::read_to_string(project.path().join("demo.txt")).unwrap(),
@@ -278,11 +284,11 @@ fn transcript_blocks_diff_hashline_edit_from_read_anchors() {
         );
         pty.wait_for("committed hashline edit diff card", |screen| {
             let text = screen.contents();
-            text.contains("edit · demo.txt")
-                && text.contains("+1 -1")
-                && text.contains("  1 - old")
-                && text.contains("  1 + new")
-                && text.contains("  2   keep")
+            text.contains("Edit:") && text.contains("demo.txt")
+                && text.contains("+1/-1")
+                && text.contains("-  1│old")
+                && text.contains("+  1│new")
+                && text.contains("   2│keep")
                 && diff_blocks_screen_colored(screen, "old", DIFF_BLOCKS_REMOVED)
                 && diff_blocks_screen_colored(screen, "new", DIFF_BLOCKS_ADDED)
         });
@@ -301,7 +307,7 @@ fn transcript_blocks_diff_hashline_edit_from_read_anchors() {
 }
 
 // 行结束符边界可见：CRLF→LF 附 LF/CRLF 提示、末尾换行删除附 No newline 行、
-// BOM 剥离产生真实 +1 -1、非 UTF-8 覆盖成功且显示 unavailable 回退。
+// BOM 剥离产生真实 +1/-1、非 UTF-8 覆盖成功且显示 unavailable 回退。
 #[test]
 fn transcript_blocks_diff_endings_bom_and_unavailable() {
     for protocol in ["completion", "response"] {
@@ -465,9 +471,9 @@ fn transcript_blocks_diff_failed_edits_have_no_fabricated_diff() {
             };
             pty.wait_for("failed edit error without diff body", |screen| {
                 let text = screen.contents();
-                text.contains("edit · demo.txt")
+                text.contains("Edit:") && text.contains("demo.txt")
                     && text.contains(error_needle)
-                    && !text.contains("+1 -1")
+                    && !text.contains("+1/-1")
                     && !diff_blocks_screen_colored(screen, "old", DIFF_BLOCKS_REMOVED)
                     && !diff_blocks_screen_colored(screen, "new", DIFF_BLOCKS_ADDED)
             });
@@ -537,28 +543,28 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
         );
         pty.wait_for("long diff collapsed preview", |screen| {
             let text = screen.contents();
-            text.contains("edit · lines.txt")
-                && text.contains("+24 -24")
-                && text.contains("  1 - 1")
-                && text.contains(" 24 - 24")
-                && text.contains(" 16 + P")
-                && !text.contains(" 17 + Q")
+            text.contains("Edit:") && text.contains("lines.txt")
+                && text.contains("+24/-24")
+                && text.contains("-  1│1")
+                && text.contains("- 24│24")
+                && text.contains("+ 16│P")
+                && !text.contains("+ 17│Q")
                 && text.contains("… 9 more lines (Ctrl + O to expand)")
         });
         pty.input("\x0f");
         pty.wait_for("long diff expanded", |screen| {
             let text = screen.contents();
-            text.contains("  1 + A")
-                && text.contains(" 24 - 24")
-                && text.contains(" 24 + X")
-                && text.contains(" 25   keep")
+            text.contains("+  1│A")
+                && text.contains("- 24│24")
+                && text.contains("+ 24│X")
+                && text.contains("  25│keep")
                 && !text.contains("(Ctrl + O to expand)")
         });
         pty.input("\x0f");
         pty.wait_for("long diff folded again", |screen| {
             let text = screen.contents();
-            !text.contains(" 17 + Q")
-                && text.contains("  1 - 1")
+            !text.contains("+ 17│Q")
+                && text.contains("-  1│1")
                 && text.contains("… 9 more lines (Ctrl + O to expand)")
         });
         let (request, _) = pty.request_at(&server, path);
@@ -566,11 +572,11 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
         pty.text("diff-blocks long done");
         pty.ready();
         let (scrollback, raw) = diff_blocks_exit_scrollback(&mut pty, "diff-blocks long done");
-        for expected in ["  1 - 1", "  1 + A"] {
+        for expected in ["-  1│1", "+  1│A"] {
             assert!(scrollback.contains(expected), "{expected}\n{scrollback}");
         }
         assert!(
-            scrollback.contains("(Ctrl + O to expand)") && !scrollback.contains(" 24 + X"),
+            scrollback.contains("(Ctrl + O to expand)") && !scrollback.contains("+ 24│X"),
             "{scrollback}"
         );
         let mut parser = vt100::Parser::new(600, 100, 0);
@@ -661,9 +667,9 @@ fn transcript_blocks_diff_resume_replays_committed_diffs_without_reexecution() {
             let journal_before = std::fs::read(&journal).unwrap();
             pty.wait_for("replayed edit diff card", |screen| {
                 let text = screen.contents();
-                text.contains("edit · demo.txt")
-                    && text.contains("  1 - old")
-                    && text.contains("  1 + new")
+                text.contains("Edit:")
+                    && text.contains("-  1│old")
+                    && text.contains("+  1│new")
                     && diff_blocks_screen_colored(screen, "old", DIFF_BLOCKS_REMOVED)
                     && diff_blocks_screen_colored(screen, "new", DIFF_BLOCKS_ADDED)
             });
@@ -679,9 +685,9 @@ fn transcript_blocks_diff_resume_replays_committed_diffs_without_reexecution() {
             pty.ready();
             pty.wait_for("restored transcript shows the same diff", |screen| {
                 let text = screen.contents();
-                text.contains("edit · demo.txt")
-                    && text.contains("  1 - old")
-                    && text.contains("  1 + new")
+                text.contains("Edit:")
+                    && text.contains("-  1│old")
+                    && text.contains("+  1│new")
                     && diff_blocks_screen_colored(screen, "old", DIFF_BLOCKS_REMOVED)
                     && diff_blocks_screen_colored(screen, "new", DIFF_BLOCKS_ADDED)
             });
@@ -704,9 +710,9 @@ fn transcript_blocks_diff_resume_replays_committed_diffs_without_reexecution() {
             pty.ready();
             pty.wait_for("old journal replays summary without diff body", |screen| {
                 let text = screen.contents();
-                text.contains("edit · demo.txt")
+                text.contains("Edit:")
                     && text.contains("edits_applied")
-                    && !text.contains("+1 -1")
+                    && !text.contains("+1/-1")
                     && !diff_blocks_screen_colored(screen, "old", DIFF_BLOCKS_REMOVED)
                     && !diff_blocks_screen_colored(screen, "new", DIFF_BLOCKS_ADDED)
             });

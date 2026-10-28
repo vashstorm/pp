@@ -66,9 +66,48 @@ struct TableBlock {
 type Cell = Vec<Span<'static>>;
 
 pub(super) fn parse(source: &str) -> MarkdownDocument {
+    parse_styled(source, false)
+}
+
+/// 指令正文保留源换行；frontmatter 按原文展示，避免被识别为 Setext 标题。
+pub(super) fn parse_instruction(source: &str) -> MarkdownDocument {
+    let Some(metadata) = source
+        .strip_prefix("---\n")
+        .or_else(|| source.strip_prefix("---\r\n"))
+    else {
+        return parse_styled(source, true);
+    };
+    let mut header = Vec::new();
+    let mut offset = 0;
+    let mut closed = false;
+    for line in metadata.split_inclusive('\n') {
+        offset += line.len();
+        if line.trim_end() == "---" {
+            closed = true;
+            break;
+        }
+        let text = line.trim_end_matches(['\r', '\n']);
+        let content = text.trim_start_matches(' ');
+        let indent = &text[..text.len() - content.len()];
+        header.push(WrapLine {
+            first: vec![Span::raw(indent.to_owned())],
+            rest: Vec::new(),
+            spans: vec![Span::raw(display_text(content).into_owned())],
+        });
+    }
+    let mut blocks = vec![Block::Rule(Vec::new()), Block::Paragraph(header, None)];
+    if closed {
+        blocks.push(Block::Rule(Vec::new()));
+    }
+    blocks.extend(parse_styled(&metadata[offset..], true).blocks);
+    MarkdownDocument { blocks }
+}
+
+fn parse_styled(source: &str, instruction: bool) -> MarkdownDocument {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH);
     let mut b = Builder::new(source);
+    b.instruction = instruction;
     for (ev, range) in Parser::new_ext(source, opts).into_offset_iter() {
         match ev {
             Event::Start(tag) => match tag {
@@ -212,6 +251,7 @@ struct TableState {
 
 struct Builder<'a> {
     source: &'a str,
+    instruction: bool,
     blocks: Vec<Block>,
     lines: Vec<WrapLine>,
     cur: Vec<Span<'static>>,
@@ -240,6 +280,7 @@ impl<'a> Builder<'a> {
     fn new(source: &'a str) -> Self {
         Builder {
             source,
+            instruction: false,
             blocks: Vec::new(),
             lines: Vec::new(),
             cur: Vec::new(),
@@ -275,10 +316,18 @@ impl<'a> Builder<'a> {
     fn inline_style(&self) -> Style {
         let mut st = Style::new();
         if self.heading {
-            st = st.fg(ACCENT).add_modifier(Modifier::BOLD);
+            st = if self.instruction {
+                st.fg(super::transcript_style::READ_ACCENT)
+                    .add_modifier(Modifier::UNDERLINED)
+            } else {
+                st.fg(ACCENT).add_modifier(Modifier::BOLD)
+            };
         }
         if self.strong > 0 {
             st = st.add_modifier(Modifier::BOLD);
+            if self.instruction {
+                st = st.fg(super::transcript_style::READ_ACCENT);
+            }
         }
         if self.em > 0 {
             st = st.add_modifier(Modifier::ITALIC);
@@ -603,6 +652,10 @@ impl<'a> Builder<'a> {
     }
 
     fn on_soft_break(&mut self) {
+        if self.instruction && self.code.is_none() && self.images.is_empty() && !self.in_cell {
+            self.push_line();
+            return;
+        }
         if let Some(code) = self.code.as_mut() {
             code.buf.push('\n');
             return;

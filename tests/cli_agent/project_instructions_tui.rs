@@ -108,14 +108,14 @@ fn instruction_loading_cards_preview_expand_and_resume_both_protocols() {
         let (request, body) = pty.request_at(&server, path);
         assert!(body.to_string().contains("secret-skill-line-19"), "{body}");
         project_instructions::finish_request(request, protocol, "cards-skill-ready");
-        pty.text("Read · skill://rust");
+        pty.text("Read skill://rust");
         pty.text("cards-skill-ready");
         pty.ready();
 
         // sent 在首个建连结果之后执行；先返回 SSE，再检查真实加载卡片。
         let agents_footer = format!("Resolved path: {}", agents.canonicalize().unwrap().display());
         let paged = instruction_cards_paged_text(&mut pty);
-        assert!(paged.contains("Read · AGENTS.md"), "{paged}");
+        assert!(paged.contains("Read AGENTS.md"), "{paged}");
         assert!(paged.contains("agents-rule-line-00"), "{paged}");
         assert!(paged.contains("agents-rule-line-09"), "{paged}");
         assert!(!paged.contains("agents-rule-line-14"), "{paged}");
@@ -174,8 +174,8 @@ fn instruction_loading_cards_preview_expand_and_resume_both_protocols() {
         instruction_cards_barrier(&mut pty);
         {
             let (history, _) = pty.native_history();
-            assert_eq!(history.matches("Read · AGENTS.md").count(), 1, "{history}");
-            assert_eq!(history.matches("Read · skill://rust").count(), 1, "{history}");
+            assert_eq!(history.matches("Read AGENTS.md").count(), 1, "{history}");
+            assert_eq!(history.matches("Read skill://rust").count(), 1, "{history}");
         }
 
         instruction_cards_exit(&mut pty);
@@ -214,7 +214,7 @@ fn instruction_loading_cards_preview_expand_and_resume_both_protocols() {
         instruction_cards_barrier(&mut pty);
         {
             let (history, _) = pty.native_history();
-            assert_eq!(history.matches("Read · AGENTS.md").count(), 1, "{history}");
+            assert_eq!(history.matches("Read AGENTS.md").count(), 1, "{history}");
         }
         instruction_cards_exit(&mut pty);
         pty.finish();
@@ -247,7 +247,7 @@ fn instruction_loading_cards_refresh_new_and_failures_both_protocols() {
         );
         instruction_cards_assert_plain_request(&body, protocol, 0);
         project_instructions::finish_request(request, protocol, "cards-refresh-one-done");
-        pty.text("Read · AGENTS.md");
+        pty.text("Read AGENTS.md");
         pty.text("cards-refresh-one-done");
         pty.ready();
 
@@ -262,7 +262,7 @@ fn instruction_loading_cards_refresh_new_and_failures_both_protocols() {
         pty.text("cards-refresh-two-done");
         pty.ready();
         let paged = instruction_cards_paged_text(&mut pty);
-        assert!(paged.matches("Read · AGENTS.md").count() >= 2, "{paged}");
+        assert!(paged.matches("Read AGENTS.md").count() >= 2, "{paged}");
         assert!(paged.contains("cards-refresh-first-rule"), "{paged}");
         assert!(paged.contains("cards-refresh-second-rule"), "{paged}");
 
@@ -304,7 +304,7 @@ fn instruction_loading_cards_refresh_new_and_failures_both_protocols() {
         instruction_cards_barrier(&mut pty);
         {
             let (history, _) = pty.native_history();
-            assert_eq!(history.matches("Read · AGENTS.md").count(), 3, "{history}");
+            assert_eq!(history.matches("Read AGENTS.md").count(), 3, "{history}");
             assert!(history.contains("cards-refresh-first-rule"), "{history}");
             assert!(history.contains("cards-refresh-second-rule"), "{history}");
             assert!(history.contains("cards-refresh-third-rule"), "{history}");
@@ -323,13 +323,13 @@ fn instruction_loading_cards_refresh_new_and_failures_both_protocols() {
         );
         instruction_cards_assert_plain_request(&body, protocol, 0);
         project_instructions::finish_request(request, protocol, "cards-refresh-six-done");
-        pty.text("Read · AGENTS.md");
+        pty.text("Read AGENTS.md");
         pty.text("cards-refresh-six-done");
         pty.ready();
         instruction_cards_barrier(&mut pty);
         {
             let (history, _) = pty.native_history();
-            assert_eq!(history.matches("Read · AGENTS.md").count(), 1, "{history}");
+            assert_eq!(history.matches("Read AGENTS.md").count(), 1, "{history}");
         }
 
         // 非 UTF-8 正文阻止请求：真实错误、无模型请求、无成功卡片。
@@ -351,7 +351,7 @@ fn instruction_loading_cards_refresh_new_and_failures_both_protocols() {
         no_more(&server);
         {
             let (history, _) = pty.native_history();
-            assert_eq!(history.matches("Read · AGENTS.md").count(), 1, "{history}");
+            assert_eq!(history.matches("Read AGENTS.md").count(), 1, "{history}");
         }
 
         // 修复后重新可加载。
@@ -369,7 +369,7 @@ fn instruction_loading_cards_refresh_new_and_failures_both_protocols() {
         instruction_cards_barrier(&mut pty);
         {
             let (history, _) = pty.native_history();
-            assert_eq!(history.matches("Read · AGENTS.md").count(), 2, "{history}");
+            assert_eq!(history.matches("Read AGENTS.md").count(), 2, "{history}");
         }
         instruction_cards_exit(&mut pty);
         pty.finish();
@@ -401,7 +401,7 @@ fn instruction_loading_cards_tree_and_native_history_both_protocols() {
             "{body}"
         );
         project_instructions::finish_request(request, protocol, "cards-tree-one-answer");
-        pty.text("Read · AGENTS.md");
+        pty.text("Read AGENTS.md");
         pty.text("cards-tree-one-answer");
         pty.ready();
 
@@ -424,7 +424,7 @@ fn instruction_loading_cards_tree_and_native_history_both_protocols() {
         {
             let text = pty.parser.screen().contents();
             assert!(text.contains("cards-tree-first-rule"), "{text}");
-            assert!(text.contains("Read · AGENTS.md"), "{text}");
+            assert!(text.contains("Read AGENTS.md"), "{text}");
         }
         tree_tui_assert_abandoned_invisible(
             pty.parser.screen(),
@@ -442,7 +442,7 @@ fn instruction_loading_cards_tree_and_native_history_both_protocols() {
         {
             let text = pty.parser.screen().contents();
             assert!(text.contains("cards-tree-first-rule"), "{text}");
-            assert!(text.contains("Read · AGENTS.md"), "{text}");
+            assert!(text.contains("Read AGENTS.md"), "{text}");
         }
         tree_tui_assert_abandoned_invisible(
             pty.parser.screen(),
@@ -470,7 +470,7 @@ fn instruction_loading_cards_tree_and_native_history_both_protocols() {
         instruction_cards_barrier(&mut pty);
         {
             let (history, _) = pty.native_history();
-            assert_eq!(history.matches("Read · AGENTS.md").count(), 1, "{history}");
+            assert_eq!(history.matches("Read AGENTS.md").count(), 1, "{history}");
             assert_eq!(history.matches("cards-tree-first-rule").count(), 1, "{history}");
             assert!(!history.contains("cards-tree-second-rule"), "{history}");
         }
@@ -480,11 +480,11 @@ fn instruction_loading_cards_tree_and_native_history_both_protocols() {
         instruction_cards_exit(&mut pty);
         let exit = String::from_utf8_lossy(&pty.raw[before..]);
         assert!(
-            !exit.contains("cards-tree-first-rule") && !exit.contains("Read · AGENTS.md"),
+            !exit.contains("cards-tree-first-rule") && !exit.contains("Read AGENTS.md"),
             "退出重放了已提交卡片：{exit:?}"
         );
         let (history, _) = pty.native_history();
-        assert_eq!(history.matches("Read · AGENTS.md").count(), 1, "{history}");
+        assert_eq!(history.matches("Read AGENTS.md").count(), 1, "{history}");
         pty.finish();
         no_more(&server);
     }

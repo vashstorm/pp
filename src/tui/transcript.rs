@@ -340,6 +340,66 @@ impl TranscriptEntry {
         }
     }
 
+    fn is_file_read(&self) -> bool {
+        self.tool.as_deref() == Some("read") && self.kind != EntryKind::Read
+    }
+
+    fn is_edit(&self) -> bool {
+        self.tool.as_deref() == Some("edit")
+    }
+
+    fn edit_path(&self) -> &str {
+        self.arguments["path"]
+            .as_str()
+            .or_else(|| crate::tools::edit_path(&self.arguments))
+            .unwrap_or_default()
+    }
+
+    fn edit_header(&self) -> Line<'static> {
+        let style = Style::default()
+            .fg(palette::EDIT_TITLE)
+            .bg(palette::EDIT_BG);
+        let meta = style.fg(palette::EDIT_META);
+        let path = self.edit_path();
+        let mut spans = vec![
+            Span::styled(format!("{} Edit: ", palette::tool_icon("edit")), style),
+            Span::styled(
+                if path.ends_with(".rs") {
+                    "\u{e7a8} "
+                } else {
+                    "\u{f1c9} "
+                },
+                meta,
+            ),
+            Span::styled(palette::display_text(path).into_owned(), style),
+        ];
+        if let EntryBody::Diff(FileDiff::Text { added, removed, .. }) = &self.body {
+            spans.extend([
+                Span::styled(" ⟨", meta),
+                Span::styled(format!("+{added}"), style.fg(palette::EDIT_ADDED)),
+                Span::styled("/", meta),
+                Span::styled(format!("-{removed}"), style.fg(palette::EDIT_REMOVED)),
+                Span::styled("⟩ ", meta),
+            ]);
+        } else if self.status != EntryStatus::Complete {
+            spans.push(Span::styled(
+                if self.status == EntryStatus::Failed {
+                    " · failed "
+                } else {
+                    " · running "
+                },
+                if self.status == EntryStatus::Failed {
+                    style.fg(palette::EDIT_REMOVED)
+                } else {
+                    meta
+                },
+            ));
+        } else {
+            spans.push(Span::styled(" ", style));
+        }
+        Line::from(spans)
+    }
+
     fn source(&self, source: Source) -> &str {
         match source {
             Source::Top | Source::Divider | Source::Bottom | Source::Padding => "",
@@ -357,6 +417,9 @@ impl TranscriptEntry {
     }
 
     fn line<'a>(&'a self, line: &'a LayoutLine) -> Line<'a> {
+        if self.is_edit() && matches!(line.source(), Some(Source::Title)) {
+            return self.edit_header();
+        }
         let (source, range, title_end) = match &line.content {
             LayoutContent::Styled(styled) => {
                 return Line::from(
@@ -405,21 +468,18 @@ impl TranscriptEntry {
             );
         }
         if self.kind == EntryKind::Read && matches!(source, Source::Title) {
-            let mut spans = vec![Span::styled(
-                text,
-                Style::default()
-                    .fg(self.kind.color())
-                    .add_modifier(Modifier::BOLD),
-            )];
+            let mut spans = Vec::new();
             if title_end {
                 let color = match self.status {
                     EntryStatus::Running => palette::ACCENT,
                     EntryStatus::Complete => palette::ADDED,
                     EntryStatus::Failed => palette::REMOVED,
                 };
-                spans.push(Span::styled(" ●", Style::default().fg(color)));
+                spans.push(Span::styled(" · ", Style::default().fg(color)));
             }
-            return Line::from(spans);
+            spans.push(Span::styled(text, Style::default().fg(palette::READ_TEXT)));
+            spans.push(Span::raw(" "));
+            return Line::from(spans).style(Style::default().bg(palette::READ_BG));
         }
         if matches!(source, Source::Title) {
             let mut spans = vec![Span::styled(
@@ -438,10 +498,9 @@ impl TranscriptEntry {
             }
             Line::from(spans)
         } else {
-            let style = if matches!(
-                (self.kind, source),
-                (EntryKind::Diff, _) | (EntryKind::Read, Source::Footer)
-            ) {
+            let style = if self.kind == EntryKind::Read {
+                Style::default().fg(palette::DIM).bg(palette::READ_BG)
+            } else if matches!((self.kind, source), (EntryKind::Diff, _)) {
                 Style::default().fg(palette::MUTED)
             } else if self.tool.is_some() {
                 Style::default().add_modifier(Modifier::DIM)
@@ -458,7 +517,7 @@ impl TranscriptEntry {
             && self.kind != EntryKind::Read
             && self.display_title.is_none()
         {
-            self.display_title = Some(self.read_summary());
+            self.display_title = Some(self.read_summary(true));
         }
         if self.markdown_dirty {
             self.body = EntryBody::Markdown(super::markdown::parse(self.visible_text()));
@@ -484,6 +543,8 @@ impl TranscriptEntry {
         let bash = self.kind == EntryKind::Bash;
         let user = self.kind == EntryKind::User;
         let read = self.kind == EntryKind::Read;
+        let edit = self.is_edit();
+        let grep = self.tool.as_deref() == Some("grep");
         let border = |source| LayoutLine {
             content: LayoutContent::Source {
                 source,
@@ -502,7 +563,9 @@ impl TranscriptEntry {
             // 顶部边框行内嵌标题与状态圆点。
             self.add_lines(Source::Title, &mut lines);
         }
-        if matches!(self.kind, EntryKind::Diff | EntryKind::Ask) {
+        if edit {
+            lines.push(border(Source::Title));
+        } else if matches!(self.kind, EntryKind::Diff | EntryKind::Ask) {
             let (status, color) = match self.status {
                 EntryStatus::Running => ("running", palette::ACCENT),
                 EntryStatus::Complete => ("ok", palette::ADDED),
@@ -549,6 +612,84 @@ impl TranscriptEntry {
                         height: 1,
                     }),
             );
+        } else if grep {
+            lines.extend(
+                tool_display::grep_header(
+                    &tool_display::View {
+                        name: "grep",
+                        text: self.visible_text(),
+                        arguments: &self.arguments,
+                        result: self.result.as_ref(),
+                        running: self.status == EntryStatus::Running,
+                        failed: self.status == EntryStatus::Failed,
+                        expanded: self.expanded,
+                        instruction_read: false,
+                        context: self.display,
+                    },
+                    width,
+                )
+                .into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }),
+            );
+        } else if self.is_file_read() {
+            // 普通文件摘要使用无边框树形列表，分开绘制标题、数量、连线与路径。
+            for text in self.source(Source::Title).lines() {
+                let meta = Style::default().fg(palette::READ_SUMMARY_META);
+                let path = Style::default().fg(palette::READ_SUMMARY_PATH);
+                let (spans, continuation) = if let Some(count) = text.strip_prefix("● Read (") {
+                    (
+                        vec![
+                            Span::styled(
+                                "● Read",
+                                Style::default().fg(palette::READ_SUMMARY_TITLE),
+                            ),
+                            Span::styled(format!(" ({count}"), meta),
+                        ],
+                        "  ",
+                    )
+                } else if let Some(path_text) = text.strip_prefix("● Read · ") {
+                    (
+                        vec![
+                            Span::styled(
+                                "● Read",
+                                Style::default().fg(palette::READ_SUMMARY_TITLE),
+                            ),
+                            Span::styled(" · ", meta),
+                            Span::styled(path_text.to_owned(), path),
+                        ],
+                        "  ",
+                    )
+                } else if let Some((branch, path_text)) = text.split_once("─ ") {
+                    (
+                        vec![
+                            Span::styled(format!("{branch}─ "), meta),
+                            Span::styled(path_text.to_owned(), path),
+                        ],
+                        if branch.ends_with('├') {
+                            "  │  "
+                        } else {
+                            "     "
+                        },
+                    )
+                } else {
+                    (vec![Span::styled(text.to_owned(), path)], "     ")
+                };
+                lines.extend(
+                    wrap_block(
+                        Line::from(spans).style(Style::default().bg(palette::READ_SUMMARY_BG)),
+                        width,
+                        continuation,
+                    )
+                    .into_iter()
+                    .map(|line| LayoutLine {
+                        content: LayoutContent::Styled(line),
+                        height: 1,
+                    }),
+                );
+            }
         } else if !read && !self.kind.hides_title() && !matches!(self.body, EntryBody::Tips) {
             self.add_lines(Source::Title, &mut lines);
         }
@@ -574,6 +715,14 @@ impl TranscriptEntry {
             }
             let style = if bash {
                 Style::default().fg(MUTED_TEXT).bg(BASH_BACKGROUND)
+            } else if read {
+                Style::default()
+                    .fg(if self.status == EntryStatus::Failed {
+                        palette::REMOVED
+                    } else {
+                        palette::READ_TEXT
+                    })
+                    .bg(palette::READ_BG)
             } else {
                 Style::default().add_modifier(Modifier::DIM)
             };
@@ -616,12 +765,17 @@ impl TranscriptEntry {
             }));
         } else if let EntryBody::Diff(diff) = &self.body {
             lines.extend(
-                diff_layout(diff, width, self.expanded || self.display.full)
-                    .into_iter()
-                    .map(|line| LayoutLine {
-                        content: LayoutContent::Styled(line),
-                        height: 1,
-                    }),
+                diff_layout_styled(
+                    diff,
+                    width,
+                    self.expanded || self.display.full,
+                    edit.then(|| self.edit_path()),
+                )
+                .into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }),
             );
             if let Some(warning) = self.text.strip_prefix("Warning: ") {
                 lines.extend(
@@ -720,11 +874,14 @@ impl TranscriptEntry {
         if user {
             lines.push(border(Source::Padding));
         }
+        if edit {
+            lines.push(border(Source::Bottom));
+        }
         let mut height = 0;
         for line in &mut lines {
             line.height = if self.kind == EntryKind::Activity
                 // 边框行必须保持单行，窄宽度下标题按现有规则裁剪。
-                || (read && matches!(line.source(), Some(Source::Title)))
+                || ((read || edit) && matches!(line.source(), Some(Source::Title | Source::Bottom)))
                 || matches!(line.content, LayoutContent::Styled(_))
             {
                 1
@@ -743,7 +900,7 @@ impl TranscriptEntry {
         });
     }
 
-    fn read_summary(&self) -> String {
+    fn read_summary(&self, show_success: bool) -> String {
         let path = self
             .result
             .as_ref()
@@ -790,9 +947,10 @@ impl TranscriptEntry {
             })
             .unwrap_or_default();
         let status = match self.status {
-            EntryStatus::Running => "running",
-            EntryStatus::Complete => "ok",
-            EntryStatus::Failed => "failed",
+            EntryStatus::Running => " · running",
+            EntryStatus::Complete if show_success => " · ok",
+            EntryStatus::Complete => "",
+            EntryStatus::Failed => " · failed",
         };
         let truncated = if self
             .result
@@ -804,8 +962,7 @@ impl TranscriptEntry {
             ""
         };
         format!(
-            "{} Read · {}{range}{image} · {status}{truncated}",
-            palette::tool_icon("read"),
+            "● Read · {}{range}{image}{status}{truncated}",
             palette::display_text(path)
         )
     }
@@ -1428,7 +1585,7 @@ impl Transcript {
                 // 自动加载的 AGENTS 正文：独立完成的 Read 卡片，不注册 running_tools。
                 let mut entry = TranscriptEntry::new(
                     EntryKind::Read,
-                    format!("{} Read · AGENTS.md", palette::tool_icon("read")),
+                    "Read AGENTS.md".into(),
                     content,
                     Some("read".into()),
                 );
@@ -1619,7 +1776,7 @@ impl Transcript {
                 } else {
                     match detail {
                         Some(command) if name == "bash" => format!("$ {command}"),
-                        Some(path) if kind == EntryKind::Read => format!("Read · {path}"),
+                        Some(path) if kind == EntryKind::Read => format!("Read {path}"),
                         Some(path) => format!("{name} · {path}"),
                         None => name.clone(),
                     }
@@ -1629,7 +1786,7 @@ impl Transcript {
                 } else {
                     title
                 };
-                let title = if name == "bash" {
+                let title = if name == "bash" || kind == EntryKind::Read {
                     title
                 } else {
                     format!("{} {title}", palette::tool_icon(&name))
@@ -1704,11 +1861,7 @@ impl Transcript {
                                 .as_str()
                                 .filter(|source| !source.is_empty())
                             {
-                                entry.title = format!(
-                                    "{} Read · {}",
-                                    palette::tool_icon("read"),
-                                    palette::display_text(source)
-                                );
+                                entry.title = format!("Read {}", palette::display_text(source));
                             }
                         }
                         if entry.kind == EntryKind::Read
@@ -2095,7 +2248,7 @@ impl Transcript {
             entry.display = display;
             entry.layout = None;
         }
-        let padding = if compact {
+        let padding = if compact || entry.tool.as_deref() == Some("grep") || entry.is_file_read() {
             0
         } else if matches!(entry.kind, EntryKind::Bash | EntryKind::Read) {
             4
@@ -2147,9 +2300,9 @@ impl Transcript {
                 }
             }
             let title = if end - index > 1 {
-                let mut title = format!("{} Read ({})", palette::tool_icon("read"), end - index);
+                let mut title = format!("● Read ({})", end - index);
                 for (offset, entry) in self.entries[index..end].iter().enumerate() {
-                    let summary = entry.read_summary();
+                    let summary = entry.read_summary(false);
                     let path = summary
                         .split_once("Read · ")
                         .map_or(summary.as_str(), |(_, path)| path);
@@ -2164,7 +2317,7 @@ impl Transcript {
                 }
                 title
             } else {
-                self.entries[index].read_summary()
+                self.entries[index].read_summary(true)
             };
             for (offset, entry) in self.entries[index..end].iter_mut().enumerate() {
                 let hidden = offset > 0;
@@ -2222,9 +2375,20 @@ impl Transcript {
                 let height = (line.height - skip).min(usize::from(end - y)) as u16;
                 let bash = entry.kind == EntryKind::Bash;
                 let read = entry.kind == EntryKind::Read;
+                let edit = entry.is_edit();
+                let file_read = entry.is_file_read();
+                let grep = entry.tool.as_deref() == Some("grep");
                 let think = entry.kind == EntryKind::Think;
                 let background = if bash {
                     Some(BASH_BACKGROUND)
+                } else if edit {
+                    Some(palette::EDIT_BG)
+                } else if grep {
+                    Some(palette::GREP_BG)
+                } else if read {
+                    Some(palette::READ_BG)
+                } else if file_read {
+                    Some(palette::READ_SUMMARY_BG)
                 } else if matches!(entry.kind, EntryKind::Diff | EntryKind::Ask) {
                     Some(match entry.status {
                         EntryStatus::Running => palette::TOOL_PENDING_BG,
@@ -2272,14 +2436,22 @@ impl Transcript {
                             )
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
-                    } else if read {
+                    } else if read || edit {
                         let (left, right, horizontal, label) = match line.source() {
                             Some(Source::Title) => ("╭", "╮", true, ""),
                             Some(Source::Divider) => ("├", "┤", true, " Output "),
                             Some(Source::Bottom) => ("╰", "╯", true, ""),
                             _ => ("│", "│", false, ""),
                         };
-                        let style = Style::default().fg(palette::MUTED);
+                        let style = if edit {
+                            Style::default()
+                                .fg(palette::EDIT_BORDER)
+                                .bg(palette::EDIT_BG)
+                        } else {
+                            Style::default()
+                                .fg(palette::READ_BORDER)
+                                .bg(palette::READ_BG)
+                        };
                         if horizontal {
                             Span::styled("─".repeat(usize::from(area.width)), style)
                                 .render(Rect::new(area.x, row, area.width, 1), buffer);
@@ -2290,17 +2462,20 @@ impl Transcript {
                                 .render(Rect::new(area.right() - 1, row, 1, 1), buffer);
                         }
                         if !label.is_empty() && area.width > 4 {
-                            Span::styled(label, Style::default().fg(palette::MUTED))
-                                .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
+                            Span::styled(
+                                label,
+                                Style::default().fg(palette::READ_TEXT).bg(palette::READ_BG),
+                            )
+                            .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
                     } else if !think && entry.kind != EntryKind::Activity && background.is_none() {
                         Span::styled("│", Style::default().fg(entry.kind.color()))
                             .render(Rect::new(area.x, row, 1, 1), buffer);
                     }
                 }
-                let padding = if compact {
+                let padding = if compact || grep || file_read {
                     0
-                } else if bash || read {
+                } else if bash || read || (edit && matches!(line.source(), Some(Source::Title))) {
                     4
                 } else {
                     inset
@@ -2311,7 +2486,22 @@ impl Transcript {
                         Some(Source::Top | Source::Divider | Source::Bottom)
                     )
                 {
-                    let target = Rect::new(area.x + inset, y, area.width - padding, height);
+                    let target = Rect::new(
+                        area.x
+                            + if grep || file_read {
+                                0
+                            } else if edit
+                                && !compact
+                                && !matches!(line.source(), Some(Source::Title))
+                            {
+                                1
+                            } else {
+                                inset
+                            },
+                        y,
+                        area.width - padding,
+                        height,
+                    );
                     let paragraph = Paragraph::new(entry.line(line));
                     let paragraph = if matches!(line.content, LayoutContent::Source { .. }) {
                         paragraph.wrap(Wrap { trim: false })
@@ -2427,6 +2617,15 @@ fn diff_line_text(text: &str) -> (&str, &'static str) {
 }
 
 pub(super) fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Line<'static>> {
+    diff_layout_styled(diff, width, expanded, None)
+}
+
+fn diff_layout_styled(
+    diff: &FileDiff,
+    width: u16,
+    expanded: bool,
+    edit_path: Option<&str>,
+) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
     let FileDiff::Text {
         created,
@@ -2444,15 +2643,17 @@ pub(super) fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Li
         }
         unreachable!();
     };
-    rows.extend(wrap_block(
-        Line::from(vec![
-            Span::styled(format!("+{added}"), Style::default().fg(palette::ADDED)),
-            Span::raw(" "),
-            Span::styled(format!("-{removed}"), Style::default().fg(palette::REMOVED)),
-        ]),
-        width,
-        "",
-    ));
+    if edit_path.is_none() {
+        rows.extend(wrap_block(
+            Line::from(vec![
+                Span::styled(format!("+{added}"), Style::default().fg(palette::ADDED)),
+                Span::raw(" "),
+                Span::styled(format!("-{removed}"), Style::default().fg(palette::REMOVED)),
+            ]),
+            width,
+            "",
+        ));
+    }
     let summary_rows = rows.len();
     let total: usize = hunks.iter().map(|hunk| hunk.lines.len()).sum();
     if total == 0 {
@@ -2478,7 +2679,7 @@ pub(super) fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Li
         .max()
         .unwrap_or(0);
     let gutter = max_number.to_string().len().max(3);
-    let continuation = " ".repeat(gutter + 3);
+    let continuation = " ".repeat(gutter + if edit_path.is_some() { 2 } else { 3 });
     let mut shown = 0;
     for (hunk_index, hunk) in hunks.iter().enumerate() {
         if !expanded
@@ -2489,7 +2690,8 @@ pub(super) fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Li
         if hunk_index > 0 {
             rows.push(Line::styled("…", Style::default().fg(palette::DIM)));
         }
-        // A contiguous replacement run can contain otherwise indistinguishable EOL edits.
+        let highlights = edit_path.map(|_| super::edit_diff::highlights(&hunk.lines));
+        // 连续替换段中的行尾变化可能仅靠正文无法区分。
         let mut eol_hints = std::collections::HashSet::new();
         let mut start = 0;
         while start < hunk.lines.len() {
@@ -2537,18 +2739,54 @@ pub(super) fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Li
             shown += 1;
             let (text, eol) = diff_line_text(&line.text);
             let (mark, color, number) = match line.kind {
-                DiffLineKind::Added => ("+", palette::ADDED, line.new_line),
-                DiffLineKind::Removed => ("-", palette::REMOVED, line.old_line),
+                DiffLineKind::Added => (
+                    "+",
+                    if edit_path.is_some() {
+                        palette::EDIT_ADDED
+                    } else {
+                        palette::ADDED
+                    },
+                    line.new_line,
+                ),
+                DiffLineKind::Removed => (
+                    "-",
+                    if edit_path.is_some() {
+                        palette::EDIT_REMOVED
+                    } else {
+                        palette::REMOVED
+                    },
+                    line.old_line,
+                ),
                 DiffLineKind::Context => (" ", palette::MUTED, line.new_line),
             };
             let number = number.map(|number| number.to_string()).unwrap_or_default();
-            let mut spans = vec![
-                Span::styled(
-                    format!("{number:>gutter$} {mark} "),
-                    Style::default().fg(palette::DIM),
-                ),
-                Span::styled(text.to_owned(), Style::default().fg(color)),
-            ];
+            let mut spans = if let Some(path) = edit_path {
+                let mut spans = vec![Span::styled(
+                    format!("{mark}{number:>gutter$}│"),
+                    Style::default()
+                        .fg(if line.kind == DiffLineKind::Context {
+                            palette::EDIT_META
+                        } else {
+                            color
+                        })
+                        .bg(palette::EDIT_BG),
+                )];
+                spans.extend(super::edit_diff::spans(
+                    text,
+                    path,
+                    line.kind,
+                    highlights.as_ref().and_then(|ranges| ranges.get(&index)),
+                ));
+                spans
+            } else {
+                vec![
+                    Span::styled(
+                        format!("{number:>gutter$} {mark} "),
+                        Style::default().fg(palette::DIM),
+                    ),
+                    Span::styled(text.to_owned(), Style::default().fg(color)),
+                ]
+            };
             if text.starts_with('\u{feff}') {
                 spans.push(Span::styled("  BOM", Style::default().fg(palette::DIM)));
             }
@@ -2887,7 +3125,7 @@ mod tests {
         });
         let text = screen(&render(&mut transcript, 100, 30));
         assert!(
-            text.contains("Read (3)") && text.contains("one:20-21 · ok"),
+            text.contains("Read (3)") && text.contains("one:20-21") && !text.contains(" · ok"),
             "{text}"
         );
         transcript.progress(AgentEvent::ToolFinished {
@@ -2939,6 +3177,58 @@ mod tests {
             assert!(text.contains(expected), "{expected}: {text}");
         }
         assert!(!text.contains("Read ("), "{text}");
+    }
+
+    #[test]
+    fn read_summary_matches_reference_layout_colors_and_wrapping() {
+        let mut transcript = Transcript::new();
+        let files = [
+            ("src/tools.rs", 184, 707),
+            ("src/agent/plan_workflow.rs", 1, 315),
+            ("src/events.rs", 1, 170),
+            ("src/agent.rs", 1430, 1600),
+        ];
+        for (path, start, end) in files {
+            tool(&mut transcript, path, "read", json!({"path":path}));
+            transcript.progress(AgentEvent::ToolFinished {
+                id: path.into(),
+                result: json!({"ok":true,"source":path,"ranges":[{"start":start,"end":end}],"content":"retained body"}),
+            });
+        }
+        let buffer = render(&mut transcript, 80, 10);
+        let text = screen(&buffer);
+        assert_eq!(
+            text.lines().take(5).map(str::trim_end).collect::<Vec<_>>(),
+            [
+                "● Read (4)",
+                "  ├─ src/tools.rs:184-707",
+                "  ├─ src/agent/plan_workflow.rs:1-315",
+                "  ├─ src/events.rs:1-170",
+                "  └─ src/agent.rs:1430-1600",
+            ]
+        );
+        assert_eq!(buffer[(0, 0)].fg, palette::READ_SUMMARY_TITLE);
+        assert_eq!(buffer[(7, 0)].fg, palette::READ_SUMMARY_META);
+        for row in 0..5 {
+            for col in 0..80 {
+                assert_eq!(buffer[(col, row)].bg, palette::READ_SUMMARY_BG);
+                assert!(!buffer[(col, row)].modifier.contains(Modifier::BOLD));
+            }
+            if row > 0 {
+                assert_eq!(buffer[(2, row)].fg, palette::READ_SUMMARY_META);
+                assert_eq!(buffer[(5, row)].fg, palette::READ_SUMMARY_PATH);
+            }
+        }
+        let narrow = screen(&render(&mut transcript, 20, 20));
+        assert!(narrow.contains("  │  workflow.rs:1-3"), "{narrow}");
+        assert!(narrow.contains("  └─ src/agent.rs:14"), "{narrow}");
+        assert_eq!(transcript.entries.len(), 4);
+        assert!(
+            transcript
+                .entries
+                .iter()
+                .all(|entry| entry.text == "retained body")
+        );
     }
 
     #[test]
@@ -3251,8 +3541,17 @@ mod tests {
             }
         }
         let text = screen(&second);
-        assert_eq!(text.matches('╭').count(), 1, "{text}");
-        assert_eq!(text.matches('╰').count(), 1, "{text}");
+        // 只统计外围候选框；edit 卡片有自己的内嵌边框。
+        assert_eq!(
+            (0..60).filter(|&y| second[(0, y)].symbol() == "╭").count(),
+            1,
+            "{text}"
+        );
+        assert_eq!(
+            (0..60).filter(|&y| second[(0, y)].symbol() == "╰").count(),
+            1,
+            "{text}"
+        );
         let tool_rows = ranges[2].clone();
         let tool_text = (tool_rows.start..tool_rows.end)
             .map(|y| {
@@ -3378,20 +3677,20 @@ mod tests {
         transcript.progress(AgentEvent::ToolFinished { id: "edit-1".into(), result: serde_json::json!({"ok":true,"edits_applied":1,"bytes_written":4,"warning":"directory sync warning"}) });
         let buffer = render(&mut transcript, 100, 15);
         let text = screen(&buffer);
-        assert!(text.contains("+1 -1"), "{text}");
+        assert!(text.contains("+1/-1"), "{text}");
         assert!(text.contains("CRLF") && text.contains("LF"), "{text}");
         assert!(text.contains("directory sync warning"), "{text}");
         assert!(
             buffer
                 .content
                 .iter()
-                .any(|cell| cell.symbol() == "o" && cell.fg == palette::REMOVED)
+                .any(|cell| cell.symbol() == "o" && cell.fg == palette::EDIT_REMOVED)
         );
         assert!(
             buffer
                 .content
                 .iter()
-                .any(|cell| cell.symbol() == "o" && cell.fg == palette::ADDED)
+                .any(|cell| cell.symbol() == "o" && cell.fg == palette::EDIT_ADDED)
         );
         let mut old = Transcript::new();
         old.replay(
@@ -3414,6 +3713,75 @@ mod tests {
             "{old_screen}"
         );
         assert!(!old_screen.contains("+28 -0"));
+    }
+
+    #[test]
+    fn edit_card_reference_layout_colors_inline_changes_and_narrow_widths() {
+        use crate::events::{DiffHunk, DiffLine};
+        let mut transcript = Transcript::new();
+        tool(
+            &mut transcript,
+            "edit",
+            "edit",
+            json!({"path":"src/agent/read_tests.rs"}),
+        );
+        transcript.progress(AgentEvent::FileChanged {
+            id: "edit".into(),
+            path: "src/agent/read_tests.rs".into(),
+            diff: FileDiff::Text {
+                created: false, added: 2, removed: 1,
+                hunks: vec![DiffHunk { lines: vec![
+                    DiffLine { kind: DiffLineKind::Context, old_line: Some(162), new_line: Some(162), text: "        let document = crate::plan::PlanDocument::new().unwrap();\n".into() },
+                    DiffLine { kind: DiffLineKind::Added, old_line: None, new_line: Some(163), text: "        let execute_workflow = crate::plan::WorkflowState::default();\n".into() },
+                    DiffLine { kind: DiffLineKind::Context, old_line: Some(163), new_line: Some(164), text: "        for workflow in [\"execute\", \"plan\", \"review\"] {\n".into() },
+                    DiffLine { kind: DiffLineKind::Removed, old_line: Some(165), new_line: None, text: "                \"execute\" => crate::tools::ToolPolicy::Execute,\n".into() },
+                    DiffLine { kind: DiffLineKind::Added, old_line: None, new_line: Some(166), text: "                \"execute\" => crate::tools::ToolPolicy::Execute { workflow: &execute_workflow },\n".into() },
+                ] }],
+            },
+        });
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "edit".into(),
+            result: json!({"ok":true}),
+        });
+        let buffer = render(&mut transcript, 130, 12);
+        let text = screen(&buffer);
+        let rows: Vec<_> = text.lines().collect();
+        assert!(
+            rows[0].starts_with("╭─") && rows[0].ends_with('╮'),
+            "{text}"
+        );
+        assert!(
+            rows[0].contains("Edit:") && rows[0].contains("src/agent/read_tests.rs ⟨+2/-1⟩"),
+            "{text}"
+        );
+        assert!(rows[1].contains("162│        let document"), "{text}");
+        assert!(
+            rows[2].contains("+163│········let execute_workflow"),
+            "{text}"
+        );
+        assert!(rows[4].contains("-165│"), "{text}");
+        assert!(rows[6].starts_with('╰') && rows[6].ends_with('╯'), "{text}");
+        assert_eq!(buffer[(0, 0)].fg, palette::EDIT_BORDER);
+        assert_eq!(buffer[(4, 0)].fg, palette::EDIT_TITLE);
+        assert_eq!(buffer[(14, 1)].fg, palette::EDIT_KEYWORD);
+        assert_eq!(buffer[(6, 2)].fg, palette::EDIT_ADDED);
+        assert_eq!(buffer[(6, 2)].bg, palette::EDIT_BG);
+        let highlighted: String = (0..130)
+            .filter(|&x| buffer[(x, 5)].bg == palette::EDIT_ADDED)
+            .map(|x| buffer[(x, 5)].symbol())
+            .collect();
+        assert_eq!(highlighted, " { workflow: &execute_workflow }");
+        assert!(!text.contains(" · ok"));
+        for width in [1, 2, 3, 4, 8, 20, 60, 130] {
+            let buffer = render(&mut transcript, width, 100);
+            if width >= 8 {
+                let top = (0..buffer.area.height)
+                    .find(|&y| buffer[(0, y)].symbol() == "╭")
+                    .unwrap();
+                assert_eq!(buffer[(width - 1, top)].symbol(), "╮");
+                assert_eq!(buffer[(width - 1, top + 1)].symbol(), "│");
+            }
+        }
     }
 
     #[test]
@@ -3761,6 +4129,108 @@ mod tests {
     }
 
     #[test]
+    fn grep_reference_layout_colors_and_replay() {
+        let path = "/workspace/pi-coding-agent/src/tools/todo.ts";
+        let arguments =
+            json!({"pattern":"function applyEntry|function formatSummary", "path":path});
+        let result = json!({"ok":true,
+            "content":"[todo.ts#abc123]\n*399: function applyEntry() {\n...\n*481: function inferTodoOp() {\n*634: function formatSummary() {",
+            "details":{"matchCount":3,"fileCount":1,"scopePath":path,"fileMatches":[{"path":path,"count":3}]}});
+        for replay in [false, true] {
+            let events = vec![
+                AgentEvent::ToolStarted {
+                    id: "g".into(),
+                    name: "grep".into(),
+                    arguments: arguments.to_string(),
+                },
+                AgentEvent::ToolFinished {
+                    id: "g".into(),
+                    result: result.clone(),
+                },
+            ];
+            let mut transcript = Transcript::new();
+            if replay {
+                assert!(
+                    transcript
+                        .replay(
+                            events.into_iter().map(ReplayRecord::Event).collect(),
+                            &mut Vec::new()
+                        )
+                        .is_none()
+                );
+            } else {
+                for event in events {
+                    transcript.progress(event);
+                }
+            }
+            let buffer = render(&mut transcript, 100, 12);
+            let text = screen(&buffer);
+            let rows: Vec<_> = text.lines().map(str::trim_end).collect();
+            assert!(
+                rows[0].starts_with(&format!(
+                    "{} Grep: function applyEntry|function formatSummary 3 matches · 1 file · in",
+                    palette::tool_icon("grep")
+                )),
+                "{text}"
+            );
+            assert_eq!(rows[1], path);
+            assert_eq!(rows[2], "└─ *399| function applyEntry() {");
+            assert!(text.contains("   *634| function formatSummary() {"));
+            assert!(!text.contains("abc123") && !text.contains(" · ok"));
+            assert_eq!(buffer[(0, 0)].fg, palette::GREP_TITLE);
+            assert_eq!(buffer[(8, 0)].fg, palette::GREP_TEXT);
+            assert_eq!(buffer[(0, 1)].fg, palette::GREP_META);
+            assert_eq!(buffer[(0, 2)].fg, palette::GREP_TEXT);
+            for y in 0..6 {
+                assert_eq!(buffer[(99, y)].bg, palette::GREP_BG);
+                assert!(
+                    !buffer[(0, y)]
+                        .modifier
+                        .contains(Modifier::DIM | Modifier::BOLD)
+                );
+            }
+            assert_eq!(transcript.entries[0].result, Some(result.clone()));
+            for width in [1, 8, 40, 100] {
+                let buffer = render(&mut transcript, width, 100);
+                assert!(screen(&buffer).contains("G") || width == 1);
+            }
+        }
+    }
+
+    #[test]
+    fn grep_groups_keep_paths_notices_and_failures() {
+        let mut transcript = Transcript::new();
+        tool(&mut transcript, "g", "grep", json!({"pattern":"needle"}));
+        transcript.progress(AgentEvent::ToolFinished { id:"g".into(), result:json!({
+            "ok":true,"content":"# src/\n## a.rs#abc\n*1:needle one\n\n## nested/\n### b.rs#def\n*9|needle two\n\n[truncated by output limits]",
+            "details":{"matchCount":2,"fileCount":2,"scopePath":".","fileMatches":[{"path":"src/a.rs"},{"path":"src/nested/b.rs"}]}
+        })});
+        let preview = screen(&render(&mut transcript, 100, 20))
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(preview.contains("src/a.rs\n└─ *1|needle one"));
+        assert!(preview.contains("src/nested/b.rs\n└─ *9|needle two"));
+        transcript.toggle_tool_output();
+        assert!(screen(&render(&mut transcript, 100, 20)).contains("[truncated by output limits]"));
+        tool(&mut transcript, "failed", "grep", json!({"pattern":"bad"}));
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "failed".into(),
+            result: json!({"ok":false,"error":"cannot search path"}),
+        });
+        let buffer = render(&mut transcript, 100, 25);
+        let text = screen(&buffer);
+        assert!(text.contains("Grep: bad · failed") && text.contains("cannot search path"));
+        let row = text
+            .lines()
+            .position(|line| line.contains("cannot search path"))
+            .unwrap() as u16;
+        assert_eq!(buffer[(0, row)].fg, palette::REMOVED);
+        assert_eq!(buffer[(0, row)].bg, palette::GREP_BG);
+    }
+
+    #[test]
     fn streaming_category_colors_and_statuses_preserve_default_body() {
         for kind in [EntryKind::Grep, EntryKind::Data] {
             let mut transcript = Transcript::new();
@@ -3870,10 +4340,12 @@ mod tests {
                 }
                 for width in [80, 20, 80] {
                     let buffer = render(&mut transcript, width, 20);
+                    // 普通 Read 摘要以实心圆替代文件图标，仍保留两列前缀。
+                    let display_icon = if name == "read" { "●" } else { icon };
                     let row = (0..buffer.area.height)
                         .find_map(|row| {
                             (0..buffer.area.width)
-                                .find(|&column| buffer[(column, row)].symbol() == icon)
+                                .find(|&column| buffer[(column, row)].symbol() == display_icon)
                                 .map(|column| (column, row))
                         })
                         .unwrap_or_else(|| {
@@ -3885,6 +4357,10 @@ mod tests {
                             buffer[(row.0 + 2, row.1)].symbol(),
                             if name == "read" {
                                 "R".into()
+                            } else if name == "grep" {
+                                "G".into()
+                            } else if name == "edit" {
+                                "E".into()
                             } else {
                                 title[prefix.len()..].chars().next().unwrap().to_string()
                             }
@@ -4291,7 +4767,7 @@ mod tests {
             text.contains("skill-first") && text.contains("skill-fourth"),
             "{text}"
         );
-        assert!(text.contains("Read · skill://rust"));
+        assert!(text.contains("Read skill://rust"));
         assert!(text.contains("⟨Resolved path: /tmp/skills/rust/SKILL.md⟩"));
         assert_eq!(transcript.entries[1].kind, EntryKind::Read);
         assert!(!transcript.entries[1].hidden);
@@ -4305,6 +4781,82 @@ mod tests {
             .unwrap();
         let text = String::from_utf8_lossy(&output);
         assert!(text.contains("[file#A1B2]"));
+    }
+
+    #[test]
+    fn instruction_cards_match_reference_layout_and_colors() {
+        let content = "---\nname: rust\ndescription: >\n  Metadata description\n---\n\n# Rust guide\n\n**Important guidance**\nPlain text\nhidden line";
+        for skill in [false, true] {
+            let mut transcript = Transcript::new();
+            if skill {
+                tool(
+                    &mut transcript,
+                    "skill",
+                    "read",
+                    json!({"path":"skill://rust"}),
+                );
+                transcript.progress(AgentEvent::ToolFinished {
+                    id: "skill".into(),
+                    result: json!({"ok":true,"path":"/skills/rust/SKILL.md","content":content}),
+                });
+            } else {
+                transcript.progress(AgentEvent::ProjectInstructionsLoaded {
+                    path: "/project/AGENTS.md".into(),
+                    content: content.into(),
+                });
+            }
+            let buffer = render(&mut transcript, 80, 30);
+            let text = screen(&buffer);
+            assert!(
+                text.contains(if skill {
+                    "· Read skill://rust"
+                } else {
+                    "· Read AGENTS.md"
+                }),
+                "{text}"
+            );
+            assert!(
+                !text.contains("# Rust") && !text.contains("**Important"),
+                "{text}"
+            );
+            assert!(
+                text.contains("name: rust") && text.contains("description: >"),
+                "{text}"
+            );
+            assert!(text.contains("│   Metadata description"), "{text}");
+            assert!(!text.contains("hidden line"), "{text}");
+            assert_eq!(buffer[(0, 0)].fg, palette::READ_BORDER);
+            assert_eq!(buffer[(3, 0)].fg, palette::ADDED);
+            assert_eq!(buffer[(5, 0)].fg, palette::READ_TEXT);
+            let cell = |needle: &str| {
+                let row = text.lines().position(|line| line.contains(needle)).unwrap() as u16;
+                &buffer[(2, row)]
+            };
+            // 元数据保持逐行原文；正文标题与强调使用截图中的金色层次。
+            assert_eq!(cell("name: rust").fg, palette::READ_TEXT);
+            let heading_row = text
+                .lines()
+                .position(|line| line.contains("Rust guide"))
+                .unwrap() as u16;
+            assert_eq!(buffer[(2, heading_row)].fg, palette::READ_ACCENT);
+            assert!(
+                buffer[(2, heading_row)]
+                    .modifier
+                    .contains(Modifier::UNDERLINED)
+            );
+            assert_eq!(cell("Important guidance").fg, palette::READ_ACCENT);
+            assert_eq!(cell("Plain text").fg, palette::READ_TEXT);
+            assert!(!cell("Plain text").modifier.contains(Modifier::DIM));
+            assert_eq!(cell("more lines").fg, palette::DIM);
+            assert_eq!(cell("Resolved path").fg, palette::DIM);
+            assert_eq!(cell("Output").fg, palette::READ_TEXT);
+            for row in 0..=text.lines().position(|line| line.contains('╰')).unwrap() as u16 {
+                assert_eq!(buffer[(0, row)].bg, palette::READ_BG);
+                assert_eq!(buffer[(79, row)].bg, palette::READ_BG);
+            }
+            transcript.toggle_tool_output();
+            assert!(screen(&render(&mut transcript, 80, 30)).contains("hidden line"));
+        }
     }
 
     #[test]
@@ -4367,7 +4919,7 @@ mod tests {
             ]
         );
         let text = screen(&render(&mut transcript, 100, 60));
-        assert!(text.contains("Read · AGENTS.md"), "{text}");
+        assert!(text.contains("Read AGENTS.md"), "{text}");
         assert!(
             text.contains("agents-09") && !text.contains("agents-10"),
             "{text}"
@@ -4378,7 +4930,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Output"), "{text}");
-        assert!(text.contains("Read · skill://rust"), "{text}");
+        assert!(text.contains("Read skill://rust"), "{text}");
         assert!(
             text.contains("⟨Resolved path: /tmp/skills/rust/SKILL.md⟩"),
             "{text}"
@@ -4423,7 +4975,7 @@ mod tests {
         assert_eq!(transcript.entries[0].status, EntryStatus::Failed);
         assert!(transcript.entries[0].footer.is_empty());
         let text = screen(&render(&mut transcript, 100, 20));
-        assert!(text.contains("Read · skill://missing"), "{text}");
+        assert!(text.contains("Read skill://missing"), "{text}");
         assert!(text.contains("skill not found: missing"), "{text}");
         assert!(!text.contains("Resolved path"), "{text}");
 
@@ -4436,7 +4988,7 @@ mod tests {
         assert_eq!(transcript.entries[1].kind, EntryKind::Read);
         assert_eq!(transcript.entries[1].status, EntryStatus::Complete);
         let text = screen(&render(&mut transcript, 100, 40));
-        assert!(text.contains("Read · skill://late"), "{text}");
+        assert!(text.contains("Read skill://late"), "{text}");
         assert!(
             text.contains("⟨Resolved path: /skills/late/SKILL.md⟩"),
             "{text}"
@@ -4483,7 +5035,7 @@ mod tests {
         );
         assert!(error.is_none());
         let text = screen(&render(&mut transcript, 100, 30));
-        assert!(text.contains("Read · AGENTS.md"), "{text}");
+        assert!(text.contains("Read AGENTS.md"), "{text}");
         assert!(text.contains("recorded-body"), "{text}");
         assert!(text.contains("⟨Resolved path: /old/AGENTS.md⟩"), "{text}");
 
@@ -4506,7 +5058,7 @@ mod tests {
         let wide = tree_render(&mut transcript, &blocks, &[0], Some(0), true, 60, 12);
         let wide_text = screen(&wide);
         assert!(wide_text.contains("tree"), "{wide_text}");
-        assert!(wide_text.contains("Read · AGENTS.md"), "{wide_text}");
+        assert!(wide_text.contains("Read AGENTS.md"), "{wide_text}");
         let narrow = tree_render(&mut transcript, &blocks, &[0], Some(0), true, 2, 6);
         assert!(screen(&narrow).contains('t'));
 
@@ -4519,7 +5071,7 @@ mod tests {
         });
         transcript.append("Assistant", &"tail-line\n\n".repeat(40));
         let output = retire_native(&mut transcript, 60, 30, false);
-        assert!(output.contains("Read · AGENTS.md"), "{output}");
+        assert!(output.contains("Read AGENTS.md"), "{output}");
         assert_eq!(output.matches("native-body").count(), 1, "{output}");
         assert!(
             retire_native(&mut transcript, 60, 30, false)

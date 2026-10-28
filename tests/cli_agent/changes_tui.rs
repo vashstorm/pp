@@ -478,8 +478,8 @@ fn changes_tui_restart_and_resume_replay_diffs_but_never_restore_undo_snapshots(
             // These are the historical per-call diffs, not a reconstructed undo baseline.
             pty.wait_for("historical committed diff replayed", |screen| {
                 let text = screen.contents();
-                text.contains("  1 - agent-one")
-                    && text.contains("  1 + agent-final")
+                text.contains("-  1│agent-one")
+                    && text.contains("+  1│agent-final")
                     && text.contains("created")
                     && text.contains("Wrote 8 bytes")
                     && diff_blocks_screen_colored(screen, "agent-one", DIFF_BLOCKS_REMOVED)

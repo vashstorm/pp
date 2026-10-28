@@ -152,6 +152,150 @@ pub(super) fn is_skill_read(arguments: &Value, result: Option<&Value>) -> bool {
         })
 }
 
+pub(super) fn grep_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
+    let text = Style::default().fg(palette::GREP_TEXT).bg(palette::GREP_BG);
+    let meta = text.fg(palette::GREP_META);
+    let pattern = view.arguments["pattern"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            view.arguments["args"]
+                .as_array()
+                .map(|args| serde_json::to_string(args).expect("JSON values serialize"))
+                .unwrap_or_default()
+        });
+    let mut spans = vec![
+        Span::styled(
+            format!("{} Grep: ", palette::tool_icon("grep")),
+            text.fg(palette::GREP_TITLE),
+        ),
+        Span::styled(pattern, text),
+    ];
+    let details = view.result.map(|result| &result["details"]);
+    if view.failed {
+        spans.push(Span::styled(" · failed", text.fg(palette::REMOVED)));
+    } else if let Some((matches, files)) =
+        details.and_then(|d| Some((d["matchCount"].as_u64()?, d["fileCount"].as_u64()?)))
+    {
+        spans.push(Span::styled(
+            format!(
+                " {matches} {} · {files} {} · in ",
+                if matches == 1 { "match" } else { "matches" },
+                if files == 1 { "file" } else { "files" }
+            ),
+            meta,
+        ));
+    } else {
+        spans.push(Span::styled(
+            if view.running {
+                " · running · in "
+            } else {
+                " · in "
+            },
+            meta,
+        ));
+    }
+    let scope = details
+        .and_then(|d| {
+            (d["fileCount"] == 1)
+                .then(|| d["fileMatches"][0]["path"].as_str())
+                .flatten()
+        })
+        .or_else(|| details.and_then(|d| d["scopePath"].as_str()))
+        .or_else(|| view.arguments["path"].as_str())
+        .unwrap_or(".");
+    let mut header = Line::from(spans);
+    if !view.failed
+        && header.width() + Line::raw(palette::display_text(scope).as_ref()).width()
+            > usize::from(width)
+    {
+        let mut rows = wrap_block(header, width, "");
+        rows.extend(wrap([scope.to_owned()], width, meta));
+        rows
+    } else {
+        if !view.failed {
+            header.spans.push(Span::styled(scope.to_owned(), meta));
+        }
+        wrap_block(header, width, "")
+    }
+}
+
+fn grep_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default()
+        .fg(if view.failed {
+            palette::REMOVED
+        } else {
+            palette::GREP_TEXT
+        })
+        .bg(palette::GREP_BG);
+    let structured = view.result.is_some_and(|r| r["content"].is_string());
+    let details = view.result.map(|r| &r["details"]);
+    let single = details.is_some_and(|d| d["fileCount"] == 1);
+    let files = details.and_then(|d| d["fileMatches"].as_array());
+    let mut file_index = 0;
+    let mut first = true;
+    let mut lines = Vec::new();
+    for line in logical(view.text) {
+        if structured {
+            // 路径已在标题或文件分组中展示；hash anchor 仍保留在原始工具结果。
+            if single
+                && files.is_some()
+                && line.starts_with('[')
+                && line.ends_with(']')
+                && line.contains('#')
+            {
+                continue;
+            }
+            if files.is_some()
+                && let Some(heading) = line.strip_prefix('#')
+                && let Some((_, path)) = heading.trim_start_matches('#').split_once(' ')
+            {
+                if !path.ends_with('/') {
+                    let path = files
+                        .and_then(|files| files.get(file_index))
+                        .and_then(|file| file["path"].as_str())
+                        .unwrap_or(path);
+                    if !single {
+                        lines.push(path.to_owned());
+                    }
+                    file_index += 1;
+                    first = true;
+                }
+                continue;
+            }
+            if let Some(i) = line.find([':', '|'])
+                && i > 1
+                && matches!(line.as_bytes()[0], b'*' | b' ')
+                && line[1..i].bytes().all(|c| c.is_ascii_digit())
+            {
+                let branch = if first { "└─ " } else { "   " };
+                lines.push(format!("{branch}{}|{}", &line[..i], &line[i + 1..]));
+                first = false;
+                continue;
+            }
+        }
+        lines.push(line.to_owned());
+    }
+    let display = lines.join("\n");
+    if view.context.full {
+        wrap(lines, width, style)
+    } else {
+        head(
+            &display,
+            if view.expanded {
+                usize::MAX
+            } else {
+                GREP_LINES
+            },
+            true,
+            true,
+            width,
+            style,
+            MoreHint::Expand("items"),
+        )
+    }
+}
+
 pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static>> {
     let expanded = view.expanded || view.context.full;
     let text = view.text;
@@ -159,6 +303,30 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
         // 静态完整清单卡必须先于 full/失败提前返回：
         // Ctrl+O、native scrollback 与 replay 都走同一条结构化完整渲染。
         return todo_body(&view, width);
+    }
+    if view.name == "grep" {
+        return grep_body(&view, width);
+    }
+    if view.instruction_read && !view.failed {
+        let source = logical(text);
+        let shown = if expanded {
+            source.len()
+        } else {
+            source.len().min(INSTRUCTION_LINES)
+        };
+        let mut rows =
+            super::markdown::parse_instruction(&source[..shown].join("\n")).layout(width);
+        for line in &mut rows {
+            line.style = Style::default().fg(palette::READ_TEXT).bg(palette::READ_BG);
+        }
+        if shown < source.len() {
+            rows.extend(wrap(
+                [hint(source.len() - shown, MoreHint::Expand("lines"))],
+                width,
+                Style::default().fg(palette::DIM).bg(palette::READ_BG),
+            ));
+        }
+        return rows;
     }
     if view.context.full {
         let text = if view.name == "write" && !view.failed {
@@ -183,22 +351,6 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     }
     match view.name {
         "read" => {
-            if view.instruction_read {
-                // 指令卡片始终展示预览，不受 read.toolResultPreview 影响。
-                return head(
-                    text,
-                    if expanded {
-                        usize::MAX
-                    } else {
-                        INSTRUCTION_LINES
-                    },
-                    false,
-                    false,
-                    width,
-                    style,
-                    MoreHint::Expand("lines"),
-                );
-            }
             if !view.context.read_preview && !is_skill_read(view.arguments, view.result) {
                 return Vec::new();
             }
@@ -210,41 +362,6 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                 width,
                 style,
                 MoreHint::Expand("lines"),
-            )
-        }
-        "grep" => {
-            let display = if view
-                .result
-                .is_some_and(|result| result["content"].is_string())
-            {
-                logical(text)
-                    .into_iter()
-                    .map(|line| {
-                        let split = line.find([':', '|']);
-                        match split {
-                            Some(i)
-                                if i > 1
-                                    && matches!(line.as_bytes()[0], b'*' | b' ')
-                                    && line[1..i].bytes().all(|c| c.is_ascii_digit()) =>
-                            {
-                                format!("{} │ {}", &line[..i], &line[i + 1..])
-                            }
-                            _ => line.to_owned(),
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            } else {
-                text.to_owned()
-            };
-            head(
-                &display,
-                if expanded { usize::MAX } else { GREP_LINES },
-                true,
-                true,
-                width,
-                style,
-                MoreHint::Expand("items"),
             )
         }
         "glob" => {

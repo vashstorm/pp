@@ -15,6 +15,29 @@ pub(super) const TOOL_SUCCESS_BG: Color = Color::Rgb(22, 26, 31);
 pub(super) const TOOL_ERROR_BG: Color = Color::Rgb(41, 29, 29);
 pub(super) const ASK_BG: Color = Color::Rgb(40, 42, 54);
 pub(super) const ASK_BORDER: Color = Color::Rgb(39, 135, 165);
+pub(super) const READ_BG: Color = Color::Rgb(22, 26, 31);
+pub(super) const READ_BORDER: Color = Color::Rgb(76, 85, 98);
+pub(super) const READ_TEXT: Color = Color::Rgb(190, 190, 185);
+pub(super) const READ_ACCENT: Color = Color::Rgb(204, 153, 51);
+pub(super) const READ_SUMMARY_BG: Color = Color::Rgb(40, 42, 53);
+pub(super) const READ_SUMMARY_TITLE: Color = Color::Rgb(248, 248, 243);
+pub(super) const READ_SUMMARY_PATH: Color = Color::Rgb(244, 191, 84);
+pub(super) const READ_SUMMARY_META: Color = Color::Rgb(96, 102, 114);
+pub(super) const GREP_BG: Color = Color::Rgb(40, 42, 53);
+pub(super) const GREP_TITLE: Color = Color::Rgb(212, 212, 212);
+pub(super) const GREP_TEXT: Color = Color::Rgb(120, 125, 135);
+pub(super) const GREP_META: Color = Color::Rgb(96, 102, 114);
+pub(super) const EDIT_BG: Color = Color::Rgb(23, 26, 31);
+pub(super) const EDIT_BORDER: Color = Color::Rgb(62, 66, 73);
+pub(super) const EDIT_TITLE: Color = Color::Rgb(244, 191, 84);
+pub(super) const EDIT_TEXT: Color = Color::Rgb(248, 248, 243);
+pub(super) const EDIT_META: Color = Color::Rgb(120, 125, 135);
+pub(super) const EDIT_ADDED: Color = Color::Rgb(153, 208, 137);
+pub(super) const EDIT_REMOVED: Color = Color::Rgb(232, 76, 82);
+pub(super) const EDIT_KEYWORD: Color = Color::Rgb(103, 154, 209);
+pub(super) const EDIT_TYPE: Color = Color::Rgb(170, 218, 250);
+pub(super) const EDIT_STRING: Color = Color::Rgb(197, 148, 124);
+pub(super) const EDIT_NUMBER: Color = Color::Rgb(220, 220, 175);
 
 // 统一使用 Nerd Font Font Awesome 单列字形；加一列空白为图标预留两列。
 pub(super) fn tool_icon(name: &str) -> &'static str {
