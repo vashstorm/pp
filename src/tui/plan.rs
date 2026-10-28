@@ -26,9 +26,8 @@ const ACTIONS: [&str; 6] = [
 ];
 /// 打开完整审阅面板时直接聚焦操作区，默认选中第一项可用操作。
 const DEFAULT_ACTION: usize = 0;
-const HINT: &str =
-    "↑↓ choose · Enter run/send · Tab focus · ←→ body tabs · Esc chat · Esc Esc tree";
-const READONLY_HINT: &str = "Read-only view · ←→ tabs · PgUp/PgDn scroll · Esc close";
+const HINT: &str = "↑↓ choose · Enter run/send · Tab actions/input/body · ←→ tabs · Esc close";
+const READONLY_HINT: &str = "Read-only view · most recently synced version · Esc close";
 const DISCUSS_HINT: &str = "Enter send · Ctrl + J newline · Esc discard";
 
 /// 按字符数截断纯显示文本，超宽时以省略号结尾。
@@ -65,14 +64,12 @@ pub(super) enum Action {
     SaveAndLeave,
     EditInput(KeyEvent),
     DiscussInput,
-    ScrollConversation(KeyEvent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Plan,
     Review,
-    Conversation,
 }
 
 impl Tab {
@@ -80,15 +77,13 @@ impl Tab {
         match self {
             Tab::Plan => 0,
             Tab::Review => 1,
-            Tab::Conversation => 2,
         }
     }
 
-    fn next(self, forward: bool, has_report: bool) -> Self {
-        match (self, forward, has_report) {
-            (Tab::Plan, true, true) | (Tab::Conversation, false, true) => Tab::Review,
-            (Tab::Plan, _, _) | (Tab::Review, true, _) => Tab::Conversation,
-            _ => Tab::Plan,
+    fn toggled(self) -> Self {
+        match self {
+            Tab::Plan => Tab::Review,
+            Tab::Review => Tab::Plan,
         }
     }
 }
@@ -107,9 +102,9 @@ pub(super) struct Panel {
     tab: Tab,
     focus: Focus,
     action: usize,
-    scroll: [usize; 3],
+    scroll: [usize; 2],
     // (宽度, 布局缓存)；仅在宽度或正文变化时重建，不在每帧重排版。
-    layouts: [Option<(u16, Vec<Line<'static>>)>; 3],
+    layouts: [Option<(u16, Vec<Line<'static>>)>; 2],
     discussion: Option<TextArea<'static>>,
     viewport: usize,
 }
@@ -134,8 +129,8 @@ impl Panel {
             tab: Tab::Plan,
             focus: Focus::Body,
             action: DEFAULT_ACTION,
-            scroll: [0; 3],
-            layouts: [None, None, None],
+            scroll: [0; 2],
+            layouts: [None, None],
             discussion: None,
             viewport: 0,
         }
@@ -176,10 +171,6 @@ impl Panel {
 
     pub(super) fn input_focused(&self) -> bool {
         self.focus == Focus::Input && self.discussion.is_none()
-    }
-
-    pub(super) fn conversation_visible(&self) -> bool {
-        self.tab == Tab::Conversation && self.discussion.is_none()
     }
 
     fn border_color(&self, focus: Focus) -> Color {
@@ -291,13 +282,12 @@ impl Panel {
             // Esc 仅关闭面板：不降级、不执行，保留模式与正文。
             return Action::Close;
         }
-        if (self.focus == Focus::Body || (self.focus == Focus::Actions && self.report.is_some()))
+        if self.focus != Focus::Input
+            && self.report.is_some()
             && key.modifiers.is_empty()
             && matches!(key.code, KeyCode::Left | KeyCode::Right)
         {
-            self.tab = self
-                .tab
-                .next(key.code == KeyCode::Right, self.report.is_some());
+            self.tab = self.tab.toggled();
             return Action::None;
         }
         if self.focus != Focus::Input
@@ -341,14 +331,6 @@ impl Panel {
     }
 
     fn body_key(&mut self, key: KeyEvent) -> Action {
-        if self.tab == Tab::Conversation
-            && matches!(
-                key.code,
-                KeyCode::PageUp | KeyCode::PageDown | KeyCode::Up | KeyCode::Down
-            )
-        {
-            return Action::ScrollConversation(key);
-        }
         match key.code {
             KeyCode::PageUp => {
                 self.scroll_page(false);
@@ -358,6 +340,10 @@ impl Panel {
             }
             KeyCode::Up => self.scroll_by(false, 1),
             KeyCode::Down => self.scroll_by(true, 1),
+            KeyCode::Left | KeyCode::Right if self.report.is_some() => {
+                // 左右键切换 Plan/Review 标签；各自保留滚动位置。
+                self.tab = self.tab.toggled();
+            }
             _ => {}
         }
         Action::None
@@ -447,8 +433,8 @@ impl Panel {
         message
     }
 
-    pub(super) fn wheel(&mut self, down: bool, lines: usize) {
-        self.scroll_by(down, lines);
+    pub(super) fn wheel(&mut self, up: bool, lines: usize) {
+        self.scroll_by(up, lines);
     }
 
     fn scroll_by(&mut self, down: bool, lines: usize) {
@@ -473,7 +459,6 @@ impl Panel {
                 Some(report) => &report.content,
                 None => return &[],
             },
-            Tab::Conversation => return &[],
         };
         let slot = &mut self.layouts[tab.index()];
         if slot.as_ref().is_none_or(|(cached, _)| *cached != width) {
@@ -495,15 +480,9 @@ impl Panel {
         }
     }
 
-    /// 返回对话正文区域，由 App 借用现有 Transcript 绘制，避免复制历史。
-    pub(super) fn draw(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        progress: (usize, usize),
-    ) -> Option<Rect> {
+    pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect, progress: (usize, usize)) {
         if area.width < 6 || area.height < 3 {
-            return None;
+            return;
         }
         let has_actions = self.token.is_some() && !self.readonly();
         let actions_height = if has_actions && area.height >= 7 {
@@ -587,14 +566,15 @@ impl Panel {
             body.height -= 1;
         }
 
-        // 对话使用原 Transcript，计划与审查仍保留各自的布局和滚动位置。
-        if body.height > 0 {
-            let mut tabs = vec![choice_span("Plan", self.tab == Tab::Plan)];
-            if self.report.is_some() {
-                tabs.push(choice_span("Review", self.tab == Tab::Review));
-            }
-            tabs.push(choice_span("Conversation", self.tab == Tab::Conversation));
-            frame.render_widget(Line::from(tabs), Rect::new(body.x, body.y, body.width, 1));
+        // 报告标签行；没有报告时不占用行高。
+        if self.report.is_some() && body.height > 0 {
+            frame.render_widget(
+                Line::from(vec![
+                    choice_span("Plan", self.tab == Tab::Plan),
+                    choice_span("Review", self.tab == Tab::Review),
+                ]),
+                Rect::new(body.x, body.y, body.width, 1),
+            );
             body.y += 1;
             body.height -= 1;
         }
@@ -649,7 +629,6 @@ impl Panel {
         if self.discussion.is_some() {
             self.draw_discussion(frame, area);
         }
-        self.conversation_visible().then_some(body)
     }
 
     fn draw_actions(&self, frame: &mut Frame, area: Rect) {
@@ -784,9 +763,7 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, height)).unwrap();
         terminal
-            .draw(|frame| {
-                panel.draw(frame, frame.area(), (0, 1));
-            })
+            .draw(|frame| panel.draw(frame, frame.area(), (0, 1)))
             .unwrap();
         let buffer = terminal.backend().buffer();
         (0..height)
