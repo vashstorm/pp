@@ -12,7 +12,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders},
+    widgets::{Block, BorderType, Borders, Clear},
 };
 use ratatui_textarea::TextArea;
 
@@ -697,6 +697,7 @@ impl Panel {
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ));
         let inner = block.inner(area);
+        frame.render_widget(Clear, area);
         frame.render_widget(block, area);
         let Some(editor) = &self.discussion else {
             return;
