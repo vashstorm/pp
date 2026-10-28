@@ -30,12 +30,13 @@ pub(super) fn tool_icon(name: &str) -> &'static str {
         "plan_find" => "\u{f14e}",
         "plan_write" => "\u{f0cb}",
         "plan_submit" => "\u{f00c}",
+        "todo" => "\u{f0ae}",
         name if name.starts_with("mcp__") => "\u{f1e6}",
         _ => "\u{f12e}",
     }
 }
 
-pub(super) fn display_text(text: &str) -> Cow<'_, str> {
+pub(crate) fn display_text(text: &str) -> Cow<'_, str> {
     fn unsafe_control(c: char) -> bool {
         (c <= '\u{1f}' && c != '\n' && c != '\t') || c == '\u{7f}'
     }

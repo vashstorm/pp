@@ -22,6 +22,7 @@ pp is a Pi-style terminal coding agent written in Rust. It lets models read proj
 | --- | --- |
 | **Terminal interaction** | Streaming text, reasoning, and tool output in a TUI, one-shot tasks, or piped input |
 | **Planning and execution** | Plan research, review, and explicit approval, with an ask panel for key decisions; `/plan-list` manages saved plans across drafts, plans, and done |
+| **Todo tracking** | Standalone task lists, read-only draft previews, approved-plan checkbox synchronization, and bounded completion reminders |
 | **Task control** | Add instructions while a task runs, queue follow-up tasks, and press Esc to cancel |
 | **Sessions and changes** | Automatic saving and restoration, session tree navigation, and recent-task diffs with safe undo |
 | **Extensions on demand** | Project `AGENTS.md`, skills, Markdown prompt commands, and local stdio MCP tools |

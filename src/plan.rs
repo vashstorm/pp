@@ -1,5 +1,9 @@
+use std::ops::Range;
+
 use anyhow::{Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
+
+use crate::tools::todo::TodoPhase;
 
 pub(crate) const PLAN_MAX_BYTES: usize = 262_144;
 
@@ -95,6 +99,15 @@ pub(crate) struct WorkflowState {
     pub plan: Option<PlanDocument>,
     #[serde(default)]
     pub review: Option<PlanReviewReport>,
+    /// 计划派生的阶段/任务投影缓存，同时是 active/blocked 运行态载体；
+    /// Markdown 始终是任务与勾选的主记录，这里不是竞争的第二主记录。
+    /// 空时省略，旧会话记录靠 serde default 兼容，checkpoint 格式不升版。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todos: Vec<TodoPhase>,
+    /// None 表示普通清单；Some(id) 表示当前清单来自该计划的派生投影，
+    /// 必须与当前绑定的 plan.id 一致。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_plan_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,6 +351,11 @@ impl WorkflowState {
                 "{invalid}"
             );
         }
+        // 计划来源的 todo 必须仍绑定当前计划；普通清单不需要来源。
+        if let Some(id) = &self.todo_plan_id {
+            let plan = self.plan.as_ref().ok_or_else(|| anyhow::anyhow!(invalid))?;
+            ensure!(*id == plan.id, "{invalid}");
+        }
         if let Some(report) = &self.review {
             let plan = self.plan.as_ref().ok_or_else(|| anyhow::anyhow!(invalid))?;
             ensure!(
@@ -362,62 +380,107 @@ impl WorkflowState {
     }
 }
 
-/// 一个真实 Markdown 任务项：去掉 checkbox 标记后的首段正文及勾选状态。
+/// 一个真实 Markdown 任务项：去掉 checkbox 标记后的首段正文及勾选状态，
+/// 以及所属阶段与源文件中的 checkbox 标记位置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlanTask {
     pub text: String,
     pub completed: bool,
+    /// 所属 H2 阶段的完整显示文本；未归属 H2（文档开头或 H1 重置后）为
+    /// `Tasks`。H3-H6 标题继承当前 H2。
+    pub phase: String,
+    /// 物理阶段区域序号：每个 H1/H2 标题都开启新区域，重复标题不合并；
+    /// 仅用于按物理区域分组，不序列化为任务 ID。
+    pub phase_index: usize,
+    /// 源文件中 TaskListMarker 的字节区间；起点在 checkbox 的 `[` 之前
+    /// （可能含少量前导空白），终点在 `]` 之后。回写时必须在区间内定位
+    /// 唯一标准 checkbox，不能假定整个区间就是 checkbox。
+    pub marker: Range<usize>,
 }
 
 /// 按正文出现顺序提取全部真实任务项，与 `task_progress` 共用 pulldown-cmark
-/// 的 task list 解析，因此围栏示例不计数；说明、普通子项目符号不成为任务。
-/// 松散列表取项内首个段落，紧凑列表取 marker 后到该项首个换行为止。
+/// 的 task list 解析（含源位置），因此围栏示例不计数；说明、普通子项目符号
+/// 不成为任务。松散列表取项内首个段落，紧凑列表取 marker 后到该项首个换行
+/// 为止。同一次遍历捕获 H2 阶段标题（ATX 与 setext 均可）：H1 重置阶段，
+/// H3-H6 继承当前 H2，未归属 H2 的任务归入 `Tasks`；每个新的阶段区域有新的
+/// `phase_index`，重复标题不合并、不重排文档任务。
 pub(crate) fn plan_tasks(content: &str) -> Vec<PlanTask> {
-    use pulldown_cmark::{Event, Tag, TagEnd};
+    use pulldown_cmark::{Event, HeadingLevel, Tag, TagEnd};
     let parser =
-        pulldown_cmark::Parser::new_ext(content, pulldown_cmark::Options::ENABLE_TASKLISTS);
+        pulldown_cmark::Parser::new_ext(content, pulldown_cmark::Options::ENABLE_TASKLISTS)
+            .into_offset_iter();
     let mut tasks = Vec::new();
     // (任务, 是否已进入段落)
     let mut open: Option<(PlanTask, bool)> = None;
-    for event in parser {
+    let mut phase = String::from("Tasks");
+    let mut phase_index = 0usize;
+    // 打开的标题内已聚合的显示文本。
+    let mut heading: Option<String> = None;
+    for (event, range) in parser {
         if let Some((task, in_paragraph)) = &mut open {
-            let keep = match &event {
+            match &event {
                 Event::Text(text) | Event::Code(text) => {
                     task.text.push_str(text);
-                    true
+                    continue;
                 }
                 Event::SoftBreak | Event::HardBreak if *in_paragraph => {
                     task.text.push(' ');
-                    true
+                    continue;
                 }
                 Event::Start(Tag::Paragraph) if task.text.is_empty() => {
                     *in_paragraph = true;
-                    true
+                    continue;
                 }
                 Event::Start(
                     Tag::Emphasis | Tag::Strong | Tag::Strikethrough | Tag::Link { .. },
                 )
                 | Event::End(
                     TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link,
-                ) => true,
-                _ => false,
-            };
-            if keep {
-                continue;
+                ) => continue,
+                _ => {}
             }
             if let Some((mut task, _)) = open.take() {
                 task.text = task.text.trim().to_owned();
                 tasks.push(task);
             }
         }
-        if let Event::TaskListMarker(completed) = event {
-            open = Some((
-                PlanTask {
-                    text: String::new(),
-                    completed,
-                },
-                false,
-            ));
+        match event {
+            Event::TaskListMarker(completed) => {
+                open = Some((
+                    PlanTask {
+                        text: String::new(),
+                        completed,
+                        phase: phase.clone(),
+                        phase_index,
+                        marker: range,
+                    },
+                    false,
+                ));
+            }
+            Event::Start(Tag::Heading { .. }) => {
+                heading = Some(String::new());
+            }
+            Event::Text(text) | Event::Code(text) => {
+                if let Some(heading_text) = &mut heading {
+                    heading_text.push_str(&text);
+                }
+            }
+            Event::End(TagEnd::Heading(level)) => {
+                if let Some(heading_text) = heading.take() {
+                    match level {
+                        HeadingLevel::H1 => {
+                            phase_index += 1;
+                            phase = "Tasks".to_string();
+                        }
+                        HeadingLevel::H2 => {
+                            phase_index += 1;
+                            phase = heading_text.trim().to_owned();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
         }
     }
     if let Some((mut task, _)) = open {
@@ -425,6 +488,76 @@ pub(crate) fn plan_tasks(content: &str) -> Vec<PlanTask> {
         tasks.push(task);
     }
     tasks
+}
+
+/// 将任务勾选状态回写到源正文：仅对状态变化的任务，在其 marker 源区间内
+/// 定位唯一标准 checkbox（`[ ]`/`[x]`/`[X]`），验证旧状态与解析状态一致后
+/// 修改中间一个 ASCII 字节。任务与勾选向量长度不一致、区间越界、区间内没有
+/// 或出现多个标准 checkbox、或旧状态与解析状态不符（stale）时返回错误，不做
+/// 任何位置猜测。全部无变化返回 `None`，不复制正文；有变化只复制一次，保留
+/// CRLF、缩进、列表符号、内联 Markdown、代码围栏及所有其他字节。
+pub(crate) fn patch_task_checks(
+    content: &str,
+    tasks: &[PlanTask],
+    checked: &[bool],
+) -> Result<Option<String>> {
+    ensure!(
+        tasks.len() == checked.len(),
+        "Checked vector length {} does not match {} parsed tasks.",
+        checked.len(),
+        tasks.len()
+    );
+    let mut edits: Vec<(usize, u8)> = Vec::new();
+    for (index, (task, &checked)) in tasks.iter().zip(checked).enumerate() {
+        if task.completed == checked {
+            continue;
+        }
+        let marker = content.get(task.marker.clone()).ok_or_else(|| {
+            anyhow!(
+                "Task {index} marker range {:?} is out of bounds.",
+                task.marker
+            )
+        })?;
+        let bytes = marker.as_bytes();
+        let mut found: Option<usize> = None;
+        for offset in 0..bytes.len().saturating_sub(2) {
+            if bytes[offset] == b'['
+                && bytes[offset + 2] == b']'
+                && matches!(bytes[offset + 1], b' ' | b'x' | b'X')
+            {
+                ensure!(
+                    found.is_none(),
+                    "Task {index} marker range {:?} contains multiple checkboxes.",
+                    task.marker
+                );
+                found = Some(offset);
+            }
+        }
+        let offset = found.ok_or_else(|| {
+            anyhow!(
+                "Task {index} marker range {:?} contains no standard checkbox.",
+                task.marker
+            )
+        })?;
+        ensure!(
+            (bytes[offset + 1] != b' ') == task.completed,
+            "Task {index} marker is stale; re-parse the plan before patching."
+        );
+        edits.push((
+            task.marker.start + offset + 1,
+            if checked { b'x' } else { b' ' },
+        ));
+    }
+    if edits.is_empty() {
+        return Ok(None);
+    }
+    let mut bytes = content.as_bytes().to_vec();
+    for (position, byte) in edits {
+        bytes[position] = byte;
+    }
+    Ok(Some(
+        String::from_utf8(bytes).expect("only ASCII checkbox state bytes were replaced"),
+    ))
 }
 
 pub(crate) fn task_progress(content: &str) -> (usize, usize) {
@@ -444,6 +577,95 @@ pub(crate) fn task_progress(content: &str) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::todo::{TodoItem, TodoStatus};
+
+    #[test]
+    fn todo_workflow_fields_stay_backward_compatible_in_serde() {
+        // 旧会话记录没有 todo 字段：serde default 补齐为空，checkpoint 不升版。
+        let legacy: WorkflowState =
+            serde_json::from_str(r#"{"mode":"execute","plan":null}"#).unwrap();
+        assert_eq!(legacy, WorkflowState::default());
+        assert!(legacy.todos.is_empty());
+        assert_eq!(legacy.todo_plan_id, None);
+
+        // 空投影不写入保存的 workflow 快照。
+        let text = serde_json::to_string(&WorkflowState::default()).unwrap();
+        assert!(!text.contains("todos"));
+        assert!(!text.contains("todo_plan_id"));
+
+        // 非空投影与来源完整往返。
+        let planned = WorkflowState {
+            todos: vec![TodoPhase {
+                name: "Write".into(),
+                tasks: vec![TodoItem {
+                    content: "A".into(),
+                    status: TodoStatus::InProgress,
+                    blocker: None,
+                }],
+            }],
+            todo_plan_id: Some("0123456789abcdef0123456789abcdef".into()),
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&planned).unwrap();
+        assert!(text.contains("todos") && text.contains("todo_plan_id"));
+        assert_eq!(
+            serde_json::from_str::<WorkflowState>(&text).unwrap(),
+            planned
+        );
+    }
+
+    #[test]
+    fn todo_plan_source_validation_requires_current_plan_binding() {
+        let mut plan = PlanDocument::new().unwrap();
+        plan.revision = 1;
+        plan.title = "Title".into();
+        plan.content = "- [ ] task".into();
+        plan.origin_prompt = "task".into();
+        plan.status = PlanStatus::Executed;
+        plan.location = PlanLocation::Plans;
+        let base = WorkflowState {
+            mode: WorkMode::Execute,
+            plan: Some(plan.clone()),
+            ..Default::default()
+        };
+        base.validate().unwrap();
+
+        // 与当前 plan.id 一致的来源合法；投影条目可有可无。
+        let mut bound = base.clone();
+        bound.todo_plan_id = Some(plan.id.clone());
+        bound.validate().unwrap();
+        bound.todos = vec![TodoPhase {
+            name: "Write".into(),
+            tasks: vec![TodoItem {
+                content: "task".into(),
+                status: TodoStatus::InProgress,
+                blocker: None,
+            }],
+        }];
+        bound.validate().unwrap();
+
+        // 来源与当前计划不一致拒绝。
+        let mut wrong = bound.clone();
+        wrong.todo_plan_id = Some("ffffffffffffffffffffffffffffffff".into());
+        assert!(wrong.validate().is_err());
+
+        // 有来源但未绑定计划拒绝。
+        let mut detached = bound;
+        detached.plan = None;
+        assert!(detached.validate().is_err());
+
+        // 无来源的普通清单合法。
+        let mut ordinary = base;
+        ordinary.todos = vec![TodoPhase {
+            name: "Tasks".into(),
+            tasks: vec![TodoItem {
+                content: "standalone".into(),
+                status: TodoStatus::Pending,
+                blocker: None,
+            }],
+        }];
+        ordinary.validate().unwrap();
+    }
 
     #[test]
     fn plan_progress_ignores_code_examples_and_counts_real_tasks() {
@@ -468,7 +690,7 @@ mod tests {
         let mut workflow = WorkflowState {
             mode: WorkMode::Plan,
             plan: Some(plan),
-            review: None,
+            ..Default::default()
         };
         workflow.validate().unwrap();
         workflow.mode = WorkMode::Execute;
@@ -557,7 +779,7 @@ mod tests {
         let workflow = |plan: PlanDocument| WorkflowState {
             mode: WorkMode::Plan,
             plan: Some(plan),
-            review: None,
+            ..Default::default()
         };
         // Draft/Ready 在 Drafts 或 Plans（旧记录）。
         for location in [PlanLocation::Drafts, PlanLocation::Plans] {
@@ -604,28 +826,155 @@ mod task_tests {
     fn plan_tasks_extract_marker_text_in_order_and_ignore_prose_and_fences() {
         let body = "# Plan title\n\nIntro with [ ] text.\n\n```md\n- [ ] fenced example\n```\n\n## Phase one\n- [ ] Create the file; done when bytes match.\n  - Location: src/a.rs\n  - Acceptance: read-back equals input\n- [x] **Verify** `behavior` end to end.\n  - [ ] nested child action\n\n## Phase two\n- [ ] Loose item first paragraph.\n\n  Second paragraph is not the task text.\n";
         let tasks = plan_tasks(body);
+        fn summary(items: &[PlanTask]) -> Vec<(&str, bool, &str)> {
+            items
+                .iter()
+                .map(|task| (task.text.as_str(), task.completed, task.phase.as_str()))
+                .collect::<Vec<_>>()
+        }
         assert_eq!(
-            tasks,
+            summary(&tasks),
             vec![
-                PlanTask {
-                    text: "Create the file; done when bytes match.".into(),
-                    completed: false
-                },
-                PlanTask {
-                    text: "Verify behavior end to end.".into(),
-                    completed: true
-                },
-                PlanTask {
-                    text: "nested child action".into(),
-                    completed: false
-                },
-                PlanTask {
-                    text: "Loose item first paragraph.".into(),
-                    completed: false
-                },
+                (
+                    "Create the file; done when bytes match.",
+                    false,
+                    "Phase one"
+                ),
+                ("Verify behavior end to end.", true, "Phase one"),
+                ("nested child action", false, "Phase one"),
+                ("Loose item first paragraph.", false, "Phase two"),
             ]
         );
+        // marker 恰好指向源文件中的 checkbox 本体。
+        assert_eq!(&body[tasks[0].marker.clone()], "[ ]");
+        assert_eq!(&body[tasks[1].marker.clone()], "[x]");
+        assert_eq!(&body[tasks[2].marker.clone()], "[ ]");
+        assert_eq!(&body[tasks[3].marker.clone()], "[ ]");
         assert_eq!(task_progress(body), (1, 4));
+    }
+
+    #[test]
+    fn plan_todo_tasks_capture_phase_regions_headings_and_duplicates() {
+        let body = "- [ ] bootstrap task\n\n## Step\n- [ ] first\n\n## Step\n- [ ] second\n\n### Detail\n- [ ] inherits Step region\n\n# Reset\n- [ ] after reset\n\nSetext phase\n------------\n- [ ] setext task\n";
+        let tasks = plan_tasks(body);
+        fn summary(items: &[PlanTask]) -> Vec<(&str, bool, &str, usize)> {
+            items
+                .iter()
+                .map(|task| {
+                    (
+                        task.text.as_str(),
+                        task.completed,
+                        task.phase.as_str(),
+                        task.phase_index,
+                    )
+                })
+                .collect::<Vec<_>>()
+        }
+        assert_eq!(
+            summary(&tasks),
+            vec![
+                ("bootstrap task", false, "Tasks", 0),
+                ("first", false, "Step", 1),
+                ("second", false, "Step", 2),
+                ("inherits Step region", false, "Step", 2),
+                ("after reset", false, "Tasks", 3),
+                ("setext task", false, "Setext phase", 4),
+            ]
+        );
+        // 重复标题的两个区域拥有不同的 phase_index，任务保持文档顺序。
+        assert_ne!(tasks[1].phase_index, tasks[2].phase_index);
+        assert_eq!(task_progress(body), (0, 6));
+    }
+
+    #[test]
+    fn plan_todo_patch_updates_state_bytes_and_preserves_everything_else() {
+        let body = "# 计划\r\n\r\n## 写入\r\n- [ ] 写入 canary\t字节。\r\n  - Acceptance: 中文 ✓ 证据\r\n- [X] 已有勾选\r\n\r\n```md\r\n- [ ] fenced example\r\n```\r\n";
+        let tasks = plan_tasks(body);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(
+            tasks.iter().map(|task| task.completed).collect::<Vec<_>>(),
+            vec![false, true]
+        );
+        let checked = vec![true, false];
+        let patched = patch_task_checks(body, &tasks, &checked)
+            .unwrap()
+            .expect("checked states changed");
+        // 除两个 checkbox 的中间状态字节外逐字节相等。
+        let diff: Vec<usize> = body
+            .bytes()
+            .zip(patched.bytes())
+            .enumerate()
+            .filter_map(|(index, (old, new))| (old != new).then_some(index))
+            .collect();
+        assert_eq!(
+            diff,
+            vec![tasks[0].marker.start + 1, tasks[1].marker.start + 1]
+        );
+        assert_eq!(patched.as_bytes()[diff[0]], b'x');
+        assert_eq!(patched.as_bytes()[diff[1]], b' ');
+        // 与逐字 replacen 的期望一致（含 CRLF、制表符、中文与其他字节）。
+        let expected = body.replacen("[ ]", "[x]", 1).replacen("[X]", "[ ]", 1);
+        assert_eq!(patched, expected);
+        // 状态无变化时不复制正文。
+        assert!(
+            patch_task_checks(body, &tasks, &[false, true])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn plan_todo_patch_rejects_mismatch_out_of_bounds_ambiguous_and_stale() {
+        let body = "- [ ] one\n- [ ] two\n";
+        let tasks = plan_tasks(body);
+        // 长度不一致。
+        assert!(patch_task_checks(body, &tasks, &[true]).is_err());
+        // marker 区间越界。
+        let mut out_of_bounds = tasks.clone();
+        out_of_bounds[0].marker = 100..110;
+        assert!(patch_task_checks(body, &out_of_bounds, &[true, false]).is_err());
+        // 区间内出现两个 checkbox：拒绝猜测位置。
+        let ambiguous = PlanTask {
+            text: "one".into(),
+            completed: false,
+            phase: "Tasks".into(),
+            phase_index: 0,
+            marker: 0..9,
+        };
+        assert!(patch_task_checks("- [ ] [ ] one", &[ambiguous], &[true]).is_err());
+        // 区间内没有标准 checkbox。
+        let absent = PlanTask {
+            text: "one".into(),
+            completed: false,
+            phase: "Tasks".into(),
+            phase_index: 0,
+            marker: 0..5,
+        };
+        assert!(patch_task_checks("hello world", &[absent], &[true]).is_err());
+        // 旧状态与解析状态不符（stale）：正文仍是 [ ]，解析状态却被标为已勾选。
+        let mut stale = plan_tasks("- [ ] pending\n");
+        stale[0].completed = true;
+        assert!(patch_task_checks("- [ ] pending\n", &stale, &[false]).is_err());
+    }
+
+    #[test]
+    fn plan_todo_task_progress_matches_parsed_tasks_on_real_documents() {
+        let check = |body: &str| {
+            let tasks = plan_tasks(body);
+            let (completed, total) = task_progress(body);
+            assert_eq!(total, tasks.len(), "total mismatch for {body:?}");
+            assert_eq!(
+                completed,
+                tasks.iter().filter(|task| task.completed).count(),
+                "completed mismatch for {body:?}"
+            );
+        };
+        check(
+            "# 计划\n\nIntro [ ] not a task.\n\n```md\n- [ ] fenced\n```\n\n## 阶段一\n- [ ] 第一项\n  - [ ] 嵌套项\n- [X] 已完成项\n\n## 阶段二\n- [ ] loose\n\n  second paragraph\n",
+        );
+        check(
+            "# Plan\r\n\r\n## Write\r\n- [ ] write bytes\r\n  - Acceptance: read-back\r\n- [x] verify\r\n\r\n## Verify\r\n- [ ] read back\r\n",
+        );
     }
 
     #[test]

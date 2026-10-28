@@ -847,7 +847,7 @@ mod tests {
         WorkflowState {
             mode: WorkMode::Plan,
             plan: Some(document),
-            review: None,
+            ..Default::default()
         }
     }
 

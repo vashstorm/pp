@@ -331,6 +331,53 @@ pub(crate) fn is_plan_path(workspace: &save::Workspace, path: &str, expected_pat
     }
 }
 
+/// Conditional progress write-back for the plan todo adapter. The caller is
+/// the Execute+Executed path that already holds the current task's PlanLease
+/// (`ensure_task_plan_lease`); no lease is reacquired here and the lock order
+/// stays lease → PlanCatalogLock. Within a short catalog lock the active
+/// entry is re-checked by ID: non-tombstone, canonical file_name/location in
+/// sync with the borrowed document, and located under Plans — progress
+/// write-back only happens on handed-off executing plans. Old bytes are read
+/// through the bounded NOFOLLOW handle and must match the synced document
+/// before `save_if_unchanged_custom` commits; an external edit between the
+/// sync and this call fails without overwriting anything. The returned
+/// warning (if any) describes an already-committed catalog sync and is
+/// passed through to the tool result unchanged.
+pub(super) fn save_progress(
+    workspace: &save::Workspace,
+    document: &PlanDocument,
+    content: &str,
+) -> Result<Option<String>> {
+    let _lock = plan_catalog::PlanCatalogLock::acquire(workspace)?;
+    let snapshot = plan_catalog::load_catalog(workspace)?;
+    let entry = snapshot
+        .catalog
+        .active_by_id(&document.id)
+        .ok_or_else(|| anyhow::anyhow!("Plan is not registered; reopen it from /plan-list."))?;
+    ensure!(
+        entry.location == PlanLocation::Plans,
+        "Plan progress can only be saved to an executing plan under .pp/plans/."
+    );
+    let bound_matches = match &document.file_name {
+        Some(name) => name == &entry.file_name && document.location == entry.location,
+        // 旧记录缺文件名：接受登记 canonical 名称，位置必须一致。
+        None => document.location == entry.location,
+    };
+    ensure!(bound_matches, "{MOVED_PLAN}");
+    let path = plan::path_for(&entry.file_name, entry.location);
+    let target = workspace.target(Path::new(&path), false)?;
+    let old = target.read_bounded(PLAN_MAX_BYTES)?;
+    ensure!(
+        old == document.content.as_bytes(),
+        "Plan file changed externally; review it before writing."
+    );
+    target.save_if_unchanged_custom(
+        document.content.as_bytes(),
+        content.as_bytes(),
+        "Plan file changed externally; review it before writing.",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -984,5 +1031,83 @@ mod tests {
             ".pp/drafts/other-name.md"
         ));
         assert!(!is_plan_path(&workspace, "../outside", &relative));
+    }
+
+    /// Registered Plans entry plus matching on-disk bytes for one document.
+    fn plan_todo_registered(workspace: &save::Workspace, document: &PlanDocument, content: &str) {
+        {
+            let _lock = plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
+            let snapshot = plan_catalog::load_catalog(workspace).unwrap();
+            let mut catalog = snapshot.catalog;
+            catalog.entries.push(plan_catalog::PlanCatalogEntry {
+                id: document.id.clone(),
+                file_name: document.file_name.clone().unwrap(),
+                location: PlanLocation::Plans,
+                deleted: false,
+                deleted_file_identity: None,
+            });
+            plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog).unwrap();
+        }
+        let target = workspace
+            .target(std::path::Path::new(&document.path().unwrap()), true)
+            .unwrap();
+        target.save_new(content.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn plan_todo_save_progress_commits_conditionally_and_refuses_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = save::Workspace::open(dir.path()).unwrap();
+        let content = "## Write\n- [ ] Write canary bytes.\n- [ ] Verify canary bytes.\n";
+        let mut document = plan_document(1, "Progress", content);
+        document.location = PlanLocation::Plans;
+        plan_todo_registered(&workspace, &document, content);
+        let updated = "## Write\n- [x] Write canary bytes.\n- [ ] Verify canary bytes.\n";
+        assert_eq!(save_progress(&workspace, &document, updated).unwrap(), None);
+        assert_eq!(
+            std::fs::read(dir.path().join(document.path().unwrap())).unwrap(),
+            updated.as_bytes()
+        );
+
+        // External modification after the sync: the document snapshot no
+        // longer matches the disk, so the write-back refuses and the
+        // external bytes stay untouched.
+        let external = "## Write\n- [x] Write canary bytes.\n- [ ] Verify canary bytes.\n\nExternally appended evidence.\n";
+        std::fs::write(dir.path().join(document.path().unwrap()), external).unwrap();
+        let error = save_progress(&workspace, &document, updated).unwrap_err();
+        assert!(error.to_string().contains("changed externally"), "{error}");
+        assert_eq!(
+            std::fs::read(dir.path().join(document.path().unwrap())).unwrap(),
+            external.as_bytes()
+        );
+
+        // Unregistered plan: fail-closed instead of guessing a file name.
+        let mut unregistered = plan_document(1, "Other", content);
+        unregistered.location = PlanLocation::Plans;
+        assert!(save_progress(&workspace, &unregistered, updated).is_err());
+
+        // Tombstoned entry: tombstones never resolve identities.
+        let mut tombstoned = plan_document(1, "Progress", content);
+        tombstoned.location = PlanLocation::Plans;
+        tombstoned.id = document.id.clone();
+        {
+            let _lock = plan_catalog::PlanCatalogLock::acquire(&workspace).unwrap();
+            let snapshot = plan_catalog::load_catalog(&workspace).unwrap();
+            let mut catalog = snapshot.catalog;
+            catalog
+                .entries
+                .iter_mut()
+                .filter(|entry| entry.id == document.id)
+                .for_each(|entry| entry.deleted = true);
+            plan_catalog::save_catalog(&workspace, snapshot.raw.as_deref(), &catalog).unwrap();
+        }
+        assert!(save_progress(&workspace, &tombstoned, updated).is_err());
+
+        // Drafts location: progress write-back is limited to executing
+        // plans under .pp/plans/.
+        let mut draft = plan_document(1, "Draft", content);
+        draft.location = PlanLocation::Drafts;
+        plan_todo_registered(&workspace, &draft, content);
+        assert!(save_progress(&workspace, &draft, updated).is_err());
     }
 }

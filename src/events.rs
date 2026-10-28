@@ -45,6 +45,17 @@ pub(crate) enum DiffLineKind {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentEvent {
+    TodoReminder {
+        todos: Vec<crate::tools::todo::TodoItem>,
+        attempt: u8,
+        max_attempts: u8,
+    },
+    TodoSnapshot {
+        plan_id: String,
+        revision: u64,
+        phases: Vec<crate::tools::todo::TodoPhase>,
+        status: crate::plan::PlanStatus,
+    },
     PlanProgressUpdated {
         plan_id: String,
         revision: u64,

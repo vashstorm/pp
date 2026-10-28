@@ -553,7 +553,11 @@ fn plan_list_execution_requires_new_local_approval() {
             "{}",
             users[0]
         );
-        plan_final(request, protocol, "Executed.");
+        plan_final(
+            request,
+            protocol,
+            "Executed. Shall we continue with the remaining canary step?",
+        );
         pty.text("Executed.");
 
         // 本地批准把 drafts 搬到 plans；未全部完成不会归档到 done。
@@ -725,7 +729,7 @@ fn plan_list_six_actions_use_the_selected_plan_and_leave_the_list() {
                     if action == 3 {
                         "List reviewer findings"
                     } else {
-                        "List action finished"
+                        "List action finished. Shall we continue with the remaining item?"
                     },
                 );
                 if action == 3 {

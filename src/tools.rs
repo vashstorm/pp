@@ -2,7 +2,7 @@ use crate::agent::input::InputQueue;
 use crate::cancellation::{CancellationToken, Cancelled, CleanupError};
 use crate::config::{EditMode, ToolLimits};
 use crate::events::{AgentEvent, OutputStream};
-use crate::plan::{PlanDocument, WorkMode};
+use crate::plan::{PlanDocument, PlanStatus, WorkMode, WorkflowState};
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
 use serde::Deserialize;
@@ -30,6 +30,7 @@ pub(crate) mod plan_catalog;
 pub(crate) mod read;
 mod replace;
 pub(crate) mod save;
+pub(crate) mod todo;
 
 #[cfg(test)]
 use std::{fs, sync::mpsc::sync_channel};
@@ -59,14 +60,19 @@ pub(crate) struct ToolExecution {
     /// Outcome of the dedicated plan tools for this single call; the caller
     /// applies it to the shared workflow state at the batch commit boundary.
     pub(crate) plan_change: Option<PlanChange>,
+    /// Outcome of one todo call (standalone list or plan projection); the
+    /// caller installs it on the workflow at the batch commit boundary via
+    /// `apply_todo_change`. `None` for every non-todo tool and for `view`.
+    pub(crate) todo_change: Option<todo::TodoChange>,
 }
 
 /// Per-call tool authorization, borrowed from the agent's current workflow
 /// for every batch. The execution-layer gate inside `execute` is
 /// authoritative; hidden tool schemas never are.
 pub(crate) enum ToolPolicy<'a> {
-    /// Normal execution with the full toolset.
-    Execute,
+    /// Normal execution with the full toolset; the borrowed workflow state
+    /// classifies todo calls as standalone lists or bound plan projections.
+    Execute { workflow: &'a WorkflowState },
     /// Independent plan review: read-only investigation tools only; no ask,
     /// no plan writes, no shell, no MCP.
     Review,
@@ -239,6 +245,9 @@ impl Tools {
                 definitions.push(glob::definition());
                 definitions.push(grep::definition());
                 definitions.extend(Self::plan_definitions());
+                // Same tool name, `view`-only schema; the reviewer list below
+                // filters it out again.
+                definitions.push(todo::preview_definition());
                 definitions
             }
         }
@@ -347,6 +356,7 @@ impl Tools {
                 parameters: Some(json!({"type":"object","properties":{"task_id":{"type":"string","minLength":1},"action":{"type":"string","enum":["status","stop"]}},"required":["task_id","action"],"additionalProperties":false})),
                 ..Default::default()
             },
+            todo::definition(),
         ]
     }
 
@@ -394,6 +404,7 @@ impl Tools {
             "bash_task" => "bash_task",
             "grep" => "grep",
             "glob" => "glob",
+            "todo" => "todo",
             "plan_search" | "plan_find" | "plan_write" | "plan_submit" => "plan_tool",
             _ => "external",
         };
@@ -407,6 +418,7 @@ impl Tools {
         // parsing, file access or process creation.
         let mut stop_error = None;
         let mut plan_change = None;
+        let mut todo_change = None;
         let value = if cancellation.is_cancelled() {
             json!({"ok":false,"cancelled":true,"error":"Not executed: task cancelled."})
         } else {
@@ -420,8 +432,9 @@ impl Tools {
                 fetch,
                 &mut images,
             ) {
-                Ok((result, change)) => {
+                Ok((result, change, todo)) => {
                     plan_change = change;
+                    todo_change = todo;
                     result
                 }
                 Err(error) => {
@@ -464,6 +477,7 @@ impl Tools {
             images,
             stop_error,
             plan_change,
+            todo_change,
         }
     }
 
@@ -478,7 +492,7 @@ impl Tools {
         emit: &mut dyn FnMut(AgentEvent),
         fetch: &mut read::Fetch<'_>,
         images: &mut Vec<read::ToolImage>,
-    ) -> Result<(Value, Option<PlanChange>)> {
+    ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         // A sealed batch (plan already submitted) refuses every call before
         // any parsing or dispatch, while still producing one result per call
         // ID through the ordinary ToolStarted/ToolFinished path.
@@ -490,7 +504,7 @@ impl Tools {
         // side effects even with malformed arguments, and unknown names
         // (including unseen MCP tools) cannot bypass it via the fallback.
         let allowed = match &policy {
-            ToolPolicy::Execute => !is_plan_tool(name),
+            ToolPolicy::Execute { .. } => !is_plan_tool(name),
             ToolPolicy::Review => {
                 PLAN_BASE_TOOLS.contains(&name) || PLAN_SEARCH_TOOLS.contains(&name)
             }
@@ -498,6 +512,7 @@ impl Tools {
                 PLAN_BASE_TOOLS.contains(&name)
                     || PLAN_SEARCH_TOOLS.contains(&name)
                     || is_plan_tool(name)
+                    || name == "todo"
                     || name == "ask" && self.ask_handler.is_some()
             }
         };
@@ -505,7 +520,9 @@ impl Tools {
             bail!(
                 "{}",
                 match &policy {
-                    ToolPolicy::Execute => format!("{name} is only available in Plan mode."),
+                    ToolPolicy::Execute { .. } => {
+                        format!("{name} is only available in Plan mode.")
+                    }
                     ToolPolicy::Review => "Tool is not available during Plan review.".to_owned(),
                     ToolPolicy::Plan { .. } => "Tool is not available in Plan mode.".to_owned(),
                 }
@@ -698,11 +715,109 @@ impl Tools {
                 else {
                     unreachable!("plan tools are gated to ToolPolicy::Plan");
                 };
-                return plan::run(&self.workspace, document, input, name, arguments);
+                return plan::run(&self.workspace, document, input, name, arguments)
+                    .map(|(value, change)| (value, change, None));
+            }
+            "todo" => {
+                return self
+                    .run_todo(&policy, arguments)
+                    .map(|(value, change)| (value, None, change));
             }
             _ => self.mcp.call(name, arguments, cancellation),
         }
-        .map(|value| (value, None))
+        .map(|value| (value, None, None))
+    }
+}
+
+/// How this todo call is classified for tracing and dispatch; no task
+/// content is ever logged.
+enum TodoRoute<'a> {
+    /// Plan mode with a draft/ready document: read-only preview projected
+    /// from the document itself.
+    Preview(&'a PlanDocument),
+    /// Execute+Executed with a bound plan: the plan adapter with checkbox
+    /// write-back.
+    Executing(&'a PlanDocument),
+    /// A plan document still bound via todo_plan_id but not executing
+    /// (draft/ready under Execute, or a finished plan): read-only, except an
+    /// explicit or inferred `init`, which detaches into a standalone list.
+    Readonly(&'a PlanDocument, &'static str),
+    /// No plan binding applies: ordinary standalone list.
+    Standalone,
+}
+
+impl Tools {
+    /// Route one todo call by the borrowed workflow state. The policy gate
+    /// has already admitted the call; classification only decides which
+    /// adapter runs. Detached standalone lists are never re-bound by an old
+    /// plan document, and bound finished plans stay read-only unless the
+    /// call starts a new standalone list.
+    fn run_todo(
+        &self,
+        policy: &ToolPolicy<'_>,
+        arguments: &str,
+    ) -> Result<(Value, Option<todo::TodoChange>)> {
+        match self.todo_route(policy, arguments) {
+            TodoRoute::Preview(document) => {
+                tracing::debug!(event = "tool_todo", classification = "preview");
+                todo::run_plan(&self.workspace, document, &[], arguments, false)
+            }
+            TodoRoute::Executing(document) => {
+                let ToolPolicy::Execute { workflow } = policy else {
+                    unreachable!("executing plans only occur under Execute policy");
+                };
+                tracing::debug!(event = "tool_todo", classification = "plan");
+                todo::run_plan(&self.workspace, document, &workflow.todos, arguments, true)
+            }
+            TodoRoute::Readonly(document, message) => {
+                tracing::debug!(event = "tool_todo", classification = "readonly");
+                todo::run_readonly(document, arguments, message)
+            }
+            TodoRoute::Standalone => {
+                let ToolPolicy::Execute { workflow } = policy else {
+                    unreachable!("standalone todos only occur under Execute policy");
+                };
+                tracing::debug!(event = "tool_todo", classification = "standalone");
+                let (value, change) = todo::run(&workflow.todos, arguments);
+                // `change` carries plan: None; installing it detaches any
+                // finished-plan binding without touching PlanDocument.
+                Ok((value, change))
+            }
+        }
+    }
+
+    fn todo_route<'a>(&self, policy: &'a ToolPolicy<'a>, arguments: &str) -> TodoRoute<'a> {
+        match policy {
+            ToolPolicy::Plan { document, .. } => TodoRoute::Preview(document),
+            ToolPolicy::Review => unreachable!("todo is gated out of review"),
+            ToolPolicy::Execute { workflow } => match workflow.plan.as_ref() {
+                Some(document) if document.status == PlanStatus::Executed => {
+                    TodoRoute::Executing(document)
+                }
+                Some(document)
+                    if workflow.todo_plan_id.as_deref() == Some(document.id.as_str()) =>
+                {
+                    // Explicit or inferred `init` starts a standalone list
+                    // and clears the binding at the commit boundary.
+                    let starts_standalone = matches!(
+                        todo::resolve_params(arguments, !workflow.todos.is_empty()),
+                        Ok(params) if params.op == todo::TodoOperation::Init
+                    );
+                    if starts_standalone {
+                        TodoRoute::Standalone
+                    } else {
+                        let message = match document.status {
+                            PlanStatus::Completed | PlanStatus::Abandoned => {
+                                "Plan todos are read-only; initialize a new standalone list."
+                            }
+                            _ => "Plan todos are read-only before execution.",
+                        };
+                        TodoRoute::Readonly(document, message)
+                    }
+                }
+                _ => TodoRoute::Standalone,
+            },
+        }
     }
 }
 
@@ -837,14 +952,18 @@ fn decode_prefix(mut bytes: &[u8], output: &mut String) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::PlanLocation;
 
     fn execute(tools: &Tools, name: &str, args: Value) -> Value {
+        let workflow = WorkflowState::default();
         let token = CancellationToken::new();
         let execution = tools.execute(
             name,
             &args.to_string(),
             "test-call",
-            ToolPolicy::Execute,
+            ToolPolicy::Execute {
+                workflow: &workflow,
+            },
             &token,
             &mut |_| {},
         );
@@ -1408,6 +1527,7 @@ mod tests {
 
     #[test]
     fn background_natural_exit_cancellation_and_tools_drop_reap_descendants() {
+        let workflow = WorkflowState::default();
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         let natural = execute(
@@ -1428,7 +1548,7 @@ mod tests {
             "natural-exit descendant",
         );
         let token = CancellationToken::new();
-        let execution = tools.execute("bash", &json!({"mode":"background","command":"trap '' TERM; sleep 60 & child=$!; printf '%s\\n%s' \"$$\" \"$child\" > cancelled.pending; mv cancelled.pending cancelled.pid; printf cancelled-output; wait \"$child\""}).to_string(), "cancel-start", ToolPolicy::Execute, &token, &mut |_| {});
+        let execution = tools.execute("bash", &json!({"mode":"background","command":"trap '' TERM; sleep 60 & child=$!; printf '%s\\n%s' \"$$\" \"$child\" > cancelled.pending; mv cancelled.pending cancelled.pid; printf cancelled-output; wait \"$child\""}).to_string(), "cancel-start", ToolPolicy::Execute { workflow: &workflow }, &token, &mut |_| {});
         let started: Value = serde_json::from_str(&execution.output).unwrap();
         let pids = background_marker(&dir.path().join("cancelled.pid"));
         let other = execute(
@@ -1672,6 +1792,7 @@ mod tests {
 
     #[test]
     fn bash_line_limit_is_shared_by_both_pipes_and_matches_live_output() {
+        let workflow = WorkflowState::default();
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         let mut stdout = String::new();
@@ -1681,7 +1802,7 @@ mod tests {
             "bash",
             &json!({"command":"for ((i=0;i<10000;i++)); do printf 'out\\n'; printf 'err\\n' >&2; done; printf done > completed; exit 7"}).to_string(),
             "line-limit",
-            ToolPolicy::Execute,
+            ToolPolicy::Execute { workflow: &workflow },
             &token,
             &mut |event| {
                 if let AgentEvent::ToolOutput { stream, text, .. } = event {
@@ -1892,6 +2013,7 @@ mod tests {
 
     #[test]
     fn bash_watchdog_runs_while_output_callback_is_blocked_and_temp_defaults_are_local() {
+        let workflow = WorkflowState::default();
         use std::time::{Duration, Instant};
         let dir = tempfile::tempdir().unwrap();
         let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
@@ -1904,7 +2026,9 @@ mod tests {
             &json!({"command":"trap '' TERM; printf ready; sleep 3; printf late > late"})
                 .to_string(),
             "call",
-            ToolPolicy::Execute,
+            ToolPolicy::Execute {
+                workflow: &workflow,
+            },
             &token,
             &mut |event| {
                 if matches!(event, AgentEvent::ToolOutput { .. }) && !blocked {
@@ -1953,6 +2077,7 @@ mod tests {
 
     #[test]
     fn bash_cancel_stops_term_resistant_group_and_reports_cancelled() {
+        let workflow = WorkflowState::default();
         let dir = tempfile::tempdir().unwrap();
         let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         tools.limits.bash_timeout_seconds = 60;
@@ -1976,7 +2101,7 @@ mod tests {
             "bash",
             &json!({"command":"trap '' TERM; printf 'cancel-ready\\n'; printf '%s' \"$$\" > bash.pid; sleep 30 & child=$!; printf '%s' \"$child\" > bash-child.pid; wait \"$child\""}).to_string(),
             "cancel-call",
-            ToolPolicy::Execute,
+            ToolPolicy::Execute { workflow: &workflow },
             &token,
             &mut |_| {},
         );
@@ -2476,6 +2601,7 @@ mod tests {
 
     #[test]
     fn changes_failed_edit_and_cancelled_or_unauthorized_write_do_not_record() {
+        let workflow = WorkflowState::default();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("demo.txt");
         fs::write(&path, b"user-local\n").unwrap();
@@ -2492,7 +2618,12 @@ mod tests {
         cancellation.cancel();
         let document = plan_document();
         for (policy, token) in [
-            (ToolPolicy::Execute, cancellation),
+            (
+                ToolPolicy::Execute {
+                    workflow: &workflow,
+                },
+                cancellation,
+            ),
             (
                 ToolPolicy::Plan {
                     document: &document,
@@ -2611,6 +2742,7 @@ mod tests {
 
     #[test]
     fn file_changed_follows_commit_and_never_changes_model_tool_result() {
+        let workflow = WorkflowState::default();
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("demo.txt"), b"old\nkeep\n").unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
@@ -2621,7 +2753,9 @@ mod tests {
                 "edit",
                 &json!({"path":"demo.txt","edits":[{"oldText":"old","newText":"new"}]}).to_string(),
                 "edit-1",
-                ToolPolicy::Execute,
+                ToolPolicy::Execute {
+                    workflow: &workflow,
+                },
                 &token,
                 &mut |event| {
                     if matches!(event, AgentEvent::FileChanged { .. }) {
@@ -2663,7 +2797,9 @@ mod tests {
             "edit",
             &json!({"path":"demo.txt","edits":[{"oldText":"missing","newText":"bad"}]}).to_string(),
             "edit-fail",
-            ToolPolicy::Execute,
+            ToolPolicy::Execute {
+                workflow: &workflow,
+            },
             &token,
             &mut |event| events.push(event),
         );
@@ -2679,7 +2815,9 @@ mod tests {
                 "write",
                 &json!({"path":"binary.txt","content":"text\n"}).to_string(),
                 "write-binary",
-                ToolPolicy::Execute,
+                ToolPolicy::Execute {
+                    workflow: &workflow,
+                },
                 &token,
                 &mut |event| events.push(event),
             )
@@ -2697,6 +2835,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn write_snapshot_permission_failure_does_not_block_commit() {
+        let workflow = WorkflowState::default();
         use std::os::unix::fs::PermissionsExt;
         if rustix::process::getuid().as_raw() == 0 {
             return;
@@ -2712,7 +2851,9 @@ mod tests {
                 "write",
                 &json!({"path":"unreadable.txt","content":"new"}).to_string(),
                 "unreadable",
-                ToolPolicy::Execute,
+                ToolPolicy::Execute {
+                    workflow: &workflow,
+                },
                 &CancellationToken::new(),
                 &mut |event| events.push(event),
             )
@@ -2727,6 +2868,7 @@ mod tests {
 
     #[test]
     fn cancelled_token_skips_execution_but_reports_started_and_finished() {
+        let workflow = WorkflowState::default();
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         let token = CancellationToken::new();
@@ -2736,7 +2878,9 @@ mod tests {
             "write",
             &json!({"path":"skipped.txt","content":"must-not-exist"}).to_string(),
             "skip-call",
-            ToolPolicy::Execute,
+            ToolPolicy::Execute {
+                workflow: &workflow,
+            },
             &token,
             &mut |event| match event {
                 AgentEvent::ToolStarted { .. } | AgentEvent::ToolFinished { .. } => events += 1,
@@ -2946,6 +3090,7 @@ mod tests {
 
     #[test]
     fn execute_policy_rejects_dedicated_plan_tools() {
+        let workflow = WorkflowState::default();
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         for name in ["plan_write", "plan_submit"] {
@@ -2953,7 +3098,9 @@ mod tests {
                 name,
                 "{}",
                 "exec-call",
-                ToolPolicy::Execute,
+                ToolPolicy::Execute {
+                    workflow: &workflow,
+                },
                 &CancellationToken::new(),
                 &mut |_| {},
             );
@@ -3213,6 +3360,7 @@ mod tests {
 
     #[test]
     fn streaming_bash_reports_both_pipes_before_exit_without_newlines() {
+        let workflow = WorkflowState::default();
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         let args = json!({
@@ -3229,7 +3377,9 @@ mod tests {
             "bash",
             &args,
             "live-call",
-            ToolPolicy::Execute,
+            ToolPolicy::Execute {
+                workflow: &workflow,
+            },
             &token,
             &mut |event| match event {
                 AgentEvent::ToolStarted {
@@ -3276,5 +3426,422 @@ mod tests {
         assert_eq!(stdout, "out-firstout-last");
         assert_eq!(stderr, "err-first");
         assert_eq!(result["ok"], true);
+    }
+
+    // ---------------------------------------------------------------------
+    // todo routing policy, plan adapter and finished-plan detach
+    // ---------------------------------------------------------------------
+
+    /// Registered executing/finished plan fixture: canonical Plans entry,
+    /// matching file on disk, and a workflow binding the document with its
+    /// projected todos.
+    fn plan_todo_fixture(
+        dir: &tempfile::TempDir,
+        file_name: &str,
+        status: PlanStatus,
+        content: &str,
+    ) -> (Tools, crate::plan::PlanDocument, WorkflowState) {
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let mut document = crate::plan::PlanDocument::new().unwrap();
+        document.revision = 1;
+        document.title = "Todo integration".into();
+        document.content = content.to_owned();
+        document.origin_prompt = "original task".into();
+        document.file_name = Some(file_name.to_owned());
+        document.location = PlanLocation::Plans;
+        document.status = status;
+        document.approved_tasks = Some(
+            crate::plan::plan_tasks(content)
+                .iter()
+                .map(|task| task.text.clone())
+                .collect(),
+        );
+        let workspace = tools.plan_workspace();
+        {
+            let _lock = plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
+            let snapshot = plan_catalog::load_catalog(workspace).unwrap();
+            let mut catalog = snapshot.catalog;
+            catalog.entries.push(plan_catalog::PlanCatalogEntry {
+                id: document.id.clone(),
+                file_name: file_name.to_owned(),
+                location: PlanLocation::Plans,
+                deleted: false,
+                deleted_file_identity: None,
+            });
+            plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog).unwrap();
+        }
+        let path = crate::plan::path_for(file_name, PlanLocation::Plans);
+        let target = workspace.target(std::path::Path::new(&path), true).unwrap();
+        target.save_new(content.as_bytes()).unwrap();
+        let workflow = WorkflowState {
+            mode: WorkMode::Execute,
+            plan: Some(document.clone()),
+            review: None,
+            todos: todo::project_plan_todos(&document, &[], false).unwrap(),
+            todo_plan_id: Some(document.id.clone()),
+        };
+        (tools, document, workflow)
+    }
+
+    fn todo_call(tools: &Tools, workflow: &WorkflowState, arguments: Value) -> ToolExecution {
+        let token = CancellationToken::new();
+        tools.execute(
+            "todo",
+            &arguments.to_string(),
+            "todo-call",
+            ToolPolicy::Execute { workflow },
+            &token,
+            &mut |_| {},
+        )
+    }
+
+    #[test]
+    fn todo_review_policy_refuses_todo() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let execution = tools.execute(
+            "todo",
+            r#"{"op":"view"}"#,
+            "review-todo",
+            ToolPolicy::Review,
+            &CancellationToken::new(),
+            &mut |_| {},
+        );
+        assert!(execution.stop_error.is_none());
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(
+            result["error"],
+            json!("Tool is not available during Plan review.")
+        );
+    }
+
+    #[test]
+    fn todo_plan_preview_is_read_only_and_revision_zero_has_null_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let mut document = crate::plan::PlanDocument::new().unwrap();
+        document.revision = 0;
+        document.content = String::new();
+        document.status = PlanStatus::Draft;
+        let token = CancellationToken::new();
+        let execution = tools.execute(
+            "todo",
+            r#"{"op":"view"}"#,
+            "preview-call",
+            ToolPolicy::Plan {
+                document: &document,
+                sealed: false,
+                input: None,
+            },
+            &token,
+            &mut |_| {},
+        );
+        assert!(execution.stop_error.is_none());
+        assert!(execution.plan_change.is_none());
+        assert!(execution.todo_change.is_none());
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["op"], "view");
+        assert_eq!(result["content"], "Todo list is empty.");
+        assert_eq!(result["phases"], json!([]));
+        assert_eq!(result["plan"]["id"], document.id);
+        assert_eq!(result["plan"]["path"], Value::Null);
+        assert_eq!(result["plan"]["status"], "draft");
+        assert_eq!(result["plan"]["readonly"], true);
+
+        // Saved draft: view projects the checklist, mutations are refused
+        // without touching the document or producing a change.
+        document.revision = 1;
+        document.file_name = Some("todo-draft.md".into());
+        document.location = PlanLocation::Drafts;
+        document.content = "## Write\n- [ ] Write canary bytes.\n".into();
+        let view = tools.execute(
+            "todo",
+            r#"{"op":"view"}"#,
+            "preview-view",
+            ToolPolicy::Plan {
+                document: &document,
+                sealed: false,
+                input: None,
+            },
+            &token,
+            &mut |_| {},
+        );
+        let view: Value = serde_json::from_str(&view.output).unwrap();
+        assert_eq!(view["ok"], true);
+        assert_eq!(view["plan"]["path"], json!(".pp/drafts/todo-draft.md"));
+        assert_eq!(view["phases"][0]["tasks"][0]["status"], "pending");
+        let done = tools.execute(
+            "todo",
+            r#"{"op":"done","task":"Write canary bytes."}"#,
+            "preview-done",
+            ToolPolicy::Plan {
+                document: &document,
+                sealed: false,
+                input: None,
+            },
+            &token,
+            &mut |_| {},
+        );
+        let done: Value = serde_json::from_str(&done.output).unwrap();
+        assert_eq!(done["ok"], false);
+        assert_eq!(
+            done["error"],
+            json!("Plan todos are read-only before execution.")
+        );
+        assert_eq!(done["phases"][0]["tasks"][0]["status"], "pending");
+    }
+
+    #[test]
+    fn todo_executed_plan_done_writes_checkbox_and_reports_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "## Write\n- [ ] Write canary bytes.\n  - Acceptance: read back.\n- [ ] Verify canary bytes.\n";
+        let (tools, document, workflow) =
+            plan_todo_fixture(&dir, "todo-executed.md", PlanStatus::Executed, content);
+        let execution = todo_call(
+            &tools,
+            &workflow,
+            json!({"op":"done","task":"Write canary bytes."}),
+        );
+        assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+        assert!(execution.plan_change.is_none());
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["op"], "done");
+        assert_eq!(result["plan"]["id"], document.id);
+        assert_eq!(result["plan"]["revision"], 2);
+        assert_eq!(result["plan"]["status"], "executed");
+        assert_eq!(result["plan"]["readonly"], false);
+        assert_eq!(result["phases"][0]["tasks"][0]["status"], "completed");
+        assert_eq!(result["phases"][0]["tasks"][1]["status"], "in_progress");
+        let change = execution.todo_change.expect("done must report a change");
+        assert_eq!(
+            change.plan.as_ref().expect("plan projection").plan_id,
+            document.id
+        );
+        assert_eq!(change.plan.as_ref().unwrap().revision, 2);
+        let new_content = change
+            .plan
+            .as_ref()
+            .unwrap()
+            .content
+            .as_deref()
+            .expect("checkbox write-back carries content");
+        assert_eq!(
+            new_content,
+            "## Write\n- [x] Write canary bytes.\n  - Acceptance: read back.\n- [ ] Verify canary bytes.\n"
+        );
+        // The other bytes are untouched and the file is committed.
+        let path = dir.path().join(".pp/plans/todo-executed.md");
+        assert_eq!(std::fs::read(&path).unwrap(), new_content.as_bytes());
+    }
+
+    #[test]
+    fn todo_executed_plan_duplicate_needs_phase_or_occurrence() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "## Phase\n- [ ] Write canary bytes.\n- [ ] Write canary bytes.\n";
+        let (tools, document, workflow) =
+            plan_todo_fixture(&dir, "todo-duplicate.md", PlanStatus::Executed, content);
+        let ambiguous = todo_call(
+            &tools,
+            &workflow,
+            json!({"op":"done","task":"Write canary bytes."}),
+        );
+        let ambiguous: Value = serde_json::from_str(&ambiguous.output).unwrap();
+        assert_eq!(ambiguous["ok"], false);
+        assert_eq!(
+            ambiguous["error"],
+            json!("Ambiguous plan task; specify phase or occurrence.")
+        );
+        assert_eq!(ambiguous["phases"][0]["tasks"][0]["status"], "in_progress");
+        assert_eq!(
+            std::fs::read(dir.path().join(".pp/plans/todo-duplicate.md")).unwrap(),
+            content.as_bytes()
+        );
+
+        // Phase filter alone is still ambiguous; occurrence picks by ordinal.
+        let still_ambiguous = todo_call(
+            &tools,
+            &workflow,
+            json!({"op":"done","task":"Write canary bytes.","phase":"Phase"}),
+        );
+        let still_ambiguous: Value = serde_json::from_str(&still_ambiguous.output).unwrap();
+        assert_eq!(
+            still_ambiguous["error"],
+            json!("Ambiguous plan task; specify phase or occurrence.")
+        );
+        let second = todo_call(
+            &tools,
+            &workflow,
+            json!({"op":"done","task":"Write canary bytes.","occurrence":2}),
+        );
+        let result: Value = serde_json::from_str(&second.output).unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        let change = second.todo_change.unwrap();
+        assert_eq!(
+            change.plan.unwrap().content.unwrap(),
+            "## Phase\n- [ ] Write canary bytes.\n- [x] Write canary bytes.\n"
+        );
+        // Out-of-range occurrences fail without side effects.
+        let over = todo_call(
+            &tools,
+            &workflow,
+            json!({"op":"done","task":"Write canary bytes.","occurrence":3}),
+        );
+        let over: Value = serde_json::from_str(&over.output).unwrap();
+        assert_eq!(over["ok"], false);
+        assert!(over["error"].as_str().unwrap().contains("occurrence 3"));
+        assert_eq!(
+            std::fs::read(dir.path().join(".pp/plans/todo-duplicate.md")).unwrap(),
+            "## Phase\n- [ ] Write canary bytes.\n- [x] Write canary bytes.\n".as_bytes()
+        );
+        let _ = document;
+    }
+
+    #[test]
+    fn todo_executed_plan_block_is_runtime_only_without_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "## Phase\n- [ ] Write canary bytes.\n- [ ] Verify canary bytes.\n";
+        let (tools, document, workflow) =
+            plan_todo_fixture(&dir, "todo-blocked.md", PlanStatus::Executed, content);
+        let execution = todo_call(
+            &tools,
+            &workflow,
+            json!({"op":"block","task":"Write canary bytes.","reason":"wait for upstream"}),
+        );
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["phases"][0]["tasks"][0]["status"], "blocked");
+        let change = execution.todo_change.expect("block reports a change");
+        let plan = change.plan.expect("plan projection");
+        assert_eq!(plan.revision, document.revision);
+        assert!(plan.content.is_none(), "runtime-only state has no content");
+        assert_eq!(
+            std::fs::read(dir.path().join(".pp/plans/todo-blocked.md")).unwrap(),
+            content.as_bytes()
+        );
+        // Unblock clears the blocker without touching the file either.
+        let unblock = todo_call(
+            &tools,
+            &workflow,
+            json!({"op":"unblock","task":"Write canary bytes."}),
+        );
+        let result: Value = serde_json::from_str(&unblock.output).unwrap();
+        assert_eq!(result["ok"], true);
+        let change = unblock.todo_change.unwrap();
+        let plan = change.plan.unwrap();
+        assert_eq!(plan.revision, document.revision);
+        assert!(plan.content.is_none());
+        assert_eq!(
+            change.phases[0].tasks[0].status,
+            todo::TodoStatus::InProgress
+        );
+    }
+
+    #[test]
+    fn todo_executed_plan_structure_operations_are_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "## Phase\n- [ ] Write canary bytes.\n";
+        let (tools, _document, workflow) =
+            plan_todo_fixture(&dir, "todo-locked.md", PlanStatus::Executed, content);
+        for arguments in [
+            json!({"op":"init","list":[{"phase":"Extra","items":["new"]}]}),
+            json!({"op":"append","phase":"Extra","items":["new"]}),
+            json!({"op":"rm","task":"Write canary bytes."}),
+            json!({"op":"drop","task":"Write canary bytes."}),
+        ] {
+            let execution = todo_call(&tools, &workflow, arguments);
+            let result: Value = serde_json::from_str(&execution.output).unwrap();
+            assert_eq!(result["ok"], false, "{result}");
+            assert_eq!(
+                result["error"],
+                json!(
+                    "Approved plan tasks cannot be added, removed, replaced, or dropped; re-plan first."
+                )
+            );
+            assert_eq!(
+                std::fs::read(dir.path().join(".pp/plans/todo-locked.md")).unwrap(),
+                content.as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn todo_finished_plan_is_read_only_until_init_detaches() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "## Phase\n- [x] Write canary bytes.\n- [x] Verify canary bytes.\n";
+        let (tools, document, workflow) =
+            plan_todo_fixture(&dir, "todo-finished.md", PlanStatus::Completed, content);
+        // Bound finished plan: mutations keep the historical diagnostic and
+        // never touch the file.
+        let done = todo_call(
+            &tools,
+            &workflow,
+            json!({"op":"done","task":"Write canary bytes."}),
+        );
+        let done: Value = serde_json::from_str(&done.output).unwrap();
+        assert_eq!(done["ok"], false);
+        assert_eq!(
+            done["error"],
+            json!("Plan todos are read-only; initialize a new standalone list.")
+        );
+        assert_eq!(done["plan"]["readonly"], true);
+        assert_eq!(done["phases"][0]["tasks"][0]["status"], "completed");
+        // View stays available against the document projection.
+        let view = todo_call(&tools, &workflow, json!({"op":"view"}));
+        let view: Value = serde_json::from_str(&view.output).unwrap();
+        assert_eq!(view["ok"], true);
+        assert_eq!(view["plan"]["readonly"], true);
+        assert!(view["phases"][0]["tasks"][0]["status"] == "completed");
+        // Explicit init starts a standalone list: plan-less change, document
+        // untouched.
+        let init = todo_call(
+            &tools,
+            &workflow,
+            json!({"op":"init","list":[{"phase":"Fresh","items":["standalone"] }]}),
+        );
+        let result: Value = serde_json::from_str(&init.output).unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        assert!(
+            result.get("plan").is_none(),
+            "standalone results carry no plan object"
+        );
+        let change = init.todo_change.expect("init reports a change");
+        assert!(change.plan.is_none(), "detaching init has no plan effect");
+        assert_eq!(change.phases[0].name, "Fresh");
+        assert_eq!(
+            std::fs::read(dir.path().join(".pp/plans/todo-finished.md")).unwrap(),
+            content.as_bytes()
+        );
+        let _ = document;
+    }
+
+    #[test]
+    fn todo_plan_tasks_drift_is_refused_for_every_editable_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "## Phase\n- [ ] Write canary bytes.\n";
+        let (tools, _document, mut workflow) =
+            plan_todo_fixture(&dir, "todo-drift.md", PlanStatus::Executed, content);
+        // External rewrite: document and file both show a task set that no
+        // longer matches the approved vector.
+        workflow.plan.as_mut().unwrap().content = "## Phase\n- [ ] Rewritten task.\n".into();
+        let path = dir.path().join(".pp/plans/todo-drift.md");
+        std::fs::write(&path, workflow.plan.as_ref().unwrap().content.as_bytes()).unwrap();
+        for arguments in [
+            json!({"op":"view"}),
+            json!({"op":"done","task":"Rewritten task."}),
+        ] {
+            let execution = todo_call(&tools, &workflow, arguments);
+            let result: Value = serde_json::from_str(&execution.output).unwrap();
+            assert_eq!(result["ok"], false, "{result}");
+            assert_eq!(
+                result["error"],
+                json!("Plan tasks changed; re-plan before completing.")
+            );
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                workflow.plan.as_ref().unwrap().content.as_bytes()
+            );
+        }
     }
 }

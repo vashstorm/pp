@@ -1,5 +1,6 @@
 //! 基于已提交的原生记录重建逻辑会话树，节点只保存日志游标。
 use super::*;
+use crate::tools::todo::TodoPhase;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -21,6 +22,11 @@ pub(in crate::agent) struct Prepared {
     pub replay: Vec<ReplayRecord>,
     pub selection: Selection,
     pub draft: Option<String>,
+    /// 目标 cursor 之前最后一条 State/Workflow 记录折叠出的历史 todo 投影：
+    /// 普通 `todos` 无来源，计划投影带 `todo_plan_id`；空 + None 为无清单。
+    /// 只保留最新一份，不逐节点复制整个清单。
+    pub todos: Vec<TodoPhase>,
+    pub todo_plan_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,7 +352,7 @@ impl Tree {
         let user = node.kind == Kind::User;
         let leaf = if user { node.parent } else { Some(index) };
         let cursor = if user { node.before } else { node.native };
-        let (session, model_reference) = session_at(file, cursor)?;
+        let (session, model_reference, todos, todo_plan_id) = session_at(file, cursor)?;
         let replay = self.replay(file, leaf, false)?;
         Ok(Prepared {
             session,
@@ -356,16 +362,26 @@ impl Tree {
                 leaf: leaf.map(|i| self.nodes[i].id.clone()),
             },
             draft: user.then(|| node.text.clone()),
+            todos,
+            todo_plan_id,
         })
     }
 }
 
-fn session_at(file: &File, cursor: Cursor) -> Result<(Session, String)> {
+/// 目标 cursor 之前的会话快照，以及折叠自最后一条 State/Workflow 记录的
+/// 历史 todo 投影。每条 State 携带完整 workflow 快照，随后的 Workflow
+/// 记录是运行态增量，因此只保留最后一份。
+fn session_at(
+    file: &File,
+    cursor: Cursor,
+) -> Result<(Session, String, Vec<TodoPhase>, Option<String>)> {
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::Start(0))?;
     let mut offset = 0;
     let mut session = None;
     let mut model_reference = String::new();
+    let mut todos = Vec::new();
+    let mut todo_plan_id = None;
     let mut line = Vec::new();
     while offset < cursor.offset {
         line.clear();
@@ -383,6 +399,14 @@ fn session_at(file: &File, cursor: Cursor) -> Result<(Session, String)> {
             } => {
                 model_reference = state.model_reference;
                 session = Some(state.session);
+                todos = state.workflow.todos;
+                todo_plan_id = state.workflow.todo_plan_id;
+            }
+            Payload::Custom {
+                custom: Custom::Workflow(record),
+            } => {
+                todos = record.workflow.todos;
+                todo_plan_id = record.workflow.todo_plan_id;
             }
             Payload::Custom {
                 custom: Custom::NativeAppend(append),
@@ -420,7 +444,7 @@ fn session_at(file: &File, cursor: Cursor) -> Result<(Session, String)> {
             super::super::context::response_boundaries(input)?;
         }
     }
-    Ok((session, model_reference))
+    Ok((session, model_reference, todos, todo_plan_id))
 }
 
 #[cfg(test)]
@@ -1165,6 +1189,149 @@ mod tests {
             assert_eq!(text(&restored.checkpoint.session), text(&cached.session));
             assert!(!text(&restored.checkpoint.session).contains("question-c"));
             assert_eq!(users(&restored.replay), ["question-a", "question-b"]);
+        }
+    }
+
+    fn push_todo_user(session: &mut Session, user: &str) {
+        match session {
+            Session::Completion(request) => request
+                .messages
+                .push(serde_json::from_value(json!({"role":"user","content":user})).unwrap()),
+            Session::Response(request) => super::super::super::response_input(request)
+                .push(serde_json::from_value(json!({"role":"user","content":user})).unwrap()),
+        }
+    }
+
+    fn append_todo_assistant(session: &mut Session, answer: &str) {
+        match session {
+            Session::Completion(request) => request
+                .messages
+                .push(
+                    serde_json::from_value(json!({"role":"assistant","content":answer})).unwrap(),
+                ),
+            Session::Response(request) => super::super::super::response_input(request)
+                .push(serde_json::from_value(json!({"type":"message","id":"message-todo","role":"assistant","status":"completed","content":[{"type":"output_text","text":answer,"annotations":[]}]})).unwrap()),
+        }
+    }
+
+    #[test]
+    fn todo_prepared_restores_ordinary_and_plan_source_from_history() {
+        use crate::tools::todo::{TodoItem, TodoStatus};
+        for protocol in [Protocol::Completion, Protocol::Response] {
+            let dir = tempfile::tempdir().unwrap();
+            let metadata = metadata(dir.path());
+            let mut journal = SessionJournal::new(dir.path().into());
+            let mut session =
+                Session::new("model".into(), protocol, "system".into(), EditMode::Replace);
+
+            // 第一轮请求携带普通清单（无计划来源）。
+            let ordinary = WorkflowState {
+                todos: vec![TodoPhase {
+                    name: "Tasks".into(),
+                    tasks: vec![TodoItem {
+                        content: "A".into(),
+                        status: TodoStatus::InProgress,
+                        blocker: None,
+                    }],
+                }],
+                ..Default::default()
+            };
+            push_todo_user(&mut session, "question-a");
+            journal
+                .sent(
+                    &metadata,
+                    (&session).into(),
+                    &ordinary,
+                    Some("question-a"),
+                    None,
+                )
+                .unwrap();
+            append_todo_assistant(&mut session, "answer-a");
+            journal.commit((&session).into()).unwrap();
+
+            let tree = journal.tree().unwrap();
+            let user_a = tree.nodes[0].id.clone();
+            let answer_a = tree.nodes[1].id.clone();
+
+            // 用户 before cursor 与助手 native cursor 都折叠出 checkpoint 里的普通清单。
+            let Prepared {
+                todos,
+                todo_plan_id,
+                ..
+            } = journal.prepare_tree(&user_a).unwrap();
+            assert_eq!(todos, ordinary.todos);
+            assert_eq!(todo_plan_id, None);
+            let Prepared {
+                todos,
+                todo_plan_id,
+                ..
+            } = journal.prepare_tree(&answer_a).unwrap();
+            assert_eq!(todos, ordinary.todos);
+            assert_eq!(todo_plan_id, None);
+
+            // 第二轮：执行中经 pp.workflow 记录把清单切换到计划投影。
+            let planned = WorkflowState {
+                mode: WorkMode::Execute,
+                review: None,
+                plan: Some(crate::plan::PlanDocument {
+                    id: "0123456789abcdef0123456789abcdef".into(),
+                    revision: 1,
+                    title: "Plan".into(),
+                    content: "- [ ] step one\n".into(),
+                    status: crate::plan::PlanStatus::Executed,
+                    origin_prompt: "original task".into(),
+                    file_name: None,
+                    location: crate::plan::PlanLocation::Plans,
+                    approved_tasks: None,
+                }),
+                todos: vec![TodoPhase {
+                    name: "Write".into(),
+                    tasks: vec![TodoItem {
+                        content: "step one".into(),
+                        status: TodoStatus::Pending,
+                        blocker: None,
+                    }],
+                }],
+                todo_plan_id: Some("0123456789abcdef0123456789abcdef".into()),
+            };
+            push_todo_user(&mut session, "question-b");
+            journal
+                .sent(
+                    &metadata,
+                    (&session).into(),
+                    &WorkflowState::default(),
+                    Some("question-b"),
+                    None,
+                )
+                .unwrap();
+            journal.write_workflow(&planned).unwrap();
+            append_todo_assistant(&mut session, "answer-b");
+            journal.commit((&session).into()).unwrap();
+
+            let tree = journal.tree().unwrap();
+            let user_b = tree.nodes[2].id.clone();
+            let answer_b = tree.nodes[3].id.clone();
+
+            // 导航到 B 的用户消息之前：最后一 State/Workflow 记录仍是普通清单。
+            let Prepared {
+                todos,
+                todo_plan_id,
+                ..
+            } = journal.prepare_tree(&user_b).unwrap();
+            assert_eq!(todos, ordinary.todos);
+            assert_eq!(todo_plan_id, None);
+
+            // 助手节点：同轮 pp.workflow 增量成为最新投影来源。
+            let Prepared {
+                todos,
+                todo_plan_id,
+                ..
+            } = journal.prepare_tree(&answer_b).unwrap();
+            assert_eq!(todos, planned.todos);
+            assert_eq!(
+                todo_plan_id.as_deref(),
+                Some("0123456789abcdef0123456789abcdef")
+            );
         }
     }
 }

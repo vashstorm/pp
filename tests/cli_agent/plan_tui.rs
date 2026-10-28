@@ -55,15 +55,11 @@ fn plan_final(request: Request, protocol: &str, text: &str) {
 
 fn plan_wait_mode(pty: &mut Pty, mode: &str) {
     pty.wait_for("authoritative workflow mode", |screen| {
-        screen
-            .contents()
-            .lines()
-            .last()
-            .is_some_and(|line| {
-                ["off", "low", "med", "hig", "xhi", "max"].iter().any(|effort| {
-                    line.contains(&format!("{effort} · \u{f0132} {mode} · "))
-                })
-            })
+        screen.contents().lines().last().is_some_and(|line| {
+            ["off", "low", "med", "hig", "xhi", "max"]
+                .iter()
+                .any(|effort| line.contains(&format!("{effort} · \u{f0132} {mode} · ")))
+        })
     });
 }
 
@@ -125,7 +121,7 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
             assert!(
                 matches!(
                     name.as_str(),
-                    Some("read" | "grep" | "glob" | "ask" | "plan_write" | "plan_submit")
+                    Some("read" | "grep" | "glob" | "ask" | "todo" | "plan_write" | "plan_submit")
                 ),
                 "{body}"
             );
@@ -185,7 +181,10 @@ fn plan_path(project: &Path) -> std::path::PathBuf {
                 .flatten()
                 .map(|entry| entry.unwrap().path())
         })
-        .filter(|path| path.file_name().is_some_and(|name| name == "create-canary.md"))
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name == "create-canary.md")
+        })
         .collect();
     assert_eq!(files.len(), 1, "expected one saved plan: {files:?}");
     files.into_iter().next().unwrap()
@@ -212,12 +211,7 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
     assert!(
         names.iter().all(|name| matches!(
             *name,
-            "read"
-                | "ask"
-                | "grep"
-                | "glob"
-                | "plan_write"
-                | "plan_submit"
+            "read" | "ask" | "grep" | "glob" | "plan_write" | "todo" | "plan_submit"
         )),
         "{body}"
     );
@@ -544,11 +538,7 @@ fn plan_tui_rejects_real_side_effects_but_reads_searches_and_asks() {
                 "grep",
                 json!({"pattern":"needle","path":"src"}),
             ),
-            (
-                "research-find",
-                "glob",
-                json!({"path":"src/agent.rs"}),
-            ),
+            ("research-find", "glob", json!({"path":"src/agent.rs"})),
         ];
         plan_calls(
             request,
@@ -570,8 +560,18 @@ fn plan_tui_rejects_real_side_effects_but_reads_searches_and_asks() {
             );
         }
         assert_eq!(outputs[8].1["content"], "first\nneedle here\nlast\n");
-        assert!(outputs[9].1["content"].as_str().unwrap().contains("*2|needle here"));
-        assert!(outputs[10].1["content"].as_str().unwrap().contains("agent.rs"));
+        assert!(
+            outputs[9].1["content"]
+                .as_str()
+                .unwrap()
+                .contains("*2|needle here")
+        );
+        assert!(
+            outputs[10].1["content"]
+                .as_str()
+                .unwrap()
+                .contains("agent.rs")
+        );
         assert_eq!(
             std::fs::read(project.path().join("canary.txt")).unwrap(),
             b"original bytes"
@@ -1116,7 +1116,14 @@ fn plan_tui_submission_requires_deliberate_action_and_survives_resize_and_resume
         let review = text.find("Review Plan").unwrap();
         let compact = text.find("Compact context and execute").unwrap();
         let leave = text.find("Save draft and leave Plan mode").unwrap();
-        assert!(fresh < keep && keep < compact && compact < review && review < discuss && discuss < leave, "{text}");
+        assert!(
+            fresh < keep
+                && keep < compact
+                && compact < review
+                && review < discuss
+                && discuss < leave,
+            "{text}"
+        );
         assert!(text.contains('☐'), "{text}");
         no_more(&fixture);
         pty.resize(4, 20);
@@ -1167,8 +1174,11 @@ fn plan_ai_filename_is_stable_and_never_overwrites() {
         for location in ["drafts", "plans", "done"] {
             let directory = project.path().join(".pp").join(location);
             std::fs::create_dir_all(&directory).unwrap();
-            std::fs::write(directory.join(format!("occupied-{location}.md")), b"external bytes")
-                .unwrap();
+            std::fs::write(
+                directory.join(format!("occupied-{location}.md")),
+                b"external bytes",
+            )
+            .unwrap();
         }
         let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
         plan_enter(&mut pty, &fixture);
@@ -1210,11 +1220,21 @@ fn plan_ai_filename_is_stable_and_never_overwrites() {
                 "Plan file name already exists; choose another file_name."
             );
             assert_eq!(
-                std::fs::read(project.path().join(".pp").join(location).join(format!("occupied-{location}.md"))).unwrap(),
+                std::fs::read(
+                    project
+                        .path()
+                        .join(".pp")
+                        .join(location)
+                        .join(format!("occupied-{location}.md"))
+                )
+                .unwrap(),
                 b"external bytes"
             );
         }
-        assert_eq!(outputs.iter().find(|(id, _)| id == "bad-path").unwrap().1["ok"], false);
+        assert_eq!(
+            outputs.iter().find(|(id, _)| id == "bad-path").unwrap().1["ok"],
+            false
+        );
         let saved = &outputs.iter().find(|(id, _)| id == "named-save").unwrap().1;
         assert_eq!(saved["path"], ".pp/drafts/create-canary.md");
         assert_eq!(saved["revision"], 1);
@@ -1223,18 +1243,47 @@ fn plan_ai_filename_is_stable_and_never_overwrites() {
             request,
             protocol,
             json!([
-                plan_call(protocol, "stable-save", "plan_write", json!({"title":"Canary","file_name":"create-canary.md","content":revised,"expected_revision":1})),
-                plan_call(protocol, "rename-refused", "plan_write", json!({"title":"Canary","file_name":"another-name.md","content":"- [ ] wrong","expected_revision":2}))
+                plan_call(
+                    protocol,
+                    "stable-save",
+                    "plan_write",
+                    json!({"title":"Canary","file_name":"create-canary.md","content":revised,"expected_revision":1})
+                ),
+                plan_call(
+                    protocol,
+                    "rename-refused",
+                    "plan_write",
+                    json!({"title":"Canary","file_name":"another-name.md","content":"- [ ] wrong","expected_revision":2})
+                )
             ]),
         );
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         let outputs = cancel_tool_outputs(&body, protocol);
-        assert_eq!(outputs.iter().find(|(id, _)| id == "stable-save").unwrap().1["revision"], 2);
-        assert_eq!(outputs.iter().find(|(id, _)| id == "rename-refused").unwrap().1["error"], "Rename plans through /plan-list.");
-        assert_eq!(std::fs::read_to_string(plan_path(project.path())).unwrap(), revised);
+        assert_eq!(
+            outputs
+                .iter()
+                .find(|(id, _)| id == "stable-save")
+                .unwrap()
+                .1["revision"],
+            2
+        );
+        assert_eq!(
+            outputs
+                .iter()
+                .find(|(id, _)| id == "rename-refused")
+                .unwrap()
+                .1["error"],
+            "Rename plans through /plan-list."
+        );
+        assert_eq!(
+            std::fs::read_to_string(plan_path(project.path())).unwrap(),
+            revised
+        );
         assert!(!project.path().join(".pp/drafts/another-name.md").exists());
         plan_final(request, protocol, "Named draft saved");
-        pty.wait_for("named draft save finished", |screen| screen.contents().contains("Named draft saved"));
+        pty.wait_for("named draft save finished", |screen| {
+            screen.contents().contains("Named draft saved")
+        });
         pty.ready();
         pty.input("\x03");
         pty.finish();
@@ -1259,7 +1308,14 @@ fn plan_toggle_waits_for_prompt_and_preserves_drafts() {
         plan_wait_mode(&mut pty, "Plan");
         no_more(&fixture);
         for location in ["drafts", "plans", "done"] {
-            assert!(!project.path().join(".pp").join(location).join("create-canary.md").exists());
+            assert!(
+                !project
+                    .path()
+                    .join(".pp")
+                    .join(location)
+                    .join("create-canary.md")
+                    .exists()
+            );
         }
 
         // 空待命可直接退出；再次进入仍待命。
@@ -1338,7 +1394,11 @@ fn plan_toggle_waits_for_prompt_and_preserves_drafts() {
         no_more(&fixture);
         pty.input("Research without saving anything\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        plan_final(request, protocol, "Findings are only in chat; nothing saved yet.");
+        plan_final(
+            request,
+            protocol,
+            "Findings are only in chat; nothing saved yet.",
+        );
         pty.ready();
         pty.input("/plan\r");
         pty.text("Save the draft with plan_write before leaving Plan mode.");
@@ -1386,9 +1446,19 @@ fn plan_tui_success_archives_completed_plan() {
         plan_enter(&mut pty, &fixture);
         pty.input("Plan the canary ORIGIN_ONLY_MARKER\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        plan_final(request, protocol, "EXPLORATION_ONLY_MARKER: verified current code");
+        plan_final(
+            request,
+            protocol,
+            "EXPLORATION_ONLY_MARKER: verified current code",
+        );
         pty.ready();
-        plan_drive_ready(&mut pty, &fixture, protocol, "Finalize the plan", PLAN_TUI_BODY);
+        plan_drive_ready(
+            &mut pty,
+            &fixture,
+            protocol,
+            "Finalize the plan",
+            PLAN_TUI_BODY,
+        );
         let origin_id = saved_session_id(home.path());
         // 本地批准 Execute (plan only)：固定 Fresh 新会话，只携带计划。
         plan_choose(&mut pty, 0);
@@ -1459,8 +1529,8 @@ fn plan_tui_success_archives_completed_plan() {
         pty.completed();
         // 同名文件进入 done，plans 源不存在，勾选进度保留。
         assert!(!project.path().join(".pp/plans/create-canary.md").exists());
-        let archived = std::fs::read_to_string(project.path().join(".pp/done/create-canary.md"))
-            .unwrap();
+        let archived =
+            std::fs::read_to_string(project.path().join(".pp/done/create-canary.md")).unwrap();
         assert!(archived.contains("- [x] Create canary.txt"), "{archived}");
         assert!(
             archived.contains("- [x] Verify the failure boundary"),
@@ -1488,8 +1558,7 @@ fn plan_tui_success_archives_completed_plan() {
         // 旧源规划会话恢复：按 ID 协调到 done，只读显示同一路径。
         pty.input("\x03");
         pty.finish();
-        let mut resumed =
-            Pty::start_with_args(project.path(), home.path(), &["-r", &origin_id]);
+        let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &origin_id]);
         resumed.ready();
         resumed.input("/plan view\r");
         resumed.wait_for("source session reads the archived plan", |screen| {
@@ -1516,7 +1585,13 @@ fn plan_completion_requires_success_and_approved_tasks() {
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         plan_final(request, protocol, "Findings verified.");
         pty.ready();
-        plan_drive_ready(&mut pty, &fixture, protocol, "Finalize the plan", PLAN_TUI_BODY);
+        plan_drive_ready(
+            &mut pty,
+            &fixture,
+            protocol,
+            "Finalize the plan",
+            PLAN_TUI_BODY,
+        );
         plan_choose(&mut pty, 0);
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         plan_calls(
@@ -1538,18 +1613,24 @@ fn plan_completion_requires_success_and_approved_tasks() {
             ]),
         );
         let plan_relative = ".pp/plans/create-canary.md";
-        let tick = |old: &str| {
-            json!([plan_call(
+        let tick = |id: &str, old: &str| {
+            plan_call(
                 protocol,
-                "progress",
+                id,
                 "edit",
-                json!({"path":plan_relative,"edits":[{"oldText":old,"newText":old.replace("- [ ]","- [x]")}]})
-            )])
+                json!({"path":plan_relative,"edits":[{"oldText":old,"newText":old.replace("- [ ]","- [x]")}]}),
+            )
         };
+        // 同批直接勾选两项：同一批计划编辑只在批后同步一次实际正文。
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        plan_calls(request, protocol, tick("- [ ] Create canary.txt"));
-        let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        plan_calls(request, protocol, tick("- [ ] Verify the failure boundary"));
+        plan_calls(
+            request,
+            protocol,
+            json!([
+                tick("progress-create", "- [ ] Create canary.txt"),
+                tick("progress-verify", "- [ ] Verify the failure boundary")
+            ]),
+        );
         let plans_path = project.path().join(".pp/plans/create-canary.md");
 
         // 全部勾选但最终错误：流中错误使任务失败，不归档。
@@ -1570,13 +1651,25 @@ fn plan_completion_requires_success_and_approved_tasks() {
         }
         pty.ready();
         assert!(plans_path.exists());
-        assert!(!project.path().join(".pp/done").join("create-canary.md").exists());
+        assert!(
+            !project
+                .path()
+                .join(".pp/done")
+                .join("create-canary.md")
+                .exists()
+        );
         pty.input("/plan view\r");
         pty.wait_for("failed task keeps executed status", |screen| {
             let text = screen.contents();
-            text.contains("Executed") && !text.contains("Completed")
+            screen.alternate_screen()
+                && text.contains("Read-only view")
+                && text.contains("Executed")
+                && !text.contains("Completed")
         });
         pty.input("\x1b");
+        pty.wait_for("closing executed plan before the next task", |screen| {
+            !screen.alternate_screen() && input_is_ready(screen)
+        });
         no_more(&fixture);
 
         // 全部勾选但取消：同样不归档。
@@ -1584,14 +1677,57 @@ fn plan_completion_requires_success_and_approved_tasks() {
         let (_request, _) = pty.request_at(&fixture, api_path(protocol));
         pty.input("\x1b");
         cancel_wait_cancelled_ready(&mut pty);
+        drop(_request);
         assert!(plans_path.exists());
-        assert!(!project.path().join(".pp/done").join("create-canary.md").exists());
+        assert!(
+            !project
+                .path()
+                .join(".pp/done")
+                .join("create-canary.md")
+                .exists()
+        );
         no_more(&fixture);
 
-        // 下一次成功收尾：正文已同步未再次变化也归档。
+        // 改写批准任务：编辑落盘后同步立即拒绝，不发起下一次模型请求。
+        pty.input("Rewrite the second approved task\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_calls(
+            request,
+            protocol,
+            json!([plan_call(
+                protocol,
+                "drift-rewrite",
+                "edit",
+                json!({"path":plan_relative,"edits":[{"oldText":"- [x] Verify the failure boundary","newText":"- [x] Verify the boundary twice"}]})
+            )]),
+        );
+        pty.wait_for("rewriting an approved task is rejected", |screen| {
+            screen.contents().contains("Plan tasks changed")
+        });
+        assert!(plans_path.exists());
+        assert!(
+            !project
+                .path()
+                .join(".pp/done")
+                .join("create-canary.md")
+                .exists()
+        );
+        no_more(&fixture);
+
+        // 恢复批准正文（逐字节还原）后成功收尾：已同步未再次变化也归档。
+        let approved_checked = PLAN_TUI_BODY.replace("- [ ]", "- [x]");
+        std::fs::write(&plans_path, &approved_checked).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&plans_path).unwrap(),
+            approved_checked
+        );
         pty.input("Recovered and completed all approved tasks\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        plan_final(request, protocol, "Recovered and completed all approved tasks.");
+        plan_final(
+            request,
+            protocol,
+            "Recovered and completed all approved tasks.",
+        );
         pty.completed();
         assert!(!plans_path.exists());
         let archived =
@@ -1621,7 +1757,13 @@ fn plan_tui_ready_keeps_input_and_output_and_sends_discussion() {
         let project = tempfile::tempdir().unwrap();
         let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
         plan_enter(&mut pty, &fixture);
-        plan_drive_ready(&mut pty, &fixture, protocol, "Plan the canary", PLAN_TUI_BODY);
+        plan_drive_ready(
+            &mut pty,
+            &fixture,
+            protocol,
+            "Plan the canary",
+            PLAN_TUI_BODY,
+        );
         pty.input("\t继续讨论具体边界");
         pty.draft("继续讨论具体边界");
         let text = pty.parser.screen().contents();
@@ -1632,17 +1774,26 @@ fn plan_tui_ready_keeps_input_and_output_and_sends_discussion() {
         assert!(text.contains("Save draft and leave Plan mode"), "{text}");
         assert!(text.contains("┌ Plan"), "{text}");
         assert!(text.contains("╭ Actions"), "{text}");
-        assert!(!text.contains("Plan ready · /plan view to review"), "{text}");
+        assert!(
+            !text.contains("Plan ready · /plan view to review"),
+            "{text}"
+        );
         assert!(cancel_cursor_on_input_row(pty.parser.screen()), "{text}");
         pty.resize(24, 90);
         pty.draft("继续讨论具体边界");
         pty.input("\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert_eq!(cancel_user_messages(&body, protocol).last().unwrap(), "继续讨论具体边界");
+        assert_eq!(
+            cancel_user_messages(&body, protocol).last().unwrap(),
+            "继续讨论具体边界"
+        );
         assert!(!body.to_string().contains("[Approved Markdown snapshot]"));
         plan_final(request, protocol, "Discussion continued");
         pty.ready();
-        assert_eq!(std::fs::read_to_string(plan_path(project.path())).unwrap(), PLAN_TUI_BODY);
+        assert_eq!(
+            std::fs::read_to_string(plan_path(project.path())).unwrap(),
+            PLAN_TUI_BODY
+        );
         assert!(!project.path().join("canary.txt").exists());
         pty.input("\x03");
         pty.finish();
@@ -1658,7 +1809,13 @@ fn plan_tui_save_draft_and_leave_preserves_file_without_model_request() {
         let project = tempfile::tempdir().unwrap();
         let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
         plan_enter(&mut pty, &fixture);
-        plan_drive_ready(&mut pty, &fixture, protocol, "Plan the canary", PLAN_TUI_BODY);
+        plan_drive_ready(
+            &mut pty,
+            &fixture,
+            protocol,
+            "Plan the canary",
+            PLAN_TUI_BODY,
+        );
         let path = plan_path(project.path());
         let id = saved_session_id(home.path());
         plan_choose(&mut pty, 5);
@@ -1668,10 +1825,20 @@ fn plan_tui_save_draft_and_leave_preserves_file_without_model_request() {
         assert!(path.starts_with(project.path().join(".pp/drafts")));
         assert!(!project.path().join("canary.txt").exists());
         let journal = plan_journal(home.path(), &id);
-        let workflows: Vec<_> = journal.iter().filter(|record| record["customType"] == "pp.workflow").collect();
-        assert_eq!(workflows.last().unwrap()["data"]["workflow"]["mode"], "execute");
+        let workflows: Vec<_> = journal
+            .iter()
+            .filter(|record| record["customType"] == "pp.workflow")
+            .collect();
+        assert_eq!(
+            workflows.last().unwrap()["data"]["workflow"]["mode"],
+            "execute"
+        );
         assert!(workflows.last().unwrap()["data"]["workflow"]["plan"].is_null());
-        assert!(workflows.iter().any(|record| record["data"]["workflow"]["plan"]["status"] == "draft"));
+        assert!(
+            workflows
+                .iter()
+                .any(|record| record["data"]["workflow"]["plan"]["status"] == "draft")
+        );
         no_more(&fixture);
         pty.input("\x03");
         pty.finish();
@@ -1691,16 +1858,34 @@ fn plan_tui_compact_then_execute_succeeds_or_stays_in_plan_on_failure_and_cancel
             let (request, _) = pty.request_at(&fixture, api_path(protocol));
             plan_final(request, protocol, "OLD_RESEARCH_ONLY_MARKER");
             pty.ready();
-            plan_drive_ready(&mut pty, &fixture, protocol, "Finalize the plan", PLAN_TUI_BODY);
+            plan_drive_ready(
+                &mut pty,
+                &fixture,
+                protocol,
+                "Finalize the plan",
+                PLAN_TUI_BODY,
+            );
             let id = saved_session_id(home.path());
             let path = plan_path(project.path());
             plan_choose(&mut pty, 2);
             let (request, summary) = pty.request_at(&fixture, api_path(protocol));
-            assert!(summary.to_string().contains("Summarize the preceding conversation"), "{summary}");
-            assert!(summary.get("tools").is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)), "{summary}");
+            assert!(
+                summary
+                    .to_string()
+                    .contains("Summarize the preceding conversation"),
+                "{summary}"
+            );
+            assert!(
+                summary
+                    .get("tools")
+                    .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
+                "{summary}"
+            );
             plan_wait_mode(&mut pty, "Plan");
             match outcome {
-                "failure" => request.respond(Response::empty(tiny_http::StatusCode(500))).unwrap(),
+                "failure" => request
+                    .respond(Response::empty(tiny_http::StatusCode(500)))
+                    .unwrap(),
                 "cancel" => {
                     pty.input("\x1b");
                     pty.wait_for("取消压缩并恢复计划菜单", |screen| {
@@ -1724,7 +1909,12 @@ fn plan_tui_compact_then_execute_succeeds_or_stays_in_plan_on_failure_and_cancel
                 assert!(encoded.contains("[Approved Markdown snapshot]"), "{body}");
                 assert!(encoded.contains("approved bytes"), "{body}");
                 assert_eq!(saved_session_id(home.path()), id);
-                plan_final(request, protocol, "Execution finished");
+                // 终答显式等待用户：批准任务仍未勾选，等待识别阻止完成提醒追加请求。
+                plan_final(
+                    request,
+                    protocol,
+                    "Execution finished with tasks still open. Which task should I resume first?",
+                );
                 pty.ready();
                 plan_wait_execute(&mut pty);
             } else {

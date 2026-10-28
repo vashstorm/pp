@@ -160,9 +160,12 @@ fn skill_read_execution_and_disablement_apply_to_every_workflow() {
         let mut tools = Tools::new(dir.path().into(), mode).unwrap();
         tools.skills = crate::skills::Skills::from_dir(&registry_dir).shared();
         let document = crate::plan::PlanDocument::new().unwrap();
+        let execute_workflow = crate::plan::WorkflowState::default();
         for workflow in ["execute", "plan", "review"] {
             let policy = || match workflow {
-                "execute" => crate::tools::ToolPolicy::Execute,
+                "execute" => crate::tools::ToolPolicy::Execute {
+                    workflow: &execute_workflow,
+                },
                 "plan" => crate::tools::ToolPolicy::Plan {
                     document: &document,
                     sealed: false,

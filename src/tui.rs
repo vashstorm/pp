@@ -19,6 +19,8 @@ mod transcript_style;
 mod tree;
 mod welcome;
 
+pub(crate) use transcript_style::display_text;
+
 use crate::{
     agent::{
         Agent, ExecutionPreparation,
@@ -353,6 +355,9 @@ enum WorkerEvent {
         session_id: Option<String>,
         replay: Option<Vec<crate::agent::persistence::ReplayRecord>>,
         cleanup: crate::mcp::Cleanup,
+        /// 交接快照：UI 必须在采纳 replay/替换 workflow 之后、ACK 之前渲染，
+        /// Fresh 清理后才入卡，源会话不能先 emit 再被清掉。
+        todo_snapshot: Option<AgentEvent>,
         reply: mpsc::SyncSender<()>,
     },
 }
@@ -418,6 +423,7 @@ fn publish_prepared(
             session_id: preparation.session_id,
             replay: preparation.replay,
             cleanup: preparation.cleanup,
+            todo_snapshot: preparation.todo_snapshot,
             reply,
         },
         cancellation,
@@ -2184,6 +2190,11 @@ impl App {
                             if let Some(records) = preparation.replay {
                                 note = self.adopt_history(records);
                             }
+                            // 与 ExecutionPrepared 相同顺序：采纳会话状态后渲染
+                            // 新候选的 Preview 快照，不被 replay 清理吞掉。
+                            if let Some(snapshot) = preparation.todo_snapshot {
+                                self.conversation.progress(snapshot);
+                            }
                             self.session_id = preparation.session_id;
                             self.usage = None;
                             self.token_speed.clear();
@@ -2380,6 +2391,7 @@ impl App {
                     session_id,
                     replay,
                     cleanup,
+                    todo_snapshot,
                     reply,
                 }) => {
                     // 一次性交接：先安装退出清理句柄并更新模式/会话，再 ACK；
@@ -2391,6 +2403,11 @@ impl App {
                     if let Some(records) = replay {
                         // None：Keep/off 不重绘；Some(空)：Fresh 新会话；Some(records)：恢复。
                         note = self.adopt_history(records);
+                    }
+                    // 快照在 adopt_history/替换 workflow 之后、ACK 之前渲染，
+                    // 保证 Fresh 清理后的新 transcript 立即携带交接卡片。
+                    if let Some(snapshot) = todo_snapshot {
+                        self.conversation.progress(snapshot);
                     }
                     self.session_id = session_id;
                     self.usage = None;
@@ -8522,7 +8539,7 @@ mod tests {
                 location: crate::plan::PlanLocation::Plans,
                 approved_tasks: None,
             }),
-            review: None,
+            ..Default::default()
         }
     }
 
@@ -8632,7 +8649,7 @@ mod tests {
         app.workflow = WorkflowState {
             mode: WorkMode::Plan,
             plan: None,
-            review: None,
+            ..Default::default()
         };
         for command in ["/plan", "/plan research"] {
             app.input.insert_str(command);
@@ -8766,7 +8783,7 @@ mod tests {
                 status: PlanStatus::Executed,
                 ..ready_plan_workflow().plan.expect("plan")
             }),
-            review: None,
+            ..Default::default()
         };
         events
             .send(WorkerEvent::ExecutionPrepared {
@@ -8774,6 +8791,7 @@ mod tests {
                 session_id: Some("next".into()),
                 replay: None,
                 cleanup,
+                todo_snapshot: None,
                 reply,
             })
             .unwrap();
@@ -8854,7 +8872,7 @@ mod tests {
         app.receive_event_for_test(WorkerEvent::WorkflowChanged(Ok(WorkflowState {
             mode: WorkMode::Plan,
             plan: None,
-            review: None,
+            ..Default::default()
         })));
         assert!(app.plan_after_enter.is_none());
         assert!(!app.plan_retry_enter);
@@ -8880,7 +8898,7 @@ mod tests {
         app.workflow = WorkflowState {
             mode: WorkMode::Plan,
             plan: Some(plan),
-            review: None,
+            ..Default::default()
         };
         app.input.insert_str("/plan");
         app.submit(PendingKind::Steering);

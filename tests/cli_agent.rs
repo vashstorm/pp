@@ -2662,6 +2662,7 @@ mod tui {
     include!("cli_agent/transcript_blocks_tui.rs");
     include!("cli_agent/ask_tui.rs");
     include!("cli_agent/plan_tui.rs");
+    include!("cli_agent/todo_tui.rs");
     include!("cli_agent/plan_list_tui.rs");
     include!("cli_agent/plan_review_tui.rs");
     include!("cli_agent/tree_tui.rs");
@@ -6322,3 +6323,6 @@ mod resume_cli;
 
 #[path = "cli_agent/logging.rs"]
 mod logging;
+
+#[path = "cli_agent/todo.rs"]
+mod todo;

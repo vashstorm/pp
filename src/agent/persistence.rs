@@ -2175,7 +2175,7 @@ mod tests {
                 status: crate::plan::PlanStatus::Ready,
                 origin_prompt: "Create hello.txt".into(),
             }),
-            review: None,
+            ..Default::default()
         }
     }
 

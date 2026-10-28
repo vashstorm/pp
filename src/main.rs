@@ -861,11 +861,19 @@ fn run_cli_task(
             }
             AgentEvent::ToolFinished { id, result } => {
                 if current_tool.as_ref().is_some_and(|(current_id, name)| {
-                    current_id == &id && matches!(name.as_str(), "grep" | "glob")
+                    current_id == &id && matches!(name.as_str(), "grep" | "glob" | "todo")
                 }) && let Some(content) = result["content"]
                     .as_str()
                     .or_else(|| result["error"].as_str())
                 {
+                    let content = if current_tool
+                        .as_ref()
+                        .is_some_and(|(_, name)| name == "todo")
+                    {
+                        crate::tui::display_text(content)
+                    } else {
+                        std::borrow::Cow::Borrowed(content)
+                    };
                     cli_write(
                         stderr,
                         &format!("{content}\n"),
@@ -910,6 +918,68 @@ fn run_cli_task(
                     cli_write(
                         stderr,
                         &format!("\ntool {name}: {status}\n"),
+                        &mut err_broken,
+                        &mut first_error,
+                    );
+                }
+            }
+            AgentEvent::TodoSnapshot {
+                revision,
+                phases,
+                status,
+                ..
+            } => {
+                let preview = if matches!(
+                    status,
+                    crate::plan::PlanStatus::Draft | crate::plan::PlanStatus::Ready
+                ) {
+                    " · Preview (not executing)"
+                } else {
+                    ""
+                };
+                cli_write(
+                    stderr,
+                    &format!(
+                        "Plan tasks · {status:?} · r{revision}{preview}\n{}\n",
+                        crate::tui::display_text(&crate::tools::todo::format_summary(
+                            &phases,
+                            &[],
+                            true
+                        ))
+                    ),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+            }
+            AgentEvent::TodoReminder {
+                todos,
+                attempt,
+                max_attempts,
+            } => {
+                // stderr 提醒与 open 项；stdout 仍只保留助手文本。
+                let open: Vec<&crate::tools::todo::TodoItem> = todos
+                    .iter()
+                    .filter(|item| {
+                        !matches!(
+                            item.status,
+                            crate::tools::todo::TodoStatus::Completed
+                                | crate::tools::todo::TodoStatus::Abandoned
+                        )
+                    })
+                    .collect();
+                cli_write(
+                    stderr,
+                    &format!(
+                        "{} incomplete todos - reminder {attempt}/{max_attempts}\n",
+                        open.len()
+                    ),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+                for item in &open {
+                    cli_write(
+                        stderr,
+                        &format!("  - {}\n", crate::tui::display_text(&item.content)),
                         &mut err_broken,
                         &mut first_error,
                     );

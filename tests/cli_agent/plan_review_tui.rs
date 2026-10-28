@@ -209,7 +209,7 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                 plan_final(
                     request,
                     protocol,
-                    "Executed despite the advisory Major finding",
+                    "Executed despite the advisory Major finding. Shall we continue with the remaining plan items?",
                 );
                 pty.ready();
                 plan_wait_execute(&mut pty);

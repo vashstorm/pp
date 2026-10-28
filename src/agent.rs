@@ -7,6 +7,7 @@ pub(crate) mod plan_management;
 mod plan_open;
 mod plan_review;
 mod plan_workflow;
+mod todo;
 mod tool_images;
 
 #[cfg(test)]
@@ -88,6 +89,7 @@ pub(crate) struct ExecutionPreparation {
     pub(crate) session_id: Option<String>,
     pub(crate) replay: Option<Vec<persistence::ReplayRecord>>,
     pub(crate) cleanup: crate::mcp::Cleanup,
+    pub(crate) todo_snapshot: Option<AgentEvent>,
 }
 
 pub(crate) struct TreeNavigation {
@@ -350,8 +352,8 @@ impl Agent {
     ) -> Result<Self> {
         let persistence::RestoredSession {
             mut checkpoint,
-            journal,
-            replay,
+            mut journal,
+            mut replay,
         } = restored;
         let config = catalog
             .resolve(&checkpoint.model_reference)
@@ -370,6 +372,14 @@ impl Agent {
             config.thinking.supports(checkpoint.think_level),
             "saved session thinking level is not supported by the configured model"
         );
+        if let Some(snapshot) = plan_workflow::sync_restored_todos(
+            &tools,
+            &mut journal,
+            &mut checkpoint.workflow,
+            &replay,
+        )? {
+            replay.push(persistence::ReplayRecord::Event(snapshot));
+        }
         let client = OpenAiClient::new(&config)?;
         tools.limits = checkpoint.tool_limits;
         if checkpoint.workflow.mode == crate::plan::WorkMode::Execute {
@@ -512,7 +522,16 @@ impl Agent {
             replay,
             selection,
             draft,
+            todos,
+            todo_plan_id,
         } = self.journal.prepare_tree(id)?;
+        plan_workflow::sync_plan_todos(
+            &self.tools,
+            &mut self.journal,
+            &mut self.workflow,
+            &mut |_| {},
+            false,
+        )?;
         let compatible = match &source {
             Session::Completion(_) => self.current_model.protocol == Protocol::Completion,
             Session::Response(request) => {
@@ -562,6 +581,24 @@ impl Agent {
             base_system: &self.base_system,
             prompt_source: self.prompt_source.as_ref(),
         };
+        let keep_plan_todos = self.workflow.plan.as_ref().is_some_and(|plan| {
+            self.workflow.mode == crate::plan::WorkMode::Plan
+                || plan.status == crate::plan::PlanStatus::Executed
+                || self.workflow.todo_plan_id.as_deref() == Some(plan.id.as_str())
+        });
+        let previous_todos = if keep_plan_todos {
+            None
+        } else {
+            let restored_todos = if todo_plan_id.is_none() {
+                todos
+            } else {
+                Vec::new()
+            };
+            Some((
+                std::mem::replace(&mut self.workflow.todos, restored_todos),
+                self.workflow.todo_plan_id.take(),
+            ))
+        };
         let old_status = self.workflow.plan.as_ref().map(|plan| plan.status);
         if let Some(plan) = &mut self.workflow.plan
             && plan.status == crate::plan::PlanStatus::Ready
@@ -576,6 +613,10 @@ impl Agent {
         ) {
             if let (Some(plan), Some(status)) = (&mut self.workflow.plan, old_status) {
                 plan.status = status;
+            }
+            if let Some((todos, source)) = previous_todos {
+                self.workflow.todos = todos;
+                self.workflow.todo_plan_id = source;
             }
             return Err(error);
         }
@@ -897,7 +938,9 @@ impl Agent {
             "bash",
             &arguments,
             call_id,
-            crate::tools::ToolPolicy::Execute,
+            crate::tools::ToolPolicy::Execute {
+                workflow: &self.workflow,
+            },
             cancellation,
             emit,
             &mut |url, token| self.client.fetch_read_url(url, token),
@@ -913,6 +956,16 @@ impl Agent {
             self.plan_lease = None;
             return Ok(());
         };
+        if self.workflow.mode == crate::plan::WorkMode::Execute
+            && matches!(
+                document.status,
+                crate::plan::PlanStatus::Completed | crate::plan::PlanStatus::Abandoned
+            )
+            && self.workflow.todo_plan_id.is_none()
+        {
+            self.plan_lease = None;
+            return Ok(());
+        }
         if self
             .plan_lease
             .as_ref()
@@ -937,6 +990,7 @@ impl Agent {
         self.journal.check()?;
         // 裸 /plan 只待命：首条非空任务才分配文档并绑定 origin。
         let created = self.workflow.plan.is_none() && !prompt.trim().is_empty();
+        let before_creation = created.then(|| self.workflow.clone());
         if created {
             self.workflow.plan = Some(crate::plan::PlanDocument::new()?);
         }
@@ -956,13 +1010,17 @@ impl Agent {
         let old_status = plan.status;
         let set_origin = plan.origin_prompt.is_empty() && !prompt.trim().is_empty();
         let persist = created || set_origin || old_status == crate::plan::PlanStatus::Ready;
-        let previous = persist.then(|| self.workflow.clone());
+        let previous = before_creation.or_else(|| persist.then(|| self.workflow.clone()));
         let plan = self.workflow.plan.as_mut().expect("plan allocated");
         if set_origin {
             plan.origin_prompt = prompt.to_owned();
         }
         if plan.status == crate::plan::PlanStatus::Ready {
             plan.status = crate::plan::PlanStatus::Draft;
+        }
+        if created {
+            self.workflow.todo_plan_id = self.workflow.plan.as_ref().map(|plan| plan.id.clone());
+            self.workflow.todos.clear();
         }
         if let Some(previous) = previous {
             self.commit_workflow(previous)?;
@@ -1152,12 +1210,20 @@ impl Agent {
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
         let mut claim_boundary = true;
+        let mut reminder = todo::TodoReminderState::default();
         loop {
             self.journal.check()?;
             if cancellation.is_cancelled() {
                 self.persist_pending_input(user.take())?;
                 return Err(Cancelled.into());
             }
+            plan_workflow::sync_plan_todos(
+                &self.tools,
+                &mut self.journal,
+                &mut self.workflow,
+                emit,
+                true,
+            )?;
             self.refresh_instructions()?;
             // 补充边界：仅首次普通请求前，以及上一轮完整回复/整批工具结果成功提交之后。
             let claimed = match (input, claim_boundary) {
@@ -1209,7 +1275,6 @@ impl Agent {
                 pending_project_load: &mut self.pending_project_load,
                 reported_project_load: &mut self.reported_project_load,
             };
-            let before_revision = self.workflow.plan.as_ref().map(|plan| plan.revision);
             let mut plan_dirty = false;
             let resources = TurnResources {
                 client: &mut self.client,
@@ -1220,6 +1285,7 @@ impl Agent {
                 workflow: &mut self.workflow,
                 input,
                 plan_dirty: &mut plan_dirty,
+                reminder: &mut reminder,
             };
             let finished = match &mut self.session {
                 Session::Completion(request) => {
@@ -1251,19 +1317,45 @@ impl Agent {
                 }
                 return Ok(RunOutcome::AwaitingPlanReview);
             }
-            if before_revision != self.workflow.plan.as_ref().map(|plan| plan.revision) {
-                self.journal.write_workflow(&self.workflow)?;
-            }
-            if matches!(finished, TurnOutcome::Completed) {
+            if let TurnOutcome::Completed {
+                awaiting_user_answer,
+            } = finished
+            {
+                plan_workflow::sync_plan_todos(
+                    &self.tools,
+                    &mut self.journal,
+                    &mut self.workflow,
+                    emit,
+                    true,
+                )?;
+                let remind = todo::eligible(&self.workflow, &reminder, awaiting_user_answer);
                 // 原子“领取或关闭”：最终回复与新补充仅在这个短锁内仲裁。
                 if let Some(queue) = input {
-                    let batch = queue.claim_steering(true)?;
+                    let batch = queue.claim_steering(!remind)?;
                     if !batch.is_empty() {
                         self.apply_pending(batch, input, &mut user, cancellation, emit)?;
                         // 本边界只消费固定批次；确认期间新到达的消息等下一边界。
                         claim_boundary = false;
                         continue;
                     }
+                }
+                if remind {
+                    cancellation::check(cancellation)?;
+                    let attempt = reminder.count + 1;
+                    let text = todo::reminder_text(&self.workflow.todos, attempt);
+                    append_developer_to(&mut self.session, text);
+                    self.journal.commit((&self.session).into())?;
+                    let event = AgentEvent::TodoReminder {
+                        todos: todo::open_todos(&self.workflow.todos),
+                        attempt,
+                        max_attempts: todo::TODO_REMINDERS_MAX,
+                    };
+                    self.journal.event(&event);
+                    self.journal.check()?;
+                    reminder.count = attempt;
+                    reminder.awaiting_progress = true;
+                    emit(event);
+                    continue;
                 }
                 return Ok(RunOutcome::Completed);
             }
@@ -1470,6 +1562,7 @@ struct TurnResources<'a> {
     workflow: &'a mut crate::plan::WorkflowState,
     input: Option<&'a InputQueue>,
     plan_dirty: &'a mut bool,
+    reminder: &'a mut todo::TodoReminderState,
 }
 
 fn tool_policy<'a>(
@@ -1478,7 +1571,7 @@ fn tool_policy<'a>(
     input: Option<&'a InputQueue>,
 ) -> Result<crate::tools::ToolPolicy<'a>> {
     Ok(match workflow.mode {
-        crate::plan::WorkMode::Execute => crate::tools::ToolPolicy::Execute,
+        crate::plan::WorkMode::Execute => crate::tools::ToolPolicy::Execute { workflow },
         crate::plan::WorkMode::Plan => crate::tools::ToolPolicy::Plan {
             document: workflow
                 .plan
@@ -1492,7 +1585,7 @@ fn tool_policy<'a>(
 
 enum TurnOutcome {
     Continue,
-    Completed,
+    Completed { awaiting_user_answer: bool },
     PlanSubmitted,
 }
 
@@ -1524,33 +1617,134 @@ fn plan_file_touched(tools: &Tools, plan_path: &Option<String>, event: &AgentEve
 
 fn apply_plan_change(
     workflow: &mut crate::plan::WorkflowState,
+    journal: &mut SessionJournal,
     sealed: &mut bool,
     change: Option<crate::tools::PlanChange>,
+    emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<()> {
-    let Some(change) = change else {
-        return Ok(());
-    };
+    let Some(change) = change else { return Ok(()) };
     ensure!(
         workflow.mode == crate::plan::WorkMode::Plan && !*sealed,
         "Invalid plan tool transition."
     );
+    if matches!(change, crate::tools::PlanChange::Submitted) {
+        *sealed = true;
+        return Ok(());
+    }
+    let previous = workflow.clone();
     let plan = workflow
         .plan
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("No current plan."))?;
-    match change {
-        crate::tools::PlanChange::Written {
-            title,
-            file_name,
-            content,
-        } => {
-            plan.revision = plan.next_revision()?;
-            plan.title = title;
-            plan.file_name = Some(file_name);
-            plan.content = content;
-            plan.status = crate::plan::PlanStatus::Draft;
+    if let crate::tools::PlanChange::Written {
+        title,
+        file_name,
+        content,
+    } = change
+    {
+        plan.revision = plan.next_revision()?;
+        plan.title = title;
+        plan.file_name = Some(file_name);
+        plan.content = content;
+        plan.status = crate::plan::PlanStatus::Draft;
+    }
+    workflow.todos = crate::tools::todo::project_plan_todos(plan, &[], false)?;
+    workflow.todo_plan_id = Some(plan.id.clone());
+    if let Err(error) = journal.write_workflow(workflow) {
+        *workflow = previous;
+        return Err(error.context("Plan file saved but session synchronization failed."));
+    }
+    publish_todo_snapshot(workflow, journal, emit)
+}
+
+pub(super) fn todo_snapshot(workflow: &crate::plan::WorkflowState) -> Option<AgentEvent> {
+    let plan = workflow.plan.as_ref()?;
+    (workflow.todo_plan_id.as_deref() == Some(plan.id.as_str())).then(|| AgentEvent::TodoSnapshot {
+        plan_id: plan.id.clone(),
+        revision: plan.revision,
+        phases: workflow.todos.clone(),
+        status: plan.status,
+    })
+}
+
+fn publish_todo_snapshot(
+    workflow: &crate::plan::WorkflowState,
+    journal: &mut SessionJournal,
+    emit: &mut dyn FnMut(AgentEvent),
+) -> Result<()> {
+    if let Some(event) = todo_snapshot(workflow) {
+        journal.event(&event);
+        journal.check()?;
+        emit(event);
+    }
+    Ok(())
+}
+
+pub(super) fn publish_plan_progress(
+    workflow: &crate::plan::WorkflowState,
+    emit: &mut dyn FnMut(AgentEvent),
+) {
+    if let Some(document) = &workflow.plan {
+        emit(AgentEvent::PlanProgressUpdated {
+            plan_id: document.id.clone(),
+            revision: document.revision,
+            content: document.content.clone(),
+            file_name: document.file_name.clone(),
+            location: Some(document.location),
+            status: Some(document.status),
+        });
+    }
+}
+
+fn apply_todo_change(
+    workflow: &mut crate::plan::WorkflowState,
+    journal: &mut SessionJournal,
+    change: Option<crate::tools::todo::TodoChange>,
+) -> Result<()> {
+    let Some(change) = change else { return Ok(()) };
+    if let Some(plan_change) = &change.plan {
+        let document = workflow
+            .plan
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No current plan."))?;
+        ensure!(
+            document.id == plan_change.plan_id
+                && workflow.todo_plan_id.as_deref() == Some(document.id.as_str())
+                && plan_change.revision
+                    == if plan_change.content.is_some() {
+                        document.next_revision()?
+                    } else {
+                        document.revision
+                    },
+            "Invalid plan todo transition."
+        );
+    }
+    let source = change.plan.as_ref().map(|plan| plan.plan_id.clone());
+    let previous_todos = std::mem::replace(&mut workflow.todos, change.phases);
+    let previous_source = std::mem::replace(&mut workflow.todo_plan_id, source);
+    let previous_document = change.plan.and_then(|change| {
+        change.content.map(|content| {
+            let document = workflow.plan.as_mut().expect("plan effect validated");
+            (
+                std::mem::replace(&mut document.content, content),
+                std::mem::replace(&mut document.revision, change.revision),
+            )
+        })
+    });
+    let saved_progress = previous_document.is_some();
+    if let Err(error) = journal.write_workflow(workflow) {
+        workflow.todos = previous_todos;
+        workflow.todo_plan_id = previous_source;
+        if let Some((content, revision)) = previous_document {
+            let document = workflow.plan.as_mut().expect("plan effect validated");
+            document.content = content;
+            document.revision = revision;
         }
-        crate::tools::PlanChange::Submitted => *sealed = true,
+        return Err(if saved_progress {
+            error.context("Plan progress saved but session synchronization failed; the plan file was not rolled back.")
+        } else {
+            error
+        });
     }
     Ok(())
 }
@@ -1572,6 +1766,7 @@ fn completion_turn(
         workflow,
         input: queue,
         plan_dirty,
+        reminder,
     } = resources;
     tracing::info!(
         event = "model_request_started",
@@ -1621,27 +1816,23 @@ fn completion_turn(
     cancellation::check(cancellation)?;
     let usage = response.usage;
     let response = response.message;
-    let progress_plan_path = tracked_plan_path(workflow);
-    let mut progress = |event| {
-        if plan_file_touched(tools, &progress_plan_path, &event) {
-            *plan_dirty = true;
-        }
-        journal.event(&event);
-        emit(event);
-    };
-    let emit: &mut dyn FnMut(AgentEvent) = &mut progress;
     let text = match &response.content {
         Some(ChatCompletionRequestAssistantMessageContent::Text(text)) => text.clone(),
         _ => String::new(),
     };
-    emit(AgentEvent::AssistantFinished { text });
+    let awaiting_user_answer = todo::is_awaiting_user_answer(&text);
+    let event = AgentEvent::AssistantFinished { text };
+    journal.event(&event);
+    emit(event);
     let calls = response.tool_calls.as_deref().unwrap_or_default();
     if calls.is_empty() {
         request
             .messages
             .push(ChatCompletionRequestMessage::Assistant(response));
         *last_request = usage;
-        return Ok(TurnOutcome::Completed);
+        return Ok(TurnOutcome::Completed {
+            awaiting_user_answer,
+        });
     }
     let count = calls.len();
     let assistant_index = request.messages.len();
@@ -1663,16 +1854,30 @@ fn completion_turn(
         else {
             bail!("agent invariant: missing function call");
         };
-        let content = tools.execute_with_fetch(
-            &call.function.name,
-            &call.function.arguments,
-            &call.id,
-            tool_policy(workflow, sealed, queue)?,
-            cancellation,
-            emit,
-            &mut |url, token| client.fetch_read_url(url, token),
-        );
-        apply_plan_change(workflow, &mut sealed, content.plan_change)?;
+        if !sealed && call.function.name == "todo" {
+            plan_workflow::sync_plan_todos(tools, journal, workflow, emit, false)?;
+            *plan_dirty = false;
+        }
+        let content = {
+            let progress_plan_path = tracked_plan_path(workflow);
+            let mut progress = |event| {
+                if plan_file_touched(tools, &progress_plan_path, &event) {
+                    *plan_dirty = true;
+                }
+                journal.event(&event);
+                emit(event);
+            };
+            tools.execute_with_fetch(
+                &call.function.name,
+                &call.function.arguments,
+                &call.id,
+                tool_policy(workflow, sealed, queue)?,
+                cancellation,
+                &mut progress,
+                &mut |url, token| client.fetch_read_url(url, token),
+            )
+        };
+        reminder.awaiting_progress = false;
         if stop_error.is_none() {
             stop_error = content.stop_error;
         }
@@ -1684,6 +1889,20 @@ fn completion_turn(
                 content: content.output.into(),
             },
         ));
+        apply_plan_change(workflow, journal, &mut sealed, content.plan_change, emit)?;
+        let changed_checks = content
+            .todo_change
+            .as_ref()
+            .and_then(|change| change.plan.as_ref())
+            .is_some_and(|change| change.content.is_some());
+        apply_todo_change(workflow, journal, content.todo_change)?;
+        if changed_checks {
+            publish_plan_progress(workflow, emit);
+        }
+        if !sealed && *plan_dirty {
+            plan_workflow::sync_plan_todos(tools, journal, workflow, emit, true)?;
+            *plan_dirty = false;
+        }
     }
     tool_images::append_chat(&mut request.messages, attachments);
     *last_request = usage;
@@ -1715,6 +1934,7 @@ fn response_turn(
         workflow,
         input: queue,
         plan_dirty,
+        reminder,
     } = resources;
     tracing::info!(
         event = "model_request_started",
@@ -1762,22 +1982,18 @@ fn response_turn(
         outcome?
     };
     cancellation::check(cancellation)?;
-    let progress_plan_path = tracked_plan_path(workflow);
-    let mut progress = |event| {
-        if plan_file_touched(tools, &progress_plan_path, &event) {
-            *plan_dirty = true;
-        }
-        journal.event(&event);
-        emit(event);
-    };
-    let emit: &mut dyn FnMut(AgentEvent) = &mut progress;
-    emit(AgentEvent::AssistantFinished { text: turn.text });
+    let awaiting_user_answer = todo::is_awaiting_user_answer(&turn.text);
+    let event = AgentEvent::AssistantFinished { text: turn.text };
+    journal.event(&event);
+    emit(event);
     let input = response_input(request);
     let start = input.len();
     input.extend(turn.output.into_iter().map(InputItem::from));
     if !turn.has_calls {
         *last_request = turn.usage;
-        return Ok(TurnOutcome::Completed);
+        return Ok(TurnOutcome::Completed {
+            awaiting_user_answer,
+        });
     }
     let end = input.len();
     let mut stop_error = None;
@@ -1786,16 +2002,30 @@ fn response_turn(
         let InputItem::Item(Item::FunctionCall(call)) = &input[index] else {
             continue;
         };
-        let output = tools.execute_with_fetch(
-            &call.name,
-            &call.arguments,
-            &call.call_id,
-            tool_policy(workflow, sealed, queue)?,
-            cancellation,
-            emit,
-            &mut |url, token| client.fetch_read_url(url, token),
-        );
-        apply_plan_change(workflow, &mut sealed, output.plan_change)?;
+        if !sealed && call.name == "todo" {
+            plan_workflow::sync_plan_todos(tools, journal, workflow, emit, false)?;
+            *plan_dirty = false;
+        }
+        let output = {
+            let progress_plan_path = tracked_plan_path(workflow);
+            let mut progress = |event| {
+                if plan_file_touched(tools, &progress_plan_path, &event) {
+                    *plan_dirty = true;
+                }
+                journal.event(&event);
+                emit(event);
+            };
+            tools.execute_with_fetch(
+                &call.name,
+                &call.arguments,
+                &call.call_id,
+                tool_policy(workflow, sealed, queue)?,
+                cancellation,
+                &mut progress,
+                &mut |url, token| client.fetch_read_url(url, token),
+            )
+        };
+        reminder.awaiting_progress = false;
         if stop_error.is_none() {
             stop_error = output.stop_error;
         }
@@ -1811,6 +2041,20 @@ fn response_turn(
                 caller: None,
             },
         )));
+        apply_plan_change(workflow, journal, &mut sealed, output.plan_change, emit)?;
+        let changed_checks = output
+            .todo_change
+            .as_ref()
+            .and_then(|change| change.plan.as_ref())
+            .is_some_and(|change| change.content.is_some());
+        apply_todo_change(workflow, journal, output.todo_change)?;
+        if changed_checks {
+            publish_plan_progress(workflow, emit);
+        }
+        if !sealed && *plan_dirty {
+            plan_workflow::sync_plan_todos(tools, journal, workflow, emit, true)?;
+            *plan_dirty = false;
+        }
     }
     *last_request = turn.usage;
     if let Some(error) = stop_error {
@@ -1844,6 +2088,28 @@ fn append_user_to(session: &mut Session, prompt: &str) {
     }
 }
 
+fn append_developer_to(session: &mut Session, text: String) {
+    match session {
+        Session::Completion(request) => {
+            request
+                .messages
+                .push(ChatCompletionRequestMessage::Developer(
+                    async_openai::types::chat::ChatCompletionRequestDeveloperMessage {
+                        content: text.into(),
+                        ..Default::default()
+                    },
+                ))
+        }
+        Session::Response(request) => {
+            response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
+                role: Role::Developer,
+                content: text.into(),
+                ..Default::default()
+            }))
+        }
+    }
+}
+
 fn response_input(request: &mut CreateResponse) -> &mut Vec<InputItem> {
     let InputParam::Items(input) = &mut request.input else {
         unreachable!("agent always uses an item array for Responses history");
@@ -1855,6 +2121,172 @@ fn response_input(request: &mut CreateResponse) -> &mut Vec<InputItem> {
 mod tests {
     use super::*;
     use serde_json::{Value, json};
+
+    #[test]
+    fn todo_tree_navigation_restores_standalone_and_retains_current_plan_authority() {
+        use crate::tools::todo::{TodoStatus, project_plan_todos};
+        for protocol in ["completion", "response"] {
+            for plan_bound in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+                let (_, change) = crate::tools::todo::run(
+                    &[],
+                    r#"{"op":"init","items":["Historical standalone"]}"#,
+                );
+                apply_todo_change(&mut agent.workflow, &mut agent.journal, change).unwrap();
+                seed_session(&mut agent, "first history boundary");
+                let target = agent.session_tree().unwrap().tree.nodes[0].id.clone();
+                if plan_bound {
+                    let content = "## Live\n- [x] finished\n- [ ] waiting\n";
+                    agent.workflow =
+                        plan_workflow(content, ORIGIN, crate::plan::PlanStatus::Executed);
+                    agent.workflow.mode = crate::plan::WorkMode::Execute;
+                    let document = agent.workflow.plan.as_mut().unwrap();
+                    document.approved_tasks = Some(vec!["finished".into(), "waiting".into()]);
+                    agent.workflow.todo_plan_id = Some(document.id.clone());
+                    agent.workflow.todos = project_plan_todos(document, &[], false).unwrap();
+                    agent.workflow.todos[0].tasks[1].status = TodoStatus::Blocked;
+                    agent.workflow.todos[0].tasks[1].blocker = Some("dependency".into());
+                    write_plan_file(&agent, content);
+                    agent.reconcile_plan_location().unwrap();
+                    agent.journal.write_workflow(&agent.workflow).unwrap();
+                } else {
+                    let (_, change) =
+                        crate::tools::todo::run(&agent.workflow.todos, r#"{"op":"done"}"#);
+                    apply_todo_change(&mut agent.workflow, &mut agent.journal, change).unwrap();
+                }
+                seed_session(&mut agent, "second history boundary");
+                let source = agent.workflow.todo_plan_id.clone();
+                agent.navigate_tree(&target).unwrap();
+                if plan_bound {
+                    assert_eq!(agent.workflow.todo_plan_id, source);
+                    assert_eq!(
+                        agent.workflow.todos[0].tasks[0].status,
+                        TodoStatus::Completed
+                    );
+                    assert_eq!(agent.workflow.todos[0].tasks[1].status, TodoStatus::Blocked);
+                    assert_eq!(
+                        agent.workflow.todos[0].tasks[1].blocker.as_deref(),
+                        Some("dependency")
+                    );
+                    assert_eq!(
+                        agent
+                            .tools
+                            .read_plan(agent.workflow.plan.as_ref().unwrap())
+                            .unwrap(),
+                        "## Live\n- [x] finished\n- [ ] waiting\n"
+                    );
+                } else {
+                    assert!(agent.workflow.todo_plan_id.is_none());
+                    assert_eq!(
+                        agent.workflow.todos[0].tasks[0].content,
+                        "Historical standalone"
+                    );
+                    assert_eq!(
+                        agent.workflow.todos[0].tasks[0].status,
+                        TodoStatus::InProgress
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plan_todo_committed_checkbox_survives_failed_journal_and_recovers_from_disk() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+            let body = "## Work\n- [ ] first\n- [ ] second\n";
+            agent.workflow = plan_workflow(body, ORIGIN, crate::plan::PlanStatus::Executed);
+            agent.workflow.mode = crate::plan::WorkMode::Execute;
+            write_plan_file(&agent, body);
+            agent.ensure_task_plan_lease().unwrap();
+            plan_workflow::sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |_| {},
+                false,
+            )
+            .unwrap();
+            seed_session(&mut agent, "persist approved runtime");
+            let id = agent.session_id().unwrap().to_owned();
+            let trusted = agent.workflow.clone();
+            let path = dir.path().join("sessions").join(format!("{id}.jsonl"));
+            agent.journal.use_read_only_file(&path);
+            let execution = agent.tools.execute(
+                "todo",
+                r#"{"op":"done","task":"first"}"#,
+                "saved-progress",
+                crate::tools::ToolPolicy::Execute {
+                    workflow: &agent.workflow,
+                },
+                &CancellationToken::new(),
+                &mut |_| {},
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&execution.output).unwrap()["ok"],
+                true
+            );
+            let error = apply_todo_change(
+                &mut agent.workflow,
+                &mut agent.journal,
+                execution.todo_change,
+            )
+            .unwrap_err();
+            assert!(format!("{error:#}").contains("Plan progress saved"));
+            assert_eq!(agent.workflow, trusted);
+            assert_eq!(
+                agent
+                    .tools
+                    .read_plan(agent.workflow.plan.as_ref().unwrap())
+                    .unwrap(),
+                body.replacen("[ ]", "[x]", 1)
+            );
+            drop(agent);
+            let restored =
+                persistence::load(&dir.path().join("sessions"), Some(&id), true).unwrap();
+            let template = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+            let recovered = Agent::restore(template.catalog, template.tools, restored).unwrap();
+            assert!(recovered.replay.iter().any(|record| matches!(
+                record,
+                persistence::ReplayRecord::Event(AgentEvent::TodoSnapshot { phases, .. })
+                    if phases[0].tasks[0].status == crate::tools::todo::TodoStatus::Completed
+            )));
+            assert_eq!(
+                recovered.workflow.todos[0].tasks[0].status,
+                crate::tools::todo::TodoStatus::Completed
+            );
+            assert_eq!(
+                recovered.workflow.todos[0].tasks[1].status,
+                crate::tools::todo::TodoStatus::InProgress
+            );
+            assert_eq!(
+                recovered.workflow.plan.as_ref().unwrap().revision,
+                trusted.plan.as_ref().unwrap().revision + 1
+            );
+        }
+    }
+
+    #[test]
+    fn todo_failed_journal_commit_restores_trusted_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+        seed_session(&mut agent, "seed durable history");
+        let (_, change) = crate::tools::todo::run(&[], r#"{"op":"init","items":["A","B"]}"#);
+        apply_todo_change(&mut agent.workflow, &mut agent.journal, change).unwrap();
+        let previous = agent.workflow.clone();
+        let path = dir
+            .path()
+            .join("sessions")
+            .join(format!("{}.jsonl", agent.session_id().unwrap()));
+        agent.journal.use_read_only_file(&path);
+        let (_, change) =
+            crate::tools::todo::run(&agent.workflow.todos, r#"{"op":"done","task":"A"}"#);
+        assert!(apply_todo_change(&mut agent.workflow, &mut agent.journal, change).is_err());
+        assert_eq!(agent.workflow, previous);
+        assert!(agent.journal.check().is_err());
+    }
 
     #[test]
     fn instruction_loading_cards_failed_requests_record_frozen_body_once() {
@@ -2100,7 +2532,7 @@ mod tests {
         let mut previous = None;
         for outcome in [0, 1, 2] {
             let token = CancellationToken::new();
-            let started = agent.tools.execute("bash", &json!({"command":"printf '%s\\n%s' \"$$\" \"$TMPDIR\" > marker.pending; mv marker.pending marker; exec sleep 60","mode":"background"}).to_string(), "start", crate::tools::ToolPolicy::Execute, &token, &mut |_| {});
+            let started = agent.tools.execute("bash", &json!({"command":"printf '%s\\n%s' \"$$\" \"$TMPDIR\" > marker.pending; mv marker.pending marker; exec sleep 60","mode":"background"}).to_string(), "start", crate::tools::ToolPolicy::Execute { workflow: &agent.workflow }, &token, &mut |_| {});
             let snapshot: serde_json::Value = serde_json::from_str(&started.output).unwrap();
             let id = snapshot["task_id"].as_str().unwrap().to_owned();
             assert_ne!(previous.as_ref(), Some(&id));
@@ -2140,7 +2572,9 @@ mod tests {
                 "bash_task",
                 &json!({"task_id":id,"action":"status"}).to_string(),
                 "status",
-                crate::tools::ToolPolicy::Execute,
+                crate::tools::ToolPolicy::Execute {
+                    workflow: &agent.workflow,
+                },
                 &CancellationToken::new(),
                 &mut |_| {},
             );
@@ -2498,6 +2932,7 @@ mod tests {
             mode: crate::plan::WorkMode::Plan,
             plan: Some(document),
             review: None,
+            ..Default::default()
         }
     }
 

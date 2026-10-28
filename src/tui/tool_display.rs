@@ -3,7 +3,10 @@
 
 use super::transcript::{block_line, wrap_block};
 use super::transcript_style as palette;
-use ratatui::{style::Style, text::Line};
+use ratatui::{
+    style::{Modifier, Style},
+    text::{Line, Span},
+};
 use serde_json::Value;
 
 const READ_LINES: usize = 3;
@@ -152,6 +155,11 @@ pub(super) fn is_skill_read(arguments: &Value, result: Option<&Value>) -> bool {
 pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static>> {
     let expanded = view.expanded || view.context.full;
     let text = view.text;
+    if view.name == "todo" {
+        // 静态完整清单卡必须先于 full/失败提前返回：
+        // Ctrl+O、native scrollback 与 replay 都走同一条结构化完整渲染。
+        return todo_body(&view, width);
+    }
     if view.context.full {
         let text = if view.name == "write" && !view.failed {
             view.arguments
@@ -441,6 +449,175 @@ fn append_notices(rows: &mut Vec<Line<'static>>, result: Option<&Value>, width: 
                 });
                 rows.extend(wrap([format!("Warning: {message}")], width, style));
             }
+        }
+    }
+}
+
+// =============================================================================
+// todo 静态完整清单卡
+// =============================================================================
+
+/// 阶段编号采用上游 ROMAN_PAIRS 的罗马数字，仅用于显示。
+fn phase_roman(mut number: usize) -> String {
+    const PAIRS: [(usize, &str); 13] = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut roman = String::new();
+    for (value, symbol) in PAIRS {
+        while number >= value {
+            roman.push_str(symbol);
+            number -= value;
+        }
+    }
+    roman
+}
+
+/// 结构化完整清单：阶段头 `I. Name (closed/total)`，任务行按状态着色。
+/// 动态文本全部经 display_text 折行安全展示，重复文案附 phase+occurrence 寻址提示。
+fn todo_checklist(phases: &[crate::tools::todo::TodoPhase], width: u16) -> Vec<Line<'static>> {
+    use crate::tools::todo::TodoStatus;
+    use std::collections::HashMap;
+
+    let mut totals: HashMap<&str, usize> = HashMap::new();
+    for phase in phases {
+        for task in &phase.tasks {
+            *totals.entry(task.content.as_str()).or_default() += 1;
+        }
+    }
+    let mut occurrence: HashMap<&str, usize> = HashMap::new();
+
+    let mut rows = Vec::new();
+    for (index, phase) in phases.iter().enumerate() {
+        let closed = phase
+            .tasks
+            .iter()
+            .filter(|task| matches!(task.status, TodoStatus::Completed | TodoStatus::Abandoned))
+            .count();
+        let header = Line::from(vec![
+            Span::styled(
+                format!("{}.", phase_roman(index + 1)),
+                Style::default().fg(palette::ACCENT),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                palette::display_text(&phase.name).into_owned(),
+                Style::default().fg(palette::ACCENT),
+            ),
+            Span::styled(
+                format!(" ({closed}/{})", phase.tasks.len()),
+                Style::default().fg(palette::MUTED),
+            ),
+        ]);
+        rows.extend(wrap_block(header, width, ""));
+        for task in &phase.tasks {
+            let (symbol, style, tag) = match &task.status {
+                TodoStatus::Pending => ("☐", Style::default().fg(palette::MUTED), String::new()),
+                TodoStatus::InProgress => (
+                    "☐",
+                    Style::default().fg(palette::ACCENT),
+                    " (in progress)".to_owned(),
+                ),
+                TodoStatus::Completed => (
+                    "☑",
+                    Style::default()
+                        .fg(palette::ADDED)
+                        .add_modifier(Modifier::CROSSED_OUT),
+                    String::new(),
+                ),
+                TodoStatus::Abandoned => (
+                    "☐",
+                    Style::default()
+                        .fg(palette::REMOVED)
+                        .add_modifier(Modifier::CROSSED_OUT),
+                    " (dropped)".to_owned(),
+                ),
+                TodoStatus::Blocked => (
+                    "☐",
+                    Style::default().fg(palette::ACCENT),
+                    match &task.blocker {
+                        Some(reason) => format!(" (blocked: {reason})"),
+                        None => " (blocked)".to_owned(),
+                    },
+                ),
+            };
+            let mut spans = vec![Span::styled(format!("{symbol} "), style)];
+            spans.push(Span::styled(
+                palette::display_text(&task.content).into_owned(),
+                style,
+            ));
+            if !tag.is_empty() {
+                spans.push(Span::styled(
+                    palette::display_text(&tag).into_owned(),
+                    style,
+                ));
+            }
+            if totals[task.content.as_str()] > 1 {
+                let ordinal = {
+                    let slot = occurrence.entry(task.content.as_str()).or_default();
+                    *slot += 1;
+                    *slot
+                };
+                spans.push(Span::styled(
+                    format!(
+                        " · phase \"{}\" occurrence {ordinal}",
+                        palette::display_text(&phase.name)
+                    ),
+                    Style::default().fg(palette::MUTED),
+                ));
+            }
+            rows.extend(wrap_block(Line::from(spans), width, ""));
+        }
+    }
+    rows
+}
+
+/// todo 卡正文先于通用截断/失败分支执行：
+/// 有可信 phases 时渲染完整结构化列表，缺失/损坏或空清单降级为完整可读正文。
+fn todo_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
+    let result = view.result.unwrap_or(&Value::Null);
+    let phases: Option<Vec<crate::tools::todo::TodoPhase>> =
+        serde_json::from_value(result["phases"].clone()).ok();
+    match phases {
+        Some(phases) if !phases.is_empty() => {
+            let mut rows = Vec::new();
+            if view.failed
+                && let Some(error) = result["error"].as_str().filter(|error| !error.is_empty())
+            {
+                // 诊断先行，其后仍是可信的调用前列表。
+                rows.extend(wrap_block(
+                    block_line(
+                        palette::display_text(error).into_owned(),
+                        Style::default().fg(palette::REMOVED),
+                    ),
+                    width,
+                    "",
+                ));
+            }
+            rows.extend(todo_checklist(&phases, width));
+            rows
+        }
+        _ => {
+            let text = result["content"]
+                .as_str()
+                .or_else(|| result["error"].as_str())
+                .unwrap_or(view.text);
+            wrap(
+                logical(text).into_iter().map(str::to_owned),
+                width,
+                Style::default(),
+            )
         }
     }
 }

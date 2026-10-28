@@ -20,7 +20,7 @@ use crate::{
         WorkMode, WorkflowState,
     },
     project_instructions,
-    tools::plan_catalog,
+    tools::{Tools, plan_catalog},
 };
 use anyhow::{Result, anyhow, bail, ensure};
 use std::path::Path;
@@ -442,6 +442,302 @@ fn reconcile_plan_state(
     }
 }
 
+/// 绑定文档的身份三元组：登记协调是否改变了名称/位置/状态。
+fn plan_identity(document: &PlanDocument) -> (Option<String>, PlanLocation, PlanStatus) {
+    (
+        document.file_name.clone(),
+        document.location,
+        document.status,
+    )
+}
+
+/// 只读预览投影：unchecked→pending、checked→completed，无 active/blocker，
+/// 从不归一化激活，也从不继承运行态。Plan 模式下的来源会话（含 Fresh 批准
+/// 后留在源会话的 Executed 绑定）一律走这里，不伪装成执行中。
+pub(super) fn preview_phases(
+    document: &PlanDocument,
+) -> Result<Vec<crate::tools::todo::TodoPhase>> {
+    let mut phases: Vec<crate::tools::todo::TodoPhase> = Vec::new();
+    let mut region: Option<usize> = None;
+    for task in plan::plan_tasks(&document.content) {
+        if region != Some(task.phase_index) {
+            region = Some(task.phase_index);
+            phases.push(crate::tools::todo::TodoPhase {
+                name: task.phase,
+                tasks: Vec::new(),
+            });
+        }
+        phases
+            .last_mut()
+            .expect("task creates its phase")
+            .tasks
+            .push(crate::tools::todo::TodoItem {
+                content: task.text,
+                status: if task.completed {
+                    crate::tools::todo::TodoStatus::Completed
+                } else {
+                    crate::tools::todo::TodoStatus::Pending
+                },
+                blocker: None,
+            });
+    }
+    Ok(phases)
+}
+
+/// Step 4 共享同步入口：把当前绑定计划的实际 Markdown 同步为会话 todo
+/// 投影。适用范围固定为 Plan 模式有绑定、Execute+Executed，或仍绑定当前
+/// 只读 Completed/Abandoned 计划；已用 init 脱离旧计划的独立普通清单
+/// （来源为空且非空）绝不因此被覆盖。行为要点：
+///
+/// - 实际文件优先：先按 ID 协调登记路径，再安全读取；内容未变但投影或
+///   来源缺失时仍初始化并持久化（旧会话/交接遗漏的自愈）。
+/// - 旧 Executed 记录缺 approved_tasks：先以已登记正文冻结一次性迁移
+///   基线并持久化，之后才读磁盘；不把迁移后的磁盘内容冒充批准集合。
+/// - Execute+Executed 的磁盘任务文本/数量/顺序与批准向量不同（无论勾选
+///   状态）时拒绝安装，保留最后可信的正文与运行态，阻止继续执行/提醒/
+///   归档；说明与勾选变化正常同步。
+/// - 执行投影只在 Execute+Executed 归一化唯一 active；预览与结束计划
+///   始终无 active。revision-0 绑定从不读盘，预览为空。
+/// - 无变化不写 journal、不发事件；正文/路径/状态变化发布
+///   PlanProgressUpdated，投影/正文/来源的真实变化才按
+///   `publish_snapshot` 发布 TodoSnapshot（先持久化 workflow，再
+///   journal.event/check 后 emit）。
+pub(super) fn sync_plan_todos(
+    tools: &Tools,
+    journal: &mut SessionJournal,
+    workflow: &mut WorkflowState,
+    emit: &mut dyn FnMut(crate::events::AgentEvent),
+    publish_snapshot: bool,
+) -> Result<()> {
+    let Some(document) = workflow.plan.as_ref() else {
+        return Ok(());
+    };
+    let bound = workflow.todo_plan_id.as_deref() == Some(document.id.as_str());
+    let applicable = workflow.mode == WorkMode::Plan
+        || (workflow.mode == WorkMode::Execute && document.status == PlanStatus::Executed)
+        || (bound
+            && matches!(
+                document.status,
+                PlanStatus::Completed | PlanStatus::Abandoned
+            ));
+    if !applicable {
+        return Ok(());
+    }
+    let identity_before = plan_identity(document);
+    let status_before = document.status;
+    reconcile_plan_state(tools.plan_workspace(), journal, workflow)?;
+    let identity_changed =
+        plan_identity(workflow.plan.as_ref().expect("plan bound")) != identity_before;
+    let executing = workflow.mode == WorkMode::Execute
+        && workflow.plan.as_ref().expect("plan bound").status == PlanStatus::Executed;
+    if executing
+        && workflow
+            .plan
+            .as_ref()
+            .expect("plan bound")
+            .approved_tasks
+            .is_none()
+    {
+        // 迁移基线只能来自已登记旧正文，不能让随后读取的新磁盘任务获得批准。
+        let approved = plan::plan_tasks(&workflow.plan.as_ref().expect("plan bound").content)
+            .into_iter()
+            .map(|task| task.text)
+            .collect();
+        workflow.plan.as_mut().expect("plan bound").approved_tasks = Some(approved);
+        if let Err(error) = journal.write_workflow(workflow) {
+            workflow.plan.as_mut().expect("plan bound").approved_tasks = None;
+            return Err(error.context(
+                "Plan progress could not be refreshed; last synchronized progress retained.",
+            ));
+        }
+    }
+    let document = workflow.plan.as_ref().expect("plan bound");
+    let content = if document.revision == 0 {
+        None
+    } else {
+        let content = tools.read_plan(document).map_err(|error| {
+            error.context(
+                "Plan progress could not be refreshed; last synchronized progress retained.",
+            )
+        })?;
+        (content != document.content).then_some(content)
+    };
+    let content_changed = content.is_some();
+    let previous_document = if let Some(content) = content {
+        let document = workflow.plan.as_mut().expect("plan bound");
+        let revision = document.next_revision()?;
+        let previous_status = document.status;
+        if matches!(document.status, PlanStatus::Draft | PlanStatus::Ready) {
+            plan::validate_content(&content)?;
+            document.status = if plan::task_progress(&content).1 > 0 {
+                PlanStatus::Ready
+            } else {
+                PlanStatus::Draft
+            };
+        }
+        Some((
+            std::mem::replace(&mut document.content, content),
+            std::mem::replace(&mut document.revision, revision),
+            previous_status,
+        ))
+    } else {
+        None
+    };
+    let projected = {
+        let document = workflow.plan.as_ref().expect("plan bound");
+        if executing {
+            crate::tools::todo::project_plan_todos(document, &workflow.todos, bound)
+        } else {
+            preview_phases(document)
+        }
+    };
+    let phases = match projected {
+        Ok(phases) => phases,
+        Err(error) => {
+            if let Some((content, revision, status)) = previous_document {
+                let document = workflow.plan.as_mut().expect("plan bound");
+                document.content = content;
+                document.revision = revision;
+                document.status = status;
+            }
+            return Err(error);
+        }
+    };
+    let source = Some(workflow.plan.as_ref().expect("plan bound").id.clone());
+    let projection_changed = workflow.todos != phases || workflow.todo_plan_id != source;
+    if content_changed || projection_changed {
+        let previous_phases = std::mem::replace(&mut workflow.todos, phases);
+        let previous_source = std::mem::replace(&mut workflow.todo_plan_id, source);
+        if let Err(error) = journal.write_workflow(workflow) {
+            workflow.todos = previous_phases;
+            workflow.todo_plan_id = previous_source;
+            if let Some((content, revision, status)) = previous_document {
+                let document = workflow.plan.as_mut().expect("plan bound");
+                document.content = content;
+                document.revision = revision;
+                document.status = status;
+            }
+            return Err(error.context(
+                "Plan progress could not be refreshed; last synchronized progress retained.",
+            ));
+        }
+    }
+    if content_changed || identity_changed {
+        super::publish_plan_progress(workflow, emit);
+    }
+    let status_changed = workflow.plan.as_ref().expect("plan bound").status != status_before;
+    if publish_snapshot && (content_changed || projection_changed || status_changed) {
+        super::publish_todo_snapshot(workflow, journal, emit)?;
+    }
+    Ok(())
+}
+
+/// 恢复只携带一次同步新生成的快照；replay 已包含相同快照时不重复追加。
+fn resume_todo_snapshot(
+    workflow: &WorkflowState,
+    replay: &[super::persistence::ReplayRecord],
+) -> Option<crate::events::AgentEvent> {
+    let event = super::todo_snapshot(workflow)?;
+    let crate::events::AgentEvent::TodoSnapshot {
+        plan_id,
+        revision,
+        phases,
+        status,
+    } = &event
+    else {
+        unreachable!("todo_snapshot builds a TodoSnapshot");
+    };
+    let replayed = replay.iter().any(|record| {
+        matches!(
+            record,
+            super::persistence::ReplayRecord::Event(crate::events::AgentEvent::TodoSnapshot {
+                plan_id: replayed_plan,
+                revision: replayed_revision,
+                phases: replayed_phases,
+                status: replayed_status,
+            }) if replayed_plan == plan_id
+                && replayed_revision == revision
+                && replayed_phases == phases
+                && replayed_status == status
+        )
+    });
+    (!replayed).then_some(event)
+}
+
+/// 启动恢复与交互式 resume 共用同一文件同步和快照去重边界。
+pub(super) fn sync_restored_todos(
+    tools: &Tools,
+    journal: &mut SessionJournal,
+    workflow: &mut WorkflowState,
+    replay: &[super::persistence::ReplayRecord],
+) -> Result<Option<crate::events::AgentEvent>> {
+    let Some(document) = workflow.plan.as_ref() else {
+        return Ok(None);
+    };
+    let previous_plan = (document.id.clone(), document.revision, document.status);
+    let previous_todos = workflow.todos.clone();
+    let previous_source = workflow.todo_plan_id.clone();
+    reconcile_plan_state(tools.plan_workspace(), journal, workflow)?;
+    sync_plan_todos(tools, journal, workflow, &mut |_| {}, false)?;
+    let document = workflow.plan.as_ref().expect("restored plan bound");
+    let changed = previous_todos != workflow.todos
+        || previous_source != workflow.todo_plan_id
+        || previous_plan != (document.id.clone(), document.revision, document.status);
+    let snapshot = changed
+        .then(|| resume_todo_snapshot(workflow, replay))
+        .flatten();
+    if let Some(event) = &snapshot {
+        journal.event(event);
+        journal.check()?;
+    }
+    Ok(snapshot)
+}
+
+/// Register on-disk plan bytes as a new revision against the bound workflow.
+/// Returns `false` when the file matches the registered snapshot. Draft/Ready
+/// documents become Ready only when the imported content has a genuine
+/// Markdown task list; Executed/Abandoned documents remain read-only after
+/// importing progress. The whole workflow is rolled back when the journal
+/// rejects the write.
+fn import_plan_content(
+    journal: &mut SessionJournal,
+    workflow: &mut WorkflowState,
+    content: String,
+    new_title: &str,
+) -> Result<bool> {
+    plan::validate_content(&content)?;
+    let revision = {
+        let bound = workflow.plan.as_ref().expect("plan bound");
+        if bound.content == content {
+            return Ok(false);
+        }
+        if bound.revision == 0 {
+            plan::validate_title(new_title)?;
+        }
+        bound.next_revision()?
+    };
+    let previous = workflow.clone();
+    let document = workflow.plan.as_mut().expect("plan bound");
+    if document.revision == 0 {
+        document.title = new_title.to_owned();
+    }
+    document.revision = revision;
+    let (_, total) = plan::task_progress(&content);
+    document.content = content;
+    if matches!(document.status, PlanStatus::Draft | PlanStatus::Ready) {
+        document.status = if total > 0 {
+            PlanStatus::Ready
+        } else {
+            PlanStatus::Draft
+        };
+    }
+    if let Err(error) = journal.write_workflow(workflow) {
+        *workflow = previous;
+        return Err(error);
+    }
+    Ok(true)
+}
+
 impl Agent {
     /// Stop every managed MCP process so Plan mode cannot reach them. On
     /// failure the registry, its slots and the UI's exit handle stay in place
@@ -499,7 +795,7 @@ impl Agent {
             WorkflowState {
                 mode: WorkMode::Plan,
                 plan: None,
-                review: None,
+                ..Default::default()
             },
         );
         self.commit_workflow(previous)?;
@@ -512,34 +808,7 @@ impl Agent {
     /// Ready only when the imported content has a genuine Markdown task list;
     /// Executed/Abandoned documents remain read-only after importing progress.
     fn import_plan_revision(&mut self, content: String, new_title: &str) -> Result<bool> {
-        plan::validate_content(&content)?;
-        let revision = {
-            let bound = self.workflow.plan.as_ref().expect("plan bound");
-            if bound.content == content {
-                return Ok(false);
-            }
-            if bound.revision == 0 {
-                plan::validate_title(new_title)?;
-            }
-            bound.next_revision()?
-        };
-        let previous = self.workflow.clone();
-        let document = self.workflow.plan.as_mut().expect("plan bound");
-        if document.revision == 0 {
-            document.title = new_title.to_owned();
-        }
-        document.revision = revision;
-        let (_, total) = plan::task_progress(&content);
-        document.content = content;
-        if matches!(document.status, PlanStatus::Draft | PlanStatus::Ready) {
-            document.status = if total > 0 {
-                PlanStatus::Ready
-            } else {
-                PlanStatus::Draft
-            };
-        }
-        self.commit_workflow(previous)?;
-        Ok(true)
+        import_plan_content(&mut self.journal, &mut self.workflow, content, new_title)
     }
 
     /// Safe plan review snapshot: reads the current file through the NOFOLLOW
@@ -547,7 +816,9 @@ impl Agent {
     /// a review token bound to the current session, plan and exact bytes. A
     /// missing or unreadable file is an error; the logged snapshot is never a
     /// fallback. Executed/Abandoned plans safely refresh their displayed
-    /// snapshot without regaining approval eligibility.
+    /// snapshot without regaining approval eligibility. The shared todo sync
+    /// reconciles the registered path, imports the revision and rebuilds the
+    /// read-only projection; a detached standalone list is never replaced.
     pub(crate) fn read_plan(&mut self) -> Result<PlanReview> {
         self.journal.check()?;
         let document = self
@@ -561,11 +832,15 @@ impl Agent {
             // 历史快照或猜测路径导入。
             bail!("{NO_PLAN}");
         }
-        // 读取前按 ID 协调登记路径；墓碑、搬迁与首次登记在此暴露。
-        self.reconcile_plan_location()?;
-        let document = self.workflow.plan.as_ref().expect("plan bound").clone();
-        let content = self.tools.read_plan(&document)?;
-        self.import_plan_revision(content, &document.title)?;
+        // 按 ID 协调登记路径、导入外部修订并刷新只读投影；墓碑、搬迁与
+        // 首次登记在此暴露。
+        sync_plan_todos(
+            &self.tools,
+            &mut self.journal,
+            &mut self.workflow,
+            &mut |_| {},
+            true,
+        )?;
         let document = self.workflow.plan.as_ref().expect("plan bound").clone();
         let session_id = self
             .journal
@@ -615,8 +890,11 @@ impl Agent {
         let previous = self.workflow.clone();
         self.workflow.mode = WorkMode::Execute;
         // 解除绑定但不删除任何文件；空待命与已保存草稿都直接清除。
+        // 计划 todo 来源与投影一并解除，不恢复任何隐藏的旧普通清单。
         self.workflow.plan = None;
         self.workflow.review = None;
+        self.workflow.todos = Vec::new();
+        self.workflow.todo_plan_id = None;
         let mut definitions = self.tools.all_definitions(WorkMode::Execute);
         definitions.extend(registry.definitions());
         self.session.set_tools(definitions);
@@ -632,6 +910,7 @@ impl Agent {
             session_id: self.journal.id().map(str::to_owned),
             replay: None,
             cleanup,
+            todo_snapshot: None,
         })
     }
 
@@ -639,84 +918,22 @@ impl Agent {
         &mut self,
         emit: &mut dyn FnMut(crate::events::AgentEvent),
     ) -> Result<()> {
-        if self.workflow.mode != WorkMode::Execute {
+        if self.workflow.mode != WorkMode::Execute
+            || !self
+                .workflow
+                .plan
+                .as_ref()
+                .is_some_and(|plan| plan.status == PlanStatus::Executed)
+        {
             return Ok(());
         }
-        let executed = self
-            .workflow
-            .plan
-            .as_ref()
-            .is_some_and(|plan| plan.status == PlanStatus::Executed);
-        if !executed {
-            return Ok(());
-        }
-        // 进度刷新前按 ID 协调：登记重命名/移位后跟踪实际路径。
-        self.reconcile_plan_location()?;
-        let Some(document) = self
-            .workflow
-            .plan
-            .as_ref()
-            .filter(|plan| plan.status == PlanStatus::Executed)
-        else {
-            return Ok(());
-        };
-        // 旧 Executed 记录缺 approved_tasks：先以当前已登记的 workflow
-        // 正文建立一次性迁移基线并持久化，再读取新的磁盘进度；不把
-        // 迁移后第一次磁盘内容冒充原始批准快照。
-        if document.approved_tasks.is_none() {
-            let previous = self.workflow.clone();
-            let document = self.workflow.plan.as_mut().expect("executed plan bound");
-            document.approved_tasks = Some(
-                plan::plan_tasks(&document.content)
-                    .into_iter()
-                    .map(|task| task.text)
-                    .collect(),
-            );
-            if let Err(error) = self.journal.write_workflow(&self.workflow) {
-                self.workflow = previous;
-                return Err(error.context(
-                    "Plan progress could not be refreshed; last synchronized progress retained.",
-                ));
-            }
-        }
-        let Some(document) = self
-            .workflow
-            .plan
-            .as_ref()
-            .filter(|plan| plan.status == PlanStatus::Executed)
-        else {
-            return Ok(());
-        };
-        let content = self.tools.read_plan(document).map_err(|error| {
-            error.context(
-                "Plan progress could not be refreshed; last synchronized progress retained.",
-            )
-        })?;
-        if content == document.content {
-            return Ok(());
-        }
-        let revision = document.next_revision()?;
-        let document = self.workflow.plan.as_mut().expect("executed plan bound");
-        let previous = std::mem::replace(&mut document.content, content);
-        document.revision = revision;
-        if let Err(error) = self.journal.write_workflow(&self.workflow) {
-            let document = self.workflow.plan.as_mut().expect("executed plan bound");
-            document.content = previous;
-            document.revision -= 1;
-            return Err(error.context(
-                "Plan progress could not be refreshed; last synchronized progress retained.",
-            ));
-        }
-        let document = self.workflow.plan.as_ref().expect("executed plan bound");
-        emit(crate::events::AgentEvent::PlanProgressUpdated {
-            plan_id: document.id.clone(),
-            revision,
-            content: document.content.clone(),
-            file_name: document.file_name.clone(),
-            location: Some(document.location),
-            status: Some(document.status),
-        });
-        Ok(())
+        sync_plan_todos(
+            &self.tools,
+            &mut self.journal,
+            &mut self.workflow,
+            emit,
+            false,
+        )
     }
 
     /// 成功收尾的自动归档：仅 Execute + Executed + Plans 可进入。安全读取
@@ -1038,6 +1255,18 @@ impl Agent {
             .clone();
         debug_assert_eq!(document.content, token.content);
         let prompt = crate::plan::execution_prompt(&document, ExecutionContext::Keep);
+        // 三种批准交接一致：从批准正文重建执行投影并激活首个未勾选项；
+        // 投影与 Execute workflow 一起进入同一个 handoff 事务。
+        let mut todos = crate::tools::todo::project_plan_todos(
+            &PlanDocument {
+                status: PlanStatus::Executed,
+                ..document.clone()
+            },
+            &[],
+            false,
+        )?;
+        crate::tools::todo::normalize_in_progress(&mut todos);
+        let todo_plan_id = Some(document.id.clone());
         let previous_workflow = self.workflow.clone();
         let previous_system = SavedInstructions::take(&mut self.session);
         let previous_pending = self.pending_instructions.take();
@@ -1046,6 +1275,8 @@ impl Agent {
         if let Some(plan) = &mut self.workflow.plan {
             plan.status = PlanStatus::Executed;
         }
+        self.workflow.todos = todos;
+        self.workflow.todo_plan_id = todo_plan_id;
         let mut definitions = self.tools.all_definitions(WorkMode::Execute);
         definitions.extend(registry.definitions());
         self.session.set_tools(definitions);
@@ -1080,6 +1311,12 @@ impl Agent {
             // 旧 path token 失效，重试从 Plans 幂等重入。
             return Err(self.abort_execution_preparation(registry, error));
         }
+        // 批准初始化快照先记入目标 journal；再随交接发布给 UI。
+        let todo_snapshot = super::todo_snapshot(&self.workflow);
+        if let Some(event) = &todo_snapshot {
+            self.journal.event(event);
+            self.journal.check()?;
+        }
         self.finish_approved_move(pending_move, token);
         self.tools.mcp = registry;
         self.pending_instructions = None;
@@ -1088,6 +1325,7 @@ impl Agent {
             session_id: self.journal.id().map(str::to_owned),
             replay: None,
             cleanup,
+            todo_snapshot,
         })
     }
 
@@ -1110,13 +1348,19 @@ impl Agent {
             .expect("ready plan bound")
             .clone();
         debug_assert_eq!(document.content, token.content);
+        // 候选执行 workflow 从批准正文重建执行投影并激活首个未勾选项；
+        // 与目标 checkpoint 一起进入同一个 handoff 事务。
+        let candidate_plan = PlanDocument {
+            status: PlanStatus::Executed,
+            ..document.clone()
+        };
+        let todos = crate::tools::todo::project_plan_todos(&candidate_plan, &[], false)?;
         let candidate_workflow = WorkflowState {
             mode: WorkMode::Execute,
-            plan: Some(PlanDocument {
-                status: PlanStatus::Executed,
-                ..document.clone()
-            }),
-            review: None,
+            plan: Some(candidate_plan),
+            todos,
+            todo_plan_id: Some(document.id.clone()),
+            ..Default::default()
         };
         let prompt = crate::plan::execution_prompt(&document, ExecutionContext::Fresh);
         let previous = self.workflow.clone();
@@ -1158,6 +1402,11 @@ impl Agent {
                 &candidate_workflow,
                 &prompt,
             )?;
+            // 批准初始化快照记入目标 journal；失败整体放弃候选。
+            if let Some(event) = super::todo_snapshot(&candidate_workflow) {
+                journal.event(&event);
+                journal.check()?;
+            }
             Ok((session, journal))
         })();
         let (session, journal) = match prepared {
@@ -1193,6 +1442,9 @@ impl Agent {
             session_id: self.journal.id().map(str::to_owned),
             replay: Some(Vec::new()),
             cleanup,
+            // 空 replay 的新会话总是携带批准初始化快照；源规划会话保持
+            // 只读预览，绝不伪装成已执行。
+            todo_snapshot: super::todo_snapshot(&self.workflow),
         })
     }
 
@@ -1232,12 +1484,11 @@ impl Agent {
             (WorkMode::Execute, WorkMode::Execute) => {}
         }
         let cleanup = self.tools.mcp.cleanup()?;
-        // 恢复访问前按 ID 协调：旧会话绑定在此首次登记/迁移；失败则整次
-        // 恢复中止，不安装半协调的会话。
-        reconcile_plan_state(
-            self.tools.plan_workspace(),
+        let todo_snapshot = sync_restored_todos(
+            &self.tools,
             &mut restored.journal,
             &mut restored.checkpoint.workflow,
+            &restored.replay,
         )?;
         restored.journal.history_replaced();
         self.session = restored.checkpoint.session;
@@ -1259,6 +1510,7 @@ impl Agent {
             session_id: self.journal.id().map(str::to_owned),
             replay: Some(std::mem::take(&mut self.replay)),
             cleanup,
+            todo_snapshot,
         })
     }
 }
@@ -2068,12 +2320,17 @@ mod tests {
                 PlanLocation::Plans
             );
 
-            // 零任务：total == 0 不归档，即使批准集合曾经存在。
-            assert!(archive_skipped(
-                &mut agent,
-                "# Create hello\n\nNo tasks here.\n"
-            ));
+            // 零任务：任务数量与批准向量不同即漂移，同步拒绝安装并按
+            // 合同报错（不是静默跳过）；文件与 Executed/Plans 保持不变。
+            assert!(
+                archive_error(&mut agent, "# Create hello\n\nNo tasks here.\n")
+                    .contains(TASKS_CHANGED)
+            );
             assert!(plans.exists() && !done.exists());
+            assert_eq!(
+                agent.workflow.plan.as_ref().unwrap().status,
+                PlanStatus::Executed
+            );
 
             // 删除任务后勾选剩余项：任务集合不匹配，合同错误。
             let error = archive_error(&mut agent, &format!("- [x] {FIRST}\n"));
@@ -2566,6 +2823,490 @@ mod tests {
             let _lock = crate::tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
             let snapshot = crate::tools::plan_catalog::load_catalog(workspace).unwrap();
             assert!(snapshot.catalog.active_by_id(&missing_id).is_none());
+        }
+    }
+
+    // --- todo 生命周期同步（Step 4）---
+
+    fn task_states(agent: &Agent) -> Vec<(String, crate::tools::todo::TodoStatus, Option<String>)> {
+        agent
+            .workflow
+            .todos
+            .iter()
+            .flat_map(|phase| phase.tasks.iter())
+            .map(|task| (task.content.clone(), task.status, task.blocker.clone()))
+            .collect()
+    }
+
+    /// Execute+Executed 双任务夹具：批准向量冻结、AI 文件名已登记、
+    /// 运行态手工置入（第一项 active、第二项 blocked 带原因），磁盘为
+    /// 未勾选正文。不播种会话：调用方按需（含 todo 字段裁剪）自行 seed。
+    fn executed_todo_fixture(dir: &std::path::Path, protocol: &str) -> (Agent, String, String) {
+        const FIRST: &str = "Create hello.txt and read back hello.";
+        const SECOND: &str = "Verify the failure boundary.";
+        let content = format!("# Create hello\n\n- [ ] {FIRST}\n- [ ] {SECOND}\n");
+        let mut agent = runtime_input_agent(dir, protocol, "127.0.0.1:1", "");
+        agent.workflow = plan_workflow(&content, ORIGIN, PlanStatus::Executed);
+        agent.workflow.mode = WorkMode::Execute;
+        let plan_id = agent.workflow.plan.as_ref().unwrap().id.clone();
+        let file_name = format!("{plan_id}.md");
+        {
+            let document = agent.workflow.plan.as_mut().unwrap();
+            document.file_name = Some(file_name.clone());
+            document.approved_tasks = Some(vec![FIRST.to_owned(), SECOND.to_owned()]);
+        }
+        register_entry(&agent, &plan_id, &file_name, PlanLocation::Plans);
+        agent.workflow.todos = vec![crate::tools::todo::TodoPhase {
+            name: "Tasks".into(),
+            tasks: vec![
+                crate::tools::todo::TodoItem {
+                    content: FIRST.into(),
+                    status: crate::tools::todo::TodoStatus::InProgress,
+                    blocker: None,
+                },
+                crate::tools::todo::TodoItem {
+                    content: SECOND.into(),
+                    status: crate::tools::todo::TodoStatus::Blocked,
+                    blocker: Some("waiting on CI".into()),
+                },
+            ],
+        }];
+        agent.workflow.todo_plan_id = Some(plan_id);
+        write_plan_file(&agent, &content);
+        (agent, FIRST.to_owned(), SECOND.to_owned())
+    }
+
+    #[test]
+    fn todo_sync_projects_preview_sources_without_active_and_executes_only_executed() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+            agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Draft);
+            write_plan_file(&agent, PLAN_CONTENT);
+            seed_session(&mut agent, EXPLORATION);
+            let session_id = agent.session_id().unwrap().to_owned();
+            let plan_id = agent.workflow.plan.as_ref().unwrap().id.clone();
+
+            // 草稿预览：来源绑定当前计划，全部 pending，无 active；状态持久化。
+            sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |_| {},
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                agent.workflow.todo_plan_id.as_deref(),
+                Some(plan_id.as_str())
+            );
+            assert_eq!(agent.workflow.todos.len(), 1);
+            assert_eq!(agent.workflow.todos[0].name, "Tasks");
+            assert_eq!(
+                task_states(&agent)[0].1,
+                crate::tools::todo::TodoStatus::Pending
+            );
+            assert_eq!(journal_workflow(dir.path(), &session_id), agent.workflow);
+
+            // Plan+Executed 来源会话（Fresh 批准后的规划会话）：预览保持
+            // 只读，不归一化激活。
+            agent.workflow.plan.as_mut().unwrap().status = PlanStatus::Executed;
+            sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |_| {},
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                task_states(&agent)[0].1,
+                crate::tools::todo::TodoStatus::Pending
+            );
+
+            // Execute+Executed：执行投影归一化，激活首个未勾选项。
+            agent.workflow.mode = WorkMode::Execute;
+            sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |_| {},
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                task_states(&agent)[0].1,
+                crate::tools::todo::TodoStatus::InProgress
+            );
+            assert_eq!(journal_workflow(dir.path(), &session_id), agent.workflow);
+
+            // 已用 init 脱离旧计划的独立普通清单：查看/刷新旧 Completed
+            // 文档绝不替换它，也不触碰其计划文档。
+            let content = PLAN_CONTENT.replace("- [ ]", "- [x]");
+            write_plan_file(&agent, &content);
+            sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |_| {},
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                task_states(&agent)[0].1,
+                crate::tools::todo::TodoStatus::Completed
+            );
+            agent.workflow.plan.as_mut().unwrap().status = PlanStatus::Completed;
+            agent.workflow.plan.as_mut().unwrap().location = PlanLocation::Done;
+            agent.workflow.todo_plan_id = None;
+            agent.workflow.todos = vec![crate::tools::todo::TodoPhase {
+                name: "Own".into(),
+                tasks: vec![crate::tools::todo::TodoItem {
+                    content: "standalone task".into(),
+                    status: crate::tools::todo::TodoStatus::Pending,
+                    blocker: None,
+                }],
+            }];
+            sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |_| {},
+                false,
+            )
+            .unwrap();
+            assert_eq!(agent.workflow.todos[0].name, "Own");
+            assert_eq!(agent.workflow.todo_plan_id, None);
+        }
+    }
+
+    #[test]
+    fn plan_todo_sync_merges_external_checkboxes_and_preserves_runtime() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut agent, first, _second) = executed_todo_fixture(dir.path(), protocol);
+            seed_session(&mut agent, EXPLORATION);
+            let session_id = agent.session_id().unwrap().to_owned();
+
+            // 内容未变：运行态按序保留，不产生新写入或事件。
+            let mut published = Vec::new();
+            sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |event| published.push(event),
+                false,
+            )
+            .unwrap();
+            assert!(published.is_empty());
+            let states = task_states(&agent);
+            assert_eq!(states[0].1, crate::tools::todo::TodoStatus::InProgress);
+            assert_eq!(states[1].1, crate::tools::todo::TodoStatus::Blocked);
+            assert_eq!(states[1].2.as_deref(), Some("waiting on CI"));
+
+            // 外部勾选第一项：正文与 revision 同步，第一项转 completed，
+            // 第二项保留 blocked 与原因；blocked 不自动启动。
+            let progress = agent
+                .workflow
+                .plan
+                .as_ref()
+                .unwrap()
+                .content
+                .replacen("- [ ]", "- [x]", 1);
+            write_plan_file(&agent, &progress);
+            sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |event| published.push(event),
+                false,
+            )
+            .unwrap();
+            assert!(matches!(
+                published.as_slice(),
+                [crate::events::AgentEvent::PlanProgressUpdated { revision: 2, .. }]
+            ));
+            let states = task_states(&agent);
+            assert_eq!(
+                states[0],
+                (first, crate::tools::todo::TodoStatus::Completed, None)
+            );
+            assert_eq!(states[1].1, crate::tools::todo::TodoStatus::Blocked);
+            assert_eq!(states[1].2.as_deref(), Some("waiting on CI"));
+            assert_eq!(agent.workflow.plan.as_ref().unwrap().revision, 2);
+            assert_eq!(agent.workflow.plan.as_ref().unwrap().content, progress);
+            assert_eq!(journal_workflow(dir.path(), &session_id), agent.workflow);
+        }
+    }
+
+    #[test]
+    fn plan_todo_sync_refuses_approved_vector_drift_and_keeps_trusted_runtime() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut agent, first, second) = executed_todo_fixture(dir.path(), protocol);
+            seed_session(&mut agent, EXPLORATION);
+            let document = agent.workflow.plan.as_ref().unwrap();
+            let trusted = (document.content.clone(), document.revision);
+            let trusted_path = agent
+                .tools
+                .cwd()
+                .join(document.path().expect("saved plan path"));
+            let trusted_todos = agent.workflow.todos.clone();
+
+            // 改写、增项、删除、重排（即使全部未勾选）都在同步处立即拒绝；
+            // 最后可信的正文、revision 与运行态原样保留，磁盘不被覆盖。
+            let drifted = [
+                format!("# Create hello\n\n- [ ] Rewritten task.\n- [ ] {second}\n"),
+                format!("# Create hello\n\n- [ ] {first}\n- [ ] {second}\n- [ ] extra\n"),
+                format!("# Create hello\n\n- [ ] {first}\n"),
+                format!("- [ ] {second}\n- [ ] {first}\n"),
+            ];
+            for drift in &drifted {
+                std::fs::write(&trusted_path, drift).unwrap();
+                let error = err_message(sync_plan_todos(
+                    &agent.tools,
+                    &mut agent.journal,
+                    &mut agent.workflow,
+                    &mut |_| {},
+                    false,
+                ));
+                assert!(error.contains(TASKS_CHANGED), "{error}");
+                assert_eq!(agent.workflow.plan.as_ref().unwrap().content, trusted.0);
+                assert_eq!(agent.workflow.plan.as_ref().unwrap().revision, trusted.1);
+                assert_eq!(agent.workflow.todos, trusted_todos);
+                assert_eq!(
+                    agent.workflow.todo_plan_id.as_deref(),
+                    Some(agent.workflow.plan.as_ref().unwrap().id.as_str())
+                );
+            }
+
+            // 恢复批准任务集合后同步恢复正常。
+            std::fs::write(&trusted_path, trusted.0.as_bytes()).unwrap();
+            sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |_| {},
+                false,
+            )
+            .unwrap();
+            assert_eq!(agent.workflow.todos, trusted_todos);
+        }
+    }
+
+    #[test]
+    fn plan_todo_sync_rolls_back_on_journal_failure_and_keeps_completed_readonly() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut agent, _first, _second) = executed_todo_fixture(dir.path(), protocol);
+            seed_session(&mut agent, EXPLORATION);
+            let progress = agent
+                .workflow
+                .plan
+                .as_ref()
+                .unwrap()
+                .content
+                .replacen("- [ ]", "- [x]", 1);
+            write_plan_file(&agent, &progress);
+            let previous = agent.workflow.clone();
+            let session_id = agent.session_id().unwrap().to_owned();
+            agent.journal.use_read_only_file(
+                &dir.path()
+                    .join("sessions")
+                    .join(format!("{session_id}.jsonl")),
+            );
+            let error = err_message(sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |_| {},
+                false,
+            ));
+            // journal 只读：同步失败回滚全部内存状态，不假装已同步。
+            assert!(error.contains("last synchronized progress retained"));
+            assert_eq!(agent.workflow, previous);
+            drop(error);
+
+            // 已结束计划仍以实际 Markdown 为准，始终只读，不恢复执行态。
+            let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+            let done_content = PLAN_CONTENT.replace("- [ ]", "- [x]");
+            agent.workflow = plan_workflow(&done_content, ORIGIN, PlanStatus::Completed);
+            agent.workflow.mode = WorkMode::Execute;
+            let plan_id = agent.workflow.plan.as_ref().unwrap().id.clone();
+            let done_file = format!("{plan_id}.md");
+            {
+                let document = agent.workflow.plan.as_mut().unwrap();
+                document.location = PlanLocation::Done;
+                document.revision = 2;
+                document.file_name = Some(done_file.clone());
+            }
+            agent.workflow.todo_plan_id = Some(plan_id.clone());
+            register_entry(&agent, &plan_id, &done_file, PlanLocation::Done);
+            let done_path = dir
+                .path()
+                .join(".pp/done")
+                .join(format!("{}.md", agent.workflow.plan.as_ref().unwrap().id));
+            std::fs::create_dir_all(done_path.parent().unwrap()).unwrap();
+            std::fs::write(&done_path, &done_content).unwrap();
+            sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |_| {},
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                agent.workflow.todo_plan_id.as_deref(),
+                Some(plan_id.as_str())
+            );
+            assert_eq!(
+                task_states(&agent)[0].1,
+                crate::tools::todo::TodoStatus::Completed
+            );
+            std::fs::write(&done_path, done_content.replace("[x]", "[ ]")).unwrap();
+            sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |_| {},
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                task_states(&agent)[0].1,
+                crate::tools::todo::TodoStatus::Pending
+            );
+            assert_eq!(
+                agent.workflow.plan.as_ref().unwrap().status,
+                PlanStatus::Completed
+            );
+            let trusted = agent.workflow.clone();
+            std::fs::remove_file(&done_path).unwrap();
+            assert!(
+                sync_plan_todos(
+                    &agent.tools,
+                    &mut agent.journal,
+                    &mut agent.workflow,
+                    &mut |_| {},
+                    false
+                )
+                .is_err()
+            );
+            assert_eq!(agent.workflow, trusted);
+        }
+    }
+
+    #[test]
+    fn todo_resume_syncs_checkboxes_and_carries_snapshot_once() {
+        // prepare_resume 从全局 sessions 目录读取，因此用临时 HOME 重入
+        // 自身（与 plan_resume 相同模式）。
+        const FIXTURE: &str = "PP_TEST_TODO_RESUME";
+        let Ok(root) = std::env::var(FIXTURE) else {
+            let home = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "agent::plan_workflow::tests::todo_resume_syncs_checkboxes_and_carries_snapshot_once",
+                    "--nocapture",
+                ])
+                .env("HOME", home.path())
+                .env(FIXTURE, home.path())
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        };
+        let root = std::path::Path::new(&root);
+        let sessions = root.join(".pp/agent/sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        for protocol in ["completion", "response"] {
+            // 正常缓存已经可信，且没有快照事件：resume 不能复制工具卡片内容。
+            let unchanged_dir = root.join("unchanged-exec");
+            std::fs::create_dir_all(&unchanged_dir).unwrap();
+            let (mut unchanged, _, _) = executed_todo_fixture(&unchanged_dir, protocol);
+            unchanged.journal = SessionJournal::new(sessions.clone());
+            seed_session(&mut unchanged, "already synchronized runtime");
+            let unchanged_id = unchanged.session_id().unwrap().to_owned();
+            let unchanged_document = unchanged.workflow.plan.as_ref().unwrap().clone();
+            let unchanged_current = root.join("unchanged-current");
+            std::fs::create_dir_all(unchanged_current.join(".pp/plans")).unwrap();
+            std::fs::write(
+                unchanged_current.join(unchanged_document.path().unwrap()),
+                &unchanged_document.content,
+            )
+            .unwrap();
+            drop(unchanged);
+            let mut resumed = fixture_agent(&unchanged_current, &sessions, protocol);
+            seed_session(&mut resumed, "current");
+            let preparation = resumed
+                .resume(&unchanged_id, &CancellationToken::new())
+                .unwrap();
+            assert!(preparation.todo_snapshot.is_none());
+            assert_eq!(
+                task_states(&resumed)[1].1,
+                crate::tools::todo::TodoStatus::Blocked
+            );
+            drop(resumed);
+            std::fs::create_dir_all(root.join("exec")).unwrap();
+            let (mut source, _first, _second) = executed_todo_fixture(&root.join("exec"), protocol);
+            source.journal = SessionJournal::new(sessions.clone());
+            // 源会话缺 todo 字段（todos 为空、来源为空）：恢复时初始化。
+            source.workflow.todos = Vec::new();
+            source.workflow.todo_plan_id = None;
+            seed_session(&mut source, EXPLORATION);
+            let executed_id = source.session_id().unwrap().to_owned();
+            let plan_id = source.workflow.plan.as_ref().unwrap().id.clone();
+            // 磁盘进度：第一项已勾选（执行会话目录里准备实际文件）。
+            let progress = source
+                .workflow
+                .plan
+                .as_ref()
+                .unwrap()
+                .content
+                .replacen("- [ ]", "- [x]", 1);
+            let current_dir = root.join("current");
+            std::fs::create_dir_all(current_dir.join(".pp/plans")).unwrap();
+            std::fs::write(
+                current_dir.join(".pp/plans").join(format!("{plan_id}.md")),
+                &progress,
+            )
+            .unwrap();
+            drop(source);
+
+            let mut agent = fixture_agent(&current_dir, &sessions, protocol);
+            seed_session(&mut agent, "current");
+            let preparation = agent
+                .resume(&executed_id, &CancellationToken::new())
+                .unwrap();
+            // 恢复时按实际 Markdown 初始化执行投影：第一项 completed，
+            // 第二项归一化激活；快照随交接发布一次。
+            let states = task_states(&agent);
+            assert_eq!(states[0].1, crate::tools::todo::TodoStatus::Completed);
+            assert_eq!(states[1].1, crate::tools::todo::TodoStatus::InProgress);
+            assert_eq!(
+                agent.workflow.todo_plan_id.as_deref(),
+                Some(plan_id.as_str())
+            );
+            assert!(matches!(
+                &preparation.todo_snapshot,
+                Some(crate::events::AgentEvent::TodoSnapshot { plan_id: snapshot_plan, revision: 2, phases, status: PlanStatus::Executed })
+                    if snapshot_plan == &plan_id && phases == &agent.workflow.todos
+            ));
+            assert_eq!(agent.workflow.plan.as_ref().unwrap().content, progress);
+
+            // 再次恢复：replay 已包含相同快照，不重复携带。
+            drop(agent);
+            let mut agent = fixture_agent(&current_dir, &sessions, protocol);
+            seed_session(&mut agent, "current");
+            let preparation = agent
+                .resume(&executed_id, &CancellationToken::new())
+                .unwrap();
+            assert!(preparation.todo_snapshot.is_none());
+            assert_eq!(
+                agent.workflow.todo_plan_id.as_deref(),
+                Some(plan_id.as_str())
+            );
         }
     }
 

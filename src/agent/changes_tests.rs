@@ -86,7 +86,9 @@ fn commit_write(agent: &Agent, path: &str, content: &str) {
         "write",
         &json!({"path":path,"content":content}).to_string(),
         "changes-fixture-write",
-        ToolPolicy::Execute,
+        ToolPolicy::Execute {
+            workflow: &agent.workflow,
+        },
         &CancellationToken::new(),
         &mut |event| {
             if matches!(event, AgentEvent::FileChanged { .. }) {
@@ -472,7 +474,7 @@ fn changes_plan_fresh_commits_clear_keep_and_failed_fresh_retain() {
                     protocol,
                     vec![
                         Reply::Write("demo.txt", "approved execution bytes\n"),
-                        Reply::Final("approved execution finished"),
+                        Reply::Final("approved execution paused. What should I work on next?"),
                     ],
                 );
                 assert_eq!(

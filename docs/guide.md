@@ -252,15 +252,27 @@ chmod 600 ~/.pp/agent/models.yml
 - `/quit` 或 Ctrl + C 退出整个 pp：先停止受管理后台进程组并等待它们收尾，正常退出码为 0；真实清理失败返回错误。恢复终端后，全部对话记录按退出时的终端宽度写入普通终端的滚动历史，保留原有颜色、缩进、分隔线、流式片段、工具输出及错误，末尾保留输入框、未提交的草稿、菜单和状态栏；可以向上滚动查看超出一屏的历史。保留长度受终端自身的滚动历史容量限制。退出不等待整个 agent worker、阻塞中的模型请求或其他前台工具；受管理后台清理不依赖 UI 事件回调。其他前台 bash 子进程仍无 Ctrl + C 清理保证，需要任务级前台受控清理时应先按 Esc 等待收尾。文件修改不会回滚。
 - `-p/--prompt` 执行一次任务后退出，不解析 slash；可与 `-r ID` 联用追加任务，不能与 `-c` 联用。stdin 或 stdout 任一不是终端时使用行模式，不启用 raw mode 或备用屏幕。行模式 `/model` 列出模型，`/model provider/model` 切换。stdout 流式输出所有可读助手正文，包括工具前文字，每个非空轮次补一个末尾换行，完成时不重复回放；无非空正文时才显示拒绝文本。帮助、命令响应、错误、工具状态和思考写 stderr，进程流使用 `[{name} stdout]`／`[{name} stderr]` 标记，不添加 ANSI。显示写入失败会在 Agent 保存历史和工具结果后返回。
 
+### Todo 任务清单
+
+`todo` 是模型工具，不是 `/todo` 用户命令。普通 Execute 会话支持 `init/start/done/rm/drop/block/unblock/append/view`；每次只提交一个 `op` 对象。任务按完整原文、阶段按完整名称匹配，不使用生成的任务 ID。`init` 可接受 `list:[{phase,items}]` 或平铺 `items`；显式 `list:[]` 清空清单。普通清单要求阶段名及任务原文唯一。错误不会部分安装修改，`view` 只查看、不推进执行指针。
+
+普通任务保持一个 active：成功修改后保留顺序最前的已有 active；没有 active 时启动最前 pending。乱序完成不会重新打开 completed；`block` 记录可选原因并跳过该任务，`unblock` 解除阻塞。`start` 可以显式重开已关闭任务。`drop` 将任务标记为 abandoned，`rm` 移除任务；普通清单的关闭计数包含 completed 和 abandoned。
+
+清单随会话保存、恢复和压缩保留；普通清单也随会话树目标恢复。进入／离开 Plan 或 `/new` 清掉当前清单，不保存隐藏的旧列表。任务卡片始终静态完整展示所有阶段和任务，完成项划线；Ctrl + O、恢复及原生滚动历史不会把清单截成摘要或 JSON。没有常驻 HUD、动画或另一份 TODO 文件。
+
+Execute 终答时仍有 pending/in_progress、且不是等待用户回答时，运行时以 developer 消息提醒继续，每次 run/continue 最多三次。发出提醒后，必须先有工具结果才允许再次提醒；只终答、不使用工具不会循环催促。queued steering 优先，不消耗提醒次数；提醒续做不提前清理后台任务。Plan 草稿、只读历史计划、全 blocked 或全 closed 清单不提醒。CLI 的清单与提醒写 stderr，stdout 仍只有助手正文。
+
 ### Plan（仅 TUI）
 
 普通任务默认 **EXEC**。空闲时输入 `/plan` 切换到 **PLAN** 待命：只进入模式，不创建计划身份或 Markdown 文件；第一条用户任务才建立计划绑定，之后的普通输入和 steering 继续同一绑定。再输入一次 `/plan` 退出 Plan 回 **EXEC** 并解除当前计划/审阅绑定；已保存的草稿文件和目录原样保留，不标记 Abandoned、不删除、不改名。已提交任务但尚未 `plan_write` 首存（revision-0）时退出被拒绝，提示 `Save the draft with plan_write before leaving Plan mode.`；空待命可直接退出。也可输入 `/plan 调研登录流程`，先确保进入 Plan 再将 `调研登录流程` 作为用户消息发送；已在 Plan 时直接继续当前草稿，不暗中切出或新建计划。提示词可包含多行，输入历史保留原始命令。参数恰好为 `view` 时只查看当前计划，未保存时显示 `No saved plan.`；恰好为 `new` 或 `off` 时只报本地错误 `Use /plan to toggle; manage plans with /plan-list.`，不进入 Plan、不发模型请求；其余非空正文均作为提示词。切换失败或取消时不发送提示词，输入框为空时恢复该命令，已有新草稿则保留新草稿，可从输入历史取回原命令；退出失败不改变重试方向，下一次裸 `/plan` 仍执行离开。模型只能调研、询问关键产品取舍并保存计划，不能切换模式。忙碌或有 pending 输入时不能切换／批准；带提示词的 `/plan` 同样拒绝且保留草稿，不排队成后续执行动作。
 
-Plan 的执行层白名单只有 `read`、`grep`、`glob`、TUI `ask`、`plan_write`、`plan_submit`；技能同样通过 `read` 读取。即使模型返回隐藏的 shell、write/edit、旧 find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，再次 `/plan` 优先重试进入（MCP 清理失败时裸命令先重试进入而不是退出）。批准或退出切换的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
+Plan 的执行层白名单只有 `read`、`grep`、`glob`、TUI `ask`、只读 `todo(view)`、`plan_write`、`plan_submit`；技能同样通过 `read` 读取。todo 的状态修改在执行层拒绝，独立 reviewer 不暴露 todo；提交后同批剩余调用全部拒绝。即使模型返回隐藏的 shell、write/edit、旧 find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，再次 `/plan` 优先重试进入。批准或退出切换的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
 
 Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 支持 `path`、`hidden`、`gitignore`、`limit`，默认包含隐藏文件并遵守忽略规则；无分页，结果按修改时间排序，最多 200 项和 50 KiB。裸 `*.rs` 递归匹配，`src/*.rs` 仅匹配直接子项；五秒协作式超时返回部分结果及提示。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
 
 计划正文由 AI 选定的英文 kebab-case 文件名保存在项目 `.pp/drafts/<file_name>.md`，首次保存才创建目录／文件；不自动修改 `.gitignore`。正文须为非空 UTF-8、无 NUL、最多 262,144 字节，实施步骤使用标准 `- [ ]`／`- [x]` Markdown task list；代码 fence 中的 checkbox 不算任务。保存使用目录句柄、NOFOLLOW 和原子提交，拒绝符号链接／特殊文件；同名首次创建不覆盖。修订写入要求 expected revision 和已登记磁盘字节都匹配，避免覆盖外部编辑。
+
+保存草稿后，运行时从 Markdown 任务自动派生 `Preview (not executing)` 完整卡片：unchecked 为 pending、checked 为 completed，不激活、不提醒。H2 标题作为阶段，重复标题保留各自的文档区域；H1 重置为默认 `Tasks`，较低级标题继承当前阶段。仅有任务的区域生成阶段，围栏示例不产生任务。相同正文 no-op 不重复追加卡片。
 
 模型 `plan_submit` 成功后补齐整批 call-ID/results、同步 native history 和 Ready workflow，然后停在审阅边界，不再发总结请求。计划正文显示在输入框上方，原输入草稿保留。正文预览使用直角细框，六项操作独立放在下方的圆角框中，两区之间留一行空白；正文、操作区和输入框中，获得焦点的区域边框高亮，其余边框淡化。操作项不显示序号，也不显示数字选择提示；选中箭头始终保留，切换焦点不会清除选择。输入框上沿不再显示 `Plan ready · /plan view to review` 提示。默认聚焦操作区并选中第一项，↑/↓ 选择、Enter 确认，也可按 1–6 选中再按 Enter；Tab/Shift+Tab 在操作区、输入框与正文间切换，正文支持 PgUp/PgDn／滚轮滚动。在输入框中 Enter 发送内容继续讨论计划，Ctrl + J 换行；在操作区开始输入普通文字也会转入输入框。六项严格按以下顺序显示：
 
@@ -273,9 +285,15 @@ Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 支持 
 
 Esc 只关闭审阅，不退出 Plan。外部编辑后再次安全读取可直接登记新修订并进入 Ready（须有真实 TODO），不强制模型复核；无 TODO 的正文只能 Draft 查看。批准携带 session／plan／revision／精确正文 token，worker 在准备前后再次核对文件及队列。字节变化会刷新新修订并要求重审；文件缺失、非 UTF-8、过大或不安全时绝不用日志旧正文回填。报告绑定审查修订和模型，计划改变后标记 `outdated`；审查结束不会自动实施。
 
-三种执行方式交接成功后都保持 **EXEC**，包括成功、失败和取消；再次规划必须用户 `/plan`。`Executed` 表示已经交接，不表示全部完成。执行通过普通 edit 更新**同一份 Markdown**：只有动作及完成条件实际验证后才勾选，失败／取消／阻塞项保持未勾选；不能重写批准的目标、接口和方案或用后来新增 TODO 扩大范围。执行中 `/plan view` 显示最近成功同步的只读进度，Esc 只关闭视图，不取消任务；批次提交及收尾安全刷新正文，不监听外部文件、不自动勾选剩余项。批准时的原始快照永久保留在实施消息／checkpoint，进度不会改写审批记录。
+三种执行方式交接成功后都保持 **EXEC**，包括成功、失败和取消；再次规划必须用户 `/plan`。`Executed` 表示已经交接，不表示全部完成。Fresh／Keep／Compact 均在首个实施请求前从批准正文绑定 todo、激活首个 unchecked，不需要模型 `init`。Markdown 是任务及完成勾选的主记录：验收后 `todo done` 只修改对应 checkbox 中间的状态字节；`start` 显式重开 completed 时同时取消勾选。active、blocked 和原因只保存在会话中，失败／取消／阻塞项保持未勾选。执行计划仅允许 `view/start/done/block/unblock`，拒绝 `init/append/rm/drop`；不能增删、重排或改写批准任务。重复文案须以完整 `task`、可选完整 `phase` 及筛选后的 `occurrence`（从 1 开始）消除歧义，同名 phase-only 操作覆盖所有同名区域；普通清单不接受 occurrence。丢失原文先 `view`，不能默认选择第一个同文案任务。
+
+准确地直接 edit/write checkbox 和相邻验收证据仍可用。运行时在每个 todo 调用前、绑定文件的 edit/write 完成后、模型请求前及终答收尾前安全读取实际 Markdown；同批 `edit → todo`、`done → view` 不读旧状态。外部 checkbox 变动按文档序号合并，保留合法 active/blocked；外部取消勾选使 completed 回到 pending。标题与说明可刷新，但批准任务文本、数量或顺序改变会立即报错并停止继续执行、提醒及归档。没有后台文件监听。`/plan view` 显示最近成功同步的只读进度，Esc 只关闭视图；批准原始快照永久保留在实施消息／checkpoint。
+
+checkbox 写回先验证登记 ID、canonical 文件名和 Plans 位置，并在已有任务 lease 下条件保存同步过的旧字节；并发外部修改报错，不重试、不创建缺失文件。正文不变的运行态操作不递增 revision。提交后的目录同步 warning 表示文件已保存；若随后 journal 失败，会停止本轮并说明文件没有回滚，恢复时重新读取实际文件。文件与 journal 不是跨文件原子事务，对任意外部写者也不承诺严格线性化 CAS。
 
 批准时以经过审阅 token 验证的正文冻结有序任务集合（`approved_tasks`，重复文本按序保留）；执行进度导入只更新勾选与说明，不覆盖该集合。成功收尾自动归档：仅当输入队列关闭、后台清理、进度同步全部成功、结果确为 `Completed` 且未取消时，运行时把同名计划文件从 `.pp/plans/` 原子搬迁到 `.pp/done/` 并把 workflow 提交为 `Completed`（纯路径／状态变化，不递增正文 revision，不新增完成工具或确认操作）。任务未全部勾选、零任务、取消、失败，或当前任务文本集合与批准集合不一致（删除、替换、增项、重排都算）都不归档并保留 plans，集合不匹配报 `Plan tasks changed; re-plan before completing.`。归档提交后的源链接清理／目录同步警告不撤回状态；登记已更新但会话状态提交失败时保留源链接，下一次按 ID 协调到 done。旧 Executed 记录缺少批准集合时，以当前已登记正文建立一次性迁移基线并持久化，再同步磁盘进度，不冒充原始批准快照。`Completed` 是只读历史：进度规则不再注入，`/plan view` 只读显示 N/N 与实际 done 路径，归档后正文未变化也立即更新名称／位置／状态。
+
+Completed／Abandoned 且仍关联的计划保持只读投影，实际 Markdown 仍是文件权威；明确 `todo init` 才开始普通清单并解除 todo 来源，不修改历史 PlanDocument。脱离后的普通清单不会因查看旧计划或下一请求而被覆盖。恢复／跨协议 resume 先按当前计划 ID 协调实际文件，再发布投影；缺失、非 UTF-8、超限、symlink 或批准任务漂移均如实失败，不从 journal 重建文件。树导航可恢复普通 todo，但计划任务始终按当前绑定和实际 Markdown 同步，不倒勾 checkbox，不复活其他计划。
 
 `/new` 保持模式但清掉绑定，下一次 Plan 普通任务建立新计划；切模型、跨协议及手动／自动 compact 保留 workflow。`/tree` 保持当前模式和最新计划文件，Ready 降 Draft，不恢复历史 Execute 权限。Plan 的 `-r`／`/resume` 不重放审批、review 或执行；打开审阅须重新读磁盘，`-c` 在 Draft 等输入、Ready 打开审阅，不自动续跑模型。非 TUI 恢复 Plan 明确失败，所有 `/plan` 命令在行模式只给 TUI 提示，`/plan new`、`/plan off` 在两种模式都只报本地拒绝错误；没有 `--plan` 或管道批准接口，`-p` 内容仍是字面 prompt。
 
