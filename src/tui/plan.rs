@@ -24,7 +24,7 @@ const ACTIONS: [&str; 6] = [
     "Continue discussing Plan",
     "Save draft and leave Plan mode",
 ];
-/// 打开完整审阅面板时直接聚焦操作区，默认选中第一项。
+/// 打开完整审阅面板时直接聚焦操作区，默认选中第一项可用操作。
 const DEFAULT_ACTION: usize = 0;
 const HINT: &str = "↑↓ choose · Enter run/send · Tab actions/input/body · ←→ tabs · Esc close";
 const READONLY_HINT: &str = "Read-only view · most recently synced version · Esc close";
@@ -116,6 +116,7 @@ impl Panel {
         panel.token = Some(review.token);
         panel.report = review.report;
         panel.focus = Focus::Actions;
+        panel.ensure_enabled_action();
         panel
     }
 
@@ -202,6 +203,7 @@ impl Panel {
         self.document.file_name = document.file_name.clone();
         self.document.location = document.location;
         self.document.approved_tasks = document.approved_tasks.clone();
+        self.ensure_enabled_action();
         changed
     }
 
@@ -229,6 +231,15 @@ impl Panel {
         }
         if self.report.is_none() {
             self.tab = Tab::Plan;
+        }
+        self.ensure_enabled_action();
+    }
+
+    fn ensure_enabled_action(&mut self) {
+        if !self.action_enabled(self.action)
+            && let Some(index) = (0..ACTIONS.len()).find(|&index| self.action_enabled(index))
+        {
+            self.action = index;
         }
     }
 
@@ -285,7 +296,7 @@ impl Panel {
             && let KeyCode::Char(number @ '1'..='6') = key.code
         {
             let index = (number as u8 - b'1') as usize;
-            if index < ACTIONS.len() {
+            if self.action_enabled(index) {
                 self.focus = Focus::Actions;
                 self.action = index;
             }
@@ -339,13 +350,21 @@ impl Panel {
     }
 
     fn action_key(&mut self, key: KeyEvent) -> Action {
-        let actions = &ACTIONS;
         match key.code {
             KeyCode::Up | KeyCode::Left => {
-                self.action = self.action.saturating_sub(1);
+                if let Some(index) = (0..self.action)
+                    .rev()
+                    .find(|&index| self.action_enabled(index))
+                {
+                    self.action = index;
+                }
             }
             KeyCode::Down | KeyCode::Right => {
-                self.action = (self.action + 1).min(actions.len() - 1);
+                if let Some(index) =
+                    (self.action + 1..ACTIONS.len()).find(|&index| self.action_enabled(index))
+                {
+                    self.action = index;
+                }
             }
             KeyCode::Enter if key.kind == KeyEventKind::Press => {
                 if !self.action_enabled(self.action) {
@@ -636,7 +655,7 @@ impl Panel {
             .take(visible)
             .enumerate()
         {
-            let selected = self.action == index;
+            let selected = self.action == index && self.action_enabled(index);
             let style = if !self.action_enabled(index) {
                 Style::default().fg(DIM)
             } else if selected {
@@ -830,10 +849,65 @@ mod tests {
         assert!(draft.action_enabled(4));
         assert!(draft.action_enabled(5));
         draft.key(key_event(KeyCode::Char('1')));
+        assert_eq!(draft.action, 4);
+        assert!(draft.discussion.is_none());
         assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::None);
-        draft.key(key_event(KeyCode::Char('5')));
-        draft.key(key_event(KeyCode::Enter));
         assert!(draft.discussion.is_some());
+    }
+
+    #[test]
+    fn plan_action_arrows_only_select_enabled_options_and_stop_at_boundaries() {
+        for (status, first) in [(PlanStatus::Draft, 4), (PlanStatus::Ready, 0)] {
+            let mut panel = review_panel(status);
+            assert_eq!(panel.action, first);
+            for up in [KeyCode::Up, KeyCode::Left] {
+                panel.key(key_event(up));
+                assert_eq!(panel.action, first);
+            }
+            for down in [KeyCode::Down, KeyCode::Right] {
+                for expected in first + 1..ACTIONS.len() {
+                    panel.key(key_event(down));
+                    assert_eq!(panel.action, expected);
+                    assert!(panel.action_enabled(panel.action));
+                }
+                panel.key(key_event(down));
+                assert_eq!(panel.action, ACTIONS.len() - 1);
+                for expected in (first..ACTIONS.len() - 1).rev() {
+                    panel.key(key_event(KeyCode::Up));
+                    assert_eq!(panel.action, expected);
+                    assert!(panel.action_enabled(panel.action));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plan_action_selection_stays_enabled_after_document_refresh() {
+        let mut panel = review_panel(PlanStatus::Ready);
+        panel.key(key_event(KeyCode::Down));
+        panel.sync_document(&document(PlanStatus::Draft, "- [ ] step"));
+        assert_eq!(panel.action, 4);
+        panel.key(key_event(KeyCode::Down));
+        panel.set_review(PlanReview {
+            token: token(),
+            document: document(PlanStatus::Draft, "- [ ] step"),
+            report: None,
+        });
+        assert_eq!(panel.action, 5);
+        let mut updated = document(PlanStatus::Draft, "updated");
+        updated.revision = 2;
+        panel.set_review(PlanReview {
+            token: token(),
+            document: updated,
+            report: None,
+        });
+        assert_eq!(panel.action, 4);
+        let rows = render_panel(&mut panel, 26);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("❯ Continue discussing Plan"))
+        );
+        assert!(!rows.iter().any(|row| row.contains("❯ Execute")));
     }
 
     #[test]
@@ -922,7 +996,8 @@ mod tests {
         assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::Review);
         let mut draft = review_panel(PlanStatus::Draft);
         draft.key(key_event(KeyCode::Char('4')));
-        assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::None);
+        assert_eq!(draft.action, 4);
+        assert!(draft.discussion.is_none());
     }
 
     #[test]

@@ -631,7 +631,20 @@ fn plan_list_enter_opens_six_actions_for_drafts_and_plans_and_only_displays_done
                 });
                 assert!(pty.parser.screen().contents().contains("Selected plan"));
                 if location == "prose" {
-                    plan_choose(&mut pty, 0);
+                    pty.wait_for("草稿默认选中可用的讨论项", |screen| {
+                        screen.contents().contains("❯ Continue discussing Plan")
+                    });
+                    pty.input("\x1b[B");
+                    pty.wait_for("下箭头选择保存草稿", |screen| {
+                        screen.contents().contains("❯ Save draft and leave Plan mode")
+                    });
+                    pty.input("1\x1b[A\x1b[A\x1b[D");
+                    pty.wait_for("上箭头和数字键跳过灰色禁用项", |screen| {
+                        let text = screen.contents();
+                        text.contains("❯ Continue discussing Plan")
+                            && !text.contains("❯ Execute")
+                            && !text.contains("❯ Review Plan")
+                    });
                     no_more(&fixture);
                     assert!(!project.path().join("canary.txt").exists());
                 }

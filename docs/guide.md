@@ -275,7 +275,7 @@ Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 支持 
 
 保存草稿后，运行时从 Markdown 任务自动派生 `Preview (not executing)` 完整卡片：unchecked 为 pending、checked 为 completed，不激活、不提醒。H2 标题作为阶段，重复标题保留各自的文档区域；H1 重置为默认 `Tasks`，较低级标题继承当前阶段。仅有任务的区域生成阶段，围栏示例不产生任务。相同正文 no-op 不重复追加卡片。
 
-模型 `plan_submit` 成功后补齐整批 call-ID/results、同步 native history 和 Ready workflow，然后停在审阅边界，不再发总结请求。计划正文显示在输入框上方，原输入草稿保留。正文预览使用直角细框，六项操作独立放在下方的圆角框中，两区之间留一行空白；正文、操作区和输入框中，获得焦点的区域边框高亮，其余边框淡化。操作项不显示序号，也不显示数字选择提示；选中箭头始终保留，切换焦点不会清除选择。输入框上沿不再显示 `Plan ready · /plan view to review` 提示。默认聚焦操作区并选中第一项，↑/↓ 选择、Enter 确认，也可按 1–6 选中再按 Enter；Tab/Shift+Tab 在操作区、输入框与正文间切换，正文支持 PgUp/PgDn／滚轮滚动。在输入框中 Enter 发送内容继续讨论计划，Ctrl + J 换行；在操作区开始输入普通文字也会转入输入框。六项严格按以下顺序显示：
+模型 `plan_submit` 成功后补齐整批 call-ID/results、同步 native history 和 Ready workflow，然后停在审阅边界，不再发总结请求。计划正文显示在输入框上方，原输入草稿保留。正文预览使用直角细框，六项操作独立放在下方的圆角框中，两区之间留一行空白；正文、操作区和输入框中，获得焦点的区域边框高亮，其余边框淡化。操作项不显示序号，也不显示数字选择提示；选中箭头始终保留，切换焦点不会清除选择。输入框上沿不再显示 `Plan ready · /plan view to review` 提示。默认聚焦操作区并选中第一项可用操作，↑/↓ 选择时跳过灰色禁用项，首尾不循环；Enter 确认，也可按 1–6 选中可用项再按 Enter，禁用项的数字键不改变选择；Tab/Shift+Tab 在操作区、输入框与正文间切换，正文支持 PgUp/PgDn／滚轮滚动。在输入框中 Enter 发送内容继续讨论计划，Ctrl + J 换行；在操作区开始输入普通文字也会转入输入框。六项严格按以下顺序显示：
 
 1. **Execute in a new session**：Fresh，新 session；只发送完整批准计划及固定实施／更新 TODO 规则，正常加载系统、当前项目与技能规则，不带原始需求、调研聊天、旧调用或 reviewer 报告。
 2. **Execute (keep context)**：Keep，保留当前历史并追加一次完整批准快照；计划与重要历史用户要求冲突时先澄清。
