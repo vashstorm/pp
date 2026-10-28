@@ -11,6 +11,18 @@ impl App {
         {
             self.escape_tap.reset();
         }
+        // 放弃确认独占输入；粘贴、鼠标和全局快捷键不能绕过确认。
+        if let Some(panel) = &mut self.plan_leave_confirmation {
+            if let Event::Key(key) = event {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return key.kind == KeyEventKind::Press;
+                }
+                let action = panel.key(key);
+                self.apply_plan_leave_action(action);
+            }
+            *dirty = true;
+            return false;
+        }
         if let Event::Mouse(mouse) = event {
             let (changed, action) = self.notifications.mouse(mouse, Instant::now());
             *dirty |= changed;

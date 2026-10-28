@@ -323,10 +323,11 @@ fn plan_toggle_enters_standby_and_leaves_without_confirm() {
 }
 
 #[test]
-fn plan_toggle_refuses_leaving_with_unsaved_revision_zero_draft() {
+fn plan_toggle_confirms_discarding_unsaved_revision_zero_draft() {
     let (mut app, requests, _events) = plan_app();
     let mut plan = crate::plan::PlanDocument::new().unwrap();
     plan.origin_prompt = "first task".into();
+    let id = plan.id.clone();
     app.workflow = WorkflowState {
         mode: WorkMode::Plan,
         plan: Some(plan),
@@ -338,9 +339,96 @@ fn plan_toggle_refuses_leaving_with_unsaved_revision_zero_draft() {
     assert!(matches!(app.state, State::Ready));
     assert_eq!(app.workflow.mode, WorkMode::Plan);
     assert!(app.workflow.plan.is_some());
-    assert_notification(&mut app, Color::Rgb(224, 108, 117));
-    let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("Save the draft with plan_write before leaving Plan mode."));
+    let screen = draw(&mut app, 100, 30).replace(' ', "");
+    assert!(screen.contains("放弃未保存的修改？"), "{screen}");
+    assert!(screen.contains("取消，继续规划"));
+    assert!(screen.contains("放弃修改并退出"));
+    assert!(app.needs_alternate());
+    app.input.insert_str("保留输入");
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert!(app.plan_leave_confirmation.is_none());
+    assert!(requests.try_recv().is_err());
+    assert_eq!(app.input.lines(), &["保留输入"]);
+    assert_eq!(app.workflow.plan.as_ref().unwrap().id, id);
+
+    app.apply_plan_command(PlanCommand::Toggle);
+    app.handle(Event::Paste("不能插入".into()), &mut false);
+    app.handle(function_key('p'), &mut false);
+    app.handle(key(KeyCode::F(1)), &mut false);
+    assert_eq!(app.input.lines(), &["保留输入"]);
+    assert!(requests.try_recv().is_err());
+    app.handle(key(KeyCode::Esc), &mut false);
+    assert!(app.plan_leave_confirmation.is_none());
+    assert_eq!(app.workflow.mode, WorkMode::Plan);
+
+    app.apply_plan_command(PlanCommand::Toggle);
+    app.handle(key(KeyCode::Down), &mut false);
+    app.handle(key(KeyCode::Tab), &mut false);
+    let mut repeat = crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    repeat.kind = KeyEventKind::Repeat;
+    app.handle(Event::Key(repeat), &mut false);
+    assert!(requests.try_recv().is_err());
+    app.handle(Event::Resize(4, 20), &mut false);
+    draw(&mut app, 20, 4);
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert!(
+        matches!(requests.try_recv(), Ok(WorkerCommand::LeavePlan { discard_plan_id: Some(token), .. }) if token == id)
+    );
+    assert!(requests.try_recv().is_err());
+    assert_eq!(app.input.lines(), &["保留输入"]);
+}
+
+#[test]
+fn plan_discard_confirmation_rejects_stale_binding() {
+    let (mut app, requests, _events) = plan_app();
+    let mut plan = crate::plan::PlanDocument::new().unwrap();
+    plan.origin_prompt = "first task".into();
+    app.workflow = WorkflowState {
+        mode: WorkMode::Plan,
+        plan: Some(plan),
+        ..Default::default()
+    };
+    app.apply_plan_command(PlanCommand::Toggle);
+    app.workflow = ready_plan_workflow();
+    app.handle(key(KeyCode::Down), &mut false);
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert!(requests.try_recv().is_err());
+    assert!(app.plan_leave_confirmation.is_none());
+    assert_eq!(app.workflow, ready_plan_workflow());
+}
+
+#[test]
+fn plan_list_new_plan_confirms_discard_and_reenters_standby() {
+    let (mut app, requests, _events) = plan_app();
+    let mut plan = crate::plan::PlanDocument::new().unwrap();
+    plan.origin_prompt = "first task".into();
+    app.workflow = WorkflowState {
+        mode: WorkMode::Plan,
+        plan: Some(plan),
+        ..Default::default()
+    };
+    app.plan_list_panel = Some(plan_list::Panel::new(None));
+    app.plan_list_new_plan();
+    assert!(requests.try_recv().is_err());
+    app.handle(key(KeyCode::Esc), &mut false);
+    assert!(app.plan_list_panel.is_some());
+    app.plan_list_new_plan();
+    app.handle(key(KeyCode::Down), &mut false);
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(WorkerCommand::LeavePlan {
+            discard_plan_id: Some(_),
+            ..
+        })
+    ));
+    assert!(app.plan_list_panel.is_none());
+    app.receive_event_for_test(WorkerEvent::WorkflowChanged(Ok(WorkflowState::default())));
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(WorkerCommand::EnterPlan { .. })
+    ));
+    assert!(requests.try_recv().is_err());
 }
 
 #[test]

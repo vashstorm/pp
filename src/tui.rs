@@ -8,6 +8,7 @@ mod menu;
 mod model;
 mod notification;
 mod plan;
+mod plan_leave;
 mod plan_list;
 mod scrollback;
 mod sessions;
@@ -268,6 +269,7 @@ enum WorkerCommand {
     ReadPlan,
     LeavePlan {
         cancellation: CancellationToken,
+        discard_plan_id: Option<String>,
     },
     SavePlanAndLeave {
         token: ReviewToken,
@@ -582,6 +584,7 @@ struct App {
     plan_list_pending: Option<plan_list::PendingOp>,
     // `n` 在 Plan 模式下先解除绑定（LeavePlan），成功后立即重新进入 Plan 待命。
     plan_reenter_standby: bool,
+    plan_leave_confirmation: Option<plan_leave::Panel>,
     escape_tap: EscapeTap,
     session_id: Option<String>,
     // 最近一次 ContextUpdated 快照；渲染直接使用，不逐帧重新估算。

@@ -19,11 +19,33 @@ fn plan_toggle_enters_standby_and_leave_unbinds_without_abandoning() {
         unsaved.origin_prompt = "first task".into();
         agent.workflow.plan = Some(unsaved);
         assert_eq!(
-            err_message(agent.leave_plan(&CancellationToken::new())),
-            "Save the draft with plan_write before leaving Plan mode."
+            err_message(agent.leave_plan(&CancellationToken::new(), None)),
+            "Confirm discarding the unsaved draft before leaving Plan mode."
         );
         assert_eq!(agent.workflow.mode, WorkMode::Plan);
         assert!(agent.workflow.plan.is_some());
+
+        let id = agent.workflow.plan.as_ref().unwrap().id.clone();
+        let previous = agent.workflow.clone();
+        assert_eq!(
+            err_message(agent.leave_plan(&CancellationToken::new(), Some("stale-id"))),
+            "Plan changed; confirm leaving again."
+        );
+        assert_eq!(agent.workflow, previous);
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(agent.leave_plan(&cancelled, Some(&id)).is_err());
+        assert_eq!(agent.workflow, previous);
+        let preparation = agent
+            .leave_plan(&CancellationToken::new(), Some(&id))
+            .unwrap();
+        assert_eq!(preparation.workflow, WorkflowState::default());
+        assert_eq!(preparation.session_id.as_deref(), Some(session_id.as_str()));
+        assert!(preparation.replay.is_none());
+        assert_eq!(
+            journal_workflow(dir.path(), &session_id),
+            preparation.workflow
+        );
 
         // 已保存草稿退出：解除绑定而非 Abandoned；文件保留在磁盘。
         agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Draft);
@@ -32,7 +54,15 @@ fn plan_toggle_enters_standby_and_leave_unbinds_without_abandoning() {
             dir.path(),
             &agent.workflow.plan.as_ref().unwrap().id.clone(),
         );
-        let preparation = agent.leave_plan(&CancellationToken::new()).unwrap();
+        // 原确认不能用于已经首存的文档。
+        assert_eq!(
+            err_message(agent.leave_plan(
+                &CancellationToken::new(),
+                Some(&agent.workflow.plan.as_ref().unwrap().id.clone())
+            )),
+            "Plan changed; confirm leaving again."
+        );
+        let preparation = agent.leave_plan(&CancellationToken::new(), None).unwrap();
         assert_eq!(preparation.workflow.mode, WorkMode::Execute);
         assert!(preparation.workflow.plan.is_none());
         assert!(preparation.replay.is_none());
@@ -45,7 +75,7 @@ fn plan_toggle_enters_standby_and_leave_unbinds_without_abandoning() {
 
         // Leaving in Execute mode is refused.
         assert_eq!(
-            err_message(agent.leave_plan(&CancellationToken::new())),
+            err_message(agent.leave_plan(&CancellationToken::new(), None)),
             NOT_PLAN
         );
     }

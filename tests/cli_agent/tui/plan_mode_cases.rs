@@ -174,7 +174,7 @@ fn plan_toggle_waits_for_prompt_and_preserves_drafts() {
         assert_eq!(std::fs::read_to_string(&second).unwrap(), PLAN_TUI_BODY);
         assert_eq!(std::fs::read_to_string(&first).unwrap(), PLAN_TUI_BODY);
 
-        // 已提交任务但 revision-0 尚未首存：退出被明确拒绝，绑定保留。
+        // 已提交任务但尚未首存：请求出错后也能在本地确认放弃并退出。
         pty.input("\x1b");
         pty.wait_for("closing review before unsaved exit", |screen| {
             !screen.contents().contains("Execute (keep context)")
@@ -193,11 +193,37 @@ fn plan_toggle_waits_for_prompt_and_preserves_drafts() {
             "Findings are only in chat; nothing saved yet.",
         );
         pty.ready();
+        pty.input("Continue the unsaved research\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        request
+            .respond(Response::from_string("").with_status_code(400))
+            .unwrap();
+        pty.text("HTTP status 400");
+        pty.ready();
         pty.input("/plan\r");
-        pty.text("Save the draft with plan_write before leaving Plan mode.");
+        pty.text("放弃未保存的修改？");
+        no_more(&fixture);
+        // 默认 Enter 和 Esc 都保留当前规划；只有选中放弃并确认才退出。
+        pty.input("\r");
+        pty.wait_for("默认取消放弃", |screen| {
+            !screen.contents().contains("放弃未保存的修改？") && input_is_ready(screen)
+        });
+        plan_wait_mode(&mut pty, "Plan");
+        pty.input("/plan\r");
+        pty.text("放弃未保存的修改？");
+        pty.input("\x1b");
+        pty.wait_for("Esc 取消放弃", |screen| {
+            !screen.contents().contains("放弃未保存的修改？") && input_is_ready(screen)
+        });
         plan_wait_mode(&mut pty, "Plan");
         no_more(&fixture);
-        assert!(second.exists());
+        pty.input("/plan\r");
+        pty.text("放弃未保存的修改？");
+        pty.input("\x1b[B\r");
+        plan_wait_execute(&mut pty);
+        no_more(&fixture);
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), PLAN_TUI_BODY);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), PLAN_TUI_BODY);
         pty.input("\x03");
         pty.finish();
     }

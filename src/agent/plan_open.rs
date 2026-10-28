@@ -20,7 +20,7 @@ use crate::{
 use anyhow::{Result, bail, ensure};
 
 /// 已提交任务但 revision-0 尚未首存的草稿不可被“另开会话”静默丢弃。
-const UNSAVED_DRAFT: &str = "Save the draft with plan_write before leaving Plan mode.";
+const UNSAVED_DRAFT: &str = "Leave the current Plan mode before opening another plan.";
 
 /// 初始唯一用户内容：本地选择动作 + 计划 ID + 实际路径 + 完整 Markdown
 /// 快照；绝不携带原会话聊天或推理。
@@ -571,10 +571,7 @@ mod tests {
             PlanOpenIntent::ContinueDraft,
             &CancellationToken::new(),
         ));
-        assert_eq!(
-            error,
-            "Save the draft with plan_write before leaving Plan mode."
-        );
+        assert_eq!(error, UNSAVED_DRAFT);
         // 未登记的选择被拒绝：绝不按列表下标直接操作磁盘。
         agent.workflow = WorkflowState::default();
         let unregistered = PlanSelection {

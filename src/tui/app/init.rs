@@ -81,6 +81,7 @@ impl App {
             plan_list_panel: None,
             plan_list_pending: None,
             plan_reenter_standby: false,
+            plan_leave_confirmation: None,
             escape_tap: EscapeTap::default(),
             session_id: None,
             usage: None,
@@ -322,9 +323,16 @@ impl App {
                                 command @ (WorkerCommand::LeavePlan { .. }
                                 | WorkerCommand::SavePlanAndLeave { .. }) => {
                                     let (result, cancellation) = match command {
-                                        WorkerCommand::LeavePlan { cancellation } => {
-                                            (agent.leave_plan(&cancellation), cancellation)
-                                        }
+                                        WorkerCommand::LeavePlan {
+                                            cancellation,
+                                            discard_plan_id,
+                                        } => (
+                                            agent.leave_plan(
+                                                &cancellation,
+                                                discard_plan_id.as_deref(),
+                                            ),
+                                            cancellation,
+                                        ),
                                         WorkerCommand::SavePlanAndLeave {
                                             token,
                                             cancellation,

@@ -1,7 +1,7 @@
 use crate::tui::{
     App, CancellationToken, ExecutionContext, Instant, Level, ModelChoice, PlanCommand,
     PlanEnterAction, PlanReview, PlanStatus, ReviewToken, State, ThinkLevel, Transcript, WorkMode,
-    WorkerCommand, WorkflowState, editor, plan,
+    WorkerCommand, WorkflowState, editor, plan, plan_leave,
 };
 
 impl App {
@@ -75,6 +75,7 @@ impl App {
         self.plan_list_panel = None;
         self.plan_list_pending = None;
         self.plan_reenter_standby = false;
+        self.plan_leave_confirmation = None;
         self.plan_panel = None;
         self.plan_after_enter = None;
         self.review_transcript = None;
@@ -235,6 +236,7 @@ impl App {
             || self.plan_list_panel.is_some()
             || self.model_panel.is_some()
             || self.queue_menu
+            || self.plan_leave_confirmation.is_some()
         {
             self.notify(
                 Level::Error,
@@ -273,22 +275,7 @@ impl App {
                     );
                     return;
                 }
-                // revision-0 且已提交任务（origin 非空）的草稿还没有可保存的
-                // 正文：退出会静默丢失工作，必须先 plan_write 保存。
-                if let Some(plan) = &self.workflow.plan
-                    && plan.revision == 0
-                    && !plan.origin_prompt.trim().is_empty()
-                {
-                    self.notify(
-                        Level::Error,
-                        "Save the draft with plan_write before leaving Plan mode.".into(),
-                    );
-                    return;
-                }
-                self.start_plan_transition(
-                    |cancellation| WorkerCommand::LeavePlan { cancellation },
-                    State::ChangingPlan,
-                );
+                self.request_plan_leave(false);
             }
             PlanCommand::Prompt(prompt) => {
                 if !self.plan_transition_ready(PENDING_MODE) {
@@ -314,6 +301,72 @@ impl App {
                 } else {
                     self.notify(Level::Normal, "No saved plan.".into());
                 }
+            }
+        }
+    }
+
+    /// 未首存的规划需要显式放弃；确认只对当前绑定生效。
+    pub(in crate::tui) fn request_plan_leave(&mut self, reenter: bool) {
+        if let Some(document) = &self.workflow.plan
+            && document.revision == 0
+            && !document.origin_prompt.trim().is_empty()
+        {
+            self.plan_leave_confirmation =
+                Some(plan_leave::Panel::new(document.id.clone(), reenter));
+            self.menu = None;
+            self.file_query = None;
+            return;
+        }
+        self.start_plan_leave(None, reenter);
+    }
+
+    pub(in crate::tui) fn start_plan_leave(
+        &mut self,
+        discard_plan_id: Option<String>,
+        reenter: bool,
+    ) {
+        if reenter {
+            self.close_plan_list();
+        }
+        self.plan_reenter_standby = reenter;
+        self.start_plan_transition(
+            |cancellation| WorkerCommand::LeavePlan {
+                cancellation,
+                discard_plan_id,
+            },
+            State::ChangingPlan,
+        );
+    }
+
+    pub(in crate::tui) fn apply_plan_leave_action(&mut self, action: plan_leave::Action) {
+        match action {
+            plan_leave::Action::None => {}
+            plan_leave::Action::Cancel => {
+                self.plan_leave_confirmation = None;
+            }
+            plan_leave::Action::Discard => {
+                let Some(panel) = self.plan_leave_confirmation.take() else {
+                    return;
+                };
+                if !matches!(self.state, State::Ready) || self.has_pending() {
+                    self.notify(
+                        Level::Error,
+                        "Finish the current task and pending input before leaving Plan mode."
+                            .into(),
+                    );
+                    return;
+                }
+                if self.workflow.mode != WorkMode::Plan
+                    || self
+                        .workflow
+                        .plan
+                        .as_ref()
+                        .is_none_or(|plan| plan.id != panel.plan_id || plan.revision != 0)
+                {
+                    self.notify(Level::Error, "Plan changed; confirm leaving again.".into());
+                    return;
+                }
+                self.start_plan_leave(Some(panel.plan_id), panel.reenter);
             }
         }
     }
@@ -461,6 +514,7 @@ impl App {
             || self.changes_panel.is_some()
             || self.tree_panel.is_some()
             || self.plan_list_panel.is_some()
+            || self.plan_leave_confirmation.is_some()
             || self.plan_panel.is_some()
             || self.review_transcript.is_some()
             || self.ask_panel.is_some()

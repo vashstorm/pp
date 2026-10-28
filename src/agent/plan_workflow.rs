@@ -396,18 +396,31 @@ impl Agent {
 
     /// `/plan` toggle 的退出方向：回到 Execute 并解除当前计划/审阅绑定。
     /// 已保存的草稿文件和登记原样保留（不再标记 Abandoned），旧稿经
-    /// /plan-list 继续。已提交任务但 revision-0 尚未首存时拒绝退出。
+    /// /plan-list 继续。未首存草稿仅在用户确认放弃同一绑定后允许退出。
     pub(crate) fn leave_plan(
         &mut self,
         cancellation: &CancellationToken,
+        discard_plan_id: Option<&str>,
     ) -> Result<ExecutionPreparation> {
         cancellation::check(cancellation)?;
         ensure!(self.workflow.mode == WorkMode::Plan, "{NOT_PLAN}");
+        if let Some(id) = discard_plan_id {
+            ensure!(
+                self.workflow
+                    .plan
+                    .as_ref()
+                    .is_some_and(|plan| plan.id == id && plan.revision == 0),
+                "Plan changed; confirm leaving again."
+            );
+        }
         if let Some(plan) = &self.workflow.plan
             && plan.revision == 0
             && !plan.origin_prompt.trim().is_empty()
         {
-            bail!("Save the draft with plan_write before leaving Plan mode.");
+            ensure!(
+                discard_plan_id == Some(plan.id.as_str()),
+                "Confirm discarding the unsaved draft before leaving Plan mode."
+            );
         }
         self.journal.check()?;
         self.ensure_plan_mcp_shutdown(cancellation)?;
@@ -669,7 +682,7 @@ impl Agent {
             self.workflow = previous;
             return Err(error);
         }
-        self.leave_plan(cancellation)
+        self.leave_plan(cancellation, None)
     }
 
     /// 批准已审阅计划并准备执行交接；可先在 Plan 权限下压缩上下文。

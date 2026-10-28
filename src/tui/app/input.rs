@@ -36,6 +36,7 @@ impl App {
             || self.tree_panel.is_some()
             || self.changes_panel.is_some()
             || self.plan_list_panel.is_some()
+            || self.plan_leave_confirmation.is_some()
             || self.menu_dismissed
             || !matches!(
                 self.state,
@@ -481,6 +482,7 @@ impl App {
             || self.changes_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.plan_panel.is_some()
+            || self.plan_leave_confirmation.is_some()
             || self.model_panel.is_some()
         {
             return false;

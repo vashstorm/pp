@@ -236,17 +236,14 @@ impl App {
     }
 
     /// `n` 新建规划：保留已保存草稿，关闭列表并进入 Plan+None 待命；
-    /// 不分配 ID、不写正文、不调模型；未落盘草稿复用裸 /plan 防丢失门禁。
+    /// 不分配 ID、不写正文、不调模型；未落盘草稿复用裸 /plan 放弃确认。
     pub(in crate::tui) fn plan_list_new_plan(&mut self) {
         if self.workflow.mode == WorkMode::Plan
             && let Some(plan) = &self.workflow.plan
             && plan.revision == 0
             && !plan.origin_prompt.trim().is_empty()
         {
-            self.notify(
-                Level::Error,
-                "Save the draft with plan_write before leaving Plan mode.".into(),
-            );
+            self.request_plan_leave(true);
             return;
         }
         self.close_plan_list();
@@ -260,11 +257,7 @@ impl App {
         }
         // 已在 Plan 模式：先解除当前绑定（LeavePlan→Execute+None），
         // 成功后由 WorkflowChanged 立即重新进入 Plan 待命。
-        self.plan_reenter_standby = true;
-        self.start_plan_transition(
-            |cancellation| WorkerCommand::LeavePlan { cancellation },
-            State::ChangingPlan,
-        );
+        self.request_plan_leave(true);
     }
 
     /// Done 只读预览：以 selection 构造展示用文档，不发审批 token。
