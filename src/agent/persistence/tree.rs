@@ -419,7 +419,7 @@ fn session_at(
                         request.messages.extend(messages)
                     }
                     (Session::Response(request), NativeAppend::Response { items }) => {
-                        super::super::response_input(request).extend(items)
+                        super::super::turn::response_input(request).extend(items)
                     }
                     _ => bail!("session tree protocol mismatch"),
                 }
@@ -438,7 +438,7 @@ fn session_at(
             super::super::context::completion_boundaries(&request.messages)?;
         }
         Session::Response(request) => {
-            let input = super::super::response_input(request);
+            let input = super::super::turn::response_input(request);
             ensure!(cursor.len <= input.len(), "invalid session tree cursor");
             input.truncate(cursor.len);
             super::super::context::response_boundaries(input)?;
@@ -465,7 +465,7 @@ mod tests {
             Session::Completion(request) => request
                 .messages
                 .push(serde_json::from_value(json!({"role":"user","content":user})).unwrap()),
-            Session::Response(request) => super::super::super::response_input(request)
+            Session::Response(request) => super::super::super::turn::response_input(request)
                 .push(serde_json::from_value(json!({"role":"user","content":user})).unwrap()),
         }
         journal
@@ -516,7 +516,7 @@ mod tests {
                 }
             }
             Session::Response(request) => {
-                let input = super::super::super::response_input(request);
+                let input = super::super::super::turn::response_input(request);
                 input.push(serde_json::from_value(json!({"type":"message","id":"message-a","role":"assistant","status":"completed","content":[{"type":"output_text","text":answer,"annotations":[]}]})).unwrap());
                 if tools {
                     for id in ["call-a", "call-b"] {
@@ -1197,7 +1197,7 @@ mod tests {
             Session::Completion(request) => request
                 .messages
                 .push(serde_json::from_value(json!({"role":"user","content":user})).unwrap()),
-            Session::Response(request) => super::super::super::response_input(request)
+            Session::Response(request) => super::super::super::turn::response_input(request)
                 .push(serde_json::from_value(json!({"role":"user","content":user})).unwrap()),
         }
     }
@@ -1209,7 +1209,7 @@ mod tests {
                 .push(
                     serde_json::from_value(json!({"role":"assistant","content":answer})).unwrap(),
                 ),
-            Session::Response(request) => super::super::super::response_input(request)
+            Session::Response(request) => super::super::super::turn::response_input(request)
                 .push(serde_json::from_value(json!({"type":"message","id":"message-todo","role":"assistant","status":"completed","content":[{"type":"output_text","text":answer,"annotations":[]}]})).unwrap()),
         }
     }

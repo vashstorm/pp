@@ -10,9 +10,8 @@
 //! so writes, shell, ask, plan authoring and MCP are refused at the execution
 //! layer regardless of what the reviewer requests.
 
-use super::{
-    Agent, Session, append_user_to, input::InputQueue, persistence::Metadata, response_input,
-};
+use super::turn::{append_user_to, response_input};
+use super::{Agent, Session, input::InputQueue, persistence::Metadata};
 use crate::{
     cancellation::{self, CancellationToken},
     context::estimate_tokens,

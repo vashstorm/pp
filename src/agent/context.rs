@@ -27,10 +27,10 @@ use async_openai::types::{
 };
 use std::collections::HashSet;
 
+use super::turn::{log_model_request_finished, publish_project_load, response_input};
 use super::{
-    Agent, Session, log_model_request_finished,
+    Agent, Session,
     persistence::{Metadata, SessionJournal, SessionRef},
-    response_input,
 };
 
 const UNSUPPORTED_HISTORY: &str = "cannot compact: unsupported or incomplete history";
@@ -674,7 +674,7 @@ impl Agent {
         if self.pending_instructions.is_some() {
             self.persist_pending_input(None)?;
         }
-        super::publish_project_load(
+        publish_project_load(
             &mut self.pending_project_load,
             &mut self.reported_project_load,
             &mut self.journal,

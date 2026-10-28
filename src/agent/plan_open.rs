@@ -112,7 +112,7 @@ impl Agent {
         plan::validate_content(&document.content)?;
         // 新候选从选中文件建立只读预览投影：不携带原会话任务，来源绑定
         // 新候选的计划 ID；执行仍须本地批准，预览无 active。
-        let todos = super::plan_workflow::preview_phases(&document)?;
+        let todos = super::plan_sync::preview_phases(&document)?;
         let candidate_workflow = WorkflowState {
             mode: WorkMode::Plan,
             plan: Some(document),
@@ -140,7 +140,7 @@ impl Agent {
             );
             session.set_think_level(self.think_level);
             session.set_tools(definitions);
-            super::append_user_to(&mut session, &prompt);
+            super::turn::append_user_to(&mut session, &prompt);
             let metadata = Metadata {
                 cwd: self.tools.cwd(),
                 model_reference: &self.current_model.reference,
@@ -176,7 +176,7 @@ impl Agent {
         drop(verified);
         // 预览快照先记入目标 journal，再随交接发布；空 replay 的新候选
         // 总是携带它。
-        let todo_snapshot = super::todo_snapshot(&self.workflow);
+        let todo_snapshot = super::turn::todo_snapshot(&self.workflow);
         if let Some(event) = &todo_snapshot {
             self.journal.event(event);
             self.journal.check()?;

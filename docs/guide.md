@@ -734,6 +734,25 @@ pp gc
 
 ## 开发与验证
 
+### 源码与测试模块边界
+
+项目保持单一 binary crate。较大的入口文件保留状态定义与协调逻辑，子模块按职责承接原有实现，不通过生产 `include!`、代理函数或兼容重导出来拼接：
+
+| 模块 | 职责边界 |
+|---|---|
+| `src/agent.rs`、`src/agent/turn.rs` | Agent／Session 生命周期与任务协调留在入口；请求生命周期、双协议轮次、工具结果提交和原生历史追加在 `turn`。 |
+| `src/agent/plan_workflow.rs`、`src/agent/plan_sync.rs` | 审批／Keep/Fresh 交接及 MCP 生命周期留在 workflow；登记协调、磁盘修订导入、Todo 投影与恢复同步在 `plan_sync`。 |
+| `src/tools.rs`、`src/tools/todo/plan_adapter.rs` | schema、授权策略与分发留在工具入口；普通 Todo 状态机留在 `todo.rs`，计划适配复用其解析、转换与格式化逻辑。 |
+| `src/tui.rs`、`src/tui/app/` | App 的唯一状态定义与 worker 协议留在入口；初始化、状态、事件接收、输入、导航、面板、事件处理和绘制使用跨文件 `impl App`。 |
+| `src/tui/transcript.rs`、`src/tui/transcript/` | 类型、事件／回放状态机和共享 diff／包装函数留在入口；entry、native、tree_layout、render 分担布局实现，仍操作同一个 Transcript。 |
+
+单元测试使用父模块的 `#[cfg(test)] mod tests;`，共享 fixture 留在对应 `tests.rs`，行为分组使用 `tests/*_cases.rs`，不复制 harness。配置、LLM、streaming、安全保存、持久化和 Markdown 的内聚实现只外移测试，不增加生产抽象。
+
+集成测试仍只有 `cli_agent` target：`tests/cli_agent.rs` 保留注册和共享 CLI／SSE fixture，`tests/cli_agent/tui.rs` 保留唯一 PTY harness；session、context、streaming 及 TUI 的测试按行为放入同名目录。通过 `#[path]` 注册的父模块，其子模块也使用显式相对路径，避免误解析到其他分组。已有 TUI `include!` 只共享原上下文，不重复注册测试。
+
+移动测试后，模块限定名前缀会变化，特别要同步自重启测试中的 `--exact` 字符串。迁移前后可用 `cargo nextest list --locked --message-format json` 比较 binary-id／kind、测试总数，以及每个 binary 内 `(测试末级名称, ignored)` 的计数多重集，避免仅凭总数漏掉遗漏或重复注册。
+
+
 ### read 模块分层
 
 `src/tools/read.rs` 保留统一入口、同步 `Read` trait、`ReadContext` 和结果类型。trait 使用关联类型 `Input`，`src/tools/read/` 下的 `FileReader`、`ImageReader`、`UrlReader` 分别接收本地文件目标、来源与图片字节、URL 目标。文件和 URL 读取识别图片后都移交同一个 `ImageReader`，通过移动字节缓冲区复用图片校验与编码，不复制完整图片。
