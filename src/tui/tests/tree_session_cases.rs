@@ -13,6 +13,50 @@ fn tree_double_escape_deadline_and_reset_are_deterministic() {
 }
 
 #[test]
+fn tree_empty_or_failed_scan_keeps_startup_editor_on_main_screen() {
+    for failed in [false, true] {
+        let mut app = app();
+        app.state = State::Ready;
+        app.show_welcome = true;
+        let (commands, requests) = mpsc::channel();
+        let (events, replies) = mpsc::channel();
+        app.commands = Some(commands);
+        app.events = Some(replies);
+        let before = draw_buffer(&mut app, 100, 30);
+        let mut dirty = false;
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(matches!(requests.try_recv(), Ok(WorkerCommand::ReadTree)));
+        assert!(!app.needs_alternate());
+        // 主屏幕与历史浏览的绘制路径都不能暂时替换输入框。
+        for native in [false, true] {
+            app.native_render = native;
+            assert_eq!(draw_buffer(&mut app, 100, 30), before);
+        }
+        events
+            .send(WorkerEvent::TreeRead(if failed {
+                Err(anyhow::anyhow!("fixture tree read failed"))
+            } else {
+                Ok(crate::agent::persistence::tree::View {
+                    tree: Default::default(),
+                    records: vec![],
+                })
+            }))
+            .unwrap();
+        app.receive();
+        assert!(matches!(app.state, State::Ready));
+        assert!(app.tree_panel.is_none());
+        assert!(!app.needs_alternate());
+        let after = draw_buffer(&mut app, 100, 30);
+        for y in 26..30 {
+            for x in 0..100 {
+                assert_eq!(after[(x, y)], before[(x, y)]);
+            }
+        }
+    }
+}
+
+#[test]
 fn tree_double_escape_cancelled_scan_ignores_late_result_and_keeps_draft() {
     let mut app = app();
     app.state = State::Ready;
@@ -85,12 +129,8 @@ fn tree_inline_preview_keeps_history_viewport_draft_and_paste_isolated() {
     app.open_tree();
     assert!(matches!(requests.try_recv(), Ok(WorkerCommand::ReadTree)));
     let loading = draw(&mut app, 100, 30);
-    assert!(loading.contains("Loading session tree…"));
-    assert!(loading.contains("user turns"));
-    assert_eq!(
-        before.lines().take(26).collect::<Vec<_>>(),
-        loading.lines().take(26).collect::<Vec<_>>()
-    );
+    assert_eq!(loading, before);
+    assert!(!app.needs_alternate());
     events
         .send(WorkerEvent::TreeRead(Ok(View {
             tree: Tree::fixture(
@@ -112,6 +152,7 @@ fn tree_inline_preview_keeps_history_viewport_draft_and_paste_isolated() {
         })))
         .unwrap();
     app.receive();
+    assert!(app.needs_alternate());
     let preview = draw(&mut app, 100, 30);
     assert!(preview.contains("preview only") && preview.contains("branch answer"));
     assert!(!preview.contains("existing draft"));

@@ -226,33 +226,6 @@ impl App {
         } else {
             self.active_transcript().draw(frame, conversation);
         }
-        if !self.native_render
-            && let Some(panel) = &self.tree_panel
-        {
-            if input.height > 0 {
-                panel.draw_status(frame, Rect::new(input.x, input.y, input.width, 1));
-            }
-            if input.height > 1 {
-                frame.render_widget(
-                    Line::styled(tree::HINT, Style::default().fg(transcript_style::MUTED)),
-                    Rect::new(input.x, input.y + 1, input.width, 1),
-                );
-            }
-            if status.height > 0 {
-                frame.render_widget(
-                    statusline::primary(
-                        self.current_model.as_ref(),
-                        self.think_level,
-                        self.workflow.mode,
-                        context,
-                        status.width,
-                    ),
-                    status,
-                );
-            }
-            self.notifications.draw(frame, conversation);
-            return;
-        }
         let editor_area = if bordered {
             let block = Block::default()
                 .borders(Borders::TOP | Borders::BOTTOM)

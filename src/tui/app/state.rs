@@ -512,7 +512,8 @@ impl App {
             || self.skill_panel.is_some()
             || self.session_panel.is_some()
             || self.changes_panel.is_some()
-            || self.tree_panel.is_some()
+            // 读取完成前保留主屏幕，空历史或读取失败时无需切换屏幕。
+            || self.tree_panel.as_ref().is_some_and(|panel| !panel.is_loading())
             || self.plan_list_panel.is_some()
             || self.plan_leave_confirmation.is_some()
             || self.plan_panel.is_some()

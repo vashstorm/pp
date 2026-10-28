@@ -7,6 +7,42 @@ const TREE_TUI_RIGHT: &str = "\x1b[C";
 const TREE_TUI_HOME: &str = "\x1b[H";
 const TREE_TUI_END: &str = "\x1b[F";
 
+#[test]
+fn tree_tui_startup_double_escape_keeps_editor_without_screen_switch() {
+    for protocol in ["completion", "response"] {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let (_home, mut pty) = context_tui_start(&server, protocol, 100_000, 80);
+        pty.drain();
+        let before = pty.raw.len();
+        let cursor = pty.parser.screen().cursor_position();
+        pty.input("\x1b");
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            pty.drain();
+            if pty.raw.len() > before {
+                break;
+            }
+            assert!(Instant::now() < deadline, "首个 Esc 未处理");
+            thread::sleep(Duration::from_millis(10));
+        }
+        pty.input("\x1b");
+        pty.text("No entries found in session tree.");
+        let output = String::from_utf8_lossy(&pty.raw[before..]);
+        assert!(!output.contains("\x1b[?1049h"), "空会话不应进入备用屏幕");
+        assert!(!output.contains("Loading session tree"));
+        let screen = pty.parser.screen();
+        assert!(input_is_ready(screen));
+        assert!(!screen.alternate_screen());
+        assert!(!screen.hide_cursor());
+        assert_eq!(screen.cursor_position(), cursor);
+        context_tui_paste(&mut pty, "保留输入焦点");
+        pty.draft("保留输入焦点");
+        no_more(&server);
+        pty.input("\x03");
+        pty.finish();
+    }
+}
+
 // 打开树选择：等待底部 tips、实际消息可见且 loading 消失，而不是弹窗标题。
 fn tree_tui_open(pty: &mut Pty, expected: &str) {
     pty.input("/tree\r");
