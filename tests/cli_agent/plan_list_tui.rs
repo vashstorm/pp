@@ -55,9 +55,10 @@ fn plan_list_filters_previews_and_preserves_input() {
             && text.contains("approved.md")
             && text.contains("completed.md")
             && text.contains("—")
-            && text.contains("草稿")
-            && text.contains("待执行")
-            && text.contains("已完成")
+            && text.contains("[Draft]")
+            && text.contains("[Plan]")
+            && text.contains("[Done]")
+            && text.contains("Search:Press/tosearch")
             && !text.contains("Current")
     });
 
@@ -89,6 +90,7 @@ fn plan_list_filters_previews_and_preserves_input() {
     pty.wait_for("搜索退出但过滤保留", |screen| {
         let text = cancel_normalize(screen);
         text.contains("completed.md") && !text.contains("fix-config.md")
+            && text.contains("Search:Completed")
     });
     // 重新进入搜索后 Ctrl+U 才清空 query。
     pty.input("/\x15");
@@ -97,11 +99,11 @@ fn plan_list_filters_previews_and_preserves_input() {
         text.contains("fix-config.md")
             && text.contains("approved.md")
             && text.contains("completed.md")
-            && !text.contains("/Completed")
+            && !text.contains("Search:Completed")
     });
 
     // Enter 打开完整操作菜单；打开本身不调模型，Esc 返回列表。
-    pty.input("fix");
+    pty.input("修复");
     pty.wait_for("选中 fix-config", |screen| {
         let text = cancel_normalize(screen);
         text.contains("fix-config.md") && !text.contains("approved.md")
@@ -118,12 +120,14 @@ fn plan_list_filters_previews_and_preserves_input() {
     pty.wait_for("预览返回列表且保留状态", |screen| {
         let text = cancel_normalize(screen);
         text.contains("Planlist") && text.contains("fix-config.md")
+            && text.contains("Search:修复")
     });
 
     // F5 刷新与 resize 后列表仍正常。
     pty.input("\x1b[15~");
     pty.wait_for("F5 刷新完成", |screen| {
-        cancel_normalize(screen).contains("fix-config.md")
+        let text = cancel_normalize(screen);
+        text.contains("fix-config.md") && text.contains("Search:修复")
     });
     pty.resize(50, 120);
     pty.wait_for("resize 后列表仍渲染", |screen| {

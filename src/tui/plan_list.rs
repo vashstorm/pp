@@ -1,18 +1,19 @@
 //! 项目级 /plan-list 管理面板：只渲染 worker 发布的快照，磁盘/登记 I/O 全部留在 worker。
 //! 键盘与绘制路径不做任何 IO；操作只携带 ID，worker 按 ID 重查登记并核对当前路径与精确正文。
 use super::transcript::wrap_block;
-use super::transcript_style::{ACCENT, DIM, MUTED, REMOVED, display_text};
+use super::transcript_style::{ACCENT, ADDED, CODE, DIM, LINK, MUTED, REMOVED, display_text};
 use crate::agent::plan_management::{PlanListEntry, PlanListing, PlanOpenIntent};
 use crate::plan::PlanLocation;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
 use std::time::SystemTime;
+use unicode_segmentation::UnicodeSegmentation;
 
 pub(super) const HINT: &str = "↑/↓ select · ←/→ or Tab category · Enter open · / search · F5 refresh · n new · c continue · e actions · r rename · d delete · Esc close";
 /// Done 只读详情显示返回列表的提示。
@@ -82,6 +83,15 @@ enum Tab {
 }
 
 impl Tab {
+    fn color(self) -> Color {
+        match self {
+            Tab::All => MUTED,
+            Tab::Drafts => category_color(PlanLocation::Drafts),
+            Tab::Plans => category_color(PlanLocation::Plans),
+            Tab::Done => category_color(PlanLocation::Done),
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Tab::All => "All",
@@ -556,10 +566,10 @@ impl Panel {
                     format!(" {} ", tab.label()),
                     if tab == self.tab {
                         Style::default()
-                            .fg(ACCENT)
+                            .fg(if tab == Tab::All { CODE } else { tab.color() })
                             .add_modifier(Modifier::BOLD | Modifier::REVERSED)
                     } else {
-                        Style::default().fg(MUTED)
+                        Style::default().fg(tab.color())
                     },
                 ));
                 spans.push(Span::raw(" "));
@@ -567,9 +577,9 @@ impl Panel {
             frame.render_widget(Line::from(spans), Rect::new(area.x, y, area.width, 1));
             y += 1;
         }
-        // 输入行：重命名编辑器优先，其次搜索；query 保留时始终可见。
+        // 输入行：重命名编辑器优先，其余状态始终展示搜索入口。
         let mut cursor = None;
-        if y < bottom {
+        if y < bottom.saturating_sub(1) {
             if let Some(name) = &self.rename {
                 let line = format!("rename> {name}");
                 frame.render_widget(
@@ -577,18 +587,8 @@ impl Panel {
                     Rect::new(area.x, y, area.width, 1),
                 );
                 cursor = Some((area.x + 8 + Line::from(name.as_str()).width() as u16, y));
-            } else if self.searching || !self.query.is_empty() {
-                let line = format!("/{}", self.query);
-                frame.render_widget(
-                    Line::styled(line.clone(), Style::default().fg(ACCENT)),
-                    Rect::new(area.x, y, area.width, 1),
-                );
-                if self.searching {
-                    cursor = Some((
-                        area.x + 1 + Line::from(self.query.as_str()).width() as u16,
-                        y,
-                    ));
-                }
+            } else {
+                cursor = self.draw_search(frame, Rect::new(area.x, y, area.width, 1));
             }
             y += 1;
         }
@@ -639,6 +639,42 @@ impl Panel {
         if let Some((x, y)) = cursor {
             frame.set_cursor_position((x, y));
         }
+    }
+
+    fn draw_search(&self, frame: &mut Frame, area: Rect) -> Option<(u16, u16)> {
+        let prefix = "Search: ";
+        // 编辑时至少为光标留一列；窄窗口优先截短前缀。
+        let prefix_width =
+            (prefix.len() as u16).min(area.width.saturating_sub(u16::from(self.searching)));
+        frame.render_widget(
+            Line::styled(prefix, Style::default().fg(MUTED)),
+            Rect::new(area.x, area.y, prefix_width, 1),
+        );
+        let input = Rect::new(area.x + prefix_width, area.y, area.width - prefix_width, 1);
+        if !self.searching && self.query.is_empty() {
+            frame.render_widget(
+                Line::styled("Press / to search", Style::default().fg(DIM)),
+                input,
+            );
+            return None;
+        }
+        let available = usize::from(input.width.saturating_sub(u16::from(self.searching)));
+        let mut start = self.query.len();
+        let mut width = 0;
+        // 按完整字素和屏幕列截取尾部，避免拆开中文、组合字符或 emoji。
+        for (index, grapheme) in self.query.grapheme_indices(true).rev() {
+            let next_width = width + Span::raw(grapheme).width();
+            if next_width > available {
+                break;
+            }
+            start = index;
+            width = next_width;
+        }
+        frame.render_widget(
+            Line::styled(&self.query[start..], Style::default().fg(ACCENT)),
+            input,
+        );
+        self.searching.then_some((input.x + width as u16, input.y))
     }
 
     /// 居中确认删除框：完整相对路径、固定提示与默认 Cancel 按钮行。
@@ -783,7 +819,7 @@ impl Panel {
                 ));
                 spans.push(Span::styled(
                     format!("  [{}]", category_label(entry.location)),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(category_color(entry.location)),
                 ));
                 spans.push(Span::raw(format!("  {}", progress_label(entry))));
                 spans.push(Span::styled(
@@ -806,9 +842,17 @@ fn relative_path(entry: &PlanListEntry) -> String {
 
 fn category_label(location: PlanLocation) -> &'static str {
     match location {
-        PlanLocation::Drafts => "草稿",
-        PlanLocation::Plans => "待执行",
-        PlanLocation::Done => "已完成",
+        PlanLocation::Drafts => "Draft",
+        PlanLocation::Plans => "Plan",
+        PlanLocation::Done => "Done",
+    }
+}
+
+fn category_color(location: PlanLocation) -> Color {
+    match location {
+        PlanLocation::Drafts => ACCENT,
+        PlanLocation::Plans => LINK,
+        PlanLocation::Done => ADDED,
     }
 }
 
@@ -834,6 +878,7 @@ fn format_age(time: SystemTime, now: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
     use std::time::UNIX_EPOCH;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -875,6 +920,167 @@ mod tests {
 
     fn selected_file(panel: &Panel) -> String {
         panel.selected_entry().expect("selection").file_name.clone()
+    }
+
+    fn draw(panel: &mut Panel, width: u16) -> Terminal<TestBackend> {
+        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        terminal
+            .draw(|frame| panel.draw(frame, frame.area()))
+            .unwrap();
+        terminal
+    }
+
+    fn row_text(buffer: &Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn category_colors_match_tabs_and_badges_and_keep_selection_visible() {
+        let mut panel = ready_panel(vec![
+            entry("a", "d.md", PlanLocation::Drafts, "Draft", 0, 1),
+            entry("b", "p.md", PlanLocation::Plans, "Ready", 0, 2),
+            entry("c", "f.md", PlanLocation::Done, "Done", 2, 2),
+        ]);
+        let terminal = draw(&mut panel, 100);
+        let buffer = terminal.backend().buffer();
+        for (row, label, color) in [
+            (3, "[Draft]", ACCENT),
+            (4, "[Plan]", LINK),
+            (5, "[Done]", ADDED),
+        ] {
+            assert!(row_text(buffer, row).contains(label));
+            let cell = (0..100)
+                .map(|x| &buffer[(x, row)])
+                .find(|cell| cell.symbol() == "[")
+                .expect("分类标记应可见");
+            assert_eq!(cell.fg, color);
+        }
+        for selected in 0..4 {
+            let terminal = draw(&mut panel, 100);
+            let buffer = terminal.backend().buffer();
+            for (index, (x, color)) in [(1, MUTED), (7, ACCENT), (16, LINK), (24, ADDED)]
+                .into_iter()
+                .enumerate()
+            {
+                let cell = &buffer[(x, 1)];
+                assert_eq!(
+                    cell.fg,
+                    if index == 0 && selected == 0 {
+                        CODE
+                    } else {
+                        color
+                    }
+                );
+                assert_eq!(
+                    cell.modifier.contains(Modifier::BOLD | Modifier::REVERSED),
+                    index == selected,
+                );
+            }
+            panel.key(key(KeyCode::Right));
+        }
+    }
+
+    #[test]
+    fn search_row_is_always_visible_and_rename_takes_priority() {
+        let mut panel = ready_panel(vec![entry(
+            "a",
+            "fix.md",
+            PlanLocation::Drafts,
+            "修复配置",
+            0,
+            1,
+        )]);
+        let terminal = draw(&mut panel, 70);
+        let buffer = terminal.backend().buffer();
+        assert!(row_text(buffer, 2).starts_with("Search: Press / to search"));
+        assert_eq!(buffer[(8, 2)].fg, DIM);
+        assert!(!panel.searching);
+
+        panel.key(key(KeyCode::Char('/')));
+        panel.paste("修复");
+        let terminal = draw(&mut panel, 70);
+        assert_eq!(terminal.backend().cursor_position(), (12, 2).into());
+        assert_eq!(terminal.backend().buffer()[(8, 2)].symbol(), "修");
+        assert_eq!(terminal.backend().buffer()[(10, 2)].symbol(), "复");
+        assert_eq!(selected_file(&panel), "fix.md");
+
+        panel.key(key(KeyCode::Enter));
+        let terminal = draw(&mut panel, 70);
+        assert!(row_text(terminal.backend().buffer(), 2).starts_with("Search: 修"));
+        assert_eq!(panel.query, "修复");
+        panel.key(key(KeyCode::Char('r')));
+        let terminal = draw(&mut panel, 70);
+        assert!(row_text(terminal.backend().buffer(), 2).starts_with("rename> fix.md"));
+        panel.key(key(KeyCode::Esc));
+        panel.key(key(KeyCode::Char('/')));
+        panel.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        panel.key(key(KeyCode::Esc));
+        let terminal = draw(&mut panel, 70);
+        assert!(row_text(terminal.backend().buffer(), 2).starts_with("Search: Press / to search"));
+    }
+
+    #[test]
+    fn search_tail_and_cursor_fit_narrow_offset_areas_without_splitting_graphemes() {
+        let mut panel = ready_panel(Vec::new());
+        panel.key(key(KeyCode::Char('/')));
+        for query in [
+            "abcdefghijk",
+            "前缀修复配置",
+            "prefix-e\u{301}",
+            "prefix-👩‍💻",
+        ] {
+            panel.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+            panel.paste(query);
+            for width in [1, 8, 9, 10, 12, 16, 50] {
+                let mut terminal = Terminal::new(TestBackend::new(width + 4, 12)).unwrap();
+                let area = Rect::new(2, 1, width, 8);
+                terminal.draw(|frame| panel.draw(frame, area)).unwrap();
+                let cursor = terminal.backend().cursor_position();
+                assert_eq!(cursor.y, 3);
+                assert!(cursor.x >= area.x && cursor.x < area.right());
+                assert_eq!(
+                    terminal.backend().buffer()[(cursor.x, cursor.y)].symbol(),
+                    " "
+                );
+                assert_eq!(panel.query, query);
+            }
+        }
+        panel.query = "前缀修复配置".into();
+        let terminal = draw(&mut panel, 13);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(8, 2)].symbol(), "配");
+        assert_eq!(buffer[(10, 2)].symbol(), "置");
+        assert_eq!(terminal.backend().cursor_position(), (12, 2).into());
+        panel.query = "prefix-e\u{301}".into();
+        let terminal = draw(&mut panel, 10);
+        assert_eq!(terminal.backend().buffer()[(8, 2)].symbol(), "e\u{301}");
+        assert_eq!(terminal.backend().cursor_position(), (9, 2).into());
+        panel.query = "prefix-👩‍💻".into();
+        let terminal = draw(&mut panel, 11);
+        assert_eq!(terminal.backend().buffer()[(8, 2)].symbol(), "👩‍💻");
+        assert_eq!(terminal.backend().cursor_position(), (10, 2).into());
+    }
+
+    #[test]
+    fn search_combines_with_category_and_shows_empty_results() {
+        let mut panel = ready_panel(vec![
+            entry("a", "draft.md", PlanLocation::Drafts, "修复配置", 0, 1),
+            entry("b", "ready.md", PlanLocation::Plans, "修复配置", 0, 1),
+        ]);
+        panel.key(key(KeyCode::Right));
+        panel.key(key(KeyCode::Char('/')));
+        panel.paste("修复");
+        assert_eq!(panel.filtered.len(), 1);
+        assert_eq!(selected_file(&panel), "draft.md");
+        panel.key(key(KeyCode::Enter));
+        panel.key(key(KeyCode::Right));
+        assert_eq!(panel.query, "修复");
+        assert_eq!(selected_file(&panel), "ready.md");
+        panel.key(key(KeyCode::Right));
+        let terminal = draw(&mut panel, 70);
+        assert!(row_text(terminal.backend().buffer(), 3).starts_with("No matching plans."));
     }
 
     #[test]
