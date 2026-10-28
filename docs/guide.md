@@ -72,8 +72,9 @@ disabled_skills: []
 # 仅当前模型显式配置 context_window 时生效
 auto_compact: true
 auto_compact_threshold_percent: 80 # 严格限制 1..=99
-request_timeout_seconds: 120
-# 建连阶段 429 限流的总重试等待预算（秒）；0 表示不重试
+# 模型建连及连续无数据的闲置超时（秒），不限制整轮生成总耗时
+request_timeout_seconds: 300
+# 模型建连阶段临时 HTTP／网络错误的总重试等待预算（秒）；0 表示不重试
 rate_limit_retry_budget_seconds: 300
 read_max_bytes: 65536
 read_max_lines: 2000
@@ -131,7 +132,7 @@ chmod 600 ~/.pp/agent/models.yml
 
 - `think_level` 设置启动时的默认思考级别，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；省略字段或缺少配置文件时使用 `none`。界面将 `none` 显示为 `no think`。旧值 `default` 仍可读取，但作为 `none` 的兼容别名，含义变为显式关闭思考。仅接受这些小写字符串，拒绝 null 和其他值。Responses 请求显式发送 `reasoning.effort`，Chat Completions 请求显式发送 `reasoning_effort`；`none` 均传为字符串 `"none"`，Responses 同时省略 `reasoning.summary`，其他档位仍使用 `reasoning.summary: "auto"` 请求可读思考摘要。通过本地模型白名单校验的档位原样传给服务端；白名单不保证供应商实际支持，未配置白名单时仍由服务端决定，不自动降档或重试。参见 [OpenAI 官方思考级别说明](https://developers.openai.com/api/docs/guides/reasoning)。
 - TUI 输入 `/effort `（命令后加空格）即在输入框上方展开档位菜单，左侧显示档位，右侧显示说明和“当前”标记，浅蓝色突出选中项。↑/↓ 选择，Enter 确认，Esc 取消并保留输入；⌥ + S / Ctrl + S 将当前高亮选中的档位保存为全局默认值（写入 `~/.pp/agent/settings.yml`，下次普通新启动生效），不改变当前会话档位。菜单底部显示快捷键提示；继续输入档位前缀会筛选候选，Tab 补全但不执行。菜单只包含当前模型允许的档位；未配置限制时包含 `no think` 和上述五档，关闭思考的补全值为 `none`，不显示固定 token 预算。输入 `/effort` 后按 Enter 也可展开。行模式用 `/effort` 查看当前级别及可选值；两种模式均可用 `/effort high` 直接切换、`/effort none` 关闭思考，兼容旧命令 `/think` 和旧值 `default`。切换保留历史，对后续请求生效；`/new` 保留当前级别，`/model` 按目标模型策略选择档位；未配置策略的模型仍保留当前级别。TUI 底部状态栏显示实际选择，运行中拒绝切换并保留输入草稿。命令及 Shift + Tab 不改写配置文件；已有活动 session 时会持久化选择，写入失败则保留原档位。普通新启动按模型默认值与全局 `think_level` 优先级选择，恢复 session 使用仍被允许的保存档位。
-- 缺少 `settings.yml`、省略 `default_model` 或没有匹配的 provider/model 时，使用首个 provider 的首个模型。模型请求次数默认 20，模型请求超时和前台 bash 超时分别默认 120 秒；后台 bash 不设固定 deadline，按本次用户任务生命周期收尾；read 文本默认最多返回 65,536 源字节且不超过 2000 个完整行，图片使用独立大小限制。限制值必须为正整数，拒绝 null、负数、小数、字符串和数值溢出。
+- 缺少 `settings.yml`、省略 `default_model` 或没有匹配的 provider/model 时，使用首个 provider 的首个模型。模型请求次数默认 20，模型建连及连续无数据的闲置超时默认 300 秒，收到响应数据（包括思考和 SSE 心跳）后重新计时，不限制生成总耗时；前台 bash 超时默认 120 秒；后台 bash 不设固定 deadline，按本次用户任务生命周期收尾；read 文本默认最多返回 65,536 源字节且不超过 2000 个完整行，图片使用独立大小限制。限制值必须为正整数，拒绝 null、负数、小数、字符串和数值溢出。
 - `edit` 缺省为 `replace`，只接受严格小写的 `replace`／`hashline`，拒绝 null、其他类型、大小写或空白变体。启动时固定，`/model`（含跨协议切换）和 `/new` 均保留；使用锚点编辑须显式配置 `hashline`。
 - 显式 `default_model` 必须为 `provider/model`，以第一个 `/` 分隔；两部分不能空白，匹配区分大小写且不裁剪空格。供应商 ID 不能含 `/`，模型 ID 可以：`gateway/team/model` 指 gateway 下 ID 为 `team/model` 的模型。不接受裸模型 ID，也无环境变量回退。
 - `providers` 与各供应商的 `models` 均不能为空。供应商 ID 全局唯一，模型别名只需在供应商内唯一；两类 ID、`api_key` 和实际 `model` 均不得为空白。启动时校验所有条目，包括未选中的供应商和模型。
@@ -164,7 +165,7 @@ chmod 600 ~/.pp/agent/models.yml
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除 | 仅 TUI |
 | `/quit` | 退出 | TUI / 行模式 |
 
-输入 `!命令` 在项目目录运行本地非交互 bash，不请求模型，命令和输出不进入模型上下文或会话文件。需要有效的 Agent 配置和 Execute 模式；Plan、忙碌或有待处理消息时不可运行。每条命令使用独立 shell，`cd` 和环境变量不跨命令保留；以当前用户权限执行，无文件系统沙箱。TUI 按 Esc 取消并等待进程回收，行模式输出写入 stderr，stdout 仍保留给模型回复。
+输入 `!命令` 在项目目录运行本地非交互 bash，不请求模型，命令和输出不进入模型上下文或会话文件。需要有效的 Agent 配置和 Execute 模式；Plan、忙碌或有待处理消息时不可运行。每条命令使用独立 shell，`cd` 和环境变量不跨命令保留；以当前用户权限执行，无文件系统沙箱。TUI 首个 `!` 仅进入 shell 模式，不显示在输入框中；后续 `!` 作为命令正文保留，历史回填会恢复模式并隐藏切换前缀。编辑时按 Esc 或在空输入框按 Backspace 退出模式，清空命令也会退出；命令运行时按 Esc 取消并等待进程回收。行模式仍输入完整的 `!命令`，输出写入 stderr，stdout 仍保留给模型回复。
 
 以下快捷键用于 TUI；macOS / Linux 分列显示。
 
@@ -468,13 +469,15 @@ TUI 输入 `/skills` 打开全局管理面板，顶部依次显示 `Sources`（�
 
 行模式支持 `/skills` 查看来源与技能列表，`/skills enable 名称`、`/skills disable 名称` 逐项启停；`/skills sources` 查看来源，`/skills sources enable claude`、`/skills sources enable codex` 开启继承，`/skills sources disable claude` 或 `codex` 关闭继承。TUI 也支持这些参数；`/skills sources` 直接打开来源页。命令仅本地管理，不发送模型请求。
 
-系统只列出已启用技能的名称、说明和完整 `skill://` URI；技能提示词参考 [oh-my-pi](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/prompts/system/system-prompt.md)，保留 `<skills>` 列表，要求匹配技能时先调用 `read`。例如 `read({"path":"skill://rust"})` 读取当前磁盘上的完整 `SKILL.md`，包含 frontmatter；正文不会自动注入系统提示词，也不会执行其中脚本。成功结果保留 read 的 `source/content/ranges/lines_read/truncated/next_offset/next_path` 字段，并额外返回实际规范资源 `path` 与技能根目录 `base_dir`；正文中的相对文件和脚本引用以 `base_dir` 定位，技能指导不能覆盖系统规则。
+系统只列出已启用技能的名称、说明和完整 `skill://` URI，保留 `<skills>` 列表；选择规则紧邻实际列表注入，使用自定义基础系统提示词时也会附加。在研究、规划、代码发现或实现前，模型须根据用户请求及将执行的具体子任务，按语言、文件类型、框架和主题选择适用的最少技能集合；用户显式指定的已列出技能必须选择，未指定时也须主动匹配。小改动、熟悉技术或已有批准计划不能代替读取；新发现或补充任务引入其他领域时再次匹配，每项技能每任务读取一次，不逐工具调用重复读取。无适用技能时正常继续，不因仓库包含某种语言而读取无关技能。上述为模型提示词要求，不是运行时强制调用或触发率保证。
+
+例如 `read({"path":"skill://rust"})` 读取当前磁盘上的完整 `SKILL.md`，包含 frontmatter；正文不会自动注入系统提示词，也不会执行其中脚本。成功读取后模型应简短说明使用的技能和用途；读取失败应如实报告并采用适当回退，不能仅凭摘要宣称已经加载。成功结果保留 read 的 `source/content/ranges/lines_read/truncated/next_offset/next_path` 字段，并额外返回实际规范资源 `path` 与技能根目录 `base_dir`；正文中的相对文件和脚本引用以 `base_dir` 定位，技能指导不能覆盖系统规则或当前工作流权限。
 
 裸 URI 与尾部 `/` 都读取 `SKILL.md`；追加 `/references/guide.md` 读取附属资源，`/.` 列出技能根目录。目录列表非递归，包含隐藏项，真实目录在前且名称后加 `/`，文件在后，两组分别按名称排序；symlink 仅列名称，不跟随扫描，空目录显示 `(empty directory)`。目录不生成 Hashline 编辑锚点。技能正文、附属文本和目录默认全文返回，不受普通 `read_max_lines/read_max_bytes` 限制，因此大技能会占用更多模型上下文；显式 `:2-3:raw`、多范围与 tail 仍按 read 规则精确生效。技能图片沿用 20 MiB／3200 万像素限制，不能使用选择器。
 
 名称保持大小写；发布 URI 只保留 ASCII 字母、数字和 `-._~`，其他 UTF-8 字节百分号编码一次，例如名称 `team/rust` 对应 `skill://team%2Frust`，与 `skill://team/rust` 的资源路径不混淆。冒号、百分号、空格等使用列表中发布的编码 URI；可直接读取未编码的 Unicode 名称。URI 不支持字面 query／fragment，文件名中的 `?`、`#` 须编码；非法转义、无效 UTF-8、空名称或 NUL 被拒绝。资源路径不允许绝对路径或 `..`，规范化后必须仍位于技能根目录内；目录内 symlink 可读，目录外 symlink 被拒绝。普通 read 对已知绝对文件路径的既有访问能力不变，技能启停不是文件权限沙箱。
 
-技能通过 read 显示来源及成功／失败状态，默认预览前三行正文，独立于普通文件的 `read.toolResultPreview` 设置；Ctrl + O 展开全文。技能读取不并入普通 read 概要分组。旧会话里的 `load_skill` 事件作为未知工具显示完整 Data／JSON，不重写历史，也不再提供旧执行入口。
+技能通过独立 Read 卡片显示来源及成功／失败状态，默认预览前十行正文，独立于普通文件的 `read.toolResultPreview` 设置；Ctrl + O 展开全文。技能读取不并入普通 read 概要分组。仅发现或注入技能摘要不会生成正文加载卡片；排查漏触发时应核对是否实际调用了 `read` 读取 `skill://` URI，而非只看 `/skills` 的启用状态或 stats 的 Skills 摘要。旧会话里的 `load_skill` 事件作为未知工具显示完整 Data／JSON，不重写历史，也不再提供旧执行入口。
 
 启停和重扫对后续请求生效，跨模型及协议切换保留。URI 只解析当前已发现且启用的精确名称，不触发重扫；关闭来源、禁用或未发现统一返回 `Skill does not exist or is disabled`。读取不缓存正文、不重解析 frontmatter 或复核名称：磁盘修改立即可见，文件被删除后失败，元数据由发现／重扫校验。已读取内容仍在当前会话历史中，`/new` 清除历史并保留全局启用选择。配置不会被其他运行实例自动刷新，需要重扫或重启。技能读取的 read 状态写入 stderr，行模式 stdout 仍只有助手输出。
 
@@ -514,7 +517,7 @@ cargo nextest run --locked mcp_
 - **容量必须显式配置。** 每模型 `context_window` 为可选的正整数 token 数；省略表示未知，拒绝 null、0、负数、小数、字符串及溢出，未选中的模型也校验。不猜测模型名，不远程探测容量。`auto_compact` 默认 true，`auto_compact_threshold_percent` 默认 80 且必须为 1..=99 的整数；修改后重启生效，无运行时开关命令。当前模型没有容量时显示 `Auto compact: inactive (context_window not configured)`，不显示虚构的百分比；明确关闭则显示 `off`。切模型只用目标模型的容量，恢复只用当前模型目录配置，不继承旧模型或日志中的容量。
 - **主动 `/compact`，自动在每次普通请求前检查。** `/compact` 不接受参数，支持 TUI 和行模式；`-p '/compact'` 仍是普通提示词。自动检查包含刚接受的用户输入及同一任务内完整工具批次的增长；用量达到阈值时先摘要，再继续任务。手动压缩不要求已知容量；空历史、只有待回复用户输入或只有一个完整 exchange 时返回 `Nothing to compact.`，不发请求、不创建空日志。TUI 仅空闲时接受命令，运行中草稿可编辑，Esc 等待实际取消终态后恢复；自动压缩仍属于当前任务，手动压缩不产生虚假的任务 Completed 或 `You: /compact`。
 - **当前模型总结旧前缀，近期交互原生保留。** 完整 assistant 回复或 assistant calls 与该批全部 tool results 构成安全 exchange；Responses 的 reasoning 与输出／calls/results 不拆开。至少保留最后一个完整 exchange 和其后待回复用户输入；后缀预算为 `min(16384, context_window / 5)`，容量未知为 16384 tokens，最后一个 exchange 超预算也整体保留。旧摘要参与再次摘要，不叠加摘要链。摘要只发送当前 system/instructions、旧原生前缀和固定摘要请求，不发送近期后缀，不配置或执行工具，不改变当前 effort。摘要目标为 `min(2048, max(1, context_window / 16))` tokens（未知容量为 2048），输出上限为目标的两倍；候选为一个 `[Context summary]` 用户消息加原生后缀。可见对话和原始日志不删除，也不减少日志磁盘占用。
-- **有限失败，不重试或裁掉最新 exchange。** 已知容量时，摘要请求的估算输入加输出上限必须不超过容量；不做分块摘要。空白、拒绝、工具调用或截断的摘要不能提交。手动候选未变小则保持原历史；自动候选还必须严格低于触发阈值，否则报 `cannot compact: retained context exceeds automatic threshold` 并停止当前任务。系统／工具 schema、当前输入或最新 exchange 太大而无可压前缀时同样有限失败。网络失败、取消或 state 写失败均恢复原生历史，不执行摘要工具，不继续普通请求，不重放已执行工具。手动取消不改写历史任务的 done/aborted 状态；自动失败／取消走当前任务的终态处理。
+- **有限失败，不裁掉最新 exchange。** 已知容量时，摘要请求的估算输入加输出上限必须不超过容量；不做分块摘要。空白、拒绝、工具调用或截断的摘要不能提交。手动候选未变小则保持原历史；自动候选还必须严格低于触发阈值，否则报 `cannot compact: retained context exceeds automatic threshold` 并停止当前任务。系统／工具 schema、当前输入或最新 exchange 太大而无可压前缀时同样有限失败。临时 HTTP／网络故障沿用模型请求的有界重试；预算耗尽、永久错误、流开始后的失败、取消或 state 写失败均恢复原生历史，不执行摘要工具，不继续普通请求，不重放已执行工具。手动取消不改写历史任务的 done/aborted 状态；自动失败／取消走当前任务的终态处理。
 
 上下文回归覆盖双协议 usage-only／completed usage、手动与任务内自动压缩、容量与额度门槛、摘要失败矩阵、连续恢复的 native append cursor、真实 PTY 的 Esc／草稿／阈值颜色／60 与 30 列 resize，以及 `ulimit -f` 残尾恢复。独立临时 Python 标准库 runner 在 loopback HTTP + 100×30 PTY 上验证两协议的手动压缩、恢复和两个只读批次后的自动摘要；未使用个人配置或真实远程供应商，Linux 未在本次环境实机验证。
 
@@ -621,7 +624,7 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 - Esc 取消会关闭本地模型连接及 SDK 后台网络任务；下一任务惰性创建新的 runtime／HTTP 连接池。流式半成品只保留展示，不进入原生历史或执行未完成工具调用。已开始的同步 read/edit/write 操作允许完成并保留真实结果；同批剩余调用不执行，但仍按 call_id 追加取消结果。只有终止／回收成功且原生批次与终态同步保存成功才显示取消；真实清理失败或持久化错误优先报告错误。只能保证本地连接及同进程组受控工作停止，不能撤销供应商远端计算、计费、外部副作用或主动脱离进程组的进程。
 - 工具按序执行，write → read 等批内依赖按顺序可见。先保存完整模型输出，再按对应 call ID 逐项追加结果；普通工具失败不会跳过其余调用。取消和真实进程清理失败按前述规则处理。
 - `read_max_bytes`、`read_max_lines`、`bash_timeout_seconds` 均要求正整数，启动时读取并固定；`/model`、`/new` 不重新读取这些限制。技能 URI 文本使用独立的全文读取例外，不改变普通文件和 HTTP 的限额。
-- 普通请求使用当前原生上下文，其中可能含压缩摘要；追加式 JSONL 与可见对话保留原消息和事件。已接受输入在自动压缩可能失败前保存。网络／协议错误不回滚文件修改，只有建连阶段 HTTP 429 在限流预算内重试；此前完整历史和工具结果仍可恢复。
+- 普通请求使用当前原生上下文，其中可能含压缩摘要；追加式 JSONL 与可见对话保留原消息和事件。已接受输入在自动压缩可能失败前保存。网络／协议错误不回滚文件修改，建连阶段 HTTP 408／409／429／5xx、连接故障和超时在配置预算内重试；此前完整历史和工具结果仍可恢复。
 - `/model` 仅从启动时完整校验的 catalog 选择，不重载或写配置。选择当前引用无操作；解析、客户端初始化或历史转换失败保留当前模型和历史。切换不探测 HTTP、不执行工具或回退协议，兼容性由下一次实际请求验证。
 - 切模型保留用户／助手文字、系统指令、工具 call ID／参数及结果。Completion 之间保留原生消息；同一配置供应商的 Responses 之间保留含加密思考的原生输出。跨协议或跨 Responses 供应商时转换可读历史，去掉 item ID、重放元数据和不透明加密思考；可读思考转为助手文本，交错消息／调用转换为 Completion 批次。不支持的非文本或未知历史会拒绝切换，避免静默丢失记录；加密供应商状态不可移植。
 
@@ -629,7 +632,7 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 
 ## HTTP 协议
 
-以下请求结构适用于普通任务；专用摘要请求不带工具和 tool choice。`async-openai` 以类型化 SSE 流消费两种协议，仅提供流式执行路径。Tokio runtime 连接同步 Agent 与 SDK，不在 TUI 绘制线程执行请求。每次请求使用 `request_timeout_seconds`（默认 120），禁止自动重定向。唯一重试是建连阶段 HTTP 429：在 `rate_limit_retry_budget_seconds`（默认 300，0 关闭）内优先遵循整数秒 `Retry-After`（0 立即重试），否则指数退避，等待截断至剩余预算，最多十次尝试，等待期间可取消；流内限流不重试。显式覆盖 SDK 从环境派生的凭据、API 地址、organization 和 project，仍只用文件配置。
+以下请求结构适用于普通任务；专用摘要请求不带工具和 tool choice。`async-openai` 以类型化 SSE 流消费两种协议，仅提供流式执行路径。Tokio runtime 连接同步 Agent 与 SDK，不在 TUI 绘制线程执行请求。模型请求不设总耗时上限；`request_timeout_seconds`（默认 300）限制建连和连续无响应数据的闲置等待，收到数据后重新计时，正文、思考及 SSE 心跳均可保活。保留原配置名，已显式配置的数值仍生效；修改后需重启。禁止自动重定向。建连阶段的 HTTP 408／409／429／5xx、连接故障和超时会自动重试；400／401／403 等永久错误、请求构造错误以及流开始后的任何失败（含流内限流、畸形数据和截断）不重试。沿用兼容配置名 `rate_limit_retry_budget_seconds`（默认 300，0 关闭全部建连重试）作为累计退避等待预算，每次尝试仍受上述建连及闲置超时限制，总耗时可能超过等待预算。优先遵循整数秒 `Retry-After`（0 立即重试），否则从 1 秒起指数退避，等待截断至剩余预算，含首次请求最多十次尝试；等待和重新建连均可取消。CLI stderr 与 TUI 通知显示脱敏原因、重试次数及等待时长，不写入会话或重复采集统计。建连超时并不保证上游未处理原请求，重试可能产生额外模型费用；已执行的本地工具不会重放。显式覆盖 SDK 从环境派生的凭据、API 地址、organization 和 project，仍只用文件配置。
 
 - **`response`（默认）**：发送 `model`、`instructions`、本地 `input` 历史、function `tools`、`tool_choice: auto`、`stream: true`、`store: false` 和 `include: ["reasoning.encrypted_content"]`，不使用 `previous_response_id` 或服务端 conversations。正文和拒绝按输出项及内容顺序显示；可读思考单独展示，不重复 delta／done／completed，不显示参数分片和加密思考。仅以 `response.completed.response` 提交输出和调用，收到后立即结束轮次，不等待 HTTP EOF 或 `[DONE]`。response／message／reasoning／function-call 状态须通过完成校验；原生保留消息、思考及调用顺序，结果匹配 `call_id`。`/new` 清空 input，保留 instructions。
 - **`completion`**：发送 `model`、`messages`、function `tools`、`tool_choice: auto`、`stream: true` 和 `stream_options.include_usage: true`。chunk 使用 SDK schema，只消费 choice 0；保留最后一次非空 usage，包括 choices 为空的 usage-only chunk，缺 usage 不重试或回退。必须有实际 assistant role 和 `stop`／`tool_calls` finish reason。工具片段按 index 累积，无错误结束后才校验；截断、过滤和 finish 前 EOF 均失败。SDK 内部消费 `[DONE]`，服务端省略时仍接受合法 finish 加正常结束。`/new` 只保留 system 消息。
@@ -681,7 +684,7 @@ cost:
 
 费用公式为 `(总输入 - 缓存读取 - 缓存写入) × cost.input + 缓存读取 × cost.cacheRead + 缓存写入 × cost.cacheWrite + 输出 × cost.output`，最后除以一百万。每次统计查询重新读取模型配置，修改后历史估算按当前单价重算，不代表历史账单或订阅实际支出。缺少价格、完整 usage 或缓存读写数量，以及缓存读写之和超过总输入等异常的请求都计入 Unpriced 并从估算中排除；写入量大于 0 时必须配置 `cacheWrite`；明确为 0 时无需写入单价。旧数据写入量未知也计入 Unpriced。全未定价显示 `—`，混合数据只合计已定价部分并标示覆盖数量。空范围的费用为 `$0`。模型配置不存在时全部未定价；文件损坏、字段错误或无法读取时，页面提示问题并保留其余统计，不返回配置原文或密钥。统计服务仍可在没有模型配置时启动。Overview、Requests 及请求详情沿用相同计价规则。每日费用按 UTC 日聚合，Average per day 以有请求的 UTC 日数为分母。模型按完整配置引用分组，同名跨供应商或同供应商不同别名不会混在一起。
 
-数据库保存模型输出（含可获得的思考、工具参数）、请求指标和已提交的对应会话条目快照，并为每个新 session 的首次实际模型请求保存完整原生 JSON 请求体及当时注入的技能摘要头，不依赖 `debug`。快照包含完整 system prompt、用户消息及其他 `messages/input` 项、实际发送的工具定义和模型参数，不截断正文；不保存 HTTP 请求头或认证配置。首次请求失败、流中断或发送后取消仍保留快照，429 重试按同一次请求记录；发送前取消不消费首次采集资格。后续工具轮次、普通任务和切换模型不重复保存；`/new` 或 Plan Fresh 创建的新 session 重新采集，恢复已有 session 不补造快照。摘要和未提交输出没有会话条目时仍明确显示未记录。统计文件可能包含提示词、用户输入、代码和模型输出，应按个人会话数据保管；不会自动清理，可运行 `pp gc` 删除超过 90 天的记录。目录权限为 `0700`、数据库为 `0600`，SQLite 使用 WAL 支持多进程写入；存储不可用只提示，不中断模型任务。
+数据库保存模型输出（含可获得的思考、工具参数）、请求指标和已提交的对应会话条目快照，并为每个新 session 的首次实际模型请求保存完整原生 JSON 请求体及当时注入的技能摘要头，不依赖 `debug`。快照包含完整 system prompt、用户消息及其他 `messages/input` 项、实际发送的工具定义和模型参数，不截断正文；不保存 HTTP 请求头或认证配置。首次请求失败、流中断或发送后取消仍保留快照，建连重试按同一次请求记录；发送前取消不消费首次采集资格。后续工具轮次、普通任务和切换模型不重复保存；`/new` 或 Plan Fresh 创建的新 session 重新采集，恢复已有 session 不补造快照。摘要和未提交输出没有会话条目时仍明确显示未记录。统计文件可能包含提示词、用户输入、代码和模型输出，应按个人会话数据保管；不会自动清理，可运行 `pp gc` 删除超过 90 天的记录。目录权限为 `0700`、数据库为 `0600`，SQLite 使用 WAL 支持多进程写入；存储不可用只提示，不中断模型任务。
 
 Requests 列表以旗帜图标（悬停提示 Session first request）、行左侧色条及浅色渐变底纹标识已保存首次上下文的请求，不根据当前筛选或排序猜测首次请求，旧记录不补造标记。Requests 详情顶部的 **Context** 与 **Trace** 按钮并排，Traces 展开区的 **Context** 与 **Full request details** 按钮并排；没有快照时 Context 按钮禁用并显示未记录。两处入口打开同一个桌面端上下文阅读器：Context 分类保留 system prompt、消息／输入项的原始顺序和其余请求参数；Tools 从快照中的 `tools` 展示名称、说明及完整 schema；Skills 展示本次提示词组装时冻结的技能名称、说明和 `skill://` URI，表示已提供给模型的技能摘要，不表示技能正文已读取或执行。查看时不扫描当前配置或技能目录。阅读器默认选中 system prompt，支持按名称／说明筛选、字符数、保留换行和缩进的原文高亮、自动折行、复制当前条目或完整请求 JSON；采用左右分栏布局，Esc 关闭后恢复原页面与展开状态。多模态及未知字段保留在对应条目和完整请求 JSON 中；旧记录及后续请求显示未记录。
 

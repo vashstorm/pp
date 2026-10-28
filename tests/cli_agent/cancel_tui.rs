@@ -1288,3 +1288,48 @@ fn background_status_stop_lifecycle_displays_states_and_keeps_foreground_footer(
         cancel_assert_no_request(&fixture);
     }
 }
+
+#[test]
+fn request_retry_tui_notifies_and_cancels_backoff_before_recovering() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&fixture, Some(protocol)),
+        )
+        .unwrap();
+        let mut pty = Pty::start_with_existing_files(home.path());
+        pty.ready();
+        pty.input("retry cancelled prompt\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        request
+            .respond(
+                Response::from_string("private-error-body fixture-key")
+                    .with_status_code(503)
+                    .with_header(Header::from_bytes("Retry-After", "30").unwrap()),
+            )
+            .unwrap();
+        pty.wait_for("重试通知展示等待时长与 HTTP 状态", |screen| {
+            let text = screen.contents();
+            text.contains("Retrying in 30s") && text.contains("HTTP status 503")
+        });
+        pty.input("\x1b");
+        cancel_wait_cancelled_ready(&mut pty);
+        cancel_assert_no_request(&fixture);
+        assert!(!pty.parser.screen().contents().contains("fixture-key"));
+        pty.input("after retry cancellation\r");
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert_eq!(
+            cancel_user_messages(&body, protocol),
+            ["retry cancelled prompt", "after retry cancellation"]
+        );
+        plan_final(request, protocol, "retry-recovery-complete");
+        pty.text("retry-recovery-complete");
+        pty.ready();
+        pty.input("/quit\r");
+        pty.finish();
+        no_more(&fixture);
+    }
+}

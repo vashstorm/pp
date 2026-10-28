@@ -985,11 +985,15 @@ fn run_cli_task(
                     );
                 }
             }
-            AgentEvent::RateLimited { attempt, wait_ms } => {
+            AgentEvent::RequestRetrying {
+                reason,
+                attempt,
+                wait_ms,
+            } => {
                 cli_write(
                     stderr,
                     &format!(
-                        "rate limited; retrying in {} (attempt {attempt})\n",
+                        "{reason}; retrying in {} (attempt {attempt})\n",
                         crate::tui::format_wait(wait_ms)
                     ),
                     &mut err_broken,

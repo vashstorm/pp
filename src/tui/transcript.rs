@@ -1372,7 +1372,7 @@ impl Transcript {
                 AgentEvent::TodoReminder { .. } => {}
                 // 运行时指标只服务状态栏，不改变对话阶段。
                 AgentEvent::ModelRequestStarted
-                | AgentEvent::RateLimited { .. }
+                | AgentEvent::RequestRetrying { .. }
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. } => {}
                 // 运行时上下文管理：自动压缩开始切换阶段；用量更新不影响活动显示。
@@ -1388,7 +1388,7 @@ impl Transcript {
             AgentEvent::ContextUpdated { .. } | AgentEvent::PlanProgressUpdated { .. } => {}
             // 运行时指标只服务状态栏，不产生对话条目。
             AgentEvent::ModelRequestStarted
-            | AgentEvent::RateLimited { .. }
+            | AgentEvent::RequestRetrying { .. }
             | AgentEvent::ModelOutputProgress { .. }
             | AgentEvent::ModelRequestFinished { .. } => {}
             // 已接受的补充输入由 App 直接追加，不生成重复用户卡。

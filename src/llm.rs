@@ -242,7 +242,7 @@ impl OpenAiClient {
                 Some(opened) => opened,
                 None => return Err(Cancelled.into()),
             };
-            let mut stream = open_with_rate_limit_retry(
+            let mut stream = open_with_request_retry(
                 cancellation,
                 budget,
                 "Chat Completions",
@@ -360,7 +360,7 @@ impl OpenAiClient {
                 Some(opened) => opened,
                 None => return Err(Cancelled.into()),
             };
-            let mut stream = open_with_rate_limit_retry(
+            let mut stream = open_with_request_retry(
                 cancellation,
                 budget,
                 "Responses",
@@ -461,7 +461,9 @@ fn elapsed_millis(start: Instant) -> u64 {
 
 fn build_client(sdk_config: OpenAIConfig, timeout: Duration) -> Result<Client<OpenAIConfig>> {
     let http = reqwest::Client::builder()
-        .timeout(timeout)
+        // 只限制建连和连续无数据的等待，持续生成不设总耗时上限。
+        .connect_timeout(timeout)
+        .read_timeout(timeout)
         .redirect(Policy::none())
         .retry(reqwest::retry::never())
         .build()
@@ -503,20 +505,15 @@ fn redacted_error(error: OpenAIError, api: &str) -> anyhow::Error {
     }
 }
 
-/// The middleware never reads response bodies, so the integer seconds of a
-/// 429's `Retry-After` header travel through the otherwise-empty `code`
-/// field for the retry loop. `redacted_error` only prints status codes, so
-/// this marker never reaches user-visible output.
+/// middleware 不读取错误响应体，通过自构造 code 标记传递 Retry-After 整数秒。
+/// 脱敏错误只展示状态码，不输出该内部标记。
 const RETRY_AFTER_CODE_PREFIX: &str = "pp-retry-after:";
 
 /// Safety valve so a provider answering `Retry-After: 0` cannot turn the
 /// retry budget into a tight request loop.
-const RATE_LIMIT_MAX_ATTEMPTS: u32 = 10;
+const REQUEST_MAX_ATTEMPTS: u32 = 10;
 
 fn retry_after_code(response: &reqwest::Response) -> Option<String> {
-    if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return None;
-    }
     let seconds = response
         .headers()
         .get(reqwest::header::RETRY_AFTER)?
@@ -533,9 +530,6 @@ fn retry_after_seconds(error: &OpenAIError) -> Option<u64> {
         OpenAIError::ApiError(response) => response,
         _ => return None,
     };
-    if response.status_code != reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return None;
-    }
     response
         .api_error
         .code
@@ -545,33 +539,35 @@ fn retry_after_seconds(error: &OpenAIError) -> Option<u64> {
         .ok()
 }
 
-/// Only opening-phase HTTP 429 responses are retryable; the stream has not
-/// started, so no partial output exists.
-fn is_rate_limited(error: &OpenAIError) -> bool {
-    matches!(
-        error,
-        OpenAIError::ApiError(response)
-            if response.status_code == reqwest::StatusCode::TOO_MANY_REQUESTS
-    )
+/// 只分类建连阶段的临时错误；流开始后的错误不进入重试循环。
+fn request_retry_reason(error: &OpenAIError) -> Option<crate::events::RequestRetryReason> {
+    use crate::events::RequestRetryReason;
+    match error {
+        OpenAIError::ApiError(response) => match response.status_code.as_u16() {
+            429 => Some(RequestRetryReason::RateLimited),
+            status @ (408 | 409 | 500..=599) => Some(RequestRetryReason::HttpStatus(status)),
+            _ => None,
+        },
+        OpenAIError::Reqwest(error) if error.is_timeout() => Some(RequestRetryReason::Timeout),
+        OpenAIError::Reqwest(error) if error.is_connect() || error.is_request() => {
+            Some(RequestRetryReason::Connection)
+        }
+        _ => None,
+    }
 }
 
-/// Wait before the next opening attempt of a rate-limited request: the
-/// provider's `Retry-After` seconds win when present (zero retries at
-/// once), otherwise the delay doubles per attempt starting at one second.
-/// Waits are clipped to the remaining budget; `None` means stop retrying.
-fn rate_limit_wait(
+/// 优先使用 Retry-After 整数秒，否则从 1 秒开始指数退避；等待截断到剩余预算。
+fn request_retry_wait(
     error: &OpenAIError,
     waited: Duration,
     budget: Duration,
     attempt: u32,
 ) -> Option<Duration> {
-    if !is_rate_limited(error) {
+    request_retry_reason(error)?;
+    if budget.is_zero() || waited >= budget || attempt >= REQUEST_MAX_ATTEMPTS - 1 {
         return None;
     }
-    if budget.is_zero() || waited >= budget || attempt >= RATE_LIMIT_MAX_ATTEMPTS {
-        return None;
-    }
-    // The attempt guard above bounds the shift well below overflow.
+    // 上方尝试次数限制保证移位不会溢出。
     let backoff = match retry_after_seconds(error) {
         Some(seconds) => Duration::from_secs(seconds),
         None => Duration::from_secs(1 << attempt),
@@ -579,27 +575,21 @@ fn rate_limit_wait(
     Some(backoff.min(budget - waited))
 }
 
-/// Final error for a failed opening phase: anything but an exhausted 429
-/// retry budget keeps the plain redacted message, matching requests that
-/// never retried.
+/// 重试结束后仍只展示脱敏错误，并补充实际重试次数和累计等待时长。
 fn opening_error(error: OpenAIError, api: &str, waited: Duration, retries: u32) -> anyhow::Error {
-    if !is_rate_limited(&error) || retries == 0 {
+    if retries == 0 {
         return redacted_error(error, api);
     }
     anyhow::anyhow!(
-        "{} (rate limited; gave up after {} retries and {}s of backoff)",
+        "{} (gave up after {} retries and {}s of backoff)",
         redacted_error(error, api),
         retries,
         waited.as_secs()
     )
 }
 
-/// Opens a stream, retrying the opening phase while the provider answers
-/// 429 within the wait budget. Retrying is safe only before the first
-/// chunk: no partial output has been committed, and `on_request_sent` has
-/// already fired exactly once for the first attempt. Both the backoff sleep
-/// and every reopening stay cancellable.
-async fn open_with_rate_limit_retry<S, F, Fut>(
+/// 仅重开尚未返回 SSE 流的请求；持久化回调已执行一次，等待和重开均可取消。
+async fn open_with_request_retry<S, F, Fut>(
     cancellation: &CancellationToken,
     budget: Duration,
     api: &str,
@@ -618,12 +608,13 @@ where
             Ok(stream) => return Ok(stream),
             Err(error) => error,
         };
-        let Some(delay) = rate_limit_wait(&error, waited, budget, retries) else {
+        let Some(delay) = request_retry_wait(&error, waited, budget, retries) else {
             return Err(opening_error(error, api, waited, retries));
         };
         retries += 1;
         waited += delay;
-        progress(AgentEvent::RateLimited {
+        progress(AgentEvent::RequestRetrying {
+            reason: request_retry_reason(&error).expect("重试条件已确认临时错误"),
             attempt: retries,
             wait_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
         });
@@ -1176,29 +1167,29 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_wait_honors_header_exponential_fallback_and_budget() {
+    fn request_retry_wait_honors_header_exponential_fallback_and_budget() {
         let budget = Duration::from_secs(300);
         let no_header = api_error(429, None);
         assert_eq!(
-            rate_limit_wait(&no_header, Duration::ZERO, budget, 0),
+            request_retry_wait(&no_header, Duration::ZERO, budget, 0),
             Some(Duration::from_secs(1))
         );
         assert_eq!(
-            rate_limit_wait(&no_header, Duration::ZERO, budget, 1),
+            request_retry_wait(&no_header, Duration::ZERO, budget, 1),
             Some(Duration::from_secs(2))
         );
         assert_eq!(
-            rate_limit_wait(&no_header, Duration::ZERO, budget, 3),
+            request_retry_wait(&no_header, Duration::ZERO, budget, 3),
             Some(Duration::from_secs(8))
         );
         let header = api_error(429, Some("pp-retry-after:7"));
         assert_eq!(
-            rate_limit_wait(&header, Duration::ZERO, budget, 0),
+            request_retry_wait(&header, Duration::ZERO, budget, 0),
             Some(Duration::from_secs(7))
         );
         // Zero seconds means the provider allows an immediate retry.
         assert_eq!(
-            rate_limit_wait(
+            request_retry_wait(
                 &api_error(429, Some("pp-retry-after:0")),
                 Duration::ZERO,
                 budget,
@@ -1208,28 +1199,110 @@ mod tests {
         );
         // Waits are clipped to the remaining budget.
         assert_eq!(
-            rate_limit_wait(&header, Duration::from_secs(296), budget, 0),
+            request_retry_wait(&header, Duration::from_secs(296), budget, 0),
             Some(Duration::from_secs(4))
         );
-        // Budget spent, budget disabled, the attempt cap, and non-429 stop retrying.
-        assert_eq!(rate_limit_wait(&header, budget, budget, 0), None);
+        // 预算耗尽、关闭重试、达到次数上限及永久错误均停止重试。
+        assert_eq!(request_retry_wait(&header, budget, budget, 0), None);
         assert_eq!(
-            rate_limit_wait(&header, Duration::ZERO, Duration::ZERO, 0),
+            request_retry_wait(&header, Duration::ZERO, Duration::ZERO, 0),
             None
         );
         assert_eq!(
-            rate_limit_wait(&no_header, Duration::ZERO, budget, 10),
+            request_retry_wait(&no_header, Duration::ZERO, budget, 9),
             None
         );
         assert_eq!(
-            rate_limit_wait(&api_error(500, None), Duration::ZERO, budget, 0),
+            request_retry_wait(&api_error(400, None), Duration::ZERO, budget, 0),
             None
         );
         // Only the middleware's own marker counts as a Retry-After value.
         assert_eq!(
-            rate_limit_wait(&api_error(429, Some("7")), Duration::ZERO, budget, 0),
+            request_retry_wait(&api_error(429, Some("7")), Duration::ZERO, budget, 0),
             Some(Duration::from_secs(1))
         );
+    }
+
+    #[test]
+    fn request_retry_classifies_transient_statuses_and_rejects_permanent_errors() {
+        use crate::events::RequestRetryReason;
+        for status in [408, 409, 429, 500, 502, 503, 504, 599] {
+            let error = api_error(status, Some("pp-retry-after:3"));
+            assert!(request_retry_reason(&error).is_some(), "{status}");
+            assert_eq!(
+                request_retry_wait(&error, Duration::ZERO, Duration::from_secs(10), 0),
+                Some(Duration::from_secs(3)),
+                "{status}"
+            );
+            assert_eq!(
+                request_retry_wait(&error, Duration::ZERO, Duration::ZERO, 0),
+                None
+            );
+        }
+        assert_eq!(
+            request_retry_reason(&api_error(503, None)),
+            Some(RequestRetryReason::HttpStatus(503))
+        );
+        for status in [302, 400, 401, 403, 404, 422] {
+            assert!(
+                request_retry_reason(&api_error(status, None)).is_none(),
+                "{status}"
+            );
+        }
+        assert!(
+            request_retry_reason(&OpenAIError::InvalidArgument("private argument".into()))
+                .is_none()
+        );
+        let invalid_json = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        assert!(
+            request_retry_reason(&OpenAIError::JSONDeserialize(
+                invalid_json,
+                "private body".into()
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn request_retry_attempt_cap_and_cancellation_stop_reopening() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        for cancel in [false, true] {
+            let token = CancellationToken::new();
+            let mut attempts = 1;
+            let mut events = 0;
+            let error = runtime
+                .block_on(open_with_request_retry(
+                    &token,
+                    Duration::from_secs(30),
+                    "fixture",
+                    &mut |event| {
+                        if let AgentEvent::RequestRetrying { .. } = event {
+                            events += 1;
+                            if cancel {
+                                token.cancel();
+                            }
+                        }
+                    },
+                    Err::<(), _>(api_error(503, Some("pp-retry-after:0"))),
+                    || {
+                        attempts += 1;
+                        std::future::ready(Err(api_error(503, Some("pp-retry-after:0"))))
+                    },
+                ))
+                .unwrap_err();
+            if cancel {
+                assert_eq!(attempts, 1);
+                assert_eq!(events, 1);
+                assert!(error.downcast_ref::<Cancelled>().is_some());
+            } else {
+                assert_eq!(attempts, 10);
+                assert_eq!(events, 9);
+                assert!(error.to_string().contains("gave up after 9 retries"));
+            }
+        }
     }
 
     #[test]
@@ -1255,7 +1328,7 @@ mod tests {
                 2
             )
             .to_string(),
-            "Chat Completions HTTP status 500 Internal Server Error"
+            "Chat Completions HTTP status 500 Internal Server Error (gave up after 2 retries and 3s of backoff)"
         );
     }
 
@@ -1308,7 +1381,10 @@ mod tests {
                         Ok(())
                     },
                     &mut |event| {
-                        if let AgentEvent::RateLimited { attempt, wait_ms } = event {
+                        if let AgentEvent::RequestRetrying {
+                            attempt, wait_ms, ..
+                        } = event
+                        {
                             rate_limited.push((attempt, wait_ms));
                         }
                     },
@@ -1366,7 +1442,9 @@ mod tests {
                         Ok(())
                     },
                     &mut |event| match event {
-                        AgentEvent::RateLimited { attempt, wait_ms } => {
+                        AgentEvent::RequestRetrying {
+                            attempt, wait_ms, ..
+                        } => {
                             rate_limited.push((attempt, wait_ms));
                         }
                         AgentEvent::ModelRequestFinished { success, .. } => {

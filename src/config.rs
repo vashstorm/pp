@@ -249,6 +249,7 @@ pub(crate) struct Settings {
     pub(crate) default_model: Option<String>,
     #[serde(default)]
     pub(crate) favorite_models: Vec<String>,
+    // 模型建连及连续无数据的闲置超时，不限制整轮生成的总耗时。
     #[serde(default = "default_request_timeout_seconds")]
     pub(crate) request_timeout_seconds: u64,
     // Zero disables opening-phase 429 retries entirely.
@@ -381,7 +382,7 @@ fn default_settings() -> Settings {
 }
 
 fn default_request_timeout_seconds() -> u64 {
-    120
+    300
 }
 
 fn default_rate_limit_retry_budget_seconds() -> u64 {
@@ -1054,6 +1055,7 @@ favorite_models: [removed/team/model, fixture/primary]
         for settings in [None, Some("{}")] {
             let config = load(settings, Some(providers)).unwrap();
             assert_eq!(config.settings.edit, EditMode::Replace);
+            assert_eq!(config.settings.request_timeout_seconds, 300);
             assert_eq!(config.api_key, "first-key");
             assert_eq!(config.model, "first-model");
             assert_eq!(config.base_url.as_str(), "https://a.example/v1");
@@ -1078,6 +1080,7 @@ favorite_models: [removed/team/model, fixture/primary]
         )
         .unwrap();
         assert_eq!(config.api_key, "second-key");
+        assert_eq!(config.settings.request_timeout_seconds, 7);
         assert_eq!(config.model, "second-secondary");
         assert_eq!(config.base_url.as_str(), "http://localhost:8080/custom/v1");
         assert_eq!(config.protocol, models::Protocol::Completion);

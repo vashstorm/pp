@@ -74,6 +74,8 @@ auto_compact: true
 auto_compact_threshold_percent: 80
 ```
 
+Model requests have no total time limit. `request_timeout_seconds` defaults to 300 seconds and limits connection setup and idle reads; incoming text, reasoning, and SSE heartbeats reset the idle timer. Explicitly configured values still apply.
+
 Automatic compaction is enabled only when the model has an explicit `context_window`. Reasoning levels must match the provider's capabilities. Use `thinking.efforts` and `thinking.defaultLevel` in the model configuration to restrict available levels and set a default.
 
 See the [configuration guide (Chinese)](docs/guide.md#配置) for full examples and validation rules. Model and application settings are loaded only from `~/.pp/agent/`; project files with the same names and provider environment variables are not read. [System prompt overrides](docs/guide.md#系统提示词) can also be loaded from the startup directory's `.pp/`.
@@ -113,7 +115,7 @@ Use `/help` for full help and `/tips` for usage tips. The following slash comman
 | `/changes` | View recent-task edit/write changes and undo individual files (TUI only) |
 | `/skills`, `/quit` | Manage skills or exit |
 
-Enter `!command` to run a local, non-interactive bash command in the project directory. Output is shown locally, not sent to the model or saved in session history. Requires a configured agent and Execute mode; commands run with your user permissions, without a sandbox. Each command starts a fresh shell. In the TUI, Esc cancels it; wait for cleanup before continuing.
+Enter `!command` to run a local, non-interactive bash command in the project directory. Output is shown locally, not sent to the model or saved in session history. Requires a configured agent and Execute mode; commands run with your user permissions, without a sandbox. Each command starts a fresh shell. In the TUI, the first `!` enters shell mode without appearing in the editor; subsequent `!` characters belong to the command. Esc leaves shell mode while editing; Backspace on an empty editor also leaves it. While a command is running, Esc cancels it; wait for cleanup before continuing.
 
 <details>
 <summary><strong>Common TUI shortcuts</strong></summary>
@@ -134,7 +136,7 @@ Enter `!command` to run a local, non-interactive bash command in the project dir
 
 Type `@` for project file path completion. When idle with an empty input, press Esc twice to open the session tree. Navigating back through history does not roll back files. [Full interaction guide (Chinese) →](docs/guide.md#终端交互)
 
-`read` accepts only `path` for local text, images, static web pages, and enabled `skill://` resources. The system lists skill names, descriptions, and URIs; matching skills must be read first, without automatic body injection. A bare skill URI reads the full `SKILL.md`; append `/<path>` for resources or `/.` for a directory listing. Skill text bypasses ordinary text limits and returns `path` and `base_dir`; explicit selectors still apply. Put exact ranges in the path: `src/main.rs:20-60`, `notes.md:-30`, or `file.rs:5-10,20-30`; use `next_path` to continue. `:raw` disables prefixes (and returns the original body for web pages). PNG/JPEG/WebP/GIF images reach the model as visual input; the terminal shows metadata only. Images persist across resume and protocol switches. Web reads extract static HTML text without JavaScript, support cancellation, and use a bounded session cache. [Read behavior and limits (Chinese) →](docs/guide.md#工具执行与权限)
+`read` accepts only `path` for local text, images, static web pages, and enabled `skill://` resources. The system lists skill names, descriptions, and URIs alongside selection instructions, including with custom base prompts: match the task and concrete subtasks, read applicable skills before other task tools, and briefly report their use after successful reads. This also applies to approved plans; selection remains model-driven, without automatic body injection. A bare skill URI reads the full `SKILL.md`; append `/<path>` for resources or `/.` for a directory listing. Skill text bypasses ordinary text limits and returns `path` and `base_dir`; explicit selectors still apply. Put exact ranges in the path: `src/main.rs:20-60`, `notes.md:-30`, or `file.rs:5-10,20-30`; use `next_path` to continue. `:raw` disables prefixes (and returns the original body for web pages). PNG/JPEG/WebP/GIF images reach the model as visual input; the terminal shows metadata only. Images persist across resume and protocol switches. Web reads extract static HTML text without JavaScript, support cancellation, and use a bounded session cache. [Read behavior and limits (Chinese) →](docs/guide.md#工具执行与权限)
 
 `grep` searches local files in process with regex, path globs, file ranges and file-based pagination. Its `pattern`, `path`, `case`, `gitignore` and `skip` parameters are shared across Execute, Plan and Review. Set `grep: {contextBefore: 1, contextAfter: 3}` in `settings.yml` to control surrounding lines.
 

@@ -64,6 +64,21 @@ fn bang_shell_tui_output_and_history() {
         let sessions = bang_shell_sessions_dir(home.path());
         assert!(!sessions.exists(), "{protocol}: 尚无任务却已有会话目录");
 
+        // 首个 ! 只切换模式，输入框与原生光标仍停在空正文位置。
+        pty.input("!");
+        pty.wait_for("shell 模式隐藏切换前缀", |screen| {
+            let (row, column) = screen.cursor_position();
+            screen.contents().lines().any(|line| line.contains('❯'))
+                && screen.cell(row, column.saturating_sub(1)).is_some_and(|cell| {
+                    cell.contents().trim().is_empty()
+                })
+                && !screen.contents().lines().any(|line| line.contains("❯ !"))
+                && screen.cell(row.saturating_sub(1), column).is_some_and(|cell| {
+                    cell.fgcolor() == vt100::Color::Rgb(255, 121, 198)
+                })
+        });
+        pty.input("\x7f");
+
         // stdout/stderr 双流 + 14 行输出 + exit 7：以卡片 footer 判定结束。
         pty.input("!printf 'tui-out-marker\\n'; printf 'tui-err-marker\\n' >&2; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do printf 'fold-%02d\\n' \"$i\"; done; exit 7\r");
         bang_shell_wait_footer(&mut pty, "exit 7 卡片 footer", "Exit code: 7");
@@ -87,9 +102,9 @@ fn bang_shell_tui_output_and_history() {
         bang_shell_wait_footer(&mut pty, "第二条命令 exit 0", "Exit code: 0");
         pty.text("tui-second");
 
-        // ↑ 取回原始 ! 输入（保留 ! 前缀与字面内容）。
+        // ↑ 回填 shell 命令并恢复模式，切换用的 ! 不显示。
         pty.input("\x1b[A");
-        pty.draft("!printf 'tui-second\\n'");
+        pty.draft("printf 'tui-second\\n'");
         pty.input("\x01\x0b");
 
         // shell-only：无模型请求、无会话文件、scratch 收尾干净。
@@ -172,7 +187,7 @@ fn bang_shell_tui_busy_and_plan_reject() {
         );
         pty.input("!touch forbidden\r");
         pty.text("Finish or cancel the current task");
-        pty.draft("!touch forbidden");
+        pty.draft("touch forbidden");
         assert!(!forbidden.exists(), "{protocol}");
         runtime_input_final(request, protocol, "busy-shell-released");
         pty.text("busy-shell-released");
@@ -189,7 +204,7 @@ fn bang_shell_tui_busy_and_plan_reject() {
         plan_wait_mode(&mut pty, "Plan");
         pty.input("!touch forbidden\r");
         pty.text("Shell commands are unavailable in Plan mode.");
-        pty.draft("!touch forbidden");
+        pty.draft("touch forbidden");
         assert!(!forbidden.exists(), "{protocol}");
         pty.input("\x01\x0b");
         pty.input("/plan\r");
@@ -214,7 +229,7 @@ fn bang_shell_tui_busy_and_plan_reject() {
         runtime_input_failed_terminal(&mut pty, 1, 0);
         pty.input("!touch forbidden\r");
         pty.text("Resolve pending messages");
-        pty.draft("!touch forbidden");
+        pty.draft("touch forbidden");
         runtime_input_counts(&mut pty, 1, 0, true);
         assert!(!forbidden.exists(), "{protocol}");
         cancel_assert_no_request(&server);

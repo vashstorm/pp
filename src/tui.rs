@@ -505,8 +505,9 @@ enum MenuAction {
 
 struct ModelPickerDraft {
     input: TextArea<'static>,
+    shell_mode: bool,
     history_index: Option<usize>,
-    history_draft: Option<TextArea<'static>>,
+    history_draft: Option<(TextArea<'static>, bool)>,
     menu: Option<SelectionMenu<MenuAction>>,
     menu_dismissed: bool,
 }
@@ -540,9 +541,10 @@ struct App {
     notifications: Notifications,
     show_welcome: bool,
     input: TextArea<'static>,
+    shell_mode: bool,
     input_history: Vec<String>,
     history_index: Option<usize>,
-    history_draft: Option<TextArea<'static>>,
+    history_draft: Option<(TextArea<'static>, bool)>,
     state: State,
     next_shell_id: u64,
     active_cancellation: Option<CancellationToken>,
@@ -709,6 +711,7 @@ impl App {
             notifications: Notifications::new(notification_options),
             show_welcome: true,
             input: editor(),
+            shell_mode: false,
             input_history: Vec::new(),
             history_index: None,
             history_draft: None,
@@ -1202,6 +1205,7 @@ impl App {
         self.input_history = Vec::new();
         let error = self.conversation.replay(replay, &mut self.input_history);
         self.input = editor();
+        self.shell_mode = false;
         self.history_index = None;
         self.history_draft = None;
         self.model_picker_draft = None;
@@ -1744,12 +1748,16 @@ impl App {
                             self.token_speed.clear();
                             self.conversation.progress(event);
                         }
-                        // 限流重试只提示等待时长，不进入 Transcript。
-                        AgentEvent::RateLimited { attempt, wait_ms } => {
+                        // 请求重试只显示脱敏原因与等待时长，不进入 Transcript。
+                        AgentEvent::RequestRetrying {
+                            reason,
+                            attempt,
+                            wait_ms,
+                        } => {
                             self.notify(
                                 Level::Important,
                                 format!(
-                                    "Rate limited; retrying in {} (attempt {attempt})",
+                                    "Retrying in {} (attempt {attempt}; {reason})",
                                     format_wait(wait_ms)
                                 ),
                             );
@@ -2476,6 +2484,11 @@ impl App {
             self.refresh_pending_menu();
             return;
         }
+        if self.shell_mode {
+            self.file_query = None;
+            self.menu = None;
+            return;
+        }
         if edited {
             self.menu_dismissed = false;
         }
@@ -2678,15 +2691,47 @@ impl App {
         self.refresh_file_menu(true);
     }
 
+    fn at_input_prefix(&self) -> bool {
+        let ratatui_textarea::DataCursor(row, column) = self.input.cursor();
+        row == 0
+            && !self.input.is_selecting()
+            && self.input.lines()[0]
+                .chars()
+                .take(column)
+                .all(char::is_whitespace)
+    }
+
+    fn insert_input(&mut self, mut text: String) {
+        if !self.shell_mode && self.at_input_prefix() {
+            let trimmed = text.trim_start_matches(|ch: char| ch.is_whitespace() && ch != '\n');
+            if trimmed.starts_with('!') {
+                // 在交给编辑器前消费前缀，撤销与重做也不会重新插入切换键。
+                text.remove(text.len() - trimmed.len());
+                self.shell_mode = true;
+            }
+        }
+        self.input.insert_str(text);
+    }
+
+    fn input_text(&self) -> String {
+        let text = self.input.lines().join("\n");
+        if self.shell_mode {
+            format!("!{text}")
+        } else {
+            text
+        }
+    }
+
     fn clear_input(&mut self) {
         self.input = editor();
+        self.shell_mode = false;
         self.history_index = None;
         self.history_draft = None;
         self.refresh_candidates(true);
     }
 
     fn remember_input(&mut self) {
-        let text = self.input.lines().join("\n");
+        let text = self.input_text();
         if !text.trim().is_empty() {
             self.input_history.push(text);
         }
@@ -2697,14 +2742,17 @@ impl App {
     fn navigate_history(&mut self, previous: bool) {
         let index = match (self.history_index, previous) {
             (None, true) if !self.input_history.is_empty() => {
-                self.history_draft = Some(self.input.clone());
+                self.history_draft = Some((self.input.clone(), self.shell_mode));
                 self.input_history.len() - 1
             }
             (Some(0), true) => return,
             (Some(index), true) => index - 1,
             (Some(index), false) if index + 1 < self.input_history.len() => index + 1,
             (Some(_), false) => {
-                self.input = self.history_draft.take().unwrap_or_else(editor);
+                (self.input, self.shell_mode) = self
+                    .history_draft
+                    .take()
+                    .unwrap_or_else(|| (editor(), false));
                 self.history_index = None;
                 self.file_query = None;
                 self.menu = None;
@@ -2715,7 +2763,8 @@ impl App {
         };
         self.file_query = None;
         self.input = editor();
-        self.input.insert_str(&self.input_history[index]);
+        self.shell_mode = false;
+        self.insert_input(self.input_history[index].clone());
         self.history_index = Some(index);
         // 回填命令时先保持菜单关闭，让上下键可以连续浏览历史。
         self.menu = None;
@@ -3332,6 +3381,7 @@ impl App {
         if preserve_draft {
             self.model_picker_draft = Some(ModelPickerDraft {
                 input: std::mem::replace(&mut self.input, editor()),
+                shell_mode: std::mem::take(&mut self.shell_mode),
                 history_index: self.history_index.take(),
                 history_draft: self.history_draft.take(),
                 menu: self.menu.take(),
@@ -3339,6 +3389,7 @@ impl App {
             });
         } else {
             self.input = editor();
+            self.shell_mode = false;
             self.history_index = None;
             self.history_draft = None;
         }
@@ -3391,6 +3442,7 @@ impl App {
     fn restore_model_picker_draft(&mut self) {
         if let Some(draft) = self.model_picker_draft.take() {
             self.input = draft.input;
+            self.shell_mode = draft.shell_mode;
             self.history_index = draft.history_index;
             self.history_draft = draft.history_draft;
             self.menu = draft.menu;
@@ -3431,12 +3483,18 @@ impl App {
         if prompt.trim().is_empty() {
             return false;
         }
-        let command = match commands::parse(&prompt, &self.file_commands) {
-            Ok(command) => command,
-            Err(error) => {
-                self.notify(Level::Error, format!("{error:#}"));
-                return false;
+        let command = if self.shell_mode {
+            Some(Command::Shell(prompt.as_str()))
+        } else if prompt.trim_start().starts_with('/') {
+            match commands::parse(&prompt, &self.file_commands) {
+                Ok(command) => command,
+                Err(error) => {
+                    self.notify(Level::Error, format!("{error:#}"));
+                    return false;
+                }
             }
+        } else {
+            None
         };
         if matches!(command, Some(Command::Changes))
             && matches!(self.state, State::Running | State::Cancelling)
@@ -4218,6 +4276,9 @@ impl App {
                             if column < self.input.lines()[row].chars().count() {
                                 self.input.cancel_selection();
                                 self.input.delete_line_by_end();
+                                if self.input.lines().iter().all(String::is_empty) {
+                                    self.shell_mode = false;
+                                }
                                 self.refresh_candidates(true);
                             }
                             return false;
@@ -4244,6 +4305,20 @@ impl App {
                     if self.history_browser {
                         self.history_browser = false;
                         self.conversation.follow();
+                        self.escape_tap.reset();
+                        return false;
+                    }
+                    if self.shell_mode
+                        && !matches!(
+                            self.state,
+                            State::RunningShell
+                                | State::Running
+                                | State::Compacting
+                                | State::ReviewingPlan
+                        )
+                    {
+                        self.shell_mode = false;
+                        self.menu_dismissed = true;
                         self.escape_tap.reset();
                         return false;
                     }
@@ -4296,6 +4371,24 @@ impl App {
                     }
                     return false;
                 }
+                if key.code == KeyCode::Char('!')
+                    && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
+                    && !self.shell_mode
+                    && self.at_input_prefix()
+                {
+                    self.shell_mode = true;
+                    self.refresh_candidates(false);
+                    return false;
+                }
+                if key.code == KeyCode::Backspace
+                    && key.modifiers.is_empty()
+                    && self.shell_mode
+                    && self.input.lines().iter().all(String::is_empty)
+                {
+                    self.shell_mode = false;
+                    self.refresh_candidates(false);
+                    return false;
+                }
                 match key.code {
                     KeyCode::Enter => {
                         if key.kind == KeyEventKind::Press
@@ -4334,6 +4427,9 @@ impl App {
                     }
                     _ => {
                         let edited = self.input.input(key);
+                        if edited && self.input.lines().iter().all(String::is_empty) {
+                            self.shell_mode = false;
+                        }
                         self.refresh_candidates(edited);
                     }
                 }
@@ -4481,8 +4577,7 @@ impl App {
                 if self.queue_menu {
                     self.close_pending_menu();
                 }
-                self.input
-                    .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
+                self.insert_input(text.replace("\r\n", "\n").replace('\r', "\n"));
                 self.refresh_candidates(true);
                 *dirty = true;
             }
@@ -4744,13 +4839,8 @@ impl App {
                             transcript_style::MUTED
                         } else if self.menu.is_some() {
                             menu::SEPARATOR
-                        } else if self
-                            .input
-                            .lines()
-                            .first()
-                            .is_some_and(|line| line.trim_start().starts_with('!'))
-                        {
-                            // Shell 模式：与 `!command` 命令判定一致，提示草稿将作为 shell 执行。
+                        } else if self.shell_mode {
+                            // 模式独立于正文，首个切换用的 `!` 不在输入框显示。
                             statusline::SHELL_MODE
                         } else {
                             statusline::ACCENT
@@ -5754,6 +5844,95 @@ mod tests {
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert!(token.is_cancelled());
         assert!(matches!(app.state, State::Cancelling));
+    }
+
+    #[test]
+    fn bang_shell_input_consumes_only_mode_prefix() {
+        let mut app = app();
+        app.state = State::Ready;
+        let (commands, requests) = mpsc::channel();
+        app.commands = Some(commands);
+        let mut dirty = false;
+        app.handle(key(KeyCode::Char('!')), &mut dirty);
+        assert!(app.shell_mode);
+        assert_eq!(app.input.lines(), &[""]);
+        assert!(
+            draw_buffer(&mut app, 100, 30)
+                .content
+                .iter()
+                .any(|cell| { cell.symbol() == "─" && cell.fg == statusline::SHELL_MODE })
+        );
+        app.submit(PendingKind::Steering);
+        assert!(requests.try_recv().is_err());
+
+        app.handle(key(KeyCode::Char('!')), &mut dirty);
+        app.handle(Event::Paste(" false".into()), &mut dirty);
+        assert_eq!(app.input.lines(), &["! false"]);
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        let WorkerCommand::Shell { command, .. } = requests.try_recv().unwrap() else {
+            panic!("应提交本地 shell 命令");
+        };
+        assert_eq!(command, "! false");
+        assert_eq!(app.input_history, ["!! false"]);
+        assert!(!app.shell_mode);
+        assert_eq!(app.input.lines(), &[""]);
+    }
+
+    #[test]
+    fn bang_shell_paste_history_and_picker_preserve_mode() {
+        let mut app = app();
+        app.state = State::Ready;
+        let mut dirty = false;
+        app.handle(
+            Event::Paste("  !printf '你好!'\n! false".into()),
+            &mut dirty,
+        );
+        assert!(app.shell_mode);
+        assert_eq!(app.input.lines(), &["  printf '你好!'", "! false"]);
+        assert_eq!(app.input.cursor(), ratatui_textarea::DataCursor(1, 7));
+        assert!(app.input.undo());
+        assert_eq!(app.input.lines(), &[""]);
+        assert!(app.input.redo());
+        assert_eq!(app.input.lines(), &["  printf '你好!'", "! false"]);
+        app.input_history.push("ordinary prompt".into());
+        app.navigate_history(true);
+        assert!(!app.shell_mode);
+        app.navigate_history(false);
+        assert!(app.shell_mode);
+        assert_eq!(app.input.lines(), &["  printf '你好!'", "! false"]);
+        app.open_model_picker();
+        assert!(!app.shell_mode);
+        app.close_model_panel();
+        assert!(app.shell_mode);
+        app.remember_input();
+        app.clear_input();
+        app.navigate_history(true);
+        assert!(app.shell_mode);
+        assert_eq!(app.input.lines(), &["  printf '你好!'", "! false"]);
+    }
+
+    #[test]
+    fn bang_shell_input_exits_mode_and_suppresses_menus() {
+        let mut app = app();
+        app.state = State::Ready;
+        let mut dirty = false;
+        app.handle(key(KeyCode::Char('!')), &mut dirty);
+        app.handle(key(KeyCode::Backspace), &mut dirty);
+        assert!(!app.shell_mode);
+        app.handle(Event::Paste("!/model @file".into()), &mut dirty);
+        assert!(app.shell_mode);
+        assert!(app.menu.is_none());
+        assert!(app.model_panel.is_none());
+        assert!(app.file_query.is_none());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(!app.shell_mode);
+        assert_eq!(app.input.lines(), &["/model @file"]);
+        app.clear_input();
+        app.handle(Event::Paste("!echo ok".into()), &mut dirty);
+        app.handle(control('a'), &mut dirty);
+        app.handle(control('k'), &mut dirty);
+        assert!(!app.shell_mode);
+        assert_eq!(app.input.lines(), &[""]);
     }
 
     #[test]

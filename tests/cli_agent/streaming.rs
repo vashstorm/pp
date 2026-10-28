@@ -562,6 +562,118 @@ fn text_output(text: &str) -> Value {
     json!([response_message("msg-stream", json!([response_text(text)]))])
 }
 
+#[test]
+fn streaming_idle_timeout_keeps_active_text_thinking_and_heartbeats_alive() {
+    for protocol in PROTOCOLS {
+        for mode in ["text", "thinking", "heartbeat"] {
+            let server = server();
+            let dir = tempfile::tempdir().unwrap();
+            let mut cli = protocol.start_with_settings(
+                &server,
+                dir.path(),
+                Some("keep generating"),
+                "request_timeout_seconds: 1\nrate_limit_retry_budget_seconds: 0\nthink_level: high\n",
+            );
+            let (request, _) = protocol.receive(&server);
+            let mut stream = SseReply::new(request);
+            let mut text = "started".to_owned();
+            let mut thinking = String::new();
+            protocol.text(&mut stream, &text);
+            cli.wait_for(Pipe::Stdout, &text);
+            let started = Instant::now();
+            for index in 0..6 {
+                // 主动控制发送间隔，使累计生成时间超过闲置阈值；输出消费仍用栅栏确认。
+                thread::sleep(Duration::from_millis(250));
+                let delta = format!(" part-{index}");
+                match mode {
+                    "text" => {
+                        protocol.text(&mut stream, &delta);
+                        text.push_str(&delta);
+                        cli.wait_for(Pipe::Stdout, &text);
+                    }
+                    "thinking" => {
+                        match protocol {
+                            Protocol::Chat => {
+                                stream.event(chat_chunk(json!({"reasoning_content":delta}), None))
+                            }
+                            Protocol::Responses => stream.event(json!({
+                                "type":"response.reasoning_summary_text.delta",
+                                "sequence_number":index + 2, "item_id":"r",
+                                "output_index":1, "summary_index":0, "delta":delta
+                            })),
+                        }
+                        thinking.push_str(&delta);
+                        cli.wait_for(Pipe::Stderr, &thinking);
+                    }
+                    "heartbeat" => {
+                        // SSE 注释不会产生模型事件，但收到字节也应重置闲置等待。
+                        let heartbeat = ": keepalive\n\n";
+                        write!(stream.writer, "{:x}\r\n{}\r\n", heartbeat.len(), heartbeat)
+                            .unwrap();
+                        stream.writer.flush().unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            assert!(started.elapsed() > Duration::from_secs(1));
+            let mut native = text_output(&text);
+            if mode == "thinking" {
+                native.as_array_mut().unwrap().push(json!({
+                    "type":"reasoning", "id":"r", "status":"completed",
+                    "summary":[{"type":"summary_text", "text":thinking}]
+                }));
+            }
+            protocol.complete(&mut stream, native, false);
+            stream.finish();
+            let output = cli.finish();
+            assert!(output.status.success(), "{protocol:?} {mode}: {output:?}");
+            assert_eq!(output.stdout, format!("{text}\n").as_bytes());
+            assert_clean_pipes(&output);
+            no_more(&server);
+        }
+    }
+}
+
+#[test]
+fn streaming_idle_timeout_stops_silent_stream_before_or_after_output() {
+    for protocol in PROTOCOLS {
+        for partial in [false, true] {
+            let server = server();
+            let dir = tempfile::tempdir().unwrap();
+            let mut cli = protocol.start_with_settings(
+                &server,
+                dir.path(),
+                Some("stalled response"),
+                "request_timeout_seconds: 1\nrate_limit_retry_budget_seconds: 5\n",
+            );
+            let (request, _) = protocol.receive(&server);
+            let mut stream = SseReply::new(request);
+            if partial {
+                protocol.text(&mut stream, "partial");
+                cli.wait_for(Pipe::Stdout, "partial");
+            }
+            // 保持连接开放，等待客户端因连续收不到数据而失败，不能靠 EOF 结束。
+            let output = cli.finish();
+            assert!(
+                !output.status.success(),
+                "{protocol:?} {partial}: {output:?}"
+            );
+            assert_eq!(
+                output.stdout,
+                if partial {
+                    b"partial\n".as_slice()
+                } else {
+                    b""
+                }
+            );
+            assert!(String::from_utf8_lossy(&output.stderr).contains("HTTP request failed"));
+            assert_clean_pipes(&output);
+            drop(stream);
+            no_more(&server);
+        }
+    }
+}
+
 fn assert_clean_pipes(output: &Output) {
     assert!(!output.stdout.contains(&0x1b), "ANSI on stdout");
     assert!(!output.stderr.contains(&0x1b), "ANSI on stderr");
@@ -1074,7 +1186,12 @@ fn streaming_failures_keep_partial_redact_secrets_and_never_commit_or_retry() {
             for repl in [false, true] {
                 let server = server();
                 let dir = tempfile::tempdir().unwrap();
-                let mut cli = protocol.start(&server, dir.path(), (!repl).then_some("broken turn"));
+                let mut cli = protocol.start_with_settings(
+                    &server,
+                    dir.path(),
+                    (!repl).then_some("broken turn"),
+                    "default_model: fixture/primary\n",
+                );
                 if repl {
                     cli.input("broken turn\n");
                 }
@@ -2244,7 +2361,8 @@ fn background_task_cleanup_at_run_boundaries() {
         for boundary in [RunBoundary::FinalAnswer, RunBoundary::ModelError] {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
-            let settings = r#"{"default_model":"fixture/primary"}"#;
+            let settings =
+                r#"{"default_model":"fixture/primary","rate_limit_retry_budget_seconds":0}"#;
             std::fs::write(dir.path().join("marker"), "marker\n").unwrap();
             let service_pid = dir.path().join("service.pid");
             let second_pid = dir.path().join("second.pid");

@@ -470,7 +470,8 @@ fn context_tui_seed_large_session(
         context_tui_models(server, protocol, 32768),
     )
     .unwrap();
-    let settings: Value = serde_json::from_str(&context_tui_settings(false, 80)).unwrap();
+    let mut settings: Value = serde_json::from_str(&context_tui_settings(false, 80)).unwrap();
+    settings["rate_limit_retry_budget_seconds"] = json!(0);
     let mut cli = super::streaming::LiveCli::new(Cli::start_with(
         home,
         Some("context checkpoint seed prompt"),

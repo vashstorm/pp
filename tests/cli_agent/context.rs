@@ -458,7 +458,7 @@ const OLD_MARKER: &str = "OLD-TOOL-RESULT-MARKER";
 const RECENT_REASONING: &str = "recent reasoning";
 const RECENT_ENCRYPTED: &str = "opaque-recent-reasoning";
 const SUMMARY_TEXT: &str = "SUMMARY: remembered constraint";
-const MANUAL_SETTINGS: &str = r#"{"default_model":"fixture/primary","auto_compact":false}"#;
+const MANUAL_SETTINGS: &str = r#"{"default_model":"fixture/primary","auto_compact":false,"rate_limit_retry_budget_seconds":0}"#;
 
 fn context_summary_wrap() -> String {
     format!("[Context summary]\n{SUMMARY_TEXT}\n[/Context summary]")
@@ -2545,7 +2545,7 @@ fn context_auto_compact_failures_never_retry_or_send_the_normal_request() {
                 &server,
                 dir.path(),
                 &[("primary", Some(32768))],
-                r#"{"default_model":"fixture/primary"}"#,
+                r#"{"default_model":"fixture/primary","rate_limit_retry_budget_seconds":0}"#,
             );
             context_auto_grow_two_batches(protocol, &server, &mut cli, true);
             let (request, body) = protocol.receive(&server);

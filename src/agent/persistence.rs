@@ -683,7 +683,7 @@ impl SessionJournal {
                 | AgentEvent::ModelRequestStarted
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. }
-                | AgentEvent::RateLimited { .. }
+                | AgentEvent::RequestRetrying { .. }
         ) {
             return;
         }

@@ -5,7 +5,7 @@ const PLAN_TUI_BODY: &str = "# Create canary\n\nCreate canary.txt with the exact
 fn plan_start(server: &Server, home: &Path, project: &Path, protocol: &str) -> Pty {
     std::fs::write(
         config_path(home, "settings.yml"),
-        r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#,
+        r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"rate_limit_retry_budget_seconds":0}"#,
     )
     .unwrap();
     std::fs::write(

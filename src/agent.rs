@@ -2822,7 +2822,9 @@ mod tests {
         let models = dir.join("models.yml");
         std::fs::write(
             &settings,
-            format!("# 测试设置\ndefault_model: fixture/one\n{settings_extra}"),
+            format!(
+                "# 测试设置\ndefault_model: fixture/one\nrate_limit_retry_budget_seconds: 0\n{settings_extra}"
+            ),
         )
         .unwrap();
         let model = json!({"model":"one"});

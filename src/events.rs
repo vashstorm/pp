@@ -42,6 +42,26 @@ pub(crate) enum DiffLineKind {
     Removed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RequestRetryReason {
+    RateLimited,
+    HttpStatus(u16),
+    Timeout,
+    Connection,
+}
+
+impl std::fmt::Display for RequestRetryReason {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RateLimited => formatter.write_str("rate limited"),
+            Self::HttpStatus(status) => write!(formatter, "HTTP status {status}"),
+            Self::Timeout => formatter.write_str("request timed out"),
+            Self::Connection => formatter.write_str("connection failed"),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentEvent {
@@ -83,7 +103,8 @@ pub(crate) enum AgentEvent {
         text: String,
     },
     ModelRequestStarted,
-    RateLimited {
+    RequestRetrying {
+        reason: RequestRetryReason,
         attempt: u32,
         wait_ms: u64,
     },
