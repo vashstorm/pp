@@ -105,11 +105,13 @@ impl App {
             let with_hint = self.plan_list_panel.is_some();
             let available = area.height.saturating_sub(1);
             let panel_height = available.saturating_sub(u16::from(with_hint));
-            panel.draw(
+            if let Some(body) = panel.draw(
                 frame,
                 Rect::new(area.x, area.y, area.width, panel_height),
                 self.plan_progress,
-            );
+            ) {
+                self.conversation.draw(frame, body);
+            }
             if with_hint && panel_height < available {
                 frame.render_widget(
                     Line::styled(
@@ -218,7 +220,9 @@ impl App {
         if self.native_render {
             self.conversation.draw_native(frame, conversation);
         } else if let Some(panel) = &mut self.plan_panel {
-            panel.draw(frame, conversation, self.plan_progress);
+            if let Some(body) = panel.draw(frame, conversation, self.plan_progress) {
+                self.conversation.draw(frame, body);
+            }
         } else {
             self.active_transcript().draw(frame, conversation);
         }

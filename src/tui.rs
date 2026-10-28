@@ -517,21 +517,30 @@ struct ModelPickerDraft {
 }
 
 #[derive(Default)]
-struct EscapeTap(Option<Instant>);
+struct EscapeTap {
+    last: Option<Instant>,
+    from_plan: bool,
+}
 
 impl EscapeTap {
     fn reset(&mut self) {
-        self.0 = None;
+        self.last = None;
+        self.from_plan = false;
+    }
+    fn close_plan(&mut self, now: Instant) {
+        self.last = Some(now);
+        self.from_plan = true;
     }
     fn press(&mut self, now: Instant) -> bool {
+        self.from_plan = false;
         if self
-            .0
+            .last
             .take()
             .is_some_and(|last| now.saturating_duration_since(last) <= Duration::from_millis(500))
         {
             true
         } else {
-            self.0 = Some(now);
+            self.last = Some(now);
             false
         }
     }

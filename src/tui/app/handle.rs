@@ -83,7 +83,21 @@ impl App {
                             if let Some(plan) = &self.workflow.plan {
                                 self.plan_progress = crate::plan::task_progress(&plan.content);
                             }
+                            // 关闭当前计划的这一按计入双 Esc；草稿不影响随后进入树。
+                            if key.kind == KeyEventKind::Press
+                                && matches!(self.state, State::Ready)
+                                && self.plan_list_panel.is_none()
+                            {
+                                self.escape_tap.close_plan(Instant::now());
+                            }
                         }
+                        plan::Action::ScrollConversation(key) => match key.code {
+                            KeyCode::PageUp => self.conversation.page_up(),
+                            KeyCode::PageDown => self.conversation.page_down(),
+                            KeyCode::Up => self.conversation.scroll_up(1),
+                            KeyCode::Down => self.conversation.scroll_down(1),
+                            _ => {}
+                        },
                         plan::Action::Approve(context) => self.approve_plan(context),
                         plan::Action::Discuss(text) => {
                             // 讨论经普通 Plan run 送回原上下文；主草稿与光标保留。
@@ -425,6 +439,13 @@ impl App {
                     }
                 }
                 if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+                    if key.kind == KeyEventKind::Press && self.escape_tap.from_plan {
+                        if self.escape_tap.press(Instant::now()) {
+                            self.open_tree();
+                            return false;
+                        }
+                        self.escape_tap.reset();
+                    }
                     if self.history_browser {
                         self.history_browser = false;
                         self.conversation.follow();
@@ -614,10 +635,16 @@ impl App {
                     MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 ) {
                     let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
-                    self.plan_panel
-                        .as_mut()
-                        .expect("active plan panel")
-                        .wheel(up, MOUSE_SCROLL_LINES);
+                    let panel = self.plan_panel.as_mut().expect("active plan panel");
+                    if panel.conversation_visible() {
+                        if up {
+                            self.conversation.scroll_up(MOUSE_SCROLL_LINES);
+                        } else {
+                            self.conversation.scroll_down(MOUSE_SCROLL_LINES);
+                        }
+                    } else {
+                        panel.wheel(!up, MOUSE_SCROLL_LINES);
+                    }
                     *dirty = true;
                 }
             }

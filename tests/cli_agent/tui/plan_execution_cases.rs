@@ -1,6 +1,88 @@
 use super::*;
 
 #[test]
+fn plan_tui_ready_browses_conversation_and_thinking_then_double_escape_rewinds_with_draft() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        plan_enter(&mut pty, &fixture);
+        pty.input("Explain the design\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        let discussion = (0..30)
+            .map(|index| format!("PLAN_HISTORY_MARKER line {index}\n"))
+            .collect::<String>();
+        plan_final(request, protocol, &discussion);
+        pty.ready();
+        pty.input("Finalize the plan\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        resume_history_tool_batch(
+            request,
+            protocol,
+            "PLAN_THINKING_MARKER",
+            json!([
+                plan_call(
+                    protocol,
+                    "write-plan",
+                    "plan_write",
+                    json!({
+                        "title":"Create canary", "file_name":"create-canary.md",
+                        "content":PLAN_TUI_BODY, "expected_revision":0
+                    })
+                ),
+                plan_call(
+                    protocol,
+                    "submit-plan",
+                    "plan_submit",
+                    json!({"expected_revision":1})
+                )
+            ]),
+        );
+        plan_wait_review(&mut pty, 1);
+        let path = plan_path(project.path());
+        let original = std::fs::read(&path).unwrap();
+        context_tui_paste(&mut pty, "preserved history draft");
+        // 粘贴后输入框聚焦；Tab 到正文，再切换 Conversation。
+        pty.input("\t\x1b[C");
+        pty.wait_for("计划面板显示对话且保留操作区", |screen| {
+            let text = screen.contents();
+            text.contains("plan_submit")
+                && text.contains("Execute (keep context)")
+                && text.contains("preserved history draft")
+        });
+        pty.input("\x1b[5~");
+        pty.text("PLAN_THINKING_MARKER");
+        pty.input("\x1b[5~");
+        pty.text("PLAN_HISTORY_MARKER");
+        pty.input("\x1b[D");
+        pty.text("Create canary.txt");
+        pty.input("\x1b[C");
+        pty.text("PLAN_HISTORY_MARKER");
+        // 连续两个 Esc 从面板直接进入树，非空草稿也保留。
+        pty.input("\x1b");
+        pty.wait_for("首个 Esc 关闭计划面板", |screen| {
+            !screen.contents().contains("Execute (keep context)")
+                && screen.contents().contains("preserved history draft")
+        });
+        pty.input("\x1b");
+        pty.wait_for("计划待审批时双 Esc 打开树", |screen| {
+            let text = screen.contents();
+            text.contains("user turns")
+                && text.contains("rewind")
+                && !text.contains("Loading session tree")
+        });
+        tree_tui_rewind(&mut pty, &[TREE_TUI_LEFT], "Finalize the plan");
+        pty.text("preserved history draft");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!project.path().join("canary.txt").exists());
+        no_more(&fixture);
+        pty.input("\x03");
+        pty.finish();
+    }
+}
+
+#[test]
 fn plan_tui_approval_uses_reviewed_bytes_and_tracks_only_verified_progress() {
     for protocol in ["completion", "response"] {
         for fresh in [false, true] {
