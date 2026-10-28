@@ -26,8 +26,8 @@ const ACTIONS: [&str; 6] = [
 ];
 /// 打开完整审阅面板时直接聚焦操作区，默认选中第一项可用操作。
 const DEFAULT_ACTION: usize = 0;
-const HINT: &str = "↑↓ choose · Enter run/send · Tab actions/input/body · ←→ tabs · Esc close";
-const READONLY_HINT: &str = "Read-only view · most recently synced version · Esc close";
+const HINT: &str = "Tab focus · ↑↓ choose/scroll · Enter run/jump/send · ←→ tabs · Esc close";
+const READONLY_HINT: &str = "Read-only view · Tab focus · ↑↓ scroll · Enter jump · Esc close";
 const DISCUSS_HINT: &str = "Enter send · Ctrl + J newline · Esc discard";
 
 /// 按字符数截断纯显示文本，超宽时以省略号结尾。
@@ -90,9 +90,16 @@ impl Tab {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
+    Toc,
     Body,
     Actions,
     Input,
+}
+
+struct BodyLayout {
+    width: u16,
+    lines: Vec<Line<'static>>,
+    headings: Vec<markdown::HeadingAnchor>,
 }
 
 pub(super) struct Panel {
@@ -103,8 +110,11 @@ pub(super) struct Panel {
     focus: Focus,
     action: usize,
     scroll: [usize; 2],
-    // (宽度, 布局缓存)；仅在宽度或正文变化时重建，不在每帧重排版。
-    layouts: [Option<(u16, Vec<Line<'static>>)>; 2],
+    // 正文与目录锚点只在宽度或正文变化时重建。
+    layouts: [Option<BodyLayout>; 2],
+    toc_selected: [usize; 2],
+    toc_visible: bool,
+    toc_viewport: usize,
     discussion: Option<TextArea<'static>>,
     viewport: usize,
 }
@@ -131,6 +141,9 @@ impl Panel {
             action: DEFAULT_ACTION,
             scroll: [0; 2],
             layouts: [None, None],
+            toc_selected: [0; 2],
+            toc_visible: false,
+            toc_viewport: 0,
             discussion: None,
             viewport: 0,
         }
@@ -306,14 +319,28 @@ impl Panel {
             && matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
         {
             let with_input = self.token.is_some() && !self.readonly();
-            self.focus = match (self.focus, key.code == KeyCode::BackTab, with_input) {
-                (Focus::Actions, false, true) | (Focus::Body, true, true) => Focus::Input,
-                (Focus::Actions, _, _) | (Focus::Input, false, _) => Focus::Body,
-                _ => Focus::Actions,
+            let mut focuses = Vec::with_capacity(4);
+            if with_input {
+                focuses.extend([Focus::Actions, Focus::Input]);
+            }
+            focuses.push(Focus::Body);
+            if self.toc_available() {
+                focuses.push(Focus::Toc);
+            }
+            let current = focuses
+                .iter()
+                .position(|focus| *focus == self.focus)
+                .unwrap_or(0);
+            let next = if key.code == KeyCode::BackTab {
+                (current + focuses.len() - 1) % focuses.len()
+            } else {
+                (current + 1) % focuses.len()
             };
+            self.focus = focuses[next];
             return Action::None;
         }
         match self.focus {
+            Focus::Toc => self.toc_key(key),
             Focus::Body => self.body_key(key),
             Focus::Actions => self.action_key(key),
             Focus::Input => {
@@ -328,6 +355,39 @@ impl Panel {
                 }
             }
         }
+    }
+
+    fn toc_available(&self) -> bool {
+        self.toc_visible
+            && self.layouts[self.tab.index()]
+                .as_ref()
+                .is_some_and(|layout| !layout.headings.is_empty())
+    }
+
+    fn toc_key(&mut self, key: KeyEvent) -> Action {
+        let index = self.tab.index();
+        let Some(layout) = &self.layouts[index] else {
+            return Action::None;
+        };
+        let selected = &mut self.toc_selected[index];
+        let last = layout.headings.len().saturating_sub(1);
+        let page = self.toc_viewport.saturating_sub(1).max(1);
+        *selected = match key.code {
+            KeyCode::Up => selected.saturating_sub(1),
+            KeyCode::Down => selected.saturating_add(1).min(last),
+            KeyCode::PageUp => selected.saturating_sub(page),
+            KeyCode::PageDown => selected.saturating_add(page).min(last),
+            KeyCode::Home => 0,
+            KeyCode::End => last,
+            KeyCode::Enter if key.kind == KeyEventKind::Press => {
+                if let Some(heading) = layout.headings.get(*selected) {
+                    self.scroll[index] = heading.row;
+                }
+                *selected
+            }
+            _ => *selected,
+        };
+        Action::None
     }
 
     fn body_key(&mut self, key: KeyEvent) -> Action {
@@ -451,23 +511,24 @@ impl Panel {
         self.scroll_by(down, page);
     }
 
-    fn layout(&mut self, tab: Tab, width: u16) -> &[Line<'static>] {
+    fn layout(&mut self, tab: Tab, width: u16) -> &BodyLayout {
         let content: &str = match tab {
-            Tab::Plan if self.document.content.is_empty() => return &[],
             Tab::Plan => &self.document.content,
-            Tab::Review => match &self.report {
-                Some(report) => &report.content,
-                None => return &[],
-            },
+            Tab::Review => self
+                .report
+                .as_ref()
+                .map_or("", |report| report.content.as_str()),
         };
         let slot = &mut self.layouts[tab.index()];
-        if slot.as_ref().is_none_or(|(cached, _)| *cached != width) {
-            *slot = Some((width, markdown::parse(content).layout(width)));
+        if slot.as_ref().is_none_or(|cached| cached.width != width) {
+            let (lines, headings) = markdown::parse(content).layout_with_headings(width);
+            *slot = Some(BodyLayout {
+                width,
+                lines,
+                headings,
+            });
         }
-        match slot {
-            Some((_, lines)) => lines,
-            None => &[],
-        }
+        slot.as_ref().expect("正文布局已初始化")
     }
 
     fn status_label(&self) -> (&'static str, Color) {
@@ -490,7 +551,7 @@ impl Panel {
         } else {
             0
         };
-        let preview = Rect::new(
+        let preview_area = Rect::new(
             area.x,
             area.y,
             area.width,
@@ -502,6 +563,24 @@ impl Panel {
             area.bottom() - actions_height,
             area.width,
             actions_height,
+        );
+        // 左侧固定列宽，窄窗口收起目录，确保正文仍有可用空间。
+        let toc_width = if area.width >= 60 {
+            26.min(area.width / 3)
+        } else {
+            0
+        };
+        self.toc_visible = toc_width > 0;
+        if !self.toc_visible && self.focus == Focus::Toc {
+            self.focus = Focus::Body;
+        }
+        let toc_area = Rect::new(area.x, preview_area.y, toc_width, preview_area.height);
+        let gap = u16::from(toc_width > 0);
+        let preview = Rect::new(
+            area.x + toc_width + gap,
+            preview_area.y,
+            area.width.saturating_sub(toc_width + gap),
+            preview_area.height,
         );
         let title = if self.token.is_none() || self.readonly() {
             format!(" Plan · {}/{} ", progress.0, progress.1)
@@ -595,8 +674,8 @@ impl Panel {
         let tab = self.tab;
         let slot_scroll = self.scroll[tab.index()];
         let empty_plan = self.document.content.is_empty();
-        let lines = self.layout(tab, body.width);
-        let total = lines.len();
+        let layout = self.layout(tab, body.width);
+        let total = layout.lines.len();
         let scroll = slot_scroll.min(total.saturating_sub(viewport));
         if body.height > 0 {
             if total == 0 && tab == Tab::Plan && empty_plan {
@@ -605,7 +684,7 @@ impl Panel {
                     body,
                 );
             } else {
-                for (row, line) in lines.iter().enumerate().skip(scroll).take(viewport) {
+                for (row, line) in layout.lines.iter().enumerate().skip(scroll).take(viewport) {
                     frame.render_widget(
                         line,
                         Rect::new(body.x, body.y + (row - scroll) as u16, body.width, 1),
@@ -615,6 +694,9 @@ impl Panel {
         }
         // 布局借用结束后再落滚动位置，下一帧继续从此处显示。
         self.scroll[tab.index()] = scroll;
+        if toc_width > 0 {
+            self.draw_toc(frame, toc_area);
+        }
 
         if footer_height > 0 {
             frame.render_widget(
@@ -628,6 +710,73 @@ impl Panel {
 
         if self.discussion.is_some() {
             self.draw_discussion(frame, area);
+        }
+    }
+
+    fn draw_toc(&mut self, frame: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.border_color(Focus::Toc)))
+            .title(" TOC ");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        self.toc_viewport = usize::from(inner.height);
+        let index = self.tab.index();
+        let Some(layout) = &self.layouts[index] else {
+            return;
+        };
+        if layout.headings.is_empty() {
+            self.toc_selected[index] = 0;
+            if self.focus == Focus::Toc {
+                self.focus = Focus::Body;
+            }
+            frame.render_widget(
+                Line::styled("No headings", Style::default().fg(MUTED)),
+                inner,
+            );
+            return;
+        }
+        let active = layout
+            .headings
+            .partition_point(|heading| heading.row <= self.scroll[index])
+            .saturating_sub(1);
+        let selected = if self.focus == Focus::Toc {
+            self.toc_selected[index].min(layout.headings.len() - 1)
+        } else {
+            active
+        };
+        self.toc_selected[index] = selected;
+        let first = selected.saturating_add(1).saturating_sub(self.toc_viewport);
+        let base_level = layout
+            .headings
+            .iter()
+            .map(|heading| heading.level)
+            .min()
+            .unwrap_or(1);
+        for (row, (position, heading)) in layout
+            .headings
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(self.toc_viewport)
+            .enumerate()
+        {
+            let style = if position == selected {
+                let style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+                if self.focus == Focus::Toc {
+                    style.add_modifier(Modifier::REVERSED)
+                } else {
+                    style
+                }
+            } else {
+                Style::default().fg(MUTED)
+            };
+            let prefix = if position == selected { "❯ " } else { "  " };
+            let indent = "  ".repeat(usize::from(heading.level.saturating_sub(base_level)));
+            frame.render_widget(
+                Line::styled(format!("{prefix}{indent}{}", heading.title), style),
+                Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            );
         }
     }
 
@@ -760,14 +909,18 @@ mod tests {
     }
 
     fn render_panel(panel: &mut Panel, height: u16) -> Vec<String> {
+        render_panel_size(panel, 100, height)
+    }
+
+    fn render_panel_size(panel: &mut Panel, width: u16, height: u16) -> Vec<String> {
         let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, height)).unwrap();
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| panel.draw(frame, frame.area(), (0, 1)))
             .unwrap();
         let buffer = terminal.backend().buffer();
         (0..height)
-            .map(|y| (0..100).map(|x| buffer[(x, y)].symbol()).collect())
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
     }
 
@@ -775,7 +928,8 @@ mod tests {
     fn plan_preview_and_actions_have_separate_frames_and_spacing() {
         let mut panel = review_panel(PlanStatus::Ready);
         let rows = render_panel(&mut panel, 26);
-        assert!(rows[0].starts_with("┌ Plan"));
+        assert!(rows[0].starts_with("┌ TOC"));
+        assert!(rows[0].contains("┌ Plan"));
         assert!(rows[15].starts_with('└'));
         assert!(rows[16].trim().is_empty());
         assert!(rows[17].starts_with("╭ Actions"));
@@ -787,6 +941,105 @@ mod tests {
         let rows = render_panel(&mut completed, 26);
         assert!(!rows.iter().any(|row| row.contains("Actions")));
         assert!(rows[25].starts_with('└'));
+    }
+
+    #[test]
+    fn plan_toc_jump_uses_current_wrapping_and_tracks_body_scroll() {
+        let content = format!(
+            "# Overview\n\n{}\n\n## Implementation\n\n{}",
+            "Long paragraph content. ".repeat(100),
+            "- detail\n".repeat(40)
+        );
+        let mut panel = Panel::progress(document(PlanStatus::Executed, &content));
+        let rows = render_panel(&mut panel, 14);
+        assert!(rows[0].contains("TOC") && rows[0].contains("Plan"));
+        assert!(rows.iter().any(|row| row.contains("    Implementation")));
+        panel.key(key_event(KeyCode::Tab));
+        assert_eq!(panel.focus, Focus::Toc);
+        panel.key(key_event(KeyCode::Down));
+        assert_eq!(panel.scroll[0], 0);
+        for width in [100, 70] {
+            render_panel_size(&mut panel, width, 14);
+            assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None);
+            let rows = render_panel_size(&mut panel, width, 14);
+            let body_x = usize::from(26.min(width / 3) + 2);
+            assert!(
+                rows[2]
+                    .chars()
+                    .skip(body_x)
+                    .collect::<String>()
+                    .starts_with("Implementation")
+            );
+        }
+        panel.key(key_event(KeyCode::Tab));
+        assert_eq!(panel.focus, Focus::Body);
+        panel.wheel(false, usize::MAX);
+        render_panel(&mut panel, 14);
+        assert_eq!(panel.toc_selected[0], 0);
+        panel.key(key_event(KeyCode::BackTab));
+        assert_eq!(panel.focus, Focus::Toc);
+        render_panel_size(&mut panel, 40, 14);
+        assert_eq!(panel.focus, Focus::Body);
+        assert!(!panel.toc_visible);
+    }
+
+    #[test]
+    fn plan_toc_scrolls_long_outlines_and_handles_removed_headings() {
+        let content = (0..30)
+            .map(|index| format!("## Section {index}\n\nbody\n\n"))
+            .collect::<String>();
+        let mut panel = Panel::progress(document(PlanStatus::Ready, &content));
+        render_panel(&mut panel, 10);
+        panel.key(key_event(KeyCode::Tab));
+        panel.key(key_event(KeyCode::End));
+        let rows = render_panel(&mut panel, 10);
+        assert!(rows.iter().any(|row| row.contains("❯ Section 29")));
+        panel.key(key_event(KeyCode::Home));
+        let rows = render_panel(&mut panel, 10);
+        assert!(rows.iter().any(|row| row.contains("❯ Section 0")));
+        panel.sync_document(&document(PlanStatus::Ready, "Content without headings"));
+        let rows = render_panel(&mut panel, 10);
+        assert!(rows.iter().any(|row| row.contains("No headings")));
+        assert_eq!(panel.focus, Focus::Body);
+        panel.key(key_event(KeyCode::Tab));
+        assert_eq!(panel.focus, Focus::Body);
+    }
+
+    #[test]
+    fn plan_toc_keeps_plan_and_review_navigation_independent() {
+        let content = format!(
+            "# Plan start\n\n{}\n\n## Plan end\n\n{}",
+            "- item\n".repeat(30),
+            "- last\n".repeat(30)
+        );
+        let mut panel = Panel::progress(document(PlanStatus::Executed, &content));
+        panel.report = Some(PlanReviewReport {
+            plan_id: panel.document.id.clone(),
+            revision: 1,
+            model_reference: "fixture/primary".into(),
+            content: format!(
+                "# Review start\n\n{}\n\n## Review end\n\n{}",
+                "- evidence\n".repeat(30),
+                "- result\n".repeat(30)
+            ),
+        });
+        render_panel(&mut panel, 14);
+        panel.key(key_event(KeyCode::Tab));
+        panel.key(key_event(KeyCode::Down));
+        panel.key(key_event(KeyCode::Enter));
+        render_panel(&mut panel, 14);
+        let plan_scroll = panel.scroll[0];
+        panel.key(key_event(KeyCode::Right));
+        let rows = render_panel(&mut panel, 14);
+        assert!(rows.iter().any(|row| row.contains("❯ Review start")));
+        panel.key(key_event(KeyCode::Down));
+        panel.key(key_event(KeyCode::Enter));
+        render_panel(&mut panel, 14);
+        assert!(panel.scroll[1] > 0);
+        panel.key(key_event(KeyCode::Left));
+        let rows = render_panel(&mut panel, 14);
+        assert_eq!(panel.scroll[0], plan_scroll);
+        assert!(rows.iter().any(|row| row.contains("❯   Plan end")));
     }
 
     #[test]

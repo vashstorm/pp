@@ -35,6 +35,33 @@ fn heading_strips_marker_and_uses_accent_bold() {
 }
 
 #[test]
+fn heading_anchors_follow_wrapped_blocks_and_ignore_fenced_examples() {
+    let source = "# **Overview**\n\nA long paragraph that wraps over several terminal lines.\n\n```md\n# Not a heading\n```\n\n## 重复章节 `code`\n\n| Column | Value |\n| --- | --- |\n| long content | more content |\n\n重复章节\n--------\n\n### Final\n";
+    let document = parse(source);
+    for width in [8, 25, 80] {
+        let (lines, headings) = document.layout_with_headings(width);
+        assert_eq!(lines, document.layout(width));
+        assert_eq!(headings.len(), 4);
+        assert_eq!(
+            headings
+                .iter()
+                .map(|heading| heading.level)
+                .collect::<Vec<_>>(),
+            [1, 2, 2, 3]
+        );
+        assert_eq!(headings[0].title, "Overview");
+        assert_eq!(headings[1].title, "重复章节 code");
+        assert_eq!(headings[2].title, "重复章节");
+        for heading in &headings {
+            assert!(heading.title.starts_with(&text(&lines[heading.row])));
+        }
+        assert!(headings.windows(2).all(|pair| pair[0].row < pair[1].row));
+    }
+    let (lines, headings) = document.layout_with_headings(0);
+    assert!(lines.is_empty() && headings.is_empty());
+}
+
+#[test]
 fn inline_styles_use_modifiers_and_palette() {
     let ls = layout("**bold** and *em* and ~~gone~~ and `code`", 80);
     assert_eq!(

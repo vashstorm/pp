@@ -1,6 +1,69 @@
 use super::*;
 
 #[test]
+fn plan_tui_toc_navigates_view_without_executing() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let content = format!(
+            "# Overview\n\n{}\n\n## Implementation\n\n{}\n\n## Validation\n\n{}",
+            "- research detail\n".repeat(35),
+            "- [ ] implementation detail\n".repeat(35),
+            "- [ ] validation detail\n".repeat(35),
+        );
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        plan_enter(&mut pty, &fixture);
+        plan_drive_ready(&mut pty, &fixture, protocol, "Plan with sections", &content);
+        pty.input("\x1b");
+        pty.wait_for("关闭计划面板", |screen| {
+            !screen.contents().contains("TOC")
+        });
+        pty.input("/plan view\r");
+        plan_wait_review(&mut pty, 1);
+        pty.wait_for("计划目录与正文分栏", |screen| {
+            screen.contents().contains("TOC")
+                && screen.rows(0, 26).any(|row| row.contains("Implementation"))
+                && !screen
+                    .rows(28, 72)
+                    .any(|row| row.contains("validation detail"))
+        });
+        pty.input("\t\t\t\x1b[F");
+        pty.wait_for("选择目录末项", |screen| {
+            screen.rows(0, 26).any(|row| row.contains("❯   Validation"))
+        });
+        no_more(&fixture);
+        pty.input("\r");
+        pty.wait_for("目录跳转至正文标题", |screen| {
+            screen
+                .rows(28, 72)
+                .nth(2)
+                .is_some_and(|row| row.starts_with("Validation"))
+                && screen
+                    .rows(28, 72)
+                    .any(|row| row.contains("validation detail"))
+                && screen.contents().contains("Execute in a new session")
+        });
+        no_more(&fixture);
+        pty.resize(30, 50);
+        pty.wait_for("窄窗口收起目录", |screen| {
+            !screen.contents().contains("TOC") && screen.contents().contains("Plan")
+        });
+        pty.resize(30, 100);
+        pty.wait_for("恢复目录分栏", |screen| {
+            screen.contents().contains("TOC")
+        });
+        assert_eq!(
+            std::fs::read_to_string(plan_path(project.path())).unwrap(),
+            content
+        );
+        assert!(!project.path().join("forbidden-after-submit").exists());
+        pty.input("\x03");
+        pty.finish();
+    }
+}
+
+#[test]
 fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
     for protocol in ["completion", "response"] {
         let other = if protocol == "completion" {

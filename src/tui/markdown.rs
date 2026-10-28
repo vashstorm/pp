@@ -33,6 +33,7 @@ pub(super) struct MarkdownDocument {
 enum Block {
     /// Lines with resolved hanging prefixes (list markers, quote bars).
     Paragraph(Vec<WrapLine>, Option<usize>),
+    Heading(Vec<WrapLine>, u8),
     Code(CodeBlock),
     Rule(Vec<Span<'static>>),
     Table(TableBlock),
@@ -64,6 +65,12 @@ struct TableBlock {
 }
 
 type Cell = Vec<Span<'static>>;
+
+pub(super) struct HeadingAnchor {
+    pub level: u8,
+    pub title: String,
+    pub row: usize,
+}
 
 pub(super) fn parse(source: &str) -> MarkdownDocument {
     parse_styled(source, false)
@@ -112,7 +119,7 @@ fn parse_styled(source: &str, instruction: bool) -> MarkdownDocument {
         match ev {
             Event::Start(tag) => match tag {
                 Tag::Paragraph => b.start_paragraph(),
-                Tag::Heading { .. } => b.start_heading(),
+                Tag::Heading { level, .. } => b.start_heading(level as u8),
                 Tag::BlockQuote(_) => b.start_quote(),
                 Tag::CodeBlock(kind) => b.start_code(kind, range.start),
                 Tag::HtmlBlock => b.start_html(),
@@ -169,6 +176,42 @@ impl MarkdownDocument {
     /// Physical lines for `width` terminal columns. `width == 0` yields no
     /// lines. Lines are already wrapped; draw without a second wrap pass.
     pub(super) fn layout(&self, width: u16) -> Vec<Line<'static>> {
+        self.layout_blocks(width, |_, _| {})
+    }
+
+    /// 目录锚点与正文共用同一轮排版，行号包含块间空行与实际换行。
+    pub(super) fn layout_with_headings(
+        &self,
+        width: u16,
+    ) -> (Vec<Line<'static>>, Vec<HeadingAnchor>) {
+        let mut headings = Vec::new();
+        let lines = self.layout_blocks(width, |block, row| {
+            if let Block::Heading(lines, level) = block {
+                let title = lines
+                    .iter()
+                    .map(|line| {
+                        line.spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                headings.push(HeadingAnchor {
+                    level: *level,
+                    title,
+                    row,
+                });
+            }
+        });
+        (lines, headings)
+    }
+
+    fn layout_blocks(
+        &self,
+        width: u16,
+        mut on_block: impl FnMut(&Block, usize),
+    ) -> Vec<Line<'static>> {
         let mut out = Vec::new();
         if width == 0 {
             return out;
@@ -184,8 +227,11 @@ impl MarkdownDocument {
                 out.push(Line::from(""));
             }
             previous_group = group;
+            on_block(block, out.len());
             match block {
-                Block::Paragraph(lines, _) => layout_paragraph(lines, width, &mut out),
+                Block::Paragraph(lines, _) | Block::Heading(lines, _) => {
+                    layout_paragraph(lines, width, &mut out);
+                }
                 Block::Code(cb) => layout_code(cb, width, &mut out),
                 Block::Rule(prefix) => {
                     let mut spans = fit_prefix(prefix, width);
@@ -257,6 +303,7 @@ struct Builder<'a> {
     cur: Vec<Span<'static>>,
     col: usize,
     heading: bool,
+    heading_level: u8,
     paragraph: bool,
     list_group: usize,
     strong: u32,
@@ -286,6 +333,7 @@ impl<'a> Builder<'a> {
             cur: Vec::new(),
             col: 0,
             heading: false,
+            heading_level: 1,
             paragraph: false,
             list_group: 0,
             strong: 0,
@@ -435,11 +483,15 @@ impl<'a> Builder<'a> {
             self.push_line();
         }
         if !self.lines.is_empty() {
-            self.blocks.push(Block::Paragraph(
-                std::mem::take(&mut self.lines),
-                (!self.lists.is_empty() && !self.paragraph && !self.heading)
-                    .then_some(self.list_group),
-            ));
+            let lines = std::mem::take(&mut self.lines);
+            self.blocks.push(if self.heading {
+                Block::Heading(lines, self.heading_level)
+            } else {
+                Block::Paragraph(
+                    lines,
+                    (!self.lists.is_empty() && !self.paragraph).then_some(self.list_group),
+                )
+            });
         }
     }
 
@@ -449,9 +501,10 @@ impl<'a> Builder<'a> {
         self.col = 0;
     }
 
-    fn start_heading(&mut self) {
+    fn start_heading(&mut self, level: u8) {
         self.flush_block();
         self.heading = true;
+        self.heading_level = level;
         self.col = 0;
     }
 
