@@ -607,6 +607,8 @@ fn copy_session(from: &Path, to: &Path, id: &str) {
 
 #[path = "session/lifecycle_cases.rs"]
 mod lifecycle_cases;
+#[path = "session/lock_cases.rs"]
+mod lock_cases;
 #[path = "session/restore_cases.rs"]
 mod restore_cases;
 #[path = "session/settings_cases.rs"]

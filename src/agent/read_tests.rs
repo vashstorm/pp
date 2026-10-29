@@ -327,7 +327,13 @@ fn read_history_restores_unknown_tool_results_without_special_handling() {
         agent.journal.commit((&agent.session).into()).unwrap();
         let id = agent.session_id().unwrap().to_owned();
         drop(agent);
-        let saved = persistence::load(&dir.path().join("sessions"), Some(&id), true).unwrap();
+        let saved = persistence::load(
+            &dir.path().join("sessions"),
+            &dir.path().join("sessions/.locks"),
+            Some(&id),
+            true,
+        )
+        .unwrap();
         let mut restored = Agent::restore(
             ModelCatalog::from_files(
                 &dir.path().join("settings.yml"),

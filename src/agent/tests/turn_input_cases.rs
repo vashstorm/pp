@@ -88,7 +88,13 @@ fn runtime_input_steering_applies_at_committed_boundary_and_replays_once() {
         // 已应用的输入各以普通 User 记录持久化一次，事件不入 journal。
         let id = agent.session_id().unwrap().to_owned();
         drop(agent);
-        let restored = persistence::load(&dir.path().join("sessions"), Some(&id), true).unwrap();
+        let restored = persistence::load(
+            &dir.path().join("sessions"),
+            &dir.path().join("sessions/.locks"),
+            Some(&id),
+            true,
+        )
+        .unwrap();
         let users = restored
             .replay
             .iter()
@@ -196,7 +202,13 @@ fn runtime_input_claimed_batch_cancel_restores_only_unaccepted_items() {
         assert!(queue.claim_next().unwrap().is_none());
         let id = agent.session_id().unwrap().to_owned();
         drop(agent);
-        let restored = persistence::load(&dir.path().join("sessions"), Some(&id), true).unwrap();
+        let restored = persistence::load(
+            &dir.path().join("sessions"),
+            &dir.path().join("sessions/.locks"),
+            Some(&id),
+            true,
+        )
+        .unwrap();
         let users: Vec<_> = restored
             .replay
             .iter()

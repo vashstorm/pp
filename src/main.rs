@@ -105,7 +105,7 @@ impl From<ApprovalModeCli> for crate::tools::approval::ApprovalMode {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Remove logs and SQLite request data older than 90 days
+    /// 清理超过 90 天的日志、SQLite 请求数据和未被占用的 session 锁文件
     Gc,
     /// Start the local stats page server
     Stats {
@@ -181,6 +181,8 @@ fn run_gc() -> Result<()> {
     // Logs encode local calendar dates, not precise creation timestamps.
     let (logs_total, logs_removed) = logging::gc(cutoff.with_timezone(&chrono::Local).date_naive())
         .context("cleaning log files")?;
+    let (locks_total, locks_removed) =
+        agent::persistence::locks::gc(cutoff.into()).context("cleaning session lock files")?;
     let mut stdout = io::stdout().lock();
     writeln!(
         stdout,
@@ -191,6 +193,11 @@ fn run_gc() -> Result<()> {
         stdout,
         "SQLite requests: total={requests_total}, removed={requests_removed}, remaining={}",
         requests_total - requests_removed
+    )?;
+    writeln!(
+        stdout,
+        "Session locks: total={locks_total}, removed={locks_removed}, remaining={}",
+        locks_total - locks_removed
     )?;
     Ok(())
 }
@@ -243,6 +250,7 @@ fn run(args: Args) -> Result<()> {
             .map_err(|error| anyhow::anyhow!("{error:#}"))?;
         Some(agent::persistence::load(
             &dir.join("sessions"),
+            &agent::persistence::locks::directory()?,
             resume_id,
             // 加载记录用于会话级去重，CLI 恢复同样需要有效回放。
             true,

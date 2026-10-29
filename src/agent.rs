@@ -78,6 +78,7 @@ impl Bootstrap {
             catalog,
             tools,
             self.dir.join("sessions"),
+            persistence::locks::directory()?,
             self.prompt.clone(),
         )?;
         if let Some(mode) = self.approval {
@@ -286,10 +287,12 @@ impl Agent {
 
     #[cfg(test)]
     pub(crate) fn new(catalog: ModelCatalog, tools: Tools, sessions_dir: PathBuf) -> Result<Self> {
+        let lock_dir = sessions_dir.join(".locks");
         Self::new_with_prompt(
             catalog,
             tools,
             sessions_dir,
+            lock_dir,
             crate::system_prompt::Snapshot::bundled(),
         )
     }
@@ -298,6 +301,7 @@ impl Agent {
         catalog: ModelCatalog,
         mut tools: Tools,
         sessions_dir: PathBuf,
+        lock_dir: PathBuf,
         prompt_source: crate::system_prompt::Snapshot,
     ) -> Result<Self> {
         let config = catalog.resolve(catalog.default_reference())?;
@@ -365,7 +369,7 @@ impl Agent {
             pending_project_load: None,
             reported_project_load: None,
             request_skills: Vec::new(),
-            journal: SessionJournal::new(sessions_dir),
+            journal: SessionJournal::with_locks(sessions_dir, lock_dir),
             replay: Vec::new(),
             debug: debug::DebugState::new(config.settings.debug, false),
             workflow: crate::plan::WorkflowState::default(),
@@ -499,7 +503,12 @@ impl Agent {
 
     fn prepare_resume(&self, id: &str) -> Result<persistence::RestoredSession> {
         let dir = crate::config::global_dir()?;
-        let mut restored = persistence::load(&dir.join("sessions"), Some(id), true)?;
+        let mut restored = persistence::load(
+            &dir.join("sessions"),
+            self.journal.lock_dir(),
+            Some(id),
+            true,
+        )?;
         let saved = &restored.checkpoint;
         let same_model = saved.model_reference == self.current_model.reference
             && match &saved.session {

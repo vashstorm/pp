@@ -119,7 +119,13 @@ fn plan_todo_committed_checkbox_survives_failed_journal_and_recovers_from_disk()
             body.replacen("[ ]", "[x]", 1)
         );
         drop(agent);
-        let restored = persistence::load(&dir.path().join("sessions"), Some(&id), true).unwrap();
+        let restored = persistence::load(
+            &dir.path().join("sessions"),
+            &dir.path().join("sessions/.locks"),
+            Some(&id),
+            true,
+        )
+        .unwrap();
         let template = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
         let recovered = Agent::restore(template.catalog, template.tools, restored).unwrap();
         assert!(recovered.replay.iter().any(|record| matches!(

@@ -297,7 +297,10 @@ impl App {
                         WorkerCommand::DeleteSession(id) => {
                             let result = crate::config::global_dir()
                                 .map(|dir| dir.join("sessions"))
-                                .and_then(|dir| crate::agent::persistence::delete(&dir, &id));
+                                .and_then(|dir| {
+                                    let locks = crate::agent::persistence::locks::directory()?;
+                                    crate::agent::persistence::delete(&dir, &locks, &id)
+                                });
                             WorkerEvent::SessionDeleted(id, result)
                         }
                         WorkerCommand::Resume { id, cancellation } => {

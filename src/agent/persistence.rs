@@ -1,4 +1,5 @@
 mod format;
+pub(crate) mod locks;
 pub(crate) mod tree;
 
 use super::Session;
@@ -17,6 +18,7 @@ use format::{
     Custom, CustomRef, Entry, EntryRef, Header, HeaderRef, Message, NativeAppend, NativeAppendRef,
     Payload, PayloadRef, SavedMessage, StateRef, WorkflowRef,
 };
+use locks::SessionLock;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -113,6 +115,7 @@ struct Active {
     id: String,
     created_at_ms: u64,
     file: File,
+    _lock: SessionLock,
     truncate_to: Option<u64>,
     header_written: bool,
     tail: Option<String>,
@@ -121,6 +124,7 @@ struct Active {
 
 pub(super) struct SessionJournal {
     dir: PathBuf,
+    lock_dir: PathBuf,
     active: Option<Active>,
     committed: usize,
     buffer: Vec<u8>,
@@ -168,9 +172,16 @@ impl SessionJournal {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn new(dir: PathBuf) -> Self {
+        let lock_dir = dir.join(".locks");
+        Self::with_locks(dir, lock_dir)
+    }
+
+    pub(super) fn with_locks(dir: PathBuf, lock_dir: PathBuf) -> Self {
         Self {
             dir,
+            lock_dir,
             active: None,
             committed: 0,
             buffer: Vec::new(),
@@ -191,7 +202,13 @@ impl SessionJournal {
         self.notice.take()
     }
     pub(super) fn reset(&mut self) {
-        *self = Self::new(std::mem::take(&mut self.dir));
+        *self = Self::with_locks(
+            std::mem::take(&mut self.dir),
+            std::mem::take(&mut self.lock_dir),
+        );
+    }
+    pub(super) fn lock_dir(&self) -> &Path {
+        &self.lock_dir
     }
     pub(super) fn history_replaced(&mut self) {
         // 仅恢复时不改变日志和排序；下一次请求发送后再保存新的模型与原生历史。
@@ -445,10 +462,9 @@ impl SessionJournal {
         }))
     }
 
-    /// A blank journal for a fresh-context execution; only the sessions
-    /// directory is shared with the planning session.
+    /// 新上下文复用会话目录与锁目录，独立持有新会话的锁。
     pub(super) fn fork_empty(&self) -> Self {
-        Self::new(self.dir.clone())
+        Self::with_locks(self.dir.clone(), self.lock_dir.clone())
     }
 
     /// Test-only fault injection: swap the active descriptor for a read-only
@@ -513,7 +529,7 @@ impl SessionJournal {
                 .mode(0o700)
                 .create(&self.dir)
                 .context("creating session directory")?;
-            create(&self.dir, created_at_ms, || {
+            create(&self.dir, &self.lock_dir, created_at_ms, || {
                 let mut random = [0; 16];
                 getrandom::fill(&mut random)
                     .map_err(|_| anyhow::anyhow!("session OS random source failed"))?;
@@ -759,18 +775,9 @@ pub(crate) fn validate_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn lock(file: &File, id: &str) -> Result<()> {
-    rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive).map_err(|error| {
-        if error == rustix::io::Errno::WOULDBLOCK {
-            anyhow::anyhow!("session is already in use: {id}")
-        } else {
-            anyhow::anyhow!("locking session {id}: {error}")
-        }
-    })
-}
-
 fn create(
     dir: &Path,
+    lock_dir: &Path,
     created_at_ms: u64,
     mut random: impl FnMut() -> Result<[u8; 16]>,
 ) -> Result<Active> {
@@ -794,6 +801,9 @@ fn create(
             id.push(char::from(HEX[usize::from(byte >> 4)]));
             id.push(char::from(HEX[usize::from(byte & 15)]));
         }
+        let Some(session_lock) = SessionLock::try_acquire(lock_dir, &id)? else {
+            continue;
+        };
         match OpenOptions::new()
             .read(true)
             .append(true)
@@ -802,11 +812,11 @@ fn create(
             .open(dir.join(format!("{id}.jsonl")))
         {
             Ok(file) => {
-                lock(&file, &id)?;
                 return Ok(Active {
                     id,
                     created_at_ms,
                     file,
+                    _lock: session_lock,
                     truncate_to: None,
                     header_written: false,
                     tail: None,
@@ -1085,9 +1095,11 @@ fn compact_summary(text: &str, limit: usize) -> String {
     result
 }
 
-pub(crate) fn delete(dir: &Path, id: &str) -> Result<()> {
+pub(crate) fn delete(dir: &Path, lock_dir: &Path, id: &str) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     validate_id(id)?;
+    // 当前会话及其他进程持有的会话都不可删除。
+    let _lock = SessionLock::acquire(lock_dir, id)?;
     let path = dir.join(format!("{id}.jsonl"));
     let file = OpenOptions::new()
         .read(true)
@@ -1098,8 +1110,6 @@ pub(crate) fn delete(dir: &Path, id: &str) -> Result<()> {
         .context("opening session for deletion")?;
     let metadata = file.metadata().context("reading session metadata")?;
     ensure!(metadata.is_file(), "session is not a regular file");
-    // 当前会话及其他进程持有的会话都不可删除。
-    lock(&file, id)?;
     let current = fs::symlink_metadata(&path).context("checking session before deletion")?;
     ensure!(
         current.is_file() && current.dev() == metadata.dev() && current.ino() == metadata.ino(),
@@ -1108,7 +1118,12 @@ pub(crate) fn delete(dir: &Path, id: &str) -> Result<()> {
     fs::remove_file(path).context("deleting session")
 }
 
-pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result<RestoredSession> {
+pub(crate) fn load(
+    dir: &Path,
+    lock_dir: &Path,
+    id: Option<&str>,
+    include_replay: bool,
+) -> Result<RestoredSession> {
     let id = match id {
         Some(id) => {
             validate_id(id)?;
@@ -1116,6 +1131,7 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
         }
         None => latest(dir)?,
     };
+    let session_lock = SessionLock::acquire(lock_dir, &id)?;
     let path = dir.join(format!("{id}.jsonl"));
     let file = OpenOptions::new()
         .read(true)
@@ -1130,7 +1146,6 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
         "saved session is not a regular file: {}",
         path.display()
     );
-    lock(&file, &id)?;
     let mut reader = BufReader::new(&file);
     let mut line = Vec::new();
     let mut line_number = 0;
@@ -1353,10 +1368,12 @@ pub(crate) fn load(dir: &Path, id: Option<&str>, include_replay: bool) -> Result
         checkpoint,
         journal: SessionJournal {
             dir: dir.to_owned(),
+            lock_dir: lock_dir.to_owned(),
             active: Some(Active {
                 id,
                 created_at_ms,
                 file,
+                _lock: session_lock,
                 truncate_to: truncated.then_some(offset),
                 header_written: true,
                 tail,

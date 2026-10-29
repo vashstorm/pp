@@ -98,7 +98,10 @@ fn gc_removes_expired_logs_and_sqlite_snapshots_without_models() {
     );
     // Three expired and three boundary logs, plus the server's current log.
     // Foreign names, symlinks, directories, and snapshots are not extra inventory.
-    assert_eq!(gc_counts(&output), [vec![7, 3, 4], vec![3, 1, 2]]);
+    assert_eq!(
+        gc_counts(&output),
+        [vec![7, 3, 4], vec![3, 1, 2], vec![0, 0, 0]]
+    );
     for name in old_names {
         assert!(!logs.join(name).exists());
     }
@@ -144,7 +147,10 @@ fn gc_removes_expired_logs_and_sqlite_snapshots_without_models() {
     );
     let second = Cli::spawn(home.path(), &["gc"], &[]).finish();
     assert!(second.status.success());
-    assert_eq!(gc_counts(&second), [vec![4, 0, 4], vec![2, 0, 2]]);
+    assert_eq!(
+        gc_counts(&second),
+        [vec![4, 0, 4], vec![2, 0, 2], vec![0, 0, 0]]
+    );
 }
 
 #[test]
@@ -157,7 +163,10 @@ fn gc_empty_home_does_not_create_storage_and_rejects_symlink_database() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(gc_counts(&output), [vec![0, 0, 0], vec![0, 0, 0]]);
+    assert_eq!(
+        gc_counts(&output),
+        [vec![0, 0, 0], vec![0, 0, 0], vec![0, 0, 0]]
+    );
     assert!(!home.path().join(".pp").exists());
     let stats = home.path().join(".pp/stats");
     fs::create_dir_all(&stats).unwrap();

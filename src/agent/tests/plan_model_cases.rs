@@ -106,7 +106,13 @@ fn plan_submit_seals_batch_without_another_model_request() {
         let id = agent.session_id().unwrap().to_owned();
         let expected = agent.workflow.clone();
         drop(agent);
-        let restored = persistence::load(&dir.path().join("sessions"), Some(&id), true).unwrap();
+        let restored = persistence::load(
+            &dir.path().join("sessions"),
+            &dir.path().join("sessions/.locks"),
+            Some(&id),
+            true,
+        )
+        .unwrap();
         assert_eq!(restored.checkpoint.workflow, expected);
         assert!(server.try_recv().unwrap().is_none());
     }

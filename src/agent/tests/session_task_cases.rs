@@ -68,7 +68,13 @@ fn instruction_loading_cards_failed_requests_record_frozen_body_once() {
         }
         let id = agent.session_id().unwrap().to_owned();
         drop(agent);
-        let restored = persistence::load(&dir.path().join("sessions"), Some(&id), true).unwrap();
+        let restored = persistence::load(
+            &dir.path().join("sessions"),
+            &dir.path().join("sessions/.locks"),
+            Some(&id),
+            true,
+        )
+        .unwrap();
         let loads: Vec<_> = restored
             .replay
             .iter()
@@ -154,7 +160,7 @@ fn resume_preparation_preserves_current_session_and_releases_failed_candidate() 
     let saved = agents.pop().unwrap();
     let expected = serde_json::to_value(&saved.session).unwrap();
     drop(saved);
-    let old = agents.pop().unwrap();
+    let mut old = agents.pop().unwrap();
     let before = serde_json::to_value(&old.session).unwrap();
     let cwd = std::env::current_dir().unwrap();
     assert!(old.prepare_resume(&ids[0]).is_err());
@@ -171,10 +177,14 @@ fn resume_preparation_preserves_current_session_and_releases_failed_candidate() 
     assert_eq!(old.session_id(), Some(ids[0].as_str()));
     assert_eq!(serde_json::to_value(&old.session).unwrap(), before);
     assert_eq!(std::env::current_dir().unwrap(), cwd);
-    assert!(persistence::load(&sessions, Some(&ids[0]), true).is_err());
-    assert!(persistence::load(&sessions, Some(&ids[1]), true).is_err());
+    assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[0]), true).is_err());
+    assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_err());
     drop(candidate);
-    assert!(persistence::load(&sessions, Some(&ids[1]), true).is_ok());
+    assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_ok());
+    old.resume(&ids[1], &CancellationToken::new()).unwrap();
+    assert_eq!(old.session_id(), Some(ids[1].as_str()));
+    assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[0]), true).is_ok());
+    assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_err());
 }
 
 #[test]
@@ -214,7 +224,8 @@ fn cancellation_before_request_saves_accepted_input_and_replays_terminal() {
         assert_eq!(outcome, RunOutcome::Cancelled);
         let id = agent.session_id().unwrap().to_owned();
         drop(agent);
-        let restored = persistence::load(&sessions, Some(&id), true).unwrap();
+        let restored =
+            persistence::load(&sessions, &sessions.join(".locks"), Some(&id), true).unwrap();
         assert!(
             matches!(restored.replay.as_slice(), [persistence::ReplayRecord::User(text), persistence::ReplayRecord::Cancelled] if text == "accepted input")
         );
@@ -436,6 +447,7 @@ fn system_prompt_render_failure_preserves_native_session_and_journal() {
             ModelCatalog::from_files(&settings, &models).unwrap(),
             Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
             dir.path().join("sessions"),
+            dir.path().join("sessions/.locks"),
             source,
         )
         .unwrap();

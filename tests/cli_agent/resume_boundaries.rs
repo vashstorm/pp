@@ -620,7 +620,9 @@ fn tui_slash_resume_locked_session_keeps_current_session_and_cwd() {
         std::time::SystemTime::now() + Duration::from_secs(3600),
     );
     // 另一进程持锁：恢复必须失败且不破坏当前会话。
-    let guard = std::fs::File::open(&locked_journal).unwrap();
+    let guard = std::fs::File::open(
+        home.path().join(".pp/run/sessions").join(format!("{locked_id}.lock")),
+    ).unwrap();
     rustix::fs::flock(&guard, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
     resume_boundary_quick_notifications(home.path());
 

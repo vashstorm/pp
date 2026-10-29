@@ -77,10 +77,9 @@ fn deletion_rejects_locked_sessions_symlinks_and_invalid_ids() {
     let link_id = format!("2026-10-17T01-02-03-{}", "b".repeat(32));
     let path = dir.path().join(format!("{id}.jsonl"));
     fs::write(&path, "original bytes").unwrap();
-    let guard = File::open(&path).unwrap();
-    lock(&guard, &id).unwrap();
+    let guard = SessionLock::acquire(&dir.path().join(".locks"), &id).unwrap();
     assert!(
-        delete(dir.path(), &id)
+        delete(dir.path(), &dir.path().join(".locks"), &id)
             .unwrap_err()
             .to_string()
             .contains("already in use")
@@ -89,12 +88,12 @@ fn deletion_rejects_locked_sessions_symlinks_and_invalid_ids() {
     drop(guard);
     let link = dir.path().join(format!("{link_id}.jsonl"));
     symlink(&path, &link).unwrap();
-    assert!(delete(dir.path(), &link_id).is_err());
+    assert!(delete(dir.path(), &dir.path().join(".locks"), &link_id).is_err());
     assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
-    assert!(delete(dir.path(), "../escape").is_err());
-    delete(dir.path(), &id).unwrap();
+    assert!(delete(dir.path(), &dir.path().join(".locks"), "../escape").is_err());
+    delete(dir.path(), &dir.path().join(".locks"), &id).unwrap();
     assert!(!path.exists());
-    assert!(delete(dir.path(), &id).is_err());
+    assert!(delete(dir.path(), &dir.path().join(".locks"), &id).is_err());
 }
 
 #[test]
@@ -164,8 +163,11 @@ fn listing_is_read_only_sorted_and_isolates_invalid_sessions() {
             )
         })
         .collect();
-    let locked = File::open(&paths[0]).unwrap();
-    lock(&locked, "listing-fixture").unwrap();
+    let _locked = SessionLock::acquire(
+        &dir.path().join(".locks"),
+        &format!("2026-10-17T01-02-03-{:032x}", 0),
+    )
+    .unwrap();
     let listing = list(dir.path()).unwrap();
     assert_eq!(
         listing
@@ -245,8 +247,13 @@ fn collision_preserves_existing_file() {
         .to_string();
     let path = dir.path().join(format!("{time}-{}.jsonl", "00".repeat(16)));
     fs::write(&path, "original").unwrap();
+    let _held = SessionLock::acquire(
+        &dir.path().join(".locks"),
+        &format!("{time}-{}", "00".repeat(16)),
+    )
+    .unwrap();
     let mut candidate = 0;
-    let active = create(dir.path(), 42, || {
+    let active = create(dir.path(), &dir.path().join(".locks"), 42, || {
         let bytes = [candidate; 16];
         candidate += 1;
         Ok(bytes)
@@ -296,7 +303,7 @@ fn replay_native_history_and_repair_only_on_append() {
             .unwrap()
             .write_all(b"{unfinished")
             .unwrap();
-        let mut restored = load(dir.path(), Some(&id), true).unwrap();
+        let mut restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
         assert_eq!(
             serde_json::to_value(&restored.checkpoint.session).unwrap(),
             serde_json::to_value(&session).unwrap()
@@ -305,7 +312,7 @@ fn replay_native_history_and_repair_only_on_append() {
         assert_eq!(fs::read(&path).unwrap().len(), complete.len() + 11);
         restored.journal.think(ThinkLevel::High).unwrap();
         drop(restored);
-        let restored = load(dir.path(), Some(&id), false).unwrap();
+        let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
         assert_eq!(restored.checkpoint.think_level, ThinkLevel::High);
         assert!(restored.replay.is_empty());
     }
@@ -377,7 +384,7 @@ fn incomplete_native_commit_never_restores_projections_or_model_audit() {
             .unwrap()
             .write_all(b"{\"type\":\"custom\",\"customType\":\"pp.native_append\"")
             .unwrap();
-        let mut restored = load(dir.path(), Some(&id), true).unwrap();
+        let mut restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
         assert_eq!(restored.checkpoint.model_reference, "fixture/primary");
         assert_eq!(
             serde_json::to_value(&restored.checkpoint.session).unwrap(),
@@ -404,7 +411,7 @@ fn incomplete_native_commit_never_restores_projections_or_model_audit() {
             1
         );
         assert_eq!(
-            load(dir.path(), Some(&id), false)
+            load(dir.path(), &dir.path().join(".locks"), Some(&id), false)
                 .unwrap()
                 .checkpoint
                 .think_level,
@@ -531,7 +538,13 @@ fn context_failed_history_replacement_restores_native_memory_and_disk() {
         assert_eq!(fs::read(&path).unwrap(), before);
         assert!(agent.journal.check().is_err());
         drop(agent);
-        let restored = load(&dir.path().join("sessions"), Some(&id), false).unwrap();
+        let restored = load(
+            &dir.path().join("sessions"),
+            &dir.path().join("sessions/.locks"),
+            Some(&id),
+            false,
+        )
+        .unwrap();
         assert_eq!(
             serde_json::to_value(&restored.checkpoint.session).unwrap(),
             native
@@ -712,7 +725,7 @@ fn rejects_complete_corruption_and_locked_files() {
         .unwrap();
     let id = journal.id().unwrap().to_owned();
     assert!(
-        load(dir.path(), Some(&id), false)
+        load(dir.path(), &dir.path().join(".locks"), Some(&id), false)
             .err()
             .unwrap()
             .to_string()
@@ -732,7 +745,9 @@ fn rejects_complete_corruption_and_locked_files() {
         .unwrap()
         .write_all(b"invalid\n")
         .unwrap();
-    let error = load(dir.path(), Some(&id), false).err().unwrap();
+    let error = load(dir.path(), &dir.path().join(".locks"), Some(&id), false)
+        .err()
+        .unwrap();
     assert!(format!("{error:#}").contains(&format!("line {next_line}")));
 }
 
@@ -804,7 +819,7 @@ fn instruction_loading_cards_journal_failure_keeps_unpublished_snapshot() {
         assert!(reported.is_none());
         drop(journal);
 
-        let mut restored = load(dir.path(), Some(&id), true).unwrap();
+        let mut restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
         assert!(!restored.replay.iter().any(|record| matches!(
             record,
             ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded { .. })
@@ -824,7 +839,7 @@ fn instruction_loading_cards_journal_failure_keeps_unpublished_snapshot() {
                     && path == &dir.path().join("AGENTS.md").display().to_string()
         ));
         drop(restored);
-        let restored = load(dir.path(), Some(&id), true).unwrap();
+        let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
         assert!(matches!(
             restored.replay.as_slice(),
             [ReplayRecord::User(user), ReplayRecord::Event(
@@ -865,7 +880,7 @@ fn stats_context_early_journal_does_not_consume_capture_and_restore_does_not_rea
         );
         let id = journal.id().unwrap().to_owned();
         drop(journal);
-        let restored = load(dir.path(), Some(&id), false).unwrap();
+        let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
         assert!(
             restored
                 .journal
@@ -949,7 +964,7 @@ fn workflow_state_survives_restore_without_moving_native_cursor() {
     assert_eq!(journal.tree().unwrap().nodes.len(), nodes_before);
     drop(journal);
 
-    let restored = load(dir.path(), Some(&id), true).unwrap();
+    let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
     assert_eq!(restored.work_mode(), WorkMode::Plan);
     assert_eq!(restored.checkpoint.workflow, updated);
     assert!(
@@ -980,7 +995,7 @@ fn workflow_state_survives_restore_without_moving_native_cursor() {
             *record = serde_json::Value::Null;
         }
     });
-    let restored = load(dir.path(), Some(&id), false).unwrap();
+    let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
     assert_eq!(restored.checkpoint.workflow, WorkflowState::default());
     assert_eq!(restored.work_mode(), WorkMode::Execute);
 }
@@ -1044,7 +1059,12 @@ fn workflow_records_fail_closed_on_version_unknown_fields_and_privilege() {
         record["parentId"] = entries.last().unwrap()["id"].clone();
         record["timestamp"] = entries[0]["timestamp"].clone();
         fs::write(&path, format!("{base}{record}\n")).unwrap();
-        let error = format!("{:#}", load(dir.path(), Some(&id), false).err().unwrap());
+        let error = format!(
+            "{:#}",
+            load(dir.path(), &dir.path().join(".locks"), Some(&id), false)
+                .err()
+                .unwrap()
+        );
         assert!(error.contains(expected), "{expected}: {error}");
         if let Some(secret) = secret {
             assert!(!error.contains(secret), "leaked saved content: {error}");
@@ -1060,7 +1080,12 @@ fn workflow_records_fail_closed_on_version_unknown_fields_and_privilege() {
             *record = serde_json::Value::Null;
         }
     });
-    let error = format!("{:#}", load(dir.path(), Some(&id), false).err().unwrap());
+    let error = format!(
+        "{:#}",
+        load(dir.path(), &dir.path().join(".locks"), Some(&id), false)
+            .err()
+            .unwrap()
+    );
     assert!(error.contains("invalid session record"), "{error}");
 }
 
@@ -1102,7 +1127,7 @@ fn failed_workflow_sync_rolls_back_and_blocks_until_reset() {
     assert_eq!(fs::read(&path).unwrap(), before);
     assert!(journal.check().is_err());
     drop(journal);
-    let restored = load(dir.path(), Some(&id), false).unwrap();
+    let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
     assert_eq!(restored.work_mode(), WorkMode::Plan);
     assert_eq!(
         restored.checkpoint.workflow.plan.as_ref().unwrap().revision,
@@ -1156,7 +1181,7 @@ fn commit_plan_handoff_commits_projection_and_state_atomically() {
         let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
         assert_eq!(first["type"], "session");
         drop(journal);
-        let restored = load(dir.path(), Some(&id), true).unwrap();
+        let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
         assert_eq!(restored.work_mode(), WorkMode::Plan);
         assert_eq!(restored.checkpoint.workflow, workflow);
         // The user projection appears exactly once; the native history
@@ -1250,7 +1275,7 @@ fn commit_plan_handoff_failure_rolls_back_the_whole_group() {
     assert_eq!(fs::read(&path).unwrap(), before);
     assert!(journal.check().is_err());
     drop(journal);
-    let restored = load(dir.path(), Some(&id), true).unwrap();
+    let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
     // Neither the execution projection nor the workflow grant survived.
     assert!(matches!(restored.replay.as_slice(), [ReplayRecord::User(text)] if text == "first"));
     assert_eq!(restored.work_mode(), WorkMode::Execute);
