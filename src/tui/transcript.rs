@@ -525,6 +525,7 @@ impl Transcript {
                 {
                     let entry = &mut self.entries[index];
                     entry.text.push_str(&text);
+                    entry.markdown_dirty = true;
                     entry.layout = None;
                 } else {
                     self.read_groups_key = None;

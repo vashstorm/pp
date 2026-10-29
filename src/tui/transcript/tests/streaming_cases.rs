@@ -622,6 +622,81 @@ fn thinking_turns_stay_separate_from_answers_and_each_other() {
 }
 
 #[test]
+fn thinking_renders_markdown_with_muted_base_and_semantic_highlights() {
+    let mut transcript = Transcript::new();
+    transcript.progress(AgentEvent::AssistantStarted);
+    transcript.progress(AgentEvent::ThinkingDelta {
+        text: "plain intro\n\n**bold** and `code`\n\n```rust\nlet x = 1;\n```\n\n| left | right |\n| --- | --- |\n| a | b |\n".into(),
+    });
+    let buffer = render(&mut transcript, 80, 30);
+    let text = screen(&buffer);
+    let cell_of = |needle: &str| -> (u16, u16) {
+        for (row, line) in text.lines().enumerate() {
+            if let Some(column) = line.find(needle) {
+                return (column as u16, row as u16);
+            }
+        }
+        panic!("missing {needle} in:\n{text}");
+    };
+    // 普通文本保持灰色基调 + 助手暗色背景。
+    let plain = cell_of("plain");
+    assert_eq!(buffer[plain].fg, MUTED_TEXT);
+    assert_eq!(buffer[plain].bg, ASSISTANT_BACKGROUND);
+    // 粗体叠加 BOLD modifier，fg 仍继承灰色基色。
+    let bold = cell_of("bold");
+    assert_eq!(buffer[bold].fg, MUTED_TEXT);
+    assert!(buffer[bold].modifier.contains(Modifier::BOLD));
+    // 行内代码使用 CODE 色。
+    let code = cell_of("code");
+    assert_eq!(buffer[code].fg, palette::CODE);
+    assert_eq!(buffer[code].bg, ASSISTANT_BACKGROUND);
+    // 围栏代码块内容使用 CODE_BLOCK 色。
+    let block = cell_of("let x = 1;");
+    assert_eq!(buffer[block].fg, palette::CODE_BLOCK);
+    // 表格渲染出真实分隔线而非原始管道符。
+    assert!(text.contains('│'));
+    assert!(text.contains("─┼─"));
+    assert!(!text.contains("**"));
+    assert!(!text.contains('`'));
+    assert!(!text.contains("---"));
+}
+
+#[test]
+fn thinking_markdown_reparses_across_streaming_deltas() {
+    let mut transcript = Transcript::new();
+    transcript.progress(AgentEvent::AssistantStarted);
+    transcript.progress(AgentEvent::ThinkingDelta {
+        text: "**bo".into(),
+    });
+    // 先触发布局缓存，再补齐标记，验证新片段会使旧解析结果失效。
+    assert!(screen(&render(&mut transcript, 80, 10)).contains("**bo"));
+    transcript.progress(AgentEvent::ThinkingDelta {
+        text: "ld**".into(),
+    });
+    let text = screen(&render(&mut transcript, 80, 10));
+    assert!(!text.contains('*'), "{text}");
+    transcript.progress(AgentEvent::ThinkingDelta {
+        text: " tail".into(),
+    });
+    let buffer = render(&mut transcript, 80, 10);
+    let text = screen(&buffer);
+    let (row, line) = text
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains("bold"))
+        .expect("bold rendered");
+    let column = line.find("bold").expect("bold rendered") as u16;
+    let row = row as u16;
+    assert_eq!(buffer[(column as u16, row)].fg, MUTED_TEXT);
+    assert!(
+        buffer[(column as u16, row)]
+            .modifier
+            .contains(Modifier::BOLD)
+    );
+    assert!(text.contains("tail"));
+}
+
+#[test]
 fn streaming_scrolling_keeps_viewport_until_follow_is_restored() {
     let mut transcript = Transcript::new();
     for index in 0..60 {

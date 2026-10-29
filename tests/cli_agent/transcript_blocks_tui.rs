@@ -123,6 +123,113 @@ fn markdown_blocks_final(request: Request, protocol: &str, text: &str) {
 }
 
 #[test]
+fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
+    let first = "plain thinking\n\n# Reasoning title\n\n**bold";
+    let second = " word** and `inline code`\n\n```rust\nlet x = 1;\n";
+    let third = "```\n\n| Name | Value |\n| --- | --- |\n| item | **cell bold** |\n\n- list item\n\n> quoted text\n";
+    let reasoning = format!("{first}{second}{third}");
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(home.path(), "settings.yml"),
+            r#"{"default_model":"fixture/primary","think_level":"high","notification_timeout_seconds":1}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&fixture, Some(protocol)),
+        )
+        .unwrap();
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready();
+        pty.input("render thinking markdown\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        let mut stream = SseReply::new(request);
+        for (index, chunk) in [first, second, third].into_iter().enumerate() {
+            if protocol == "completion" {
+                stream.event(chat_chunk(json!({"reasoning_content":chunk}), None));
+            } else {
+                stream.event(json!({
+                    "type":"response.reasoning_summary_text.delta", "sequence_number":index,
+                    "item_id":"reasoning-live", "output_index":0, "summary_index":0,
+                    "delta":chunk
+                }));
+            }
+            match index {
+                0 => {
+                    pty.text("**bold");
+                    assert!(markdown_blocks_bold(pty.parser.screen(), "Reasoning title"));
+                    assert!(!markdown_blocks_bold(pty.parser.screen(), "**bold"));
+                }
+                1 => {
+                    pty.wait_for("思考流补齐加粗和代码块", |s| {
+                        s.contents().contains("let x = 1;") && !s.contents().contains("**bold")
+                    });
+                    let screen = pty.parser.screen();
+                    assert!(markdown_blocks_bold(screen, "bold word"));
+                    assert_eq!(
+                        markdown_blocks_fg(screen, "inline code", 0),
+                        vt100::Color::Rgb(229, 193, 255)
+                    );
+                    assert_eq!(
+                        markdown_blocks_fg(screen, "let x = 1;", 0),
+                        vt100::Color::Rgb(156, 220, 254)
+                    );
+                }
+                _ => {
+                    pty.wait_for("思考流显示表格、列表和引用", |s| {
+                        let text = s.contents();
+                        text.contains("cell bold") && text.contains("• list item")
+                            && text.contains("quoted text") && text.contains("─┼─")
+                    });
+                    assert!(markdown_blocks_bold(pty.parser.screen(), "cell bold"));
+                }
+            }
+        }
+        if protocol == "completion" {
+            streaming_delta(&mut stream, protocol, "Final answer");
+            streaming_complete(&mut stream, protocol, "Final answer");
+        } else {
+            stream.event(json!({
+                "type":"response.completed", "sequence_number":3,
+                "response":response_body(json!([
+                    {"type":"reasoning", "id":"reasoning-live", "status":"completed",
+                     "summary":[{"type":"summary_text", "text":reasoning}]},
+                    response_message("answer", json!([response_text("Final answer")]))
+                ]))
+            }));
+        }
+        stream.finish();
+        pty.text("Final answer");
+        pty.ready();
+        // 缩放触发重新布局，思考的语义样式仍应保留。
+        for cols in [60, 100] {
+            pty.resize(40, cols);
+            pty.text("plain thinking");
+            let screen = pty.parser.screen();
+            assert_eq!(
+                markdown_blocks_fg(screen, "plain thinking", 0),
+                vt100::Color::Rgb(110, 117, 129)
+            );
+            assert!(markdown_blocks_bold(screen, "bold word"));
+            assert!(markdown_blocks_bold(screen, "cell bold"));
+            assert!(!screen.contents().contains("```"));
+        }
+        pty.input("/quit\r");
+        pty.wait_for("退出并恢复终端模式", |s| !s.hide_cursor() && !s.bracketed_paste());
+        // 退出后的终端原生历史也应保留高亮，且没有重复的思考正文。
+        let screen = pty.parser.screen();
+        assert_eq!(screen.contents().matches("plain thinking").count(), 1);
+        assert!(markdown_blocks_bold(screen, "bold word"));
+        assert!(markdown_blocks_bold(screen, "cell bold"));
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
 fn transcript_blocks_markdown_streams_staged_blocks_and_styles() {
     let stage1 = "# Fixture Title\n\n**bold";
     let stage2 = " word** and `inline code`";

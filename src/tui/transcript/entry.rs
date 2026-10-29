@@ -183,7 +183,7 @@ impl TranscriptEntry {
         Self {
             kind,
             body: EntryBody::Plain,
-            markdown_dirty: kind == EntryKind::Assistant,
+            markdown_dirty: matches!(kind, EntryKind::Assistant | EntryKind::Think),
             status: EntryStatus::Complete,
             title,
             text,
@@ -331,12 +331,6 @@ impl TranscriptEntry {
                 MUTED_TEXT
             };
             return Line::styled(text, Style::default().fg(color).bg(BASH_BACKGROUND));
-        }
-        if self.kind == EntryKind::Think {
-            return Line::styled(
-                text,
-                Style::default().fg(MUTED_TEXT).bg(ASSISTANT_BACKGROUND),
-            );
         }
         if self.kind == EntryKind::Read && matches!(source, Source::Title) {
             let mut spans = Vec::new();
@@ -630,9 +624,17 @@ impl TranscriptEntry {
                     }),
             );
         } else if let EntryBody::Markdown(document) = &self.body {
-            lines.extend(document.layout(width).into_iter().map(|line| LayoutLine {
-                content: LayoutContent::Styled(line),
-                height: 1,
+            // 思考普通文本继承灰色，保留语义 span 的颜色与粗体等修饰。
+            let base_style =
+                (self.kind == EntryKind::Think).then(|| Style::default().fg(MUTED_TEXT));
+            lines.extend(document.layout(width).into_iter().map(|mut line| {
+                if let Some(style) = base_style {
+                    line = line.style(style);
+                }
+                LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }
             }));
         } else if let EntryBody::Diff(diff) = &self.body {
             lines.extend(
