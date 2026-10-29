@@ -158,9 +158,13 @@ pub(crate) fn run(
                 )
                 .context("finishing terminal transcript")?;
                 app.shutdown_background_tasks()?;
-                return surface
+                surface
                     .finish(canvas.backend().buffer().area.height)
-                    .context("restoring shell cursor");
+                    .context("restoring shell cursor")?;
+                // 恢复终端模式后输出，避免提示与状态栏或 shell 提示符混在同一行。
+                drop(_guard);
+                crate::write_resume_hint(&mut io::stderr(), app.session_id.as_deref())?;
+                return Ok(());
             }
         }
     }

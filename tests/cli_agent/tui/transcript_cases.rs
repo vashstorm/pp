@@ -60,6 +60,8 @@ fn tui_exit_keeps_conversation_on_normal_screen() {
         final_reply(request, "retained-answer 中😀\n    indented code");
         pty.text("retained-answer");
         pty.ready();
+        let id = resume_boundary_session_ids(dir.path()).pop().unwrap();
+        let resume_hint = format!("Resume with: pp --resume {id}");
         if exit == "\x03" {
             pty.input("unsubmitted-draft");
             pty.draft("unsubmitted-draft");
@@ -72,6 +74,9 @@ fn tui_exit_keeps_conversation_on_normal_screen() {
         pty.wait_for("退出已恢复输入模式", |screen| {
             !screen.bracketed_paste()
         });
+        pty.wait_for("退出提示显示后恢复默认前景色", |screen| {
+            screen.contents().contains(&resume_hint) && screen.fgcolor() == vt100::Color::Default
+        });
         let output = &pty.raw[exit_start..];
         let text = String::from_utf8_lossy(output);
         assert!(
@@ -79,28 +84,36 @@ fn tui_exit_keeps_conversation_on_normal_screen() {
             "退出不重放已有正文：{text:?}"
         );
         assert!(!text.contains("\x1b[2J") && !text.contains("\x1b[3J"));
-        pty.wait_for("退出后普通屏幕保留完整对话", |screen| {
-            let text = screen.contents();
-            !screen.alternate_screen()
-                && text.contains("保留提问")
-                && text.contains("retained-answer 中😀")
-                && text.contains("indented code")
-                && text.contains("✻ Completed ·")
-                && text.contains("fixture/primary")
-                && text.contains('❯')
-                && background_color(screen, "保留提问") == USER_BACKGROUND
-                && background_color(screen, "retained-answer") == ASSISTANT_BACKGROUND
-        });
-        let text = pty.parser.screen().contents();
+        assert_eq!(text.matches(&resume_hint).count(), 1, "{text}");
+        assert!(!pty.parser.screen().alternate_screen());
+        // 退出提示会把顶行推进回滚历史，合并检查正文与可见区域。
+        let (_, raw) = pty.native_history();
+        let mut parser = vt100::Parser::new(600, 100, 0);
+        parser.process(&raw);
+        let screen = parser.screen();
+        let text = screen.contents();
+        let hint_row = text.lines().position(|line| line == resume_hint).unwrap() as u16;
+        assert_eq!(
+            screen.cell(hint_row, 0).unwrap().fgcolor(),
+            vt100::Color::Idx(8)
+        );
+        for retained in [
+            "保留提问",
+            "retained-answer 中😀",
+            "indented code",
+            "✻ Completed ·",
+            "fixture/primary",
+            "❯",
+            &resume_hint,
+        ] {
+            assert!(text.contains(retained), "{text}");
+        }
         if exit == "\x03" {
             assert!(text.contains("unsubmitted-draft"), "{text}");
         }
+        assert_eq!(background_color(screen, "保留提问"), USER_BACKGROUND);
         assert_eq!(
-            background_color(pty.parser.screen(), "保留提问"),
-            USER_BACKGROUND
-        );
-        assert_eq!(
-            background_color(pty.parser.screen(), "retained-answer"),
+            background_color(screen, "retained-answer"),
             ASSISTANT_BACKGROUND
         );
         assert!(!text.contains("You"), "{text}");

@@ -23,6 +23,7 @@ mod yaml;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
+use crossterm::style::Stylize;
 use std::{
     io::{self, BufRead, IsTerminal, Write},
     process::ExitCode,
@@ -377,8 +378,10 @@ fn run(args: Args) -> Result<()> {
         writeln!(stderr, "Resumed session: {id}")?;
     }
     if let Some(prompt) = args.prompt {
-        run_cli_task(&mut agent?, Some(&prompt), &mut stdout, &mut stderr)?;
-        return Ok(());
+        let mut agent = agent?;
+        let result = run_cli_task(&mut agent, Some(&prompt), &mut stdout, &mut stderr);
+        write_resume_hint(&mut stderr, agent.session_id().as_deref())?;
+        return result;
     }
     if continue_requested {
         let active = agent
@@ -608,6 +611,28 @@ fn run(args: Args) -> Result<()> {
                 Ok(()) => {}
                 Err(error) => writeln!(stderr, "error: {error:#}")?,
             },
+        }
+    }
+    if let Some(id) = agent.as_ref().ok().and_then(|agent| agent.session_id()) {
+        writeln!(stderr)?;
+        write_resume_hint(&mut stderr, Some(&id))?;
+    }
+    Ok(())
+}
+
+fn write_resume_hint(
+    stderr: &mut (impl Write + IsTerminal),
+    session_id: Option<&str>,
+) -> io::Result<()> {
+    if let Some(id) = session_id {
+        if stderr.is_terminal() {
+            writeln!(
+                stderr,
+                "{}",
+                format!("Resume with: pp --resume {id}").dark_grey()
+            )?;
+        } else {
+            writeln!(stderr, "Resume with: pp --resume {id}")?;
         }
     }
     Ok(())

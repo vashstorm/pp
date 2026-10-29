@@ -14,6 +14,7 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
             let output = cli.finish();
             assert!(output.status.success());
             assert!(!sessions_dir(home.path()).exists());
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("Resume with:"));
             no_more(&server);
         }
         // Before any prompt the process is idle: no request, no file.
@@ -135,6 +136,9 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
             assert_eq!(output.stdout, b"alpha noted\n");
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert_eq!(stderr.matches(&format!("Session: {id}")).count(), 1);
+            let resume_hint = format!("Resume with: pp --resume {id}");
+            assert_eq!(stderr.matches(&resume_hint).count(), 1);
+            assert_eq!(stderr.lines().last(), Some(resume_hint.as_str()));
             let saved = records(&path);
             assert_session_contract(&saved, &id, cwd.path());
             let messages = canonical_messages(&saved);
@@ -321,6 +325,9 @@ fn session_resume_sends_no_request_and_appends_in_place() {
         assert_eq!(output.stdout, b"you said alpha\n");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(&format!("Resumed session: {id}")));
+        let resume_hint = format!("Resume with: pp --resume {id}");
+        assert_eq!(stderr.matches(&resume_hint).count(), 1);
+        assert!(stderr.ends_with(&format!("{resume_hint}\n")));
         // Restoring an existing session never emits a new-ID notice.
         assert!(!stderr.contains("Session: "));
 

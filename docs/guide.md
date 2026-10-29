@@ -634,7 +634,7 @@ TUI 空闲时提交 `/resume`，打开 omp 风格的全屏 `Resume session` 面�
 
 启动参数 `-r` / `-c` 使用原工作目录、edit 模式、工具限制、模型引用、思考级别、基础系统提示词和完整历史；请求前按当前文件刷新项目规则及技能摘要，并继续追加原文件，不分叉。原目录缺失或不可进入时报错，不回退到启动目录。模型必须仍存在于当前 catalog 且实际 model/protocol 未改变；凭据、base URL、HTTP 超时和每任务请求上限使用当前配置。启动恢复失败是非零退出，不进入禁用模型的交互兜底；运行中的 `/resume` 恢复失败保留旧会话、工作目录与列表选择，不发送模型请求。
 
-TUI 恢复可见消息、工具结果、错误和用户输入历史，输入框为空；不恢复草稿、菜单、滚动位置或布局缓存。恢复的 bash 卡片仅显示保存的退出状态，不伪造耗时。未完成展示事件显示 `Previous request was interrupted.`，不加入模型上下文。行模式不重印旧回答。恢复 ID 与首次创建 ID 分别通过 stderr / TUI Note 提示 `Resumed session: <ID>`、`Session: <ID>`；stdout 仍只有模型回答。
+TUI 恢复可见消息、工具结果、错误和用户输入历史，输入框为空；不恢复草稿、菜单、滚动位置或布局缓存。恢复的 bash 卡片仅显示保存的退出状态，不伪造耗时。未完成展示事件显示 `Previous request was interrupted.`，不加入模型上下文。行模式不重印旧回答。恢复 ID 与首次创建 ID 分别通过 stderr / TUI Note 提示 `Resumed session: <ID>`、`Session: <ID>`；stdout 仍只有模型回答。退出时若当前会话已保存，额外向 stderr 输出一行 `Resume with: pp --resume <ID>`；TUI 在恢复终端模式后输出，未创建会话或 `/new` 后尚未创建新会话时不显示。
 
 “最新”按文件修改时间选择，时间相同按 ID 字典序降序；只查看恢复不会提高排序，不按项目过滤。session 文件必须是普通文件，不跟随符号链接；进程持有排他锁，另一进程恢复同一 ID 会报 `session is already in use`。最新文件损坏或已锁时直接报错，不换另一个文件。
 

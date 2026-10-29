@@ -31,6 +31,10 @@ fn tui_config_error_and_busy_quit_restore_terminal() {
     no_more(&server);
     assert!(!unavailable.path().join("must-not-exist").exists());
     pty.input("\x7f\x7f\x7f\x7f/quit\r");
+    pty.wait_for("未创建会话的退出已恢复终端", |screen| {
+        !screen.bracketed_paste()
+    });
+    assert!(!String::from_utf8_lossy(&pty.raw).contains("Resume with:"));
     pty.finish();
     no_more(&server);
 
