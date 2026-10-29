@@ -93,6 +93,9 @@ impl App {
     pub(in crate::tui) fn set_workflow(&mut self, workflow: WorkflowState) {
         if let Some(document) = &workflow.plan {
             self.update_plan_progress_cache(document);
+        } else {
+            self.plan_panel = None;
+            self.plan_progress = (0, 0);
         }
         self.todo_panel
             .update(crate::events::TodoState::from_workflow(&workflow));

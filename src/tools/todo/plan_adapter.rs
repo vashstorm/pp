@@ -12,26 +12,15 @@ const PLAN_STRUCTURE_LOCKED: &str =
     "Approved plan tasks cannot be added, removed, replaced, or dropped; re-plan first.";
 /// The approved ordered checklist drifted from the executed document.
 const TASKS_CHANGED: &str = "Plan tasks changed; re-plan before completing.";
-/// Mutating a plan checklist before its plan is executing.
-const PLAN_READONLY_BEFORE_EXECUTION: &str = "Plan todos are read-only before execution.";
-
-/// Plan task adapter. `current` is the synced projection of `document` (same
-/// task count and order), so targets resolve to document-order ordinals
-/// instead of first-content matching. `editable=false` (draft/ready preview)
-/// only allows `view`; `editable=true` allows view/start/done/block/unblock
-/// and writes checkbox changes back through the conditional plan save. Every
-/// semantic, parse and commit failure returns `{ok:false,..}` with the
-/// trustworthy pre-call projection; `Err` never carries todo outcomes.
+/// 执行计划的任务适配器：`current` 与批准正文的任务数量、顺序一致，
+/// 按文档序号定位并通过条件保存回写 checkbox。普通操作失败携带可信的
+/// 调用前投影；`Err` 不携带 todo 修改。
 pub(in crate::tools) fn run_plan(
     workspace: &save::Workspace,
     document: &PlanDocument,
     current: &[TodoPhase],
     arguments: &str,
-    editable: bool,
 ) -> anyhow::Result<(Value, Option<TodoChange>)> {
-    if !editable {
-        return run_readonly(document, arguments, PLAN_READONLY_BEFORE_EXECUTION);
-    }
     let op = identifiable_op(arguments);
     // The approved ordered baseline is authoritative for every editable call,
     // including view: a drifted checklist must not be operated on, and the
@@ -266,9 +255,7 @@ fn write_plan_progress(
     Ok((revision, Some(content), warning))
 }
 
-/// Read-only plan projection entry (Plan-mode preview and bound finished
-/// plans). Only `view` runs; every other operation fails with the supplied
-/// diagnostic and the pre-call projection. Never touches files or runtime.
+/// 执行模式中仍绑定计划的只读投影；仅允许 `view`，不修改文件或运行态。
 pub(in crate::tools) fn run_readonly(
     document: &PlanDocument,
     arguments: &str,

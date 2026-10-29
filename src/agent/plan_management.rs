@@ -508,6 +508,10 @@ impl Agent {
             let previous = self.workflow.clone();
             self.workflow.plan = None;
             self.workflow.review = None;
+            if self.workflow.todo_plan_id.as_deref() == Some(selection.id.as_str()) {
+                self.workflow.todos.clear();
+                self.workflow.todo_plan_id = None;
+            }
             if let Err(error) = self.journal.write_workflow(&self.workflow) {
                 self.workflow = previous;
                 return Err(error);
@@ -1210,6 +1214,14 @@ mod tests {
         let listing = agent.list_plans().unwrap();
         let target = entry(&listing, "delete-me.md").clone();
         agent.workflow = bound_workflow(&target.id, "delete-me.md", content);
+        // 模拟旧版本载入详情后留下的计划预览缓存。
+        agent.workflow.todos = crate::tools::todo::project_plan_todos(
+            agent.workflow.plan.as_ref().unwrap(),
+            &[],
+            false,
+        )
+        .unwrap();
+        agent.workflow.todo_plan_id = Some(target.id.clone());
         seed_session(&mut agent, "delete fixture");
         let selection = agent.read_listed_plan(&target.id).unwrap();
 
@@ -1229,6 +1241,8 @@ mod tests {
         assert!(!root.join(".pp/drafts/delete-me.md").exists());
         assert!(!leftover_path.exists());
         assert!(agent.workflow.plan.is_none());
+        assert!(agent.workflow.todos.is_empty());
+        assert!(agent.workflow.todo_plan_id.is_none());
         assert_eq!(agent.workflow.mode, WorkMode::Plan);
         let workspace = agent.tools.plan_workspace();
         {

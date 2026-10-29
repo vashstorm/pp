@@ -349,7 +349,9 @@ impl App {
                             agent.rename_listed_plan(selection, file_name),
                         ),
                         WorkerCommand::DeleteListedPlan { selection } => {
-                            WorkerEvent::ListedPlanDeleted(agent.delete_listed_plan(selection))
+                            let result = agent.delete_listed_plan(selection);
+                            push_workflow_snapshot(&agent, &mut snapshots);
+                            WorkerEvent::ListedPlanDeleted(result)
                         }
                         command @ (WorkerCommand::LeavePlan { .. }
                         | WorkerCommand::SavePlanAndLeave { .. }) => {

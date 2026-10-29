@@ -21,80 +21,43 @@ fn todo_review_policy_refuses_todo() {
 }
 
 #[test]
-fn todo_plan_preview_is_read_only_and_revision_zero_has_null_path() {
+fn todo_plan_policy_hides_and_refuses_every_operation() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-    let mut document = crate::plan::PlanDocument::new().unwrap();
-    document.revision = 0;
-    document.content = String::new();
-    document.status = PlanStatus::Draft;
-    let token = CancellationToken::new();
-    let execution = tools.execute(
-        "todo",
+    assert!(
+        tools
+            .all_definitions(WorkMode::Plan)
+            .iter()
+            .all(|tool| tool.name != "todo")
+    );
+    let document = crate::plan::PlanDocument::new().unwrap();
+    for arguments in [
         r#"{"op":"view"}"#,
-        "preview-call",
-        ToolPolicy::Plan {
-            document: &document,
-            sealed: false,
-            input: None,
-        },
-        &token,
-        &mut |_| {},
-    );
-    assert!(execution.stop_error.is_none());
-    assert!(execution.plan_change.is_none());
-    assert!(execution.todo_change.is_none());
-    let result: Value = serde_json::from_str(&execution.output).unwrap();
-    assert_eq!(result["ok"], true);
-    assert_eq!(result["op"], "view");
-    assert_eq!(result["content"], "Todo list is empty.");
-    assert_eq!(result["phases"], json!([]));
-    assert_eq!(result["plan"]["id"], document.id);
-    assert_eq!(result["plan"]["path"], Value::Null);
-    assert_eq!(result["plan"]["status"], "draft");
-    assert_eq!(result["plan"]["readonly"], true);
-
-    // Saved draft: view projects the checklist, mutations are refused
-    // without touching the document or producing a change.
-    document.revision = 1;
-    document.file_name = Some("todo-draft.md".into());
-    document.location = PlanLocation::Drafts;
-    document.content = "## Write\n- [ ] Write canary bytes.\n".into();
-    let view = tools.execute(
-        "todo",
-        r#"{"op":"view"}"#,
-        "preview-view",
-        ToolPolicy::Plan {
-            document: &document,
-            sealed: false,
-            input: None,
-        },
-        &token,
-        &mut |_| {},
-    );
-    let view: Value = serde_json::from_str(&view.output).unwrap();
-    assert_eq!(view["ok"], true);
-    assert_eq!(view["plan"]["path"], json!(".pp/drafts/todo-draft.md"));
-    assert_eq!(view["phases"][0]["tasks"][0]["status"], "pending");
-    let done = tools.execute(
-        "todo",
-        r#"{"op":"done","task":"Write canary bytes."}"#,
-        "preview-done",
-        ToolPolicy::Plan {
-            document: &document,
-            sealed: false,
-            input: None,
-        },
-        &token,
-        &mut |_| {},
-    );
-    let done: Value = serde_json::from_str(&done.output).unwrap();
-    assert_eq!(done["ok"], false);
-    assert_eq!(
-        done["error"],
-        json!("Plan todos are read-only before execution.")
-    );
-    assert_eq!(done["phases"][0]["tasks"][0]["status"], "pending");
+        r#"{"op":"init","list":[]}"#,
+        r#"{"op":"done"}"#,
+        "invalid json",
+    ] {
+        let execution = tools.execute(
+            "todo",
+            arguments,
+            "plan-todo",
+            ToolPolicy::Plan {
+                document: &document,
+                sealed: false,
+                input: None,
+            },
+            &CancellationToken::new(),
+            &mut |_| {},
+        );
+        assert!(execution.stop_error.is_none());
+        assert!(execution.plan_change.is_none());
+        assert!(execution.todo_change.is_none());
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(
+            result,
+            json!({"ok":false,"error":"Tool is not available in Plan mode."})
+        );
+    }
 }
 
 #[test]

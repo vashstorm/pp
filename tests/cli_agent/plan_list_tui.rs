@@ -767,3 +767,56 @@ fn plan_list_six_actions_use_the_selected_plan_and_leave_the_list() {
         }
     }
 }
+
+#[test]
+fn plan_list_delete_after_open_keeps_planning_free_of_todos() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        plan_list_seed(project.path());
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        pty.ready();
+        plan_wait_execute(&mut pty);
+        plan_list_open(&mut pty);
+        pty.wait_for("计划列表加载完成", |screen| {
+            cancel_normalize(screen).contains("fix-config.md")
+        });
+        pty.input("/fix-config");
+        pty.wait_for("筛选待删草稿", |screen| {
+            let text = cancel_normalize(screen);
+            text.contains("fix-config.md") && !text.contains("approved.md")
+        });
+        pty.input("\r\r");
+        pty.wait_for("打开草稿详情", |screen| {
+            cancel_normalize(screen).contains("Executeinanewsession")
+        });
+        pty.input("\x1b");
+        pty.wait_for("详情返回列表", |screen| {
+            cancel_normalize(screen).contains("Planlist")
+        });
+        pty.input("d");
+        pty.wait_for("确认删除草稿", |screen| {
+            cancel_normalize(screen).contains("Deletetheplanfileonly")
+        });
+        pty.input("\x1b[D\r");
+        pty.wait_for("删除完成", |screen| {
+            let text = cancel_normalize(screen);
+            text.contains("Nomatchingplans") && !text.contains("Deletetheplanfileonly")
+        });
+        assert!(!project.path().join(".pp/drafts/fix-config.md").exists());
+        pty.input("\x1b");
+        plan_list_wait_closed(&mut pty);
+        plan_wait_mode(&mut pty, "Plan");
+        pty.input("Discuss the next plan\r");
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert!(!pty.parser.screen().contents().contains("TODO ·"));
+        assert!(!plan_list_tool_names(protocol, &body).iter().any(|name| name == "todo"));
+        plan_final(request, protocol, "Continue planning without task execution.");
+        pty.completed();
+        assert!(!pty.parser.screen().contents().contains("TODO ·"));
+        no_more(&fixture);
+        pty.input("\x03");
+        pty.finish();
+    }
+}

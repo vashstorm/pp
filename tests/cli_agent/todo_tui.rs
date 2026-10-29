@@ -32,26 +32,13 @@ fn plan_todo_approval_initializes_all_contexts_and_reminders_archive_same_bytes(
             );
             let source_id = saved_session_id(home.path());
             let source = plan_journal(home.path(), &source_id);
-            let preview = source
-                .iter()
-                .find(|record| {
-                    record["customType"] == "pp.event"
-                        && record["data"]["event"]["todo_snapshot"].is_object()
-                })
-                .expect("saved Preview snapshot");
-            let workflow = source
-                .iter()
-                .rev()
-                .find(|record| record["customType"] == "pp.workflow")
-                .unwrap();
-            assert_eq!(
-                workflow["data"]["workflow"]["todos"][0]["tasks"][0]["status"],
-                "pending"
-            );
-            assert_eq!(
-                preview["data"]["event"]["todo_snapshot"]["phases"][1]["tasks"][0]["status"],
-                "pending"
-            );
+            assert!(!source.iter().any(|record| {
+                record["data"]["event"]["todo_snapshot"].is_object()
+            }));
+            let workflow = source.iter().rev()
+                .find(|record| record["customType"] == "pp.workflow").unwrap();
+            assert!(workflow["data"]["workflow"]["todos"].is_null());
+            assert!(workflow["data"]["workflow"]["todo_plan_id"].is_null());
             assert_eq!(
                 std::fs::read_to_string(project.path().join(".pp/drafts/create-canary.md"))
                     .unwrap(),
@@ -266,7 +253,7 @@ fn plan_todo_same_batch_external_checkbox_sync_preserves_runtime_and_duplicate_l
 }
 
 #[test]
-fn plan_todo_draft_preview_is_readonly_and_noop_write_does_not_duplicate_card() {
+fn plan_todo_draft_refuses_all_todo_calls_and_never_creates_snapshots() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
@@ -324,17 +311,14 @@ fn plan_todo_draft_preview_is_readonly_and_noop_write_does_not_duplicate_card() 
                 .find(|result| result["id"] == format!("deny-{op}"))
                 .unwrap();
             assert_eq!(event["result"]["ok"], false, "{event:?}");
-            assert_eq!(
-                event["result"]["phases"][0]["tasks"][0]["status"],
-                "pending"
-            );
+            assert_eq!(event["result"]["error"], "Tool is not available in Plan mode.");
         }
         let view = results
             .iter()
             .find(|result| result["id"] == "draft-view")
             .unwrap();
-        assert_eq!(view["result"]["plan"]["readonly"], true);
-        assert_eq!(view["result"]["phases"][1]["tasks"][0]["status"], "pending");
+        assert_eq!(view["result"]["ok"], false);
+        assert_eq!(view["result"]["error"], "Tool is not available in Plan mode.");
         let sealed = results
             .iter()
             .find(|result| result["id"] == "sealed-view")
@@ -345,8 +329,8 @@ fn plan_todo_draft_preview_is_readonly_and_noop_write_does_not_duplicate_card() 
                 .iter()
                 .filter(|record| record["data"]["event"]["todo_snapshot"].is_object())
                 .count(),
-            1,
-            "same Markdown write must not append a duplicate card"
+            0,
+            "规划阶段不生成 TODO 快照"
         );
         assert!(
             !records
@@ -513,7 +497,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
 }
 
 #[test]
-fn tui_todo_plan_preview_updates_hud_before_submit_and_execution() {
+fn tui_todo_plan_keeps_hud_empty_until_approved_execution() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
@@ -521,7 +505,8 @@ fn tui_todo_plan_preview_updates_hud_before_submit_and_execution() {
         let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
         plan_enter(&mut pty, &fixture);
         pty.input("preview fixed plan tasks\r");
-        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert!(!plan_list_tool_names(protocol, &body).iter().any(|name| name == "todo"));
         plan_calls(
             request,
             protocol,
@@ -533,13 +518,7 @@ fn tui_todo_plan_preview_updates_hud_before_submit_and_execution() {
             )]),
         );
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        pty.wait_for("草稿只读预览固定区", |screen| {
-            let text = screen.contents();
-            text.contains("TODO · 0/2 · Preview")
-                && text.contains("☐ Write canary bytes.")
-                && !text.contains("→ Write canary bytes.")
-                && !text.contains("Plan tasks ·")
-        });
+        assert!(!pty.parser.screen().contents().contains("TODO ·"));
         plan_calls(
             request,
             protocol,

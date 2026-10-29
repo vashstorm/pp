@@ -131,7 +131,7 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
     assert!(
         names.iter().all(|name| matches!(
             *name,
-            "read" | "ask" | "grep" | "glob" | "plan_write" | "todo" | "plan_submit"
+            "read" | "ask" | "grep" | "glob" | "plan_write" | "plan_submit"
         )),
         "{body}"
     );

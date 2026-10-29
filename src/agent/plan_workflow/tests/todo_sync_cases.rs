@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn todo_sync_projects_preview_sources_without_active_and_executes_only_executed() {
+fn todo_sync_clears_legacy_plan_previews_and_initializes_only_execution() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
@@ -11,7 +11,14 @@ fn todo_sync_projects_preview_sources_without_active_and_executes_only_executed(
         let session_id = agent.session_id().unwrap().to_owned();
         let plan_id = agent.workflow.plan.as_ref().unwrap().id.clone();
 
-        // 草稿预览：来源绑定当前计划，全部 pending，无 active；状态持久化。
+        // 旧版本草稿带有预览缓存；同步后必须清空并持久化。
+        agent.workflow.todos = crate::tools::todo::project_plan_todos(
+            agent.workflow.plan.as_ref().unwrap(),
+            &[],
+            false,
+        )
+        .unwrap();
+        agent.workflow.todo_plan_id = Some(plan_id.clone());
         sync_plan_todos(
             &agent.tools,
             &mut agent.journal,
@@ -20,20 +27,11 @@ fn todo_sync_projects_preview_sources_without_active_and_executes_only_executed(
             false,
         )
         .unwrap();
-        assert_eq!(
-            agent.workflow.todo_plan_id.as_deref(),
-            Some(plan_id.as_str())
-        );
-        assert_eq!(agent.workflow.todos.len(), 1);
-        assert_eq!(agent.workflow.todos[0].name, "Tasks");
-        assert_eq!(
-            task_states(&agent)[0].1,
-            crate::tools::todo::TodoStatus::Pending
-        );
+        assert!(agent.workflow.todos.is_empty());
+        assert!(agent.workflow.todo_plan_id.is_none());
         assert_eq!(journal_workflow(dir.path(), &session_id), agent.workflow);
 
-        // Plan+Executed 来源会话（Fresh 批准后的规划会话）：预览保持
-        // 只读，不归一化激活。
+        // Fresh 批准后的来源会话仍是 Plan，不恢复执行 TODO。
         agent.workflow.plan.as_mut().unwrap().status = PlanStatus::Executed;
         sync_plan_todos(
             &agent.tools,
@@ -43,10 +41,8 @@ fn todo_sync_projects_preview_sources_without_active_and_executes_only_executed(
             false,
         )
         .unwrap();
-        assert_eq!(
-            task_states(&agent)[0].1,
-            crate::tools::todo::TodoStatus::Pending
-        );
+        assert!(agent.workflow.todos.is_empty());
+        assert!(agent.workflow.todo_plan_id.is_none());
 
         // Execute+Executed：执行投影归一化，激活首个未勾选项。
         agent.workflow.mode = WorkMode::Execute;
@@ -432,4 +428,69 @@ fn todo_resume_syncs_checkboxes_and_carries_snapshot_once() {
             Some(plan_id.as_str())
         );
     }
+}
+
+#[test]
+fn todo_plan_restore_clears_legacy_cache_with_or_without_a_bound_plan() {
+    for protocol in ["completion", "response"] {
+        for bound in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+            agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Draft);
+            write_plan_file(&agent, PLAN_CONTENT);
+            agent.workflow.todos = crate::tools::todo::project_plan_todos(
+                agent.workflow.plan.as_ref().unwrap(),
+                &[],
+                false,
+            )
+            .unwrap();
+            agent.workflow.todo_plan_id = Some(agent.workflow.plan.as_ref().unwrap().id.clone());
+            if !bound {
+                agent.workflow.plan = None;
+            }
+            seed_session(&mut agent, "legacy planning cache");
+            let id = agent.session_id().unwrap().to_owned();
+            let snapshot = crate::agent::plan_sync::sync_restored_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &[],
+            )
+            .unwrap();
+            assert!(snapshot.is_none());
+            assert!(agent.workflow.todos.is_empty());
+            assert!(agent.workflow.todo_plan_id.is_none());
+            assert_eq!(agent.workflow.plan.is_some(), bound);
+            assert_eq!(journal_workflow(dir.path(), &id), agent.workflow);
+        }
+    }
+}
+
+#[test]
+fn todo_plan_legacy_cleanup_rolls_back_when_journal_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = runtime_input_agent(dir.path(), "response", "127.0.0.1:1", "");
+    agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Draft);
+    agent.workflow.todos =
+        crate::tools::todo::project_plan_todos(agent.workflow.plan.as_ref().unwrap(), &[], false)
+            .unwrap();
+    agent.workflow.todo_plan_id = Some(agent.workflow.plan.as_ref().unwrap().id.clone());
+    seed_session(&mut agent, "legacy planning cache");
+    let previous = agent.workflow.clone();
+    agent.journal.use_read_only_file(
+        &dir.path()
+            .join("sessions")
+            .join(format!("{}.jsonl", agent.session_id().unwrap())),
+    );
+    assert!(
+        sync_plan_todos(
+            &agent.tools,
+            &mut agent.journal,
+            &mut agent.workflow,
+            &mut |_| {},
+            true,
+        )
+        .is_err()
+    );
+    assert_eq!(agent.workflow, previous);
 }

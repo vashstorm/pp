@@ -78,6 +78,9 @@ pub(crate) struct TodoPlanState {
 
 impl TodoState {
     pub(crate) fn from_workflow(workflow: &crate::plan::WorkflowState) -> Self {
+        if workflow.mode == crate::plan::WorkMode::Plan {
+            return Self::default();
+        }
         Self {
             phases: workflow.todos.clone(),
             plan: workflow

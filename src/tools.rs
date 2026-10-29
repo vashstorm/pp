@@ -245,9 +245,6 @@ impl Tools {
                 definitions.push(glob::definition());
                 definitions.push(grep::definition());
                 definitions.extend(Self::plan_definitions());
-                // Same tool name, `view`-only schema; the reviewer list below
-                // filters it out again.
-                definitions.push(todo::preview_definition());
                 definitions
             }
         }
@@ -512,7 +509,6 @@ impl Tools {
                 PLAN_BASE_TOOLS.contains(&name)
                     || PLAN_SEARCH_TOOLS.contains(&name)
                     || is_plan_tool(name)
-                    || name == "todo"
                     || name == "ask" && self.ask_handler.is_some()
             }
         };
@@ -738,9 +734,6 @@ impl Tools {
 /// How this todo call is classified for tracing and dispatch; no task
 /// content is ever logged.
 enum TodoRoute<'a> {
-    /// Plan mode with a draft/ready document: read-only preview projected
-    /// from the document itself.
-    Preview(&'a PlanDocument),
     /// Execute+Executed with a bound plan: the plan adapter with checkbox
     /// write-back.
     Executing(&'a PlanDocument),
@@ -764,22 +757,12 @@ impl Tools {
         arguments: &str,
     ) -> Result<(Value, Option<todo::TodoChange>)> {
         match self.todo_route(policy, arguments) {
-            TodoRoute::Preview(document) => {
-                tracing::debug!(event = "tool_todo", classification = "preview");
-                todo::plan_adapter::run_plan(&self.workspace, document, &[], arguments, false)
-            }
             TodoRoute::Executing(document) => {
                 let ToolPolicy::Execute { workflow } = policy else {
                     unreachable!("executing plans only occur under Execute policy");
                 };
                 tracing::debug!(event = "tool_todo", classification = "plan");
-                todo::plan_adapter::run_plan(
-                    &self.workspace,
-                    document,
-                    &workflow.todos,
-                    arguments,
-                    true,
-                )
+                todo::plan_adapter::run_plan(&self.workspace, document, &workflow.todos, arguments)
             }
             TodoRoute::Readonly(document, message) => {
                 tracing::debug!(event = "tool_todo", classification = "readonly");
@@ -800,8 +783,9 @@ impl Tools {
 
     fn todo_route<'a>(&self, policy: &'a ToolPolicy<'a>, arguments: &str) -> TodoRoute<'a> {
         match policy {
-            ToolPolicy::Plan { document, .. } => TodoRoute::Preview(document),
-            ToolPolicy::Review => unreachable!("todo is gated out of review"),
+            ToolPolicy::Plan { .. } | ToolPolicy::Review => {
+                unreachable!("todo is gated out of planning and review")
+            }
             ToolPolicy::Execute { workflow } => match workflow.plan.as_ref() {
                 Some(document) if document.status == PlanStatus::Executed => {
                     TodoRoute::Executing(document)

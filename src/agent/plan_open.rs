@@ -110,14 +110,10 @@ impl Agent {
             approved_tasks: None,
         };
         plan::validate_content(&document.content)?;
-        // 新候选从选中文件建立只读预览投影：不携带原会话任务，来源绑定
-        // 新候选的计划 ID；执行仍须本地批准，预览无 active。
-        let todos = super::plan_sync::preview_phases(&document)?;
+        // 载入计划只建立规划会话；任务投影在本地批准执行后初始化。
         let candidate_workflow = WorkflowState {
             mode: WorkMode::Plan,
             plan: Some(document),
-            todos,
-            todo_plan_id: Some(verified.id.clone()),
             ..Default::default()
         };
         candidate_workflow.validate()?;
@@ -174,13 +170,6 @@ impl Agent {
         self.last_request = None;
         self.pending_instructions = None;
         drop(verified);
-        // 预览快照先记入目标 journal，再随交接发布；空 replay 的新候选
-        // 总是携带它。
-        let todo_snapshot = super::turn::todo_snapshot(&self.workflow);
-        if let Some(event) = &todo_snapshot {
-            self.journal.event(event);
-            self.journal.check()?;
-        }
         // Plan 候选未连接任何 MCP 服务：清理句柄是空快照，Drop 无副作用。
         let cleanup = self.tools.mcp.cleanup()?;
         Ok(ExecutionPreparation {
@@ -188,7 +177,7 @@ impl Agent {
             session_id: self.journal.id().map(str::to_owned),
             replay: Some(Vec::new()),
             cleanup,
-            todo_snapshot,
+            todo_snapshot: None,
         })
     }
 }
@@ -344,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn todo_open_listed_plan_previews_selected_file_without_active() {
+    fn todo_open_listed_plan_defers_tasks_until_approval() {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
             let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
@@ -359,28 +348,13 @@ mod tests {
                     &CancellationToken::new(),
                 )
                 .unwrap();
-            // 新候选从选中文件建立只读预览：来源绑定候选计划，全部
-            // pending，无 active；预览快照随交接发布一次。
-            let todos = &agent.workflow.todos;
-            assert_eq!(todos.len(), 1);
-            assert_eq!(todos[0].name, "Tasks");
-            assert_eq!(todos[0].tasks.len(), 2);
-            assert!(
-                todos[0]
-                    .tasks
-                    .iter()
-                    .all(|task| task.status == crate::tools::todo::TodoStatus::Pending)
+            assert!(agent.workflow.todos.is_empty());
+            assert!(agent.workflow.todo_plan_id.is_none());
+            assert!(preparation.todo_snapshot.is_none());
+            assert_eq!(
+                agent.workflow.plan.as_ref().unwrap().content,
+                selection.content
             );
-            assert_eq!(agent.workflow.todo_plan_id.as_deref(), Some(LISTED_ID));
-            assert!(matches!(
-                &preparation.todo_snapshot,
-                Some(crate::events::AgentEvent::TodoSnapshot {
-                    plan_id,
-                    revision: 1,
-                    phases,
-                    status: PlanStatus::Ready,
-                }) if plan_id == LISTED_ID && phases == todos
-            ));
         }
     }
 

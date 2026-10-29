@@ -178,18 +178,6 @@ pub(super) fn definition() -> FunctionObject {
     }
 }
 
-/// Read-only plan preview: same tool name, `op` restricted to `view`.
-pub(super) fn preview_definition() -> FunctionObject {
-    FunctionObject {
-        name: TOOL_NAME.into(),
-        description: Some(
-            "Read-only preview of the current plan's task checklist. Only {\"op\":\"view\"} is accepted; state-changing operations are unavailable until the plan is approved and executing.".into(),
-        ),
-        parameters: Some(schema_with_ops(&["view"])),
-        ..Default::default()
-    }
-}
-
 fn schema_with_ops(ops: &[&str]) -> Value {
     json!({
         "type": "object",

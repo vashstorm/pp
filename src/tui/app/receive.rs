@@ -640,11 +640,7 @@ impl App {
                             Err(error) => panel.set_error(format!("{error:#}")),
                         }
                     }
-                    // 删除当前绑定只解除绑定：worker 清空 plan/review 后同步 UI。
-                    if self.workflow.plan.is_none() {
-                        self.plan_panel = None;
-                        self.plan_progress = (0, 0);
-                    }
+                    // 随后的 Workflow 快照统一同步绑定、进度与 TODO。
                     changed = true;
                 }
                 Ok(WorkerEvent::WorkflowChanged(result)) => {

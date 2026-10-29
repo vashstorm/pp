@@ -319,13 +319,13 @@ Execute 终答时仍有 pending/in_progress、且不是等待用户回答时，�
 
 普通任务默认 **EXEC**。空闲时输入 `/plan` 切换到 **PLAN** 待命：只进入模式，不创建计划身份或 Markdown 文件；第一条用户任务才建立计划绑定，之后的普通输入和 steering 继续同一绑定。再输入一次 `/plan` 退出 Plan 回 **EXEC** 并解除当前计划/审阅绑定；已保存的草稿文件和目录原样保留，不标记 Abandoned、不删除、不改名。已提交任务但尚未 `plan_write` 首存（revision-0）时，退出会显示“放弃未保存的修改？”本地确认框，默认选中“取消，继续规划”；Enter 确认当前选项，Esc 取消，只有显式选中“放弃修改并退出”才解除绑定。确认不调用模型，不生成计划文件，也不删除已保存文件或对话历史；确认期间输入与粘贴不会发起任务，原输入草稿保留。空待命或已保存草稿可直接退出。也可输入 `/plan 调研登录流程`，先确保进入 Plan 再将 `调研登录流程` 作为用户消息发送；已在 Plan 时直接继续当前草稿，不暗中切出或新建计划。提示词可包含多行，输入历史保留原始命令。参数恰好为 `view` 时只查看当前计划，未保存时显示 `No saved plan.`；恰好为 `new` 或 `off` 时只报本地错误 `Use /plan to toggle; manage plans with /plan-list.`，不进入 Plan、不发模型请求；其余非空正文均作为提示词。切换失败或取消时不发送提示词，输入框为空时恢复该命令，已有新草稿则保留新草稿，可从输入历史取回原命令；退出失败不改变重试方向，下一次裸 `/plan` 仍执行离开。模型只能调研、询问关键产品取舍并保存计划，不能切换模式。忙碌或有 pending 输入时不能切换／批准；带提示词的 `/plan` 同样拒绝且保留草稿，不排队成后续执行动作。
 
-Plan 的执行层白名单只有 `read`、`grep`、`glob`、TUI `ask`、只读 `todo(view)`、`plan_write`、`plan_submit`；技能同样通过 `read` 读取。todo 的状态修改在执行层拒绝，独立 reviewer 不暴露 todo；提交后同批剩余调用全部拒绝。即使模型返回隐藏的 shell、write/edit、旧 find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，再次 `/plan` 优先重试进入。批准或退出切换的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
+Plan 的执行层白名单只有 `read`、`grep`、`glob`、TUI `ask`、`plan_write`、`plan_submit`；技能同样通过 `read` 读取。Plan 在执行层拒绝所有 todo 调用（包括 view），独立 reviewer 同样不暴露 todo；提交后同批剩余调用全部拒绝。即使模型返回隐藏的 shell、write/edit、旧 find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，再次 `/plan` 优先重试进入。批准或退出切换的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
 
 Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 支持 `path`、`hidden`、`gitignore`、`limit`，默认包含隐藏文件并遵守忽略规则；无分页，结果按修改时间排序，最多 200 项和 50 KiB。裸 `*.rs` 递归匹配，`src/*.rs` 仅匹配直接子项；五秒协作式超时返回部分结果及提示。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
 
 计划正文由 AI 选定的英文 kebab-case 文件名保存在项目 `.pp/drafts/<file_name>.md`，首次保存才创建目录／文件；不自动修改 `.gitignore`。正文须为非空 UTF-8、无 NUL、最多 262,144 字节，实施步骤使用标准 `- [ ]`／`- [x]` Markdown task list；代码 fence 中的 checkbox 不算任务。保存使用目录句柄、NOFOLLOW 和原子提交，拒绝符号链接／特殊文件；同名首次创建不覆盖。修订写入要求 expected revision 和已登记磁盘字节都匹配，避免覆盖外部编辑。
 
-保存草稿后，运行时从 Markdown 任务自动派生带 `Preview` 标记的固定区清单：unchecked 为 pending、checked 为 completed，不激活、不提醒。H2 标题作为阶段，重复标题保留各自的文档区域；H1 重置为默认 `Tasks`，较低级标题继承当前阶段。仅有任务的区域生成阶段，围栏示例不产生任务。相同正文 no-op 不产生重复快照。
+Plan 阶段只讨论、编写和审阅计划 Markdown，不生成 TODO 投影或快照，也不展示输入框上方的 TODO 固定区；载入、恢复、继续讨论和删除草稿均遵守这一规则，旧会话残留的规划清单在恢复时清理。仅在本地批准并进入执行后，运行时才从批准正文初始化 TODO。H2 标题作为阶段，重复标题保留各自的文档区域；H1 重置为默认 `Tasks`，较低级标题继承当前阶段。仅有任务的区域生成阶段，围栏示例不产生任务。
 
 模型 `plan_submit` 成功后补齐整批 call-ID/results、同步 native history 和 Ready workflow，然后停在审阅边界，不再发总结请求。计划正文显示在输入框上方，原输入草稿保留。正文预览使用直角细框，六项操作独立放在下方的圆角框中，两区之间留一行空白；目录、正文、操作区和输入框中，获得焦点的区域边框高亮，其余边框淡化。操作项不显示序号，也不显示数字选择提示；选中箭头始终保留，切换焦点不会清除选择。输入框上沿不再显示 `Plan ready · /plan view to review` 提示。默认聚焦操作区并选中第一项可用操作，↑/↓ 选择时跳过灰色禁用项，首尾不循环；Enter 确认，也可按 1–6 选中可用项再按 Enter，禁用项的数字键不改变选择；Tab/Shift+Tab 依次在操作区、输入框、正文与目录间切换，正文支持 PgUp/PgDn／滚轮滚动。在输入框中 Enter 发送内容继续讨论计划，Ctrl + J 换行；在操作区开始输入普通文字也会转入输入框。六项严格按以下顺序显示：
 
@@ -335,7 +335,7 @@ Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 支持 
 2. **Execute (keep context)**：Keep，保留当前历史并追加一次完整批准快照；计划与重要历史用户要求冲突时先澄清。
 3. **Compact context and execute**：先复用手动上下文压缩，再按 Keep 在当前 session 中执行完整批准计划；无可压缩前缀时直接执行。压缩期间仍为 Plan 权限，Esc 可取消；压缩失败、摘要未能缩短历史、取消、计划发生变化或出现待处理输入均不执行，成功摘要会独立保存。
 4. **Review Plan**：当前模型的独立只读上下文，仅原始需求＋当前计划；可读取代码和安全搜索，不可 ask／写入／提交／实施。审查需求覆盖、关键决策是否完整、真实代码及调用方、契约与失败边界、验证方案；只报告有证据、可行动且会影响实施的问题，不挑风格、不扩大范围、不把无关既有缺陷算到计划上，允许零发现。报告使用任务／计划语言，先列问题及对应计划项、证据、触发条件、影响和最小修订建议：Major 为影响安全实施或需求达成的问题，Minor 为局部规格／验证缺陷；未确认问题和缺失证据单列 Info 开放项，最后给出就绪评估及静态审查局限。不会修改计划或勾选 TODO，也不自动批准；无需先 review 或消除报告问题才可执行。
-5. **Continue discussing Plan**：独立编辑器，Enter 发送、Ctrl + J 换行、Esc 丢弃未发送问题；发送后降 Draft，保留计划／TODO，重新提交才能批准。不强制立即重写文件；仅针对当前修订的 reviewer 报告随问题作为辅助材料带回。也可直接在下方输入框继续讨论。
+5. **Continue discussing Plan**：独立编辑器，Enter 发送、Ctrl + J 换行、Esc 丢弃未发送问题；发送后降 Draft，保留计划正文，重新提交才能批准。不强制立即重写文件；仅针对当前修订的 reviewer 报告随问题作为辅助材料带回。也可直接在下方输入框继续讨论。
 6. **Save draft and leave Plan mode**：安全核对磁盘正文与当前审阅版本，保存 Draft 状态并退出 Plan，保留计划文件；不发起模型请求，也不实施计划。失败保留面板并显示错误。
 
 审查提示词位于 `src/prompts/plan-review.md`。设计参考 Codex 的 [Plan Mode 模板](https://github.com/openai/codex/blob/23934d31b15b1127c83535f84854e5009f7cd51d/codex-rs/collaboration-mode-templates/templates/plan.md)与 [review rubric](https://github.com/openai/codex/blob/23934d31b15b1127c83535f84854e5009f7cd51d/codex-rs/prompts/templates/review/rubric.md)：采用关键决策完整、可独立交接、有证据的独立问题、去重和宁缺毋滥原则；按 pp 的计划审查场景使用 Markdown，不沿用代码 diff 审查的 JSON／行内评论格式，也不引入 Codex 允许的构建／测试能力。

@@ -215,16 +215,20 @@ fn apply_plan_change(
         plan.content = content;
         plan.status = crate::plan::PlanStatus::Draft;
     }
-    workflow.todos = crate::tools::todo::project_plan_todos(plan, &[], false)?;
-    workflow.todo_plan_id = Some(plan.id.clone());
+    workflow.todos.clear();
+    workflow.todo_plan_id = None;
     if let Err(error) = journal.write_workflow(workflow) {
         *workflow = previous;
         return Err(error.context("Plan file saved but session synchronization failed."));
     }
-    publish_todo_snapshot(workflow, journal, emit)
+    publish_plan_progress(workflow, emit);
+    Ok(())
 }
 
 pub(super) fn todo_snapshot(workflow: &crate::plan::WorkflowState) -> Option<AgentEvent> {
+    if workflow.mode == crate::plan::WorkMode::Plan {
+        return None;
+    }
     let plan = workflow.plan.as_ref()?;
     (workflow.todo_plan_id.as_deref() == Some(plan.id.as_str())).then(|| AgentEvent::TodoSnapshot {
         plan_id: plan.id.clone(),

@@ -234,12 +234,8 @@ fn plan_identity(document: &PlanDocument) -> (Option<String>, PlanLocation, Plan
     )
 }
 
-/// 只读预览投影：unchecked→pending、checked→completed，无 active/blocker，
-/// 从不归一化激活，也从不继承运行态。Plan 模式下的来源会话（含 Fresh 批准
-/// 后留在源会话的 Executed 绑定）一律走这里，不伪装成执行中。
-pub(super) fn preview_phases(
-    document: &PlanDocument,
-) -> Result<Vec<crate::tools::todo::TodoPhase>> {
+/// 已结束计划的只读投影：按 Markdown 勾选状态派生，不保留 active/blocker。
+fn readonly_phases(document: &PlanDocument) -> Result<Vec<crate::tools::todo::TodoPhase>> {
     let mut phases: Vec<crate::tools::todo::TodoPhase> = Vec::new();
     let mut region: Option<usize> = None;
     for task in plan::plan_tasks(&document.content) {
@@ -267,24 +263,11 @@ pub(super) fn preview_phases(
     Ok(phases)
 }
 
-/// Step 4 共享同步入口：把当前绑定计划的实际 Markdown 同步为会话 todo
-/// 投影。适用范围固定为 Plan 模式有绑定、Execute+Executed，或仍绑定当前
-/// 只读 Completed/Abandoned 计划；已用 init 脱离旧计划的独立普通清单
-/// （来源为空且非空）绝不因此被覆盖。行为要点：
-///
-/// - 实际文件优先：先按 ID 协调登记路径，再安全读取；内容未变但投影或
-///   来源缺失时仍初始化并持久化（旧会话/交接遗漏的自愈）。
-/// - 旧 Executed 记录缺 approved_tasks：先以已登记正文冻结一次性迁移
-///   基线并持久化，之后才读磁盘；不把迁移后的磁盘内容冒充批准集合。
-/// - Execute+Executed 的磁盘任务文本/数量/顺序与批准向量不同（无论勾选
-///   状态）时拒绝安装，保留最后可信的正文与运行态，阻止继续执行/提醒/
-///   归档；说明与勾选变化正常同步。
-/// - 执行投影只在 Execute+Executed 归一化唯一 active；预览与结束计划
-///   始终无 active。revision-0 绑定从不读盘，预览为空。
-/// - 无变化不写 journal、不发事件；正文/路径/状态变化发布
-///   PlanProgressUpdated，投影/正文/来源的真实变化才按
-///   `publish_snapshot` 发布 TodoSnapshot（先持久化 workflow，再
-///   journal.event/check 后 emit）。
+/// 安全导入绑定计划的实际 Markdown，执行模式另同步任务投影。
+/// Plan 仅更新正文、修订和状态，并清除旧版本的 TODO 预览。
+/// Execute+Executed 冻结旧记录的批准基线后读取磁盘，拒绝任务集合漂移，
+/// 保留合法 active/blocked；结束计划只读，脱离后的普通清单不被覆盖。
+/// 所有状态先持久化再发布，失败恢复最后可信的正文与运行态。
 pub(super) fn sync_plan_todos(
     tools: &Tools,
     journal: &mut SessionJournal,
@@ -292,6 +275,21 @@ pub(super) fn sync_plan_todos(
     emit: &mut dyn FnMut(crate::events::AgentEvent),
     publish_snapshot: bool,
 ) -> Result<()> {
+    if workflow.mode == WorkMode::Plan {
+        // 兼容旧会话：包括删除计划后留下的无绑定清单，均在请求或恢复前清理。
+        let previous_todos = std::mem::take(&mut workflow.todos);
+        let previous_source = workflow.todo_plan_id.take();
+        if !previous_todos.is_empty() || previous_source.is_some() {
+            if let Err(error) = journal.write_workflow(workflow) {
+                workflow.todos = previous_todos;
+                workflow.todo_plan_id = previous_source;
+                return Err(error);
+            }
+            if publish_snapshot {
+                super::turn::publish_todo_state(workflow, emit);
+            }
+        }
+    }
     let Some(document) = workflow.plan.as_ref() else {
         return Ok(());
     };
@@ -368,10 +366,12 @@ pub(super) fn sync_plan_todos(
     };
     let projected = {
         let document = workflow.plan.as_ref().expect("plan bound");
-        if executing {
+        if workflow.mode == WorkMode::Plan {
+            Ok(Vec::new())
+        } else if executing {
             crate::tools::todo::project_plan_todos(document, &workflow.todos, bound)
         } else {
-            preview_phases(document)
+            readonly_phases(document)
         }
     };
     let phases = match projected {
@@ -386,7 +386,8 @@ pub(super) fn sync_plan_todos(
             return Err(error);
         }
     };
-    let source = Some(workflow.plan.as_ref().expect("plan bound").id.clone());
+    let source = (workflow.mode == WorkMode::Execute)
+        .then(|| workflow.plan.as_ref().expect("plan bound").id.clone());
     let projection_changed = workflow.todos != phases || workflow.todo_plan_id != source;
     if content_changed || projection_changed {
         let previous_phases = std::mem::replace(&mut workflow.todos, phases);
@@ -455,6 +456,7 @@ pub(super) fn sync_restored_todos(
     replay: &[super::persistence::ReplayRecord],
 ) -> Result<Option<crate::events::AgentEvent>> {
     let Some(document) = workflow.plan.as_ref() else {
+        sync_plan_todos(tools, journal, workflow, &mut |_| {}, false)?;
         return Ok(None);
     };
     let previous_plan = (document.id.clone(), document.revision, document.status);

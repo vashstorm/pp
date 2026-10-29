@@ -238,28 +238,9 @@ impl Agent {
 
 /// 绑定文档的身份三元组：登记协调是否改变了名称/位置/状态。
 
-/// 只读预览投影：unchecked→pending、checked→completed，无 active/blocker，
-/// 从不归一化激活，也从不继承运行态。Plan 模式下的来源会话（含 Fresh 批准
-/// 后留在源会话的 Executed 绑定）一律走这里，不伪装成执行中。
+/// Plan 模式只同步计划正文，不生成任务投影；任务运行态仅在执行时建立。
 
-/// Step 4 共享同步入口：把当前绑定计划的实际 Markdown 同步为会话 todo
-/// 投影。适用范围固定为 Plan 模式有绑定、Execute+Executed，或仍绑定当前
-/// 只读 Completed/Abandoned 计划；已用 init 脱离旧计划的独立普通清单
-/// （来源为空且非空）绝不因此被覆盖。行为要点：
-///
-/// - 实际文件优先：先按 ID 协调登记路径，再安全读取；内容未变但投影或
-///   来源缺失时仍初始化并持久化（旧会话/交接遗漏的自愈）。
-/// - 旧 Executed 记录缺 approved_tasks：先以已登记正文冻结一次性迁移
-///   基线并持久化，之后才读磁盘；不把迁移后的磁盘内容冒充批准集合。
-/// - Execute+Executed 的磁盘任务文本/数量/顺序与批准向量不同（无论勾选
-///   状态）时拒绝安装，保留最后可信的正文与运行态，阻止继续执行/提醒/
-///   归档；说明与勾选变化正常同步。
-/// - 执行投影只在 Execute+Executed 归一化唯一 active；预览与结束计划
-///   始终无 active。revision-0 绑定从不读盘，预览为空。
-/// - 无变化不写 journal、不发事件；正文/路径/状态变化发布
-///   PlanProgressUpdated，投影/正文/来源的真实变化才按
-///   `publish_snapshot` 发布 TodoSnapshot（先持久化 workflow，再
-///   journal.event/check 后 emit）。
+/// 共享同步入口安全导入实际 Markdown；Plan 只更新正文，Execute 才同步任务。
 
 /// 恢复只携带一次同步新生成的快照；replay 已包含相同快照时不重复追加。
 
@@ -345,14 +326,10 @@ impl Agent {
         import_plan_content(&mut self.journal, &mut self.workflow, content, new_title)
     }
 
-    /// Safe plan review snapshot: reads the current file through the NOFOLLOW
-    /// workspace handle, imports external edits as a new revision, and issues
-    /// a review token bound to the current session, plan and exact bytes. A
-    /// missing or unreadable file is an error; the logged snapshot is never a
-    /// fallback. Executed/Abandoned plans safely refresh their displayed
-    /// snapshot without regaining approval eligibility. The shared todo sync
-    /// reconciles the registered path, imports the revision and rebuilds the
-    /// read-only projection; a detached standalone list is never replaced.
+    /// 通过 NOFOLLOW 工作区句柄读取计划，导入外部修订并签发绑定当前
+    /// 会话、计划、路径及精确正文的审批 token。文件缺失或不可读时报错，
+    /// 不回退到日志快照。Executed/Abandoned 可刷新但不恢复执行授权；
+    /// Plan 仅同步正文，Execute 才刷新任务投影，已脱离的普通清单不被替换。
     pub(crate) fn read_plan(&mut self) -> Result<PlanReview> {
         self.journal.check()?;
         let document = self
@@ -366,8 +343,8 @@ impl Agent {
             // 历史快照或猜测路径导入。
             bail!("{NO_PLAN}");
         }
-        // 按 ID 协调登记路径、导入外部修订并刷新只读投影；墓碑、搬迁与
-        // 首次登记在此暴露。
+        // 按 ID 协调登记路径并导入外部修订；Plan 不生成 TODO。
+        // 墓碑、搬迁与首次登记在此暴露。
         sync_plan_todos(
             &self.tools,
             &mut self.journal,

@@ -629,11 +629,11 @@ impl Agent {
             base_system: &self.base_system,
             prompt_source: self.prompt_source.as_ref(),
         };
-        let keep_plan_todos = self.workflow.plan.as_ref().is_some_and(|plan| {
-            self.workflow.mode == crate::plan::WorkMode::Plan
-                || plan.status == crate::plan::PlanStatus::Executed
-                || self.workflow.todo_plan_id.as_deref() == Some(plan.id.as_str())
-        });
+        let keep_plan_todos = self.workflow.mode == crate::plan::WorkMode::Plan
+            || self.workflow.plan.as_ref().is_some_and(|plan| {
+                plan.status == crate::plan::PlanStatus::Executed
+                    || self.workflow.todo_plan_id.as_deref() == Some(plan.id.as_str())
+            });
         let previous_todos = if keep_plan_todos {
             None
         } else {

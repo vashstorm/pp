@@ -235,3 +235,24 @@ fn todo_runtime_snapshots_follow_durable_transitions_and_are_not_journaled() {
         assert!(snapshots[2].phases.is_empty());
     }
 }
+
+#[test]
+fn todo_tree_navigation_in_plan_standby_never_restores_execution_tasks() {
+    for protocol in ["completion", "response"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+        let (_, change) = crate::tools::todo::run(
+            &[],
+            r#"{"op":"init","items":["Historical execution task"]}"#,
+        );
+        apply_todo_change(&mut agent.workflow, &mut agent.journal, change).unwrap();
+        seed_session(&mut agent, "execution history");
+        let target = agent.session_tree().unwrap().tree.nodes[0].id.clone();
+        agent.enter_plan(&CancellationToken::new()).unwrap();
+        agent.navigate_tree(&target).unwrap();
+        assert_eq!(agent.workflow.mode, crate::plan::WorkMode::Plan);
+        assert!(agent.workflow.plan.is_none());
+        assert!(agent.workflow.todos.is_empty());
+        assert!(agent.workflow.todo_plan_id.is_none());
+    }
+}

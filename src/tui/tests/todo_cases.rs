@@ -179,3 +179,28 @@ fn tui_todo_tiny_layout_never_overlaps_editor_and_status() {
         }
     }
 }
+
+#[test]
+fn tui_todo_plan_hides_legacy_cache_and_deletion_clears_bound_state() {
+    let mut app = app();
+    let mut workflow = ready_plan_workflow();
+    workflow.todos = todo_state(2).phases;
+    workflow.todo_plan_id = Some(workflow.plan.as_ref().unwrap().id.clone());
+    app.set_workflow(workflow.clone());
+    app.show_welcome = false;
+    assert!(!draw(&mut app, 100, 24).contains("TODO ·"));
+    workflow.mode = WorkMode::Execute;
+    workflow.plan.as_mut().unwrap().status = PlanStatus::Executed;
+    app.set_workflow(workflow);
+    assert!(draw(&mut app, 100, 24).contains("TODO · 0/2"));
+    app.open_plan_progress_view();
+    assert!(app.plan_panel.is_some());
+    app.receive_event_for_test(WorkerEvent::Workflow(WorkflowState {
+        mode: WorkMode::Plan,
+        ..Default::default()
+    }));
+    assert!(app.workflow.plan.is_none());
+    assert!(app.plan_panel.is_none());
+    assert_eq!(app.plan_progress, (0, 0));
+    assert!(!draw(&mut app, 100, 24).contains("TODO ·"));
+}
