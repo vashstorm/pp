@@ -1,5 +1,6 @@
 mod format;
 pub(crate) mod locks;
+mod summary;
 pub(crate) mod tree;
 
 use super::Session;
@@ -919,7 +920,7 @@ pub(crate) fn list(dir: &Path) -> Result<SessionListing> {
             if !entry.file_type()?.is_file() {
                 return Ok(None);
             }
-            read_summary(&entry.path(), id)
+            summary::read(&entry.path(), id)
         })();
         match result {
             Ok(Some(summary)) => listing.sessions.push(summary),
@@ -933,161 +934,6 @@ pub(crate) fn list(dir: &Path) -> Result<SessionListing> {
         .sessions
         .sort_unstable_by(|a, b| (b.updated_at, &b.id).cmp(&(a.updated_at, &a.id)));
     Ok(listing)
-}
-
-fn read_summary(path: &Path, id: &str) -> Result<Option<SessionSummary>> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(
-            rustix::fs::OFlags::NOFOLLOW.bits() as i32 | rustix::fs::OFlags::NONBLOCK.bits() as i32,
-        )
-        .open(path)
-        .context("opening session")?;
-    let metadata = file.metadata().context("reading session metadata")?;
-    ensure!(metadata.is_file(), "session is not a regular file");
-    let updated_at = metadata
-        .modified()
-        .context("reading session modification time")?;
-    let mut reader = BufReader::new(&file);
-    let mut line = Vec::new();
-    reader
-        .read_until(b'\n', &mut line)
-        .context("reading session header")?;
-    ensure!(line.ends_with(b"\n"), "incomplete session header");
-    let header: Header =
-        serde_json::from_slice(&line).map_err(|_| anyhow::anyhow!("invalid session header"))?;
-    ensure!(
-        header.kind == "session",
-        "first record must be a session header"
-    );
-    ensure!(header.version == 3, "unsupported session version");
-    ensure!(header.id == id, "session ID does not match filename");
-    ensure!(
-        header.cwd.is_absolute(),
-        "session working directory must be absolute"
-    );
-    parse_timestamp(&header.timestamp)?;
-    #[derive(Deserialize)]
-    struct SummaryEntry {
-        #[serde(rename = "type")]
-        kind: String,
-        #[serde(default)]
-        message: Option<SummaryMessage>,
-        #[serde(default, rename = "customType")]
-        custom_type: String,
-        #[serde(default)]
-        data: SummaryData,
-    }
-    #[derive(Default, Deserialize)]
-    struct SummaryData {
-        #[serde(default)]
-        tree: Option<serde::de::IgnoredAny>,
-    }
-    #[derive(Deserialize)]
-    #[serde(tag = "role")]
-    enum SummaryMessage {
-        #[serde(rename = "user")]
-        User { content: String },
-        #[serde(rename = "assistant")]
-        Assistant {
-            #[serde(default)]
-            content: Vec<SummaryContent>,
-            #[serde(default, rename = "stopReason")]
-            stop_reason: String,
-        },
-        #[serde(other)]
-        Other,
-    }
-    #[derive(Deserialize)]
-    struct SummaryContent {
-        #[serde(default, rename = "type")]
-        kind: String,
-        #[serde(default)]
-        text: String,
-    }
-    let mut branched = false;
-    let mut summary = None;
-    let mut preview = String::new();
-    let mut done = false;
-    loop {
-        line.clear();
-        reader
-            .read_until(b'\n', &mut line)
-            .context("reading session record")?;
-        if !line.ends_with(b"\n") {
-            if !line.is_empty() {
-                done = false;
-            }
-            break;
-        }
-        let entry: SummaryEntry = match serde_json::from_slice(&line) {
-            Ok(entry) => entry,
-            // 列表可展示已有摘要；损坏的尾部仍由完整恢复流程校验。
-            Err(_) if summary.is_some() => {
-                done = false;
-                break;
-            }
-            Err(_) => bail!("invalid session record before first user message"),
-        };
-        branched |= entry.data.tree.is_some();
-        if matches!(entry.custom_type.as_str(), "pp.error" | "pp.cancelled") {
-            done = false;
-        }
-        if entry.kind == "message" {
-            match entry.message {
-                Some(SummaryMessage::User { content }) => {
-                    summary.get_or_insert_with(|| compact_summary(&content, 80));
-                    done = false;
-                }
-                Some(SummaryMessage::Assistant {
-                    content,
-                    stop_reason,
-                }) => {
-                    if preview.is_empty() {
-                        preview = compact_summary(
-                            &content
-                                .iter()
-                                .filter(|part| part.kind == "text")
-                                .map(|part| part.text.as_str())
-                                .collect::<Vec<_>>()
-                                .join(" "),
-                            200,
-                        );
-                    }
-                    done = stop_reason == "stop";
-                }
-                _ => {}
-            }
-        }
-    }
-    if branched {
-        let tree = tree::Tree::read(&file)?;
-        let path = tree.path(tree.leaf);
-        summary = Some(
-            path.iter()
-                .map(|i| &tree.nodes[*i])
-                .find(|n| n.kind == tree::Kind::User)
-                .map_or_else(
-                    || "Untitled session".into(),
-                    |n| compact_summary(&n.text, 80),
-                ),
-        );
-        preview = path
-            .iter()
-            .map(|i| &tree.nodes[*i])
-            .find(|n| n.kind == tree::Kind::Assistant)
-            .map_or_else(String::new, |n| compact_summary(&n.text, 200));
-        done = tree.leaf.is_some_and(|i| tree.nodes[i].done);
-    }
-    Ok(summary.map(|summary| SessionSummary {
-        id: id.to_owned(),
-        cwd: header.cwd,
-        updated_at,
-        summary,
-        preview,
-        bytes: metadata.len(),
-        done,
-    }))
 }
 
 fn compact_summary(text: &str, limit: usize) -> String {

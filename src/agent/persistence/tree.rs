@@ -48,7 +48,6 @@ pub(crate) struct Node {
     pub parent: Option<usize>,
     pub kind: Kind,
     pub text: String,
-    pub done: bool,
     native: Cursor,
     before: Cursor,
     replay: (u64, u64),
@@ -132,7 +131,6 @@ impl Tree {
                     parent: *parent,
                     kind: *kind,
                     text: (*text).into(),
-                    done: *kind == Kind::Assistant,
                     native: Cursor { offset: 0, len: 0 },
                     before: Cursor { offset: 0, len: 0 },
                     replay: (0, 0),
@@ -226,12 +224,12 @@ impl Tree {
                         } else {
                             text
                         };
-                        node = Some((kind, text, kind == Kind::Assistant));
+                        node = Some((kind, text));
                     }
                     tools.clear();
                 }
-                "pp.cancelled" => node = Some((Kind::Assistant, "(aborted)".into(), false)),
-                "pp.error" => node = Some((Kind::Assistant, "(error)".into(), false)),
+                "pp.cancelled" => node = Some((Kind::Assistant, "(aborted)".into())),
+                "pp.error" => node = Some((Kind::Assistant, "(error)".into())),
                 _ => {}
             }
             if entry["type"] == "message" {
@@ -244,7 +242,6 @@ impl Tree {
                                 .as_str()
                                 .context("invalid session tree user message")?
                                 .to_owned(),
-                            false,
                         ))
                     }
                     Some("assistant") => {
@@ -270,7 +267,7 @@ impl Tree {
                     _ => {}
                 }
             }
-            if let Some((kind, text, done)) = node {
+            if let Some((kind, text)) = node {
                 let id = entry["id"]
                     .as_str()
                     .context("missing session tree ID")?
@@ -293,7 +290,6 @@ impl Tree {
                     parent: tree.leaf,
                     kind,
                     text,
-                    done,
                     native,
                     before,
                     replay: (start, offset),
@@ -676,7 +672,7 @@ mod tests {
             assert!(!native.contains("question-b"));
             assert!(!native.contains("answer-b"));
 
-            // Every consumer now sees only the effective A path.
+            // 树与恢复只保留有效的 A 路径；列表摘要固定使用最初消息。
             let tree = journal.tree().unwrap();
             assert_eq!(tree.nodes.len(), 2);
             assert_eq!(tree.nodes[1].parent, Some(0));
@@ -976,7 +972,7 @@ mod tests {
             assert!(!text(&restored.checkpoint.session).contains("first-answer"));
             assert_eq!(
                 list(dir.path()).unwrap().sessions[0].summary,
-                "Untitled session"
+                "first-question"
             );
             // New input continues from the empty effective history only; the
             // discarded turn never returns and the session keeps its identity.
@@ -1001,8 +997,8 @@ mod tests {
             let listing = list(dir.path()).unwrap();
             assert_eq!(listing.sessions.len(), 1);
             assert_eq!(listing.sessions[0].id, id);
-            assert_eq!(listing.sessions[0].summary, "next-question");
-            assert_eq!(listing.sessions[0].preview, "next-answer");
+            assert_eq!(listing.sessions[0].summary, "first-question");
+            assert_eq!(listing.sessions[0].preview, "first-answer");
         }
     }
     #[test]
