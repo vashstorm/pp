@@ -314,7 +314,18 @@ fn grep_reference_layout_colors_and_replay() {
         }
         let buffer = render(&mut transcript, 100, 12);
         let text = screen(&buffer);
-        let rows: Vec<_> = text.lines().map(str::trim_end).collect();
+        let rows: Vec<_> = text
+            .lines()
+            .skip(1)
+            .map(|line| {
+                line.chars()
+                    .skip(2)
+                    .take(96)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect();
         assert!(
             rows[0].starts_with(&format!(
                 "{} Grep: function applyEntry|function formatSummary 3 matches · 1 file · in",
@@ -323,14 +334,15 @@ fn grep_reference_layout_colors_and_replay() {
             "{text}"
         );
         assert_eq!(rows[1], path);
-        assert_eq!(rows[2], "└─ *399| function applyEntry() {");
-        assert!(text.contains("   *634| function formatSummary() {"));
+        assert_eq!(rows[2], "└─ *399│ function applyEntry() {");
+        assert!(text.contains("   *634│ function formatSummary() {"));
         assert!(!text.contains("abc123") && !text.contains(" · ok"));
-        assert_eq!(buffer[(0, 0)].fg, palette::GREP_TITLE);
-        assert_eq!(buffer[(8, 0)].fg, palette::GREP_TEXT);
-        assert_eq!(buffer[(0, 1)].fg, palette::GREP_META);
-        assert_eq!(buffer[(0, 2)].fg, palette::GREP_TEXT);
-        for y in 0..6 {
+        assert_eq!(buffer[(0, 0)].fg, palette::GREP_BORDER);
+        assert_eq!(buffer[(2, 1)].fg, palette::GREP_TITLE);
+        assert_eq!(buffer[(10, 1)].fg, palette::GREP_TEXT);
+        assert_eq!(buffer[(2, 2)].fg, palette::GREP_META);
+        assert_eq!(buffer[(2, 3)].fg, palette::GREP_TITLE);
+        for y in 0..8 {
             assert_eq!(buffer[(99, y)].bg, palette::GREP_BG);
             assert!(
                 !buffer[(0, y)]
@@ -359,8 +371,8 @@ fn grep_groups_keep_paths_notices_and_failures() {
         .map(str::trim_end)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(preview.contains("src/a.rs\n└─ *1|needle one"));
-    assert!(preview.contains("src/nested/b.rs\n└─ *9|needle two"));
+    assert!(preview.contains("src/a.rs") && preview.contains("└─ *1│needle one"));
+    assert!(preview.contains("src/nested/b.rs") && preview.contains("└─ *9│needle two"));
     transcript.toggle_tool_output();
     assert!(screen(&render(&mut transcript, 100, 20)).contains("[truncated by output limits]"));
     tool(&mut transcript, "failed", "grep", json!({"pattern":"bad"}));
@@ -377,6 +389,112 @@ fn grep_groups_keep_paths_notices_and_failures() {
         .unwrap() as u16;
     assert_eq!(buffer[(0, row)].fg, palette::REMOVED);
     assert_eq!(buffer[(0, row)].bg, palette::GREP_BG);
+}
+
+#[test]
+fn glob_card_groups_paths_and_replays_without_changing_results() {
+    let result =
+        json!({"ok":true,"content":"root.rs\n# src/\nlib.rs\n## tui/\n界面.rs\n# tests/\ncli.rs"});
+    for replay in [false, true] {
+        let events = vec![
+            AgentEvent::ToolStarted {
+                id: "paths".into(),
+                name: "glob".into(),
+                arguments: json!({"path":"**/*.rs"}).to_string(),
+            },
+            AgentEvent::ToolFinished {
+                id: "paths".into(),
+                result: result.clone(),
+            },
+        ];
+        let mut transcript = Transcript::new();
+        if replay {
+            assert!(
+                transcript
+                    .replay(
+                        events.into_iter().map(ReplayRecord::Event).collect(),
+                        &mut Vec::new()
+                    )
+                    .is_none()
+            );
+        } else {
+            for event in events {
+                transcript.progress(event);
+            }
+        }
+        let buffer = render(&mut transcript, 60, 16);
+        let text = screen(&buffer);
+        assert!(
+            text.contains("Glob: **/*.rs") && !text.contains("# src/"),
+            "{text}"
+        );
+        for (needle, column, color) in [
+            ("root.rs", 2, palette::READ_SUMMARY_PATH),
+            ("src/", 2, palette::GREP_TITLE),
+            ("lib.rs", 4, palette::READ_SUMMARY_PATH),
+            ("tui/", 4, palette::GREP_TITLE),
+            ("界", 6, palette::READ_SUMMARY_PATH),
+            ("tests/", 2, palette::GREP_TITLE),
+            ("cli.rs", 4, palette::READ_SUMMARY_PATH),
+        ] {
+            let row = text
+                .lines()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("{needle}: {text}")) as u16;
+            assert_eq!(buffer[(column, row)].fg, color, "{needle}");
+            assert_eq!(buffer[(0, row)].symbol(), "│");
+            assert_eq!(buffer[(59, row)].symbol(), "│");
+        }
+        assert_eq!(transcript.entries[0].result, Some(result.clone()));
+        for width in [1, 2, 4, 10] {
+            render(&mut transcript, width, 30);
+        }
+        render(&mut transcript, 60, 16);
+        assert!(entry_text(&mut transcript.entries[0], 56).contains("界面.rs"));
+    }
+}
+
+#[test]
+fn bash_card_distinguishes_live_stderr_and_failed_status_from_stdout() {
+    let mut transcript = Transcript::new();
+    tool(
+        &mut transcript,
+        "b",
+        "bash",
+        json!({"command":"cargo check"}),
+    );
+    for (stream, text) in [
+        (OutputStream::Stdout, "checking crate\n"),
+        (OutputStream::Stderr, "compiler diagnostic\n"),
+    ] {
+        transcript.progress(AgentEvent::ToolOutput {
+            id: "b".into(),
+            stream,
+            text: text.into(),
+        });
+    }
+    let live = render(&mut transcript, 80, 20);
+    let text = screen(&live);
+    assert!(text.contains("Bash · running"));
+    let row = text
+        .lines()
+        .position(|line| line.contains("compiler diagnostic"))
+        .unwrap() as u16;
+    assert_eq!(live[(2, row)].fg, palette::ACCENT);
+    transcript.progress(AgentEvent::ToolFinished { id: "b".into(), result: json!({"ok":false,"exit_code":1,"stdout":"checking crate\n","stderr":"compiler diagnostic\n"}) });
+    let failed = render(&mut transcript, 80, 20);
+    let text = screen(&failed);
+    assert!(text.contains("Bash · failed") && text.contains("Exit code: 1"));
+    assert_eq!(failed[(0, 0)].fg, palette::REMOVED);
+    for (needle, color) in [
+        ("checking crate", palette::GREP_TEXT),
+        ("compiler diagnostic", palette::REMOVED),
+        ("Exit code: 1", palette::REMOVED),
+    ] {
+        let row = text.lines().position(|line| line.contains(needle)).unwrap() as u16;
+        assert_eq!(failed[(2, row)].fg, color);
+    }
+    assert_eq!(text.matches("compiler diagnostic").count(), 1);
 }
 
 #[test]
@@ -562,7 +680,9 @@ fn bash_card_and_thinking_match_reference_and_keep_full_output() {
     }
     assert!(!text.contains("line-00"));
     assert_eq!(buffer[(0, 0)].fg, BASH_BORDER);
-    assert_eq!(buffer[(2, 1)].fg, Color::Rgb(190, 188, 139));
+    assert_eq!(buffer[(2, 1)].fg, palette::ADDED);
+    assert_eq!(buffer[(4, 1)].fg, palette::TOOL_COMMAND);
+    assert!(text.contains("Bash · done"));
     assert_eq!(buffer[(2, 1)].bg, BASH_BACKGROUND);
     let think_row = text
         .lines()

@@ -219,6 +219,10 @@ impl TranscriptEntry {
         self.tool.as_deref() == Some("edit")
     }
 
+    pub(super) fn is_search(&self) -> bool {
+        matches!(self.tool.as_deref(), Some("grep" | "glob"))
+    }
+
     pub(super) fn edit_path(&self) -> &str {
         self.arguments["path"]
             .as_str()
@@ -324,9 +328,11 @@ impl TranscriptEntry {
         }
         if self.kind == EntryKind::Bash {
             let color = if matches!(source, Source::Title) {
-                Color::Rgb(190, 188, 139)
+                palette::TOOL_COMMAND
             } else if matches!(source, Source::Footer) && self.status == EntryStatus::Failed {
-                Color::Red
+                palette::REMOVED
+            } else if matches!(source, Source::Footer) && self.status == EntryStatus::Complete {
+                palette::ADDED
             } else {
                 MUTED_TEXT
             };
@@ -409,7 +415,7 @@ impl TranscriptEntry {
         let user = self.kind == EntryKind::User;
         let read = self.kind == EntryKind::Read;
         let edit = self.is_edit();
-        let grep = self.tool.as_deref() == Some("grep");
+        let search = self.is_search();
         let border = |source| LayoutLine {
             content: LayoutContent::Source {
                 source,
@@ -418,7 +424,7 @@ impl TranscriptEntry {
             },
             height: 1,
         };
-        if bash {
+        if bash || search {
             lines.push(border(Source::Top));
         }
         if user {
@@ -455,7 +461,7 @@ impl TranscriptEntry {
             );
         } else if bash {
             let style = Style::default()
-                .fg(Color::Rgb(190, 188, 139))
+                .fg(palette::TOOL_COMMAND)
                 .bg(BASH_BACKGROUND);
             let mut command = tool_display::command(&self.title, self.expanded, self.display);
             if self.tool.as_deref() != Some("bash")
@@ -470,29 +476,48 @@ impl TranscriptEntry {
                 );
             }
             lines.extend(
-                tool_display::wrap(command, width, style)
+                command
                     .into_iter()
+                    .flat_map(|command| {
+                        let line = if let Some(text) = command.strip_prefix("$ ") {
+                            Line::from(vec![
+                                Span::styled("$ ", style.fg(palette::ADDED)),
+                                Span::styled(text.to_owned(), style),
+                            ])
+                            .style(style)
+                        } else {
+                            let color = if command.starts_with('…') {
+                                palette::MUTED
+                            } else {
+                                palette::TOOL_COMMAND
+                            };
+                            Line::styled(command, style.fg(color))
+                        };
+                        wrap_block(line, width, "")
+                    })
                     .map(|line| LayoutLine {
                         content: LayoutContent::Styled(line),
                         height: 1,
                     }),
             );
-        } else if grep {
+        } else if search {
+            let view = tool_display::View {
+                name: self.tool.as_deref().unwrap_or_default(),
+                text: self.visible_text(),
+                arguments: &self.arguments,
+                result: self.result.as_ref(),
+                running: self.status == EntryStatus::Running,
+                failed: self.status == EntryStatus::Failed,
+                expanded: self.expanded,
+                instruction_read: false,
+                context: self.display,
+            };
             lines.extend(
-                tool_display::grep_header(
-                    &tool_display::View {
-                        name: "grep",
-                        text: self.visible_text(),
-                        arguments: &self.arguments,
-                        result: self.result.as_ref(),
-                        running: self.status == EntryStatus::Running,
-                        failed: self.status == EntryStatus::Failed,
-                        expanded: self.expanded,
-                        instruction_read: false,
-                        context: self.display,
-                    },
-                    width,
-                )
+                if view.name == "grep" {
+                    tool_display::grep_header(&view, width)
+                } else {
+                    tool_display::glob_header(&view, width)
+                }
                 .into_iter()
                 .map(|line| LayoutLine {
                     content: LayoutContent::Styled(line),
@@ -722,6 +747,9 @@ impl TranscriptEntry {
                 self.footer = "⟨running⟩".into();
             }
             self.add_lines(Source::Footer, &mut lines);
+            lines.push(border(Source::Bottom));
+        }
+        if search {
             lines.push(border(Source::Bottom));
         }
         if self.tool.as_deref() == Some("write") && self.status == EntryStatus::Complete {

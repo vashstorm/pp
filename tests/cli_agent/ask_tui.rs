@@ -219,11 +219,15 @@ fn tool_folding_omp_native_search_clips_long_rows_for_both_protocols() {
                 let screen = pty.parser.screen();
                 let text = screen.contents();
                 assert!(text.contains("Grep: needle 20 matches · 1 file · in lines"), "{text}");
-                let row = text.lines().position(|line| line.contains("└─ *1|entry-00")).unwrap() as u16;
-                let cell = screen.cell(row, 0).unwrap();
+                let row = text.lines().position(|line| line.contains("└─ *1│entry-00")).unwrap() as u16;
+                let cell = screen.cell(row, 2).unwrap();
                 assert_eq!(cell.contents(), "└");
-                assert_eq!(cell.fgcolor(), vt100::Color::Rgb(120, 125, 135));
-                assert_eq!(cell.bgcolor(), vt100::Color::Rgb(40, 42, 53));
+                assert_eq!(cell.fgcolor(), vt100::Color::Rgb(156, 220, 254));
+                assert_eq!(cell.bgcolor(), vt100::Color::Rgb(22, 26, 31));
+            } else {
+                let text = pty.parser.screen().contents();
+                assert!(text.contains("Glob: files/*") && text.contains("files/"), "{text}");
+                assert!(!text.contains("# files/"), "{text}");
             }
             pty.input("\x0fa");
             pty.draft("a");

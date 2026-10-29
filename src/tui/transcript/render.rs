@@ -1,7 +1,7 @@
 use super::{
-    BASH_BACKGROUND, BASH_BORDER, Buffer, Color, DisplayContext, EntryKind, EntryStatus,
-    LayoutContent, Paragraph, Rect, Source, Span, Style, Transcript, TranscriptEntry, Widget, Wrap,
-    palette, tool_display,
+    BASH_BACKGROUND, BASH_BORDER, Buffer, DisplayContext, EntryKind, EntryStatus, LayoutContent,
+    Paragraph, Rect, Source, Span, Style, Transcript, TranscriptEntry, Widget, Wrap, palette,
+    tool_display,
 };
 
 impl Transcript {
@@ -39,9 +39,9 @@ impl Transcript {
             entry.display = display;
             entry.layout = None;
         }
-        let padding = if compact || entry.tool.as_deref() == Some("grep") || entry.is_file_read() {
+        let padding = if compact || entry.is_file_read() {
             0
-        } else if matches!(entry.kind, EntryKind::Bash | EntryKind::Read) {
+        } else if matches!(entry.kind, EntryKind::Bash | EntryKind::Read) || entry.is_search() {
             4
         } else {
             2
@@ -168,13 +168,13 @@ impl Transcript {
                 let read = entry.kind == EntryKind::Read;
                 let edit = entry.is_edit();
                 let file_read = entry.is_file_read();
-                let grep = entry.tool.as_deref() == Some("grep");
+                let search = entry.is_search();
                 let think = entry.kind == EntryKind::Think;
                 let background = if bash {
                     Some(BASH_BACKGROUND)
                 } else if edit {
                     Some(palette::EDIT_BG)
-                } else if grep {
+                } else if search {
                     Some(palette::GREP_BG)
                 } else if read {
                     Some(palette::READ_BG)
@@ -199,14 +199,26 @@ impl Transcript {
                     if compact {
                         continue;
                     }
-                    if bash {
+                    if bash || search {
                         let (left, right, label) = match line.source() {
                             Some(Source::Top) => ("╭", "╮", ""),
                             Some(Source::Divider) => ("├", "┤", " Output "),
                             Some(Source::Bottom) => ("╰", "╯", ""),
                             _ => ("│", "│", ""),
                         };
-                        let style = Style::default().fg(BASH_BORDER).bg(BASH_BACKGROUND);
+                        let card_bg = if bash {
+                            BASH_BACKGROUND
+                        } else {
+                            palette::GREP_BG
+                        };
+                        let border_color = if entry.status == EntryStatus::Failed {
+                            palette::REMOVED
+                        } else if bash {
+                            BASH_BORDER
+                        } else {
+                            palette::GREP_BORDER
+                        };
+                        let style = Style::default().fg(border_color).bg(card_bg);
                         let horizontal = matches!(
                             line.source(),
                             Some(Source::Top | Source::Divider | Source::Bottom)
@@ -221,10 +233,30 @@ impl Transcript {
                                 .render(Rect::new(area.right() - 1, row, 1, 1), buffer);
                         }
                         if !label.is_empty() && area.width > 4 {
-                            Span::styled(
-                                label,
-                                Style::default().fg(Color::Gray).bg(BASH_BACKGROUND),
-                            )
+                            Span::styled(label, Style::default().fg(palette::MUTED).bg(card_bg))
+                                .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
+                        }
+                        if bash && matches!(line.source(), Some(Source::Top)) && area.width > 4 {
+                            let (status, color) = match entry.status {
+                                EntryStatus::Running => ("running", palette::ACCENT),
+                                EntryStatus::Complete => ("done", palette::ADDED),
+                                EntryStatus::Failed => ("failed", palette::REMOVED),
+                            };
+                            let title = if entry.tool.as_deref() == Some("bash_task") {
+                                "Bash task"
+                            } else {
+                                "Bash"
+                            };
+                            ratatui::text::Line::from(vec![
+                                Span::styled(
+                                    format!(" {title} "),
+                                    Style::default().fg(palette::GREP_TITLE).bg(card_bg),
+                                ),
+                                Span::styled(
+                                    format!("· {status} "),
+                                    Style::default().fg(color).bg(card_bg),
+                                ),
+                            ])
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
                     } else if read || edit {
@@ -264,9 +296,13 @@ impl Transcript {
                             .render(Rect::new(area.x, row, 1, 1), buffer);
                     }
                 }
-                let padding = if compact || grep || file_read {
+                let padding = if compact || file_read {
                     0
-                } else if bash || read || (edit && matches!(line.source(), Some(Source::Title))) {
+                } else if bash
+                    || search
+                    || read
+                    || (edit && matches!(line.source(), Some(Source::Title)))
+                {
                     4
                 } else {
                     inset
@@ -279,7 +315,7 @@ impl Transcript {
                 {
                     let target = Rect::new(
                         area.x
-                            + if grep || file_read {
+                            + if file_read {
                                 0
                             } else if edit
                                 && !compact

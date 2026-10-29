@@ -220,6 +220,141 @@ pub(super) fn grep_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     }
 }
 
+pub(super) fn glob_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default().fg(palette::GREP_TEXT).bg(palette::GREP_BG);
+    let (status, color) = if view.failed {
+        (" · failed", palette::REMOVED)
+    } else if view.running {
+        (" · running", palette::ACCENT)
+    } else {
+        ("", palette::GREP_META)
+    };
+    wrap_block(
+        Line::from(vec![
+            Span::styled(
+                format!("{} Glob: ", palette::tool_icon("glob")),
+                style.fg(palette::GREP_TITLE),
+            ),
+            Span::styled(
+                view.arguments["path"].as_str().unwrap_or(".").to_owned(),
+                style,
+            ),
+            Span::styled(status, style.fg(color)),
+        ]),
+        width,
+        "  ",
+    )
+}
+
+fn search_row(line: &str, view: &View<'_>) -> Line<'static> {
+    let style = Style::default().fg(palette::GREP_TEXT).bg(palette::GREP_BG);
+    let meta = style.fg(palette::GREP_META);
+    if view.failed {
+        return Line::styled(line.to_owned(), style.fg(palette::REMOVED));
+    }
+    if line.starts_with('…') || line.starts_with('[') || line.starts_with("No ") {
+        return Line::styled(line.to_owned(), meta);
+    }
+    if view.name == "grep" {
+        if let Some((gutter, text)) = line.split_once('|')
+            && gutter
+                .trim_start_matches(['└', '─', ' ', '*'])
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+            && gutter.bytes().any(|b| b.is_ascii_digit())
+        {
+            let matched = gutter.contains('*');
+            return Line::from(vec![
+                Span::styled(
+                    gutter.to_owned(),
+                    if matched {
+                        style.fg(palette::GREP_TITLE)
+                    } else {
+                        meta
+                    },
+                ),
+                Span::styled("│", meta),
+                Span::styled(text.to_owned(), if matched { style } else { meta }),
+            ])
+            .style(style);
+        }
+        if view.result.is_some_and(|r| {
+            r["details"]["fileMatches"]
+                .as_array()
+                .is_some_and(|files| files.iter().any(|file| file["path"].as_str() == Some(line)))
+        }) {
+            return Line::styled(line.to_owned(), style.fg(palette::READ_SUMMARY_PATH));
+        }
+    } else if view.name == "glob" {
+        if line.starts_with("Warning:") {
+            return Line::styled(line.to_owned(), style.fg(palette::ACCENT));
+        }
+        let split = line.trim_end_matches('/').rfind('/').map_or(0, |i| i + 1);
+        return Line::from(vec![
+            Span::styled(line[..split].to_owned(), meta),
+            Span::styled(
+                line[split..].to_owned(),
+                style.fg(if line.ends_with('/') {
+                    palette::GREP_TITLE
+                } else {
+                    palette::READ_SUMMARY_PATH
+                }),
+            ),
+        ])
+        .style(style);
+    }
+    Line::styled(line.to_owned(), style)
+}
+
+fn search_rows(rows: Vec<Line<'static>>, view: &View<'_>) -> Vec<Line<'static>> {
+    rows.into_iter()
+        .map(|row| search_row(&row.to_string(), view))
+        .collect()
+}
+
+fn glob_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default().fg(palette::GREP_TEXT).bg(palette::GREP_BG);
+    let mut depth = 0;
+    let grouped = view.result.is_some_and(|r| r["content"].is_string()) && !view.failed;
+    let lines = logical(view.text)
+        .into_iter()
+        .map(|line| {
+            if grouped {
+                let level = line.bytes().take_while(|b| *b == b'#').count();
+                if level > 0 && line[level..].starts_with(' ') && line.ends_with('/') {
+                    depth = level;
+                    return format!(
+                        "{}{}",
+                        "  ".repeat(level.saturating_sub(1)),
+                        &line[level + 1..]
+                    );
+                }
+                return format!("{}{line}", "  ".repeat(depth));
+            }
+            line.to_owned()
+        })
+        .collect::<Vec<_>>();
+    let mut rows = if view.context.full || view.failed {
+        wrap(lines, width, style)
+    } else {
+        head(
+            &lines.join("\n"),
+            if view.expanded {
+                usize::MAX
+            } else {
+                FIND_ITEMS
+            },
+            false,
+            true,
+            width,
+            style,
+            MoreHint::Expand("items"),
+        )
+    };
+    append_notices(&mut rows, view.result, width, style);
+    search_rows(rows, view)
+}
+
 fn grep_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     let style = Style::default()
         .fg(if view.failed {
@@ -277,7 +412,7 @@ fn grep_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
         lines.push(line.to_owned());
     }
     let display = lines.join("\n");
-    if view.context.full {
+    let rows = if view.context.full {
         wrap(lines, width, style)
     } else {
         head(
@@ -293,7 +428,8 @@ fn grep_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
             style,
             MoreHint::Expand("items"),
         )
-    }
+    };
+    search_rows(rows, view)
 }
 
 pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static>> {
@@ -305,6 +441,9 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     }
     if view.name == "grep" {
         return grep_body(&view, width);
+    }
+    if view.name == "glob" {
+        return glob_body(&view, width);
     }
     if view.instruction_read && !view.failed {
         let source = logical(text);
@@ -327,7 +466,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
         }
         return rows;
     }
-    if view.context.full {
+    if view.context.full && !matches!(view.name, "bash" | "bash_task") {
         let text = if view.name == "write" && !view.failed {
             view.arguments
                 .get("content")
@@ -336,11 +475,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
         } else {
             text
         };
-        let mut rows = wrap(logical(text).into_iter().map(str::to_owned), width, style);
-        if view.name == "glob" {
-            append_notices(&mut rows, view.result, width, style);
-        }
-        return rows;
+        return wrap(logical(text).into_iter().map(str::to_owned), width, style);
     }
     if view.failed
         && !matches!(view.name, "bash" | "bash_task" | "grep" | "find")
@@ -362,19 +497,6 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                 style,
                 MoreHint::Expand("lines"),
             )
-        }
-        "glob" => {
-            let mut rows = head(
-                text,
-                if expanded { usize::MAX } else { FIND_ITEMS },
-                false,
-                true,
-                width,
-                style,
-                MoreHint::Expand("items"),
-            );
-            append_notices(&mut rows, view.result, width, style);
-            rows
         }
         "find" => head(
             text,
@@ -410,7 +532,25 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
         }
         "plan_search" => plan_search(&view, width, style),
         "bash" | "bash_task" => {
-            let mut rows = wrap(logical(text).into_iter().map(str::to_owned), width, style);
+            let mut stderr = false;
+            let mut rows: Vec<_> = logical(text)
+                .into_iter()
+                .flat_map(|line| {
+                    if line == "[stderr]" {
+                        stderr = true;
+                    }
+                    let color = if view.failed
+                        && (stderr || view.result.is_some_and(|r| r["error"].is_string()))
+                    {
+                        palette::REMOVED
+                    } else if stderr {
+                        palette::ACCENT
+                    } else {
+                        palette::GREP_TEXT
+                    };
+                    wrap([line.to_owned()], width, style.fg(color))
+                })
+                .collect();
             let total = rows.len();
             let limit = BASH_LINES.min(view.context.window());
             if !expanded && total > limit {
@@ -419,7 +559,11 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                     "… ({} earlier lines, showing {limit} of {total}) (Ctrl + O to expand)",
                     total - limit
                 );
-                let mut prefix = wrap([clip(&marker, usize::from(width), true)], width, style);
+                let mut prefix = wrap(
+                    [clip(&marker, usize::from(width), true)],
+                    width,
+                    style.fg(palette::MUTED),
+                );
                 prefix.append(&mut rows);
                 rows = prefix;
             }
