@@ -489,17 +489,91 @@ fn todo_schema_rejects_unknown_fields_nulls_and_types() {
 }
 
 #[test]
-fn todo_occurrence_rejected_for_plain_tasks() {
+fn todo_occurrence_supported_for_plain_tasks() {
     let current = inited(&[("P", &["a"])]);
     let (value, change) = run(&current, r#"{"op":"done","task":"a","occurrence":1}"#);
-    assert_eq!(value["ok"], json!(false));
-    assert_eq!(
-        value["error"],
-        json!("occurrence is only available for plan tasks.")
-    );
+    assert_eq!(value["ok"], json!(true), "{value}");
     assert_eq!(value["op"], json!("done"));
-    assert!(change.is_none());
-    assert_eq!(value["phases"], serde_json::to_value(&current).unwrap());
+    assert_eq!(
+        status_of(&change.unwrap().phases, "a"),
+        TodoStatus::Completed
+    );
+}
+
+#[test]
+fn todo_init_append_and_view_accept_unused_occurrence() {
+    let mut current = Vec::new();
+    for args in [
+        r#"{"op":"init","items":["a"],"occurrence":1}"#,
+        r#"{"op":"append","phase":"Tasks","items":["b"],"occurrence":1}"#,
+        r#"{"op":"view","occurrence":1}"#,
+    ] {
+        let (value, change) = run(&current, args);
+        assert_eq!(value["ok"], true, "{args}: {value}");
+        if let Some(change) = change {
+            current = change.phases;
+        }
+    }
+    assert_eq!(current[0].tasks.len(), 2);
+}
+
+#[test]
+fn todo_occurrence_targets_all_plain_task_operations_after_phase_filter() {
+    let current = phases(&[
+        ("First", &[("same", TodoStatus::InProgress)]),
+        (
+            "Second",
+            &[("same", TodoStatus::Pending), ("same", TodoStatus::Pending)],
+        ),
+    ]);
+    let (value, change) = run(&current, r#"{"op":"done","task":"same","occurrence":2}"#);
+    assert_eq!(value["ok"], true, "{value}");
+    let next = change.unwrap().phases;
+    assert_eq!(next[0], current[0]);
+    assert_eq!(next[1].tasks[0].status, TodoStatus::Completed);
+    assert_eq!(next[1].tasks[1], current[1].tasks[1]);
+    for (op, status) in [
+        ("start", TodoStatus::InProgress),
+        ("done", TodoStatus::Completed),
+        ("drop", TodoStatus::Abandoned),
+        ("block", TodoStatus::Blocked),
+        ("unblock", TodoStatus::Pending),
+        ("rm", TodoStatus::Pending),
+    ] {
+        let mut before = current.clone();
+        if op == "unblock" {
+            before[1].tasks[1].status = TodoStatus::Blocked;
+            before[1].tasks[1].blocker = Some("waiting".into());
+        }
+        let args = json!({"op":op,"task":"same","phase":"Second","occurrence":2});
+        let (value, change) = run(&before, &args.to_string());
+        assert_eq!(value["ok"], true, "{args}: {value}");
+        let next = change.unwrap().phases;
+        assert_eq!(next[1].tasks[0], before[1].tasks[0], "{op}");
+        if op == "rm" {
+            assert_eq!(next[1].tasks.len(), 1);
+        } else {
+            assert_eq!(next[1].tasks[1].status, status, "{op}");
+            assert!(next[1].tasks[1].blocker.is_none() || op == "block");
+        }
+    }
+}
+
+#[test]
+fn todo_invalid_occurrence_target_keeps_plain_state() {
+    let current = inited(&[("First", &["a"]), ("Second", &["b"])]);
+    for args in [
+        r#"{"op":"done","task":"a","occurrence":2}"#,
+        r#"{"op":"start","task":"a","occurrence":18446744073709551615}"#,
+        r#"{"op":"done","task":"a","phase":"Second","occurrence":1}"#,
+        r#"{"op":"done","occurrence":1}"#,
+        r#"{"op":"rm","task":"","occurrence":1}"#,
+    ] {
+        let (value, change) = run(&current, args);
+        assert_eq!(value["ok"], false, "{args}: {value}");
+        assert!(change.is_none(), "{args}");
+        assert_eq!(value["phases"], serde_json::to_value(&current).unwrap());
+    }
 }
 
 #[test]

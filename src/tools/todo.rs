@@ -223,7 +223,7 @@ fn schema_with_ops(ops: &[&str]) -> Value {
             "occurrence": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "one-based pick among identical task texts; only plan tasks support occurrence",
+                "description": "one-based pick among identical task texts after optional phase filtering; supported for standalone and plan tasks",
             },
         },
         "required": ["op"],
@@ -608,7 +608,7 @@ fn resolve(current: &[TodoPhase], params: &TodoParams) -> Result<Operation, Vec<
             Operation::Append { phase, items }
         }
         TodoOperation::Start => {
-            let Some(target) = resolve_task(current, params.task.as_deref(), &mut errors) else {
+            let Some(target) = resolve_task(current, params, &mut errors) else {
                 return Err(errors);
             };
             Operation::Start(target)
@@ -667,6 +667,9 @@ fn task_targets(
     params: &TodoParams,
     errors: &mut Vec<String>,
 ) -> Vec<TaskOrdinal> {
+    if params.occurrence.is_some() {
+        return resolve_task(current, params, errors).into_iter().collect();
+    }
     if let Some(task) = params.task.as_deref().filter(|t| !t.is_empty()) {
         return locate_task(current, task, errors).into_iter().collect();
     }
@@ -751,16 +754,33 @@ fn locate_phase(current: &[TodoPhase], name: &str, errors: &mut Vec<String>) -> 
     }
 }
 
-/// `start` must name one task; missing or empty content is "Missing task content".
+/// 单任务定位支持可选阶段筛选及一基 occurrence；缺失或空任务原文报错。
 fn resolve_task(
     current: &[TodoPhase],
-    content: Option<&str>,
+    params: &TodoParams,
     errors: &mut Vec<String>,
 ) -> Option<TaskOrdinal> {
-    let Some(content) = content.filter(|c| !c.is_empty()) else {
+    let Some(content) = params.task.as_deref().filter(|c| !c.is_empty()) else {
         errors.push("Missing task content".into());
         return None;
     };
+    if let Some(occurrence) = params.occurrence {
+        let mut candidates = locate_task_matches(current, content);
+        if let Some(phase) = params.phase.as_deref() {
+            candidates.retain(|target| current[target.phase].name == phase);
+        }
+        let target = usize::try_from(occurrence - 1)
+            .ok()
+            .and_then(|index| candidates.get(index))
+            .copied();
+        if target.is_none() {
+            errors.push(format!(
+                "Task \"{content}\" not found: occurrence {occurrence} exceeds {} match(es).",
+                candidates.len()
+            ));
+        }
+        return target;
+    }
     locate_task(current, content, errors)
 }
 
@@ -1162,19 +1182,6 @@ pub(crate) fn run(current: &[TodoPhase], arguments: &str) -> (Value, Option<Todo
             return (failure_value(current, op, message.clone(), message), None);
         }
     };
-    if params.occurrence.is_some() {
-        let errors = vec!["occurrence is only available for plan tasks.".to_owned()];
-        let content = format_summary(current, &errors, params.op == TodoOperation::View);
-        return (
-            failure_value(
-                current,
-                Some(params.op.as_str()),
-                errors.join("; "),
-                content,
-            ),
-            None,
-        );
-    }
     let operation = match resolve(current, &params) {
         Ok(operation) => operation,
         Err(errors) => {

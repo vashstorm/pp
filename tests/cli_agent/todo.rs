@@ -70,7 +70,7 @@ fn todo_native_batches_commit_each_transition_and_resume_standalone_state() {
                 todo_call(
                     protocol,
                     "init",
-                    json!({"op":"init","list":[{"phase":"First","items":["A","B"]},{"phase":"Second","items":["C"]}]})
+                    json!({"op":"init","list":[{"phase":"First","items":["A","B"]},{"phase":"Second","items":["C"]}],"occurrence":1})
                 ),
                 todo_call(protocol, "done-b", json!({"op":"done","task":"B"})),
                 todo_call(protocol, "view", json!({"op":"view"}))
@@ -105,13 +105,10 @@ fn todo_native_batches_commit_each_transition_and_resume_standalone_state() {
         assert_eq!(viewed["phases"][0]["tasks"][1]["status"], "completed");
         assert_eq!(
             viewed["phases"][1]["tasks"],
-            json!([{"content":"C","status":"in_progress"}])
+            json!([{"content":"C","status":"completed"}])
         );
         assert_eq!(todo_result(&body, protocol, "reject")["ok"], false);
-        assert_eq!(
-            todo_result(&body, protocol, "occurrence")["error"],
-            "occurrence is only available for plan tasks."
-        );
+        assert_eq!(todo_result(&body, protocol, "occurrence")["ok"], true);
         todo_calls(
             request,
             protocol,

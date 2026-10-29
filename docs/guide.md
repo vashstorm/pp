@@ -301,7 +301,7 @@ chmod 600 ~/.pp/agent/models.yml
 
 ### Todo 任务清单
 
-`todo` 是模型工具，不是 `/todo` 用户命令。普通 Execute 会话支持 `init/start/done/rm/drop/block/unblock/append/view`；每次只提交一个 `op` 对象。任务按完整原文、阶段按完整名称匹配，不使用生成的任务 ID。`init` 可接受 `list:[{phase,items}]` 或平铺 `items`；显式 `list:[]` 清空清单。普通清单要求阶段名及任务原文唯一。错误不会部分安装修改，`view` 只查看、不推进执行指针。
+`todo` 是模型工具，不是 `/todo` 用户命令。普通 Execute 会话支持 `init/start/done/rm/drop/block/unblock/append/view`；每次只提交一个 `op` 对象。任务按完整原文、阶段按完整名称匹配，不使用生成的任务 ID。`init` 可接受 `list:[{phase,items}]` 或平铺 `items`；显式 `list:[]` 清空清单。普通清单要求阶段名及任务原文唯一。普通清单与计划任务均支持 `occurrence`：在完整 `task` 与可选完整 `phase` 筛选后，从 1 开始选择匹配项；超出范围时报错并保留原清单。`init`、`append`、`view` 不使用该定位参数，附带合法值不会因此失败。错误不会部分安装修改，`view` 只查看、不推进执行指针。
 
 普通任务保持一个 active：成功修改后保留顺序最前的已有 active；没有 active 时启动最前 pending。乱序完成不会重新打开 completed；`block` 记录可选原因并跳过该任务，`unblock` 解除阻塞。`start` 可以显式重开已关闭任务。`drop` 将任务标记为 abandoned，`rm` 移除任务；普通清单的关闭计数包含 completed 和 abandoned。
 
@@ -334,7 +334,7 @@ Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 支持 
 
 Esc 只关闭审阅，不退出 Plan。外部编辑后再次安全读取可直接登记新修订并进入 Ready（须有真实 TODO），不强制模型复核；无 TODO 的正文只能 Draft 查看。批准携带 session／plan／revision／精确正文 token，worker 在准备前后再次核对文件及队列。字节变化会刷新新修订并要求重审；文件缺失、非 UTF-8、过大或不安全时绝不用日志旧正文回填。报告绑定审查修订和模型，计划改变后标记 `outdated`；审查结束不会自动实施。
 
-三种执行方式交接成功后都保持 **EXEC**，包括成功、失败和取消；再次规划必须用户 `/plan`。`Executed` 表示已经交接，不表示全部完成。Fresh／Keep／Compact 均在首个实施请求前从批准正文绑定 todo、激活首个 unchecked，不需要模型 `init`。Markdown 是任务及完成勾选的主记录：验收后 `todo done` 只修改对应 checkbox 中间的状态字节；`start` 显式重开 completed 时同时取消勾选。active、blocked 和原因只保存在会话中，失败／取消／阻塞项保持未勾选。执行计划仅允许 `view/start/done/block/unblock`，拒绝 `init/append/rm/drop`；不能增删、重排或改写批准任务。重复文案须以完整 `task`、可选完整 `phase` 及筛选后的 `occurrence`（从 1 开始）消除歧义，同名 phase-only 操作覆盖所有同名区域；普通清单不接受 occurrence。丢失原文先 `view`，不能默认选择第一个同文案任务。
+三种执行方式交接成功后都保持 **EXEC**，包括成功、失败和取消；再次规划必须用户 `/plan`。`Executed` 表示已经交接，不表示全部完成。Fresh／Keep／Compact 均在首个实施请求前从批准正文绑定 todo、激活首个 unchecked，不需要模型 `init`。Markdown 是任务及完成勾选的主记录：验收后 `todo done` 只修改对应 checkbox 中间的状态字节；`start` 显式重开 completed 时同时取消勾选。active、blocked 和原因只保存在会话中，失败／取消／阻塞项保持未勾选。执行计划仅允许 `view/start/done/block/unblock`，拒绝 `init/append/rm/drop`；不能增删、重排或改写批准任务。重复文案须以完整 `task`、可选完整 `phase` 及筛选后的 `occurrence`（从 1 开始）消除歧义，同名 phase-only 操作覆盖所有同名区域；普通清单同样支持 occurrence。丢失原文先 `view`，不能默认选择第一个同文案任务。
 
 准确地直接 edit/write checkbox 和相邻验收证据仍可用。运行时在每个 todo 调用前、绑定文件的 edit/write 完成后、模型请求前及终答收尾前安全读取实际 Markdown；同批 `edit → todo`、`done → view` 不读旧状态。外部 checkbox 变动按文档序号合并，保留合法 active/blocked；外部取消勾选使 completed 回到 pending。标题与说明可刷新，但批准任务文本、数量或顺序改变会立即报错并停止继续执行、提醒及归档。没有后台文件监听。`/plan view` 显示最近成功同步的只读进度，Esc 只关闭视图；批准原始快照永久保留在实施消息／checkpoint。
 
