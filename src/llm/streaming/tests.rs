@@ -5,7 +5,7 @@ use async_openai::types::chat::ChatCompletionRequestAssistantMessageContent;
 use serde_json::{Value, json};
 
 fn chat(delta: Value, finish: Option<&str>) -> ChatChunk {
-    serde_json::from_value(json!({
+    ChatChunk::decode(json!({
         "id":"fixture", "object":"chat.completion.chunk", "created":0, "model":"fixture",
         "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
     }))
@@ -13,7 +13,7 @@ fn chat(delta: Value, finish: Option<&str>) -> ChatChunk {
 }
 
 fn usage_chunk(usage: Value) -> ChatChunk {
-    serde_json::from_value(json!({
+    ChatChunk::decode(json!({
         "id":"fixture", "object":"chat.completion.chunk", "created":0, "model":"fixture",
         "choices":[], "usage":usage
     }))
@@ -231,7 +231,7 @@ fn streaming_responses_argument_progress_without_visible_answer() {
 
 #[test]
 fn thinking_chat_extensions_are_visible_and_separate_from_answer() {
-    for field in ["reasoning_content", "reasoning"] {
+    for field in ["reasoning_content", "reasoning", "reasoning_text"] {
         let mut stream = ChatStream::default();
         let mut thinking = String::new();
         let mut answer = String::new();
@@ -263,6 +263,212 @@ fn thinking_chat_extensions_are_visible_and_separate_from_answer() {
         );
         assert_eq!(turn.usage, None);
     }
+}
+
+#[test]
+fn streaming_chat_copilot_thinking_aliases_are_not_duplicated() {
+    let mut stream = ChatStream::default();
+    let mut thinking = String::new();
+    stream
+        .push(
+            chat(
+                json!({"role":"assistant","content":"answer", "reasoning_content":"inspect",
+                    "reasoning":"duplicate", "reasoning_text":"duplicate", "reasoning_opaque":"private-opaque"}),
+                Some("stop"),
+            ),
+            &mut |event| {
+                if let AgentEvent::ThinkingDelta { text } = event {
+                    thinking.push_str(&text);
+                }
+            },
+        )
+        .unwrap();
+    assert_eq!(thinking, "inspect");
+    assert!(into_completion_turn(stream.finish().unwrap()).is_ok());
+}
+
+#[test]
+fn streaming_chat_copilot_defaults_only_missing_object_metadata() {
+    let baseline = json!({"id":"fixture", "created":0, "model":"fixture",
+        "choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]});
+    let chunk = ChatChunk::decode(baseline.clone()).unwrap();
+    assert_eq!(chunk.native.object, "chat.completion.chunk");
+    let mut stream = ChatStream::default();
+    stream.push(chunk, &mut |_| {}).unwrap();
+    assert!(into_completion_turn(stream.finish().unwrap()).is_ok());
+    for invalid in [Value::Null, json!([]), json!(123)] {
+        let mut value = baseline.clone();
+        value["object"] = invalid;
+        let error = ChatChunk::decode(value).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "decoding Chat Completions response: invalid field type at object"
+        );
+    }
+}
+
+#[test]
+fn streaming_chat_decode_diagnostics_keep_paths_without_provider_values() {
+    let baseline = json!({"id":"fixture", "object":"chat.completion.chunk", "created":0,
+        "model":"fixture", "choices":[{"index":0,"delta":{"role":"assistant"}}]});
+    let mut missing = baseline.clone();
+    missing.as_object_mut().unwrap().remove("created");
+    let mut delta = baseline.clone();
+    delta["choices"][0]["delta"] = Value::Null;
+    let mut content = baseline.clone();
+    content["choices"][0]["delta"]["content"] = json!({"private-field":"private-value"});
+    let mut finish = baseline.clone();
+    finish["choices"][0]["finish_reason"] = "private-value".into();
+    let mut tier = baseline.clone();
+    tier["service_tier"] = "private-value".into();
+    let mut usage = baseline.clone();
+    usage["usage"] = json!({"prompt_tokens":1,"completion_tokens":2});
+    for (value, expected) in [
+        (missing, "missing field at created"),
+        (delta, "invalid field type at choices[0].delta"),
+        (content, "invalid field type at choices[0].delta.content"),
+        (finish, "unsupported enum value at choices[0].finish_reason"),
+        (tier, "unsupported enum value at service_tier"),
+        (usage, "missing field at usage.total_tokens"),
+    ] {
+        let error = ChatChunk::decode(value).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            format!("decoding Chat Completions response: {expected}")
+        );
+        assert!(!format!("{error:?}").contains("private"));
+    }
+    for value in [
+        json!({"error":{"code":"private-code","message":"private-message","param":"private-param"}}),
+        json!({"error":"private-message"}),
+    ] {
+        let error = ChatChunk::decode(value).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "Chat Completions stream error: unrecognized error code"
+        );
+        assert!(!format!("{error:?}").contains("private"));
+    }
+    let error = ChatChunk::decode(
+        json!({"error":{"code":"rate_limit_exceeded","message":"private-message"}}),
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("rate_limit_exceeded"));
+    assert!(!format!("{error:?}").contains("private"));
+
+    let error = serde_path_to_error::deserialize::<_, BTreeMap<String, u8>>(
+        json!({"private-field":"private-value"}),
+    )
+    .err()
+    .unwrap();
+    let error = chat_decode_error(error);
+    assert_eq!(
+        error.to_string(),
+        "decoding Chat Completions response: invalid field type at <field>"
+    );
+    assert!(!format!("{error:?}").contains("private"));
+}
+
+#[test]
+fn streaming_chat_copilot_error_keeps_usage_and_never_finishes_successfully() {
+    let mut stream = ChatStream::default();
+    let mut visible = Vec::new();
+    stream
+        .push(
+            chat(json!({"role":"assistant","content":"partial"}), None),
+            &mut capture(&mut visible),
+        )
+        .unwrap();
+    let mut value = json!({"id":"fixture", "object":"chat.completion.chunk", "created":0,
+        "model":"fixture", "choices":[{"index":0,"delta":{"content":"discarded"},"finish_reason":"error"}],
+        "usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}});
+    value["error"] = Value::Null;
+    let error = stream
+        .push(
+            ChatChunk::decode(value).unwrap(),
+            &mut capture(&mut visible),
+        )
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("finish_reason=error"));
+    assert_eq!(visible, [("partial".into(), false)]);
+    let snapshot = stream.stats_snapshot();
+    assert_eq!(snapshot["finish_reason"], "error");
+    assert_eq!(snapshot["usage"]["prompt_tokens"], 10);
+    assert!(stream.finish().is_err());
+}
+
+#[test]
+fn streaming_chat_copilot_refusal_requires_text_and_rejects_pending_tools() {
+    for field in ["content", "refusal"] {
+        let mut stream = ChatStream::default();
+        stream
+            .push(
+                chat(
+                    json!({"role":"assistant",field:"Cannot help"}),
+                    Some("refusal"),
+                ),
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!(stream.stats_snapshot()["finish_reason"], "refusal");
+        let turn = into_completion_turn(stream.finish().unwrap()).unwrap();
+        assert!(turn.refusal);
+        assert_eq!(
+            turn.message.content,
+            Some(ChatCompletionRequestAssistantMessageContent::Text(
+                "Cannot help".into()
+            ))
+        );
+    }
+    let mut empty = ChatStream::default();
+    empty
+        .push(
+            chat(json!({"role":"assistant"}), Some("refusal")),
+            &mut |_| {},
+        )
+        .unwrap();
+    assert!(empty.finish().and_then(into_completion_turn).is_err());
+
+    let mut pending = ChatStream::default();
+    pending
+        .push(
+            chat(
+                json!({"role":"assistant", "tool_calls":[{"index":0,"id":"call", "type":"function",
+        "function":{"name":"write","arguments":"{}"}}]}),
+                None,
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
+    pending
+        .push(
+            chat(json!({"content":"Cannot help"}), Some("refusal")),
+            &mut |_| {},
+        )
+        .unwrap();
+    assert!(
+        pending
+            .finish()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("refusal cannot authorize tool calls")
+    );
+
+    let mut finished = ChatStream::default();
+    finished
+        .push(
+            chat(json!({"role":"assistant","content":"done"}), Some("stop")),
+            &mut |_| {},
+        )
+        .unwrap();
+    assert!(
+        finished
+            .push(chat(json!({}), Some("refusal")), &mut |_| {})
+            .is_err()
+    );
 }
 
 #[test]
@@ -341,7 +547,7 @@ fn streaming_chat_aggregates_interleaved_tool_fragments_and_late_role() {
 }
 
 #[test]
-fn streaming_chat_requires_finish_role_and_valid_complete_batch() {
+fn streaming_chat_requires_finish_and_valid_complete_batch() {
     let mut unfinished = ChatStream::default();
     unfinished
         .push(
@@ -358,7 +564,6 @@ fn streaming_chat_requires_finish_role_and_valid_complete_batch() {
             .contains("before finish_reason")
     );
     for (delta, finish) in [
-        (json!({"content":"no role"}), "stop"),
         (json!({"role":"user","content":"wrong role"}), "stop"),
         (json!({"role":"assistant","content":"truncated"}), "length"),
         (
@@ -381,6 +586,68 @@ fn streaming_chat_requires_finish_role_and_valid_complete_batch() {
                     json!({"function_call":{"name":"write","arguments":"{}"}}),
                     None
                 ),
+                &mut |_| {}
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn streaming_chat_missing_role_defaults_only_after_aggregation() {
+    for role in [None, Some(Value::Null)] {
+        for tools in [false, true] {
+            let mut delta = if tools {
+                json!({"tool_calls":[{"index":0,"id":"call", "type":"function",
+                    "function":{"name":"read","arguments":"{\"path\":\"probe.txt\"}"}}]})
+            } else {
+                json!({"content":"answer"})
+            };
+            if let Some(role) = &role {
+                delta["role"] = role.clone();
+            }
+            let mut stream = ChatStream::default();
+            stream.push(chat(delta, None), &mut |_| {}).unwrap();
+            assert_eq!(stream.role, None);
+            stream
+                .push(
+                    chat(json!({}), Some(if tools { "tool_calls" } else { "stop" })),
+                    &mut |_| {},
+                )
+                .unwrap();
+            let response = stream.finish().unwrap();
+            assert_eq!(response.choices[0].message.role, Role::Assistant);
+            let turn = into_completion_turn(response).unwrap();
+            assert_eq!(turn.message.tool_calls.is_some(), tools);
+        }
+    }
+
+    // 缺省角色不掩盖末尾的显式错误角色，也不替代必要的结束状态或有效正文。
+    for (role, finish) in [
+        (None, None),
+        (None, Some("length")),
+        (Some("user"), Some("stop")),
+    ] {
+        let mut stream = ChatStream::default();
+        stream
+            .push(chat(json!({"content":"partial"}), None), &mut |_| {})
+            .unwrap();
+        let delta = role.map_or_else(|| json!({}), |role| json!({"role":role}));
+        stream.push(chat(delta, finish), &mut |_| {}).unwrap();
+        assert!(stream.finish().and_then(into_completion_turn).is_err());
+    }
+    let mut empty = ChatStream::default();
+    empty
+        .push(chat(json!({}), Some("stop")), &mut |_| {})
+        .unwrap();
+    assert!(empty.finish().and_then(into_completion_turn).is_err());
+    let mut conflicting = ChatStream::default();
+    conflicting
+        .push(chat(json!({"role":"assistant"}), None), &mut |_| {})
+        .unwrap();
+    assert!(
+        conflicting
+            .push(
+                chat(json!({"role":"user","content":"wrong"}), Some("stop")),
                 &mut |_| {}
             )
             .is_err()

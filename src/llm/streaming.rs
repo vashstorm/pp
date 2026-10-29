@@ -120,16 +120,28 @@ fn default_output_text_annotations(part: &mut serde_json::Value) {
     }
 }
 
-// 保留 SDK 的完整分片校验，同时读取兼容供应商的可读思考扩展。
+// 保留 SDK 的核心字段校验，在转换前识别兼容供应商的终止状态与思考扩展。
 pub(super) struct ChatChunk {
     native: CreateChatCompletionStreamResponse,
     thinking: String,
     cache_write_tokens: Option<u64>,
+    termination: Option<ChatTermination>,
 }
 
-impl<'de> Deserialize<'de> for ChatChunk {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        let value = serde_json::Value::deserialize(deserializer)?;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChatTermination {
+    Error,
+    Refusal,
+}
+
+impl ChatChunk {
+    pub(super) fn decode(mut value: serde_json::Value) -> Result<Self> {
+        if value.get("error").is_some_and(|error| !error.is_null()) {
+            bail!(
+                "Chat Completions stream error: {}",
+                response_error_description(value["error"]["code"].as_str().unwrap_or(""))
+            );
+        }
         let thinking = value["choices"]
             .as_array()
             .into_iter()
@@ -139,16 +151,121 @@ impl<'de> Deserialize<'de> for ChatChunk {
                 choice["delta"]["reasoning_content"]
                     .as_str()
                     .or_else(|| choice["delta"]["reasoning"].as_str())
+                    .or_else(|| choice["delta"]["reasoning_text"].as_str())
             })
             .collect::<String>();
         let cache_write_tokens = cache_write_tokens(&value["usage"], "prompt_tokens_details");
-        let native = serde_json::from_value(value).map_err(D::Error::custom)?;
+        let mut termination = None;
+        if let Some(choices) = value
+            .get_mut("choices")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for choice in choices {
+                let special = match choice["finish_reason"].as_str() {
+                    Some("error") => ChatTermination::Error,
+                    Some("refusal") => ChatTermination::Refusal,
+                    _ => continue,
+                };
+                if choice["index"] == 0 {
+                    termination = Some(special);
+                }
+                // SDK 尚未定义这两种状态；保留原始语义，流汇总时独立校验。
+                choice["finish_reason"] = "stop".into();
+            }
+        }
+        // Copilot 的实际分片可能省略 object；这里只补固定的传输元数据，
+        // 不覆盖已有值，也不推断正文、工具参数、结束状态或用量。
+        if let Some(object) = value.as_object_mut() {
+            object
+                .entry("object")
+                .or_insert_with(|| "chat.completion.chunk".into());
+        }
+        let native = serde_path_to_error::deserialize(value).map_err(chat_decode_error)?;
         Ok(Self {
             native,
             thinking,
             cache_write_tokens,
+            termination,
         })
     }
+}
+
+// 路径与缺失字段名也属于供应商输入；只输出协议中已知的静态名称。
+fn chat_decode_error(error: serde_path_to_error::Error<serde_json::Error>) -> anyhow::Error {
+    const FIELDS: &[&str] = &[
+        "id",
+        "object",
+        "created",
+        "model",
+        "choices",
+        "index",
+        "delta",
+        "role",
+        "content",
+        "refusal",
+        "tool_calls",
+        "type",
+        "function",
+        "function_call",
+        "name",
+        "arguments",
+        "finish_reason",
+        "logprobs",
+        "usage",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "prompt_tokens_details",
+        "completion_tokens_details",
+        "cached_tokens",
+        "reasoning_tokens",
+        "service_tier",
+        "system_fingerprint",
+        "moderation",
+        "obfuscation",
+    ];
+    let mut path = String::new();
+    for segment in error.path().iter().take(16) {
+        match segment {
+            serde_path_to_error::Segment::Seq { index } => {
+                use std::fmt::Write;
+                let _ = write!(path, "[{index}]");
+            }
+            segment => {
+                if !path.is_empty() {
+                    path.push('.');
+                }
+                path.push_str(match segment {
+                    serde_path_to_error::Segment::Map { key } if FIELDS.contains(&key.as_str()) => {
+                        key
+                    }
+                    _ => "<field>",
+                });
+            }
+        }
+    }
+    let message = error.inner().to_string();
+    let reason = if let Some(field) = message
+        .strip_prefix("missing field `")
+        .and_then(|field| field.strip_suffix('`'))
+        .filter(|field| FIELDS.contains(field))
+    {
+        if !path.is_empty() {
+            path.push('.');
+        }
+        path.push_str(field);
+        "missing field"
+    } else if message.starts_with("unknown variant ") {
+        "unsupported enum value"
+    } else if message.starts_with("invalid type:") {
+        "invalid field type"
+    } else {
+        "invalid response structure"
+    };
+    if path.is_empty() {
+        path.push_str("<root>");
+    }
+    anyhow::anyhow!("decoding Chat Completions response: {reason} at {path}")
 }
 
 #[derive(Default)]
@@ -158,6 +275,7 @@ pub(super) struct ChatStream {
     refusal: String,
     calls: BTreeMap<u32, ChatCompletionMessageToolCall>,
     finish_reason: Option<FinishReason>,
+    termination: Option<ChatTermination>,
     usage: Option<CompletionUsage>,
     pub(super) cache_write_tokens: Option<u64>,
     output_bytes: u64,
@@ -166,6 +284,11 @@ pub(super) struct ChatStream {
 impl ChatStream {
     pub(super) fn stats_snapshot(&self) -> serde_json::Value {
         let mut value = serde_json::json!({"role":self.role,"content":self.content,"refusal":self.refusal,"tool_calls":self.calls.values().collect::<Vec<_>>(),"finish_reason":self.finish_reason,"usage":self.usage});
+        match self.termination {
+            Some(ChatTermination::Error) => value["finish_reason"] = "error".into(),
+            Some(ChatTermination::Refusal) => value["finish_reason"] = "refusal".into(),
+            None => {}
+        }
         if let Some(written) = self.cache_write_tokens {
             value["usage"]["prompt_tokens_details"]["cache_write_tokens"] = written.into();
         }
@@ -186,6 +309,17 @@ impl ChatStream {
         if chunk.native.usage.is_some() {
             self.usage = chunk.native.usage;
             self.cache_write_tokens = chunk.cache_write_tokens;
+        }
+        if let Some(termination) = chunk.termination {
+            ensure!(
+                self.finish_reason.is_none(),
+                "Chat Completions protocol: choice continued after finish_reason"
+            );
+            self.termination = Some(termination);
+            ensure!(
+                termination != ChatTermination::Error,
+                "Chat Completions stream error: finish_reason=error (provider could not complete the response)"
+            );
         }
         if !chunk.thinking.is_empty() {
             ensure!(
@@ -263,14 +397,29 @@ impl ChatStream {
     }
 
     #[allow(deprecated)] // SDK response construction requires deprecated nullable fields.
-    pub(super) fn finish(self) -> Result<CreateChatCompletionResponse> {
+    pub(super) fn finish(mut self) -> Result<CreateChatCompletionResponse> {
+        ensure!(
+            self.termination != Some(ChatTermination::Error),
+            "Chat Completions stream error: provider could not complete the response"
+        );
+        if self.termination == Some(ChatTermination::Refusal) {
+            ensure!(
+                self.calls.is_empty(),
+                "Chat Completions protocol: refusal cannot authorize tool calls"
+            );
+            // Copilot 可把拒绝文本放在 content；转换为原有的拒绝答复语义。
+            let content = std::mem::take(&mut self.content);
+            if !content.trim().is_empty() {
+                self.refusal = content;
+            }
+        }
         ensure!(
             self.finish_reason.is_some(),
             "Chat Completions protocol: stream ended before finish_reason"
         );
-        let role = self
-            .role
-            .ok_or_else(|| anyhow::anyhow!("Chat Completions protocol: missing assistant role"))?;
+        // Chat Completions 的响应默认属于助手；部分供应商整轮省略 role。
+        // 仅在汇总结束时补默认值，保留后续显式角色与冲突角色的校验。
+        let role = self.role.unwrap_or(Role::Assistant);
         // Feed the reconstructed batch through the existing complete-response validator.
         Ok(CreateChatCompletionResponse {
             id: String::new(),

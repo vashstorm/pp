@@ -339,7 +339,7 @@ impl OpenAiClient {
             let opened = cancellation
                 .run_until_cancelled(async {
                     attempted = true;
-                    chat.create_stream_byot::<_, ChatChunk>(&wire).await
+                    chat.create_stream_byot::<_, serde_json::Value>(&wire).await
                 })
                 .await;
             // Persist the accepted request exactly once, before judging the
@@ -355,7 +355,7 @@ impl OpenAiClient {
                 "Chat Completions",
                 &mut progress,
                 opened,
-                || chat.create_stream_byot::<_, ChatChunk>(&wire),
+                || chat.create_stream_byot::<_, serde_json::Value>(&wire),
             )
             .await?;
             loop {
@@ -364,7 +364,9 @@ impl OpenAiClient {
                     Some(None) => break,
                     Some(Some(chunk)) => {
                         output.push(
-                            chunk.map_err(|error| redacted_error(error, "Chat Completions"))?,
+                            ChatChunk::decode(
+                                chunk.map_err(|error| redacted_error(error, "Chat Completions"))?,
+                            )?,
                             &mut progress,
                         )?;
                     }
@@ -607,6 +609,18 @@ fn redacted_error(error: OpenAIError, api: &str) -> anyhow::Error {
         }
         OpenAIError::ApiError(error) => {
             anyhow::anyhow!("{api} HTTP status {}", error.status_code)
+        }
+        OpenAIError::JSONDeserialize(error, _) if api == "Chat Completions" => {
+            let reason = match error.classify() {
+                serde_json::error::Category::Eof => "incomplete JSON",
+                serde_json::error::Category::Syntax => "invalid JSON syntax",
+                _ => "invalid JSON structure",
+            };
+            anyhow::anyhow!(
+                "decoding {api} response: {reason} (line {}, column {})",
+                error.line(),
+                error.column()
+            )
         }
         OpenAIError::JSONDeserialize(..) => {
             anyhow::anyhow!("decoding {api} response: invalid JSON or response structure")

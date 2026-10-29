@@ -128,7 +128,7 @@ fn thinking_is_streamed_when_enabled_without_polluting_stdout() {
         let reasoning = json!({"type":"reasoning","id":"r","status":"completed","summary":[{"type":"summary_text","text":"inspect 中"}],"encrypted_content":"opaque-hidden"});
         match protocol {
             Protocol::Chat => stream.event(chat_chunk(
-                json!({"role":"assistant","reasoning_content":"inspect 中"}),
+                json!({"role":"assistant","reasoning_text":"inspect 中","reasoning_opaque":"opaque-hidden"}),
                 None,
             )),
             Protocol::Responses => {
@@ -388,6 +388,10 @@ fn streaming_failures_keep_partial_redact_secrets_and_never_commit_or_retry() {
                 Broken::Eof,
                 Broken::Malformed,
                 Broken::Error("private-provider-code"),
+                Broken::Error("rate_limit_exceeded"),
+                Broken::Failed("error"),
+                Broken::Failed("refusal"),
+                Broken::Failed("private-provider-reason"),
                 Broken::Failed("content_filter"),
                 Broken::Incomplete("length"),
             ],
@@ -454,6 +458,25 @@ fn streaming_failures_keep_partial_redact_secrets_and_never_commit_or_retry() {
                     }
                 );
                 assert!(!output.stderr.is_empty(), "missing failure description");
+                if matches!(protocol, Protocol::Chat) {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let expected = match broken {
+                        Broken::Malformed => Some("invalid JSON syntax"),
+                        Broken::Error("rate_limit_exceeded") => Some("rate_limit_exceeded"),
+                        Broken::Error(_) => Some("stream error: unrecognized error code"),
+                        Broken::Failed("error") => Some("finish_reason=error"),
+                        Broken::Failed("refusal") => Some("refusal cannot authorize tool calls"),
+                        Broken::Failed("private-provider-reason") => {
+                            Some("unsupported enum value at choices[0].finish_reason")
+                        }
+                        _ => None,
+                    };
+                    if let Some(expected) = expected {
+                        assert!(stderr.contains(expected), "{broken:?}: {stderr}");
+                    }
+                    assert!(!stderr.contains("private-provider-reason"));
+                    assert!(!stderr.contains("private-provider-code"));
+                }
                 if matches!(protocol, Protocol::Responses) {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     let diagnostic = match broken {
@@ -769,6 +792,103 @@ fn streaming_refusal_is_printed_once_and_content_has_priority() {
             no_more(&server);
         }
     }
+}
+
+#[test]
+fn streaming_chat_copilot_missing_object_and_role_keeps_tool_rounds_and_followups() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cli = Protocol::Chat.start(&server, dir.path(), None);
+    cli.input("write a file\n");
+    let (request, _) = Protocol::Chat.receive(&server);
+    let mut stream = SseReply::new(request);
+    let mut chunk = chat_chunk(
+        json!({"tool_calls":[{
+            "index":0,"id":"copilot-call","type":"function","function":{
+                "name":"write","arguments":json!({"path":"copilot-result","content":"OK"}).to_string()
+            }
+        }]}),
+        Some("tool_calls"),
+    );
+    chunk.as_object_mut().unwrap().remove("object");
+    stream.event(chunk);
+    let mut usage = chat_chunk(json!({}), None);
+    usage.as_object_mut().unwrap().remove("object");
+    usage["choices"] = json!([]);
+    usage["usage"] = json!({"prompt_tokens":100,"completion_tokens":10,"total_tokens":110});
+    stream.event(usage);
+    stream.frame("[DONE]");
+    stream.finish();
+    let (request, body) = Protocol::Chat.receive(&server);
+    let result = Protocol::Chat.tool_result(&body, "copilot-call");
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("copilot-result")).unwrap(),
+        "OK"
+    );
+    let mut stream = SseReply::new(request);
+    let mut final_chunk = chat_chunk(json!({"content":"done"}), Some("stop"));
+    final_chunk.as_object_mut().unwrap().remove("object");
+    stream.event(final_chunk);
+    stream.frame("[DONE]");
+    stream.finish();
+    cli.wait_for(Pipe::Stdout, "done");
+    cli.input("continue\n");
+    let (request, body) = Protocol::Chat.receive(&server);
+    let assistants: Vec<_> = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "assistant")
+        .collect();
+    assert_eq!(assistants.len(), 2);
+    assert_eq!(assistants[0]["tool_calls"][0]["id"], "copilot-call");
+    assert_eq!(assistants[1]["content"], "done");
+    let mut stream = SseReply::new(request);
+    let mut followup = chat_chunk(json!({"content":"continued"}), Some("stop"));
+    followup.as_object_mut().unwrap().remove("object");
+    stream.event(followup);
+    stream.frame("[DONE]");
+    stream.finish();
+    cli.input("/quit\n");
+    let output = cli.finish();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"done\ncontinued\n");
+    assert_clean_pipes(&output);
+    no_more(&server);
+}
+
+#[test]
+fn streaming_chat_copilot_refusal_is_printed_once_and_restored_as_text() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cli = Protocol::Chat.start(&server, dir.path(), None);
+    cli.input("refuse\n");
+    let (request, _) = Protocol::Chat.receive(&server);
+    let mut stream = SseReply::new(request);
+    Protocol::Chat.text(&mut stream, "Cannot help");
+    stream.event(chat_chunk(json!({}), Some("refusal")));
+    stream.frame("[DONE]");
+    stream.finish();
+    cli.wait_for(Pipe::Stdout, "Cannot help");
+    cli.input("continue\n");
+    let (request, body) = Protocol::Chat.receive(&server);
+    let assistant: Vec<_> = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "assistant")
+        .collect();
+    assert_eq!(assistant.len(), 1);
+    assert_eq!(assistant[0]["content"], "Cannot help");
+    assert!(assistant[0].get("tool_calls").is_none_or(Value::is_null));
+    Protocol::Chat.final_reply(request, "done");
+    cli.input("/quit\n");
+    let output = cli.finish();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"Cannot help\ndone\n");
+    assert_clean_pipes(&output);
+    no_more(&server);
 }
 
 #[test]
