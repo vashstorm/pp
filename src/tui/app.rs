@@ -1,3 +1,4 @@
+mod auth;
 mod draw;
 mod handle;
 mod init;

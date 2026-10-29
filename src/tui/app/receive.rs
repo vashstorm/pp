@@ -6,7 +6,7 @@ use crate::tui::{
 
 impl App {
     pub(in crate::tui) fn receive(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.receive_auth();
         while let Ok(reply) = self.skill_worker.replies.try_recv() {
             self.skills_pending = false;
             match reply.result {
@@ -72,6 +72,20 @@ impl App {
                 break;
             };
             match events.try_recv() {
+                Ok(WorkerEvent::ModelsReloaded(result)) => {
+                    self.model_refresh_pending = false;
+                    match result {
+                        Ok(listing) => {
+                            self.choices = listing.choices;
+                            self.default_model_reference = Some(listing.default_reference);
+                            self.favorite_models = listing.favorites;
+                            self.refresh_candidates(false);
+                        }
+                        Err(error) => self
+                            .notify(Level::Error, format!("Could not refresh models: {error:#}")),
+                    }
+                    changed = true;
+                }
                 Ok(WorkerEvent::Ask { request, reply }) => {
                     if matches!(self.state, State::Running)
                         && self

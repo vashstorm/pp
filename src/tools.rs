@@ -17,6 +17,7 @@ use std::{
 
 mod bash;
 pub(crate) use bash::BackgroundCleanup;
+pub(crate) mod approval;
 mod changes;
 pub(crate) use changes::{ChangedFile, ChangesView, UndoResult, UndoToken};
 mod diff;
@@ -36,6 +37,7 @@ const OUTPUT_LIMIT: usize = 65_536;
 
 pub(crate) struct Tools {
     pub(crate) ask_handler: Option<crate::interaction::AskHandler>,
+    pub(crate) approval: approval::Gate,
     pub(crate) mcp: crate::mcp::Registry,
     pub(crate) skills: crate::skills::SharedSkills,
     cwd: PathBuf,
@@ -151,6 +153,7 @@ impl Tools {
         let workspace = save::Workspace::open(&cwd)?;
         Ok(Self {
             ask_handler: None,
+            approval: approval::Gate::new(),
             mcp: Default::default(),
             skills: crate::skills::Skills::default().shared(),
             cwd: workspace.path.clone(),
@@ -524,6 +527,12 @@ impl Tools {
                     ToolPolicy::Plan { .. } => "Tool is not available in Plan mode.".to_owned(),
                 }
             );
+        }
+        // 审批门只作用于 Execute；Plan/Review 的白名单门禁已是完整授权边界。
+        // 与 Plan/Review 门禁一样在参数解析与分发之前执行，失败由
+        // execute_with_fetch 统一回填为 ok:false 的工具结果。
+        if matches!(policy, ToolPolicy::Execute { .. }) {
+            self.approval.enforce(name, arguments, cancellation)?;
         }
         match name {
             "ask" => {

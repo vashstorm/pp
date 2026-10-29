@@ -22,6 +22,16 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Show startup tips without recording session history",
     },
     CommandSpec {
+        name: "/login",
+        usage: "/login",
+        description: "Log in to a subscription provider (TUI)",
+    },
+    CommandSpec {
+        name: "/logout",
+        usage: "/logout",
+        description: "Remove saved subscription authorization (TUI)",
+    },
+    CommandSpec {
         name: "/model",
         usage: "/model [provider/model]",
         description: "List or select a configured model without clearing history",
@@ -108,6 +118,8 @@ pub(crate) enum Command<'a> {
     Tree,
     Changes,
     PlanList,
+    Login,
+    Logout,
     Plan(PlanCommand<'a>),
     Quit,
     Model(Option<&'a str>),
@@ -141,6 +153,14 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/resume" => Command::Resume,
         "/tree" => Command::Tree,
         "/changes" => Command::Changes,
+        "/login" | "/logout" => {
+            ensure!(argument.is_empty(), "usage: {name}");
+            if name == "/login" {
+                Command::Login
+            } else {
+                Command::Logout
+            }
+        }
         "/plan-list" => {
             ensure!(argument.is_empty(), "usage: /plan-list");
             Command::PlanList

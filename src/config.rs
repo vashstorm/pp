@@ -11,6 +11,7 @@ use crate::{models, yaml};
 
 // Deliberately not Debug: this owns the API credential.
 pub(crate) struct Config {
+    pub(crate) auth: Option<crate::auth::Config>,
     pub(crate) thinking: models::ModelThinking,
     pub(crate) protocol: models::Protocol,
     pub(crate) api_key: String,
@@ -26,6 +27,7 @@ pub(crate) struct ModelCatalog {
     settings_path: PathBuf,
     providers: Vec<models::ValidatedProvider>,
     default_reference: String,
+    auth_generations: std::collections::BTreeMap<crate::auth::Provider, String>,
 }
 
 #[derive(Clone)]
@@ -144,6 +146,15 @@ impl Default for GrepSettings {
     }
 }
 
+/// settings.yml 的 `tools:` 小节；字段语义由 `crate::tools::approval` 解释。
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct ToolsSettings {
+    #[serde(rename = "approvalMode")]
+    pub(crate) approval_mode: crate::tools::approval::ApprovalMode,
+    pub(crate) approval: std::collections::BTreeMap<String, crate::tools::approval::ApprovalPolicy>,
+}
+
 impl ToolLimits {
     pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
@@ -226,6 +237,8 @@ pub(crate) struct Settings {
     pub(crate) grep: GrepSettings,
     #[serde(default)]
     pub(crate) read: ReadDisplaySettings,
+    #[serde(default)]
+    pub(crate) tools: ToolsSettings,
     #[serde(default)]
     pub(crate) debug: bool,
     #[serde(default = "default_notification_show_countdown")]
@@ -339,9 +352,29 @@ impl Settings {
             "auto_compact_threshold_percent must be between 1 and 99"
         );
         self.tool_limits().validate()?;
+        ensure!(
+            self.tools.approval.iter().all(|(name, _)| {
+                !name.trim().is_empty()
+                    && (APPROVAL_TOOL_NAMES.contains(&name.as_str()) || name.starts_with("mcp__"))
+            }),
+            "tools.approval keys must be non-blank built-in tool names or mcp__ prefixes"
+        );
         Ok(())
     }
 }
+
+/// 审批 policy 允许的内置工具名；MCP 工具只接受 `mcp__` 前缀防拼写错误。
+const APPROVAL_TOOL_NAMES: &[&str] = &[
+    "read",
+    "grep",
+    "glob",
+    "todo",
+    "ask",
+    "edit",
+    "write",
+    "bash",
+    "bash_task",
+];
 
 fn default_skill_dirs() -> Vec<String> {
     vec!["~/.pp/agent/skills".into()]
@@ -360,6 +393,7 @@ fn default_settings() -> Settings {
     Settings {
         grep: GrepSettings::default(),
         read: ReadDisplaySettings::default(),
+        tools: ToolsSettings::default(),
         debug: false,
         notification_show_countdown: default_notification_show_countdown(),
         notification_timeout_seconds: default_notification_timeout_seconds(),
@@ -402,12 +436,62 @@ impl ModelCatalog {
         self.settings.read.tool_result_preview
     }
     pub(crate) fn from_files(settings_path: &Path, models_path: &Path) -> Result<Self> {
+        Self::load(settings_path, models_path, false)
+    }
+
+    fn load(settings_path: &Path, models_path: &Path, allow_empty: bool) -> Result<Self> {
         let settings: Settings = read_settings(settings_path)?;
         settings
             .validate()
             .with_context(|| format!("loading YAML settings config {}", settings_path.display()))?;
-        let providers = models::load_models(models_path)?;
-        let first_reference = format!("{}/{}", providers[0].id, providers[0].models[0].id);
+        Self::with_settings(settings, settings_path, models_path, allow_empty)
+    }
+
+    fn with_settings(
+        settings: Settings,
+        settings_path: &Path,
+        models_path: &Path,
+        allow_empty: bool,
+    ) -> Result<Self> {
+        let auth_path = settings_path.with_file_name("auth.yml");
+        let store = crate::auth::Store::load(&auth_path)?;
+        let mut providers = if models_path.try_exists()? {
+            models::load_models(models_path)?
+        } else {
+            Vec::new()
+        };
+        providers.retain(|provider| {
+            provider
+                .auth
+                .is_none_or(|auth| store.credentials.contains_key(&auth))
+        });
+        let subscription =
+            crate::auth::models::Catalog::load(&settings_path.with_file_name("models-sub.yml"))?;
+        let manual_references: std::collections::HashSet<_> = providers
+            .iter()
+            .flat_map(|provider| {
+                provider
+                    .models
+                    .iter()
+                    .map(|model| format!("{}/{}", provider.id, model.id))
+            })
+            .collect();
+        for mut provider in subscription.validated(&store) {
+            provider.models.retain(|model| {
+                !manual_references.contains(&format!("{}/{}", provider.id, model.id))
+            });
+            if !provider.models.is_empty() {
+                providers.push(provider);
+            }
+        }
+        ensure!(
+            allow_empty || !providers.is_empty(),
+            "No models configured; use /login in the TUI or configure models.yml."
+        );
+        let first_reference = providers
+            .first()
+            .map(|provider| format!("{}/{}", provider.id, provider.models[0].id))
+            .unwrap_or_default();
         let default_reference = match settings.default_model.as_deref() {
             Some(reference) => {
                 let (provider_id, model_id) = reference
@@ -430,6 +514,11 @@ impl ModelCatalog {
             settings_path: settings_path.to_path_buf(),
             providers,
             default_reference,
+            auth_generations: store
+                .credentials
+                .into_iter()
+                .map(|(provider, credential)| (provider, credential.generation))
+                .collect(),
         })
     }
 
@@ -450,10 +539,13 @@ impl ModelCatalog {
         })
     }
 
-    pub(crate) fn save_default_model(&self, reference: &str) -> Result<()> {
+    pub(crate) fn save_default_model(&mut self, reference: &str) -> Result<()> {
         update_settings(&self.settings_path, |_| {
             Ok(("default_model", serde_yaml::Value::String(reference.into())))
-        })
+        })?;
+        self.settings.default_model = Some(reference.to_owned());
+        self.default_reference = reference.to_owned();
+        Ok(())
     }
 
     pub(crate) fn favorite_models(&self) -> &[String] {
@@ -500,7 +592,34 @@ impl ModelCatalog {
             .collect()
     }
 
+    pub(crate) fn reload_models(&mut self) -> Result<()> {
+        let mut settings = self.settings.clone();
+        // 模型目录刷新不改变运行参数；偏好文件暂时无效时沿用已提交的偏好。
+        if let Ok(updated) = read_settings(&self.settings_path)
+            && updated.validate().is_ok()
+        {
+            settings.default_model = updated.default_model;
+            settings.favorite_models = updated.favorite_models;
+        }
+        let next = Self::with_settings(
+            settings,
+            &self.settings_path,
+            &self.settings_path.with_file_name("models.yml"),
+            true,
+        )?;
+        self.providers = next.providers;
+        self.auth_generations = next.auth_generations;
+        self.default_reference = next.default_reference;
+        self.settings.favorite_models = next.settings.favorite_models;
+        self.settings.default_model = next.settings.default_model;
+        Ok(())
+    }
+
     pub(crate) fn resolve(&self, reference: &str) -> Result<Config> {
+        ensure!(
+            !reference.is_empty(),
+            "No models configured; use /login in the TUI or configure models.yml."
+        );
         let (provider_id, model_id) = reference
             .split_once('/')
             .filter(|(provider, model)| !provider.trim().is_empty() && !model.trim().is_empty())
@@ -521,12 +640,24 @@ impl ModelCatalog {
             })
             .context("model not found; use /model to list configured models")?;
         Ok(Config {
+            auth: provider.auth.map(|provider| crate::auth::Config {
+                provider,
+                path: self.settings_path.with_file_name("auth.yml"),
+                generation: self
+                    .auth_generations
+                    .get(&provider)
+                    .cloned()
+                    .unwrap_or_default(),
+            }),
             protocol: provider.protocol,
             thinking: model.thinking,
             api_key: provider.api_key.clone(),
             model: model.model.clone(),
             context_window: model.context_window,
-            base_url: models::openai_base_url(provider.base_url.clone()),
+            base_url: match provider.auth {
+                Some(auth) => Url::parse(auth.base_url()).expect("内置供应商 URL 有效"),
+                None => models::openai_base_url(provider.base_url.clone()),
+            },
             settings: self.settings.clone(),
         })
     }

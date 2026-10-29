@@ -11,6 +11,19 @@ impl App {
         {
             self.escape_tap.reset();
         }
+        if let Some(panel) = &mut self.auth_panel {
+            if matches!(&event, Event::Key(key) if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+            {
+                if let Some(token) = &self.auth_cancellation {
+                    token.cancel();
+                }
+                return matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press);
+            }
+            let action = panel.handle(event);
+            self.apply_auth_action(action);
+            *dirty = true;
+            return false;
+        }
         // 放弃确认独占输入；粘贴、鼠标和全局快捷键不能绕过确认。
         if let Some(panel) = &mut self.plan_leave_confirmation {
             if let Event::Key(key) = event {

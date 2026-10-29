@@ -1,5 +1,8 @@
 mod app;
 mod ask;
+mod auth;
+#[cfg(test)]
+mod auth_tests;
 mod changes;
 mod edit_diff;
 mod files;
@@ -87,6 +90,7 @@ pub(crate) fn run(
     file_commands: commands::FileCommands,
     auto_continue: bool,
     notification_options: NotificationOptions,
+    bootstrap: Option<crate::agent::Bootstrap>,
 ) -> Result<()> {
     // 初始化中途失败和 panic 同样恢复终端模式。
     let _guard = TerminalGuard;
@@ -94,6 +98,7 @@ pub(crate) fn run(
     let mut surface = surface::Surface::new(io::stdout());
     let mut canvas = ratatui::Terminal::new(ratatui::backend::TestBackend::new(1, 1))?;
     let mut app = App::new_with_skills(agent, skills, file_commands, cwd, notification_options)?;
+    app.bootstrap = bootstrap;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c：Execute 保持原继续行为；Plan/Draft 提示继续输入；Plan/Ready 进入审阅。
         match (
@@ -230,6 +235,7 @@ fn paint_surface(
 }
 
 enum WorkerCommand {
+    ReloadModels,
     Shell {
         command: String,
         call_id: String,
@@ -307,6 +313,7 @@ enum WorkerCommand {
     },
 }
 enum WorkerEvent {
+    ModelsReloaded(Result<ModelListing>),
     Ask {
         request: crate::interaction::AskRequest,
         reply: mpsc::SyncSender<Vec<crate::interaction::AskAnswer>>,
@@ -459,6 +466,13 @@ impl WorkerEvent {
     }
 }
 
+/// worker 完整加载并验证后的模型目录快照。
+struct ModelListing {
+    choices: Vec<ModelChoice>,
+    default_reference: String,
+    favorites: Vec<String>,
+}
+
 /// 由 worker 一次性准备好的会话切换产物；全部就绪后才替换 UI 状态。
 /// 历史 replay 通过 ExecutionPrepared 交接，这里只保留会话 ID。
 struct ResumeState {
@@ -538,6 +552,12 @@ impl EscapeTap {
 }
 
 struct App {
+    auth_worker: auth::Worker,
+    auth_panel: Option<auth::Panel>,
+    auth_cancellation: Option<CancellationToken>,
+    auth_pending: bool,
+    bootstrap: Option<crate::agent::Bootstrap>,
+    model_refresh_pending: bool,
     conversation: Transcript,
     native_render: bool,
     normal_snapshot: Option<ratatui::buffer::Buffer>,

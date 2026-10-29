@@ -4,7 +4,7 @@ use crate::{config::Config, events::AgentEvent};
 use anyhow::{Result, bail, ensure};
 use async_openai::{
     Client,
-    config::OpenAIConfig,
+    config::{Config as _, OpenAIConfig},
     error::{ApiError, ApiErrorResponse, OpenAIError},
     middleware::ReqwestService,
     types::{
@@ -25,11 +25,13 @@ use std::{
 };
 use tokio::runtime::Runtime;
 
+pub(crate) mod auth;
 mod streaming;
 
 use streaming::{ChatChunk, ChatStream, ResponseEvent, ResponsesStream};
 
 pub(crate) struct OpenAiClient {
+    auth: Option<crate::auth::Config>,
     client: Client<OpenAIConfig>,
     runtime: Option<Runtime>,
     read_http: Option<reqwest::Client>,
@@ -55,6 +57,21 @@ pub(crate) struct CompletionTurn {
 }
 
 impl OpenAiClient {
+    pub(crate) fn same_source(&self, config: &Config) -> bool {
+        if self.auth != config.auth {
+            return false;
+        }
+        self.auth.is_some()
+            || (self.client.config().api_base() == config.base_url.as_str().trim_end_matches('/')
+                && self
+                    .client
+                    .config()
+                    .headers()
+                    .get(reqwest::header::AUTHORIZATION)
+                    .is_some_and(|header| {
+                        header.as_bytes() == format!("Bearer {}", config.api_key).as_bytes()
+                    }))
+    }
     pub(crate) fn set_stats_context(&mut self, context: crate::stats::RequestContext) {
         self.stats_context = Some(context);
         self.stats_key = None;
@@ -83,6 +100,7 @@ impl OpenAiClient {
             .build()
             .map_err(|_| anyhow::anyhow!("initializing model runtime failed"))?;
         Ok(Self {
+            auth: config.auth.clone(),
             client,
             runtime: Some(runtime),
             read_http: None,
@@ -109,6 +127,92 @@ impl OpenAiClient {
         self.client = client;
         self.read_http = None;
         self.runtime = Some(runtime);
+        Ok(())
+    }
+
+    fn prepare_auth(
+        &mut self,
+        cancellation: &CancellationToken,
+        initiator: &str,
+        has_images: bool,
+    ) -> Result<()> {
+        let Some(auth) = &self.auth else {
+            return Ok(());
+        };
+        let _lock = crate::auth::StoreLock::acquire(&auth.path, cancellation)?;
+        let mut store = crate::auth::Store::load(&auth.path)?;
+        let credential = store.credentials.get(&auth.provider).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} 尚未登录，请使用 /login 或通过 /model 选择其他模型",
+                auth.provider.id()
+            )
+        })?;
+        anyhow::ensure!(
+            credential.generation == auth.generation,
+            "Authorization changed; use /model to reselect the model before continuing."
+        );
+        if credential
+            .expires_at
+            .is_some_and(|expiry| expiry <= crate::auth::now().saturating_add(60))
+        {
+            let renewed = self
+                .runtime
+                .as_ref()
+                .expect("运行时已初始化")
+                .block_on(async {
+                    cancellation
+                        .run_until_cancelled(auth::refresh(auth.provider, credential))
+                        .await
+                        .unwrap_or_else(|| Err(Cancelled.into()))
+                })?;
+            crate::cancellation::check(cancellation)?;
+            store.credentials.insert(auth.provider, renewed);
+            store.save(&auth.path)?;
+        }
+        let credential = &store.credentials[&auth.provider];
+        credential.validate(auth.provider)?;
+        let mut sdk = OpenAIConfig::new()
+            .with_api_key(credential.access_token.clone())
+            .with_api_base(
+                credential
+                    .api_endpoint
+                    .as_deref()
+                    .unwrap_or(auth.provider.base_url()),
+            )
+            .with_org_id("")
+            .with_project_id("");
+        let mut headers = auth::headers(
+            auth.provider,
+            credential.account_id.as_deref(),
+            credential.device_id.as_deref(),
+        )?;
+        if auth.provider == crate::auth::Provider::GithubCopilot {
+            headers.insert(
+                "x-github-api-version",
+                HeaderValue::from_static("2026-08-01"),
+            );
+            headers.insert(
+                "x-initiator",
+                HeaderValue::from_str(initiator).expect("固定请求来源"),
+            );
+            headers.insert(
+                "x-interaction-type",
+                HeaderValue::from_str(&format!("conversation-{initiator}")).expect("固定交互类型"),
+            );
+            if has_images {
+                headers.insert("copilot-vision-request", HeaderValue::from_static("true"));
+            }
+        }
+        for (name, value) in &headers {
+            sdk = sdk
+                .with_header(name.clone(), value.as_bytes())
+                .map_err(|_| anyhow::anyhow!("认证请求头无效"))?;
+        }
+        if self.client.config().api_base() != sdk.api_base()
+            || self.client.config().headers() != sdk.headers()
+        {
+            self.client = build_client(sdk, self.request_timeout)?;
+        }
         Ok(())
     }
 
@@ -205,6 +309,9 @@ impl OpenAiClient {
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<CompletionTurn> {
         self.ensure_ready()?;
+        let wire = auth::wire_request(request, self.auth.as_ref().map(|auth| auth.provider))?;
+        let (initiator, has_images) = auth::request_metadata(&wire);
+        self.prepare_auth(cancellation, initiator, has_images)?;
         let started_at = Instant::now();
         let record = !cancellation.is_cancelled() && self.stats_context.is_some();
         let mut observation = crate::stats::Observation::new();
@@ -232,7 +339,7 @@ impl OpenAiClient {
             let opened = cancellation
                 .run_until_cancelled(async {
                     attempted = true;
-                    chat.create_stream_byot::<_, ChatChunk>(request).await
+                    chat.create_stream_byot::<_, ChatChunk>(&wire).await
                 })
                 .await;
             // Persist the accepted request exactly once, before judging the
@@ -248,7 +355,7 @@ impl OpenAiClient {
                 "Chat Completions",
                 &mut progress,
                 opened,
-                || chat.create_stream_byot::<_, ChatChunk>(request),
+                || chat.create_stream_byot::<_, ChatChunk>(&wire),
             )
             .await?;
             loop {
@@ -296,7 +403,7 @@ impl OpenAiClient {
             observation.output = snapshot;
             if let Some(context) = &self.stats_context {
                 if attempted {
-                    observation.request_context = context.capture(request);
+                    observation.request_context = context.capture(&wire);
                 }
                 self.stats_key = crate::stats::save(
                     context,
@@ -326,6 +433,9 @@ impl OpenAiClient {
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<ResponseTurn> {
         self.ensure_ready()?;
+        let wire = auth::wire_request(request, self.auth.as_ref().map(|auth| auth.provider))?;
+        let (initiator, has_images) = auth::request_metadata(&wire);
+        self.prepare_auth(cancellation, initiator, has_images)?;
         let started_at = Instant::now();
         let record = !cancellation.is_cancelled() && self.stats_context.is_some();
         let mut observation = crate::stats::Observation::new();
@@ -352,7 +462,7 @@ impl OpenAiClient {
             let opened = cancellation
                 .run_until_cancelled(async {
                     attempted = true;
-                    responses.create_stream_byot::<_, ResponseEvent>(request).await
+                    responses.create_stream_byot::<_, ResponseEvent>(&wire).await
                 })
                 .await;
             on_request_sent()?;
@@ -366,7 +476,7 @@ impl OpenAiClient {
                 "Responses",
                 &mut progress,
                 opened,
-                || responses.create_stream_byot::<_, ResponseEvent>(request),
+                || responses.create_stream_byot::<_, ResponseEvent>(&wire),
             )
             .await?;
             let mut output = ResponsesStream::default();
@@ -430,7 +540,7 @@ impl OpenAiClient {
             };
             if let Some(context) = &self.stats_context {
                 if attempted {
-                    observation.request_context = context.capture(request);
+                    observation.request_context = context.capture(&wire);
                 }
                 self.stats_key = crate::stats::save(
                     context,

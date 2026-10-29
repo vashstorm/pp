@@ -43,6 +43,18 @@ mkdir -p ~/.pp/agent
 
 ### 2. Configure a model
 
+Start the terminal UI even without model configuration, then use `/login` to choose ChatGPT, GitHub Copilot, Kimi Code, GLM, or Z.AI:
+
+```sh
+./target/release/pp
+```
+
+`/login` opens the authorization page in your browser. ChatGPT, Copilot, and Kimi use device authorization; GLM and Z.AI use masked API key input. Credentials are stored in `~/.pp/agent/auth.yml` with mode `0600`. Discovered subscription models are stored separately in `~/.pp/agent/models-sub.yml`. Discovery failures keep the authorization and offer a retry without adding a guessed default model.
+
+Use `/model` to select a model immediately. It reloads both model files; `models.yml` takes priority for identical `provider/model` references. `/logout` removes a provider's local authorization and subscription models. These authorization commands require the TUI; the old `pp auth` command and `auth.json` are no longer used. Kimi and GLM currently use non-thinking mode. See [subscription authentication](docs/guide.md#订阅认证) for details.
+
+For a regular API key, use the configuration below.
+
 Create `~/.pp/agent/models.yml` and replace the API key and actual model ID:
 
 ```yaml

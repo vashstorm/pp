@@ -59,6 +59,34 @@ enum Session {
     Response(Box<CreateResponse>),
 }
 
+#[derive(Clone)]
+pub(crate) struct Bootstrap {
+    pub(crate) dir: PathBuf,
+    pub(crate) cwd: PathBuf,
+    pub(crate) skills: crate::skills::SharedSkills,
+    pub(crate) prompt: crate::system_prompt::Snapshot,
+    pub(crate) approval: Option<crate::tools::approval::ApprovalMode>,
+}
+
+impl Bootstrap {
+    pub(crate) fn build(&self) -> Result<Agent> {
+        let catalog =
+            ModelCatalog::from_files(&self.dir.join("settings.yml"), &self.dir.join("models.yml"))?;
+        let mut tools = Tools::new(self.cwd.clone(), catalog.edit_mode())?;
+        tools.skills = self.skills.clone();
+        let mut agent = Agent::new_with_prompt(
+            catalog,
+            tools,
+            self.dir.join("sessions"),
+            self.prompt.clone(),
+        )?;
+        if let Some(mode) = self.approval {
+            agent.set_approval_override(mode);
+        }
+        Ok(agent)
+    }
+}
+
 pub(crate) struct Agent {
     client: OpenAiClient,
     tools: Tools,
@@ -274,6 +302,7 @@ impl Agent {
     ) -> Result<Self> {
         let config = catalog.resolve(catalog.default_reference())?;
         tools.limits = config.settings.tool_limits();
+        tools.approval.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
         tools.mcp = crate::mcp::Registry::connect(
             &config.settings.mcp_servers,
@@ -351,6 +380,19 @@ impl Agent {
             .set_tools(self.tools.all_definitions(self.workflow.mode));
     }
 
+    /// `--approval-mode` 覆盖 settings.yml 的 `tools.approvalMode`。
+    pub(crate) fn set_approval_override(&mut self, mode: crate::tools::approval::ApprovalMode) {
+        self.tools.approval.set_override(mode);
+    }
+
+    /// 审批 handler 镜像 ask：不改变 schema 列表，无需刷新工具定义。
+    pub(crate) fn set_approval_handler(
+        &mut self,
+        handler: crate::tools::approval::ApprovalHandler,
+    ) {
+        self.tools.approval.set_handler(handler);
+    }
+
     pub(crate) fn restore(
         catalog: ModelCatalog,
         mut tools: Tools,
@@ -385,6 +427,9 @@ impl Agent {
         }
         let client = OpenAiClient::new(&config)?;
         tools.limits = checkpoint.tool_limits;
+        // 审批配置沿用当前 settings.yml，不恢复 checkpoint 中的旧值；
+        // 会话级授权本来就不序列化。
+        tools.approval.set_config(config.settings.tools.clone());
         if checkpoint.workflow.mode == crate::plan::WorkMode::Execute {
             // A restored Plan session never connects MCP; only Execute does.
             tools.mcp = crate::mcp::Registry::connect(
@@ -682,6 +727,10 @@ impl Agent {
         Ok(())
     }
 
+    pub(crate) fn reload_models(&mut self) -> Result<()> {
+        self.catalog.reload_models()
+    }
+
     pub(crate) fn model_choices(&self) -> Vec<ModelChoice> {
         self.catalog.choices()
     }
@@ -747,7 +796,7 @@ impl Agent {
         self.catalog.default_reference()
     }
 
-    pub(crate) fn save_default_model(&self, reference: &str) -> Result<()> {
+    pub(crate) fn save_default_model(&mut self, reference: &str) -> Result<()> {
         self.catalog.save_default_model(reference)
     }
 
@@ -778,10 +827,17 @@ impl Agent {
     }
 
     pub(crate) fn switch_model(&mut self, reference: &str) -> Result<()> {
-        if reference == self.current_model.reference {
+        let config = self.catalog.resolve(reference)?;
+        let same_source = self.client.same_source(&config);
+        if reference == self.current_model.reference
+            && same_source
+            && config.model == self.current_model.model
+            && config.protocol == self.current_model.protocol
+            && config.thinking == self.current_model.thinking
+            && config.context_window == self.current_model.context_window
+        {
             return Ok(());
         }
-        let config = self.catalog.resolve(reference)?;
         let target_level = config.thinking.explicit_default().unwrap_or_else(|| {
             if config.thinking.supports(self.think_level) {
                 self.think_level
@@ -799,7 +855,7 @@ impl Agent {
                 .split_once('/')
                 .map(|(provider, _)| provider);
         let portable = config.protocol != self.current_model.protocol
-            || (config.protocol == Protocol::Response && !same_provider);
+            || (config.protocol == Protocol::Response && (!same_provider || !same_source));
         let converted = if portable {
             Some(history::convert(
                 &self.session,

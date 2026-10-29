@@ -7,6 +7,8 @@ use std::{
 };
 use tiny_http::{Header, Request, Response, Server};
 
+#[path = "cli_agent/auth.rs"]
+mod auth;
 #[path = "cli_agent/shell_cli.rs"]
 mod shell_cli;
 #[path = "cli_agent/stats.rs"]

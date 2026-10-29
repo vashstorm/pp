@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use reqwest::Url;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
 
 use crate::{config::ThinkLevel, yaml};
@@ -21,6 +21,13 @@ impl Default for ModelThinking {
 }
 
 impl ModelThinking {
+    pub(crate) fn without_reasoning() -> Self {
+        Self {
+            allowed: 1,
+            default_level: Some(ThinkLevel::None),
+        }
+    }
+
     pub(crate) fn supports(self, level: ThinkLevel) -> bool {
         self.allowed & (1 << level as u8) != 0
     }
@@ -147,7 +154,8 @@ where
     deserializer.deserialize_map(EntriesVisitor(std::marker::PhantomData))
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum Protocol {
     Completion,
     #[default]
@@ -197,13 +205,26 @@ impl<'de> Deserialize<'de> for Protocol {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderEntry {
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    protocol: Option<Protocol>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    auth: Option<crate::auth::Provider>,
     #[serde(default)]
-    protocol: Protocol,
     api_key: String,
     #[serde(default, deserialize_with = "deserialize_optional_base_url")]
     base_url: Option<String>,
     #[serde(deserialize_with = "deserialize_named_entries")]
     models: Vec<(String, ModelEntry)>,
+}
+
+fn deserialize_present_option<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 fn deserialize_optional_base_url<'de, D>(
@@ -289,6 +310,7 @@ pub(crate) struct ValidatedProvider {
     pub(crate) id: String,
     pub(crate) protocol: Protocol,
     pub(crate) api_key: String,
+    pub(crate) auth: Option<crate::auth::Provider>,
     pub(crate) base_url: Option<Url>,
     pub(crate) models: Vec<ValidatedModel>,
 }
@@ -320,10 +342,29 @@ fn validate_providers(providers: Vec<(String, ProviderEntry)>) -> Result<Vec<Val
     providers
         .into_iter()
         .map(|(id, provider)| {
+            let protocol = provider.protocol.unwrap_or_else(|| {
+                provider
+                    .auth
+                    .map_or(Protocol::default(), crate::auth::Provider::protocol)
+            });
             ensure!(
-                !provider.api_key.trim().is_empty(),
-                "api_key must not be blank"
+                provider.auth.is_some() || !provider.api_key.trim().is_empty(),
+                "api_key must not be blank (or configure auth)"
             );
+            if let Some(auth) = provider.auth {
+                ensure!(
+                    provider.api_key.is_empty(),
+                    "auth and api_key cannot be used together"
+                );
+                ensure!(
+                    provider.base_url.is_none(),
+                    "auth uses a fixed provider endpoint; omit base_url"
+                );
+                ensure!(
+                    auth == crate::auth::Provider::GithubCopilot || protocol == auth.protocol(),
+                    "protocol is incompatible with auth provider"
+                );
+            }
             let base_url = provider
                 .base_url
                 .as_deref()
@@ -342,8 +383,9 @@ fn validate_providers(providers: Vec<(String, ProviderEntry)>) -> Result<Vec<Val
             }
             Ok(ValidatedProvider {
                 id,
-                protocol: provider.protocol,
+                protocol,
                 api_key: provider.api_key,
+                auth: provider.auth,
                 base_url,
                 models: provider
                     .models
@@ -353,7 +395,26 @@ fn validate_providers(providers: Vec<(String, ProviderEntry)>) -> Result<Vec<Val
                             id,
                             model: model.model,
                             cost: model.cost,
-                            thinking: model.thinking.validate()?,
+                            thinking: if matches!(
+                                provider.auth,
+                                Some(
+                                    crate::auth::Provider::KimiCode
+                                        | crate::auth::Provider::Glm
+                                        | crate::auth::Provider::Zai
+                                )
+                            ) {
+                                ensure!(
+                                    model.thinking.efforts.is_empty()
+                                        && model
+                                            .thinking
+                                            .default_level
+                                            .is_none_or(|level| level == ThinkLevel::None),
+                                    "this auth provider currently requires thinking disabled"
+                                );
+                                ModelThinking::without_reasoning()
+                            } else {
+                                model.thinking.validate()?
+                            },
                             context_window: model.context_window,
                         })
                     })

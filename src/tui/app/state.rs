@@ -508,7 +508,8 @@ impl App {
 
     /// 当前显示的转录：独立审查页优先于主对话。
     pub(in crate::tui) fn needs_alternate(&self) -> bool {
-        self.history_browser
+        self.auth_panel.is_some()
+            || self.history_browser
             || self.skill_panel.is_some()
             || self.session_panel.is_some()
             || self.changes_panel.is_some()

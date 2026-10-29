@@ -12,6 +12,7 @@ include!("diff_blocks_tui.rs");
 include!("changes_tui.rs");
 include!("transcript_blocks_tui.rs");
 include!("ask_tui.rs");
+include!("auth_tui.rs");
 include!("plan_tui.rs");
 include!("todo_tui.rs");
 include!("plan_list_tui.rs");

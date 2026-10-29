@@ -1,4 +1,5 @@
 mod agent;
+mod auth;
 mod cancellation;
 mod commands;
 mod config;
@@ -34,7 +35,7 @@ use std::{
     disable_version_flag = true,
     args_conflicts_with_subcommands = true,
     about = "Minimal coding agent using OpenAI-compatible Responses or Chat Completions",
-    after_help = "Modes:\n  pp -p 'task'          run one task and exit\n  pp -c [SESSION_ID]    continue a saved session\n  pp                    interactive session (TUI on a terminal, line mode otherwise)\n\nUse `pp stats --help` for the stats subcommand, or `pp gc` to remove data older than 90 days."
+    after_help = "Modes:\n  pp -p 'task'          run one task and exit\n  pp -c [SESSION_ID]    continue a saved session\n  pp                    interactive session (TUI on a terminal, line mode otherwise)\n\nUse `/login` and `/logout` in the TUI to manage subscription credentials, `pp stats --help` for statistics, or `pp gc` to remove data older than 90 days."
 )]
 struct Args {
     #[command(subcommand)]
@@ -78,6 +79,27 @@ struct Args {
         conflicts_with_all = ["resume", "prompt"]
     )]
     continue_session: Option<Option<String>>,
+
+    /// Override tools.approvalMode from settings.yml for this run
+    #[arg(long, value_enum, value_name = "MODE")]
+    approval_mode: Option<ApprovalModeCli>,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ApprovalModeCli {
+    Yolo,
+    Write,
+    AlwaysAsk,
+}
+
+impl From<ApprovalModeCli> for crate::tools::approval::ApprovalMode {
+    fn from(value: ApprovalModeCli) -> Self {
+        match value {
+            ApprovalModeCli::Yolo => Self::Yolo,
+            ApprovalModeCli::Write => Self::Write,
+            ApprovalModeCli::AlwaysAsk => Self::AlwaysAsk,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -269,6 +291,15 @@ fn run(args: Args) -> Result<()> {
         }
     }
     .shared();
+    let bootstrap = global_dir.as_ref().ok().map(|dir| agent::Bootstrap {
+        dir: dir.clone(),
+        cwd: cwd.clone(),
+        skills: skills.clone(),
+        prompt: prompt_source
+            .clone()
+            .unwrap_or_else(system_prompt::Snapshot::bundled),
+        approval: args.approval_mode.map(Into::into),
+    });
     let mut agent = match restored {
         Some(session) => {
             let global_dir = global_dir?;
@@ -281,19 +312,10 @@ fn run(args: Args) -> Result<()> {
             tools.skills = skills.clone();
             Ok(agent::Agent::restore(catalog, tools, session)?)
         }
-        None => global_dir.and_then(|dir| {
-            config::ModelCatalog::from_files(&dir.join("settings.yml"), &dir.join("models.yml"))
-                .and_then(|catalog| {
-                    let mut tools = tools::Tools::new(cwd.clone(), catalog.edit_mode())?;
-                    tools.skills = skills.clone();
-                    agent::Agent::new_with_prompt(
-                        catalog,
-                        tools,
-                        dir.join("sessions"),
-                        prompt_source.expect("global directory resolved"),
-                    )
-                })
-        }),
+        None => bootstrap
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Unable to locate global configuration directory"))
+            .and_then(agent::Bootstrap::build),
     };
     if agent
         .as_ref()
@@ -308,6 +330,9 @@ fn run(args: Args) -> Result<()> {
             pid = std::process::id()
         );
     }
+    if let (Some(mode), Ok(agent)) = (args.approval_mode, agent.as_mut()) {
+        agent.set_approval_override(mode.into());
+    }
     if use_tui {
         return tui::run(
             agent,
@@ -316,6 +341,7 @@ fn run(args: Args) -> Result<()> {
             file_commands,
             continue_requested,
             notification_options,
+            bootstrap,
         );
     }
     if let Ok(agent) = &mut agent {
@@ -465,6 +491,13 @@ fn run(args: Args) -> Result<()> {
                 writeln!(stderr, "/plan requires the TUI; run pp in a terminal.")?;
                 continue;
             }
+            Some(commands::Command::Login | commands::Command::Logout) => {
+                writeln!(
+                    stderr,
+                    "/login and /logout require the TUI; run pp in a terminal."
+                )?;
+                continue;
+            }
             Some(commands::Command::PlanList) => {
                 writeln!(stderr, "/plan-list requires the TUI; run pp in a terminal.")?;
                 continue;
@@ -520,6 +553,9 @@ fn run(args: Args) -> Result<()> {
                 writeln!(stderr, "Session reset.")?;
             }
             Some(commands::Command::Model(None)) => {
+                if let Err(error) = agent.reload_models() {
+                    writeln!(stderr, "error: {error:#}")?;
+                }
                 for choice in agent.model_choices() {
                     let marker = if choice.reference == agent.current_model().reference {
                         "*"
@@ -535,7 +571,10 @@ fn run(args: Args) -> Result<()> {
                 writeln!(stderr, "Use /model provider/model to switch.")?;
             }
             Some(commands::Command::Model(Some(reference))) => {
-                match agent.switch_model(reference) {
+                match agent
+                    .reload_models()
+                    .and_then(|()| agent.switch_model(reference))
+                {
                     Ok(()) => {
                         let choice = agent.current_model();
                         writeln!(
@@ -556,6 +595,8 @@ fn run(args: Args) -> Result<()> {
                 | commands::Command::Tree
                 | commands::Command::Changes
                 | commands::Command::PlanList
+                | commands::Command::Login
+                | commands::Command::Logout
                 | commands::Command::Plan(_),
             ) => unreachable!(),
             Some(commands::Command::Prompt(prompt)) => {

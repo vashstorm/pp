@@ -43,6 +43,18 @@ mkdir -p ~/.pp/agent
 
 ### 2. 配置模型
 
+没有模型配置时，也可以先启动终端界面，再用 `/login` 选择 ChatGPT、GitHub Copilot、Kimi Code、GLM 或 Z.AI：
+
+```sh
+./target/release/pp
+```
+
+选择服务商后自动打开授权页面。ChatGPT、Copilot 和 Kimi 使用设备码授权；GLM 与 Z.AI 使用遮蔽的 API key 输入。凭证保存到权限为 `0600` 的 `~/.pp/agent/auth.yml`，发现的订阅模型单独保存到 `~/.pp/agent/models-sub.yml`。发现失败时保留授权并提供重试，不补造默认模型。
+
+登录后立即使用 `/model` 选模型，无需重启。它重新读取两个模型文件，同名 `provider/model` 以 `models.yml` 为准。`/logout` 删除目标服务商的本地授权和订阅模型。授权命令仅支持终端界面，不再提供 `pp auth` 参数入口，也不读取或迁移旧 `auth.json`。Kimi／GLM 当前使用非思考模式。详见[订阅认证](docs/guide.md#订阅认证)。
+
+使用普通 API key 时，按以下方式配置。
+
 创建 `~/.pp/agent/models.yml`，替换密钥和实际模型标识：
 
 ```yaml
@@ -84,6 +96,7 @@ auto_compact_threshold_percent: 80
 ### 3. 启动
 
 ```sh
+# 使用 models.yml 时限制文件权限
 chmod 600 ~/.pp/agent/models.yml
 ./target/release/pp
 ```

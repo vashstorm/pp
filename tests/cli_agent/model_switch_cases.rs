@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn model_switch_reload_same_reference_rebinds_provider_without_losing_history() {
+    let first = server();
+    let second = server();
+    let home = tempfile::tempdir().unwrap();
+    let models = |server: &Server, key: &str, model: &str| {
+        json!({"providers":{"fixture":slash_provider(server,key,"completion",json!({"primary":{"model":model}}))}}).to_string()
+    };
+    let mut cli = Cli::start_with(
+        home.path(),
+        None,
+        "{}",
+        &models(&first, "first", "first-model"),
+    );
+    cli.input("remember the original task\n");
+    let (request, body) = receive(&first);
+    let first_user = body["messages"][1].clone();
+    final_reply(request, "first reply");
+    std::fs::write(
+        config_path(home.path(), "models.yml"),
+        models(&second, "second", "second-model"),
+    )
+    .unwrap();
+    cli.input("/model fixture/primary\ncontinue with the new provider\n");
+    let (request, body) = receive(&second);
+    assert_eq!(authorization(&request), "Bearer second-key");
+    assert_eq!(body["model"], "second-model");
+    assert_eq!(body["messages"][1], first_user);
+    slash_assert_message(&body["messages"][2], "assistant", "first reply");
+    final_reply(request, "rebound reply");
+    cli.input("/quit\n");
+    let output = cli.finish();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"first reply\nrebound reply\n");
+    no_more(&first);
+    no_more(&second);
+}
+
+#[test]
 fn model_switch_completion_alias_routing_preserves_tools_and_reset_selection() {
     let a = server();
     let b = server();
@@ -504,7 +542,7 @@ fn model_switch_responses_native_replay_and_cross_provider_portability() {
 }
 
 #[test]
-fn model_switch_failure_is_atomic_and_catalog_is_a_read_only_startup_snapshot() {
+fn model_switch_failure_is_atomic_and_catalog_reloads_without_clearing_history() {
     let a = server();
     let b = server();
     let bad = server();
@@ -539,10 +577,14 @@ fn model_switch_failure_is_atomic_and_catalog_is_a_read_only_startup_snapshot() 
         settings.as_bytes()
     );
     let replacement_settings = r#"{"default_model":"replacement/new"}"#;
-    let replacement_models = json!({"providers": {
-        "replacement": slash_provider(&bad, "replacement", "response", json!({
-            "new": {"model":"not-the-startup-model"}}))}})
-    .to_string();
+    let mut replacement_catalog: Value = serde_json::from_str(&models).unwrap();
+    replacement_catalog["providers"]["replacement"] = slash_provider(
+        &bad,
+        "replacement",
+        "response",
+        json!({"new": {"model":"newly-discovered-model"}}),
+    );
+    let replacement_models = replacement_catalog.to_string();
     std::fs::write(
         config_path(dir.path(), "settings.yml"),
         replacement_settings,
@@ -612,8 +654,8 @@ fn model_switch_failure_is_atomic_and_catalog_is_a_read_only_startup_snapshot() 
     );
     assert!(stderr.contains("gateway/team/secondary"), "{stderr}");
     assert!(stderr.contains("vendor-b"), "{stderr}");
-    assert!(!stderr.contains("replacement/new"), "{stderr}");
-    assert!(!stderr.contains("not-the-startup-model"), "{stderr}");
+    assert!(stderr.contains("replacement/new"), "{stderr}");
+    assert!(stderr.contains("newly-discovered-model"), "{stderr}");
     for secret in [
         "switch-secret-marker",
         "invalid-header",

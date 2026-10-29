@@ -14,6 +14,12 @@ impl App {
             return;
         }
         if !self.native_render
+            && let Some(panel) = &mut self.auth_panel
+        {
+            panel.draw(frame, area);
+            return;
+        }
+        if !self.native_render
             && let Some(panel) = &mut self.plan_leave_confirmation
         {
             panel.draw(frame, area);

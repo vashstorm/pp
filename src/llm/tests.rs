@@ -198,12 +198,68 @@ fn decode(message: Value, finish: &str) -> Result<CompletionTurn> {
     }))?)
 }
 
+#[test]
+fn auth_client_reloads_credentials_headers_and_observes_logout() {
+    use crate::auth::{Credential, Provider, Store};
+    use async_openai::config::Config as _;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.yml");
+    let mut store = Store::default();
+    let mut credential = Credential::api_key("first-github-token".into());
+    credential.api_endpoint = Some("https://api.business.githubcopilot.com".into());
+    store
+        .credentials
+        .insert(Provider::GithubCopilot, credential);
+    store.save(&path).unwrap();
+    let mut client = test_client("http://127.0.0.1:1");
+    client.auth = Some(crate::auth::Config {
+        provider: Provider::GithubCopilot,
+        path: path.clone(),
+        generation: String::new(),
+    });
+    let cancellation = CancellationToken::new();
+    client.prepare_auth(&cancellation, "user", true).unwrap();
+    let sdk = client.client.config();
+    assert_eq!(sdk.api_base(), "https://api.business.githubcopilot.com");
+    assert_eq!(sdk.headers()["authorization"], "Bearer first-github-token");
+    assert_eq!(sdk.headers()["x-initiator"], "user");
+    assert_eq!(sdk.headers()["copilot-vision-request"], "true");
+    store
+        .credentials
+        .get_mut(&Provider::GithubCopilot)
+        .unwrap()
+        .access_token = "second-github-token".into();
+    store.save(&path).unwrap();
+    client.prepare_auth(&cancellation, "agent", false).unwrap();
+    let headers = client.client.config().headers();
+    assert_eq!(headers["authorization"], "Bearer second-github-token");
+    assert_eq!(headers["x-initiator"], "agent");
+    assert!(!headers.contains_key("copilot-vision-request"));
+    store
+        .credentials
+        .get_mut(&Provider::GithubCopilot)
+        .unwrap()
+        .generation = "new-account".into();
+    store.save(&path).unwrap();
+    let error = client
+        .prepare_auth(&cancellation, "user", false)
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("Authorization changed"));
+    client.auth.as_mut().unwrap().generation = "new-account".into();
+    client.prepare_auth(&cancellation, "user", false).unwrap();
+    store.credentials.clear();
+    store.save(&path).unwrap();
+    assert!(client.prepare_auth(&cancellation, "user", false).is_err());
+}
+
 fn test_client(base_url: &str) -> OpenAiClient {
     test_client_with_rate_limit_budget(base_url, 0)
 }
 
 fn test_client_with_rate_limit_budget(base_url: &str, budget_seconds: u64) -> OpenAiClient {
     OpenAiClient::new(&Config {
+        auth: None,
         api_key: "private-key".into(),
         model: "fixture".into(),
         protocol: crate::models::Protocol::Completion,
@@ -213,6 +269,7 @@ fn test_client_with_rate_limit_budget(base_url: &str, budget_seconds: u64) -> Op
         settings: crate::config::Settings {
             grep: Default::default(),
             read: Default::default(),
+            tools: Default::default(),
             debug: false,
             notification_show_countdown: true,
             notification_timeout_seconds: 10,

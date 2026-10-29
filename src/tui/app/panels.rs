@@ -64,6 +64,9 @@ impl App {
         self.menu_dismissed = true;
         self.model_panel = Some(model::Panel::new(query, self.choices.len()));
         self.refresh_candidates(true);
+        if self.bootstrap.is_some() {
+            self.reload_model_catalog();
+        }
     }
 
     pub(in crate::tui) fn close_model_panel(&mut self) {
@@ -162,6 +165,17 @@ impl App {
         } else {
             None
         };
+        if matches!(command, Some(Command::Login | Command::Logout)) {
+            if self.open_auth(matches!(command, Some(Command::Logout))) {
+                self.remember_input();
+                self.clear_input();
+            }
+            return false;
+        }
+        if matches!(command, Some(Command::Model(_))) && matches!(self.state, State::Unavailable) {
+            self.reload_model_catalog();
+            return false;
+        }
         if matches!(command, Some(Command::Changes))
             && matches!(self.state, State::Running | State::Cancelling)
         {
@@ -400,7 +414,14 @@ impl App {
                         self.clear_input();
                     }
                 }
-                Some(Command::Help | Command::Tips | Command::Quit | Command::Skills(_)) => {
+                Some(
+                    Command::Help
+                    | Command::Tips
+                    | Command::Quit
+                    | Command::Skills(_)
+                    | Command::Login
+                    | Command::Logout,
+                ) => {
                     unreachable!()
                 }
                 // Plan 子命令在状态检查前已处理。
