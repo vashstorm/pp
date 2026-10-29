@@ -17,6 +17,7 @@ mod scrollback;
 mod sessions;
 mod skills;
 mod statusline;
+mod subagents;
 mod surface;
 mod tips;
 mod todo;
@@ -314,10 +315,14 @@ enum WorkerCommand {
     },
 }
 enum WorkerEvent {
+    DialogFinished {
+        call_id: String,
+    },
     ModelsReloaded(Result<ModelListing>),
     Ask {
         request: crate::interaction::AskRequest,
         reply: mpsc::SyncSender<Vec<crate::interaction::AskAnswer>>,
+        cancellation: CancellationToken,
     },
     Progress(AgentEvent),
     ShellCompleted(Result<()>),
@@ -448,13 +453,19 @@ fn request_ask(
     cancellation: &CancellationToken,
 ) -> Result<Vec<crate::interaction::AskAnswer>> {
     crate::cancellation::check(cancellation)?;
+    let call_id = request.call_id.clone();
     let answers = send_and_wait_ack(
         events,
-        |reply| WorkerEvent::Ask { request, reply },
+        |reply| WorkerEvent::Ask {
+            request,
+            reply,
+            cancellation: cancellation.clone(),
+        },
         cancellation,
-    )?;
+    );
+    let _ = events.try_send(WorkerEvent::DialogFinished { call_id });
     crate::cancellation::check(cancellation)?;
-    Ok(answers)
+    answers
 }
 
 impl WorkerEvent {
@@ -581,6 +592,8 @@ struct App {
     queue_snapshot: Option<QueueSnapshot>,
     ask_panel: Option<ask::Panel>,
     ask_reply: Option<mpsc::SyncSender<Vec<crate::interaction::AskAnswer>>>,
+    ask_id: Option<String>,
+    ask_cancellation: Option<CancellationToken>,
     commands: Option<Sender<WorkerCommand>>,
     events: Option<Receiver<WorkerEvent>>,
     unavailable: Option<String>,
@@ -601,6 +614,9 @@ struct App {
     session_panel: Option<sessions::Panel>,
     tree_panel: Option<tree::Panel>,
     changes_panel: Option<changes::Panel>,
+    subagent_panel: Option<subagents::Panel>,
+    subagent_autowake: bool,
+    subagent_control: std::sync::Arc<std::sync::Mutex<Option<crate::subagent::Binding>>>,
     plan_list_panel: Option<plan_list::Panel>,
     // 列表动作读取 selection 后继续执行的后续步骤。
     plan_list_pending: Option<plan_list::PendingOp>,
@@ -702,3 +718,10 @@ impl App {
 
 #[cfg(test)]
 mod tests;
+
+fn dialog_guard<'a>(
+    queue: &'a crate::interaction::DialogQueue,
+    token: &CancellationToken,
+) -> Result<crate::interaction::DialogPermit<'a>> {
+    queue.acquire(token)
+}

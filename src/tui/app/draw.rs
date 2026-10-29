@@ -7,6 +7,7 @@ use crate::tui::{
 pub(in crate::tui) struct MainLayout {
     pub conversation: Rect,
     todo: Rect,
+    subagents: Rect,
     ask: Rect,
     input: Rect,
     status: Rect,
@@ -37,15 +38,24 @@ impl App {
         } else {
             0
         };
-        let conversation_height = remaining.saturating_sub(todo_height);
+        let has_agents = self
+            .subagent_control
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|b| !b.summary().is_empty());
+        let subagent_height = u16::from(has_agents && remaining > todo_height + 1);
+        let conversation_height = remaining.saturating_sub(todo_height + subagent_height);
         let conversation = Rect::new(area.x, area.y, area.width, conversation_height);
         let ask = Rect::new(area.x, conversation.bottom(), area.width, ask_height);
         let todo = Rect::new(area.x, ask.bottom(), area.width, todo_height);
-        let input = Rect::new(area.x, todo.bottom(), area.width, input_height);
+        let subagents = Rect::new(area.x, todo.bottom(), area.width, subagent_height);
+        let input = Rect::new(area.x, subagents.bottom(), area.width, input_height);
         let status = Rect::new(area.x, input.bottom(), area.width, status_height);
         MainLayout {
             conversation,
             todo,
+            subagents,
             ask,
             input,
             status,
@@ -61,6 +71,18 @@ impl App {
         let area = frame.area();
         self.todo_panel.area = Rect::default();
         if area.width == 0 || area.height == 0 {
+            return;
+        }
+        if !self.native_render
+            && self.ask_panel.is_none()
+            && let Some(panel) = &mut self.subagent_panel
+        {
+            panel.binding = self
+                .subagent_control
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            panel.draw(frame, area);
             return;
         }
         if !self.native_render
@@ -217,11 +239,21 @@ impl App {
         let MainLayout {
             conversation,
             todo,
+            subagents,
             ask: ask_area,
             input,
             status,
             bordered,
         } = self.main_layout(area);
+        if subagents.height > 0
+            && let Some(binding) = self
+                .subagent_control
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+        {
+            frame.render_widget(Line::from(binding.summary()), subagents);
+        }
         // 菜单只覆盖对话区，不盖住 TODO 或 ask。
         let menu_height = if self.native_render {
             0

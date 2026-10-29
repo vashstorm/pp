@@ -22,6 +22,7 @@ pub(crate) struct Config {
 }
 
 // Deliberately not Debug: the catalog owns all startup credentials.
+#[derive(Clone)]
 pub(crate) struct ModelCatalog {
     settings: Settings,
     settings_path: PathBuf,
@@ -234,6 +235,8 @@ pub(crate) struct ReadDisplaySettings {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
     #[serde(default)]
+    pub(crate) task: crate::subagent::Settings,
+    #[serde(default)]
     pub(crate) grep: GrepSettings,
     #[serde(default)]
     pub(crate) read: ReadDisplaySettings,
@@ -351,6 +354,14 @@ impl Settings {
             (1..=99).contains(&self.auto_compact_threshold_percent),
             "auto_compact_threshold_percent must be between 1 and 99"
         );
+        ensure!(
+            (1..=32).contains(&self.task.max_concurrency),
+            "task.max_concurrency must be between 1 and 32"
+        );
+        ensure!(
+            self.task.max_recursion_depth <= 8,
+            "task.max_recursion_depth must not exceed 8"
+        );
         self.tool_limits().validate()?;
         ensure!(
             self.tools.approval.iter().all(|(name, _)| {
@@ -374,6 +385,8 @@ const APPROVAL_TOOL_NAMES: &[&str] = &[
     "write",
     "bash",
     "bash_task",
+    "task",
+    "wait",
 ];
 
 fn default_skill_dirs() -> Vec<String> {
@@ -391,6 +404,7 @@ pub(crate) fn global_dir() -> Result<PathBuf> {
 
 fn default_settings() -> Settings {
     Settings {
+        task: Default::default(),
         grep: GrepSettings::default(),
         read: ReadDisplaySettings::default(),
         tools: ToolsSettings::default(),
@@ -432,6 +446,17 @@ fn default_auto_compact_threshold_percent() -> u8 {
 }
 
 impl ModelCatalog {
+    pub(crate) fn cost(&self, reference: &str) -> Option<crate::models::ModelCost> {
+        let (provider, model) = reference.split_once('/')?;
+        self.providers
+            .iter()
+            .find(|p| p.id == provider)?
+            .models
+            .iter()
+            .find(|m| m.id == model)?
+            .cost
+    }
+
     pub(crate) fn read_tool_result_preview(&self) -> bool {
         self.settings.read.tool_result_preview
     }

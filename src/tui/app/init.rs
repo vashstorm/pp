@@ -65,6 +65,8 @@ impl App {
             queue_snapshot: None,
             ask_panel: None,
             ask_reply: None,
+            ask_id: None,
+            ask_cancellation: None,
             commands: None,
             events: None,
             unavailable: None,
@@ -95,6 +97,9 @@ impl App {
             token_speed: statusline::TokenSpeed::default(),
             mcp_cleanup: None,
             background_cleanup: None,
+            subagent_panel: None,
+            subagent_autowake: false,
+            subagent_control: Default::default(),
             file_commands,
             file_worker: files::Worker::new(cwd)?,
             file_paths: Vec::new(),
@@ -161,10 +166,25 @@ impl App {
         self.default_model_reference = Some(agent.default_model_reference().to_owned());
         let (commands, receiver) = mpsc::channel();
         let (sender, events) = mpsc::sync_channel(256);
+        self.subagent_control = agent.subagent_control.clone();
+        let dialog_lock = std::sync::Arc::new(crate::interaction::DialogQueue::default());
+        let ask_lock = dialog_lock.clone();
         let ask_events = sender.clone();
         agent.set_ask_handler(Box::new(move |request, cancellation| {
+            let _guard = crate::tui::dialog_guard(&ask_lock, cancellation)?;
             request_ask(&ask_events, request, cancellation)
         }));
+        let approval_events = sender.clone();
+        agent.set_approval_handler(Box::new(move |request,token|{
+            let _guard=crate::tui::dialog_guard(&dialog_lock,token)?;
+            let mut options=vec![serde_json::json!({"label":"允许一次","description":"仅执行当前工具调用"})];
+            if request.session_grant{options.push(serde_json::json!({"label":"本会话允许","description":"该根会话及子 Agent 共享授权"}));}
+            options.push(serde_json::json!({"label":"拒绝","description":"返回工具审批被拒绝"}));
+            let args=crate::interaction::AskArgs::parse(&serde_json::json!({"questions":[{"id":"approval","question":format!("{}：{}",request.tool,request.reason),"options":options}]}).to_string())?;
+            let answers=request_ask(&approval_events,crate::interaction::AskRequest{call_id:request.agent.as_ref().map(|id|format!("subagent-{id}-approval")).unwrap_or_else(||"approval-dialog".into()),args:std::sync::Arc::new(args)},token)?;
+            Ok(match answers.first().and_then(|a|a.selected_options.first()).map(String::as_str){Some("允许一次")=>crate::tools::approval::ApprovalDecision::Approve,Some("本会话允许")if request.session_grant=>crate::tools::approval::ApprovalDecision::ApproveSession,_=>crate::tools::approval::ApprovalDecision::Deny})
+        }));
+        agent.ensure_subagents()?;
         let usage = agent.context_usage().ok();
         // 经 set_workflow 走统一入口：恢复的计划正文必须同步种子进度缓存，
         // 否则 /plan view 正文未变时不重算，标题停留 0/0。

@@ -79,19 +79,38 @@ pub(crate) fn validate_config(servers: &BTreeMap<String, ServerConfig>) -> Resul
     Ok(())
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Registry {
-    servers: BTreeMap<String, Mutex<ServerState>>,
+    servers: BTreeMap<String, SharedServer>,
     tools: BTreeMap<String, RemoteTool>,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct RemoteTool {
     server: String,
     original_name: String,
     definition: FunctionObject,
 }
 
+#[derive(Clone)]
+struct SharedServer {
+    state: Arc<Mutex<ServerState>>,
+    process: SharedProcess,
+}
+impl SharedServer {
+    fn new(state: ServerState) -> Self {
+        Self {
+            process: state.client.process.clone(),
+            state: Arc::new(Mutex::new(state)),
+        }
+    }
+}
+impl std::ops::Deref for SharedServer {
+    type Target = Mutex<ServerState>;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
 struct ServerState {
     config: ServerConfig,
     cwd: PathBuf,
@@ -123,6 +142,20 @@ impl Drop for Cleanup {
 }
 
 impl Registry {
+    pub(crate) fn abort_connections(&self) -> Result<()> {
+        for server in self.servers.values() {
+            let mut process = server.process.lock().unwrap_or_else(|e| e.into_inner());
+            process.closing = true;
+            stop_locked(&mut process)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_shared(&self) -> bool {
+        self.servers
+            .values()
+            .any(|server| Arc::strong_count(&server.state) > 1)
+    }
     pub(crate) fn cleanup(&self) -> Result<Cleanup> {
         let processes = self
             .servers
@@ -225,7 +258,7 @@ impl Registry {
         self.tools.extend(tools);
         self.servers.insert(
             server.into(),
-            Mutex::new(ServerState {
+            SharedServer::new(ServerState {
                 config: config.clone(),
                 cwd: cwd.to_owned(),
                 client,
@@ -242,11 +275,47 @@ impl Registry {
             .collect()
     }
 
+    pub(crate) fn proxy_call(
+        &self,
+        name: &str,
+        arguments: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Value> {
+        cancellation::check(cancellation)?;
+        let registry = self.clone();
+        let request_token = cancellation.clone();
+        let name = name.to_owned();
+        let arguments = arguments.to_owned();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        thread::Builder::new()
+            .name("pp-mcp-proxy".into())
+            .spawn(move || {
+                let outcome = registry.call_inner(&name, &arguments, &request_token, true);
+                let _ = sender.send(outcome);
+            })?;
+        loop {
+            cancellation::check(cancellation)?;
+            match receiver.recv_timeout(Duration::from_millis(25)) {
+                Ok(result) => return result,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(_) => bail!("MCP 代理已退出"),
+            }
+        }
+    }
     pub(crate) fn call(
         &self,
         name: &str,
         arguments: &str,
         cancellation: &CancellationToken,
+    ) -> Result<Value> {
+        self.call_inner(name, arguments, cancellation, false)
+    }
+    fn call_inner(
+        &self,
+        name: &str,
+        arguments: &str,
+        cancellation: &CancellationToken,
+        proxy: bool,
     ) -> Result<Value> {
         let tool = self.tools.get(name).context("unknown tool")?;
         let arguments: Value = serde_json::from_str(arguments)
@@ -255,16 +324,27 @@ impl Registry {
             arguments.is_object(),
             "MCP tool arguments must be an object"
         );
-        let mut state = self.servers[&tool.server]
-            .lock()
-            .map_err(|_| anyhow::anyhow!("MCP server unavailable"))?;
+        let mut state = loop {
+            cancellation::check(cancellation)?;
+            match self.servers[&tool.server].try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::WouldBlock) => thread::sleep(POLL),
+                Err(_) => bail!("MCP server unavailable"),
+            }
+        };
         if state.restart_after_cancel {
             self.restart(&tool.server, &mut state, cancellation)?;
         }
+        cancellation::check(cancellation)?;
+        let transport_token = if proxy {
+            CancellationToken::new()
+        } else {
+            cancellation.clone()
+        };
         let result = match state.client.request(
             "tools/call",
             json!({"name":tool.original_name,"arguments":arguments}),
-            cancellation,
+            &transport_token,
         ) {
             Ok(result) => result,
             Err(error) => {
@@ -822,10 +902,65 @@ mod tests {
         (client, process)
     }
 
+    #[test]
+    fn proxy_cancelled_while_queued_never_dispatches_or_closes_shared_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ServerConfig {
+            command: "bash".into(),
+            args: vec![format!(
+                "{}/tests/fixtures/mcp_server.sh",
+                env!("CARGO_MANIFEST_DIR")
+            )],
+            env: BTreeMap::from([("MCP_LOG".into(), "proxy-log".into())]),
+            timeout_seconds: 1,
+        };
+        let registry = Registry::connect(
+            &BTreeMap::from([("local".into(), config)]),
+            dir.path(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let guard = registry.servers["local"].lock().unwrap();
+        let proxy = registry.clone();
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let worker = thread::spawn(move || {
+            proxy.proxy_call(
+                "mcp__local__echo",
+                r#"{"text":"must-not-dispatch"}"#,
+                &worker_token,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Arc::strong_count(&registry.servers["local"].state) < 3 {
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        token.cancel();
+        assert!(worker.join().unwrap().unwrap_err().is::<Cancelled>());
+        drop(guard);
+        while Arc::strong_count(&registry.servers["local"].state) > 1 {
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        assert!(
+            registry
+                .call(
+                    "mcp__local__echo",
+                    r#"{"text":"survived"}"#,
+                    &CancellationToken::new()
+                )
+                .unwrap()["ok"]
+                == true
+        );
+        let log = std::fs::read_to_string(dir.path().join("proxy-log")).unwrap();
+        assert!(!log.contains("must-not-dispatch"));
+    }
+
     fn plan_register(registry: &mut Registry, name: &str, client: Client) {
         registry.servers.insert(
             name.into(),
-            Mutex::new(ServerState {
+            SharedServer::new(ServerState {
                 config: plan_server_config(&["-c", "true"]),
                 cwd: PathBuf::from("."),
                 client,

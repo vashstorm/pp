@@ -919,8 +919,8 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
             .join(".pp/agent/sessions")
             .join(format!("{id}.jsonl"));
 
-        // 新输入与审计可写完；候选含完整 40KB 最新批次，超过 16KB 余量。
-        let limit = (seeded_len + 16384).div_ceil(1024) * 1024;
+        // 为工具清单及新输入审计预留 32KB；候选还包含完整 40KB 最新批次，仍会超限。
+        let limit = (seeded_len + 32768).div_ceil(1024) * 1024;
         std::fs::write(
             config_path(home.path(), "settings.yml"),
             context_tui_settings(true, 80),

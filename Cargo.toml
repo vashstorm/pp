@@ -45,6 +45,7 @@ grep-searcher = "0.1"
 grep-pcre2 = "0.1"
 regex = "1"
 globset = "0.4"
+jsonschema = { version = "0.60.2", default-features = false }
 
 [dev-dependencies]
 flate2 = "1"

@@ -116,7 +116,7 @@ fn ask_layout_keeps_latest_message_above_panel_on_resize() {
         let panel = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
         assert!(message < panel, "消息 viewport 必须止于面板上方：{screen}");
         let bottom = rows.iter().position(|row| row.contains('╰')).unwrap();
-        assert_eq!(bottom - panel + 1, 8, "两项选择、Other 与框架应占八行");
+        assert_eq!(bottom - panel + 1, 7, "两项选择、Other 与四行框架应占七行");
         assert!(screen.contains("main draft"));
     }
 }
@@ -174,6 +174,7 @@ fn ask_cancel_exit_and_late_request_never_reopen_panel() {
         app.events = Some(receiver);
         events
             .send(WorkerEvent::Ask {
+                cancellation: CancellationToken::new(),
                 request: crate::interaction::AskRequest {
                     call_id: "late".into(),
                     args: std::sync::Arc::new(args),

@@ -257,7 +257,8 @@ fn tui_skill_read_preview_busy_rejection_and_resize_for_both_apis() {
             super::super::skills::send_skill_read(request, protocol, "中文技能");
             let (request, body) = receive_at(&server, path);
             assert!(body.to_string().contains("secret-skill-line-19"));
-            pty.text("Read · skill://");
+            pty.text("Read skill://");
+            pty.text("name: 中文技能");
             pty.drain();
             let screen = pty.parser.screen();
             let text = screen.contents();
@@ -268,7 +269,7 @@ fn tui_skill_read_preview_busy_rejection_and_resize_for_both_apis() {
             assert!(!text.contains("secret-skill-line-19"));
             assert!(
                 text.contains("name: 中文技能"),
-                "技能始终显示三行预览: {text}"
+                "技能预览应包含 frontmatter: {text}"
             );
             pty.function_key('o');
             pty.text("secret-skill-line-19");

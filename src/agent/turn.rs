@@ -356,6 +356,11 @@ pub(super) fn completion_turn(
     );
     let request_started = std::time::Instant::now();
     let response = {
+        let _permit = tools
+            .subagent
+            .as_ref()
+            .map(|b| b.permit(cancellation))
+            .transpose()?;
         let journal = RefCell::new(&mut *journal);
         let emit = RefCell::new(&mut *emit);
         let mut sent = || {
@@ -367,6 +372,9 @@ pub(super) fn completion_turn(
                 update.user,
                 update.instructions,
             )?;
+            if let (Some(binding), Some(id)) = (&tools.subagent, journal.id()) {
+                binding.bind_session(journal.directory(), id);
+            }
             publish_project_load(
                 update.pending_project_load,
                 update.reported_project_load,
@@ -386,7 +394,15 @@ pub(super) fn completion_turn(
             journal.borrow_mut().event(&event);
             (*emit.borrow_mut())(event);
         };
-        client.set_stats_context(journal.borrow().stats_context(metadata, "task", skills));
+        client.set_stats_context(journal.borrow().stats_context(
+            metadata,
+            if tools.subagent.as_ref().is_some_and(|b| b.depth > 0) {
+                "subagent"
+            } else {
+                "task"
+            },
+            skills,
+        ));
         let outcome = client.complete(request, cancellation, &mut sent, &mut progress);
         journal
             .borrow_mut()
@@ -528,6 +544,11 @@ pub(super) fn response_turn(
     );
     let request_started = std::time::Instant::now();
     let turn = {
+        let _permit = tools
+            .subagent
+            .as_ref()
+            .map(|b| b.permit(cancellation))
+            .transpose()?;
         let journal = RefCell::new(&mut *journal);
         let emit = RefCell::new(&mut *emit);
         let mut sent = || {
@@ -539,6 +560,9 @@ pub(super) fn response_turn(
                 update.user,
                 update.instructions,
             )?;
+            if let (Some(binding), Some(id)) = (&tools.subagent, journal.id()) {
+                binding.bind_session(journal.directory(), id);
+            }
             publish_project_load(
                 update.pending_project_load,
                 update.reported_project_load,
@@ -558,7 +582,15 @@ pub(super) fn response_turn(
             journal.borrow_mut().event(&event);
             (*emit.borrow_mut())(event);
         };
-        client.set_stats_context(journal.borrow().stats_context(metadata, "task", skills));
+        client.set_stats_context(journal.borrow().stats_context(
+            metadata,
+            if tools.subagent.as_ref().is_some_and(|b| b.depth > 0) {
+                "subagent"
+            } else {
+                "task"
+            },
+            skills,
+        ));
         let outcome = client.respond(request, cancellation, &mut sent, &mut progress);
         journal
             .borrow_mut()

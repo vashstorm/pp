@@ -106,6 +106,26 @@ impl InputQueue {
         Ok(id)
     }
 
+    pub(crate) fn steer_if_open(&self, source: String) -> Result<Option<u64>> {
+        let mut state = self.lock()?;
+        if !state.steering_open {
+            return Ok(None);
+        }
+        let id = state
+            .last_id
+            .checked_add(1)
+            .ok_or_else(|| anyhow!(UNAVAILABLE))?;
+        state.last_id = id;
+        state.inputs.push_back(PendingInput {
+            id,
+            kind: PendingKind::Steering,
+            source,
+            expansion: None,
+            echo_source: false,
+        });
+        state.changed();
+        Ok(Some(id))
+    }
     pub(crate) fn begin_run(&self) -> Result<()> {
         self.set_open(true)
     }
@@ -145,6 +165,13 @@ impl InputQueue {
         Ok(true)
     }
 
+    pub(crate) fn has_steering(&self) -> Result<bool> {
+        Ok(self
+            .lock()?
+            .inputs
+            .iter()
+            .any(|i| i.kind == PendingKind::Steering))
+    }
     pub(crate) fn is_empty(&self) -> Result<bool> {
         Ok(self.lock()?.inputs.is_empty())
     }

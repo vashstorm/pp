@@ -165,6 +165,20 @@ impl App {
         } else {
             None
         };
+        if matches!(command, Some(Command::Agents | Command::Subagents)) {
+            self.subagent_panel = Some(crate::tui::subagents::Panel {
+                binding: self
+                    .subagent_control
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+                roles: matches!(command, Some(Command::Agents)),
+                ..Default::default()
+            });
+            self.remember_input();
+            self.clear_input();
+            return false;
+        }
         if matches!(command, Some(Command::Login | Command::Logout)) {
             if self.open_auth(matches!(command, Some(Command::Logout))) {
                 self.remember_input();
@@ -346,6 +360,7 @@ impl App {
                 }
             }
             State::Ready => match command {
+                Some(Command::Agents | Command::Subagents) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
                 Some(Command::Think(Some(level))) => {
                     self.set_think_level(level);
@@ -542,6 +557,14 @@ impl App {
             token.cancel();
         }
         self.close_ask_on_exit();
+        let binding = self
+            .subagent_control
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(binding) = binding {
+            binding.shutdown()?;
+        }
         if let Some(cleanup) = &self.background_cleanup {
             cleanup.shutdown()?;
         }
@@ -550,7 +573,15 @@ impl App {
 
     pub(in crate::tui) fn close_ask_on_exit(&mut self) {
         if self.ask_panel.is_some() || self.ask_reply.is_some() {
-            if let Some(token) = &self.active_cancellation {
+            let child = self
+                .ask_id
+                .as_ref()
+                .is_some_and(|id| id.starts_with("subagent-"));
+            if let Some(token) = self.ask_cancellation.take() {
+                token.cancel();
+            }
+            self.ask_id = None;
+            if !child && let Some(token) = &self.active_cancellation {
                 token.cancel();
             }
             self.ask_reply = None;
@@ -562,14 +593,27 @@ impl App {
         match action {
             ask::Action::None => {}
             ask::Action::Cancel => {
+                let child = self
+                    .ask_id
+                    .as_ref()
+                    .is_some_and(|id| id.starts_with("subagent-"));
                 self.close_ask_on_exit();
-                self.state = State::Cancelling;
-                self.conversation.cancelling();
+                if !child {
+                    self.state = State::Cancelling;
+                    self.conversation.cancelling();
+                }
             }
             ask::Action::Submit(answers) => {
+                let child = self
+                    .ask_id
+                    .as_ref()
+                    .is_some_and(|id| id.starts_with("subagent-"));
                 self.ask_panel = None;
+                self.ask_cancellation = None;
+                self.ask_id = None;
                 if let Some(reply) = self.ask_reply.take()
                     && reply.send(answers).is_err()
+                    && !child
                 {
                     if let Some(token) = &self.active_cancellation {
                         token.cancel();

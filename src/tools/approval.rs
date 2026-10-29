@@ -7,8 +7,8 @@
 use anyhow::{Result, bail};
 use serde::Deserialize;
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, HashSet},
+    sync::{Arc, Mutex},
 };
 
 use crate::cancellation::CancellationToken;
@@ -54,7 +54,8 @@ pub(crate) fn tier_of(name: &str) -> Tier {
     match name {
         "read" | "grep" | "glob" | "todo" | "ask" => Tier::Read,
         "edit" | "write" => Tier::Write,
-        "bash" | "bash_task" => Tier::Exec,
+        "bash" | "bash_task" | "task" => Tier::Exec,
+        "wait" => Tier::Read,
         other if other.starts_with("mcp__") => Tier::Write,
         _ => Tier::Exec,
     }
@@ -81,6 +82,7 @@ impl From<crate::config::ToolsSettings> for ApprovalConfig {
 #[derive(Clone, Debug)]
 pub(crate) struct ApprovalRequest {
     pub(crate) tool: String,
+    pub(crate) agent: Option<String>,
     pub(crate) reason: String,
     /// 仅当本条 prompt 允许"本会话内放行"时为 true；强制 prompt
     /// （关键命令、用户 `prompt` policy）每次都问，不提供该选项。
@@ -94,16 +96,18 @@ pub(crate) enum ApprovalDecision {
     Deny,
 }
 
-pub(crate) type ApprovalHandler =
-    Box<dyn Fn(ApprovalRequest, &CancellationToken) -> Result<ApprovalDecision> + Send + Sync>;
+pub(crate) type ApprovalCallback =
+    dyn Fn(ApprovalRequest, &CancellationToken) -> Result<ApprovalDecision> + Send + Sync;
+pub(crate) type ApprovalHandler = Box<ApprovalCallback>;
 
+#[derive(Clone)]
 pub(crate) struct Gate {
     config: ApprovalConfig,
     /// `--approval-mode` flag 覆盖；`None` 时使用配置值。
     override_mode: Option<ApprovalMode>,
     /// 会话级授权（"Approve for this session"），进程生命周期，不序列化。
-    grants: RefCell<HashSet<String>>,
-    handler: Option<ApprovalHandler>,
+    grants: Arc<Mutex<HashSet<String>>>,
+    handler: Option<Arc<ApprovalCallback>>,
 }
 
 impl Default for Gate {
@@ -117,21 +121,31 @@ impl Gate {
         Self {
             config: ApprovalConfig::default(),
             override_mode: None,
-            grants: RefCell::default(),
+            grants: Default::default(),
             handler: None,
         }
     }
 
+    pub(crate) fn label(&mut self, label: String, binding: crate::subagent::Binding) {
+        if let Some(handler) = self.handler.clone() {
+            self.handler = Some(Arc::new(move |mut request, token| {
+                request.agent = Some(binding.owner.clone());
+                request.reason = format!("[{label}] {}", request.reason);
+                binding.interaction(token, || handler(request, token))
+            }));
+        }
+    }
     pub(crate) fn set_config(&mut self, settings: crate::config::ToolsSettings) {
         self.config = ApprovalConfig::from(settings);
     }
 
     pub(crate) fn set_override(&mut self, mode: ApprovalMode) {
+        tracing::debug!(mode = mode.as_str(), "设置工具审批模式");
         self.override_mode = Some(mode);
     }
 
     pub(crate) fn set_handler(&mut self, handler: ApprovalHandler) {
-        self.handler = Some(handler);
+        self.handler = Some(Arc::from(handler));
     }
 
     fn effective_mode(&self) -> ApprovalMode {
@@ -163,6 +177,7 @@ impl Gate {
             return self.prompt(
                 ApprovalRequest {
                     tool: name.to_owned(),
+                    agent: None,
                     reason: reason.to_owned(),
                     session_grant: false,
                 },
@@ -173,6 +188,7 @@ impl Gate {
             return self.prompt(
                 ApprovalRequest {
                     tool: name.to_owned(),
+                    agent: None,
                     reason: "required by the tools.approval policy for this tool.".to_owned(),
                     session_grant: false,
                 },
@@ -190,7 +206,12 @@ impl Gate {
         if !needs_prompt {
             return Ok(());
         }
-        if self.grants.borrow().contains(name) {
+        if self
+            .grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(name)
+        {
             return Ok(());
         }
         let reason = match mode {
@@ -200,6 +221,7 @@ impl Gate {
         self.prompt(
             ApprovalRequest {
                 tool: name.to_owned(),
+                agent: None,
                 reason,
                 session_grant: true,
             },
@@ -220,7 +242,10 @@ impl Gate {
         match decision {
             ApprovalDecision::Approve => Ok(()),
             ApprovalDecision::ApproveSession => {
-                self.grants.borrow_mut().insert(name);
+                self.grants
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(name);
                 Ok(())
             }
             ApprovalDecision::Deny => bail!("{name} was denied by the user."),
@@ -306,8 +331,7 @@ fn is_piped_remote_script(command: &str) -> bool {
             let stripped = segment_tokens
                 .iter()
                 .copied()
-                .skip_while(|token| *token == "sudo")
-                .next();
+                .find(|token| *token != "sudo");
             if matches!(stripped, Some("sh" | "bash" | "/bin/sh" | "/bin/bash")) {
                 return true;
             }
@@ -360,6 +384,24 @@ mod tests {
         gate
     }
 
+    #[test]
+    fn cloned_gate_keeps_session_grants_shared() {
+        let mut parent = gate(ApprovalMode::Write, &[]);
+        parent.set_handler(session_handler());
+        let child = parent.clone();
+        parent
+            .enforce("bash", r#"{"command":"pwd"}"#, &CancellationToken::new())
+            .unwrap();
+        let mut child = child;
+        child.set_handler(deny_handler());
+        child
+            .enforce("bash", r#"{"command":"pwd"}"#, &CancellationToken::new())
+            .unwrap();
+        let mut once = gate(ApprovalMode::Write, &[]);
+        once.set_handler(approve_handler());
+        once.enforce("bash", r#"{"command":"pwd"}"#, &CancellationToken::new())
+            .unwrap();
+    }
     fn approve_handler() -> ApprovalHandler {
         Box::new(|_request, _cancellation| Ok(ApprovalDecision::Approve))
     }

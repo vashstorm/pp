@@ -227,7 +227,7 @@ impl Agent {
 }
 
 /// 按 ID 协调结果：绑定需采纳登记、登记需首次建立，或已一致。
-
+///
 /// 按 ID 协调计划身份：登记表始终优先，把绑定文档同步到 canonical
 /// 名称/位置；纯路径/状态变化不递增正文 revision，但使旧 path token
 /// 失效。未登记的 revision>=1 旧绑定按迁移规则首次登记：Draft/Ready 的
@@ -235,24 +235,24 @@ impl Agent {
 /// Abandoned 保留原位置只读，历史 Executed 登记到 Done 时只读同步
 /// Completed，不重新授权。墓碑、路径/正文缺失一律报错，绝不从历史
 /// 快照恢复，也不让历史 Draft/Ready 绑定把已提升的位置退回 drafts。
-
+///
 /// 绑定文档的身份三元组：登记协调是否改变了名称/位置/状态。
-
+///
 /// Plan 模式只同步计划正文，不生成任务投影；任务运行态仅在执行时建立。
-
+///
 /// 共享同步入口安全导入实际 Markdown；Plan 只更新正文，Execute 才同步任务。
-
+///
 /// 恢复只携带一次同步新生成的快照；replay 已包含相同快照时不重复追加。
-
+///
 /// 启动恢复与交互式 resume 共用同一文件同步和快照去重边界。
-
+///
 /// Register on-disk plan bytes as a new revision against the bound workflow.
 /// Returns `false` when the file matches the registered snapshot. Draft/Ready
 /// documents become Ready only when the imported content has a genuine
 /// Markdown task list; Executed/Abandoned documents remain read-only after
 /// importing progress. The whole workflow is rolled back when the journal
 /// rejects the write.
-
+///
 impl Agent {
     /// Stop every managed MCP process so Plan mode cannot reach them. On
     /// failure the registry, its slots and the UI's exit handle stay in place
@@ -262,6 +262,7 @@ impl Agent {
         &mut self,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        self.stop_subagents()?;
         cancellation::check(cancellation)?;
         if let Err(error) = self.tools.mcp.shutdown() {
             let message = format!(
@@ -298,6 +299,7 @@ impl Agent {
     /// 文档；工作流权威先持久化，之后才关闭 MCP 能力。已在 Plan 时只重试
     /// 一次失败的关闭（`/plan <prompt>` 继续当前草稿也复用该入口）。
     pub(crate) fn enter_plan(&mut self, cancellation: &CancellationToken) -> Result<WorkflowState> {
+        self.stop_subagents()?;
         cancellation::check(cancellation)?;
         if self.workflow.mode == WorkMode::Plan {
             self.ensure_plan_mcp_shutdown(cancellation)?;
@@ -982,6 +984,7 @@ impl Agent {
         cancellation: &CancellationToken,
     ) -> Result<ExecutionPreparation> {
         cancellation::check(cancellation)?;
+        self.stop_subagents()?;
         let mut restored = self.prepare_resume(id)?;
         let target_mode = restored.checkpoint.workflow.mode;
         match (self.workflow.mode, target_mode) {

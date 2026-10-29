@@ -10,12 +10,12 @@ mod arguments;
 
 pub(crate) const RESERVED_CUSTOM_LABEL: &str = "Other (type your own)";
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AskArgs {
     pub(crate) questions: Vec<AskQuestion>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AskQuestion {
     pub(crate) id: String,
@@ -26,7 +26,7 @@ pub(crate) struct AskQuestion {
     pub(crate) multi: bool,
     pub(crate) recommended: Option<usize>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AskOption {
     pub(crate) label: String,
@@ -37,15 +37,17 @@ pub(crate) struct AskRequest {
     pub(crate) call_id: String,
     pub(crate) args: Arc<AskArgs>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AskAnswer {
     pub(crate) id: String,
     pub(crate) selected_options: Vec<String>,
     pub(crate) custom_input: Option<String>,
 }
-pub(crate) type AskHandler =
-    Box<dyn Fn(AskRequest, &CancellationToken) -> anyhow::Result<Vec<AskAnswer>> + Send + Sync>;
+pub(crate) type AskCallback =
+    dyn Fn(AskRequest, &CancellationToken) -> anyhow::Result<Vec<AskAnswer>> + Send + Sync;
+pub(crate) type AskHandler = Box<AskCallback>;
+pub(crate) type SharedAskHandler = Arc<AskCallback>;
 
 pub(crate) fn definition() -> FunctionObject {
     FunctionObject {
@@ -658,5 +660,77 @@ mod tests {
             ordered[0].selected_options,
             vec!["  spaced  ".to_string(), "中文 label".to_string()]
         );
+    }
+}
+
+/// 所有 Agent 共用一条可取消的 FIFO 交互队列；释放许可后才显示下一项。
+#[derive(Default)]
+pub(crate) struct DialogQueue {
+    state: std::sync::Mutex<(u64, std::collections::VecDeque<u64>)>,
+    changed: std::sync::Condvar,
+}
+pub(crate) struct DialogPermit<'a> {
+    queue: &'a DialogQueue,
+    ticket: u64,
+}
+impl DialogQueue {
+    pub(crate) fn acquire(&self, token: &CancellationToken) -> Result<DialogPermit<'_>> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.0 += 1;
+        let ticket = state.0;
+        state.1.push_back(ticket);
+        loop {
+            if token.is_cancelled() {
+                state.1.retain(|id| *id != ticket);
+                self.changed.notify_all();
+                return Err(crate::cancellation::Cancelled.into());
+            }
+            if state.1.front() == Some(&ticket) {
+                return Ok(DialogPermit {
+                    queue: self,
+                    ticket,
+                });
+            }
+            let (next, _) = self
+                .changed
+                .wait_timeout(state, std::time::Duration::from_millis(25))
+                .unwrap_or_else(|e| e.into_inner());
+            state = next;
+        }
+    }
+}
+impl Drop for DialogPermit<'_> {
+    fn drop(&mut self) {
+        let mut state = self.queue.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.1.retain(|id| *id != self.ticket);
+        self.queue.changed.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod dialog_tests {
+    use super::*;
+    #[test]
+    fn fifo_dialog_queue_removes_cancelled_waiter_and_admits_next() {
+        let queue = Arc::new(DialogQueue::default());
+        let held = queue.acquire(&CancellationToken::new()).unwrap();
+        let cancelled = CancellationToken::new();
+        let token = cancelled.clone();
+        let second = queue.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = second.acquire(&token);
+            tx.send(result.is_err()).unwrap();
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while queue.state.lock().unwrap().1.len() < 2 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        cancelled.cancel();
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap());
+        worker.join().unwrap();
+        drop(held);
+        assert!(queue.acquire(&CancellationToken::new()).is_ok());
     }
 }

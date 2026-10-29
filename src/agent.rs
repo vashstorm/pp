@@ -8,6 +8,7 @@ mod plan_open;
 mod plan_review;
 mod plan_sync;
 mod plan_workflow;
+mod subagents;
 mod todo;
 mod tool_images;
 mod turn;
@@ -89,6 +90,7 @@ impl Bootstrap {
 }
 
 pub(crate) struct Agent {
+    pub(crate) subagent_control: std::sync::Arc<std::sync::Mutex<Option<crate::subagent::Binding>>>,
     client: OpenAiClient,
     tools: Tools,
     session: Session,
@@ -158,6 +160,13 @@ impl Session {
         }
     }
 
+    fn restore_tools(&mut self, tools: serde_json::Value) -> Result<()> {
+        match self {
+            Self::Completion(request) => request.tools = serde_json::from_value(tools)?,
+            Self::Response(request) => request.tools = serde_json::from_value(tools)?,
+        }
+        Ok(())
+    }
     fn set_instructions(&mut self, system: String) {
         match self {
             Self::Completion(request) => {
@@ -355,6 +364,7 @@ impl Agent {
         session.set_think_level(think_level);
         Ok(Self {
             client,
+            subagent_control: Default::default(),
             session,
             tools,
             auto_compact: config.settings.auto_compact,
@@ -379,7 +389,7 @@ impl Agent {
     }
 
     pub(crate) fn set_ask_handler(&mut self, handler: crate::interaction::AskHandler) {
-        self.tools.ask_handler = Some(handler);
+        self.tools.ask_handler = Some(std::sync::Arc::from(handler));
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));
     }
@@ -453,6 +463,7 @@ impl Agent {
         }
         let agent = Self {
             client,
+            subagent_control: Default::default(),
             tools,
             session: checkpoint.session,
             auto_compact: config.settings.auto_compact,
@@ -573,6 +584,16 @@ impl Agent {
     }
 
     pub(crate) fn navigate_tree(&mut self, id: &str) -> Result<TreeNavigation> {
+        let previous_binding = self.subagents();
+        self.stop_subagents()?;
+        if let Some(binding) = previous_binding {
+            let ids = binding
+                .deliveries(&[])
+                .into_iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>();
+            binding.acknowledge(&ids)?;
+        }
         let persistence::tree::Prepared {
             session: source,
             model_reference,
@@ -698,12 +719,29 @@ impl Agent {
     }
 
     fn refresh_instructions(&mut self) -> Result<()> {
+        let definitions = if self.tools.subagent.is_some() {
+            Some(self.tools.all_definitions(self.workflow.mode))
+        } else {
+            None
+        };
+        let names = definitions.as_ref().map_or_else(
+            || self.session.tool_names(),
+            |defs| defs.iter().map(|d| d.name.clone()).collect(),
+        );
         let (system, skills, project) = self.compose_prompt_snapshot(
             &self.workflow.instructions(),
             self.workflow.mode_name(),
             &self.current_model.model,
-            self.session.tool_names(),
+            names,
         )?;
+        if let Some(definitions) = definitions {
+            let before = serde_json::to_value(&self.session)?["request"]["tools"].clone();
+            self.session.set_tools(definitions);
+            let after = serde_json::to_value(&self.session)?["request"]["tools"].clone();
+            if before != after {
+                self.journal.tools_changed();
+            }
+        }
         self.request_skills = skills;
         if project.is_empty() {
             self.pending_project_load = None;
@@ -737,6 +775,7 @@ impl Agent {
     }
 
     pub(crate) fn reload_models(&mut self) -> Result<()> {
+        self.stop_subagents()?;
         self.catalog.reload_models()
     }
 
@@ -836,6 +875,7 @@ impl Agent {
     }
 
     pub(crate) fn switch_model(&mut self, reference: &str) -> Result<()> {
+        self.journal.check()?;
         let config = self.catalog.resolve(reference)?;
         let same_source = self.client.same_source(&config);
         if reference == self.current_model.reference
@@ -882,16 +922,14 @@ impl Agent {
             thinking: config.thinking,
             context_window: config.context_window,
         };
+        let definitions = self.tools.all_definitions(self.workflow.mode);
         let system = self.compose_prompt(
             &self.workflow.instructions(),
             self.workflow.mode_name(),
             &choice.model,
-            self.tools
-                .all_definitions(self.workflow.mode)
-                .into_iter()
-                .map(|tool| tool.name)
-                .collect(),
+            definitions.iter().map(|tool| tool.name.clone()).collect(),
         )?;
+        self.stop_subagents()?;
         let metadata = Metadata {
             cwd: self.tools.cwd(),
             model_reference: &choice.reference,
@@ -903,7 +941,7 @@ impl Agent {
         };
         if let Some(mut session) = converted {
             session.set_instructions(system);
-            session.set_tools(self.tools.all_definitions(self.workflow.mode));
+            session.set_tools(definitions);
             session.set_think_level(target_level);
             self.journal
                 .checkpoint(&metadata, (&session).into(), &self.workflow)?;
@@ -953,6 +991,10 @@ impl Agent {
     }
 
     pub(crate) fn reset(&mut self) {
+        if let Err(error) = self.stop_subagents() {
+            self.plan_cleanup_error = Some(format!("子 Agent 清理失败: {error:#}"));
+            return;
+        }
         self.plan_lease = None;
         self.tools.clear_changes();
         self.workflow.plan = None;
@@ -1110,6 +1152,7 @@ impl Agent {
         );
         let started = std::time::Instant::now();
         let result = (|| -> Result<RunOutcome> {
+            self.journal.check()?;
             if let Some(error) = &self.plan_cleanup_error {
                 bail!("{error}");
             }
@@ -1139,6 +1182,7 @@ impl Agent {
         );
         let started = std::time::Instant::now();
         let result = (|| -> Result<RunOutcome> {
+            self.journal.check()?;
             if let Some(error) = &self.plan_cleanup_error {
                 bail!("{error}");
             }
@@ -1220,6 +1264,9 @@ impl Agent {
         cancellation: &CancellationToken,
     ) -> Result<RunOutcome> {
         if cancellation.is_cancelled() {
+            if let Some(binding) = &self.tools.subagent {
+                binding.cancel_owned()?;
+            }
             self.client.cancel_pending_io();
         }
         let result = match self.tools.stop_background_tasks() {
@@ -1230,6 +1277,27 @@ impl Agent {
                 }
                 _ => cleanup,
             }),
+        };
+        let result = if !matches!(
+            &result,
+            Ok(RunOutcome::Completed | RunOutcome::AwaitingPlanReview)
+        ) {
+            if let Some(binding) = &self.tools.subagent {
+                match binding.reap_owned() {
+                    Ok(()) => result,
+                    Err(cleanup) => Err(cleanup.context(format!(
+                        "Parent run also stopped: {}",
+                        result
+                            .as_ref()
+                            .err()
+                            .map_or(String::new(), |e| format!("{e:#}"))
+                    ))),
+                }
+            } else {
+                result
+            }
+        } else {
+            result
         };
         match result {
             Err(error) if error.is::<Cancelled>() => {
@@ -1277,10 +1345,14 @@ impl Agent {
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
+        self.tools.yielded.borrow_mut().take();
+        let mut request_count = 0usize;
         let mut claim_boundary = true;
         let mut reminder = todo::TodoReminderState::default();
         loop {
             self.journal.check()?;
+            self.ensure_subagents()?;
+            self.receive_subagents()?;
             if cancellation.is_cancelled() {
                 self.persist_pending_input(user.take())?;
                 return Err(Cancelled.into());
@@ -1335,6 +1407,18 @@ impl Agent {
                 debug::DebugState::warn_unavailable();
                 self.debug = None;
             }
+            if let Some(binding) = &self.tools.subagent
+                && binding.depth > 0
+            {
+                let budget = binding.request_budget();
+                if budget > 0 && request_count >= budget.saturating_mul(3) / 2 {
+                    bail!("子 Agent 请求预算已耗尽；部分成果已保存在历史中。");
+                }
+                if budget > 0 && request_count == budget {
+                    append_developer_to(&mut self.session,"Request budget reached. Finish your current work and return the partial findings now.".into());
+                }
+            }
+            request_count += 1;
             emit(AgentEvent::AssistantStarted);
             let update = RequestUpdate {
                 user: user.take(),
@@ -1369,6 +1453,22 @@ impl Agent {
                 self.refresh_plan_progress(emit)?;
             }
             self.publish_context(emit)?;
+            if self.tools.yielded.borrow().is_some() {
+                if let Some(binding) = self.tools.subagent.clone()
+                    && binding.pending()
+                {
+                    self.tools.yielded.borrow_mut().take();
+                    while binding.pending() {
+                        cancellation::check(cancellation)?;
+                        if !self.receive_subagents()? {
+                            binding.sleep();
+                        }
+                    }
+                    append_developer_to(&mut self.session,"Owned background work completed after your submitted result. Review the new results and submit a fresh final yield.".into());
+                    continue;
+                }
+                return Ok(RunOutcome::Completed);
+            }
             if matches!(finished, TurnOutcome::PlanSubmitted) {
                 self.workflow
                     .plan
@@ -1397,6 +1497,24 @@ impl Agent {
                     emit,
                     true,
                 )?;
+                if let Some(binding) = self.tools.subagent.clone()
+                    && binding.pending()
+                {
+                    while binding.pending() {
+                        cancellation::check(cancellation)?;
+                        if self.receive_subagents()? {
+                            break;
+                        }
+                        if input.is_some_and(|q| q.has_steering().unwrap_or(false)) {
+                            break;
+                        }
+                        binding.sleep();
+                    }
+                    continue;
+                }
+                if self.tools.yield_schema.is_some() && self.tools.yielded.borrow().is_none() {
+                    bail!("结构化子任务未调用 yield；结果不满足完成协议。");
+                }
                 let remind = todo::eligible(&self.workflow, &reminder, awaiting_user_answer);
                 // 原子“领取或关闭”：最终回复与新补充仅在这个短锁内仲裁。
                 if let Some(queue) = input {

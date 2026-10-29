@@ -343,6 +343,10 @@ fn rebuild_request(records: &[Value]) -> Value {
                 completion = data["session"]["protocol"] == "completion";
                 request = data["session"]["request"].clone();
             }
+            ("custom", Some("pp.tools")) => {
+                assert_eq!(data["version"], 1);
+                request["tools"] = data["tools"].clone();
+            }
             ("custom", Some("pp.instructions")) => {
                 let system = data["system"].clone();
                 if completion {
@@ -457,6 +461,7 @@ fn assert_session_contract(records: &[Value], id: &str, cwd: &Path) {
                     record["customType"].as_str(),
                     Some(
                         "pp.session_state"
+                            | "pp.tools"
                             | "pp.native_append"
                             | "pp.instructions"
                             | "pp.event"

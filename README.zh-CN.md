@@ -201,3 +201,7 @@ cargo fmt --check
 ---
 
 灵感来自 [Pi](https://github.com/badlogic/pi-mono)，模型接口基于 [async-openai](https://github.com/64bit/async-openai)。
+
+## 子 Agent
+
+使用 `/agents` 查看角色，`/subagents` 查看状态、历史、消耗并追问、取消或恢复任务。支持批量异步派发、独立上下文、两层递归、结构化结果及可选 worktree 隔离，子任务沿用父审批规则。详见[子 Agent 使用说明](docs/subagents.md)。

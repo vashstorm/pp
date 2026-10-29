@@ -171,7 +171,8 @@ fn tui_exit_keeps_scrolled_history_and_footer_styles() {
     );
     parser.process(b"shell> ");
     assert!(parser.screen().contents().contains("\nshell> "));
-    assert_eq!(parser.screen().fgcolor(), vt100::Color::Default);
+    // native_history 重建单元格，真实终端的当前颜色从 PTY 状态读取。
+    assert_eq!(pty.parser.screen().fgcolor(), vt100::Color::Default);
     assert!(!parser.screen().hide_cursor());
     pty.finish();
     no_more(&server);

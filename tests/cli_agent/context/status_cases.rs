@@ -198,7 +198,8 @@ fn context_new_and_model_switch_reset_usage_and_change_capacity() {
     let dir = tempfile::tempdir().unwrap();
     let windows = [
         ("primary", Some(32768u64)),
-        ("small", Some(8192u64)),
+        // 为新增委托工具预留上下文，本例只验证模型切换与用量重置。
+        ("small", Some(10000u64)),
         ("bare", None),
     ];
     let mut cli = Protocol::Chat.start(
@@ -255,7 +256,7 @@ fn context_new_and_model_switch_reset_usage_and_change_capacity() {
         statuses[0]
     );
     // Model switch clears usage and swaps the capacity denominator.
-    assert!(statuses[1].contains(" / 8192 tokens ("), "{}", statuses[1]);
+    assert!(statuses[1].contains(" / 10000 tokens ("), "{}", statuses[1]);
     assert!(
         statuses[1].contains("Last request: unavailable"),
         "{}",

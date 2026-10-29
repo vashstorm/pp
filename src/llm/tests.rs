@@ -267,6 +267,7 @@ fn test_client_with_rate_limit_budget(base_url: &str, budget_seconds: u64) -> Op
         base_url: base_url.parse().unwrap(),
         context_window: None,
         settings: crate::config::Settings {
+            task: Default::default(),
             grep: Default::default(),
             read: Default::default(),
             tools: Default::default(),

@@ -42,6 +42,7 @@ fn changes_view(blocked: bool) -> ChangesView {
         task_id: 1,
         revision: 2,
         files: vec![crate::tools::ChangedFile {
+            sources: Vec::new(),
             path: path.clone(),
             diff: crate::events::FileDiff::Text {
                 created: false,

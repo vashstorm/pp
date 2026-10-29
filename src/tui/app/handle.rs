@@ -11,6 +11,23 @@ impl App {
         {
             self.escape_tap.reset();
         }
+        if self.ask_panel.is_none()
+            && let Some(panel) = &mut self.subagent_panel
+        {
+            if let Event::Key(key) = event {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return true;
+                }
+                let close = panel.key(key);
+                self.subagent_autowake |= panel.wake_parent;
+                panel.wake_parent = false;
+                if close {
+                    self.subagent_panel = None;
+                }
+            }
+            *dirty = true;
+            return false;
+        }
         if let Some(panel) = &mut self.auth_panel {
             if matches!(&event, Event::Key(key) if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
             {

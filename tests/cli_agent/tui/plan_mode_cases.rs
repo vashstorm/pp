@@ -39,7 +39,17 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
             assert!(
                 matches!(
                     name.as_str(),
-                    Some("read" | "grep" | "glob" | "ask" | "todo" | "plan_write" | "plan_submit")
+                    Some(
+                        "read"
+                            | "grep"
+                            | "glob"
+                            | "ask"
+                            | "todo"
+                            | "plan_write"
+                            | "plan_submit"
+                            | "task"
+                            | "wait"
+                    )
                 ),
                 "{body}"
             );

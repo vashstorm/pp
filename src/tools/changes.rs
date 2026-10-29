@@ -33,6 +33,7 @@ pub(crate) struct ChangesView {
 #[derive(Debug)]
 pub(crate) struct ChangedFile {
     pub(crate) path: PathBuf,
+    pub(crate) sources: Vec<String>,
     pub(crate) diff: FileDiff,
     pub(crate) undo: std::result::Result<UndoToken, String>,
 }
@@ -44,7 +45,7 @@ pub(crate) struct UndoResult {
 }
 
 #[derive(Debug)]
-pub(super) enum Original {
+pub(crate) enum Original {
     Missing,
     Bytes(Vec<u8>),
     Unavailable,
@@ -55,10 +56,11 @@ struct FileChange {
     original: Original,
     latest: Vec<u8>,
     interleaved: bool,
+    sources: std::collections::BTreeSet<String>,
 }
 
 #[derive(Default)]
-pub(super) struct TaskChanges {
+pub(crate) struct TaskChanges {
     task_id: u64,
     revision: u64,
     files: BTreeMap<PathBuf, FileChange>,
@@ -86,13 +88,14 @@ impl TaskChanges {
     /// The caller supplies a workspace-normalized relative path. Net-zero
     /// records remain stored so later writes cannot replace the first baseline
     /// or erase evidence of intervening changes.
-    pub(super) fn record(&mut self, path: PathBuf, before: Original, latest: Vec<u8>) {
+    pub(crate) fn record(&mut self, path: PathBuf, before: Original, latest: Vec<u8>) {
         match self.files.entry(path) {
             Entry::Vacant(entry) => {
                 entry.insert(FileChange {
                     original: before,
                     latest,
                     interleaved: false,
+                    sources: Default::default(),
                 });
             }
             Entry::Occupied(mut entry) => {
@@ -106,6 +109,11 @@ impl TaskChanges {
         self.advance_revision();
     }
 
+    pub(crate) fn source(&mut self, path: &std::path::Path, source: &str) {
+        if let Some(change) = self.files.get_mut(path) {
+            change.sources.insert(source.to_owned());
+        }
+    }
     /// Validates the confirmation before resolving a fresh safe target. The
     /// baseline remains borrowed and retained until the filesystem commits;
     /// only a committed restore invalidates the revision and consumes it.
@@ -158,6 +166,7 @@ impl TaskChanges {
                     .map_err(|error| error.to_string());
                 ChangedFile {
                     path: path.clone(),
+                    sources: change.sources.iter().cloned().collect(),
                     diff: change.diff(),
                     undo,
                 }

@@ -18,6 +18,8 @@ mod stats;
 mod ask;
 #[path = "cli_agent/mcp.rs"]
 mod mcp;
+#[path = "cli_agent/subagents.rs"]
+mod subagents;
 
 fn config_path(home: &std::path::Path, name: &str) -> std::path::PathBuf {
     let dir = home.join(".pp/agent");

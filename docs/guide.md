@@ -860,3 +860,9 @@ nextest 不运行 doctest；当前只有 binary target，新增 library target �
 [Pi](https://github.com/badlogic/pi-mono) · [工具循环](https://github.com/badlogic/pi-mono/blob/main/packages/agent/README.md) · [async-openai](https://github.com/64bit/async-openai)
 
 协议实现与限制见上方 HTTP 协议；不支持供应商专有扩展协议或直接互读上游 session 文件。
+
+## 子 Agent
+
+pp 支持批量异步委托、持续追问、驻留恢复、结构化结果和可选 worktree 隔离。用 `/agents` 查看角色，`/subagents` 查看和控制运行实例；输入框上方显示子任务摘要。子 Agent 沿用父会话审批规则，并保留适用的项目指令。
+
+完整配置、工具协议、权限与恢复行为见[子 Agent 使用说明](subagents.md)。

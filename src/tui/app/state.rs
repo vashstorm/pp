@@ -35,6 +35,7 @@ impl App {
         replay: Vec<crate::agent::persistence::ReplayRecord>,
     ) -> Option<String> {
         self.close_ask_on_exit();
+        self.subagent_autowake = false;
         self.token_speed.clear();
         self.history_browser = false;
         self.todo_panel.reset_view();
@@ -515,6 +516,7 @@ impl App {
     /// 当前显示的转录：独立审查页优先于主对话。
     pub(in crate::tui) fn needs_alternate(&self) -> bool {
         self.auth_panel.is_some()
+            || self.subagent_panel.is_some()
             || self.history_browser
             || self.skill_panel.is_some()
             || self.session_panel.is_some()

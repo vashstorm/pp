@@ -409,6 +409,15 @@ fn session_at(
                 todo_plan_id = record.workflow.todo_plan_id;
             }
             Payload::Custom {
+                custom: Custom::ToolDefinitions { version, tools },
+            } => {
+                ensure!(version == 1, "unsupported saved tool definitions version");
+                session
+                    .as_mut()
+                    .context("missing session tree state")?
+                    .restore_tools(tools)?;
+            }
+            Payload::Custom {
                 custom: Custom::NativeAppend(append),
             } => {
                 match (

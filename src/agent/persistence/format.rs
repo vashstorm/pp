@@ -87,6 +87,8 @@ pub(super) enum CustomRef<'a> {
     NativeAppend(NativeAppendRef<'a>),
     #[serde(rename = "pp.workflow")]
     Workflow(WorkflowRef<'a>),
+    #[serde(rename = "pp.tools")]
+    ToolDefinitions { version: u32, tools: &'a Value },
     #[serde(rename = "pp.instructions")]
     Instructions { system: &'a str },
     #[serde(rename = "pp.event")]
@@ -212,6 +214,8 @@ pub(super) enum Custom {
     NativeAppend(NativeAppend),
     #[serde(rename = "pp.workflow")]
     Workflow(Box<Workflow>),
+    #[serde(rename = "pp.tools")]
+    ToolDefinitions { version: u32, tools: Value },
     #[serde(rename = "pp.instructions")]
     Instructions { system: String },
     #[serde(rename = "pp.event")]

@@ -134,11 +134,15 @@ pub(super) struct SessionJournal {
     thinking: String,
     capture_thinking: bool,
     pending_checkpoint: bool,
+    pending_tools: bool,
     pending_stats: Option<String>,
     first_request: Arc<AtomicBool>,
 }
 
 impl SessionJournal {
+    pub(super) fn directory(&self) -> &Path {
+        &self.dir
+    }
     pub(super) fn stats_context(
         &self,
         metadata: &Metadata<'_>,
@@ -191,6 +195,7 @@ impl SessionJournal {
             thinking: String::new(),
             capture_thinking: false,
             pending_checkpoint: false,
+            pending_tools: false,
             pending_stats: None,
             first_request: Arc::new(AtomicBool::new(true)),
         }
@@ -209,6 +214,9 @@ impl SessionJournal {
     }
     pub(super) fn lock_dir(&self) -> &Path {
         &self.lock_dir
+    }
+    pub(super) fn tools_changed(&mut self) {
+        self.pending_tools = true;
     }
     pub(super) fn history_replaced(&mut self) {
         // 仅恢复时不改变日志和排序；下一次请求发送后再保存新的模型与原生历史。
@@ -408,6 +416,7 @@ impl SessionJournal {
         self.capture_thinking = matches!(session, SessionRef::Completion(_));
         self.thinking.clear();
         self.pending_checkpoint = false;
+        self.pending_tools = false;
         Ok(())
     }
 
@@ -592,6 +601,20 @@ impl SessionJournal {
         if self.pending_checkpoint || first {
             self.checkpoint(metadata, session, workflow)?;
         } else {
+            if self.pending_tools {
+                let tools = match session {
+                    SessionRef::Completion(request) => serde_json::to_value(&request.tools)?,
+                    SessionRef::Response(request) => serde_json::to_value(&request.tools)?,
+                };
+                self.custom(
+                    CustomRef::ToolDefinitions {
+                        version: 1,
+                        tools: &tools,
+                    },
+                    false,
+                )?;
+                self.pending_tools = false;
+            }
             if let Some(system) = instructions {
                 self.custom(CustomRef::Instructions { system }, false)?;
             }
@@ -1248,6 +1271,16 @@ pub(crate) fn load(
                     state.workflow = record.workflow;
                 }
                 Payload::Custom {
+                    custom: Custom::ToolDefinitions { version, tools },
+                } => {
+                    ensure!(version == 1, "unsupported saved tool definitions version");
+                    checkpoint
+                        .as_mut()
+                        .context("tool definitions before pp session state")?
+                        .session
+                        .restore_tools(tools)?;
+                }
+                Payload::Custom {
                     custom: Custom::Instructions { system },
                 } => {
                     let saved = checkpoint
@@ -1387,6 +1420,7 @@ pub(crate) fn load(
             thinking: String::new(),
             capture_thinking,
             pending_checkpoint: false,
+            pending_tools: false,
             pending_stats: None,
             first_request: Arc::new(AtomicBool::new(false)),
         },

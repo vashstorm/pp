@@ -303,9 +303,15 @@ impl Panel {
 }
 
 fn file_row(file: &ChangedFile) -> Line<'static> {
-    let mut spans = vec![Span::raw(
-        display_text(&file.path.to_string_lossy()).into_owned(),
-    )];
+    let mut spans = vec![Span::raw(format!(
+        "{}{}",
+        display_text(&file.path.to_string_lossy()),
+        if file.sources.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", file.sources.join(", "))
+        }
+    ))];
     match &file.diff {
         FileDiff::Text {
             created,
@@ -428,6 +434,7 @@ mod tests {
 
     fn file(path: &str, created: bool, count: usize) -> ChangedFile {
         ChangedFile {
+            sources: Vec::new(),
             path: path.into(),
             diff: FileDiff::Text {
                 created,

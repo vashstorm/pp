@@ -18,7 +18,7 @@ use std::{
 mod bash;
 pub(crate) use bash::BackgroundCleanup;
 pub(crate) mod approval;
-mod changes;
+pub(crate) mod changes;
 pub(crate) use changes::{ChangedFile, ChangesView, UndoResult, UndoToken};
 mod diff;
 mod edit;
@@ -36,14 +36,20 @@ pub(crate) mod todo;
 const OUTPUT_LIMIT: usize = 65_536;
 
 pub(crate) struct Tools {
-    pub(crate) ask_handler: Option<crate::interaction::AskHandler>,
+    pub(crate) ask_handler: Option<crate::interaction::SharedAskHandler>,
     pub(crate) approval: approval::Gate,
     pub(crate) mcp: crate::mcp::Registry,
+    pub(crate) mcp_proxy: Option<crate::mcp::Registry>,
+    pub(crate) subagent: Option<crate::subagent::Binding>,
+    pub(crate) allowed_tools: Option<Vec<String>>,
+    pub(crate) yield_schema: Option<Value>,
+    pub(crate) yielded: RefCell<Option<Value>>,
     pub(crate) skills: crate::skills::SharedSkills,
     cwd: PathBuf,
     edit_mode: EditMode,
     workspace: save::Workspace,
-    changes: RefCell<changes::TaskChanges>,
+    pub(crate) changes: std::sync::Arc<std::sync::Mutex<changes::TaskChanges>>,
+    pub(crate) write_lock: std::sync::Arc<std::sync::Mutex<()>>,
     web_cache: RefCell<read::WebCache>,
     snapshots: RefCell<hashline::Store>,
     background_tasks: bash::TaskManager,
@@ -153,13 +159,19 @@ impl Tools {
         let workspace = save::Workspace::open(&cwd)?;
         Ok(Self {
             ask_handler: None,
+            mcp_proxy: None,
+            subagent: None,
+            allowed_tools: None,
+            yield_schema: None,
+            yielded: RefCell::new(None),
             approval: approval::Gate::new(),
             mcp: Default::default(),
             skills: crate::skills::Skills::default().shared(),
             cwd: workspace.path.clone(),
             edit_mode,
             workspace,
-            changes: RefCell::default(),
+            changes: Default::default(),
+            write_lock: Default::default(),
             web_cache: RefCell::default(),
             snapshots: RefCell::default(),
             background_tasks: Default::default(),
@@ -168,21 +180,36 @@ impl Tools {
     }
 
     pub(crate) fn begin_changes_task(&self) {
-        self.changes.borrow_mut().begin();
+        if self.subagent.as_ref().is_none_or(|b| b.depth == 0) {
+            self.changes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .begin();
+        }
     }
 
     pub(crate) fn clear_changes(&self) {
         self.web_cache.borrow_mut().clear();
         self.snapshots.borrow_mut().clear();
-        self.changes.borrow_mut().clear();
+        self.changes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     pub(crate) fn changes_view(&self) -> ChangesView {
-        self.changes.borrow().view(&self.workspace)
+        self.changes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .view(&self.workspace)
     }
 
     pub(crate) fn undo_file(&self, token: &UndoToken) -> Result<UndoResult> {
-        let result = self.changes.borrow_mut().undo(&self.workspace, token)?;
+        let result = self
+            .changes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .undo(&self.workspace, token)?;
         self.snapshots.borrow_mut().invalidate(&token.path);
         Ok(result)
     }
@@ -222,7 +249,7 @@ impl Tools {
     }
 
     pub(crate) fn all_definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
-        match mode {
+        let mut definitions = match mode {
             WorkMode::Execute => {
                 let mut definitions = Self::definitions(self.edit_mode);
                 if self.ask_handler.is_some() {
@@ -230,7 +257,7 @@ impl Tools {
                 }
                 definitions.push(glob::definition());
                 definitions.push(grep::definition());
-                definitions.extend(self.mcp.definitions());
+                definitions.extend(self.mcp_proxy.as_ref().unwrap_or(&self.mcp).definitions());
                 definitions
             }
             WorkMode::Plan => {
@@ -247,7 +274,17 @@ impl Tools {
                 definitions.extend(Self::plan_definitions());
                 definitions
             }
+        };
+        if let Some(binding) = &self.subagent {
+            definitions.extend(binding.definitions(mode));
         }
+        if self.yield_schema.is_some() {
+            definitions.push(crate::subagent::yield_definition());
+        }
+        if let Some(allowed) = &self.allowed_tools {
+            definitions.retain(|d| allowed.contains(&d.name) || d.name == "yield");
+        }
+        definitions
     }
 
     /// Read-only definitions for the independent plan reviewer: a subset of
@@ -490,6 +527,25 @@ impl Tools {
         fetch: &mut read::Fetch<'_>,
         images: &mut Vec<read::ToolImage>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
+        ensure!(
+            self.yielded.borrow().is_none(),
+            "子任务已完成，后续工具未执行。"
+        );
+        if name == "plan_submit"
+            && let Some(binding) = &self.subagent
+        {
+            ensure!(
+                !binding.pending(),
+                "请等待子任务结果完成并提交到上下文后再提交计划。"
+            );
+        }
+        if let Some(allowed) = &self.allowed_tools {
+            ensure!(
+                allowed.iter().any(|tool| tool == name)
+                    || name == "yield" && self.yield_schema.is_some(),
+                "Tool is outside this agent capability set."
+            );
+        }
         // A sealed batch (plan already submitted) refuses every call before
         // any parsing or dispatch, while still producing one result per call
         // ID through the ordinary ToolStarted/ToolFinished path.
@@ -508,6 +564,7 @@ impl Tools {
             ToolPolicy::Plan { .. } => {
                 PLAN_BASE_TOOLS.contains(&name)
                     || PLAN_SEARCH_TOOLS.contains(&name)
+                    || self.subagent.is_some() && matches!(name, "task" | "wait")
                     || is_plan_tool(name)
                     || name == "ask" && self.ask_handler.is_some()
             }
@@ -530,7 +587,47 @@ impl Tools {
         if matches!(policy, ToolPolicy::Execute { .. }) {
             self.approval.enforce(name, arguments, cancellation)?;
         }
+        if let Some(binding) = &self.subagent {
+            if matches!(name, "task" | "wait") {
+                let plan = matches!(policy, ToolPolicy::Plan { .. });
+                return Ok((
+                    binding.execute(name, arguments, plan, cancellation)?,
+                    None,
+                    None,
+                ));
+            }
+            if matches!(name, "read" | "write") {
+                let value: Value = serde_json::from_str(arguments)?;
+                if let Some(path) = value["path"]
+                    .as_str()
+                    .filter(|p| crate::subagent::is_uri(p))
+                {
+                    let result =
+                        binding.uri(name, path, value["content"].as_str(), cancellation)?;
+                    return Ok((result, None, None));
+                }
+            }
+        }
+        let _permit = if !matches!(name, "task" | "wait" | "ask") {
+            self.subagent
+                .as_ref()
+                .map(|b| b.permit(cancellation))
+                .transpose()?
+        } else {
+            None
+        };
+
         match name {
+            "yield" => {
+                let value: Value = serde_json::from_str(arguments)?;
+                let data = value.get("data").context("yield requires data")?;
+                crate::subagent::validate_output(
+                    self.yield_schema.as_ref().context("yield unavailable")?,
+                    data,
+                )?;
+                *self.yielded.borrow_mut() = Some(data.clone());
+                Ok(json!({"ok":true,"completed":true}))
+            }
             "ask" => {
                 let handler = self
                     .ask_handler
@@ -568,6 +665,7 @@ impl Tools {
                 Ok(result.value)
             }
             "edit" => {
+                let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
                 let request = edit::Request::parse(self.edit_mode, arguments)?;
                 let path = request.path().to_owned();
                 let target = self.workspace.target(Path::new(&path), false)?;
@@ -594,11 +692,21 @@ impl Tools {
                 let warning = target.save_if_unchanged(&bytes, output.as_bytes())?;
                 let bytes_written = output.len();
                 self.snapshots.borrow_mut().invalidate(&normalized_path);
-                self.changes.borrow_mut().record(
-                    normalized_path,
-                    changes::Original::Bytes(bytes),
-                    output.into_bytes(),
-                );
+                self.changes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .record(
+                        normalized_path.clone(),
+                        changes::Original::Bytes(bytes),
+                        output.into_bytes(),
+                    );
+                self.changes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .source(
+                        &normalized_path,
+                        self.subagent.as_ref().map_or("Main", |b| b.owner.as_str()),
+                    );
                 emit(AgentEvent::FileChanged {
                     id: call_id.to_owned(),
                     path,
@@ -612,6 +720,7 @@ impl Tools {
                 Ok(result)
             }
             "write" => {
+                let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
                 let args: WriteArgs =
                     serde_json::from_str(arguments).context("invalid write arguments")?;
                 ensure!(!args.path.trim().is_empty(), "path must not be blank");
@@ -642,11 +751,17 @@ impl Tools {
                     Err(_) => changes::Original::Unavailable,
                 };
                 let bytes_written = args.content.len();
-                self.changes.borrow_mut().record(
-                    normalized_path,
-                    original,
-                    args.content.into_bytes(),
-                );
+                self.changes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .record(normalized_path.clone(), original, args.content.into_bytes());
+                self.changes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .source(
+                        &normalized_path,
+                        self.subagent.as_ref().map_or("Main", |b| b.owner.as_str()),
+                    );
                 emit(AgentEvent::FileChanged {
                     id: call_id.to_owned(),
                     path: args.path,
@@ -725,7 +840,13 @@ impl Tools {
                     .run_todo(&policy, arguments)
                     .map(|(value, change)| (value, None, change));
             }
-            _ => self.mcp.call(name, arguments, cancellation),
+            _ => {
+                if let Some(proxy) = &self.mcp_proxy {
+                    proxy.proxy_call(name, arguments, cancellation)
+                } else {
+                    self.mcp.call(name, arguments, cancellation)
+                }
+            }
         }
         .map(|value| (value, None, None))
     }
@@ -947,3 +1068,18 @@ fn decode_prefix(mut bytes: &[u8], output: &mut String) -> usize {
 
 #[cfg(test)]
 mod tests;
+
+impl Drop for Tools {
+    fn drop(&mut self) {
+        if let Some(binding) = self.subagent.take().filter(|b| b.depth == 0) {
+            if let Err(error) = binding.shutdown() {
+                tracing::error!(error=%error,"子 Agent 退出清理失败");
+            }
+            if self.mcp.is_shared()
+                && let Err(error) = self.mcp.abort_connections()
+            {
+                tracing::error!(error=%error,"MCP 退出清理失败");
+            }
+        }
+    }
+}

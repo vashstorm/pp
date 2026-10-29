@@ -250,7 +250,7 @@ struct ModelEntry {
     context_window: Option<u64>,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ModelCost {
     pub(crate) input: f64,
@@ -306,6 +306,7 @@ where
 }
 
 // Deliberately not Debug: this owns the API credential.
+#[derive(Clone)]
 pub(crate) struct ValidatedProvider {
     pub(crate) id: String,
     pub(crate) protocol: Protocol,
@@ -315,6 +316,7 @@ pub(crate) struct ValidatedProvider {
     pub(crate) models: Vec<ValidatedModel>,
 }
 
+#[derive(Clone)]
 pub(crate) struct ValidatedModel {
     pub(crate) id: String,
     pub(crate) model: String,

@@ -12,6 +12,16 @@ pub(crate) struct CommandSpec {
 
 pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
+        name: "/subagents",
+        usage: "/subagents",
+        description: "查看、追问和控制子 Agent",
+    },
+    CommandSpec {
+        name: "/agents",
+        usage: "/agents",
+        description: "查看可用子 Agent 角色与来源",
+    },
+    CommandSpec {
         name: "/help",
         usage: "/help",
         description: "Show available commands",
@@ -117,6 +127,8 @@ pub(crate) enum Command<'a> {
     Resume,
     Tree,
     Changes,
+    Agents,
+    Subagents,
     PlanList,
     Login,
     Logout,
@@ -153,6 +165,8 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/resume" => Command::Resume,
         "/tree" => Command::Tree,
         "/changes" => Command::Changes,
+        "/agents" => Command::Agents,
+        "/subagents" => Command::Subagents,
         "/login" | "/logout" => {
             ensure!(argument.is_empty(), "usage: {name}");
             if name == "/login" {

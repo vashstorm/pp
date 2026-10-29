@@ -15,6 +15,7 @@ mod project_instructions;
 mod shortcuts;
 mod skills;
 mod stats;
+mod subagent;
 mod system_prompt;
 mod tips;
 mod tools;
@@ -388,7 +389,7 @@ fn run(args: Args) -> Result<()> {
     if let Some(prompt) = args.prompt {
         let mut agent = agent?;
         let result = run_cli_task(&mut agent, Some(&prompt), &mut stdout, &mut stderr);
-        write_resume_hint(&mut stderr, agent.session_id().as_deref())?;
+        write_resume_hint(&mut stderr, agent.session_id())?;
         return result;
     }
     if continue_requested {
@@ -425,6 +426,37 @@ fn run(args: Args) -> Result<()> {
                 continue;
             }
         };
+        if matches!(
+            command,
+            Some(commands::Command::Agents | commands::Command::Subagents)
+        ) {
+            if let Ok(agent) = agent.as_mut() {
+                if matches!(command, Some(commands::Command::Agents)) {
+                    for role in agent.agent_definitions()? {
+                        writeln!(
+                            stderr,
+                            "{} — {} [{}]",
+                            role.name, role.description, role.source
+                        )?;
+                    }
+                    continue;
+                }
+                agent.ensure_subagents()?;
+                if let Some(binding) = agent.subagents() {
+                    writeln!(
+                        stderr,
+                        "{}",
+                        serde_json::to_string_pretty(&binding.snapshots())?
+                    )?;
+                } else {
+                    writeln!(
+                        stderr,
+                        "暂无子 Agent；角色定义见 .pp/agents 和 ~/.pp/agent/agents。"
+                    )?;
+                }
+            }
+            continue;
+        }
         match command {
             Some(commands::Command::Quit) => break,
             Some(commands::Command::Skills(selection)) => {
@@ -605,6 +637,8 @@ fn run(args: Args) -> Result<()> {
                 | commands::Command::Resume
                 | commands::Command::Tree
                 | commands::Command::Changes
+                | commands::Command::Agents
+                | commands::Command::Subagents
                 | commands::Command::PlanList
                 | commands::Command::Login
                 | commands::Command::Logout
@@ -623,7 +657,7 @@ fn run(args: Args) -> Result<()> {
     }
     if let Some(id) = agent.as_ref().ok().and_then(|agent| agent.session_id()) {
         writeln!(stderr)?;
-        write_resume_hint(&mut stderr, Some(&id))?;
+        write_resume_hint(&mut stderr, Some(id))?;
     }
     Ok(())
 }
@@ -634,11 +668,11 @@ fn write_resume_hint(
 ) -> io::Result<()> {
     if let Some(id) = session_id {
         if stderr.is_terminal() {
-            writeln!(
-                stderr,
-                "{}",
+            let hint = format!(
+                "{}\x1b[0m\n",
                 format!("Resume with: pp --resume {id}").dark_grey()
-            )?;
+            );
+            stderr.write_all(hint.as_bytes())?;
         } else {
             writeln!(stderr, "Resume with: pp --resume {id}")?;
         }
