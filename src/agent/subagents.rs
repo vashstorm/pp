@@ -24,6 +24,7 @@ impl Agent {
         }
         if let Some(binding) = &mut self.tools.subagent {
             if binding.depth == 0 {
+                binding.set_model_roles(self.catalog.model_roles().clone());
                 binding.model = self.current_model.reference.clone();
                 binding.thinking = self.think_level;
             }
@@ -208,6 +209,7 @@ impl Agent {
                 .map(|d| d.name)
                 .collect(),
         );
+        binding.set_model_roles(self.catalog.model_roles().clone());
         binding.track_changes(
             self.tools.cwd().to_owned(),
             self.tools.changes.clone(),

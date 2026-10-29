@@ -306,6 +306,11 @@ impl Agent {
             return Ok(self.workflow.clone());
         }
         self.journal.check()?;
+        let selection = self.catalog.role_selection(
+            crate::config::ModelRole::Plan,
+            &self.current_model.reference,
+            self.think_level,
+        )?;
         // 旧 Executed/Completed 绑定一并解除；文件与登记保留，由 /plan-list 管理。
         let previous = std::mem::replace(
             &mut self.workflow,
@@ -317,6 +322,7 @@ impl Agent {
         );
         self.commit_workflow(previous)?;
         self.ensure_plan_mcp_shutdown(cancellation)?;
+        self.switch_model_with_effort(&selection.model, Some(selection.effort))?;
         Ok(self.workflow.clone())
     }
 

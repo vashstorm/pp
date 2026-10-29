@@ -36,6 +36,8 @@ task:
 
 `agent_models` 按角色名称覆盖模型，例如 `reviewer: provider/review-model`。模型优先级为角色配置覆盖、角色定义、派发时的父模型，模型引用及 thinking 必须在 pp 模型配置中有效。全局配置沿用 pp 的加载与模型重载时机。
 
+模型 Role 与上述 Agent 定义分开：使用 `/Roles` 为 DEFAULT、FAST、SLOW、VISION、PLAN、REVIEW 独立设置 model 和 effort。主 Agent 在每个任务项指定 `role`，例如 `{"agent":"scout","role":"fast","task":"定位实现"}`。已选中的显式 Role 优先于 `agent_models` 和 Agent 定义，并同时决定 effort；未配置或未选中的 Role 不进入 prompt 和工具参数可选项，显式指定会在派发前报错。Space 或点击圆点可切换启用状态，取消选中保留 model/effort。`agent: "reviewer"` 在未指定 `role` 时默认采用已选中的 REVIEW，适用于计划实现完成后的代码审查；未启用 REVIEW 时沿用既有选模规则。已派发实例继续使用保存的模型快照。详见[模型 Roles](guide.md#模型-roles)。
+
 ## 自定义角色
 
 发现顺序为最近的项目 `.pp/agents/*.md`、用户 `~/.pp/agent/agents/*.md`、内置定义；同名精确匹配，先发现者优先。无效自定义文件记录诊断后跳过。以下定义允许只读研究：

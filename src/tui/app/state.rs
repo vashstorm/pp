@@ -48,6 +48,7 @@ impl App {
         self.history_draft = None;
         self.model_picker_draft = None;
         self.model_panel = None;
+        self.roles_panel = None;
         self.file_paths.clear();
         self.file_directory.clear();
         self.file_query = None;
@@ -73,6 +74,7 @@ impl App {
         self.events = None;
         self.unavailable = Some(message.into());
         self.tree_panel = None;
+        self.roles_panel = None;
         self.changes_panel = None;
         self.plan_list_panel = None;
         self.plan_list_pending = None;
@@ -242,6 +244,7 @@ impl App {
             || self.changes_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.model_panel.is_some()
+            || self.roles_panel.is_some()
             || self.queue_menu
             || self.plan_leave_confirmation.is_some()
         {
@@ -516,6 +519,7 @@ impl App {
     /// 当前显示的转录：独立审查页优先于主对话。
     pub(in crate::tui) fn needs_alternate(&self) -> bool {
         self.auth_panel.is_some()
+            || self.roles_panel.is_some()
             || self.subagent_panel.is_some()
             || self.history_browser
             || self.skill_panel.is_some()

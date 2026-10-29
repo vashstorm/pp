@@ -129,6 +129,31 @@ read:
 bash_timeout_seconds: 120
 ```
 
+### 模型 Roles
+
+在 TUI 输入 `/Roles`（也接受 `/roles`），打开独立的模型角色配置页；`/model` 仍只切换当前会话的模型。配置页采用深色双栏布局：左侧为 Roles、全部模型和供应商导航，右侧为角色、模型或 effort 选择区。
+
+首批角色为 `DEFAULT`、`FAST`、`SLOW`、`VISION`、`PLAN`、`REVIEW`，直接列出全部六项，暂不分类。每项独立保存一个 `provider/model` 和 effort；`FAST` 对应参考界面中的 SMOL。圆点是启用标识：`●` 为选中，`○` 为未选中；方向箭头仅表示键盘焦点。选中的 Role 显示彩色，未选中的整行灰显，光标移动不会改变启用状态。Space 或点击圆点切换启用状态，取消选中会保留 model/effort。Enter 配置模型及受支持的 effort；首次配置默认启用，修改已取消选中的配置不会重新启用。`e` 单独调整 effort，Delete 删除配置，Esc 逐级返回。更改设置不会切换当前会话，也不会改写已经派发的子任务。
+
+设置保存在 `~/.pp/agent/settings.yml`，例如：
+
+```yaml
+model_roles:
+  default: {enabled: true, model: openai/primary, effort: high}
+  fast: {enabled: true, model: gateway/primary, effort: low}
+  slow: {enabled: false, model: openai/primary, effort: high}
+  vision: {enabled: false, model: openai/primary, effort: medium}
+  plan: {enabled: true, model: openai/primary, effort: high}
+  review: {enabled: true, model: gateway/primary, effort: high}
+```
+
+已启用的 `DEFAULT` 用于新启动会话；未设置或未选中时沿用 `default_model` 和 `think_level`。未选中的模型 Role 不会进入 prompt 或 task 的可选枚举；全部未选中时不暴露 `role` 参数，显式调用未启用的 Role 会在派发前返回错误。自动 Plan/Review 路由未启用时保留原有模型及 effort。已有配置省略 `enabled` 时按已选中读取，兼容此前保存的配置。显式配置的模型不可用或 effort 不受支持时返回错误，不悄悄替换。清除 DEFAULT 后恢复原有默认设置。
+
+- 主 Agent 可在 `task.tasks[]` 中指定 `role: "fast"` 等模型角色；`agent` 仍选择 task、scout、reviewer 等任务定义。已启用的显式模型角色优先于任务定义的选模。
+- 从 Execute 进入 Plan，或从 `/plan-list` 打开新的规划会话时，采用已启用 PLAN 的 model 和 effort。同一 Plan 内继续讨论不会重复套用 PLAN，用户用 `/model` 或 `/effort` 的手动选择会保留；恢复会话沿用已保存的实际模型。
+- 计划面板的独立审阅使用已启用的 REVIEW；代码审查的 `agent: "reviewer"` 子任务也默认使用已启用的 REVIEW，主 Agent 可以显式指定其他 `role` 覆盖。独立计划审阅不会改变主会话模型。角色配置本身不自动发起审查。
+- `VISION` 是可选模型角色，不改变模型自身的图像输入能力。
+
 ### 模型目录
 
 ```yaml
@@ -200,6 +225,7 @@ chmod 600 ~/.pp/agent/models.yml
 |---|---|---|
 | `/help`、`/tips` | 查看完整帮助或全部操作提示 | TUI / 行模式 |
 | `/model [provider/model]` | 选择模型，保留历史 | TUI / 行模式 |
+| `/Roles`（或 `/roles`） | 独立配置六个模型 Role 的 model 和 effort，不改变当前模型 | 仅 TUI |
 | `/effort [none\|low\|medium\|high\|xhigh\|max]` | 查看或切换当前模型允许的思考档位，`/think` 为别名 | TUI / 行模式 |
 | `/new` | 清空当前会话，保留模型和思考档位 | TUI / 行模式 |
 | `/init` | 使用当前模型创建或更新项目 `AGENTS.md` | TUI / 行模式 |
@@ -334,7 +360,7 @@ Plan 阶段只讨论、编写和审阅计划 Markdown，不生成 TODO 投影或
 1. **Execute in a new session**：Fresh，新 session；只发送完整批准计划及固定实施／更新 TODO 规则，正常加载系统、当前项目与技能规则，不带原始需求、调研聊天、旧调用或 reviewer 报告。
 2. **Execute (keep context)**：Keep，保留当前历史并追加一次完整批准快照；计划与重要历史用户要求冲突时先澄清。
 3. **Compact context and execute**：先复用手动上下文压缩，再按 Keep 在当前 session 中执行完整批准计划；无可压缩前缀时直接执行。压缩期间仍为 Plan 权限，Esc 可取消；压缩失败、摘要未能缩短历史、取消、计划发生变化或出现待处理输入均不执行，成功摘要会独立保存。
-4. **Review Plan**：当前模型的独立只读上下文，仅原始需求＋当前计划；可读取代码和安全搜索，不可 ask／写入／提交／实施。审查需求覆盖、关键决策是否完整、真实代码及调用方、契约与失败边界、验证方案；只报告有证据、可行动且会影响实施的问题，不挑风格、不扩大范围、不把无关既有缺陷算到计划上，允许零发现。报告使用任务／计划语言，先列问题及对应计划项、证据、触发条件、影响和最小修订建议：Major 为影响安全实施或需求达成的问题，Minor 为局部规格／验证缺陷；未确认问题和缺失证据单列 Info 开放项，最后给出就绪评估及静态审查局限。不会修改计划或勾选 TODO，也不自动批准；无需先 review 或消除报告问题才可执行。
+4. **Review Plan**：使用 REVIEW Role 的 model 和 effort，未配置时沿用当前模型；在独立只读上下文中运行，仅原始需求＋当前计划；可读取代码和安全搜索，不可 ask／写入／提交／实施。审查需求覆盖、关键决策是否完整、真实代码及调用方、契约与失败边界、验证方案；只报告有证据、可行动且会影响实施的问题，不挑风格、不扩大范围、不把无关既有缺陷算到计划上，允许零发现。报告使用任务／计划语言，先列问题及对应计划项、证据、触发条件、影响和最小修订建议：Major 为影响安全实施或需求达成的问题，Minor 为局部规格／验证缺陷；未确认问题和缺失证据单列 Info 开放项，最后给出就绪评估及静态审查局限。不会修改计划或勾选 TODO，也不自动批准；无需先 review 或消除报告问题才可执行。
 5. **Continue discussing Plan**：独立编辑器，Enter 发送、Ctrl + J 换行、Esc 丢弃未发送问题；发送后降 Draft，保留计划正文，重新提交才能批准。不强制立即重写文件；仅针对当前修订的 reviewer 报告随问题作为辅助材料带回。也可直接在下方输入框继续讨论。
 6. **Save draft and leave Plan mode**：安全核对磁盘正文与当前审阅版本，保存 Draft 状态并退出 Plan，保留计划文件；不发起模型请求，也不实施计划。失败保留面板并显示错误。
 

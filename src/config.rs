@@ -9,6 +9,9 @@ use std::{
 
 use crate::{models, yaml};
 
+mod roles;
+pub(crate) use roles::{ModelRole, ModelRoles, RoleAssignment};
+
 // Deliberately not Debug: this owns the API credential.
 pub(crate) struct Config {
     pub(crate) auth: Option<crate::auth::Config>,
@@ -235,6 +238,8 @@ pub(crate) struct ReadDisplaySettings {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
     #[serde(default)]
+    pub(crate) model_roles: ModelRoles,
+    #[serde(default)]
     pub(crate) task: crate::subagent::Settings,
     #[serde(default)]
     pub(crate) grep: GrepSettings,
@@ -301,6 +306,17 @@ impl Settings {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        for assignment in self.model_roles.values() {
+            ensure!(
+                assignment
+                    .model
+                    .split_once('/')
+                    .is_some_and(
+                        |(provider, model)| !provider.trim().is_empty() && !model.trim().is_empty()
+                    ),
+                "model_roles model must use provider/model"
+            );
+        }
         ensure!(
             self.notification_timeout_seconds > 0,
             "notification_timeout_seconds must be greater than zero"
@@ -404,6 +420,7 @@ pub(crate) fn global_dir() -> Result<PathBuf> {
 
 fn default_settings() -> Settings {
     Settings {
+        model_roles: Default::default(),
         task: Default::default(),
         grep: GrepSettings::default(),
         read: ReadDisplaySettings::default(),
@@ -517,7 +534,13 @@ impl ModelCatalog {
             .first()
             .map(|provider| format!("{}/{}", provider.id, provider.models[0].id))
             .unwrap_or_default();
-        let default_reference = match settings.default_model.as_deref() {
+        let default_reference = match settings
+            .model_roles
+            .get(&ModelRole::Default)
+            .filter(|assignment| assignment.enabled)
+            .map(|assignment| assignment.model.as_str())
+            .or(settings.default_model.as_deref())
+        {
             Some(reference) => {
                 let (provider_id, model_id) = reference
                     .split_once('/')
@@ -552,22 +575,55 @@ impl ModelCatalog {
     }
 
     pub(crate) fn default_think_level(&self) -> ThinkLevel {
-        self.settings.think_level
+        self.settings
+            .model_roles
+            .get(&ModelRole::Default)
+            .filter(|assignment| assignment.enabled)
+            .map_or(self.settings.think_level, |assignment| assignment.effort)
     }
 
-    pub(crate) fn save_default_think_level(&self, level: ThinkLevel) -> Result<()> {
-        update_settings(&self.settings_path, |_| {
-            Ok((
-                "think_level",
-                serde_yaml::Value::String(level.as_str().into()),
-            ))
-        })
+    pub(crate) fn save_default_think_level(&mut self, level: ThinkLevel) -> Result<()> {
+        let mut roles = self.settings.model_roles.clone();
+        update_settings_fields(&self.settings_path, |settings| {
+            roles = settings.model_roles;
+            if let Some(assignment) = roles.get_mut(&ModelRole::Default)
+                && assignment.enabled
+            {
+                ensure!(
+                    self.resolve(&assignment.model)?.thinking.supports(level),
+                    "DEFAULT role effort 不受模型支持"
+                );
+                assignment.effort = level;
+            }
+            Ok(vec![
+                ("think_level", serde_yaml::to_value(level)?),
+                ("model_roles", serde_yaml::to_value(&roles)?),
+            ])
+        })?;
+        self.settings.think_level = level;
+        self.settings.model_roles = roles;
+        Ok(())
     }
 
     pub(crate) fn save_default_model(&mut self, reference: &str) -> Result<()> {
-        update_settings(&self.settings_path, |_| {
-            Ok(("default_model", serde_yaml::Value::String(reference.into())))
+        let mut roles = self.settings.model_roles.clone();
+        let thinking = self.resolve(reference)?.thinking;
+        update_settings_fields(&self.settings_path, |settings| {
+            roles = settings.model_roles;
+            if let Some(assignment) = roles.get_mut(&ModelRole::Default)
+                && assignment.enabled
+            {
+                assignment.model = reference.to_owned();
+                if !thinking.supports(assignment.effort) {
+                    assignment.effort = thinking.effective_default(settings.think_level);
+                }
+            }
+            Ok(vec![
+                ("default_model", serde_yaml::Value::String(reference.into())),
+                ("model_roles", serde_yaml::to_value(&roles)?),
+            ])
         })?;
+        self.settings.model_roles = roles;
         self.settings.default_model = Some(reference.to_owned());
         self.default_reference = reference.to_owned();
         Ok(())
@@ -625,6 +681,7 @@ impl ModelCatalog {
         {
             settings.default_model = updated.default_model;
             settings.favorite_models = updated.favorite_models;
+            settings.model_roles = updated.model_roles;
         }
         let next = Self::with_settings(
             settings,
@@ -637,6 +694,7 @@ impl ModelCatalog {
         self.default_reference = next.default_reference;
         self.settings.favorite_models = next.settings.favorite_models;
         self.settings.default_model = next.settings.default_model;
+        self.settings.model_roles = next.settings.model_roles;
         Ok(())
     }
 

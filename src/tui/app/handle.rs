@@ -41,6 +41,16 @@ impl App {
             *dirty = true;
             return false;
         }
+        if let Some(panel) = &mut self.roles_panel {
+            if matches!(&event, Event::Key(key) if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+            {
+                return matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press);
+            }
+            let action = panel.handle(event);
+            self.apply_roles_action(action);
+            *dirty = true;
+            return false;
+        }
         // 放弃确认独占输入；粘贴、鼠标和全局快捷键不能绕过确认。
         if let Some(panel) = &mut self.plan_leave_confirmation {
             if let Event::Key(key) = event {

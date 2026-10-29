@@ -15,6 +15,134 @@ fn binding(dir: &Path, settings: Settings) -> Binding {
     )
     .unwrap()
 }
+
+#[test]
+fn model_roles_subagent_explicit_selection_and_default_reviewer_route_are_independent() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding(dir.path(), Settings::default());
+    binding.set_model_roles(std::collections::BTreeMap::from([
+        (
+            crate::config::ModelRole::Fast,
+            crate::config::RoleAssignment {
+                enabled: true,
+                model: "fixture/fast".into(),
+                effort: ThinkLevel::Low,
+            },
+        ),
+        (
+            crate::config::ModelRole::Review,
+            crate::config::RoleAssignment {
+                enabled: true,
+                model: "fixture/review".into(),
+                effort: ThinkLevel::High,
+            },
+        ),
+    ]));
+    binding
+        .execute(
+            "task",
+            &json!({"context":"routing", "tasks":[
+                {"agent":"scout", "role":"fast", "task":"find"},
+                {"agent":"reviewer", "task":"review"},
+                {"agent":"reviewer", "role":"fast", "task":"quick review"},
+                {"task":"inherit parent model"}
+            ]})
+            .to_string(),
+            false,
+            &Default::default(),
+        )
+        .unwrap();
+    let state = lock(&binding.inner.state);
+    for (id, model, effort) in [
+        ("a1", "fixture/fast", ThinkLevel::Low),
+        ("a2", "fixture/review", ThinkLevel::High),
+        ("a3", "fixture/fast", ThinkLevel::Low),
+        ("a4", "fixture/main", ThinkLevel::None),
+    ] {
+        assert_eq!(state.disk.agents[id].spec.model, model);
+        assert_eq!(state.disk.agents[id].spec.thinking, effort);
+    }
+}
+
+#[test]
+fn model_roles_unselected_roles_are_absent_from_prompt_schema_and_rejected_before_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding(dir.path(), Settings::default());
+    let inactive = crate::config::RoleAssignment {
+        enabled: false,
+        model: "fixture/disabled-model-marker".into(),
+        effort: ThinkLevel::High,
+    };
+    binding.set_model_roles(std::collections::BTreeMap::from([
+        (
+            crate::config::ModelRole::Fast,
+            crate::config::RoleAssignment {
+                enabled: true,
+                model: "fixture/fast".into(),
+                effort: ThinkLevel::Low,
+            },
+        ),
+        (crate::config::ModelRole::Review, inactive.clone()),
+    ]));
+    let task = binding
+        .definitions(WorkMode::Execute)
+        .into_iter()
+        .find(|def| def.name == "task")
+        .unwrap();
+    let parameters = task.parameters.unwrap();
+    assert_eq!(
+        parameters
+            .pointer("/properties/tasks/items/properties/role/enum")
+            .unwrap(),
+        &json!(["fast"])
+    );
+    assert!(
+        !task
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("disabled-model-marker")
+    );
+    assert!(
+        !task
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("review model role")
+    );
+    for role in ["review", "vision"] {
+        assert!(binding.execute("task", &json!({"context":"test","tasks":[{"task":"valid"},{"task":"reject unselected role","role":role}]}).to_string(), false, &Default::default()).is_err());
+    }
+    assert!(lock(&binding.inner.state).disk.agents.is_empty());
+    binding.set_model_roles(std::collections::BTreeMap::from([(
+        crate::config::ModelRole::Review,
+        inactive,
+    )]));
+    let task = binding
+        .definitions(WorkMode::Execute)
+        .into_iter()
+        .find(|def| def.name == "task")
+        .unwrap();
+    assert!(
+        task.parameters
+            .unwrap()
+            .pointer("/properties/tasks/items/properties/role")
+            .is_none()
+    );
+    assert!(!task.description.unwrap().contains("model role"));
+    binding
+        .execute(
+            "task",
+            &json!({"context":"test","tasks":[{"agent":"reviewer","task":"ordinary review"}]})
+                .to_string(),
+            false,
+            &Default::default(),
+        )
+        .unwrap();
+    let state = lock(&binding.inner.state);
+    assert_eq!(state.disk.agents["a1"].spec.model, "fixture/main");
+    assert_eq!(state.disk.agents["a1"].spec.model_role, None);
+}
 #[test]
 fn schema_checks_nested_required_additional_properties_and_combinators() {
     let schema = json!({"type":"object","properties":{"items":{"type":"array","items":{"type":"integer","minimum":1}}},"required":["items"],"additionalProperties":false});
@@ -292,6 +420,7 @@ fn plan_mode_refuses_to_revive_a_writable_isolated_workspace() {
     let mut binding = binding(dir.path(), Default::default());
     Arc::get_mut(&mut binding.inner).unwrap().plan_mode = true;
     let spec = Spec {
+        model_role: None,
         definition: "task".into(),
         prompt: String::new(),
         context: String::new(),

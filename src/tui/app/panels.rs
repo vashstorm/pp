@@ -21,7 +21,11 @@ impl App {
     }
 
     pub(in crate::tui) fn shortcut_ready(&mut self) -> bool {
-        if self.skills_pending || self.changes_panel.is_some() || self.plan_list_panel.is_some() {
+        if self.skills_pending
+            || self.changes_panel.is_some()
+            || self.plan_list_panel.is_some()
+            || self.roles_panel.is_some()
+        {
             return false;
         }
         match self.state {
@@ -360,6 +364,7 @@ impl App {
                 }
             }
             State::Ready => match command {
+                Some(Command::Roles) => self.open_roles(),
                 Some(Command::Agents | Command::Subagents) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
                 Some(Command::Think(Some(level))) => {

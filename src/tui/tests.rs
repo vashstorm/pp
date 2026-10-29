@@ -332,6 +332,7 @@ mod file_picker_cases;
 mod input_cases;
 mod model_menu_cases;
 mod plan_cases;
+mod roles_cases;
 mod streaming_panel_cases;
 mod tree_session_cases;
 

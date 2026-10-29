@@ -176,6 +176,8 @@ pp stats
 
 ## 扩展能力
 
+输入 `/Roles` 配置 DEFAULT、FAST、SLOW、VISION、PLAN、REVIEW 各自的 model 和 effort；`/model` 只切换当前模型。圆点表示启用状态，Space 或点击圆点切换，未选中的 Role 灰显且不会进入 prompt。进入 Plan 默认采用已启用的 PLAN，计划审阅及 reviewer 子任务默认采用已启用的 REVIEW，主 Agent 也可在子任务中显式指定模型 Role。[配置与使用 →](docs/guide.md#模型-roles)
+
 | 扩展 | 入口 | 说明 |
 | --- | --- | --- |
 | [项目指令](docs/guide.md#项目级-agentsmd) | 当前工作目录的 `AGENTS.md` | 每次模型请求前刷新项目规则 |

@@ -74,6 +74,24 @@ impl App {
             return;
         }
         if !self.native_render
+            && let Some(panel) = &mut self.roles_panel
+        {
+            panel.update_roles(
+                self.model_roles.clone(),
+                self.current_model
+                    .as_ref()
+                    .map(|model| model.reference.clone())
+                    .unwrap_or_default(),
+                self.think_level,
+            );
+            panel.draw(frame, area);
+            self.notifications.draw(
+                frame,
+                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
+            );
+            return;
+        }
+        if !self.native_render
             && self.ask_panel.is_none()
             && let Some(panel) = &mut self.subagent_panel
         {

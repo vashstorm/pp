@@ -13,6 +13,7 @@ mod notification;
 mod plan;
 mod plan_leave;
 mod plan_list;
+mod roles;
 mod scrollback;
 mod sessions;
 mod skills;
@@ -260,6 +261,10 @@ enum WorkerCommand {
     SetThinkLevel(ThinkLevel),
     SaveDefaultThinkLevel(ThinkLevel),
     SaveDefaultModel(String),
+    SaveModelRole(
+        crate::config::ModelRole,
+        Option<crate::config::RoleAssignment>,
+    ),
     ToggleFavoriteModel(String),
     ListSessions,
     DeleteSession(String),
@@ -339,6 +344,8 @@ enum WorkerEvent {
     ThinkLevelSet(Result<ThinkLevel>),
     DefaultThinkLevelSaved(Result<ThinkLevel>),
     DefaultModelSaved(Result<String>),
+    ModelRolesSaved(Result<(crate::config::ModelRoles, String, ThinkLevel)>),
+    ModelState(ModelChoice, ThinkLevel),
     FavoriteModelsSaved(Result<Vec<String>>),
     SessionsListed(Result<crate::agent::persistence::SessionListing>),
     SessionDeleted(String, Result<()>),
@@ -392,6 +399,10 @@ fn publish_transition_failure(agent: &Agent, snapshots: &mut Vec<WorkerEvent>) {
 
 /// Publish the workflow snapshot so the UI never keeps a stale plan/mode.
 fn push_workflow_snapshot(agent: &Agent, snapshots: &mut Vec<WorkerEvent>) {
+    snapshots.push(WorkerEvent::ModelState(
+        agent.current_model().clone(),
+        agent.think_level(),
+    ));
     snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
 }
 
@@ -480,9 +491,23 @@ impl WorkerEvent {
 
 /// worker 完整加载并验证后的模型目录快照。
 struct ModelListing {
+    roles: crate::config::ModelRoles,
+    default_effort: ThinkLevel,
     choices: Vec<ModelChoice>,
     default_reference: String,
     favorites: Vec<String>,
+}
+
+impl ModelListing {
+    fn from_agent(agent: &Agent) -> Self {
+        Self {
+            choices: agent.model_choices(),
+            default_reference: agent.default_model_reference().to_owned(),
+            favorites: agent.favorite_models().to_vec(),
+            roles: agent.model_roles().clone(),
+            default_effort: agent.default_think_level(),
+        }
+    }
 }
 
 /// 由 worker 一次性准备好的会话切换产物；全部就绪后才替换 UI 状态。
@@ -607,6 +632,8 @@ struct App {
     menu_dismissed: bool,
     model_picker_draft: Option<ModelPickerDraft>,
     model_panel: Option<model::Panel>,
+    roles_panel: Option<roles::Panel>,
+    model_roles: crate::config::ModelRoles,
     secondary_status: Option<String>,
     skill_worker: skills::Worker,
     skill_panel: Option<skills::Panel>,

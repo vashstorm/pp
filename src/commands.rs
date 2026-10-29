@@ -12,6 +12,11 @@ pub(crate) struct CommandSpec {
 
 pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
+        name: "/Roles",
+        usage: "/Roles",
+        description: "配置各模型 Role 的 model 与 effort（TUI）",
+    },
+    CommandSpec {
         name: "/subagents",
         usage: "/subagents",
         description: "查看、追问和控制子 Agent",
@@ -128,6 +133,7 @@ pub(crate) enum Command<'a> {
     Tree,
     Changes,
     Agents,
+    Roles,
     Subagents,
     PlanList,
     Login,
@@ -166,6 +172,10 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/tree" => Command::Tree,
         "/changes" => Command::Changes,
         "/agents" => Command::Agents,
+        "/Roles" | "/roles" => {
+            ensure!(argument.is_empty(), "usage: /Roles");
+            return Ok(Some(Command::Roles));
+        }
         "/subagents" => Command::Subagents,
         "/login" | "/logout" => {
             ensure!(argument.is_empty(), "usage: {name}");

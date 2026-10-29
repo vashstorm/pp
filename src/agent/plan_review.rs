@@ -1,6 +1,5 @@
-//! Independent plan reviewer: the current model audits the saved plan in an
-//! isolated scratch session and the report is persisted as a revision-bound
-//! workflow record.
+//! 独立计划审阅：使用 REVIEW Role 的模型和 effort；未配置时沿用主会话。
+//! 审阅运行在独立临时上下文中，报告作为绑定计划修订的工作流记录保存。
 //!
 //! The reviewer reuses the real SDK clients and the shared tool gate, but
 //! never touches the main session's native history, context usage, request
@@ -20,7 +19,7 @@ use crate::{
     plan::{PLAN_MAX_BYTES, PlanDocument, PlanReviewReport, ReviewToken},
     tools::ToolPolicy,
 };
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use async_openai::types::{
     chat::{
         ChatCompletionMessageToolCalls, ChatCompletionRequestAssistantMessageContent,
@@ -39,8 +38,7 @@ const REVIEW_CONTEXT: &str = "Plan review context limit reached.";
 const REVIEW_INSTRUCTIONS: &str = include_str!("../prompts/plan-review.md");
 
 impl Agent {
-    /// Review the approved plan in an isolated current-model context and
-    /// persist the resulting report as `workflow.review`.
+    /// 使用 REVIEW Role 独立审阅已保存计划，将报告写入 `workflow.review`。
     ///
     /// The token is validated exactly like an approval (mode, Ready status,
     /// session, revision, queue, journal health and exact on-disk bytes); a
@@ -63,14 +61,16 @@ impl Agent {
             .as_ref()
             .expect("validated token has a Ready plan")
             .clone();
-        let config = self
-            .catalog
-            .resolve(&self.current_model.reference)
-            .map_err(|_| anyhow!("current model is unavailable"))?;
+        let selection = self.catalog.role_selection(
+            crate::config::ModelRole::Review,
+            &self.current_model.reference,
+            self.think_level,
+        )?;
+        let config = self.catalog.resolve(&selection.model)?;
         let metadata = Metadata {
             cwd: self.tools.cwd(),
-            model_reference: &self.current_model.reference,
-            think_level: self.think_level,
+            model_reference: &selection.model,
+            think_level: selection.effort,
             edit_mode: self.tools.edit_mode(),
             tool_limits: self.tools.limits,
             base_system: &self.base_system,
@@ -85,13 +85,13 @@ impl Agent {
             &self.request_skills,
         ));
         let mut session = Session::new(
-            self.current_model.model.clone(),
-            self.current_model.protocol,
-            self.review_system()?,
+            config.model.clone(),
+            config.protocol,
+            self.review_system_for(&config.model)?,
             self.tools.edit_mode(),
         );
         session.set_tools(self.tools.review_definitions());
-        session.set_think_level(self.think_level);
+        session.set_think_level(selection.effort);
         append_user_to(&mut session, &review_prompt(&document));
         let outcome = self.review_loop(
             &mut client,
@@ -108,7 +108,7 @@ impl Agent {
         let report = PlanReviewReport {
             plan_id: document.id.clone(),
             revision: document.revision,
-            model_reference: self.current_model.reference.clone(),
+            model_reference: selection.model,
             content,
         };
         let previous = self.workflow.clone();
@@ -129,7 +129,11 @@ impl Agent {
             cancellation::check(cancellation)?;
             // Refresh project instructions and the skill summary every round
             // so the reviewer always audits against current rules.
-            let system = self.review_system()?;
+            let model = match session {
+                Session::Completion(request) => request.model.as_str(),
+                Session::Response(request) => request.model.as_deref().unwrap_or_default(),
+            };
+            let system = self.review_system_for(model)?;
             set_review_system(session, &system);
             if let Some(window) = context_window {
                 let estimated = estimate_tokens(session)?;
@@ -298,11 +302,11 @@ impl Agent {
     /// Reviewer system prompt: current project instructions and skill summary
     /// plus the fixed review-only rules. Plan-mode drafting rules are never
     /// mixed in; the reviewer cannot write or authorize anything.
-    fn review_system(&self) -> Result<String> {
+    fn review_system_for(&self, model: &str) -> Result<String> {
         self.compose_prompt(
             REVIEW_INSTRUCTIONS,
             "review",
-            &self.current_model.model,
+            model,
             self.tools
                 .review_definitions()
                 .into_iter()
@@ -372,6 +376,70 @@ mod tests {
     use serde_json::{Value, json};
 
     const REPORT: &str = "## Findings\n\n- Minor: verification step is vague.\n";
+
+    #[test]
+    fn model_roles_review_uses_its_own_model_protocol_and_effort_without_changing_main() {
+        for protocol in ["completion", "response"] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let address = server.server_addr().to_string();
+            let dir = tempfile::tempdir().unwrap();
+            let (mut agent, token) = ready_reviewer(
+                dir.path(),
+                if protocol == "completion" {
+                    "response"
+                } else {
+                    "completion"
+                },
+                &address,
+            );
+            let path = dir.path().join("models.yml");
+            let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            models["providers"]["audit"] = json!({"api_key":"fixture-key", "protocol":protocol,
+                "base_url":format!("http://{address}/v1"), "models":{"review":{"model":"audit-model"}}});
+            std::fs::write(path, models.to_string()).unwrap();
+            agent.reload_models().unwrap();
+            agent
+                .save_model_role(
+                    crate::config::ModelRole::Review,
+                    Some(crate::config::RoleAssignment {
+                        enabled: true,
+                        model: "audit/review".into(),
+                        effort: crate::config::ThinkLevel::High,
+                    }),
+                )
+                .unwrap();
+            let main = serde_json::to_value(&agent.session).unwrap();
+            let handle = std::thread::spawn(move || {
+                let mut request = server
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap()
+                    .unwrap();
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).unwrap();
+                let body: Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(body["model"], "audit-model");
+                let effort = if protocol == "completion" {
+                    &body["reasoning_effort"]
+                } else {
+                    &body["reasoning"]["effort"]
+                };
+                assert_eq!(effort, "high");
+                final_for(protocol, request, REPORT, false);
+            });
+            let report = agent
+                .review_plan(
+                    token,
+                    &InputQueue::default(),
+                    &CancellationToken::new(),
+                    &mut |_| {},
+                )
+                .unwrap();
+            handle.join().unwrap();
+            assert_eq!(report.model_reference, "audit/review");
+            assert_eq!(agent.current_model.reference, "fixture/one");
+            assert_eq!(serde_json::to_value(&agent.session).unwrap(), main);
+        }
+    }
 
     // --- fixtures ---------------------------------------------------------
 

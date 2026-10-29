@@ -117,30 +117,36 @@ impl Agent {
             ..Default::default()
         };
         candidate_workflow.validate()?;
+        let selection = self.catalog.role_selection(
+            crate::config::ModelRole::Plan,
+            &self.current_model.reference,
+            self.think_level,
+        )?;
+        let config = self.catalog.resolve(&selection.model)?;
+        let client = crate::llm::OpenAiClient::new(&config)?;
         let prompt = selection_prompt(intent, &verified.id, &verified.path, &verified.content);
-        // 候选会话沿用当前模型/思考/工具配置与当前项目/技能规则；候选模式
-        // 为 Plan：工具清单是 Plan 白名单，不连接任何 MCP 服务。
+        // 新 Plan 使用 PLAN 的模型与 effort；工具仍是 Plan 白名单，不连接 MCP。
         let prepared = (|| -> Result<(Session, super::persistence::SessionJournal)> {
             let definitions = self.tools.all_definitions(WorkMode::Plan);
             let system = self.compose_prompt(
                 &candidate_workflow.instructions(),
                 "plan",
-                &self.current_model.model,
+                &config.model,
                 definitions.iter().map(|tool| tool.name.clone()).collect(),
             )?;
             let mut session = Session::new(
-                self.current_model.model.clone(),
-                self.current_model.protocol,
+                config.model.clone(),
+                config.protocol,
                 system,
                 self.tools.edit_mode(),
             );
-            session.set_think_level(self.think_level);
+            session.set_think_level(selection.effort);
             session.set_tools(definitions);
             super::turn::append_user_to(&mut session, &prompt);
             let metadata = Metadata {
                 cwd: self.tools.cwd(),
-                model_reference: &self.current_model.reference,
-                think_level: self.think_level,
+                model_reference: &selection.model,
+                think_level: selection.effort,
                 edit_mode: self.tools.edit_mode(),
                 tool_limits: self.tools.limits,
                 base_system: &self.base_system,
@@ -164,6 +170,15 @@ impl Agent {
         self.ensure_plan_mcp_shutdown(cancellation)?;
         // 完整提交后才替换当前会话；只有真正切换才清除撤销内存资格。
         self.session = session;
+        self.client = client;
+        self.current_model = crate::config::ModelChoice {
+            reference: selection.model,
+            model: config.model,
+            protocol: config.protocol,
+            thinking: config.thinking,
+            context_window: config.context_window,
+        };
+        self.think_level = selection.effort;
         self.journal = journal;
         self.workflow = candidate_workflow;
         self.tools.clear_changes();

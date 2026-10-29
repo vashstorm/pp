@@ -105,6 +105,11 @@ impl App {
                             self.choices = listing.choices;
                             self.default_model_reference = Some(listing.default_reference);
                             self.favorite_models = listing.favorites;
+                            self.model_roles = listing.roles;
+                            self.default_think_level = listing.default_effort;
+                            if let Some(panel) = &mut self.roles_panel {
+                                panel.update_choices(self.choices.clone());
+                            }
                             self.refresh_candidates(false);
                         }
                         Err(error) => self
@@ -332,6 +337,32 @@ impl App {
                             self.token_speed.clear();
                         }
                         Err(error) => self.notify(Level::Error, format!("{error:#}")),
+                    }
+                    self.state = State::Ready;
+                    changed = true;
+                }
+                Ok(WorkerEvent::ModelState(model, effort)) => {
+                    self.current_model = Some(model);
+                    self.think_level = effort;
+                    changed = true;
+                }
+                Ok(WorkerEvent::ModelRolesSaved(result)) => {
+                    if let Some(panel) = &mut self.roles_panel {
+                        panel.busy = false;
+                    }
+                    match result {
+                        Ok((roles, default, effort)) => {
+                            self.model_roles = roles;
+                            self.default_model_reference = Some(default);
+                            self.default_think_level = effort;
+                            if let Some(panel) = &mut self.roles_panel {
+                                panel.saved();
+                            }
+                            self.notify(Level::Normal, "Role 配置已保存".into());
+                        }
+                        Err(error) => {
+                            self.notify(Level::Error, format!("Role 保存失败：{error:#}"))
+                        }
                     }
                     self.state = State::Ready;
                     changed = true;

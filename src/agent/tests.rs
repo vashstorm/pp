@@ -2,6 +2,7 @@ use super::turn::apply_todo_change;
 use super::*;
 use serde_json::{Value, json};
 
+mod model_role_cases;
 mod plan_model_cases;
 mod session_task_cases;
 mod tree_todo_cases;

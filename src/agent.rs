@@ -330,9 +330,21 @@ impl Agent {
             context_window: config.context_window,
         };
         let edit_mode = tools.edit_mode();
-        let think_level = config
-            .thinking
-            .effective_default(config.settings.think_level);
+        let think_level = if let Some(assignment) = catalog
+            .model_roles()
+            .get(&crate::config::ModelRole::Default)
+            .filter(|assignment| assignment.enabled)
+        {
+            ensure!(
+                config.thinking.supports(assignment.effort),
+                "DEFAULT role effort 不受模型支持"
+            );
+            assignment.effort
+        } else {
+            config
+                .thinking
+                .effective_default(config.settings.think_level)
+        };
         // 项目文件在任务开始时加载，读取失败不会让整个交互会话永久不可用。
         let context = crate::system_prompt::RenderContext::new(
             tools.cwd(),
@@ -836,7 +848,7 @@ impl Agent {
         self.catalog.default_think_level()
     }
 
-    pub(crate) fn save_default_think_level(&self, level: ThinkLevel) -> Result<()> {
+    pub(crate) fn save_default_think_level(&mut self, level: ThinkLevel) -> Result<()> {
         self.catalog.save_default_think_level(level)
     }
 
@@ -846,6 +858,22 @@ impl Agent {
 
     pub(crate) fn save_default_model(&mut self, reference: &str) -> Result<()> {
         self.catalog.save_default_model(reference)
+    }
+
+    pub(crate) fn model_roles(&self) -> &crate::config::ModelRoles {
+        self.catalog.model_roles()
+    }
+
+    pub(crate) fn save_model_role(
+        &mut self,
+        role: crate::config::ModelRole,
+        assignment: Option<crate::config::RoleAssignment>,
+    ) -> Result<()> {
+        self.catalog.save_model_role(role, assignment)?;
+        if let Some(binding) = &self.tools.subagent {
+            binding.set_model_roles(self.catalog.model_roles().clone());
+        }
+        Ok(())
     }
 
     pub(crate) fn favorite_models(&self) -> &[String] {
@@ -875,8 +903,22 @@ impl Agent {
     }
 
     pub(crate) fn switch_model(&mut self, reference: &str) -> Result<()> {
+        self.switch_model_with_effort(reference, None)
+    }
+
+    pub(super) fn switch_model_with_effort(
+        &mut self,
+        reference: &str,
+        effort: Option<ThinkLevel>,
+    ) -> Result<()> {
         self.journal.check()?;
         let config = self.catalog.resolve(reference)?;
+        if let Some(level) = effort {
+            ensure!(
+                config.thinking.supports(level),
+                "角色 effort 不受目标模型支持"
+            );
+        }
         let same_source = self.client.same_source(&config);
         if reference == self.current_model.reference
             && same_source
@@ -884,17 +926,20 @@ impl Agent {
             && config.protocol == self.current_model.protocol
             && config.thinking == self.current_model.thinking
             && config.context_window == self.current_model.context_window
+            && effort.is_none_or(|level| level == self.think_level)
         {
             return Ok(());
         }
-        let target_level = config.thinking.explicit_default().unwrap_or_else(|| {
-            if config.thinking.supports(self.think_level) {
-                self.think_level
-            } else {
-                config
-                    .thinking
-                    .effective_default(config.settings.think_level)
-            }
+        let target_level = effort.unwrap_or_else(|| {
+            config.thinking.explicit_default().unwrap_or_else(|| {
+                if config.thinking.supports(self.think_level) {
+                    self.think_level
+                } else {
+                    config
+                        .thinking
+                        .effective_default(config.settings.think_level)
+                }
+            })
         });
         let client = OpenAiClient::new(&config)?;
         let same_provider = reference.split_once('/').map(|(provider, _)| provider)

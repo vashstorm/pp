@@ -80,6 +80,8 @@ impl App {
             menu_dismissed: false,
             model_picker_draft: None,
             model_panel: None,
+            roles_panel: None,
+            model_roles: Default::default(),
             secondary_status: None,
             skill_worker: skills::Worker::new(skills)?,
             skill_panel: None,
@@ -163,6 +165,7 @@ impl App {
         self.background_cleanup = Some(agent.background_cleanup());
         self.choices = agent.model_choices();
         self.favorite_models = agent.favorite_models().to_vec();
+        self.model_roles = agent.model_roles().clone();
         self.default_model_reference = Some(agent.default_model_reference().to_owned());
         let (commands, receiver) = mpsc::channel();
         let (sender, events) = mpsc::sync_channel(256);
@@ -201,15 +204,11 @@ impl App {
                     // 状态切换成功后紧随一份新用量快照，与动作保持 FIFO 顺序。
                     let mut snapshots: Vec<WorkerEvent> = Vec::new();
                     let event = match command {
-                        WorkerCommand::ReloadModels => {
-                            WorkerEvent::ModelsReloaded(agent.reload_models().map(|()| {
-                                crate::tui::ModelListing {
-                                    choices: agent.model_choices(),
-                                    default_reference: agent.default_model_reference().to_owned(),
-                                    favorites: agent.favorite_models().to_vec(),
-                                }
-                            }))
-                        }
+                        WorkerCommand::ReloadModels => WorkerEvent::ModelsReloaded(
+                            agent
+                                .reload_models()
+                                .map(|()| crate::tui::ModelListing::from_agent(&agent)),
+                        ),
                         WorkerCommand::Shell {
                             command,
                             call_id,
@@ -269,13 +268,32 @@ impl App {
                             WorkerEvent::ThinkLevelSet(result)
                         }
                         WorkerCommand::SaveDefaultThinkLevel(level) => {
-                            WorkerEvent::DefaultThinkLevelSaved(
-                                agent.save_default_think_level(level).map(|()| level),
-                            )
+                            let result = agent.save_default_think_level(level).map(|()| level);
+                            if result.is_ok() {
+                                snapshots.push(WorkerEvent::ModelsReloaded(Ok(
+                                    crate::tui::ModelListing::from_agent(&agent),
+                                )));
+                            }
+                            WorkerEvent::DefaultThinkLevelSaved(result)
                         }
                         WorkerCommand::SaveDefaultModel(reference) => {
-                            WorkerEvent::DefaultModelSaved(
-                                agent.save_default_model(&reference).map(|()| reference),
+                            let result = agent.save_default_model(&reference).map(|()| reference);
+                            if result.is_ok() {
+                                snapshots.push(WorkerEvent::ModelsReloaded(Ok(
+                                    crate::tui::ModelListing::from_agent(&agent),
+                                )));
+                            }
+                            WorkerEvent::DefaultModelSaved(result)
+                        }
+                        WorkerCommand::SaveModelRole(role, assignment) => {
+                            WorkerEvent::ModelRolesSaved(
+                                agent.save_model_role(role, assignment).map(|()| {
+                                    (
+                                        agent.model_roles().clone(),
+                                        agent.default_model_reference().to_owned(),
+                                        agent.default_think_level(),
+                                    )
+                                }),
                             )
                         }
                         WorkerCommand::ToggleFavoriteModel(reference) => {
@@ -340,6 +358,10 @@ impl App {
                         }
                         WorkerCommand::EnterPlan { cancellation } => {
                             let result = agent.enter_plan(&cancellation);
+                            snapshots.push(WorkerEvent::ModelState(
+                                agent.current_model().clone(),
+                                agent.think_level(),
+                            ));
                             if result.is_ok() {
                                 if let Some(event) = usage_snapshot(&agent) {
                                     snapshots.push(event);
@@ -360,11 +382,13 @@ impl App {
                             selection,
                             intent,
                             cancellation,
-                        } => WorkerEvent::ListedPlanOpened(agent.open_listed_plan(
-                            &selection,
-                            intent,
-                            &cancellation,
-                        )),
+                        } => {
+                            let result = agent.open_listed_plan(&selection, intent, &cancellation);
+                            if result.is_ok() {
+                                push_runtime_snapshot(&agent, &mut snapshots);
+                            }
+                            WorkerEvent::ListedPlanOpened(result)
+                        }
                         WorkerCommand::RenameListedPlan {
                             selection,
                             file_name,

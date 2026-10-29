@@ -1,6 +1,77 @@
 use super::*;
 
 #[test]
+fn tui_roles_configures_model_and_effort_without_switching_current_session() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let models =
+        json!({"providers":{"fixture":slash_provider(&server, "fixture", "completion", json!({
+            "one":{"model":"vendor-one"}, "two":{"model":"vendor-two"}
+        }))}})
+        .to_string();
+    std::fs::write(
+        config_path(dir.path(), "settings.yml"),
+        "default_model: fixture/one\n",
+    )
+    .unwrap();
+    std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
+    let mut pty = Pty::start_with_existing_files(dir.path());
+    pty.ready_model("fixture/one");
+    pty.input("/Roles\r");
+    pty.wait_for("独立 Roles 双栏面板", |screen| {
+        let text = screen.contents();
+        screen.alternate_screen()
+            && [
+                "Model roles",
+                "All models",
+                "DEFAULT",
+                "FAST",
+                "SLOW",
+                "VISION",
+                "PLAN",
+                "REVIEW",
+            ]
+            .into_iter()
+            .all(|label| text.contains(label))
+    });
+    assert_eq!(
+        pty.parser.screen().cell(20, 50).unwrap().bgcolor(),
+        vt100::Color::Rgb(40, 42, 54)
+    );
+    pty.resize(6, 30);
+    pty.resize(30, 100);
+    pty.input("\x1b[C\x1b[B\r");
+    pty.text("为 FAST 选择 model");
+    pty.input("two\r");
+    pty.text("选择此 Role 的独立 effort");
+    pty.input("\x1b[B\x1b[B\x1b[B\r");
+    pty.text("Role 配置已保存");
+    let settings: Value = serde_yaml::from_str(
+        &std::fs::read_to_string(config_path(dir.path(), "settings.yml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings["model_roles"]["fast"]["model"], "fixture/two");
+    assert_eq!(settings["model_roles"]["fast"]["effort"], "high");
+    assert_eq!(settings["model_roles"]["fast"]["enabled"], true);
+    pty.input(" ");
+    pty.wait_for("取消选中并保存 Role", |screen| {
+        screen.contents().contains("0/6")
+    });
+    let settings: Value = serde_yaml::from_str(
+        &std::fs::read_to_string(config_path(dir.path(), "settings.yml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings["model_roles"]["fast"]["enabled"], false);
+    assert_eq!(settings["model_roles"]["fast"]["model"], "fixture/two");
+    assert_eq!(settings["model_roles"]["fast"]["effort"], "high");
+    pty.input("\x1b");
+    pty.ready_model("fixture/one");
+    no_more(&server);
+    pty.input("\x03");
+    pty.finish();
+}
+
+#[test]
 fn tui_slash_model_picker_preserves_history() {
     let a = server();
     let b = server();

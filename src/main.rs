@@ -458,6 +458,13 @@ fn run(args: Args) -> Result<()> {
             continue;
         }
         match command {
+            Some(commands::Command::Roles) => {
+                writeln!(
+                    stderr,
+                    "/Roles 需要交互式终端；也可在 settings.yml 配置 model_roles。"
+                )?;
+                continue;
+            }
             Some(commands::Command::Quit) => break,
             Some(commands::Command::Skills(selection)) => {
                 let result = (|| -> Result<()> {
@@ -638,6 +645,7 @@ fn run(args: Args) -> Result<()> {
                 | commands::Command::Tree
                 | commands::Command::Changes
                 | commands::Command::Agents
+                | commands::Command::Roles
                 | commands::Command::Subagents
                 | commands::Command::PlanList
                 | commands::Command::Login
