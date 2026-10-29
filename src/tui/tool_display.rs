@@ -632,7 +632,9 @@ pub(super) fn todo_checklist(
             Span::raw(" "),
             Span::styled(
                 palette::display_text(&phase.name).into_owned(),
-                Style::default().fg(palette::ACCENT),
+                Style::default()
+                    .fg(palette::ACTIVITY)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(" ({closed}/{})", phase.tasks.len()),
@@ -642,10 +644,10 @@ pub(super) fn todo_checklist(
         rows.extend(wrap_block(header, width, ""));
         for task in &phase.tasks {
             let (symbol, style, tag) = match &task.status {
-                TodoStatus::Pending => ("☐", Style::default().fg(palette::MUTED), String::new()),
+                TodoStatus::Pending => ("☐", Style::default().fg(palette::ACTIVITY), String::new()),
                 TodoStatus::InProgress => (
-                    "☐",
-                    Style::default().fg(palette::ACCENT),
+                    "→",
+                    Style::default().fg(palette::CODE_BLOCK),
                     " (in progress)".to_owned(),
                 ),
                 TodoStatus::Completed => (
@@ -663,7 +665,7 @@ pub(super) fn todo_checklist(
                     " (dropped)".to_owned(),
                 ),
                 TodoStatus::Blocked => (
-                    "☐",
+                    "!",
                     Style::default().fg(palette::ACCENT),
                     match &task.blocker {
                         Some(reason) => format!(" (blocked: {reason})"),
@@ -671,7 +673,7 @@ pub(super) fn todo_checklist(
                     },
                 ),
             };
-            let mut spans = vec![Span::styled(format!("{symbol} "), style)];
+            let mut spans = vec![Span::styled(format!("  {symbol} "), style)];
             spans.push(Span::styled(
                 palette::display_text(&task.content).into_owned(),
                 style,
@@ -696,7 +698,9 @@ pub(super) fn todo_checklist(
                     Style::default().fg(palette::MUTED),
                 ));
             }
-            rows.extend(wrap_block(Line::from(spans), width, ""));
+            // 窄窗口缩减悬挂缩进，确保中文宽字符仍有可用列。
+            let continuation = if width >= 6 { "    " } else { "" };
+            rows.extend(wrap_block(Line::from(spans), width, continuation));
         }
     }
     rows

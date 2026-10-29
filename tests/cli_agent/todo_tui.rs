@@ -441,8 +441,11 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         for (row, col, symbol) in [(22, 0, "╭"), (23, 0, "│"), (25, 99, "╯")] {
             let cell = pty.parser.screen().cell(row, col).unwrap();
             assert_eq!(cell.contents(), symbol);
-            assert_eq!(cell.fgcolor(), vt100::Color::Rgb(254, 188, 56));
+            assert_eq!(cell.fgcolor(), vt100::Color::Rgb(76, 85, 98));
         }
+        let current = pty.parser.screen().cell(23, 4).unwrap();
+        assert_eq!(current.contents(), "→");
+        assert_eq!(current.fgcolor(), vt100::Color::Rgb(156, 220, 254));
         let mut stream = SseReply::new(request);
         let answer = (0..70)
             .map(|i| format!("    pinned-stream-{i:03}\n"))
@@ -538,6 +541,10 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 .nth(24)
                 .is_some_and(|row| row.contains("TODO · 12/12") && row.contains("Complete"))
         });
+        let screen = pty.parser.screen();
+        assert_eq!(screen.cell(24, 2).unwrap().contents(), "✔");
+        assert_eq!(screen.cell(24, 2).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
+        assert_eq!(screen.cell(24, 0).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
         plan_final(request, protocol, "Fixed tasks finished.");
         pty.completed();
         pty.input("clear the list\r");
