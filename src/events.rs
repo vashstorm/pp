@@ -62,9 +62,43 @@ impl std::fmt::Display for RequestRetryReason {
     }
 }
 
+/// 仅供运行时展示的任务快照，不包含计划正文，也不是新的持久化权威。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TodoState {
+    pub phases: Vec<crate::tools::todo::TodoPhase>,
+    pub plan: Option<TodoPlanState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TodoPlanState {
+    pub id: String,
+    pub revision: u64,
+    pub status: crate::plan::PlanStatus,
+}
+
+impl TodoState {
+    pub(crate) fn from_workflow(workflow: &crate::plan::WorkflowState) -> Self {
+        Self {
+            phases: workflow.todos.clone(),
+            plan: workflow
+                .plan
+                .as_ref()
+                .filter(|plan| workflow.todo_plan_id.as_deref() == Some(plan.id.as_str()))
+                .map(|plan| TodoPlanState {
+                    id: plan.id.clone(),
+                    revision: plan.revision,
+                    status: plan.status,
+                }),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentEvent {
+    TodoStateUpdated {
+        state: TodoState,
+    },
     TodoReminder {
         todos: Vec<crate::tools::todo::TodoItem>,
         attempt: u8,

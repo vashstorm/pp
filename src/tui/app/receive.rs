@@ -109,6 +109,7 @@ impl App {
                 Ok(WorkerEvent::Progress(event)) => {
                     // 用量快照由 App 缓存，供状态栏渲染；不进入 Transcript。
                     match event {
+                        AgentEvent::TodoStateUpdated { state } => self.todo_panel.update(state),
                         AgentEvent::ContextUpdated { usage } => self.usage = Some(usage),
                         AgentEvent::ModelRequestStarted => self.token_speed.start(Instant::now()),
                         AgentEvent::ModelOutputProgress { output_bytes } => {
@@ -245,6 +246,7 @@ impl App {
                     changed = true;
                 }
                 Ok(WorkerEvent::Reset) => {
+                    self.todo_panel = Default::default();
                     self.close_ask_on_exit();
                     self.history_browser = false;
                     self.conversation = self.conversation.fresh();
@@ -582,8 +584,8 @@ impl App {
                             if let Some(records) = preparation.replay {
                                 note = self.adopt_history(records);
                             }
-                            // 与 ExecutionPrepared 相同顺序：采纳会话状态后渲染
-                            // 新候选的 Preview 快照，不被 replay 清理吞掉。
+                            // 清单已由 workflow 安装到固定区；旧显示事件只消费，
+                            // 不在新会话的对话流中重复生成 Preview 卡片。
                             if let Some(snapshot) = preparation.todo_snapshot {
                                 self.conversation.progress(snapshot);
                             }
@@ -796,8 +798,8 @@ impl App {
                         // None：Keep/off 不重绘；Some(空)：Fresh 新会话；Some(records)：恢复。
                         note = self.adopt_history(records);
                     }
-                    // 快照在 adopt_history/替换 workflow 之后、ACK 之前渲染，
-                    // 保证 Fresh 清理后的新 transcript 立即携带交接卡片。
+                    // 清单在替换 workflow 时已安装到固定区；旧显示快照不再
+                    // 生成对话卡片，ACK 前仍完成事件消费以保留交接顺序。
                     if let Some(snapshot) = todo_snapshot {
                         self.conversation.progress(snapshot);
                     }

@@ -19,6 +19,7 @@ mod skills;
 mod statusline;
 mod surface;
 mod tips;
+mod todo;
 mod tool_display;
 mod transcript;
 mod transcript_style;
@@ -74,8 +75,8 @@ const STEERING_HINT: &str = platform_text(
     "Enter steer · Alt + Enter queue · Ctrl + Q pending messages · Ctrl + R resume queue",
 );
 const SHORTCUTS_TAIL: &str = platform_text(
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · ⌥ + T expand/collapse TODO · ⌥ + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · Ctrl + T expand/collapse TODO · Ctrl + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
 );
 const EFFORT_HINT: &str = platform_text(
     "Enter select · ⌥ + S set selected effort as default · Esc cancel",
@@ -188,11 +189,7 @@ fn paint_surface(
     let alternate = !exiting && app.needs_alternate();
     app.native_render = !alternate;
     if !alternate {
-        let available = height.saturating_sub(u16::from(height >= 2));
-        let bordered = available >= 3 && width >= 3;
-        let input = available
-            .min(app.input.lines().len().clamp(1, 6) as u16 + if bordered { 2 } else { 0 });
-        let conversation_height = available.saturating_sub(input);
+        let conversation_height = app.main_layout(area).conversation.height;
         while let Some(batch) =
             app.conversation
                 .next_native_batch(width, conversation_height, exiting)
@@ -559,6 +556,7 @@ struct App {
     bootstrap: Option<crate::agent::Bootstrap>,
     model_refresh_pending: bool,
     conversation: Transcript,
+    todo_panel: todo::Panel,
     native_render: bool,
     normal_snapshot: Option<ratatui::buffer::Buffer>,
     history_browser: bool,

@@ -144,6 +144,7 @@ struct TranscriptEntry {
 struct Activity {
     entry: TranscriptEntry,
     started: Option<Instant>,
+    waiting_started: Option<Instant>,
     label: String,
     seconds: u64,
 }
@@ -289,11 +290,12 @@ impl Transcript {
             .activity
             .get_or_insert_with(|| Activity::new(Instant::now()));
         activity.started = None;
+        activity.waiting_started = None;
         activity.label = label.into();
         activity.seconds = elapsed.as_secs();
         activity.entry.text = format!(
-            "✻ {label} · {}s · done {}",
-            activity.seconds,
+            "✻ {label} · {} · done {}",
+            Activity::format_duration(activity.seconds),
             finished_at.format("%H:%M")
         );
         activity.entry.layout = None;
@@ -429,7 +431,7 @@ impl Transcript {
                 AgentEvent::ToolOutput { .. } | AgentEvent::FileChanged { .. } => {}
                 // 后台自动加载不改变活动阶段，不伪装成模型工具执行。
                 AgentEvent::ProjectInstructionsLoaded { .. } => {}
-                AgentEvent::TodoSnapshot { .. } => {}
+                AgentEvent::TodoSnapshot { .. } | AgentEvent::TodoStateUpdated { .. } => {}
                 // 提醒通知不改变活动阶段。
                 AgentEvent::TodoReminder { .. } => {}
                 // 运行时指标只服务状态栏，不改变对话阶段。
@@ -456,36 +458,8 @@ impl Transcript {
             // 已接受的补充输入由 App 直接追加，不生成重复用户卡。
             AgentEvent::UserInputAccepted { .. } => {}
             AgentEvent::CompactionStarted { .. } => {}
-            AgentEvent::TodoSnapshot {
-                plan_id: _,
-                revision,
-                phases,
-                status,
-            } => {
-                let preview = if matches!(
-                    status,
-                    crate::plan::PlanStatus::Draft | crate::plan::PlanStatus::Ready
-                ) {
-                    " · Preview (not executing)"
-                } else {
-                    ""
-                };
-                let text = crate::tools::todo::format_summary(&phases, &[], true);
-                let result =
-                    serde_json::json!({"ok":true,"op":"view","content":text,"phases":phases});
-                let mut entry = TranscriptEntry::new(
-                    EntryKind::Data,
-                    format!("Plan tasks · {status:?} · r{revision}{preview}"),
-                    text,
-                    Some("todo".into()),
-                );
-                entry.arguments = serde_json::json!({"op":"view"});
-                entry.result = Some(result);
-                entry.display = self.display;
-                entry.expanded = self.tools_expanded;
-                self.read_groups_key = None;
-                self.entries.push(entry);
-            }
+            // 完整任务只在固定区展示，旧日志的快照同样不生成历史卡片。
+            AgentEvent::TodoSnapshot { .. } | AgentEvent::TodoStateUpdated { .. } => {}
             AgentEvent::ProjectInstructionsLoaded { path, content } => {
                 // 自动加载的 AGENTS 正文：独立完成的 Read 卡片，不注册 running_tools。
                 let mut entry = TranscriptEntry::new(

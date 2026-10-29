@@ -160,3 +160,78 @@ fn todo_failed_journal_commit_restores_trusted_runtime() {
     assert_eq!(agent.workflow, previous);
     assert!(agent.journal.check().is_err());
 }
+
+#[test]
+fn todo_runtime_snapshots_follow_durable_transitions_and_are_not_journaled() {
+    for protocol in ["completion", "response"] {
+        let dir = tempfile::tempdir().unwrap();
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let mut agent =
+            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let serving = protocol.to_owned();
+        let worker = std::thread::spawn(move || {
+            for args in [
+                json!({"op":"init","items":["A","B"]}),
+                json!({"op":"done","task":"missing"}),
+                json!({"op":"done"}),
+                json!({"op":"init","list":[]}),
+            ] {
+                let mut request = server
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let _: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                tool_call_for(&serving, request, "todo", &args.to_string());
+            }
+            let request = server
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            final_for(&serving, request, "All clear", true);
+        });
+        let mut snapshots = Vec::new();
+        agent
+            .run(
+                "Exercise committed todos",
+                &CancellationToken::new(),
+                None,
+                &mut |event| {
+                    if let AgentEvent::TodoStateUpdated { state } = event {
+                        let journal = std::fs::read_dir(dir.path().join("sessions"))
+                            .unwrap()
+                            .map(|entry| entry.unwrap().path())
+                            .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+                            .unwrap();
+                        let text = std::fs::read_to_string(journal).unwrap();
+                        let saved: Value = text
+                            .lines()
+                            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                            .rfind(|entry| entry["customType"] == "pp.workflow")
+                            .unwrap();
+                        let persisted = saved["data"]["workflow"]
+                            .get("todos")
+                            .cloned()
+                            .unwrap_or_else(|| json!([]));
+                        assert_eq!(persisted, serde_json::to_value(&state.phases).unwrap());
+                        assert!(!text.contains("todo_state_updated"));
+                        snapshots.push(state);
+                    }
+                },
+            )
+            .unwrap();
+        worker.join().unwrap();
+        // 失败操作不发布状态，清空必须发布空快照。
+        assert_eq!(snapshots.len(), 3);
+        assert_eq!(
+            snapshots[0].phases[0].tasks[0].status,
+            crate::tools::todo::TodoStatus::InProgress
+        );
+        assert!(
+            snapshots[1].phases[0]
+                .tasks
+                .iter()
+                .all(|task| task.status == crate::tools::todo::TodoStatus::Completed)
+        );
+        assert!(snapshots[2].phases.is_empty());
+    }
+}

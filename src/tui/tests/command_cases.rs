@@ -167,7 +167,7 @@ fn bang_shell_cleanup_failure_disables_future_execution() {
 fn completed_turn_uses_worker_timing_and_preserves_draft() {
     use chrono::TimeZone;
 
-    for (seconds, duration) in [(0, "0s"), (5, "5s"), (65, "65s"), (3725, "3725s")] {
+    for (seconds, duration) in [(0, "0s"), (5, "5s"), (65, "1m 5s"), (3725, "1h 2m 5s")] {
         let mut app = app();
         app.state = State::Running;
         app.show_welcome = false;

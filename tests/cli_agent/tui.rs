@@ -165,7 +165,7 @@ impl Pty {
         writer.flush().unwrap();
     }
 
-    /// P/S/Q/R 按平台发送 Option 或 Ctrl；O 始终使用 Ctrl。
+    /// P/S/Q/R/T 按平台发送 Option 或 Ctrl；O 始终使用 Ctrl。
     fn function_key(&mut self, character: char) {
         let bytes: &str = if cfg!(target_os = "macos") {
             match character {
@@ -174,6 +174,7 @@ impl Pty {
                 'o' => "\x0f",
                 'q' => "\x1bq",
                 'r' => "\x1br",
+                't' => "\x1bt",
                 _ => panic!("unsupported function key character: {character}"),
             }
         } else {
@@ -183,6 +184,7 @@ impl Pty {
                 'o' => "\x0f",
                 'q' => "\x11",
                 'r' => "\x12",
+                't' => "\x14",
                 _ => panic!("unsupported function key character: {character}"),
             }
         };

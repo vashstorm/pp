@@ -43,6 +43,7 @@ impl App {
             model_refresh_pending: false,
             native_render: false,
             normal_snapshot: None,
+            todo_panel: Default::default(),
             history_browser: false,
             conversation: Transcript::with_read_preview(
                 agent.as_ref().is_ok_and(Agent::read_tool_result_preview),

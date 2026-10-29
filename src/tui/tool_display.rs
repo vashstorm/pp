@@ -300,8 +300,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     let expanded = view.expanded || view.context.full;
     let text = view.text;
     if view.name == "todo" {
-        // 静态完整清单卡必须先于 full/失败提前返回：
-        // Ctrl+O、native scrollback 与 replay 都走同一条结构化完整渲染。
+        // 清单由固定区展示；历史只保留操作标题及失败诊断。
         return todo_body(&view, width);
     }
     if view.name == "grep" {
@@ -571,7 +570,7 @@ fn append_notices(rows: &mut Vec<Line<'static>>, result: Option<&Value>, width: 
 }
 
 // =============================================================================
-// todo 静态完整清单卡
+// TODO 固定区的完整清单布局
 // =============================================================================
 
 /// 阶段编号采用上游 ROMAN_PAIRS 的罗马数字，仅用于显示。
@@ -603,7 +602,10 @@ fn phase_roman(mut number: usize) -> String {
 
 /// 结构化完整清单：阶段头 `I. Name (closed/total)`，任务行按状态着色。
 /// 动态文本全部经 display_text 折行安全展示，重复文案附 phase+occurrence 寻址提示。
-fn todo_checklist(phases: &[crate::tools::todo::TodoPhase], width: u16) -> Vec<Line<'static>> {
+pub(super) fn todo_checklist(
+    phases: &[crate::tools::todo::TodoPhase],
+    width: u16,
+) -> Vec<Line<'static>> {
     use crate::tools::todo::TodoStatus;
     use std::collections::HashMap;
 
@@ -700,43 +702,25 @@ fn todo_checklist(phases: &[crate::tools::todo::TodoPhase], width: u16) -> Vec<L
     rows
 }
 
-/// todo 卡正文先于通用截断/失败分支执行：
-/// 有可信 phases 时渲染完整结构化列表，缺失/损坏或空清单降级为完整可读正文。
+/// 成功调用只保留标题；失败不得把随结果携带的旧清单再次展开。
 fn todo_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
-    let result = view.result.unwrap_or(&Value::Null);
-    let phases: Option<Vec<crate::tools::todo::TodoPhase>> =
-        serde_json::from_value(result["phases"].clone()).ok();
-    match phases {
-        Some(phases) if !phases.is_empty() => {
-            let mut rows = Vec::new();
-            if view.failed
-                && let Some(error) = result["error"].as_str().filter(|error| !error.is_empty())
-            {
-                // 诊断先行，其后仍是可信的调用前列表。
-                rows.extend(wrap_block(
-                    block_line(
-                        palette::display_text(error).into_owned(),
-                        Style::default().fg(palette::REMOVED),
-                    ),
-                    width,
-                    "",
-                ));
-            }
-            rows.extend(todo_checklist(&phases, width));
-            rows
-        }
-        _ => {
-            let text = result["content"]
-                .as_str()
-                .or_else(|| result["error"].as_str())
-                .unwrap_or(view.text);
-            wrap(
-                logical(text).into_iter().map(str::to_owned),
-                width,
-                Style::default(),
-            )
-        }
+    if !view.failed {
+        return Vec::new();
     }
+    let result = view.result.unwrap_or(&Value::Null);
+    let error = result["error"]
+        .as_str()
+        .or_else(|| {
+            result["content"]
+                .as_str()
+                .and_then(|text| text.lines().next())
+        })
+        .unwrap_or(view.text);
+    wrap(
+        logical(error).into_iter().map(str::to_owned),
+        width,
+        Style::default().fg(palette::REMOVED),
+    )
 }
 
 fn plan_search(view: &View<'_>, width: u16, style: Style) -> Vec<Line<'static>> {

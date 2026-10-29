@@ -1046,7 +1046,8 @@ fn run_cli_task(
             | AgentEvent::ModelRequestFinished { .. }
             | AgentEvent::UserInputAccepted { .. }
             | AgentEvent::ProjectInstructionsLoaded { .. }
-            | AgentEvent::PlanProgressUpdated { .. } => {}
+            | AgentEvent::PlanProgressUpdated { .. }
+            | AgentEvent::TodoStateUpdated { .. } => {}
         }
     };
     let cancellation = cancellation::CancellationToken::new();

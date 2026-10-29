@@ -676,6 +676,7 @@ impl SessionJournal {
         if matches!(
             event,
             AgentEvent::ContextUpdated { .. }
+                | AgentEvent::TodoStateUpdated { .. }
                 | AgentEvent::PlanProgressUpdated { .. }
                 | AgentEvent::CompactionStarted { .. }
                 | AgentEvent::CompactionFinished { .. }

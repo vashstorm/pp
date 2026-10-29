@@ -361,3 +361,219 @@ fn plan_todo_draft_preview_is_readonly_and_noop_write_does_not_duplicate_card() 
         pty.finish();
     }
 }
+
+#[test]
+fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        pty.input("fixed todo exercise\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        let items: Vec<_> = (0..12).map(|i| format!("PINNED_TASK_{i:02}")).collect();
+        plan_calls(
+            request,
+            protocol,
+            json!([plan_call(
+                protocol,
+                "init-fixed",
+                "todo",
+                json!({"op":"init","items":items})
+            )]),
+        );
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        // 模型下一轮尚未结束时，已提交清单就应出现在固定位置。
+        pty.wait_for("任务区固定在输入框上方", |screen| {
+            screen
+                .rows(0, 100)
+                .nth(23)
+                .is_some_and(|row| row.contains("TODO · 0/12"))
+                && screen.contents().contains("PINNED_TASK_00")
+        });
+        let mut stream = SseReply::new(request);
+        let answer = (0..70)
+            .map(|i| format!("    pinned-stream-{i:03}\n"))
+            .collect::<String>()
+            + "\nCan you confirm?";
+        streaming_delta(&mut stream, protocol, &answer);
+        pty.text("pinned-stream-069");
+        pty.input("中文草稿");
+        pty.draft("中文草稿");
+        pty.function_key('t');
+        pty.wait_for("TODO 原位展开", |screen| {
+            screen
+                .rows(0, 100)
+                .nth(16)
+                .is_some_and(|row| row.contains("TODO · 0/12"))
+                && screen.contents().contains("PINNED_TASK_07")
+        });
+        assert!(!pty.parser.screen().alternate_screen());
+        pty.resize(24, 60);
+        pty.wait_for("缩放后的 TODO 高度上限", |screen| {
+            screen
+                .rows(0, 60)
+                .nth(12)
+                .is_some_and(|row| row.contains("TODO · 0/12"))
+        });
+        pty.draft("中文草稿");
+        pty.function_key('t');
+        pty.wait_for("TODO 收回三行", |screen| {
+            screen
+                .rows(0, 60)
+                .nth(17)
+                .is_some_and(|row| row.contains("TODO · 0/12"))
+        });
+        streaming_complete(&mut stream, protocol, &answer);
+        stream.finish();
+        pty.completed();
+        let id = saved_session_id(home.path());
+        let journal = plan_journal(home.path(), &id);
+        assert!(
+            !journal
+                .iter()
+                .any(|entry| entry["data"]["event"]["todo_state_updated"].is_object())
+        );
+        // native_history 包含当前屏幕；这里只检查真正进入滚动历史的行。
+        let mut screen = pty.parser.screen().clone();
+        screen.set_scrollback(usize::MAX);
+        let history = (1..=screen.scrollback())
+            .rev()
+            .map(|offset| {
+                screen.set_scrollback(offset);
+                screen.rows(0, screen.size().1).next().unwrap()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !history.contains("PINNED_TASK_"),
+            "固定区进入原生历史：{history}"
+        );
+        let history = pty.native_history().0;
+        assert_eq!(history.matches("pinned-stream-000").count(), 1);
+        assert_eq!(history.matches("PINNED_TASK_00").count(), 1);
+        let before_exit = pty.raw.len();
+        pty.input("\x03");
+        pty.wait_for("退出恢复终端", |screen| !screen.bracketed_paste());
+        assert!(!String::from_utf8_lossy(&pty.raw[before_exit..]).contains("pinned-stream-000"));
+        pty.finish();
+        no_more(&fixture);
+
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
+        pty.wait_for("恢复最终清单并默认收起", |screen| {
+            screen
+                .rows(0, 100)
+                .nth(23)
+                .is_some_and(|row| row.contains("TODO · 0/12"))
+                && !screen.contents().contains("PINNED_TASK_07")
+        });
+        pty.input("finish all tasks\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_calls(
+            request,
+            protocol,
+            json!([plan_call(
+                protocol,
+                "done-fixed",
+                "todo",
+                json!({"op":"done"})
+            )]),
+        );
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        pty.wait_for("完成后保留一行摘要", |screen| {
+            screen
+                .rows(0, 100)
+                .nth(25)
+                .is_some_and(|row| row.contains("TODO · 12/12") && row.contains("Complete"))
+        });
+        plan_final(request, protocol, "Fixed tasks finished.");
+        pty.completed();
+        pty.input("clear the list\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_calls(
+            request,
+            protocol,
+            json!([plan_call(
+                protocol,
+                "clear-fixed",
+                "todo",
+                json!({"op":"init","list":[]})
+            )]),
+        );
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        pty.wait_for("空清单不占位置", |screen| {
+            !screen.contents().contains("TODO ·")
+        });
+        plan_final(request, protocol, "Fixed list cleared.");
+        pty.completed();
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
+fn tui_todo_plan_preview_updates_hud_before_submit_and_execution() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        plan_enter(&mut pty, &fixture);
+        pty.input("preview fixed plan tasks\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_calls(
+            request,
+            protocol,
+            json!([plan_call(
+                protocol,
+                "preview-fixed",
+                "plan_write",
+                json!({"title":"Todo integration","file_name":"create-canary.md","content":TODO_TUI_BODY,"expected_revision":0})
+            )]),
+        );
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        pty.wait_for("草稿只读预览固定区", |screen| {
+            let text = screen.contents();
+            text.contains("TODO · 0/2 · Preview")
+                && text.contains("☐ Write canary bytes.")
+                && !text.contains("→ Write canary bytes.")
+                && !text.contains("Plan tasks ·")
+        });
+        plan_calls(
+            request,
+            protocol,
+            json!([plan_call(
+                protocol,
+                "submit-fixed",
+                "plan_submit",
+                json!({"expected_revision":1})
+            )]),
+        );
+        plan_wait_review(&mut pty, 1);
+        assert!(!pty.parser.screen().contents().contains("TODO ·"));
+        plan_choose(&mut pty, 0);
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        pty.wait_for("执行交接后显示 active 清单", |screen| {
+            screen.contents().contains("→ Write canary bytes.")
+                && !screen.contents().contains("Preview")
+        });
+        plan_calls(
+            request,
+            protocol,
+            json!([plan_call(
+                protocol,
+                "complete-fixed-plan",
+                "todo",
+                json!({"op":"done"})
+            )]),
+        );
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        plan_final(request, protocol, "Approved tasks complete.");
+        pty.completed();
+        assert!(pty.parser.screen().contents().contains("TODO · 2/2"));
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}

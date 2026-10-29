@@ -255,6 +255,24 @@ impl App {
                     }
                     return false;
                 }
+                if key.modifiers == FUNCTION_MODIFIER && self.menu.is_none() {
+                    match key.code {
+                        KeyCode::Char('t') => {
+                            if key.kind == KeyEventKind::Press {
+                                self.todo_panel.toggle();
+                            }
+                            return false;
+                        }
+                        KeyCode::PageUp | KeyCode::PageDown if self.todo_panel.expanded => {
+                            self.todo_panel.scroll(
+                                key.code == KeyCode::PageUp,
+                                usize::from(self.todo_panel.area.height.saturating_sub(1)).max(1),
+                            );
+                            return false;
+                        }
+                        _ => {}
+                    }
+                }
                 if key.modifiers == FUNCTION_MODIFIER
                     && matches!(key.code, KeyCode::Char('q' | 'r'))
                 {
@@ -655,7 +673,13 @@ impl App {
                 self.apply_ask_action(action);
                 *dirty = true;
             }
-            Event::Mouse(mouse) if self.ask_panel.is_some() => {
+            Event::Mouse(mouse)
+                if self.ask_panel.is_some()
+                    && !self
+                        .todo_panel
+                        .area
+                        .contains(ratatui::layout::Position::new(mouse.column, mouse.row)) =>
+            {
                 if matches!(
                     mouse.kind,
                     MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -716,6 +740,21 @@ impl App {
                 self.insert_input(text.replace("\r\n", "\n").replace('\r', "\n"));
                 self.refresh_candidates(true);
                 *dirty = true;
+            }
+            Event::Mouse(mouse)
+                if self
+                    .todo_panel
+                    .area
+                    .contains(ratatui::layout::Position::new(mouse.column, mouse.row)) =>
+            {
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) {
+                    self.todo_panel
+                        .scroll(mouse.kind == MouseEventKind::ScrollUp, MOUSE_SCROLL_LINES);
+                    *dirty = true;
+                }
             }
             Event::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::ScrollUp => {

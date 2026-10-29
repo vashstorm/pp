@@ -3,13 +3,63 @@ use crate::tui::{
     plan_list, platform_text, statusline, transcript_style, tree, welcome,
 };
 
+/// 主屏幕和原生历史提交共用的几何结果，TODO 永远不进入对话 viewport。
+pub(in crate::tui) struct MainLayout {
+    pub conversation: Rect,
+    todo: Rect,
+    ask: Rect,
+    input: Rect,
+    status: Rect,
+    bordered: bool,
+}
+
 impl App {
+    pub(in crate::tui) fn main_layout(&mut self, area: Rect) -> MainLayout {
+        let status_height = u16::from(area.height >= 2);
+        let available = area.height.saturating_sub(status_height);
+        let bordered = available >= 3 && area.width >= 3;
+        let input_height = available
+            .min(self.input.lines().len().clamp(1, 6) as u16 + if bordered { 2 } else { 0 });
+        let above = available.saturating_sub(input_height);
+        let base = Rect::new(area.x, area.y, area.width, above);
+        let ask_height = if self.native_render {
+            0
+        } else {
+            self.ask_panel
+                .as_mut()
+                .map_or(0, |panel| panel.height(base, area.height))
+        }
+        .min(above);
+        let remaining = above.saturating_sub(ask_height);
+        let todo_height = if self.native_render || self.plan_panel.is_none() {
+            self.todo_panel
+                .height(area.width, area.height, remaining.saturating_sub(1))
+        } else {
+            0
+        };
+        let conversation_height = remaining.saturating_sub(todo_height);
+        let conversation = Rect::new(area.x, area.y, area.width, conversation_height);
+        let ask = Rect::new(area.x, conversation.bottom(), area.width, ask_height);
+        let todo = Rect::new(area.x, ask.bottom(), area.width, todo_height);
+        let input = Rect::new(area.x, todo.bottom(), area.width, input_height);
+        let status = Rect::new(area.x, input.bottom(), area.width, status_height);
+        MainLayout {
+            conversation,
+            todo,
+            ask,
+            input,
+            status,
+            bordered,
+        }
+    }
+
     pub(in crate::tui) fn draw(&mut self, frame: &mut Frame, context: &StatusContext) {
         self.conversation.set_terminal_rows(frame.area().height);
         if let Some(review) = &mut self.review_transcript {
             review.set_terminal_rows(frame.area().height);
         }
         let area = frame.area();
+        self.todo_panel.area = Rect::default();
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -164,57 +214,34 @@ impl App {
             );
             return;
         }
-        let status_height = u16::from(area.height >= 2);
-        let available = area.height.saturating_sub(status_height);
-        let bordered = available >= 3 && area.width >= 3;
-        let lines = self.input.lines().len().clamp(1, 6) as u16;
-        let input_height = available.min(lines.saturating_add(if bordered { 2 } else { 0 }));
-        // 菜单覆盖输入框上方，候选数量不参与对话区和输入框的布局。
-        let conversation_height = available.saturating_sub(input_height);
+        let MainLayout {
+            conversation,
+            todo,
+            ask: ask_area,
+            input,
+            status,
+            bordered,
+        } = self.main_layout(area);
+        // 菜单只覆盖对话区，不盖住 TODO 或 ask。
         let menu_height = if self.native_render {
             0
         } else {
             self.menu
                 .as_ref()
-                .map_or(0, |menu| menu.height(conversation_height))
+                .map_or(0, |menu| menu.height(conversation.height))
                 .max(
                     self.model_panel
                         .as_ref()
-                        .map_or(0, |panel| panel.height(conversation_height)),
+                        .map_or(0, |panel| panel.height(conversation.height)),
                 )
         };
         let menu_area = Rect::new(
-            area.x,
-            area.y + conversation_height - menu_height,
-            area.width,
+            conversation.x,
+            conversation.bottom().saturating_sub(menu_height),
+            conversation.width,
             menu_height,
         );
-        let conversation = Rect::new(area.x, area.y, area.width, conversation_height);
-        let input = Rect::new(
-            area.x,
-            area.y.saturating_add(conversation_height),
-            area.width,
-            input_height,
-        );
-        let status = Rect::new(area.x, input.bottom(), area.width, status_height);
-        // ask 占用独立区域，先缩短消息 viewport，再绘制消息，避免覆盖最新内容。
-        let ask_height = if self.native_render {
-            0
-        } else {
-            self.ask_panel
-                .as_mut()
-                .map_or(0, |panel| panel.height(conversation, area.height))
-        };
-        let ask_area = Rect::new(
-            conversation.x,
-            conversation.bottom().saturating_sub(ask_height),
-            conversation.width,
-            ask_height,
-        );
-        let conversation = Rect {
-            height: conversation.height.saturating_sub(ask_height),
-            ..conversation
-        };
+        self.todo_panel.draw(frame, todo);
         let conversation = if self.show_welcome && self.plan_panel.is_none() {
             welcome::draw(frame, conversation)
         } else {

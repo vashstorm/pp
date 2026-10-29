@@ -1,6 +1,82 @@
 use super::*;
 
 #[test]
+fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
+    let mut transcript = Transcript::new();
+    let started = Instant::now() - Duration::from_secs(85);
+    transcript.activity = Some(Activity::new(started));
+    transcript.tick(started + Duration::from_secs(85));
+    assert!(screen(&render(&mut transcript, 100, 30)).contains("Requesting model · 1m 25s"));
+
+    for id in ["ask-1", "ask-2"] {
+        transcript.progress(AgentEvent::ToolStarted {
+            id: id.into(),
+            name: "ask".into(),
+            arguments: r#"{"questions":[{"id":"q","question":"Question","options":[]}]}"#.into(),
+        });
+        transcript.waiting_for_input();
+        let waiting = transcript
+            .activity
+            .as_ref()
+            .unwrap()
+            .waiting_started
+            .unwrap();
+        assert!(screen(&render(&mut transcript, 100, 30)).contains("Waiting for input · 0s"));
+        assert!(!transcript.tick(waiting + Duration::from_millis(999)));
+        transcript.tick(waiting + Duration::from_secs(85));
+        assert!(screen(&render(&mut transcript, 100, 30)).contains("Waiting for input · 1m 25s"));
+        transcript.progress(AgentEvent::ToolFinished {
+            id: id.into(),
+            result: json!({"ok":true,"answers":[{"id":"q","selected_options":[],"custom_input":"yes"}]}),
+        });
+        assert!(
+            transcript
+                .activity
+                .as_ref()
+                .unwrap()
+                .waiting_started
+                .is_none()
+        );
+        transcript.tick(started + Duration::from_secs(85));
+        assert!(
+            screen(&render(&mut transcript, 100, 30)).contains("Processing tool result · 1m 25s")
+        );
+        assert_eq!(transcript.activity.as_ref().unwrap().started, Some(started));
+    }
+    transcript.waiting_for_input();
+    transcript.cancelling();
+    transcript.waiting_for_input();
+    transcript.tick(started + Duration::from_secs(85));
+    assert!(screen(&render(&mut transcript, 100, 30)).contains("Cancelling · 1m 25s"));
+    transcript.cancel();
+    assert!(!transcript.tick(Instant::now() + Duration::from_secs(3600)));
+}
+
+#[test]
+fn activity_duration_carries_seconds_minutes_and_hours() {
+    let started = Instant::now();
+    let mut transcript = Transcript::new();
+    transcript.activity = Some(Activity::new(started));
+    for (seconds, expected) in [
+        (0, "0s"),
+        (59, "59s"),
+        (60, "1m 0s"),
+        (85, "1m 25s"),
+        (3599, "59m 59s"),
+        (3600, "1h 0m 0s"),
+        (3725, "1h 2m 5s"),
+        (86400, "24h 0m 0s"),
+    ] {
+        transcript.tick(started + Duration::from_secs(seconds));
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(
+            text.contains(&format!("Requesting model · {expected}")),
+            "{text}"
+        );
+    }
+}
+
+#[test]
 fn activity_timer_ticks_without_events_and_stops_on_failure() {
     let mut transcript = Transcript::new();
     transcript.append("You", "waiting task");

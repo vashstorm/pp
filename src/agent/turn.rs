@@ -243,8 +243,18 @@ pub(super) fn publish_todo_snapshot(
         journal.event(&event);
         journal.check()?;
         emit(event);
+        publish_todo_state(workflow, emit);
     }
     Ok(())
+}
+
+pub(super) fn publish_todo_state(
+    workflow: &crate::plan::WorkflowState,
+    emit: &mut dyn FnMut(AgentEvent),
+) {
+    emit(AgentEvent::TodoStateUpdated {
+        state: crate::events::TodoState::from_workflow(workflow),
+    });
 }
 
 pub(super) fn publish_plan_progress(
@@ -462,7 +472,11 @@ pub(super) fn completion_turn(
             .as_ref()
             .and_then(|change| change.plan.as_ref())
             .is_some_and(|change| change.content.is_some());
+        let todo_changed = content.todo_change.is_some();
         apply_todo_change(workflow, journal, content.todo_change)?;
+        if todo_changed {
+            publish_todo_state(workflow, emit);
+        }
         if changed_checks {
             publish_plan_progress(workflow, emit);
         }
@@ -614,7 +628,11 @@ pub(super) fn response_turn(
             .as_ref()
             .and_then(|change| change.plan.as_ref())
             .is_some_and(|change| change.content.is_some());
+        let todo_changed = output.todo_change.is_some();
         apply_todo_change(workflow, journal, output.todo_change)?;
+        if todo_changed {
+            publish_todo_state(workflow, emit);
+        }
         if changed_checks {
             publish_plan_progress(workflow, emit);
         }

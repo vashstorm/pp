@@ -1374,6 +1374,7 @@ impl Agent {
                         .status = crate::plan::PlanStatus::Draft;
                     return Err(error);
                 }
+                turn::publish_todo_state(&self.workflow, emit);
                 return Ok(RunOutcome::AwaitingPlanReview);
             }
             if let TurnOutcome::Completed {

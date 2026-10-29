@@ -37,6 +37,7 @@ impl App {
         self.close_ask_on_exit();
         self.token_speed.clear();
         self.history_browser = false;
+        self.todo_panel.reset_view();
         self.conversation = self.conversation.fresh();
         self.input_history = Vec::new();
         let error = self.conversation.replay(replay, &mut self.input_history);
@@ -93,6 +94,8 @@ impl App {
         if let Some(document) = &workflow.plan {
             self.update_plan_progress_cache(document);
         }
+        self.todo_panel
+            .update(crate::events::TodoState::from_workflow(&workflow));
         self.workflow = workflow;
         if let (Some(panel), Some(document)) = (&mut self.plan_panel, &self.workflow.plan) {
             panel.sync_document(document);

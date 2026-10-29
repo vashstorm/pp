@@ -890,6 +890,7 @@ impl Activity {
                 None,
             ),
             started: Some(started),
+            waiting_started: None,
             label: "Requesting model".into(),
             seconds: 0,
         }
@@ -899,7 +900,9 @@ impl Activity {
         let Some(started) = self.started else {
             return false;
         };
-        let seconds = now.saturating_duration_since(started).as_secs();
+        let seconds = now
+            .saturating_duration_since(self.waiting_started.unwrap_or(started))
+            .as_secs();
         if seconds == self.seconds {
             return false;
         }
@@ -909,20 +912,37 @@ impl Activity {
     }
 
     pub(super) fn refresh(&mut self) {
-        self.entry.text = format!("✻ {} · {}s", self.label, self.seconds);
+        self.entry.text = format!("✻ {} · {}", self.label, Self::format_duration(self.seconds));
         self.entry.layout = None;
+    }
+
+    pub(super) fn format_duration(seconds: u64) -> String {
+        match seconds {
+            0..60 => format!("{seconds}s"),
+            60..3600 => format!("{}m {}s", seconds / 60, seconds % 60),
+            _ => format!(
+                "{}h {}m {}s",
+                seconds / 3600,
+                seconds / 60 % 60,
+                seconds % 60
+            ),
+        }
     }
 
     pub(super) fn phase(&mut self, label: &str) {
         if self.started.is_some() && self.label != "Cancelling" && self.label != label {
             self.label = label.into();
-            self.tick(Instant::now());
+            let now = Instant::now();
+            // ask 单独计算等待时间；其他阶段继续使用整轮任务的起点。
+            self.waiting_started = (label == "Waiting for input").then_some(now);
+            self.tick(now);
             self.refresh();
         }
     }
 
     pub(super) fn stop(&mut self, label: &str) {
         if self.started.is_some() {
+            self.waiting_started = None;
             self.tick(Instant::now());
             self.started = None;
             self.label = label.into();
