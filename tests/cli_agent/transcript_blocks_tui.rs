@@ -175,7 +175,7 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
                     );
                     assert_eq!(
                         markdown_blocks_fg(screen, "let x = 1;", 0),
-                        vt100::Color::Rgb(156, 220, 254)
+                        vt100::Color::Rgb(197, 134, 192)
                     );
                 }
                 _ => {

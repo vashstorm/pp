@@ -14,12 +14,15 @@
 
 use std::borrow::Cow;
 use std::ops::Range;
+use std::sync::Arc;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::transcript_style::{ACCENT, CODE, CODE_BLOCK, DIM, LINK, MUTED, display_text};
+
+mod highlight;
 
 const TAB_STOP: usize = 4;
 const CELL_MIN_WIDTH: usize = 3;
@@ -50,7 +53,8 @@ struct WrapLine {
 
 struct CodeBlock {
     lang: Option<String>,
-    lines: Vec<String>,
+    /// 已着色的每行 spans（tab 已展开；高亮失败时为纯色单 span）。
+    lines: Arc<Vec<Vec<Span<'static>>>>,
     closed: bool,
     first: Vec<Span<'static>>,
     rest: Vec<Span<'static>>,
@@ -601,6 +605,25 @@ impl<'a> Builder<'a> {
             let raw = raw.strip_suffix('\r').unwrap_or(raw);
             lines.push(display_text(raw).into_owned());
         }
+        // tab 展开前移到解析期：span 化后无法再对 String 展开。
+        let expanded: Vec<String> = lines.iter().map(|l| expand_tabs(l, TAB_STOP)).collect();
+        let text = expanded.join("\n");
+        let lines: Arc<Vec<Vec<Span<'static>>>> =
+            match highlight::highlight(code.lang.as_deref(), &text) {
+                Some(spans) => spans,
+                None => Arc::new(
+                    expanded
+                        .into_iter()
+                        .map(|line| {
+                            if line.is_empty() {
+                                Vec::new()
+                            } else {
+                                vec![Span::styled(line, Style::new().fg(CODE_BLOCK))]
+                            }
+                        })
+                        .collect(),
+                ),
+            };
         let closed = !code.fenced
             || match code.content_end {
                 Some(ce) => {
@@ -922,15 +945,8 @@ fn layout_code(cb: &CodeBlock, width: usize, out: &mut Vec<Line<'static>>) {
     let mut top = first;
     top.extend(frame_top(cb.lang.as_deref(), first_width).spans);
     out.push(Line::from(top));
-    let style = Style::new().fg(CODE_BLOCK);
-    for raw in &cb.lines {
-        let expanded = expand_tabs(raw, TAB_STOP);
-        let wrapped = wrap(
-            WrapMode::Char,
-            &[Span::styled(expanded, style)],
-            body_width,
-            body_width,
-        );
+    for line_spans in cb.lines.iter() {
+        let wrapped = wrap(WrapMode::Char, line_spans, body_width, body_width);
         if wrapped.is_empty() {
             out.push(Line::from(rest.clone()));
         }

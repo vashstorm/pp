@@ -650,9 +650,10 @@ fn thinking_renders_markdown_with_muted_base_and_semantic_highlights() {
     let code = cell_of("code");
     assert_eq!(buffer[code].fg, palette::CODE);
     assert_eq!(buffer[code].bg, ASSISTANT_BACKGROUND);
-    // 围栏代码块内容使用 CODE_BLOCK 色。
+    // 围栏代码块按 syntect 语义高亮，`let` 为 keyword 色。思考正文的行级灰
+    // 基调被语义 span 覆盖，与粗体/行内代码的约定一致。
     let block = cell_of("let x = 1;");
-    assert_eq!(buffer[block].fg, palette::CODE_BLOCK);
+    assert_eq!(buffer[block].fg, palette::SYNTAX_KEYWORD);
     // 表格渲染出真实分隔线而非原始管道符。
     assert!(text.contains('│'));
     assert!(text.contains("─┼─"));
@@ -687,12 +688,8 @@ fn thinking_markdown_reparses_across_streaming_deltas() {
         .expect("bold rendered");
     let column = line.find("bold").expect("bold rendered") as u16;
     let row = row as u16;
-    assert_eq!(buffer[(column as u16, row)].fg, MUTED_TEXT);
-    assert!(
-        buffer[(column as u16, row)]
-            .modifier
-            .contains(Modifier::BOLD)
-    );
+    assert_eq!(buffer[(column, row)].fg, MUTED_TEXT);
+    assert!(buffer[(column, row)].modifier.contains(Modifier::BOLD));
     assert!(text.contains("tail"));
 }
 

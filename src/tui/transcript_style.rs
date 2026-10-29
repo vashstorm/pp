@@ -39,6 +39,12 @@ pub(super) const EDIT_KEYWORD: Color = Color::Rgb(103, 154, 209);
 pub(super) const EDIT_TYPE: Color = Color::Rgb(170, 218, 250);
 pub(super) const EDIT_STRING: Color = Color::Rgb(197, 148, 124);
 pub(super) const EDIT_NUMBER: Color = Color::Rgb(220, 220, 175);
+// Markdown 代码块 syntect 语义高亮配色（VS Code Dark+ 风格）。
+pub(super) const SYNTAX_KEYWORD: Color = Color::Rgb(197, 134, 192);
+pub(super) const SYNTAX_COMMENT: Color = Color::Rgb(106, 153, 85);
+pub(super) const SYNTAX_FUNCTION: Color = Color::Rgb(220, 220, 170);
+pub(super) const SYNTAX_CONSTANT: Color = Color::Rgb(79, 193, 255);
+pub(super) const SYNTAX_TAG: Color = Color::Rgb(86, 156, 214);
 
 // 统一使用 Nerd Font Font Awesome 单列字形；加一列空白为图标预留两列。
 pub(super) fn tool_icon(name: &str) -> &'static str {

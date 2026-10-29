@@ -1,5 +1,9 @@
 use super::*;
+use crate::tui::transcript_style::{EDIT_NUMBER, EDIT_STRING, SYNTAX_KEYWORD};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::widgets::{Paragraph, Widget};
 
 fn layout(src: &str, width: u16) -> Vec<Line<'static>> {
     parse(src).layout(width)
@@ -21,6 +25,14 @@ fn has_modifier(line: &Line<'_>, idx: usize, m: Modifier) -> bool {
     line.spans
         .get(idx)
         .is_some_and(|s| s.style.add_modifier.contains(m))
+}
+
+/// 首个包含 `needle` 的 span 的前景色，用于语义高亮断言。
+fn span_fg(line: &Line<'_>, needle: &str) -> Option<Color> {
+    line.spans
+        .iter()
+        .find(|span| span.content.contains(needle))
+        .and_then(|span| span.style.fg)
 }
 
 #[test]
@@ -110,9 +122,90 @@ fn closed_code_block_renders_frame_with_language() {
     assert!(text(&ls[0]).ends_with('─'));
     assert_eq!(Span::raw(text(&ls[0])).width(), 40);
     assert_eq!(text(&ls[1]), "let x = 1;");
-    assert_eq!(fg(&ls[1], 0), Some(CODE_BLOCK));
+    assert_eq!(span_fg(&ls[1], "let"), Some(SYNTAX_KEYWORD));
+    assert_eq!(span_fg(&ls[1], "="), Some(SYNTAX_KEYWORD));
+    assert_eq!(span_fg(&ls[1], "1"), Some(EDIT_NUMBER));
+    assert_eq!(span_fg(&ls[1], " x "), Some(CODE_BLOCK));
     assert_eq!(text(&ls[2]), "─".repeat(40));
     assert_eq!(fg(&ls[2], 0), Some(DIM));
+}
+
+#[test]
+fn code_block_without_or_unknown_language_falls_back_to_plain_color() {
+    let plain = layout("```\nlet x = 1;\n```\n", 40);
+    assert_eq!(text(&plain[1]), "let x = 1;");
+    assert_eq!(span_fg(&plain[1], "let"), Some(CODE_BLOCK));
+    let unknown = layout("```notalang\nlet x = 1;\n```\n", 40);
+    assert_eq!(text(&unknown[1]), "let x = 1;");
+    assert_eq!(span_fg(&unknown[1], "let"), Some(CODE_BLOCK));
+}
+
+#[test]
+fn highlighted_code_wraps_and_keeps_span_colors() {
+    let ls = layout("```rust\nlet xy = 1;\n```\n", 9);
+    assert_eq!(
+        texts(&ls),
+        vec!["── rust ─", "let xy = ", "1;", "─────────"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(span_fg(&ls[1], "let"), Some(SYNTAX_KEYWORD));
+    assert_eq!(span_fg(&ls[1], " xy "), Some(CODE_BLOCK));
+    assert_eq!(span_fg(&ls[2], "1"), Some(EDIT_NUMBER));
+    assert_eq!(span_fg(&ls[2], ";"), Some(CODE_BLOCK));
+    assert!(ls.iter().all(|line| line.width() <= 9));
+}
+
+#[test]
+fn highlighted_code_with_tabs_cjk_and_emoji_survives() {
+    let ls = layout("```rust\n\tlet s = \"中文🙂\";\n```\n", 40);
+    assert_eq!(text(&ls[1]), "    let s = \"中文🙂\";");
+    assert_eq!(span_fg(&ls[1], "let"), Some(SYNTAX_KEYWORD));
+    assert_eq!(span_fg(&ls[1], "中文🙂"), Some(EDIT_STRING));
+}
+
+#[test]
+fn highlighted_code_preserves_combining_graphemes_in_buffer() {
+    let code = "function e\u{301}() {}";
+    for closed in [false, true] {
+        let source = format!(
+            "```javascript\n{code}\n{}",
+            if closed { "```\n" } else { "" }
+        );
+        for width in [10, 11, 40] {
+            let lines = layout(&source, width);
+            let body_end = lines.len() - usize::from(closed);
+            let area = Rect::new(0, 0, width, lines.len() as u16);
+            let mut buffer = Buffer::empty(area);
+            Paragraph::new(lines).render(area, &mut buffer);
+            let mut rendered = String::new();
+            for y in 1..body_end as u16 {
+                let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                // 仅去除最后一行的填充，保留换行前代码自身的空格。
+                if y + 1 == body_end as u16 {
+                    rendered.push_str(row.trim_end());
+                } else {
+                    rendered.push_str(&row);
+                }
+            }
+            assert_eq!(rendered, code, "width={width}, closed={closed}");
+            let accent_x = 9 % width;
+            let accent_y = 1 + 9 / width;
+            assert_eq!(buffer[(accent_x, accent_y)].symbol(), "e\u{301}");
+        }
+    }
+}
+
+#[test]
+fn oversized_code_block_falls_back_to_plain_color() {
+    let src = format!("```rust\n{}\n```\n", "let x = 1;\n".repeat(500));
+    let ls = layout(&src, 40);
+    // 500 行内容 + 1 空行 + 顶/底框，全部回退纯色。
+    assert_eq!(ls.len(), 503);
+    for line in &ls[1..501] {
+        assert_eq!(span_fg(line, "let"), Some(CODE_BLOCK));
+    }
 }
 
 #[test]
@@ -121,6 +214,9 @@ fn unclosed_code_block_stays_open_for_streaming() {
     assert_eq!(ls.len(), 2);
     assert!(text(&ls[0]).starts_with("── rust "));
     assert_eq!(text(&ls[1]), "let x = 1;");
+    // 流式未闭合块已到达内容即时着色，且没有闭合底线。
+    assert_eq!(span_fg(&ls[1], "let"), Some(SYNTAX_KEYWORD));
+    assert!(!text(&ls[1]).chars().all(|c| c == '─'));
     let empty_closed = layout("```\n```\n", 20);
     assert_eq!(empty_closed.len(), 2);
 }
