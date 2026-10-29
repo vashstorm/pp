@@ -328,9 +328,11 @@ Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 支持 
 1. **Execute in a new session**：Fresh，新 session；只发送完整批准计划及固定实施／更新 TODO 规则，正常加载系统、当前项目与技能规则，不带原始需求、调研聊天、旧调用或 reviewer 报告。
 2. **Execute (keep context)**：Keep，保留当前历史并追加一次完整批准快照；计划与重要历史用户要求冲突时先澄清。
 3. **Compact context and execute**：先复用手动上下文压缩，再按 Keep 在当前 session 中执行完整批准计划；无可压缩前缀时直接执行。压缩期间仍为 Plan 权限，Esc 可取消；压缩失败、摘要未能缩短历史、取消、计划发生变化或出现待处理输入均不执行，成功摘要会独立保存。
-4. **Review Plan**：当前模型的独立只读上下文，仅原始需求＋当前计划；可读取代码和安全搜索，不可 ask／写入／提交／实施。报告按严重程度给出计划条目、代码证据、影响和建议，明确静态审查局限；不会修改计划或勾选 TODO，也不自动批准。无需先 review 或消除报告问题才可执行。
+4. **Review Plan**：当前模型的独立只读上下文，仅原始需求＋当前计划；可读取代码和安全搜索，不可 ask／写入／提交／实施。审查需求覆盖、关键决策是否完整、真实代码及调用方、契约与失败边界、验证方案；只报告有证据、可行动且会影响实施的问题，不挑风格、不扩大范围、不把无关既有缺陷算到计划上，允许零发现。报告使用任务／计划语言，先列问题及对应计划项、证据、触发条件、影响和最小修订建议：Major 为影响安全实施或需求达成的问题，Minor 为局部规格／验证缺陷；未确认问题和缺失证据单列 Info 开放项，最后给出就绪评估及静态审查局限。不会修改计划或勾选 TODO，也不自动批准；无需先 review 或消除报告问题才可执行。
 5. **Continue discussing Plan**：独立编辑器，Enter 发送、Ctrl + J 换行、Esc 丢弃未发送问题；发送后降 Draft，保留计划／TODO，重新提交才能批准。不强制立即重写文件；仅针对当前修订的 reviewer 报告随问题作为辅助材料带回。也可直接在下方输入框继续讨论。
 6. **Save draft and leave Plan mode**：安全核对磁盘正文与当前审阅版本，保存 Draft 状态并退出 Plan，保留计划文件；不发起模型请求，也不实施计划。失败保留面板并显示错误。
+
+审查提示词位于 `src/prompts/plan-review.md`。设计参考 Codex 的 [Plan Mode 模板](https://github.com/openai/codex/blob/23934d31b15b1127c83535f84854e5009f7cd51d/codex-rs/collaboration-mode-templates/templates/plan.md)与 [review rubric](https://github.com/openai/codex/blob/23934d31b15b1127c83535f84854e5009f7cd51d/codex-rs/prompts/templates/review/rubric.md)：采用关键决策完整、可独立交接、有证据的独立问题、去重和宁缺毋滥原则；按 pp 的计划审查场景使用 Markdown，不沿用代码 diff 审查的 JSON／行内评论格式，也不引入 Codex 允许的构建／测试能力。
 
 Esc 只关闭审阅，不退出 Plan。外部编辑后再次安全读取可直接登记新修订并进入 Ready（须有真实 TODO），不强制模型复核；无 TODO 的正文只能 Draft 查看。批准携带 session／plan／revision／精确正文 token，worker 在准备前后再次核对文件及队列。字节变化会刷新新修订并要求重审；文件缺失、非 UTF-8、过大或不安全时绝不用日志旧正文回填。报告绑定审查修订和模型，计划改变后标记 `outdated`；审查结束不会自动实施。
 
