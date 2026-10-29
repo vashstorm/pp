@@ -37,7 +37,7 @@ use std::{
     disable_version_flag = true,
     args_conflicts_with_subcommands = true,
     about = "Minimal coding agent using OpenAI-compatible Responses or Chat Completions",
-    after_help = "Modes:\n  pp -p 'task'          run one task and exit\n  pp -c [SESSION_ID]    continue a saved session\n  pp                    interactive session (TUI on a terminal, line mode otherwise)\n\nUse `/login` and `/logout` in the TUI to manage subscription credentials, `pp stats --help` for statistics, or `pp gc` to remove data older than 90 days."
+    after_help = "Modes:\n  pp -p 'task'          run one task and exit\n  pp -c [SESSION_ID]    continue a saved session\n  pp                    interactive session (TUI on a terminal, line mode otherwise)\n\nUse `/login` and `/logout` in the TUI to manage subscription credentials, `pp stats --help` for statistics, or `pp gc [DAYS]` to remove data older than the given days (default 90)."
 )]
 struct Args {
     #[command(subcommand)]
@@ -106,8 +106,15 @@ impl From<ApprovalModeCli> for crate::tools::approval::ApprovalMode {
 
 #[derive(Subcommand)]
 enum Command {
-    /// 清理超过 90 天的日志、SQLite 请求数据和未被占用的 session 锁文件
-    Gc,
+    /// 清理超过指定天数（默认 90 天，上限 36500）的日志、SQLite 请求数据和未被占用的 session 锁文件
+    Gc {
+        // 100 年上限：远低于 chrono DateTime 可表示的年代下限，避免 cutoff 运算溢出。
+        #[arg(
+            default_value_t = 90,
+            value_parser = clap::value_parser!(u32).range(1..=36_500)
+        )]
+        days: u32,
+    },
     /// Start the local stats page server
     Stats {
         #[arg(long, default_value_t = 3848)]
@@ -121,7 +128,7 @@ enum Command {
 fn main() -> ExitCode {
     let args = Args::parse();
     // gc reports the existing inventory without creating its own diagnostic log.
-    let logging = if matches!(args.command, Some(Command::Gc)) {
+    let logging = if matches!(args.command, Some(Command::Gc { .. })) {
         None
     } else {
         match logging::init() {
@@ -175,8 +182,8 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_gc() -> Result<()> {
-    let cutoff = chrono::Utc::now() - chrono::Duration::days(90);
+fn run_gc(days: u32) -> Result<()> {
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
     let (requests_total, requests_removed) =
         stats::gc(cutoff.timestamp_millis()).context("cleaning statistics database")?;
     // Logs encode local calendar dates, not precise creation timestamps.
@@ -206,7 +213,7 @@ fn run_gc() -> Result<()> {
 fn run(args: Args) -> Result<()> {
     if let Some(command) = args.command {
         return match command {
-            Command::Gc => run_gc(),
+            Command::Gc { days } => run_gc(days),
             Command::Stats { port, no_open } => stats::server::run(port, !no_open),
         };
     }

@@ -179,6 +179,89 @@ fn gc_empty_home_does_not_create_storage_and_rejects_symlink_database() {
 }
 
 #[test]
+fn gc_days_argument_overrides_default_cutoff() {
+    use chrono::{Days, Local, Utc};
+
+    let home = tempfile::tempdir().unwrap();
+    let (_server, _address) = start_stats_server(home.path());
+    let db = database(home.path());
+    let timestamp = Utc::now().timestamp_millis() - 30 * 24 * 60 * 60 * 1000;
+    db.execute(
+        "INSERT INTO requests(id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,duration_ms,status) VALUES (?1,?1,?2,'m','p','p/m','completion','project','/project','task',1,'ok')",
+        rusqlite::params![1, timestamp],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO request_payloads(request_id,output_json,session_entry_json) VALUES (?1,'{}','[]')",
+        [1],
+    )
+    .unwrap();
+    let logs = home.path().join(".pp/logs");
+    let day = Local::now()
+        .date_naive()
+        .checked_sub_days(Days::new(30))
+        .unwrap();
+    let old_log = logs.join(format!("pp.{day}.1.log"));
+    fs::write(&old_log, b"fixture").unwrap();
+    let request_ids = || -> Vec<i64> {
+        db.prepare("SELECT id FROM requests ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+
+    // 非法天数（0、非数字、多参数、超过上限）在参数解析阶段失败，不删除任何数据。
+    for arguments in [
+        &["gc", "0"][..],
+        &["gc", "abc"][..],
+        &["gc", "7", "8"][..],
+        &["gc", "4294967295"][..],
+    ] {
+        let output = Cli::spawn(home.path(), arguments, &[]).finish();
+        assert!(!output.status.success());
+        assert!(old_log.is_file());
+        assert_eq!(request_ids(), [1]);
+    }
+
+    // 默认 90 天 cutoff 保留 30 天前的数据；总数含 stats server 的当日日志。
+    let output = Cli::spawn(home.path(), &["gc"], &[]).finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        gc_counts(&output),
+        [vec![2, 0, 2], vec![1, 0, 1], vec![0, 0, 0]]
+    );
+    assert!(old_log.is_file());
+    assert_eq!(request_ids(), [1]);
+
+    // 显式更短的天数同时清理日志和请求。
+    let output = Cli::spawn(home.path(), &["gc", "7"], &[]).finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        gc_counts(&output),
+        [vec![2, 1, 1], vec![1, 1, 0], vec![0, 0, 0]]
+    );
+    assert!(!old_log.exists());
+    assert!(request_ids().is_empty());
+
+    let output = Cli::spawn(home.path(), &["gc", "1"], &[]).finish();
+    assert!(output.status.success());
+    assert_eq!(
+        gc_counts(&output),
+        [vec![1, 0, 1], vec![0, 0, 0], vec![0, 0, 0]]
+    );
+}
+
+#[test]
 fn stats_context_first_request_freezes_full_body_skills_and_session_identity() {
     for protocol in ["completion", "response"] {
         let server = server();
