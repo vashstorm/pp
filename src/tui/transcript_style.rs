@@ -15,6 +15,7 @@ pub(super) const TOOL_SUCCESS_BG: Color = Color::Rgb(22, 26, 31);
 pub(super) const TOOL_ERROR_BG: Color = Color::Rgb(41, 29, 29);
 pub(super) const ASK_BG: Color = Color::Rgb(40, 42, 54);
 pub(super) const ASK_BORDER: Color = Color::Rgb(39, 135, 165);
+pub(super) const ASK_TAB_BG: Color = Color::Rgb(60, 63, 75);
 pub(super) const READ_BG: Color = Color::Rgb(22, 26, 31);
 pub(super) const READ_BORDER: Color = Color::Rgb(76, 85, 98);
 pub(super) const READ_TEXT: Color = Color::Rgb(190, 190, 185);

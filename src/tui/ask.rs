@@ -17,7 +17,9 @@ use ratatui::{
 use ratatui_textarea::TextArea;
 
 use super::menu::{MenuEvent, MenuItem, SelectionMenu};
-use super::transcript_style::{ACCENT, ASK_BG, ASK_BORDER, DIM, REMOVED, display_text};
+use super::transcript_style::{
+    ACCENT, ACTIVITY, ASK_BG, ASK_BORDER, ASK_TAB_BG, DIM, REMOVED, display_text,
+};
 use crate::interaction::{AskAnswer, AskArgs, AskRequest};
 
 const OTHER_LABEL: &str = "Other (type your own)";
@@ -26,9 +28,11 @@ const EMPTY_MULTI_MESSAGE: &str = "No options selected";
 const NOT_ANSWERED_MESSAGE: &str = "(not answered)";
 const EDITOR_HINT: &str = "Enter accept · Ctrl + J newline · Esc discard";
 const SINGLE_HINT: &str = "Space select · ↵ confirm · ↑/↓ move · Tab/←/→ question · Esc cancel";
+const SINGLE_PAGE_HINT: &str = "Space select · ↵ confirm · ↑/↓ move · Esc cancel";
 const MULTI_HINT: &str = "Space toggle · ↵ next · ↑/↓ move · Tab/←/→ question · Esc cancel";
 const REVIEW_HINT: &str = "Enter submit · Tab questions · Esc cancel";
 const COMPACT_HINT: &str = "Space select · Enter confirm · Tab next · Esc cancel";
+const COMPACT_SINGLE_PAGE_HINT: &str = "Space select · Enter confirm · Esc cancel";
 
 #[derive(Debug)]
 pub(super) enum Action {
@@ -175,7 +179,7 @@ impl Panel {
         };
         self.overlay = Some(area);
         frame.render_widget(Clear, area);
-        if height < 6 {
+        if height < 5 + u16::from(self.has_tabs()) {
             self.draw_compact(frame, area);
             return;
         }
@@ -200,9 +204,11 @@ impl Panel {
         if inner.width == 0 || inner.height == 0 {
             return;
         }
-        self.draw_tabs(frame, Rect { height: 1, ..inner });
-        inner.y += 1;
-        inner.height -= 1;
+        if self.has_tabs() {
+            self.draw_tabs(frame, Rect { height: 1, ..inner });
+            inner.y += 1;
+            inner.height -= 1;
+        }
         match self.page {
             Page::Question(index) => self.draw_question(frame, inner, index),
             Page::Review => self.draw_review(frame, inner),
@@ -409,6 +415,10 @@ impl Panel {
         !(self.questions.questions.len() == 1 && !self.questions.questions[0].multi)
     }
 
+    fn has_tabs(&self) -> bool {
+        self.questions.questions.len() > 1 || self.has_review()
+    }
+
     fn submit(&mut self) -> Action {
         for (index, question) in self.questions.questions.iter().enumerate() {
             if question.multi {
@@ -544,9 +554,9 @@ impl Panel {
                     .min(usize::from(u16::MAX)) as u16
             }
         };
-        // 只计算当前页：边框两行、页签一行、底部分隔线和快捷键各一行。
+        // 只计算当前页：边框两行、底部分隔线和快捷键各一行，多个页签时再占一行。
         let need = content_height
-            .saturating_add(5)
+            .saturating_add(4 + u16::from(self.has_tabs()))
             .saturating_add(u16::from(self.error.is_some()));
         let cap = (u32::from(screen_height) * 7 / 10) as u16;
         need.min(cap).min(available.height).max(1)
@@ -604,10 +614,7 @@ impl Panel {
                 break;
             }
             let style = if index == active {
-                Style::default()
-                    .fg(ASK_BG)
-                    .bg(ACCENT)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(ACTIVITY).bg(ASK_TAB_BG)
             } else {
                 Style::default().fg(DIM)
             };
@@ -654,8 +661,13 @@ impl Panel {
             },
         );
         if area.height >= 3 {
+            let hint = if self.has_tabs() {
+                COMPACT_HINT
+            } else {
+                COMPACT_SINGLE_PAGE_HINT
+            };
             frame.render_widget(
-                Line::styled(COMPACT_HINT, Style::default().fg(DIM)),
+                Line::styled(hint, Style::default().fg(DIM)),
                 Rect {
                     y: area.y + 2,
                     height: 1,
@@ -673,6 +685,8 @@ impl Panel {
             EDITOR_HINT
         } else if multi {
             MULTI_HINT
+        } else if !self.has_tabs() {
+            SINGLE_PAGE_HINT
         } else {
             SINGLE_HINT
         };
@@ -1317,18 +1331,27 @@ mod tests {
     }
 
     #[test]
-    fn picker_shows_header_tab_without_internal_id_or_repeated_question() {
+    fn single_page_omits_tabs_and_starts_choices_below_title() {
         let mut q = question("confirm_commit", false, None, &["yes", "no"]);
         q.header = Some("Commit confirmation".into());
         let mut panel = panel(vec![q]);
         let screen = render(&mut panel, 80, 24);
         assert!(!screen.contains("confirm_commit"));
-        assert!(screen.contains("1. Commit confirmation"));
+        assert!(!screen.contains("Commit confirmation"));
         assert!(!screen.contains("Choose for"));
+        assert!(!screen.contains("Tab/←/→"));
+        assert_eq!(panel.overlay.unwrap().height, 7, "单页应收回页签占用的一行");
         let rows: Vec<_> = screen.lines().collect();
         let title = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
-        assert!(rows[title + 1].contains("1. Commit confirmation"));
-        assert!(rows[title + 2].contains("󰐽 yes"), "页签下方应直接显示选项");
+        assert!(rows[title + 1].contains("󰐽 yes"), "标题下方应直接显示选项");
+        let compact = render(&mut panel, 80, 5);
+        assert!(!compact.contains("Tab next"));
+
+        let mut custom_only = self::panel(vec![question("custom", false, None, &[])]);
+        let screen = render(&mut custom_only, 80, 24);
+        assert_eq!(custom_only.overlay.unwrap().height, 5);
+        assert!(screen.contains(OTHER_LABEL));
+        assert!(screen.contains("╭ Ask"), "单页五行布局仍应使用完整边框");
     }
 
     #[test]
@@ -1351,13 +1374,21 @@ mod tests {
                     .filter(|&x| x == 0 || Span::raw(buffer[(x - 1, row)].symbol()).width() <= 1);
                 let highlighted: String = columns
                     .clone()
-                    .filter(|&x| buffer[(x, row)].bg == ACCENT)
+                    .filter(|&x| buffer[(x, row)].bg == ASK_TAB_BG)
                     .map(|x| buffer[(x, row)].symbol())
                     .collect();
                 assert!(
                     highlighted.contains(label),
                     "当前页签应可见且高亮：{highlighted}"
                 );
+                for x in 2..width.saturating_sub(2) {
+                    let cell = &buffer[(x, row)];
+                    assert_ne!(cell.bg, ACCENT, "页签不应使用亮黄色背景");
+                    if cell.bg == ASK_TAB_BG {
+                        assert_eq!(cell.fg, ACTIVITY);
+                        assert!(!cell.modifier.contains(Modifier::BOLD));
+                    }
+                }
                 if width == 80 {
                     let text: String = columns.map(|x| buffer[(x, row)].symbol()).collect();
                     for expected in ["1. 范围", "2. 模式", "Review"] {

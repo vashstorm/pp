@@ -458,6 +458,13 @@ fn ask_tui_single_space_selects_without_sending_until_enter() {
             json!([ask_call_json(protocol, "ask-space", ask_single_arguments())]),
         );
         ask_wait_panel(&mut pty, "Which database should the project use?");
+        {
+            let screen = pty.parser.screen();
+            let (top, _) = ask_panel_find(screen, "╭ Ask");
+            assert_eq!(ask_panel_find(screen, "SQLite (Recommended)").0, top + 1);
+            assert!(!screen.contents().contains("Tab/←/→ question"));
+            assert!(!screen.contents().contains("Question 1"));
+        }
         pty.input(" ");
         pty.wait_for("空格选中单选但不提交", |screen| {
             screen.contents().contains("󰐾 SQLite (Recommended)")
@@ -523,7 +530,7 @@ fn ask_tui_tabs_fit_current_page_and_keep_message_tail_above_panel() {
                 assert!(tail < top, "消息尾部必须显示在面板上方：{}", screen.contents());
                 let (row, col) = ask_panel_find(screen, tab);
                 assert_eq!(row, top + 1);
-                assert_eq!(screen.cell(row, col).unwrap().bgcolor(), vt100::Color::Rgb(254, 188, 56));
+                assert_eq!(screen.cell(row, col).unwrap().bgcolor(), vt100::Color::Rgb(60, 63, 75));
                 assert_eq!(ask_panel_find(screen, "Review").0, top + 1);
             }
             pty.input("\t");
