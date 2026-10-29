@@ -9,6 +9,69 @@ fn plan_todo_result(body: &Value, protocol: &str, id: &str) -> Value {
 }
 
 #[test]
+fn tui_todo_new_and_mode_switches_keep_old_lists_cleared() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        for action in ["new", "plan"] {
+            pty.input(&format!("create tasks before {action}\r"));
+            let (request, _) = pty.request_at(&fixture, api_path(protocol));
+            plan_calls(
+                request,
+                protocol,
+                json!([plan_call(
+                    protocol,
+                    "init-before-switch",
+                    "todo",
+                    json!({"op":"init","items":["OLD_TODO_FIRST","OLD_TODO_SECOND"]})
+                )]),
+            );
+            let (request, _) = pty.request_at(&fixture, api_path(protocol));
+            pty.text("TODO · 0/2");
+            plan_final(request, protocol, "Can you confirm?");
+            pty.completed();
+
+            if action == "new" {
+                pty.input("/new\r");
+                pty.wait_for("新会话已重置", |screen| {
+                    screen.contents().contains("▄▄▄██▀▀██") && input_is_ready(screen)
+                });
+            } else {
+                for _ in 0..3 {
+                    pty.input("/plan\r");
+                    plan_wait_mode(&mut pty, "Plan");
+                    assert!(!pty.parser.screen().contents().contains("TODO ·"));
+                    pty.input("/plan\r");
+                    plan_wait_execute(&mut pty);
+                    assert!(!pty.parser.screen().contents().contains("TODO ·"));
+                }
+            }
+
+            // 再次请求工具并消费最终 workflow，验证旧清单没有仅在界面暂时隐藏。
+            pty.input("inspect tasks after switching\r");
+            let (request, _) = pty.request_at(&fixture, api_path(protocol));
+            plan_calls(
+                request,
+                protocol,
+                json!([plan_call(protocol, "view-after-switch", "todo", json!({"op":"view"}))]),
+            );
+            let (request, body) = pty.request_at(&fixture, api_path(protocol));
+            let result = plan_todo_result(&body, protocol, "view-after-switch");
+            assert_eq!(result["ok"], true);
+            assert_eq!(result["phases"], json!([]));
+            plan_final(request, protocol, "No previous tasks remain.");
+            pty.completed();
+            assert!(!pty.parser.screen().contents().contains("TODO ·"));
+        }
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
 fn plan_todo_approval_initializes_all_contexts_and_reminders_archive_same_bytes() {
     for protocol in ["completion", "response"] {
         for context in [0, 1, 2] {

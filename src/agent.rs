@@ -1042,8 +1042,10 @@ impl Agent {
         }
         self.plan_lease = None;
         self.tools.clear_changes();
-        self.workflow.plan = None;
-        self.workflow.review = None;
+        self.workflow = crate::plan::WorkflowState {
+            mode: self.workflow.mode,
+            ..Default::default()
+        };
         self.journal.reset();
         if let Some(debug) = &mut self.debug {
             debug.set_prompt_recorded(false);

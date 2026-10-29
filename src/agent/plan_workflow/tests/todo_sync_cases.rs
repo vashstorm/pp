@@ -1,6 +1,45 @@
 use super::*;
 
 #[test]
+fn todo_reset_clears_tasks_and_plan_source_preserving_mode() {
+    for protocol in ["completion", "response"] {
+        for mode in [WorkMode::Execute, WorkMode::Plan] {
+            for bound in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut agent, _, _) = executed_todo_fixture(dir.path(), protocol);
+                let document = agent.workflow.plan.as_ref().unwrap().clone();
+                let path = dir.path().join(document.path().unwrap());
+                let bytes = std::fs::read(&path).unwrap();
+                agent.workflow.mode = mode;
+                if !bound {
+                    agent.workflow.plan = None;
+                    agent.workflow.todo_plan_id = None;
+                }
+                seed_session(&mut agent, "old task");
+                let previous_id = agent.session_id().unwrap().to_owned();
+                let previous = agent.workflow.clone();
+
+                agent.reset();
+
+                let expected = WorkflowState {
+                    mode,
+                    ..Default::default()
+                };
+                assert_eq!(agent.workflow, expected);
+                assert!(agent.session_id().is_none());
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+                assert_eq!(journal_workflow(dir.path(), &previous_id), previous);
+
+                seed_session(&mut agent, "new task");
+                let id = agent.session_id().unwrap();
+                assert_ne!(id, previous_id);
+                assert_eq!(journal_workflow(dir.path(), id), expected);
+            }
+        }
+    }
+}
+
+#[test]
 fn todo_sync_clears_legacy_plan_previews_and_initializes_only_execution() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
