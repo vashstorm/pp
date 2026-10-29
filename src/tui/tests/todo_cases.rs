@@ -43,11 +43,12 @@ fn tui_todo_fixed_position_survives_streaming_and_input_edits() {
         app.native_render = native;
         let text = draw(&mut app, 100, 24);
         assert!(
-            text.lines().nth(17).unwrap().contains("TODO · 0/8"),
+            text.lines().nth(16).unwrap().contains("TODO · 0/8"),
             "{text}"
         );
-        assert!(text.lines().nth(18).unwrap().contains("TODO_TASK_00"));
-        assert!(text.lines().nth(19).unwrap().contains("TODO_TASK_01"));
+        assert!(text.lines().nth(17).unwrap().contains("TODO_TASK_00"));
+        assert!(text.lines().nth(18).unwrap().contains("TODO_TASK_01"));
+        assert!(text.lines().nth(19).unwrap().starts_with('╰'));
         assert!(
             text.lines()
                 .nth(21)
@@ -59,13 +60,13 @@ fn tui_todo_fixed_position_survives_streaming_and_input_edits() {
             app.main_layout(Rect::new(0, 0, 100, 24))
                 .conversation
                 .height,
-            17
+            16
         );
     }
     app.input.insert_newline();
     app.input.insert_str("第二行");
     let text = draw(&mut app, 100, 24);
-    assert!(text.lines().nth(16).unwrap().contains("TODO · 0/8"));
+    assert!(text.lines().nth(15).unwrap().contains("TODO · 0/8"));
     assert!(text.replace(' ', "").contains("第二行"));
 }
 

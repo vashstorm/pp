@@ -434,10 +434,15 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         pty.wait_for("任务区固定在输入框上方", |screen| {
             screen
                 .rows(0, 100)
-                .nth(23)
+                .nth(22)
                 .is_some_and(|row| row.contains("TODO · 0/12"))
                 && screen.contents().contains("PINNED_TASK_00")
         });
+        for (row, col, symbol) in [(22, 0, "╭"), (23, 0, "│"), (25, 99, "╯")] {
+            let cell = pty.parser.screen().cell(row, col).unwrap();
+            assert_eq!(cell.contents(), symbol);
+            assert_eq!(cell.fgcolor(), vt100::Color::Rgb(254, 188, 56));
+        }
         let mut stream = SseReply::new(request);
         let answer = (0..70)
             .map(|i| format!("    pinned-stream-{i:03}\n"))
@@ -453,7 +458,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 .rows(0, 100)
                 .nth(16)
                 .is_some_and(|row| row.contains("TODO · 0/12"))
-                && screen.contents().contains("PINNED_TASK_07")
+                && screen.contents().contains("PINNED_TASK_06")
         });
         assert!(!pty.parser.screen().alternate_screen());
         pty.resize(24, 60);
@@ -465,10 +470,10 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         });
         pty.draft("中文草稿");
         pty.function_key('t');
-        pty.wait_for("TODO 收回三行", |screen| {
+        pty.wait_for("TODO 收回四行边框摘要", |screen| {
             screen
                 .rows(0, 60)
-                .nth(17)
+                .nth(16)
                 .is_some_and(|row| row.contains("TODO · 0/12"))
         });
         streaming_complete(&mut stream, protocol, &answer);
@@ -510,7 +515,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         pty.wait_for("恢复最终清单并默认收起", |screen| {
             screen
                 .rows(0, 100)
-                .nth(23)
+                .nth(22)
                 .is_some_and(|row| row.contains("TODO · 0/12"))
                 && !screen.contents().contains("PINNED_TASK_07")
         });
@@ -527,10 +532,10 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
             )]),
         );
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        pty.wait_for("完成后保留一行摘要", |screen| {
+        pty.wait_for("完成后保留带边框摘要", |screen| {
             screen
                 .rows(0, 100)
-                .nth(25)
+                .nth(24)
                 .is_some_and(|row| row.contains("TODO · 12/12") && row.contains("Complete"))
         });
         plan_final(request, protocol, "Fixed tasks finished.");

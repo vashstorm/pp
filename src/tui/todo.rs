@@ -6,7 +6,13 @@ use crate::{
     shortcuts::platform_text,
     tools::todo::{TodoItem, TodoStatus},
 };
-use ratatui::{Frame, layout::Rect, style::Style, text::Line, widgets::Paragraph};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::Style,
+    text::Line,
+    widgets::{Block, BorderType, Borders, Padding, Paragraph},
+};
 
 pub(super) const TOGGLE_HINT: &str = platform_text("⌥T", "Ctrl+T");
 
@@ -76,14 +82,17 @@ impl Panel {
             return 0;
         }
         let cap = budget.min((terminal_height / 3).max(1));
-        if self.expanded && cap >= 3 {
-            self.prepare(width);
-            return cap.min(self.rows.len().saturating_add(1).min(u16::MAX as usize) as u16);
+        if width < 4 || cap < 3 {
+            return 1;
         }
-        if self.closed() == self.tasks().count() || cap < 3 {
-            1
+        if self.expanded {
+            self.prepare(width.saturating_sub(4));
+            return cap.min(self.rows.len().saturating_add(2).min(u16::MAX as usize) as u16);
+        }
+        if self.closed() == self.tasks().count() {
+            2
         } else {
-            3
+            cap.min(4)
         }
     }
 
@@ -110,8 +119,16 @@ impl Panel {
         self.scroll = self.scroll.min(
             self.rows
                 .len()
-                .saturating_sub(usize::from(self.area.height.saturating_sub(1))),
+                .saturating_sub(usize::from(Self::block().inner(self.area).height)),
         );
+    }
+
+    fn block() -> Block<'static> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(palette::ACCENT))
+            .padding(Padding::horizontal(1))
     }
 
     fn header(&self) -> String {
@@ -132,13 +149,14 @@ impl Panel {
             ""
         };
         let action = if self.expanded { "collapse" } else { "expand" };
-        let position =
-            if self.expanded && self.rows.len() > usize::from(self.area.height.saturating_sub(1)) {
-                format!(" · {}/{}", self.scroll + 1, self.rows.len())
-            } else {
-                String::new()
-            };
-        format!("─ TODO · {closed}/{total}{status} · {TOGGLE_HINT} {action}{position}")
+        let position = if self.expanded
+            && self.rows.len() > usize::from(Self::block().inner(self.area).height)
+        {
+            format!(" · {}/{}", self.scroll + 1, self.rows.len())
+        } else {
+            String::new()
+        };
+        format!(" TODO · {closed}/{total}{status} · {TOGGLE_HINT} {action}{position} ")
     }
 
     fn brief(task: &TodoItem) -> String {
@@ -187,24 +205,30 @@ impl Panel {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        if self.expanded && area.height >= 3 {
-            self.prepare(area.width);
+        if area.width < 4 || area.height < 2 {
+            frame.render_widget(
+                Line::styled(self.header(), Style::default().fg(palette::ACCENT)),
+                Rect::new(area.x, area.y, area.width, 1),
+            );
+            return;
+        }
+        let block = Self::block();
+        let body = block.inner(area);
+        if self.expanded && body.height > 0 {
+            self.prepare(body.width);
             self.clamp_scroll();
         }
         frame.render_widget(
-            Line::styled(self.header(), Style::default().fg(palette::MUTED)),
-            Rect::new(area.x, area.y, area.width, 1),
-        );
-        let body = Rect::new(
-            area.x,
-            area.y + 1,
-            area.width,
-            area.height.saturating_sub(1),
+            block.title(Line::styled(
+                self.header(),
+                Style::default().fg(palette::ACCENT),
+            )),
+            area,
         );
         if body.height == 0 {
             return;
         }
-        if self.expanded && area.height >= 3 {
+        if self.expanded {
             // 按物理行切片，避免 Paragraph 的 u16 scroll 在超长清单中截断。
             let end = self
                 .scroll
@@ -282,8 +306,8 @@ mod tests {
             ("下一任务", TodoStatus::Pending),
             ("隐藏任务", TodoStatus::Pending),
         ]));
-        assert_eq!(panel.height(80, 24, 20), 3);
-        let text = render(&mut panel, 80, 3);
+        assert_eq!(panel.height(80, 24, 20), 4);
+        let text = render(&mut panel, 80, 4);
         assert!(text.contains("1/4"));
         assert!(text.contains("→ 当前任务"));
         assert!(text.contains("Next: 下一任务"));
@@ -294,6 +318,44 @@ mod tests {
     }
 
     #[test]
+    fn tui_todo_yellow_border_encloses_compact_and_expanded_content() {
+        for expanded in [false, true] {
+            for width in [4, 12, 80] {
+                let mut panel = Panel::default();
+                panel.update(state(&[
+                    ("当前任务包含很长的中文内容", TodoStatus::InProgress),
+                    ("下一任务", TodoStatus::Pending),
+                ]));
+                panel.expanded = expanded;
+                let height = panel.height(width, 24, 20);
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| panel.draw(frame, frame.area()))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                for (x, y, symbol) in [
+                    (0, 0, "╭"),
+                    (width - 1, 0, "╮"),
+                    (0, height - 1, "╰"),
+                    (width - 1, height - 1, "╯"),
+                ] {
+                    assert_eq!(buffer[(x, y)].symbol(), symbol);
+                }
+                for y in 0..height {
+                    for x in 0..width {
+                        if y == 0 || y == height - 1 || x == 0 || x == width - 1 {
+                            assert_eq!(buffer[(x, y)].fg, palette::ACCENT);
+                        }
+                        if y > 0 && y < height - 1 && (x == 0 || x == width - 1) {
+                            assert_eq!(buffer[(x, y)].symbol(), "│");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn tui_todo_completed_abandoned_empty_and_tiny_heights() {
         let mut panel = Panel::default();
         assert_eq!(panel.height(80, 24, 20), 0);
@@ -301,13 +363,13 @@ mod tests {
         panel.toggle();
         panel.update(state(&[("完成", TodoStatus::Completed)]));
         assert!(!panel.expanded);
-        assert_eq!(panel.height(80, 24, 20), 1);
+        assert_eq!(panel.height(80, 24, 20), 2);
         panel.toggle();
-        assert_eq!(panel.height(80, 24, 20), 3);
+        assert_eq!(panel.height(80, 24, 20), 4);
         panel.toggle();
         assert!(render(&mut panel, 80, 1).contains("Complete ✓"));
         panel.update(state(&[("放弃", TodoStatus::Abandoned)]));
-        let text = render(&mut panel, 80, 1);
+        let text = render(&mut panel, 80, 2);
         assert!(text.contains("Closed"));
         assert!(!text.contains("Complete"));
         panel.update(state(&[("待办", TodoStatus::Pending)]));
@@ -347,8 +409,8 @@ mod tests {
         panel.toggle();
         panel.height(12, 90, 30);
         let text = render(&mut panel, 12, 30);
-        assert!(text.contains("验证阶段"));
-        let joined = text.replace(['\n', ' '], "");
+        let joined = text.replace(['\n', ' ', '│'], "");
+        assert!(joined.contains("验证阶段"));
         assert!(joined.contains("很长的中文任务名称必须完整换行展示"));
         assert!(joined.contains("外部等待"));
         assert!(!text.contains('\u{1b}'));
@@ -395,7 +457,7 @@ mod tests {
         let previous = panel.scroll;
         assert!(previous > 0);
         render(&mut panel, 20, 8);
-        assert!(panel.scroll <= panel.rows.len() - 7);
+        assert!(panel.scroll <= panel.rows.len() - 6);
         panel.update(state(&[("最后任务", TodoStatus::Pending)]));
         let text = render(&mut panel, 80, 8);
         assert!(text.contains("最后任务"));
