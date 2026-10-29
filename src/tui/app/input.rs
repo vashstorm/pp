@@ -96,32 +96,35 @@ impl App {
                 preferred = items.iter().position(|item| item.current).unwrap_or(0);
                 items
             }
-            None if input.trim().starts_with('/') => COMMANDS
-                .iter()
-                .enumerate()
-                .filter(|(_, spec)| spec.name.starts_with(input.trim()))
-                .map(|(index, spec)| MenuItem {
-                    value: MenuAction::Command(index),
-                    label: spec.name.into(),
-                    description: spec.description.into(),
-                    icon: None,
-                    current: false,
-                })
-                .chain(
-                    self.file_commands
-                        .entries
+            None if input.trim().starts_with('/') => {
+                let query = input.trim()[1..].to_lowercase();
+                let mut matches: Vec<_> =
+                    COMMANDS
                         .iter()
                         .enumerate()
-                        .filter(|(_, command)| command.name.starts_with(input.trim()))
-                        .map(|(index, command)| MenuItem {
-                            value: MenuAction::FileCommand(index),
-                            label: command.name.clone(),
-                            description: command.description.clone(),
+                        .map(|(index, spec)| MenuItem {
+                            value: MenuAction::Command(index),
+                            label: spec.name.into(),
+                            description: spec.description.into(),
                             icon: None,
                             current: false,
-                        }),
-                )
-                .collect(),
+                        })
+                        .chain(self.file_commands.entries.iter().enumerate().map(
+                            |(index, command)| MenuItem {
+                                value: MenuAction::FileCommand(index),
+                                label: command.name.clone(),
+                                description: command.description.clone(),
+                                icon: None,
+                                current: false,
+                            },
+                        ))
+                        .filter_map(|item| {
+                            command_match_rank(&item.label, &query).map(|rank| (rank, item))
+                        })
+                        .collect();
+                matches.sort_by_key(|(rank, _)| *rank);
+                matches.into_iter().map(|(_, item)| item).collect()
+            }
             _ => {
                 if self.model_picker_draft.is_some() {
                     self.file_query = None;
@@ -584,5 +587,22 @@ impl App {
             self.clear_input();
             self.secondary_status = Some("Compacting context...".into());
         }
+    }
+}
+
+fn command_match_rank(name: &str, query: &str) -> Option<u8> {
+    let name = name.strip_prefix('/').unwrap_or(name).to_lowercase();
+    if name == query {
+        Some(0)
+    } else if name.starts_with(query) {
+        Some(1)
+    } else if name.contains(query) {
+        Some(2)
+    } else {
+        let mut chars = name.chars();
+        query
+            .chars()
+            .all(|expected| chars.any(|ch| ch == expected))
+            .then_some(3)
     }
 }

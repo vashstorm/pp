@@ -17,8 +17,8 @@ fn tui_slash_file_command_menu_and_submission() {
     let mut pty = Pty::start(&server, dir.path());
     pty.ready();
 
-    // Typing a prefix lists the file command with its description.
-    pty.input("/rev");
+    // 忽略大小写的模糊输入列出自定义命令及其说明。
+    pty.input("/RVW");
     pty.wait_for("file command candidate with description", |screen| {
         let text = screen.contents();
         text.contains("review") && text.contains("Review source")
@@ -81,7 +81,7 @@ fn tui_slash_file_command_menu_and_submission() {
     pty.draft("");
 
     // Enter on the menu of an argument-less template submits directly.
-    pty.input("/dep");
+    pty.input("/DLY");
     pty.wait_for("second file command candidate", |screen| {
         let text = screen.contents();
         text.contains("deploy") && text.contains("Deploy checklist")

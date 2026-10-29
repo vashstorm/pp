@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn command_menu_matches_fuzzy_case_insensitively_and_prioritizes_prefixes() {
+    let mut app = app();
+    let mut dirty = false;
+    for (query, expected) in [
+        ("/roles", "/Roles"),
+        ("/MDL", "/model"),
+        ("/PLS", "/plan-list"),
+        ("/LIST", "/plan-list"),
+        ("/PLAN", "/plan"),
+        ("/RE", "/resume"),
+    ] {
+        app.input = editor();
+        app.handle(Event::Paste(query.into()), &mut dirty);
+        let menu = app.menu.as_ref().unwrap();
+        assert_eq!(menu.items()[0].label, expected, "{query}");
+        assert_eq!(menu.selected_index(), Some(0));
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(app.input.lines(), &[expected]);
+    }
+    for query in ["/LDM", "/zzzz", "/MDL argument"] {
+        app.input = editor();
+        app.handle(Event::Paste(query.into()), &mut dirty);
+        assert!(app.menu.is_none(), "{query}");
+        assert_eq!(app.input.lines(), &[query]);
+    }
+}
+
+#[test]
 fn model_space_menu_renders_above_input_and_preserves_selection_on_resize() {
     let mut app = app();
     app.state = State::Ready;

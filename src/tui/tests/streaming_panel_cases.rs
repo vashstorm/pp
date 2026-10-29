@@ -59,7 +59,7 @@ fn startup_skill_summary_keeps_complete_diagnostics_in_panel() {
 fn init_menu_submits_model_task_and_displays_command() {
     let (mut app, requests) = file_commands_app(commands::FileCommands::default());
     let mut dirty = false;
-    app.handle(Event::Paste("/ini".into()), &mut dirty);
+    app.handle(Event::Paste("/INt".into()), &mut dirty);
     assert!(draw(&mut app, 100, 30).contains("Create or update project AGENTS.md"));
     app.handle(key(KeyCode::Tab), &mut dirty);
     assert_eq!(app.input.lines(), &["/init"]);
@@ -77,11 +77,38 @@ fn init_menu_submits_model_task_and_displays_command() {
 }
 
 #[test]
+fn file_command_menu_ranks_matches_together_with_builtin_commands() {
+    let mut files = review_files();
+    files.entries.push(commands::FileCommand {
+        name: "/re".into(),
+        description: "Exact match".into(),
+        content: "Review now.".into(),
+    });
+    let (mut app, requests) = file_commands_app(files);
+    let mut dirty = false;
+    app.handle(Event::Paste("/RE".into()), &mut dirty);
+    let labels: Vec<_> = app
+        .menu
+        .as_ref()
+        .unwrap()
+        .items()
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect();
+    assert_eq!(labels, ["/re", "/resume", "/review", "/tree", "/Roles"]);
+    app.handle(key(KeyCode::Enter), &mut dirty);
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(WorkerCommand::Run { prompt, .. }) if prompt == "Review now."
+    ));
+}
+
+#[test]
 fn file_command_menu_completes_name_and_submits_expanded_prompt() {
     let (mut app, requests) = file_commands_app(review_files());
     let mut dirty = false;
-    // 斜杠菜单在内置命令后链接用户命令，且显示加载的 description。
-    app.handle(Event::Paste("/rev".into()), &mut dirty);
+    // 自定义命令支持忽略大小写的模糊匹配，并显示加载的 description。
+    app.handle(Event::Paste("/RVW".into()), &mut dirty);
     assert_eq!(menu_values(&app), vec![MenuAction::FileCommand(0)]);
     assert!(draw(&mut app, 100, 30).contains("Review source"));
     // Tab 只补全名字，不展开也不发送。
