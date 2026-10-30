@@ -526,13 +526,20 @@ impl Panel {
                         Line::default(),
                         Line::from(format!(
                             "Paste your {} API key",
-                            if provider == Provider::Zai {
-                                "Z.AI"
-                            } else {
-                                "GLM"
+                            match provider {
+                                Provider::Zai => "Z.AI",
+                                Provider::CommandCode => "Command Code",
+                                _ => "GLM",
                             }
                         )),
-                        Line::styled("e.g., sk-...", Style::default().fg(MUTED)),
+                        Line::styled(
+                            if provider == Provider::CommandCode {
+                                "e.g., user_..."
+                            } else {
+                                "e.g., sk-..."
+                            },
+                            Style::default().fg(MUTED),
+                        ),
                         Line::from(format!(
                             "> {}",
                             "•".repeat(

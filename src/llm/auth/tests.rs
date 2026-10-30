@@ -125,107 +125,163 @@ fn auth_discovery_filters_unsupported_models_and_preserves_unknown_metadata() {
 }
 
 #[test]
-fn auth_copilot_discovery_roundtrip_preserves_model_protocols_and_manual_priority() {
+fn auth_commandcode_discovery_selects_supported_protocols_and_filters_other_endpoints() {
+    use crate::models::Protocol;
+
+    let models = discovered_models(Provider::CommandCode, &json!({"object":"list", "data":[
+        {"id":"deepseek/chat", "context_length":1000000, "supported_endpoints":["/chat/completions", "/responses"]},
+        {"id":"chat-only", "supported_endpoints":["/chat/completions"]},
+        {"id":"response-only", "supported_endpoints":["/responses"]},
+        {"id":"claude", "supported_endpoints":["/messages"]},
+        {"id":"decision", "supported_endpoints":["/systemone"]},
+        {"id":"no-tools", "supports_tool_calls":false, "supported_endpoints":["/responses"]},
+        {"id":"empty", "supported_endpoints":[]}
+    ]})).unwrap();
+    assert_eq!(models.len(), 3);
+    assert_eq!(models["deepseek/chat"].protocol, Some(Protocol::Response));
+    assert_eq!(models["deepseek/chat"].context_window, Some(1000000));
+    assert_eq!(models["chat-only"].protocol, Some(Protocol::Completion));
+    assert_eq!(models["chat-only"].context_window, None);
+    assert_eq!(models["response-only"].protocol, Some(Protocol::Response));
+    assert!(
+        discovered_models(
+            Provider::CommandCode,
+            &json!({"data":[
+                {"id":"claude", "supported_endpoints":["/messages"]}
+            ]})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn auth_discovery_roundtrip_preserves_model_protocols_and_manual_priority() {
     use crate::auth::{Store, models, service};
     use crate::cancellation::CancellationToken;
     use crate::models::Protocol;
 
-    let dir = tempfile::tempdir().unwrap();
-    service::commit_login(
-        dir.path(),
-        Provider::GithubCopilot,
-        Credential::api_key("private-fixture".into()),
-        &CancellationToken::new(),
-    )
-    .unwrap();
-    let store = Store::load(&dir.path().join("agent.db")).unwrap();
-    let credential = &store.credentials[&Provider::GithubCopilot];
-    let (base, server) = mock(vec![(
-        200,
-        json!({"data":[
-            {"id":"a-response", "supported_endpoints":["/responses"], "context_window":128000},
-            {"id":"b-chat", "supported_endpoints":["/chat/completions"]},
-            {"id":"c-response", "supported_endpoints":["/responses"]},
-            {"id":"d-legacy"}
-        ]}),
-    )]);
-    let discovered = runtime().block_on(async {
-        discover_at(
-            &client().unwrap(),
-            Provider::GithubCopilot,
-            credential,
-            &format!("{base}/models"),
+    for provider in [Provider::GithubCopilot, Provider::CommandCode] {
+        let id = provider.id();
+        let dir = tempfile::tempdir().unwrap();
+        service::commit_login(
+            dir.path(),
+            provider,
+            Credential::api_key("private-fixture".into()),
+            &CancellationToken::new(),
         )
-        .await
-        .unwrap()
-    });
-    let cache_path = dir.path().join("models-sub.yml");
-    let cache = models::Catalog {
-        providers: std::collections::BTreeMap::from([(
-            Provider::GithubCopilot.id().into(),
-            models::Entry {
-                auth: Provider::GithubCopilot,
-                generation: credential.generation.clone(),
-                protocol: Protocol::Completion,
-                models: discovered,
-            },
-        )]),
-    };
-    cache.save(&cache_path).unwrap();
-    let cache = models::Catalog::load(&cache_path).unwrap();
-    assert_eq!(
-        cache.providers["github-copilot"].models["a-response"].protocol,
-        Some(Protocol::Response)
-    );
-    let settings_path = dir.path().join("settings.yml");
-    let models_path = dir.path().join("models.yml");
-    let mut catalog =
-        crate::config::ModelCatalog::from_files(&settings_path, &models_path).unwrap();
-    assert_eq!(catalog.default_reference(), "github-copilot/a-response");
-    assert_eq!(catalog.choices().len(), 4);
-    for (id, protocol) in [
-        ("a-response", Protocol::Response),
-        ("b-chat", Protocol::Completion),
-        ("c-response", Protocol::Response),
-        ("d-legacy", Protocol::Completion),
-    ] {
-        let reference = format!("github-copilot/{id}");
-        let config = catalog.resolve(&reference).unwrap();
-        assert_eq!(config.protocol, protocol);
-        assert_eq!(config.model, id);
-        assert_eq!(config.auth.unwrap().generation, credential.generation);
+        .unwrap();
+        let store = Store::load(&dir.path().join("agent.db")).unwrap();
+        let credential = &store.credentials[&provider];
+        let (base, server) = mock(vec![(
+            200,
+            json!({"data":[
+                {"id":"a-response", "supported_endpoints":["/responses"], "context_window":128000},
+                {"id":"vendor/b-chat", "supported_endpoints":["/chat/completions"]},
+                {"id":"c-response", "supported_endpoints":["/responses"]},
+                {"id":"d-legacy"}
+            ]}),
+        )]);
+        let discovered = runtime().block_on(async {
+            discover_at(
+                &client().unwrap(),
+                provider,
+                credential,
+                &format!("{base}/models"),
+            )
+            .await
+            .unwrap()
+        });
+        let cache_path = dir.path().join("models-sub.yml");
+        let cache = models::Catalog {
+            providers: std::collections::BTreeMap::from([(
+                provider.id().into(),
+                models::Entry {
+                    auth: provider,
+                    generation: credential.generation.clone(),
+                    protocol: Protocol::Completion,
+                    models: discovered,
+                },
+            )]),
+        };
+        cache.save(&cache_path).unwrap();
+        let cache = models::Catalog::load(&cache_path).unwrap();
+        assert_eq!(
+            cache.providers[id].models["a-response"].protocol,
+            Some(Protocol::Response)
+        );
+        let settings_path = dir.path().join("settings.yml");
+        let models_path = dir.path().join("models.yml");
+        let mut catalog =
+            crate::config::ModelCatalog::from_files(&settings_path, &models_path).unwrap();
+        assert_eq!(catalog.default_reference(), &format!("{id}/a-response"));
+        assert_eq!(catalog.choices().len(), 4);
+        for (id, protocol) in [
+            ("a-response", Protocol::Response),
+            ("vendor/b-chat", Protocol::Completion),
+            ("c-response", Protocol::Response),
+            ("d-legacy", Protocol::Completion),
+        ] {
+            let reference = format!("{}/{id}", provider.id());
+            let config = catalog.resolve(&reference).unwrap();
+            assert_eq!(config.protocol, protocol);
+            assert_eq!(config.model, id);
+            assert_eq!(config.auth.unwrap().generation, credential.generation);
+            assert_eq!(
+                catalog
+                    .choices()
+                    .iter()
+                    .find(|choice| choice.reference == reference)
+                    .unwrap()
+                    .protocol,
+                protocol
+            );
+        }
         assert_eq!(
             catalog
-                .choices()
-                .iter()
-                .find(|choice| choice.reference == reference)
+                .resolve(&format!("{id}/a-response"))
+                .unwrap()
+                .context_window,
+            Some(128000)
+        );
+        std::fs::write(&models_path, format!("providers:\n  {id}:\n    api_key: manual-fixture\n    protocol: completion\n    base_url: https://example.com/v1\n    models:\n      a-response:\n        model: manual-model\n")).unwrap();
+        catalog.reload_models().unwrap();
+        let manual = catalog.resolve(&format!("{id}/a-response")).unwrap();
+        assert_eq!(manual.protocol, Protocol::Completion);
+        assert_eq!(manual.model, "manual-model");
+        assert!(manual.auth.is_none());
+        assert_eq!(catalog.choices().len(), 4);
+        assert_eq!(
+            catalog
+                .resolve(&format!("{id}/c-response"))
                 .unwrap()
                 .protocol,
-            protocol
+            Protocol::Response
+        );
+        assert_eq!(server.join().unwrap()[0].path, "/models");
+        let update = service::logout(dir.path(), provider, &CancellationToken::new()).unwrap();
+        assert!(update.logged.is_empty());
+        assert!(
+            Store::load(&dir.path().join("agent.db"))
+                .unwrap()
+                .credentials
+                .is_empty()
+        );
+        assert!(
+            models::Catalog::load(&cache_path)
+                .unwrap()
+                .providers
+                .is_empty()
+        );
+        catalog.reload_models().unwrap();
+        assert_eq!(catalog.choices().len(), 1);
+        assert!(
+            catalog
+                .resolve(&format!("{id}/a-response"))
+                .unwrap()
+                .auth
+                .is_none()
         );
     }
-    assert_eq!(
-        catalog
-            .resolve("github-copilot/a-response")
-            .unwrap()
-            .context_window,
-        Some(128000)
-    );
-    std::fs::write(&models_path, "providers:\n  github-copilot:\n    api_key: manual-fixture\n    protocol: completion\n    base_url: https://example.com/v1\n    models:\n      a-response:\n        model: manual-model\n").unwrap();
-    catalog.reload_models().unwrap();
-    let manual = catalog.resolve("github-copilot/a-response").unwrap();
-    assert_eq!(manual.protocol, Protocol::Completion);
-    assert_eq!(manual.model, "manual-model");
-    assert!(manual.auth.is_none());
-    assert_eq!(catalog.choices().len(), 4);
-    assert_eq!(
-        catalog
-            .resolve("github-copilot/c-response")
-            .unwrap()
-            .protocol,
-        Protocol::Response
-    );
-    assert_eq!(server.join().unwrap()[0].path, "/models");
 }
 
 #[test]

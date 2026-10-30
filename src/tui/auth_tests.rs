@@ -82,6 +82,38 @@ fn auth_key_panel_masks_paste_and_routes_links_without_leaking_input() {
 }
 
 #[test]
+fn auth_commandcode_key_panel_masks_input_and_submits_to_correct_provider() {
+    let mut panel = Panel::new(false);
+    panel.listed(Vec::new());
+    assert!(render(&mut panel, 100, 30).contains("Command Code"));
+    panel.handle(key(KeyCode::End));
+    let url = match panel.handle(key(KeyCode::Enter)) {
+        Action::Open(url) => url,
+        _ => panic!("必须打开 Command Code 控制台"),
+    };
+    assert_eq!(url, Provider::CommandCode.key_url().unwrap());
+    assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
+    panel.handle(Event::Paste("user_private-commandcode-key".into()));
+    let screen = render(&mut panel, 100, 30);
+    assert!(screen.contains("Paste your Command Code API key"));
+    assert!(screen.contains("user_...") && screen.contains('•'));
+    assert!(!screen.contains("user_private-commandcode-key"));
+    assert!(matches!(
+        panel.handle(key(KeyCode::Enter)),
+        Action::Login(Provider::CommandCode, Some(value)) if value == "user_private-commandcode-key"
+    ));
+    assert!(!render(&mut panel, 100, 30).contains("user_private-commandcode-key"));
+
+    let mut logout = Panel::new(true);
+    logout.listed(vec![Provider::CommandCode]);
+    assert!(render(&mut logout, 100, 30).contains("Command Code ● logged in (api key)"));
+    assert!(matches!(
+        logout.handle(key(KeyCode::Enter)),
+        Action::Logout(Provider::CommandCode)
+    ));
+}
+
+#[test]
 fn auth_panel_mouse_selects_and_opens_wrapped_urls_during_wait() {
     let mut panel = Panel::new(false);
     panel.listed(Vec::new());

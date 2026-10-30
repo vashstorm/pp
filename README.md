@@ -43,13 +43,13 @@ mkdir -p ~/.pp/agent
 
 ### 2. Configure a model
 
-Start the terminal UI even without model configuration, then use `/login` to choose ChatGPT, GitHub Copilot, Kimi Code, GLM, or Z.AI:
+Start the terminal UI even without model configuration, then use `/login` to choose ChatGPT, GitHub Copilot, Kimi Code, GLM, Z.AI, or Command Code:
 
 ```sh
 ./target/release/pp
 ```
 
-`/login` opens the authorization page in your browser. ChatGPT, Copilot, and Kimi use device authorization; GLM and Z.AI use masked API key input. Credentials are stored in plain text in `~/.pp/agent/agent.db`, with directory mode `0700` and database file mode `0600`; no system keychain or encryption is provided. Discovered subscription models remain in `~/.pp/agent/models-sub.yml`, which keeps its existing format. Discovery failures keep the authorization and offer a retry without adding a guessed default model. Quit every running pp process before upgrading: on first start pp imports the old preference fields in `settings.yml` and `auth.yml` into `agent.db` exactly once, then removes the authorization and those fields from YAML.
+`/login` opens the authorization page in your browser. ChatGPT, Copilot, and Kimi use device authorization; GLM, Z.AI, and Command Code use masked API key input. Credentials are stored in plain text in `~/.pp/agent/agent.db`, with directory mode `0700` and database file mode `0600`; no system keychain or encryption is provided. Discovered subscription models remain in `~/.pp/agent/models-sub.yml`, which keeps its existing format. Discovery failures keep the authorization and offer a retry without adding a guessed default model. Quit every running pp process before upgrading: on first start pp imports the old preference fields in `settings.yml` and `auth.yml` into `agent.db` exactly once, then removes the authorization and those fields from YAML.
 
 Use `/model` to select a model immediately. It reloads both model files; `models.yml` takes priority for identical `provider/model` references. `/logout` removes a provider's credentials from `agent.db` and its subscription models. These authorization commands require the TUI; the old `pp auth` command and `auth.json` are no longer used. Kimi and GLM currently use non-thinking mode. See [subscription authentication](docs/guide.md#订阅认证) for details.
 

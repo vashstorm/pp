@@ -363,7 +363,10 @@ fn validate_providers(providers: Vec<(String, ProviderEntry)>) -> Result<Vec<Val
                     "auth uses a fixed provider endpoint; omit base_url"
                 );
                 ensure!(
-                    auth == crate::auth::Provider::GithubCopilot || protocol == auth.protocol(),
+                    matches!(
+                        auth,
+                        crate::auth::Provider::GithubCopilot | crate::auth::Provider::CommandCode
+                    ) || protocol == auth.protocol(),
                     "protocol is incompatible with auth provider"
                 );
             }

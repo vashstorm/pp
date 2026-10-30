@@ -43,13 +43,13 @@ mkdir -p ~/.pp/agent
 
 ### 2. 配置模型
 
-没有模型配置时，也可以先启动终端界面，再用 `/login` 选择 ChatGPT、GitHub Copilot、Kimi Code、GLM 或 Z.AI：
+没有模型配置时，也可以先启动终端界面，再用 `/login` 选择 ChatGPT、GitHub Copilot、Kimi Code、GLM、Z.AI 或 Command Code：
 
 ```sh
 ./target/release/pp
 ```
 
-选择服务商后自动打开授权页面。ChatGPT、Copilot 和 Kimi 使用设备码授权；GLM 与 Z.AI 使用遮蔽的 API key 输入。凭证以明文保存在 `~/.pp/agent/agent.db`，目录权限为 `0700`、数据库文件为 `0600`，不提供系统钥匙串或加密保证。发现的订阅模型仍单独保存到 `~/.pp/agent/models-sub.yml`，该文件保持原有格式。发现失败时保留授权并提供重试，不补造默认模型。升级前请退出所有运行中的 pp：首次启动时会把 `settings.yml` 的旧偏好字段和 `auth.yml` 一次性导入 `agent.db`，随后从 YAML 中移除授权及这些字段。
+选择服务商后自动打开授权页面。ChatGPT、Copilot 和 Kimi 使用设备码授权；GLM、Z.AI 与 Command Code 使用遮蔽的 API key 输入。凭证以明文保存在 `~/.pp/agent/agent.db`，目录权限为 `0700`、数据库文件为 `0600`，不提供系统钥匙串或加密保证。发现的订阅模型仍单独保存到 `~/.pp/agent/models-sub.yml`，该文件保持原有格式。发现失败时保留授权并提供重试，不补造默认模型。升级前请退出所有运行中的 pp：首次启动时会把 `settings.yml` 的旧偏好字段和 `auth.yml` 一次性导入 `agent.db`，随后从 YAML 中移除授权及这些字段。
 
 登录后立即使用 `/model` 选模型，无需重启。它重新读取两个模型文件，同名 `provider/model` 以 `models.yml` 为准。`/logout` 从 `agent.db` 删除目标服务商凭证，并删除其订阅模型。授权命令仅支持终端界面，不再提供 `pp auth` 参数入口，也不读取或迁移旧 `auth.json`。Kimi／GLM 当前使用非思考模式。详见[订阅认证](docs/guide.md#订阅认证)。
 

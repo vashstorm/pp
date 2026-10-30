@@ -41,7 +41,7 @@ impl Catalog {
             ensure!(!entry.models.is_empty(), "订阅模型列表为空");
             for (id, model) in &entry.models {
                 ensure!(
-                    entry.auth == Provider::GithubCopilot
+                    matches!(entry.auth, Provider::GithubCopilot | Provider::CommandCode)
                         || model
                             .protocol
                             .is_none_or(|protocol| protocol == entry.protocol),

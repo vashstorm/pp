@@ -25,15 +25,18 @@ pub(crate) enum Provider {
     KimiCode,
     Glm,
     Zai,
+    #[serde(alias = "commandcode")]
+    CommandCode,
 }
 
 impl Provider {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::OpenaiCodex,
         Self::Zai,
         Self::Glm,
         Self::KimiCode,
         Self::GithubCopilot,
+        Self::CommandCode,
     ];
 
     pub(crate) fn id(self) -> &'static str {
@@ -43,6 +46,7 @@ impl Provider {
             Self::KimiCode => "kimi-code",
             Self::Glm => "glm",
             Self::Zai => "zai",
+            Self::CommandCode => "command-code",
         }
     }
 
@@ -53,6 +57,7 @@ impl Provider {
             Self::KimiCode => "https://api.kimi.com/coding/v1",
             Self::Glm => "https://open.bigmodel.cn/api/coding/paas/v4",
             Self::Zai => "https://api.z.ai/api/coding/paas/v4",
+            Self::CommandCode => "https://api.commandcode.ai/provider/v1",
         }
     }
 
@@ -71,6 +76,7 @@ impl Provider {
             Self::KimiCode => "Kimi Code",
             Self::Glm => "GLM (Coding Plan)",
             Self::Zai => "Z.AI (GLM Coding Plan)",
+            Self::CommandCode => "Command Code",
         }
     }
 
@@ -78,6 +84,7 @@ impl Provider {
         match self {
             Self::Glm => Some("https://bigmodel.cn/coding-plan/personal/overview"),
             Self::Zai => Some("https://z.ai/manage-apikey/apikey-list"),
+            Self::CommandCode => Some("https://commandcode.ai/studio/"),
             _ => None,
         }
     }

@@ -16,6 +16,7 @@ pub(crate) use migration::initialize;
 
 const UNAVAILABLE: &str = "Agent database unavailable.";
 const UNSUPPORTED_VERSION: &str = "Agent database schema version is not supported.";
+const SCHEMA_VERSION: i64 = 2;
 
 static USAGE_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -53,8 +54,14 @@ CREATE TABLE IF NOT EXISTS model_usage (
     model_reference TEXT PRIMARY KEY,
     request_count INTEGER NOT NULL DEFAULT 0 CHECK(request_count>=0)
 );
+CREATE TABLE IF NOT EXISTS migration_state (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    stage TEXT NOT NULL CHECK(stage IN ('imported','ready'))
+);";
+
+const AUTH_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS auth_credentials (
-    provider TEXT PRIMARY KEY CHECK(provider IN ('github-copilot','openai-codex','kimi-code','glm','zai')),
+    provider TEXT PRIMARY KEY CHECK(provider IN ('github-copilot','openai-codex','kimi-code','glm','zai','command-code')),
     generation TEXT NOT NULL,
     access_token TEXT NOT NULL,
     refresh_token TEXT NULL,
@@ -62,10 +69,6 @@ CREATE TABLE IF NOT EXISTS auth_credentials (
     account_id TEXT NULL,
     api_endpoint TEXT NULL,
     device_id TEXT NULL
-);
-CREATE TABLE IF NOT EXISTS migration_state (
-    id INTEGER PRIMARY KEY CHECK(id=1),
-    stage TEXT NOT NULL CHECK(stage IN ('imported','ready'))
 );";
 
 impl AgentStore {
@@ -74,8 +77,8 @@ impl AgentStore {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
-        ensure!(version <= 1, UNSUPPORTED_VERSION);
-        if version < 1 {
+        ensure!(version <= SCHEMA_VERSION, UNSUPPORTED_VERSION);
+        if version < SCHEMA_VERSION {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
@@ -83,11 +86,29 @@ impl AgentStore {
             let version: i64 = tx
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
-            ensure!(version <= 1, UNSUPPORTED_VERSION);
+            ensure!(version <= SCHEMA_VERSION, UNSUPPORTED_VERSION);
             if version == 0 {
                 tx.execute_batch(SCHEMA)
                     .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
-                tx.pragma_update(None, "user_version", 1)
+                tx.execute_batch(AUTH_SCHEMA)
+                    .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+            } else if version == 1 {
+                // SQLite 不能直接扩展 CHECK；在同一事务中重建授权表并完整保留凭证。
+                tx.execute_batch("ALTER TABLE auth_credentials RENAME TO auth_credentials_v1;")
+                    .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+                tx.execute_batch(AUTH_SCHEMA)
+                    .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+                tx.execute_batch(
+                    "INSERT INTO auth_credentials(provider, generation, access_token, refresh_token,
+                                                  expires_at, account_id, api_endpoint, device_id)
+                     SELECT provider, generation, access_token, refresh_token,
+                            expires_at, account_id, api_endpoint, device_id FROM auth_credentials_v1;
+                     DROP TABLE auth_credentials_v1;",
+                )
+                .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+            }
+            if version < SCHEMA_VERSION {
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
             }
             tx.commit().map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
@@ -644,13 +665,90 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_auth_commandcode_upgrade_preserves_credentials_preferences_and_usage() {
+        use crate::auth::{Credential, Provider, Store};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.db");
+        let conn = crate::sqlite::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(&AUTH_SCHEMA.replace(",'command-code'", ""))
+            .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute("INSERT INTO migration_state VALUES (1, 'ready')", [])
+            .unwrap();
+        let mut old = AgentStore { conn };
+        old.set_default_model("fixture/main", ModelThinking::default())
+            .unwrap();
+        old.toggle_favorite("fixture/favorite").unwrap();
+        old.set_model_role(
+            ModelRole::Fast,
+            Some(&RoleAssignment {
+                enabled: true,
+                model: "fixture/fast".into(),
+                effort: ThinkLevel::Low,
+            }),
+        )
+        .unwrap();
+        old.increment_model_usage("fixture/main").unwrap();
+        let prefs = old.preferences().unwrap();
+        let mut auth = Store {
+            credentials: BTreeMap::from([
+                (Provider::Glm, Credential::api_key("glm-fixture".into())),
+                (
+                    Provider::GithubCopilot,
+                    Credential {
+                        generation: "existing-generation".into(),
+                        access_token: "copilot-fixture".into(),
+                        refresh_token: Some("refresh-fixture".into()),
+                        expires_at: Some(123456),
+                        account_id: Some("account-fixture".into()),
+                        api_endpoint: Some("https://api.githubcopilot.com".into()),
+                        device_id: Some("device-fixture".into()),
+                    },
+                ),
+            ]),
+        };
+        old.save_auth(&auth).unwrap();
+        drop(old);
+
+        let mut upgraded = AgentStore::open(&path).unwrap();
+        assert!(upgraded.load_auth().unwrap() == auth);
+        assert_eq!(upgraded.preferences().unwrap(), prefs);
+        assert_eq!(
+            upgraded.model_usage().unwrap().get("fixture/main"),
+            Some(&1)
+        );
+        let version: i64 = upgraded
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let stage: String = upgraded
+            .conn
+            .query_row("SELECT stage FROM migration_state WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(stage, "ready");
+        auth.credentials.insert(
+            Provider::CommandCode,
+            Credential::api_key("user_fixture".into()),
+        );
+        upgraded.save_auth(&auth).unwrap();
+        drop(upgraded);
+        assert!(AgentStore::open(&path).unwrap().load_auth().unwrap() == auth);
+    }
+
+    #[test]
     fn sqlite_rejects_future_schema() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("agent.db");
         drop(AgentStore::open(&path).unwrap());
         {
             let raw = Connection::open(&path).unwrap();
-            raw.pragma_update(None, "user_version", 2).unwrap();
+            raw.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+                .unwrap();
         }
         let error = AgentStore::open(&path).err().unwrap();
         assert_eq!(error.to_string(), UNSUPPORTED_VERSION);

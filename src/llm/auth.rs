@@ -145,8 +145,8 @@ fn discovered_models(
         }
         let mut protocol = provider.protocol();
         if let Some(endpoints) = value["supported_endpoints"].as_array() {
-            // Copilot 同一目录中的模型可能使用不同协议，优先采用明确声明的 Responses。
-            if provider == Provider::GithubCopilot
+            // 同一目录中的模型可能使用不同协议，优先采用明确声明的 Responses。
+            if matches!(provider, Provider::GithubCopilot | Provider::CommandCode)
                 && endpoints.iter().any(|v| v.as_str() == Some("/responses"))
             {
                 protocol = crate::models::Protocol::Response;
@@ -182,7 +182,8 @@ fn discovered_models(
             id.to_owned(),
             crate::auth::models::Model {
                 model: id.to_owned(),
-                protocol: (provider == Provider::GithubCopilot).then_some(protocol),
+                protocol: matches!(provider, Provider::GithubCopilot | Provider::CommandCode)
+                    .then_some(protocol),
                 context_window,
             },
         );

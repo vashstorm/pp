@@ -158,6 +158,36 @@ fn auth_copilot_endpoints_reject_credential_redirection() {
 }
 
 #[test]
+fn auth_commandcode_manual_models_accept_both_protocols_and_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("models.yml");
+    for auth in ["command-code", "commandcode"] {
+        for protocol in ["completion", "response"] {
+            std::fs::write(&path, format!("providers:\n  custom:\n    auth: {auth}\n    protocol: {protocol}\n    models:\n      main:\n        model: vendor/model\n")).unwrap();
+            let providers = crate::models::load_models(&path).unwrap();
+            assert_eq!(providers[0].auth, Some(Provider::CommandCode));
+            assert_eq!(providers[0].models[0].model, "vendor/model");
+            assert_eq!(
+                providers[0].protocol,
+                if protocol == "response" {
+                    crate::models::Protocol::Response
+                } else {
+                    crate::models::Protocol::Completion
+                }
+            );
+        }
+    }
+    assert_eq!(Provider::CommandCode.id(), "command-code");
+    assert_eq!(
+        Provider::CommandCode.base_url(),
+        "https://api.commandcode.ai/provider/v1"
+    );
+    Credential::api_key("user_fixture".into())
+        .validate(Provider::CommandCode)
+        .unwrap();
+}
+
+#[test]
 fn auth_model_protocol_overrides_reject_incompatible_providers() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("models-sub.yml");
@@ -188,7 +218,7 @@ fn auth_model_protocol_overrides_reject_incompatible_providers() {
         catalog.save(&path).unwrap();
         assert_eq!(
             models::Catalog::load(&path).is_ok(),
-            provider == Provider::GithubCopilot
+            matches!(provider, Provider::GithubCopilot | Provider::CommandCode)
         );
     }
 }

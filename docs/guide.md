@@ -74,8 +74,9 @@ pp
 | `kimi-code` | Kimi Code 设备码授权 | `completion` |
 | `glm` | 智谱 Coding Plan API key | `completion` |
 | `zai` | 国际版 Z.AI Coding Plan API key | `completion` |
+| `command-code` | Command Code Studio API key | 按模型选择 `response` 或 `completion` |
 
-设备码登录显示浏览器地址、验证码和等待状态。GLM／Z.AI 从控制台获取 API key 后在独立面板输入或粘贴，输入始终遮蔽，不进入普通消息及输入历史。`/login`、`/logout` 只在终端界面提供；行模式会提示使用终端界面，`-p` 不解析斜杠命令。旧 `pp auth …` 参数入口已移除。
+设备码登录显示浏览器地址、验证码和等待状态。GLM／Z.AI／Command Code 从控制台获取 API key 后在独立面板输入或粘贴，输入始终遮蔽，不进入普通消息及输入历史。`/login`、`/logout` 只在终端界面提供；行模式会提示使用终端界面，`-p` 不解析斜杠命令。旧 `pp auth …` 参数入口已移除。
 
 授权记录保存在 `~/.pp/agent/agent.db`，发现模型保存在 `~/.pp/agent/models-sub.yml`，该 YAML 文件使用 `0600` 权限和原子替换。旧 `auth.json` 不读取、不迁移、不删除，需要重新登录。旧 `auth.yml` 只在首次迁移时读取一次，导入并核对完成后删除；此后即使重新出现也不会读取，不提供运行期 YAML 授权回退。访问令牌在模型 worker 中可取消地刷新，跨进程锁保护令牌轮换，刷新失败保留旧凭证；登出先提交数据库删除再清理 `models-sub.yml`，文件清理失败仍视为已登出，残留缓存因缺少凭据而被忽略。认证内容、验证码、授权 URL 和请求头不进入会话日志、统计正文或诊断日志。
 
@@ -83,11 +84,13 @@ pp
 
 Copilot 按每个模型的 `supported_endpoints` 选择协议：包含 `/responses` 时优先使用 `response`，否则采用声明的 `/chat/completions`；未提供接口元数据时沿用 `completion`，仅支持其他接口的模型仍不列入。旧模型缓存继续可读；升级后可在 `/login` 中选择 GitHub Copilot 并重试模型发现，补齐此前因协议过滤而缺失的模型，再通过 `/model` 选择。
 
+Command Code 使用 [Provider API](https://commandcode.ai/docs/provider-api)，自动打开 [Studio](https://commandcode.ai/studio/) 后，从 API keys 页面获取密钥并粘贴到授权面板。模型目录来自 `https://api.commandcode.ai/provider/v1/models`，按 `supported_endpoints` 优先选择 `/responses`，其次 `/chat/completions`；仅支持 `/messages` 的 Claude 模型及其他不兼容端点不列入。未知端点元数据沿用 `completion`。手动模型可使用 `auth: command-code`（兼容别名 `commandcode`），并显式设置 `protocol: response` 或 `completion`；模型 ID 保留完整的供应商前缀，例如 `moonshotai/Kimi-K2.5`。密钥沿用现有数据库保存与 `/logout` 流程，不读取 Command Code 自身的凭证文件或环境变量。公开模型目录不验证密钥或套餐权限，首次实际调用仍可能返回认证或权限错误。
+
 模型发现失败或返回空列表时，保留授权并提示在 `/login` 中重试，不补造内置默认模型。只有能确认同一身份才保留旧缓存；缓存绑定授权版本，换账号后忽略旧目录。价格、上下文容量等未知元数据保持未知。
 
 `/model` 每次打开都重新读取 `models.yml` 和 `models-sub.yml`，登录、退出后也立即刷新，无需重启。相同完整 `provider/model` 引用以手动维护的 `models.yml` 为准；同名供应商的不同模型仍保留各自文件的认证、地址和协议配置。已有会话不会因刷新而自动切换模型或清空历史；退出当前模型的授权后，需要重新登录或选择其他模型才能继续请求；换账号后须通过 `/model` 重新选择模型，以重新绑定授权并转换跨来源的 Responses 历史。
 
-`models-sub.yml` 由程序维护，其中保存 `auth` 引用、授权版本、默认协议和发现的模型；Copilot 模型另存各自的协议，不包含密钥。手动模型、价格或容量配置仍写入 `models.yml`，例如：
+`models-sub.yml` 由程序维护，其中保存 `auth` 引用、授权版本、默认协议和发现的模型；Copilot／Command Code 模型另存各自的协议，不包含密钥。手动模型、价格或容量配置仍写入 `models.yml`，例如：
 
 ```yaml
 providers:
