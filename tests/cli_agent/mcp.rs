@@ -575,7 +575,7 @@ fn mcp_legacy_settings_require_manual_migration_without_writing_mcp_json() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("mcp.json"));
-    assert!(stderr.contains("迁移"));
+    assert!(stderr.contains("migrate"));
     assert!(!stderr.contains("secret-command"));
     assert!(!config_path(home.path(), "mcp.json").exists());
     no_more(&provider);

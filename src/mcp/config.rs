@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const INVALID: &str = "MCP 配置无效：请检查 JSON 语法、重复键、字段及类型";
+const INVALID: &str = "Invalid MCP config: check JSON syntax, duplicate keys, fields, and types";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EntryView {
@@ -88,7 +88,7 @@ fn read_native(path: &Path) -> Result<Native> {
             serde_json::from_value(json_value(&text)?).map_err(|_| anyhow::anyhow!(INVALID))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Native::default()),
-        Err(_) => bail!("无法读取 MCP 配置"),
+        Err(_) => bail!("cannot read MCP config"),
     }
 }
 
@@ -121,7 +121,7 @@ impl Directory {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                     Err(_) => {
                         dir.diagnostics
-                            .push(format!("无法读取 MCP 来源：{relative}"));
+                            .push(format!("cannot read MCP source: {relative}"));
                         continue;
                     }
                 };
@@ -144,17 +144,20 @@ impl Directory {
                                 );
                             } else {
                                 dir.diagnostics
-                                    .push(format!("MCP 来源字段无效：{relative}"));
+                                    .push(format!("invalid MCP source field: {relative}"));
                             }
                         }
                     }
                     Err(_) => dir
                         .diagnostics
-                        .push(format!("MCP 来源格式无效：{relative}")),
+                        .push(format!("invalid MCP source format: {relative}")),
                 }
             }
         }
-        ensure!(dir.entries.len() <= 32, "MCP 服务数量超过上限 32");
+        ensure!(
+            dir.entries.len() <= 32,
+            "MCP server count exceeds the limit of 32"
+        );
         for (name, entry) in &mut dir.entries {
             if native.enabled_servers.contains(name) {
                 entry.enabled = true;
@@ -227,9 +230,10 @@ impl Directory {
         }
     }
     pub fn save_enabled(&self, name: &str, enabled: bool, token: &CancellationToken) -> Result<()> {
-        ensure!(self.entries.contains_key(name), "未知 MCP 服务");
+        ensure!(self.entries.contains_key(name), "unknown MCP server");
         let parent = self.path.parent().ok_or_else(|| anyhow::anyhow!(INVALID))?;
-        fs::create_dir_all(parent).map_err(|_| anyhow::anyhow!("无法创建 MCP 配置目录"))?;
+        fs::create_dir_all(parent)
+            .map_err(|_| anyhow::anyhow!("cannot create MCP config directory"))?;
         let lock = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -238,10 +242,10 @@ impl Directory {
             .mode(0o600)
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(parent.join("mcp.lock"))
-            .map_err(|_| anyhow::anyhow!("无法打开 MCP 配置锁"))?;
+            .map_err(|_| anyhow::anyhow!("cannot open MCP config lock"))?;
         ensure!(
             lock.metadata().is_ok_and(|m| m.is_file()),
-            "MCP 配置锁必须是普通文件"
+            "MCP config lock must be a regular file"
         );
         let start = Instant::now();
         loop {
@@ -249,11 +253,11 @@ impl Directory {
             match rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
                 Ok(()) => break,
                 Err(rustix::io::Errno::INTR | rustix::io::Errno::WOULDBLOCK) => {}
-                Err(_) => bail!("无法获取 MCP 配置锁"),
+                Err(_) => bail!("cannot acquire MCP config lock"),
             }
             ensure!(
                 start.elapsed() < Duration::from_secs(30),
-                "等待 MCP 配置锁超时"
+                "timed out waiting for the MCP config lock"
             );
             std::thread::sleep(Duration::from_millis(25));
         }
@@ -278,7 +282,7 @@ impl Directory {
             Ok(())
         };
         cancellation::check(token)?;
-        save().map_err(|_| anyhow::anyhow!("保存 MCP 配置失败"))?;
+        save().map_err(|_| anyhow::anyhow!("failed to save MCP config"))?;
         Ok(())
     }
 }

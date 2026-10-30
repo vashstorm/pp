@@ -176,7 +176,7 @@ impl Panel {
 
     fn begin_effort(&mut self, model: String) {
         let Some(choice) = self.choices.iter().find(|choice| choice.reference == model) else {
-            self.message = "模型已不可用，请先重新选择 model".into();
+            self.message = "Model is no longer available; select a model again".into();
             return;
         };
         let old = self.effective().effort;
@@ -501,10 +501,10 @@ impl Panel {
         );
         let header = match self.view {
             View::Roles => {
-                "Model roles — Space / 点击圆点启停；仅选中的 Role 提供给模型使用".to_owned()
+                "Model roles — Space or click the dot to toggle; only selected roles are offered to the model".to_owned()
             }
             View::Models => format!(
-                "为 {} 选择 model · 输入搜索 · Enter 选择 effort",
+                "Select a model for {} · type to search · Enter to choose effort",
                 self.role().name()
             ),
             View::Effort => format!(
@@ -606,7 +606,7 @@ impl Panel {
                     .selected
                     .saturating_sub(usize::from(content.height.saturating_sub(1)));
                 if indices.is_empty() {
-                    frame.render_widget("没有匹配的模型", content);
+                    frame.render_widget("No matching models", content);
                 }
                 for (row, index) in indices
                     .into_iter()
@@ -631,7 +631,7 @@ impl Panel {
             }
             View::Effort => {
                 frame.render_widget(
-                    "选择此 Role 的独立 effort（仅列出模型支持的等级）",
+                    "Choose an effort for this role (only levels supported by the model)",
                     Rect::new(self.body.x, self.body.y + 1, self.body.width, 1),
                 );
                 let chips = self
@@ -659,11 +659,11 @@ impl Panel {
             }
         }
         let hint = if self.busy {
-            "保存中…"
+            "Saving…"
         } else if !self.message.is_empty() {
             &self.message
         } else {
-            "↑↓ 移动 · Space 启停 · Enter 配置/保存 · e effort · Delete 清除 · Esc 返回"
+            "↑↓ Move · Space Toggle · Enter Configure/Save · e Effort · Delete Clear · Esc Back"
         };
         frame.render_widget(
             Line::styled(hint, Style::default().fg(MUTED)),

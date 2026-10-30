@@ -15,22 +15,22 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/mcp",
         usage: "/mcp [list|enable <name>|disable <name>|reconnect <name>|reload|help]",
-        description: "管理 MCP 服务与连接状态",
+        description: "Manage MCP servers and connection state",
     },
     CommandSpec {
         name: "/Roles",
         usage: "/Roles",
-        description: "配置各模型 Role 的 model 与 effort（TUI）",
+        description: "Configure model and effort for each model role (TUI)",
     },
     CommandSpec {
         name: "/subagents",
         usage: "/subagents",
-        description: "查看、追问和控制子 Agent",
+        description: "View, follow up, and control subagents",
     },
     CommandSpec {
         name: "/agents",
         usage: "/agents",
-        description: "查看可用子 Agent 角色与来源",
+        description: "View available subagent roles and sources",
     },
     CommandSpec {
         name: "/help",
@@ -110,7 +110,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/skills",
         usage: "/skills [enable NAME|disable NAME|sources [enable|disable claude|codex]]",
-        description: "管理技能来源与逐项启停",
+        description: "Manage skill sources and per-item toggles",
     },
     CommandSpec {
         name: "/quit",

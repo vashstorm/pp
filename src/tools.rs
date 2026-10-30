@@ -542,14 +542,14 @@ impl Tools {
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         ensure!(
             self.yielded.borrow().is_none(),
-            "子任务已完成，后续工具未执行。"
+            "subagent task is complete; further tools were not executed"
         );
         if name == "plan_submit"
             && let Some(binding) = &self.subagent
         {
             ensure!(
                 !binding.pending(),
-                "请等待子任务结果完成并提交到上下文后再提交计划。"
+                "wait for the subagent result to complete and commit to context before submitting a plan."
             );
         }
         if let Some(allowed) = &self.allowed_tools {
@@ -1086,12 +1086,12 @@ impl Drop for Tools {
     fn drop(&mut self) {
         if let Some(binding) = self.subagent.take().filter(|b| b.depth == 0) {
             if let Err(error) = binding.shutdown() {
-                tracing::error!(error=%error,"子 Agent 退出清理失败");
+                tracing::error!(error=%error,"subagent exit cleanup failed");
             }
             if self.mcp.is_shared()
                 && let Err(error) = self.mcp.abort_connections()
             {
-                tracing::error!(error=%error,"MCP 退出清理失败");
+                tracing::error!(error=%error,"MCP exit cleanup failed");
             }
         }
     }

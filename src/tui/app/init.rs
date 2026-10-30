@@ -221,12 +221,12 @@ impl App {
         let approval_events = sender.clone();
         agent.set_approval_handler(Box::new(move |request,token|{
             let _guard=crate::tui::dialog_guard(&dialog_lock,token)?;
-            let mut options=vec![serde_json::json!({"label":"允许一次","description":"仅执行当前工具调用"})];
-            if request.session_grant{options.push(serde_json::json!({"label":"本会话允许","description":"该根会话及子 Agent 共享授权"}));}
-            options.push(serde_json::json!({"label":"拒绝","description":"返回工具审批被拒绝"}));
-            let args=crate::interaction::AskArgs::parse(&serde_json::json!({"questions":[{"id":"approval","question":format!("{}：{}",request.tool,request.reason),"options":options}]}).to_string())?;
+            let mut options=vec![serde_json::json!({"label":"Approve once","description":"Run the current tool call only"})];
+            if request.session_grant{options.push(serde_json::json!({"label":"Allow for this session","description":"Granted to the root session and its subagents"}));}
+            options.push(serde_json::json!({"label":"Deny","description":"Return tool approval denied"}));
+            let args=crate::interaction::AskArgs::parse(&serde_json::json!({"questions":[{"id":"approval","question":format!("{}: {}",request.tool,request.reason),"options":options}]}).to_string())?;
             let answers=request_ask(&approval_events,crate::interaction::AskRequest{call_id:request.agent.as_ref().map(|id|format!("subagent-{id}-approval")).unwrap_or_else(||"approval-dialog".into()),args:std::sync::Arc::new(args)},token)?;
-            Ok(match answers.first().and_then(|a|a.selected_options.first()).map(String::as_str){Some("允许一次")=>crate::tools::approval::ApprovalDecision::Approve,Some("本会话允许")if request.session_grant=>crate::tools::approval::ApprovalDecision::ApproveSession,_=>crate::tools::approval::ApprovalDecision::Deny})
+            Ok(match answers.first().and_then(|a|a.selected_options.first()).map(String::as_str){Some("Approve once")=>crate::tools::approval::ApprovalDecision::Approve,Some("Allow for this session")if request.session_grant=>crate::tools::approval::ApprovalDecision::ApproveSession,_=>crate::tools::approval::ApprovalDecision::Deny})
         }));
         agent.ensure_subagents()?;
         let usage = agent.context_usage().ok();

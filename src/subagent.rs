@@ -166,7 +166,7 @@ fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 pub(crate) fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let parent = path.parent().context("缺少持久目录")?;
+    let parent = path.parent().context("missing persist directory")?;
     fs::create_dir_all(parent)?;
     fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
@@ -210,11 +210,11 @@ impl Binding {
         } = options;
         ensure!(
             (1..=32).contains(&settings.max_concurrency),
-            "task.max_concurrency 必须在 1..=32 内"
+            "task.max_concurrency must be in 1..=32"
         );
         ensure!(
             settings.max_recursion_depth <= 8,
-            "task.max_recursion_depth 不得超过 8"
+            "task.max_recursion_depth must not exceed 8"
         );
         let mut disk: Disk = if dir
             .file_name()
@@ -228,7 +228,7 @@ impl Binding {
                 Err(error) => return Err(error.into()),
             }
         };
-        ensure!(disk.version <= 1, "子 Agent 存储版本不可识别");
+        ensure!(disk.version <= 1, "unrecognized subagent storage version");
         disk.version = 1;
         for agent in disk.agents.values_mut() {
             if agent.status != "aborted" {
@@ -241,13 +241,13 @@ impl Binding {
                     run.status.as_str(),
                     "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted"
                 ),
-                "未知的子任务状态"
+                "unknown subagent task status"
             );
             if matches!(run.status.as_str(), "queued" | "running") {
                 match fs::read(dir.join(format!("{}.result.json", run.id))) {
                     Ok(bytes) => {
                         let result: Value = serde_json::from_slice(&bytes)?;
-                        ensure!(result["ok"].is_boolean(), "无效子任务结果文件");
+                        ensure!(result["ok"].is_boolean(), "invalid subagent result file");
                         run.status = if result["cancelled"] == true {
                             "cancelled"
                         } else if result["ok"] == true {
@@ -261,7 +261,7 @@ impl Binding {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                         run.status = "interrupted".into();
                         run.result = Some(
-                            json!({"ok":false,"error":"进程中断；需要显式追问以继续，不会重放工具。"}),
+                            json!({"ok":false,"error":"Process interrupted; explicit follow-up required to continue, tools will not be replayed."}),
                         );
                     }
                     Err(error) => return Err(error.into()),
@@ -269,7 +269,7 @@ impl Binding {
             }
             ensure!(
                 matches!(run.status.as_str(), "queued" | "running") || run.result.is_some(),
-                "终态子任务缺少结果"
+                "terminal subagent task missing result"
             );
         }
         let inner = Arc::new(Inner {
@@ -431,7 +431,7 @@ impl Binding {
                 let args: Wait = serde_json::from_str(arguments)?;
                 self.wait(&args.run_ids, args.timeout_ms.min(60_000), token)
             }
-            _ => bail!("未知子 Agent 工具"),
+            _ => bail!("unknown subagent tool"),
         }
     }
     fn spawn(&self, batch: Batch, plan: bool, token: &CancellationToken) -> Result<Value> {
@@ -439,11 +439,11 @@ impl Binding {
             self.depth < self.inner.settings.max_recursion_depth
                 && !self.spawns.is_empty()
                 && !self.readonly,
-            "此 Agent 不允许继续派发"
+            "this agent is not allowed to spawn further subagents"
         );
         ensure!(
             !batch.tasks.is_empty() && batch.tasks.len() <= 32,
-            "tasks 数量必须为 1..=32"
+            "tasks count must be in 1..=32"
         );
         let roles = self.roles()?;
         // 整批使用同一份启用状态；旧 prompt 或手写调用也不能绕过取消选中。
@@ -459,27 +459,33 @@ impl Binding {
             if let Some(model_role) = item.role {
                 ensure!(
                     enabled_roles.contains_key(&model_role),
-                    "模型 Role {} 未选中，请先在 /Roles 启用",
+                    "model role {} is not selected; enable it in /Roles first",
                     model_role.name()
                 );
             }
             let role = item.agent.as_deref().unwrap_or("task");
             ensure!(
                 self.spawns.iter().any(|n| n == "*" || n == role),
-                "父角色不允许派发 {role}"
+                "parent role does not allow spawning {role}"
             );
             let def = roles
                 .iter()
                 .find(|d| d.name == role)
-                .context("未知或已禁用的 Agent 角色")?;
-            ensure!(!item.task.trim().is_empty(), "子任务不能为空");
+                .context("unknown or disabled agent role")?;
+            ensure!(
+                !item.task.trim().is_empty(),
+                "subagent task must not be empty"
+            );
             if let Some(name) = &item.name {
                 ensure!(
                     !name.trim().is_empty() && names.insert(name.to_lowercase()),
-                    "重复或空 Agent 名称"
+                    "duplicate or empty agent name"
                 );
             }
-            ensure!(!plan || !item.isolated, "Plan 不允许工作区隔离");
+            ensure!(
+                !plan || !item.isolated,
+                "plan mode does not allow workspace isolation"
+            );
             let output = item.output_schema.clone().or_else(|| def.output.clone());
             if let Some(schema) = &output {
                 validate_schema(schema)?;
@@ -558,7 +564,7 @@ impl Binding {
         let mut records = Vec::new();
         {
             let mut state = lock(&self.inner.state);
-            ensure!(!state.stopping, "子 Agent supervisor 正在停止");
+            ensure!(!state.stopping, "subagent supervisor is stopping");
             for (item, spec, blocking) in prepared {
                 state.disk.next_id += 1;
                 let id = format!("a{}", state.disk.next_id);
@@ -607,7 +613,10 @@ impl Binding {
         }
         for value in &mut results {
             if value["blocking"] == true {
-                let id = value["run_id"].as_str().context("缺少 Run ID")?.to_owned();
+                let id = value["run_id"]
+                    .as_str()
+                    .context("missing run ID")?
+                    .to_owned();
                 value["results"] = self.wait(&[id], u64::MAX, token)?;
             }
         }
@@ -622,13 +631,13 @@ impl Binding {
     ) -> Result<()> {
         ensure!(
             !self.inner.plan_mode || !record.spec.isolated,
-            "Plan 模式只能查看已有隔离会话，不能恢复隔离运行。"
+            "Plan mode can only view existing isolated sessions; isolated runs cannot be resumed."
         );
         let token = parent_token.child_token();
         let mut state = lock(&self.inner.state);
         ensure!(
             !state.stopping && !state.retiring.contains(&record.id),
-            "Agent 正在清理，暂时不能恢复"
+            "Agent is shutting down; resume is temporarily unavailable"
         );
         if let Some(live) = state.live.get_mut(&record.id) {
             if run.is_empty() {
@@ -682,7 +691,7 @@ impl Binding {
     }
     fn settle(&self, run: &str, result: Value, duration_ms: u64) -> Result<()> {
         let mut state = lock(&self.inner.state);
-        let r = state.disk.runs.get_mut(run).context("未知 Run")?;
+        let r = state.disk.runs.get_mut(run).context("unknown run")?;
         r.status = if result["cancelled"] == true {
             "cancelled"
         } else if result["ok"] == true {
@@ -746,7 +755,7 @@ impl Binding {
                         .runs
                         .get(id)
                         .is_some_and(|r| r.owner == self.owner),
-                    "Run 不属于当前 Agent"
+                    "run does not belong to this agent"
                 );
             }
         }
@@ -793,7 +802,7 @@ impl Binding {
             .filter(|r| matches!(r.status.as_str(), "queued" | "running"))
             .count();
         format!(
-            "Subagents: {active} 运行/排队 · {} 个会话 · /subagents 查看",
+            "Subagents: {active} running/queued · {} sessions · use /subagents",
             state.disk.agents.len()
         )
     }
@@ -808,7 +817,7 @@ impl Binding {
         content: Option<&str>,
         token: &CancellationToken,
     ) -> Result<Value> {
-        let (scheme, rest) = path.split_once("://").context("无效 URI")?;
+        let (scheme, rest) = path.split_once("://").context("invalid URI")?;
         let (id, suffix) = rest.split_once('/').unwrap_or((rest, ""));
         if scheme == "history" && id.is_empty() {
             let state = lock(&self.inner.state);
@@ -817,9 +826,9 @@ impl Binding {
         }
         if scheme == "proc" {
             let state = lock(&self.inner.state);
-            let run = state.disk.runs.get(id).context("未知 Run")?;
+            let run = state.disk.runs.get(id).context("unknown run")?;
             if op == "write" {
-                ensure!(suffix == "kill", "仅支持 proc://run/kill");
+                ensure!(suffix == "kill", "only proc://run/kill is supported");
                 if matches!(run.status.as_str(), "queued" | "running")
                     && let Some(live) = state.live.get(&run.agent_id)
                 {
@@ -829,16 +838,23 @@ impl Binding {
             }
             return Ok(json!({"ok":true,"run":run}));
         }
-        ensure!(suffix.is_empty(), "Agent URI 不支持路径后缀");
+        ensure!(
+            suffix.is_empty(),
+            "agent URI does not support path suffixes"
+        );
         let record = lock(&self.inner.state)
             .disk
             .agents
             .get(id)
             .cloned()
-            .context("未知 Agent")?;
+            .context("unknown agent")?;
         if op == "write" {
-            ensure!(scheme == "agent", "历史 URI 只支持读取");
-            return self.followup(&record, content.context("消息不能为空")?, token);
+            ensure!(scheme == "agent", "history URI is read-only");
+            return self.followup(
+                &record,
+                content.context("message must not be empty")?,
+                token,
+            );
         }
         if scheme == "history" {
             use std::io::{Read, Seek, SeekFrom};
@@ -900,11 +916,11 @@ impl Binding {
     }
 
     fn followup(&self, record: &Record, text: &str, token: &CancellationToken) -> Result<Value> {
-        ensure!(!text.trim().is_empty(), "消息不能为空");
+        ensure!(!text.trim().is_empty(), "message must not be empty");
         let mut state = lock(&self.inner.state);
         ensure!(
             !state.stopping && !state.retiring.contains(&record.id),
-            "Agent 正在清理，暂时不能追问"
+            "Agent is shutting down; follow-up is temporarily unavailable"
         );
         if let Some(live) = state.live.get(&record.id).filter(|_| {
             state.disk.runs.values().any(|r| {
@@ -922,7 +938,7 @@ impl Binding {
                 .values()
                 .any(|r| r.agent_id == record.id
                     && matches!(r.status.as_str(), "queued" | "running")),
-            "Agent 正在提交上一轮结果，请稍后重试追问。"
+            "Agent is still committing the previous result; retry the follow-up later."
         );
         state.disk.next_id += 1;
         let run = format!("r{}", state.disk.next_id);
@@ -957,7 +973,7 @@ impl Binding {
                 .agents
                 .get(id)
                 .cloned()
-                .context("未知 Agent")?;
+                .context("unknown agent")?;
             self.launch(record, "", String::new(), &CancellationToken::new())?;
             return Ok(json!({"ok":true,"revived":true}));
         }
@@ -967,7 +983,7 @@ impl Binding {
                 .agents
                 .get(id)
                 .cloned()
-                .context("未知 Agent")?;
+                .context("unknown agent")?;
             return self.followup(
                 &record,
                 content.unwrap_or(
@@ -977,8 +993,11 @@ impl Binding {
             );
         }
         let mut state = lock(&self.inner.state);
-        let agent = state.disk.agents.get_mut(id).context("未知 Agent")?;
-        ensure!(matches!(action, "cancel" | "kill"), "未知控制动作");
+        let agent = state.disk.agents.get_mut(id).context("unknown agent")?;
+        ensure!(
+            matches!(action, "cancel" | "kill"),
+            "unknown control action"
+        );
         if action == "kill" {
             agent.status = "aborted".into();
             agent.generation += 1;
@@ -1021,7 +1040,7 @@ impl Binding {
             }
             if start.elapsed() > Duration::from_secs(5) {
                 return Err(crate::cancellation::CleanupError(anyhow::anyhow!(
-                    "子 Agent 停止清理超时"
+                    "subagent stop cleanup timed out"
                 ))
                 .into());
             }
@@ -1041,7 +1060,7 @@ impl Binding {
         while lock(&self.inner.state).workers > 0 {
             ensure!(
                 start.elapsed() < Duration::from_secs(5),
-                "子 Agent 清理超时"
+                "subagent cleanup timed out"
             );
             self.sleep();
         }
@@ -1199,7 +1218,7 @@ fn worker(
             if agent.is_none() {
                 let factory = lock(&binding.inner.factory)
                     .clone()
-                    .context("Supervisor 已停止")?;
+                    .context("supervisor stopped")?;
                 agent = Some(factory(&record, binding.clone())?);
             }
             {
@@ -1208,11 +1227,11 @@ fn worker(
                     .disk
                     .runs
                     .get_mut(&work.run)
-                    .context("未知 Run")?
+                    .context("unknown run")?
                     .status = "running".into();
                 binding.inner.save(&state)?;
             }
-            let native = agent.as_mut().context("Agent 初始化失败")?;
+            let native = agent.as_mut().context("agent initialization failed")?;
             let mut sequence = 0u64;
             let mut requests = 0usize;
             let mut tokens = 0u64;
@@ -1257,7 +1276,7 @@ fn worker(
             } else {
                 ensure!(
                     !last.trim().is_empty() || native.yielded().is_some(),
-                    "子 Agent 未返回结果"
+                    "subagent returned no result"
                 );
                 json!({"ok":true,"output":native.yielded().unwrap_or(Value::String(last.clone()))})
             };
@@ -1311,7 +1330,7 @@ fn worker(
             .directory()
             .join(format!("{}.result.json", work.run));
         if let Err(error) = atomic_json(&output_path, &result) {
-            result = json!({"ok":false,"error":format!("结果文件保存失败：{error:#}")});
+            result = json!({"ok":false,"error":format!("failed to save result file: {error:#}")});
         } else if let Some(text) = result["output"]
             .as_str()
             .filter(|s| s.chars().count() > 11500)
@@ -1323,7 +1342,7 @@ fn worker(
         }
 
         if let Err(e) = binding.settle(&work.run, result, started.elapsed().as_millis() as u64) {
-            tracing::error!(error=%e,"子 Agent 结果持久化失败");
+            tracing::error!(error=%e,"subagent result persist failed");
         }
         let mut state = lock(&binding.inner.state);
         if let Some(current) = state
@@ -1427,12 +1446,12 @@ pub(crate) fn is_uri(path: &str) -> bool {
 pub(crate) fn validate_schema(schema: &Value) -> Result<()> {
     jsonschema::validator_for(schema)
         .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("无效输出 schema：{error}"))
+        .map_err(|error| anyhow::anyhow!("invalid output schema: {error}"))
 }
 pub(crate) fn validate_output(schema: &Value, data: &Value) -> Result<()> {
     let validator = jsonschema::validator_for(schema)
-        .map_err(|error| anyhow::anyhow!("无效输出 schema：{error}"))?;
+        .map_err(|error| anyhow::anyhow!("invalid output schema: {error}"))?;
     validator
         .validate(data)
-        .map_err(|error| anyhow::anyhow!("输出不符合 schema：{error}"))
+        .map_err(|error| anyhow::anyhow!("output does not match schema: {error}"))
 }

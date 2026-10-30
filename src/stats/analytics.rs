@@ -49,7 +49,7 @@ impl Pricing {
             }
             Err(_) => Self {
                 error: Some(
-                    "无法从 ~/.pp/agent/models.yml 读取价格：请检查模型配置及 cost.input、cost.cacheRead、cost.cacheWrite、cost.output 单价（USD／百万 Token）。",
+                    "Unable to read pricing from ~/.pp/agent/models.yml: check the model configuration and the cost.input, cost.cacheRead, cost.cacheWrite, and cost.output rates (USD per million tokens).",
                 ),
                 ..Self::default()
             },

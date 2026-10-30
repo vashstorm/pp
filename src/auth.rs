@@ -132,27 +132,27 @@ impl Credential {
     pub(crate) fn validate(&self, provider: Provider) -> Result<()> {
         ensure!(
             !self.access_token.trim().is_empty(),
-            "认证凭证为空，请重新登录"
+            "auth credential is empty; sign in again"
         );
         reqwest::header::HeaderValue::from_str(&format!("Bearer {}", self.access_token))
-            .map_err(|_| anyhow::anyhow!("认证凭证格式无效，请重新登录"))?;
+            .map_err(|_| anyhow::anyhow!("invalid auth credential format; sign in again"))?;
         if matches!(provider, Provider::OpenaiCodex | Provider::KimiCode) {
             ensure!(
                 self.refresh_token.as_ref().is_some_and(|v| !v.is_empty())
                     && self.expires_at.is_some(),
-                "认证凭证不完整，请重新登录"
+                "auth credential incomplete; sign in again"
             );
         }
         if provider == Provider::OpenaiCodex {
             ensure!(
                 self.account_id.as_ref().is_some_and(|id| !id.is_empty()),
-                "Codex 凭证缺少账号标识，请重新登录"
+                "Codex credential is missing the account identifier; sign in again"
             );
         }
         if let Some(endpoint) = &self.api_endpoint {
             ensure!(
                 provider == Provider::GithubCopilot && copilot_endpoint(endpoint),
-                "认证服务地址无效，请重新登录"
+                "invalid auth service endpoint; sign in again"
             );
         }
         Ok(())
@@ -215,22 +215,23 @@ pub(super) fn read_yaml<T: serde::de::DeserializeOwned>(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(None);
         }
-        Err(_) => anyhow::bail!("读取认证文件失败"),
+        Err(_) => anyhow::bail!("failed to read the auth file"),
     };
     let metadata = file
         .metadata()
-        .map_err(|_| anyhow::anyhow!("读取认证文件属性失败"))?;
+        .map_err(|_| anyhow::anyhow!("failed to read auth file metadata"))?;
     ensure!(
         metadata.is_file() && metadata.permissions().mode() & 0o077 == 0,
-        "认证文件必须为仅当前用户可读写的普通文件（chmod 600）"
+        "auth file must be a regular file readable/writable only by the current user (chmod 600)"
     );
     let mut bytes = Vec::new();
     (&mut file)
         .take(1024 * 1024 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| anyhow::anyhow!("读取认证文件失败"))?;
-    ensure!(bytes.len() <= 1024 * 1024, "认证文件过大");
-    let text = std::str::from_utf8(&bytes).map_err(|_| anyhow::anyhow!("认证文件格式无效"))?;
+        .map_err(|_| anyhow::anyhow!("failed to read the auth file"))?;
+    ensure!(bytes.len() <= 1024 * 1024, "auth file is too large");
+    let text =
+        std::str::from_utf8(&bytes).map_err(|_| anyhow::anyhow!("invalid auth file format"))?;
     crate::yaml::parse(text, kind).map(Some)
 }
 
@@ -238,19 +239,20 @@ pub(super) fn save_yaml(path: &Path, value: &impl Serialize) -> Result<()> {
     if let Ok(metadata) = fs::symlink_metadata(path) {
         ensure!(
             metadata.is_file() && !metadata.file_type().is_symlink(),
-            "认证文件必须为普通文件"
+            "auth file must be a regular file"
         );
     }
-    let parent = path.parent().context("认证文件目录无效")?;
+    let parent = path.parent().context("invalid auth file directory")?;
     // tempfile 默认以 0600 创建；原子替换前同步，失败时保留旧凭证。
     let mut temp = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|_| anyhow::anyhow!("创建认证临时文件失败"))?;
-    serde_yaml::to_writer(&mut temp, value).map_err(|_| anyhow::anyhow!("序列化认证文件失败"))?;
+        .map_err(|_| anyhow::anyhow!("failed to create auth temp file"))?;
+    serde_yaml::to_writer(&mut temp, value)
+        .map_err(|_| anyhow::anyhow!("failed to serialize auth file"))?;
     temp.flush()
         .and_then(|_| temp.as_file().sync_all())
-        .map_err(|_| anyhow::anyhow!("同步认证文件失败"))?;
+        .map_err(|_| anyhow::anyhow!("failed to sync auth file"))?;
     temp.persist(path)
-        .map_err(|_| anyhow::anyhow!("保存认证文件失败"))?;
+        .map_err(|_| anyhow::anyhow!("failed to save auth file"))?;
     Ok(())
 }
 
@@ -259,8 +261,9 @@ pub(crate) struct StoreLock(File);
 
 impl StoreLock {
     pub(crate) fn acquire(path: &Path, cancellation: &CancellationToken) -> Result<Self> {
-        let parent = path.parent().context("认证文件目录无效")?;
-        fs::create_dir_all(parent).map_err(|_| anyhow::anyhow!("创建认证目录失败"))?;
+        let parent = path.parent().context("invalid auth file directory")?;
+        fs::create_dir_all(parent)
+            .map_err(|_| anyhow::anyhow!("failed to create auth directory"))?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -269,8 +272,11 @@ impl StoreLock {
             .mode(0o600)
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(parent.join("auth.lock"))
-            .map_err(|_| anyhow::anyhow!("打开认证锁失败"))?;
-        ensure!(file.metadata()?.is_file(), "认证锁必须为普通文件");
+            .map_err(|_| anyhow::anyhow!("failed to open auth lock"))?;
+        ensure!(
+            file.metadata()?.is_file(),
+            "auth lock must be a regular file"
+        );
         let started = Instant::now();
         loop {
             if cancellation.is_cancelled() {
@@ -279,11 +285,11 @@ impl StoreLock {
             match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
                 Ok(()) => return Ok(Self(file)),
                 Err(rustix::io::Errno::INTR | rustix::io::Errno::WOULDBLOCK) => {}
-                Err(_) => anyhow::bail!("获取认证锁失败"),
+                Err(_) => anyhow::bail!("failed to acquire the auth lock"),
             }
             ensure!(
                 started.elapsed() < Duration::from_secs(30),
-                "等待认证锁超时"
+                "timed out waiting for the auth lock"
             );
             std::thread::sleep(Duration::from_millis(25));
         }
@@ -307,7 +313,8 @@ pub(crate) fn now() -> u64 {
 
 pub(super) fn generation() -> Result<String> {
     let mut bytes = [0; 16];
-    getrandom::fill(&mut bytes).map_err(|_| anyhow::anyhow!("生成授权版本失败"))?;
+    getrandom::fill(&mut bytes)
+        .map_err(|_| anyhow::anyhow!("failed to generate an auth generation"))?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 

@@ -39,7 +39,7 @@ impl App {
                         panel.busy = true;
                     }
                 } else {
-                    self.notify(Level::Error, "Role 设置服务不可用".into());
+                    self.notify(Level::Error, "Role management service unavailable".into());
                 }
             }
         }

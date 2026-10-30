@@ -37,9 +37,9 @@ impl Panel {
         let snapshot = self.snapshot();
         let agents = ordered_agents(&snapshot["agents"]);
         let mut lines = vec![Line::from(if self.roles {
-            "角色定义（项目 > 用户 > 内置）"
+            "Role definitions (Project > User > Built-in)"
         } else {
-            "↑↓ 选择 · Enter 历史 · e 追问 · c 取消 · x 停止 Agent · r 恢复 · Esc 返回"
+            "↑↓ Select · Enter History · e Follow-up · c Cancel · x Stop Agent · r Resume · Esc Back"
         })];
         if self.roles {
             if let Some(binding) = &self.binding {
@@ -57,7 +57,7 @@ impl Panel {
             }
         } else if let Some(text) = &self.message {
             lines.push(Line::from(
-                "输入补充要求；Enter 发送，Esc 返回（不会执行本地命令）",
+                "Enter follow-up input; Enter to send, Esc to go back (no local commands)",
             ));
             lines.push(Line::from(text.clone()));
         } else if self.detail {
@@ -103,9 +103,9 @@ impl Panel {
                     .map(|r| r["cost"].as_f64())
                     .collect::<Option<Vec<_>>>()
                     .map(|rates| format!("${:.6}", rates.iter().sum::<f64>()))
-                    .unwrap_or_else(|| "费用 —".into());
+                    .unwrap_or_else(|| "cost —".into());
                 lines.push(Line::from(format!(
-                    "{} {}{} {} [{}] {} · {} 次请求 · {tokens} tokens · {cost}",
+                    "{} {}{} {} [{}] {} · {} requests · {tokens} tokens · {cost}",
                     if index == self.selected { "›" } else { " " },
                     "  ".repeat(
                         agent["spec"]["depth"]
@@ -122,7 +122,9 @@ impl Panel {
                 )));
             }
             if agents.is_empty() {
-                lines.push(Line::from("暂无子 Agent。任务派发后会在这里显示。"));
+                lines.push(Line::from(
+                    "No subagents yet. Spawned agents will appear here.",
+                ));
             }
         }
         if let Some(error) = &self.error {

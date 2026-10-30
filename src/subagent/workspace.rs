@@ -50,8 +50,8 @@ impl Git<'_> {
             .stderr(Stdio::piped())
             .process_group(0)
             .spawn()?;
-        let stdout = child.stdout.take().context("Git stdout 不可用")?;
-        let stderr = child.stderr.take().context("Git stderr 不可用")?;
+        let stdout = child.stdout.take().context("Git stdout unavailable")?;
+        let stderr = child.stderr.take().context("Git stderr unavailable")?;
         let output = thread::spawn(move || {
             let mut bytes = Vec::new();
             stdout
@@ -84,13 +84,13 @@ impl Git<'_> {
         };
         let output = output
             .join()
-            .map_err(|_| anyhow::anyhow!("Git 输出读取失败"))??;
+            .map_err(|_| anyhow::anyhow!("failed to read Git output"))??;
         let errors = errors
             .join()
-            .map_err(|_| anyhow::anyhow!("Git 错误读取失败"))??;
+            .map_err(|_| anyhow::anyhow!("failed to read Git errors"))??;
         ensure!(
             status.success(),
-            "Git 隔离操作失败: {}",
+            "Git isolation operation failed: {}",
             String::from_utf8_lossy(&errors)
         );
         Ok(output)
@@ -133,11 +133,11 @@ fn prepare_at(
     token: &CancellationToken,
     depth: usize,
 ) -> Result<PathBuf> {
-    ensure!(depth <= 8, "嵌套仓库层级超过限制");
+    ensure!(depth <= 8, "nested repository depth exceeds the limit");
     let meta = metadata(dir, id);
     if meta.exists() {
         let lease: Lease = serde_json::from_slice(&fs::read(meta)?)?;
-        ensure!(lease.target.is_dir(), "隔离目录已丢失");
+        ensure!(lease.target.is_dir(), "isolation directory is missing");
         return Ok(lease.target.join(lease.relative));
     }
     let source = source.canonicalize()?;
@@ -157,12 +157,12 @@ fn prepare_at(
     if target.exists() {
         ensure!(
             !dir.join(format!("{id}.session.json")).exists(),
-            "隔离基线丢失；工作区已保留，拒绝覆盖已有子任务成果"
+            "isolation baseline lost; workspace preserved, refusing to overwrite existing subagent results"
         );
         let actual = Git { cwd: target, token }.text(&["rev-parse", "--show-toplevel"])?;
         ensure!(
             PathBuf::from(actual).canonicalize()? == target.canonicalize()?,
-            "隔离目标不是独立 worktree"
+            "isolation target is not an independent worktree"
         );
     } else {
         git.run(&[
@@ -189,7 +189,7 @@ fn prepare_at(
                 && !path
                     .components()
                     .any(|c| matches!(c, std::path::Component::ParentDir)),
-            "非法 Git 路径"
+            "invalid Git path"
         );
         let src = root.join(path);
         let dst = target.join(path);
@@ -199,7 +199,10 @@ fn prepare_at(
         match fs::symlink_metadata(&src) {
             Ok(meta) if meta.is_file() => {
                 total = total.saturating_add(meta.len());
-                ensure!(total <= 1024 * 1024 * 1024, "工作区快照超过 1 GiB");
+                ensure!(
+                    total <= 1024 * 1024 * 1024,
+                    "workspace snapshot exceeds 1 GiB"
+                );
                 if let Some(parent) = dst.parent() {
                     fs::create_dir_all(parent)?;
                 }
@@ -246,8 +249,12 @@ fn prepare_at(
             && !metadata(dir, &child_id).exists()
             && !child_target.join(".git").exists()
         {
-            fs::remove_dir(&child_target)
-                .with_context(|| format!("嵌套仓库目标不是空目录: {}", child_target.display()))?;
+            fs::remove_dir(&child_target).with_context(|| {
+                format!(
+                    "nested repository target is not an empty directory: {}",
+                    child_target.display()
+                )
+            })?;
         }
         if let Some(parent) = child_target.parent() {
             fs::create_dir_all(parent)?;
@@ -389,7 +396,7 @@ pub(crate) fn capture(
             ])
             .with_context(|| {
                 format!(
-                    "隔离修改冲突；保留补丁 {} 与工作区 {}",
+                    "isolation change conflict; keeping patch {} and workspace {}",
                     item.patch.display(),
                     item.lease.target.display()
                 )

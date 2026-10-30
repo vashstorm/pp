@@ -343,7 +343,7 @@ impl Agent {
         {
             ensure!(
                 config.thinking.supports(assignment.effort),
-                "DEFAULT role effort 不受模型支持"
+                "DEFAULT role effort is not supported by the model"
             );
             assignment.effort
         } else {
@@ -925,7 +925,7 @@ impl Agent {
         if let Some(level) = effort {
             ensure!(
                 config.thinking.supports(level),
-                "角色 effort 不受目标模型支持"
+                "role effort is not supported by the target model"
             );
         }
         let same_source = self.client.same_source(&config);
@@ -1046,7 +1046,7 @@ impl Agent {
 
     pub(crate) fn reset(&mut self) {
         if let Err(error) = self.stop_subagents() {
-            self.plan_cleanup_error = Some(format!("子 Agent 清理失败: {error:#}"));
+            self.plan_cleanup_error = Some(format!("subagent cleanup failed: {error:#}"));
             return;
         }
         self.plan_lease = None;
@@ -1468,7 +1468,9 @@ impl Agent {
             {
                 let budget = binding.request_budget();
                 if budget > 0 && request_count >= budget.saturating_mul(3) / 2 {
-                    bail!("子 Agent 请求预算已耗尽；部分成果已保存在历史中。");
+                    bail!(
+                        "subagent request budget exhausted; partial results are saved in history."
+                    );
                 }
                 if budget > 0 && request_count == budget {
                     append_developer_to(&mut self.session,"Request budget reached. Finish your current work and return the partial findings now.".into());
@@ -1569,7 +1571,9 @@ impl Agent {
                     continue;
                 }
                 if self.tools.yield_schema.is_some() && self.tools.yielded.borrow().is_none() {
-                    bail!("结构化子任务未调用 yield；结果不满足完成协议。");
+                    bail!(
+                        "structured subagent task did not call yield; result does not satisfy the completion protocol."
+                    );
                 }
                 let remind = todo::eligible(&self.workflow, &reminder, awaiting_user_answer);
                 // 原子“领取或关闭”：最终回复与新补充仅在这个短锁内仲裁。

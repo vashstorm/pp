@@ -57,7 +57,7 @@ vt100 = "0.16.2"
 [profile.dev]
 # opt-level = 2
 debug = "line-tables-only"
-#incremental = false
+incremental = false
 
 [profile.release]
 opt-level = "z"

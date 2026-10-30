@@ -33,7 +33,8 @@ impl Agent {
             .as_ref()
             .is_err_and(|error| error.is::<crate::cancellation::CleanupError>())
         {
-            self.plan_cleanup_error = Some("MCP 进程回收失败；请退出并重启 pp".into());
+            self.plan_cleanup_error =
+                Some("Failed to reap MCP processes; exit and restart pp".into());
         }
         result?;
         Ok(self.mcp_view())

@@ -256,7 +256,10 @@ impl App {
         }
         if let Some(Command::Mcp(action)) = &command {
             if !matches!(self.state, State::Ready) || self.has_pending() {
-                self.notify(Level::Error, "请先完成或取消当前任务，再管理 MCP".into());
+                self.notify(
+                    Level::Error,
+                    "Finish or cancel the current task before managing MCP".into(),
+                );
             } else if matches!(action, crate::mcp::Action::Help) {
                 self.remember_input();
                 self.clear_input();
@@ -273,7 +276,7 @@ impl App {
                 ) {
                     self.active_cancellation = Some(cancellation);
                     self.clear_input();
-                    self.secondary_status = Some("正在管理 MCP 服务…".into());
+                    self.secondary_status = Some("Managing MCP servers…".into());
                 }
             }
             return false;

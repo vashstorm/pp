@@ -475,7 +475,7 @@ fn run(args: Args) -> Result<()> {
                 } else {
                     writeln!(
                         stderr,
-                        "暂无子 Agent；角色定义见 .pp/agents 和 ~/.pp/agent/agents。"
+                        "No subagents; see .pp/agents and ~/.pp/agent/agents for role definitions."
                     )?;
                 }
             }
@@ -485,7 +485,7 @@ fn run(args: Args) -> Result<()> {
             Some(commands::Command::Roles) => {
                 writeln!(
                     stderr,
-                    "/Roles 需要交互式终端；也可在 settings.yml 配置 model_roles。"
+                    "/Roles requires an interactive terminal; configure model_roles in settings.yml instead."
                 )?;
                 continue;
             }
@@ -506,7 +506,10 @@ fn run(args: Args) -> Result<()> {
                                 writeln!(stderr, "error: {error:#}")?;
                             }
                         },
-                        Err(_) => writeln!(stderr, "MCP 管理不可用：请先修复启动配置")?,
+                        Err(_) => writeln!(
+                            stderr,
+                            "MCP management unavailable: fix the startup config first"
+                        )?,
                     }
                 }
                 continue;

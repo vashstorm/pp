@@ -35,17 +35,20 @@ impl Catalog {
         for (id, entry) in &catalog.providers {
             ensure!(
                 id == entry.auth.id() && !entry.generation.is_empty(),
-                "订阅模型来源无效"
+                "invalid subscription model source"
             );
-            ensure!(entry.protocol == entry.auth.protocol(), "订阅模型协议无效");
-            ensure!(!entry.models.is_empty(), "订阅模型列表为空");
+            ensure!(
+                entry.protocol == entry.auth.protocol(),
+                "invalid subscription model protocol"
+            );
+            ensure!(!entry.models.is_empty(), "subscription model list is empty");
             for (id, model) in &entry.models {
                 ensure!(
                     matches!(entry.auth, Provider::GithubCopilot | Provider::CommandCode)
                         || model
                             .protocol
                             .is_none_or(|protocol| protocol == entry.protocol),
-                    "订阅模型协议无效"
+                    "invalid subscription model protocol"
                 );
                 ensure!(
                     !id.trim().is_empty()
@@ -53,7 +56,7 @@ impl Catalog {
                         && !model.model.trim().is_empty()
                         && !model.model.chars().any(char::is_control)
                         && model.context_window.is_none_or(|size| size > 0),
-                    "订阅模型配置无效"
+                    "invalid subscription model configuration"
                 );
             }
         }

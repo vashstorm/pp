@@ -31,12 +31,12 @@ pub(crate) enum Action {
     Reload,
 }
 pub(crate) const SUBCOMMANDS: &[(&str, &str, bool)] = &[
-    ("list", "列出所有 MCP 服务及状态", false),
-    ("enable", "启用 MCP 服务", true),
-    ("disable", "禁用 MCP 服务", true),
-    ("reconnect", "重新连接一个 MCP 服务", true),
-    ("reload", "重新加载配置及 MCP 服务", false),
-    ("help", "显示 MCP 命令帮助", false),
+    ("list", "List all MCP servers with their status", false),
+    ("enable", "Enable an MCP server", true),
+    ("disable", "Disable an MCP server", true),
+    ("reconnect", "Reconnect an MCP server", true),
+    ("reload", "Reload config and MCP servers", false),
+    ("help", "Show MCP command help", false),
 ];
 pub(crate) fn help() -> String {
     SUBCOMMANDS
@@ -73,7 +73,7 @@ impl View {
             ));
         }
         if self.entries.is_empty() {
-            text.push_str("未配置 MCP 服务。\n");
+            text.push_str("No MCP servers configured.\n");
         }
         for diagnostic in &self.diagnostics {
             text.push_str(diagnostic);
@@ -395,9 +395,9 @@ impl Registry {
                     .directory
                     .entries
                     .get(name)
-                    .ok_or_else(|| anyhow::anyhow!("未知 MCP 服务"))?;
-                ensure!(entry.enabled, "MCP 服务已禁用，请先 enable");
-                ensure!(active, "Plan/Review 中不连接 MCP");
+                    .ok_or_else(|| anyhow::anyhow!("unknown MCP server"))?;
+                ensure!(entry.enabled, "MCP server is disabled; enable it first");
+                ensure!(active, "MCP servers do not connect in Plan/Review");
                 self.disconnect(name)?;
                 self.connect_one(name, cwd, token)?;
             }
@@ -491,7 +491,7 @@ impl Registry {
         }));
         {
             let mut tracking = self.tracking.lock().unwrap_or_else(|e| e.into_inner());
-            ensure!(!tracking.closing, "MCP 管理器正在退出");
+            ensure!(!tracking.closing, "MCP manager is shutting down");
             tracking.processes.push(process.clone());
         }
         let mut client = Client::spawn(config, cwd, process)?;
@@ -575,7 +575,7 @@ impl Registry {
             match receiver.recv_timeout(Duration::from_millis(25)) {
                 Ok(result) => return result,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(_) => bail!("MCP 代理已退出"),
+                Err(_) => bail!("MCP worker exited"),
             }
         }
     }

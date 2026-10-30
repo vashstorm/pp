@@ -136,7 +136,7 @@ fn convert_web(response: HttpResponse, raw: bool) -> Result<WebText> {
         let content = match extracted {
             Some(ref text) => text.as_str(),
             None => {
-                note = Some("正文提取失败，已回退整页 HTML 转文本。");
+                note = Some("content extraction failed; fell back to full-page HTML as text");
                 body.as_ref()
             }
         };

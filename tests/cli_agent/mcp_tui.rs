@@ -72,18 +72,18 @@ fn mcp_tui_list_is_read_only_and_core_completion_updates_runtime() {
     pty.input("\x1b");
     pty.ready();
     pty.input("/mcp disable local\r");
-    pty.text("MCP 状态已更新");
+    pty.text("MCP state updated");
     pty.input("task without MCP\r");
     let (request, body) = receive(&provider);
     assert!(!body["tools"].to_string().contains("mcp__local__"));
     // 任务运行中提交管理命令必须本地拒绝，不能变成 steering。
     pty.input("/mcp enable local\r");
-    pty.text("请先完成或取消当前任务");
+    pty.text("Finish or cancel the current task");
     final_reply(request, "task complete");
     pty.text("task complete");
     pty.ready();
     pty.input("\x01\x0b/mcp enable local\r");
-    pty.text("MCP 状态已更新");
+    pty.text("MCP state updated");
     pty.input("task with MCP\r");
     let (request, body) = receive(&provider);
     assert!(body["tools"].to_string().contains("mcp__local__echo"));

@@ -25,7 +25,7 @@ impl Panel {
             vec![
                 MenuItem {
                     value: false,
-                    label: "取消，继续规划".into(),
+                    label: "Cancel, keep planning".into(),
                     description: String::new(),
                     icon: None,
                     current: false,
@@ -33,9 +33,9 @@ impl Panel {
                 MenuItem {
                     value: true,
                     label: if reenter {
-                        "放弃修改并新建规划"
+                        "Discard changes and start a new plan"
                     } else {
-                        "放弃修改并退出"
+                        "Discard changes and exit"
                     }
                     .into(),
                     description: String::new(),
@@ -45,7 +45,7 @@ impl Panel {
             ],
             0,
         )
-        .with_hint("↑↓ 选择 · Enter 确认 · Esc 取消");
+        .with_hint("↑↓ Navigate · Enter Confirm · Esc Cancel");
         Self {
             plan_id,
             reenter,
@@ -72,16 +72,16 @@ impl Panel {
         );
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" 放弃未保存的修改？ ");
+            .title(" Discard unsaved changes? ");
         let inner = block.inner(dialog);
         frame.render_widget(block, dialog);
         let menu_height = self.menu.height(inner.height);
         let message_height = inner.height.saturating_sub(menu_height);
         frame.render_widget(
             Paragraph::new(if self.reenter {
-                "当前规划尚未保存。是否放弃这些修改并开始新的规划？已保存的文件和对话历史会保留。"
+                "The current plan has not been saved. Discard these changes and start a new plan? Saved files and conversation history are kept."
             } else {
-                "当前规划尚未保存。是否放弃这些修改并退出 Plan 模式？已保存的文件和对话历史会保留。"
+                "The current plan has not been saved. Discard these changes and exit Plan mode? Saved files and conversation history are kept."
             })
             .wrap(Wrap { trim: false }),
             Rect::new(inner.x, inner.y, inner.width, message_height),

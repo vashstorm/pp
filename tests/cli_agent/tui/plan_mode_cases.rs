@@ -207,24 +207,24 @@ fn plan_toggle_waits_for_prompt_and_preserves_drafts() {
         pty.text("HTTP status 400");
         pty.ready();
         pty.input("/plan\r");
-        pty.text("放弃未保存的修改？");
+        pty.text("Discard unsaved changes?");
         no_more(&fixture);
         // 默认 Enter 和 Esc 都保留当前规划；只有选中放弃并确认才退出。
         pty.input("\r");
         pty.wait_for("默认取消放弃", |screen| {
-            !screen.contents().contains("放弃未保存的修改？") && input_is_ready(screen)
+            !screen.contents().contains("Discard unsaved changes?") && input_is_ready(screen)
         });
         plan_wait_mode(&mut pty, "Plan");
         pty.input("/plan\r");
-        pty.text("放弃未保存的修改？");
+        pty.text("Discard unsaved changes?");
         pty.input("\x1b");
         pty.wait_for("Esc 取消放弃", |screen| {
-            !screen.contents().contains("放弃未保存的修改？") && input_is_ready(screen)
+            !screen.contents().contains("Discard unsaved changes?") && input_is_ready(screen)
         });
         plan_wait_mode(&mut pty, "Plan");
         no_more(&fixture);
         pty.input("/plan\r");
-        pty.text("放弃未保存的修改？");
+        pty.text("Discard unsaved changes?");
         pty.input("\x1b[B\r");
         plan_wait_execute(&mut pty);
         no_more(&fixture);

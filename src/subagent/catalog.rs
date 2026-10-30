@@ -45,18 +45,20 @@ pub(crate) fn discover(cwd: &Path, user: &Path, settings: &Settings) -> Result<V
         for path in files {
             let parsed = (|| -> Result<Definition> {
                 let text = fs::read_to_string(&path)?.replace("\r\n", "\n");
-                let text = text.strip_prefix("---\n").context("缺少 frontmatter")?;
-                let (meta, body) = text.split_once("\n---").context("frontmatter 未结束")?;
+                let text = text.strip_prefix("---\n").context("missing frontmatter")?;
+                let (meta, body) = text
+                    .split_once("\n---")
+                    .context("unterminated frontmatter")?;
                 let mut def: Definition = crate::yaml::parse(meta, "agent definition")?;
                 ensure!(
                     !def.name.trim().is_empty() && !def.description.trim().is_empty(),
-                    "角色名称和描述不能为空"
+                    "role name and description must not be empty"
                 );
                 ensure!(
                     def.name
                         .bytes()
                         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')),
-                    "角色名称无效"
+                    "invalid role name"
                 );
                 def.prompt = body.trim().to_owned();
                 def.source = path.display().to_string();
@@ -67,15 +69,19 @@ pub(crate) fn discover(cwd: &Path, user: &Path, settings: &Settings) -> Result<V
                     found.entry(def.name.clone()).or_insert(def);
                 }
                 Err(error) => {
-                    tracing::warn!(path = %path.display(), error = %error, "跳过无效子 Agent 定义")
+                    tracing::warn!(path = %path.display(), error = %error, "skipping invalid subagent definition")
                 }
             }
         }
     }
     for (name, description, readonly) in [
-        ("task", "执行独立的多步任务", false),
-        ("scout", "只读调查与代码定位", true),
-        ("reviewer", "只读审阅并报告具体问题", true),
+        ("task", "Run an independent multi-step task", false),
+        ("scout", "Read-only investigation and code location", true),
+        (
+            "reviewer",
+            "Read-only review reporting concrete issues",
+            true,
+        ),
     ] {
         found.entry(name.to_owned()).or_insert_with(|| Definition {
             name: name.to_owned(), description: description.to_owned(),

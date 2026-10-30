@@ -41,11 +41,11 @@ fn tui_roles_configures_model_and_effort_without_switching_current_session() {
     pty.resize(6, 30);
     pty.resize(30, 100);
     pty.input("\x1b[C\x1b[B\r");
-    pty.text("为 FAST 选择 model");
+    pty.text("Select a model for FAST");
     pty.input("two\r");
-    pty.text("选择此 Role 的独立 effort");
+    pty.text("Choose an effort for this role");
     pty.input("\x1b[B\x1b[B\x1b[B\r");
-    pty.text("Role 配置已保存");
+    pty.text("Role configuration saved");
     let database = rusqlite::Connection::open_with_flags(
         config_path(dir.path(), "agent.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,

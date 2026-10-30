@@ -34,7 +34,8 @@ impl Agent {
             Some(id) => id.to_owned(),
             None => {
                 let mut bytes = [0u8; 16];
-                getrandom::fill(&mut bytes).map_err(|_| anyhow::anyhow!("生成子会话标识失败"))?;
+                getrandom::fill(&mut bytes)
+                    .map_err(|_| anyhow::anyhow!("failed to generate a subagent session id"))?;
                 format!(
                     "pending-{}",
                     bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
@@ -64,7 +65,7 @@ impl Agent {
             let config = catalog.resolve(&record.spec.model)?;
             ensure!(
                 config.thinking.supports(record.spec.thinking),
-                "子 Agent thinking 不受目标模型支持"
+                "subagent thinking is not supported by the target model"
             );
             let mut tools = Tools::new(record.spec.cwd.clone(), config.settings.edit)?;
             tools.limits = config.settings.tool_limits();
@@ -152,7 +153,7 @@ impl Agent {
                 let saved: SavedChild = serde_json::from_slice(&std::fs::read(snapshot)?)?;
                 ensure!(
                     saved.version == 1 && saved.model == record.spec.model,
-                    "已保存子会话模型不匹配"
+                    "saved subagent session model mismatch"
                 );
                 ensure!(
                     match &saved.session {
@@ -164,7 +165,7 @@ impl Agent {
                                 && request.model.as_deref()
                                     == Some(child.current_model.model.as_str()),
                     },
-                    "子会话实际模型或协议已变化，拒绝隐式恢复"
+                    "subagent actual model or protocol changed; refusing implicit resume"
                 );
                 child.session = saved.session;
                 child.think_level = saved.thinking;
@@ -184,7 +185,7 @@ impl Agent {
             spec.cost = validator_catalog.cost(&spec.model);
             ensure!(
                 config.thinking.supports(spec.thinking),
-                "子 Agent thinking 不受目标模型支持"
+                "subagent thinking is not supported by the target model"
             );
             Ok(())
         });

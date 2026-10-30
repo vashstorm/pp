@@ -66,7 +66,7 @@ fn auth_tui_logout_refreshes_models_and_blocks_current_authorization() {
     pty.input("\x1b");
     pty.wait_for("模型面板退出后再输入任务", |screen| !screen.alternate_screen() && input_is_ready(screen));
     pty.input("authorization must block this request\r");
-    pty.text("尚未登录");
+    pty.text("is not signed in");
     assert!(!String::from_utf8_lossy(&pty.raw).contains("private-key-marker"));
     pty.input("\x03"); pty.finish();
 }

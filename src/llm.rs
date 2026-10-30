@@ -169,7 +169,7 @@ impl OpenAiClient {
         let mut store = crate::auth::Store::load(&auth.path)?;
         let credential = store.credentials.get(&auth.provider).ok_or_else(|| {
             anyhow::anyhow!(
-                "{} 尚未登录，请使用 /login 或通过 /model 选择其他模型",
+                "{} is not signed in; use /login or select another model in /model",
                 auth.provider.id()
             )
         })?;
@@ -236,7 +236,7 @@ impl OpenAiClient {
         for (name, value) in &headers {
             sdk = sdk
                 .with_header(name.clone(), value.as_bytes())
-                .map_err(|_| anyhow::anyhow!("认证请求头无效"))?;
+                .map_err(|_| anyhow::anyhow!("invalid auth request header"))?;
         }
         if self.client.config().api_base() != sdk.api_base()
             || self.client.config().headers() != sdk.headers()

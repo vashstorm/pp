@@ -10,7 +10,7 @@ pub(crate) fn parse<T: serde::de::DeserializeOwned>(text: &str, kind: &str) -> R
         && value.get("mcp_servers").is_some()
     {
         anyhow::bail!(
-            "settings.yml.mcp_servers 已移除；请手动迁移到 ~/.pp/agent/mcp.json 的 mcpServers，并删除旧字段"
+            "settings.yml.mcp_servers was removed; migrate it manually to mcpServers in ~/.pp/agent/mcp.json and delete the old field"
         );
     }
     if !value.is_mapping() {

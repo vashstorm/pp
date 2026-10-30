@@ -549,7 +549,7 @@ impl App {
                         self.queue_paused = true;
                         match self.state {
                             State::ManagingMcp => {
-                                self.secondary_status = Some("正在取消 MCP 管理操作…".into());
+                                self.secondary_status = Some("Cancelling MCP management…".into());
                             }
                             State::Compacting => {
                                 self.secondary_status = Some("Cancelling context...".into());

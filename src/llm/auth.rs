@@ -24,7 +24,7 @@ impl Http {
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|_| anyhow::anyhow!("初始化认证运行时失败"))?,
+                .map_err(|_| anyhow::anyhow!("failed to initialize the auth runtime"))?,
             client: client()?,
         })
     }
@@ -87,7 +87,7 @@ fn client() -> Result<reqwest::Client> {
         .retry(reqwest::retry::never())
         .user_agent(concat!("pp/", env!("CARGO_PKG_VERSION")))
         .build()
-        .map_err(|_| anyhow::anyhow!("初始化认证 HTTP 客户端失败"))
+        .map_err(|_| anyhow::anyhow!("failed to initialize the auth HTTP client"))
 }
 
 async fn discover_at(
@@ -126,8 +126,8 @@ fn discovered_models(
     };
     let values = values
         .as_array()
-        .ok_or_else(|| anyhow::anyhow!("模型目录格式无效"))?;
-    ensure!(values.len() <= 4096, "模型目录过大");
+        .ok_or_else(|| anyhow::anyhow!("invalid model catalog format"))?;
+    ensure!(values.len() <= 4096, "model catalog is too large");
     let mut models = std::collections::BTreeMap::new();
     for value in values {
         if value["visibility"].as_str().is_some_and(|v| v != "list")
@@ -166,7 +166,7 @@ fn discovered_models(
             value["id"].as_str()
         }
         .filter(|id| !id.trim().is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
-        .ok_or_else(|| anyhow::anyhow!("模型标识无效"))?;
+        .ok_or_else(|| anyhow::anyhow!("invalid model identifier"))?;
         // 供应商明确声明必须思考的模型无法走当前非思考 Chat 适配。
         if matches!(provider, Provider::KimiCode | Provider::Glm | Provider::Zai)
             && value["always_thinking"] == true
@@ -199,24 +199,24 @@ async fn response_json(request: reqwest::RequestBuilder) -> Result<(StatusCode, 
     let mut response = request
         .send()
         .await
-        .map_err(|_| anyhow::anyhow!("认证网络请求失败"))?;
+        .map_err(|_| anyhow::anyhow!("auth network request failed"))?;
     let status = response.status();
     let mut bytes = Vec::new();
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| anyhow::anyhow!("读取认证响应失败"))?
+        .map_err(|_| anyhow::anyhow!("failed to read the auth response"))?
     {
         ensure!(
             bytes.len().saturating_add(chunk.len()) <= 1024 * 1024,
-            "认证响应过大"
+            "auth response is too large"
         );
         bytes.extend_from_slice(&chunk);
     }
     let value = match serde_json::from_slice(&bytes) {
         Ok(value) => value,
         Err(_) if !status.is_success() => Value::Null,
-        Err(_) => anyhow::bail!("认证服务返回无效数据"),
+        Err(_) => anyhow::bail!("invalid data returned by the auth service"),
     };
     Ok((status, value))
 }
@@ -224,7 +224,7 @@ async fn response_json(request: reqwest::RequestBuilder) -> Result<(StatusCode, 
 fn success(status: StatusCode) -> Result<()> {
     ensure!(
         status.is_success(),
-        "认证服务 HTTP 状态 {}",
+        "auth service HTTP status {}",
         status.as_u16()
     );
     Ok(())
@@ -234,7 +234,7 @@ fn string<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
     value[field]
         .as_str()
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("认证响应缺少必要字段"))
+        .ok_or_else(|| anyhow::anyhow!("auth response is missing required fields"))
 }
 
 fn seconds(value: &Value, field: &str, default: u64) -> u64 {
@@ -256,7 +256,7 @@ fn oauth_credential(
         .map(str::to_owned)
         .or_else(|| previous.and_then(|old| old.refresh_token.clone()));
     let expires = seconds(value, "expires_in", 0);
-    ensure!(expires > 0, "认证响应缺少有效期限");
+    ensure!(expires > 0, "auth response is missing an expiry");
     let account_id = if provider == Provider::OpenaiCodex {
         codex_account_id(&access_token)
             .or_else(|| value["id_token"].as_str().and_then(codex_account_id))
@@ -301,7 +301,7 @@ async fn login(
     let kimi = provider == Provider::KimiCode;
     ensure!(
         kimi || provider == Provider::GithubCopilot,
-        "该供应商使用 API key 登录"
+        "this provider signs in with an API key"
     );
     let (device_url, token_url, client_id) = if kimi {
         (
@@ -372,9 +372,9 @@ async fn device_login(
                 interval = interval.saturating_add(5);
                 continue;
             }
-            Some("access_denied") => anyhow::bail!("用户拒绝了授权"),
-            Some("expired_token") => anyhow::bail!("验证码已过期，请重新登录"),
-            Some(_) => anyhow::bail!("设备授权失败，请重新登录"),
+            Some("access_denied") => anyhow::bail!("user denied the authorization"),
+            Some("expired_token") => anyhow::bail!("verification code expired; sign in again"),
+            Some(_) => anyhow::bail!("device authorization failed; sign in again"),
             None => {}
         }
         success(status)?;
@@ -400,7 +400,7 @@ async fn device_login(
             if let Some(endpoint) = user["endpoints"]["api"].as_str() {
                 ensure!(
                     crate::auth::copilot_endpoint(endpoint),
-                    "Copilot 返回了无效的 API 地址"
+                    "Copilot returned an invalid API endpoint"
                 );
                 credential.api_endpoint = Some(endpoint.trim_end_matches('/').to_owned());
             }
@@ -410,7 +410,7 @@ async fn device_login(
 }
 
 fn validate_verification_url(url: &str, provider: Provider) -> Result<()> {
-    let url = reqwest::Url::parse(url).map_err(|_| anyhow::anyhow!("认证页面地址无效"))?;
+    let url = reqwest::Url::parse(url).map_err(|_| anyhow::anyhow!("invalid auth page URL"))?;
     let allowed = match provider {
         Provider::KimiCode => "kimi.com",
         _ => "github.com",
@@ -422,16 +422,22 @@ fn validate_verification_url(url: &str, provider: Provider) -> Result<()> {
             && url
                 .host_str()
                 .is_some_and(|host| host == allowed || host.ends_with(&format!(".{allowed}"))),
-        "认证页面地址无效"
+        "invalid auth page URL"
     );
     Ok(())
 }
 
 async fn poll_wait(deadline: Instant, seconds: u64) -> Result<()> {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    ensure!(!remaining.is_zero(), "等待设备授权超时，请重新登录");
+    ensure!(
+        !remaining.is_zero(),
+        "timed out waiting for device authorization; sign in again"
+    );
     tokio::time::sleep(Duration::from_secs(seconds).min(remaining)).await;
-    ensure!(Instant::now() < deadline, "等待设备授权超时，请重新登录");
+    ensure!(
+        Instant::now() < deadline,
+        "timed out waiting for device authorization; sign in again"
+    );
     Ok(())
 }
 
@@ -503,7 +509,7 @@ pub(super) async fn refresh(provider: Provider, previous: &Credential) -> Result
     let (url, client_id) = match provider {
         Provider::OpenaiCodex => (CODEX_TOKEN, CODEX_CLIENT),
         Provider::KimiCode => (KIMI_TOKEN, KIMI_CLIENT),
-        _ => anyhow::bail!("该供应商不支持令牌刷新"),
+        _ => anyhow::bail!("this provider does not support token refresh"),
     };
     refresh_at(&client, provider, previous, url, client_id).await
 }
@@ -518,7 +524,7 @@ async fn refresh_at(
     let token = previous
         .refresh_token
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("缺少刷新令牌，请重新登录"))?;
+        .ok_or_else(|| anyhow::anyhow!("missing refresh token; sign in again"))?;
     let (status, value) = response_json(
         client
             .post(url)
@@ -536,7 +542,7 @@ async fn refresh_at(
     .await?;
     ensure!(
         status.is_success(),
-        "{} 令牌刷新失败（HTTP {}），请重新登录",
+        "{} token refresh failed (HTTP {}); sign in again",
         provider.id(),
         status.as_u16()
     );
@@ -545,7 +551,8 @@ async fn refresh_at(
 
 fn random_id() -> Result<String> {
     let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).map_err(|_| anyhow::anyhow!("生成设备标识失败"))?;
+    getrandom::fill(&mut bytes)
+        .map_err(|_| anyhow::anyhow!("failed to generate a device identifier"))?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
@@ -557,7 +564,7 @@ pub(super) fn headers(
     let mut headers = HeaderMap::new();
     let mut insert = |name: &'static str, value: &str| -> Result<()> {
         let mut value = reqwest::header::HeaderValue::from_str(value)
-            .map_err(|_| anyhow::anyhow!("认证请求头无效"))?;
+            .map_err(|_| anyhow::anyhow!("invalid auth request header"))?;
         if name == "chatgpt-account-id" {
             value.set_sensitive(true);
         }
@@ -611,12 +618,12 @@ pub(super) fn wire_request<T: serde::Serialize>(
     let Some(provider) = provider else {
         return Ok(WireRequest::Original(request));
     };
-    let mut body =
-        serde_json::to_value(request).map_err(|_| anyhow::anyhow!("序列化模型请求失败"))?;
+    let mut body = serde_json::to_value(request)
+        .map_err(|_| anyhow::anyhow!("failed to serialize the model request"))?;
     if provider == Provider::OpenaiCodex {
         let object = body
             .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("模型请求格式无效"))?;
+            .ok_or_else(|| anyhow::anyhow!("invalid model request format"))?;
         for field in [
             "background",
             "conversation",
@@ -649,13 +656,13 @@ pub(super) fn wire_request<T: serde::Serialize>(
     if matches!(provider, Provider::KimiCode | Provider::Glm | Provider::Zai) {
         let object = body
             .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("模型请求格式无效"))?;
+            .ok_or_else(|| anyhow::anyhow!("invalid model request format"))?;
         // SDK 原生历史不保存供应商专有 reasoning_content；明确使用非思考模式。
         ensure!(
             object
                 .get("reasoning_effort")
                 .is_none_or(|effort| effort == "none"),
-            "该认证来源暂不支持思考历史回放，请将 think_level 设为 none"
+            "this auth source does not support thinking history replay; set think_level to none"
         );
         object.remove("reasoning_effort");
         object.insert("thinking".into(), json!({"type":"disabled"}));

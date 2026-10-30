@@ -586,7 +586,7 @@ impl ModelCatalog {
             let config = self.resolve(model)?;
             ensure!(
                 config.thinking.supports(level),
-                "DEFAULT role effort 不受模型支持"
+                "DEFAULT role effort is not supported by the model"
             );
             Ok(())
         })?;

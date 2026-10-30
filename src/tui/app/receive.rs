@@ -360,10 +360,10 @@ impl App {
                             if let Some(panel) = &mut self.roles_panel {
                                 panel.saved();
                             }
-                            self.notify(Level::Normal, "Role 配置已保存".into());
+                            self.notify(Level::Normal, "Role configuration saved".into());
                         }
                         Err(error) => {
-                            self.notify(Level::Error, format!("Role 保存失败：{error:#}"))
+                            self.notify(Level::Error, format!("Failed to save role: {error:#}"))
                         }
                     }
                     self.state = State::Ready;
@@ -859,7 +859,7 @@ impl App {
                             } else {
                                 self.notify(
                                     Level::Normal,
-                                    "MCP 状态已更新；可用 /mcp list 查看".into(),
+                                    "MCP state updated; use /mcp list to view".into(),
                                 );
                             }
                         }

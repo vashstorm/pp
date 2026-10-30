@@ -340,9 +340,9 @@ fn plan_toggle_confirms_discarding_unsaved_revision_zero_draft() {
     assert_eq!(app.workflow.mode, WorkMode::Plan);
     assert!(app.workflow.plan.is_some());
     let screen = draw(&mut app, 100, 30).replace(' ', "");
-    assert!(screen.contains("放弃未保存的修改？"), "{screen}");
-    assert!(screen.contains("取消，继续规划"));
-    assert!(screen.contains("放弃修改并退出"));
+    assert!(screen.contains("Discardunsavedchanges?"), "{screen}");
+    assert!(screen.contains("Cancel,keepplanning"));
+    assert!(screen.contains("Discardchangesandexit"));
     assert!(app.needs_alternate());
     app.input.insert_str("保留输入");
     app.handle(key(KeyCode::Enter), &mut false);

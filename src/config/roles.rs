@@ -102,7 +102,7 @@ impl ModelCatalog {
                 let config = self.resolve(&assignment.model)?;
                 ensure!(
                     config.thinking.supports(assignment.effort),
-                    "角色 effort 不受所选模型支持"
+                    "role effort is not supported by the selected model"
                 );
             }
         }

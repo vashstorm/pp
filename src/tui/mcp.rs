@@ -68,7 +68,9 @@ impl Panel {
             }
         }
         if lines.is_empty() {
-            lines.push(Line::from(" 未配置 MCP 服务；请编辑 ~/.pp/agent/mcp.json"));
+            lines.push(Line::from(
+                " No MCP servers configured; edit ~/.pp/agent/mcp.json",
+            ));
         }
         for diagnostic in &view.diagnostics {
             lines.push(Line::styled(
