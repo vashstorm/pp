@@ -772,7 +772,6 @@ fn shortcuts_reject_busy_actions_and_ignore_repeats_and_shift_tab_in_menus() {
     app.input.insert_str("草稿🙂");
     let mut dirty = false;
     for state in [
-        State::Running,
         State::Resetting,
         State::SwitchingModel,
         State::SettingThinkLevel,

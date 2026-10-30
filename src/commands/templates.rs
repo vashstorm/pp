@@ -73,7 +73,8 @@ impl FileCommands {
                 );
                 let name = format!("/{stem}");
                 ensure!(
-                    name != "/think" && !COMMANDS.iter().any(|spec| spec.name == name),
+                    !matches!(name.as_str(), "/think" | "/models")
+                        && !COMMANDS.iter().any(|spec| spec.name == name),
                     "command name conflicts with a built-in: {name}"
                 );
                 ensure!(
@@ -400,6 +401,7 @@ mod tests {
             ("utf8.md", &[255]),
             ("help.md", b"override"),
             ("think.md", b"override"),
+            ("models.md", b"override"),
             ("bad name.md", b"invalid"),
             ("type.md", b"---\ndescription: 1\n---\nbody"),
         ]);
@@ -414,7 +416,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["/good"]
         );
-        assert_eq!(commands.diagnostics.len(), 8);
+        assert_eq!(commands.diagnostics.len(), 9);
         assert!(
             commands
                 .diagnostics

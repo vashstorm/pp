@@ -112,6 +112,10 @@ impl Panel {
         self.scroll = 0;
     }
 
+    pub(super) fn runtime_status(&mut self, message: String) {
+        self.message = message;
+    }
+
     fn role(&self) -> ModelRole {
         ModelRole::ALL[self.role_index.min(ModelRole::ALL.len() - 1)]
     }

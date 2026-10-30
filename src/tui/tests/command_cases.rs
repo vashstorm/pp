@@ -252,6 +252,8 @@ fn task_cancel_waits_for_completed_and_preserves_editable_draft() {
         Event::Key(KeyEvent::new(KeyCode::Char('p'), FUNCTION_MODIFIER)),
         &mut dirty,
     );
+    assert!(app.model_panel.is_some());
+    app.handle(key(KeyCode::Esc), &mut dirty);
     app.handle(key(KeyCode::BackTab), &mut dirty);
     assert!(requests.try_recv().is_err());
     assert_eq!(app.input.lines(), &["保留草稿"]);

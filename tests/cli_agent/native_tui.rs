@@ -1,3 +1,14 @@
+// 等待全部正文进入原生历史或当前视口，不再把一次输入回显当作历史队列清空。
+fn native_wait_complete(pty: &mut Pty, prefix: &str, count: usize) {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let history = pty.native_history().0;
+        if (0..count).all(|index| history.matches(&format!("{prefix}{index:03}")).count() == 1) { return; }
+        assert!(Instant::now() < deadline, "原生历史未完整提交：{history}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 // 原生历史必须在运行中提交；退出只收尾，不能重新输出早期会话。
 
 #[test]
@@ -16,6 +27,7 @@ fn native_tui_long_history_exits_without_replay_both_protocols() {
         pty.input("exit-barrier");
         pty.draft("exit-barrier");
         assert!(!pty.parser.screen().alternate_screen());
+        native_wait_complete(&mut pty, "native-history-", 140);
         let (history, _) = pty.native_history();
         assert_eq!(history.matches("native-history-000").count(), 1, "{history}");
         assert_eq!(history.matches("native-history-100").count(), 1, "{history}");
@@ -48,6 +60,7 @@ fn native_tui_new_clears_native_history_without_deleting_saved_session() {
     pty.ready();
     pty.input("reset-barrier");
     pty.draft("reset-barrier");
+    native_wait_complete(&mut pty, "native-old-", 80);
     assert!(pty.native_history().0.contains("native-old-000"));
     let id = saved_session_id(home.path());
     pty.input("\x01\x0b/new\r");
@@ -85,4 +98,20 @@ fn native_tui_long_partial_exit_preserves_uncommitted_rows_both_protocols() {
         stream.finish();
         no_more(&provider);
     }
+}
+
+#[test]
+fn native_tui_resize_between_batches_keeps_each_source_line_once() {
+    let provider = server();
+    let (_home, mut pty) = context_tui_start(&provider, "completion", 100_000, 80);
+    pty.input("native resize task\r");
+    let (request, _) = pty.request(&provider);
+    let answer = format!("```txt\n{}\n```", (0..160).map(|index| format!("mid-resize-{index:03} {}", "abcdefghij".repeat(6))).collect::<Vec<_>>().join("\n"));
+    final_reply(request, &answer);
+    pty.wait_for_raw(b"mid-resize-000");
+    pty.resize(30, 40);
+    native_wait_complete(&mut pty, "mid-resize-", 160);
+    pty.input("\x03");
+    pty.finish();
+    no_more(&provider);
 }

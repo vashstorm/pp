@@ -43,7 +43,7 @@ fn plan_tui_external_file_errors_never_restore_or_execute_snapshot_bytes() {
                 let text = cancel_normalize(screen);
                 text.contains("Plan")
                     && (text.contains("UTF-8")
-                        || text.contains("regularfile")
+                        || (text.contains("regular") && text.contains("file"))
                         || text.contains("Nosuchfile")
                         || text.contains("toolarge")
                         || text.contains("exceeds"))

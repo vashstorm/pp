@@ -55,16 +55,22 @@ fn tui_shortcuts_preserve_drafts_and_send_selected_effort_to_both_apis() {
         );
         pty.input("busy-中\x1b[Z");
         pty.function_key('p');
+        pty.model_search("");
+        pty.input("\x1b");
+        pty.draft("busy-中");
         pty.input("!");
         pty.draft("busy-中!");
-        pty.wait_for("快捷键在忙碌时拒绝执行", |screen| {
-            input_is_ready(screen)
-                && screen
-                    .contents()
-                    .lines()
-                    .last()
-                    .is_some_and(|line| line.contains(" xhi ·"))
-        });
+        pty.wait_for(
+            "忙碌时保持思考级别且模型面板取消后恢复草稿",
+            |screen| {
+                input_is_ready(screen)
+                    && screen
+                        .contents()
+                        .lines()
+                        .last()
+                        .is_some_and(|line| line.contains(" xhi ·"))
+            },
+        );
         pty.input("\x7f");
         pty.draft("busy-中");
         super::super::think::finish_request(request, protocol);

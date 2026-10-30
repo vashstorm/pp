@@ -91,6 +91,7 @@ impl Bootstrap {
 }
 
 pub(crate) struct Agent {
+    pub(crate) runtime_models: Option<crate::model_control::Binding>,
     pub(crate) subagent_control: std::sync::Arc<std::sync::Mutex<Option<crate::subagent::Binding>>>,
     client: OpenAiClient,
     tools: Tools,
@@ -382,6 +383,7 @@ impl Agent {
         session.set_think_level(think_level);
         Ok(Self {
             client,
+            runtime_models: None,
             subagent_control: Default::default(),
             session,
             tools,
@@ -479,6 +481,7 @@ impl Agent {
         }
         let agent = Self {
             client,
+            runtime_models: None,
             subagent_control: Default::default(),
             tools,
             session: checkpoint.session,
@@ -911,6 +914,80 @@ impl Agent {
         Ok(())
     }
 
+    pub(crate) fn model_catalog(&self) -> ModelCatalog {
+        self.catalog.clone()
+    }
+
+    pub(crate) fn apply_runtime_models(&mut self) -> Result<()> {
+        if let Some(catalog) = self
+            .runtime_models
+            .as_ref()
+            .and_then(|binding| binding.registry.catalog())
+        {
+            self.catalog = catalog;
+        }
+        let Some(target) = self
+            .runtime_models
+            .as_mut()
+            .and_then(|binding| binding.take())
+        else {
+            return Ok(());
+        };
+        let old_catalog = std::mem::replace(&mut self.catalog, (*target.catalog).clone());
+        if let Err(error) = self.switch_model_with_effort(&target.reference, target.effort) {
+            self.catalog = old_catalog;
+            let binding = self
+                .runtime_models
+                .as_ref()
+                .expect("模型绑定在应用期间保留");
+            binding.report(crate::model_control::Report::Failed {
+                agent: binding.agent.clone(),
+                revision: target.revision,
+                message: format!("{error:#}"),
+            });
+            return Ok(());
+        }
+        if let Some(supervisor) = &mut self.tools.subagent {
+            supervisor.model = self.current_model.reference.clone();
+            supervisor.thinking = self.think_level;
+            if supervisor.depth > 0 {
+                let supervisor = supervisor.clone();
+                let snapshot = supervisor
+                    .directory()
+                    .join(format!("{}.session.json", supervisor.owner));
+                if let Err(error) = self.save_child(&snapshot).and_then(|()| {
+                    supervisor.update_model(
+                        &self.current_model.reference,
+                        self.think_level,
+                        self.catalog.cost(&self.current_model.reference),
+                    )
+                }) {
+                    let binding = self
+                        .runtime_models
+                        .as_ref()
+                        .expect("模型绑定在应用期间保留");
+                    binding.report(crate::model_control::Report::Failed {
+                        agent: binding.agent.clone(),
+                        revision: target.revision,
+                        message: format!("Could not persist active model: {error:#}"),
+                    });
+                    return Err(error.context("persisting subagent model change"));
+                }
+            }
+        }
+        let binding = self
+            .runtime_models
+            .as_ref()
+            .expect("模型绑定在应用期间保留");
+        binding.report(crate::model_control::Report::Applied {
+            agent: binding.agent.clone(),
+            revision: target.revision,
+            model: self.current_model.clone(),
+            effort: self.think_level,
+        });
+        Ok(())
+    }
+
     pub(crate) fn switch_model(&mut self, reference: &str) -> Result<()> {
         self.switch_model_with_effort(reference, None)
     }
@@ -983,7 +1060,6 @@ impl Agent {
             &choice.model,
             definitions.iter().map(|tool| tool.name.clone()).collect(),
         )?;
-        self.stop_subagents()?;
         let metadata = Metadata {
             cwd: self.tools.cwd(),
             model_reference: &choice.reference,
@@ -1413,6 +1489,14 @@ impl Agent {
                 self.persist_pending_input(user.take())?;
                 return Err(Cancelled.into());
             }
+            if self
+                .runtime_models
+                .as_ref()
+                .is_some_and(|binding| binding.pending())
+            {
+                self.persist_pending_input(user.take())?;
+            }
+            self.apply_runtime_models()?;
             plan_sync::sync_plan_todos(
                 &self.tools,
                 &mut self.journal,
@@ -1507,6 +1591,7 @@ impl Agent {
             };
             self.pending_instructions = None;
             self.journal.commit((&self.session).into())?;
+            self.apply_runtime_models()?;
             if plan_dirty {
                 self.refresh_plan_progress(emit)?;
             }
@@ -1518,6 +1603,7 @@ impl Agent {
                     self.tools.yielded.borrow_mut().take();
                     while binding.pending() {
                         cancellation::check(cancellation)?;
+                        self.apply_runtime_models()?;
                         if !self.receive_subagents()? {
                             binding.sleep();
                         }
@@ -1560,6 +1646,7 @@ impl Agent {
                 {
                     while binding.pending() {
                         cancellation::check(cancellation)?;
+                        self.apply_runtime_models()?;
                         if self.receive_subagents()? {
                             break;
                         }

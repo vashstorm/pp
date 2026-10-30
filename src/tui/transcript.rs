@@ -16,7 +16,10 @@ use std::io::{self, Write};
 use std::{
     collections::VecDeque,
     ops::Range,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -34,6 +37,9 @@ struct NativeState {
     row: usize,
     retained: VecDeque<Vec<ratatui::buffer::Cell>>,
     revision: u64,
+    width: u16,
+    commit_layout: Option<Arc<EntryLayout>>,
+    commit_full_rows: bool,
 }
 
 pub(super) struct NativeBatch {
@@ -71,7 +77,7 @@ pub(super) enum EntryStatus {
 }
 
 #[derive(Clone, Copy)]
-enum Source {
+pub(super) enum Source {
     Top,
     Divider,
     Bottom,
@@ -85,7 +91,7 @@ enum Source {
     Stderr,
 }
 
-enum LayoutContent {
+pub(super) enum LayoutContent {
     Source {
         source: Source,
         range: Range<usize>,
@@ -94,9 +100,9 @@ enum LayoutContent {
     Styled(Line<'static>),
 }
 
-struct LayoutLine {
-    content: LayoutContent,
-    height: usize,
+pub(super) struct LayoutLine {
+    pub(super) content: LayoutContent,
+    pub(super) height: usize,
 }
 
 enum EntryBody {
@@ -113,13 +119,14 @@ struct AskBlock {
     previews: Vec<Vec<Option<super::markdown::MarkdownDocument>>>,
 }
 
-struct EntryLayout {
-    width: u16,
-    height: usize,
-    lines: Vec<LayoutLine>,
+pub(super) struct EntryLayout {
+    pub(super) width: u16,
+    pub(super) height: usize,
+    pub(super) lines: Vec<LayoutLine>,
 }
 
 struct TranscriptEntry {
+    render: super::render_worker::Ticket,
     kind: EntryKind,
     body: EntryBody,
     markdown_dirty: bool,
@@ -130,7 +137,7 @@ struct TranscriptEntry {
     stdout: String,
     stderr: String,
     tool: Option<String>,
-    layout: Option<EntryLayout>,
+    layout: Option<Arc<EntryLayout>>,
     expanded: bool,
     footer: String,
     started: Instant,

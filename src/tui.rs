@@ -15,6 +15,7 @@ mod notification;
 mod plan;
 mod plan_leave;
 mod plan_list;
+mod render_worker;
 mod roles;
 mod scrollback;
 mod sessions;
@@ -133,22 +134,65 @@ pub(crate) fn run(
         }
     }
     let mut workspace = WorkspaceStatus::new(cwd)?;
+    app.renderer = Some(render_worker::Worker::start().context("starting layout worker")?);
     let mut dirty = true;
     let mut generation = app.conversation.native_generation();
+    let mut last_paint = Instant::now() - Duration::from_millis(33);
     loop {
+        let input_started = Instant::now();
+        let mut input_changed = false;
+        let mut quit = false;
+        for _ in 0..64 {
+            if input_started.elapsed() >= Duration::from_millis(2)
+                || !event::poll(Duration::ZERO).context("polling terminal input")?
+            {
+                break;
+            }
+            let event = event::read().context("reading terminal input")?;
+            quit |= app.handle(event, &mut input_changed);
+            if quit {
+                break;
+            }
+        }
+        dirty |= input_changed;
         dirty |= app.receive();
+        dirty |= app
+            .renderer
+            .as_ref()
+            .is_some_and(render_worker::Worker::changed);
         dirty |= workspace.receive();
         dirty |= app.notifications.tick(Instant::now());
         dirty |= app.conversation.tick(Instant::now());
         dirty |= app.review_transcript_tick(Instant::now());
         dirty |= app.token_speed.tick(Instant::now());
-        if dirty {
+        if quit {
+            if let Some(cancellation) = &app.active_cancellation {
+                cancellation.cancel();
+            }
+            paint_surface(
+                &mut app,
+                &workspace.context,
+                &mut canvas,
+                &mut surface,
+                true,
+            )
+            .context("finishing terminal transcript")?;
+            app.shutdown_background_tasks()?;
+            app.shutdown_history();
+            surface
+                .finish(canvas.backend().buffer().area.height)
+                .context("restoring shell cursor")?;
+            drop(_guard);
+            crate::write_resume_hint(&mut io::stderr(), app.session_id.as_deref())?;
+            return Ok(());
+        }
+        if dirty && (input_changed || last_paint.elapsed() >= Duration::from_millis(33)) {
             if generation != app.conversation.native_generation() {
                 surface.reset_history();
                 generation = app.conversation.native_generation();
                 app.history_browser = false;
             }
-            paint_surface(
+            dirty = paint_surface(
                 &mut app,
                 &workspace.context,
                 &mut canvas,
@@ -156,35 +200,22 @@ pub(crate) fn run(
                 false,
             )
             .context("drawing terminal")?;
-            dirty = false;
+            last_paint = Instant::now();
         }
-        if event::poll(Duration::from_millis(50)).context("polling terminal input")? {
-            let event = event::read().context("reading terminal input")?;
-            if app.handle(event, &mut dirty) {
-                if let Some(cancellation) = &app.active_cancellation {
-                    cancellation.cancel();
-                }
-                // 在资源销毁前封存已接收内容；之后不再调用 App::draw。
-                paint_surface(
-                    &mut app,
-                    &workspace.context,
-                    &mut canvas,
-                    &mut surface,
-                    true,
-                )
-                .context("finishing terminal transcript")?;
-                app.shutdown_background_tasks()?;
-                // 关闭输入历史 worker：先取消索引扫描，再排入并 join 已投递的追加。
-                app.shutdown_history();
-                surface
-                    .finish(canvas.backend().buffer().area.height)
-                    .context("restoring shell cursor")?;
-                // 恢复终端模式后输出，避免提示与状态栏或 shell 提示符混在同一行。
-                drop(_guard);
-                crate::write_resume_hint(&mut io::stderr(), app.session_id.as_deref())?;
-                return Ok(());
-            }
-        }
+        let wait = if dirty {
+            Duration::from_millis(33)
+                .saturating_sub(last_paint.elapsed())
+                .min(Duration::from_millis(5))
+        } else if app
+            .renderer
+            .as_ref()
+            .is_some_and(render_worker::Worker::pending)
+        {
+            Duration::from_millis(5)
+        } else {
+            Duration::from_millis(10)
+        };
+        let _ = event::poll(wait).context("polling terminal input")?;
     }
 }
 
@@ -201,7 +232,7 @@ fn paint_surface(
     canvas: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
     surface: &mut surface::Surface<impl io::Write>,
     exiting: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let (width, height) = crossterm::terminal::size()?;
     let area = Rect::new(0, 0, width.max(1), height.max(1));
     if canvas.backend().buffer().area != area {
@@ -210,12 +241,20 @@ fn paint_surface(
     }
     let alternate = !exiting && app.needs_alternate();
     app.native_render = !alternate;
+    let mut backlog = false;
     if !alternate {
         let conversation_height = app.main_layout(area).conversation.height;
-        while let Some(batch) =
-            app.conversation
-                .next_native_batch(width, conversation_height, exiting)
-        {
+        loop {
+            let Some(batch) =
+                app.conversation
+                    .next_native_batch(width, conversation_height, exiting)
+            else {
+                if exiting && app.conversation.render_pending() {
+                    thread::park_timeout(Duration::from_millis(1));
+                    continue;
+                }
+                break;
+            };
             app.conversation.preview_native_batch(&batch);
             let mut rendered = None;
             canvas.draw(|frame| {
@@ -233,6 +272,10 @@ fn paint_surface(
                 .then(|| canvas.backend().cursor_position());
             surface.paint(buffer, cursor, false, &batch.rows)?;
             app.conversation.acknowledge_native_batch(batch);
+            if !exiting {
+                backlog = true;
+                break;
+            }
         }
     }
     let mut rendered = None;
@@ -250,7 +293,7 @@ fn paint_surface(
         rendered.as_ref().expect("rendered frame")
     };
     surface.paint(buffer, cursor, alternate, &[])?;
-    Ok(())
+    Ok(backlog)
 }
 
 enum WorkerCommand {
@@ -278,6 +321,7 @@ enum WorkerCommand {
     },
     Reset,
     SwitchModel(String),
+    ApplyModelTargets,
     SetThinkLevel(ThinkLevel),
     SaveDefaultThinkLevel(ThinkLevel),
     SaveDefaultModel(String),
@@ -617,6 +661,9 @@ impl EscapeTap {
 }
 
 struct App {
+    renderer: Option<render_worker::Worker>,
+    model_control: Option<crate::model_control::Service>,
+    pending_model: Option<(u64, String)>,
     auth_worker: auth::Worker,
     auth_panel: Option<auth::Panel>,
     auth_cancellation: Option<CancellationToken>,

@@ -45,7 +45,7 @@ impl App {
     }
 
     pub(in crate::tui) fn open_model_panel(&mut self, query: &str, preserve_draft: bool) {
-        if self.model_panel.is_some() || !self.shortcut_ready() {
+        if self.model_panel.is_some() || !self.model_selection_ready() {
             return;
         }
         if preserve_draft {
@@ -68,7 +68,7 @@ impl App {
         self.menu_dismissed = true;
         self.model_panel = Some(model::Panel::new(query, self.choices.len()));
         self.refresh_candidates(true);
-        if self.bootstrap.is_some() {
+        if self.bootstrap.is_some() && matches!(self.state, State::Ready) {
             self.reload_model_catalog();
         }
     }
@@ -85,14 +85,19 @@ impl App {
     pub(in crate::tui) fn apply_model_action(&mut self, action: model::Action) {
         match action {
             model::Action::Cancel => self.close_model_panel(),
-            model::Action::Select(index) if matches!(self.state, State::Ready) => {
+            model::Action::Select(index)
+                if matches!(
+                    self.state,
+                    State::Ready | State::Running | State::Cancelling
+                ) =>
+            {
                 let reference = self.choices[index].reference.clone();
                 let current = self
                     .current_model
                     .as_ref()
                     .is_some_and(|choice| choice.reference == reference);
-                if !current {
-                    self.send(WorkerCommand::SwitchModel(reference), State::SwitchingModel);
+                if !current || self.pending_model.is_some() {
+                    self.request_model_switch(reference);
                 }
                 self.close_model_panel();
             }
@@ -125,7 +130,7 @@ impl App {
     }
 
     pub(in crate::tui) fn switch_model(&mut self, reference: String) {
-        if self.send_submission(WorkerCommand::SwitchModel(reference), State::SwitchingModel) {
+        if self.request_model_switch(reference) {
             self.clear_input();
         }
     }
@@ -190,6 +195,30 @@ impl App {
         } else {
             None
         };
+        if matches!(
+            self.state,
+            State::Running | State::Cancelling | State::ReviewingPlan
+        ) {
+            match command {
+                Some(Command::Model(Some(reference))) => {
+                    self.switch_model(reference.to_owned());
+                    return false;
+                }
+                Some(Command::Model(None)) => {
+                    self.remember_input();
+                    self.clear_input();
+                    self.open_model_picker();
+                    return false;
+                }
+                Some(Command::Roles) => {
+                    self.remember_input();
+                    self.clear_input();
+                    self.open_roles();
+                    return false;
+                }
+                _ => {}
+            }
+        }
         if matches!(command, Some(Command::TaskTest)) {
             match self.task_test_prompt() {
                 Ok(expanded) => command = Some(Command::Prompt(expanded)),
@@ -421,7 +450,11 @@ impl App {
                 }
             }
             State::Ready => match command {
-                Some(Command::Roles) => self.open_roles(),
+                Some(Command::Roles) => {
+                    self.remember_input();
+                    self.clear_input();
+                    self.open_roles();
+                }
                 Some(Command::Agents | Command::Subagents) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
                 Some(Command::TaskTest) => unreachable!("converted before the state match"),

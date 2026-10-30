@@ -125,6 +125,7 @@ struct ChangeSink {
     serial: Arc<Mutex<()>>,
 }
 struct Inner {
+    runtime_models: Mutex<Option<crate::model_control::Binding>>,
     model_roles: Mutex<crate::config::ModelRoles>,
     state: Mutex<State>,
     changed: Condvar,
@@ -273,6 +274,7 @@ impl Binding {
             );
         }
         let inner = Arc::new(Inner {
+            runtime_models: Mutex::new(None),
             model_roles: Mutex::new(Default::default()),
             state: Mutex::new(State {
                 disk,
@@ -307,6 +309,31 @@ impl Binding {
     }
     pub(crate) fn plan_mode(&self) -> bool {
         self.inner.plan_mode
+    }
+    pub(crate) fn set_runtime_models(&self, binding: Option<crate::model_control::Binding>) {
+        *lock(&self.inner.runtime_models) = binding;
+    }
+    pub(crate) fn update_model(
+        &self,
+        model: &str,
+        thinking: ThinkLevel,
+        cost: Option<crate::models::ModelCost>,
+    ) -> Result<()> {
+        let mut state = lock(&self.inner.state);
+        let previous = state.disk.agents.get(&self.owner).cloned();
+        if let Some(record) = state.disk.agents.get_mut(&self.owner) {
+            record.spec.model = model.into();
+            record.spec.thinking = thinking;
+            record.spec.cost = cost;
+            record.updated_ms = now();
+        }
+        if let Err(error) = self.inner.save(&state) {
+            if let Some(previous) = previous {
+                state.disk.agents.insert(self.owner.clone(), previous);
+            }
+            return Err(error);
+        }
+        Ok(())
     }
     pub(crate) fn set_model_roles(&self, roles: crate::config::ModelRoles) {
         *lock(&self.inner.model_roles) = roles;
@@ -445,6 +472,12 @@ impl Binding {
             !batch.tasks.is_empty() && batch.tasks.len() <= 32,
             "tasks count must be in 1..=32"
         );
+        if let Some(catalog) = lock(&self.inner.runtime_models)
+            .as_ref()
+            .and_then(|r| r.registry.catalog())
+        {
+            self.set_model_roles(catalog.model_roles().clone());
+        }
         let roles = self.roles()?;
         // 整批使用同一份启用状态；旧 prompt 或手写调用也不能绕过取消选中。
         let enabled_roles = lock(&self.inner.model_roles)
@@ -807,8 +840,23 @@ impl Binding {
         )
     }
     pub(crate) fn snapshots(&self) -> Value {
+        let runtime = lock(&self.inner.runtime_models).clone();
         let state = lock(&self.inner.state);
-        json!({"agents":state.disk.agents.values().collect::<Vec<_>>(),"runs":state.disk.runs.values().collect::<Vec<_>>()})
+        let agents = state
+            .disk
+            .agents
+            .values()
+            .map(|record| {
+                let mut value = json!(record);
+                value["model_change"] = json!(runtime.as_ref().and_then(|binding| {
+                    binding
+                        .registry
+                        .describe(&record.id, record.spec.model_role)
+                }));
+                value
+            })
+            .collect::<Vec<_>>();
+        json!({"agents":agents,"runs":state.disk.runs.values().collect::<Vec<_>>()})
     }
     pub(crate) fn uri(
         &self,
@@ -1240,7 +1288,8 @@ fn worker(
                 sequence+=1;
                 match &event { AgentEvent::AssistantFinished{text}if !text.trim().is_empty()=>last=text.clone(), AgentEvent::ModelRequestStarted=>requests+=1, AgentEvent::ModelRequestFinished{usage:Some(usage),..}=>{
                     tokens+=usage.input_tokens+usage.output_tokens;
-                    cost=cost.zip(record.spec.cost).and_then(|(total,price)|{
+                    let current_price = lock(&binding.inner.state).disk.agents.get(&record.id).and_then(|r| r.spec.cost);
+                    cost=cost.zip(current_price).and_then(|(total,price)|{
                         let cached=usage.cached_tokens?;let written=usage.cache_write_tokens.unwrap_or(0);
                         let uncached=usage.input_tokens.checked_sub(cached)?.checked_sub(written)?;
                         Some(total+(uncached as f64*price.input+cached as f64*price.cache_read+if written==0{0.0}else{written as f64*price.cache_write?}+usage.output_tokens as f64*price.output)/1e6)

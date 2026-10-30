@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 mod model_role_cases;
 mod plan_model_cases;
+mod runtime_model_cases;
 mod session_task_cases;
 mod tree_todo_cases;
 mod turn_input_cases;

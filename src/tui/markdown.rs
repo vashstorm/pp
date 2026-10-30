@@ -24,6 +24,14 @@ use super::transcript_style::{ACCENT, CODE, CODE_BLOCK, DIM, LINK, MUTED, displa
 
 mod highlight;
 
+pub(super) fn release_highlight_context(id: u64) {
+    highlight::release_context(id);
+}
+
+pub(super) fn highlight_context(id: u64, epoch: u64) {
+    highlight::context(id, epoch);
+}
+
 const TAB_STOP: usize = 4;
 const CELL_MIN_WIDTH: usize = 3;
 const CELL_SEPARATOR: &str = " │ ";

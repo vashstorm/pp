@@ -51,7 +51,7 @@ Start the terminal UI even without model configuration, then use `/login` to cho
 
 `/login` opens the authorization page in your browser. ChatGPT, Copilot, and Kimi use device authorization; GLM, Z.AI, and Command Code use masked API key input. Credentials are stored in plain text in `~/.pp/agent/agent.db`, with directory mode `0700` and database file mode `0600`; no system keychain or encryption is provided. Discovered subscription models remain in `~/.pp/agent/models-sub.yml`, which keeps its existing format. Discovery failures keep the authorization and offer a retry without adding a guessed default model. Quit every running pp process before upgrading: on first start pp imports the old preference fields in `settings.yml` and `auth.yml` into `agent.db` exactly once, then removes the authorization and those fields from YAML.
 
-Use `/model` to select a model immediately. It reloads both model files; `models.yml` takes priority for identical `provider/model` references. `/logout` removes a provider's credentials from `agent.db` and its subscription models. These authorization commands require the TUI; the old `pp auth` command and `auth.json` are no longer used. Kimi and GLM currently use non-thinking mode. See [subscription authentication](docs/guide.md#订阅认证) for details.
+Use `/model` (alias `/models`) to select a model. An idle session switches immediately; a running session switches after its current response and complete tool batch have been committed. It reloads both model files; `models.yml` takes priority for identical `provider/model` references. `/logout` removes a provider's credentials from `agent.db` and its subscription models. These authorization commands require the TUI; the old `pp auth` command and `auth.json` are no longer used. Kimi and GLM currently use non-thinking mode. See [subscription authentication](docs/guide.md#订阅认证) for details.
 
 For a regular API key, use the configuration below.
 
@@ -113,11 +113,15 @@ Opening the model picker in the TUI clears the main input and focuses a separate
 
 Use `/help` for full help and `/tips` for usage tips. The following slash commands work in interactive modes; content passed through `-p` is always sent as a regular prompt.
 
+Typing, pasting, and opening the model picker remain available while the model is streaming. Markdown parsing, syntax highlighting, and text layout run on a background thread; a plain-text preview may appear briefly before the styled result. Selecting another model keeps committed context and does not cancel the current request, repeat a completed task, or restart background work. Unsupported history rejects the switch and keeps the current model.
+
+Use `/Roles` to save role-specific models and effort. Updating DEFAULT also schedules a main-session change and leaves existing subagents alone. Updating FAST, SLOW, VISION, PLAN, or REVIEW applies to subagents explicitly bound to that role at each subagent's next committed boundary, including nested agents. Existing subagents without a role keep their model. Disabling or clearing a role does not cancel or rebind existing subagents. Changes apply within this pp process; other running pp processes are not watched.
+
 `/task-test` exists only in cargo debug builds. It requires the FAST, SLOW, and REVIEW model roles to be enabled, keeps the current model, and sends one fixed read-only batch: `scout` with role `fast`, `scout` with role `slow`, and `reviewer`. It waits for all three results and never modifies repository files. Release builds reject it locally and hide it from `/help` and the `/` menu.
 
 | Command | Purpose |
 | --- | --- |
-| `/model`, `/effort` | Switch models and reasoning levels while keeping history |
+| `/model` (`/models`), `/effort` | Switch models and reasoning levels while keeping history |
 | `/init` | Create or update the current project's `AGENTS.md` |
 | `/plan [prompt]` | Toggle Plan mode standby; view the plan or send a planning task immediately; execute after approval (TUI only) |
 | `/plan-list` | Manage saved plans: preview, continue, execute, rename, delete (TUI only) |

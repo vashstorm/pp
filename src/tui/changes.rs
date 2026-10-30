@@ -44,6 +44,7 @@ pub(super) struct Panel {
     detail_offset: usize,
     detail_height: usize,
     loading: bool,
+    refresh_again: bool,
     pending: bool,
     confirmation: Option<Confirmation>,
     error: Option<String>,
@@ -63,6 +64,7 @@ impl Panel {
             detail_offset: 0,
             detail_height: 0,
             loading: true,
+            refresh_again: false,
             pending: false,
             confirmation: None,
             error: None,
@@ -91,6 +93,15 @@ impl Panel {
         self.loading = false;
         self.pending = false;
         self.confirmation = None;
+    }
+
+    pub(super) fn take_refresh(&mut self) -> bool {
+        let again = std::mem::take(&mut self.refresh_again);
+        if again {
+            self.loading = true;
+            self.error = None;
+        }
+        again
     }
 
     pub(super) fn key(&mut self, key: KeyEvent) -> Action {
@@ -124,6 +135,9 @@ impl Panel {
             return Action::Close;
         }
         if self.loading {
+            if key.code == KeyCode::Char('r') && key.kind == KeyEventKind::Press {
+                self.refresh_again = true;
+            }
             return Action::None;
         }
         match key.code {

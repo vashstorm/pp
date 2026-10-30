@@ -23,8 +23,19 @@ impl Agent {
             self.stop_subagents()?;
         }
         if let Some(binding) = &mut self.tools.subagent {
+            binding.set_runtime_models(self.runtime_models.clone());
+            if let Some(catalog) = self
+                .runtime_models
+                .as_ref()
+                .and_then(|r| r.registry.catalog())
+            {
+                binding.set_model_roles(catalog.model_roles().clone());
+            }
             if binding.depth == 0 {
-                binding.set_model_roles(self.catalog.model_roles().clone());
+                if self.runtime_models.is_none() {
+                    binding.set_model_roles(self.catalog.model_roles().clone());
+                }
+                binding.set_runtime_models(self.runtime_models.clone());
                 binding.model = self.current_model.reference.clone();
                 binding.thinking = self.think_level;
             }
@@ -46,6 +57,7 @@ impl Agent {
             return Ok(());
         };
         let catalog = self.catalog.clone();
+        let runtime_models = self.runtime_models.clone();
         let skills = self.tools.skills.clone();
         let mcp = self.tools.mcp.clone();
         let approval = self.tools.approval.clone();
@@ -62,9 +74,38 @@ impl Agent {
             .map(|p| p.content.clone())
             .unwrap_or_default();
         let factory = Arc::new(move |record: &Record, binding: Binding| -> Result<Agent> {
-            let config = catalog.resolve(&record.spec.model)?;
+            let catalog = runtime_models
+                .as_ref()
+                .and_then(|runtime| runtime.registry.catalog())
+                .unwrap_or_else(|| catalog.clone());
+            let snapshot = binding
+                .directory()
+                .join(format!("{}.session.json", record.id));
+            let saved: Option<SavedChild> = match std::fs::read(&snapshot) {
+                Ok(bytes) => Some(serde_json::from_slice(&bytes)?),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            if let Some(saved) = &saved {
+                ensure!(
+                    (1..=2).contains(&saved.version),
+                    "unsupported subagent snapshot version"
+                );
+                ensure!(
+                    saved.version == 2 || saved.model == record.spec.model,
+                    "saved subagent session model mismatch"
+                );
+            }
+            // v2 快照记录已经提交的实际模型；注册表写失败后也可据此安全恢复。
+            let actual_model = saved
+                .as_ref()
+                .map_or(record.spec.model.as_str(), |saved| saved.model.as_str());
+            let actual_thinking = saved
+                .as_ref()
+                .map_or(record.spec.thinking, |saved| saved.thinking);
+            let config = catalog.resolve(actual_model)?;
             ensure!(
-                config.thinking.supports(record.spec.thinking),
+                config.thinking.supports(actual_thinking),
                 "subagent thinking is not supported by the target model"
             );
             let mut tools = Tools::new(record.spec.cwd.clone(), config.settings.edit)?;
@@ -99,6 +140,9 @@ impl Agent {
             }
             let sessions = binding.directory().join("sessions");
             let mut child = Agent {
+                runtime_models: runtime_models
+                    .as_ref()
+                    .map(|runtime| runtime.child(record.spec.model_role, record.id.clone())),
                 subagent_control: Default::default(),
                 client: OpenAiClient::new(&config)?,
                 tools,
@@ -113,13 +157,13 @@ impl Agent {
                 last_request: None,
                 catalog: catalog.clone(),
                 current_model: ModelChoice {
-                    reference: record.spec.model.clone(),
+                    reference: actual_model.to_owned(),
                     model: config.model,
                     protocol: config.protocol,
                     thinking: config.thinking,
                     context_window: config.context_window,
                 },
-                think_level: record.spec.thinking,
+                think_level: actual_thinking,
                 base_system: format!(
                     "{}\n\nShared context:\n{}\n\nYou are subagent {}. Stay within your assignment. Return your final result to the parent. Do not modify the parent's TODO or plan.{}",
                     record.spec.prompt,
@@ -146,15 +190,7 @@ impl Agent {
                 plan_cleanup_error: None,
                 plan_lease: None,
             };
-            let snapshot = binding
-                .directory()
-                .join(format!("{}.session.json", record.id));
-            if snapshot.exists() {
-                let saved: SavedChild = serde_json::from_slice(&std::fs::read(snapshot)?)?;
-                ensure!(
-                    saved.version == 1 && saved.model == record.spec.model,
-                    "saved subagent session model mismatch"
-                );
+            if let Some(saved) = saved {
                 ensure!(
                     match &saved.session {
                         Session::Completion(request) =>
@@ -169,6 +205,19 @@ impl Agent {
                 );
                 child.session = saved.session;
                 child.think_level = saved.thinking;
+                if saved.version == 2
+                    && (saved.model != record.spec.model || saved.thinking != record.spec.thinking)
+                {
+                    binding.update_model(
+                        &saved.model,
+                        saved.thinking,
+                        catalog.cost(&saved.model),
+                    )?;
+                }
+            }
+            if let Some(binding) = &mut child.tools.subagent {
+                binding.model = child.current_model.reference.clone();
+                binding.thinking = child.think_level;
             }
             child
                 .session
@@ -180,9 +229,14 @@ impl Agent {
             Ok(child)
         });
         let validator_catalog = self.catalog.clone();
+        let validator_runtime = self.runtime_models.clone();
         let validator = Arc::new(move |spec: &mut crate::subagent::Spec| -> Result<()> {
-            let config = validator_catalog.resolve(&spec.model)?;
-            spec.cost = validator_catalog.cost(&spec.model);
+            let catalog = validator_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.registry.catalog())
+                .unwrap_or_else(|| validator_catalog.clone());
+            let config = catalog.resolve(&spec.model)?;
+            spec.cost = catalog.cost(&spec.model);
             ensure!(
                 config.thinking.supports(spec.thinking),
                 "subagent thinking is not supported by the target model"
@@ -211,6 +265,7 @@ impl Agent {
                 .collect(),
         );
         binding.set_model_roles(self.catalog.model_roles().clone());
+        binding.set_runtime_models(self.runtime_models.clone());
         binding.track_changes(
             self.tools.cwd().to_owned(),
             self.tools.changes.clone(),
@@ -249,7 +304,7 @@ impl Agent {
         crate::subagent::atomic_json(
             path,
             &SavedChild {
-                version: 1,
+                version: 2,
                 session: serde_json::from_value(serde_json::to_value(&self.session)?)?,
                 model: self.current_model.reference.clone(),
                 thinking: self.think_level,

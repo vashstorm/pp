@@ -105,7 +105,7 @@ impl Panel {
                     .map(|rates| format!("${:.6}", rates.iter().sum::<f64>()))
                     .unwrap_or_else(|| "cost —".into());
                 lines.push(Line::from(format!(
-                    "{} {}{} {} [{}] {} · {} requests · {tokens} tokens · {cost}",
+                    "{} {}{} {} [{}] {}{} · {} requests · {tokens} tokens · {cost}",
                     if index == self.selected { "›" } else { " " },
                     "  ".repeat(
                         agent["spec"]["depth"]
@@ -118,6 +118,10 @@ impl Panel {
                     agent["name"].as_str().unwrap_or(""),
                     agent["status"].as_str().unwrap_or(""),
                     agent["spec"]["model"].as_str().unwrap_or(""),
+                    agent["model_change"]
+                        .as_str()
+                        .map(|status| format!(" {status}"))
+                        .unwrap_or_default(),
                     requests
                 )));
             }

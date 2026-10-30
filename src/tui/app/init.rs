@@ -43,6 +43,9 @@ impl App {
             .diagnostics
             .clone();
         let mut app = Self {
+            renderer: None,
+            model_control: None,
+            pending_model: None,
             auth_worker: super::super::auth::Worker::new()?,
             auth_panel: None,
             auth_cancellation: None,
@@ -181,6 +184,11 @@ impl App {
         Ok(app)
     }
     pub(in crate::tui) fn install_agent(&mut self, mut agent: Agent) -> Result<()> {
+        let control = crate::model_control::Service::start(agent.model_catalog())?;
+        agent.runtime_models = Some(crate::model_control::Binding::main(
+            control.registry.clone(),
+        ));
+        self.model_control = Some(control);
         self.conversation
             .set_bash_timeout(agent.bash_timeout_seconds());
         // 取 replay、模型字段与 MCP 清理句柄必须发生在 agent move 进 worker 之前。
@@ -353,6 +361,13 @@ impl App {
                         WorkerCommand::ToggleFavoriteModel(reference) => {
                             WorkerEvent::FavoriteModelsSaved(
                                 agent.toggle_favorite_model(&reference),
+                            )
+                        }
+                        WorkerCommand::ApplyModelTargets => {
+                            let _ = agent.apply_runtime_models();
+                            WorkerEvent::ModelState(
+                                agent.current_model().clone(),
+                                agent.think_level(),
                             )
                         }
                         WorkerCommand::SwitchModel(reference) => {

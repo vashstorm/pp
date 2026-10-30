@@ -60,7 +60,7 @@ impl App {
             ""
         };
         let argument = input.split_once(char::is_whitespace);
-        if let Some(("/model", query)) = argument
+        if let Some(("/model" | "/models", query)) = argument
             && matches!(self.state, State::Ready)
         {
             let query = query.to_owned();

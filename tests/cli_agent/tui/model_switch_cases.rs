@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn tui_model_switch_busy_and_failure() {
+fn tui_model_switch_safe_boundary_and_failure() {
     let a = server();
     let b = server();
     let bad = server();
@@ -31,27 +31,21 @@ fn tui_model_switch_busy_and_failure() {
     pty.ready_model("a/primary");
     pty.input("hold busy history\r");
     let (pending, first) = pty.request(&a);
-    pty.input("/model gateway/team/secondary\r!");
-    pty.draft("/model gateway/team/secondary!");
-    pty.input("\x7f");
-    pty.draft("/model gateway/team/secondary");
-    assert!(input_is_ready(pty.parser.screen()));
+    pty.input("/models gateway/team/secondary\r");
+    pty.text("pending safe boundary");
+    pty.input("draft-中");
+    pty.draft("draft-中");
     no_more(&a);
     no_more(&b);
     no_more(&bad);
     final_reply(pending, "busy history retained");
     pty.text("busy history retained");
     pty.completed();
-    pty.ready_model("a/primary");
-    pty.model_search("gateway/team/secondary");
-    no_more(&a);
-    no_more(&b);
-
-    // Only a fresh Enter after the held request finishes may switch models.
-    pty.input("\r");
     pty.ready_model("gateway/team/secondary");
+    pty.draft("draft-中");
     no_more(&a);
     no_more(&b);
+    pty.input("\x01\x0b");
     pty.input("after busy switch\r");
     let (request, body) = pty.request(&b);
     assert_eq!(authorization(&request), "Bearer gateway-key");

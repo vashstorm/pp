@@ -181,6 +181,7 @@ impl TranscriptEntry {
 
     pub(super) fn new(kind: EntryKind, title: String, text: String, tool: Option<String>) -> Self {
         Self {
+            render: Default::default(),
             kind,
             body: EntryBody::Plain,
             markdown_dirty: matches!(kind, EntryKind::Assistant | EntryKind::Think),
@@ -431,6 +432,20 @@ impl TranscriptEntry {
     }
 
     pub(super) fn ensure_layout(&mut self, width: u16) {
+        if matches!(self.kind, EntryKind::Assistant | EntryKind::Think)
+            && crate::tui::render_worker::enabled()
+        {
+            let source = if self.text.trim().is_empty() && !self.refusal.is_empty() {
+                &self.refusal
+            } else {
+                &self.text
+            };
+            self.layout = Some(
+                self.render
+                    .layout(source, width, self.kind == EntryKind::Think),
+            );
+            return;
+        }
         if self.kind == EntryKind::Bash
             && self.status == EntryStatus::Running
             && self.footer.is_empty()
@@ -457,11 +472,11 @@ impl TranscriptEntry {
             return;
         }
         if self.hidden {
-            self.layout = Some(EntryLayout {
+            self.layout = Some(std::sync::Arc::new(EntryLayout {
                 width,
                 height: 0,
                 lines: Vec::new(),
-            });
+            }));
             return;
         }
         let mut lines = Vec::new();
@@ -844,11 +859,11 @@ impl TranscriptEntry {
             };
             height += line.height;
         }
-        self.layout = Some(EntryLayout {
+        self.layout = Some(std::sync::Arc::new(EntryLayout {
             width,
             height,
             lines,
-        });
+        }));
     }
 
     pub(super) fn read_summary(&self, show_success: bool) -> String {

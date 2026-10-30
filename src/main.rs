@@ -11,6 +11,7 @@ mod interaction;
 mod llm;
 mod logging;
 mod mcp;
+mod model_control;
 mod models;
 mod plan;
 mod project_instructions;

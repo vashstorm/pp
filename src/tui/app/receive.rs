@@ -7,6 +7,7 @@ use crate::tui::{
 impl App {
     pub(in crate::tui) fn receive(&mut self) -> bool {
         let mut changed = self.poll_history();
+        changed |= self.poll_model_control();
         changed |= self.receive_auth();
         while let Ok(reply) = self.skill_worker.replies.try_recv() {
             self.skills_pending = false;
@@ -85,7 +86,11 @@ impl App {
                 changed = true;
             }
         }
-        for _ in 0..256 {
+        let receive_started = Instant::now();
+        for _ in 0..64 {
+            if receive_started.elapsed() >= std::time::Duration::from_millis(2) {
+                break;
+            }
             let Some(events) = &self.events else {
                 break;
             };
@@ -423,6 +428,9 @@ impl App {
                     self.state = State::Ready;
                     if let Some(panel) = &mut self.changes_panel {
                         panel.set_view(view);
+                        if panel.take_refresh() {
+                            self.send(WorkerCommand::ReadChanges, State::ReadingChanges);
+                        }
                     }
                     changed = true;
                 }

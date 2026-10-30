@@ -159,7 +159,7 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
             }
             match index {
                 0 => {
-                    pty.text("**bold");
+                    pty.wait_for("思考标题样式已就绪", |screen| screen.contents().contains("**bold") && markdown_blocks_find(screen, "Reasoning title").is_some() && markdown_blocks_bold(screen, "Reasoning title"));
                     assert!(markdown_blocks_bold(pty.parser.screen(), "Reasoning title"));
                     assert!(!markdown_blocks_bold(pty.parser.screen(), "**bold"));
                 }
@@ -207,7 +207,12 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
         // 缩放触发重新布局，思考的语义样式仍应保留。
         for cols in [60, 100] {
             pty.resize(40, cols);
-            pty.text("plain thinking");
+            pty.wait_for("缩放后的思考语义排版已就绪", |screen| {
+                screen.contents().contains("plain thinking")
+                    && markdown_blocks_find(screen, "bold word").is_some()
+                    && markdown_blocks_bold(screen, "bold word")
+                    && !screen.contents().contains("```")
+            });
             let screen = pty.parser.screen();
             assert_eq!(
                 markdown_blocks_fg(screen, "plain thinking", 0),
@@ -253,6 +258,7 @@ fn transcript_blocks_markdown_streams_staged_blocks_and_styles() {
                 && s.contents().contains("**bold")
                 && !s.contents().contains(" word**")
                 && s.contents().contains("✻ Responding")
+                && markdown_blocks_bold(s, "Fixture Title")
         });
         {
             let screen = pty.parser.screen();
@@ -432,7 +438,7 @@ fn transcript_blocks_markdown_tool_output_stays_literal() {
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         markdown_blocks_final(request, protocol, "Final **styled** answer");
         pty.wait_for("字面工具输出后助手 Markdown 仍正常渲染", |s| {
-            s.contents().contains("Final") && input_is_ready(s)
+            s.contents().contains("Final") && input_is_ready(s) && markdown_blocks_find(s, "styled").is_some() && markdown_blocks_bold(s, "styled")
         });
         {
             let screen = pty.parser.screen();

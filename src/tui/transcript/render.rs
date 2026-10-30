@@ -140,14 +140,32 @@ impl Transcript {
         entries: impl Iterator<Item = &'a TranscriptEntry>,
         buffer: &mut Buffer,
         area: Rect,
+        skip: usize,
+        compact: bool,
+    ) {
+        Self::render_entry_layouts(
+            entries.map(|entry| (entry, None, false)),
+            buffer,
+            area,
+            skip,
+            compact,
+        );
+    }
+
+    pub(super) fn render_entry_layouts<'a>(
+        entries: impl Iterator<Item = (&'a TranscriptEntry, Option<&'a super::EntryLayout>, bool)>,
+        buffer: &mut Buffer,
+        area: Rect,
         mut skip: usize,
         compact: bool,
     ) {
         let inset = if compact { 0 } else { area.width.min(2) };
         let mut y = area.y;
         let end = area.bottom();
-        for entry in entries {
-            let layout = entry.layout.as_ref().expect("layout initialized");
+        for (entry, frozen, full_rows) in entries {
+            let layout = frozen
+                .or(entry.layout.as_deref())
+                .expect("layout initialized");
             if layout.height == 0 {
                 continue;
             }
@@ -164,6 +182,16 @@ impl Transcript {
                     return;
                 }
                 let height = (line.height - skip).min(usize::from(end - y)) as u16;
+                if full_rows {
+                    let line = entry.line(line);
+                    buffer.set_style(Rect::new(area.x, y, area.width, height), line.style);
+                    Paragraph::new(line)
+                        .scroll((skip as u16, 0))
+                        .render(Rect::new(area.x, y, area.width, height), buffer);
+                    y += height;
+                    skip = 0;
+                    continue;
+                }
                 let bash = entry.kind == EntryKind::Bash;
                 let read = entry.kind == EntryKind::Read;
                 let edit = entry.is_edit();

@@ -163,13 +163,16 @@ fn sqlite_default_model_picker_keeps_draft_and_persists_across_restart() {
         let cursor = restarted.parser.screen().cursor_position();
         restarted.function_key('p');
         restarted.text("fixture/primary");
-        restarted.input("\x1b[A");
+        restarted.model_search("");
+        restarted.input("fixture/primary");
+        restarted.model_search("fixture/primary");
         restarted.input("\x13");
         restarted.text("Default model saved: fixture/primary");
         restarted.ready_model("gateway/team/secondary");
         restarted.text("fixture/primary ");
+        restarted.input("\x01\x0b");
         restarted.model_search("");
-        restarted.input("\t");
+        restarted.input("\x1b[B\t");
         restarted.model_search("fixture/primary");
         restarted.input("\x1b");
         restarted.draft("草稿🙂");

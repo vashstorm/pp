@@ -55,7 +55,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/model",
         usage: "/model [provider/model]",
-        description: "List or select a configured model without clearing history",
+        description: "Select a model at the next safe boundary; /models is an alias",
     },
     CommandSpec {
         name: "/new",
@@ -221,7 +221,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
             })));
         }
         "/quit" => Command::Quit,
-        "/model" => {
+        "/model" | "/models" => {
             return Ok(Some(Command::Model(
                 (!argument.is_empty()).then_some(argument),
             )));
@@ -453,6 +453,8 @@ mod tests {
             (" /resume ", Command::Resume),
             ("/quit", Command::Quit),
             ("/model", Command::Model(None)),
+            ("/models", Command::Model(None)),
+            ("/models fixture/one", Command::Model(Some("fixture/one"))),
             (
                 " /model  gateway/team/model with spaces  ",
                 Command::Model(Some("gateway/team/model with spaces")),

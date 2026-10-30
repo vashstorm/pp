@@ -486,7 +486,12 @@ fn streaming_receive_is_bounded_and_preserves_busy_draft() {
     assert!(app.receive());
     assert!(matches!(app.state, State::Running));
     assert_eq!(app.input.lines(), &["draft-中"]);
-    assert!(app.receive());
+    let mut batches = 0;
+    while matches!(app.state, State::Running) && batches < 257 {
+        assert!(app.receive());
+        batches += 1;
+    }
+    assert!(batches >= 4);
     assert!(matches!(app.state, State::Ready));
     assert_eq!(app.input.lines(), &["draft-中"]);
     assert!(draw(&mut app, 100, 30).contains("draft-中"));

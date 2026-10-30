@@ -1,17 +1,20 @@
 //! fenced code block 的 syntect 语法高亮。
 //!
 //! 输入文本由调用方保证已 `display_text` 脱敏且 tab 已按四列展开；本模块只做
-//! token 解析、上限护栏与着色。流式期间每个 delta 都会全文重解析，因此结果
-//! 以语言 token + 完整块文本为 key 做进程级缓存，超限块直接回退纯色。
+//! token 解析、上限护栏与着色。完整行保存语法状态，追加时只重算变化的末行。
+//! 缓存按代码块隔离，采用数量与源文本字节双重上限。
 
-use std::collections::HashMap;
+use std::cell::Cell;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ratatui::style::{Color as RatatuiColor, Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Color as SyntectColor, FontStyle, Theme, ThemeItem, ThemeSettings};
-use syntect::parsing::SyntaxSet;
+use syntect::highlighting::{
+    Color as SyntectColor, FontStyle, HighlightState, Theme, ThemeItem, ThemeSettings,
+};
+use syntect::parsing::{ParseState, SyntaxSet};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::tui::transcript_style::{
@@ -22,7 +25,7 @@ use crate::tui::transcript_style::{
 /// 行数与字节上限：超出直接回退纯色，保证流式 delta 与超大块成本有界。
 const MAX_LINES: usize = 500;
 const MAX_BYTES: usize = 65_536;
-/// 进程级缓存容量，超出整体清空（简单有界，不做 LRU）。
+/// 进程级 LRU 缓存容量。
 const CACHE_CAPACITY: usize = 64;
 
 fn syntaxes() -> &'static SyntaxSet {
@@ -99,12 +102,35 @@ fn ratatui_style(style: syntect::highlighting::Style) -> Style {
 }
 
 type HighlightedLines = Vec<Vec<Span<'static>>>;
-type CacheKey = (String, String);
-type CacheMap = HashMap<CacheKey, Arc<HighlightedLines>>;
-
-fn cache() -> &'static Mutex<CacheMap> {
-    static CACHE: OnceLock<Mutex<CacheMap>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+thread_local! { static CONTEXT: Cell<(u64, u64, usize)> = const { Cell::new((0, 0, 0)) }; }
+pub(super) fn release_context(id: u64) {
+    cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|item| item.context.is_none_or(|(owner, _, _)| owner != id));
+}
+pub(super) fn context(id: u64, epoch: u64) {
+    cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|item| {
+            item.context
+                .is_none_or(|(owner, previous, _)| owner != id || previous == epoch)
+        });
+    CONTEXT.with(|c| c.set((id, epoch, 0)));
+}
+struct Cached {
+    context: Option<(u64, u64, usize)>,
+    lang: String,
+    code: String,
+    stable: usize,
+    state: (HighlightState, ParseState),
+    prefix: HighlightedLines,
+    result: Arc<HighlightedLines>,
+}
+fn cache() -> &'static Mutex<VecDeque<Cached>> {
+    static CACHE: OnceLock<Mutex<VecDeque<Cached>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
 fn grapheme_spans(
@@ -155,28 +181,77 @@ pub(super) fn highlight(lang: Option<&str>, code: &str) -> Option<Arc<Highlighte
     let syntax = syntaxes
         .find_syntax_by_token(lang)
         .or_else(|| syntaxes.find_syntax_by_token(&lang.to_lowercase()))?;
-    let key = (lang.to_string(), code.to_string());
-    if let Ok(guard) = cache().lock()
-        && let Some(hit) = guard.get(&key)
-    {
-        return Some(Arc::clone(hit));
-    }
-    let mut highlighter = HighlightLines::new(syntax, theme());
-    let mut lines: HighlightedLines = Vec::new();
-    for line in code.split('\n') {
-        // load_defaults_newlines 语法要求逐行喂入带换行的文本。
-        let mut fed = String::with_capacity(line.len() + 1);
-        fed.push_str(line);
-        fed.push('\n');
-        let regions = highlighter.highlight_line(&fed, syntaxes).ok()?;
-        lines.push(grapheme_spans(line, regions));
-    }
-    let result = Arc::new(lines);
-    if let Ok(mut guard) = cache().lock() {
-        if guard.len() >= CACHE_CAPACITY {
-            guard.clear();
+    let context = CONTEXT.with(|c| {
+        let (id, epoch, block) = c.get();
+        if id == 0 {
+            None
+        } else {
+            c.set((id, epoch, block + 1));
+            Some((id, epoch, block))
         }
-        guard.insert(key, Arc::clone(&result));
+    });
+    let cached = {
+        let mut cache = cache().lock().unwrap_or_else(|e| e.into_inner());
+        let exact = cache
+            .iter()
+            .position(|item| item.lang == lang && item.code == code && item.context == context);
+        if let Some(index) = exact {
+            let item = cache.remove(index)?;
+            let result = item.result.clone();
+            cache.push_back(item);
+            return Some(result);
+        }
+        let index = cache.iter().rposition(|item| {
+            item.lang == lang
+                && item.context == context
+                && item.stable > 0
+                && code.starts_with(&item.code[..item.stable])
+        });
+        index.and_then(|index| cache.remove(index))
+    };
+    let (mut highlighter, mut lines, offset) = match cached {
+        Some(item) => (
+            HighlightLines::from_state(theme(), item.state.0, item.state.1),
+            item.prefix,
+            item.stable,
+        ),
+        None => (HighlightLines::new(syntax, theme()), Vec::new(), 0),
+    };
+    let stable = code.rfind('\n').map_or(0, |index| index + 1);
+    for line in code[offset..stable].split_terminator('\n') {
+        let fed = format!("{line}\n");
+        lines.push(grapheme_spans(
+            line,
+            highlighter.highlight_line(&fed, syntaxes).ok()?,
+        ));
+    }
+    let state = highlighter.state();
+    let prefix = lines.clone();
+    let mut highlighter = HighlightLines::from_state(theme(), state.0.clone(), state.1.clone());
+    let last = &code[stable..];
+    let fed = format!("{last}\n");
+    lines.push(grapheme_spans(
+        last,
+        highlighter.highlight_line(&fed, syntaxes).ok()?,
+    ));
+    let result = Arc::new(lines);
+    let mut cache = cache().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(context) = context {
+        cache.retain(|item| item.context != Some(context));
+    }
+    cache.push_back(Cached {
+        context,
+        lang: lang.into(),
+        code: code.into(),
+        stable,
+        state,
+        prefix,
+        result: result.clone(),
+    });
+    while cache.len() > CACHE_CAPACITY
+        || cache.iter().map(|item| item.code.len()).sum::<usize>() > 8 * 1024 * 1024
+    {
+        cache.pop_front();
     }
     Some(result)
 }
@@ -277,6 +352,28 @@ mod tests {
         let first = highlight(Some("rust"), code).expect("rust resolves");
         let second = highlight(Some("rust"), code).expect("rust resolves");
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn incremental_highlight_matches_full_parse_for_partial_lines() {
+        let source = "/* multi\nline */\nlet x = r#\"string\nvalue\"#;\nlet 中文 = \"🙂\";\n";
+        for (index, _) in source.char_indices().skip(1) {
+            let text = &source[..index];
+            context(99881, 1);
+            let incremental = highlight(Some("rust"), text).unwrap();
+            let syntaxes = syntaxes();
+            let mut highlighter =
+                HighlightLines::new(syntaxes.find_syntax_by_token("rust").unwrap(), theme());
+            let full: HighlightedLines = text
+                .split('\n')
+                .map(|line| {
+                    let fed = format!("{line}\n");
+                    grapheme_spans(line, highlighter.highlight_line(&fed, syntaxes).unwrap())
+                })
+                .collect();
+            assert_eq!(*incremental, full, "前缀字节数：{index}");
+        }
+        context(0, 0);
     }
 
     #[test]
