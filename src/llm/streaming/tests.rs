@@ -80,6 +80,55 @@ fn arguments_delta(value: &str) -> ResponseStreamEvent {
     )
 }
 
+#[test]
+fn streaming_responses_pending_function_arguments_accept_null_only_at_start() {
+    for arguments in [
+        None,
+        Some(Value::Null),
+        Some(json!("")),
+        Some(json!("{\"questions\":")),
+    ] {
+        let mut item = json!({
+            "type":"function_call", "id":"fc", "call_id":"call", "name":"ask",
+            "status":"in_progress"
+        });
+        if let Some(arguments) = arguments {
+            item["arguments"] = arguments;
+        }
+        let raw = json!({"type":"response.output_item.added", "sequence_number":0,
+            "output_index":0, "item":item})
+        .to_string();
+        let event: ResponseEvent = serde_json::from_str(&raw).unwrap();
+        assert_eq!(event.2, raw, "诊断快照应保留原始事件");
+        let mut stream = ResponsesStream::default();
+        let mut events = Vec::new();
+        assert!(
+            stream
+                .push(event.0, &mut |event| events.push(event))
+                .unwrap()
+                .is_none()
+        );
+        assert!(events.is_empty(), "起始参数不应触发问答或错误展示");
+    }
+    for stage in ["done", "completed"] {
+        let item = json!({"type":"function_call", "id":"fc", "call_id":"call",
+            "name":"ask", "arguments":null, "status":"completed"});
+        let value = if stage == "done" {
+            json!({"type":"response.output_item.done", "sequence_number":1,
+                "output_index":0, "item":item})
+        } else {
+            json!({"type":"response.completed", "sequence_number":2, "response":{
+                "id":"fixture", "object":"response", "created_at":0, "model":"fixture",
+                "status":"completed", "output":[item]
+            }})
+        };
+        assert!(
+            serde_json::from_str::<ResponseEvent>(&value.to_string()).is_err(),
+            "完成事件仍须校验参数类型"
+        );
+    }
+}
+
 fn capture(target: &mut Vec<(String, bool)>) -> impl FnMut(AgentEvent) + '_ {
     |event| {
         if let AgentEvent::AssistantDelta { text, refusal } = event {

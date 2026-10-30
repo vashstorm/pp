@@ -359,6 +359,69 @@ fn ask_provider_reply(request: Request, protocol: &str, id: &str, arguments: &st
     stream.finish();
 }
 
+#[test]
+fn ask_tui_streaming_null_placeholder_waits_for_complete_arguments_and_response() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let mut pty = ask_tui_start(&server, home.path(), project.path(), "response");
+    pty.ready();
+    pty.input("stream ask slowly\r");
+    let (request, _) = pty.request_at(&server, "/v1/responses");
+    let arguments = ask_single_arguments().to_string();
+    let split = arguments.len() / 2;
+    let call = ask_call_raw("response", "slow-ask", &arguments);
+    let mut added = call.clone();
+    added["status"] = json!("in_progress");
+    added["arguments"] = Value::Null;
+    let mut stream = SseReply::new(request);
+    stream.event(json!({"type":"response.output_item.added", "sequence_number":0,
+        "output_index":1, "item":added}));
+    stream.event(json!({"type":"response.function_call_arguments.delta", "sequence_number":1,
+        "item_id":call["id"], "output_index":1, "delta":&arguments[..split]}));
+    // 正文分片是接收栅栏，证明前面的起始项和半截参数已被消费；不靠 sleep 猜时序。
+    stream.event(json!({"type":"response.output_text.delta", "sequence_number":2,
+        "item_id":"msg-stream", "output_index":0, "content_index":0,
+        "delta":"ask-partial-received"}));
+    pty.text("ask-partial-received");
+    assert!(!pty.parser.screen().contents().contains("╭ Ask"));
+    assert!(!pty.parser.screen().contents().contains("invalid"));
+    no_more(&server);
+
+    stream.event(json!({"type":"response.function_call_arguments.delta", "sequence_number":3,
+        "item_id":call["id"], "output_index":1, "delta":&arguments[split..]}));
+    stream.event(json!({"type":"response.function_call_arguments.done", "sequence_number":4,
+        "item_id":call["id"], "output_index":1, "arguments":arguments}));
+    stream.event(json!({"type":"response.output_item.done", "sequence_number":5,
+        "output_index":1, "item":call}));
+    stream.event(json!({"type":"response.output_text.delta", "sequence_number":6,
+        "item_id":"msg-stream", "output_index":0, "content_index":0,
+        "delta":" ask-json-received"}));
+    pty.text("ask-json-received");
+    assert!(!pty.parser.screen().contents().contains("╭ Ask"),
+        "参数完整后也须等整轮完成才执行 ask");
+    no_more(&server);
+
+    let message = response_message("msg-stream",
+        json!([response_text("ask-partial-received ask-json-received")]));
+    stream.event(json!({"type":"response.completed", "sequence_number":7,
+        "response":response_body(json!([message, call]))}));
+    stream.finish();
+    ask_wait_panel(&mut pty, "Which database should the project use?");
+    pty.input("\r");
+    let (request, body) = pty.request_at(&server, "/v1/responses");
+    let outputs = cancel_tool_outputs(&body, "response");
+    assert_eq!(outputs, vec![("slow-ask".into(), json!({"ok":true,"answers":[{
+        "id":"storage", "selected_options":["SQLite"], "custom_input":null
+    }]}))]);
+    ask_final_reply(request, "response", "slow ask done");
+    pty.text("slow ask done");
+    pty.ready();
+    pty.input("\x03");
+    pty.finish();
+    no_more(&server);
+}
+
 fn ask_final_reply(request: Request, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);

@@ -617,7 +617,7 @@ fn streaming_responses_annotations_default_only_when_missing() {
 fn streaming_responses_function_arguments_invalid_or_missing_final_still_fail() {
     for stage in ["added", "done", "completed"] {
         for arguments in [None, Some(Value::Null), Some(json!({})), Some(json!(7))] {
-            if stage == "added" && arguments.is_none() {
+            if stage == "added" && arguments.as_ref().is_none_or(Value::is_null) {
                 continue;
             }
             let server = server();

@@ -63,7 +63,10 @@ impl<'de> Deserialize<'de> for ResponseEvent {
             Err(error)
                 if error.is_data()
                     && (error.to_string().starts_with("missing field `annotations`")
-                        || error.to_string().starts_with("missing field `arguments`")) => {}
+                        || error.to_string().starts_with("missing field `arguments`")
+                        || error
+                            .to_string()
+                            .starts_with("invalid type: null, expected a string")) => {}
             Err(error) => return Err(D::Error::custom(error)),
         }
         let mut value: serde_json::Value =
@@ -74,10 +77,14 @@ impl<'de> Deserialize<'de> for ResponseEvent {
             && item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
             && let Some(object) = item.as_object_mut()
         {
-            // 起始事件的参数可由后续分片提供；done/completed 仍须带完整参数。
-            object
+            // 起始参数缺失或为 null 都表示尚未传输；只归一化起始占位值，
+            // 不修补参数正文，done/completed 仍须带完整的字符串参数。
+            let arguments = object
                 .entry("arguments")
                 .or_insert_with(|| serde_json::Value::String(String::new()));
+            if arguments.is_null() {
+                *arguments = serde_json::Value::String(String::new());
+            }
         }
         if let Some(part) = value.get_mut("part") {
             default_output_text_annotations(part);
