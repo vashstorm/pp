@@ -566,6 +566,11 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                 );
                 prefix.append(&mut rows);
                 rows = prefix;
+            } else if !expanded && view.running {
+                // 运行时固定正文窗口并预留提示行，新内容从底部进入，避免边框随输出增长移动。
+                let mut window = vec![Line::styled("", style); limit + 1 - total];
+                window.append(&mut rows);
+                rows = window;
             }
             rows
         }
@@ -1247,6 +1252,55 @@ mod tests {
             let tabs = output(name, "\t\t\t\t\t中😀 e\u{301}", true, false, 8);
             assert_eq!(tabs.lines().count(), 1);
             assert!(Line::raw(tabs).width() <= 8);
+        }
+    }
+
+    #[test]
+    fn bash_running_window_scrolls_without_growing_and_expansion_keeps_all_output() {
+        for (terminal_rows, limit) in [(24, 6), (30, 10), (80, 10)] {
+            let content = (0..24)
+                .map(|i| format!("output-{i:02}\n"))
+                .collect::<Vec<_>>();
+            let mut accumulated = String::new();
+            for count in 0..=content.len() {
+                if count > 0 {
+                    accumulated.push_str(&content[count - 1]);
+                }
+                let view = |running, expanded| View {
+                    name: "bash",
+                    text: &accumulated,
+                    arguments: &Value::Null,
+                    result: None,
+                    running,
+                    failed: false,
+                    expanded,
+                    instruction_read: false,
+                    context: Context {
+                        terminal_rows,
+                        ..Context::default()
+                    },
+                };
+                let rows = body(view(true, false), 100, Style::default());
+                assert_eq!(rows.len(), limit + 1);
+                if count > 0 {
+                    assert_eq!(
+                        rows.last().unwrap().to_string(),
+                        format!("output-{:02}", count - 1)
+                    );
+                }
+                let shown = text(rows);
+                for index in 0..count {
+                    assert_eq!(
+                        shown.contains(&format!("output-{index:02}")),
+                        index >= count.saturating_sub(limit),
+                    );
+                }
+                assert_eq!(body(view(true, true), 100, Style::default()).len(), count);
+                assert_eq!(
+                    body(view(false, false), 100, Style::default()).len(),
+                    count.min(limit) + usize::from(count > limit),
+                );
+            }
         }
     }
 

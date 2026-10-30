@@ -67,6 +67,80 @@ fn bang_shell_wait_done(pty: &mut Pty) {
 }
 
 #[test]
+fn bash_running_output_scrolls_inside_fixed_window_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let provider = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        // 文件门闩由屏幕断言后显式放行，轮询间隔不用于推测输出或绘制阶段。
+        std::fs::write(project.path().join("scroll-output.sh"), r#"
+for i in {0..2}; do printf 'scroll-line-%02d\n' "$i"; done
+while [[ ! -e scroll-next ]]; do sleep 0.01; done
+for i in {3..15}; do printf 'scroll-line-%02d\n' "$i"; done
+while [[ ! -e scroll-finish ]]; do sleep 0.01; done
+"#).unwrap();
+        let mut pty = ask_tui_start(&provider, home.path(), project.path(), protocol);
+        pty.input("fixed bash output\r");
+        let (request, _) = pty.request_at(&provider, api_path(protocol));
+        pty.input("保留输入草稿");
+        pty.draft("保留输入草稿");
+        let args = json!({"command":"bash scroll-output.sh"});
+        let tool = if protocol == "completion" {
+            call("scroll", "bash", args)
+        } else {
+            response_call("scroll", "bash", args)
+        };
+        ask_reply_calls(request, protocol, json!([tool]));
+        pty.wait_for("初始输出与运行边框已绘制", |screen| {
+            let text = screen.contents();
+            text.contains("scroll-line-02") && text.contains("Elapsed:")
+        });
+        let row_of = |screen: &vt100::Screen, needle: &str| {
+            screen.contents().lines().position(|line| line.contains(needle)).unwrap()
+        };
+        let anchors = ["$ bash scroll-output.sh", "Output", "scroll-line-02", "Elapsed:"]
+            .map(|needle| row_of(pty.parser.screen(), needle));
+        assert!(!pty.parser.screen().alternate_screen());
+        assert_eq!(anchors[3] - anchors[1], 12, "10 行正文及一行提示");
+
+        std::fs::write(project.path().join("scroll-next"), "").unwrap();
+        pty.wait_for("固定窗口自动移出旧行并显示最新行", |screen| {
+            let text = screen.contents();
+            text.contains("scroll-line-15") && !text.contains("scroll-line-02")
+        });
+        let screen = pty.parser.screen();
+        let text = screen.contents();
+        assert!(text.contains("scroll-line-06") && !text.contains("scroll-line-05"), "{text}");
+        assert!(text.contains("6 earlier lines, showing 10 of 16"), "{text}");
+        for (needle, row) in ["$ bash scroll-output.sh", "Output", "scroll-line-15", "Elapsed:"]
+            .into_iter().zip(anchors)
+        {
+            assert_eq!(row_of(screen, needle), row, "{protocol}: {needle}\n{text}");
+        }
+        assert!(!screen.alternate_screen());
+        pty.draft("保留输入草稿");
+
+        std::fs::write(project.path().join("scroll-finish"), "").unwrap();
+        let (request, body) = pty.request_at(&provider, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        assert_eq!(outputs.len(), 1);
+        let stdout = outputs[0].1["stdout"].as_str().unwrap();
+        assert!(stdout.contains("scroll-line-00") && stdout.contains("scroll-line-15"));
+        ask_final_reply(request, protocol, "fixed output done");
+        pty.text("fixed output done");
+        pty.ready();
+        pty.input("\x0f");
+        pty.wait_for("展开仍能查看滚出窗口的原始输出", |screen| {
+            screen.contents().contains("scroll-line-00")
+        });
+        pty.draft("保留输入草稿");
+        pty.input("\x03");
+        pty.finish();
+        no_more(&provider);
+    }
+}
+
+#[test]
 fn bang_shell_tui_output_and_history() {
     for protocol in ["completion", "response"] {
         let server = server();
