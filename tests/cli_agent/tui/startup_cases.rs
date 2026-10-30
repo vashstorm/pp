@@ -347,8 +347,22 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     .enumerate()
     {
         let row = 12 + row as u16;
-        assert_colored_tip_key(screen, row, 12..48, left, vt100::Color::Rgb(122, 162, 247));
-        assert_colored_tip_key(screen, row, 52..88, right, vt100::Color::Rgb(122, 162, 247));
+        assert_colored_tip_key(
+            screen,
+            row,
+            12..48,
+            left,
+            vt100::Color::Rgb(122, 162, 247),
+            12,
+        );
+        assert_colored_tip_key(
+            screen,
+            row,
+            52..88,
+            right,
+            vt100::Color::Rgb(122, 162, 247),
+            12,
+        );
     }
     let context_start = lines[26].find(" Ctx ").expect("用量显示在输入栏上沿");
     assert!(!lines[26][context_start..].contains('/'));
@@ -417,6 +431,7 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
             2..58,
             key,
             vt100::Color::Rgb(122, 162, 247),
+            12,
         );
     }
     pty.resize(30, 38);
@@ -485,6 +500,158 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     no_more(&server);
 }
 
+const TIPS_ACCENT: vt100::Color = vt100::Color::Rgb(127, 166, 106);
+
+// `/tips` 命令组等于命令注册表的可见项，按用户看到的键名忽略大小写排序。
+const TIPS_COMMANDS: &[&str] = &[
+    "/agents",
+    "/changes",
+    "/compact",
+    "/effort",
+    "/help",
+    "/init",
+    "/login",
+    "/logout",
+    "/mcp",
+    "/model",
+    "/new",
+    "/plan",
+    "/plan-list",
+    "/quit",
+    "/resume",
+    "/Roles",
+    "/skills",
+    "/subagents",
+    "/task-test",
+    "/tips",
+    "/tree",
+];
+
+// 快捷键组按显示键名递增；`⌥` 等非 ASCII 键名排在 ASCII 之后，两个 `Ctrl + S`
+// 分别是模型与思考档位的默认值保存。
+fn tips_shortcuts() -> Vec<&'static str> {
+    if cfg!(target_os = "macos") {
+        vec![
+            "Ctrl + A",
+            "Ctrl + C",
+            "Ctrl + E",
+            "Ctrl + F",
+            "Ctrl + J",
+            "Ctrl + K",
+            "Ctrl + O",
+            "Ctrl + S",
+            "Enter",
+            "Esc",
+            "Esc Esc",
+            "F1",
+            "PgUp/PgDn",
+            "Shift + Tab",
+            "Tab",
+            "↑ / ↓",
+            "⌥ + Enter",
+            "⌥ + P",
+            "⌥ + PgUp/PgDn",
+            "⌥ + Q",
+            "⌥ + R",
+            "⌥ + S",
+            "⌥ + T",
+        ]
+    } else {
+        vec![
+            "Alt + Enter",
+            "Ctrl + A",
+            "Ctrl + C",
+            "Ctrl + E",
+            "Ctrl + F",
+            "Ctrl + J",
+            "Ctrl + K",
+            "Ctrl + O",
+            "Ctrl + P",
+            "Ctrl + PgUp/PgDn",
+            "Ctrl + Q",
+            "Ctrl + R",
+            "Ctrl + S",
+            "Ctrl + S",
+            "Ctrl + T",
+            "Enter",
+            "Esc",
+            "Esc Esc",
+            "F1",
+            "PgUp/PgDn",
+            "Shift + Tab",
+            "Tab",
+            "↑ / ↓",
+        ]
+    }
+}
+
+fn tips_commands() -> Vec<&'static str> {
+    TIPS_COMMANDS
+        .iter()
+        .copied()
+        .filter(|label| cfg!(debug_assertions) || *label != "/task-test")
+        .collect()
+}
+
+// 键名对齐宽度：最长可见键名，下限 12 列。
+fn tips_key_width() -> u16 {
+    let widest = tips_commands()
+        .into_iter()
+        .chain(tips_shortcuts())
+        .map(|label| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    u16::try_from(widest.max(12)).unwrap()
+}
+
+// 双列时右列的屏幕起始列：左侧两列边框，左列宽 `(正文宽 - 4) / 2`，列间四列空白。
+fn tips_right_column(cols: u16) -> u16 {
+    2 + (cols - 2 - 4) / 2 + 4
+}
+
+// 逐行读取指定键名列的键名，跳过标题行与空白行。
+fn tips_visible_keys(screen: &vt100::Screen, column: u16, key_width: u16) -> Vec<String> {
+    (0..screen.size().0)
+        .filter(|&row| {
+            screen
+                .cell(row, 0)
+                .is_some_and(|cell| cell.contents() == "│")
+        })
+        .filter_map(|row| {
+            let key = tip_columns(screen, row, column..column + key_width);
+            let key = key.trim().to_owned();
+            (!key.is_empty() && !matches!(key.as_str(), "Tips:" | "Commands" | "Shortcuts"))
+                .then_some(key)
+        })
+        .collect()
+}
+
+fn tips_key_row(screen: &vt100::Screen, column: u16, key_width: u16, label: &str) -> u16 {
+    (0..screen.size().0)
+        .find(|&row| {
+            screen
+                .cell(row, 0)
+                .is_some_and(|cell| cell.contents() == "│")
+                && tip_columns(screen, row, column..column + key_width).trim() == label
+        })
+        .unwrap_or_else(|| panic!("missing tips key {label}: {}", screen.contents()))
+}
+
+fn assert_tips_title(screen: &vt100::Screen, key_width: u16, title: &str, bold: bool) {
+    let row = tips_key_row(screen, 2, key_width, title);
+    for (offset, character) in title.chars().enumerate() {
+        let col = 2 + u16::try_from(offset).unwrap();
+        let cell = screen.cell(row, col).unwrap();
+        assert_eq!(
+            cell.contents(),
+            character.to_string(),
+            "row {row}, col {col}"
+        );
+        assert_eq!(cell.fgcolor(), TIPS_ACCENT, "row {row}, col {col}");
+        assert_eq!(cell.bold(), bold, "row {row}, col {col}");
+    }
+}
+
 #[test]
 fn tui_tips_keeps_all_entries_and_leaves_active_jsonl_unchanged() {
     for protocol in ["completion", "response"] {
@@ -494,91 +661,119 @@ fn tui_tips_keeps_all_entries_and_leaves_active_jsonl_unchanged() {
         let startup = pty.parser.screen().contents();
         assert!(!startup.contains("/compact"));
         assert!(!startup.contains("/skills"));
-        let tips = [
-            "/help list commands and usage",
-            "Esc cancel the running task",
-            "/model switch model, keep chat",
-            "/new clear chat, keep model",
-            "/resume reopen a saved session",
-            "/plan plan, then approve edits",
-            "/compact summarize older context",
-            "/tree browse & rewind history",
-            "/effort set model thinking level",
-            "/init create/update AGENTS.md",
-            "/skills enable or disable skills",
-            "Shift + Tab cycle thinking levels",
-            if cfg!(target_os = "macos") {
-                "⌥ + P open the model picker"
-            } else {
-                "Ctrl + P open the model picker"
-            },
-            "F1 show commands and usage",
-            "Ctrl + J insert a newline",
-            "Ctrl + C quit pp",
-        ];
-        let model_key = if cfg!(target_os = "macos") {
-            "⌥ + P"
-        } else {
-            "Ctrl + P"
-        };
-        let shortcut_keys = [
-            (4, 12, "Shift + Tab"),
-            (5, 13, model_key),
-            (7, 15, "Ctrl + J"),
-            (8, 16, "Ctrl + C"),
-        ];
+        let commands = tips_commands();
+        let shortcuts = tips_shortcuts();
+        let key_width = tips_key_width();
+        let key_field = key_width + 1;
+        // 说明宽度预算为 20 列（见 `src/tips.rs`），颜色断言只需覆盖该区域。
+        let span = key_field + 20;
+        // 完整清单比首页精选长，先加高终端让两组整体留在可视区。
+        pty.resize(60, 100);
         pty.input("/tips\r");
         pty.wait_for("本地提示展示完成", |screen| {
             let text = screen.contents();
-            let lines = text
-                .lines()
-                .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
-                .collect::<Vec<_>>();
-            !text.contains("▄▄▄██▀▀██")
-                && tips
-                    .iter()
-                    .all(|tip| lines.iter().any(|line| line.contains(tip)))
+            ["Tips:", "Commands", "Shortcuts", "/agents", "/tree"]
+                .into_iter()
+                .all(|expected| text.contains(expected))
         });
         let screen = pty.parser.screen();
+        assert_tips_title(screen, key_width, "Tips:", false);
+        assert_tips_title(screen, key_width, "Commands", true);
+        assert_tips_title(screen, key_width, "Shortcuts", true);
+        assert_colored_tip_key(
+            screen,
+            tips_key_row(screen, 2, key_width, "/agents"),
+            2..2 + span,
+            "/agents",
+            TIPS_ACCENT,
+            key_field,
+        );
+        // 100 列：正文 98 列，两个分组各自并成两列，左列在前半、右列在后半。
+        let rows = commands.len().div_ceil(2);
+        let shortcut_rows = shortcuts.len().div_ceil(2);
+        let expected_left: Vec<String> = commands[..rows]
+            .iter()
+            .chain(&shortcuts[..shortcut_rows])
+            .map(|label| (*label).to_owned())
+            .collect();
+        let expected_right: Vec<String> = commands[rows..]
+            .iter()
+            .chain(&shortcuts[shortcut_rows..])
+            .map(|label| (*label).to_owned())
+            .collect();
+        let wide = tips_right_column(100);
+        assert_eq!(tips_visible_keys(screen, 2, key_width), expected_left);
+        assert_eq!(tips_visible_keys(screen, wide, key_width), expected_right);
         assert_eq!(
-            screen.cell(1, 2).unwrap().fgcolor(),
-            vt100::Color::Rgb(127, 166, 106)
+            tips_key_row(screen, 2, key_width, "/agents"),
+            tips_key_row(screen, wide, key_width, commands[rows]),
+            "同一物理行同时显示左右两列"
         );
-        assert!(screen.cell(1, 2).unwrap().bold());
-        assert_eq!(screen.cell(1, 14).unwrap().fgcolor(), vt100::Color::Idx(7));
-        for (wide_row, _, key) in shortcut_keys {
-            // Transcript content is 98 columns wide, with its own two-column prefix.
-            assert_tip_key(screen, wide_row, 53..100, key);
-        }
-        assert!(
-            screen
-                .contents()
-                .lines()
-                .nth(1)
-                .unwrap()
-                .contains("/effort     ")
+        assert_colored_tip_key(
+            screen,
+            tips_key_row(screen, wide, key_width, commands[rows]),
+            wide..wide + span,
+            commands[rows],
+            TIPS_ACCENT,
+            key_field,
         );
-        pty.resize(30, 60);
-        pty.wait_for("本地提示随窗口切换为完整单列", |screen| {
-            let text = screen.contents();
-            let lines = text
-                .lines()
-                .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
-                .collect::<Vec<_>>();
-            [(1, "/help"), (8, "/tree"), (16, "Ctrl + C")]
-                .into_iter()
-                .all(|(row, key)| {
-                    text.lines()
-                        .nth(row)
-                        .is_some_and(|line| line.starts_with(&format!("│ {key:<12}")))
-                })
-                && tips
-                    .iter()
-                    .all(|tip| lines.iter().any(|line| line.contains(tip)))
+        // 80 列：正文 78 列，仍双列且每行不折行。
+        pty.resize(60, 80);
+        let narrow = tips_right_column(80);
+        let right_at_80 = expected_right.clone();
+        pty.wait_for("80 列仍并排两列", move |screen| {
+            tips_visible_keys(screen, narrow, key_width) == right_at_80
         });
-        for (_, narrow_row, key) in shortcut_keys {
-            assert_tip_key(pty.parser.screen(), narrow_row, 2..60, key);
+        let screen = pty.parser.screen();
+        assert_eq!(tips_visible_keys(screen, 2, key_width), expected_left);
+        assert_colored_tip_key(
+            screen,
+            tips_key_row(screen, 2, key_width, commands[0]),
+            2..2 + span,
+            commands[0],
+            TIPS_ACCENT,
+            key_field,
+        );
+        // 60 列：正文 58 列装不下两列，按字母顺序输出完整单列。
+        pty.resize(60, 60);
+        let single: Vec<String> = commands
+            .iter()
+            .chain(&shortcuts)
+            .map(|label| (*label).to_owned())
+            .collect();
+        pty.wait_for("60 列切换为完整单列", move |screen| {
+            tips_visible_keys(screen, 2, key_width) == single
+        });
+        let screen = pty.parser.screen();
+        let commands_title = tips_key_row(screen, 2, key_width, "Commands");
+        let shortcuts_title = tips_key_row(screen, 2, key_width, "Shortcuts");
+        assert!(commands_title < shortcuts_title);
+        for label in commands.iter().chain(&shortcuts) {
+            let row = tips_key_row(screen, 2, key_width, label);
+            let in_group = if commands.contains(label) {
+                commands_title < row && row < shortcuts_title
+            } else {
+                shortcuts_title < row
+            };
+            assert!(in_group, "{label} rendered outside its group");
+            assert!(
+                screen
+                    .contents()
+                    .lines()
+                    .nth(usize::from(row))
+                    .unwrap()
+                    .starts_with("│ "),
+                "{label} must be prefixed by the transcript border"
+            );
         }
+        assert_colored_tip_key(
+            screen,
+            tips_key_row(screen, 2, key_width, shortcuts[0]),
+            2..2 + span,
+            shortcuts[0],
+            TIPS_ACCENT,
+            key_field,
+        );
         pty.resize(30, 100);
         assert!(!home.path().join(".pp/agent/sessions").exists());
         context_tui_exchange(
@@ -595,7 +790,11 @@ fn tui_tips_keeps_all_entries_and_leaves_active_jsonl_unchanged() {
         pty.input("/tips");
         pty.draft("/tips");
         pty.input("\r");
-        pty.text("/help       ");
+        pty.text(&format!(
+            "{:<width$}",
+            shortcuts[shortcuts.len() - 1],
+            width = usize::from(key_field)
+        ));
         pty.draft("");
         assert_eq!(std::fs::read(&files[0]).unwrap(), before);
         pty.input("tips-next-task\r");

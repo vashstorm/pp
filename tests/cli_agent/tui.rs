@@ -597,16 +597,13 @@ fn tip_columns(screen: &vt100::Screen, row: u16, columns: std::ops::Range<u16>) 
         .collect()
 }
 
-fn assert_tip_key(screen: &vt100::Screen, row: u16, columns: std::ops::Range<u16>, key: &str) {
-    assert_colored_tip_key(screen, row, columns, key, vt100::Color::Rgb(127, 166, 106));
-}
-
 fn assert_colored_tip_key(
     screen: &vt100::Screen,
     row: u16,
     columns: std::ops::Range<u16>,
     key: &str,
     accent: vt100::Color,
+    key_field: u16,
 ) {
     for (offset, character) in key.chars().enumerate() {
         let col = columns.start + u16::try_from(offset).unwrap();
@@ -621,10 +618,10 @@ fn assert_colored_tip_key(
         assert_eq!(cell.bgcolor(), vt100::Color::Default);
     }
     assert_eq!(
-        tip_columns(screen, row, columns.start..columns.start + 12),
-        format!("{key:<12}"),
+        tip_columns(screen, row, columns.start..columns.start + key_field),
+        format!("{key:<width$}", width = usize::from(key_field)),
     );
-    let description_start = columns.start + 12;
+    let description_start = columns.start + key_field;
     assert!(
         !screen
             .cell(row, description_start)
@@ -632,7 +629,7 @@ fn assert_colored_tip_key(
             .contents()
             .trim()
             .is_empty(),
-        "description must start after the 12-column key region",
+        "description must start after the {key_field}-column key region",
     );
     for col in description_start..columns.end {
         let cell = screen.cell(row, col).unwrap();
