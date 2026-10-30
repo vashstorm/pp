@@ -43,8 +43,7 @@ fn resume_boundary_journal(home: &Path, id: &str) -> std::path::PathBuf {
 // Short-lived notifications keep later screen assertions from racing the
 // popup that a failed or successful resume renders above the input.
 fn resume_boundary_quick_notifications(home: &Path) {
-    std::fs::write(
-        config_path(home, "settings.yml"),
+    crate::write_settings(home,
         r#"{"notification_timeout_seconds":1}"#,
     )
     .unwrap();
@@ -61,7 +60,7 @@ fn resume_boundary_create_session_with(
     user_message: &str,
     answer: &str,
 ) -> String {
-    std::fs::write(config_path(home, "settings.yml"), settings).unwrap();
+    crate::write_settings(home, settings).unwrap();
     std::fs::write(config_path(home, "models.yml"), models).unwrap();
     let before = resume_boundary_session_ids(home);
     let mut pty = Pty::start_with_args(cwd, home, &[]);
@@ -341,8 +340,7 @@ fn tui_slash_resume_truncates_long_first_user_message_summary() {
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     let launch = tempfile::tempdir().unwrap();
-    std::fs::write(
-        config_path(home.path(), "settings.yml"),
+    crate::write_settings(home.path(),
         fixture_settings(),
     )
     .unwrap();
@@ -405,8 +403,7 @@ fn tui_slash_resume_empty_state_without_sessions_directory() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     let launch = tempfile::tempdir().unwrap();
-    std::fs::write(
-        config_path(home.path(), "settings.yml"),
+    crate::write_settings(home.path(),
         fixture_settings(),
     )
     .unwrap();
@@ -948,8 +945,7 @@ fn tui_slash_resume_while_busy_does_not_switch_or_request() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     let launch = tempfile::tempdir().unwrap();
-    std::fs::write(
-        config_path(home.path(), "settings.yml"),
+    crate::write_settings(home.path(),
         fixture_settings(),
     )
     .unwrap();
@@ -998,7 +994,7 @@ fn tui_slash_resume_mcp_servers_reap_after_cross_session_exit() {
         let mut settings = super::mcp::settings("call_timeout");
         settings["default_model"] = json!("fixture/primary");
         settings["notification_timeout_seconds"] = json!(1);
-        settings["mcp_servers"]["local"]["timeout_seconds"] = json!(30);
+        settings["mcpServers"]["local"]["timeout"] = json!(30_000);
         resume_boundary_create_session_with(
             &server,
             home.path(),

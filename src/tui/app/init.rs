@@ -118,6 +118,8 @@ impl App {
             usage: None,
             token_speed: statusline::TokenSpeed::default(),
             mcp_cleanup: None,
+            mcp_view: Default::default(),
+            mcp_panel: None,
             background_cleanup: None,
             subagent_panel: None,
             subagent_autowake: false,
@@ -188,6 +190,11 @@ impl App {
         let think_level = agent.think_level();
         let default_think_level = agent.default_think_level();
         let mcp_cleanup = agent.mcp_cleanup()?;
+        self.mcp_view = agent.mcp_view();
+        let warnings = self.mcp_view.warnings();
+        if !warnings.is_empty() {
+            self.notify(Level::Error, warnings.join("\n"));
+        }
         self.background_cleanup = Some(agent.background_cleanup());
         self.choices = agent.model_choices();
         self.favorite_models = agent.favorite_models().to_vec();
@@ -238,6 +245,17 @@ impl App {
                     // 状态切换成功后紧随一份新用量快照，与动作保持 FIFO 顺序。
                     let mut snapshots: Vec<WorkerEvent> = Vec::new();
                     let event = match command {
+                        WorkerCommand::Mcp {
+                            action,
+                            cancellation,
+                        } => {
+                            let result = agent.manage_mcp(&action, &cancellation).map(|_| ());
+                            WorkerEvent::McpManaged {
+                                result,
+                                view: agent.mcp_view(),
+                                show: matches!(action, crate::mcp::Action::List),
+                            }
+                        }
                         WorkerCommand::ReloadModels => WorkerEvent::ModelsReloaded(
                             agent
                                 .reload_models()
@@ -523,6 +541,7 @@ impl App {
                             WorkerEvent::PlanReviewed(result)
                         }
                     };
+                    snapshots.push(WorkerEvent::McpSnapshot(agent.mcp_view()));
                     // Report new IDs even on task failure, before Completed.
                     if let Some(id) = agent.take_session_notice()
                         && sender.send(WorkerEvent::SessionStarted(id)).is_err()

@@ -30,6 +30,23 @@ fn config_path(home: &std::path::Path, name: &str) -> std::path::PathBuf {
     dir.join(name)
 }
 
+// 夹具允许把 MCP 与其他设置一起传入；实际落盘始终使用独立 JSON。
+fn write_settings(home: &std::path::Path, text: impl AsRef<str>) -> std::io::Result<()> {
+    let text = text.as_ref();
+    if let Ok(mut value) = serde_json::from_str::<Value>(text)
+        && let Some(servers) = value
+            .as_object_mut()
+            .and_then(|map| map.remove("mcpServers"))
+    {
+        std::fs::write(
+            config_path(home, "mcp.json"),
+            json!({"mcpServers":servers}).to_string(),
+        )?;
+        return std::fs::write(config_path(home, "settings.yml"), value.to_string());
+    }
+    std::fs::write(config_path(home, "settings.yml"), text)
+}
+
 // A user Markdown command under the isolated HOME's commands directory.
 fn install_command(home: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
     let dir = config_path(home, "commands");
@@ -47,7 +64,7 @@ impl Cli {
         settings: &str,
         models: &str,
     ) -> Self {
-        std::fs::write(config_path(cwd, "settings.yml"), settings).unwrap();
+        write_settings(cwd, settings).unwrap();
         std::fs::write(config_path(cwd, "models.yml"), models).unwrap();
         Self::start_with_existing_files(cwd, prompt)
     }

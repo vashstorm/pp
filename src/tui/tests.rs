@@ -339,3 +339,5 @@ mod streaming_panel_cases;
 mod tree_session_cases;
 
 mod todo_cases;
+
+mod mcp_cases;

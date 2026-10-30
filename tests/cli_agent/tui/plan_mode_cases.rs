@@ -8,11 +8,7 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
         let project = tempfile::tempdir().unwrap();
         let mut settings = super::super::mcp::settings("");
         settings["notification_timeout_seconds"] = json!(1);
-        std::fs::write(
-            config_path(home.path(), "settings.yml"),
-            settings.to_string(),
-        )
-        .unwrap();
+        crate::write_settings(home.path(), settings.to_string()).unwrap();
         std::fs::write(
             config_path(home.path(), "models.yml"),
             response_models(&fixture, Some(protocol)),

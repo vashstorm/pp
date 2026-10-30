@@ -6,6 +6,13 @@ pub(crate) fn parse<T: serde::de::DeserializeOwned>(text: &str, kind: &str) -> R
     // 先检查 YAML 的重复键，再通过严格的数据模型反序列化，
     // 避免数字转字符串或 null 被当成空列表、空映射。
     let value: Value = serde_yaml::from_str(text).map_err(|_| invalid_config(kind))?;
+    if std::any::type_name::<T>() == std::any::type_name::<crate::config::Settings>()
+        && value.get("mcp_servers").is_some()
+    {
+        anyhow::bail!(
+            "settings.yml.mcp_servers 已移除；请手动迁移到 ~/.pp/agent/mcp.json 的 mcpServers，并删除旧字段"
+        );
+    }
     if !value.is_mapping() {
         return Err(invalid_config(kind));
     }

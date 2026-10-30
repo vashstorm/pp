@@ -648,7 +648,7 @@ impl App {
                                 .as_ref()
                                 .and_then(|plan| plan.path())
                                 .unwrap_or_else(|| "Not saved yet".to_owned());
-                            self.mcp_cleanup = Some(preparation.cleanup);
+                            self.install_mcp_cleanup(preparation.cleanup);
                             self.plan_panel = None;
                             self.set_workflow(preparation.workflow);
                             let mut note = None;
@@ -842,9 +842,39 @@ impl App {
                     self.set_workflow(workflow);
                     changed = true;
                 }
+                Ok(WorkerEvent::McpSnapshot(view)) => {
+                    self.mcp_view = view;
+                    changed = true;
+                }
+                Ok(WorkerEvent::McpManaged { result, view, show }) => {
+                    self.mcp_view = view;
+                    self.active_cancellation = None;
+                    self.secondary_status = None;
+                    self.state = State::Ready;
+                    match result {
+                        Ok(()) => {
+                            if show {
+                                self.mcp_panel = Some(crate::tui::mcp::Panel::list(&self.mcp_view));
+                                self.menu = None;
+                            } else {
+                                self.notify(
+                                    Level::Normal,
+                                    "MCP 状态已更新；可用 /mcp list 查看".into(),
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            if error.is::<crate::cancellation::CleanupError>() {
+                                self.state = State::Unavailable;
+                            }
+                            self.notify(Level::Error, format!("{error:#}"));
+                        }
+                    }
+                    changed = true;
+                }
                 Ok(WorkerEvent::Cleanup(cleanup)) => {
                     // 错误路径上 registry 可能被保留/部分更新；刷新退出清理句柄。
-                    self.mcp_cleanup = Some(cleanup);
+                    self.install_mcp_cleanup(cleanup);
                     changed = true;
                 }
                 Ok(WorkerEvent::ExecutionPrepared {
@@ -857,7 +887,7 @@ impl App {
                 }) => {
                     // 一次性交接：先安装退出清理句柄并更新模式/会话，再 ACK；
                     // ACK 后 worker 才允许 continue_session。
-                    self.mcp_cleanup = Some(cleanup);
+                    self.install_mcp_cleanup(cleanup);
                     self.plan_panel = None;
                     self.set_workflow(workflow);
                     let mut note = None;

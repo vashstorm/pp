@@ -2,6 +2,7 @@ pub(crate) mod context;
 mod debug;
 mod history;
 pub(crate) mod input;
+mod mcp_management;
 pub(crate) mod persistence;
 pub(crate) mod plan_management;
 mod plan_open;
@@ -321,10 +322,11 @@ impl Agent {
         tools.limits = config.settings.tool_limits();
         tools.approval.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
-        tools.mcp = crate::mcp::Registry::connect(
-            &config.settings.mcp_servers,
+        tools.mcp = crate::mcp::Registry::load(
+            &catalog.mcp_path(),
             tools.cwd(),
             &CancellationToken::new(),
+            true,
         )?;
         let current_model = ModelChoice {
             reference: catalog.default_reference().to_owned(),
@@ -460,14 +462,12 @@ impl Agent {
         // 审批配置沿用当前 settings.yml，不恢复 checkpoint 中的旧值；
         // 会话级授权本来就不序列化。
         tools.approval.set_config(config.settings.tools.clone());
-        if checkpoint.workflow.mode == crate::plan::WorkMode::Execute {
-            // A restored Plan session never connects MCP; only Execute does.
-            tools.mcp = crate::mcp::Registry::connect(
-                &config.settings.mcp_servers,
-                tools.cwd(),
-                &CancellationToken::new(),
-            )?;
-        }
+        tools.mcp = crate::mcp::Registry::load(
+            &catalog.mcp_path(),
+            tools.cwd(),
+            &CancellationToken::new(),
+            checkpoint.workflow.mode == crate::plan::WorkMode::Execute,
+        )?;
         checkpoint
             .session
             .set_tools(tools.all_definitions(checkpoint.workflow.mode));

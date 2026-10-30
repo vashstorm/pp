@@ -577,30 +577,62 @@ TUI 输入 `/skills` 打开全局管理面板，顶部依次显示 `Sources`（�
 
 ## MCP 工具
 
-在 `~/.pp/agent/settings.yml` 中添加 `mcp_servers`，连接本地 stdio MCP 服务：
+MCP 的唯一可写配置为 `~/.pp/agent/mcp.json`。旧 `settings.yml.mcp_servers` 已移除，启动遇到该字段会提示手动迁移；pp 不自动改写旧文件。将旧服务放入 `mcpServers`，把 `timeout_seconds` 转为毫秒单位的 `timeout`，然后删除 YAML 旧字段。
 
-```yaml
-mcp_servers:
-  local:
-    command: python3
-    args: [/absolute/path/to/mcp_server.py]
-    env:
-      APP_MODE: development
-    timeout_seconds: 30
+```json
+{
+  "mcpServers": {
+    "codebase-memory-mcp": {
+      "command": "/absolute/path/to/codebase-memory-mcp"
+    },
+    "context7": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"],
+      "env": { "CONTEXT7_API_KEY": "YOUR_API_KEY" },
+      "timeout": 30000
+    }
+  },
+  "enabledServers": [],
+  "disabledServers": []
+}
 ```
 
-`command` 必填，按 PATH 查找程序；`args` 和 `env` 默认为空，超时默认 30 秒且必须为正整数。直接传递参数，不执行 shell 展开；需要 shell 时显式使用 `bash -c`。服务继承进程环境，`env` 覆盖指定变量，工作目录为当前会话的工作目录。省略 `mcp_servers` 或设为 `{}` 时不启动服务。所有配置层均拒绝未知字段；服务名只能包含 ASCII 字母、数字、下划线和连字符，最长 24 字节，不能含 `__`。
+`command` 必填，按 PATH 查找程序；`args`、`env` 默认为空，`enabled` 默认 `true`，`type` 省略时为 `stdio`。`timeout` 为正整数毫秒，默认 30000。继承进程环境，`env` 覆盖指定变量；省略 `cwd` 使用会话工作目录，相对 `cwd` 以配置文件目录为基准。参数和环境值按字面传递，不执行 shell、`${VAR}` 或 `!command` 展开。Context7 的 key 也可通过 pp 进程继承的 `CONTEXT7_API_KEY` 提供。
 
-连接时按照 [MCP 初始化流程](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) 完成版本协商和 `notifications/initialized`，再分页调用 `tools/list`。支持协议版本 `2025-11-25`、`2025-06-18`、`2025-03-26` 和 `2024-11-05`。本次实现仅支持 stdio 工具发现及 `tools/call`，不支持远程 HTTP、resources、prompts、sampling、elicitation 或运行中更新工具列表；服务端 ping 会正常响应，其他服务端请求返回不支持的方法错误。
+自动发现以下用户级来源，仅提取顶层 MCP 配置，不读取项目配置或 Claude 的 `projects` 记录：
 
-工具名通常为 `mcp__服务名__工具名`，例如 `mcp__local__search`；包含特殊字符或组合名超过 64 字节时，工具部分替换为确定性的 `tool_<hash>`，调用时仍发送原始名称。重名会拒绝启动。MCP 的输入 schema 原样传给模型（`strict: false`），两种模型协议均支持调用，CLI/TUI 使用现有工具事件显示状态。结果保留 `content` 和 `structuredContent` 等字段，包装为 `{"ok":true,"result":{...}}`；`isError:true` 转为 `ok:false`，同批工具仍按顺序继续执行。成功响应在完成 JSON-RPC envelope、ID、result/error 互斥和 object 校验后移出已拥有的 result，不再深拷贝结果子树；协议校验与 1 MiB 消息上限不变。
+1. pp 的 `mcp.json`。
+2. Claude Code：`~/.claude.json`、`~/.claude/mcp.json`、`~/.claude/.mcp.json`，按此顺序。
+3. Codex：`~/.codex/config.toml` 的 `mcp_servers`。
 
-初始化或发现失败时，当前配置的模型任务不可用；不完整连接会清理。每次请求的读写共享同一截止时间，通知不会延长超时；传输故障后关闭连接，后续调用返回错误，不自动重连或重试。TUI 主动取消会停止并回收当前 MCP 服务进程组，下一任务真正调用该服务时才使用同一启动配置重新初始化和发现；不重放旧调用。完整工具集合（名称、描述与 schema）必须不变，定义变化或普通重建失败会拒绝该服务直到重启 pp，其他服务与本地工具不受影响。普通超时／EOF／协议故障仍不自动重连。服务进程在会话中复用，`/model`、`/new` 不重启；恢复保存的会话时按当前全局配置重新连接和发现工具，不恢复旧凭证或过期工具定义。正常退出、TUI 的 Ctrl + C 退出及连接故障时清理服务进程组。最多连接 32 个服务、发现 256 个工具，单条协议消息最多 1 MiB。
+同名服务由最先出现的完整定义决定，不合并参数。默认沿用来源的 `enabled`；pp 的 `enabledServers` 可以覆盖来源禁用，`disabledServers` 优先级最高。外部文件始终只读，启停仅修改 pp 的覆盖列表。JSON 拒绝重复键和未知顶层字段；未知服务字段、非法定义和不支持的传输在列表中标为 `unsupported / invalid config`，不启动。外部文件格式错误会生成脱敏诊断，其他来源仍可用。最多 32 个服务、256 个工具，单条协议消息最多 1 MiB；服务名只接受 ASCII 字母、数字、下划线和连字符，最长 24 字节且不能含 `__`。
 
-MCP 服务按当前用户权限执行，能够访问工作目录之外的资源。服务 stderr 被丢弃，协议错误不输出原始响应体、命令参数或环境变量；成功的工具结果按数据展示和回填模型，服务应自行避免在结果中返回凭证。
+Codex 支持导入 `command`、`args`、`env`、`env_vars`、`cwd`、`enabled` 和超时设置。`env_vars` 从当前进程读取；`tool_timeout_sec`／`startup_timeout_sec` 转为毫秒，两者同时提供时必须相同，因为 pp 当前统一使用请求超时。包含尚不支持的工具限制、认证或其他能力字段时标为不支持，避免静默忽略限制。
+
+| 命令 | 行为 |
+|---|---|
+| `/mcp`、`/mcp help` | 查看核心命令帮助 |
+| `/mcp list` | 查看当前加载的服务来源、名称和状态；不触发连接 |
+| `/mcp enable <name>` | 保存启用覆盖并连接服务 |
+| `/mcp disable <name>` | 保存禁用覆盖、停止服务并移除工具 |
+| `/mcp reconnect <name>` | 按当前加载配置重连已启用服务，重新发现工具 |
+| `/mcp reload` | 重读所有来源并重建连接与工具表 |
+
+添加或删除服务直接编辑 JSON，然后执行 `/mcp reload`。启停先持文件锁重新读取配置，再以 `0600` 权限原子保存；保存失败不改变运行态。连接失败保留启用设置，可用 reconnect 再试。reload 的整体配置解析失败会保留旧连接；个别连接失败独立显示，不阻断健康服务和本地工具。进程回收失败属于严重错误，禁止继续模型任务。
+
+TUI 的 `/mcp list` 是只读结果面板，按来源分组并单列禁用服务，仅展示名称和状态；↑／↓、PgUp／PgDn 或滚轮滚动，Esc 关闭，保留输入草稿和对话位置。`/mcp ` 提供子命令及服务器名称补全。行模式提供相同命令并输出文本；命令不进入模型历史，`-p` 不解析斜杠命令。管理操作只允许在空闲时执行，先回收子 Agent，再同步主会话和后续子 Agent 的工具表。Plan／Review 只能查看和保存启停设置，不连接或调用 MCP，回到 Execute 后连接。
+
+连接遵循 [MCP 初始化流程](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)，协商版本并发送 `notifications/initialized`，再分页调用 `tools/list`。支持 `2025-11-25`、`2025-06-18`、`2025-03-26`、`2024-11-05`。当前仅支持 stdio 工具，不支持 HTTP、OAuth、resources、prompts、sampling、elicitation、Smithery 或服务端动态工具列表通知。
+
+工具名通常为 `mcp__服务名__工具名`；特殊字符或组合名超过 64 字节时，工具部分使用确定性的 `tool_<hash>`，调用仍发送原名。schema 原样传给模型（`strict: false`），支持 Completion 和 Responses。结果保留 `content`、`structuredContent` 等字段，包装为 `{"ok":true,"result":{...}}`；`isError:true` 转为 `ok:false`。同批调用仍按顺序执行。
+
+服务在 `/model`、`/new` 后复用。普通传输故障不自动重连或重试；TUI 取消会回收当前服务，下一次新调用才惰性重建，要求完整工具定义不变，不重放旧调用。显式 reconnect／reload 允许工具定义变化。退出清理句柄持续跟踪管理操作新建的进程，关闭窗口或 Ctrl + C 后同样回收。
+
+MCP 按当前用户权限运行，没有文件系统沙箱。服务 stderr 丢弃；错误不输出响应体、命令参数、环境值或认证内容。成功工具结果会进入模型上下文和会话记录，服务应避免返回凭证。
 
 ```sh
-cargo nextest run --locked mcp_
+cargo nextest run --locked -E 'test(mcp_) | test(slash_mcp)'
 ```
 
 ## 上下文用量与压缩

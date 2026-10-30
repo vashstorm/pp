@@ -13,6 +13,11 @@ pub(crate) struct CommandSpec {
 
 pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
+        name: "/mcp",
+        usage: "/mcp [list|enable <name>|disable <name>|reconnect <name>|reload|help]",
+        description: "管理 MCP 服务与连接状态",
+    },
+    CommandSpec {
         name: "/Roles",
         usage: "/Roles",
         description: "配置各模型 Role 的 model 与 effort（TUI）",
@@ -150,6 +155,7 @@ pub(crate) enum Command<'a> {
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
     Skills(SkillCommand<'a>),
+    Mcp(crate::mcp::Action),
     Shell(&'a str),
     Prompt(String),
 }
@@ -219,6 +225,22 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
             return Ok(Some(Command::Model(
                 (!argument.is_empty()).then_some(argument),
             )));
+        }
+        "/mcp" => {
+            use crate::mcp::Action;
+            let words: Vec<_> = argument.split_whitespace().collect();
+            let action = match words.as_slice() {
+                [] | ["help"] => Action::Help,
+                ["list"] => Action::List,
+                ["reload"] => Action::Reload,
+                ["enable", name] => Action::Enable((*name).into()),
+                ["disable", name] => Action::Disable((*name).into()),
+                ["reconnect", name] => Action::Reconnect((*name).into()),
+                _ => bail!(
+                    "usage: /mcp [list|enable <name>|disable <name>|reconnect <name>|reload|help]"
+                ),
+            };
+            return Ok(Some(Command::Mcp(action)));
         }
         "/skills" => {
             if argument.is_empty() {
@@ -527,6 +549,38 @@ mod tests {
             "/effort high extra",
         ] {
             assert!(parse(input, &FileCommands::default()).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    use super::*;
+    #[test]
+    fn slash_mcp_strict_arguments_and_core_commands() {
+        let files = FileCommands::default();
+        for input in [
+            "/mcp",
+            "/mcp help",
+            "/mcp list",
+            "/mcp reload",
+            "/mcp enable context7",
+            "/mcp disable context7",
+            "/mcp reconnect context7",
+        ] {
+            assert!(matches!(
+                parse(input, &files).unwrap(),
+                Some(Command::Mcp(_))
+            ));
+        }
+        for input in [
+            "/mcp add",
+            "/mcp test x",
+            "/mcp list x",
+            "/mcp enable",
+            "/mcp enable a b",
+        ] {
+            assert!(parse(input, &files).is_err());
         }
     }
 }

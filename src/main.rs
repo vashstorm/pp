@@ -483,6 +483,27 @@ fn run(args: Args) -> Result<()> {
                 continue;
             }
             Some(commands::Command::Quit) => break,
+            Some(commands::Command::Mcp(action)) => {
+                if matches!(action, crate::mcp::Action::Help) {
+                    writeln!(stderr, "{}", crate::mcp::help())?;
+                } else {
+                    match agent.as_mut() {
+                        Ok(agent) => match agent
+                            .manage_mcp(&action, &crate::cancellation::CancellationToken::new())
+                        {
+                            Ok(view) => writeln!(stderr, "{}", view.text())?,
+                            Err(error) => {
+                                if error.is::<crate::cancellation::CleanupError>() {
+                                    return Err(error);
+                                }
+                                writeln!(stderr, "error: {error:#}")?;
+                            }
+                        },
+                        Err(_) => writeln!(stderr, "MCP 管理不可用：请先修复启动配置")?,
+                    }
+                }
+                continue;
+            }
             Some(commands::Command::Skills(selection)) => {
                 let result = (|| -> Result<()> {
                     let mut skills = skills
@@ -658,6 +679,7 @@ fn run(args: Args) -> Result<()> {
                 | commands::Command::Tips
                 | commands::Command::Quit
                 | commands::Command::Skills(_)
+                | commands::Command::Mcp(_)
                 | commands::Command::Resume
                 | commands::Command::Tree
                 | commands::Command::Changes
@@ -910,6 +932,9 @@ fn run_cli_task(
     stderr: &mut impl Write,
 ) -> Result<()> {
     use events::{AgentEvent, OutputStream};
+    for warning in agent.mcp_view().warnings() {
+        writeln!(stderr, "{warning}")?;
+    }
     let mut first_error = None;
     let (mut out_broken, mut err_broken) = (false, false);
     let (mut visible, mut content, mut newline) = (false, false, true);

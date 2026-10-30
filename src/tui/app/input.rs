@@ -35,7 +35,8 @@ impl App {
         if edited {
             self.menu_dismissed = false;
         }
-        if self.skill_panel.is_some()
+        if self.mcp_panel.is_some()
+            || self.skill_panel.is_some()
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
@@ -68,6 +69,50 @@ impl App {
         }
         let mut preferred = 0;
         let items = match argument {
+            Some(("/mcp", argument)) => {
+                let words: Vec<_> = argument.split_whitespace().collect();
+                if words.len() > 1 || argument.ends_with(char::is_whitespace) && !words.is_empty() {
+                    let action = words[0];
+                    let prefix = words.get(1).copied().unwrap_or("");
+                    self.mcp_view
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, entry)| {
+                            entry.name.starts_with(prefix)
+                                && match action {
+                                    "enable" => entry.status == "disabled",
+                                    "disable" => entry.status != "disabled",
+                                    "reconnect" => entry.status != "disabled",
+                                    _ => false,
+                                }
+                        })
+                        .map(|(index, entry)| MenuItem {
+                            value: MenuAction::McpServer(index),
+                            label: entry.name.clone(),
+                            description: format!("{} · {}", entry.source, entry.status),
+                            icon: None,
+                            current: false,
+                        })
+                        .collect()
+                } else {
+                    crate::mcp::SUBCOMMANDS
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (name, _, _))| name.starts_with(argument.trim()))
+                        .map(|(index, (name, description, arg))| MenuItem {
+                            value: MenuAction::McpSubcommand(index),
+                            label: (*name).into(),
+                            description: format!(
+                                "{description}{}",
+                                if *arg { " · <name>" } else { "" }
+                            ),
+                            icon: None,
+                            current: false,
+                        })
+                        .collect()
+                }
+            }
             Some(("/effort", argument)) if matches!(self.state, State::Ready) => {
                 let thinking = self
                     .current_model
@@ -172,6 +217,14 @@ impl App {
             self.menu = None;
         } else if edited || self.menu.as_ref().is_none_or(|menu| menu.items() != items) {
             let menu = SelectionMenu::new(items, preferred);
+            let menu = if matches!(
+                menu.items().first().map(|item| item.value),
+                Some(MenuAction::McpSubcommand(_) | MenuAction::McpServer(_))
+            ) {
+                menu.with_accent(ratatui::style::Color::Rgb(255, 190, 55))
+            } else {
+                menu
+            };
             self.menu = Some(
                 if matches!(
                     menu.items().first().map(|item| item.value),
@@ -503,6 +556,7 @@ impl App {
     pub(in crate::tui) fn dispatch_next(&mut self, explicit: bool) -> bool {
         if !matches!(self.state, State::Ready)
             || self.queue_paused
+            || self.mcp_panel.is_some()
             || self.ask_panel.is_some()
             || self.skill_panel.is_some()
             || self.skills_pending

@@ -282,7 +282,6 @@ fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenA
             debug: false,
             notification_show_countdown: true,
             notification_timeout_seconds: 10,
-            mcp_servers: Default::default(),
             skill_dirs: Vec::new(),
             skill_sources: Vec::new(),
             disabled_skills: Vec::new(),

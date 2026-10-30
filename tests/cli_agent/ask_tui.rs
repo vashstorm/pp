@@ -118,7 +118,7 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
         let provider = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(home.path(), "settings.yml"), r#"{"notification_timeout_seconds":1}"#).unwrap();
+        crate::write_settings(home.path(), r#"{"notification_timeout_seconds":1}"#).unwrap();
         std::fs::write(config_path(home.path(), "models.yml"), response_models(&provider, Some(protocol))).unwrap();
         for name in ["one", "two"] {
             std::fs::write(project.path().join(name), (0..20).map(|i|format!("body-{name}-{i:02}\n")).collect::<String>()).unwrap();
@@ -168,7 +168,7 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
         assert!(!scrollback.contains("body-one-19") && !scrollback.contains("body-two-19"));
         pty.finish();
         let id = saved_session_id(home.path());
-        std::fs::write(config_path(home.path(), "settings.yml"), r#"{"notification_timeout_seconds":1,"read":{"toolResultPreview":true}}"#).unwrap();
+        crate::write_settings(home.path(), r#"{"notification_timeout_seconds":1,"read":{"toolResultPreview":true}}"#).unwrap();
         let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
         resumed.resize(80, 100);
         resumed.ready();
@@ -255,8 +255,8 @@ fn tool_folding_omp_mcp_multiline_result_and_write_preview() {
         let encoded = serde_json::to_string(&content).unwrap();
         let mut settings = super::mcp::settings("");
         settings["notification_timeout_seconds"] = json!(1);
-        settings["mcp_servers"]["local"]["env"]["MCP_VALUE"] = json!(&encoded[1..encoded.len()-1]);
-        std::fs::write(config_path(home.path(), "settings.yml"), settings.to_string()).unwrap();
+        settings["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!(&encoded[1..encoded.len()-1]);
+        crate::write_settings(home.path(), settings.to_string()).unwrap();
         std::fs::write(config_path(home.path(), "models.yml"), response_models(&provider, Some(protocol))).unwrap();
         let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
         pty.ready();
@@ -369,8 +369,7 @@ fn ask_final_reply(request: Request, protocol: &str, text: &str) {
 
 fn ask_tui_start(server: &Server, home: &Path, project: &Path, protocol: &str) -> Pty {
     // 弹窗一秒淡出，避免与 5 秒栅栏竞争。
-    std::fs::write(
-        config_path(home, "settings.yml"),
+    crate::write_settings(home,
         r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"read":{"toolResultPreview":true}}"#,
     )
     .unwrap();
@@ -1137,7 +1136,7 @@ fn ask_tui_schema_survives_new_model_switch_and_resume() {
         "gateway": slash_provider(&server, "gateway", "response", json!({
             "secondary": {"model":"vendor-b"}}))}})
     .to_string();
-    std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+    crate::write_settings(home.path(), fixture_settings()).unwrap();
     std::fs::write(config_path(home.path(), "models.yml"), models).unwrap();
     let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
     pty.ready();

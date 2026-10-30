@@ -5,6 +5,13 @@ use crate::tui::{
 };
 
 impl App {
+    pub(in crate::tui) fn install_mcp_cleanup(&mut self, cleanup: crate::mcp::Cleanup) {
+        if let Some(previous) = &mut self.mcp_cleanup {
+            previous.supersede(&cleanup);
+        }
+        self.mcp_cleanup = Some(cleanup);
+    }
+
     pub(in crate::tui) fn notify(&mut self, level: Level, message: String) {
         self.notifications.show(level, message, Instant::now());
     }
@@ -519,7 +526,8 @@ impl App {
 
     /// 当前显示的转录：独立审查页优先于主对话。
     pub(in crate::tui) fn needs_alternate(&self) -> bool {
-        self.auth_panel.is_some()
+        self.mcp_panel.is_some()
+            || self.auth_panel.is_some()
             || self.roles_panel.is_some()
             || self.subagent_panel.is_some()
             || self.history_browser

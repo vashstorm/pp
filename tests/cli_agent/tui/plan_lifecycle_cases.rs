@@ -75,8 +75,8 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         let base = format!("http://{}/v1", fixture.server_addr());
-        std::fs::write(
-            config_path(home.path(), "settings.yml"),
+        crate::write_settings(
+            home.path(),
             r#"{"default_model":"first/primary","notification_timeout_seconds":1}"#,
         )
         .unwrap();
@@ -198,11 +198,7 @@ fn plan_tui_mcp_is_stopped_in_plan_and_cleanup_tracks_execute_reconnection() {
             let project = tempfile::tempdir().unwrap();
             let mut settings = super::super::mcp::settings("");
             settings["notification_timeout_seconds"] = json!(1);
-            std::fs::write(
-                config_path(home.path(), "settings.yml"),
-                settings.to_string(),
-            )
-            .unwrap();
+            crate::write_settings(home.path(), settings.to_string()).unwrap();
             std::fs::write(
                 config_path(home.path(), "models.yml"),
                 response_models(&fixture, Some(protocol)),

@@ -1,8 +1,8 @@
 fn cancel_mcp_settings(mode: &str, block_restart: bool) -> String {
     let mut settings = super::mcp::settings(mode);
-    settings["mcp_servers"]["local"]["timeout_seconds"] = json!(120);
+    settings["mcpServers"]["local"]["timeout"] = json!(120_000);
     if block_restart {
-        settings["mcp_servers"]["local"]["env"]["MCP_RESTART_INIT_WAIT"] = json!("1");
+        settings["mcpServers"]["local"]["env"]["MCP_RESTART_INIT_WAIT"] = json!("1");
     }
     settings.to_string()
 }
@@ -76,7 +76,7 @@ fn tui_cancel_mcp_stops_real_work_and_restarts_only_for_new_call() {
     for protocol in ["completion", "response"] {
         let provider = server();
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(dir.path(), "settings.yml"), cancel_mcp_settings("cancel_once", false)).unwrap();
+        crate::write_settings(dir.path(), cancel_mcp_settings("cancel_once", false)).unwrap();
         std::fs::write(config_path(dir.path(), "models.yml"), response_models(&provider, Some(protocol))).unwrap();
         let mut pty = Pty::start_with_existing_files(dir.path());
         cancel_mcp_begin(&mut pty, &provider, dir.path(), protocol);
@@ -110,7 +110,7 @@ fn tui_cancel_mcp_stops_real_work_and_restarts_only_for_new_call() {
 fn tui_cancel_mcp_schema_change_rejects_new_call_without_poisoning_local_tools() {
     let provider = server();
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(dir.path(), "settings.yml"), cancel_mcp_settings("cancel_then_schema_change", false)).unwrap();
+    crate::write_settings(dir.path(), cancel_mcp_settings("cancel_then_schema_change", false)).unwrap();
     std::fs::write(config_path(dir.path(), "models.yml"), fixture_models(&provider)).unwrap();
     let mut pty = Pty::start_with_existing_files(dir.path());
     cancel_mcp_begin(&mut pty, &provider, dir.path(), "completion");
@@ -121,7 +121,11 @@ fn tui_cancel_mcp_schema_change_rejects_new_call_without_poisoning_local_tools()
         ("local-kept", "write", json!({"path":"local-kept.txt","content":"local still works"})),
     ]);
     let (request, after) = receive(&provider);
-    assert_eq!(before["tools"], after["tools"]);
+    // 定义变化拒绝后移除该服务的 schema，其他本地工具保持完整。
+    let available: Vec<_> = before["tools"].as_array().unwrap().iter()
+        .filter(|tool| !tool["function"]["name"].as_str().unwrap().starts_with("mcp__local__"))
+        .cloned().collect();
+    assert_eq!(serde_json::Value::Array(available), after["tools"]);
     let outputs = cancel_mcp_outputs(&after, "completion");
     let output = &outputs.iter().find(|(id, _)| id == "schema-rejected").unwrap().1;
     assert_eq!(output["ok"], false);
@@ -148,7 +152,7 @@ fn tui_cancel_mcp_schema_change_rejects_new_call_without_poisoning_local_tools()
 fn tui_cancel_mcp_ctrl_c_reaps_replacement_during_rediscovery() {
     let provider = server();
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(dir.path(), "settings.yml"), cancel_mcp_settings("cancel_once", true)).unwrap();
+    crate::write_settings(dir.path(), cancel_mcp_settings("cancel_once", true)).unwrap();
     std::fs::write(config_path(dir.path(), "models.yml"), fixture_models(&provider)).unwrap();
     let mut pty = Pty::start_with_existing_files(dir.path());
     cancel_mcp_begin(&mut pty, &provider, dir.path(), "completion");

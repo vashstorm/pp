@@ -269,7 +269,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn legacy(dir: &Path) {
-        fs::write(dir.join("settings.yml"), "# 保留注释\ndefault_model: fixture/one\nfavorite_models: [fixture/one, fixture/one, removed/two]\nthink_level: high\nmodel_roles: {fast: {model: fixture/two, effort: low}}\ndisabled_skills: [keep-disabled]\nmcp_servers: {local: {command: fixture, env: {KEY: unchanged}}}\n").unwrap();
+        fs::write(dir.join("settings.yml"), "# 保留注释\ndefault_model: fixture/one\nfavorite_models: [fixture/one, fixture/one, removed/two]\nthink_level: high\nmodel_roles: {fast: {model: fixture/two, effort: low}}\ndisabled_skills: [keep-disabled]\nskill_dirs: [unchanged]\n").unwrap();
         fs::write(dir.join("auth.yml"), "credentials:\n  glm: {generation: fixed-glm, access_token: fixture-private-glm}\n  zai: {generation: fixed-zai, access_token: fixture-private-zai}\n").unwrap();
         fs::set_permissions(dir.join("auth.yml"), fs::Permissions::from_mode(0o600)).unwrap();
         fs::write(dir.join("models.yml"), "manual unchanged").unwrap();
@@ -302,7 +302,7 @@ mod tests {
         assert!(text.contains("# 保留注释"));
         let settings: Mapping = yaml::parse(&text, "settings").unwrap();
         assert_eq!(settings["disabled_skills"][0], "keep-disabled");
-        assert_eq!(settings["mcp_servers"]["local"]["env"]["KEY"], "unchanged");
+        assert_eq!(settings["skill_dirs"][0], "unchanged");
         for field in FIELDS {
             assert!(!settings.contains_key(Value::String((*field).into())));
         }

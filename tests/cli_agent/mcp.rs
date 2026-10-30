@@ -1,11 +1,11 @@
 use super::*;
 
 pub(super) fn settings(mode: &str) -> Value {
-    json!({"mcp_servers":{"local":{
+    json!({"mcpServers":{"local":{
         "command":"bash",
         "args":[format!("{}/tests/fixtures/mcp_server.sh", env!("CARGO_MANIFEST_DIR"))],
         "env":{"MCP_MODE":mode,"MCP_VALUE":"中文结果","MCP_LOG":"mcp-log"},
-        "timeout_seconds":1
+        "timeout":1000
     }}})
 }
 
@@ -168,10 +168,15 @@ fn mcp_startup_failures_are_bounded_redacted_and_reap_processes() {
             &settings(mode).to_string(),
             &fixture_models(&provider),
         );
+        let (request, body) = receive(&provider);
+        assert!(
+            !body["tools"].to_string().contains("mcp__local__"),
+            "{mode}"
+        );
+        final_reply(request, "local tools remain available");
         let output = cli.finish();
-        assert!(!output.status.success(), "{mode}");
+        assert!(output.status.success(), "{mode}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("MCP"), "{mode}: {stderr}");
         assert!(!stderr.contains("secret-"), "{mode}: {stderr}");
         no_more(&provider);
         assert_stopped(dir.path());
@@ -236,11 +241,10 @@ fn mcp_config_rejects_invalid_fields_types_and_values_without_leaking_secrets() 
         json!({"command":"bash","args":"secret-config"}),
         json!({"command":"bash","env":{"A":null}}),
         json!({"command":"bash","env":{"A=B":"secret-config"}}),
-        json!({"command":"bash","timeout_seconds":0}),
-        json!({"command":"bash","timeout_seconds":null}),
-        json!({"command":"bash","timeout_seconds":-1}),
-        json!({"command":"bash","timeout_seconds":1.5}),
-        json!({"command":"bash","timeout_seconds":18446744073709551615_u64}),
+        json!({"command":"bash","timeout":0}),
+        json!({"command":"bash","timeout":null}),
+        json!({"command":"bash","timeout":-1}),
+        json!({"command":"bash","timeout":1.5}),
     ];
     for config in cases {
         let provider = server();
@@ -248,11 +252,14 @@ fn mcp_config_rejects_invalid_fields_types_and_values_without_leaking_secrets() 
         let cli = Cli::start_with(
             dir.path(),
             Some("test"),
-            &json!({"mcp_servers":{"local":config}}).to_string(),
+            &json!({"mcpServers":{"local":config}}).to_string(),
             &fixture_models(&provider),
         );
+        let (request, body) = receive(&provider);
+        assert!(!body["tools"].to_string().contains("mcp__local__"));
+        final_reply(request, "invalid server isolated");
         let output = cli.finish();
-        assert!(!output.status.success());
+        assert!(output.status.success());
         assert!(!String::from_utf8_lossy(&output.stderr).contains("secret-"));
         no_more(&provider);
     }
@@ -337,12 +344,8 @@ fn mcp_connections_survive_model_switch_and_reset_and_refresh_on_resume() {
     ids.sort_by_key(|path| std::fs::metadata(path).unwrap().modified().unwrap());
     let id = ids.last().unwrap().file_stem().unwrap().to_str().unwrap();
     let mut changed = settings("");
-    changed["mcp_servers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
-    std::fs::write(
-        config_path(home.path(), "settings.yml"),
-        changed.to_string(),
-    )
-    .unwrap();
+    changed["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
+    crate::write_settings(home.path(), changed.to_string()).unwrap();
     let cli = Cli::spawn(home.path(), &["-r", id, "-p", "resumed"], &[]);
     let (request, body) = receive(&provider);
     assert!(body["tools"].to_string().contains("mcp__local__echo"));
@@ -360,7 +363,7 @@ fn mcp_connections_survive_model_switch_and_reset_and_refresh_on_resume() {
     final_reply(request, "resumed");
     assert!(cli.finish().status.success());
     assert_stopped(home.path());
-    std::fs::write(config_path(home.path(), "settings.yml"), "{}").unwrap();
+    std::fs::write(config_path(home.path(), "mcp.json"), "{}").unwrap();
     let cli = Cli::spawn(home.path(), &["-r", id, "-p", "removed"], &[]);
     let (request, body) = receive(&provider);
     assert!(!body["tools"].to_string().contains("mcp__"));
@@ -386,9 +389,9 @@ fn mcp_multiple_servers_and_optional_capabilities_keep_names_separate() {
         let provider = server();
         let dir = tempfile::tempdir().unwrap();
         let mut config = settings(mode);
-        let mut second = settings("")["mcp_servers"]["local"].clone();
+        let mut second = settings("")["mcpServers"]["local"].clone();
         second["env"]["MCP_LOG"] = json!("second-log");
-        config["mcp_servers"]["second"] = second;
+        config["mcpServers"]["second"] = second;
         let cli = Cli::start_with(
             dir.path(),
             Some("test"),
@@ -486,4 +489,94 @@ fn mcp_special_and_long_tool_names_are_legal_stable_and_route_to_original_names(
         assert_eq!(calls.len(), 2);
         assert!(calls.iter().all(|call| call["params"]["name"] == original));
     }
+}
+
+#[test]
+fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
+    for protocol in ["completion", "response"] {
+        let provider = server();
+        let home = tempfile::tempdir().unwrap();
+        let mut configured = settings("");
+        configured["mcpServers"]["broken"] = json!({"command":"/nonexistent/pp-mcp-fixture"});
+        let mut cli = Cli::start_with(
+            home.path(),
+            None,
+            &configured.to_string(),
+            &response_models(&provider, Some(protocol)),
+        );
+        let api = if protocol == "response" {
+            "/v1/responses"
+        } else {
+            "/v1/chat/completions"
+        };
+        for (index, (command, expected)) in [
+            ("/mcp list\n/mcp disable local", None),
+            ("/mcp enable local", Some("mcp__local__echo")),
+            ("/mcp reconnect local", Some("mcp__local__echo")),
+            ("/mcp reload", Some("mcp__local__tool_")),
+            ("/mcp reload", Some("mcp__local__tool_")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index == 3 {
+                let mut changed = settings("special_name");
+                changed["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
+                std::fs::write(config_path(home.path(), "mcp.json"), changed.to_string()).unwrap();
+            }
+            if index == 4 {
+                std::fs::write(config_path(home.path(), "mcp.json"), "broken secret-config")
+                    .unwrap();
+            }
+            cli.input(&format!("{command}\ntask {index}\n"));
+            let (request, body) = receive_at(&provider, api);
+            let definitions = body["tools"].to_string();
+            assert!(!definitions.contains("mcp__broken__"));
+            match expected {
+                Some(name) => assert!(definitions.contains(name), "{index}: {definitions}"),
+                None => assert!(!definitions.contains("mcp__local__")),
+            }
+            if protocol == "response" {
+                response_final(request, &format!("done {index}"));
+            } else {
+                final_reply(request, &format!("done {index}"));
+            }
+        }
+        cli.input("/quit\n");
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Configured MCP Servers"));
+        assert!(!stderr.contains("secret-config"));
+        assert_stopped(home.path());
+        let journal = std::fs::read_dir(config_path(home.path(), "sessions"))
+            .unwrap()
+            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+            .collect::<String>();
+        assert!(!journal.contains("/mcp"));
+    }
+}
+
+#[test]
+fn mcp_legacy_settings_require_manual_migration_without_writing_mcp_json() {
+    let provider = server();
+    let home = tempfile::tempdir().unwrap();
+    let output = Cli::start_with(
+        home.path(),
+        Some("test"),
+        r#"{"mcp_servers":{"secret-name":{"command":"secret-command"}}}"#,
+        &fixture_models(&provider),
+    )
+    .finish();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("mcp.json"));
+    assert!(stderr.contains("迁移"));
+    assert!(!stderr.contains("secret-command"));
+    assert!(!config_path(home.path(), "mcp.json").exists());
+    no_more(&provider);
 }

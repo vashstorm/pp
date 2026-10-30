@@ -8,6 +8,7 @@ mod edit_diff;
 mod files;
 mod history;
 mod markdown;
+mod mcp;
 mod menu;
 mod model;
 mod notification;
@@ -253,6 +254,10 @@ fn paint_surface(
 }
 
 enum WorkerCommand {
+    Mcp {
+        action: crate::mcp::Action,
+        cancellation: CancellationToken,
+    },
     ReloadModels,
     Shell {
         command: String,
@@ -334,6 +339,12 @@ enum WorkerCommand {
     },
 }
 enum WorkerEvent {
+    McpManaged {
+        result: Result<()>,
+        view: crate::mcp::View,
+        show: bool,
+    },
+    McpSnapshot(crate::mcp::View),
     DialogFinished {
         call_id: String,
     },
@@ -533,6 +544,7 @@ struct ResumeState {
 
 #[derive(Clone, Copy)]
 enum State {
+    ManagingMcp,
     Ready,
     Running,
     RunningShell,
@@ -563,6 +575,8 @@ enum State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MenuAction {
     Command(usize),
+    McpSubcommand(usize),
+    McpServer(usize),
     FileCommand(usize),
     Model(usize),
     Effort(ThinkLevel),
@@ -690,6 +704,8 @@ struct App {
     usage: Option<crate::context::ContextUsage>,
     token_speed: statusline::TokenSpeed,
     mcp_cleanup: Option<crate::mcp::Cleanup>,
+    mcp_view: crate::mcp::View,
+    mcp_panel: Option<mcp::Panel>,
     background_cleanup: Option<crate::tools::BackgroundCleanup>,
     file_worker: files::Worker,
     file_paths: Vec<String>,

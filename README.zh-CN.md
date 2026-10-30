@@ -123,6 +123,7 @@ printf '说明当前项目的构建方式\n' | pp
 | `/plan [prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，批准后执行（仅终端界面） |
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除（仅终端界面） |
 | `/task-test` | 仅 debug 构建：按固定场景派发 FAST／SLOW／REVIEW 三个只读子 Agent 并等待三份结果 |
+| `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |
 | `/resume`、`/tree` | 恢复会话，或回退当前历史（仅终端界面） |
 | `/changes` | 查看最近任务的编辑与写入变更并逐文件撤销（仅终端界面） |
@@ -187,7 +188,7 @@ pp stats
 | [技能](docs/guide.md#技能支持) | `~/.pp/agent/skills/` | 按需加载 `SKILL.md`，通过 `/skills` 管理 |
 | [系统提示词](docs/guide.md#系统提示词) | `cwd/.pp/` 或 `~/.pp/agent/` | `SYSTEM.md`／`SYSTEM_TEMPLATE.md` 替换基础指令，`APPEND_SYSTEM.md` 追加正文 |
 | [提示词命令](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | 将 Markdown 模板展开为 `/命令 参数` |
-| [MCP 工具](docs/guide.md#mcp-工具) | `settings.yml` 的 `mcp_servers` | 连接基于本地标准输入输出的服务并发现工具 |
+| [MCP 工具](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`、`/mcp` | 发现 Claude／Codex 用户级 stdio 服务，查看状态、启停、重连和重载 |
 
 ## 开发
 

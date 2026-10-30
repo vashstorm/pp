@@ -292,14 +292,17 @@ impl App {
             menu_height,
         );
         self.todo_panel.draw(frame, todo);
-        let conversation = if self.show_welcome && self.plan_panel.is_none() {
-            welcome::draw(frame, conversation)
-        } else {
-            conversation
-        };
+        let conversation =
+            if self.show_welcome && self.plan_panel.is_none() && self.mcp_panel.is_none() {
+                welcome::draw(frame, conversation)
+            } else {
+                conversation
+            };
         // 独立审查页优先渲染：底部输入与状态栏照常可用，草稿可继续编辑但提交被拒。
         if self.native_render {
             self.conversation.draw_native(frame, conversation);
+        } else if let Some(panel) = &mut self.mcp_panel {
+            panel.draw(frame, conversation);
         } else if let Some(panel) = &mut self.plan_panel {
             panel.draw(frame, conversation, self.plan_progress);
         } else {

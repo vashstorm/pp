@@ -310,8 +310,6 @@ pub(crate) struct Settings {
     pub(crate) notification_show_countdown: bool,
     #[serde(default = "default_notification_timeout_seconds")]
     pub(crate) notification_timeout_seconds: u64,
-    #[serde(default)]
-    pub(crate) mcp_servers: std::collections::BTreeMap<String, crate::mcp::ServerConfig>,
     #[serde(default = "default_skill_dirs")]
     pub(crate) skill_dirs: Vec<String>,
     #[serde(default)]
@@ -368,7 +366,6 @@ impl Settings {
                 .is_some(),
             "notification_timeout_seconds is too large"
         );
-        crate::mcp::validate_config(&self.mcp_servers)?;
         ensure!(
             self.skill_dirs.iter().all(|path| !path.trim().is_empty()),
             "skill_dirs must contain non-blank paths"
@@ -444,7 +441,6 @@ fn default_settings() -> Settings {
         debug: false,
         notification_show_countdown: default_notification_show_countdown(),
         notification_timeout_seconds: default_notification_timeout_seconds(),
-        mcp_servers: Default::default(),
         skill_dirs: default_skill_dirs(),
         skill_sources: Vec::new(),
         disabled_skills: Vec::new(),
@@ -485,6 +481,10 @@ impl ModelCatalog {
             .iter()
             .find(|m| m.id == model)?
             .cost
+    }
+
+    pub(crate) fn mcp_path(&self) -> PathBuf {
+        self.settings_path.with_file_name("mcp.json")
     }
 
     pub(crate) fn read_tool_result_preview(&self) -> bool {

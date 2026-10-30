@@ -272,7 +272,6 @@ impl Agent {
             bail!("{message}");
         }
         self.plan_cleanup_error = None;
-        self.tools.mcp = Registry::default();
         self.session
             .set_tools(self.tools.all_definitions(WorkMode::Plan));
         Ok(())
@@ -409,12 +408,12 @@ impl Agent {
         }
         self.journal.check()?;
         self.ensure_plan_mcp_shutdown(cancellation)?;
-        let config = self
-            .catalog
-            .resolve(&self.current_model.reference)
-            .map_err(|_| anyhow!("current model is unavailable"))?;
-        let registry =
-            Registry::connect(&config.settings.mcp_servers, self.tools.cwd(), cancellation)?;
+        let registry = Registry::load(
+            &self.catalog.mcp_path(),
+            self.tools.cwd(),
+            cancellation,
+            true,
+        )?;
         let cleanup = match registry.cleanup() {
             Ok(cleanup) => cleanup,
             Err(error) => return Err(self.abort_execution_preparation(registry, error)),
@@ -717,12 +716,12 @@ impl Agent {
             cancellation::check(cancellation)?;
             self.check_plan_token_for_approval(&token, input)?;
         }
-        let config = self
-            .catalog
-            .resolve(&self.current_model.reference)
-            .map_err(|_| anyhow!("current model is unavailable"))?;
-        let registry =
-            Registry::connect(&config.settings.mcp_servers, self.tools.cwd(), cancellation)?;
+        let registry = Registry::load(
+            &self.catalog.mcp_path(),
+            self.tools.cwd(),
+            cancellation,
+            true,
+        )?;
         let cleanup = match registry.cleanup() {
             Ok(cleanup) => cleanup,
             Err(error) => return Err(self.abort_execution_preparation(registry, error)),
@@ -999,14 +998,11 @@ impl Agent {
                 // The Plan registry is empty; finish any pending cleanup, then
                 // connect ordinary execution MCP.
                 self.ensure_plan_mcp_shutdown(cancellation)?;
-                let config = self
-                    .catalog
-                    .resolve(&self.current_model.reference)
-                    .map_err(|_| anyhow!("current model is unavailable"))?;
-                self.tools.mcp = Registry::connect(
-                    &config.settings.mcp_servers,
+                self.tools.mcp = Registry::load(
+                    &self.catalog.mcp_path(),
                     self.tools.cwd(),
                     cancellation,
+                    true,
                 )?;
             }
             (WorkMode::Execute, WorkMode::Plan) => {

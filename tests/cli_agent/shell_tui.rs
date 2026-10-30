@@ -40,10 +40,9 @@ fn bang_shell_wait_footer(pty: &mut Pty, description: &str, status: &str) {
         screen
             .contents()
             .lines()
-            .filter(|line| {
+            .rfind(|line| {
                 line.contains("╰") && (line.contains("Wall:") || line.contains("Elapsed:"))
             })
-            .next_back()
             .is_some_and(|line| {
                 let line = line.split_whitespace().collect::<String>();
                 line.contains("Wall:")

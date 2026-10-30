@@ -254,6 +254,30 @@ impl App {
                 }
             }
         }
+        if let Some(Command::Mcp(action)) = &command {
+            if !matches!(self.state, State::Ready) || self.has_pending() {
+                self.notify(Level::Error, "请先完成或取消当前任务，再管理 MCP".into());
+            } else if matches!(action, crate::mcp::Action::Help) {
+                self.remember_input();
+                self.clear_input();
+                self.mcp_panel = Some(crate::tui::mcp::Panel::help());
+                self.menu = None;
+            } else {
+                let cancellation = crate::cancellation::CancellationToken::new();
+                if self.send_submission(
+                    WorkerCommand::Mcp {
+                        action: action.clone(),
+                        cancellation: cancellation.clone(),
+                    },
+                    State::ManagingMcp,
+                ) {
+                    self.active_cancellation = Some(cancellation);
+                    self.clear_input();
+                    self.secondary_status = Some("正在管理 MCP 服务…".into());
+                }
+            }
+            return false;
+        }
         match command {
             Some(Command::Quit) => return true,
             Some(Command::Plan(sub)) => {
@@ -364,7 +388,8 @@ impl App {
             return false;
         }
         match self.state {
-            State::Running
+            State::ManagingMcp
+            | State::Running
             | State::RunningShell
             | State::Cancelling
             | State::Compacting
@@ -463,6 +488,7 @@ impl App {
                     | Command::Tips
                     | Command::Quit
                     | Command::Skills(_)
+                    | Command::Mcp(_)
                     | Command::Login
                     | Command::Logout,
                 ) => {
@@ -628,6 +654,29 @@ impl App {
                 self.menu = None;
                 self.file_query = None;
                 self.menu_dismissed = true;
+            }
+            MenuAction::McpSubcommand(index) => {
+                let (name, _, argument) = crate::mcp::SUBCOMMANDS[index];
+                self.input = editor();
+                self.input
+                    .insert_str(format!("/mcp {name}{}", if argument { " " } else { "" }));
+                self.refresh_candidates(true);
+                return confirm && !argument && self.submit(PendingKind::Steering);
+            }
+            MenuAction::McpServer(index) => {
+                if let Some(entry) = self.mcp_view.entries.get(index) {
+                    let action = self.input.lines()[0]
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("")
+                        .to_owned();
+                    let name = entry.name.clone();
+                    self.input = editor();
+                    self.input.insert_str(format!("/mcp {action} {name}"));
+                    self.menu = None;
+                    self.menu_dismissed = true;
+                    return confirm && self.submit(PendingKind::Steering);
+                }
             }
             MenuAction::Command(index) => {
                 self.input = editor();

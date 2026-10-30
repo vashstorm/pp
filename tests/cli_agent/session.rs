@@ -229,7 +229,7 @@ fn sessions_dir(home: &Path) -> PathBuf {
 }
 
 fn configure(home: &Path, settings: &str, models: &str) {
-    std::fs::write(config_path(home, "settings.yml"), settings).unwrap();
+    crate::write_settings(home, settings).unwrap();
     std::fs::write(config_path(home, "models.yml"), models).unwrap();
 }
 

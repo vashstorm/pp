@@ -1,3 +1,6 @@
+mod config;
+pub(crate) use config::{EntryView, View};
+
 use crate::cancellation::{self, CancellationToken, Cancelled, CleanupError};
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
@@ -18,6 +21,68 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Action {
+    Help,
+    List,
+    Enable(String),
+    Disable(String),
+    Reconnect(String),
+    Reload,
+}
+pub(crate) const SUBCOMMANDS: &[(&str, &str, bool)] = &[
+    ("list", "列出所有 MCP 服务及状态", false),
+    ("enable", "启用 MCP 服务", true),
+    ("disable", "禁用 MCP 服务", true),
+    ("reconnect", "重新连接一个 MCP 服务", true),
+    ("reload", "重新加载配置及 MCP 服务", false),
+    ("help", "显示 MCP 命令帮助", false),
+];
+pub(crate) fn help() -> String {
+    SUBCOMMANDS
+        .iter()
+        .map(|(name, description, arg)| {
+            format!(
+                "/mcp {name}{}  {description}",
+                if *arg { " <name>" } else { "" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+impl View {
+    pub(crate) fn warnings(&self) -> Vec<String> {
+        let mut warnings = self.diagnostics.clone();
+        warnings.extend(
+            self.entries
+                .iter()
+                .filter(|e| e.status.starts_with("failed") || e.status.starts_with("unsupported"))
+                .map(|e| format!("MCP {}: {}", crate::tui::display_text(&e.name), e.status)),
+        );
+        warnings
+    }
+    pub(crate) fn text(&self) -> String {
+        let mut text = String::from("Configured MCP Servers\n");
+        for entry in &self.entries {
+            text.push_str(&format!(
+                "{} ({})  {} — {}\n",
+                entry.source,
+                entry.path.display(),
+                crate::tui::display_text(&entry.name),
+                entry.status
+            ));
+        }
+        if self.entries.is_empty() {
+            text.push_str("未配置 MCP 服务。\n");
+        }
+        for diagnostic in &self.diagnostics {
+            text.push_str(diagnostic);
+            text.push('\n');
+        }
+        text
+    }
+}
+
 const MESSAGE_LIMIT: usize = 1_048_576;
 const TOOL_LIMIT: usize = 256;
 const POLL: Duration = Duration::from_millis(5);
@@ -34,6 +99,18 @@ pub(crate) struct ServerConfig {
     env: BTreeMap<String, String>,
     #[serde(default = "default_timeout")]
     timeout_seconds: u64,
+    #[serde(default)]
+    timeout_millis: Option<u64>,
+    #[serde(default)]
+    cwd: Option<PathBuf>,
+}
+
+impl ServerConfig {
+    fn timeout(&self) -> Duration {
+        self.timeout_millis
+            .map(Duration::from_millis)
+            .unwrap_or_else(|| Duration::from_secs(self.timeout_seconds))
+    }
 }
 
 fn default_timeout() -> u64 {
@@ -69,10 +146,8 @@ pub(crate) fn validate_config(servers: &BTreeMap<String, ServerConfig>) -> Resul
             "invalid MCP environment"
         );
         ensure!(
-            config.timeout_seconds > 0
-                && Instant::now()
-                    .checked_add(Duration::from_secs(config.timeout_seconds))
-                    .is_some(),
+            config.timeout().as_millis() > 0
+                && Instant::now().checked_add(config.timeout()).is_some(),
             "invalid MCP timeout_seconds"
         );
     }
@@ -83,6 +158,8 @@ pub(crate) fn validate_config(servers: &BTreeMap<String, ServerConfig>) -> Resul
 pub(crate) struct Registry {
     servers: BTreeMap<String, SharedServer>,
     tools: BTreeMap<String, RemoteTool>,
+    directory: config::Directory,
+    tracking: Arc<Mutex<Tracking>>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -126,13 +203,31 @@ struct ProcessSlot {
 
 type SharedProcess = Arc<Mutex<ProcessSlot>>;
 
-pub(crate) struct Cleanup {
+#[derive(Default)]
+struct Tracking {
+    closing: bool,
     processes: Vec<SharedProcess>,
+}
+pub(crate) struct Cleanup {
+    tracking: Arc<Mutex<Tracking>>,
+    armed: bool,
+}
+impl Cleanup {
+    pub(crate) fn supersede(&mut self, replacement: &Self) {
+        if Arc::ptr_eq(&self.tracking, &replacement.tracking) {
+            self.armed = false;
+        }
+    }
 }
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        for process in &self.processes {
+        if !self.armed {
+            return;
+        }
+        let mut tracking = self.tracking.lock().unwrap_or_else(|e| e.into_inner());
+        tracking.closing = true;
+        for process in &tracking.processes {
             // 退出清理在 slot 锁内标记 closing，拒绝清理完成后由 worker 复活进程。
             let mut slot = process.lock().unwrap_or_else(|error| error.into_inner());
             slot.closing = true;
@@ -157,21 +252,181 @@ impl Registry {
             .any(|server| Arc::strong_count(&server.state) > 1)
     }
     pub(crate) fn cleanup(&self) -> Result<Cleanup> {
-        let processes = self
-            .servers
-            .values()
-            .map(|state| {
-                state
-                    .lock()
-                    .map(|state| state.client.process.clone())
-                    .map_err(|_| anyhow::anyhow!("MCP server unavailable"))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Cleanup { processes })
+        let mut tracking = self.tracking.lock().unwrap_or_else(|e| e.into_inner());
+        for state in self.servers.values() {
+            if !tracking
+                .processes
+                .iter()
+                .any(|p| Arc::ptr_eq(p, &state.process))
+            {
+                tracking.processes.push(state.process.clone());
+            }
+        }
+        Ok(Cleanup {
+            tracking: self.tracking.clone(),
+            armed: true,
+        })
+    }
+
+    pub(crate) fn load(
+        path: &Path,
+        cwd: &Path,
+        token: &CancellationToken,
+        active: bool,
+    ) -> Result<Self> {
+        let directory = config::Directory::load(path)?;
+        let mut registry = Self {
+            directory,
+            ..Self::default()
+        };
+        if active {
+            registry.connect_enabled(cwd, token)?;
+        }
+        Ok(registry)
+    }
+    pub(crate) fn view(&self, active: bool) -> View {
+        View {
+            entries: self
+                .directory
+                .entries
+                .iter()
+                .map(|(name, entry)| {
+                    let status = if !entry.enabled {
+                        "disabled"
+                    } else if entry.config.is_none() {
+                        entry.status
+                    } else if !active {
+                        "suspended (Plan/Review)"
+                    } else if let Some(server) = self.servers.get(name) {
+                        let state = server.lock().unwrap_or_else(|e| e.into_inner());
+                        if state.restart_after_cancel {
+                            "not connected (cancelled)"
+                        } else if state.client.stopped {
+                            "failed (connection closed)"
+                        } else {
+                            "connected"
+                        }
+                    } else {
+                        entry.status
+                    };
+                    EntryView {
+                        name: name.clone(),
+                        source: entry.source.clone(),
+                        path: entry.path.clone(),
+                        status,
+                    }
+                })
+                .collect(),
+            diagnostics: self.directory.diagnostics.clone(),
+        }
+    }
+    fn connect_enabled(&mut self, cwd: &Path, token: &CancellationToken) -> Result<()> {
+        let names: Vec<_> = self.directory.entries.keys().cloned().collect();
+        for name in names {
+            cancellation::check(token)?;
+            if self.directory.entries[&name].enabled {
+                self.connect_one(&name, cwd, token)?;
+            }
+        }
+        Ok(())
+    }
+    fn connect_one(&mut self, name: &str, cwd: &Path, token: &CancellationToken) -> Result<()> {
+        let Some(config) = self.directory.entries[name].config.clone() else {
+            return Ok(());
+        };
+        let result = self.add_server(name, &config, cwd, token);
+        self.directory
+            .entries
+            .get_mut(name)
+            .expect("known server")
+            .status = if result.is_ok() {
+            "connected"
+        } else if result.as_ref().err().is_some_and(|e| {
+            e.chain()
+                .any(|cause| cause.to_string().contains("timed out"))
+        }) {
+            "failed (timeout)"
+        } else if result
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.to_string() == "starting MCP process failed")
+        {
+            "failed (process start)"
+        } else {
+            "failed (initialization)"
+        };
+        match result {
+            Err(error) if error.is::<CleanupError>() || error.is::<Cancelled>() => Err(error),
+            _ => Ok(()),
+        }
+    }
+    pub(crate) fn manage(
+        &mut self,
+        action: &Action,
+        cwd: &Path,
+        token: &CancellationToken,
+        active: bool,
+    ) -> Result<()> {
+        match action {
+            Action::Help | Action::List => {}
+            Action::Reload => {
+                let directory = config::Directory::load(&self.directory.path)?;
+                self.shutdown()?;
+                self.directory = directory;
+                if active {
+                    self.connect_enabled(cwd, token)?;
+                }
+            }
+            Action::Enable(name) | Action::Disable(name) => {
+                let enabled = matches!(action, Action::Enable(_));
+                self.directory.save_enabled(name, enabled, token)?;
+                self.directory
+                    .entries
+                    .get_mut(name)
+                    .expect("validated name")
+                    .enabled = enabled;
+                self.disconnect(name)?;
+                if enabled && active {
+                    self.connect_one(name, cwd, token)?;
+                }
+            }
+            Action::Reconnect(name) => {
+                let entry = self
+                    .directory
+                    .entries
+                    .get(name)
+                    .ok_or_else(|| anyhow::anyhow!("未知 MCP 服务"))?;
+                ensure!(entry.enabled, "MCP 服务已禁用，请先 enable");
+                ensure!(active, "Plan/Review 中不连接 MCP");
+                self.disconnect(name)?;
+                self.connect_one(name, cwd, token)?;
+            }
+        }
+        Ok(())
+    }
+    fn disconnect(&mut self, name: &str) -> Result<()> {
+        if let Some(server) = self.servers.get(name) {
+            let mut state = server.lock().unwrap_or_else(|e| e.into_inner());
+            state.client.stop().map_err(CleanupError)?;
+            // 永久关闭旧引用，旧子 Agent 快照不能重新启动它。
+            state.restart_after_cancel = false;
+        }
+        self.servers.remove(name);
+        self.tools.retain(|_, tool| tool.server != name);
+        self.prune_tracking();
+        Ok(())
+    }
+    fn prune_tracking(&self) {
+        self.tracking
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .processes
+            .retain(|p| p.lock().unwrap_or_else(|e| e.into_inner()).child.is_some());
     }
 
     // 连接可被调用方的 token 取消：每次 spawn 前和 discovery 全程检查；
     // 取消不自动重试，由调用方决定是否再次 connect。
+    #[cfg(test)]
     pub(crate) fn connect(
         configs: &BTreeMap<String, ServerConfig>,
         cwd: &Path,
@@ -216,6 +471,7 @@ impl Registry {
         if failures == 0 {
             self.servers.clear();
             self.tools.clear();
+            self.prune_tracking();
             return Ok(());
         }
         Err(CleanupError(anyhow::anyhow!("{detail}")).into())
@@ -233,6 +489,11 @@ impl Registry {
             child: None,
             closing: false,
         }));
+        {
+            let mut tracking = self.tracking.lock().unwrap_or_else(|e| e.into_inner());
+            ensure!(!tracking.closing, "MCP 管理器正在退出");
+            tracking.processes.push(process.clone());
+        }
         let mut client = Client::spawn(config, cwd, process)?;
         let tools = match discover(&mut client, server, cancellation) {
             Ok(tools) => tools,
@@ -248,13 +509,20 @@ impl Registry {
                 });
             }
         };
-        for name in tools.keys() {
-            ensure!(!self.tools.contains_key(name), "duplicate MCP tool name");
+        let validation = (|| -> Result<()> {
+            for name in tools.keys() {
+                ensure!(!self.tools.contains_key(name), "duplicate MCP tool name");
+            }
+            ensure!(
+                self.tools.len() + tools.len() <= TOOL_LIMIT,
+                "too many MCP tools (maximum 256)"
+            );
+            Ok(())
+        })();
+        if let Err(error) = validation {
+            client.stop().map_err(CleanupError)?;
+            return Err(error);
         }
-        ensure!(
-            self.tools.len() + tools.len() <= TOOL_LIMIT,
-            "too many MCP tools (maximum 256)"
-        );
         self.tools.extend(tools);
         self.servers.insert(
             server.into(),
@@ -269,8 +537,17 @@ impl Registry {
     }
 
     pub(crate) fn definitions(&self) -> Vec<FunctionObject> {
+        let available: BTreeSet<_> = self
+            .servers
+            .iter()
+            .filter_map(|(name, server)| {
+                let state = server.lock().unwrap_or_else(|e| e.into_inner());
+                (!state.client.stopped || state.restart_after_cancel).then_some(name.as_str())
+            })
+            .collect();
         self.tools
             .values()
+            .filter(|tool| available.contains(tool.server.as_str()))
             .map(|tool| tool.definition.clone())
             .collect()
     }
@@ -549,7 +826,7 @@ impl Client {
                 let child = Command::new(&config.command)
                     .args(&config.args)
                     .envs(&config.env)
-                    .current_dir(cwd)
+                    .current_dir(config.cwd.as_deref().unwrap_or(cwd))
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null())
@@ -565,7 +842,9 @@ impl Client {
             match spawned {
                 Ok(pipes) => pipes,
                 Err(error) => {
-                    let _ = stop_locked(&mut slot);
+                    if slot.child.is_some() {
+                        stop_locked(&mut slot).map_err(CleanupError)?;
+                    }
                     return Err(error);
                 }
             }
@@ -575,7 +854,7 @@ impl Client {
             input: Some(input),
             output,
             pending: Vec::new(),
-            timeout: Duration::from_secs(config.timeout_seconds),
+            timeout: config.timeout(),
             next_id: 0,
             stopped: false,
         };
@@ -583,7 +862,7 @@ impl Client {
             .and_then(|_| nonblocking(&client.output))
         {
             // 尚未注册的进程也通过同一 slot 回收，不泄漏。
-            let _ = client.stop();
+            client.stop().map_err(CleanupError)?;
             return Err(error);
         }
         Ok(client)
@@ -648,13 +927,10 @@ impl Client {
         match response {
             Ok(result) => result,
             Err(error) => {
-                // 取消必须先真正终止并回收服务进程组，之后才返回；
-                // 取消路径的停止失败升级为 typed 清理错误，普通错误保持原文。
-                let cancelled = error.downcast_ref::<Cancelled>().is_some();
+                // 任意传输故障都必须确认进程已回收；失败不能降为普通工具错误。
                 match self.stop() {
                     Ok(()) => Err(error),
-                    Err(stop_error) if cancelled => Err(CleanupError(stop_error).into()),
-                    Err(_) => Err(error),
+                    Err(stop_error) => Err(CleanupError(stop_error).into()),
                 }
             }
         }
@@ -852,6 +1128,8 @@ mod tests {
             args: vec!["-c".into(), "sleep 30".into()],
             env: BTreeMap::new(),
             timeout_seconds: 1,
+            timeout_millis: None,
+            cwd: None,
         };
         let error = Client::spawn(&config, Path::new("."), process)
             .err()
@@ -875,6 +1153,8 @@ mod tests {
             args: vec![],
             env: BTreeMap::new(),
             timeout_seconds: 1,
+            timeout_millis: None,
+            cwd: None,
         };
         let error = Client::spawn(&config, Path::new("."), process.clone())
             .err()
@@ -890,6 +1170,8 @@ mod tests {
             args: args.iter().map(|arg| (*arg).into()).collect(),
             env: BTreeMap::new(),
             timeout_seconds: 1,
+            timeout_millis: None,
+            cwd: None,
         }
     }
 
@@ -913,6 +1195,8 @@ mod tests {
             )],
             env: BTreeMap::from([("MCP_LOG".into(), "proxy-log".into())]),
             timeout_seconds: 1,
+            timeout_millis: None,
+            cwd: None,
         };
         let registry = Registry::connect(
             &BTreeMap::from([("local".into(), config)]),
@@ -1028,7 +1312,17 @@ mod tests {
         // 任一失败保留整个 registry/slot。
         assert_eq!(registry.servers.len(), 2);
         assert_eq!(registry.tools.len(), 2);
-        assert_eq!(registry.cleanup().unwrap().processes.len(), 2);
+        assert_eq!(
+            registry
+                .cleanup()
+                .unwrap()
+                .tracking
+                .lock()
+                .unwrap()
+                .processes
+                .len(),
+            2
+        );
         // 重试不假成功：故障未清除前 shutdown 仍失败。
         assert!(registry.shutdown().is_err());
         assert!(!registry.servers.is_empty() && !registry.tools.is_empty());

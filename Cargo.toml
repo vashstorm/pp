@@ -20,6 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde_path_to_error = "0.1"
 serde_yaml = "0.9"
+toml = { version = "1", default-features = false, features = ["parse", "serde"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "deflate", "gzip", "rustls", "form"] }
 tokio = { version = "1", features = ["rt", "time", "net"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }

@@ -122,6 +122,7 @@ Use `/help` for full help and `/tips` for usage tips. The following slash comman
 | `/plan [prompt]` | Toggle Plan mode standby; view the plan or send a planning task immediately; execute after approval (TUI only) |
 | `/plan-list` | Manage saved plans: preview, continue, execute, rename, delete (TUI only) |
 | `/task-test` | Debug builds only: dispatch the fixed FAST/SLOW/REVIEW read-only subagent batch and wait for all three results |
+| `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | Manage MCP servers without restarting |
 | `/compact`, `/new` | Compact context or start a new session |
 | `/resume`, `/tree` | Restore a session or navigate back through current history (TUI only) |
 | `/changes` | View recent-task edit/write changes and undo individual files (TUI only) |
@@ -186,7 +187,7 @@ The linked guides below are in Chinese.
 | [Skills](docs/guide.md#技能支持) | `~/.pp/agent/skills/` | Load `SKILL.md` on demand and manage skills with `/skills` |
 | [System prompts](docs/guide.md#系统提示词) | `cwd/.pp/` or `~/.pp/agent/` | Replace base instructions with `SYSTEM.md` or `SYSTEM_TEMPLATE.md`, or append with `APPEND_SYSTEM.md` |
 | [Prompt commands](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | Expand Markdown templates with `/command arguments` |
-| [MCP tools](docs/guide.md#mcp-工具) | `mcp_servers` in `settings.yml` | Connect to local stdio servers and discover tools |
+| [MCP tools](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`, `/mcp` | Discover user-level Claude/Codex stdio servers, inspect status, enable, disable, reconnect, and reload |
 
 ## Development
 

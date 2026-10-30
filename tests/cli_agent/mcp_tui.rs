@@ -2,7 +2,7 @@
 fn mcp_tui_runs_tools_in_worker_and_keeps_input_draft_responsive() {
     let provider = server();
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(dir.path(), "settings.yml"), super::mcp::settings("call_timeout").to_string()).unwrap();
+    crate::write_settings(dir.path(), super::mcp::settings("call_timeout").to_string()).unwrap();
     std::fs::write(config_path(dir.path(), "models.yml"), fixture_models(&provider)).unwrap();
     let mut pty = Pty::start_with_existing_files(dir.path());
     pty.ready();
@@ -31,8 +31,8 @@ fn mcp_tui_exit_reaps_servers_while_idle_waiting_for_model_or_running_tool() {
         let provider = server();
         let dir = tempfile::tempdir().unwrap();
         let mut config = super::mcp::settings("call_timeout");
-        config["mcp_servers"]["local"]["timeout_seconds"] = json!(30);
-        std::fs::write(config_path(dir.path(),"settings.yml"),config.to_string()).unwrap();
+        config["mcpServers"]["local"]["timeout"] = json!(30_000);
+        crate::write_settings(dir.path(),config.to_string()).unwrap();
         std::fs::write(config_path(dir.path(),"models.yml"),fixture_models(&provider)).unwrap();
         let mut pty = Pty::start_with_existing_files(dir.path());
         pty.ready();
@@ -52,4 +52,44 @@ fn mcp_tui_exit_reaps_servers_while_idle_waiting_for_model_or_running_tool() {
         super::mcp::assert_stopped(dir.path());
         drop(pending);
     }
+}
+
+#[test]
+fn mcp_tui_list_is_read_only_and_core_completion_updates_runtime() {
+    let provider = server();
+    let home = tempfile::tempdir().unwrap();
+    crate::write_settings(home.path(), super::mcp::settings("").to_string()).unwrap();
+    std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&provider)).unwrap();
+    let mut pty = Pty::start_with_existing_files(home.path());
+    pty.ready();
+    pty.input("/mcp ");
+    pty.text("reconnect");
+    pty.text("reload");
+    pty.input("list\r");
+    pty.text("Configured MCP Servers");
+    pty.text("connected");
+    no_more(&provider);
+    pty.input("\x1b");
+    pty.ready();
+    pty.input("/mcp disable local\r");
+    pty.text("MCP 状态已更新");
+    pty.input("task without MCP\r");
+    let (request, body) = receive(&provider);
+    assert!(!body["tools"].to_string().contains("mcp__local__"));
+    // 任务运行中提交管理命令必须本地拒绝，不能变成 steering。
+    pty.input("/mcp enable local\r");
+    pty.text("请先完成或取消当前任务");
+    final_reply(request, "task complete");
+    pty.text("task complete");
+    pty.ready();
+    pty.input("\x01\x0b/mcp enable local\r");
+    pty.text("MCP 状态已更新");
+    pty.input("task with MCP\r");
+    let (request, body) = receive(&provider);
+    assert!(body["tools"].to_string().contains("mcp__local__echo"));
+    final_reply(request, "MCP reenabled");
+    pty.text("MCP reenabled");
+    pty.input("/quit\r");
+    pty.finish();
+    super::mcp::assert_stopped(home.path());
 }

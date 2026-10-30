@@ -223,7 +223,7 @@ fn plan_headless_restore_refuses_before_mcp_or_model_start() {
                 json!({"type":"custom","customType":"pp.workflow","data":{"version":1,"workflow":{"mode":"plan","plan":null,"review":null}}}),
             );
         });
-        configure(home.path(), &json!({"mcp_servers":{"must_not_spawn":{"command":"bash","args":["-c","touch forbidden-mcp; exit 1"]}}}).to_string(), &api.models(&provider));
+        configure(home.path(), &json!({"mcpServers":{"must_not_spawn":{"command":"bash","args":["-c","touch forbidden-mcp; exit 1"]}}}).to_string(), &api.models(&provider));
         for args in [
             vec!["-r", id.as_str()],
             vec!["-c", id.as_str()],

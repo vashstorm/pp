@@ -11,6 +11,18 @@ impl App {
         {
             self.escape_tap.reset();
         }
+        if let Some(panel) = &mut self.mcp_panel {
+            if matches!(&event, Event::Key(key) if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) && key.kind == KeyEventKind::Press)
+            {
+                return true;
+            }
+            if panel.handle(&event) {
+                self.mcp_panel = None;
+                self.menu_dismissed = true;
+            }
+            *dirty = true;
+            return false;
+        }
         if self.ask_panel.is_none()
             && let Some(panel) = &mut self.subagent_panel
         {
@@ -526,13 +538,19 @@ impl App {
                     if key.kind == KeyEventKind::Press
                         && matches!(
                             self.state,
-                            State::Running | State::Compacting | State::ReviewingPlan
+                            State::Running
+                                | State::ManagingMcp
+                                | State::Compacting
+                                | State::ReviewingPlan
                         )
                         && let Some(cancellation) = &self.active_cancellation
                     {
                         cancellation.cancel();
                         self.queue_paused = true;
                         match self.state {
+                            State::ManagingMcp => {
+                                self.secondary_status = Some("正在取消 MCP 管理操作…".into());
+                            }
                             State::Compacting => {
                                 self.secondary_status = Some("Cancelling context...".into());
                             }
