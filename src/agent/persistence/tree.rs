@@ -699,7 +699,7 @@ mod tests {
             for id in [&user_b, &answer_b] {
                 assert_unknown_target(&mut restored.journal, id);
             }
-            let listing = list(dir.path()).unwrap();
+            let listing = indexed_listing(dir.path()).unwrap();
             assert_eq!(listing.sessions[0].summary, "question-a");
             assert_eq!(listing.sessions[0].preview, "answer-a");
 
@@ -971,7 +971,7 @@ mod tests {
             }
             assert!(!text(&restored.checkpoint.session).contains("first-answer"));
             assert_eq!(
-                list(dir.path()).unwrap().sessions[0].summary,
+                indexed_listing(dir.path()).unwrap().sessions[0].summary,
                 "first-question"
             );
             // New input continues from the empty effective history only; the
@@ -994,7 +994,7 @@ mod tests {
             assert_eq!(active.nodes[0].parent, None);
             assert_eq!(active.nodes[0].text, "next-question");
             assert_eq!(active.path(active.leaf), vec![0, 1]);
-            let listing = list(dir.path()).unwrap();
+            let listing = indexed_listing(dir.path()).unwrap();
             assert_eq!(listing.sessions.len(), 1);
             assert_eq!(listing.sessions[0].id, id);
             assert_eq!(listing.sessions[0].summary, "first-question");
@@ -1181,7 +1181,7 @@ mod tests {
                 assert!(!users(records).contains(&"question-c"));
                 assert!(!answers(records).contains(&"answer-c"));
             }
-            let listing = list(dir.path()).unwrap();
+            let listing = indexed_listing(dir.path()).unwrap();
             assert_eq!(listing.sessions[0].summary, "question-a");
             assert_eq!(listing.sessions[0].preview, "answer-a");
             assert!(listing.sessions[0].done);

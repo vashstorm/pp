@@ -242,7 +242,7 @@ fn cancellation_before_request_saves_accepted_input_and_replays_terminal() {
                 .count(),
             1
         );
-        assert!(!persistence::list(&sessions).unwrap().sessions[0].done);
+        assert!(!persistence::indexed_listing(&sessions).unwrap().sessions[0].done);
     }
 }
 

@@ -52,7 +52,7 @@ pub(crate) type ModelRoles = BTreeMap<ModelRole, RoleAssignment>;
 
 impl ModelCatalog {
     pub(crate) fn model_roles(&self) -> &ModelRoles {
-        &self.settings.model_roles
+        &self.preferences.model_roles
     }
 
     /// 未配置或未选中的角色保持调用方模型；显式配置不可用时不能悄悄换模型。
@@ -63,7 +63,7 @@ impl ModelCatalog {
         effort: ThinkLevel,
     ) -> Result<RoleAssignment> {
         let assignment = self
-            .settings
+            .preferences
             .model_roles
             .get(&role)
             .filter(|assignment| assignment.enabled)
@@ -87,40 +87,30 @@ impl ModelCatalog {
         role: ModelRole,
         assignment: Option<RoleAssignment>,
     ) -> Result<()> {
-        if let Some(assignment) = &assignment
-            && assignment.enabled
-        {
-            let config = self.resolve(&assignment.model)?;
+        if let Some(assignment) = &assignment {
+            // 禁用的 Role 同样保持复合引用约束，避免下次启动偏好校验失败。
             ensure!(
-                config.thinking.supports(assignment.effort),
-                "角色 effort 不受所选模型支持"
+                assignment
+                    .model
+                    .split_once('/')
+                    .is_some_and(
+                        |(provider, model)| !provider.trim().is_empty() && !model.trim().is_empty()
+                    ),
+                "model_roles model must use provider/model"
             );
-        }
-        let mut roles = ModelRoles::new();
-        update_settings(&self.settings_path, |settings| {
-            roles = settings.model_roles;
-            if let Some(assignment) = assignment {
-                roles.insert(role, assignment);
-            } else {
-                roles.remove(&role);
+            if assignment.enabled {
+                let config = self.resolve(&assignment.model)?;
+                ensure!(
+                    config.thinking.supports(assignment.effort),
+                    "角色 effort 不受所选模型支持"
+                );
             }
-            Ok(("model_roles", serde_yaml::to_value(&roles)?))
-        })?;
-        self.settings.model_roles = roles;
+        }
+        let mut store = crate::agent_store::AgentStore::open(&self.agent_db_path)?;
+        let preferences = store.set_model_role(role, assignment.as_ref())?;
+        self.preferences = preferences;
         if role == ModelRole::Default {
-            self.default_reference = self
-                .settings
-                .model_roles
-                .get(&role)
-                .filter(|assignment| assignment.enabled)
-                .map(|assignment| assignment.model.clone())
-                .or_else(|| self.settings.default_model.clone())
-                .unwrap_or_else(|| {
-                    self.choices()
-                        .first()
-                        .map(|choice| choice.reference.clone())
-                        .unwrap_or_default()
-                });
+            self.default_reference = default_reference(&self.providers, &self.preferences);
         }
         Ok(())
     }
@@ -218,21 +208,29 @@ mod tests {
         catalog
             .save_model_role(ModelRole::Plan, Some(value.clone()))
             .unwrap();
-        let path = dir.path().join("settings.yml");
-        let before = fs::read(&path).unwrap();
-        for value in [
+        for invalid in [
             assignment("fixture/two", ThinkLevel::Max),
             assignment("removed/model", ThinkLevel::Low),
         ] {
             assert!(
                 catalog
-                    .save_model_role(ModelRole::Plan, Some(value))
+                    .save_model_role(ModelRole::Plan, Some(invalid))
                     .is_err()
             );
-            assert_eq!(fs::read(&path).unwrap(), before);
         }
-        fs::remove_file(&path).unwrap();
-        fs::create_dir(&path).unwrap();
+        // 禁用的 Role 同样保持复合引用约束。
+        let mut malformed = assignment("garbage", ThinkLevel::Low);
+        malformed.enabled = false;
+        assert!(
+            catalog
+                .save_model_role(ModelRole::Plan, Some(malformed))
+                .is_err()
+        );
+        assert_eq!(catalog.model_roles()[&ModelRole::Plan], value);
+        // agent.db 不可用时保存失败，catalog 内存快照保持已提交状态。
+        let agent_db = dir.path().join("agent.db");
+        fs::remove_file(&agent_db).unwrap();
+        fs::create_dir(&agent_db).unwrap();
         assert!(catalog.save_model_role(ModelRole::Plan, None).is_err());
         assert_eq!(catalog.model_roles()[&ModelRole::Plan], value);
     }
@@ -318,13 +316,14 @@ mod tests {
             assert_eq!(selected.model, "fixture/one");
             assert_eq!(selected.effort, ThinkLevel::Low);
         }
-        let settings = read_settings(&dir.path().join("settings.yml")).unwrap();
-        assert!(!settings.model_roles[&ModelRole::Review].enabled);
-        let legacy: Settings = yaml::parse(
-            "model_roles: {fast: {model: fixture/one, effort: high}}",
-            "settings",
+        let restored = ModelCatalog::from_files(
+            &dir.path().join("settings.yml"),
+            &dir.path().join("models.yml"),
         )
         .unwrap();
-        assert!(legacy.model_roles[&ModelRole::Fast].enabled);
+        for role in [ModelRole::Default, ModelRole::Plan, ModelRole::Review] {
+            assert!(!restored.model_roles()[&role].enabled);
+            assert_eq!(restored.model_roles()[&role].model, "fixture/two");
+        }
     }
 }

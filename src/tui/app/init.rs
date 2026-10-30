@@ -5,6 +5,7 @@ use crate::tui::{
     publish_transition_failure, push_runtime_snapshot, push_workflow_snapshot, request_ask, skills,
     statusline, thread, usage_snapshot,
 };
+use std::collections::BTreeMap;
 
 impl App {
     #[cfg(test)]
@@ -13,13 +14,19 @@ impl App {
             .as_ref()
             .map(|agent| agent.skills())
             .unwrap_or_else(|_| crate::skills::Skills::default().shared());
-        Self::new_with_skills(
+        // 每个 App 独立 history.db：不读取真实 HOME，也不共享临时库。
+        let dir = tempfile::tempdir()?;
+        let history_path = dir.path().join("history.db");
+        let mut app = Self::new_with_skills(
             agent,
             skills,
             commands::FileCommands::default(),
             Path::new("."),
             NotificationOptions::default(),
-        )
+            Some(history_path),
+        )?;
+        app.history_dir = Some(dir);
+        Ok(app)
     }
 
     pub(in crate::tui) fn new_with_skills(
@@ -28,6 +35,7 @@ impl App {
         file_commands: commands::FileCommands,
         cwd: &Path,
         notification_options: NotificationOptions,
+        history_path: Option<std::path::PathBuf>,
     ) -> Result<Self> {
         let diagnostics = skills
             .lock()
@@ -55,6 +63,17 @@ impl App {
             input_history: Vec::new(),
             history_index: None,
             history_draft: None,
+            history_worker: None,
+            history_cwd: cwd.to_path_buf(),
+            history_oldest_id: None,
+            history_has_more: false,
+            history_page_pending: None,
+            history_request_id: 0,
+            history_waiting_up: false,
+            history_failure_notified: false,
+            session_generation: 0,
+            #[cfg(test)]
+            history_dir: None,
             state: State::Unavailable,
             next_shell_id: 0,
             active_cancellation: None,
@@ -74,6 +93,7 @@ impl App {
             current_model: None,
             default_model_reference: None,
             favorite_models: Vec::new(),
+            model_usage: BTreeMap::new(),
             think_level: ThinkLevel::None,
             default_think_level: ThinkLevel::default(),
             menu: None,
@@ -118,6 +138,10 @@ impl App {
             plan_review_pending: None,
         };
         let mut startup_notice = None;
+        // 启动持久输入 recall：LoadInputs 必须排在任何 AppendInput 之前。
+        if let Some(message) = app.start_history(history_path) {
+            merge_startup_notice(&mut startup_notice, message);
+        }
         match agent {
             Ok(agent) => app.install_agent(agent)?,
             Err(error) => {
@@ -165,6 +189,14 @@ impl App {
         self.background_cleanup = Some(agent.background_cleanup());
         self.choices = agent.model_choices();
         self.favorite_models = agent.favorite_models().to_vec();
+        // 首次安装没有旧快照可保留；读取失败保留空缓存并单独提示，不阻断模型任务。
+        match agent.model_usage() {
+            Ok(usage) => self.model_usage = usage,
+            Err(error) => self.notify(
+                Level::Error,
+                format!("Could not load model usage: {error:#}"),
+            ),
+        }
         self.model_roles = agent.model_roles().clone();
         self.default_model_reference = Some(agent.default_model_reference().to_owned());
         let (commands, receiver) = mpsc::channel();
@@ -207,7 +239,7 @@ impl App {
                         WorkerCommand::ReloadModels => WorkerEvent::ModelsReloaded(
                             agent
                                 .reload_models()
-                                .map(|()| crate::tui::ModelListing::from_agent(&agent)),
+                                .and_then(|()| crate::tui::ModelListing::from_agent(&agent)),
                         ),
                         WorkerCommand::Shell {
                             command,
@@ -270,18 +302,20 @@ impl App {
                         WorkerCommand::SaveDefaultThinkLevel(level) => {
                             let result = agent.save_default_think_level(level).map(|()| level);
                             if result.is_ok() {
-                                snapshots.push(WorkerEvent::ModelsReloaded(Ok(
+                                // 偏好已提交；快照读取失败经 ModelsReloaded 单独报错，
+                                // 不把保存伪装成失败。
+                                snapshots.push(WorkerEvent::ModelsReloaded(
                                     crate::tui::ModelListing::from_agent(&agent),
-                                )));
+                                ));
                             }
                             WorkerEvent::DefaultThinkLevelSaved(result)
                         }
                         WorkerCommand::SaveDefaultModel(reference) => {
                             let result = agent.save_default_model(&reference).map(|()| reference);
                             if result.is_ok() {
-                                snapshots.push(WorkerEvent::ModelsReloaded(Ok(
+                                snapshots.push(WorkerEvent::ModelsReloaded(
                                     crate::tui::ModelListing::from_agent(&agent),
-                                )));
+                                ));
                             }
                             WorkerEvent::DefaultModelSaved(result)
                         }
@@ -327,11 +361,6 @@ impl App {
                             }
                             WorkerEvent::TreeNavigated(result)
                         }
-                        WorkerCommand::ListSessions => WorkerEvent::SessionsListed(
-                            crate::config::global_dir()
-                                .map(|dir| dir.join("sessions"))
-                                .and_then(|dir| crate::agent::persistence::list(&dir)),
-                        ),
                         WorkerCommand::DeleteSession(id) => {
                             let result = crate::config::global_dir()
                                 .map(|dir| dir.join("sessions"))
@@ -339,7 +368,7 @@ impl App {
                                     let locks = crate::agent::persistence::locks::directory()?;
                                     crate::agent::persistence::delete(&dir, &locks, &id)
                                 });
-                            WorkerEvent::SessionDeleted(id, result)
+                            WorkerEvent::SessionDeleted(result)
                         }
                         WorkerCommand::Resume { id, cancellation } => {
                             let result = agent.resume(&id, &cancellation);

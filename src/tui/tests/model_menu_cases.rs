@@ -1065,3 +1065,103 @@ fn effort_space_opens_inline_menu_and_confirms_only_after_enter() {
     assert_eq!(app.think_level, ThinkLevel::Max);
     assert_eq!(app.input.lines(), &["新草稿"]);
 }
+
+#[test]
+fn sqlite_model_menu_orders_favorites_then_usage() {
+    let (mut app, requests, _events) = plan_app();
+    app.choices = ["p/one-a", "p/one-b", "p/two"]
+        .into_iter()
+        .map(|id| ModelChoice {
+            reference: id.into(),
+            model: format!("vendor-{id}"),
+            protocol: crate::models::Protocol::Completion,
+            thinking: crate::models::ModelThinking::default(),
+            context_window: None,
+        })
+        .collect();
+    app.current_model = Some(app.choices[0].clone());
+    app.default_model_reference = Some(app.choices[0].reference.clone());
+    app.favorite_models = vec!["p/two".into()];
+    app.model_usage = std::collections::BTreeMap::from([
+        ("p/one-a".to_string(), 5),
+        ("p/one-b".to_string(), 5),
+        ("p/two".to_string(), 1),
+    ]);
+
+    let mut dirty = false;
+    app.handle(Event::Paste("/model ".into()), &mut dirty);
+    // 收藏 p/two 尽管次数最低仍居首；非收藏按次数降序，5/5 平手保持目录顺序。
+    assert_eq!(
+        menu_values(&app),
+        vec![
+            MenuAction::Model(2),
+            MenuAction::Model(0),
+            MenuAction::Model(1)
+        ]
+    );
+
+    // 过滤到平手对：排序键在筛选结果内同样生效且保持目录顺序。
+    app.close_model_panel();
+    app.input = editor();
+    app.handle(Event::Paste("/model one".into()), &mut dirty);
+    assert_eq!(
+        menu_values(&app),
+        vec![MenuAction::Model(0), MenuAction::Model(1)]
+    );
+
+    // 打开面板、筛选、取消不发请求，也不改动缓存的用量快照。
+    let usage_before = app.model_usage.clone();
+    app.handle(key(KeyCode::Esc), &mut dirty);
+    assert!(requests.try_recv().is_err());
+    assert_eq!(app.model_usage, usage_before);
+
+    // 选中 p/one-b 后目录刷新重排；选择跟随同一模型而不是固定位置。
+    app.input = editor();
+    app.handle(Event::Paste("/model ".into()), &mut dirty);
+    app.handle(key(KeyCode::Down), &mut dirty);
+    assert_eq!(active_menu(&app).selected_index(), Some(2));
+    let mut usage = app.model_usage.clone();
+    usage.insert("p/one-b".to_string(), 9);
+    app.receive_event_for_test(WorkerEvent::ModelsReloaded(Ok(crate::tui::ModelListing {
+        roles: Default::default(),
+        default_effort: ThinkLevel::default(),
+        choices: app.choices.clone(),
+        default_reference: "p/one-a".into(),
+        favorites: app.favorite_models.clone(),
+        usage: usage.clone(),
+    })));
+    assert_eq!(app.model_usage, usage);
+    assert_eq!(
+        menu_values(&app),
+        vec![
+            MenuAction::Model(2),
+            MenuAction::Model(1),
+            MenuAction::Model(0)
+        ]
+    );
+    assert_eq!(active_menu(&app).selected_index(), Some(1));
+
+    // 用量读取失败：保留旧快照与菜单，单独报错，不把缓存清零。
+    app.receive_event_for_test(WorkerEvent::ModelsReloaded(Err(anyhow::anyhow!(
+        "Agent database unavailable."
+    ))));
+    assert_eq!(app.model_usage, usage);
+    assert_eq!(
+        menu_values(&app),
+        vec![
+            MenuAction::Model(2),
+            MenuAction::Model(1),
+            MenuAction::Model(0)
+        ]
+    );
+    assert!(draw(&mut app, 130, 30).contains("Could not refresh models"));
+
+    // 偏好已提交但随后的快照读取失败：保存成功与刷新失败分别提示，不伪装保存失败。
+    app.receive_event_for_test(WorkerEvent::DefaultModelSaved(Ok("p/one-b".into())));
+    assert!(draw(&mut app, 130, 30).contains("Default model saved: p/one-b"));
+    app.receive_event_for_test(WorkerEvent::ModelsReloaded(Err(anyhow::anyhow!(
+        "Agent database unavailable."
+    ))));
+    assert_eq!(app.default_model_reference.as_deref(), Some("p/one-b"));
+    assert!(draw(&mut app, 130, 30).contains("Could not refresh models"));
+}

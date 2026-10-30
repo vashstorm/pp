@@ -24,7 +24,7 @@ pp is a Pi-style terminal coding agent written in Rust. It lets models read proj
 | **Planning and execution** | Plan research, review, and explicit approval, with an ask panel for key decisions; `/plan-list` manages saved plans across drafts, plans, and done |
 | **Todo tracking** | Fixed progress above the input box, expandable task lists during execution, approved-plan checkbox synchronization, and bounded completion reminders |
 | **Task control** | Add instructions while a task runs, queue follow-up tasks, and press Esc to cancel |
-| **Sessions and changes** | Automatic saving and restoration, session tree navigation, and recent-task diffs with safe undo |
+| **Sessions and changes** | Automatic saving and restoration, session tree navigation, persistent per-directory input recall, full-prompt `/resume` search, and recent-task diffs with safe undo |
 | **Extensions on demand** | Project `AGENTS.md`, skills, Markdown prompt commands, and local stdio MCP tools |
 | **Usage visibility** | Context estimates and compaction, plus local request, token, cost, and latency statistics |
 
@@ -49,9 +49,9 @@ Start the terminal UI even without model configuration, then use `/login` to cho
 ./target/release/pp
 ```
 
-`/login` opens the authorization page in your browser. ChatGPT, Copilot, and Kimi use device authorization; GLM and Z.AI use masked API key input. Credentials are stored in `~/.pp/agent/auth.yml` with mode `0600`. Discovered subscription models are stored separately in `~/.pp/agent/models-sub.yml`. Discovery failures keep the authorization and offer a retry without adding a guessed default model.
+`/login` opens the authorization page in your browser. ChatGPT, Copilot, and Kimi use device authorization; GLM and Z.AI use masked API key input. Credentials are stored in plain text in `~/.pp/agent/agent.db`, with directory mode `0700` and database file mode `0600`; no system keychain or encryption is provided. Discovered subscription models remain in `~/.pp/agent/models-sub.yml`, which keeps its existing format. Discovery failures keep the authorization and offer a retry without adding a guessed default model. Quit every running pp process before upgrading: on first start pp imports the old preference fields in `settings.yml` and `auth.yml` into `agent.db` exactly once, then removes the authorization and those fields from YAML.
 
-Use `/model` to select a model immediately. It reloads both model files; `models.yml` takes priority for identical `provider/model` references. `/logout` removes a provider's local authorization and subscription models. These authorization commands require the TUI; the old `pp auth` command and `auth.json` are no longer used. Kimi and GLM currently use non-thinking mode. See [subscription authentication](docs/guide.md#订阅认证) for details.
+Use `/model` to select a model immediately. It reloads both model files; `models.yml` takes priority for identical `provider/model` references. `/logout` removes a provider's credentials from `agent.db` and its subscription models. These authorization commands require the TUI; the old `pp auth` command and `auth.json` are no longer used. Kimi and GLM currently use non-thinking mode. See [subscription authentication](docs/guide.md#订阅认证) for details.
 
 For a regular API key, use the configuration below.
 
@@ -75,12 +75,9 @@ providers:
 <details>
 <summary><strong>Optional: application settings, multiple models, and reasoning levels</strong></summary>
 
-Create `~/.pp/agent/settings.yml`, or omit it to use the defaults.
+Create `~/.pp/agent/settings.yml`, or omit it to use the defaults. The default model, reasoning effort, favorites, and the six model roles are managed in the TUI (`/model`, `/effort`, the menus' save shortcuts, Ctrl + F, `/Roles`) and stored in `~/.pp/agent/agent.db`; they are not configured in YAML. The remaining settings stay declarative YAML.
 
 ```yaml
-default_model: openai/main
-favorite_models: []
-think_level: none
 edit: replace
 auto_compact: true
 auto_compact_threshold_percent: 80
@@ -112,7 +109,7 @@ printf 'Explain how to build the current project\n' | pp
 
 ## Everyday use
 
-Opening the model picker in the TUI clears the main input and focuses a separate search field above the list. The panel height is set from the total model count when opened and stays fixed while filtering. The panel uses at most 15 rows: 3 for search, up to 11 for the list, and 1 for hints. Longer lists show a scrollbar and support arrow keys, page keys, and mouse-wheel scrolling inside the panel. Search filters as you type, matching any part of `provider/model` or the actual model name, case-insensitively. Ctrl + F toggles the highlighted model's favorite status. Favorites show a solid gold Nerd Font star `` and appear first, with configuration order preserved within each group. Favorites are saved in the global `settings.yml` under `favorite_models` and persist across restarts. Ctrl + S saves the default model. When no models match, the panel shows a message, and Enter and Tab do nothing.
+Opening the model picker in the TUI clears the main input and focuses a separate search field above the list. The panel height is set from the total model count when opened and stays fixed while filtering. The panel uses at most 15 rows: 3 for search, up to 11 for the list, and 1 for hints. Longer lists show a scrollbar and support arrow keys, page keys, and mouse-wheel scrolling inside the panel. Search filters as you type, matching any part of `provider/model` or the actual model name, case-insensitively. Ctrl + F toggles the highlighted model's favorite status. Favorites show a solid gold Nerd Font star `` and always appear before other models; within each group, models are ordered by usage, with more logical requests first and equal counts keeping catalog order. Usage counts logical model API requests actually attempted since the upgrade: connection retries of one request count once, while opening the panel or switching models does not count. Favorites and usage are stored in `~/.pp/agent/agent.db` and persist across restarts. Ctrl + S saves the default model. When no models match, the panel shows a message, and Enter and Tab do nothing.
 
 Use `/help` for full help and `/tips` for usage tips. The following slash commands work in interactive modes; content passed through `-p` is always sent as a regular prompt.
 
@@ -173,6 +170,8 @@ pp stats
 ```
 
 `pp stats` automatically opens the statistics page in your default browser, served at [127.0.0.1:3848](http://127.0.0.1:3848) by default; piped or non-terminal contexts (scripts, CI, agent shells) only print the URL. Use `pp stats --no-open` to only start the server. No model configuration, Node, or CDN is required at runtime. Each active session is held exclusively by one pp process through `~/.pp/run/sessions/SESSION_ID.lock`, including while waiting for input. Run `pp gc [DAYS]` to manually remove logs, statistics, and unused session lock files older than the given number of days (default 90); original sessions and configuration are kept.
+
+TUI input history is stored per working directory in `~/.pp/agent/history.db` and can be recalled with the up arrow after a restart; other directories and authorization-panel input never appear there. `/resume` searches titles, previews, IDs, paths, and every user prompt in the JSONL session logs, including branches outside the active leaf; all query words must match literally, and short Chinese words work without being treated as query syntax. The session index can be rebuilt from the logs, but the input history cannot: never delete `history.db` to rebuild the index, because that permanently loses recalled input. Line mode and `-p` prompts are searchable from the logs and are not added to TUI input history. See [session persistence](docs/guide.md#会话持久化与恢复) for details.
 
 ## Extensions
 

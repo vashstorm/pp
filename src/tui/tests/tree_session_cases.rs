@@ -197,58 +197,123 @@ fn tree_navigation_error_preserves_transcript_draft_and_panel() {
 }
 
 #[test]
-fn resume_cancelled_scan_never_reopens_panel_and_keeps_worker_busy_until_reply() {
+fn resume_cancelled_search_never_reopens_panel_and_keeps_editor_usable() {
     let mut app = app();
     app.state = State::Ready;
     app.append("You", "original conversation");
-    let original = draw(&mut app, 100, 30);
     let (commands, requests) = mpsc::channel();
-    let (events, replies) = mpsc::channel();
+    let (_events, replies) = mpsc::channel();
     app.commands = Some(commands);
     app.events = Some(replies);
     let mut dirty = false;
     app.handle(Event::Paste("/resume".into()), &mut dirty);
     app.handle(key(KeyCode::Enter), &mut dirty);
-    assert!(matches!(
-        requests.try_recv(),
-        Ok(WorkerCommand::ListSessions)
-    ));
-    assert!(draw(&mut app, 100, 30).contains("Loading saved sessions…"));
+    // 会话检索走独立 history worker：面板开启期间不向 Agent worker 发送命令。
+    assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+    assert!(app.needs_alternate());
+    let generation = app
+        .session_panel
+        .as_ref()
+        .expect("session panel opened")
+        .generation();
+    assert!(draw(&mut app, 100, 30).contains("Resume session"));
     app.handle(Event::Paste("must not enter editor".into()), &mut dirty);
     app.handle(function_key('p'), &mut dirty);
     app.handle(key(KeyCode::F(1)), &mut dirty);
     app.handle(key(KeyCode::Esc), &mut dirty);
+    assert!(!app.needs_alternate());
     assert!(draw(&mut app, 100, 30).contains("original conversation"));
-    app.handle(Event::Paste("next prompt".into()), &mut dirty);
-    app.handle(key(KeyCode::Enter), &mut dirty);
-    assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
-    assert_eq!(app.input.lines(), &["next prompt"]);
-    events
-        .send(WorkerEvent::SessionsListed(Ok(
-            crate::agent::persistence::SessionListing {
-                sessions: vec![crate::agent::persistence::SessionSummary {
-                    id: "late".into(),
-                    cwd: "/tmp".into(),
-                    updated_at: std::time::SystemTime::now(),
-                    summary: "late scan result".into(),
-                    preview: String::new(),
-                    bytes: 0,
-                    done: false,
-                }],
-                diagnostics: Vec::new(),
-            },
-        )))
-        .unwrap();
+    // 关闭后到达的同代次检索结果不能重开面板，也不能覆盖主屏幕。
+    app.receive_session_search(
+        generation,
+        1,
+        Ok(crate::agent::persistence::SessionListing {
+            sessions: vec![crate::agent::persistence::SessionSummary {
+                id: "late".into(),
+                cwd: "/tmp".into(),
+                updated_at: std::time::SystemTime::now(),
+                summary: "late scan result".into(),
+                preview: String::new(),
+                bytes: 0,
+                done: false,
+            }],
+            diagnostics: Vec::new(),
+        }),
+    );
     app.receive();
     let screen = draw(&mut app, 100, 30);
+    assert!(app.session_panel.is_none());
     assert!(screen.contains("original conversation"));
     assert!(!screen.contains("Resume session"));
     assert!(!screen.contains("late scan result"));
-    assert_eq!(screen.lines().last(), original.lines().last());
+    app.handle(Event::Paste("next prompt".into()), &mut dirty);
     app.handle(key(KeyCode::Enter), &mut dirty);
     assert!(
         matches!(requests.try_recv(), Ok(WorkerCommand::Run { prompt, .. }) if prompt == "next prompt")
     );
+}
+
+#[test]
+fn sqlite_resume_ignores_stale_search_replies() {
+    fn listing(id: &str) -> crate::agent::persistence::SessionListing {
+        crate::agent::persistence::SessionListing {
+            sessions: vec![crate::agent::persistence::SessionSummary {
+                id: id.into(),
+                cwd: "/project".into(),
+                updated_at: std::time::SystemTime::now(),
+                summary: id.into(),
+                preview: String::new(),
+                bytes: 0,
+                done: true,
+            }],
+            diagnostics: Vec::new(),
+        }
+    }
+    fn open(app: &mut App, generation: u64) -> u64 {
+        let mut panel = crate::tui::sessions::Panel::new(generation, None, "/project".into());
+        let (request_id, _, _) = panel.sync_request();
+        app.session_panel = Some(panel);
+        request_id
+    }
+    let first_id = |app: &App| {
+        app.session_panel
+            .as_ref()
+            .and_then(|panel| panel.id(0))
+            .map(str::to_owned)
+    };
+
+    let mut app = app();
+    app.state = State::Ready;
+    let generation = app.next_session_generation();
+    let first = open(&mut app, generation);
+    let second = app
+        .session_panel
+        .as_mut()
+        .expect("panel")
+        .refresh_request()
+        .0;
+    // 更旧面板代次的迟到结果被整体丢弃。
+    app.receive_session_search(generation.wrapping_sub(1), second, Ok(listing("old-panel")));
+    assert_eq!(first_id(&app), None);
+    // 同代次但非最新请求的结果被丢弃，失败回复同样不能清空新请求。
+    app.receive_session_search(generation, first, Ok(listing("old-request")));
+    assert_eq!(first_id(&app), None);
+    app.receive_session_search(generation, first, Err(anyhow::anyhow!("stale")));
+    assert_eq!(first_id(&app), None);
+    // 只有最新请求安装结果。
+    app.receive_session_search(generation, second, Ok(listing("current")));
+    assert_eq!(first_id(&app).as_deref(), Some("current"));
+    // 关闭后即使代次和请求都匹配也绝不重开面板。
+    app.session_panel = None;
+    app.receive_session_search(generation, second, Ok(listing("after-close")));
+    assert!(app.session_panel.is_none());
+    // 新面板代次拒绝旧面板的迟到回复。
+    let next = app.next_session_generation();
+    let current = open(&mut app, next);
+    app.receive_session_search(generation, second, Ok(listing("previous-panel")));
+    assert_eq!(first_id(&app), None);
+    app.receive_session_search(next, current, Ok(listing("new-panel")));
+    assert_eq!(first_id(&app).as_deref(), Some("new-panel"));
 }
 
 #[test]

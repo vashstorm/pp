@@ -275,7 +275,11 @@ fn unselected_anthropic_refuses_both_cli_modes_without_requests_or_tools() {
             } else {
                 Some("create must-not-exist file")
             },
-            r#"{"default_model":"openai/primary"}"#,
+            if interactive {
+                "{}"
+            } else {
+                r#"{"default_model":"openai/primary"}"#
+            },
             &models,
         );
         if interactive {

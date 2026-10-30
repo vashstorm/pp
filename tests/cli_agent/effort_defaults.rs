@@ -4,8 +4,81 @@ fn effort_save_popup(screen: &vt100::Screen, message: &str) -> bool {
     screen.contents().contains(message) && input_is_ready(screen)
 }
 
+// 迁移完成后 agent.db 是偏好权威；用只读连接核对已提交的值，
+// 运行期行为仍由真实 PTY 与重启证明，不断言 SQL 或 YAML 落点。
+struct DbPreferences {
+    default_model: Option<String>,
+    think_level: String,
+    favorites: Vec<String>,
+}
+
+fn read_agent_preferences(home: &std::path::Path) -> DbPreferences {
+    let connection = rusqlite::Connection::open_with_flags(
+        config_path(home, "agent.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let (default_model, think_level) = connection
+        .query_row(
+            "SELECT default_model, think_level FROM preferences WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let favorites = connection
+        .prepare("SELECT model_reference FROM favorite_models ORDER BY position")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    DbPreferences {
+        default_model,
+        think_level,
+        favorites,
+    }
+}
+
+// 忙碌注入：外部写事务占住 agent.db 超过 250ms busy_timeout，保存必须失败。
+fn hold_agent_db_write(home: &std::path::Path) -> rusqlite::Connection {
+    let connection = rusqlite::Connection::open(config_path(home, "agent.db")).unwrap();
+    connection.busy_timeout(std::time::Duration::from_secs(2)).unwrap();
+    connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+    connection
+}
+
+// 安全注入：过宽的数据库权限在打开时被拒绝，不回退也不改写文件。
+fn restrict_agent_db(home: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        config_path(home, "agent.db"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+}
+
+fn restore_agent_db(home: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        config_path(home, "agent.db"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+}
+
+// 保存失败只显示固定领域提示：不得泄露路径、权限或 SQLite 细节。
+fn assert_sanitized_database_error(screen: &vt100::Screen) {
+    let contents = screen.contents();
+    for leaked in ["agent.db", "denied", "os error", "SQL"] {
+        assert!(
+            !contents.contains(leaked),
+            "{leaked} 不应出现在数据库错误提示中"
+        );
+    }
+}
+
 #[test]
-fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
+fn sqlite_default_model_picker_keeps_draft_and_persists_across_restart() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();
@@ -21,6 +94,7 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         std::fs::write(&models_path, &models).unwrap();
         let mut pty = Pty::start_with_existing_files(home.path());
         pty.ready_model("fixture/primary");
+        let migrated_settings = std::fs::read_to_string(&path).unwrap();
         pty.input("/model ");
         pty.text("fixture/primary  ");
         for (icon, color) in [
@@ -50,11 +124,17 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         pty.input("\x1b");
         pty.draft("");
         let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(saved, migrated_settings);
         assert!(saved.contains("# 保留默认模型之外的设置"));
-        assert!(saved.contains("# 默认模型说明"));
-        assert!(saved.contains("think_level: high"));
         assert!(saved.contains("edit: hashline"));
-        assert!(saved.contains("default_model: gateway/team/secondary"));
+        assert!(!saved.contains("default_model") && !saved.contains("think_level"));
+        let preferences = read_agent_preferences(home.path());
+        assert_eq!(
+            preferences.default_model.as_deref(),
+            Some("gateway/team/secondary")
+        );
+        // 旧 YAML 的 think_level: high 已随迁移成为数据库权威值。
+        assert_eq!(preferences.think_level, "high");
         assert_eq!(std::fs::read_to_string(&models_path).unwrap(), models);
         no_more(&server);
         pty.input("verify current model\r");
@@ -94,14 +174,17 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         restarted.input("\x1b");
         restarted.draft("草稿🙂");
         assert_eq!(restarted.parser.screen().cursor_position(), cursor);
-        assert!(std::fs::read_to_string(&path).unwrap().contains("default_model: fixture/primary"));
-        let invalid = "{ broken secret-marker-config }";
-        std::fs::write(&path, invalid).unwrap();
+        assert_eq!(
+            read_agent_preferences(home.path()).default_model.as_deref(),
+            Some("fixture/primary")
+        );
+        restrict_agent_db(home.path());
         restarted.function_key('p');
         restarted.text("fixture/primary ");
         assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary "));
         restarted.input("\x13");
         restarted.text("Failed to save default model");
+        assert_sanitized_database_error(restarted.parser.screen());
         restarted.model_search("");
         restarted.text("fixture/primary ");
         restarted.input("\x1b");
@@ -109,15 +192,27 @@ fn tui_model_ctrl_s_keeps_picker_open_and_restores_draft_on_escape() {
         restarted.function_key('p');
         restarted.text("fixture/primary ");
         assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary "));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        // 保存失败没有改写 settings.yml，也没有留下部分提交。
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), migrated_settings);
+        restore_agent_db(home.path());
+        // 权限恢复后同一保存立即成功。
+        restarted.input("fixture/primary");
+        restarted.text("❯ fixture/primary");
+        restarted.input("\x13");
+        restarted.text("Default model saved: fixture/primary");
+        assert_eq!(
+            read_agent_preferences(home.path()).default_model.as_deref(),
+            Some("fixture/primary")
+        );
         restarted.input("\x03");
         restarted.finish();
         no_more(&server);
     }
 }
 
+// 缺少 settings.yml 时偏好只落 agent.db；忙碌库的保存失败不改变目录快照与草稿。
 #[test]
-fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
+fn sqlite_default_model_saves_without_settings_file_and_recovers_from_busy_database() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&server)).unwrap();
@@ -125,37 +220,82 @@ fn tui_model_ctrl_s_creates_missing_settings_and_preserves_invalid_settings() {
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready_model("fixture/primary");
     pty.input("/model\r");
-    pty.text("fixture/primary ");
+    pty.text("fixture/primary ");
     pty.input("\x13");
     pty.text("Default model saved: fixture/primary");
     pty.ready_model("fixture/primary");
     pty.model_search("");
-    pty.text("fixture/primary ");
+    pty.text("fixture/primary ");
     pty.input("\x1b");
     pty.draft("");
-    assert!(std::fs::read_to_string(&path).unwrap().contains("default_model: fixture/primary"));
+    assert!(!path.exists());
+    assert_eq!(
+        read_agent_preferences(home.path()).default_model.as_deref(),
+        Some("fixture/primary")
+    );
 
-    let invalid = "{ broken secret-marker-config }";
-    std::fs::write(&path, invalid).unwrap();
+    let held = hold_agent_db_write(home.path());
     pty.input("draft after failure");
     pty.function_key('p');
     pty.text("fixture/primary");
     pty.input("\x13");
     pty.text("Failed to save default model");
+    assert_sanitized_database_error(pty.parser.screen());
     pty.ready_model("fixture/primary");
     pty.model_search("");
-    pty.text("fixture/primary ");
+    pty.text("fixture/primary ");
     pty.input("\x1b");
     pty.draft("draft after failure");
-    assert!(!pty.parser.screen().contents().contains("secret-marker-config"));
+    drop(held);
+    // 忙碌解除后同一保存立即恢复；失败没有留下部分提交或错误快照。
+    pty.function_key('p');
+    pty.text("fixture/primary ");
+    pty.input("\x13");
+    pty.text("Default model saved: fixture/primary");
+    assert_eq!(
+        read_agent_preferences(home.path()).default_model.as_deref(),
+        Some("fixture/primary")
+    );
+    pty.input("\x03");
+    pty.finish();
+    no_more(&server);
+}
+
+// 迁移完成后 settings.yml 不再承载偏好；运行期损坏它不得让偏好保存失败。
+#[test]
+fn sqlite_preference_save_ignores_invalid_settings_file() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&server)).unwrap();
+    let path = config_path(home.path(), "settings.yml");
+    std::fs::write(&path, "edit: hashline\n").unwrap();
+    let mut pty = Pty::start_with_existing_files(home.path());
+    pty.ready_model("fixture/primary");
+    let invalid = "{ broken secret-marker-config }";
+    std::fs::write(&path, invalid).unwrap();
+    pty.input("/model\r");
+    pty.text("fixture/primary ");
+    pty.input("\x13");
+    pty.text("Default model saved: fixture/primary");
+    pty.ready_model("fixture/primary");
+    pty.model_search("");
+    pty.text("fixture/primary ");
+    pty.input("\x1b");
+    pty.draft("");
+    // 损坏的 settings.yml 原样保留；偏好提交到 agent.db。
     assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+    assert_eq!(
+        read_agent_preferences(home.path()).default_model.as_deref(),
+        Some("fixture/primary")
+    );
+    assert!(!pty.parser.screen().contents().contains("secret-marker-config"));
     pty.input("\x03");
     pty.finish();
     no_more(&server);
 }
 
 #[test]
-fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
+fn sqlite_effort_selection_persists_across_restart() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();
@@ -169,6 +309,7 @@ fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
         .unwrap();
         let mut pty = Pty::start_with_existing_files(home.path());
         pty.ready_effort("high");
+        let migrated_settings = std::fs::read_to_string(&path).unwrap();
         pty.input("/effort ");
         pty.text(if cfg!(target_os = "macos") {
             "⌥ + S"
@@ -194,11 +335,12 @@ fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
         pty.input("\x01\x0b");
         pty.draft("");
         let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(saved, migrated_settings);
         assert!(saved.contains("# 保留其他设置与注释"));
-        assert!(saved.contains("# 等级说明"));
-        assert!(saved.contains("think_level: xhigh"));
         assert!(saved.contains("edit: hashline"));
         assert!(saved.contains("disabled_skills: [uninstalled]"));
+        assert!(!saved.contains("think_level"));
+        assert_eq!(read_agent_preferences(home.path()).think_level, "xhigh");
         no_more(&server);
         pty.input("\x03");
         pty.finish();
@@ -224,6 +366,7 @@ fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
         restarted.wait_for("重启后 no think 保存结果可见且输入恢复", |screen| {
             effort_save_popup(screen, "Default thinking effort saved: no think")
         });
+        assert_eq!(read_agent_preferences(home.path()).think_level, "none");
         restarted.ready_effort("xhigh");
         restarted.input("\x03");
         restarted.finish();
@@ -235,8 +378,9 @@ fn tui_effort_ctrl_s_saves_selection_for_next_startup() {
     }
 }
 
+// 缺少 settings.yml 时 effort 只落 agent.db；忙碌库保存失败后目录快照与菜单不变。
 #[test]
-fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
+fn sqlite_effort_save_reports_busy_database_and_recovers() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -258,15 +402,15 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
         "Ctrl + S"
     });
     pty.function_key('s');
-    pty.wait_for("新建设置后 low 保存结果可见且输入恢复", |screen| {
+    pty.wait_for("新建数据库后 low 保存结果可见且输入恢复", |screen| {
         effort_save_popup(screen, "Default thinking effort saved: low")
     });
     pty.ready_effort("no think");
-    assert!(std::fs::read_to_string(&path).unwrap().contains("think_level: low"));
+    assert!(!path.exists());
+    assert_eq!(read_agent_preferences(home.path()).think_level, "low");
 
-    // 启动后配置变为无效内容时，保存应失败且不暴露原文。
-    let invalid = "{ broken secret-marker-config }";
-    std::fs::write(&path, invalid).unwrap();
+    // agent.db 忙碌超过 busy_timeout 时保存失败：固定领域提示，不暴露任何底层细节。
+    let held = hold_agent_db_write(home.path());
     pty.input("/effort max");
     pty.text(if cfg!(target_os = "macos") {
         "⌥ + S"
@@ -277,12 +421,7 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
     pty.wait_for("保存失败弹框可见且输入恢复", |screen| {
         effort_save_popup(screen, "Failed to save default thinking effort")
     });
-    assert!(
-        !pty.parser
-            .screen()
-            .contents()
-            .contains("secret-marker-config")
-    );
+    assert_sanitized_database_error(pty.parser.screen());
     pty.ready_effort("no think");
     pty.input("/effort ");
     pty.text("low (default)");
@@ -295,13 +434,19 @@ fn tui_effort_ctrl_s_creates_missing_settings_and_reports_save_errors() {
     assert!(!pty.parser.screen().contents().contains("max (default)"));
     pty.input("\x01\x0b");
     pty.draft("");
-    assert!(
-        !pty.parser
-            .screen()
-            .contents()
-            .contains("secret-marker-config")
-    );
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+    drop(held);
+    // 忙碌解除后同一保存立即成功，失败没有留下部分提交。
+    pty.input("/effort max");
+    pty.text(if cfg!(target_os = "macos") {
+        "⌥ + S"
+    } else {
+        "Ctrl + S"
+    });
+    pty.function_key('s');
+    pty.wait_for("忙碌解除后 max 保存结果可见且输入恢复", |screen| {
+        effort_save_popup(screen, "Default thinking effort saved: max")
+    });
+    assert_eq!(read_agent_preferences(home.path()).think_level, "max");
     pty.input("draft after failure");
     pty.draft("draft after failure");
     pty.input("\x03");
@@ -536,7 +681,7 @@ fn model_thinking_tui_single_effort_shift_tab_retains_level_and_draft() {
 }
 
 #[test]
-fn model_thinking_tui_ctrl_s_saves_global_without_overriding_model_default() {
+fn sqlite_global_effort_save_keeps_model_policy_default() {
     let server = server();
     let home = model_thinking_home(&server);
     let settings = config_path(home.path(), "settings.yml");
@@ -551,10 +696,11 @@ fn model_thinking_tui_ctrl_s_saves_global_without_overriding_model_default() {
     pty.wait_for("low 全局默认保存结果可见且输入恢复", |screen| {
         effort_save_popup(screen, "Default thinking effort saved: low")
     });
+    assert_eq!(read_agent_preferences(home.path()).think_level, "low");
     assert!(
-        std::fs::read_to_string(&settings)
+        !std::fs::read_to_string(&settings)
             .unwrap()
-            .contains("think_level: low")
+            .contains("think_level")
     );
     pty.ready_effort("high");
     no_more(&server);
@@ -575,7 +721,7 @@ fn model_thinking_tui_ctrl_s_saves_global_without_overriding_model_default() {
 }
 
 #[test]
-fn tui_model_favorites_search_persist_and_restore_drafts_without_requests() {
+fn sqlite_favorites_search_persist_and_restore_drafts_without_requests() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();
@@ -591,6 +737,7 @@ fn tui_model_favorites_search_persist_and_restore_drafts_without_requests() {
         std::fs::write(&models_path, &models).unwrap();
         let mut pty = Pty::start_with_existing_files(home.path());
         pty.ready_model("fixture/primary");
+        let migrated_settings = std::fs::read_to_string(&path).unwrap();
         pty.input("草稿🙂");
         pty.draft("草稿🙂");
         let cursor = pty.parser.screen().cursor_position();
@@ -614,10 +761,14 @@ fn tui_model_favorites_search_persist_and_restore_drafts_without_requests() {
             }))
         });
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("favorite_models:"));
-        assert!(saved.contains("gateway/team/secondary"));
+        assert_eq!(saved, migrated_settings);
         assert!(saved.contains("# 保留应用设置"));
         assert!(saved.contains("edit: hashline"));
+        assert!(!saved.contains("favorite_models"));
+        assert_eq!(
+            read_agent_preferences(home.path()).favorites,
+            ["gateway/team/secondary"]
+        );
         pty.input("\x01\x0b");
         pty.wait_for("收藏模型排在最前", |screen| {
             let text = screen.contents();
@@ -643,15 +794,16 @@ fn tui_model_favorites_search_persist_and_restore_drafts_without_requests() {
         restarted.text("❯ gateway/team/secondary ");
         restarted.input("\x06");
         restarted.wait_for("取消收藏后移除星标", |screen| !screen.contents().contains("gateway/team/secondary "));
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("gateway/team/secondary"));
-        let invalid = "favorite_models: secret-marker";
-        std::fs::write(&path, invalid).unwrap();
+        assert!(read_agent_preferences(home.path()).favorites.is_empty());
+        let held = hold_agent_db_write(home.path());
         restarted.input("\x06");
         restarted.text("Failed to save favorite models");
-        assert!(!restarted.parser.screen().contents().contains("secret-marker"));
+        assert_sanitized_database_error(restarted.parser.screen());
         assert!(!restarted.parser.screen().contents().contains("gateway/team/secondary "));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        drop(held);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), migrated_settings);
         assert_eq!(std::fs::read_to_string(&models_path).unwrap(), models);
+        assert!(read_agent_preferences(home.path()).favorites.is_empty());
         no_more(&server);
         restarted.input("\r");
         restarted.ready_model("gateway/team/secondary");

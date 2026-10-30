@@ -568,7 +568,7 @@ mod tests {
         let path = dir.join("settings.yml");
         fs::write(
             &path,
-            "# 保留注释\nthink_level: high\ndisabled_skills: [not-installed]\n",
+            "# 保留注释\ndebug: true\ndisabled_skills: [not-installed]\n",
         )
         .unwrap();
         let mut skills = Skills::from_dir(&dir);
@@ -593,7 +593,7 @@ mod tests {
         skills.save_management(&selection).unwrap();
         let persisted = fs::read_to_string(&path).unwrap();
         assert!(persisted.contains("# 保留注释"));
-        assert!(persisted.contains("think_level: high"));
+        assert!(persisted.contains("debug: true"));
         assert!(persisted.contains("not-installed"));
         let mut restored = Skills::from_dir(&dir);
         assert!(restored.resolve_uri("skill://claude-only").is_err());
@@ -731,7 +731,7 @@ mod tests {
         let path = dir.join("settings.yml");
         fs::write(
             &path,
-            "# 保留此注释\nthink_level: high\ndisabled_skills: [not-installed] # 保留行尾注释\n",
+            "# 保留此注释\ndebug: true\ndisabled_skills: [not-installed] # 保留行尾注释\n",
         )
         .unwrap();
         #[cfg(unix)]
@@ -752,7 +752,7 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("# 保留此注释"));
         assert!(text.contains("# 保留行尾注释"));
-        assert!(text.contains("think_level: high"));
+        assert!(text.contains("debug: true"));
         let settings = config::read_settings(&path).unwrap();
         assert_eq!(settings.disabled_skills, ["not-installed", "rust"]);
         assert!(!skills.entries[0].enabled);

@@ -61,95 +61,78 @@ fn read_preview_defaults_and_strict_nested_settings() {
     let path = dir.path().join("settings.yml");
     fs::write(&path, "read:\n  toolResultPreview: true\n").unwrap();
     update_settings(&path, |_| {
-        Ok(("think_level", serde_yaml::Value::String("high".into())))
+        Ok(("edit", serde_yaml::Value::String("hashline".into())))
     })
     .unwrap();
-    assert!(read_settings(&path).unwrap().read.tool_result_preview);
+    let settings = read_settings(&path).unwrap();
+    assert!(settings.read.tool_result_preview);
+    assert_eq!(settings.edit, EditMode::Hashline);
 }
 
 #[test]
 fn favorite_models_default_validate_and_preserve_unavailable_references() {
-    for settings in [None, Some("{}"), Some("default_model: fixture/primary")] {
-        assert!(
-            load(settings, Some(VALID_MODELS))
-                .unwrap()
-                .settings
-                .favorite_models
-                .is_empty()
-        );
+    for settings in [None, Some("{}")] {
+        let (_dir, catalog) = catalog(settings, Some(VALID_MODELS)).unwrap();
+        assert!(catalog.favorite_models().is_empty());
     }
-    let config = load(
+    // 旧 settings.yml 的收藏经一次性迁移进入 agent.db；已移除模型的引用继续保留，
+    // 旧字段不再是 settings.yml 落点。
+    let (dir, catalog) = catalog(
         Some("favorite_models: [removed/team/model, fixture/primary]"),
         Some(VALID_MODELS),
     )
     .unwrap();
     assert_eq!(
-        config.settings.favorite_models,
+        catalog.favorite_models(),
         ["removed/team/model", "fixture/primary"]
     );
-    for value in [
-        json!(null),
-        json!(true),
-        json!("secret-marker"),
-        json!([1]),
-        json!([""]),
-        json!(["secret-marker"]),
-        json!(["/secret-marker"]),
-        json!(["secret-marker/"]),
+    let text = fs::read_to_string(dir.path().join("settings.yml")).unwrap();
+    assert!(!text.contains("favorite_models"));
+    // 结构校验沿用迁移前规则：收藏必须是复合引用。
+    for favorites in [
+        vec![""],
+        vec!["secret-marker"],
+        vec!["/secret-marker"],
+        vec!["secret-marker/"],
     ] {
-        rejection(
-            Some(&json!({"favorite_models": value}).to_string()),
-            Some(VALID_MODELS),
-            &["settings.yml"],
-        );
+        let preferences = ModelPreferences {
+            favorite_models: favorites.iter().map(|item| item.to_string()).collect(),
+            ..Default::default()
+        };
+        assert!(preferences.validate().is_err(), "{favorites:?}");
     }
+    // 非法类型的旧字段让启动失败，不会被静默当作空收藏。
+    rejection(Some("favorite_models: secret-marker"), Some(VALID_MODELS));
 }
 
 #[test]
 fn favorite_models_save_reload_toggle_and_fail_without_changing_state() {
-    let dir = tempfile::tempdir().unwrap();
+    let (dir, mut catalog) = catalog(None, Some(VALID_MODELS)).unwrap();
     let settings_path = dir.path().join("settings.yml");
     let models_path = dir.path().join("models.yml");
-    fs::write(&models_path, VALID_MODELS).unwrap();
-    let mut catalog = ModelCatalog::from_files(&settings_path, &models_path).unwrap();
+    fs::write(&settings_path, "# 保留注释\nedit: hashline\n").unwrap();
     assert_eq!(
         catalog.toggle_favorite_model("fixture/primary").unwrap(),
         ["fixture/primary"]
     );
-    assert!(settings_path.is_file());
-    assert_eq!(
-        ModelCatalog::from_files(&settings_path, &models_path)
-            .unwrap()
-            .favorite_models(),
-        ["fixture/primary"]
-    );
-    let original = "# 保留注释
-edit: hashline
-favorite_models: [removed/team/model, fixture/primary]
-";
-    fs::write(&settings_path, original).unwrap();
-    assert_eq!(
-        catalog.toggle_favorite_model("fixture/primary").unwrap(),
-        ["removed/team/model"]
-    );
+    // 偏好写入 agent.db；settings.yml 不再承载收藏，无关字段与注释保持原样。
     let saved = fs::read_to_string(&settings_path).unwrap();
     assert!(saved.contains("# 保留注释"));
     assert!(saved.contains("edit: hashline"));
+    assert!(!saved.contains("favorite_models"));
+    // 重启后从 agent.db 恢复。
+    let restored = ModelCatalog::from_files(&settings_path, &models_path).unwrap();
+    assert_eq!(restored.favorite_models(), ["fixture/primary"]);
+    // 不可用模型不能收藏，失败不改变已提交状态。
     assert!(catalog.toggle_favorite_model("unknown/model").is_err());
-    assert_eq!(fs::read_to_string(&settings_path).unwrap(), saved);
-    let invalid = "favorite_models: secret-marker";
-    fs::write(&settings_path, invalid).unwrap();
-    let error = catalog
-        .toggle_favorite_model("fixture/primary")
-        .unwrap_err();
-    assert!(!format!("{error:#}").contains("secret-marker"));
-    assert_eq!(fs::read_to_string(&settings_path).unwrap(), invalid);
-    assert_eq!(catalog.favorite_models(), ["removed/team/model"]);
-    fs::remove_file(&settings_path).unwrap();
-    fs::create_dir(&settings_path).unwrap();
-    assert!(catalog.toggle_favorite_model("fixture/primary").is_err());
-    assert_eq!(catalog.favorite_models(), ["removed/team/model"]);
+    assert_eq!(catalog.favorite_models(), ["fixture/primary"]);
     assert_eq!(fs::read_to_string(&models_path).unwrap(), VALID_MODELS);
+    // agent.db 不可用时保存失败，catalog 内存快照保持已提交状态。
+    let agent_db = dir.path().join("agent.db");
+    fs::remove_file(&agent_db).unwrap();
+    fs::create_dir(&agent_db).unwrap();
+    assert!(catalog.toggle_favorite_model("fixture/primary").is_err());
+    assert_eq!(catalog.favorite_models(), ["fixture/primary"]);
 }
 
 #[test]
@@ -174,19 +157,16 @@ fn notification_options_validate_overrides() {
         rejection(
             Some(&json!({"notification_timeout_seconds":value}).to_string()),
             Some(VALID_MODELS),
-            &["settings.yml"],
         );
     }
     rejection(
         Some(r#"{"notification_timeout_seconds":18446744073709551616}"#),
         Some(VALID_MODELS),
-        &["settings.yml"],
     );
     for value in [json!(0), json!(null), json!("secret-marker")] {
         rejection(
             Some(&json!({"notification_show_countdown":value}).to_string()),
             Some(VALID_MODELS),
-            &["settings.yml"],
         );
     }
 }
@@ -212,30 +192,81 @@ fn tool_limits_validate_positive_overrides() {
             json!("secret-marker-invalid"),
         ] {
             let settings = json!({field:value}).to_string();
-            rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
+            rejection(Some(&settings), Some(VALID_MODELS));
         }
     }
 }
 
-const VALID_SETTINGS: &str = r#"{"default_model":"fixture/primary"}"#;
+const VALID_SETTINGS: &str = "{}";
 const VALID_MODELS: &str = r#"{"providers":{"fixture": {"api_key":"secret-marker-fixture-key",
         "models":{"primary": {"model":"fixture-model"}}
     }}}"#;
+
+fn catalog(
+    settings: Option<&str>,
+    models: Option<&str>,
+) -> Result<(tempfile::TempDir, ModelCatalog)> {
+    let dir = tempfile::tempdir().unwrap();
+    if let Some(settings) = settings {
+        fs::write(dir.path().join("settings.yml"), settings).unwrap();
+    }
+    if let Some(models) = models {
+        fs::write(dir.path().join("models.yml"), models).unwrap();
+    }
+    let catalog = ModelCatalog::from_files(
+        &dir.path().join("settings.yml"),
+        &dir.path().join("models.yml"),
+    )?;
+    Ok((dir, catalog))
+}
+
+/// 在首次构建 catalog 前直接向 agent.db 播种偏好；TempDir 生命周期由调用方持有。
+fn seeded_catalog(
+    settings: Option<&str>,
+    models: Option<&str>,
+    seed: impl FnOnce(&mut crate::agent_store::AgentStore),
+) -> Result<(tempfile::TempDir, ModelCatalog)> {
+    let dir = tempfile::tempdir().unwrap();
+    if let Some(settings) = settings {
+        fs::write(dir.path().join("settings.yml"), settings).unwrap();
+    }
+    if let Some(models) = models {
+        fs::write(dir.path().join("models.yml"), models).unwrap();
+    }
+    crate::agent_store::initialize(dir.path(), &crate::cancellation::CancellationToken::new())?;
+    {
+        let mut store = crate::agent_store::AgentStore::open(&dir.path().join("agent.db")).unwrap();
+        seed(&mut store);
+    }
+    let catalog = ModelCatalog::from_files(
+        &dir.path().join("settings.yml"),
+        &dir.path().join("models.yml"),
+    )?;
+    Ok((dir, catalog))
+}
+
+fn load(settings: Option<&str>, models: Option<&str>) -> Result<Config> {
+    let (_dir, catalog) = catalog(settings, models)?;
+    let config = catalog.resolve(catalog.default_reference())?;
+    drop(catalog);
+    Ok(config)
+}
 
 #[test]
 fn model_cost_accepts_existing_rates_and_rejects_invalid_unselected_models() {
     let mut models: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
     models["providers"]["fixture"]["models"]["primary"]["cost"] =
         json!({"input":0.8,"output":2.8,"cacheRead":0.23});
-    let configured = catalog(None, Some(&models.to_string())).unwrap();
+    let (_dir, configured) = catalog(None, Some(&models.to_string())).unwrap();
     let cost = configured.providers[0].models[0].cost.unwrap();
     assert_eq!(cost.input, 0.8);
     assert_eq!(cost.output, 2.8);
     assert_eq!(cost.cache_read, 0.23);
     assert_eq!(cost.cache_write, None);
     models["providers"]["fixture"]["models"]["primary"]["cost"]["cacheWrite"] = json!(1.25);
+    let (_dir, with_cache_write) = catalog(None, Some(&models.to_string())).unwrap();
     assert_eq!(
-        catalog(None, Some(&models.to_string())).unwrap().providers[0].models[0]
+        with_cache_write.providers[0].models[0]
             .cost
             .unwrap()
             .cache_write,
@@ -253,54 +284,48 @@ fn model_cost_accepts_existing_rates_and_rejects_invalid_unselected_models() {
     ] {
         models["providers"]["fixture"]["models"]["unselected"] =
             json!({"model":"fixture-model","cost":invalid});
-        rejection(None, Some(&models.to_string()), &["models.yml"]);
+        rejection(None, Some(&models.to_string()));
     }
-}
-
-fn catalog(settings: Option<&str>, models: Option<&str>) -> Result<ModelCatalog> {
-    let dir = tempfile::tempdir().unwrap();
-    let settings_path = dir.path().join("settings.yml");
-    let models_path = dir.path().join("models.yml");
-    if let Some(settings) = settings {
-        fs::write(&settings_path, settings).unwrap();
-    }
-    if let Some(models) = models {
-        fs::write(&models_path, models).unwrap();
-    }
-    ModelCatalog::from_files(&settings_path, &models_path)
-}
-
-fn load(settings: Option<&str>, models: Option<&str>) -> Result<Config> {
-    let catalog = catalog(settings, models)?;
-    catalog.resolve(catalog.default_reference())
 }
 
 fn report(error: &anyhow::Error) -> String {
     format!("{error:#}")
 }
 
-fn rejection(settings: Option<&str>, models: Option<&str>, files: &[&str]) -> String {
+fn rejection(settings: Option<&str>, models: Option<&str>) -> String {
     let error = load(settings, models)
         .err()
         .expect("invalid config was accepted");
     let chain = report(&error);
     assert!(!chain.contains("secret-marker"), "{chain}");
-    for file in files {
-        assert!(chain.contains(file), "{chain}");
-    }
     chain
 }
 
 #[test]
 fn think_level_config_accepts_exact_levels_and_rejects_invalid_values() {
     for level in ["none", "default", "low", "medium", "high", "xhigh", "max"] {
-        let settings = json!({"think_level": level}).to_string();
-        let config = load(Some(&settings), Some(VALID_MODELS)).unwrap();
-        assert_eq!(
-            config.settings.think_level.as_str(),
-            if level == "default" { "none" } else { level }
-        );
+        let parsed = level.parse::<ThinkLevel>().unwrap();
+        let (dir, mut catalog) = seeded_catalog(None, Some(VALID_MODELS), |store| {
+            store.set_default_effort(parsed, |_, _| Ok(())).unwrap();
+        })
+        .unwrap();
+        assert_eq!(catalog.default_think_level(), parsed);
+        // 保存经 agent.db 持久化，重启后保持。
+        catalog.save_default_think_level(ThinkLevel::Low).unwrap();
+        let restored = ModelCatalog::from_files(
+            &dir.path().join("settings.yml"),
+            &dir.path().join("models.yml"),
+        )
+        .unwrap();
+        assert_eq!(restored.default_think_level(), ThinkLevel::Low);
     }
+    assert_eq!(
+        catalog(None, Some(VALID_MODELS))
+            .unwrap()
+            .1
+            .default_think_level(),
+        ThinkLevel::None
+    );
     for value in [
         json!(null),
         json!(0),
@@ -314,20 +339,12 @@ fn think_level_config_accepts_exact_levels_and_rejects_invalid_values() {
         rejection(
             Some(&json!({"think_level":value}).to_string()),
             Some(VALID_MODELS),
-            &["settings.yml"],
         );
     }
-    assert_eq!(
-        load(None, Some(VALID_MODELS)).unwrap().settings.think_level,
-        ThinkLevel::None
-    );
-    assert_eq!(
-        load(Some("{}"), Some(VALID_MODELS))
-            .unwrap()
-            .settings
-            .think_level,
-        ThinkLevel::None
-    );
+    // 解析后的结构校验同样拒绝非法级别。
+    for level in ["HIGH", " high", "ultra", ""] {
+        assert!(level.parse::<ThinkLevel>().is_err(), "{level}");
+    }
 }
 
 #[test]
@@ -417,22 +434,17 @@ fn model_thinking_validates_sets_defaults_and_unselected_models() {
     }
     for thinking in invalid {
         let models = make(thinking);
-        rejection(None, Some(&models.to_string()), &["models.yml"]);
+        rejection(None, Some(&models.to_string()));
         let mut unselected: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
         unselected["providers"]["fixture"]["models"]["unselected"] =
             models["providers"]["fixture"]["models"]["primary"].clone();
-        rejection(None, Some(&unselected.to_string()), &["models.yml"]);
+        rejection(None, Some(&unselected.to_string()));
     }
-    let error = rejection(
-        None,
-        Some(&make(json!({"efforts":["none"]})).to_string()),
-        &["models.yml"],
-    );
+    let error = rejection(None, Some(&make(json!({"efforts":["none"]})).to_string()));
     assert!(error.contains("thinking.efforts must contain only low, medium, high, xhigh, max"));
     let error = rejection(
         None,
         Some(&make(json!({"efforts":["low"],"defaultLevel":"high"})).to_string()),
-        &["models.yml"],
     );
     assert!(error.contains("thinking.defaultLevel must be included in thinking.efforts"));
 }
@@ -454,7 +466,7 @@ fn missing_or_empty_settings_default_to_first_provider_first_model() {
         assert_eq!(config.base_url.as_str(), "https://a.example/v1");
         assert_eq!(config.protocol, models::Protocol::Completion);
     }
-    rejection(None, None, &["models.yml"]);
+    rejection(None, None);
 }
 
 #[test]
@@ -508,7 +520,7 @@ fn edit_modes_are_strict_and_redacted() {
         json!({"secret-marker": true}),
     ] {
         let settings = json!({"edit": value}).to_string();
-        rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
+        rejection(Some(&settings), Some(VALID_MODELS));
     }
 }
 
@@ -573,8 +585,10 @@ fn malformed_composite_references_are_rejected_without_values() {
         " /secret-marker",
         "secret-marker/ \t",
     ] {
-        let settings = json!({"default_model": reference}).to_string();
-        rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
+        rejection(
+            Some(&json!({"default_model": reference}).to_string()),
+            Some(VALID_MODELS),
+        );
     }
 }
 
@@ -659,11 +673,7 @@ fn provider_and_model_scope_constraints_reject_whole_configuration() {
         cases.push(json!({"providers": {"fixture": invalid}}));
     }
     for models in cases {
-        rejection(
-            Some(VALID_SETTINGS),
-            Some(&models.to_string()),
-            &["models.yml"],
-        );
+        rejection(Some(VALID_SETTINGS), Some(&models.to_string()));
     }
 }
 
@@ -679,20 +689,19 @@ fn invalid_settings_limits_and_numeric_types_are_rejected() {
         "1e30",
         "18446744073709551616",
     ] {
-        let settings =
-            format!(r#"{{"default_model":"fixture/primary","request_timeout_seconds":{value}}}"#);
-        rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
+        let settings = format!(r#"{{"request_timeout_seconds":{value}}}"#);
+        rejection(Some(&settings), Some(VALID_MODELS));
     }
 }
 
 #[test]
 fn unknown_and_misplaced_fields_and_old_format_are_rejected() {
     for settings in [
-        r#"{"default_model":"fixture/primary","secret-marker":true}"#,
-        r#"{"default_model":"fixture/primary","api_key":"secret-marker"}"#,
-        r#"{"default_model":"fixture/primary","models":["secret-marker"]}"#,
+        r#"{"secret-marker":true}"#,
+        r#"{"api_key":"secret-marker"}"#,
+        r#"{"models":["secret-marker"]}"#,
     ] {
-        rejection(Some(settings), Some(VALID_MODELS), &["settings.yml"]);
+        rejection(Some(settings), Some(VALID_MODELS));
     }
     let valid: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
     let mut cases = vec![
@@ -719,11 +728,7 @@ fn unknown_and_misplaced_fields_and_old_format_are_rejected() {
         cases.push(invalid);
     }
     for models in cases {
-        rejection(
-            Some(VALID_SETTINGS),
-            Some(&models.to_string()),
-            &["models.yml"],
-        );
+        rejection(Some(VALID_SETTINGS), Some(&models.to_string()));
     }
 }
 
@@ -739,11 +744,7 @@ fn protocol_and_base_url_reject_null_wrong_types_and_unknown_protocols() {
         ] {
             let mut invalid = valid.clone();
             invalid["providers"]["fixture"][field] = value;
-            rejection(
-                Some(VALID_SETTINGS),
-                Some(&invalid.to_string()),
-                &["models.yml"],
-            );
+            rejection(Some(VALID_SETTINGS), Some(&invalid.to_string()));
         }
     }
     for protocol in [
@@ -756,11 +757,7 @@ fn protocol_and_base_url_reject_null_wrong_types_and_unknown_protocols() {
     ] {
         let mut invalid = valid.clone();
         invalid["providers"]["fixture"]["protocol"] = json!(protocol);
-        rejection(
-            Some(VALID_SETTINGS),
-            Some(&invalid.to_string()),
-            &["models.yml"],
-        );
+        rejection(Some(VALID_SETTINGS), Some(&invalid.to_string()));
     }
 }
 
@@ -775,14 +772,14 @@ fn syntax_type_and_semantic_errors_do_not_disclose_values() {
         r#"{"providers":{"fixture": {"api_key":"secret-marker" "models":{"primary": {"model":"m"}}}}}"#,
         r#"{"providers":[{"id":"fixture","api_key":"secret-marker", /* unterminated"#,
     ] {
-        rejection(Some(VALID_SETTINGS), Some(models), &["models.yml"]);
+        rejection(Some(VALID_SETTINGS), Some(models));
     }
     for settings in [
         r#"{"default_model":["secret-marker"]}"#,
         r#"{"default_model":true,"secret-marker":1}"#,
         r#"{"default_model" "secret-marker"}"#,
     ] {
-        rejection(Some(settings), Some(VALID_MODELS), &["settings.yml"]);
+        rejection(Some(settings), Some(VALID_MODELS));
     }
 }
 
@@ -823,7 +820,7 @@ fn unselected_providers_and_models_are_validated_before_selection() {
             VALID_SETTINGS,
             r#"{"default_model":"secret-marker/missing"}"#,
         ] {
-            rejection(Some(settings), Some(&invalid.to_string()), &["models.yml"]);
+            rejection(Some(settings), Some(&invalid.to_string()));
         }
     }
     for model in [
@@ -832,11 +829,7 @@ fn unselected_providers_and_models_are_validated_before_selection() {
     ] {
         let mut invalid = valid.clone();
         invalid["providers"]["fixture"]["models"]["other"] = model;
-        rejection(
-            Some(VALID_SETTINGS),
-            Some(&invalid.to_string()),
-            &["models.yml"],
-        );
+        rejection(Some(VALID_SETTINGS), Some(&invalid.to_string()));
     }
 }
 
@@ -859,20 +852,19 @@ fn anthropic_is_rejected_whether_selected_or_not() {
             Some(r#"{"default_model":"anthropic/primary"}"#),
             Some(r#"{"default_model":"anthropic/secret-marker"}"#),
         ] {
-            rejection(settings, Some(&models), &["models.yml"]);
+            rejection(settings, Some(&models));
         }
     }
 }
 
 #[test]
 fn missing_and_unparseable_files_are_reported_per_file() {
-    rejection(Some(VALID_SETTINGS), None, &["models.yml"]);
+    rejection(Some(VALID_SETTINGS), None);
     for settings in ["{", "{\"default_model\" \"secret-marker\"}", ""] {
-        let chain = rejection(Some(settings), Some(VALID_MODELS), &["settings.yml"]);
-        assert!(chain.contains("invalid YAML settings config"), "{chain}");
+        rejection(Some(settings), Some(VALID_MODELS));
     }
     for models in ["{", "{\"providers\": \"secret-marker\"", ""] {
-        let chain = rejection(Some(VALID_SETTINGS), Some(models), &["models.yml"]);
+        let chain = rejection(Some(VALID_SETTINGS), Some(models));
         assert!(chain.contains("invalid YAML models config"), "{chain}");
     }
 }
@@ -898,18 +890,10 @@ fn skill_settings_default_empty_lists_and_strict_field_types() {
             json!([""]),
             json!(["  "]),
         ] {
-            rejection(
-                Some(&json!({field:value}).to_string()),
-                Some(VALID_MODELS),
-                &["settings.yml"],
-            );
+            rejection(Some(&json!({field:value}).to_string()), Some(VALID_MODELS));
         }
     }
-    rejection(
-        Some("skill_sources: [unknown]"),
-        Some(VALID_MODELS),
-        &["settings.yml"],
-    );
+    rejection(Some("skill_sources: [unknown]"), Some(VALID_MODELS));
     let settings = load(Some("skill_sources: [claude, codex]"), Some(VALID_MODELS))
         .unwrap()
         .settings;
@@ -918,7 +902,7 @@ fn skill_settings_default_empty_lists_and_strict_field_types() {
 
 #[test]
 fn context_window_omission_means_unknown_and_explicit_values_propagate() {
-    let default_catalog = catalog(None, Some(VALID_MODELS)).unwrap();
+    let (_dir, default_catalog) = catalog(None, Some(VALID_MODELS)).unwrap();
     assert!(
         default_catalog
             .resolve(default_catalog.default_reference())
@@ -937,7 +921,7 @@ fn context_window_omission_means_unknown_and_explicit_values_propagate() {
                 "primary": {"model":"primary-model","context_window":32768},
                 "secondary": {"model":"secondary-model"}}
         }}}"#;
-    let catalog = catalog(
+    let (_dir, catalog) = catalog(
         Some(r#"{"default_model":"fixture/secondary"}"#),
         Some(models),
     )
@@ -993,28 +977,20 @@ fn context_window_rejects_invalid_values_including_unselected_models() {
         let selected = format!(
             r#"{{"providers":{{"fixture": {{"api_key":"fixture-key","models":{{"primary": {{"model":"m","context_window":{value}}}}}}}}}}}"#
         );
-        rejection(Some(VALID_SETTINGS), Some(&selected), &["models.yml"]);
+        rejection(Some(VALID_SETTINGS), Some(&selected));
         let unselected_model = format!(
             r#"{{"providers":{{"fixture": {{"api_key":"fixture-key","models":{{"primary": {{"model":"m"}},"other": {{"model":"m","context_window":{value}}}}}}}}}}}"#
         );
-        rejection(
-            Some(VALID_SETTINGS),
-            Some(&unselected_model),
-            &["models.yml"],
-        );
+        rejection(Some(VALID_SETTINGS), Some(&unselected_model));
         let unselected_provider = format!(
             r#"{{"providers":{{"fixture": {{"api_key":"fixture-key","models":{{"primary": {{"model":"m"}}}}}},"other": {{"api_key":"fixture-key","models":{{"primary": {{"model":"m","context_window":{value}}}}}}}}}}}"#
         );
-        rejection(
-            Some(VALID_SETTINGS),
-            Some(&unselected_provider),
-            &["models.yml"],
-        );
+        rejection(Some(VALID_SETTINGS), Some(&unselected_provider));
     }
     // Zero reaches semantic validation, so the fixed diagnostic names it.
     let models = r#"{"providers":{"fixture": {"api_key":"fixture-key",
             "models":{"primary": {"model":"m","context_window":0}}}}}"#;
-    let chain = rejection(Some(VALID_SETTINGS), Some(models), &["models.yml"]);
+    let chain = rejection(Some(VALID_SETTINGS), Some(models));
     assert!(
         chain.contains("context_window must be a positive integer"),
         "{chain}"
@@ -1060,17 +1036,81 @@ fn context_auto_compact_defaults_on_at_80_with_strict_bounds() {
         "18446744073709551616",
     ] {
         let settings = format!(r#"{{"auto_compact_threshold_percent":{value}}}"#);
-        rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
+        rejection(Some(&settings), Some(VALID_MODELS));
     }
     for value in ["\"secret-marker\"", "null", "0", "1"] {
         let settings = format!(r#"{{"auto_compact":{value}}}"#);
-        rejection(Some(&settings), Some(VALID_MODELS), &["settings.yml"]);
+        rejection(Some(&settings), Some(VALID_MODELS));
     }
     // u8 范围内的无效值返回固定语义校验提示，类型错误由 YAML 解析器统一脱敏。
     let settings = r#"{"auto_compact_threshold_percent":100}"#;
-    let chain = rejection(Some(settings), Some(VALID_MODELS), &["settings.yml"]);
+    let chain = rejection(Some(settings), Some(VALID_MODELS));
     assert!(
         chain.contains("auto_compact_threshold_percent must be between 1 and 99"),
         "{chain}"
     );
+}
+
+#[test]
+fn legacy_settings_preferences_migrate_into_agent_db_and_are_stripped() {
+    let (dir, catalog) = catalog(
+        Some("# 保留注释\ndefault_model: fixture/primary\nfavorite_models: [fixture/primary]\nthink_level: high\nedit: hashline\n"),
+        Some(VALID_MODELS),
+    )
+    .unwrap();
+    assert_eq!(catalog.default_reference(), "fixture/primary");
+    assert_eq!(catalog.favorite_models(), ["fixture/primary"]);
+    assert_eq!(catalog.default_think_level(), ThinkLevel::High);
+    // 旧四字段不再是 settings.yml 落点；注释与无关字段保持原样。
+    let text = fs::read_to_string(dir.path().join("settings.yml")).unwrap();
+    assert!(text.contains("# 保留注释") && text.contains("edit: hashline"));
+    assert!(!text.contains("default_model"));
+    assert!(!text.contains("favorite_models"));
+    assert!(!text.contains("think_level"));
+    // 重启后偏好仍来自 agent.db。
+    let restored = ModelCatalog::from_files(
+        &dir.path().join("settings.yml"),
+        &dir.path().join("models.yml"),
+    )
+    .unwrap();
+    assert_eq!(restored.default_reference(), "fixture/primary");
+    assert_eq!(restored.favorite_models(), ["fixture/primary"]);
+    assert_eq!(restored.default_think_level(), ThinkLevel::High);
+}
+
+#[test]
+fn sqlite_concurrent_preferences_preserve_all_writers_and_failures_keep_memory() {
+    let models = r#"{"providers":{"fixture": {"api_key":"secret-marker-fixture-key",
+            "models":{"primary": {"model":"fixture-model"},"secondary": {"model":"fixture-model-2"}}}}}"#;
+    let (dir, mut first) = catalog(None, Some(models)).unwrap();
+    let mut second = ModelCatalog::from_files(
+        &dir.path().join("settings.yml"),
+        &dir.path().join("models.yml"),
+    )
+    .unwrap();
+    // 两个实例分别改不同偏好；每次保存重读当前 DB 值，互不丢失。
+    first.save_default_model("fixture/secondary").unwrap();
+    assert_eq!(first.default_reference(), "fixture/secondary");
+    assert_eq!(second.default_reference(), "fixture/primary");
+    second.toggle_favorite_model("fixture/primary").unwrap();
+    first.save_default_think_level(ThinkLevel::High).unwrap();
+    let reloaded = ModelCatalog::from_files(
+        &dir.path().join("settings.yml"),
+        &dir.path().join("models.yml"),
+    )
+    .unwrap();
+    assert_eq!(reloaded.default_reference(), "fixture/secondary");
+    assert_eq!(reloaded.favorite_models(), ["fixture/primary"]);
+    assert_eq!(reloaded.default_think_level(), ThinkLevel::High);
+    // agent.db 不可用时保存失败，两个 catalog 的内存快照保持各自已提交状态。
+    let agent_db = dir.path().join("agent.db");
+    fs::remove_file(&agent_db).unwrap();
+    fs::create_dir(&agent_db).unwrap();
+    assert!(second.save_default_model("fixture/primary").is_err());
+    assert_eq!(second.default_reference(), "fixture/primary");
+    assert!(second.toggle_favorite_model("fixture/secondary").is_err());
+    assert_eq!(second.favorite_models(), ["fixture/primary"]);
+    assert!(first.save_default_think_level(ThinkLevel::Low).is_err());
+    assert_eq!(first.default_think_level(), ThinkLevel::High);
+    assert_eq!(first.default_reference(), "fixture/secondary");
 }

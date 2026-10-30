@@ -40,12 +40,13 @@ impl App {
         self.history_browser = false;
         self.todo_panel.reset_view();
         self.conversation = self.conversation.fresh();
-        self.input_history = Vec::new();
-        let error = self.conversation.replay(replay, &mut self.input_history);
+        // 持久输入回忆与可见会话解耦：恢复/树导航不写入手记录，也不清空回忆。
+        let error = self.conversation.replay(replay);
         self.input = editor();
         self.shell_mode = false;
         self.history_index = None;
         self.history_draft = None;
+        self.history_waiting_up = false;
         self.model_picker_draft = None;
         self.model_panel = None;
         self.roles_panel = None;

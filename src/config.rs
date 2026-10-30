@@ -19,8 +19,11 @@ pub(crate) struct Config {
     pub(crate) protocol: models::Protocol,
     pub(crate) api_key: String,
     pub(crate) model: String,
+    // 完整 provider/model 配置引用；与供应商实际 wire model 名（model 字段）不同。
+    pub(crate) model_reference: String,
     pub(crate) context_window: Option<u64>,
     pub(crate) base_url: Url,
+    pub(crate) agent_db_path: PathBuf,
     pub(crate) settings: Settings,
 }
 
@@ -29,7 +32,9 @@ pub(crate) struct Config {
 pub(crate) struct ModelCatalog {
     settings: Settings,
     settings_path: PathBuf,
+    agent_db_path: PathBuf,
     providers: Vec<models::ValidatedProvider>,
+    preferences: ModelPreferences,
     default_reference: String,
     auth_generations: std::collections::BTreeMap<crate::auth::Provider, String>,
 }
@@ -234,11 +239,63 @@ pub(crate) struct ReadDisplaySettings {
     pub(crate) tool_result_preview: bool,
 }
 
+/// 默认/收藏/Role/effort 的持久化权威，本批自 settings.yml 四字段迁入 agent.db。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelPreferences {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) default_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) favorite_models: Vec<String>,
+    #[serde(default)]
+    pub(crate) model_roles: ModelRoles,
+    #[serde(default)]
+    pub(crate) think_level: ThinkLevel,
+}
+
+impl ModelPreferences {
+    /// 沿用 settings.yml 四字段的既有校验规则；可用性由 ModelCatalog 在入口校验。
+    pub(crate) fn validate(&self) -> Result<()> {
+        for assignment in self.model_roles.values() {
+            ensure!(
+                assignment
+                    .model
+                    .split_once('/')
+                    .is_some_and(
+                        |(provider, model)| !provider.trim().is_empty() && !model.trim().is_empty()
+                    ),
+                "model_roles model must use provider/model"
+            );
+        }
+        ensure!(
+            self.favorite_models.iter().all(|reference| {
+                reference.split_once('/').is_some_and(|(provider, model)| {
+                    !provider.trim().is_empty() && !model.trim().is_empty()
+                })
+            }),
+            "favorite_models must use provider/model"
+        );
+        if let Some(default_model) = &self.default_model {
+            ensure!(
+                !default_model.trim().is_empty(),
+                "default_model must not be blank"
+            );
+            ensure!(
+                default_model
+                    .split_once('/')
+                    .is_some_and(|(provider, model)| {
+                        !provider.trim().is_empty() && !model.trim().is_empty()
+                    }),
+                "default_model must use provider/model"
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
-    #[serde(default)]
-    pub(crate) model_roles: ModelRoles,
     #[serde(default)]
     pub(crate) task: crate::subagent::Settings,
     #[serde(default)]
@@ -262,14 +319,7 @@ pub(crate) struct Settings {
     #[serde(default)]
     pub(crate) disabled_skills: Vec<String>,
     #[serde(default)]
-    pub(crate) think_level: ThinkLevel,
-    #[serde(default)]
     pub(crate) edit: EditMode,
-    // None means "use the first provider's first model".
-    #[serde(default)]
-    pub(crate) default_model: Option<String>,
-    #[serde(default)]
-    pub(crate) favorite_models: Vec<String>,
     // 模型建连及连续无数据的闲置超时，不限制整轮生成的总耗时。
     #[serde(default = "default_request_timeout_seconds")]
     pub(crate) request_timeout_seconds: u64,
@@ -306,17 +356,6 @@ impl Settings {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        for assignment in self.model_roles.values() {
-            ensure!(
-                assignment
-                    .model
-                    .split_once('/')
-                    .is_some_and(
-                        |(provider, model)| !provider.trim().is_empty() && !model.trim().is_empty()
-                    ),
-                "model_roles model must use provider/model"
-            );
-        }
         ensure!(
             self.notification_timeout_seconds > 0,
             "notification_timeout_seconds must be greater than zero"
@@ -340,28 +379,6 @@ impl Settings {
                 .all(|name| !name.trim().is_empty()),
             "disabled_skills must contain non-blank names"
         );
-        ensure!(
-            self.favorite_models.iter().all(|reference| {
-                reference.split_once('/').is_some_and(|(provider, model)| {
-                    !provider.trim().is_empty() && !model.trim().is_empty()
-                })
-            }),
-            "favorite_models must use provider/model"
-        );
-        if let Some(default_model) = &self.default_model {
-            ensure!(
-                !default_model.trim().is_empty(),
-                "default_model must not be blank"
-            );
-            ensure!(
-                default_model
-                    .split_once('/')
-                    .is_some_and(|(provider, model)| {
-                        !provider.trim().is_empty() && !model.trim().is_empty()
-                    }),
-                "default_model must use provider/model"
-            );
-        }
         ensure!(
             self.request_timeout_seconds > 0,
             "request_timeout_seconds must be greater than zero"
@@ -420,7 +437,6 @@ pub(crate) fn global_dir() -> Result<PathBuf> {
 
 fn default_settings() -> Settings {
     Settings {
-        model_roles: Default::default(),
         task: Default::default(),
         grep: GrepSettings::default(),
         read: ReadDisplaySettings::default(),
@@ -432,10 +448,7 @@ fn default_settings() -> Settings {
         skill_dirs: default_skill_dirs(),
         skill_sources: Vec::new(),
         disabled_skills: Vec::new(),
-        think_level: ThinkLevel::None,
         edit: EditMode::Replace,
-        default_model: None,
-        favorite_models: Vec::new(),
         request_timeout_seconds: default_request_timeout_seconds(),
         rate_limit_retry_budget_seconds: default_rate_limit_retry_budget_seconds(),
         read_max_bytes: default_read_max_bytes(),
@@ -482,6 +495,12 @@ impl ModelCatalog {
     }
 
     fn load(settings_path: &Path, models_path: &Path, allow_empty: bool) -> Result<Self> {
+        // 一次性迁移先于任何 settings.yml 解析：旧四字段由迁移导入 agent.db 并从文件剥离。
+        let dir = settings_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        crate::agent_store::initialize(dir, &crate::cancellation::CancellationToken::new())?;
         let settings: Settings = read_settings(settings_path)?;
         settings
             .validate()
@@ -495,8 +514,11 @@ impl ModelCatalog {
         models_path: &Path,
         allow_empty: bool,
     ) -> Result<Self> {
-        let auth_path = settings_path.with_file_name("auth.yml");
-        let store = crate::auth::Store::load(&auth_path)?;
+        let agent_db_path = settings_path.with_file_name("agent.db");
+        let agent_store = crate::agent_store::AgentStore::open(&agent_db_path)?;
+        let preferences = agent_store.preferences()?;
+        preferences.validate()?;
+        let store = agent_store.load_auth()?;
         let mut providers = if models_path.try_exists()? {
             models::load_models(models_path)?
         } else {
@@ -530,37 +552,13 @@ impl ModelCatalog {
             allow_empty || !providers.is_empty(),
             "No models configured; use /login in the TUI or configure models.yml."
         );
-        let first_reference = providers
-            .first()
-            .map(|provider| format!("{}/{}", provider.id, provider.models[0].id))
-            .unwrap_or_default();
-        let default_reference = match settings
-            .model_roles
-            .get(&ModelRole::Default)
-            .filter(|assignment| assignment.enabled)
-            .map(|assignment| assignment.model.as_str())
-            .or(settings.default_model.as_deref())
-        {
-            Some(reference) => {
-                let (provider_id, model_id) = reference
-                    .split_once('/')
-                    .expect("validated default_model is a composite reference");
-                let matched = providers.iter().any(|provider| {
-                    provider.id == provider_id
-                        && provider.models.iter().any(|model| model.id == model_id)
-                });
-                if matched {
-                    reference.to_owned()
-                } else {
-                    first_reference
-                }
-            }
-            None => first_reference,
-        };
+        let default_reference = default_reference(&providers, &preferences);
         Ok(Self {
             settings,
             settings_path: settings_path.to_path_buf(),
+            agent_db_path,
             providers,
+            preferences,
             default_reference,
             auth_generations: store
                 .credentials
@@ -575,62 +573,37 @@ impl ModelCatalog {
     }
 
     pub(crate) fn default_think_level(&self) -> ThinkLevel {
-        self.settings
+        self.preferences
             .model_roles
             .get(&ModelRole::Default)
             .filter(|assignment| assignment.enabled)
-            .map_or(self.settings.think_level, |assignment| assignment.effort)
+            .map_or(self.preferences.think_level, |assignment| assignment.effort)
     }
 
     pub(crate) fn save_default_think_level(&mut self, level: ThinkLevel) -> Result<()> {
-        let mut roles = self.settings.model_roles.clone();
-        update_settings_fields(&self.settings_path, |settings| {
-            roles = settings.model_roles;
-            if let Some(assignment) = roles.get_mut(&ModelRole::Default)
-                && assignment.enabled
-            {
-                ensure!(
-                    self.resolve(&assignment.model)?.thinking.supports(level),
-                    "DEFAULT role effort 不受模型支持"
-                );
-                assignment.effort = level;
-            }
-            Ok(vec![
-                ("think_level", serde_yaml::to_value(level)?),
-                ("model_roles", serde_yaml::to_value(&roles)?),
-            ])
+        let mut store = crate::agent_store::AgentStore::open(&self.agent_db_path)?;
+        let preferences = store.set_default_effort(level, |model, level| {
+            let config = self.resolve(model)?;
+            ensure!(
+                config.thinking.supports(level),
+                "DEFAULT role effort 不受模型支持"
+            );
+            Ok(())
         })?;
-        self.settings.think_level = level;
-        self.settings.model_roles = roles;
+        self.install(preferences);
         Ok(())
     }
 
     pub(crate) fn save_default_model(&mut self, reference: &str) -> Result<()> {
-        let mut roles = self.settings.model_roles.clone();
         let thinking = self.resolve(reference)?.thinking;
-        update_settings_fields(&self.settings_path, |settings| {
-            roles = settings.model_roles;
-            if let Some(assignment) = roles.get_mut(&ModelRole::Default)
-                && assignment.enabled
-            {
-                assignment.model = reference.to_owned();
-                if !thinking.supports(assignment.effort) {
-                    assignment.effort = thinking.effective_default(settings.think_level);
-                }
-            }
-            Ok(vec![
-                ("default_model", serde_yaml::Value::String(reference.into())),
-                ("model_roles", serde_yaml::to_value(&roles)?),
-            ])
-        })?;
-        self.settings.model_roles = roles;
-        self.settings.default_model = Some(reference.to_owned());
-        self.default_reference = reference.to_owned();
+        let mut store = crate::agent_store::AgentStore::open(&self.agent_db_path)?;
+        let preferences = store.set_default_model(reference, thinking)?;
+        self.install(preferences);
         Ok(())
     }
 
     pub(crate) fn favorite_models(&self) -> &[String] {
-        &self.settings.favorite_models
+        &self.preferences.favorite_models
     }
 
     pub(crate) fn toggle_favorite_model(&mut self, reference: &str) -> Result<Vec<String>> {
@@ -640,18 +613,10 @@ impl ModelCatalog {
                 .any(|choice| choice.reference == reference),
             "Cannot favorite an unavailable model"
         );
-        let mut favorites = Vec::new();
-        update_settings(&self.settings_path, |settings| {
-            favorites = settings.favorite_models;
-            if favorites.iter().any(|item| item == reference) {
-                favorites.retain(|item| item != reference);
-            } else {
-                favorites.push(reference.to_owned());
-            }
-            Ok(("favorite_models", serde_yaml::to_value(&favorites)?))
-        })?;
-        self.settings.favorite_models = favorites.clone();
-        Ok(favorites)
+        let mut store = crate::agent_store::AgentStore::open(&self.agent_db_path)?;
+        let preferences = store.toggle_favorite(reference)?;
+        self.preferences = preferences;
+        Ok(self.preferences.favorite_models.clone())
     }
 
     pub(crate) fn default_reference(&self) -> &str {
@@ -674,17 +639,9 @@ impl ModelCatalog {
     }
 
     pub(crate) fn reload_models(&mut self) -> Result<()> {
-        let mut settings = self.settings.clone();
-        // 模型目录刷新不改变运行参数；偏好文件暂时无效时沿用已提交的偏好。
-        if let Ok(updated) = read_settings(&self.settings_path)
-            && updated.validate().is_ok()
-        {
-            settings.default_model = updated.default_model;
-            settings.favorite_models = updated.favorite_models;
-            settings.model_roles = updated.model_roles;
-        }
+        // 模型目录刷新不改变运行参数；偏好一律从 agent.db 读取，全部验证成功后才替换内存状态。
         let next = Self::with_settings(
-            settings,
+            self.settings.clone(),
             &self.settings_path,
             &self.settings_path.with_file_name("models.yml"),
             true,
@@ -692,10 +649,14 @@ impl ModelCatalog {
         self.providers = next.providers;
         self.auth_generations = next.auth_generations;
         self.default_reference = next.default_reference;
-        self.settings.favorite_models = next.settings.favorite_models;
-        self.settings.default_model = next.settings.default_model;
-        self.settings.model_roles = next.settings.model_roles;
+        self.preferences = next.preferences;
         Ok(())
+    }
+
+    /// 安装事务提交后返回的完整偏好快照，并按精确优先级重算默认引用。
+    fn install(&mut self, preferences: ModelPreferences) {
+        self.default_reference = default_reference(&self.providers, &preferences);
+        self.preferences = preferences;
     }
 
     pub(crate) fn resolve(&self, reference: &str) -> Result<Config> {
@@ -725,7 +686,7 @@ impl ModelCatalog {
         Ok(Config {
             auth: provider.auth.map(|provider| crate::auth::Config {
                 provider,
-                path: self.settings_path.with_file_name("auth.yml"),
+                path: self.agent_db_path.clone(),
                 generation: self
                     .auth_generations
                     .get(&provider)
@@ -736,13 +697,53 @@ impl ModelCatalog {
             thinking: model.thinking,
             api_key: provider.api_key.clone(),
             model: model.model.clone(),
+            model_reference: reference.to_owned(),
             context_window: model.context_window,
             base_url: match provider.auth {
                 Some(auth) => Url::parse(auth.base_url()).expect("内置供应商 URL 有效"),
                 None => models::openai_base_url(provider.base_url.clone()),
             },
+            agent_db_path: self.agent_db_path.clone(),
             settings: self.settings.clone(),
         })
+    }
+
+    /// 读取按逻辑请求累计的使用次数；打开或读取失败都是固定脱敏错误。
+    pub(crate) fn model_usage(&self) -> Result<std::collections::BTreeMap<String, u64>> {
+        crate::agent_store::AgentStore::open(&self.agent_db_path)
+            .and_then(|store| store.model_usage())
+    }
+}
+
+/// 默认引用优先级：启用的 Default Role → default_model → 第一个可用模型；
+/// 不可用的普通默认引用回退到第一个可用模型。
+fn default_reference(
+    providers: &[models::ValidatedProvider],
+    preferences: &ModelPreferences,
+) -> String {
+    let first_reference = providers
+        .first()
+        .map(|provider| format!("{}/{}", provider.id, provider.models[0].id))
+        .unwrap_or_default();
+    let reference = preferences
+        .model_roles
+        .get(&ModelRole::Default)
+        .filter(|assignment| assignment.enabled)
+        .map(|assignment| assignment.model.as_str())
+        .or(preferences.default_model.as_deref());
+    let Some(reference) = reference else {
+        return first_reference;
+    };
+    let (provider_id, model_id) = reference
+        .split_once('/')
+        .expect("validated default preference is a composite reference");
+    let matched = providers.iter().any(|provider| {
+        provider.id == provider_id && provider.models.iter().any(|model| model.id == model_id)
+    });
+    if matched {
+        reference.to_owned()
+    } else {
+        first_reference
     }
 }
 

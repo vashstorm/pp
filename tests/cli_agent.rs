@@ -111,7 +111,7 @@ impl Drop for Cli {
 }
 
 fn fixture_settings() -> &'static str {
-    "# 此测试进程的应用设置\ndefault_model: fixture/primary\nrate_limit_retry_budget_seconds: 0\n"
+    "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\n"
 }
 
 fn fixture_models(server: &Server) -> String {
@@ -547,3 +547,6 @@ mod config_model_cases;
 
 #[path = "cli_agent/config_error_cases.rs"]
 mod config_error_cases;
+
+#[path = "cli_agent/sqlite.rs"]
+mod sqlite;

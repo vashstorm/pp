@@ -52,20 +52,17 @@ fn committed_diff_survives_result_and_replay_without_reconstructing_old_logs() {
             .any(|cell| cell.symbol() == "o" && cell.fg == palette::EDIT_ADDED)
     );
     let mut old = Transcript::new();
-    old.replay(
-        vec![
-            ReplayRecord::Event(AgentEvent::ToolStarted {
-                id: "old".into(),
-                name: "write".into(),
-                arguments: r#"{"path":"old.txt","content":"not a real committed diff"}"#.into(),
-            }),
-            ReplayRecord::Event(AgentEvent::ToolFinished {
-                id: "old".into(),
-                result: serde_json::json!({"ok":true,"bytes_written":28}),
-            }),
-        ],
-        &mut Vec::new(),
-    );
+    old.replay(vec![
+        ReplayRecord::Event(AgentEvent::ToolStarted {
+            id: "old".into(),
+            name: "write".into(),
+            arguments: r#"{"path":"old.txt","content":"not a real committed diff"}"#.into(),
+        }),
+        ReplayRecord::Event(AgentEvent::ToolFinished {
+            id: "old".into(),
+            result: serde_json::json!({"ok":true,"bytes_written":28}),
+        }),
+    ]);
     let old_screen = screen(&render(&mut old, 100, 12));
     assert!(
         old_screen.contains("not a real committed diff"),

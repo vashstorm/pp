@@ -1,35 +1,18 @@
-//! 列表只读取最初的消息摘要和末尾状态，不重建会话树。
-use super::{Header, SessionSummary, compact_summary, parse_timestamp};
-use anyhow::{Context, Result, bail, ensure};
-use serde::Deserialize;
-use std::{
-    fs::OpenOptions,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
-    os::unix::fs::OpenOptionsExt,
-    path::Path,
-};
+//! 会话列表投影的共享规则：header 校验、记录分类与末尾状态判定。
+//!
+//! `persistence::index` 在逐文件流式重建派生投影时复用这些规则，
+//! 不维护第二套摘要/状态实现。
 
-pub(super) fn read(path: &Path, id: &str) -> Result<Option<SessionSummary>> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(
-            rustix::fs::OFlags::NOFOLLOW.bits() as i32 | rustix::fs::OFlags::NONBLOCK.bits() as i32,
-        )
-        .open(path)
-        .context("opening session")?;
-    let metadata = file.metadata().context("reading session metadata")?;
-    ensure!(metadata.is_file(), "session is not a regular file");
-    let updated_at = metadata
-        .modified()
-        .context("reading session modification time")?;
-    let mut reader = BufReader::new(&file);
-    let mut line = Vec::new();
-    reader
-        .read_until(b'\n', &mut line)
-        .context("reading session header")?;
+use super::{Header, compact_summary, parse_timestamp};
+use anyhow::{Result, ensure};
+use serde::Deserialize;
+
+/// 校验并返回日志首行（完整换行结尾）的会话 header：kind 必须是 session、
+/// 版本受支持、id 与文件名一致、cwd 绝对、时间可解析。
+pub(super) fn header(line: &[u8], id: &str) -> Result<Header> {
     ensure!(line.ends_with(b"\n"), "incomplete session header");
     let header: Header =
-        serde_json::from_slice(&line).map_err(|_| anyhow::anyhow!("invalid session header"))?;
+        serde_json::from_slice(line).map_err(|_| anyhow::anyhow!("invalid session header"))?;
     ensure!(
         header.kind == "session",
         "first record must be a session header"
@@ -41,25 +24,15 @@ pub(super) fn read(path: &Path, id: &str) -> Result<Option<SessionSummary>> {
         "session working directory must be absolute"
     );
     parse_timestamp(&header.timestamp)?;
-    let Some((summary, preview)) = messages(&mut reader)? else {
-        return Ok(None);
-    };
-    let done = done(&mut reader, metadata.len())?;
-    Ok(Some(SessionSummary {
-        id: id.to_owned(),
-        cwd: header.cwd,
-        updated_at,
-        summary,
-        preview,
-        bytes: metadata.len(),
-        done,
-    }))
+    Ok(header)
 }
 
 #[derive(Deserialize)]
 struct SummaryEntry {
     #[serde(rename = "type")]
     kind: String,
+    #[serde(default, rename = "customType")]
+    custom_type: String,
     #[serde(default)]
     message: Option<SummaryMessage>,
 }
@@ -73,80 +46,6 @@ enum SummaryMessage {
     Assistant {
         #[serde(default)]
         content: Vec<SummaryContent>,
-    },
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Deserialize)]
-struct SummaryContent {
-    #[serde(default, rename = "type")]
-    kind: String,
-    #[serde(default)]
-    text: String,
-}
-
-fn messages(reader: &mut impl BufRead) -> Result<Option<(String, String)>> {
-    let mut line = Vec::new();
-    let mut summary = None;
-    let mut preview = String::new();
-    loop {
-        line.clear();
-        reader
-            .read_until(b'\n', &mut line)
-            .context("reading session record")?;
-        if !line.ends_with(b"\n") {
-            break;
-        }
-        let entry: SummaryEntry = match serde_json::from_slice(&line) {
-            Ok(entry) => entry,
-            // 列表保留已有摘要；完整日志校验留给实际恢复。
-            Err(_) if summary.is_some() => break,
-            Err(_) => bail!("invalid session record before first user message"),
-        };
-        if entry.kind == "message" {
-            match entry.message {
-                Some(SummaryMessage::User { content }) => {
-                    summary.get_or_insert_with(|| compact_summary(&content, 80));
-                }
-                Some(SummaryMessage::Assistant { content }) if preview.is_empty() => {
-                    preview = compact_summary(
-                        &content
-                            .iter()
-                            .filter(|part| part.kind == "text")
-                            .map(|part| part.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                        200,
-                    );
-                }
-                _ => {}
-            }
-        }
-        if summary.is_some() && !preview.is_empty() {
-            break;
-        }
-    }
-    Ok(summary.map(|summary| (summary, preview)))
-}
-
-#[derive(Deserialize)]
-struct StatusEntry {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default, rename = "customType")]
-    custom_type: String,
-    #[serde(default)]
-    message: Option<StatusMessage>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "role")]
-enum StatusMessage {
-    #[serde(rename = "user")]
-    User,
-    #[serde(rename = "assistant")]
-    Assistant {
         #[serde(default, rename = "stopReason")]
         stop_reason: String,
     },
@@ -154,166 +53,139 @@ enum StatusMessage {
     Other,
 }
 
-fn status(line: &[u8]) -> Option<bool> {
-    let Ok(entry) = serde_json::from_slice::<StatusEntry>(line) else {
-        return Some(false);
-    };
+#[derive(Deserialize)]
+pub(super) struct SummaryContent {
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default)]
+    text: String,
+}
+
+/// 单条完整日志记录的分类结果；JSON 解析失败即为坏记录，由调用方按
+/// “首条 user 之前/之后”的规则处理。
+pub(super) enum Classified {
+    /// `type=message`、`role=user` 的实际正文；只有这类记录进入 prompt 索引。
+    User(String),
+    /// `type=message`、`role=assistant` 的 content 部分，仅用于首条预览。
+    Assistant(Vec<SummaryContent>, bool),
+    /// 其余记录（native state、事件、工具结果等）不参与投影。
+    Other(Option<bool>),
+}
+
+/// 按列表摘要规则分类一条完整记录行。
+pub(super) fn classify(line: &[u8]) -> Result<Classified> {
+    let entry: SummaryEntry =
+        serde_json::from_slice(line).map_err(|_| anyhow::anyhow!("invalid session record"))?;
     if matches!(entry.custom_type.as_str(), "pp.error" | "pp.cancelled") {
-        return Some(false);
+        return Ok(Classified::Other(Some(false)));
     }
-    if entry.kind == "message" {
-        match entry.message {
-            Some(StatusMessage::User) => return Some(false),
-            Some(StatusMessage::Assistant { stop_reason }) => return Some(stop_reason == "stop"),
+    if entry.kind != "message" {
+        return Ok(Classified::Other(None));
+    }
+    Ok(match entry.message {
+        Some(SummaryMessage::User { content }) => Classified::User(content),
+        Some(SummaryMessage::Assistant {
+            content,
+            stop_reason,
+        }) => Classified::Assistant(content, stop_reason == "stop"),
+        _ => Classified::Other(None),
+    })
+}
+
+impl Classified {
+    pub(super) fn status(&self) -> Option<bool> {
+        match self {
+            Self::User(_) => Some(false),
+            Self::Assistant(_, done) => Some(*done),
+            Self::Other(status) => *status,
+        }
+    }
+}
+
+/// 首条 user 摘要（80 字符）与首条 assistant 文本预览（200 字符）的累加器，
+/// 规则与旧列表入口一致。
+#[derive(Default)]
+pub(super) struct Head {
+    summary: Option<String>,
+    preview: String,
+}
+
+impl Head {
+    pub(super) fn feed(&mut self, record: Classified) {
+        match record {
+            Classified::User(content) => {
+                self.summary
+                    .get_or_insert_with(|| compact_summary(&content, 80));
+            }
+            Classified::Assistant(content, _) if self.preview.is_empty() => {
+                self.preview = compact_summary(
+                    &content
+                        .iter()
+                        .filter(|part| part.kind == "text")
+                        .map(|part| part.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    200,
+                );
+            }
             _ => {}
         }
     }
-    None
-}
 
-fn done(reader: &mut (impl Read + Seek), mut end: u64) -> Result<bool> {
-    let mut buffer = [0; 8192];
-    let mut line = Vec::new();
-    let mut first = true;
-    while end > 0 {
-        let count = end.min(buffer.len() as u64) as usize;
-        end -= count as u64;
-        reader
-            .seek(SeekFrom::Start(end))
-            .context("seeking session tail")?;
-        reader
-            .read_exact(&mut buffer[..count])
-            .context("reading session tail")?;
-        let mut bytes = &buffer[..count];
-        if first {
-            // 未提交完整换行的尾部仍显示为中断。
-            if bytes.last() != Some(&b'\n') {
-                return Ok(false);
-            }
-            bytes = &bytes[..bytes.len() - 1];
-            first = false;
-        }
-        for &byte in bytes.iter().rev() {
-            if byte == b'\n' {
-                line.reverse();
-                if let Some(done) = status(&line) {
-                    return Ok(done);
-                }
-                line.clear();
-            } else {
-                line.push(byte);
-            }
-        }
+    /// 是否已看到首条 user 消息；这是坏记录“整文件无效/保留前缀”的分界。
+    pub(super) fn has_summary(&self) -> bool {
+        self.summary.is_some()
     }
-    line.reverse();
-    Ok(status(&line).unwrap_or(false))
+
+    /// 没有 user 消息的文件返回 None，不列出。
+    pub(super) fn finish(self) -> Option<(String, String)> {
+        self.summary.map(|summary| (summary, self.preview))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
-
-    struct MeasuredReader {
-        inner: Cursor<Vec<u8>>,
-        bytes: usize,
-    }
-
-    impl Read for MeasuredReader {
-        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-            let count = self.inner.read(buffer)?;
-            self.bytes += count;
-            Ok(count)
-        }
-    }
-
-    impl Seek for MeasuredReader {
-        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
-            self.inner.seek(position)
-        }
-    }
 
     #[test]
-    fn listing_reads_only_initial_messages_and_status_tail() {
-        let head = concat!(
-            "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"最初的问题\"}}\n",
-            "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"隐藏思考\"}]}}\n",
-            "{\"type\":\"message\",\"message\":{\"role\":\"toolResult\",\"content\":[]}}\n",
-            "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"最初的回答\"}]}}\n",
+    fn header_and_classify_follow_listing_rules() {
+        let id = format!("2026-10-17T01-02-03-{}", "a".repeat(32));
+        let valid = format!(
+            "{}\n",
+            serde_json::json!({"type":"session","version":3,"id":id,"timestamp":"2026-10-17T01:02:03Z","cwd":"/project"})
         );
-        let middle =
-            "{\"type\":\"custom\",\"customType\":\"pp.event\",\"data\":{\"text\":\"流式正文\"}}\n"
-                .repeat(20_000);
-        let tail = format!(
-            "{}\n{}\n",
-            serde_json::json!({"type":"message", "message":{"role":"assistant", "content":[], "stopReason":"stop"}}),
-            serde_json::json!({"type":"custom", "customType":"pp.native_append", "data":{"padding":"尾部记录".repeat(10_000)}}),
-        );
-        let data = format!("{head}{middle}{tail}").into_bytes();
-        let length = data.len() as u64;
-        let mut reader = BufReader::new(MeasuredReader {
-            inner: Cursor::new(data),
-            bytes: 0,
-        });
-        assert_eq!(
-            messages(&mut reader).unwrap(),
-            Some(("最初的问题".into(), "最初的回答".into()))
-        );
-        assert!(reader.get_ref().bytes <= 8192);
-        assert!(done(&mut reader, length).unwrap());
-        // 长尾记录可以跨多个读取块；中间的大量事件仍不应被读取。
-        assert!(reader.get_ref().bytes <= head.len() + tail.len() + 16_384);
-    }
-
-    #[test]
-    fn listing_tail_handles_status_changes_corruption_and_block_boundaries() {
-        let completed =
-            "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}\n";
-        for (last, expected) in [
-            ("", true),
-            (
-                "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"next\"}}\n",
-                false,
-            ),
-            (
-                "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"toolUse\"}}\n",
-                false,
-            ),
-            (
-                "{\"type\":\"custom\",\"customType\":\"pp.error\",\"data\":{}}\n",
-                false,
-            ),
-            (
-                "{\"type\":\"custom\",\"customType\":\"pp.cancelled\",\"data\":{}}\n",
-                false,
-            ),
-            (
-                "{\"type\":\"message\",\"message\":{\"role\":\"toolResult\"}}\n",
-                true,
-            ),
-            ("broken record\n", false),
+        assert!(header(valid.as_bytes(), &id).is_ok());
+        for broken in [
+            "{\"type\":\"session\",\"version\":3,\"id\":\"mismatch\"}\n",
+            "{\"type\":\"message\"}\n",
+            "{\"type\":\"session\",\"version\":2}\n",
+            "broken\n",
+            "",
         ] {
-            for padding in [0, 8191, 8192, 8193, 24_576] {
-                let data = format!(
-                    "{completed}{last}{}\n",
-                    serde_json::json!({"type":"custom", "customType":"pp.event", "data":{"text":"x".repeat(padding)}})
-                );
-                let length = data.len() as u64;
-                assert_eq!(
-                    done(&mut Cursor::new(data), length).unwrap(),
-                    expected,
-                    "尾部 {last:?}, 填充 {padding}"
-                );
-            }
+            assert!(header(broken.as_bytes(), &id).is_err(), "{broken}");
         }
-        for suffix in ["{partial", "\n", "broken\n", "{\"type\":\"message\"}"] {
-            let data = format!("{completed}{suffix}");
-            let length = data.len() as u64;
-            assert!(!done(&mut Cursor::new(data), length).unwrap());
+
+        let user = "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"  修复\\n测试 \"}}\n";
+        let assistant = "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"隐藏\"},{\"type\":\"text\",\"text\":\"已经\\n修复\"}]}}\n";
+        let other = "{\"type\":\"custom\",\"customType\":\"pp.native_append\",\"data\":{\"messages\":[]}}\n";
+        assert!(classify(other.as_bytes()).is_ok());
+        let mut head = Head::default();
+        assert!(!head.has_summary());
+        for line in [other, user, assistant] {
+            head.feed(classify(line.as_bytes()).unwrap());
         }
-        assert!(!done(&mut Cursor::new(Vec::new()), 0).unwrap());
-        let mut reader = Cursor::new(b"{\"type\":\"session\"}\n");
-        let length = reader.get_ref().len() as u64;
-        assert!(!done(&mut reader, length).unwrap());
+        assert_eq!(
+            head.finish().unwrap(),
+            ("修复 测试".into(), "已经 修复".into())
+        );
+        // user content 不是字符串时按坏记录处理（与列表规则一致）。
+        assert!(
+            classify(
+                "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[]}}\n"
+                    .as_bytes()
+            )
+            .is_err()
+        );
+        assert!(Head::default().finish().is_none());
     }
 }

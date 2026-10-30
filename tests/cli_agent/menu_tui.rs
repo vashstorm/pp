@@ -50,12 +50,18 @@ fn tui_menu_overlay_keeps_input_cursor_and_history_anchored() {
             && screen.cell(27, 0).unwrap().contents() == "❯"
     });
     pty.input("\x1b");
+    pty.wait_for("Esc 关闭模型菜单并保留草稿", |screen| {
+        !screen.contents().contains("Ctrl + S") && input_is_ready(screen)
+    });
     pty.draft("/mo");
     pty.input("\x01\x0b/effort ");
     pty.wait_for("思考菜单在固定输入行上方显示", |screen| {
         screen.contents().contains("Disable thinking") && screen.cursor_position() == (27, 10)
     });
     pty.input("\x1b");
+    pty.wait_for("Esc 收起思考菜单并保留草稿", |screen| {
+        !screen.contents().contains("Disable thinking") && input_is_ready(screen)
+    });
     pty.draft("/effort");
     pty.input("\x01\x0b@");
     pty.wait_for("文件菜单在固定输入行上方显示", |screen| {

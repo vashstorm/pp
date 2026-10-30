@@ -9,6 +9,7 @@ fn file_picker_activation_filters_without_rescanning() {
         commands::FileCommands::default(),
         dir.path(),
         NotificationOptions::default(),
+        None,
     )
     .unwrap();
     let (requests, scans) = mpsc::channel();

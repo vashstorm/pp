@@ -175,11 +175,22 @@ fn skills_sources_inherit_toggle_individually_and_restore_both_protocols() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(
-            std::fs::read_to_string(config_path(home.path(), "settings.yml"))
-                .unwrap()
-                .contains("# 保留注释")
-        );
+        let settings = std::fs::read_to_string(config_path(home.path(), "settings.yml")).unwrap();
+        assert!(settings.contains("# 保留注释"));
+        assert!(!settings.contains("think_level"));
+        let database = rusqlite::Connection::open_with_flags(
+            config_path(home.path(), "agent.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let think_level: String = database
+            .query_row(
+                "SELECT think_level FROM preferences WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(think_level, "high");
         let mut cli = Cli::start_with_existing_files(home.path(), None);
         cli.input("restart\n");
         let (request, body) = receive_at(&server, path);
@@ -293,7 +304,22 @@ fn skills_load_on_demand_disable_persist_and_reset_in_both_protocols() {
         assert_eq!(output.stdout, b"ok\nok\nok\n");
         let settings = std::fs::read_to_string(config_path(home.path(), "settings.yml")).unwrap();
         assert!(settings.contains("# 保留配置注释"));
-        assert!(settings.contains("think_level: high"));
+        assert!(settings.contains("read_max_lines: 2"));
+        assert!(settings.contains("read_max_bytes: 8"));
+        assert!(!settings.contains("think_level"));
+        let database = rusqlite::Connection::open_with_flags(
+            config_path(home.path(), "agent.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let think_level: String = database
+            .query_row(
+                "SELECT think_level FROM preferences WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(think_level, "high");
         let mut cli = Cli::start_with_existing_files(home.path(), None);
         cli.input("restart\n");
         let (request, body) = receive_at(&server, path);

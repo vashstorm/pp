@@ -203,7 +203,7 @@ fn auth_client_reloads_credentials_headers_and_observes_logout() {
     use crate::auth::{Credential, Provider, Store};
     use async_openai::config::Config as _;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("auth.yml");
+    let path = dir.path().join("agent.db");
     let mut store = Store::default();
     let mut credential = Credential::api_key("first-github-token".into());
     credential.api_endpoint = Some("https://api.business.githubcopilot.com".into());
@@ -258,16 +258,23 @@ fn test_client(base_url: &str) -> OpenAiClient {
 }
 
 fn test_client_with_rate_limit_budget(base_url: &str, budget_seconds: u64) -> OpenAiClient {
-    OpenAiClient::new(&Config {
+    test_client_at(base_url, budget_seconds, "fixture/primary")
+}
+
+/// 客户端自身持有临时目录，保证计数数据库路径在客户端存续期内有效。
+fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenAiClient {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = OpenAiClient::new(&Config {
         auth: None,
         api_key: "private-key".into(),
         model: "fixture".into(),
+        model_reference: reference.into(),
         protocol: crate::models::Protocol::Completion,
         thinking: crate::models::ModelThinking::default(),
         base_url: base_url.parse().unwrap(),
         context_window: None,
+        agent_db_path: dir.path().join("agent.db"),
         settings: crate::config::Settings {
-            model_roles: Default::default(),
             task: Default::default(),
             grep: Default::default(),
             read: Default::default(),
@@ -279,10 +286,7 @@ fn test_client_with_rate_limit_budget(base_url: &str, budget_seconds: u64) -> Op
             skill_dirs: Vec::new(),
             skill_sources: Vec::new(),
             disabled_skills: Vec::new(),
-            think_level: crate::config::ThinkLevel::None,
             edit: crate::config::EditMode::Replace,
-            default_model: None,
-            favorite_models: Vec::new(),
             request_timeout_seconds: 120,
             rate_limit_retry_budget_seconds: budget_seconds,
             read_max_bytes: 65_536,
@@ -292,7 +296,21 @@ fn test_client_with_rate_limit_budget(base_url: &str, budget_seconds: u64) -> Op
             auto_compact_threshold_percent: 80,
         },
     })
-    .unwrap()
+    .unwrap();
+    client.usage_dir = Some(dir);
+    client
+}
+
+/// 读取客户端计数数据库中的使用次数。
+fn usage_of(client: &OpenAiClient, reference: &str) -> u64 {
+    let path = client.usage_dir.as_ref().unwrap().path().join("agent.db");
+    crate::agent_store::AgentStore::open(&path)
+        .unwrap()
+        .model_usage()
+        .unwrap()
+        .get(reference)
+        .copied()
+        .unwrap_or(0)
 }
 
 fn chat_chunk(delta: Value, finish: Option<&str>) -> Value {
@@ -747,6 +765,210 @@ fn sent_callback_error_takes_precedence_over_cancellation() {
     assert_eq!(sent, 1);
     assert_eq!(error.to_string(), "persisting session failed");
     assert!(error.downcast_ref::<Cancelled>().is_none());
+}
+
+#[test]
+fn sqlite_model_usage_counts_logical_requests_once() {
+    // 发送前取消：未实际尝试发送，不计数。
+    {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let mut client = test_client(&format!("http://{}", server.server_addr()));
+        let token = CancellationToken::new();
+        token.cancel();
+        let error = client
+            .complete(
+                &CreateChatCompletionRequest::default(),
+                &token,
+                &mut || Ok(()),
+                &mut |_| {},
+            )
+            .err()
+            .unwrap();
+        assert!(error.downcast_ref::<Cancelled>().is_some());
+        assert_eq!(usage_of(&client, "fixture/primary"), 0);
+        assert!(
+            server
+                .recv_timeout(Duration::from_millis(50))
+                .unwrap()
+                .is_none()
+        );
+    }
+    // 建连 429 重试后成功：一次逻辑请求只计一次。
+    {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let mut client =
+            test_client_with_rate_limit_budget(&format!("http://{}", server.server_addr()), 30);
+        let token = CancellationToken::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let first = server
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                first
+                    .respond(
+                        tiny_http::Response::from_string("private-body fixture")
+                            .with_status_code(429)
+                            .with_header(
+                                tiny_http::Header::from_bytes(&b"Retry-After"[..], &b"0"[..])
+                                    .unwrap(),
+                            ),
+                    )
+                    .unwrap();
+                let second = server
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                let mut writer = sse_writer(second);
+                sse_frame(
+                    &mut writer,
+                    &chat_chunk(json!({"role":"assistant","content":"recovered"}), None)
+                        .to_string(),
+                );
+                sse_frame(
+                    &mut writer,
+                    &chat_chunk(json!({}), Some("stop")).to_string(),
+                );
+                sse_frame(&mut writer, "[DONE]");
+                sse_end(writer);
+            });
+            client
+                .complete(
+                    &CreateChatCompletionRequest::default(),
+                    &token,
+                    &mut || Ok(()),
+                    &mut |_| {},
+                )
+                .unwrap();
+        });
+        assert_eq!(usage_of(&client, "fixture/primary"), 1);
+        assert!(
+            server
+                .recv_timeout(Duration::from_millis(50))
+                .unwrap()
+                .is_none()
+        );
+    }
+    // 发送后的失败（重试预算耗尽）：仍计一次。
+    {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let mut client =
+            test_client_with_rate_limit_budget(&format!("http://{}", server.server_addr()), 1);
+        let token = CancellationToken::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..2 {
+                    let request = server
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap()
+                        .unwrap();
+                    request
+                        .respond(
+                            tiny_http::Response::from_string("private-body fixture")
+                                .with_status_code(429),
+                        )
+                        .unwrap();
+                }
+            });
+            let error = client
+                .complete(
+                    &CreateChatCompletionRequest::default(),
+                    &token,
+                    &mut || Ok(()),
+                    &mut |_| {},
+                )
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("HTTP status 429"));
+        });
+        assert_eq!(usage_of(&client, "fixture/primary"), 1);
+    }
+    // 发送后取消：计一次。
+    {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let mut client = test_client(&format!("http://{}", server.server_addr()));
+        let token = CancellationToken::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let request = server
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                let mut writer = sse_writer(request);
+                sse_frame(
+                    &mut writer,
+                    &chat_chunk(json!({"role":"assistant","content":"ignored"}), None).to_string(),
+                );
+                sse_frame(
+                    &mut writer,
+                    &chat_chunk(json!({}), Some("stop")).to_string(),
+                );
+                sse_frame(&mut writer, "[DONE]");
+                sse_end(writer);
+            });
+            let error = client
+                .complete(
+                    &CreateChatCompletionRequest::default(),
+                    &token,
+                    &mut || {
+                        token.cancel();
+                        Ok(())
+                    },
+                    &mut |_| {},
+                )
+                .err()
+                .unwrap();
+            assert!(error.downcast_ref::<Cancelled>().is_some());
+        });
+        assert_eq!(usage_of(&client, "fixture/primary"), 1);
+        assert!(
+            server
+                .recv_timeout(Duration::from_millis(50))
+                .unwrap()
+                .is_none()
+        );
+    }
+    // Responses 协议成功按各自引用计数，不影响其他模型。
+    {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let mut client = test_client_at(
+            &format!("http://{}", server.server_addr()),
+            0,
+            "fixture/secondary",
+        );
+        let completed = json!({
+            "type":"response.completed", "sequence_number":5,
+            "response":{
+                "id":"fixture", "object":"response", "created_at":0, "model":"fixture",
+                "status":"completed",
+                "output":[{"type":"message","id":"m","role":"assistant","status":"completed",
+                    "content":[{"type":"output_text","text":"answer","annotations":[]}]}]
+            }
+        })
+        .to_string();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let request = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let mut writer = sse_writer(request);
+                sse_frame(&mut writer, &completed);
+                sse_end(writer);
+            });
+            let turn = client
+                .respond(
+                    &CreateResponse::default(),
+                    &CancellationToken::new(),
+                    &mut || Ok(()),
+                    &mut |_| {},
+                )
+                .unwrap();
+            assert_eq!(turn.text, "answer");
+        });
+        assert_eq!(usage_of(&client, "fixture/secondary"), 1);
+        assert_eq!(usage_of(&client, "fixture/primary"), 0);
+    }
 }
 
 #[test]

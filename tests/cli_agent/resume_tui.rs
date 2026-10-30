@@ -1,5 +1,5 @@
-// /resume 集成回归：两种协议的推理与工具回放、原生历史续写、输入历史替换，
-// 以及跨目录加载历史时保留当前目录、状态栏、文件候选、模型和思考级别。
+// /resume 集成回归：两种协议的推理与工具回放、原生历史续写、持久输入记忆不被
+// replay 改写，以及跨目录加载历史时保留当前目录、状态栏、文件候选、模型和思考级别。
 // 日志原地追加，旧工具不重复执行；通过真实终端、HTTP 和文件系统观察行为。
 
 fn resume_history_journal_dir(home: &Path) -> std::path::PathBuf {
@@ -278,18 +278,8 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
             "resume-history evidence\n"
         );
 
-        // Input history is replaced by the resumed session's inputs: ↑ walks
-        // U2 then U1 and stops there — the submitted "/resume" is gone.
-        pty.input("\x1b[A");
-        pty.draft("resume-history U2 ask");
-        pty.input("\x1b[A");
-        pty.draft("resume-history U1 ask");
-        pty.input("\x1b[A");
-        pty.draft("resume-history U1 ask");
-        pty.input("\x1b[B");
-        pty.draft("resume-history U2 ask");
-        pty.input("\x1b[B");
-        pty.draft("");
+        // 恢复只替换可见 transcript；replay 不再写入输入回忆，因此这里不断言
+        // ↑ 能取回旧会话的 prompt（持久回忆由独立输入历史回归覆盖）。
 
         pty.wait_for("resume notification fades before scrolling", |screen| {
             !screen.contents().contains("Resumed session:")
@@ -510,11 +500,13 @@ fn tui_slash_resume_history_keeps_current_cwd_status_files_model_and_effort() {
     ).unwrap();
     std::fs::write(
         config_path(home.path(), "settings.yml"),
-        r#"{"default_model":"fixture2/other","notification_timeout_seconds":1}"#,
+        r#"{"notification_timeout_seconds":1}"#,
     )
     .unwrap();
     let mut pty = Pty::start_with_args(launch.path(), home.path(), &[]);
     pty.ready_model("fixture2/other");
+    pty.ready_effort("high");
+    pty.input("/effort none\r");
     pty.ready_effort("no think");
 
     pty.input("/resume\r");
@@ -689,7 +681,7 @@ fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_
             )}}).to_string();
             std::fs::write(&models, &current_models).unwrap();
             std::fs::write(&settings,
-                r#"{"default_model":"fixture/primary","edit":"replace","notification_timeout_seconds":1}"#).unwrap();
+                r#"{"edit":"replace","notification_timeout_seconds":1}"#).unwrap();
             let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
             pty.ready_model("fixture/primary");
             pty.input("/model fixture/selected\r");
@@ -920,4 +912,146 @@ fn tui_slash_resume_history_smoke_selects_older_session_and_continues() {
         "unselected journal must stay untouched"
     );
     assert_eq!(resume_history_session_files(home.path()).len(), 2);
+}
+
+// /resume 的检索来自 history.db 派生索引：只有第二条 user 正文命中的关键词也能
+// 列出会话；2 字中文与长词分别走字面 instr 与 trigram FTS；范围切换、关闭重开
+// 和持锁删除都在真实终端上验证，检索/恢复不发送模型请求。
+#[test]
+fn tui_slash_resume_searches_full_prompt_history_and_blocks_locked_delete() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let saved = tempfile::tempdir().unwrap();
+    let launch = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_path(home.path(), "settings.yml"),
+        r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        config_path(home.path(), "models.yml"),
+        fixture_models(&server),
+    )
+    .unwrap();
+
+    // 标题/预览只包含首条 user；检索词只出现在第二条 user 正文。
+    let id = {
+        let mut pty = Pty::start_with_args(saved.path(), home.path(), &[]);
+        pty.ready();
+        pty.input("resume-search first title only\r");
+        let (request, _) = pty.request(&server);
+        final_reply(request, "resume-search first answer");
+        pty.text("resume-search first answer");
+        pty.completed();
+        pty.input("修复模型切换失败 needle_42\r");
+        let (request, _) = pty.request(&server);
+        final_reply(request, "resume-search second answer");
+        pty.text("resume-search second answer");
+        pty.ready();
+        pty.input("/quit\r");
+        pty.finish();
+        saved_session_id(home.path())
+    };
+    no_more(&server);
+    let journal = resume_history_journal_dir(home.path()).join(format!("{id}.jsonl"));
+    let before = std::fs::read(&journal).unwrap();
+
+    // 另一进程持锁：会话可被搜索，但删除必须被拒绝且保留行与文件。
+    let lock_dir = home.path().join(".pp/run/sessions");
+    std::fs::create_dir_all(&lock_dir).unwrap();
+    let lock = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_dir.join(format!("{id}.lock")))
+        .unwrap();
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+
+    let mut pty = Pty::start_with_args(launch.path(), home.path(), &[]);
+    pty.ready();
+    pty.input("/resume\r");
+    pty.text("No sessions in current folder.");
+    pty.input("\x1b[C");
+    pty.wait_for("all projects lists the saved session", |screen| {
+        let text = screen.contents();
+        text.contains("Resume session")
+            && text.contains("resume-search first title only")
+            && text.lines().any(|line| line.starts_with('>'))
+    });
+
+    // 2 字中文走字面 instr；继续输入到 3 字走 trigram FTS；结果都来自第二条 prompt。
+    // 同时等待查询行，确保整串输入已处理且最新请求已完成（pending 时不显示结果）。
+    pty.input("模型");
+    pty.wait_for("two-character query hits the second prompt", |screen| {
+        let text = screen.contents();
+        text.contains("> 模型") && text.contains("resume-search first title only")
+    });
+    pty.input("切");
+    pty.wait_for("three-character query still hits", |screen| {
+        let text = screen.contents();
+        text.contains("> 模型切") && text.contains("resume-search first title only")
+    });
+    pty.input("\x15");
+    pty.input("needle_42");
+    pty.wait_for("full-text needle hits the second prompt", |screen| {
+        let text = screen.contents();
+        text.contains("> needle_42")
+            && text.contains("resume-search first title only")
+            && !text.contains("No matching sessions.")
+    });
+
+    // 关闭重开：新面板从当前目录隔离开始；范围切换重跑同一查询并恢复结果。
+    pty.input("\x1b");
+    pty.wait_for("escape returns to the main screen", |screen| {
+        !screen.contents().contains("Resume session")
+    });
+    pty.input("/resume\r");
+    pty.text("No sessions in current folder.");
+    pty.input("needle_42");
+    pty.wait_for("current folder query finds nothing", |screen| {
+        let text = screen.contents();
+        text.contains("> needle_42") && text.contains("No matching sessions.")
+    });
+    pty.input("\x1b[C");
+    pty.wait_for("scope change reruns the query", |screen| {
+        screen.contents().contains("resume-search first title only")
+    });
+
+    // 持锁会话：Delete 确认后删除失败，错误可见且行仍在。
+    pty.input("\x1b[3~");
+    pty.wait_for("delete confirmation", |screen| {
+        screen.contents().contains("Delete selected session?")
+    });
+    pty.input("y");
+    pty.wait_for("locked delete rejected", |screen| {
+        let text = screen.contents();
+        text.contains("Failed to delete session")
+            && text.contains("resume-search first title only")
+    });
+    assert!(journal.exists());
+    assert_eq!(std::fs::read(&journal).unwrap(), before);
+    no_more(&server);
+
+    // 释放锁后从搜索结果恢复：transcript 显示第二条 prompt，且不发送模型请求。
+    drop(lock);
+    pty.input("\x1b");
+    pty.wait_for("panel closes after the failed delete", |screen| {
+        !screen.contents().contains("Resume session")
+    });
+    pty.input("/resume\r");
+    pty.input("\x1b[C");
+    pty.wait_for("session listed again", |screen| {
+        screen.contents().contains("resume-search first title only")
+    });
+    pty.input("\r");
+    resume_history_wait_resumed(
+        &mut pty,
+        &id,
+        &["resume-search second answer", "needle_42"],
+    );
+    no_more(&server);
+    assert_eq!(std::fs::read(&journal).unwrap(), before);
+    pty.input("/quit\r");
+    pty.finish();
 }

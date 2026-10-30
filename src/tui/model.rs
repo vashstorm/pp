@@ -1,3 +1,6 @@
+use std::cmp::Reverse;
+use std::collections::BTreeMap;
+
 use super::{
     MenuAction, ModelChoice, editor,
     menu::{MenuEvent, MenuItem, SelectionMenu},
@@ -80,6 +83,7 @@ impl Panel {
         current: Option<&str>,
         default: Option<&str>,
         favorites: &[String],
+        usage: &BTreeMap<String, u64>,
         edited: bool,
     ) {
         let query = self.search.lines()[0].trim();
@@ -99,9 +103,16 @@ impl Panel {
                 current: current == Some(choice.reference.as_str()),
             })
             .collect();
+        // 稳定排序：收藏优先，其后按实际请求次数降序；缺失按 0，次数相同保持目录顺序。
         items.sort_by_key(|item| match item.value {
-            MenuAction::Model(index) => !favorites.contains(&choices[index].reference),
-            _ => true,
+            MenuAction::Model(index) => {
+                let reference = &choices[index].reference;
+                (
+                    !favorites.contains(reference),
+                    Reverse(usage.get(reference).copied().unwrap_or(0)),
+                )
+            }
+            _ => (true, Reverse(0)),
         });
         let suffixes: Vec<_> = items
             .iter()

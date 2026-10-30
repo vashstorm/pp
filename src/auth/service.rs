@@ -18,7 +18,9 @@ pub(crate) struct Update {
 }
 
 pub(crate) fn list(dir: &Path) -> Result<Vec<Provider>> {
-    let store = Store::load(&dir.join("auth.yml"))?;
+    // list 没有外部取消令牌；初始化仅读取迁移状态，用独立令牌即可。
+    crate::agent_store::initialize(dir, &CancellationToken::new())?;
+    let store = Store::load(&dir.join("agent.db"))?;
     Ok(Provider::ALL
         .into_iter()
         .filter(|p| store.credentials.contains_key(p))
@@ -62,7 +64,9 @@ pub(crate) fn commit_login(
     cancellation: &CancellationToken,
 ) -> Result<()> {
     credential.validate(provider)?;
-    let path = dir.join("auth.yml");
+    let path = dir.join("agent.db");
+    // 在取得授权锁之前完成一次性迁移；Store::load 不再读旧文件，锁内不触发迁移。
+    crate::agent_store::initialize(dir, cancellation)?;
     let _lock = StoreLock::acquire(&path, cancellation)?;
     let mut store = Store::load(&path)?;
     // 只有能确认身份相同才沿用缓存；未知身份按新授权处理。
@@ -88,7 +92,9 @@ pub(crate) fn discover(
     progress: &mut dyn FnMut(Progress),
 ) -> Result<Update> {
     progress(Progress::Discovering);
-    let path = dir.join("auth.yml");
+    let path = dir.join("agent.db");
+    // 网络发现之外的所有存储步骤都走 agent.db；初始化必须在取锁前完成。
+    crate::agent_store::initialize(dir, cancellation)?;
     let result = (|| {
         let http = crate::llm::auth::Http::new()?;
         let mut credential = {
@@ -160,7 +166,9 @@ pub(crate) fn logout(
     provider: Provider,
     cancellation: &CancellationToken,
 ) -> Result<Update> {
-    let path = dir.join("auth.yml");
+    let path = dir.join("agent.db");
+    // 在取得授权锁之前完成一次性迁移；锁内不再读旧 auth.yml。
+    crate::agent_store::initialize(dir, cancellation)?;
     let _lock = StoreLock::acquire(&path, cancellation)?;
     let mut store = Store::load(&path)?;
     let models_path = dir.join("models-sub.yml");

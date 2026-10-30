@@ -54,8 +54,12 @@ fn auth_tui_logout_refreshes_models_and_blocks_current_authorization() {
     pty.text("Z.AI (GLM Coding Plan) ● logged in (api key)");
     pty.input("\r");
     pty.text("Logged out locally.");
-    let auth: Value = serde_yaml::from_str(&std::fs::read_to_string(&auth_path).unwrap()).unwrap();
-    assert!(auth["credentials"].as_object().unwrap().is_empty());
+    let database = rusqlite::Connection::open_with_flags(
+        config_path(home.path(), "agent.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ).unwrap();
+    let remaining: i64 = database.query_row("SELECT COUNT(*) FROM auth_credentials", [], |row| row.get(0)).unwrap();
+    assert_eq!(remaining, 0);
+    assert!(!auth_path.exists());
     pty.input("\x1b"); pty.ready_model("zai/remote");
     pty.input("/model\r");
     pty.text("No matching models");

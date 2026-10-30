@@ -49,7 +49,7 @@ fn listing_reads_preview_size_and_latest_turn_status_without_native_content() {
             {"type":"text", "text":"已经\n修复"}], "stopReason":"stop"}})
     );
     fs::write(&path, &data).unwrap();
-    let listing = list(dir.path()).unwrap();
+    let listing = indexed_listing(dir.path()).unwrap();
     let summary = &listing.sessions[0];
     assert_eq!(summary.summary, "修复 测试");
     assert_eq!(summary.preview, "已经 修复");
@@ -64,7 +64,7 @@ fn listing_reads_preview_size_and_latest_turn_status_without_native_content() {
         let original = data.clone();
         data.push_str(tail);
         fs::write(&path, &data).unwrap();
-        assert!(!list(dir.path()).unwrap().sessions[0].done);
+        assert!(!indexed_listing(dir.path()).unwrap().sessions[0].done);
         data = original;
     }
 }
@@ -101,7 +101,7 @@ fn listing_is_read_only_sorted_and_isolates_invalid_sessions() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     let dir = tempfile::tempdir().unwrap();
     assert!(
-        list(&dir.path().join("missing"))
+        indexed_listing(&dir.path().join("missing"))
             .unwrap()
             .sessions
             .is_empty()
@@ -168,7 +168,7 @@ fn listing_is_read_only_sorted_and_isolates_invalid_sessions() {
         &format!("2026-10-17T01-02-03-{:032x}", 0),
     )
     .unwrap();
-    let listing = list(dir.path()).unwrap();
+    let listing = indexed_listing(dir.path()).unwrap();
     assert_eq!(
         listing
             .sessions
@@ -183,7 +183,20 @@ fn listing_is_read_only_sorted_and_isolates_invalid_sessions() {
     );
     assert_eq!(listing.sessions[1].summary, "first user message");
     assert_eq!(listing.sessions[1].cwd, Path::new("/project/2"));
-    assert_eq!(listing.diagnostics.len(), 2);
+    for suffix in [
+        "0".repeat(32),
+        format!("{:032x}", 1),
+        format!("{:032x}", 2),
+        format!("{:032x}", 3),
+        "f".repeat(32),
+    ] {
+        assert!(
+            listing
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains(&suffix))
+        );
+    }
     assert!(
         listing
             .diagnostics
@@ -213,16 +226,16 @@ fn listing_rejects_invalid_headers_and_ignores_unfinished_user_records() {
         let mut invalid = header.clone();
         invalid[key] = value;
         fs::write(&path, format!("{invalid}\n{user}\n")).unwrap();
-        let listing = list(dir.path()).unwrap();
+        let listing = indexed_listing(dir.path()).unwrap();
         assert!(listing.sessions.is_empty(), "{key}");
         assert_eq!(listing.diagnostics.len(), 1, "{key}");
     }
     fs::write(&path, format!("{header}\n{user}")).unwrap();
-    let listing = list(dir.path()).unwrap();
+    let listing = indexed_listing(dir.path()).unwrap();
     assert!(listing.sessions.is_empty());
     assert!(listing.diagnostics.is_empty());
     fs::write(&path, format!("{header}\n{user}\n{{partial")).unwrap();
-    let listing = list(dir.path()).unwrap();
+    let listing = indexed_listing(dir.path()).unwrap();
     assert_eq!(listing.sessions[0].summary, "first");
     assert!(listing.diagnostics.is_empty());
     fs::write(
@@ -232,7 +245,7 @@ fn listing_rejects_invalid_headers_and_ignores_unfinished_user_records() {
         ),
     )
     .unwrap();
-    let listing = list(dir.path()).unwrap();
+    let listing = indexed_listing(dir.path()).unwrap();
     assert!(listing.sessions.is_empty());
     assert_eq!(listing.diagnostics.len(), 1);
 }
@@ -562,6 +575,8 @@ fn write_failure_preserves_settings_and_blocks_requests_until_reset() {
             "a": {"protocol":"completion","api_key":"fixture", "base_url":format!("http://{}/v1", server.server_addr()),
              "models":{"one": {"model":"one"},"two": {"model":"two","thinking":{"defaultLevel":"max"}}}},
             "b": {"protocol":"response","api_key":"fixture", "models":{"one": {"model":"other","thinking":{"defaultLevel":"high"}},"two": {"model":"two","thinking":{"defaultLevel":"max"}}}}}}).to_string()).unwrap();
+    crate::agent_store::initialize(dir.path(), &crate::cancellation::CancellationToken::new())
+        .unwrap();
     for (source, target) in [
         ("a/one", "a/two"),
         ("a/one", "b/one"),
@@ -569,11 +584,11 @@ fn write_failure_preserves_settings_and_blocks_requests_until_reset() {
         ("b/one", "a/one"),
         ("a/one", "effort"),
     ] {
-        fs::write(
-            dir.path().join("settings.yml"),
-            serde_json::json!({"default_model":source}).to_string(),
-        )
-        .unwrap();
+        fs::write(dir.path().join("settings.yml"), "{}\n").unwrap();
+        crate::agent_store::AgentStore::open(&dir.path().join("agent.db"))
+            .unwrap()
+            .set_default_model(source, crate::models::ModelThinking::default())
+            .unwrap();
         let catalog = ModelCatalog::from_files(&dir.path().join("settings.yml"), &models).unwrap();
         let mut agent = Agent::new(
             catalog,

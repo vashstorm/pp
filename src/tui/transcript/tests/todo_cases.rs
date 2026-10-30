@@ -16,15 +16,11 @@ fn tui_todo_snapshots_never_create_history_cards() {
         },
     });
     assert!(transcript.entries.is_empty());
-    let mut history = Vec::new();
-    transcript.replay(
-        vec![ReplayRecord::Event(todo_snapshot_event(
-            1,
-            todo_phases(),
-            crate::plan::PlanStatus::Executed,
-        ))],
-        &mut history,
-    );
+    transcript.replay(vec![ReplayRecord::Event(todo_snapshot_event(
+        1,
+        todo_phases(),
+        crate::plan::PlanStatus::Executed,
+    ))]);
     assert!(transcript.entries.is_empty());
 }
 
@@ -131,22 +127,18 @@ fn tui_todo_reminder_note_lists_open_items_only() {
 fn tui_todo_reminder_replays_as_note_only() {
     use crate::tools::todo::{TodoItem, TodoStatus};
     let mut transcript = Transcript::new();
-    let mut input_history = Vec::new();
-    let error = transcript.replay(
-        vec![
-            ReplayRecord::User("go".into()),
-            ReplayRecord::Event(AgentEvent::TodoReminder {
-                todos: vec![TodoItem {
-                    content: "again".into(),
-                    status: TodoStatus::Pending,
-                    blocker: None,
-                }],
-                attempt: 1,
-                max_attempts: 3,
-            }),
-        ],
-        &mut input_history,
-    );
+    let error = transcript.replay(vec![
+        ReplayRecord::User("go".into()),
+        ReplayRecord::Event(AgentEvent::TodoReminder {
+            todos: vec![TodoItem {
+                content: "again".into(),
+                status: TodoStatus::Pending,
+                blocker: None,
+            }],
+            attempt: 1,
+            max_attempts: 3,
+        }),
+    ]);
     assert!(error.is_none());
     let text = screen(&render(&mut transcript, 100, 30));
     assert!(text.contains("Todo reminder 1/3"), "{text}");

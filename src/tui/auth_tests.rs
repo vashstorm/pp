@@ -124,7 +124,7 @@ fn auth_first_login_bootstraps_agent_without_restarting_ui_or_losing_draft() {
         &token,
     )
     .unwrap();
-    let store = crate::auth::Store::load(&global.join("auth.yml")).unwrap();
+    let store = crate::auth::Store::load(&global.join("agent.db")).unwrap();
     let mut catalog = crate::auth::models::Catalog::default();
     catalog.providers.insert(
         "zai".into(),

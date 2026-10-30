@@ -138,7 +138,7 @@ fn auth_copilot_discovery_roundtrip_preserves_model_protocols_and_manual_priorit
         &CancellationToken::new(),
     )
     .unwrap();
-    let store = Store::load(&dir.path().join("auth.yml")).unwrap();
+    let store = Store::load(&dir.path().join("agent.db")).unwrap();
     let credential = &store.credentials[&Provider::GithubCopilot];
     let (base, server) = mock(vec![(
         200,

@@ -197,10 +197,13 @@ fn model_thinking_session_restore_preserves_saved_level_across_config_changes() 
                 }}}))}})
             .to_string()
         };
-        let settings = r#"{"default_model":"p/plain","think_level":"low"}"#;
+        // 首次启动仍由旧四字段经迁移导入 agent.db；迁移完成后偏好由数据库权威，
+        // 重启只改写 settings.yml 中的其余字段。
+        let seed_settings = r#"{"default_model":"p/plain","think_level":"low"}"#;
+        let live_settings = "{}";
         configure(
             home.path(),
-            settings,
+            seed_settings,
             &configured_models("high", json!(["low", "high"])),
         );
 
@@ -263,7 +266,7 @@ fn model_thinking_session_restore_preserves_saved_level_across_config_changes() 
         // replayed native history.
         configure(
             home.path(),
-            settings,
+            live_settings,
             &configured_models("low", json!(["low", "high"])),
         );
         let cli = start(
@@ -311,7 +314,7 @@ fn model_thinking_session_restore_preserves_saved_level_across_config_changes() 
         let before_failure = fs::read(&path).unwrap();
         configure(
             home.path(),
-            settings,
+            live_settings,
             &configured_models("medium", json!(["medium", "max"])),
         );
         expect_restore_failure(
@@ -350,9 +353,10 @@ fn session_restore_keeps_saved_edit_mode_and_execution_limits() {
         let saved = rebuild_request(&records(&path));
 
         // Current settings must not silently replace the saved tool definitions or execution policy.
+        // 默认模型已由 agent.db 权威，这里只改写仍属于 settings.yml 的工具策略。
         configure(
             home.path(),
-            r#"{"default_model":"fixture/primary","skill_dirs":[],"edit":"replace","read_max_bytes":1024,"read_max_lines":10,"bash_timeout_seconds":30}"#,
+            r#"{"skill_dirs":[],"edit":"replace","read_max_bytes":1024,"read_max_lines":10,"bash_timeout_seconds":30}"#,
             &models,
         );
         let cli = start(home.path(), launch.path(), &["-c", &id]);

@@ -91,7 +91,7 @@ pub(crate) struct Config {
 }
 
 // 凭证类型不实现 Debug，避免令牌进入诊断日志。
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Credential {
     #[serde(default)]
@@ -167,7 +167,8 @@ pub(crate) fn copilot_endpoint(value: &str) -> bool {
     })
 }
 
-#[derive(Default, Serialize, Deserialize)]
+// 授权持久化在 agent.db 的 auth_credentials 表；load/save 的 path 即 agent.db。
+#[derive(Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Store {
     #[serde(default)]
@@ -176,16 +177,22 @@ pub(crate) struct Store {
 
 impl Store {
     pub(crate) fn load(path: &Path) -> Result<Self> {
-        let store: Self = read_yaml(path, "auth")?.unwrap_or_default();
-        for (provider, credential) in &store.credentials {
-            credential.validate(*provider)?;
-        }
-        Ok(store)
+        crate::agent_store::AgentStore::open(path)?.load_auth()
     }
 
     pub(crate) fn save(&self, path: &Path) -> Result<()> {
-        save_yaml(path, self)
+        let mut agent = crate::agent_store::AgentStore::open(path)?;
+        agent.save_auth(self)
     }
+}
+
+/// 仅供一次性迁移读取旧 auth.yml；运行期授权一律走 agent.db，绝不回落到此文件。
+pub(crate) fn load_legacy_store(path: &Path) -> Result<Store> {
+    let store: Store = read_yaml(path, "auth")?.unwrap_or_default();
+    for (provider, credential) in &store.credentials {
+        credential.validate(*provider)?;
+    }
+    Ok(store)
 }
 
 pub(super) fn read_yaml<T: serde::de::DeserializeOwned>(

@@ -5,7 +5,8 @@ fn tui_shortcuts_preserve_drafts_and_send_selected_effort_to_both_apis() {
     for protocol in ["completion", "response"] {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
-        let settings = r#"{"think_level":"high"}"#;
+        // 旧版设置夹具：think_level 由一次性迁移搬进 agent.db，其余字段留在 settings.yml。
+        let settings = r#"{"think_level":"high","rate_limit_retry_budget_seconds":0}"#;
         let models =
             json!({"providers":{"fixture": slash_provider(&server, "fixture", protocol, json!({
                 "primary": {"model":"first-model"},
@@ -80,9 +81,32 @@ fn tui_shortcuts_preserve_drafts_and_send_selected_effort_to_both_apis() {
         pty.ready_effort("no think");
         pty.input("\x03");
         pty.finish();
+        // 迁移后 settings.yml 只保留无关声明；快捷切换不重新写回旧字段。
+        let remaining: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(config_path(dir.path(), "settings.yml")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
-            std::fs::read_to_string(config_path(dir.path(), "settings.yml")).unwrap(),
-            settings
+            remaining["rate_limit_retry_budget_seconds"].as_u64(),
+            Some(0),
+            "{remaining}"
+        );
+        assert!(remaining.get("think_level").is_none(), "{remaining}");
+        // 会话级 effort 切换不改默认值；默认仍是一次性迁移导入的 high。
+        let database = rusqlite::Connection::open_with_flags(
+            config_path(dir.path(), "agent.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT default_model, think_level FROM preferences WHERE id = 1",
+                    [],
+                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+                )
+                .unwrap(),
+            (None, "high".to_string())
         );
         no_more(&server);
     }

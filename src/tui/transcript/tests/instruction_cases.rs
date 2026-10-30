@@ -276,21 +276,17 @@ fn instruction_cards_survive_narrow_widths_and_neutralize_controls() {
 fn instruction_cards_replay_tree_and_native_boundaries() {
     // 恢复时按记录顺序重建卡片正文，不读取当前磁盘内容。
     let mut transcript = Transcript::new();
-    let mut input_history = Vec::new();
-    let error = transcript.replay(
-        vec![
-            ReplayRecord::User("task".into()),
-            ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded {
-                path: "/old/AGENTS.md".into(),
-                content: "recorded-body\n".into(),
-            }),
-            ReplayRecord::Event(AgentEvent::AssistantStarted),
-            ReplayRecord::Event(AgentEvent::AssistantFinished {
-                text: "done".into(),
-            }),
-        ],
-        &mut input_history,
-    );
+    let error = transcript.replay(vec![
+        ReplayRecord::User("task".into()),
+        ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded {
+            path: "/old/AGENTS.md".into(),
+            content: "recorded-body\n".into(),
+        }),
+        ReplayRecord::Event(AgentEvent::AssistantStarted),
+        ReplayRecord::Event(AgentEvent::AssistantFinished {
+            text: "done".into(),
+        }),
+    ]);
     assert!(error.is_none());
     let text = screen(&render(&mut transcript, 100, 30));
     assert!(text.contains("Read AGENTS.md"), "{text}");

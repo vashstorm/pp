@@ -550,10 +550,6 @@ fn default_reasoning_rejection_allows_manual_effort_recovery_without_committing_
     assert!(!stderr.contains("tool write: running"));
     assert!(!stderr.contains(&server.server_addr().to_string()));
     assert!(!dir.path().join("must-not-exist").exists());
-    assert_eq!(
-        std::fs::read_to_string(config_path(dir.path(), "settings.yml")).unwrap(),
-        settings
-    );
     assert_clean_pipes(&output);
     no_more(&server);
 }

@@ -302,20 +302,14 @@ impl Transcript {
     }
 
     /// 按日志顺序恢复可见对话，并返回最后一条错误供弹窗展示。
-    pub(super) fn replay(
-        &mut self,
-        records: Vec<ReplayRecord>,
-        input_history: &mut Vec<String>,
-    ) -> Option<String> {
+    /// 输入回忆是独立持久数据：回放只重建可见正文，不生成输入记录。
+    pub(super) fn replay(&mut self, records: Vec<ReplayRecord>) -> Option<String> {
         self.replaying = true;
         let mut assistant_running = false;
         let mut last_error = None;
         for record in records {
             match record {
-                ReplayRecord::User(text) => {
-                    self.append("You", &text);
-                    input_history.push(text);
-                }
+                ReplayRecord::User(text) => self.append("You", &text),
                 ReplayRecord::Event(event) => {
                     match &event {
                         AgentEvent::AssistantStarted => assistant_running = true,
@@ -350,7 +344,7 @@ impl Transcript {
         fallback: &str,
     ) -> Range<usize> {
         let start = self.entries.len();
-        self.replay(records, &mut Vec::new());
+        self.replay(records);
         self.read_groups_key = None;
         // 树预览使用完整展示，不受交互预览配置或额度影响。
         for entry in &mut self.entries[start..] {

@@ -18,9 +18,7 @@ pub(super) fn runtime_input_agent(
     let models = dir.join("models.yml");
     std::fs::write(
         &settings,
-        format!(
-            "# 测试设置\ndefault_model: fixture/one\nrate_limit_retry_budget_seconds: 0\n{settings_extra}"
-        ),
+        format!("# 测试设置\nrate_limit_retry_budget_seconds: 0\n{settings_extra}"),
     )
     .unwrap();
     let model = json!({"model":"one"});

@@ -6,6 +6,7 @@ mod auth_tests;
 mod changes;
 mod edit_diff;
 mod files;
+mod history;
 mod markdown;
 mod menu;
 mod model;
@@ -62,6 +63,7 @@ use ratatui::{
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 use statusline::{StatusContext, WorkspaceStatus};
 use std::{
+    collections::BTreeMap,
     io,
     path::Path,
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
@@ -100,7 +102,18 @@ pub(crate) fn run(
     surface::initialize().context("initializing terminal")?;
     let mut surface = surface::Surface::new(io::stdout());
     let mut canvas = ratatui::Terminal::new(ratatui::backend::TestBackend::new(1, 1))?;
-    let mut app = App::new_with_skills(agent, skills, file_commands, cwd, notification_options)?;
+    // 持久输入历史与 agent 配置目录同级；无可定位目录时明确只保留进程内回忆。
+    let history_path = bootstrap
+        .as_ref()
+        .map(|bootstrap| bootstrap.dir.join("history.db"));
+    let mut app = App::new_with_skills(
+        agent,
+        skills,
+        file_commands,
+        cwd,
+        notification_options,
+        history_path,
+    )?;
     app.bootstrap = bootstrap;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c：Execute 保持原继续行为；Plan/Draft 提示继续输入；Plan/Ready 进入审阅。
@@ -160,6 +173,8 @@ pub(crate) fn run(
                 )
                 .context("finishing terminal transcript")?;
                 app.shutdown_background_tasks()?;
+                // 关闭输入历史 worker：先取消索引扫描，再排入并 join 已投递的追加。
+                app.shutdown_history();
                 surface
                     .finish(canvas.backend().buffer().area.height)
                     .context("restoring shell cursor")?;
@@ -266,7 +281,6 @@ enum WorkerCommand {
         Option<crate::config::RoleAssignment>,
     ),
     ToggleFavoriteModel(String),
-    ListSessions,
     DeleteSession(String),
     Resume {
         id: String,
@@ -347,8 +361,7 @@ enum WorkerEvent {
     ModelRolesSaved(Result<(crate::config::ModelRoles, String, ThinkLevel)>),
     ModelState(ModelChoice, ThinkLevel),
     FavoriteModelsSaved(Result<Vec<String>>),
-    SessionsListed(Result<crate::agent::persistence::SessionListing>),
-    SessionDeleted(String, Result<()>),
+    SessionDeleted(Result<()>),
     SessionResumed(Result<ResumeState>),
     TreeRead(Result<crate::agent::persistence::tree::View>),
     TreeNavigated(Result<crate::agent::TreeNavigation>),
@@ -496,17 +509,19 @@ struct ModelListing {
     choices: Vec<ModelChoice>,
     default_reference: String,
     favorites: Vec<String>,
+    usage: BTreeMap<String, u64>,
 }
 
 impl ModelListing {
-    fn from_agent(agent: &Agent) -> Self {
-        Self {
+    fn from_agent(agent: &Agent) -> Result<Self> {
+        Ok(Self {
             choices: agent.model_choices(),
             default_reference: agent.default_model_reference().to_owned(),
             favorites: agent.favorite_models().to_vec(),
             roles: agent.model_roles().clone(),
             default_effort: agent.default_think_level(),
-        }
+            usage: agent.model_usage()?,
+        })
     }
 }
 
@@ -527,7 +542,6 @@ enum State {
     SwitchingModel,
     SavingModelSettings,
     SettingThinkLevel,
-    ListingSessions,
     Resuming,
     ReadingTree,
     NavigatingTree,
@@ -607,6 +621,24 @@ struct App {
     input_history: Vec<String>,
     history_index: Option<usize>,
     history_draft: Option<(TextArea<'static>, bool)>,
+    // 持久输入回忆：独立 worker 拥有 history.db，启动 cwd 固定不变。
+    history_worker: Option<history::Worker>,
+    history_cwd: std::path::PathBuf,
+    // 已加载的最老记录 id；None 表示初始页尚未返回或库为空。
+    history_oldest_id: Option<i64>,
+    history_has_more: bool,
+    // 正在等待的 LoadInputs request_id；同刻只有一个翻页请求。
+    history_page_pending: Option<u64>,
+    history_request_id: u64,
+    // Up 在已加载最老条目上等待下一页；重复 Up 合并为一次等待导航。
+    history_waiting_up: bool,
+    // 脱敏失败提示只发一次，避免每次追加都重复弹窗。
+    history_failure_notified: bool,
+    // 会话搜索面板的代次；每次打开单调递增。
+    session_generation: u64,
+    // 单元测试独占的临时目录，保证 history.db 生命周期覆盖 App。
+    #[cfg(test)]
+    history_dir: Option<tempfile::TempDir>,
     state: State,
     next_shell_id: u64,
     active_cancellation: Option<CancellationToken>,
@@ -626,6 +658,8 @@ struct App {
     current_model: Option<ModelChoice>,
     default_model_reference: Option<String>,
     favorite_models: Vec<String>,
+    // 最近一次 worker 发布的常用排序快照；绘制/按键不读数据库。
+    model_usage: BTreeMap<String, u64>,
     think_level: ThinkLevel,
     default_think_level: ThinkLevel,
     menu: Option<SelectionMenu<MenuAction>>,

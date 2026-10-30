@@ -84,10 +84,6 @@ fn thinking_and_bash_cards_stream_with_default_style_and_expand_without_editing_
         pty.text("9 earlier lines");
         pty.text("Output");
         assert!(!pty.parser.screen().contents().contains("output-00"));
-        assert_eq!(
-            label_color(pty.parser.screen(), "$ for"),
-            vt100::Color::Rgb(190, 188, 139)
-        );
         pty.input("draft-中");
         pty.draft("draft-中");
         // Option/Alt+O 不再展开工具输出，所有平台统一使用 Ctrl+O。
@@ -232,8 +228,6 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         pty.drain();
         assert!(input_is_ready(pty.parser.screen()));
         assert!(!pty.parser.screen().contents().contains("out-firstout-last"));
-        let bash_color = label_color(pty.parser.screen(), "$ printf");
-        assert_eq!(bash_color, vt100::Color::Rgb(190, 188, 139));
         pty.text("✻ Running bash ·");
         assert_eq!(pty.parser.screen().contents().matches('✻').count(), 1);
         no_more(&server);

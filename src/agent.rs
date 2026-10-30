@@ -45,7 +45,7 @@ use async_openai::types::{
 use input::{InputQueue, PendingInput};
 use persistence::{Metadata, SessionJournal, SessionRef};
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use turn::{
     RequestUpdate, TurnOutcome, TurnResources, append_developer_to, append_user_to,
@@ -343,7 +343,7 @@ impl Agent {
         } else {
             config
                 .thinking
-                .effective_default(config.settings.think_level)
+                .effective_default(catalog.default_think_level())
         };
         // 项目文件在任务开始时加载，读取失败不会让整个交互会话永久不可用。
         let context = crate::system_prompt::RenderContext::new(
@@ -884,6 +884,11 @@ impl Agent {
         self.catalog.toggle_favorite_model(reference)
     }
 
+    /// 实际尝试发送的逻辑模型请求累计次数；读取失败时不得伪装成零。
+    pub(crate) fn model_usage(&self) -> Result<BTreeMap<String, u64>> {
+        self.catalog.model_usage()
+    }
+
     pub(crate) fn set_think_level(&mut self, level: ThinkLevel) -> Result<()> {
         if !self.current_model.thinking.supports(level) {
             let mut message =
@@ -937,7 +942,7 @@ impl Agent {
                 } else {
                     config
                         .thinking
-                        .effective_default(config.settings.think_level)
+                        .effective_default(self.catalog.default_think_level())
                 }
             })
         });

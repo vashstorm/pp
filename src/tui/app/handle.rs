@@ -134,9 +134,7 @@ impl App {
                                 self.plan_list_panel = None;
                                 self.plan_list_pending = None;
                                 self.append("You", &text);
-                                self.input_history.push(text);
-                                self.history_index = None;
-                                self.history_draft = None;
+                                self.remember_text(text);
                             }
                         }
                         plan::Action::Review => self.review_plan(),
@@ -161,9 +159,7 @@ impl App {
                                     self.plan_list_pending = None;
                                     self.input = editor();
                                     self.append("You", &text);
-                                    self.input_history.push(text);
-                                    self.history_index = None;
-                                    self.history_draft = None;
+                                    self.remember_text(text);
                                 }
                             }
                         }
@@ -233,20 +229,32 @@ impl App {
                     return false;
                 }
                 // 会话面板打开时优先消费键盘输入，编辑器、历史翻阅与快捷操作不穿透。
-                if let Some(panel) = &mut self.session_panel {
-                    match panel.key(key) {
+                if self.session_panel.is_some() {
+                    let action = self
+                        .session_panel
+                        .as_mut()
+                        .expect("active session panel")
+                        .key(key);
+                    // 查询/范围变化立即发出异步 Search；结果只按最新请求安装。
+                    self.search_session_panel();
+                    match action {
                         sessions::Action::None => {}
                         sessions::Action::Cancel => self.close_session_panel(),
                         sessions::Action::Resume(index) => {
-                            let id = panel
-                                .id(index)
+                            let id = self
+                                .session_panel
+                                .as_ref()
+                                .and_then(|panel| panel.id(index))
                                 .expect("selection indexes the session list")
                                 .to_owned();
                             if self.session_id.as_deref() == Some(id.as_str()) {
                                 // 当前会话：只关闭列表，不重锁自己的 journal。
                                 self.close_session_panel();
                             } else {
-                                panel.restore_started();
+                                self.session_panel
+                                    .as_mut()
+                                    .expect("active session panel")
+                                    .restore_started();
                                 let cancellation = CancellationToken::new();
                                 if !self.send(
                                     WorkerCommand::Resume {
@@ -262,12 +270,15 @@ impl App {
                             }
                         }
                         sessions::Action::Delete(index) => {
-                            let id = panel
-                                .id(index)
+                            let id = self
+                                .session_panel
+                                .as_ref()
+                                .and_then(|panel| panel.id(index))
                                 .expect("selection indexes the session list")
                                 .to_owned();
-                            if !self.send(WorkerCommand::DeleteSession(id), State::ListingSessions)
-                            {
+                            // 删除仍由 Agent worker 取得会话锁并删除 JSONL；
+                            // 面板存在即阻止队列派发与编辑器输入，故保持 Ready。
+                            if !self.send(WorkerCommand::DeleteSession(id), State::Ready) {
                                 self.session_panel = None;
                             }
                         }
@@ -731,6 +742,9 @@ impl App {
             Event::Paste(text) if self.session_panel.is_some() => {
                 if let Some(panel) = &mut self.session_panel {
                     panel.paste(&text);
+                }
+                if self.session_panel.is_some() {
+                    self.search_session_panel();
                 }
                 *dirty = true;
             }

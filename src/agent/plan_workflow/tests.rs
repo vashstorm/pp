@@ -181,7 +181,7 @@ fn fixture_agent(cwd: &std::path::Path, sessions: &std::path::Path, protocol: &s
     let global = sessions.parent().unwrap();
     let settings = global.join("settings.yml");
     let models = global.join("models.yml");
-    std::fs::write(&settings, "default_model: fixture/one\n").unwrap();
+    std::fs::write(&settings, "{}\n").unwrap();
     std::fs::write(
         &models,
         json!({"providers":{"fixture": { "api_key":"fixture-key", "protocol":protocol,

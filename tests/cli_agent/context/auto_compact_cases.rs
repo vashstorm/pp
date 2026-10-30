@@ -397,7 +397,8 @@ fn context_resume_capacity_comes_from_models_not_the_saved_log_both_protocols() 
             protocol.models(&server, &[("primary", None)]),
         )
         .unwrap();
-        context_auto_rewrite_settings(dir.path(), r#"{"default_model":"fixture/primary"}"#);
+        // 偏好已由 agent.db 权威；这里只把自动压缩恢复为默认开启。
+        context_auto_rewrite_settings(dir.path(), r#"{"auto_compact":true}"#);
         let resumed = context_auto_resume(dir.path(), &id, "no stale capacity");
         let (request, body) = protocol.receive(&server);
         context_assert_no_summary_with(
@@ -512,10 +513,7 @@ fn context_auto_compact_without_old_prefix_fails_without_network_both_protocols(
         let log = std::fs::read_to_string(context_session_path(dir.path(), &id)).unwrap();
         assert!(log.contains("NO-PREFIX-MARKER"), "{log}");
 
-        context_auto_rewrite_settings(
-            dir.path(),
-            r#"{"default_model":"fixture/primary","auto_compact":false}"#,
-        );
+        context_auto_rewrite_settings(dir.path(), r#"{"auto_compact":false}"#);
         let recovered = context_auto_resume(dir.path(), &id, "after no prefix");
         let (request, body) = protocol.receive(&server);
         context_assert_no_summary_with(protocol, &body, "after no prefix", &["NO-PREFIX-MARKER"]);
@@ -568,10 +566,7 @@ fn context_auto_compact_single_oversized_exchange_fails_without_network_both_pro
         assert!(log.contains("OVERSIZED-EXCHANGE-MARKER"), "{log}");
         assert!(log.contains("trigger oversized"), "{log}");
 
-        context_auto_rewrite_settings(
-            dir.path(),
-            r#"{"default_model":"fixture/primary","auto_compact":false}"#,
-        );
+        context_auto_rewrite_settings(dir.path(), r#"{"auto_compact":false}"#);
         let recovered = context_auto_resume(dir.path(), &id, "after oversized");
         let (request, body) = protocol.receive(&server);
         context_assert_no_summary_with(
@@ -658,10 +653,7 @@ fn context_auto_compact_rejects_retained_context_over_threshold_both_protocols()
         assert_eq!(stderr.matches("tool read: running").count(), 2, "{stderr}");
         let id = context_session_id(&stderr);
 
-        context_auto_rewrite_settings(
-            dir.path(),
-            r#"{"default_model":"fixture/primary","auto_compact":false}"#,
-        );
+        context_auto_rewrite_settings(dir.path(), r#"{"auto_compact":false}"#);
         let recovered = context_auto_resume(dir.path(), &id, "after retained");
         let (request, body) = protocol.receive(&server);
         context_assert_no_summary_with(
@@ -726,7 +718,8 @@ fn context_auto_compact_rejects_system_over_threshold_both_protocols() {
             protocol.models(&server, &[("open", None), ("tight", Some(window))]),
         )
         .unwrap();
-        context_auto_rewrite_settings(home.path(), r#"{"default_model":"fixture/open"}"#);
+        // 偏好已由 agent.db 权威；这里只把自动压缩恢复为默认开启。
+        context_auto_rewrite_settings(home.path(), r#"{"auto_compact":true}"#);
 
         let mut cli = LiveCli::new(Cli::start_with_existing_files(home.path(), None));
         cli.input("seed one\n");
@@ -767,10 +760,7 @@ fn context_auto_compact_rejects_system_over_threshold_both_protocols() {
         assert!(!stderr.contains("SUMMARY: system"), "{stderr}");
         let id = context_session_id(&stderr);
 
-        context_auto_rewrite_settings(
-            home.path(),
-            r#"{"default_model":"fixture/tight","auto_compact":false}"#,
-        );
+        context_auto_rewrite_settings(home.path(), r#"{"auto_compact":false}"#);
         let recovered = context_auto_resume(home.path(), &id, "after system");
         let (request, body) = protocol.receive(&server);
         context_assert_no_summary_with(protocol, &body, "after system", &["trigger system"]);
@@ -837,10 +827,7 @@ fn context_auto_compact_failures_never_retry_or_send_the_normal_request() {
 
             // The accepted prompt and both tool batches are durable enough to
             // recover once the automatic trigger is disabled.
-            context_auto_rewrite_settings(
-                dir.path(),
-                r#"{"default_model":"fixture/primary","auto_compact":false}"#,
-            );
+            context_auto_rewrite_settings(dir.path(), r#"{"auto_compact":false}"#);
             let recovered = context_auto_resume(dir.path(), &id, "after auto failure");
             let (request, body) = protocol.receive(&server);
             context_assert_auto_uncompacted(protocol, &body, "after auto failure");

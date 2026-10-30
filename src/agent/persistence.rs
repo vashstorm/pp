@@ -1,4 +1,5 @@
 mod format;
+pub(crate) mod index;
 pub(crate) mod locks;
 mod summary;
 pub(crate) mod tree;
@@ -897,43 +898,16 @@ pub(crate) struct SessionListing {
     pub(crate) diagnostics: Vec<String>,
 }
 
-pub(crate) fn list(dir: &Path) -> Result<SessionListing> {
-    let mut listing = SessionListing {
-        sessions: Vec::new(),
-        diagnostics: Vec::new(),
-    };
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(listing),
-        Err(error) => return Err(error).context("reading saved sessions"),
-    };
-    for entry in entries {
-        let entry = entry.context("reading saved session entry")?;
-        let name = entry.file_name();
-        let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".jsonl")) else {
-            continue;
-        };
-        if validate_id(id).is_err() {
-            continue;
-        }
-        let result = (|| -> Result<Option<SessionSummary>> {
-            if !entry.file_type()?.is_file() {
-                return Ok(None);
-            }
-            summary::read(&entry.path(), id)
-        })();
-        match result {
-            Ok(Some(summary)) => listing.sessions.push(summary),
-            Ok(None) => {}
-            Err(error) => listing
-                .diagnostics
-                .push(format!("Skipping session {id}: {error:#}")),
-        }
-    }
-    listing
-        .sessions
-        .sort_unstable_by(|a, b| (b.updated_at, &b.id).cmp(&(a.updated_at, &a.id)));
-    Ok(listing)
+#[cfg(test)]
+pub(crate) fn indexed_listing(dir: &Path) -> Result<SessionListing> {
+    // 每次验收显式使用独立临时库，不能从会话目录推导共享 /tmp/history.db。
+    let database = tempfile::tempdir()?;
+    let mut store = crate::history::Store::open(&database.path().join("history.db"))?;
+    let diagnostics = store.sync_sessions(dir, &crate::cancellation::CancellationToken::new())?;
+    Ok(SessionListing {
+        sessions: store.search_sessions(None, "")?,
+        diagnostics,
+    })
 }
 
 fn compact_summary(text: &str, limit: usize) -> String {

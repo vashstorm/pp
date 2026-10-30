@@ -6,7 +6,8 @@ use crate::tui::{
 
 impl App {
     pub(in crate::tui) fn receive(&mut self) -> bool {
-        let mut changed = self.receive_auth();
+        let mut changed = self.poll_history();
+        changed |= self.receive_auth();
         while let Ok(reply) = self.skill_worker.replies.try_recv() {
             self.skills_pending = false;
             match reply.result {
@@ -105,6 +106,7 @@ impl App {
                             self.choices = listing.choices;
                             self.default_model_reference = Some(listing.default_reference);
                             self.favorite_models = listing.favorites;
+                            self.model_usage = listing.usage;
                             self.model_roles = listing.roles;
                             self.default_think_level = listing.default_effort;
                             if let Some(panel) = &mut self.roles_panel {
@@ -417,36 +419,6 @@ impl App {
                     self.state = State::Ready;
                     changed = true;
                 }
-                Ok(WorkerEvent::SessionsListed(result)) => {
-                    // 扫描结束，worker 空闲；若面板已取消则只丢弃迟到的列表。
-                    self.state = State::Ready;
-                    match result {
-                        Ok(listing) => {
-                            let skipped = listing.diagnostics.len();
-                            if let Some(panel) = &mut self.session_panel
-                                && panel.is_loading()
-                            {
-                                panel.set_listing(listing);
-                                if skipped > 0 {
-                                    self.notify(
-                                        Level::Error,
-                                        format!(
-                                            "Skipped {skipped} unreadable saved session file(s)."
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            self.session_panel = None;
-                            self.notify(
-                                Level::Error,
-                                format!("Failed to list saved sessions: {error:#}"),
-                            );
-                        }
-                    }
-                    changed = true;
-                }
                 Ok(WorkerEvent::ChangesRead(view)) => {
                     self.state = State::Ready;
                     if let Some(panel) = &mut self.changes_panel {
@@ -527,13 +499,33 @@ impl App {
                     }
                     changed = true;
                 }
-                Ok(WorkerEvent::SessionDeleted(id, result)) => {
+                Ok(WorkerEvent::SessionDeleted(result)) => {
+                    // 删除仍走 Agent worker 的会话锁与 JSONL 删除；成功后再同步派生索引。
                     self.state = State::Ready;
+                    let mut refresh = None;
                     if let Some(panel) = &mut self.session_panel {
-                        panel.delete_finished(&id, result.is_ok());
+                        panel.delete_finished(result.is_ok());
+                        if result.is_ok() {
+                            let (request_id, cwd, query) = panel.refresh_request();
+                            refresh = Some((panel.generation(), request_id, cwd, query));
+                        }
                     }
-                    if let Err(error) = result {
-                        self.notify(Level::Error, format!("Failed to delete session: {error:#}"));
+                    match result {
+                        Ok(()) => {
+                            // 先报告已删除，再展示索引刷新错误；刷新失败清空旧行。
+                            self.notify(Level::Normal, "Session deleted.".into());
+                            if let Some((generation, request_id, cwd, query)) = refresh
+                                && !self.history_sync_and_search(generation, request_id, cwd, query)
+                                && let Some(panel) = &mut self.session_panel
+                            {
+                                panel.fail(
+                                    request_id,
+                                    "Session was deleted, but the session list could not be refreshed; reopen /resume to retry.".into(),
+                                );
+                            }
+                        }
+                        Err(error) => self
+                            .notify(Level::Error, format!("Failed to delete session: {error:#}")),
                     }
                     changed = true;
                 }

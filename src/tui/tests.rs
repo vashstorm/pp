@@ -170,6 +170,7 @@ fn file_picker_fixture() -> FilePickerFixture {
         commands::FileCommands::default(),
         dir.path(),
         NotificationOptions::default(),
+        None,
     )
     .unwrap();
     let (requests, scans) = mpsc::channel();
@@ -230,6 +231,7 @@ fn file_commands_app(files: commands::FileCommands) -> (App, mpsc::Receiver<Work
         files,
         Path::new("."),
         NotificationOptions::default(),
+        None,
     )
     .unwrap();
     app.notifications = Notifications::default();

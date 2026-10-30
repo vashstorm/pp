@@ -22,6 +22,7 @@ include!("tree_tui.rs");
 include!("runtime_input_tui.rs");
 include!("menu_tui.rs");
 include!("native_tui.rs");
+include!("sqlite_tui.rs");
 use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
 use std::{
     io::Read,

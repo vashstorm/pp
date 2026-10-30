@@ -561,7 +561,7 @@ fn model_switch_failure_is_atomic_and_catalog_reloads_without_clearing_history()
         "bad": invalid_header
     }})
     .to_string();
-    let settings = r#"{"default_model":"a/primary"}"#;
+    let settings = "{}";
     let mut cli = Cli::start_with(dir.path(), None, settings, &models);
     cli.input("establish history\n");
     let (request, body) = receive(&a);
@@ -576,7 +576,7 @@ fn model_switch_failure_is_atomic_and_catalog_reloads_without_clearing_history()
         std::fs::read(config_path(dir.path(), "settings.yml")).unwrap(),
         settings.as_bytes()
     );
-    let replacement_settings = r#"{"default_model":"replacement/new"}"#;
+    let replacement_settings = r#"{"notification_timeout_seconds":9}"#;
     let mut replacement_catalog: Value = serde_json::from_str(&models).unwrap();
     replacement_catalog["providers"]["replacement"] = slash_provider(
         &bad,

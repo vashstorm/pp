@@ -1,6 +1,7 @@
 mod auth;
 mod draw;
 mod handle;
+mod history;
 mod init;
 mod input;
 mod navigation;

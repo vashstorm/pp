@@ -1,10 +1,12 @@
 mod agent;
+mod agent_store;
 mod auth;
 mod cancellation;
 mod commands;
 mod config;
 mod context;
 mod events;
+mod history;
 mod interaction;
 mod llm;
 mod logging;
@@ -14,6 +16,7 @@ mod plan;
 mod project_instructions;
 mod shortcuts;
 mod skills;
+mod sqlite;
 mod stats;
 mod subagent;
 mod system_prompt;
@@ -233,6 +236,9 @@ fn run(args: Args) -> Result<()> {
     // configuration for a fresh `pp`. Load the journal before tools, skills, and
     // the TUI workspace so everything runs from the saved working directory.
     let global_dir = config::global_dir();
+    let migration_error = global_dir.as_ref().ok().and_then(|dir| {
+        agent_store::initialize(dir, &cancellation::CancellationToken::new()).err()
+    });
     // 通知设置独立于模型初始化；无效设置的诊断仍由既有启动路径呈现。
     let notification_options = global_dir
         .as_ref()
@@ -317,22 +323,26 @@ fn run(args: Args) -> Result<()> {
             .unwrap_or_else(system_prompt::Snapshot::bundled),
         approval: args.approval_mode.map(Into::into),
     });
-    let mut agent = match restored {
-        Some(session) => {
-            let global_dir = global_dir?;
-            let catalog = config::ModelCatalog::from_files(
-                &global_dir.join("settings.yml"),
-                &global_dir.join("models.yml"),
-            )
-            .context("loading configuration for saved session")?;
-            let mut tools = tools::Tools::new(cwd.clone(), session.edit_mode())?;
-            tools.skills = skills.clone();
-            Ok(agent::Agent::restore(catalog, tools, session)?)
+    let mut agent = if let Some(error) = migration_error {
+        Err(error)
+    } else {
+        match restored {
+            Some(session) => {
+                let global_dir = global_dir?;
+                let catalog = config::ModelCatalog::from_files(
+                    &global_dir.join("settings.yml"),
+                    &global_dir.join("models.yml"),
+                )
+                .context("loading configuration for saved session")?;
+                let mut tools = tools::Tools::new(cwd.clone(), session.edit_mode())?;
+                tools.skills = skills.clone();
+                Ok(agent::Agent::restore(catalog, tools, session)?)
+            }
+            None => bootstrap
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Unable to locate global configuration directory"))
+                .and_then(agent::Bootstrap::build),
         }
-        None => bootstrap
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Unable to locate global configuration directory"))
-            .and_then(agent::Bootstrap::build),
     };
     if agent
         .as_ref()

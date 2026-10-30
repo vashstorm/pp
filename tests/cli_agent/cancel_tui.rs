@@ -809,9 +809,11 @@ fn tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_l
             }
             cancel_assert_no_request(&fixture);
 
-            // /resume 列表为 aborted 而不是 done。
+            // /resume 列表为 aborted 而不是 done；结果由 history worker 异步安装。
             resume_boundary_open(&mut resumed);
-            assert!(resumed.parser.screen().contents().contains("■ aborted"));
+            resumed.wait_for("恢复列表把取消会话标记为 aborted", |screen| {
+                screen.contents().contains("■ aborted")
+            });
             assert!(!resumed.parser.screen().contents().contains("✓ done"));
             resume_boundary_close(&mut resumed);
 
@@ -826,7 +828,9 @@ fn tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_l
             resumed.text("persist recovery answer");
             resumed.ready();
             resume_boundary_open(&mut resumed);
-            assert!(resumed.parser.screen().contents().contains("✓ done"));
+            resumed.wait_for("完成新任务后列表标记为 done", |screen| {
+                screen.contents().contains("✓ done")
+            });
             resume_boundary_close(&mut resumed);
             resumed.input("/quit\r");
             resumed.finish();

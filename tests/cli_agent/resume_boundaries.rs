@@ -45,7 +45,7 @@ fn resume_boundary_journal(home: &Path, id: &str) -> std::path::PathBuf {
 fn resume_boundary_quick_notifications(home: &Path) {
     std::fs::write(
         config_path(home, "settings.yml"),
-        r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#,
+        r#"{"notification_timeout_seconds":1}"#,
     )
     .unwrap();
 }

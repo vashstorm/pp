@@ -46,24 +46,38 @@ fn tui_roles_configures_model_and_effort_without_switching_current_session() {
     pty.text("选择此 Role 的独立 effort");
     pty.input("\x1b[B\x1b[B\x1b[B\r");
     pty.text("Role 配置已保存");
-    let settings: Value = serde_yaml::from_str(
-        &std::fs::read_to_string(config_path(dir.path(), "settings.yml")).unwrap(),
+    let database = rusqlite::Connection::open_with_flags(
+        config_path(dir.path(), "agent.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
-    assert_eq!(settings["model_roles"]["fast"]["model"], "fixture/two");
-    assert_eq!(settings["model_roles"]["fast"]["effort"], "high");
-    assert_eq!(settings["model_roles"]["fast"]["enabled"], true);
+    let read_fast_role = || {
+        database
+            .query_row(
+                "SELECT enabled, model_reference, effort FROM model_roles WHERE role = 'fast'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        read_fast_role(),
+        (1, "fixture/two".to_string(), "high".to_string())
+    );
     pty.input(" ");
     pty.wait_for("取消选中并保存 Role", |screen| {
         screen.contents().contains("0/6")
     });
-    let settings: Value = serde_yaml::from_str(
-        &std::fs::read_to_string(config_path(dir.path(), "settings.yml")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(settings["model_roles"]["fast"]["enabled"], false);
-    assert_eq!(settings["model_roles"]["fast"]["model"], "fixture/two");
-    assert_eq!(settings["model_roles"]["fast"]["effort"], "high");
+    assert_eq!(
+        read_fast_role(),
+        (0, "fixture/two".to_string(), "high".to_string())
+    );
     pty.input("\x1b");
     pty.ready_model("fixture/one");
     no_more(&server);
@@ -99,10 +113,9 @@ fn tui_slash_model_picker_preserves_history() {
     pty.completed();
     pty.ready_model("a/primary");
 
-    // 用前缀锁定模型命令，避免依赖内置命令的固定排列位置。
-    pty.input("/m");
-    pty.draft("/m");
-    pty.input("\x1b[B");
+    // 用唯一前缀锁定模型命令；模糊匹配下 "/m" 也会命中 /compact。
+    pty.input("/mo");
+    pty.draft("/mo");
     pty.resize(4, 20);
     pty.resize(30, 100);
     pty.input("\t");

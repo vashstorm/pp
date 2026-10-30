@@ -6,6 +6,10 @@ use crate::tui::{
 
 impl App {
     pub(in crate::tui) fn refresh_candidates(&mut self, edited: bool) {
+        // 普通编辑取消等待中的翻页；迟到的页仍会缓存，不丢已加载内容。
+        if edited {
+            self.history_waiting_up = false;
+        }
         if let Some(panel) = &mut self.model_panel {
             panel.refresh(
                 &self.choices,
@@ -14,6 +18,7 @@ impl App {
                     .map(|choice| choice.reference.as_str()),
                 self.default_model_reference.as_deref(),
                 &self.favorite_models,
+                &self.model_usage,
                 edited,
             );
             return;
@@ -274,23 +279,44 @@ impl App {
 
     pub(in crate::tui) fn remember_input(&mut self) {
         let text = self.input_text();
-        if !text.trim().is_empty() {
-            self.input_history.push(text);
-        }
+        self.remember_text(text);
         self.history_index = None;
         self.history_draft = None;
+        self.history_waiting_up = false;
     }
 
     pub(in crate::tui) fn navigate_history(&mut self, previous: bool) {
+        // 请求进行中重复 Up 合并成一次等待导航，不重复发同一页。
+        if previous && self.history_waiting_up {
+            return;
+        }
         let index = match (self.history_index, previous) {
             (None, true) if !self.input_history.is_empty() => {
                 self.history_draft = Some((self.input.clone(), self.shell_mode));
                 self.input_history.len() - 1
             }
-            (Some(0), true) => return,
+            (None, true) => {
+                // 初始页仍在路上（或还有更老页）时，等这一页到达再完成本次 Up。
+                if self.history_page_pending.is_some() || self.history_has_more {
+                    self.wait_for_history_page();
+                }
+                return;
+            }
+            (Some(0), true) => {
+                // 到达已加载最老条目：向更老的一页请求并挂起这次 Up。
+                if self.history_has_more || self.history_page_pending.is_some() {
+                    self.wait_for_history_page();
+                }
+                return;
+            }
             (Some(index), true) => index - 1,
-            (Some(index), false) if index + 1 < self.input_history.len() => index + 1,
+            (Some(index), false) if index + 1 < self.input_history.len() => {
+                // Down 取消等待导航，但已返回的页仍作为缓存保留。
+                self.history_waiting_up = false;
+                index + 1
+            }
             (Some(_), false) => {
+                self.history_waiting_up = false;
                 (self.input, self.shell_mode) = self
                     .history_draft
                     .take()
@@ -301,16 +327,14 @@ impl App {
                 self.menu_dismissed = true;
                 return;
             }
-            _ => return,
+            _ => {
+                if !previous {
+                    self.history_waiting_up = false;
+                }
+                return;
+            }
         };
-        self.file_query = None;
-        self.input = editor();
-        self.shell_mode = false;
-        self.insert_input(self.input_history[index].clone());
-        self.history_index = Some(index);
-        // 回填命令时先保持菜单关闭，让上下键可以连续浏览历史。
-        self.menu = None;
-        self.menu_dismissed = true;
+        self.show_history(index);
     }
 
     pub(in crate::tui) fn send(&mut self, command: WorkerCommand, state: State) -> bool {

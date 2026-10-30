@@ -39,6 +39,12 @@ pub(crate) struct OpenAiClient {
     rate_limit_retry_budget: Duration,
     stats_context: Option<crate::stats::RequestContext>,
     stats_key: Option<String>,
+    model_reference: String,
+    // 复用的 agent.db 连接；构造时打开失败则整个客户端周期不计数并按需警告，不做重开回退。
+    usage_store: Option<crate::agent_store::AgentStore>,
+    // 仅测试持有临时目录生命周期，保证计数数据库路径在客户端存续期内有效。
+    #[cfg(test)]
+    usage_dir: Option<tempfile::TempDir>,
 }
 
 pub(crate) struct ResponseTurn {
@@ -80,6 +86,18 @@ impl OpenAiClient {
         self.stats_key.take()
     }
 
+    /// 每次逻辑模型请求收尾恰好调用一次的使用计数；与 stats 保存无关。
+    /// 失败只发固定脱敏警告，不更改已发生的模型结果，也不重试请求。
+    fn record_model_usage(&mut self) {
+        let counted = match &mut self.usage_store {
+            Some(store) => store.increment_model_usage(&self.model_reference).is_ok(),
+            None => false,
+        };
+        if !counted {
+            crate::agent_store::warn_usage_unavailable();
+        }
+    }
+
     pub(crate) fn new(config: &Config) -> Result<Self> {
         // Validate before the SDK constructs its authorization header (which can panic).
         HeaderValue::from_str(&format!("Bearer {}", config.api_key)).map_err(|_| {
@@ -108,6 +126,11 @@ impl OpenAiClient {
             rate_limit_retry_budget,
             stats_context: None,
             stats_key: None,
+            model_reference: config.model_reference.clone(),
+            // 构造期打开失败保持静默；实际计数失败时才发脱敏警告。
+            usage_store: crate::agent_store::AgentStore::open(&config.agent_db_path).ok(),
+            #[cfg(test)]
+            usage_dir: None,
         })
     }
 
@@ -139,6 +162,8 @@ impl OpenAiClient {
         let Some(auth) = &self.auth else {
             return Ok(());
         };
+        // auth.path 是 agent.db；启动与 auth::service 已完成一次性迁移，
+        // 持锁期间只读/写 auth_credentials，绝不触发迁移或读取旧 auth.yml。
         let _lock = crate::auth::StoreLock::acquire(&auth.path, cancellation)?;
         let mut store = crate::auth::Store::load(&auth.path)?;
         let credential = store.credentials.get(&auth.provider).ok_or_else(|| {
@@ -383,6 +408,12 @@ impl OpenAiClient {
             Ok(turn)
         });
         let elapsed_ms = elapsed_millis(started_at);
+        // 逻辑请求级使用计数：attempted 只在首次发送尝试内置位，建连重试不重复置位，
+        // 因此发送后的失败/取消恰好计一次；发送前取消与授权校验失败不计数。
+        // 必须发生在 stats 保存之前。
+        if attempted {
+            self.record_model_usage();
+        }
         if record {
             if snapshot.is_null() {
                 snapshot = output.stats_snapshot();
@@ -528,6 +559,10 @@ impl OpenAiClient {
             }
         });
         let elapsed_ms = elapsed_millis(started_at);
+        // 与 complete 相同的逻辑请求级计数边界；必须在 stats 保存之前。
+        if attempted {
+            self.record_model_usage();
+        }
         if record {
             observation.usage = result
                 .as_ref()

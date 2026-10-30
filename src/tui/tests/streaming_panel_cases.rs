@@ -28,12 +28,14 @@ fn startup_skill_summary_keeps_complete_diagnostics_in_panel() {
         "second diagnostic".into(),
     ];
     let shared = registry.shared();
+    let history_dir = tempfile::tempdir().unwrap();
     let mut app = App::new_with_skills(
         Err(anyhow::anyhow!("fixture unavailable")),
         shared.clone(),
         commands::FileCommands::default(),
         Path::new("."),
         NotificationOptions::default(),
+        Some(history_dir.path().join("history.db")),
     )
     .unwrap();
     // 配置错误与 skill 诊断合并到同一个启动弹窗。
@@ -169,12 +171,14 @@ fn file_command_esc_keeps_draft_and_startup_notice_keeps_error_level() {
         "commands/dup.md: duplicate command name: /dup".into(),
     ];
     let shared = crate::skills::Skills::default().shared();
+    let history_dir = tempfile::tempdir().unwrap();
     let mut app = App::new_with_skills(
         Err(anyhow::anyhow!("fixture unavailable")),
         shared,
         files,
         Path::new("."),
         NotificationOptions::default(),
+        Some(history_dir.path().join("history.db")),
     )
     .unwrap();
     app.show_welcome = true;

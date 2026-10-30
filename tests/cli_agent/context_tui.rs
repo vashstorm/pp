@@ -21,6 +21,16 @@ fn context_tui_settings(auto_compact: bool, threshold_percent: u8) -> String {
     )
 }
 
+// 首次启动仍由旧四字段经迁移导入 agent.db；迁移完成后 settings.yml 只保留
+// 非偏好字段，后续重启改写策略时不得再写 default_model。
+fn context_tui_live_settings(auto_compact: bool, threshold_percent: u8) -> String {
+    format!(
+        "{{\"auto_compact\":{auto_compact},\
+\"auto_compact_threshold_percent\":{threshold_percent},\
+\"notification_timeout_seconds\":2}}"
+    )
+}
+
 fn context_tui_models(server: &Server, protocol: &str, window: u64) -> String {
     json!({
         "providers": {"fixture": {
@@ -771,7 +781,7 @@ fn context_tui_auto_compact_cancel_keeps_draft_and_recovers_accepted_history() {
         pty.finish();
         std::fs::write(
             config_path(home.path(), "settings.yml"),
-            context_tui_settings(false, 80),
+            context_tui_live_settings(false, 80),
         )
         .unwrap();
         let mut resumed = Pty::start_with_args(home.path(), home.path(), &["-c", &id]);
@@ -923,7 +933,7 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
         let limit = (seeded_len + 32768).div_ceil(1024) * 1024;
         std::fs::write(
             config_path(home.path(), "settings.yml"),
-            context_tui_settings(true, 80),
+            context_tui_live_settings(true, 80),
         )
         .unwrap();
         let mut pty = Pty::start_with_file_limit(

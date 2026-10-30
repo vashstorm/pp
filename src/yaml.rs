@@ -145,9 +145,72 @@ pub(crate) fn update_field(text: &str, name: &str, value: Value) -> Result<Strin
         if serde_yaml::from_str::<Mapping>(&candidate).ok().as_ref() == Some(&expected) {
             return Ok(candidate);
         }
+        // 迁移后只剩注释和空映射时，新增第一项也保留原注释。
+        if expected.len() == 1 {
+            for (offset, _) in text.match_indices("{}") {
+                let candidate = format!(
+                    "{}{}{}",
+                    &text[..offset],
+                    replacement.trim_end(),
+                    &text[offset + 2..]
+                );
+                if parse::<Mapping>(&candidate, "settings").ok().as_ref() == Some(&expected) {
+                    return Ok(candidate);
+                }
+            }
+        }
     }
     // 流式映射等格式统一输出为块映射，字段值保持不变。
     serde_yaml::to_string(&expected).context("Failed to serialize YAML settings")
+}
+
+/// 仅删除指定顶层字段；每个局部候选都与预期完整映射比较。
+pub(crate) fn remove_fields(text: &str, names: &[&str]) -> Result<String> {
+    let mut result = text.to_owned();
+    for name in names {
+        let mut expected: Mapping = parse(&result, "settings")?;
+        let key = Value::String((*name).into());
+        if expected.remove(&key).is_none() {
+            continue;
+        }
+        let mut start = 0;
+        let mut replacement = None;
+        for line in result.split_inclusive('\n') {
+            let matches = line.split_once(':').is_some_and(|(field, _)| {
+                serde_yaml::from_str::<Value>(field.trim()).ok().as_ref() == Some(&key)
+            });
+            if matches {
+                let mut end = start;
+                for removed in result[start..].split_inclusive('\n') {
+                    end += removed.len();
+                    let candidate = format!("{}{}", &result[..start], &result[end..]);
+                    if parse::<Mapping>(&candidate, "settings").ok().as_ref() == Some(&expected) {
+                        replacement = Some(candidate);
+                        break;
+                    }
+                    if expected.is_empty() {
+                        let candidate = format!("{candidate}\n{{}}\n");
+                        if parse::<Mapping>(&candidate, "settings").ok().as_ref() == Some(&expected)
+                        {
+                            replacement = Some(candidate);
+                            break;
+                        }
+                    }
+                }
+            }
+            if replacement.is_some() {
+                break;
+            }
+            start += line.len();
+        }
+        result = match replacement {
+            Some(candidate) => candidate,
+            None => {
+                serde_yaml::to_string(&expected).context("Failed to serialize YAML settings")?
+            }
+        };
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -193,6 +256,37 @@ mod tests {
         let updated = update_field(&updated, "default_model", Value::String("a/b".into())).unwrap();
         assert!(updated.contains("# 配置说明"));
         assert!(updated.contains("default_model: a/b"));
+    }
+
+    #[test]
+    fn sqlite_migrated_empty_settings_preserve_comments_on_skill_save() {
+        let text = remove_fields("# 保留说明\nthink_level: high\n", &["think_level"]).unwrap();
+        let updated = update_field(
+            &text,
+            "disabled_skills",
+            Value::Sequence(vec![Value::String("keep".into())]),
+        )
+        .unwrap();
+        assert!(updated.starts_with("# 保留说明\n"));
+        let parsed: Mapping = parse(&updated, "settings").unwrap();
+        assert_eq!(parsed["disabled_skills"][0], "keep");
+        assert!(!parsed.contains_key(Value::String("think_level".into())));
+    }
+
+    #[test]
+    fn sqlite_remove_fields_preserves_unrelated_yaml_values() {
+        for text in [
+            "# 保留说明\nthink_level: high\nmcp_servers:\n  local:\n    command: fixture\n    env:\n      BODY: |-\n        think_level: high\n        # 正文不是注释\ndisabled_skills: [keep]\n",
+            "{think_level: high, mcp_servers: {local: {command: fixture}}, disabled_skills: [keep]}",
+            "base: &base {nested: unchanged}\nthink_level: high\ncopy: *base\n",
+        ] {
+            let mut expected: Mapping = parse(text, "settings").unwrap();
+            expected.remove(Value::String("think_level".into()));
+            let updated = remove_fields(text, &["think_level", "missing"]).unwrap();
+            assert_eq!(parse::<Mapping>(&updated, "settings").unwrap(), expected);
+            assert_eq!(remove_fields(&updated, &["think_level"]).unwrap(), updated);
+        }
+        assert!(remove_fields("think_level: low\nthink_level: high", &["think_level"]).is_err());
     }
 
     #[test]

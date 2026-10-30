@@ -149,7 +149,21 @@ fn tui_notification_fades_without_input_and_preserves_draft() {
     );
     pty.ready_effort("no think");
     let saved = std::fs::read_to_string(config_path(home.path(), "settings.yml")).unwrap();
-    assert!(saved.contains("think_level: low"));
+    assert!(!saved.contains("think_level"));
+    assert!(saved.contains("notification_timeout_seconds"));
+    let database = rusqlite::Connection::open_with_flags(
+        config_path(home.path(), "agent.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let think_level: String = database
+        .query_row(
+            "SELECT think_level FROM preferences WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(think_level, "low");
     pty.input("草稿🙂");
     pty.draft("草稿🙂");
     let cursor = pty.parser.screen().cursor_position();
