@@ -1,4 +1,4 @@
-<h1 align="center">✈ pp</h1>
+<h1 align="center"><img src="docs/assets/logo.svg" alt="pp" width="40" height="40" align="middle" /> pp</h1>
 
 <p align="center"><strong>English</strong> | <a href="README.zh-CN.md">Simplified Chinese</a></p>
 
