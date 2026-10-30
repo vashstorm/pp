@@ -1,5 +1,6 @@
 mod templates;
 pub(crate) use templates::{FileCommand, FileCommands};
+pub(crate) mod task_test;
 
 use crate::config::ThinkLevel;
 use anyhow::{Context, Result, bail, ensure};
@@ -97,6 +98,11 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Manage saved plans: preview, continue, execute, rename, delete (TUI)",
     },
     CommandSpec {
+        name: "/task-test",
+        usage: "/task-test",
+        description: "Debug build: dispatch a fixed FAST/SLOW/REVIEW subagent batch",
+    },
+    CommandSpec {
         name: "/skills",
         usage: "/skills [enable NAME|disable NAME|sources [enable|disable claude|codex]]",
         description: "管理技能来源与逐项启停",
@@ -136,6 +142,7 @@ pub(crate) enum Command<'a> {
     Roles,
     Subagents,
     PlanList,
+    TaskTest,
     Login,
     Logout,
     Plan(PlanCommand<'a>),
@@ -188,6 +195,13 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/plan-list" => {
             ensure!(argument.is_empty(), "usage: /plan-list");
             Command::PlanList
+        }
+        "/task-test" => {
+            ensure!(
+                cfg!(debug_assertions),
+                "/task-test requires a debug build of pp"
+            );
+            Command::TaskTest
         }
         "/plan" => {
             return Ok(Some(Command::Plan(match argument {
@@ -273,9 +287,15 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
     Ok(Some(command))
 }
 
+/// release 构建隐藏 debug 专用命令；`/help` 与命令菜单共用同一判据。
+pub(crate) fn visible(name: &str) -> bool {
+    cfg!(debug_assertions) || name != "/task-test"
+}
+
 pub(crate) fn help(files: &FileCommands) -> String {
     COMMANDS
         .iter()
+        .filter(|spec| visible(spec.name))
         .map(|spec| format!("{} — {}", spec.usage, spec.description))
         .chain(
             files
@@ -406,6 +426,8 @@ mod tests {
             ("/tree", Command::Tree),
             ("/plan-list", Command::PlanList),
             (" /plan-list ", Command::PlanList),
+            ("/task-test", Command::TaskTest),
+            (" /task-test ", Command::TaskTest),
             (" /resume ", Command::Resume),
             ("/quit", Command::Quit),
             ("/model", Command::Model(None)),
@@ -441,6 +463,7 @@ mod tests {
             "/tree",
             "/quit",
             "/plan-list",
+            "/task-test",
         ] {
             assert_eq!(
                 parse(&format!("{command} extra"), &FileCommands::default())
@@ -449,6 +472,16 @@ mod tests {
                 format!("usage: {command}")
             );
         }
+    }
+
+    #[test]
+    fn slash_help_lists_debug_only_commands_in_debug_builds() {
+        let text = help(&FileCommands::default());
+        let listed = text
+            .contains("/task-test — Debug build: dispatch a fixed FAST/SLOW/REVIEW subagent batch");
+        assert_eq!(listed, cfg!(debug_assertions), "{text}");
+        assert_eq!(visible("/task-test"), cfg!(debug_assertions));
+        assert!(visible("/help") && visible("/plan-list"));
     }
 
     #[test]

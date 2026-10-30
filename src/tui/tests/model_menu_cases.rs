@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn command_menu_lists_debug_only_commands_in_debug_builds() {
+    let mut app = app();
+    let mut dirty = false;
+    app.handle(Event::Paste("/task-te".into()), &mut dirty);
+    if cfg!(debug_assertions) {
+        // 过滤发生在 enumerate 之后：MenuItem 仍指向 COMMANDS 的真实下标。
+        let values = menu_values(&app);
+        assert_eq!(values.len(), 1);
+        let MenuAction::Command(index) = values[0] else {
+            panic!("unexpected menu action: {values:?}");
+        };
+        assert_eq!(COMMANDS[index].name, "/task-test");
+        assert_eq!(app.menu.as_ref().unwrap().items()[0].label, "/task-test");
+    } else {
+        assert!(app.menu.is_none());
+        assert_eq!(app.input.lines(), &["/task-te"]);
+    }
+}
+
+#[test]
 fn command_menu_matches_fuzzy_case_insensitively_and_prioritizes_prefixes() {
     let mut app = app();
     let mut dirty = false;

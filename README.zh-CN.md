@@ -114,12 +114,15 @@ printf '说明当前项目的构建方式\n' | pp
 
 `/help` 查看完整帮助，`/tips` 查看操作提示。以下斜杠命令在交互模式使用；`-p` 中的内容始终作为普通提示词发送。
 
+`/task-test` 只在 cargo debug 构建中提供。它要求已启用 FAST、SLOW、REVIEW 三个模型 Role，保持当前模型，并发送一个固定的只读批次：`scout`（role 为 `fast`）、`scout`（role 为 `slow`）与 `reviewer`，等待三份结果后汇总；不会修改仓库文件。release 构建下该命令在本地报错，且不出现在 `/help` 与 `/` 命令菜单中。
+
 | 命令 | 用途 |
 | --- | --- |
 | `/model`、`/effort` | 切换模型与思考档位，保留历史 |
 | `/init` | 创建或更新当前项目的 `AGENTS.md` |
 | `/plan [prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，批准后执行（仅终端界面） |
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除（仅终端界面） |
+| `/task-test` | 仅 debug 构建：按固定场景派发 FAST／SLOW／REVIEW 三个只读子 Agent 并等待三份结果 |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |
 | `/resume`、`/tree` | 恢复会话，或回退当前历史（仅终端界面） |
 | `/changes` | 查看最近任务的编辑与写入变更并逐文件撤销（仅终端界面） |

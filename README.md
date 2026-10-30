@@ -113,12 +113,15 @@ Opening the model picker in the TUI clears the main input and focuses a separate
 
 Use `/help` for full help and `/tips` for usage tips. The following slash commands work in interactive modes; content passed through `-p` is always sent as a regular prompt.
 
+`/task-test` exists only in cargo debug builds. It requires the FAST, SLOW, and REVIEW model roles to be enabled, keeps the current model, and sends one fixed read-only batch: `scout` with role `fast`, `scout` with role `slow`, and `reviewer`. It waits for all three results and never modifies repository files. Release builds reject it locally and hide it from `/help` and the `/` menu.
+
 | Command | Purpose |
 | --- | --- |
 | `/model`, `/effort` | Switch models and reasoning levels while keeping history |
 | `/init` | Create or update the current project's `AGENTS.md` |
 | `/plan [prompt]` | Toggle Plan mode standby; view the plan or send a planning task immediately; execute after approval (TUI only) |
 | `/plan-list` | Manage saved plans: preview, continue, execute, rename, delete (TUI only) |
+| `/task-test` | Debug builds only: dispatch the fixed FAST/SLOW/REVIEW read-only subagent batch and wait for all three results |
 | `/compact`, `/new` | Compact context or start a new session |
 | `/resume`, `/tree` | Restore a session or navigate back through current history (TUI only) |
 | `/changes` | View recent-task edit/write changes and undo individual files (TUI only) |

@@ -233,6 +233,7 @@ chmod 600 ~/.pp/agent/models.yml
 | `/changes` | 查看最近任务的 edit/write 净变更，逐文件安全撤销 | 仅 TUI |
 | `/plan [view\|prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，显式批准后执行 | 仅 TUI |
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除 | 仅 TUI |
+| `/task-test` | 派发固定的 `scout`（fast）、`scout`（slow）、`reviewer` 只读批次并等待三份结果；要求 FAST／SLOW／REVIEW 已启用，仅 debug 构建暴露 | TUI / 行模式 |
 | `/quit` | 退出 | TUI / 行模式 |
 
 输入 `!命令` 在项目目录运行本地非交互 bash，不请求模型，命令和输出不进入模型上下文或会话文件。需要有效的 Agent 配置和 Execute 模式；Plan、忙碌或有待处理消息时不可运行。每条命令使用独立 shell，`cd` 和环境变量不跨命令保留；以当前用户权限执行，无文件系统沙箱。TUI 首个 `!` 仅进入 shell 模式，不显示在输入框中；后续 `!` 作为命令正文保留，历史回填会恢复模式并隐藏切换前缀。编辑时按 Esc 或在空输入框按 Backspace 退出模式，清空命令也会退出；命令运行时按 Esc 取消并等待进程回收。行模式仍输入完整的 `!命令`，输出写入 stderr，stdout 仍保留给模型回复。
@@ -392,6 +393,14 @@ Completed／Abandoned 且仍关联的计划保持只读投影，实际 Markdown 
 `c` 仅草稿可用：以只携带该计划 Markdown 与当前规则的新会话继续规划，原会话与旧草稿原样保留，未输入前零模型请求。`e` 在草稿/待执行时与 Enter 一样打开六项菜单。保留上下文／压缩后执行使用本次载入会话的上下文，新会话执行只携带批准计划；必须再次本地批准才进入执行，已勾选进度原样保留。没有标准 TODO 的正文仍可打开菜单，但保持 Draft，只能继续讨论或保存退出。继续讨论、审查或保存退出后关闭列表，进入相应的正常工作流。Done 只读，不提供重新执行或重开。`r` 重命名（单行输入预填文件名，Enter 提交、Esc 取消）与 `d` 删除适用于三个目录：确认框显示完整相对路径与 `Delete the plan file only; code and sessions are not rolled back.`，默认 Cancel，Tab/方向显式选择 Delete 后 Enter，Esc 取消。重命名只改文件名，不改正文、checkbox 或 ID，旧会话按 ID 找到新路径；删除先提交 tombstone 再移除文件，失败可显式重试，不回滚代码或删除会话。另一实例正在同一计划上运行任务时，重命名/删除/执行被非阻塞拒绝并提示 `Plan is in use; stop the active task before managing it.`；失败保留旧列表与输入，仅显示可见错误。
 
 列表操作令牌同时绑定 ID、当时的实际路径和精确正文；其他会话重命名或搬迁后，即使正文未变，旧令牌也会被拒绝，须刷新列表并重新选择。按 ID 重新读取仍可找到新路径，但不会沿用旧的删除或重命名确认。
+
+### /task-test 自检（仅 debug 构建）
+
+`/task-test` 只在 cargo debug 构建中注册：判据是编译期 `cfg!(debug_assertions)`，与 `settings.yml` 的 `debug` 字段无关。release 构建下解析层直接报 `error: /task-test requires a debug build of pp`，且 `/help` 与 `/` 命令菜单都不显示该命令。
+
+命令要求 FAST、SLOW、REVIEW 三个 Model Role 都已启用；缺任何一个只显示本地错误（例如 `Enable model roles SLOW, REVIEW in /Roles before /task-test`），不发送任何模型请求、不消耗草稿。TUI 中另需 Execute 模式，且只在空闲或运行中提交（运行中按交互输入队列规则处理）；行模式使用当前 `agent.db` 的 Role 快照。
+
+通过校验后，用户输入被替换为一个固定提示词：主模型不变，一次 `task` 调用派发三个只读子 Agent——`scout`（`role=fast`）、`scout`（`role=slow`）与 `reviewer`（已启用时默认走 REVIEW Role），等待三份结果后输出三行汇总。固定任务只做事只读检查，不改动仓库文件，也不依赖 `bash`、网络或 MCP；TUI 回显的是 `/task-test` 命令本身，输入框上方出现 `Subagents:` 摘要行，`/subagents` 面板可见三个实例。若 `scout`／`reviewer` 被自定义 `.pp/agents` 或 `task.disabled_agents` 禁用，命令不做预检，模型会把工具错误原样报告。
 
 ### ask（仅 TUI）
 

@@ -674,6 +674,18 @@ fn run(args: Args) -> Result<()> {
                     writeln!(stderr, "error: {error:#}")?;
                 }
             }
+            Some(commands::Command::TaskTest) => {
+                if let Err(message) = commands::task_test::ready(agent.model_roles()) {
+                    writeln!(stderr, "error: {message}")?;
+                } else if let Err(error) = run_cli_task(
+                    agent,
+                    Some(commands::task_test::PROMPT),
+                    &mut stdout,
+                    &mut stderr,
+                ) {
+                    writeln!(stderr, "error: {error:#}")?;
+                }
+            }
             None => match run_cli_task(agent, Some(prompt), &mut stdout, &mut stderr) {
                 Ok(()) => {}
                 Err(error) => writeln!(stderr, "error: {error:#}")?,

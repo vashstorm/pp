@@ -10,6 +10,7 @@ pp 可以把独立工作交给多个子 Agent，并在主会话继续工作。�
 
 - `/agents`：查看角色定义、描述和生效来源。
 - `/subagents`：打开运行面板；主输入框上方显示子任务摘要。
+- `/task-test`：cargo debug 构建专用的固定自检，要求 FAST／SLOW／REVIEW 已启用，派发 `scout`（fast）、`scout`（slow）、`reviewer` 三个只读子 Agent 并等待结果；详见[常用命令](guide.md#常用命令与快捷键)。
 - 面板中用方向键选择、Enter 查看历史、`e` 追问、`c` 取消本次运行、`x` 停止 Agent、`r` 恢复会话。
 - Esc 关闭历史或面板，不会取消 child。主视图中 Esc 取消根任务及其拥有的子任务。
 - 人工追问按普通文本发送，`/model` 等文本不会在 child 中执行本地命令。

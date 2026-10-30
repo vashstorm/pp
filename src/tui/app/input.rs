@@ -1,6 +1,6 @@
 use crate::tui::{
     App, COMMANDS, CancellationToken, EFFORT_HINT, Level, MenuAction, MenuItem, PendingKind,
-    SelectionMenu, State, ThinkLevel, WorkerCommand, editor, files, platform_text,
+    SelectionMenu, State, ThinkLevel, WorkerCommand, commands, editor, files, platform_text,
     transcript_style,
 };
 
@@ -107,6 +107,8 @@ impl App {
                     COMMANDS
                         .iter()
                         .enumerate()
+                        // 先取真实下标再过滤，MenuAction 仍对应 COMMANDS 的索引。
+                        .filter(|(_, spec)| commands::visible(spec.name))
                         .map(|(index, spec)| MenuItem {
                             value: MenuAction::Command(index),
                             label: spec.name.into(),

@@ -139,9 +139,30 @@ impl App {
         }
     }
 
-    // /init 回显用户命令本身；其余展开命令回显展开正文。
+    // /init 与 /task-test 回显用户命令本身；其余展开命令回显展开正文。
     pub(in crate::tui) fn echoes_source(prompt: &str) -> bool {
-        prompt.trim() == "/init"
+        matches!(prompt.trim(), "/init" | "/task-test")
+    }
+
+    /// `/task-test` 的本地前置校验：通过时返回固定提示词，否则返回本地错误文案。
+    fn task_test_prompt(&self) -> std::result::Result<String, String> {
+        if self.workflow.mode != crate::plan::WorkMode::Execute {
+            return Err("Exit Plan mode before using /task-test.".into());
+        }
+        match self.state {
+            State::Unavailable => {
+                return Err(self
+                    .unavailable
+                    .clone()
+                    .unwrap_or_else(|| "Configuration unavailable.".into()));
+            }
+            State::Ready | State::Running => {}
+            _ => {
+                return Err("Finish or cancel the current task before using /task-test.".into());
+            }
+        }
+        commands::task_test::ready(&self.model_roles).map_err(|error| error.to_string())?;
+        Ok(commands::task_test::PROMPT.to_owned())
     }
 
     pub(in crate::tui) fn submit(&mut self, kind: PendingKind) -> bool {
@@ -156,7 +177,7 @@ impl App {
         if prompt.trim().is_empty() {
             return false;
         }
-        let command = if self.shell_mode {
+        let mut command = if self.shell_mode {
             Some(Command::Shell(prompt.as_str()))
         } else if prompt.trim_start().starts_with('/') {
             match commands::parse(&prompt, &self.file_commands) {
@@ -169,6 +190,15 @@ impl App {
         } else {
             None
         };
+        if matches!(command, Some(Command::TaskTest)) {
+            match self.task_test_prompt() {
+                Ok(expanded) => command = Some(Command::Prompt(expanded)),
+                Err(message) => {
+                    self.notify(Level::Error, message);
+                    return false;
+                }
+            }
+        }
         if matches!(command, Some(Command::Agents | Command::Subagents)) {
             self.subagent_panel = Some(crate::tui::subagents::Panel {
                 binding: self
@@ -366,6 +396,7 @@ impl App {
                 Some(Command::Roles) => self.open_roles(),
                 Some(Command::Agents | Command::Subagents) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
+                Some(Command::TaskTest) => unreachable!("converted before the state match"),
                 Some(Command::Think(Some(level))) => {
                     self.set_think_level(level);
                 }
