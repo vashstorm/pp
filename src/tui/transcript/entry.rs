@@ -195,6 +195,7 @@ impl TranscriptEntry {
             expanded: false,
             footer: String::new(),
             started: Instant::now(),
+            bash_timeout_seconds: None,
             arguments: Value::Null,
             result: None,
             display: DisplayContext::default(),
@@ -209,6 +210,53 @@ impl TranscriptEntry {
         } else {
             &self.text
         }
+    }
+
+    pub(super) fn update_bash_footer(&mut self, elapsed: Option<std::time::Duration>) -> bool {
+        let mut parts = Vec::new();
+        if let Some(elapsed) = elapsed {
+            parts.push(if self.status == EntryStatus::Running {
+                format!("Elapsed: {}s", elapsed.as_secs())
+            } else {
+                format!("Wall: {:.2}s", elapsed.as_secs_f64())
+            });
+        }
+        if let Some(seconds) = self.bash_timeout_seconds {
+            parts.push(format!("Timeout: {seconds}s"));
+        }
+        if let Some(result) = &self.result {
+            if let Some(artifact) = result.get("artifact_id").filter(|value| !value.is_null()) {
+                let artifact = artifact
+                    .as_str()
+                    .map_or_else(|| artifact.to_string(), str::to_owned);
+                parts.push(format!("Artifact: {}", palette::display_text(&artifact)));
+            }
+            if let Some(status) = super::background_status(result) {
+                parts.push(status);
+            }
+            if result["cancelled"] == true {
+                parts.push("cancelled".into());
+            } else if result["timed_out"] == true {
+                parts.push("timed out".into());
+            }
+            if let Some(code) = result["exit_code"].as_i64().filter(|code| *code != 0) {
+                parts.push(format!("Exit: {code}"));
+            } else if self.status == EntryStatus::Failed
+                && result["cancelled"] != true
+                && result["timed_out"] != true
+            {
+                parts.push("failed".into());
+            }
+        } else if self.status == EntryStatus::Failed {
+            parts.push("failed".into());
+        }
+        let footer = parts.join(" · ");
+        if self.footer == footer {
+            return false;
+        }
+        self.footer = footer;
+        self.layout = None;
+        true
     }
 
     pub(super) fn is_file_read(&self) -> bool {
@@ -383,6 +431,12 @@ impl TranscriptEntry {
     }
 
     pub(super) fn ensure_layout(&mut self, width: u16) {
+        if self.kind == EntryKind::Bash
+            && self.status == EntryStatus::Running
+            && self.footer.is_empty()
+        {
+            self.update_bash_footer(Some(self.started.elapsed()));
+        }
         if !self.hidden
             && self.tool.as_deref() == Some("read")
             && self.kind != EntryKind::Read
@@ -743,10 +797,6 @@ impl TranscriptEntry {
             self.add_lines(Source::Stderr, &mut lines);
         }
         if bash {
-            if self.footer.is_empty() {
-                self.footer = "⟨running⟩".into();
-            }
-            self.add_lines(Source::Footer, &mut lines);
             lines.push(border(Source::Bottom));
         }
         if search {

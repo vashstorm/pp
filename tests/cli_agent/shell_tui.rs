@@ -32,15 +32,27 @@ fn bang_shell_sessions_dir(home: &Path) -> std::path::PathBuf {
     home.join(".pp/agent/sessions")
 }
 
-// bash 卡片结束栅栏：footer 行必须同时含 Wall 与状态（Exit code:N / failed），
+// bash 卡片结束栅栏：footer 行必须同时含 Wall 与 Timeout 或失败状态，
 // 不能只用空闲输入框判断本地 shell 已结束。
 fn bang_shell_wait_footer(pty: &mut Pty, description: &str, status: &str) {
     let compact = status.replace(' ', "");
     pty.wait_for(description, |screen| {
-        screen.contents().lines().any(|line| {
-            let line = line.split_whitespace().collect::<String>();
-            line.contains("Wall:") && line.contains(&compact)
-        })
+        screen
+            .contents()
+            .lines()
+            .filter(|line| {
+                line.contains("╰") && (line.contains("Wall:") || line.contains("Elapsed:"))
+            })
+            .next_back()
+            .is_some_and(|line| {
+                let line = line.split_whitespace().collect::<String>();
+                line.contains("Wall:")
+                    && line.contains(&compact)
+                    && (status != "Timeout:"
+                        || (!line.contains("Exit:")
+                            && !line.contains("cancelled")
+                            && !line.contains("timedout")))
+            })
     });
 }
 
@@ -81,7 +93,7 @@ fn bang_shell_tui_output_and_history() {
 
         // stdout/stderr 双流 + 14 行输出 + exit 7：以卡片 footer 判定结束。
         pty.input("!printf 'tui-out-marker\\n'; printf 'tui-err-marker\\n' >&2; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do printf 'fold-%02d\\n' \"$i\"; done; exit 7\r");
-        bang_shell_wait_footer(&mut pty, "exit 7 卡片 footer", "Exit code: 7");
+        bang_shell_wait_footer(&mut pty, "exit 7 卡片 footer", "Exit: 7");
         pty.wait_for("折叠卡片显示尾部行与 stderr 段", |screen| {
             let text = screen.contents();
             text.contains("(Ctrl + O to expand)")
@@ -99,7 +111,7 @@ fn bang_shell_tui_output_and_history() {
 
         // 第二条命令成功执行。
         pty.input("!printf 'tui-second\\n'\r");
-        bang_shell_wait_footer(&mut pty, "第二条命令 exit 0", "Exit code: 0");
+        bang_shell_wait_footer(&mut pty, "第二条命令 exit 0", "Timeout:");
         pty.text("tui-second");
 
         // ↑ 回填 shell 命令并恢复模式，切换用的 ! 不显示。
@@ -282,7 +294,7 @@ fn bang_shell_tui_escape_reaps_process_group() {
     pty.input("\x01\x0b");
     pty.input("!printf 'shell-esc-recovered\\n'\r");
     pty.text("shell-esc-recovered");
-    bang_shell_wait_footer(&mut pty, "取消后恢复执行 exit 0", "Exit code: 0");
+    bang_shell_wait_footer(&mut pty, "取消后恢复执行 exit 0", "Timeout:");
     cancel_assert_no_scratch(project.path());
     no_more(&server);
     assert!(!sessions.exists());
@@ -308,7 +320,7 @@ fn bang_shell_tui_multiline_and_timeout() {
         pty.input("\r");
         pty.text("multi-one");
         pty.text("multi-two");
-        bang_shell_wait_footer(&mut pty, "多行命令 exit 0", "Exit code: 0");
+        bang_shell_wait_footer(&mut pty, "多行命令 exit 0", "Timeout:");
         cancel_assert_no_scratch(project.path());
         cancel_assert_no_request(&server);
         no_more(&server);
@@ -333,7 +345,7 @@ fn bang_shell_tui_multiline_and_timeout() {
         bang_shell_wait_done(&mut pty);
         pty.input("!printf 'timeout-recovered\\n'\r");
         pty.text("timeout-recovered");
-        bang_shell_wait_footer(&mut pty, "超时后恢复执行 exit 0", "Exit code: 0");
+        bang_shell_wait_footer(&mut pty, "超时后恢复执行 exit 0", "Timeout:");
         cancel_assert_no_scratch(project.path());
         no_more(&server);
         pty.input("\x03");

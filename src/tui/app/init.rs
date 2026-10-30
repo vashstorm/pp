@@ -155,6 +155,8 @@ impl App {
         Ok(app)
     }
     pub(in crate::tui) fn install_agent(&mut self, mut agent: Agent) -> Result<()> {
+        self.conversation
+            .set_bash_timeout(agent.bash_timeout_seconds());
         // 取 replay、模型字段与 MCP 清理句柄必须发生在 agent move 进 worker 之前。
         let session_id = agent.session_id().map(str::to_owned);
         let replay = agent.take_replay();
