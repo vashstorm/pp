@@ -430,7 +430,7 @@ pp 参考 [Oh My Pi 的加载机制](https://github.com/can1357/oh-my-pi/blob/0b
 
 这些工程规范参考 OMP 提交 `0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0`，按 pp 的实际工具和工作流适配；[调研记录与原文快照](research/oh-my-pi-system-prompt/README.md)保留来源与 [MIT 版权及许可声明](research/oh-my-pi-system-prompt/upstream/LICENSE)。工具参数与限制、项目及技能规则、Plan／Review 指令仍由各自独立层生成，提示词不会赋予执行层未开放的权限。
 
-专用工具可用时必须优先使用：文件内容搜索用 grep，路径定位用 glob，读取用 read 范围分页，局部修改用 edit，创建或覆盖用 write；禁止用 shell 替代这些操作。pp 的 glob 只定位路径，不承诺 OMP 的语义定位能力。具体规则随本次实际工具生成；Plan／Review 未开放的工具不会因默认工作流要求实际运行而恢复可用。
+专用工具可用时必须优先使用：研究与发现先选择适用的 MCP 专用工具，通用文本搜索及覆盖缺口用 grep，文件路径定位用 glob，普通文件读取用 read 范围分页，局部修改用 edit，创建或覆盖用 write；禁止用 shell 替代这些操作。pp 的 glob 只定位路径，不承诺 OMP 的语义定位能力。具体规则随本次实际工具生成；Plan／Review 未开放的工具不会因默认工作流要求实际运行而恢复可用。
 
 专用工具策略属于每次请求生成的运行时块，也会应用于自定义基础及恢复的会话；基础角色、工程与测试规范仍以各自保存的来源为准。
 
@@ -626,6 +626,8 @@ TUI 的 `/mcp list` 是只读结果面板，按来源分组并单列禁用服务
 连接遵循 [MCP 初始化流程](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)，协商版本并发送 `notifications/initialized`，再分页调用 `tools/list`。支持 `2025-11-25`、`2025-06-18`、`2025-03-26`、`2024-11-05`。当前仅支持 stdio 工具，不支持 HTTP、OAuth、resources、prompts、sampling、elicitation、Smithery 或服务端动态工具列表通知。
 
 工具名通常为 `mcp__服务名__工具名`；特殊字符或组合名超过 64 字节时，工具部分使用确定性的 `tool_<hash>`，调用仍发送原名。schema 原样传给模型（`strict: false`），支持 Completion 和 Responses。结果保留 `content`、`structuredContent` 等字段，包装为 `{"ok":true,"result":{...}}`；`isError:true` 转为 `ok:false`。同批调用仍按顺序执行。
+
+当前模型工具表包含 MCP 工具时，运行时系统指令要求研究与发现优先选择适用的专用工具：代码符号和调用关系使用代码图工具，库／API 参考使用文档工具，浏览器检查或交互使用浏览器工具。内置 `grep`／`glob`／`read` 用于通用文本、路径、文件操作及专用工具未覆盖的内容；专用工具不可用时可回退。项目／库 ID 应从服务发现结果或返回元数据中确认，参数错误或空结果先按提示修正、缩小查询，不能直接认定服务不可用。这是模型选择指引，不改变工具集合、write/edit 要求或 Plan／Review 权限，也不保证固定调用率；没有可用 MCP 工具时不注入该 MCP 指引。
 
 服务在 `/model`、`/new` 后复用。普通传输故障不自动重连或重试；TUI 取消会回收当前服务，下一次新调用才惰性重建，要求完整工具定义不变，不重放旧调用。显式 reconnect／reload 允许工具定义变化。退出清理句柄持续跟踪管理操作新建的进程，关闭窗口或 Ctrl + C 后同样回收。
 

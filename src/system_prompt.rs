@@ -247,6 +247,11 @@ impl Snapshot {
         for name in ["read", "edit", "write", "bash", "grep", "glob"] {
             runtime[format!("has_{name}")] = context.tools.iter().any(|tool| tool == name).into();
         }
+        runtime["has_mcp"] = context
+            .tools
+            .iter()
+            .any(|tool| tool.starts_with("mcp__"))
+            .into();
         runtime["has_writes"] =
             (runtime["has_write"] == true || runtime["has_edit"] == true).into();
         runtime["hashline"] = (context.edit_mode == "hashline").into();
