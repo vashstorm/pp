@@ -48,7 +48,7 @@ fn tui_todo_fixed_position_survives_streaming_and_input_edits() {
         );
         assert!(text.lines().nth(17).unwrap().contains("TODO_TASK_00"));
         assert!(text.lines().nth(18).unwrap().contains("TODO_TASK_01"));
-        assert!(text.lines().nth(19).unwrap().starts_with('╰'));
+        assert!(text.lines().nth(19).unwrap().starts_with('└'));
         assert!(
             text.lines()
                 .nth(21)

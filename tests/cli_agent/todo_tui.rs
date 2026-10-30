@@ -438,12 +438,14 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 .is_some_and(|row| row.contains("TODO · 0/12"))
                 && screen.contents().contains("PINNED_TASK_00")
         });
-        for (row, col, symbol) in [(22, 0, "╭"), (23, 0, "│"), (25, 99, "╯")] {
+        for (row, col, symbol) in [(23, 0, "├"), (23, 1, "─"), (24, 0, "├"), (25, 0, "└")] {
             let cell = pty.parser.screen().cell(row, col).unwrap();
             assert_eq!(cell.contents(), symbol);
-            assert_eq!(cell.fgcolor(), vt100::Color::Rgb(76, 85, 98));
+            assert_eq!(cell.fgcolor(), vt100::Color::Rgb(95, 102, 115));
         }
-        let current = pty.parser.screen().cell(23, 4).unwrap();
+        let toggle_hint = if cfg!(target_os = "macos") { "⌥ + T" } else { "Ctrl + T" };
+        assert!(pty.parser.screen().rows(0, 100).nth(22).unwrap().contains(toggle_hint));
+        let current = pty.parser.screen().cell(23, 3).unwrap();
         assert_eq!(current.contents(), "→");
         assert_eq!(current.fgcolor(), vt100::Color::Rgb(156, 220, 254));
         let mut stream = SseReply::new(request);
@@ -463,6 +465,10 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 .is_some_and(|row| row.contains("TODO · 0/12"))
                 && screen.contents().contains("PINNED_TASK_06")
         });
+        let screen = pty.parser.screen();
+        assert!(screen.rows(0, 100).nth(16).unwrap().contains(&format!("{toggle_hint} collapse")));
+        assert_eq!(screen.cell(18, 0).unwrap().contents(), "│");
+        assert_eq!(screen.cell(18, 3).unwrap().contents(), "├");
         assert!(!pty.parser.screen().alternate_screen());
         pty.resize(24, 60);
         pty.wait_for("缩放后的 TODO 高度上限", |screen| {
@@ -473,7 +479,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         });
         pty.draft("中文草稿");
         pty.function_key('t');
-        pty.wait_for("TODO 收回四行边框摘要", |screen| {
+        pty.wait_for("TODO 收回四行树形摘要", |screen| {
             screen
                 .rows(0, 60)
                 .nth(16)
@@ -535,15 +541,16 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
             )]),
         );
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        pty.wait_for("完成后保留带边框摘要", |screen| {
+        pty.wait_for("完成后保留绿色树形摘要", |screen| {
             screen
                 .rows(0, 100)
                 .nth(24)
                 .is_some_and(|row| row.contains("TODO · 12/12") && row.contains("Complete"))
         });
         let screen = pty.parser.screen();
-        assert_eq!(screen.cell(24, 2).unwrap().contents(), "✔");
-        assert_eq!(screen.cell(24, 2).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
+        assert_eq!(screen.cell(24, 0).unwrap().contents(), "✔");
+        assert_eq!(screen.cell(25, 0).unwrap().contents(), "└");
+        assert_eq!(screen.cell(25, 0).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
         assert_eq!(screen.cell(24, 0).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
         plan_final(request, protocol, "Fixed tasks finished.");
         pty.completed();

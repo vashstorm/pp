@@ -762,7 +762,7 @@ pub(super) fn todo_task_styles(
             "☑",
             palette::ADDED,
             Style::default()
-                .fg(palette::MUTED)
+                .fg(palette::ADDED)
                 .add_modifier(Modifier::CROSSED_OUT),
         ),
         TodoStatus::Abandoned => (
@@ -775,6 +775,29 @@ pub(super) fn todo_task_styles(
         TodoStatus::Blocked => ("!", palette::ACCENT, Style::default().fg(palette::ACCENT)),
     };
     (symbol, Style::default().fg(marker), text)
+}
+
+/// 先按正文宽度折行，再逐行补齐树枝，显式换行也保留连线。
+fn todo_tree_rows(
+    content: Line<'static>,
+    width: u16,
+    first: Line<'static>,
+    continuation: &str,
+) -> Vec<Line<'static>> {
+    let body_width = width.saturating_sub(first.width() as u16).max(1);
+    wrap_block(content, body_width, "")
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let mut prefix = if index == 0 {
+                first.clone()
+            } else {
+                Line::styled(continuation.to_owned(), Style::default().fg(palette::DIM))
+            };
+            prefix.spans.extend(row.spans);
+            prefix
+        })
+        .collect()
 }
 
 /// 结构化完整清单：阶段头 `I. Name (closed/total)`，任务行按状态着色。
@@ -805,7 +828,13 @@ pub(super) fn todo_checklist(
             .tasks
             .iter()
             .any(|task| task.status == TodoStatus::InProgress);
-        let phase_color = if active {
+        let phase_color = if phase
+            .tasks
+            .iter()
+            .all(|task| task.status == TodoStatus::Completed)
+        {
+            palette::ADDED
+        } else if active {
             palette::CODE_BLOCK
         } else if closed == phase.tasks.len() {
             palette::MUTED
@@ -829,8 +858,18 @@ pub(super) fn todo_checklist(
                 Style::default().fg(palette::MUTED),
             ),
         ]);
-        rows.extend(wrap_block(header, width, ""));
-        for task in &phase.tasks {
+        let (branch, continuation) = if width >= 5 {
+            ("├─ ", "│  ")
+        } else {
+            ("├", "│")
+        };
+        rows.extend(todo_tree_rows(
+            header,
+            width,
+            Line::styled(branch, Style::default().fg(palette::DIM)),
+            continuation,
+        ));
+        for (task_index, task) in phase.tasks.iter().enumerate() {
             let (symbol, marker, style) = todo_task_styles(task.status);
             let tag = match &task.status {
                 TodoStatus::Pending | TodoStatus::Completed => String::new(),
@@ -841,11 +880,10 @@ pub(super) fn todo_checklist(
                     None => " (blocked)".to_owned(),
                 },
             };
-            let mut spans = vec![Span::styled(format!("  {symbol} "), marker)];
-            spans.push(Span::styled(
+            let mut spans = vec![Span::styled(
                 palette::display_text(&task.content).into_owned(),
                 style,
-            ));
+            )];
             if !tag.is_empty() {
                 spans.push(Span::styled(
                     palette::display_text(&tag).into_owned(),
@@ -866,9 +904,45 @@ pub(super) fn todo_checklist(
                     Style::default().fg(palette::MUTED),
                 ));
             }
-            // 窄窗口缩减悬挂缩进，确保中文宽字符仍有可用列。
-            let continuation = if width >= 6 { "    " } else { "" };
-            rows.extend(wrap_block(Line::from(spans), width, continuation));
+            let last = task_index + 1 == phase.tasks.len();
+            // 缩短窄窗口的树枝，至少为中文正文保留两列。
+            let (branch, continuation) = match width {
+                10.. => {
+                    if last {
+                        ("│  └─ ", "│       ")
+                    } else {
+                        ("│  ├─ ", "│  │    ")
+                    }
+                }
+                8.. => {
+                    if last {
+                        ("│ └ ", "│     ")
+                    } else {
+                        ("│ ├ ", "│ │   ")
+                    }
+                }
+                6.. => {
+                    if last {
+                        ("└ ", "    ")
+                    } else {
+                        ("├ ", "│   ")
+                    }
+                }
+                4.. => ("", "  "),
+                _ => ("", ""),
+            };
+            let mut prefix = Line::styled(branch, Style::default().fg(palette::DIM));
+            if width >= 4 {
+                prefix
+                    .spans
+                    .push(Span::styled(format!("{symbol} "), marker));
+            }
+            rows.extend(todo_tree_rows(
+                Line::from(spans),
+                width,
+                prefix,
+                continuation,
+            ));
         }
     }
     rows
