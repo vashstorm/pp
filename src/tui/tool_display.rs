@@ -744,6 +744,39 @@ fn phase_roman(mut number: usize) -> String {
     roman
 }
 
+/// 状态标记与正文分开着色，完成项只对正文划线。
+pub(super) fn todo_task_styles(
+    status: crate::tools::todo::TodoStatus,
+) -> (&'static str, Style, Style) {
+    use crate::tools::todo::TodoStatus;
+    let (symbol, marker, text) = match status {
+        TodoStatus::Pending => ("☐", palette::MUTED, Style::default().fg(palette::ACTIVITY)),
+        TodoStatus::InProgress => (
+            "→",
+            palette::CODE_BLOCK,
+            Style::default()
+                .fg(palette::CODE_BLOCK)
+                .add_modifier(Modifier::BOLD),
+        ),
+        TodoStatus::Completed => (
+            "☑",
+            palette::ADDED,
+            Style::default()
+                .fg(palette::MUTED)
+                .add_modifier(Modifier::CROSSED_OUT),
+        ),
+        TodoStatus::Abandoned => (
+            "☐",
+            palette::MUTED,
+            Style::default()
+                .fg(palette::MUTED)
+                .add_modifier(Modifier::CROSSED_OUT),
+        ),
+        TodoStatus::Blocked => ("!", palette::ACCENT, Style::default().fg(palette::ACCENT)),
+    };
+    (symbol, Style::default().fg(marker), text)
+}
+
 /// 结构化完整清单：阶段头 `I. Name (closed/total)`，任务行按状态着色。
 /// 动态文本全部经 display_text 折行安全展示，重复文案附 phase+occurrence 寻址提示。
 pub(super) fn todo_checklist(
@@ -768,16 +801,27 @@ pub(super) fn todo_checklist(
             .iter()
             .filter(|task| matches!(task.status, TodoStatus::Completed | TodoStatus::Abandoned))
             .count();
+        let active = phase
+            .tasks
+            .iter()
+            .any(|task| task.status == TodoStatus::InProgress);
+        let phase_color = if active {
+            palette::CODE_BLOCK
+        } else if closed == phase.tasks.len() {
+            palette::MUTED
+        } else {
+            palette::ACTIVITY
+        };
         let header = Line::from(vec![
             Span::styled(
                 format!("{}.", phase_roman(index + 1)),
-                Style::default().fg(palette::ACCENT),
+                Style::default().fg(phase_color),
             ),
             Span::raw(" "),
             Span::styled(
                 palette::display_text(&phase.name).into_owned(),
                 Style::default()
-                    .fg(palette::ACTIVITY)
+                    .fg(phase_color)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -787,37 +831,17 @@ pub(super) fn todo_checklist(
         ]);
         rows.extend(wrap_block(header, width, ""));
         for task in &phase.tasks {
-            let (symbol, style, tag) = match &task.status {
-                TodoStatus::Pending => ("☐", Style::default().fg(palette::ACTIVITY), String::new()),
-                TodoStatus::InProgress => (
-                    "→",
-                    Style::default().fg(palette::CODE_BLOCK),
-                    " (in progress)".to_owned(),
-                ),
-                TodoStatus::Completed => (
-                    "☑",
-                    Style::default()
-                        .fg(palette::ADDED)
-                        .add_modifier(Modifier::CROSSED_OUT),
-                    String::new(),
-                ),
-                TodoStatus::Abandoned => (
-                    "☐",
-                    Style::default()
-                        .fg(palette::REMOVED)
-                        .add_modifier(Modifier::CROSSED_OUT),
-                    " (dropped)".to_owned(),
-                ),
-                TodoStatus::Blocked => (
-                    "!",
-                    Style::default().fg(palette::ACCENT),
-                    match &task.blocker {
-                        Some(reason) => format!(" (blocked: {reason})"),
-                        None => " (blocked)".to_owned(),
-                    },
-                ),
+            let (symbol, marker, style) = todo_task_styles(task.status);
+            let tag = match &task.status {
+                TodoStatus::Pending | TodoStatus::Completed => String::new(),
+                TodoStatus::InProgress => " (in progress)".to_owned(),
+                TodoStatus::Abandoned => " (dropped)".to_owned(),
+                TodoStatus::Blocked => match &task.blocker {
+                    Some(reason) => format!(" (blocked: {reason})"),
+                    None => " (blocked)".to_owned(),
+                },
             };
-            let mut spans = vec![Span::styled(format!("  {symbol} "), style)];
+            let mut spans = vec![Span::styled(format!("  {symbol} "), marker)];
             spans.push(Span::styled(
                 palette::display_text(&task.content).into_owned(),
                 style,

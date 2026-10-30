@@ -8,13 +8,13 @@ use crate::{
 };
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Padding, Paragraph},
 };
 
-pub(super) const TOGGLE_HINT: &str = platform_text("⌥T", "Ctrl+T");
+pub(super) const TOGGLE_HINT: &str = platform_text("⌥ + T", "Ctrl + T");
 
 #[derive(Default)]
 pub(super) struct Panel {
@@ -160,14 +160,6 @@ impl Panel {
         } else {
             ""
         };
-        let action = if self.expanded { "collapse" } else { "expand" };
-        let position = if self.expanded
-            && self.rows.len() > usize::from(self.block().inner(self.area).height)
-        {
-            format!(" · {}/{}", self.scroll + 1, self.rows.len())
-        } else {
-            String::new()
-        };
         let color = if self.completed() {
             palette::ADDED
         } else if self.preview() {
@@ -195,12 +187,24 @@ impl Panel {
                 format!("{closed}/{total}{status}"),
                 Style::default().fg(color),
             ),
-            Span::styled(" · ", Style::default().fg(palette::DIM)),
-            Span::styled(
-                format!("{TOGGLE_HINT} {action}{position} "),
-                Style::default().fg(palette::MUTED),
-            ),
+            Span::raw(" "),
         ])
+    }
+
+    fn controls(&self) -> Line<'static> {
+        let action = if self.expanded { "collapse" } else { "expand" };
+        let position = if self.expanded
+            && self.rows.len() > usize::from(self.block().inner(self.area).height)
+        {
+            format!(" · {}/{}", self.scroll + 1, self.rows.len())
+        } else {
+            String::new()
+        };
+        Line::styled(
+            format!(" {TOGGLE_HINT} {action}{position} "),
+            Style::default().fg(palette::MUTED),
+        )
+        .alignment(Alignment::Right)
     }
 
     fn brief(task: &TodoItem) -> String {
@@ -222,29 +226,22 @@ impl Panel {
             .or_else(|| self.tasks().find(|task| task.status == TodoStatus::Blocked));
         let mut rows = Vec::new();
         if let Some(current) = current {
-            let prefix = if current.status == TodoStatus::InProgress && !self.preview() {
-                "→ "
-            } else if current.status == TodoStatus::Blocked {
-                "! "
-            } else {
-                "☐ "
-            };
-            rows.push(Line::styled(
-                one_line(&format!("  {prefix}{}", Self::brief(current))),
-                Style::default().fg(match current.status {
-                    TodoStatus::InProgress => palette::CODE_BLOCK,
-                    TodoStatus::Blocked => palette::ACCENT,
-                    _ => palette::ACTIVITY,
-                }),
-            ));
+            let (symbol, marker, text) = tool_display::todo_task_styles(current.status);
+            rows.push(Line::from(vec![
+                Span::styled(format!("  {symbol} "), marker),
+                Span::styled(one_line(&Self::brief(current)), text),
+            ]));
             if let Some(next) = self
                 .tasks()
                 .find(|task| task.status == TodoStatus::Pending && !std::ptr::eq(*task, current))
             {
-                rows.push(Line::styled(
-                    one_line(&format!("    Next: {}", next.content)),
-                    Style::default().fg(palette::MUTED),
-                ));
+                rows.push(Line::from(vec![
+                    Span::styled("    Next: ", Style::default().fg(palette::MUTED)),
+                    Span::styled(
+                        one_line(&next.content),
+                        Style::default().fg(palette::ACTIVITY),
+                    ),
+                ]));
             }
         }
         rows
@@ -265,7 +262,15 @@ impl Panel {
             self.prepare(body.width);
             self.clamp_scroll();
         }
-        frame.render_widget(block.title(self.header()), area);
+        let header = self.header();
+        let controls = self.controls();
+        // 两个标题之间保留边框线，空间不足时优先完整展示进度。
+        let block = if header.width() + controls.width() + 4 <= usize::from(area.width) {
+            block.title(controls)
+        } else {
+            block
+        };
+        frame.render_widget(block.title(header), area);
         if body.height == 0 {
             return;
         }
@@ -443,20 +448,26 @@ mod tests {
         assert_eq!(buffer[(6, 1)].fg, palette::CODE_BLOCK);
         assert_eq!(buffer[(6, 2)].symbol(), "N");
         assert_eq!(buffer[(6, 2)].fg, palette::MUTED);
+        assert_eq!(buffer[(12, 2)].fg, palette::ACTIVITY);
+        assert!(buffer[(6, 1)].modifier.contains(Modifier::BOLD));
         panel.toggle();
         terminal
             .draw(|frame| panel.draw(frame, frame.area()))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        for (y, symbol, color) in [
-            (2, "→", palette::CODE_BLOCK),
-            (3, "☐", palette::ACTIVITY),
-            (4, "!", palette::ACCENT),
-            (5, "☑", palette::ADDED),
+        for (y, symbol, marker, text) in [
+            (2, "→", palette::CODE_BLOCK, palette::CODE_BLOCK),
+            (3, "☐", palette::MUTED, palette::ACTIVITY),
+            (4, "!", palette::ACCENT, palette::ACCENT),
+            (5, "☑", palette::ADDED, palette::MUTED),
         ] {
             assert_eq!(buffer[(4, y)].symbol(), symbol);
-            assert_eq!(buffer[(6, y)].fg, color);
+            assert_eq!(buffer[(4, y)].fg, marker);
+            assert_eq!(buffer[(6, y)].fg, text);
         }
+        assert!(buffer[(6, 2)].modifier.contains(Modifier::BOLD));
+        assert!(buffer[(6, 5)].modifier.contains(Modifier::CROSSED_OUT));
+        assert!(!buffer[(4, 5)].modifier.contains(Modifier::CROSSED_OUT));
         panel.update(state(&[("DONE", TodoStatus::Completed)]));
         terminal
             .draw(|frame| panel.draw(frame, Rect::new(0, 0, 80, 2)))
@@ -465,6 +476,29 @@ mod tests {
         assert_eq!(buffer[(2, 0)].symbol(), "✔");
         assert_eq!(buffer[(2, 0)].fg, palette::ADDED);
         assert_eq!(buffer[(0, 0)].fg, palette::ADDED);
+    }
+
+    #[test]
+    fn tui_todo_title_keeps_progress_and_hides_controls_when_narrow() {
+        let mut panel = Panel::default();
+        panel.update(state(&[("任务", TodoStatus::Pending)]));
+        for width in [16, 24, 80] {
+            for expanded in [false, true] {
+                panel.expanded = expanded;
+                let text = render(&mut panel, width, 4);
+                let title = text.lines().next().unwrap();
+                assert!(title.starts_with("╭ TODO · 0/1 "));
+                assert!(title.ends_with('╮'));
+                if width == 80 {
+                    let action = if expanded { "collapse" } else { "expand" };
+                    assert!(title.ends_with(&format!(" {TOGGLE_HINT} {action} ╮")));
+                } else {
+                    assert!(!title.contains(TOGGLE_HINT));
+                    assert!(!title.contains("expand"));
+                    assert!(!title.contains("collapse"));
+                }
+            }
+        }
     }
 
     #[test]
