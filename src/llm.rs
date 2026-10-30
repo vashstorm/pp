@@ -99,6 +99,7 @@ impl OpenAiClient {
     }
 
     pub(crate) fn new(config: &Config) -> Result<Self> {
+        crate::logging::register_secret(&config.api_key);
         // Validate before the SDK constructs its authorization header (which can panic).
         HeaderValue::from_str(&format!("Bearer {}", config.api_key)).map_err(|_| {
             anyhow::anyhow!("configuring HTTP authorization: invalid API key header")
@@ -195,6 +196,10 @@ impl OpenAiClient {
             store.save(&auth.path)?;
         }
         let credential = &store.credentials[&auth.provider];
+        crate::logging::register_secret(&credential.access_token);
+        if let Some(token) = &credential.refresh_token {
+            crate::logging::register_secret(token);
+        }
         credential.validate(auth.provider)?;
         let mut sdk = OpenAIConfig::new()
             .with_api_key(credential.access_token.clone())
@@ -354,6 +359,7 @@ impl OpenAiClient {
             .expect("ensure_ready leaves a runtime in place");
         let budget = self.rate_limit_retry_budget;
         let mut output = ChatStream::default();
+        let mut failure_context = crate::logging::FailureContext::default();
         let mut snapshot = serde_json::Value::Null;
         let mut attempted = false;
         let result: Result<CompletionTurn> = runtime.block_on(async {
@@ -388,12 +394,10 @@ impl OpenAiClient {
                     None => return Err(Cancelled.into()),
                     Some(None) => break,
                     Some(Some(chunk)) => {
-                        output.push(
-                            ChatChunk::decode(
-                                chunk.map_err(|error| redacted_error(error, "Chat Completions"))?,
-                            )?,
-                            &mut progress,
-                        )?;
+                        let chunk =
+                            chunk.map_err(|error| redacted_error(error, "Chat Completions"))?;
+                        failure_context.push(&chunk.to_string());
+                        output.push(ChatChunk::decode(chunk)?, &mut progress)?;
                     }
                 }
             }
@@ -408,6 +412,12 @@ impl OpenAiClient {
             Ok(turn)
         });
         let elapsed_ms = elapsed_millis(started_at);
+        failure_context.log(
+            "Chat Completions",
+            &self.model_reference,
+            &result,
+            elapsed_ms,
+        );
         // 逻辑请求级使用计数：attempted 只在首次发送尝试内置位，建连重试不重复置位，
         // 因此发送后的失败/取消恰好计一次；发送前取消与授权校验失败不计数。
         // 必须发生在 stats 保存之前。
@@ -488,6 +498,7 @@ impl OpenAiClient {
         let mut tool_deltas = Vec::new();
         let mut stop_reason = None;
         let mut reported_usage = None;
+        let mut failure_context = crate::logging::FailureContext::default();
         let budget = self.rate_limit_retry_budget;
         let mut attempted = false;
         let result: Result<ResponseTurn> = runtime.block_on(async {
@@ -520,7 +531,8 @@ impl OpenAiClient {
                         bail!("Responses protocol: stream ended before response.completed")
                     }
                     Some(Some(event)) => {
-                        let ResponseEvent(event, written) = event.map_err(|error| redacted_error(error, "Responses"))?;
+                        let ResponseEvent(event, written, raw) = event.map_err(|error| redacted_error(error, "Responses"))?;
+                        failure_context.push(&raw);
                         if record {
                             use async_openai::types::responses::ResponseStreamEvent;
                             let response = match &event {
@@ -559,6 +571,7 @@ impl OpenAiClient {
             }
         });
         let elapsed_ms = elapsed_millis(started_at);
+        failure_context.log("Responses", &self.model_reference, &result, elapsed_ms);
         // 与 complete 相同的逻辑请求级计数边界；必须在 stats 保存之前。
         if attempted {
             self.record_model_usage();
@@ -615,19 +628,51 @@ fn build_client(sdk_config: OpenAIConfig, timeout: Duration) -> Result<Client<Op
         .retry(reqwest::retry::never())
         .build()
         .map_err(|_| anyhow::anyhow!("initializing HTTP client failed"))?;
-    // Keep status codes even for non-JSON errors, without reading or exposing their bodies.
+    // HTTP 失败现场只写诊断日志；终端与重试分类仍仅使用状态码。
     let service = tower::ServiceBuilder::new()
-        .and_then(|response: reqwest::Response| async move {
+        .and_then(|mut response: reqwest::Response| async move {
             if response.status().is_success() {
                 Ok(response)
             } else {
+                let status_code = response.status();
+                let retry_after = retry_after_code(&response);
+                let request_id = response
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_owned();
+                let mut body = Vec::new();
+                let mut complete = false;
+                // 错误页可能无限输出或不结束；诊断读取最多 64 KiB、至多一秒。
+                let read = tokio::time::timeout(Duration::from_secs(1), async {
+                    while let Some(chunk) = response.chunk().await? {
+                        let remaining = 64 * 1024 - body.len();
+                        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                        if body.len() == 64 * 1024 {
+                            return Ok::<_, reqwest::Error>(());
+                        }
+                    }
+                    complete = true;
+                    Ok(())
+                })
+                .await;
+                tracing::error!(
+                    event = "ai_http_error",
+                    pid = std::process::id(),
+                    status = status_code.as_u16(),
+                    request_id = crate::logging::diagnostic_text(&request_id),
+                    body = crate::logging::diagnostic_text(&String::from_utf8_lossy(&body)),
+                    body_complete = complete,
+                    body_read_failed = !matches!(read, Ok(Ok(()))),
+                );
                 Err(OpenAIError::ApiError(ApiErrorResponse {
-                    status_code: response.status(),
+                    status_code,
                     api_error: ApiError {
                         message: String::new(),
                         r#type: None,
                         param: None,
-                        code: retry_after_code(&response),
+                        code: retry_after,
                         misalignment: None,
                     },
                 }))
@@ -638,6 +683,13 @@ fn build_client(sdk_config: OpenAIConfig, timeout: Duration) -> Result<Client<Op
 }
 
 fn redacted_error(error: OpenAIError, api: &str) -> anyhow::Error {
+    // 先保存 SDK 仍持有的原始解析现场，再生成面向终端的脱敏消息。
+    tracing::error!(
+        event = "ai_transport_error",
+        pid = std::process::id(),
+        api,
+        detail = crate::logging::diagnostic_text(&format!("{error:#}")),
+    );
     match error {
         OpenAIError::Reqwest(error) if error.is_timeout() => {
             anyhow::anyhow!("{api} request timed out")
@@ -664,7 +716,7 @@ fn redacted_error(error: OpenAIError, api: &str) -> anyhow::Error {
     }
 }
 
-/// middleware 不读取错误响应体，通过自构造 code 标记传递 Retry-After 整数秒。
+/// middleware 通过自构造 code 标记传递 Retry-After 整数秒；错误正文仅写诊断日志。
 /// 脱敏错误只展示状态码，不输出该内部标记。
 const RETRY_AFTER_CODE_PREFIX: &str = "pp-retry-after:";
 
@@ -772,6 +824,14 @@ where
         };
         retries += 1;
         waited += delay;
+        tracing::warn!(
+            event = "ai_request_retry",
+            pid = std::process::id(),
+            api,
+            attempt = retries,
+            wait_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            error = crate::logging::diagnostic_text(&format!("{error:#}")),
+        );
         progress(AgentEvent::RequestRetrying {
             reason: request_retry_reason(&error).expect("重试条件已确认临时错误"),
             attempt: retries,

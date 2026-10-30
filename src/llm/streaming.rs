@@ -16,7 +16,11 @@ use serde::{Deserialize, Deserializer, de::Error};
 use std::collections::BTreeMap;
 
 // 正常分片直接交给 SDK；仅在缺少可兼容字段时构造补齐所需的 JSON 树。
-pub(super) struct ResponseEvent(pub(super) ResponseStreamEvent, pub(super) Option<u64>);
+pub(super) struct ResponseEvent(
+    pub(super) ResponseStreamEvent,
+    pub(super) Option<u64>,
+    pub(super) String,
+);
 
 // 在 SDK 丢弃未知扩展前保留缓存写入量；不从输入余量推算。
 fn cache_write_tokens(usage: &serde_json::Value, details: &str) -> Option<u64> {
@@ -55,7 +59,7 @@ impl<'de> Deserialize<'de> for ResponseEvent {
             })
             .flatten();
         match serde_json::from_str(raw.get()) {
-            Ok(event) => return Ok(Self(event, written)),
+            Ok(event) => return Ok(Self(event, written, raw.get().to_owned())),
             Err(error)
                 if error.is_data()
                     && (error.to_string().starts_with("missing field `annotations`")
@@ -90,7 +94,7 @@ impl<'de> Deserialize<'de> for ResponseEvent {
             }
         }
         serde_json::from_value(value)
-            .map(|event| Self(event, written))
+            .map(|event| Self(event, written, raw.get().to_owned()))
             .map_err(D::Error::custom)
     }
 }
@@ -192,6 +196,12 @@ impl ChatChunk {
 
 // 路径与缺失字段名也属于供应商输入；只输出协议中已知的静态名称。
 fn chat_decode_error(error: serde_path_to_error::Error<serde_json::Error>) -> anyhow::Error {
+    tracing::error!(
+        event = "ai_decode_error",
+        pid = std::process::id(),
+        api = "Chat Completions",
+        detail = crate::logging::diagnostic_text(&error.to_string()),
+    );
     const FIELDS: &[&str] = &[
         "id",
         "object",

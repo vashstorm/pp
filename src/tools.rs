@@ -497,7 +497,20 @@ impl Tools {
         };
         let elapsed_ms = started.elapsed().as_millis() as u64;
         if status == "error" {
-            tracing::warn!(event = "tool_finished", pid, tool, status, elapsed_ms);
+            tracing::warn!(
+                event = "tool_finished",
+                pid,
+                tool,
+                status,
+                elapsed_ms,
+                error = crate::logging::diagnostic_text(
+                    value
+                        .get("error")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("tool reported failure")
+                ),
+                arguments = crate::logging::diagnostic_text(arguments)
+            );
         } else {
             tracing::info!(event = "tool_finished", pid, tool, status, elapsed_ms);
         }

@@ -77,10 +77,11 @@ pub(super) fn log_task_finished(
             status = "cancelled",
             elapsed_ms
         ),
-        Err(_) => tracing::error!(
+        Err(error) => tracing::error!(
             event = "task_finished",
             pid,
             operation,
+            error = crate::logging::diagnostic_text(&format!("{error:#}")),
             status = "error",
             elapsed_ms
         ),
@@ -109,10 +110,11 @@ pub(super) fn log_model_request_finished<T>(
             status = "cancelled",
             elapsed_ms
         ),
-        Err(_) => tracing::error!(
+        Err(error) => tracing::error!(
             event = "model_request_finished",
             pid,
             protocol,
+            error = crate::logging::diagnostic_text(&format!("{error:#}")),
             status = "error",
             elapsed_ms
         ),

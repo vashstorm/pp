@@ -166,8 +166,14 @@ fn main() -> ExitCode {
     let elapsed_ms = started.elapsed().as_millis() as u64;
     if result.is_ok() {
         tracing::info!(event = "app_stopped", pid, status = "ok", elapsed_ms);
-    } else {
-        tracing::error!(event = "app_stopped", pid, status = "error", elapsed_ms);
+    } else if let Err(error) = &result {
+        tracing::error!(
+            event = "app_stopped",
+            pid,
+            status = "error",
+            elapsed_ms,
+            error = logging::diagnostic_text(&format!("{error:#}"))
+        );
     }
     if logging
         .as_ref()
@@ -351,10 +357,11 @@ fn run(args: Args) -> Result<()> {
     {
         return agent.map(|_| ());
     }
-    if agent.is_err() {
+    if let Err(error) = &agent {
         tracing::warn!(
             event = "configuration_unavailable",
-            pid = std::process::id()
+            pid = std::process::id(),
+            error = logging::diagnostic_text(&format!("{error:#}")),
         );
     }
     if let (Some(mode), Ok(agent)) = (args.approval_mode, agent.as_mut()) {

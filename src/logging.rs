@@ -1,4 +1,7 @@
 mod debug;
+mod diagnostics;
+
+pub(crate) use diagnostics::{FailureContext, diagnostic_text, register_secret};
 
 use std::{
     fs::{self, DirBuilder, File, OpenOptions},
@@ -50,6 +53,16 @@ pub(crate) fn init() -> anyhow::Result<LoggingGuard> {
                 .with_writer(writer.clone()),
         )
         .try_init()?;
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(
+            event = "panic",
+            pid = std::process::id(),
+            detail = diagnostic_text(&info.to_string()),
+            backtrace = diagnostic_text(&std::backtrace::Backtrace::force_capture().to_string()),
+        );
+        previous_hook(info);
+    }));
     Ok(LoggingGuard { state: writer.0 })
 }
 

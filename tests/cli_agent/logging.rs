@@ -1,7 +1,7 @@
 // File-logging integration coverage: lifecycle records survive restarts,
 // concurrent instances with different working directories share one HOME and
-// bounded numeric volumes, diagnostics stay operational-only (never storing
-// prompts, answers, tool payloads, or provider secrets), and an unavailable
+// bounded numeric volumes, success diagnostics omit content, failure diagnostics
+// preserve evidence while masking credentials, and an unavailable
 // log directory degrades to one fixed warning without changing application
 // results. Every run uses a temporary HOME, never the developer's ~/.pp/logs.
 
@@ -478,8 +478,7 @@ fn logging_operational_events_do_not_store_content_or_secrets() {
             assert_eq!(record["level"], "INFO");
         }
 
-        // A provider 500 carrying secrets still yields error termini without
-        // storing the response body or the prompt.
+        // HTTP 错误正文保留现场，但请求提示词与实际凭据仍不落盘。
         let failure_server = super::server();
         let failure_home = tempfile::tempdir().unwrap();
         let failure_work = tempfile::tempdir().unwrap();
@@ -509,16 +508,24 @@ fn logging_operational_events_do_not_store_content_or_secrets() {
                     })
                     .to_string(),
                 )
-                .with_status_code(500),
+                .with_status_code(500)
+                .with_header(Header::from_bytes("x-request-id", "request-evidence-500").unwrap()),
             )
             .unwrap();
         let output = failure.finish();
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
 
-        assert_no_secrets(failure_home.path(), &markers);
+        assert_no_secrets(failure_home.path(), &markers[..5]);
+        assert!(log_text(failure_home.path()).contains(error_marker));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(error_marker));
         let records = log_records(failure_home.path());
         let mine = pid_records(&records, failure_pid);
+        let http = pick(&mine, "ai_http_error");
+        assert_eq!(http.len(), 1);
+        assert_eq!(http[0]["fields"]["status"], 500);
+        assert_eq!(http[0]["fields"]["body_complete"], true);
+        assert_eq!(str_field(http[0], "request_id"), "request-evidence-500");
         assert_eq!(count_events(&mine, "app_started"), 1);
         assert_eq!(count_events(&mine, "configuration_unavailable"), 0);
         assert_eq!(count_events(&mine, "task_started"), 1);
@@ -544,6 +551,117 @@ fn logging_operational_events_do_not_store_content_or_secrets() {
             assert_eq!(str_field(record, "status"), "error");
             assert_eq!(record["level"], "ERROR");
         }
+    }
+}
+
+#[test]
+fn logging_ai_failures_preserve_parse_and_stream_evidence() {
+    for api in [Api::Chat, Api::Responses] {
+        for kind in ["syntax", "structure", "eof"] {
+            let server = server();
+            let work = tempfile::tempdir().unwrap();
+            let cli = Cli::start_with(
+                work.path(),
+                Some("private-request-prompt"),
+                fixture_settings(),
+                &api.models(&server),
+            );
+            let (request, _) = api.receive(&server);
+            let mut stream = SseReply::new(request);
+            let partial = match api {
+                Api::Chat => chat_chunk(
+                    json!({"role":"assistant","content":"partial-evidence"}),
+                    None,
+                ),
+                Api::Responses => {
+                    json!({"type":"response.output_text.delta","sequence_number":1,"item_id":"msg","output_index":0,"content_index":0,"delta":"partial-evidence"})
+                }
+            };
+            stream.event(partial);
+            match kind {
+                "syntax" => {
+                    stream.frame(r#"{"evidence":"bad-json-evidence fixture-key","broken":]}"#)
+                }
+                "structure" => stream.event(match api {
+                    Api::Chat => {
+                        chat_chunk(json!({"role":"unknown-role-evidence fixture-key"}), None)
+                    }
+                    Api::Responses => {
+                        json!({"type":"unknown-event-evidence","evidence":"fixture-key"})
+                    }
+                }),
+                _ => {}
+            }
+            stream.finish();
+            let output = cli.finish();
+            assert!(!output.status.success(), "{kind}");
+            let text = log_text(work.path());
+            assert!(text.contains("partial-evidence"), "{kind}: {text}");
+            let marker = match kind {
+                "syntax" => "bad-json-evidence",
+                "structure" => "unknown-",
+                _ => "stream ended",
+            };
+            assert!(text.contains(marker), "{kind}: {text}");
+            assert_no_secrets(work.path(), &["fixture-key", "private-request-prompt"]);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !stderr.contains("bad-json-evidence")
+                    && !stderr.contains("unknown-role-evidence")
+                    && !stderr.contains("unknown-event-evidence")
+            );
+            let records = log_records(work.path());
+            let failure = records
+                .iter()
+                .find(|record| event_name(record) == "ai_request_failed")
+                .unwrap();
+            assert!(failure["fields"]["received_events"].as_u64().unwrap() >= 1);
+            assert!(failure["fields"]["error"].as_str().unwrap().len() > 5);
+            no_more(&server);
+        }
+    }
+}
+
+#[test]
+fn logging_tool_argument_errors_keep_sanitized_evidence() {
+    for api in [Api::Chat, Api::Responses] {
+        let server = server();
+        let work = tempfile::tempdir().unwrap();
+        let cli = Cli::start_with(
+            work.path(),
+            Some("test"),
+            fixture_settings(),
+            &api.models(&server),
+        );
+        let (request, _) = api.receive(&server);
+        api.calls_reply(
+            request,
+            json!([api.call(
+                "bad",
+                "read",
+                json!({"path":123,"evidence":"bad-tool-evidence","api_key":"unregistered-secret"})
+            )]),
+        );
+        let (request, body) = api.receive(&server);
+        assert_eq!(api.tool_result(&body, "bad")["ok"], false);
+        api.final_reply(request, "recovered");
+        assert!(cli.finish().status.success());
+        let records = log_records(work.path());
+        let failure = records
+            .iter()
+            .find(|record| {
+                event_name(record) == "tool_finished" && record["fields"]["status"] == "error"
+            })
+            .unwrap();
+        assert!(
+            failure["fields"]["arguments"]
+                .as_str()
+                .unwrap()
+                .contains("bad-tool-evidence")
+        );
+        assert!(!failure["fields"]["error"].as_str().unwrap().is_empty());
+        assert_no_secrets(work.path(), &["fixture-key", "unregistered-secret"]);
+        no_more(&server);
     }
 }
 
@@ -772,14 +890,8 @@ fn debug_logging_keeps_first_prompt_when_provider_rejects_request() {
         ]));
     assert!(!text.contains("private provider error body"));
     assert!(!text.contains("fixture-key"));
-    assert_no_secrets(
-        home.path(),
-        &[
-            "debug failed request marker",
-            "private provider error body",
-            "fixture-key",
-        ],
-    );
+    assert_no_secrets(home.path(), &["debug failed request marker", "fixture-key"]);
+    assert!(log_text(home.path()).contains("private provider error body"));
     no_more(&server);
 }
 
