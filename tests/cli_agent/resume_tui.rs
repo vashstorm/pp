@@ -322,6 +322,17 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
             pty.diagnostics()
         );
         pty.input("\x0f");
+        pty.text("Tool output expansion: enabled");
+        // 展开会增加卡片高度；先浏览到开头，不依赖展开后的 viewport 位置。
+        for _ in 0..80 {
+            pty.drain();
+            if pty.parser.screen().contents().contains("resume-history-bash-001") {
+                break;
+            }
+            if !resume_history_page(&mut pty, "\x1b[5~") {
+                break;
+            }
+        }
         pty.text("resume-history-bash-001");
         pty.input("\x0f");
         pty.wait_for("tool output folds again", |screen| {

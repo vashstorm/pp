@@ -236,6 +236,20 @@ impl Transcript {
                             Span::styled(label, Style::default().fg(palette::MUTED).bg(card_bg))
                                 .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
+                        if bash && matches!(line.source(), Some(Source::Bottom)) && area.width > 4 {
+                            Span::styled(
+                                format!(
+                                    " {} ",
+                                    tool_display::clip(
+                                        &entry.footer,
+                                        usize::from(area.width.saturating_sub(6)),
+                                        true
+                                    )
+                                ),
+                                Style::default().fg(palette::MUTED).bg(card_bg),
+                            )
+                            .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
+                        }
                         if bash && matches!(line.source(), Some(Source::Top)) && area.width > 4 {
                             let (status, color) = match entry.status {
                                 EntryStatus::Running => ("running", palette::ACCENT),

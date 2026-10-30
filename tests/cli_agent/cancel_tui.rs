@@ -1260,12 +1260,12 @@ fn background_status_stop_lifecycle_displays_states_and_keeps_foreground_footer(
             text.contains(&format!("Task{task_id}:stopped"))
                 && text.contains(&format!("bash_task·stop·{task_id}"))
         });
-        // 信号停止是 stop 的预期结果：不得显示 Exit code: null 冒充已结束。
+        // 信号停止是 stop 的预期结果：不得显示 Exit: null 冒充已结束。
         assert!(
-            !cancel_normalize(pty.parser.screen()).contains("Exitcode:null"),
-            "stop 卡片不得显示 Exit code: null"
+            !cancel_normalize(pty.parser.screen()).contains("Exit:null"),
+            "stop 卡片不得显示 Exit: null"
         );
-        // 前台卡片仍保持现有 Exit code/Wall footer。
+        // 前台成功卡片显示 Wall/Timeout footer。
         background_reply_call(
             request,
             protocol,
@@ -1274,10 +1274,10 @@ fn background_status_stop_lifecycle_displays_states_and_keeps_foreground_footer(
             json!({"command": "printf 'fg-visible-marker'", "mode": "foreground"}),
         );
         let (request, _) = pty.request_at(&fixture, path);
-        pty.wait_for("前台卡片保留 Exit code 与 Wall footer", |screen| {
+        pty.wait_for("前台卡片显示 Wall 与 Timeout footer", |screen| {
             screen.contents().lines().any(|line| {
                 let line = line.split_whitespace().collect::<String>();
-                line.contains("Wall:") && line.contains("Exitcode:0")
+                line.contains("Wall:") && line.contains("Timeout:") && !line.contains("Exit:")
             }) && cancel_normalize(screen).contains("fg-visible-marker")
         });
         if protocol == "completion" {

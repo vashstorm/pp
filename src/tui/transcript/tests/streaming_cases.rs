@@ -202,7 +202,8 @@ fn replay_restores_visible_history_and_marks_interruption() {
     let text = screen(&render(&mut transcript, 100, 30));
     assert!(text.contains("remember replay"));
     assert!(text.contains("replay"));
-    assert!(text.contains("Exit code: 0"));
+    assert!(text.contains("Timeout: 120s"));
+    assert!(!text.contains("Exit:"));
     assert!(!text.contains("Wall:"));
     assert_eq!(error.as_deref(), Some("Previous request was interrupted."));
     assert!(!text.contains("Previous request was interrupted."));
@@ -466,12 +467,12 @@ fn bash_card_distinguishes_live_stderr_and_failed_status_from_stdout() {
     transcript.progress(AgentEvent::ToolFinished { id: "b".into(), result: json!({"ok":false,"exit_code":1,"stdout":"checking crate\n","stderr":"compiler diagnostic\n"}) });
     let failed = render(&mut transcript, 80, 20);
     let text = screen(&failed);
-    assert!(text.contains("Bash · failed") && text.contains("Exit code: 1"));
+    assert!(text.contains("Bash · failed") && text.contains("Exit: 1"));
     assert_eq!(failed[(0, 0)].fg, palette::REMOVED);
     for (needle, color) in [
         ("checking crate", palette::GREP_TEXT),
         ("compiler diagnostic", palette::REMOVED),
-        ("Exit code: 1", palette::REMOVED),
+        ("Exit: 1", palette::MUTED),
     ] {
         let row = text.lines().position(|line| line.contains(needle)).unwrap() as u16;
         assert_eq!(failed[(2, row)].fg, color);
@@ -619,6 +620,91 @@ fn tool_icons_are_distinct_and_keep_two_column_prefixes_across_card_styles() {
 }
 
 #[test]
+fn bash_footer_tracks_elapsed_and_renders_status_on_bottom_border() {
+    for (result, expected, border) in [
+        (
+            json!({"ok":true,"exit_code":0,"stdout":"done"}),
+            "Wall:",
+            BASH_BORDER,
+        ),
+        (
+            json!({"ok":true,"exit_code":100,"stdout":"failed","artifact_id":227}),
+            "Artifact: 227 · Exit: 100",
+            palette::REMOVED,
+        ),
+        (
+            json!({"ok":false,"exit_code":null,"timed_out":true}),
+            "timed out",
+            palette::REMOVED,
+        ),
+        (
+            json!({"ok":false,"exit_code":null,"cancelled":true}),
+            "cancelled",
+            palette::REMOVED,
+        ),
+    ] {
+        let mut transcript = Transcript::new();
+        transcript.set_bash_timeout(300);
+        assert_eq!(transcript.fresh().bash_timeout_seconds, 300);
+        tool(
+            &mut transcript,
+            "b",
+            "bash",
+            json!({"command":"cargo test"}),
+        );
+        let live = screen(&render(&mut transcript, 100, 20));
+        assert!(live.contains("╰─ Elapsed: 0s · Timeout: 300s"), "{live}");
+        assert!(!live.contains("Wall:") && !live.contains("Exit:"));
+        let started = transcript.entries[0].started;
+        assert!(transcript.tick(started + Duration::from_secs(8)));
+        let live = screen(&render(&mut transcript, 100, 20));
+        assert!(live.contains("Elapsed: 8s · Timeout: 300s"), "{live}");
+        assert!(!transcript.tick(started + Duration::from_millis(8500)));
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "b".into(),
+            result: result.clone(),
+        });
+        let buffer = render(&mut transcript, 100, 20);
+        let text = screen(&buffer);
+        let row = text
+            .lines()
+            .position(|line| line.contains("Wall:"))
+            .unwrap() as u16;
+        assert!(text.contains(expected), "{text}");
+        assert!(text.contains("Timeout: 300s"), "{text}");
+        assert!(!text.contains("Elapsed:") && !text.contains("Exit: 0"));
+        assert_eq!(buffer[(0, row)].symbol(), "╰");
+        assert_eq!(buffer[(99, row)].symbol(), "╯");
+        for y in 0..=row {
+            assert_eq!(buffer[(0, y)].fg, border);
+            assert_eq!(buffer[(99, y)].fg, border);
+        }
+        assert_eq!(
+            text.contains("Artifact:"),
+            result.get("artifact_id").is_some()
+        );
+    }
+}
+
+#[test]
+fn bash_background_footer_does_not_invent_a_timeout() {
+    let mut transcript = Transcript::new();
+    tool(
+        &mut transcript,
+        "bg",
+        "bash",
+        json!({"command":"serve","mode":"background"}),
+    );
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "bg".into(),
+        result: json!({"ok":true,"task_id":"task-1","status":"running","exit_code":null}),
+    });
+    let text = screen(&render(&mut transcript, 80, 20));
+    assert!(text.contains("Task task-1: running"));
+    assert!(!text.contains("Timeout:") && !text.contains("Exit:"));
+}
+
+#[test]
 fn bash_card_and_thinking_match_reference_and_keep_full_output() {
     let mut long_command = Transcript::new();
     tool(
@@ -654,7 +740,7 @@ fn bash_card_and_thinking_match_reference_and_keep_full_output() {
         "line-14",
         "line-23",
         "Wall:",
-        "Exit code: 0",
+        "Timeout: 120s",
         "╰─",
         "Check the diff 中",
     ] {
@@ -981,7 +1067,7 @@ fn streaming_tool_channels_results_and_reused_ids_are_calibrated() {
     let complete = screen(&render(&mut transcript, 70, 15));
     assert_eq!(complete.matches("out-first").count(), 1);
     assert_eq!(complete.matches("err-first").count(), 1);
-    assert!(complete.contains("Exit code: 9"));
+    assert!(complete.contains("Exit: 9"));
     assert_eq!(transcript.entries[0].status, EntryStatus::Failed);
     tool(&mut transcript, "call", "bash", json!({"command": "true"}));
     transcript.progress(AgentEvent::ToolFinished {
@@ -991,7 +1077,8 @@ fn streaming_tool_channels_results_and_reused_ids_are_calibrated() {
     assert_eq!(transcript.entries[0].status, EntryStatus::Failed);
     assert_eq!(transcript.entries[1].status, EntryStatus::Complete);
     assert_eq!(transcript.entries[1].text, "");
-    assert!(transcript.entries[1].footer.contains("Exit code: 0"));
+    assert!(transcript.entries[1].footer.contains("Timeout: 120s"));
+    assert!(!transcript.entries[1].footer.contains("Exit:"));
     tool(&mut transcript, "read", "read", json!({"path": "SKILL.md"}));
     transcript.progress(AgentEvent::ToolFinished {
         id: "read".into(),

@@ -19,7 +19,7 @@ fn sqlite_input_history_survives_restart_with_original_text_and_pages() {
     first.input("/help\r");
     first.text("/quit");
     first.input("!printf sqlite-shell\r");
-    bang_shell_wait_footer(&mut first, "SQLite shell 正常完成", "Exit code: 0");
+    bang_shell_wait_footer(&mut first, "SQLite shell 正常完成", "Timeout:");
     bang_shell_wait_done(&mut first);
     first.input("\x03");
     first.finish();

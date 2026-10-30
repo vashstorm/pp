@@ -80,7 +80,7 @@ fn thinking_and_bash_cards_stream_with_default_style_and_expand_without_editing_
             );
         }
         let (request, _) = receive_at(&server, path);
-        pty.text("Exit code: 0");
+        pty.text("Wall:");
         pty.text("9 earlier lines");
         pty.text("Output");
         assert!(!pty.parser.screen().contents().contains("output-00"));

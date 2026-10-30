@@ -283,6 +283,10 @@ impl Session {
 }
 
 impl Agent {
+    pub(crate) fn bash_timeout_seconds(&self) -> u64 {
+        self.tools.limits.bash_timeout_seconds
+    }
+
     pub(crate) fn read_tool_result_preview(&self) -> bool {
         self.catalog.read_tool_result_preview()
     }

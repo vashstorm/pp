@@ -134,6 +134,7 @@ struct TranscriptEntry {
     expanded: bool,
     footer: String,
     started: Instant,
+    bash_timeout_seconds: Option<u64>,
     arguments: Value,
     result: Option<Value>,
     display: DisplayContext,
@@ -187,6 +188,7 @@ pub(super) struct Transcript {
     display: DisplayContext,
     // 重放恢复时不伪造 bash 卡片的 wall duration。
     replaying: bool,
+    bash_timeout_seconds: u64,
     tree_layout: Option<TreeLayout>,
 }
 
@@ -195,6 +197,7 @@ impl Transcript {
         Self {
             native_generation: NEXT_NATIVE_GENERATION.fetch_add(1, Ordering::Relaxed),
             follow_bottom: true,
+            bash_timeout_seconds: crate::config::ToolLimits::default().bash_timeout_seconds,
             ..Self::default()
         }
     }
@@ -210,7 +213,14 @@ impl Transcript {
     }
 
     pub(super) fn fresh(&self) -> Self {
-        Self::with_read_preview(self.display.read_preview)
+        Self {
+            bash_timeout_seconds: self.bash_timeout_seconds,
+            ..Self::with_read_preview(self.display.read_preview)
+        }
+    }
+
+    pub(super) fn set_bash_timeout(&mut self, seconds: u64) {
+        self.bash_timeout_seconds = seconds;
     }
 
     pub(super) fn native_generation(&self) -> u64 {
@@ -263,9 +273,18 @@ impl Transcript {
     }
 
     pub(super) fn tick(&mut self, now: Instant) -> bool {
-        self.activity
+        let mut changed = self
+            .activity
             .as_mut()
-            .is_some_and(|activity| activity.tick(now))
+            .is_some_and(|activity| activity.tick(now));
+        for (_, index) in &self.running_tools {
+            let entry = &mut self.entries[*index];
+            if entry.kind == EntryKind::Bash {
+                changed |=
+                    entry.update_bash_footer(Some(now.saturating_duration_since(entry.started)));
+            }
+        }
+        changed
     }
 
     pub(super) fn waiting_for_input(&mut self) {
@@ -667,6 +686,10 @@ impl Transcript {
                 };
                 let mut entry = TranscriptEntry::new(kind, title, String::new(), Some(name));
                 entry.arguments = arguments.unwrap_or(Value::Null);
+                if entry.tool.as_deref() == Some("bash") && entry.arguments["mode"] != "background"
+                {
+                    entry.bash_timeout_seconds = Some(self.bash_timeout_seconds);
+                }
                 entry.display = self.display;
                 entry.expanded = self.tools_expanded;
                 if let Some(args) = ask_args {
@@ -705,7 +728,12 @@ impl Transcript {
                 {
                     let (_, index) = self.running_tools.remove(position);
                     let entry = &mut self.entries[index];
-                    entry.status = if result.get("ok").and_then(Value::as_bool) == Some(false) {
+                    entry.status = if result.get("ok").and_then(Value::as_bool) == Some(false)
+                        || (entry.kind == EntryKind::Bash
+                            && (result["exit_code"].as_i64().is_some_and(|code| code != 0)
+                                || result["timed_out"] == true
+                                || result["cancelled"] == true))
+                    {
                         EntryStatus::Failed
                     } else {
                         EntryStatus::Complete
@@ -775,43 +803,16 @@ impl Transcript {
                             )
                         };
                     }
+                    entry.result = Some(result);
                     if entry.kind == EntryKind::Bash {
-                        let status = background_status(&result).unwrap_or_else(|| {
-                            if result["cancelled"] == true {
-                                "cancelled".into()
-                            } else if result["timed_out"] == true {
-                                "timed out".into()
-                            } else {
-                                result
-                                    .get("exit_code")
-                                    .filter(|code| !code.is_null())
-                                    .map_or_else(
-                                        || {
-                                            if entry.status == EntryStatus::Failed {
-                                                "failed".into()
-                                            } else {
-                                                "ok".into()
-                                            }
-                                        },
-                                        |code| format!("Exit code: {code}"),
-                                    )
-                            }
-                        });
-                        entry.footer = if self.replaying {
-                            format!("⟨{status}⟩")
-                        } else {
-                            format!(
-                                "⟨Wall: {:.2}s | {status}⟩",
-                                entry.started.elapsed().as_secs_f64()
-                            )
-                        };
+                        entry
+                            .update_bash_footer((!self.replaying).then(|| entry.started.elapsed()));
                     }
                     entry.layout = None;
                     entry.display_title = None;
                     if entry.tool.as_deref() == Some("read") {
                         self.read_groups_key = None;
                     }
-                    entry.result = Some(result);
                 }
             }
         }
@@ -855,7 +856,8 @@ impl Transcript {
             self.read_groups_key = None;
             self.entries[index].status = EntryStatus::Failed;
             if self.entries[index].kind == EntryKind::Bash {
-                self.entries[index].footer = "⟨failed⟩".into();
+                let entry = &mut self.entries[index];
+                entry.update_bash_footer((!self.replaying).then(|| entry.started.elapsed()));
             } else if self.entries[index].kind == EntryKind::Ask {
                 self.entries[index].text = "Previous request was interrupted.".into();
             }
