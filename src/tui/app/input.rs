@@ -5,6 +5,26 @@ use crate::tui::{
 };
 
 impl App {
+    /// 补全跟随主输入框焦点，不以后台任务状态作为开关。
+    pub(in crate::tui) fn completion_input_focused(&self) -> bool {
+        self.auth_panel.is_none()
+            && self.roles_panel.is_none()
+            && self.ask_panel.is_none()
+            && self.subagent_panel.is_none()
+            && self.model_panel.is_none()
+            && self.mcp_panel.is_none()
+            && self.skill_panel.is_none()
+            && self.session_panel.is_none()
+            && self.tree_panel.is_none()
+            && self.changes_panel.is_none()
+            && self.plan_leave_confirmation.is_none()
+            && (self.plan_list_panel.is_none() || self.plan_panel.is_some())
+            && self.plan_panel.as_ref().is_none_or(|panel| {
+                panel.input_focused()
+                    && !matches!(self.state, State::PreparingExecution | State::ChangingPlan)
+            })
+    }
+
     pub(in crate::tui) fn refresh_candidates(&mut self, edited: bool) {
         // 普通编辑取消等待中的翻页；迟到的页仍会缓存，不丢已加载内容。
         if edited {
@@ -35,46 +55,20 @@ impl App {
         if edited {
             self.menu_dismissed = false;
         }
-        if self.mcp_panel.is_some()
-            || self.skill_panel.is_some()
-            || self.skills_pending
-            || self.session_panel.is_some()
-            || self.tree_panel.is_some()
-            || self.changes_panel.is_some()
-            || self.plan_list_panel.is_some()
-            || self.plan_leave_confirmation.is_some()
-            || self.menu_dismissed
-            || !matches!(
-                self.state,
-                State::Ready | State::Running | State::Unavailable | State::SavingModelSettings
-            )
-        {
+        if !self.completion_input_focused() || self.menu_dismissed {
             self.file_query = None;
             self.menu = None;
             return;
         }
-        // 运行中只新增资源补全，不改变斜杠命令的既有提交行为。
-        if matches!(self.state, State::Running)
-            && self
-                .input
-                .lines()
-                .first()
-                .is_some_and(|line| line.trim_start().starts_with('/'))
-        {
-            self.file_query = None;
-            self.menu = None;
-            return;
-        }
-        // Only slash menus require a single-line draft.
-        let input = if self.input.lines().len() == 1 {
+        // 补全只编辑草稿；是否允许执行仍由提交入口按当前状态判断。
+        // 计划讨论输入是正文，只补全资源；普通命令补全要求单行草稿。
+        let input = if self.plan_panel.is_none() && self.input.lines().len() == 1 {
             self.input.lines()[0].trim_start()
         } else {
             ""
         };
         let argument = input.split_once(char::is_whitespace);
-        if let Some(("/model" | "/models", query)) = argument
-            && matches!(self.state, State::Ready)
-        {
+        if let Some(("/model" | "/models", query)) = argument {
             let query = query.to_owned();
             self.open_model_panel(&query, false);
             return;
@@ -125,7 +119,7 @@ impl App {
                         .collect()
                 }
             }
-            Some(("/effort", argument)) if matches!(self.state, State::Ready) => {
+            Some(("/effort" | "/think", argument)) => {
                 let thinking = self
                     .current_model
                     .as_ref()
@@ -540,6 +534,7 @@ impl App {
                         .unwrap_or_default(),
                 );
                 self.input.insert_str(message.source);
+                self.refresh_candidates(true);
                 if !self.has_pending() {
                     self.queue_paused = false;
                 }

@@ -6,22 +6,7 @@ use crate::{
 impl App {
     pub(in crate::tui) fn resource_input_available(&self) -> bool {
         !self.shell_mode
-            && self.auth_panel.is_none()
-            && self.ask_panel.is_none()
-            && self.model_panel.is_none()
-            && self.roles_panel.is_none()
-            && self.skill_panel.is_none()
-            && self.session_panel.is_none()
-            && self.tree_panel.is_none()
-            && self.changes_panel.is_none()
-            && self.subagent_panel.is_none()
-            && self.plan_list_panel.is_none()
-            && self.plan_leave_confirmation.is_none()
-            && self
-                .plan_panel
-                .as_ref()
-                .is_none_or(|panel| panel.input_focused())
-            && self.mcp_panel.is_none()
+            && self.completion_input_focused()
             && matches!(self.state, State::Ready | State::Running)
     }
 

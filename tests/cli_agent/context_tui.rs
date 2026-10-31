@@ -114,19 +114,13 @@ fn context_tui_exchange(
     context_tui_paste(pty, prompt);
     pty.input("\r");
     let (request, _) = pty.request_at(server, api_path(protocol));
-    // 模型面板只在 worker 的终结事件后出现，用它作为完成栅栏。
-    pty.input("/model ");
     let answer = format!("{answer} {}", prompt.split_whitespace().next().unwrap());
     if protocol == "completion" {
         final_reply(request, &answer);
     } else {
         response_final(request, &answer);
     }
-    pty.model_search("");
-    pty.text("fixture/primary");
-    pty.input("\x1b");
-    pty.draft("");
-    pty.text(&answer);
+    pty.completed_after(&answer);
 }
 
 // 从输入栏上沿的 `Ctx N/W` 读取简写后的估算 token 数。
@@ -604,6 +598,12 @@ fn context_tui_compact_success_keeps_dialogue_drops_usage_and_survives_narrow_re
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         context_tui_assert_summary_body(&body, protocol, "context-old-one", "context-recent-keep");
         pty.input("/model ");
+        // 摘要请求尚未结束时即可补全模型；确认受忙碌检查约束。
+        pty.model_search("");
+        pty.text("fixture/primary");
+        pty.input("\r");
+        pty.model_search("");
+        pty.text("Compacting context...");
         if protocol == "completion" {
             reply(
                 request,

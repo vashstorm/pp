@@ -59,8 +59,7 @@ fn resume_boundary_create_session_with(
     pty.input(&format!("{user_message}\r"));
     let (request, _) = pty.request(server);
     final_reply(request, answer);
-    pty.text(answer);
-    pty.ready();
+    pty.completed_after(answer);
     pty.input("/quit\r");
     pty.finish();
     no_more(server);
@@ -1039,8 +1038,7 @@ fn tui_slash_resume_filters_current_folder_searches_and_deletes_saved_session() 
     pty.input("current scope marker\r");
     let (request, _) = pty.request(&server);
     final_reply(request, "current scope answer");
-    pty.text("current scope answer");
-    pty.ready();
+    pty.completed_after("current scope answer");
     let current_id = resume_boundary_session_ids(home.path()).into_iter().find(|candidate| candidate != &id).unwrap();
 
     pty.input("/resume\r");

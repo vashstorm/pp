@@ -287,6 +287,17 @@ impl Pty {
         });
     }
 
+    /// 等待本轮回答后面的提交标记，避免把旧轮次的 Completed 当成空闲栅栏。
+    fn completed_after(&mut self, marker: &str) {
+        self.wait_for("本轮回答与完成标记均已提交", |screen| {
+            let text = screen.contents();
+            input_is_ready(screen)
+                && text
+                    .rfind("✻ Completed")
+                    .is_some_and(|end| text[..end].contains(marker))
+        });
+    }
+
     fn ready_effort(&mut self, expected: &str) {
         let (glyph, label) = match expected {
             "no think" => ("\u{f0766}", "off"),

@@ -65,8 +65,9 @@ fn instruction_cards_wait_error(pty: &mut Pty, needle: &str) {
     });
 }
 
-// 复用既有同步栅栏：模型面板只在 worker 终结事件后出现。
-fn instruction_cards_barrier(pty: &mut Pty) {
+// 补全在运行中也可打开，须等待当前回答的完成标记。
+fn instruction_cards_barrier(pty: &mut Pty, marker: &str) {
+    pty.completed_after(marker);
     pty.input("/model ");
     pty.model_search("");
     pty.text("fixture/primary");
@@ -173,7 +174,7 @@ fn instruction_loading_cards_preview_expand_and_resume_both_protocols() {
         project_instructions::finish_request(request, protocol, "cards-second-done");
         pty.text("cards-second-done");
         pty.ready();
-        instruction_cards_barrier(&mut pty);
+        instruction_cards_barrier(&mut pty, "cards-second-done");
         {
             let (history, _) = pty.native_history();
             assert_eq!(history.matches("Read AGENTS.md").count(), 1, "{history}");
@@ -213,7 +214,7 @@ fn instruction_loading_cards_preview_expand_and_resume_both_protocols() {
         project_instructions::finish_request(request, protocol, "cards-resume-done");
         pty.text("cards-resume-done");
         pty.ready();
-        instruction_cards_barrier(&mut pty);
+        instruction_cards_barrier(&mut pty, "cards-resume-done");
         {
             let (history, _) = pty.native_history();
             assert_eq!(history.matches("Read AGENTS.md").count(), 1, "{history}");
@@ -303,7 +304,7 @@ fn instruction_loading_cards_refresh_new_and_failures_both_protocols() {
         project_instructions::finish_request(request, protocol, "cards-refresh-five-done");
         pty.text("cards-refresh-five-done");
         pty.ready();
-        instruction_cards_barrier(&mut pty);
+        instruction_cards_barrier(&mut pty, "cards-refresh-five-done");
         {
             let (history, _) = pty.native_history();
             assert_eq!(history.matches("Read AGENTS.md").count(), 3, "{history}");
@@ -328,7 +329,7 @@ fn instruction_loading_cards_refresh_new_and_failures_both_protocols() {
         pty.text("Read AGENTS.md");
         pty.text("cards-refresh-six-done");
         pty.ready();
-        instruction_cards_barrier(&mut pty);
+        instruction_cards_barrier(&mut pty, "cards-refresh-six-done");
         {
             let (history, _) = pty.native_history();
             assert_eq!(history.matches("Read AGENTS.md").count(), 1, "{history}");
@@ -368,7 +369,7 @@ fn instruction_loading_cards_refresh_new_and_failures_both_protocols() {
         project_instructions::finish_request(request, protocol, "cards-refresh-seven-done");
         pty.text("cards-refresh-seven-done");
         pty.ready();
-        instruction_cards_barrier(&mut pty);
+        instruction_cards_barrier(&mut pty, "cards-refresh-seven-done");
         {
             let (history, _) = pty.native_history();
             assert_eq!(history.matches("Read AGENTS.md").count(), 2, "{history}");
@@ -469,7 +470,7 @@ fn instruction_loading_cards_tree_and_native_history_both_protocols() {
         project_instructions::finish_request(request, protocol, &answer);
         pty.text("cards-tree-long-139");
         pty.ready();
-        instruction_cards_barrier(&mut pty);
+        instruction_cards_barrier(&mut pty, "cards-tree-long-139");
         {
             let (history, _) = pty.native_history();
             assert_eq!(history.matches("Read AGENTS.md").count(), 1, "{history}");

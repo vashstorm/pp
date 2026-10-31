@@ -492,8 +492,7 @@ fn tui_slash_resume_history_keeps_current_cwd_status_files_model_and_effort() {
         assert_eq!(body["model"], "vendor-primary");
         assert_eq!(body["reasoning"]["effort"], "high");
         response_final(request, "resume-history cross A1");
-        pty.text("resume-history cross A1");
-        pty.ready();
+        pty.completed_after("resume-history cross A1");
         pty.input("/quit\r");
         pty.finish();
     }

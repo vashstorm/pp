@@ -7,9 +7,14 @@ use crate::tui::{
 impl App {
     pub(in crate::tui) fn handle(&mut self, event: Event, dirty: &mut bool) -> bool {
         let clipboard_key = matches!(&event, Event::Key(key) if key.code == KeyCode::Char('v') && key.modifiers == KeyModifiers::CONTROL);
+        let input_focused = self.completion_input_focused();
         // 普通文本输入不维护图片编辑记录，也不复制整个草稿。
         if self.resources.images.is_empty() && self.resources.job.is_none() && !clipboard_key {
-            return self.handle_inner(event, dirty);
+            let quit = self.handle_inner(event, dirty);
+            if input_focused != self.completion_input_focused() {
+                self.refresh_candidates(false);
+            }
+            return quit;
         }
         let before = self.input_text();
         let previous = self.resources.live.clone();
@@ -83,6 +88,9 @@ impl App {
             || !self.resource_input_available()
         {
             self.resources.cancel();
+        }
+        if input_focused != self.completion_input_focused() {
+            self.refresh_candidates(false);
         }
         quit
     }
@@ -210,12 +218,30 @@ impl App {
                     }
                     return false;
                 }
+                // Esc 收起或历史召回后，显式 Tab 可重新唤起补全。
+                if key.code == KeyCode::Tab
+                    && key.modifiers.is_empty()
+                    && self.menu.is_none()
+                    && self.menu_dismissed
+                    && self.completion_input_focused()
+                {
+                    self.refresh_candidates(true);
+                    if self.model_panel.is_some() {
+                        return false;
+                    }
+                }
                 if self
                     .plan_panel
                     .as_ref()
                     .is_some_and(|panel| panel.input_focused())
                     && self.file_query.is_some()
                 {
+                    if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+                        self.file_query = None;
+                        self.menu = None;
+                        self.menu_dismissed = true;
+                        return false;
+                    }
                     if self.files_pending && matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
                         return false;
                     }

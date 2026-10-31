@@ -323,6 +323,98 @@ fn file_picker_busy_slash_and_vertical_movement_do_not_reopen_files() {
 }
 
 #[test]
+fn streaming_completion_template_arguments_include_file_references() {
+    for text in ["/review @", "/review first\n查看 @"] {
+        let (mut app, scans, replies, commands) = file_picker_fixture();
+        app.state = State::Running;
+        app.file_commands = review_files();
+        let mut dirty = false;
+        app.handle(Event::Paste(text.into()), &mut dirty);
+        scans.try_recv().unwrap();
+        replies.send(Ok(vec!["README.md".into()])).unwrap();
+        app.receive();
+        assert_eq!(menu_values(&app), [MenuAction::File(0)]);
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        assert_eq!(app.input.lines().join("\n"), format!("{text}README.md "));
+        assert!(commands.try_recv().is_err());
+        assert!(matches!(app.state, State::Running));
+    }
+}
+
+#[test]
+fn completion_plan_list_discussion_tracks_input_focus_and_late_scans() {
+    let (mut app, scans, replies, requests) = file_picker_fixture();
+    app.workflow = ready_plan_workflow();
+    app.plan_list_panel = Some(plan_list::Panel::new());
+    app.plan_panel = Some(plan::Panel::review(plan_review_fixture(PlanStatus::Ready)));
+    app.handle(Event::Paste("查看 @".into()), &mut false);
+    assert!(app.completion_input_focused());
+    assert!(app.resource_input_available());
+    scans.try_recv().unwrap();
+    // 焦点切回操作区后，迟到的扫描结果不能把菜单重新覆盖到计划上。
+    app.handle(key(KeyCode::BackTab), &mut false);
+    assert!(!app.completion_input_focused());
+    replies.send(Ok(vec!["README.md".into()])).unwrap();
+    app.receive();
+    assert!(app.menu.is_none() && app.file_query.is_none());
+    // 回到输入框即可继续补全，不要求再修改草稿。
+    app.handle(key(KeyCode::Tab), &mut false);
+    assert!(app.completion_input_focused());
+    scans.try_recv().unwrap();
+    replies.send(Ok(vec!["README.md".into()])).unwrap();
+    app.receive();
+    assert_eq!(menu_values(&app), [MenuAction::File(0)]);
+    app.handle(key(KeyCode::Tab), &mut false);
+    assert_eq!(app.input.lines(), &["查看 @README.md "]);
+    assert!(app.plan_panel.is_some());
+    assert!(requests.try_recv().is_err());
+    app.clear_input();
+    app.handle(Event::Paste("/model something".into()), &mut false);
+    assert!(app.model_panel.is_none());
+    assert!(app.menu.is_none());
+    assert_eq!(app.input.lines(), &["/model something"]);
+}
+
+#[test]
+fn completion_plan_pending_escape_dismisses_picker_before_panel() {
+    let (mut app, scans, replies, requests) = file_picker_fixture();
+    app.plan_panel = Some(plan::Panel::review(plan_review_fixture(PlanStatus::Ready)));
+    app.handle(Event::Paste("@".into()), &mut false);
+    scans.try_recv().unwrap();
+    app.handle(key(KeyCode::Esc), &mut false);
+    assert!(app.plan_panel.is_some());
+    replies.send(Ok(vec!["README.md".into()])).unwrap();
+    app.receive();
+    assert!(app.menu.is_none());
+    app.handle(key(KeyCode::Tab), &mut false);
+    scans.try_recv().unwrap();
+    replies.send(Ok(vec!["README.md".into()])).unwrap();
+    app.receive();
+    assert_eq!(menu_values(&app), [MenuAction::File(0)]);
+    assert!(app.plan_panel.as_ref().unwrap().input_focused());
+    assert!(requests.try_recv().is_err());
+}
+
+#[test]
+fn completion_pending_recall_refreshes_candidates_and_modal_focus_blocks_scans() {
+    let (mut app, scans, replies, requests) = file_picker_fixture();
+    app.input_queue
+        .enqueue(PendingKind::FollowUp, "查看 @".into(), None, false)
+        .unwrap();
+    let id = app.input_queue.snapshot_since(None).unwrap().unwrap().items[0].id;
+    app.recall_pending(id);
+    scans.try_recv().unwrap();
+    // ask 独占输入时，后台回复不应给主草稿打开补全。
+    let (_answers, _cancellation) = ask_fixture(&mut app);
+    replies.send(Ok(vec!["README.md".into()])).unwrap();
+    app.receive();
+    assert!(app.menu.is_none() && app.file_query.is_none());
+    assert!(!app.resource_input_available());
+    assert_eq!(app.input.lines(), &["查看 @"]);
+    assert!(requests.try_recv().is_err());
+}
+
+#[test]
 fn file_picker_stale_action_cannot_replace_another_token() {
     let (mut app, scans, replies, commands) = file_picker_fixture();
     let mut dirty = false;

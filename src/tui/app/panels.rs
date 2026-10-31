@@ -41,11 +41,13 @@ impl App {
     }
 
     pub(in crate::tui) fn open_model_picker(&mut self) {
-        self.open_model_panel("", true);
+        if self.model_selection_ready() {
+            self.open_model_panel("", true);
+        }
     }
 
     pub(in crate::tui) fn open_model_panel(&mut self, query: &str, preserve_draft: bool) {
-        if self.model_panel.is_some() || !self.model_selection_ready() {
+        if !self.completion_input_focused() {
             return;
         }
         if preserve_draft {
@@ -92,7 +94,7 @@ impl App {
             model::Action::Select(index)
                 if matches!(
                     self.state,
-                    State::Ready | State::Running | State::Cancelling
+                    State::Ready | State::Running | State::Cancelling | State::ReviewingPlan
                 ) =>
             {
                 let reference = self.choices[index].reference.clone();
@@ -780,7 +782,6 @@ impl App {
             MenuAction::Model(index) if confirm => {
                 self.apply_model_action(model::Action::Select(index))
             }
-            MenuAction::Effort(level) if confirm => self.set_think_level(level),
             MenuAction::Model(index) => {
                 let reference = self.choices[index].reference.clone();
                 self.open_model_panel(&reference, false);
@@ -789,6 +790,7 @@ impl App {
                 self.input = editor();
                 self.input.insert_str(format!("/effort {}", level.as_str()));
                 self.refresh_candidates(true);
+                return confirm && self.submit(PendingKind::Steering);
             }
         }
         false

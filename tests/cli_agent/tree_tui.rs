@@ -412,6 +412,7 @@ fn tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft() {
     pty.text("fixture/primary");
     pty.input("\x1b");
     pty.draft("");
+    pty.completed_after("tree-answer with a reasonably");
     // 连续两个完整 Escape 输入，真实事件解码不借助计时 sleep。
     pty.drain();
     let before = pty.raw.len();
@@ -589,6 +590,7 @@ fn tree_tui_tool_batch_stays_paired_and_never_reexecutes_both_protocols() {
         pty.text("fixture/primary");
         pty.input("\x1b");
         pty.draft("");
+        pty.completed_after("tree-tools-discarded");
         tree_tui_open(&mut pty, "tree-tools-discarded");
         assert!(!pty.parser.screen().contents().contains("tree-counter"));
         pty.input("\x1b");

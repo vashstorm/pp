@@ -1,5 +1,36 @@
 use super::*;
 
+fn completion_states() -> impl Iterator<Item = State> {
+    [
+        State::ManagingMcp,
+        State::Ready,
+        State::Running,
+        State::RunningShell,
+        State::Cancelling,
+        State::Compacting,
+        State::Resetting,
+        State::SwitchingModel,
+        State::SavingModelSettings,
+        State::SettingThinkLevel,
+        State::Resuming,
+        State::ReadingTree,
+        State::NavigatingTree,
+        State::ReadingChanges,
+        State::UndoingFile,
+        State::ListingPlans,
+        State::ReadingListedPlan,
+        State::OpeningListedPlan,
+        State::RenamingPlan,
+        State::DeletingPlan,
+        State::Unavailable,
+        State::ChangingPlan,
+        State::ReadingPlan,
+        State::PreparingExecution,
+        State::ReviewingPlan,
+    ]
+    .into_iter()
+}
+
 #[test]
 fn command_menu_lists_debug_only_commands_in_debug_builds() {
     let mut app = app();
@@ -455,14 +486,101 @@ fn model_menu_filters_completes_and_cancels_without_requests() {
     assert!(active_menu(&app).items().is_empty());
     assert!(draw(&mut app, 100, 30).contains("No matching models"));
     app.close_model_panel();
-    app.input = editor();
-    app.input.insert_str("/model ");
-    for state in [State::Running, State::SwitchingModel, State::Unavailable] {
+}
+
+#[test]
+fn completion_commands_and_effort_preserve_busy_submission_rules() {
+    for state in completion_states().filter(|state| !matches!(state, State::Ready)) {
+        let (mut app, requests, _events) = plan_app();
         app.state = state;
-        app.refresh_candidates(true);
-        assert!(app.menu.is_none());
-        assert!(app.model_panel.is_none());
+        app.file_commands = review_files();
+        let cancellation = CancellationToken::new();
+        app.active_cancellation = Some(cancellation.clone());
+        let mut dirty = false;
+        for (query, expected) in [("/mo", "/model"), ("/rev", "/review")] {
+            app.clear_input();
+            app.handle(Event::Paste(query.into()), &mut dirty);
+            assert_eq!(app.menu.as_ref().unwrap().items()[0].label, expected);
+            app.handle(key(KeyCode::Tab), &mut dirty);
+            assert_eq!(app.input.lines(), &[expected]);
+            app.handle(key(KeyCode::Esc), &mut dirty);
+            assert!(!cancellation.is_cancelled());
+        }
+        for command in ["/effort h", "/think h"] {
+            app.clear_input();
+            app.handle(Event::Paste(command.into()), &mut dirty);
+            assert_eq!(menu_values(&app), [MenuAction::Effort(ThinkLevel::High)]);
+            app.handle(key(KeyCode::Tab), &mut dirty);
+            assert_eq!(app.input.lines(), &["/effort high"]);
+            app.handle(key(KeyCode::Enter), &mut dirty);
+            assert_eq!(app.input.lines(), &["/effort high"]);
+        }
+        assert!(requests.try_recv().is_err());
+        assert!(app.input_history.is_empty());
+        assert!(!cancellation.is_cancelled());
+        assert!(std::mem::discriminant(&app.state) == std::mem::discriminant(&state));
     }
+}
+
+#[test]
+fn completion_model_arguments_open_search_in_every_editable_state() {
+    for state in completion_states() {
+        for command in ["/model", "/models"] {
+            let (mut app, requests, _events) = plan_app();
+            app.state = state;
+            app.choices = favorite_model_choices();
+            let mut dirty = false;
+            app.handle(Event::Paste(format!("{command} vendor-B")), &mut dirty);
+            assert_eq!(model_query(&app), "vendor-B");
+            assert_eq!(menu_values(&app), [MenuAction::Model(1)]);
+            assert!(draw(&mut app, 100, 30).contains("gateway/team/Beta"));
+            if !matches!(
+                state,
+                State::Ready | State::Running | State::Cancelling | State::ReviewingPlan
+            ) {
+                app.handle(key(KeyCode::Enter), &mut dirty);
+                assert!(app.model_panel.is_some());
+            }
+            app.handle(key(KeyCode::Esc), &mut dirty);
+            assert!(app.model_panel.is_none());
+            assert!(requests.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn completion_files_remain_available_in_every_editable_state() {
+    for state in completion_states() {
+        let (mut app, scans, replies, requests) = file_picker_fixture();
+        app.state = state;
+        app.handle(Event::Paste("查看 @".into()), &mut false);
+        scans.try_recv().unwrap();
+        replies.send(Ok(vec!["README.md".into()])).unwrap();
+        app.receive();
+        assert_eq!(menu_values(&app), [MenuAction::File(0)]);
+        app.handle(key(KeyCode::Tab), &mut false);
+        assert_eq!(app.input.lines(), &["查看 @README.md "]);
+        assert!(requests.try_recv().is_err());
+        assert!(std::mem::discriminant(&app.state) == std::mem::discriminant(&state));
+    }
+}
+
+#[test]
+fn completion_tab_reopens_dismissed_and_recalled_drafts() {
+    let (mut app, requests, _events) = plan_app();
+    app.state = State::Compacting;
+    app.handle(Event::Paste("/mo".into()), &mut false);
+    app.handle(key(KeyCode::Esc), &mut false);
+    assert!(app.menu.is_none());
+    app.handle(key(KeyCode::Tab), &mut false);
+    assert_eq!(app.input.lines(), &["/model"]);
+    app.clear_input();
+    app.input_history.push("/mo".into());
+    app.handle(key(KeyCode::Up), &mut false);
+    assert!(app.menu.is_none());
+    app.handle(key(KeyCode::Tab), &mut false);
+    assert_eq!(app.input.lines(), &["/model"]);
+    assert!(requests.try_recv().is_err());
 }
 
 #[test]

@@ -370,6 +370,7 @@ fn sqlite_effort_selection_persists_across_restart() {
         let (request, body) = receive_at(&server, api_path(protocol));
         super::think::assert_level(&body, protocol, "xhigh");
         super::think::finish_request(request, protocol);
+        restarted.completed_after("ok");
         restarted.ready_effort("xhigh");
         restarted.input("/effort n");
         restarted.text(if cfg!(target_os = "macos") {

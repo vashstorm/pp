@@ -220,13 +220,6 @@ fn effort_menu_filters_completes_and_cancels_without_changing_level() {
     app.handle(key(KeyCode::Backspace), &mut dirty);
     app.handle(Event::Paste("\nother".into()), &mut dirty);
     assert!(app.menu.is_none());
-    app.input = editor();
-    app.input.insert_str("/effort ");
-    for state in [State::Running, State::SettingThinkLevel, State::Unavailable] {
-        app.state = state;
-        app.refresh_candidates(true);
-        assert!(app.menu.is_none());
-    }
 }
 
 #[test]
