@@ -111,6 +111,8 @@ printf 'Explain how to build the current project\n' | pp
 
 ## Everyday use
 
+主聊天 TUI 支持 `@文件`、`@目录/` 和 `@图片路径`，提交时携带正文、目录列表或图片。`Ctrl + V` 可粘贴截图或文本，拖入／粘贴纯图片路径也可附图；图片标记支持删除、撤销和持久输入历史召回。详见[输入指南](docs/guide.md#常用命令与快捷键)。
+
 Opening the model picker in the TUI clears the main input and focuses a separate search field above the list. The panel height is set from the total model count when opened and stays fixed while filtering. The panel uses at most 15 rows: 3 for search, up to 11 for the list, and 1 for hints. Longer lists show a scrollbar and support arrow keys, page keys, and mouse-wheel scrolling inside the panel. Search filters as you type, matching any part of `provider/model` or the actual model name, case-insensitively. Ctrl + F toggles the highlighted model's favorite status. Favorites show a solid gold Nerd Font star `` and always appear before other models; within each group, models are ordered by usage, with more logical requests first and equal counts keeping catalog order. Usage counts logical model API requests actually attempted since the upgrade: connection retries of one request count once, while opening the panel or switching models does not count. Favorites and usage are stored in `~/.pp/agent/agent.db` and persist across restarts. Ctrl + S saves the default model. When no models match, the panel shows a message, and Enter and Tab do nothing.
 
 Use `/help` for full help and `/tips` for usage tips. The following slash commands work in interactive modes; content passed through `-p` is always sent as a regular prompt.

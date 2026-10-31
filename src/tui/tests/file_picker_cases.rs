@@ -31,8 +31,8 @@ fn file_picker_activation_filters_without_rescanning() {
     assert_eq!(app.file_query.as_ref().unwrap().prefix, "main");
     app.state = State::Running;
     app.refresh_candidates(false);
-    assert!(app.menu.is_none());
-    assert!(app.file_query.is_none());
+    assert!(app.menu.is_some());
+    assert!(app.file_query.is_some());
 }
 
 #[test]
@@ -97,12 +97,12 @@ fn file_picker_directory_navigation_completes_draft_without_submitting() {
     assert_eq!(app.input.lines(), &["查看 @src/"]);
     assert_eq!(app.input.cursor(), (0, 8));
     assert_eq!(app.file_directory, "src/");
-    assert_eq!(labels(&app), "../,tui/,main.rs");
+    assert_eq!(labels(&app), "../,tui/,main.rs,引用当前目录");
     app.handle(key(KeyCode::Tab), &mut dirty);
     assert_eq!(app.file_directory, "src/tui/");
     assert_eq!(app.input.lines(), &["查看 @src/tui/"]);
     assert_eq!(app.input.cursor(), (0, 12));
-    assert_eq!(labels(&app), "../,menu.rs");
+    assert_eq!(labels(&app), "../,menu.rs,引用当前目录");
     app.handle(key(KeyCode::Home), &mut dirty);
     app.handle(key(KeyCode::Enter), &mut dirty);
     assert_eq!(app.file_directory, "src/");
@@ -150,7 +150,11 @@ fn file_picker_nested_filtering_and_reactivation_reset_directory() {
     assert_eq!(app.file_directory, "src/tui/");
     assert_eq!(
         menu_values(&app),
-        [MenuAction::FileParent, MenuAction::File(1)]
+        [
+            MenuAction::FileParent,
+            MenuAction::File(1),
+            MenuAction::FileCurrent
+        ]
     );
     app.handle(key(KeyCode::Esc), &mut dirty);
     assert_eq!(app.input.lines(), &["@src/tui/"]);
@@ -226,7 +230,7 @@ fn file_picker_cursor_history_and_resize_preserve_draft_and_selection() {
 }
 
 #[test]
-fn file_picker_empty_results_submit_raw_text_and_errors_preserve_worker() {
+fn file_picker_missing_references_preserve_draft_and_errors_preserve_worker() {
     for result in [
         Ok(Vec::new()),
         Ok(vec!["src/other.rs".into()]),
@@ -241,9 +245,14 @@ fn file_picker_empty_results_submit_raw_text_and_errors_preserve_worker() {
         assert!(app.menu.is_none());
         assert!(scans.try_recv().is_err());
         app.handle(key(KeyCode::Enter), &mut dirty);
-        assert!(
-            matches!(commands.try_recv(), Ok(WorkerCommand::Run { prompt: text, .. }) if text == "查看 @missing")
-        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.resources.job.is_some() && Instant::now() < deadline {
+            app.receive();
+            thread::yield_now();
+        }
+        assert!(app.resources.job.is_none());
+        assert!(commands.try_recv().is_err());
+        assert_eq!(app.input_text(), "查看 @missing");
     }
     let (mut app, scans, replies, commands) = file_picker_fixture();
     drop(replies);
@@ -292,7 +301,7 @@ fn file_picker_busy_slash_and_vertical_movement_do_not_reopen_files() {
     app.refresh_candidates(false);
     replies.send(Ok(vec!["src/main.rs".into()])).unwrap();
     app.receive();
-    assert!(app.menu.is_none() && app.file_query.is_none());
+    assert!(app.menu.is_some() && app.file_query.is_some());
     assert_eq!(app.input.lines(), &["first", "@"]);
     assert!(commands.try_recv().is_err());
     app.state = State::Ready;

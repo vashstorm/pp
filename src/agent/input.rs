@@ -18,14 +18,21 @@ pub(crate) struct PendingInput {
     pub source: String,
     pub expansion: Option<String>,
     pub echo_source: bool,
+    pub prepared: Option<crate::user_input::UserInput>,
 }
 
 impl PendingInput {
     pub(crate) fn prompt(&self) -> &str {
+        if let Some(prepared) = &self.prepared {
+            return &prepared.display;
+        }
         self.expansion.as_deref().unwrap_or(&self.source)
     }
 
     pub(crate) fn into_display(self) -> String {
+        if let Some(prepared) = self.prepared {
+            return prepared.display;
+        }
         if self.echo_source {
             self.source
         } else {
@@ -101,6 +108,33 @@ impl InputQueue {
             source,
             expansion,
             echo_source,
+            prepared: None,
+        });
+        state.changed();
+        Ok(id)
+    }
+
+    pub(crate) fn enqueue_prepared(
+        &self,
+        kind: PendingKind,
+        source: String,
+        expansion: Option<String>,
+        echo_source: bool,
+        prepared: crate::user_input::UserInput,
+    ) -> Result<u64> {
+        let mut state = self.lock()?;
+        let id = state
+            .last_id
+            .checked_add(1)
+            .ok_or_else(|| anyhow!(UNAVAILABLE))?;
+        state.last_id = id;
+        state.inputs.push_back(PendingInput {
+            id,
+            kind,
+            source,
+            expansion,
+            echo_source,
+            prepared: Some(prepared),
         });
         state.changed();
         Ok(id)
@@ -122,6 +156,7 @@ impl InputQueue {
             source,
             expansion: None,
             echo_source: false,
+            prepared: None,
         });
         state.changed();
         Ok(Some(id))

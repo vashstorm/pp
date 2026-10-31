@@ -9,6 +9,7 @@ const UNSUPPORTED: &str = "cannot switch model: unsupported history item";
 
 // These borrowed views exist only during a switch, never as a second session history.
 enum PortableItem<'a> {
+    User(Vec<crate::user_input::Part>),
     Message(r::Role, Cow<'a, str>),
     Call {
         id: &'a str,
@@ -91,6 +92,17 @@ pub(super) fn convert(
                     let mut attachments = Vec::new();
                     visit_response(source, |item| {
                         match item {
+                            PortableItem::User(parts) => {
+                                batch.flush(&mut request.messages);
+                                request.messages.push(c::ChatCompletionRequestMessage::User(
+                                    c::ChatCompletionRequestUserMessage {
+                                        content: c::ChatCompletionRequestUserMessageContent::Array(
+                                            crate::user_input::chat_parts(&parts),
+                                        ),
+                                        ..Default::default()
+                                    },
+                                ));
+                            }
                             PortableItem::Message(r::Role::Assistant, text) => batch.text(text),
                             PortableItem::Call {
                                 id,
@@ -154,6 +166,11 @@ fn easy_message(role: r::Role, text: String) -> r::InputItem {
 
 fn response_item(item: PortableItem<'_>) -> r::InputItem {
     match item {
+        PortableItem::User(parts) => r::InputItem::EasyMessage(r::EasyInputMessage {
+            role: r::Role::User,
+            content: r::EasyInputContent::ContentList(crate::user_input::response_parts(&parts)),
+            ..Default::default()
+        }),
         PortableItem::Message(role, text) => easy_message(role, text.into_owned()),
         PortableItem::Call {
             id,
@@ -230,22 +247,29 @@ fn completion_items(
             developer_text(&message.content),
         )),
         Message::User(message) => {
-            let text = match &message.content {
-                c::ChatCompletionRequestUserMessageContent::Text(text) => text.clone(),
-                c::ChatCompletionRequestUserMessageContent::Array(parts) => {
-                    let mut text = String::new();
-                    for part in parts {
-                        let c::ChatCompletionRequestUserMessageContentPart::Text(part) = part
-                        else {
-                            bail!(UNSUPPORTED);
-                        };
-                        text.push_str(&part.text);
-                    }
-                    text
+            let parts = match &message.content {
+                c::ChatCompletionRequestUserMessageContent::Text(text) => {
+                    vec![crate::user_input::Part::Text(text.clone())]
                 }
+                c::ChatCompletionRequestUserMessageContent::Array(parts) => parts
+                    .iter()
+                    .map(|part| {
+                        Ok(match part {
+                            c::ChatCompletionRequestUserMessageContentPart::Text(part) => {
+                                crate::user_input::Part::Text(part.text.clone())
+                            }
+                            c::ChatCompletionRequestUserMessageContentPart::ImageUrl(part) => {
+                                ensure!(part.image_url.url.starts_with("data:image/"), UNSUPPORTED);
+                                crate::user_input::Part::Image(part.image_url.url.as_str().into())
+                            }
+                            _ => bail!(UNSUPPORTED),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
             };
-            input.push(easy_message(r::Role::User, text));
+            input.push(response_item(portable_user(parts)));
         }
+
         Message::Assistant(message) => {
             ensure!(
                 message.audio.is_none() && message.function_call.is_none(),
@@ -301,6 +325,54 @@ fn completion_items(
     Ok(())
 }
 
+fn portable_user(parts: Vec<crate::user_input::Part>) -> PortableItem<'static> {
+    if parts
+        .iter()
+        .any(|p| matches!(p, crate::user_input::Part::Image(_)))
+    {
+        PortableItem::User(parts)
+    } else {
+        PortableItem::Message(
+            r::Role::User,
+            Cow::Owned(
+                parts
+                    .into_iter()
+                    .filter_map(|p| {
+                        if let crate::user_input::Part::Text(text) = p {
+                            Some(text)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+            ),
+        )
+    }
+}
+
+fn user_parts(content: &[r::InputContent]) -> Result<Vec<crate::user_input::Part>> {
+    content
+        .iter()
+        .map(|part| {
+            Ok(match part {
+                r::InputContent::InputText(part) => {
+                    crate::user_input::Part::Text(part.text.clone())
+                }
+                r::InputContent::InputImage(part) => {
+                    ensure!(part.file_id.is_none(), UNSUPPORTED);
+                    let url = part
+                        .image_url
+                        .as_ref()
+                        .filter(|url| url.starts_with("data:image/"))
+                        .ok_or_else(|| anyhow::anyhow!(UNSUPPORTED))?;
+                    crate::user_input::Part::Image(url.as_str().into())
+                }
+                _ => bail!(UNSUPPORTED),
+            })
+        })
+        .collect()
+}
+
 fn input_text(content: &[r::InputContent]) -> Result<String> {
     let mut text = String::new();
     for part in content {
@@ -332,7 +404,18 @@ fn visit_response(
     for item in items {
         let item = match item {
             r::InputItem::EasyMessage(message) => {
-                PortableItem::Message(message.role, easy_text(&message.content)?)
+                if message.role == r::Role::User {
+                    match &message.content {
+                        r::EasyInputContent::Text(text) => {
+                            PortableItem::Message(message.role, Cow::Borrowed(text))
+                        }
+                        r::EasyInputContent::ContentList(parts) => {
+                            portable_user(user_parts(parts)?)
+                        }
+                    }
+                } else {
+                    PortableItem::Message(message.role, easy_text(&message.content)?)
+                }
             }
             r::InputItem::Item(r::Item::Message(r::MessageItem::Input(message))) => {
                 let role = match message.role {
@@ -340,7 +423,11 @@ fn visit_response(
                     r::InputRole::System => r::Role::System,
                     r::InputRole::Developer => r::Role::Developer,
                 };
-                PortableItem::Message(role, Cow::Owned(input_text(&message.content)?))
+                if role == r::Role::User {
+                    portable_user(user_parts(&message.content)?)
+                } else {
+                    PortableItem::Message(role, Cow::Owned(input_text(&message.content)?))
+                }
             }
             r::InputItem::Item(r::Item::Message(r::MessageItem::Output(message))) => {
                 let text = message

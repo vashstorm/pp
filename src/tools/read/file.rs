@@ -204,7 +204,7 @@ impl Read for FileReader {
     }
 }
 
-pub(super) fn open(path: &Path) -> Result<std::fs::File> {
+pub(crate) fn open(path: &Path) -> Result<std::fs::File> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)

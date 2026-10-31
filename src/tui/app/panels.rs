@@ -49,8 +49,11 @@ impl App {
             return;
         }
         if preserve_draft {
+            let resources = self.resources.snapshot_draft();
+            self.resources.set_images(Vec::new());
             self.model_picker_draft = Some(ModelPickerDraft {
                 input: std::mem::replace(&mut self.input, editor()),
+                resources,
                 shell_mode: std::mem::take(&mut self.shell_mode),
                 history_index: self.history_index.take(),
                 history_draft: self.history_draft.take(),
@@ -58,6 +61,7 @@ impl App {
                 menu_dismissed: self.menu_dismissed,
             });
         } else {
+            self.resources.set_images(Vec::new());
             self.input = editor();
             self.shell_mode = false;
             self.history_index = None;
@@ -120,6 +124,7 @@ impl App {
     pub(in crate::tui) fn restore_model_picker_draft(&mut self) {
         if let Some(draft) = self.model_picker_draft.take() {
             self.input = draft.input;
+            self.resources.restore_draft(draft.resources);
             self.shell_mode = draft.shell_mode;
             self.history_index = draft.history_index;
             self.history_draft = draft.history_draft;
@@ -171,6 +176,9 @@ impl App {
     }
 
     pub(in crate::tui) fn submit(&mut self, kind: PendingKind) -> bool {
+        if self.resources.job.is_some() {
+            return false;
+        }
         if self.skills_pending
             || self.skill_panel.is_some()
             || self.changes_panel.is_some()
@@ -227,6 +235,18 @@ impl App {
                     return false;
                 }
             }
+        }
+        let model_text = match &command {
+            None => Some(prompt.as_str()),
+            Some(Command::Prompt(expanded)) => Some(expanded.as_str()),
+            Some(Command::Plan(PlanCommand::Prompt(text))) => Some(*text),
+            _ => None,
+        };
+        if self.resource_input_available()
+            && let Some(text) = model_text
+            && self.prepare_resource_input(&prompt, text, kind)
+        {
+            return false;
         }
         if matches!(command, Some(Command::Agents | Command::Subagents)) {
             self.remember_input();
@@ -398,10 +418,14 @@ impl App {
                 _ => None,
             };
             let echo_source = Self::echoes_source(&prompt);
-            match self
-                .input_queue
-                .enqueue(kind, prompt, expansion, echo_source)
-            {
+            let queued = if let Some(prepared) = self.resources.ready.take() {
+                self.input_queue
+                    .enqueue_prepared(kind, prompt, expansion, echo_source, prepared)
+            } else {
+                self.input_queue
+                    .enqueue(kind, prompt, expansion, echo_source)
+            };
+            match queued {
                 Ok(_) => {
                     self.remember_input();
                     self.clear_input();
@@ -489,24 +513,36 @@ impl App {
                 Some(Command::Model(None)) => self.open_model_panel("", false),
                 None => {
                     self.queue_paused = false;
+                    let display = self
+                        .resources
+                        .ready
+                        .as_ref()
+                        .map_or_else(|| prompt.clone(), |input| input.display.clone());
                     if self.send_task(Some(prompt.clone())) {
                         self.remember_input();
-                        self.append("You", &prompt);
+                        self.append("You", &display);
                         self.clear_input();
                     }
                 }
                 Some(Command::Prompt(expanded)) => {
                     self.queue_paused = false;
                     // /init 回显用户命令；文件命令继续回显展开正文，输入历史均保留原文。
+                    let display = self
+                        .resources
+                        .ready
+                        .as_ref()
+                        .map(|input| input.display.clone());
                     if self.send_task(Some(expanded.clone())) {
                         self.remember_input();
                         self.append(
                             "You",
-                            if Self::echoes_source(&prompt) {
-                                &prompt
-                            } else {
-                                &expanded
-                            },
+                            display.as_deref().unwrap_or_else(|| {
+                                if Self::echoes_source(&prompt) {
+                                    &prompt
+                                } else {
+                                    &expanded
+                                }
+                            }),
                         );
                         self.clear_input();
                     }
@@ -640,7 +676,10 @@ impl App {
         }
         if matches!(
             action,
-            MenuAction::File(_) | MenuAction::FileDirectory(_) | MenuAction::FileParent
+            MenuAction::File(_)
+                | MenuAction::FileDirectory(_)
+                | MenuAction::FileParent
+                | MenuAction::FileCurrent
         ) && (self.file_query.is_none() || files::query(&self.input) != self.file_query)
         {
             self.refresh_candidates(false);
@@ -652,6 +691,30 @@ impl App {
                     self.recall_pending(id);
                 }
             }
+            MenuAction::FileCurrent => {
+                let path = if self.file_directory.is_empty() {
+                    "./"
+                } else {
+                    &self.file_directory
+                };
+                files::insert(
+                    &mut self.input,
+                    self.file_query.as_ref().expect("当前引用"),
+                    path,
+                );
+                if self.input.lines()[self.input.cursor().0]
+                    .chars()
+                    .nth(self.input.cursor().1)
+                    == Some('"')
+                {
+                    self.input
+                        .move_cursor(ratatui_textarea::CursorMove::Forward);
+                }
+                self.input.insert_str(" ");
+                self.menu = None;
+                self.file_query = None;
+                self.menu_dismissed = true;
+            }
             MenuAction::FileDirectory(index) => {
                 if let Some(path) = self.file_paths.get(index)
                     && let Some((directory, true)) = files::child(path, &self.file_directory)
@@ -661,12 +724,7 @@ impl App {
                 self.complete_file_directory();
             }
             MenuAction::FileParent => {
-                let parent_end = self
-                    .file_directory
-                    .trim_end_matches(std::path::MAIN_SEPARATOR)
-                    .rfind(std::path::MAIN_SEPARATOR)
-                    .map_or(0, |end| end + 1);
-                self.file_directory.truncate(parent_end);
+                self.file_directory = files::parent_directory(&self.file_directory);
                 self.complete_file_directory();
             }
             MenuAction::File(index) => {

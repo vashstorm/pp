@@ -18,6 +18,7 @@ pub(super) enum Request {
     AppendInput {
         cwd: PathBuf,
         text: String,
+        images: Vec<crate::user_input::Image>,
         created_at_ms: i64,
     },
     LoadInputs {
@@ -88,8 +89,14 @@ impl Worker {
                         Request::AppendInput {
                             cwd,
                             text,
+                            images,
                             created_at_ms,
-                        } => Reply::InputAppended(store.append_input(&cwd, &text, created_at_ms)),
+                        } => Reply::InputAppended(store.append_input_images(
+                            &cwd,
+                            &text,
+                            &images,
+                            created_at_ms,
+                        )),
                         Request::LoadInputs {
                             request_id,
                             cwd,
@@ -209,6 +216,7 @@ mod tests {
                 .send(Request::AppendInput {
                     cwd: cwd.clone(),
                     text: format!("accepted {index}"),
+                    images: Vec::new(),
                     created_at_ms: index,
                 })
                 .unwrap();
@@ -255,6 +263,7 @@ mod tests {
             .send(Request::AppendInput {
                 cwd: cwd.clone(),
                 text: "this process".into(),
+                images: Vec::new(),
                 created_at_ms: 1,
             })
             .unwrap();

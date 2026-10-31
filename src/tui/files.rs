@@ -23,18 +23,92 @@ pub(super) fn scan(cwd: &Path) -> Result<Vec<String>> {
                 entry.path().display()
             )));
         }
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+        if entry.depth() == 0
+            || !entry
+                .file_type()
+                .is_some_and(|kind| kind.is_file() || kind.is_dir())
+        {
             continue;
         }
         let relative = entry.path().strip_prefix(cwd)?;
         if let Some(path) = relative.to_str()
             && !path.chars().any(char::is_control)
         {
-            paths.push(path.to_owned());
+            paths.push(if entry.file_type().is_some_and(|kind| kind.is_dir()) {
+                format!("{path}/")
+            } else {
+                path.to_owned()
+            });
         }
     }
     paths.sort_unstable();
     paths.dedup();
+    Ok(paths)
+}
+
+pub(super) fn scan_root(prefix: &str) -> String {
+    if prefix.starts_with('/')
+        || prefix.starts_with("~/")
+        || prefix.starts_with("../")
+        || prefix.starts_with("./")
+    {
+        prefix
+            .rfind('/')
+            .map_or_else(String::new, |end| prefix[..=end].to_owned())
+    } else {
+        String::new()
+    }
+}
+
+pub(super) fn parent_directory(directory: &str) -> String {
+    if directory == "/" {
+        return "/".into();
+    }
+    if directory == "~/" {
+        return std::env::var_os("HOME")
+            .and_then(|home| {
+                std::path::PathBuf::from(home)
+                    .parent()
+                    .map(|parent| format!("{}/", parent.display()))
+            })
+            .unwrap_or_default();
+    }
+    if directory == "./" {
+        return "../".into();
+    }
+    if directory.trim_end_matches('/').ends_with("..") {
+        return format!("{directory}../");
+    }
+    let end = directory
+        .trim_end_matches('/')
+        .rfind('/')
+        .map_or(0, |end| end + 1);
+    directory[..end].to_owned()
+}
+
+fn scan_explicit(cwd: &Path, root: &str) -> Result<Vec<String>> {
+    let directory = crate::user_input::resolve(root, cwd)?;
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(&directory)
+        .with_context(|| format!("无法列出 {}", directory.display()))?
+    {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name
+            .to_str()
+            .filter(|s| !s.chars().any(char::is_control) && *s != ".git")
+        else {
+            continue;
+        };
+        let metadata = entry.metadata()?;
+        if metadata.is_file() || metadata.is_dir() {
+            paths.push(format!(
+                "{root}{name}{}",
+                if metadata.is_dir() { "/" } else { "" }
+            ));
+        }
+    }
+    paths.sort_unstable();
     Ok(paths)
 }
 
@@ -51,6 +125,9 @@ pub(super) fn entries<'a>(paths: &'a [String], directory: &str, prefix: &str) ->
     let mut entries: Vec<Entry<'a>> = Vec::new();
     for (index, path) in paths.iter().enumerate() {
         if !path.contains(prefix) {
+            continue;
+        }
+        if path == directory {
             continue;
         }
         let Some((path, directory)) = child(path, directory) else {
@@ -97,6 +174,7 @@ pub(super) fn query(input: &ratatui_textarea::TextArea<'_>) -> Option<Query> {
         let quoted = first == '@' && characters.peek().is_some_and(|(_, c)| *c == '"');
         let doubled = first == '@' && characters.peek().is_some_and(|(_, c)| *c == '@');
         let mut end = start + 1;
+        let mut quoted_closed = false;
         if quoted {
             characters.next(); // opening quote
             let mut escaped = false;
@@ -109,7 +187,8 @@ pub(super) fn query(input: &ratatui_textarea::TextArea<'_>) -> Option<Query> {
                 }
                 escaped = character == '\\' && !escaped;
             }
-            if !closed || characters.peek().is_some_and(|(_, c)| !c.is_whitespace()) {
+            quoted_closed = closed;
+            if closed && characters.peek().is_some_and(|(_, c)| !c.is_whitespace()) {
                 return None;
             }
         } else {
@@ -124,7 +203,7 @@ pub(super) fn query(input: &ratatui_textarea::TextArea<'_>) -> Option<Query> {
         if cursor > end {
             continue;
         }
-        if first != '@' || doubled || cursor <= start || (quoted && cursor >= end) {
+        if first != '@' || doubled || cursor <= start || (quoted_closed && cursor >= end) {
             return None;
         }
         let mut prefix: String = line
@@ -135,6 +214,22 @@ pub(super) fn query(input: &ratatui_textarea::TextArea<'_>) -> Option<Query> {
         if quoted {
             prefix.push('"');
             prefix = serde_json::from_str(&prefix).ok()?;
+        }
+        // 用同一解析器判断代码上下文；补上临时路径后可覆盖尚未输入完整的 @。
+        let source = input.lines().join("\n");
+        let row_offset = input.lines()[..row]
+            .iter()
+            .map(|line| line.len() + 1)
+            .sum::<usize>();
+        let byte_start = row_offset + line.chars().take(start).map(char::len_utf8).sum::<usize>();
+        let byte_end = row_offset + line.chars().take(end).map(char::len_utf8).sum::<usize>();
+        let mut probe = source;
+        probe.replace_range(byte_start..byte_end, "@__pp_completion__");
+        if !crate::user_input::references(&probe)
+            .iter()
+            .any(|reference| reference.start == byte_start && reference.path.is_some())
+        {
+            return None;
         }
         return Some(Query {
             row,
@@ -185,20 +280,25 @@ pub(super) fn insert(input: &mut ratatui_textarea::TextArea<'_>, query: &Query, 
 }
 
 pub(super) struct Worker {
-    pub(super) requests: Sender<()>,
+    pub(super) requests: Sender<String>,
     pub(super) replies: Receiver<Result<Vec<String>>>,
 }
 
 impl Worker {
     pub(super) fn new(cwd: &Path) -> Result<Self> {
         let cwd = cwd.to_owned();
-        let (requests, receiver) = mpsc::channel();
+        let (requests, receiver) = mpsc::channel::<String>();
         let (sender, replies) = mpsc::channel();
         thread::Builder::new()
             .name("pp-files".into())
             .spawn(move || {
-                while receiver.recv().is_ok() {
-                    if sender.send(scan(&cwd)).is_err() {
+                while let Ok(root) = receiver.recv() {
+                    let result = if root.is_empty() {
+                        scan(&cwd)
+                    } else {
+                        scan_explicit(&cwd, &root)
+                    };
+                    if sender.send(result).is_err() {
                         break;
                     }
                 }
@@ -470,7 +570,7 @@ mod tests {
         }
         assert_eq!(
             scan(root)?,
-            [".gitignore", ".hidden", ".ignore", "src/main.rs"]
+            [".gitignore", ".hidden", ".ignore", "src/", "src/main.rs"]
         );
         Ok(())
     }
@@ -480,7 +580,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         fs::create_dir(dir.path().join("src"))?;
         fs::write(dir.path().join("src/main.rs"), "")?;
-        assert_eq!(scan(dir.path())?, ["src/main.rs"]);
+        assert_eq!(scan(dir.path())?, ["src/", "src/main.rs"]);
         fs::write(dir.path().join(".ignore"), "[z-a]\n")?;
         let error = scan(dir.path()).unwrap_err();
         assert!(format!("{error:#}").contains(".ignore"), "{error:#}");
@@ -493,11 +593,46 @@ mod tests {
         assert!(scan(dir.path())?.is_empty());
         assert!(scan(&dir.path().join("missing")).is_err());
         let worker = Worker::new(dir.path())?;
-        worker.requests.send(())?;
+        worker.requests.send(String::new())?;
         assert!(worker.replies.recv()??.is_empty());
         fs::write(dir.path().join("new"), "")?;
-        worker.requests.send(())?;
+        worker.requests.send(String::new())?;
         assert_eq!(worker.replies.recv()??, ["new"]);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod explicit_tests {
+    use super::*;
+    #[test]
+    fn file_picker_explicit_scan_and_parent_navigation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("empty")).unwrap();
+        std::fs::write(dir.path().join("my file.txt"), "body").unwrap();
+        let root = format!("{}/", dir.path().display());
+        let paths = scan_explicit(Path::new("."), &root).unwrap();
+        assert!(paths.contains(&format!("{root}empty/")));
+        assert!(paths.contains(&format!("{root}my file.txt")));
+        assert_eq!(parent_directory("../"), "../../");
+        assert_eq!(parent_directory("../../"), "../../../");
+        assert_eq!(parent_directory("/"), "/");
+        assert_eq!(scan_root("../file"), "../");
+    }
+    #[test]
+    fn file_picker_code_context_and_unclosed_quoted_path() {
+        for lines in [
+            vec!["```rust", "@path"],
+            vec!["~~~", "@path"],
+            vec!["`@path"],
+        ] {
+            let mut input = ratatui_textarea::TextArea::from(lines);
+            input.move_cursor(ratatui_textarea::CursorMove::Bottom);
+            input.move_cursor(ratatui_textarea::CursorMove::End);
+            assert!(query(&input).is_none());
+        }
+        let mut input = ratatui_textarea::TextArea::from(["@\"my path"]);
+        input.move_cursor(ratatui_textarea::CursorMove::End);
+        assert_eq!(query(&input).unwrap().prefix, "my path");
     }
 }

@@ -1330,6 +1330,31 @@ impl Agent {
         input: Option<&InputQueue>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
+        self.run_user(prompt, None, cancellation, input, emit)
+    }
+
+    pub(crate) fn input_limits(&self) -> crate::config::ToolLimits {
+        self.tools.limits
+    }
+
+    pub(crate) fn run_input(
+        &mut self,
+        prepared: &crate::user_input::UserInput,
+        cancellation: &CancellationToken,
+        input: Option<&InputQueue>,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<RunOutcome> {
+        self.run_user(&prepared.display, Some(prepared), cancellation, input, emit)
+    }
+
+    fn run_user(
+        &mut self,
+        prompt: &str,
+        prepared: Option<&crate::user_input::UserInput>,
+        cancellation: &CancellationToken,
+        input: Option<&InputQueue>,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<RunOutcome> {
         tracing::info!(
             event = "task_started",
             pid = std::process::id(),
@@ -1350,7 +1375,11 @@ impl Agent {
             self.refresh_instructions()?;
             self.publish_context(emit)?;
             self.tools.begin_changes_task();
-            self.append_user(prompt);
+            if let Some(prepared) = prepared {
+                turn::append_input_to(&mut self.session, prepared);
+            } else {
+                self.append_user(prompt);
+            }
             self.run_loop(Some(prompt), input, cancellation, emit)
         })();
         self.finish_task("run", started, result, cancellation, input, emit)
@@ -1790,7 +1819,11 @@ impl Agent {
                     return Err(Cancelled.into());
                 }
                 let item = batch.front().expect("batch is non-empty");
-                self.append_user(item.prompt());
+                if let Some(prepared) = &item.prepared {
+                    turn::append_input_to(&mut self.session, prepared);
+                } else {
+                    self.append_user(item.prompt());
+                }
                 if let Err(error) = self.persist_pending_input(Some(item.prompt())) {
                     self.remove_last_user();
                     return Err(error);

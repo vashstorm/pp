@@ -156,7 +156,7 @@ fn menu_values(app: &App) -> Vec<MenuAction> {
 
 type FilePickerFixture = (
     App,
-    Receiver<()>,
+    Receiver<String>,
     Sender<Result<Vec<String>>>,
     Receiver<WorkerCommand>,
 );
@@ -339,3 +339,5 @@ mod tree_session_cases;
 mod todo_cases;
 
 mod mcp_cases;
+
+mod resource_cases;

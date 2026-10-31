@@ -20,67 +20,69 @@ impl Read for ImageReader {
         _context: &mut ReadContext<'_, '_>,
     ) -> Result<ReadResult> {
         target.validate_image()?;
-        let source = &target.source;
-        let bytes = bytes.as_slice();
-        ensure!(bytes.len() <= MAX_INPUT_BYTES, "image exceeds 20 MiB limit");
-        let format = ::image::guess_format(bytes)
-            .map_err(|_| anyhow::anyhow!("unsupported image format"))?;
-        ensure!(
-            matches!(
-                format,
-                ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif
-            ),
-            "unsupported image format"
-        );
-        let mut reader = Decoder::with_format(Cursor::new(bytes), format);
-        let mut limits = Limits::default();
-        limits.max_alloc = Some(256 * 1024 * 1024);
-        reader.limits(limits.clone());
-        let (width, height) = Decoder::with_format(Cursor::new(bytes), format)
-            .into_dimensions()
-            .map_err(|_| anyhow::anyhow!("invalid image dimensions"))?;
-        ensure!(
-            u64::from(width) * u64::from(height) <= 32_000_000,
-            "image exceeds 32000000 pixel limit"
-        );
-        let decoded = reader
-            .decode()
-            .map_err(|_| anyhow::anyhow!("image decoding failed"))?;
-        let mut converted = Cursor::new(Vec::new());
-        let (data, mime) = if format == ImageFormat::Gif {
-            decoded
-                .write_to(&mut converted, ImageFormat::Png)
-                .map_err(|_| anyhow::anyhow!("image conversion failed"))?;
-            (converted.get_ref().as_slice(), "image/png")
-        } else {
-            (bytes, format.to_mime_type())
-        };
-        ensure!(
-            data.len() <= MAX_INPUT_BYTES,
-            "converted image exceeds 20 MiB limit"
-        );
-        let data_url = format!(
-            "data:{mime};base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(data)
-        );
-        let content = format!(
-            "Image: {source}\nFormat: {mime}\nDimensions: {width} x {height}\nBytes: {}{}",
-            bytes.len(),
-            if format == ImageFormat::Gif {
-                "\nGIF: first frame"
-            } else {
-                ""
-            }
-        );
-        let mut value = json!({"ok":true,"kind":"image","content":content,"mime_type":mime,"width":width,"height":height,"bytes":bytes.len()});
-        if source.starts_with("skill://") {
-            value["source"] = source.as_str().into();
-        }
-        Ok(ReadResult {
-            value,
-            images: vec![ToolImage { data_url }],
-        })
+        decode_image(&target.source, &bytes)
     }
+}
+
+pub(crate) fn decode_image(source: &str, bytes: &[u8]) -> Result<ReadResult> {
+    ensure!(bytes.len() <= MAX_INPUT_BYTES, "image exceeds 20 MiB limit");
+    let format =
+        ::image::guess_format(bytes).map_err(|_| anyhow::anyhow!("unsupported image format"))?;
+    ensure!(
+        matches!(
+            format,
+            ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif
+        ),
+        "unsupported image format"
+    );
+    let mut reader = Decoder::with_format(Cursor::new(bytes), format);
+    let mut limits = Limits::default();
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits.clone());
+    let (width, height) = Decoder::with_format(Cursor::new(bytes), format)
+        .into_dimensions()
+        .map_err(|_| anyhow::anyhow!("invalid image dimensions"))?;
+    ensure!(
+        u64::from(width) * u64::from(height) <= 32_000_000,
+        "image exceeds 32000000 pixel limit"
+    );
+    let decoded = reader
+        .decode()
+        .map_err(|_| anyhow::anyhow!("image decoding failed"))?;
+    let mut converted = Cursor::new(Vec::new());
+    let (data, mime) = if format == ImageFormat::Gif {
+        decoded
+            .write_to(&mut converted, ImageFormat::Png)
+            .map_err(|_| anyhow::anyhow!("image conversion failed"))?;
+        (converted.get_ref().as_slice(), "image/png")
+    } else {
+        (bytes, format.to_mime_type())
+    };
+    ensure!(
+        data.len() <= MAX_INPUT_BYTES,
+        "converted image exceeds 20 MiB limit"
+    );
+    let data_url = format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(data)
+    );
+    let content = format!(
+        "Image: {source}\nFormat: {mime}\nDimensions: {width} x {height}\nBytes: {}{}",
+        bytes.len(),
+        if format == ImageFormat::Gif {
+            "\nGIF: first frame"
+        } else {
+            ""
+        }
+    );
+    let mut value = json!({"ok":true,"kind":"image","content":content,"mime_type":mime,"width":width,"height":height,"bytes":bytes.len()});
+    if source.starts_with("skill://") {
+        value["source"] = source.into();
+    }
+    Ok(ReadResult {
+        value,
+        images: vec![ToolImage { data_url }],
+    })
 }
 
 pub(super) fn is_image(bytes: &[u8]) -> bool {

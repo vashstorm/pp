@@ -6,6 +6,88 @@ use crate::tui::{
 
 impl App {
     pub(in crate::tui) fn handle(&mut self, event: Event, dirty: &mut bool) -> bool {
+        let clipboard_key = matches!(&event, Event::Key(key) if key.code == KeyCode::Char('v') && key.modifiers == KeyModifiers::CONTROL);
+        // 普通文本输入不维护图片编辑记录，也不复制整个草稿。
+        if self.resources.images.is_empty() && self.resources.job.is_none() && !clipboard_key {
+            return self.handle_inner(event, dirty);
+        }
+        let before = self.input_text();
+        let previous = self.resources.live.clone();
+        let undo = matches!(&event, Event::Key(key) if key.code == KeyCode::Char('u') && key.modifiers == KeyModifiers::CONTROL);
+        let redo = matches!(&event, Event::Key(key) if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL);
+        if matches!(&event, Event::Key(key) if key.code == KeyCode::Esc)
+            && self.resources.job.is_some()
+        {
+            self.resources.cancel();
+            self.notify(Level::Normal, "已取消输入资源加载，草稿保留。".into());
+            *dirty = true;
+            return false;
+        }
+        if matches!(&event, Event::Key(key) if key.code == KeyCode::Char('v') && key.modifiers == KeyModifiers::CONTROL && key.kind != KeyEventKind::Release)
+            && self.resource_input_available()
+        {
+            self.start_resource_job(
+                crate::tui::resources::Operation::Clipboard,
+                PendingKind::Steering,
+            );
+            *dirty = true;
+            return false;
+        }
+        if let Event::Key(key) = &event
+            && key.modifiers.is_empty()
+            && matches!(key.code, KeyCode::Backspace | KeyCode::Delete)
+            && !self.input.is_selecting()
+            && self.resource_input_available()
+        {
+            let ratatui_textarea::DataCursor(row, col) = self.input.cursor();
+            let line = &self.input.lines()[row];
+            let active = self.resources.active_images(&before);
+            let marker = active
+                .iter()
+                .find(|image| {
+                    if let Some(byte) = line.find(&image.marker) {
+                        let start = line[..byte].chars().count();
+                        if key.code == KeyCode::Backspace {
+                            col == start + image.marker.chars().count()
+                        } else {
+                            col == start
+                        }
+                    } else {
+                        false
+                    }
+                })
+                .map(|image| image.marker.clone());
+            if let Some(marker) = marker {
+                if key.code == KeyCode::Backspace {
+                    for _ in marker.chars() {
+                        self.input.move_cursor(CursorMove::Back);
+                    }
+                }
+                self.input.delete_str(marker.chars().count());
+                self.resources
+                    .edited(before, self.input_text(), previous, false, false);
+                self.resources.cancel();
+                self.refresh_candidates(true);
+                *dirty = true;
+                return false;
+            }
+        }
+        let quit = self.handle_inner(event, dirty);
+        self.resources
+            .edited(before.clone(), self.input_text(), previous, undo, redo);
+        if self
+            .resources
+            .job
+            .as_ref()
+            .is_some_and(|job| job.source != self.input_text() || job.cursor != self.input.cursor())
+            || !self.resource_input_available()
+        {
+            self.resources.cancel();
+        }
+        quit
+    }
+
+    pub(in crate::tui) fn handle_inner(&mut self, event: Event, dirty: &mut bool) -> bool {
         if !matches!(&event, Event::Key(key) if key.code == KeyCode::Esc
             && key.modifiers.is_empty() && key.kind == KeyEventKind::Press)
         {
@@ -128,6 +210,38 @@ impl App {
                     }
                     return false;
                 }
+                if self
+                    .plan_panel
+                    .as_ref()
+                    .is_some_and(|panel| panel.input_focused())
+                    && self.file_query.is_some()
+                {
+                    if self.files_pending && matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
+                        return false;
+                    }
+                    let action = self
+                        .menu
+                        .as_mut()
+                        .map_or(MenuEvent::Ignored, |menu| menu.handle_key(key));
+                    match action {
+                        MenuEvent::Confirm(action) => {
+                            self.apply_menu_action(action, true);
+                            return false;
+                        }
+                        MenuEvent::Complete(action) => {
+                            self.apply_menu_action(action, false);
+                            return false;
+                        }
+                        MenuEvent::Handled => return false,
+                        MenuEvent::Cancel => {
+                            self.file_query = None;
+                            self.menu = None;
+                            self.menu_dismissed = true;
+                            return false;
+                        }
+                        MenuEvent::Ignored => {}
+                    }
+                }
                 if let Some(panel) = &mut self.plan_panel {
                     self.escape_tap.reset();
                     match panel.key(key) {
@@ -164,11 +278,24 @@ impl App {
                             } else {
                                 self.input.input(key);
                             }
+                            self.refresh_candidates(true);
                         }
                         plan::Action::DiscussInput => {
                             let text = self.input.lines().join("\n");
                             if !text.trim().is_empty() && matches!(self.state, State::Ready) {
+                                let source = text.clone();
                                 let text = panel.compose_discussion(text);
+                                if self.resources.job.is_some() {
+                                    return false;
+                                }
+                                if self.prepare_resource_input(
+                                    &source,
+                                    &text,
+                                    PendingKind::Steering,
+                                ) {
+                                    self.resources.plan_discussion = true;
+                                    return false;
+                                }
                                 self.queue_paused = false;
                                 if self.send_task(Some(text.clone())) {
                                     self.plan_panel = None;
@@ -683,14 +810,16 @@ impl App {
                 }
             }
             Event::Paste(text) if self.plan_panel.is_some() => {
-                if !self
-                    .plan_panel
-                    .as_mut()
-                    .expect("active plan panel")
-                    .paste(&text)
-                {
-                    self.input
-                        .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
+                if !self.plan_panel.as_mut().expect("当前计划面板").paste(&text) {
+                    if crate::user_input::possible_image_paste(&text)
+                        && self.resource_input_available()
+                    {
+                        self.paste_resource_input(text);
+                    } else {
+                        self.input
+                            .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
+                        self.refresh_candidates(true);
+                    }
                 }
                 *dirty = true;
             }
@@ -798,6 +927,13 @@ impl App {
                 *dirty = true;
             }
             Event::Paste(text) => {
+                if self.resource_input_available() && crate::user_input::possible_image_paste(&text)
+                {
+                    // 路径识别也访问文件系统，统一放入后台线程。
+                    self.paste_resource_input(text);
+                    *dirty = true;
+                    return false;
+                }
                 if self.queue_menu {
                     self.close_pending_menu();
                 }

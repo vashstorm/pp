@@ -14,7 +14,7 @@ fn tui_file_picker_inserts_path_without_sending() {
     std::fs::create_dir_all(project.path().join("src")).unwrap();
     std::fs::write(
         project.path().join("src/main.rs"),
-        "content-must-not-be-attached",
+        "attached-resource-content",
     )
     .unwrap();
     std::fs::write(project.path().join("src/menu.rs"), "menu source").unwrap();
@@ -83,16 +83,24 @@ fn tui_file_picker_inserts_path_without_sending() {
     });
     no_more(&server);
 
-    // 补全后的草稿按普通消息提交；请求不携带文件内容。
+    // 补全时只编辑草稿，提交时携带实际文件正文。
     pty.input("说明\r");
     let (request, body) = pty.request(&server);
     let serialized = body.to_string();
     assert!(
-        !serialized.contains("content-must-not-be-attached"),
+        serialized.contains("attached-resource-content"),
         "{serialized}"
     );
     let messages = body["messages"].as_array().unwrap();
-    slash_assert_message(messages.last().unwrap(), "user", "分析 @src/main.rs 说明");
+    let user = messages.last().unwrap();
+    assert_eq!(user["role"], "user");
+    assert!(
+        user["content"]
+            .as_str()
+            .unwrap()
+            .contains("attached-resource-content")
+    );
+    assert!(user["content"].as_str().unwrap().contains("说明"));
     final_reply(request, "file picker answer");
     pty.text("file picker answer");
     pty.ready_model("fixture/primary");
@@ -148,7 +156,7 @@ fn tui_file_picker_inserts_path_without_sending() {
             && text.contains("src/main.rs")
             && text.contains("src/menu.rs")
     });
-    pty.input("\x1b[F\r");
+    pty.input("\x1b[F\x1b[A\r");
     pty.draft("resize @src/menu.rs");
     no_more(&server);
 
@@ -158,4 +166,87 @@ fn tui_file_picker_inserts_path_without_sending() {
     pty.input("\x03");
     pty.finish();
     no_more(&server);
+}
+
+#[test]
+fn tui_image_path_paste_and_persistent_recall_send_real_images_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&server, Some(protocol)),
+        )
+        .unwrap();
+        let path = project.path().join("my screenshot.png");
+        image::DynamicImage::new_rgb8(2, 3).save(&path).unwrap();
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready_model("fixture/primary");
+        pty.input(&format!("\x1b[200~{}\x1b[201~", path.display()));
+        pty.wait_for("图片路径转为编号和摘要", |screen| {
+            screen.contents().contains("[图片 1]") && screen.contents().contains("2 x 3")
+        });
+        no_more(&server);
+        pty.input("解释\r");
+        let (request, body) = pty.request_at(&server, api_path(protocol));
+        let history = if protocol == "completion" {
+            body["messages"].as_array().unwrap()
+        } else {
+            body["input"].as_array().unwrap()
+        };
+        let user = history.iter().find(|m| m["role"] == "user").unwrap();
+        let content = user["content"].as_array().unwrap();
+        assert_eq!(
+            content
+                .iter()
+                .filter(|part| part["type"] == "image_url" || part["type"] == "input_image")
+                .count(),
+            1
+        );
+        assert!(user.to_string().contains("data:image/png;base64,"));
+        assert!(user.to_string().contains("解释"));
+        if protocol == "completion" {
+            final_reply(request, "image-first-done");
+        } else {
+            response_final(request, "image-first-done");
+        }
+        pty.text("image-first-done");
+        pty.completed();
+        pty.input("\x03");
+        pty.finish();
+        std::fs::remove_file(path).unwrap();
+        let id = saved_session_id(home.path());
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
+        pty.ready_model("fixture/primary");
+        pty.input("\x1b[A");
+        pty.wait_for("重启后召回带图输入", |screen| {
+            screen.contents().contains("[图片 1]") && screen.contents().contains("2 x 3")
+        });
+        pty.input("\r");
+        let (request, body) = pty.request_at(&server, api_path(protocol));
+        let history = if protocol == "completion" {
+            body["messages"].as_array().unwrap()
+        } else {
+            body["input"].as_array().unwrap()
+        };
+        let users: Vec<_> = history.iter().filter(|m| m["role"] == "user").collect();
+        assert_eq!(users.len(), 2);
+        assert!(
+            users
+                .iter()
+                .all(|user| user.to_string().contains("data:image/png;base64,"))
+        );
+        if protocol == "completion" {
+            final_reply(request, "image-recall-done");
+        } else {
+            response_final(request, "image-recall-done");
+        }
+        pty.text("image-recall-done");
+        pty.completed();
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
 }

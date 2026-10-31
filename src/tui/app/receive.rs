@@ -17,7 +17,8 @@ impl App {
     }
 
     pub(in crate::tui) fn receive(&mut self) -> bool {
-        let mut changed = self.poll_history();
+        let mut changed = self.receive_resources();
+        changed |= self.poll_history();
         changed |= self.poll_model_control();
         changed |= self.receive_auth();
         while let Ok(reply) = self.skill_worker.replies.try_recv() {
@@ -802,10 +803,12 @@ impl App {
                                         "Plan mode is active. Describe the task to research and plan."
                                             .into(),
                                     ),
-                                    Some(PlanEnterAction::Prompt(prompt)) => {
+                                    Some(PlanEnterAction::Prompt(prompt, prepared)) => {
+                                        let display = prepared.as_ref().map_or_else(|| prompt.clone(), |input| input.display.clone());
+                                        self.resources.ready = prepared;
                                         self.queue_paused = false;
                                         if self.send_task(Some(prompt.clone())) {
-                                            self.append("You", &prompt);
+                                            self.append("You", &display);
                                         }
                                     }
                                     None => {}
@@ -815,9 +818,12 @@ impl App {
                         Err(error) => {
                             self.plan_reenter_standby = false;
                             self.notify(Level::Error, format!("{error:#}"));
-                            if let Some(PlanEnterAction::Prompt(prompt)) = after_enter
+                            if let Some(PlanEnterAction::Prompt(prompt, prepared)) = after_enter
                                 && self.input.is_empty()
                             {
+                                if let Some(prepared) = prepared {
+                                    self.resources.set_images(prepared.images);
+                                }
                                 self.input.insert_str(format!("/plan {prompt}"));
                                 self.refresh_candidates(true);
                             }

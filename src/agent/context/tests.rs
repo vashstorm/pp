@@ -613,9 +613,9 @@ fn context_responses_embedded_developer_instructions_rejected() {
 }
 
 #[test]
-fn context_responses_structured_input_message_rejected() {
+fn context_responses_structured_user_input_preserves_exchange_boundaries() {
     let items = vec![res_user("question"), res_structured_user("second")];
-    assert_incomplete_responses(items);
+    assert!(response_boundaries(&items).unwrap().is_empty());
 }
 
 #[test]

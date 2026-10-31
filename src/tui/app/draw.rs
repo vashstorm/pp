@@ -11,6 +11,7 @@ pub(in crate::tui) struct MainLayout {
     subagents: Rect,
     ask: Rect,
     input: Rect,
+    attachments: Rect,
     status: Rect,
     bordered: bool,
 }
@@ -22,7 +23,15 @@ impl App {
         let bordered = available >= 3 && area.width >= 3;
         let input_height = available
             .min(self.input.lines().len().clamp(1, 6) as u16 + if bordered { 2 } else { 0 });
-        let above = available.saturating_sub(input_height);
+        let image_count = if self.resources.images.is_empty() {
+            0
+        } else {
+            self.resources.active_images(&self.input_text()).len()
+        };
+        let attachments_height = (image_count.min(3) as u16
+            + u16::from(self.resources.job.is_some()))
+        .min(available.saturating_sub(input_height));
+        let above = available.saturating_sub(input_height + attachments_height);
         let base = Rect::new(area.x, area.y, area.width, above);
         let ask_height = if self.native_render {
             0
@@ -51,7 +60,8 @@ impl App {
         let ask = Rect::new(area.x, conversation.bottom(), area.width, ask_height);
         let todo = Rect::new(area.x, ask.bottom(), area.width, todo_height);
         let subagents = Rect::new(area.x, todo.bottom(), area.width, subagent_height);
-        let input = Rect::new(area.x, subagents.bottom(), area.width, input_height);
+        let attachments = Rect::new(area.x, subagents.bottom(), area.width, attachments_height);
+        let input = Rect::new(area.x, attachments.bottom(), area.width, input_height);
         let status = Rect::new(area.x, input.bottom(), area.width, status_height);
         MainLayout {
             conversation,
@@ -59,6 +69,7 @@ impl App {
             subagents,
             ask,
             input,
+            attachments,
             status,
             bordered,
         }
@@ -235,9 +246,30 @@ impl App {
             subagents,
             ask: ask_area,
             input,
+            attachments,
             status,
             bordered,
         } = self.main_layout(area);
+        let images = if self.resources.images.is_empty() {
+            Vec::new()
+        } else {
+            self.resources.active_images(&self.input_text())
+        };
+        let mut summaries: Vec<Line<'_>> = images
+            .iter()
+            .take(3)
+            .map(|image| Line::styled(image.label(), Style::default().fg(Color::DarkGray)))
+            .collect();
+        if self.resources.job.is_some() {
+            summaries.insert(
+                0,
+                Line::styled(
+                    "正在准备输入资源… Esc 取消",
+                    Style::default().fg(statusline::ACCENT),
+                ),
+            );
+        }
+        frame.render_widget(ratatui::widgets::Paragraph::new(summaries), attachments);
         if subagents.height > 0
             && let Some(binding) = self
                 .subagent_control

@@ -72,6 +72,9 @@ impl App {
         self.conversation = self.conversation.fresh();
         // 持久输入回忆与可见会话解耦：恢复/树导航不写入手记录，也不清空回忆。
         let error = self.conversation.replay(replay);
+        self.resources.cancel();
+        self.resources.set_images(Vec::new());
+        self.resources.ready = None;
         self.input = editor();
         self.shell_mode = false;
         self.history_index = None;
@@ -324,7 +327,10 @@ impl App {
                 if !self.plan_transition_ready(PENDING_MODE) {
                     return;
                 }
-                self.plan_after_enter = Some(PlanEnterAction::Prompt(prompt.to_owned()));
+                self.plan_after_enter = Some(PlanEnterAction::Prompt(
+                    prompt.to_owned(),
+                    self.resources.ready.take(),
+                ));
                 self.start_plan_transition(
                     |cancellation| WorkerCommand::EnterPlan { cancellation },
                     State::ChangingPlan,

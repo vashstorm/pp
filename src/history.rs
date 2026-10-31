@@ -106,6 +106,7 @@ END;";
 pub(crate) struct InputEntry {
     pub id: i64,
     pub text: String,
+    pub images: Vec<crate::user_input::Image>,
 }
 
 pub(crate) struct Store {
@@ -123,7 +124,7 @@ impl Store {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(unavailable)?;
-        ensure!(version <= 1, UNSUPPORTED_VERSION);
+        ensure!(version <= 2, UNSUPPORTED_VERSION);
         if version < 1 {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -132,7 +133,7 @@ impl Store {
             let version: i64 = tx
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .map_err(unavailable)?;
-            ensure!(version <= 1, UNSUPPORTED_VERSION);
+            ensure!(version <= 2, UNSUPPORTED_VERSION);
             if version == 0 {
                 // 非 SQLite 识别的既有对象说明文件不是本模块创建的空库，拒绝覆盖。
                 let existing: i64 = tx
@@ -165,23 +166,61 @@ impl Store {
                 .count();
             ensure!(missing == 0, CORRUPT);
         }
+        // 在写事务内检查版本，允许多个 pp 进程同时升级旧库。
+        if conn
+            .pragma_query_value::<i64, _>(None, "user_version", |row| row.get(0))
+            .map_err(unavailable)?
+            < 2
+        {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(unavailable)?;
+            let version: i64 = tx
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .map_err(unavailable)?;
+            if version == 1 {
+                tx.execute_batch(
+                    "ALTER TABLE input_history ADD COLUMN images TEXT NOT NULL DEFAULT '[]';",
+                )
+                .map_err(unavailable)?;
+                tx.pragma_update(None, "user_version", 2)
+                    .map_err(unavailable)?;
+            }
+            tx.commit().map_err(unavailable)?;
+        }
         Ok(Self { conn })
     }
 
     /// 记录一条已接受的原始输入，返回其游标 `id`；空白文本拒绝，
     /// 重复文本保留为独立事件（无 UNIQUE 约束、不去重）。
+    #[cfg(test)]
     pub(crate) fn append_input(
         &mut self,
         cwd: &Path,
         text: &str,
         created_at_ms: i64,
     ) -> Result<i64> {
+        self.append_input_images(cwd, text, &[], created_at_ms)
+    }
+
+    pub(crate) fn append_input_images(
+        &mut self,
+        cwd: &Path,
+        text: &str,
+        images: &[crate::user_input::Image],
+        created_at_ms: i64,
+    ) -> Result<i64> {
         ensure!(!text.trim().is_empty(), BLANK_INPUT);
         let cwd = cwd.to_string_lossy();
         self.conn
             .execute(
-                "INSERT INTO input_history(cwd,text,created_at_ms) VALUES (?1,?2,?3)",
-                rusqlite::params![cwd.as_ref(), text, created_at_ms],
+                "INSERT INTO input_history(cwd,text,created_at_ms,images) VALUES (?1,?2,?3,?4)",
+                rusqlite::params![
+                    cwd.as_ref(),
+                    text,
+                    created_at_ms,
+                    serde_json::to_string(images).map_err(unavailable)?
+                ],
             )
             .map_err(unavailable)?;
         Ok(self.conn.last_insert_rowid())
@@ -199,7 +238,7 @@ impl Store {
         let mut statement = self
             .conn
             .prepare(
-                "SELECT id,text FROM input_history
+                "SELECT id,text,images FROM input_history
                  WHERE cwd=?1 AND (?2 IS NULL OR id<?2)
                  ORDER BY id DESC LIMIT ?3",
             )
@@ -211,6 +250,8 @@ impl Store {
                     Ok(InputEntry {
                         id: row.get(0)?,
                         text: row.get(1)?,
+                        images: serde_json::from_str(&row.get::<_, String>(2)?)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
                     })
                 },
             )
@@ -504,7 +545,7 @@ mod tests {
         let path = root.path().join("history.db");
         {
             let store = Store::open(&path).unwrap();
-            store.conn.pragma_update(None, "user_version", 2).unwrap();
+            store.conn.pragma_update(None, "user_version", 3).unwrap();
         }
         let error = Store::open(&path).err().unwrap();
         assert_eq!(error.to_string(), UNSUPPORTED_VERSION);
@@ -853,5 +894,45 @@ mod tests {
         store.conn.execute("DROP TABLE prompt_fts", []).unwrap();
         let error = store.search_sessions(None, "needle_42").err().unwrap();
         assert_eq!(error.to_string(), UNAVAILABLE);
+    }
+}
+
+#[cfg(test)]
+mod image_input_tests {
+    use super::*;
+    #[test]
+    fn sqlite_image_history_migrates_v1_and_roundtrips_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        let conn = crate::sqlite::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute(
+            "INSERT INTO input_history(cwd,text,created_at_ms) VALUES ('/project','old',1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut store = Store::open(&path).unwrap();
+        let images = vec![crate::user_input::Image {
+            marker: "[图片 1]".into(),
+            summary: "fixture 2x3".into(),
+            data_url: "data:image/png;base64,AA==".into(),
+        }];
+        store
+            .append_input_images(Path::new("/project"), "[图片 1]", &images, 2)
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let entries = store.load_inputs(Path::new("/project"), None, 100).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].text, "old");
+        assert!(entries[0].images.is_empty());
+        assert_eq!(entries[1].images, images);
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
     }
 }

@@ -693,6 +693,45 @@ pub(super) fn response_turn(
 
 /// Append a user message to either protocol's native history; shared by the
 /// agent loop and the fresh-context execution candidate session.
+pub(super) fn append_input_to(session: &mut Session, input: &crate::user_input::UserInput) {
+    use crate::user_input::Part;
+    use async_openai::types::{chat as c, responses as r};
+    if !input.has_images() {
+        let text = input
+            .parts
+            .iter()
+            .filter_map(|p| {
+                if let Part::Text(t) = p {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<String>();
+        append_user_to(session, &text);
+        return;
+    }
+    match session {
+        Session::Completion(request) => request.messages.push(
+            c::ChatCompletionRequestMessage::User(c::ChatCompletionRequestUserMessage {
+                content: c::ChatCompletionRequestUserMessageContent::Array(
+                    crate::user_input::chat_parts(&input.parts),
+                ),
+                ..Default::default()
+            }),
+        ),
+        Session::Response(request) => {
+            response_input(request).push(r::InputItem::EasyMessage(r::EasyInputMessage {
+                role: r::Role::User,
+                content: r::EasyInputContent::ContentList(crate::user_input::response_parts(
+                    &input.parts,
+                )),
+                ..Default::default()
+            }))
+        }
+    }
+}
+
 pub(super) fn append_user_to(session: &mut Session, prompt: &str) {
     match session {
         Session::Completion(request) => request.messages.push(ChatCompletionRequestMessage::User(

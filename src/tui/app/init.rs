@@ -55,6 +55,10 @@ impl App {
             ),
             show_welcome: true,
             input: editor(),
+            resources: Default::default(),
+            input_limits: agent
+                .as_ref()
+                .map_or_else(|_| Default::default(), Agent::input_limits),
             shell_mode: false,
             input_history: Vec::new(),
             history_index: None,
@@ -133,6 +137,7 @@ impl App {
             file_directory: String::new(),
             file_query: None,
             files_pending: false,
+            file_scan_root: String::new(),
             workflow: WorkflowState::default(),
             plan_panel: None,
             plan_progress: (0, 0),
@@ -168,6 +173,7 @@ impl App {
             control.registry.clone(),
         ));
         self.model_control = Some(control);
+        self.input_limits = agent.input_limits();
         self.conversation
             .set_bash_timeout(agent.bash_timeout_seconds());
         // 取 replay、模型字段与 MCP 清理句柄必须发生在 agent move 进 worker 之前。
@@ -260,6 +266,16 @@ impl App {
                                 break;
                             }
                             continue;
+                        }
+                        WorkerCommand::RunInput {
+                            prepared,
+                            cancellation,
+                            input,
+                        } => {
+                            let outcome =
+                                agent.run_input(&prepared, &cancellation, Some(&input), &mut emit);
+                            push_workflow_snapshot(&agent, &mut snapshots);
+                            WorkerEvent::completed(started, outcome)
                         }
                         WorkerCommand::Run {
                             prompt,

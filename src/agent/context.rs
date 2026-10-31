@@ -166,6 +166,17 @@ pub(super) fn response_boundaries(items: &[InputItem]) -> Result<Vec<usize>> {
                 }
                 _ => bail!(UNSUPPORTED_HISTORY),
             },
+            // 原生多模态用户消息在会话反序列化后采用完整 Input 形态。
+            InputItem::Item(Item::Message(MessageItem::Input(message)))
+                if message.role == async_openai::types::responses::InputRole::User =>
+            {
+                if open {
+                    ensure!(pending.is_empty() && has_output, UNSUPPORTED_HISTORY);
+                    boundaries.push(index);
+                    open = false;
+                    has_output = false;
+                }
+            }
             InputItem::Item(Item::Reasoning(_)) => open = true,
             InputItem::Item(Item::Message(MessageItem::Output(message))) => {
                 ensure!(

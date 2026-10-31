@@ -46,8 +46,20 @@ impl App {
             || self.menu_dismissed
             || !matches!(
                 self.state,
-                State::Ready | State::Unavailable | State::SavingModelSettings
+                State::Ready | State::Running | State::Unavailable | State::SavingModelSettings
             )
+        {
+            self.file_query = None;
+            self.menu = None;
+            return;
+        }
+        // 运行中只新增资源补全，不改变斜杠命令的既有提交行为。
+        if matches!(self.state, State::Running)
+            && self
+                .input
+                .lines()
+                .first()
+                .is_some_and(|line| line.trim_start().starts_with('/'))
         {
             self.file_query = None;
             self.menu = None;
@@ -184,12 +196,16 @@ impl App {
                     return;
                 }
                 let query = files::query(&self.input);
-                if query.is_some() && self.file_query.is_none() {
-                    self.file_directory.clear();
+                let root = query
+                    .as_ref()
+                    .map_or_else(String::new, |q| files::scan_root(&q.prefix));
+                if query.is_some() && (self.file_query.is_none() || root != self.file_scan_root) {
+                    self.file_directory = root.clone();
                     self.file_paths.clear();
                     self.menu = None;
                     if !self.files_pending {
-                        match self.file_worker.requests.send(()) {
+                        self.file_scan_root = root.clone();
+                        match self.file_worker.requests.send(self.file_scan_root.clone()) {
                             Ok(()) => self.files_pending = true,
                             Err(_) => self.notify(
                                 Level::Error,
@@ -204,7 +220,7 @@ impl App {
                     .zip(query.as_ref())
                     .is_some_and(|(old, new)| old.row != new.row || old.start != new.start)
                 {
-                    self.file_directory.clear();
+                    self.file_directory = root;
                 }
                 let changed = self.file_query != query;
                 self.file_query = query;
@@ -273,6 +289,15 @@ impl App {
             icon: None,
             current: false,
         }));
+        if prefix.is_empty() && !self.file_directory.is_empty() {
+            items.push(MenuItem {
+                value: MenuAction::FileCurrent,
+                label: "引用当前目录".into(),
+                description: self.file_directory.clone(),
+                icon: None,
+                current: false,
+            });
+        }
         if items.is_empty() {
             self.menu = None;
         } else if changed || self.menu.as_ref().is_none_or(|menu| menu.items() != items) {
@@ -290,7 +315,11 @@ impl App {
             &self.file_directory,
         );
         self.file_query = files::query(&self.input);
-        self.refresh_file_menu(true);
+        if files::scan_root(&self.file_directory) != self.file_scan_root {
+            self.refresh_candidates(false);
+        } else {
+            self.refresh_file_menu(true);
+        }
     }
 
     pub(in crate::tui) fn at_input_prefix(&self) -> bool {
@@ -325,6 +354,8 @@ impl App {
     }
 
     pub(in crate::tui) fn clear_input(&mut self) {
+        self.resources.cancel();
+        self.resources.set_images(Vec::new());
         self.input = editor();
         self.shell_mode = false;
         self.history_index = None;
@@ -347,6 +378,7 @@ impl App {
         }
         let index = match (self.history_index, previous) {
             (None, true) if !self.input_history.is_empty() => {
+                self.resources.history_draft = Some(self.resources.snapshot_draft());
                 self.history_draft = Some((self.input.clone(), self.shell_mode));
                 self.input_history.len() - 1
             }
@@ -372,6 +404,8 @@ impl App {
             }
             (Some(_), false) => {
                 self.history_waiting_up = false;
+                let draft = self.resources.history_draft.take().unwrap_or_default();
+                self.resources.restore_draft(draft);
                 (self.input, self.shell_mode) = self
                     .history_draft
                     .take()
@@ -499,6 +533,12 @@ impl App {
             Ok(Some(message)) => {
                 self.close_pending_menu();
                 self.clear_input();
+                self.resources.set_images(
+                    message
+                        .prepared
+                        .map(|input| input.images)
+                        .unwrap_or_default(),
+                );
                 self.input.insert_str(message.source);
                 if !self.has_pending() {
                     self.queue_paused = false;
@@ -582,6 +622,7 @@ impl App {
                 return false;
             }
         };
+        self.resources.ready = message.prepared.clone();
         let dispatched = self.send_task(Some(message.prompt().to_owned()));
         if dispatched {
             self.append("You", &message.into_display());
@@ -603,11 +644,21 @@ impl App {
         }
         let cancellation = CancellationToken::new();
         let command = match prompt {
-            Some(prompt) => WorkerCommand::Run {
-                prompt,
-                cancellation: cancellation.clone(),
-                input: self.input_queue.clone(),
-            },
+            Some(prompt) => {
+                if let Some(prepared) = self.resources.ready.take() {
+                    WorkerCommand::RunInput {
+                        prepared,
+                        cancellation: cancellation.clone(),
+                        input: self.input_queue.clone(),
+                    }
+                } else {
+                    WorkerCommand::Run {
+                        prompt,
+                        cancellation: cancellation.clone(),
+                        input: self.input_queue.clone(),
+                    }
+                }
+            }
             None => WorkerCommand::Continue {
                 cancellation: cancellation.clone(),
                 input: self.input_queue.clone(),

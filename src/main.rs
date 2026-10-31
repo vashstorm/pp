@@ -24,6 +24,7 @@ mod system_prompt;
 mod tips;
 mod tools;
 mod tui;
+mod user_input;
 mod yaml;
 
 use anyhow::{Context, Result, ensure};

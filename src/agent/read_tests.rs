@@ -361,3 +361,150 @@ fn read_history_restores_unknown_tool_results_without_special_handling() {
         assert!(server.try_recv().unwrap().is_none());
     }
 }
+
+#[test]
+fn user_image_requests_restore_navigate_and_switch_protocol_without_source() {
+    for protocol in ["completion", "response"] {
+        let dir = tempfile::tempdir().unwrap();
+        image::DynamicImage::new_rgb8(2, 3)
+            .save(dir.path().join("shot.png"))
+            .unwrap();
+        std::fs::write(dir.path().join("note"), "RESOURCE-TEXT").unwrap();
+        let prepared = crate::user_input::prepare(
+            "看图 @shot.png @note".into(),
+            "看图 @shot.png @note",
+            Vec::new(),
+            dir.path(),
+            crate::config::ToolLimits::default(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+        let mut agent =
+            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let peer = server.clone();
+        let worker = std::thread::spawn(move || {
+            let mut request = peer.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+            let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            let users: Vec<_> = if protocol == "completion" {
+                body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|m| m["role"] == "user")
+                    .collect()
+            } else {
+                body["input"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|m| m["role"] == "user")
+                    .collect()
+            };
+            assert_eq!(users.len(), 1);
+            let parts = users[0]["content"].as_array().unwrap();
+            let encoded = serde_json::to_string(parts).unwrap();
+            assert!(encoded.contains("data:image/png;base64,"));
+            assert!(encoded.contains("RESOURCE-TEXT"));
+            assert_eq!(
+                parts
+                    .iter()
+                    .filter(|p| p["type"] == "image_url" || p["type"] == "input_image")
+                    .count(),
+                1
+            );
+            if protocol == "completion" {
+                completion_stream(request, json!({"content":"done"}), "stop");
+            } else {
+                response_stream(
+                    request,
+                    &[
+                        json!({"type":"message", "id":"m1", "role":"assistant", "content":[{"type":"output_text","text":"done","annotations":[]}], "status":"completed"}),
+                    ],
+                    true,
+                );
+            }
+        });
+        assert_eq!(
+            agent
+                .run_input(&prepared, &CancellationToken::new(), None, &mut |_| {})
+                .unwrap(),
+            RunOutcome::Completed
+        );
+        worker.join().unwrap();
+        std::fs::remove_file(dir.path().join("shot.png")).unwrap();
+        std::fs::remove_file(dir.path().join("note")).unwrap();
+        let other = if protocol == "completion" {
+            Protocol::Response
+        } else {
+            Protocol::Completion
+        };
+        let switched =
+            history::convert(&agent.session, "other".into(), other, EditMode::Replace).unwrap();
+        let roundtrip = history::convert(
+            &switched,
+            "one".into(),
+            if protocol == "completion" {
+                Protocol::Completion
+            } else {
+                Protocol::Response
+            },
+            EditMode::Replace,
+        )
+        .unwrap();
+        assert!(
+            serde_json::to_string(&roundtrip)
+                .unwrap()
+                .contains("data:image/png;base64,")
+        );
+        let id = agent.session_id().unwrap().to_owned();
+        drop(agent);
+        let saved = persistence::load(
+            &dir.path().join("sessions"),
+            &dir.path().join("sessions/.locks"),
+            Some(&id),
+            true,
+        )
+        .unwrap();
+        let mut restored = Agent::restore(
+            ModelCatalog::from_files(
+                &dir.path().join("settings.yml"),
+                &dir.path().join("models.yml"),
+            )
+            .unwrap(),
+            Tools::new(dir.path().into(), EditMode::Replace).unwrap(),
+            saved,
+        )
+        .unwrap();
+        assert!(
+            serde_json::to_string(&restored.session)
+                .unwrap()
+                .contains("data:image/png;base64,")
+        );
+        let replay = restored.take_replay();
+        assert_eq!(
+            replay
+                .iter()
+                .filter(|record| matches!(record, persistence::ReplayRecord::User(_)))
+                .count(),
+            1
+        );
+        assert!(!replay.iter().any(|record| matches!(record, persistence::ReplayRecord::User(text) if text.contains("base64"))));
+        let view = restored.session_tree().unwrap();
+        assert_eq!(
+            view.tree
+                .nodes
+                .iter()
+                .filter(|n| n.kind == persistence::tree::Kind::User)
+                .count(),
+            1
+        );
+        let target = view.tree.nodes.last().unwrap().id.clone();
+        restored.navigate_tree(&target).unwrap();
+        assert!(
+            serde_json::to_string(&restored.session)
+                .unwrap()
+                .contains("data:image/png;base64,")
+        );
+    }
+}

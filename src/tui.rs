@@ -17,6 +17,7 @@ mod plan;
 mod plan_leave;
 mod plan_list;
 mod render_worker;
+mod resources;
 mod roles;
 mod scrollback;
 mod sessions;
@@ -83,8 +84,8 @@ const STEERING_HINT: &str = platform_text(
     "Enter steer · Alt + Enter queue · Ctrl + Q pending messages · Ctrl + R resume queue",
 );
 const SHORTCUTS_TAIL: &str = platform_text(
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · ⌥ + T expand/collapse TODO · ⌥ + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + O expand/collapse all tool output · Ctrl + T expand/collapse TODO · Ctrl + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · ⌥ + T expand/collapse TODO · ⌥ + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · Ctrl + T expand/collapse TODO · Ctrl + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
 );
 const EFFORT_HINT: &str = platform_text(
     "Enter select · ⌥ + S set selected effort as default · Esc cancel",
@@ -134,6 +135,8 @@ pub(crate) fn run(
     let mut generation = app.conversation.native_generation();
     let mut clock = frame_clock::FrameClock::new(options.max_fps);
     loop {
+        // 先采纳已经到达的后台结果，再用最新状态解释下一批按键。
+        dirty |= app.receive();
         let input_started = Instant::now();
         let mut input_changed = false;
         let mut quit = false;
@@ -304,6 +307,11 @@ enum WorkerCommand {
         command: String,
         call_id: String,
         cancellation: CancellationToken,
+    },
+    RunInput {
+        prepared: crate::user_input::UserInput,
+        cancellation: CancellationToken,
+        input: InputQueue,
     },
     Run {
         prompt: String,
@@ -625,11 +633,13 @@ enum MenuAction {
     File(usize),
     FileDirectory(usize),
     FileParent,
+    FileCurrent,
     PendingInput(u64),
 }
 
 struct ModelPickerDraft {
     input: TextArea<'static>,
+    resources: resources::Draft,
     shell_mode: bool,
     history_index: Option<usize>,
     history_draft: Option<(TextArea<'static>, bool)>,
@@ -677,6 +687,8 @@ struct App {
     history_browser: bool,
     show_welcome: bool,
     input: TextArea<'static>,
+    resources: resources::State,
+    input_limits: crate::config::ToolLimits,
     shell_mode: bool,
     input_history: Vec<String>,
     history_index: Option<usize>,
@@ -766,6 +778,7 @@ struct App {
     file_directory: String,
     file_query: Option<files::Query>,
     files_pending: bool,
+    file_scan_root: String,
     file_commands: commands::FileCommands,
     // worker 发布的 workflow 快照；UI 不是权限权威，只用于展示与派发守卫。
     workflow: WorkflowState,
@@ -787,7 +800,7 @@ struct App {
 enum PlanEnterAction {
     // 待命提示：进入 Plan 不绑定旧稿，也不打开审阅面板。
     Standby,
-    Prompt(String),
+    Prompt(String, Option<crate::user_input::UserInput>),
 }
 
 // worker 内部把 Agent 用量快照包装为进度事件；估算失败时跳过，不中断命令。

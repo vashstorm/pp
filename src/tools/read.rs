@@ -8,10 +8,12 @@ use std::path::Path;
 
 mod file;
 mod image;
+pub(crate) use image::decode_image;
 mod selector;
 mod text;
 mod url;
 
+pub(crate) use file::open as open_local_file;
 use file::{FileInput, FileReader};
 use selector::Target;
 pub(crate) use url::WebCache;
@@ -31,9 +33,9 @@ pub(crate) struct ToolImage {
     pub(crate) data_url: String,
 }
 
-pub(super) struct ReadResult {
-    pub(super) value: Value,
-    pub(super) images: Vec<ToolImage>,
+pub(crate) struct ReadResult {
+    pub(crate) value: Value,
+    pub(crate) images: Vec<ToolImage>,
 }
 
 /// 同步读取接口；每种实现声明自己的输入类型，共享工具结果格式。
@@ -140,5 +142,57 @@ pub(super) fn run(
         None,
         fetch,
         cancellation,
+    )
+}
+
+/// 主聊天的显式本地引用：路径按字面处理，不启用 URL、技能和行段语法。
+pub(crate) fn local_reference(
+    path: &Path,
+    limits: ToolLimits,
+    cancellation: &CancellationToken,
+) -> Result<ReadResult> {
+    if cancellation.is_cancelled() {
+        return Err(crate::cancellation::Cancelled.into());
+    }
+    if path.is_file() {
+        use std::io::Read as _;
+        let mut probe = Vec::new();
+        let file = file::open(path)?;
+        let size = file.metadata()?.len();
+        file.take(limits.read_max_bytes.saturating_add(4) as u64)
+            .read_to_end(&mut probe)?;
+        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let image_path = ["png", "jpg", "jpeg", "webp", "gif"]
+            .iter()
+            .any(|e| extension.eq_ignore_ascii_case(e));
+        if !image_path && !image::is_image(&probe) {
+            anyhow::ensure!(!probe.contains(&0), "引用文件不是文本或受支持的图片");
+            if let Err(error) = std::str::from_utf8(&probe) {
+                anyhow::ensure!(
+                    size > probe.len() as u64
+                        && error.error_len().is_none()
+                        && error.valid_up_to() >= probe.len().saturating_sub(3),
+                    "引用文本必须使用 UTF-8 编码"
+                );
+            }
+        }
+    }
+    let target = Target::literal(path.to_string_lossy().into_owned());
+    let mut cache = WebCache::default();
+    let mut fetch = |_: &str, _: &CancellationToken| anyhow::bail!("本地引用不支持网络读取");
+    FileReader.read(
+        FileInput {
+            target,
+            path: path.to_path_buf(),
+            allow_directory: true,
+        },
+        &mut ReadContext {
+            limits,
+            mode: EditMode::Replace,
+            cache: &mut cache,
+            fetch: &mut fetch,
+            cancellation,
+            snapshots: None,
+        },
     )
 }

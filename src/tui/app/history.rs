@@ -179,7 +179,20 @@ impl App {
                     return;
                 }
                 let oldest = entries.first().map(|entry| entry.id);
-                let texts: Vec<String> = entries.into_iter().map(|entry| entry.text).collect();
+                self.resources.history_images = std::mem::take(&mut self.resources.history_images)
+                    .into_iter()
+                    .map(|(index, images)| (index + count, images))
+                    .collect();
+                let texts: Vec<String> = entries
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, entry)| {
+                        if !entry.images.is_empty() {
+                            self.resources.history_images.insert(index, entry.images);
+                        }
+                        entry.text
+                    })
+                    .collect();
                 // 前置会整体右移既有条目，修正当前导航下标。
                 if let Some(index) = &mut self.history_index {
                     *index += count;
@@ -232,6 +245,7 @@ impl App {
         }
         // 已经开始浏览历史时 draft 早已捕获，不能被最老一条覆盖。
         if self.history_index.is_none() {
+            self.resources.history_draft = Some(self.resources.snapshot_draft());
             self.history_draft = Some((self.input.clone(), self.shell_mode));
         }
         self.history_waiting_up = true;
@@ -243,6 +257,14 @@ impl App {
         if index >= self.input_history.len() {
             return;
         }
+        self.resources.cancel();
+        let images = self
+            .resources
+            .history_images
+            .get(&index)
+            .cloned()
+            .unwrap_or_default();
+        self.resources.set_images(images);
         self.file_query = None;
         self.input = crate::tui::editor();
         self.shell_mode = false;
@@ -295,6 +317,16 @@ impl App {
         self.history_index = None;
         self.history_draft = None;
         self.history_waiting_up = false;
+        let images = if text == self.input_text() {
+            self.resources.active_images(&text)
+        } else {
+            Vec::new()
+        };
+        if !images.is_empty() {
+            self.resources
+                .history_images
+                .insert(self.input_history.len(), images.clone());
+        }
         self.input_history.push(text.clone());
         let Some(worker) = &self.history_worker else {
             return;
@@ -302,6 +334,7 @@ impl App {
         let request = Request::AppendInput {
             cwd: self.history_cwd.clone(),
             text,
+            images,
             created_at_ms: now_ms(),
         };
         if worker.requests.send(request).is_err() {
@@ -321,6 +354,7 @@ mod tests {
             .map(|id| crate::history::InputEntry {
                 id,
                 text: format!("prompt-{id}"),
+                images: Vec::new(),
             })
             .collect()
     }

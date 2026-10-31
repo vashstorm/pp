@@ -8,5 +8,6 @@ mod input;
 mod navigation;
 mod panels;
 mod receive;
+mod resources;
 mod roles;
 mod state;

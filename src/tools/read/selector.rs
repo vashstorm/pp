@@ -72,6 +72,13 @@ fn suffixed(source: &str, suffix: &str) -> String {
 }
 
 impl Target {
+    pub(super) fn literal(source: String) -> Self {
+        Self {
+            source,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn is_url(&self) -> bool {
         self.source.starts_with("http://") || self.source.starts_with("https://")
     }
