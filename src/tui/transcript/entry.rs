@@ -195,7 +195,7 @@ impl TranscriptEntry {
             layout: None,
             expanded: false,
             footer: String::new(),
-            started: Instant::now(),
+            started: Some(Instant::now()),
             bash_timeout_seconds: None,
             arguments: Value::Null,
             result: None,
@@ -450,7 +450,7 @@ impl TranscriptEntry {
             && self.status == EntryStatus::Running
             && self.footer.is_empty()
         {
-            self.update_bash_footer(Some(self.started.elapsed()));
+            self.update_bash_footer(self.started.map(|started| started.elapsed()));
         }
         if !self.hidden
             && self.tool.as_deref() == Some("read")
@@ -987,7 +987,8 @@ impl Activity {
             started: Some(started),
             waiting_started: None,
             label: "Requesting model".into(),
-            seconds: 0,
+            seconds: Some(0),
+            running: true,
         }
     }
 
@@ -998,17 +999,23 @@ impl Activity {
         let seconds = now
             .saturating_duration_since(self.waiting_started.unwrap_or(started))
             .as_secs();
-        if seconds == self.seconds {
+        if Some(seconds) == self.seconds {
             return false;
         }
-        self.seconds = seconds;
+        self.seconds = Some(seconds);
         self.refresh();
         true
     }
 
     pub(super) fn refresh(&mut self) {
-        self.entry.text = format!("✻ {} · {}", self.label, Self::format_duration(self.seconds));
+        self.entry.text = format!("✻ {} · {}", self.label, self.duration_text());
         self.entry.layout = None;
+    }
+
+    pub(super) fn duration_text(&self) -> String {
+        self.seconds
+            .map(Self::format_duration)
+            .unwrap_or_else(|| "—".into())
     }
 
     pub(super) fn format_duration(seconds: u64) -> String {
@@ -1025,21 +1032,23 @@ impl Activity {
     }
 
     pub(super) fn phase(&mut self, label: &str) {
-        if self.started.is_some() && self.label != "Cancelling" && self.label != label {
+        if self.running && self.label != "Cancelling" && self.label != label {
             self.label = label.into();
             let now = Instant::now();
             // ask 单独计算等待时间；其他阶段继续使用整轮任务的起点。
-            self.waiting_started = (label == "Waiting for input").then_some(now);
+            self.waiting_started =
+                (label == "Waiting for input" && self.started.is_some()).then_some(now);
             self.tick(now);
             self.refresh();
         }
     }
 
     pub(super) fn stop(&mut self, label: &str) {
-        if self.started.is_some() {
+        if self.running {
             self.waiting_started = None;
             self.tick(Instant::now());
             self.started = None;
+            self.running = false;
             self.label = label.into();
             self.refresh();
         }

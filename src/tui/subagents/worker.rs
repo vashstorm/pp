@@ -3,9 +3,9 @@
 //! 线程只持有 [`Binding`] 的快照与游标，不做任何任务控制以外的写入。请求与
 //! 回复都带根 epoch；详情页另带 view epoch，旧根/旧详情的迟到回复由 UI 丢弃。
 
-use crate::subagent::{Binding, Definition, EventCursor, EventPage, HubSnapshot};
+use crate::subagent::{Binding, Definition, EventCursor, EventPage, HubSnapshot, Run};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError, TrySendError},
     thread,
     time::{Duration, Instant},
@@ -89,7 +89,7 @@ pub(in crate::tui) enum Reply {
         epoch: u64,
         view: u64,
         agent: String,
-        page: EventPage,
+        history: DetailHistory,
     },
     /// 该 agent 的旧投影与锚点已失效，需要只重建这一路。
     Reset {
@@ -110,6 +110,13 @@ pub(in crate::tui) enum Reply {
         epoch: u64,
         message: String,
     },
+}
+
+/// 详情正文与元数据共用一次读页边界；快照补齐只能使用读页前已完成的 Run。
+pub(in crate::tui) struct DetailHistory {
+    pub page: EventPage,
+    pub runs: Vec<Run>,
+    pub settled: BTreeSet<String>,
 }
 
 pub(in crate::tui) struct Worker {
@@ -281,8 +288,9 @@ impl State {
             .filter(|detail| detail.more && budget > 0)
             .map(|detail| (detail.agent.clone(), detail.cursor.clone(), detail.view));
         if let Some((agent, cursor, view)) = detail {
-            match self.read(&agent, cursor.as_ref()) {
-                Ok(page) => {
+            match self.read_detail(&agent, cursor.as_ref()) {
+                Ok(history) => {
+                    let page = &history.page;
                     let more = page.has_more;
                     let reset = page.reset;
                     if let Some(detail) = &mut self.detail {
@@ -300,7 +308,7 @@ impl State {
                         epoch: self.epoch,
                         view,
                         agent,
-                        page,
+                        history,
                     });
                 }
                 Err(error) => {
@@ -361,6 +369,39 @@ impl State {
 
     fn read(&self, agent: &str, cursor: Option<&EventCursor>) -> anyhow::Result<EventPage> {
         self.binding.read_events(agent, cursor)
+    }
+
+    fn read_detail(
+        &self,
+        agent: &str,
+        cursor: Option<&EventCursor>,
+    ) -> anyhow::Result<DetailHistory> {
+        let mut runs = self.binding.hub_snapshot().runs;
+        runs.retain(|run| run.agent_id == agent);
+        let settled = runs
+            .iter()
+            .filter(|run| !matches!(run.status.as_str(), "queued" | "running"))
+            .map(|run| run.id.clone())
+            .collect();
+        let page = self.read(agent, cursor)?;
+        // 读页期间可能刚登记新 Run；只补它的元数据，不扩展此前冻结的终态集合。
+        if page
+            .entries
+            .iter()
+            .filter_map(|entry| entry.record.run_id.as_ref())
+            .any(|id| !runs.iter().any(|run| run.id == *id))
+        {
+            for run in self.binding.hub_snapshot().runs {
+                if run.agent_id == agent && !runs.iter().any(|known| known.id == run.id) {
+                    runs.push(run);
+                }
+            }
+        }
+        Ok(DetailHistory {
+            page,
+            runs,
+            settled,
+        })
     }
 }
 

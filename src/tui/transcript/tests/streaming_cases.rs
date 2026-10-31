@@ -685,7 +685,7 @@ fn bash_footer_tracks_elapsed_and_renders_status_on_bottom_border() {
         let live = screen(&render(&mut transcript, 100, 20));
         assert!(live.contains("╰─ Elapsed: 0s · Timeout: 300s"), "{live}");
         assert!(!live.contains("Wall:") && !live.contains("Exit:"));
-        let started = transcript.entries[0].started;
+        let started = transcript.entries[0].started.unwrap();
         assert!(transcript.tick(started + Duration::from_secs(8)));
         let live = screen(&render(&mut transcript, 100, 20));
         assert!(live.contains("Elapsed: 8s · Timeout: 300s"), "{live}");

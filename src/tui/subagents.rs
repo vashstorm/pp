@@ -223,8 +223,14 @@ impl Panel {
         self.detail.as_ref().map(|detail| detail.view)
     }
 
-    pub(super) fn opened(&mut self, agent: &str, view: u64, anchor: Option<Anchor>) {
-        let mut detail = Detail::new(agent, view);
+    pub(super) fn opened(
+        &mut self,
+        agent: &str,
+        view: u64,
+        anchor: Option<Anchor>,
+        transcript: super::Transcript,
+    ) {
+        let mut detail = Detail::new(agent, view, transcript);
         if let Some(message) = self.agent_notices.remove(agent) {
             detail.notice = Some(message);
         }
@@ -280,22 +286,18 @@ impl Panel {
                 self.projection.ingest(&agent, &page, self.clock);
                 self.validate_selection();
             }
-            Reply::Detail { agent, page, .. } => {
+            Reply::Detail { agent, history, .. } => {
+                let page = &history.page;
                 if !page.warnings.is_empty() {
                     self.error = Some(page.warnings.join("; "));
                 }
                 if let Some(detail) = self.detail.as_mut().filter(|detail| detail.agent == agent) {
                     if page.reset {
                         // 文件替换后从头重建，保留草稿与 follow 偏好。
-                        let view = detail.view;
-                        let focus = detail.focus;
-                        let mut fresh = Detail::new(&agent, view);
-                        fresh.focus = focus;
-                        fresh.notice = Some("Event log was replaced; transcript rebuilt.".into());
-                        self.detail = Some(fresh);
+                        detail.rebuild();
                     }
                     if let Some(detail) = self.detail.as_mut() {
-                        detail.ingest(&page, &self.projection);
+                        detail.ingest(page, &history.runs, &history.settled, projection::now_ms());
                     }
                 }
             }
@@ -1828,6 +1830,121 @@ mod tests {
         assert!(
             matches!(commands.as_slice(), [Command::Open { agent, .. }] if agent == "a1"),
             "roster click must open the mapped agent"
+        );
+    }
+
+    #[test]
+    fn detail_first_draw_resolves_run_scoped_anchor_and_reset_keeps_read_preview() {
+        use super::worker::DetailHistory;
+        use crate::subagent::EventPage;
+        use crate::tui::Transcript;
+        use serde_json::json;
+
+        let runs = vec![
+            run("r1", "a1", "completed", "first task"),
+            run("r2", "a1", "completed", "second task"),
+        ];
+        let mut panel = panel(vec![record("a1", "Main", "idle")], runs.clone());
+        panel.opened(
+            "a1",
+            1,
+            Some(Anchor {
+                run: Some("r1".into()),
+                offset: 0,
+                tool: Some("same".into()),
+            }),
+            Transcript::with_read_preview(true),
+        );
+        let mut entries = vec![];
+        for (id, path) in [("r1", "first.rs"), ("r2", "second.rs")] {
+            entries.push(entry(
+                entries.len() as u64,
+                id,
+                AgentEvent::ToolStarted {
+                    id: "same".into(),
+                    name: "read".into(),
+                    arguments: json!({"path":path}).to_string(),
+                },
+            ));
+            entries.push(entry(
+                entries.len() as u64,
+                id,
+                AgentEvent::ToolFinished {
+                    id: "same".into(),
+                    result: json!({"ok":true,"content":format!("body of {path}")}),
+                },
+            ));
+        }
+        entries.push(entry(
+            4,
+            "r2",
+            AgentEvent::AssistantFinished {
+                text: (0..40)
+                    .map(|i| format!("tail-{i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            },
+        ));
+        panel.apply(Reply::Detail {
+            epoch: 1,
+            view: 1,
+            agent: "a1".into(),
+            history: DetailHistory {
+                page: EventPage {
+                    entries,
+                    cursor: None,
+                    reset: false,
+                    has_more: false,
+                    warnings: vec![],
+                },
+                runs: runs.clone(),
+                settled: std::collections::BTreeSet::from(["r1".into(), "r2".into()]),
+            },
+        });
+        // 历史可在首帧取得宽度前读完；此后没有新事件也必须定位。
+        let mut drafts = Drafts::default();
+        let screen = render(&mut panel, &mut drafts, 100, 12).join("\n");
+        assert!(screen.contains("body of first.rs"), "{screen}");
+        assert!(!screen.contains("tail-39"), "{screen}");
+        panel.apply(Reply::Detail {
+            epoch: 1,
+            view: 1,
+            agent: "a1".into(),
+            history: DetailHistory {
+                page: EventPage {
+                    entries: vec![
+                        entry(
+                            0,
+                            "r2",
+                            AgentEvent::ToolStarted {
+                                id: "same".into(),
+                                name: "read".into(),
+                                arguments: json!({"path":"replacement.rs"}).to_string(),
+                            },
+                        ),
+                        entry(
+                            1,
+                            "r2",
+                            AgentEvent::ToolFinished {
+                                id: "same".into(),
+                                result: json!({"ok":true,"content":"replacement body"}),
+                            },
+                        ),
+                    ],
+                    cursor: None,
+                    reset: true,
+                    has_more: false,
+                    warnings: vec![],
+                },
+                runs,
+                settled: std::collections::BTreeSet::from(["r2".into()]),
+            },
+        });
+        let screen = render(&mut panel, &mut drafts, 100, 18).join("\n");
+        assert!(screen.contains("replacement body"), "{screen}");
+        assert!(
+            !screen.contains("first.rs") && !screen.contains("tail-39"),
+            "{screen}"
         );
     }
 

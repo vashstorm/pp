@@ -6,9 +6,9 @@
 
 use super::super::transcript_style::{ACCENT, ACTIVITY, ADDED, DIM, MUTED, REMOVED, display_text};
 use super::Drafts;
-use super::projection::{AgentView, Projection};
+use super::projection::AgentView;
 use crate::events::AgentEvent;
-use crate::subagent::{EventPage, HubEvent, ObservedEntry};
+use crate::subagent::{EventPage, HubEvent, ObservedEntry, Run};
 use crate::tui::Transcript;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -37,29 +37,40 @@ pub(super) struct Detail {
     by_run: BTreeMap<String, usize>,
     /// 源行起始偏移 -> 条目索引。
     by_offset: BTreeMap<u64, usize>,
-    /// 工具调用 id -> 卡片条目索引。
-    by_tool: BTreeMap<String, usize>,
+    /// (run, 工具调用 id) -> 卡片条目索引。
+    by_tool: BTreeMap<(String, String), usize>,
     /// 已追加过 user 卡片的 Run。
     started: BTreeSet<String>,
     /// 已应用终态的 Run。
-    terminal: BTreeSet<String>,
+    terminal: BTreeMap<String, Terminal>,
+    active_run: Option<String>,
+    accepted: BTreeSet<(String, u64)>,
+    last_offset: Option<u64>,
     caught_up: bool,
     pending: Option<Anchor>,
     pub notice: Option<String>,
     pub focus: bool,
 }
 
+struct Terminal {
+    status: String,
+    timestamp_ms: Option<u64>,
+}
+
 impl Detail {
-    pub(super) fn new(agent: &str, view: u64) -> Self {
+    pub(super) fn new(agent: &str, view: u64, transcript: Transcript) -> Self {
         Self {
             agent: agent.to_owned(),
             view,
-            transcript: Transcript::new(),
+            transcript,
             by_run: BTreeMap::new(),
             by_offset: BTreeMap::new(),
             by_tool: BTreeMap::new(),
             started: BTreeSet::new(),
-            terminal: BTreeSet::new(),
+            terminal: BTreeMap::new(),
+            active_run: None,
+            accepted: BTreeSet::new(),
+            last_offset: None,
             caught_up: false,
             pending: None,
             notice: None,
@@ -67,123 +78,188 @@ impl Detail {
         }
     }
 
+    pub(super) fn rebuild(&mut self) {
+        let focus = self.focus;
+        let following = self.transcript.following();
+        let mut fresh = Self::new(&self.agent, self.view, self.transcript.fresh());
+        fresh.focus = focus;
+        if !following {
+            fresh.transcript.scroll_up(0);
+        }
+        fresh.notice = Some("Event log was replaced; transcript rebuilt.".into());
+        *self = fresh;
+    }
+
     pub(super) fn tick(&mut self, now: std::time::Instant) {
         self.transcript.tick(now);
     }
 
-    fn task(&self, projection: &Projection, run: &str) -> Option<String> {
-        projection.snapshot().and_then(|snapshot| {
-            snapshot
-                .runs
-                .iter()
-                .find(|candidate| candidate.id == run)
-                .map(|candidate| candidate.task.clone())
-        })
-    }
-
-    /// 逐条导入：先按 Run 追加一次 user task，之后只用 progress。
-    pub(super) fn ingest(&mut self, page: &EventPage, projection: &Projection) {
+    /// settled 是 worker 读页前冻结的终态；只有读完本页历史后才可用它补齐。
+    pub(super) fn ingest(
+        &mut self,
+        page: &EventPage,
+        runs: &[Run],
+        settled: &BTreeSet<String>,
+        now_ms: u64,
+    ) {
+        let now = std::time::Instant::now();
+        self.caught_up = false;
         for entry in &page.entries {
-            self.consume(entry, projection);
+            if self
+                .last_offset
+                .is_some_and(|offset| entry.start_offset <= offset)
+            {
+                continue;
+            }
+            self.consume(entry, runs, now_ms, now);
+            self.last_offset = Some(entry.start_offset);
         }
         if !page.has_more {
             self.caught_up = true;
-            self.apply_snapshot_terminal(projection);
+            if let Some(run) = runs.iter().find(|run| {
+                self.active_run.as_deref() == Some(&run.id) && settled.contains(&run.id)
+            }) {
+                self.apply_terminal(&run.id, &run.status, None);
+            }
         }
+        self.refresh_terminal(runs);
         self.resolve_pending();
     }
 
-    fn consume(&mut self, entry: &ObservedEntry, projection: &Projection) {
+    fn consume(
+        &mut self,
+        entry: &ObservedEntry,
+        runs: &[Run],
+        now_ms: u64,
+        now: std::time::Instant,
+    ) {
         let record = &entry.record;
         let run = record.run_id.clone().unwrap_or_default();
         if !run.is_empty()
+            && self.active_run.as_deref() != Some(&run)
+            && !self.terminal.contains_key(&run)
+        {
+            // 旧日志可能缺少终态标记；新 Run 的记录证明上一轮已读完。
+            if let Some(previous) = runs.iter().find(|candidate| {
+                self.active_run.as_deref() == Some(&candidate.id)
+                    && !matches!(candidate.status.as_str(), "queued" | "running")
+            }) {
+                self.apply_terminal(&previous.id, &previous.status, None);
+            }
+            self.active_run = Some(run.clone());
+            self.transcript
+                .begin_recorded_run("Requesting model", None, now_ms, now);
+        }
+        if !run.is_empty()
             && !self.started.contains(&run)
-            && let Some(task) = self.task(projection, &run)
+            && let Some(task) = runs
+                .iter()
+                .find(|candidate| candidate.id == run && candidate.agent_id == self.agent)
+                .map(|candidate| &candidate.task)
         {
             let index = self.transcript.entry_count();
-            self.transcript.append("You", &task);
+            self.transcript.append("You", task);
             self.by_run.insert(run.clone(), index);
             self.by_offset.insert(entry.start_offset, index);
             self.started.insert(run.clone());
         }
         match (&record.event, &record.hub) {
             // 已接受的输入单独生成一次 user 卡片；progress 明确忽略该事件。
-            (Some(AgentEvent::UserInputAccepted { text, .. }), _) => {
+            (Some(AgentEvent::UserInputAccepted { id, text }), _) => {
+                if !self.accepted.insert((run.clone(), *id)) {
+                    return;
+                }
                 let index = self.transcript.entry_count();
                 self.transcript.append("You", text);
-                if !run.is_empty() {
-                    self.by_run.insert(run.clone(), index);
-                }
                 self.by_offset.insert(entry.start_offset, index);
             }
             (Some(event), _) => {
                 let before = self.transcript.entry_count();
-                self.transcript.progress(event.clone());
+                self.transcript
+                    .progress_recorded(event.clone(), record.timestamp_ms, now_ms, now);
                 let after = self.transcript.entry_count();
                 if after > before {
                     self.by_offset.insert(entry.start_offset, before);
                 }
                 if let AgentEvent::ToolStarted { id, .. } = event {
                     // ToolStarted 总是追加一张卡片；原位更新沿用同一索引。
-                    self.by_tool.insert(id.clone(), before);
+                    self.by_tool.insert((run.clone(), id.clone()), before);
                 }
             }
-            (None, Some(HubEvent::RunState { status }))
-                if !run.is_empty() && !matches!(status.as_str(), "queued" | "running") =>
-            {
-                self.apply_terminal(&run, status, projection);
+            (None, Some(HubEvent::RunState { status })) if !run.is_empty() => {
+                match status.as_str() {
+                    "queued" | "running" if !self.terminal.contains_key(&run) => {
+                        let (label, start) = if status == "queued" {
+                            ("Queued", None)
+                        } else {
+                            ("Requesting model", record.timestamp_ms)
+                        };
+                        self.transcript
+                            .begin_recorded_run(label, start, now_ms, now);
+                    }
+                    "queued" | "running" => {}
+                    _ => self.apply_terminal(&run, status, record.timestamp_ms),
+                }
             }
             _ => {}
         }
     }
 
-    fn apply_snapshot_terminal(&mut self, projection: &Projection) {
-        let Some(snapshot) = projection.snapshot() else {
+    /// 只有对应 Run 已读完（或读到终态 lifecycle）才应用终态。
+    fn apply_terminal(&mut self, run: &str, status: &str, timestamp_ms: Option<u64>) {
+        if let Some(terminal) = self.terminal.get_mut(run) {
+            // 快照补齐后，迟到的 lifecycle 仍能补回真实完成时间。
+            terminal.timestamp_ms = terminal.timestamp_ms.or(timestamp_ms);
             return;
-        };
-        let terminals = snapshot
-            .runs
-            .iter()
-            .filter(|run| run.agent_id == self.agent)
-            .filter(|run| !matches!(run.status.as_str(), "queued" | "running"))
-            .map(|run| (run.id.clone(), run.status.clone()))
-            .collect::<Vec<_>>();
-        for (run, status) in terminals {
-            self.apply_terminal(&run, &status, projection);
+        }
+        self.terminal.insert(
+            run.to_owned(),
+            Terminal {
+                status: status.into(),
+                timestamp_ms,
+            },
+        );
+        if self.active_run.as_deref() == Some(run) {
+            match status {
+                "cancelled" => self.transcript.stop_recorded_run(true),
+                "failed" | "interrupted" => self.transcript.stop_recorded_run(false),
+                _ => {}
+            }
         }
     }
 
-    /// 只有对应 Run 已读完（或读到终态 lifecycle）才应用终态。
-    fn apply_terminal(&mut self, run: &str, status: &str, projection: &Projection) {
-        if self.terminal.contains(run) {
+    fn refresh_terminal(&mut self, runs: &[Run]) {
+        let Some(id) = &self.active_run else { return };
+        let Some(terminal) = self.terminal.get(id) else {
             return;
-        }
-        match status {
-            "cancelled" => {
-                self.terminal.insert(run.to_owned());
-                self.transcript.cancel();
-            }
-            "failed" | "interrupted" => {
-                self.terminal.insert(run.to_owned());
-                self.transcript.fail();
-                let error = projection
-                    .snapshot()
-                    .and_then(|snapshot| snapshot.runs.iter().find(|candidate| candidate.id == run))
-                    .and_then(|run| run.result.clone())
-                    .and_then(|result| {
-                        result["error"]
-                            .as_str()
-                            .map(str::to_owned)
-                            .or_else(|| result["output"].as_str().map(str::to_owned))
-                    });
-                if let Some(error) = error {
-                    self.transcript.append("Note", &error);
-                }
-            }
-            // completed 不再追加最终 assistant。
-            _ => {
-                self.terminal.insert(run.to_owned());
-            }
+        };
+        let run = runs
+            .iter()
+            .find(|run| run.id == *id && run.status == terminal.status);
+        let label = match terminal.status.as_str() {
+            "completed" => "Completed",
+            "cancelled" => "Cancelled",
+            "interrupted" => "Interrupted",
+            _ => "Failed",
+        };
+        let finished_at = terminal
+            .timestamp_ms
+            .and_then(|ms| i64::try_from(ms).ok())
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .map(|time| time.with_timezone(&chrono::Local));
+        self.transcript.finish_run_with_timing(
+            label,
+            run.map(|run| std::time::Duration::from_millis(run.duration_ms)),
+            finished_at,
+        );
+        if matches!(terminal.status.as_str(), "failed" | "interrupted")
+            && let Some(error) = run.and_then(|run| run.result.as_ref()).and_then(|result| {
+                result["error"]
+                    .as_str()
+                    .or_else(|| result["output"].as_str())
+            })
+        {
+            self.notice = Some(error.to_owned());
         }
     }
 
@@ -196,10 +272,17 @@ impl Detail {
         let Some(anchor) = self.pending.clone() else {
             return;
         };
+        if !self.caught_up && self.last_offset.is_none_or(|offset| offset < anchor.offset) {
+            return;
+        }
         let index = anchor
             .tool
             .as_ref()
-            .and_then(|tool| self.by_tool.get(tool).copied())
+            .and_then(|tool| {
+                self.by_tool
+                    .get(&(anchor.run.clone().unwrap_or_default(), tool.clone()))
+                    .copied()
+            })
             .or_else(|| {
                 self.by_offset
                     .range(..=anchor.offset)
@@ -402,6 +485,8 @@ impl Detail {
         self.transcript.set_terminal_rows(area.height);
         self.transcript
             .resize_preserving_anchor(transcript_area.width);
+        // 首批历史可能在首帧获得宽度前读完，定位不能等待下一批事件。
+        self.resolve_pending();
         self.transcript.draw(frame, transcript_area);
         let block = Block::default()
             .borders(Borders::TOP)
@@ -531,3 +616,6 @@ pub(super) fn editor() -> TextArea<'static> {
     editor.set_cursor_style(Style::default().add_modifier(Modifier::empty()));
     editor
 }
+
+#[cfg(test)]
+mod tests;

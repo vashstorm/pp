@@ -232,7 +232,10 @@ fn agent_hub_streams_and_anchors_activity() {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("probe.txt"), "hub-probe-body").unwrap();
-        std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+        std::fs::write(
+            config_path(home.path(), "settings.yml"),
+            r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"bash_timeout_seconds":37,"read":{"toolResultPreview":true}}"#,
+        ).unwrap();
         std::fs::write(
             config_path(home.path(), "models.yml"),
             response_models(&fixture, Some(protocol)),
@@ -288,6 +291,7 @@ fn agent_hub_streams_and_anchors_activity() {
         pty.text("ToolFailure");
         pty.input("\r");
         pty.text("hub-stream-first");
+        pty.text("✻ Responding");
         // 第二段只追加一次。
         // 分片拼接必须与最终文本一致，否则 Responses 协议会判定冲突。
         streaming_delta(&mut live, protocol, " hub-stream-second");
@@ -296,6 +300,7 @@ fn agent_hub_streams_and_anchors_activity() {
         streaming_complete(&mut live, protocol, "hub-stream-first hub-stream-second");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         ask_final_reply(request, protocol, "hub-parent-stream-done");
+        pty.text("✻ Completed");
         // Activity：失败只出现在 Errors。
         hub_escape(&mut pty, "j/k select");
         pty.input("2");
@@ -308,6 +313,11 @@ fn agent_hub_streams_and_anchors_activity() {
         pty.input("\r");
         pty.text("Agent Hub");
         pty.text("printf hub-tool-fail");
+        // 从磁盘历史恢复工具，使用共享配置，不把回放耗时当作 Wall。
+        pty.text("Timeout: 37s");
+        assert!(!pty.contents().contains("Wall:"));
+        pty.input("\x1b[1;5H");
+        pty.text("hub-probe-body");
         // Esc 回到原 scope/search/选中活动。
         hub_escape(&mut pty, "Errors");
         assert_eq!(hub_count(&pty.contents(), "✖"), 1);

@@ -151,7 +151,7 @@ impl Transcript {
         if self
             .activity
             .as_ref()
-            .is_some_and(|activity| activity.started.is_some())
+            .is_some_and(|activity| activity.running)
         {
             let mut index = self.entries.len();
             while index > 0

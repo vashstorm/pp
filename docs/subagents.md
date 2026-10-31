@@ -18,6 +18,7 @@ Hub 分两页，`1`／`2` 切换：
 - Agents：列表与 inspector。`j`/`k` 或方向键选择，`t` 切换父子树，`/` 过滤 id 与名称（树中保留匹配项的祖先），`Enter` 打开详情，`e` 打开详情并聚焦输入，`c` 取消本次运行、`x` 立即停止 Agent、`r` 在 parked／aborted 上恢复，`F5` 重新扫描。宽屏右侧 inspector 显示身份、模型、任务、当前活动、用量与上下文、lineage、变更归属和最近活动；窄屏用 `Tab` 在列表与 inspector 之间切换，`Esc` 先清过滤、再退出 inspector、最后关闭 Hub。
 - Activity：完整活动流，`f` 切换 All／Errors／Responses／Tools，`s` 切换 All agents／Selected agent／Subtree，`/` 搜索，默认跟随最新；手动移动会暂停跟随并固定选中活动，`Space` 恢复跟随。`Enter` 打开对应 Agent 的详情并定位到该条活动。
 - 详情是全屏独立视图：正文用 child 自己的 transcript，底部是独立输入框。普通字符与方向键都进入 child 输入框，Enter 发送原文，Ctrl+J 换行，Ctrl+A／E／K 沿用主编辑器语义，PgUp／PgDn 与滚轮滚动正文，Ctrl+Home／End 跳顶／回底，Ctrl+O 只切换 child 的工具展开。输入不执行 slash、本地 shell、`@` 文件展开或主会话历史。
+- 详情消息区复用主 Agent 的 Markdown、代码高亮、工具卡片、diff 和运行状态显示，并继承 read 预览与 bash 超时配置；正文、滚动位置和工具展开状态独立，重开详情恢复默认折叠。运行计时从日志中的开始时间恢复，完成耗时使用已保存的任务耗时；缺失的时间显示 `—`，历史工具不按导入速度生成 `Wall`。
 - Esc 从详情回到来源页并保留 child 草稿，再 Esc 关闭 Hub；关闭 Hub 不取消任何 child。主视图中 Esc 取消根任务及其拥有的子任务。
 - 人工追问按普通文本发送，`/model` 等文本不会在 child 中执行本地命令。发送成功才清掉未修改的草稿，失败保留草稿并提示；父方在成功后按既有规则取回结果。
 - 详情与 Activity 使用与主对话相同的观察日志，历史超过 64 KiB 也能从头浏览；旧日志缺少时间戳时显示 `—`，不推算当前时间或费用。

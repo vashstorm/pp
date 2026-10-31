@@ -25,6 +25,7 @@ use std::{
 
 mod entry;
 mod native;
+mod recorded;
 mod render;
 mod tree_layout;
 
@@ -140,7 +141,7 @@ struct TranscriptEntry {
     layout: Option<Arc<EntryLayout>>,
     expanded: bool,
     footer: String,
-    started: Instant,
+    started: Option<Instant>,
     bash_timeout_seconds: Option<u64>,
     arguments: Value,
     result: Option<Value>,
@@ -154,7 +155,8 @@ struct Activity {
     started: Option<Instant>,
     waiting_started: Option<Instant>,
     label: String,
-    seconds: u64,
+    seconds: Option<u64>,
+    running: bool,
 }
 
 pub(super) struct TreeBlock {
@@ -287,8 +289,11 @@ impl Transcript {
         for (_, index) in &self.running_tools {
             let entry = &mut self.entries[*index];
             if entry.kind == EntryKind::Bash {
-                changed |=
-                    entry.update_bash_footer(Some(now.saturating_duration_since(entry.started)));
+                changed |= entry.update_bash_footer(
+                    entry
+                        .started
+                        .map(|started| now.saturating_duration_since(started)),
+                );
             }
         }
         changed
@@ -312,17 +317,30 @@ impl Transcript {
         elapsed: Duration,
         finished_at: chrono::DateTime<chrono::Local>,
     ) {
+        self.finish_run_with_timing(label, Some(elapsed), Some(finished_at));
+    }
+
+    /// 主会话和观察日志共用完成状态；缺失的历史时间保持未知。
+    pub(super) fn finish_run_with_timing(
+        &mut self,
+        label: &str,
+        elapsed: Option<Duration>,
+        finished_at: Option<chrono::DateTime<chrono::Local>>,
+    ) {
         let activity = self
             .activity
             .get_or_insert_with(|| Activity::new(Instant::now()));
         activity.started = None;
         activity.waiting_started = None;
+        activity.running = false;
         activity.label = label.into();
-        activity.seconds = elapsed.as_secs();
+        activity.seconds = elapsed.map(|elapsed| elapsed.as_secs());
         activity.entry.text = format!(
             "✻ {label} · {} · done {}",
-            Activity::format_duration(activity.seconds),
-            finished_at.format("%H:%M")
+            activity.duration_text(),
+            finished_at
+                .map(|time| time.format("%H:%M").to_string())
+                .unwrap_or_else(|| "—".into())
         );
         activity.entry.layout = None;
     }
@@ -435,11 +453,9 @@ impl Transcript {
         writer.flush()
     }
 
-    pub(super) fn progress(&mut self, event: AgentEvent) {
-        if !self.replaying
-            && let Some(activity) = &mut self.activity
-        {
-            match &event {
+    fn progress_phase(&mut self, event: &AgentEvent) {
+        if let Some(activity) = &mut self.activity {
+            match event {
                 AgentEvent::AssistantStarted => activity.phase("Requesting model"),
                 AgentEvent::ThinkingDelta { .. } => activity.phase("Thinking"),
                 AgentEvent::AssistantDelta { .. } => activity.phase("Responding"),
@@ -466,6 +482,12 @@ impl Transcript {
                 // 用户输入确认由 App 消费；不重置活动阶段、不产生重复卡片。
                 AgentEvent::UserInputAccepted { .. } => {}
             }
+        }
+    }
+
+    pub(super) fn progress(&mut self, event: AgentEvent) {
+        if !self.replaying {
+            self.progress_phase(&event);
         }
         match event {
             // 用量更新不产生对话条目。
@@ -817,8 +839,12 @@ impl Transcript {
                     }
                     entry.result = Some(result);
                     if entry.kind == EntryKind::Bash {
-                        entry
-                            .update_bash_footer((!self.replaying).then(|| entry.started.elapsed()));
+                        entry.update_bash_footer(
+                            entry
+                                .started
+                                .filter(|_| !self.replaying)
+                                .map(|started| started.elapsed()),
+                        );
                     }
                     entry.layout = None;
                     entry.display_title = None;
@@ -869,7 +895,12 @@ impl Transcript {
             self.entries[index].status = EntryStatus::Failed;
             if self.entries[index].kind == EntryKind::Bash {
                 let entry = &mut self.entries[index];
-                entry.update_bash_footer((!self.replaying).then(|| entry.started.elapsed()));
+                entry.update_bash_footer(
+                    entry
+                        .started
+                        .filter(|_| !self.replaying)
+                        .map(|started| started.elapsed()),
+                );
             } else if self.entries[index].kind == EntryKind::Ask {
                 self.entries[index].text = "Previous request was interrupted.".into();
             }

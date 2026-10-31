@@ -125,7 +125,7 @@ impl App {
                     self.hub_view_epoch += 1;
                     let view = self.hub_view_epoch;
                     if let Some(panel) = &mut self.subagent_panel {
-                        panel.opened(&agent, view, anchor);
+                        panel.opened(&agent, view, anchor, self.conversation.fresh());
                     }
                     let epoch = self.hub_root_epoch;
                     self.hub_send(subagents::Request::OpenDetail { epoch, view, agent });
