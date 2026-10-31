@@ -24,6 +24,7 @@ fn model_roles_subagent_explicit_selection_and_default_reviewer_route_are_indepe
         (
             crate::config::ModelRole::Fast,
             crate::config::RoleAssignment {
+                fallback: None,
                 enabled: true,
                 model: "fixture/fast".into(),
                 effort: ThinkLevel::Low,
@@ -32,6 +33,7 @@ fn model_roles_subagent_explicit_selection_and_default_reviewer_route_are_indepe
         (
             crate::config::ModelRole::Review,
             crate::config::RoleAssignment {
+                fallback: None,
                 enabled: true,
                 model: "fixture/review".into(),
                 effort: ThinkLevel::High,
@@ -69,6 +71,7 @@ fn model_roles_unselected_roles_are_absent_from_prompt_schema_and_rejected_befor
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), Settings::default());
     let inactive = crate::config::RoleAssignment {
+        fallback: None,
         enabled: false,
         model: "fixture/disabled-model-marker".into(),
         effort: ThinkLevel::High,
@@ -77,6 +80,7 @@ fn model_roles_unselected_roles_are_absent_from_prompt_schema_and_rejected_befor
         (
             crate::config::ModelRole::Fast,
             crate::config::RoleAssignment {
+                fallback: None,
                 enabled: true,
                 model: "fixture/fast".into(),
                 effort: ThinkLevel::Low,

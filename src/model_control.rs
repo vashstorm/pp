@@ -9,6 +9,7 @@ use std::{
 
 #[derive(Clone)]
 pub(crate) struct Target {
+    pub role: Option<ModelRole>,
     pub revision: u64,
     pub reference: String,
     pub effort: Option<ThinkLevel>,
@@ -178,6 +179,10 @@ impl Service {
                     }
                     let result = (|| -> Result<()> {
                         catalog.reload_models()?;
+                        let source_role = match &change {
+                            Change::Role(role, _) => Some(*role),
+                            _ => None,
+                        };
                         let (role, assignment) = match change {
                             Change::Select(reference) => {
                                 catalog.resolve(&reference)?;
@@ -206,6 +211,7 @@ impl Service {
                         let revision = inner.revision;
                         if let Some((reference, effort)) = assignment {
                             let target = Target {
+                                role: source_role,
                                 revision,
                                 reference: reference.clone(),
                                 effort,

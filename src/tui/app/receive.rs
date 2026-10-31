@@ -207,6 +207,27 @@ impl App {
                         }
                         AgentEvent::TodoStateUpdated { state } => self.todo_panel.update(state),
                         AgentEvent::ContextUpdated { usage } => self.usage = Some(usage),
+                        AgentEvent::ModelRouteChanged {
+                            model,
+                            effort,
+                            fallback,
+                            temporary,
+                        } => {
+                            if !temporary
+                                && let Some(choice) =
+                                    self.choices.iter().find(|c| c.reference == model).cloned()
+                            {
+                                self.current_model = Some(choice);
+                                self.think_level = effort;
+                                self.usage = None;
+                            }
+                            self.conversation.progress(AgentEvent::ModelRouteChanged {
+                                model,
+                                effort,
+                                fallback,
+                                temporary,
+                            });
+                        }
                         AgentEvent::ModelRequestStarted => self.token_speed.start(Instant::now()),
                         AgentEvent::ModelOutputProgress { output_bytes } => {
                             self.token_speed.progress(output_bytes, Instant::now())

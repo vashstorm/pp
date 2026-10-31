@@ -660,6 +660,7 @@ fn tui_notification_errors_stay_local_and_do_not_replay_after_resume() {
             response_models(&fixture, Some(protocol)),
         )
         .unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
         let mut pty = Pty::start_with_existing_files(home.path());
         pty.ready();
         pty.input("/bogus\r");

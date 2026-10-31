@@ -570,3 +570,6 @@ mod config_error_cases;
 
 #[path = "cli_agent/sqlite.rs"]
 mod sqlite;
+
+#[path = "cli_agent/fallback_cases.rs"]
+mod fallback_cases;

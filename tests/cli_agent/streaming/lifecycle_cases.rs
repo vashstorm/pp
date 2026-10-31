@@ -82,7 +82,7 @@ fn streaming_idle_timeout_stops_silent_stream_before_or_after_output() {
                 &server,
                 dir.path(),
                 Some("stalled response"),
-                "request_timeout_seconds: 1\nrate_limit_retry_budget_seconds: 5\n",
+                "request_timeout_seconds: 1\nrate_limit_retry_budget_seconds: 0\n",
             );
             let (request, _) = protocol.receive(&server);
             let mut stream = SseReply::new(request);
@@ -381,7 +381,7 @@ fn streaming_invalid_later_call_rejects_entire_batch_and_repl_history() {
 }
 
 #[test]
-fn streaming_failures_keep_partial_redact_secrets_and_never_commit_or_retry() {
+fn streaming_failures_keep_partial_and_never_commit_when_retries_disabled() {
     for protocol in PROTOCOLS {
         let failures: &[Broken] = match protocol {
             Protocol::Chat => &[
@@ -423,7 +423,7 @@ fn streaming_failures_keep_partial_redact_secrets_and_never_commit_or_retry() {
                     &server,
                     dir.path(),
                     (!repl).then_some("broken turn"),
-                    "default_model: fixture/primary\n",
+                    "default_model: fixture/primary\nrate_limit_retry_budget_seconds: 0\n",
                 );
                 if repl {
                     cli.input("broken turn\n");
@@ -510,7 +510,7 @@ fn default_reasoning_rejection_allows_manual_effort_recovery_without_committing_
     let protocol = Protocol::Responses;
     let server = server();
     let dir = tempfile::tempdir().unwrap();
-    let settings = r#"{"think_level":"default"}"#;
+    let settings = r#"{"think_level":"default","rate_limit_retry_budget_seconds":0}"#;
     let mut cli = protocol.start_with_settings(&server, dir.path(), None, settings);
     cli.input("original task\n");
     let (request, body) = protocol.receive(&server);

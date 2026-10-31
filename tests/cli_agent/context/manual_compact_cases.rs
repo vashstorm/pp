@@ -379,3 +379,59 @@ fn context_manual_compact_persists_before_exit_and_resumes_native_cursor() {
         no_more(&server);
     }
 }
+
+#[test]
+fn fallback_context_summary_keeps_native_suffix_and_rolls_back_on_failure() {
+    for protocol in PROTOCOLS {
+        for succeed in [true, false] {
+            let server = server();
+            let dir = tempfile::tempdir().unwrap();
+            context_write_large_file(dir.path());
+            let mut settings: Value = serde_json::from_str(MANUAL_SETTINGS).unwrap();
+            settings["model_roles"] = json!({"default":{"model":"fixture/primary","effort":"none",
+                "fallback":{"model":"fixture/backup","effort":"low"}}});
+            let mut cli = protocol.start(
+                &server,
+                dir.path(),
+                &[("primary", Some(8192)), ("backup", Some(8192))],
+                &settings.to_string(),
+            );
+            context_seed_history(protocol, &server, &mut cli);
+            cli.input("/compact\n");
+            let (request, body) = protocol.receive(&server);
+            context_assert_summary_request(protocol, &body);
+            request.respond(Response::empty(503)).unwrap();
+            let (request, body) = protocol.receive(&server);
+            assert_eq!(body["model"], "fixture-backup");
+            context_assert_summary_request(protocol, &body);
+            if succeed {
+                protocol.final_reply(request, SUMMARY_TEXT);
+                cli.wait_for(Pipe::Stderr, "Context compacted: ~");
+            } else {
+                request.respond(Response::empty(503)).unwrap();
+                cli.wait_for(Pipe::Stderr, "HTTP status 503");
+            }
+            cli.input("after summary fallback\n");
+            let (request, body) = protocol.receive(&server);
+            assert_eq!(body["model"], "fixture-primary");
+            if succeed {
+                context_assert_compacted_history(protocol, &body, "after summary fallback");
+            } else {
+                let text = body.to_string();
+                assert!(text.contains(OLD_MARKER));
+                assert!(text.contains("recent done"));
+                assert!(!text.contains(SUMMARY_TEXT));
+            }
+            protocol.final_reply(request, "after summary done");
+            cli.input("/quit\n");
+            let output = cli.finish();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!String::from_utf8_lossy(&output.stdout).contains(SUMMARY_TEXT));
+            no_more(&server);
+        }
+    }
+}

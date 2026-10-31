@@ -119,6 +119,11 @@ Typing, pasting, and opening the model picker remain available while the model i
 
 Use `/Roles` to save role-specific models and effort. Updating DEFAULT also schedules a main-session change and leaves existing subagents alone. Updating FAST, SLOW, VISION, PLAN, or REVIEW applies to subagents explicitly bound to that role at each subagent's next committed boundary, including nested agents. Existing subagents without a role keep their model. Disabling or clearing a role does not cancel or rebind existing subagents. Changes apply within this pp process; other running pp processes are not watched.
 
+Each role supports one fallback with its own thinking level. In `/Roles`, use ↑/↓ to select primary or fallback rows, Enter to pick a model, `f` to set a fallback, `x` to clear the selected row, and `t` (`e` also works) to adjust thinking. Clearing the primary disables the role while retaining its fallback; selecting a new primary keeps it disabled until you enable it. Delete/Backspace removes the whole role.
+
+Model failures, including interrupted streams, retry from the current request boundary without repeating completed tools. Each model allows at most 10 sends, bounded by `rate_limit_retry_budget_seconds`; the fallback gets an independent allowance. Zero disables retries but still permits one fallback send. Cancellation and local configuration, persistence, or cleanup failures stop immediately. A successful fallback remains active for the current task; the next independent task restores the primary. Manual `/model` selection detaches the role fallback. Failed partial output remains visibly marked and is excluded from valid model history. Existing role settings migrate transactionally to `agent.db` schema v3.
+
+
 `/task-test` exists only in cargo debug builds. It requires the FAST, SLOW, and REVIEW model roles to be enabled, keeps the current model, and sends one fixed read-only batch: `scout` with role `fast`, `scout` with role `slow`, and `reviewer`. It waits for all three results and never modifies repository files. Release builds reject it locally and hide it from `/help` and the `/` menu.
 
 | Command | Purpose |

@@ -125,7 +125,7 @@ auto_compact: true
 auto_compact_threshold_percent: 80 # 严格限制 1..=99
 # 模型建连及连续无数据的闲置超时（秒），不限制整轮生成总耗时
 request_timeout_seconds: 300
-# 模型建连阶段临时 HTTP／网络错误的总重试等待预算（秒）；0 表示不重试
+# 每个模型请求失败后的总重试等待预算（秒）；0 表示仅尝试一次
 rate_limit_retry_budget_seconds: 300
 read_max_bytes: 65536
 read_max_lines: 2000
@@ -140,7 +140,7 @@ bash_timeout_seconds: 120
 
 在 TUI 输入 `/Roles`（也接受 `/roles`），打开独立的模型角色配置页；`/model` 仍只切换当前会话的模型。配置页采用深色双栏布局：左侧为 Roles、全部模型和供应商导航，右侧为角色、模型或 effort 选择区。
 
-首批角色为 `DEFAULT`、`FAST`、`SLOW`、`VISION`、`PLAN`、`REVIEW`，直接列出全部六项，暂不分类。每项独立保存一个 `provider/model` 和 effort；`FAST` 对应参考界面中的 SMOL。圆点是启用标识：`●` 为选中，`○` 为未选中；方向箭头仅表示键盘焦点。选中的 Role 显示彩色，未选中的整行灰显，光标移动不会改变启用状态。Space 或点击圆点切换启用状态，取消选中会保留 model/effort。Enter 配置模型及受支持的 effort；首次配置默认启用，修改已取消选中的配置不会重新启用。`e` 单独调整 effort，Delete 删除配置，Esc 逐级返回。修改已启用角色的模型或 effort 后，配置提交到 `agent.db` 才发布待生效修订。DEFAULT 只作用于主 Agent；其他角色由绑定该角色的子 Agent 各自在下一安全边界应用，包括嵌套子 Agent。已有的无角色子 Agent 保持创建时的配置；取消选中或删除角色不会取消、重绑已有子 Agent。
+首批角色为 `DEFAULT`、`FAST`、`SLOW`、`VISION`、`PLAN`、`REVIEW`，直接列出全部六项，暂不分类。每项可保存一个主模型和一个 fallback，各自使用独立的 `provider/model` 与 effort；`FAST` 对应参考界面中的 SMOL。圆点是启用标识：`●` 为选中，`○` 为未选中；方向箭头仅表示键盘焦点。选中的 Role 显示彩色，未选中的整行灰显，光标移动不会改变启用状态。Space 或点击圆点切换启用状态，取消选中会保留 model/effort。Enter 配置模型及受支持的 effort；首次配置默认启用，修改已取消选中的配置不会重新启用。`↑/↓` 在主模型行与缩进的 `↳` 备用行之间选择，Enter 修改当前行；`f` 设置当前角色的 fallback，`t`（兼容 `e`）单独调整当前行 thinking，`x` 清除当前行，Delete／Backspace 删除整个角色配置，Esc 逐级返回。主备模型不能相同；清空主模型会禁用角色并保留 fallback，补齐后仍需手动启用。修改已启用角色的模型或 effort 后，配置提交到 `agent.db` 才发布待生效修订。DEFAULT 只作用于主 Agent；其他角色由绑定该角色的子 Agent 各自在下一安全边界应用，包括嵌套子 Agent。已有的无角色子 Agent 保持创建时的配置；取消选中或删除角色不会取消、重绑已有子 Agent。
 
 Role 配置保存在 `~/.pp/agent/agent.db`，只能通过 TUI 的 `/Roles` 面板修改，不写入 `settings.yml`，也没有可编辑的 YAML 形式；面板的每次启用、选模和 effort 修改都在数据库事务中提交，提交成功才更新目录快照。取消选中与重新选中都会保留已配置的 model/effort，`settings.yml` 中的旧 `model_roles` 只在首次迁移时读取。
 
@@ -154,6 +154,12 @@ Role 配置保存在 `~/.pp/agent/agent.db`，只能通过 TUI 的 `/Roles` 面�
 运行时 `/model` 与别名 `/models` 只修改主 Agent 的会话模型；`/Roles` 修改角色配置并保存。控制线程负责读取、校验和持久化，UI 不做这些 I/O。安全边界是当前回复及整批工具调用／结果已经提交，且尚未领取下一批 Steering、检查新模型容量和发送下一请求；空闲 Agent 立即应用，任务已完成则只更新模型，不额外请求模型。压缩和 Plan 审批交接期间延后，待事务完成再应用。切换复用同一 Agent 和任务，不重置预算、TODO 或文件变更快照；后台进程与其他角色的子 Agent 继续运行。
 
 每个 Agent 独立保留原生历史，只转换已提交内容。不兼容历史、目标不可用或 checkpoint 失败时保留原模型，不自动摘要；某个 Agent 的失败不影响其他 Agent 应用角色配置，界面区分配置已保存、等待边界、生效和失败。子 Agent 的实际模型、恢复快照及新请求计价一起更新，过去的请求统计不改写。配置传播仅覆盖当前 pp 进程及其子 Agent。
+
+模型请求失败（包括供应商 HTTP 错误、流中断和响应解析错误）后，只从本轮请求前的安全消息边界重发，保留此前完整的工具调用和结果，不重跑工具。每个模型最多发送 10 次（含首次），同时受 `rate_limit_retry_budget_seconds` 累计等待预算限制；任一上限耗尽后，使用该角色配置的 fallback，其次数和等待预算独立计算。预算为 0 时主备各发送一次。整数秒 `Retry-After` 优先，否则从 1 秒开始指数退避；单次等待截断到剩余预算。取消、本地配置错误、持久化失败与进程清理失败不会触发重试或 fallback。
+
+备用模型用于当前任务剩余轮次和 Steering；下一独立任务或 FollowUp 恢复主模型。手动 `/model` 解除角色 fallback 绑定，单独调整 thinking 保留绑定。角色来源和基准模型随会话保存，旧会话没有来源字段时不反推绑定。跨协议切换继续使用严格历史转换，不兼容时安全停止。独立计划审阅和摘要请求也支持备用模型，保留临时请求隔离及压缩事务约束。已显示的失败残片保留失败标记，但不进入有效模型历史；已开始流式响应的失败尝试独立计入统计，纯建连重试仍合并计数，首次请求上下文只保存一次。
+
+`agent.db` 的 schema v3 以事务迁移现有角色，新增可空主模型与备用模型／effort；其他偏好、授权和计数保持原值。
 
 ### 模型目录
 
@@ -202,7 +208,7 @@ chmod 600 ~/.pp/agent/models.yml
 - 普通新启动优先使用模型 `defaultLevel`，否则使用允许的全局默认 effort（保存在 `agent.db`），全局值不允许时使用规范顺序中最低允许档。实际切入其他模型时，显式模型默认值总是优先；没有显式默认则保留目标支持的当前档位，否则回退到目标有效默认。切到当前模型引用是无操作。`/new` 保留当前模型和档位。切换模型、原生请求参数与保存档位原子提交；持久化失败不部分改变状态。
 - 白名单贯穿 `/effort`（含 `/think` 和 `default` 别名）、TUI 菜单、Shift + Tab、会话恢复与 API 请求；不支持的输入在本地拒绝，不改变档位、请求或日志。Shift + Tab 仅循环允许档，单档时保持档位与草稿。恢复精确保留仍被允许的保存档位及原生请求，修改 `defaultLevel` 不覆盖它；收窄白名单排除保存档位时拒绝恢复，不改写日志或发送请求。⌥ + S / Ctrl + S 仍只保存全局默认 effort 到 `agent.db`，不写模型配置、不改变当前会话；显式模型默认值及菜单 `(default)` 标记仍优先于保存的全局值。
 
-- 全局默认思考档位（`agent.db` 中的 `think_level` 偏好）设置启动时的默认级别，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；未保存默认值或缺少该偏好时使用 `none`。界面将 `none` 显示为 `no think`。迁移旧设置时 `default` 作为 `none` 的兼容别名读取，含义是显式关闭思考。写入只接受这些小写字符串，拒绝 null 和其他值。Responses 请求显式发送 `reasoning.effort`，Chat Completions 请求显式发送 `reasoning_effort`；`none` 均传为字符串 `"none"`，Responses 同时省略 `reasoning.summary`，其他档位仍使用 `reasoning.summary: "auto"` 请求可读思考摘要。通过本地模型白名单校验的档位原样传给服务端；白名单不保证供应商实际支持，未配置白名单时仍由服务端决定，不自动降档或重试。参见 [OpenAI 官方思考级别说明](https://developers.openai.com/api/docs/guides/reasoning)。
+- 全局默认思考档位（`agent.db` 中的 `think_level` 偏好）设置启动时的默认级别，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；未保存默认值或缺少该偏好时使用 `none`。界面将 `none` 显示为 `no think`。迁移旧设置时 `default` 作为 `none` 的兼容别名读取，含义是显式关闭思考。写入只接受这些小写字符串，拒绝 null 和其他值。Responses 请求显式发送 `reasoning.effort`，Chat Completions 请求显式发送 `reasoning_effort`；`none` 均传为字符串 `"none"`，Responses 同时省略 `reasoning.summary`，其他档位仍使用 `reasoning.summary: "auto"` 请求可读思考摘要。通过本地模型白名单校验的档位原样传给服务端；白名单不保证供应商实际支持，未配置白名单时仍由服务端决定，不自动降档；供应商拒绝请求时仍遵循上述有界重试规则。参见 [OpenAI 官方思考级别说明](https://developers.openai.com/api/docs/guides/reasoning)。
 - TUI 输入 `/effort `（命令后加空格）即在输入框上方展开档位菜单，左侧显示档位，右侧显示说明和“当前”标记，浅蓝色突出选中项。↑/↓ 选择，Enter 确认，Esc 取消并保留输入；⌥ + S / Ctrl + S 将当前高亮选中的档位保存为全局默认值（写入 `agent.db`，下次普通新启动生效），不改变当前会话档位。菜单底部显示快捷键提示；继续输入档位前缀会筛选候选，Tab 补全但不执行。菜单只包含当前模型允许的档位；未配置限制时包含 `no think` 和上述五档，关闭思考的补全值为 `none`，不显示固定 token 预算。输入 `/effort` 后按 Enter 也可展开。行模式用 `/effort` 查看当前级别及可选值；两种模式均可用 `/effort high` 直接切换、`/effort none` 关闭思考，兼容旧命令 `/think` 和旧值 `default`。切换保留历史，对后续请求生效；`/new` 保留当前级别，`/model` 按目标模型策略选择档位；未配置策略的模型仍保留当前级别。TUI 底部状态栏显示实际选择，运行中拒绝切换并保留输入草稿。命令及 Shift + Tab 不保存全局默认值；已有活动 session 时会持久化当前选择，写入失败则保留原档位。普通新启动按模型默认值与全局默认 effort 优先级选择，恢复 session 使用仍被允许的保存档位。
 - 缺少 `settings.yml` 时声明式设置使用默认值；没有已保存的默认模型或没有匹配的 provider/model 时，使用首个 provider 的首个模型。模型请求次数默认 20，模型建连及连续无数据的闲置超时默认 300 秒，收到响应数据（包括思考和 SSE 心跳）后重新计时，不限制生成总耗时；前台 bash 超时默认 120 秒；后台 bash 不设固定 deadline，按本次用户任务生命周期收尾；read 文本默认最多返回 65,536 源字节且不超过 2000 个完整行，图片使用独立大小限制。限制值必须为正整数，拒绝 null、负数、小数、字符串和数值溢出。
 - `edit` 缺省为 `replace`，只接受严格小写的 `replace`／`hashline`，拒绝 null、其他类型、大小写或空白变体。启动时固定，`/model`（含跨协议切换）和 `/new` 均保留；使用锚点编辑须显式配置 `hashline`。
@@ -211,7 +217,7 @@ chmod 600 ~/.pp/agent/models.yml
 - 配置顶层、供应商和模型条目均拒绝未知字段。模型条目仅接受 `model`、可选的 `cost`、`thinking`、`context_window`，不接受 `id`，也不能覆盖供应商的凭据、接口地址或协议；旧顶层平铺 `models` 格式不再支持。
 - 供应商级 `protocol` 只接受 `response`（默认，`POST /responses`）和 `completion`（`POST /chat/completions`）。后者不是旧 `/completions` API。null、类型错误、旧值 `openai` 和 `anthropic` 均使配置无效，包括未选中条目；迁移旧 Chat Completions 配置时须将 `openai` 改为 `completion`，省略字段会选择 Responses。
 - Responses 流优先直接解码为 SDK 类型；在报告缺少 `annotations`／`arguments` 或字符串字段为 `null` 时进入兼容处理，为缺少注释的 `output_text` 补 `annotations: []`，并仅将 `response.output_item.added` 中 `function_call` 缺失或为 `null` 的 `arguments` 归一化为 `""`，随后仍由 SDK 校验。起始参数尚未传输不提前报错；其他字段的 `null`、错误类型以及调用结束与最终响应中的非法参数仍拒绝，工具只在最终批次校验通过后执行。
-- Chat Completions 流兼容 Copilot 缺少 `object` 的分片，仅在字段缺失时补固定值 `chat.completion.chunk`，已有的 `null` 或错误类型仍拒绝。整轮省略 `delta.role` 或只返回 `null` 时，在汇总结束后默认使用 `assistant`；显式错误角色、角色冲突、缺少结束状态及空回复仍拒绝，不在每个分片提前补角色。可读思考字段按 `reasoning_content`、`reasoning`、`reasoning_text` 的顺序选择一个，不展示 `reasoning_opaque`。Copilot 的 `finish_reason: error` 和流内错误事件按失败处理，不重试、不执行待定工具、不提交失败轮次的助手历史；`finish_reason: refusal` 仅在有文本且没有工具调用时作为拒绝答复提交。其余核心字段仍由 SDK 校验，不推断正文、工具参数、结束状态或用量；解码失败显示 JSON 错误类别或已知字段路径，不输出响应正文、未知字段名或未知枚举值。
+- Chat Completions 流兼容 Copilot 缺少 `object` 的分片，仅在字段缺失时补固定值 `chat.completion.chunk`，已有的 `null` 或错误类型仍拒绝。整轮省略 `delta.role` 或只返回 `null` 时，在汇总结束后默认使用 `assistant`；显式错误角色、角色冲突、缺少结束状态及空回复仍拒绝，不在每个分片提前补角色。可读思考字段按 `reasoning_content`、`reasoning`、`reasoning_text` 的顺序选择一个，不展示 `reasoning_opaque`。Copilot 的 `finish_reason: error` 和流内错误事件按失败处理并遵循有界重试及角色 fallback，不执行待定工具、不提交失败轮次的助手历史；`finish_reason: refusal` 仅在有文本且没有工具调用时作为拒绝答复提交。其余核心字段仍由 SDK 校验，不推断正文、工具参数、结束状态或用量；解码失败显示 JSON 错误类别或已知字段路径，不输出响应正文、未知字段名或未知枚举值。
 - 模型配置从 `models.yml`、`models-sub.yml` 加载，声明式应用设置从 `settings.yml` 加载，默认/收藏/Role/effort 与授权从 `agent.db` 加载；运行期不回落读取旧 `auth.yml` 或已迁移的 settings 字段。不使用供应商环境变量、变量替换或 `.env`。错误不输出配置值、URL、响应体或密钥。按服务端和模型实际支持情况选择协议，不自动回退。
 
 直接运行 `pp` 时，缺失／不可读／无效的模型配置或客户端初始化失败仍允许进入交互界面并编辑输入；错误显示在消息区或行终端。缺少 `settings.yml` 则正常使用默认值。启动时无法读取 `agent.db`、迁移冲突、损坏或版本过高会禁用模型请求并显示脱敏错误，不会把已保存授权当作空，也不会退回旧 YAML；运行中目录刷新失败则保留旧快照。应修正权限或冲突并保留文件，不要通过删除数据库或旧文件来自动“修复”。模型不可用时，提交任务、`/compact`、`/new` 仅显示错误，不发送请求或执行工具；`/login`、`/logout`、`/help` 可用，`/model` 可重新加载配置并尝试初始化，`/quit` 正常退出，行模式也可 EOF 退出。已有 Agent 在打开 `/model` 时只刷新模型目录；其他启动参数仍需重启生效。技能目录可在 `/skills` 中按 r 重扫。`pp -p` 遇到无效配置则以非零状态退出。
@@ -653,7 +659,7 @@ cargo nextest run --locked -E 'test(mcp_) | test(slash_mcp)'
 - **容量必须显式配置。** 每模型 `context_window` 为可选的正整数 token 数；省略表示未知，拒绝 null、0、负数、小数、字符串及溢出，未选中的模型也校验。不根据模型名猜容量；订阅模型仅采用模型目录明确返回的容量。`auto_compact` 默认 true，`auto_compact_threshold_percent` 默认 80 且必须为 1..=99 的整数；修改后重启生效，无运行时开关命令。当前模型没有容量时显示 `Auto compact: inactive (context_window not configured)`，不显示虚构的百分比；明确关闭则显示 `off`。切模型只用目标模型的容量，恢复只用当前模型目录配置，不继承旧模型或日志中的容量。
 - **主动 `/compact`，自动在每次普通请求前检查。** `/compact` 不接受参数，支持 TUI 和行模式；`-p '/compact'` 仍是普通提示词。自动检查包含刚接受的用户输入及同一任务内完整工具批次的增长；用量达到阈值时先摘要，再继续任务。手动压缩不要求已知容量；空历史、只有待回复用户输入或只有一个完整 exchange 时返回 `Nothing to compact.`，不发请求、不创建空日志。TUI 仅空闲时接受命令，运行中草稿可编辑，Esc 等待实际取消终态后恢复；自动压缩仍属于当前任务，手动压缩不产生虚假的任务 Completed 或 `You: /compact`。
 - **当前模型总结旧前缀，近期交互原生保留。** 完整 assistant 回复或 assistant calls 与该批全部 tool results 构成安全 exchange；Responses 的 reasoning 与输出／calls/results 不拆开。至少保留最后一个完整 exchange 和其后待回复用户输入；后缀预算为 `min(16384, context_window / 5)`，容量未知为 16384 tokens，最后一个 exchange 超预算也整体保留。旧摘要参与再次摘要，不叠加摘要链。摘要只发送当前 system/instructions、旧原生前缀和固定摘要请求，不发送近期后缀，不配置或执行工具，不改变当前 effort。摘要目标为 `min(2048, max(1, context_window / 16))` tokens（未知容量为 2048），输出上限为目标的两倍；候选为一个 `[Context summary]` 用户消息加原生后缀。可见对话和原始日志不删除，也不减少日志磁盘占用。
-- **有限失败，不裁掉最新 exchange。** 已知容量时，摘要请求的估算输入加输出上限必须不超过容量；不做分块摘要。空白、拒绝、工具调用或截断的摘要不能提交。手动候选未变小则保持原历史；自动候选还必须严格低于触发阈值，否则报 `cannot compact: retained context exceeds automatic threshold` 并停止当前任务。系统／工具 schema、当前输入或最新 exchange 太大而无可压前缀时同样有限失败。临时 HTTP／网络故障沿用模型请求的有界重试；预算耗尽、永久错误、流开始后的失败、取消或 state 写失败均恢复原生历史，不执行摘要工具，不继续普通请求，不重放已执行工具。手动取消不改写历史任务的 done/aborted 状态；自动失败／取消走当前任务的终态处理。
+- **有限失败，不裁掉最新 exchange。** 已知容量时，摘要请求的估算输入加输出上限必须不超过容量；不做分块摘要。空白、拒绝、工具调用或截断的摘要不能提交。手动候选未变小则保持原历史；自动候选还必须严格低于触发阈值，否则报 `cannot compact: retained context exceeds automatic threshold` 并停止当前任务。系统／工具 schema、当前输入或最新 exchange 太大而无可压前缀时同样有限失败。模型调用错误沿用统一有界重试及角色 fallback；主备均失败、取消或 state 写失败时恢复原生历史，不执行摘要工具，不继续普通请求，不重放已执行工具。手动取消不改写历史任务的 done/aborted 状态；自动失败／取消走当前任务的终态处理。
 
 上下文回归覆盖双协议 usage-only／completed usage、手动与任务内自动压缩、容量与额度门槛、摘要失败矩阵、连续恢复的 native append cursor、真实 PTY 的 Esc／草稿／阈值颜色／60 与 30 列 resize，以及 `ulimit -f` 残尾恢复。独立临时 Python 标准库 runner 在 loopback HTTP + 100×30 PTY 上验证两协议的手动压缩、恢复和两个只读批次后的自动摘要；未使用个人配置或真实远程供应商，Linux 未在本次环境实机验证。
 
@@ -760,7 +766,7 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 - Esc 取消会关闭本地模型连接及 SDK 后台网络任务；下一任务惰性创建新的 runtime／HTTP 连接池。流式半成品只保留展示，不进入原生历史或执行未完成工具调用。已开始的同步 read/edit/write 操作允许完成并保留真实结果；同批剩余调用不执行，但仍按 call_id 追加取消结果。只有终止／回收成功且原生批次与终态同步保存成功才显示取消；真实清理失败或持久化错误优先报告错误。只能保证本地连接及同进程组受控工作停止，不能撤销供应商远端计算、计费、外部副作用或主动脱离进程组的进程。
 - 工具按序执行，write → read 等批内依赖按顺序可见。先保存完整模型输出，再按对应 call ID 逐项追加结果；普通工具失败不会跳过其余调用。取消和真实进程清理失败按前述规则处理。
 - `read_max_bytes`、`read_max_lines`、`bash_timeout_seconds` 均要求正整数，启动时读取并固定；`/model`、`/new` 不重新读取这些限制。技能 URI 文本使用独立的全文读取例外，不改变普通文件和 HTTP 的限额。
-- 普通请求使用当前原生上下文，其中可能含压缩摘要；追加式 JSONL 与可见对话保留原消息和事件。已接受输入在自动压缩可能失败前保存。网络／协议错误不回滚文件修改，建连阶段 HTTP 408／409／429／5xx、连接故障和超时在配置预算内重试；此前完整历史和工具结果仍可恢复。
+- 普通请求使用当前原生上下文，其中可能含压缩摘要；追加式 JSONL 与可见对话保留原消息和事件。已接受输入在自动压缩可能失败前保存。网络／协议错误不回滚文件修改，模型调用失败按次数与等待预算重试，耗尽后可使用角色 fallback；此前完整历史和工具结果仍可恢复。
 - `/model` 仅从启动时完整校验的 catalog 选择，不重载或写配置。选择当前引用无操作；解析、客户端初始化或历史转换失败保留当前模型和历史。切换不探测 HTTP、不执行工具或回退协议，兼容性由下一次实际请求验证。
 - 切模型保留用户／助手文字、系统指令、工具 call ID／参数及结果。Completion 之间保留原生消息；同一配置供应商的 Responses 之间保留含加密思考的原生输出。跨协议或跨 Responses 供应商时转换可读历史，去掉 item ID、重放元数据和不透明加密思考；可读思考转为助手文本，交错消息／调用转换为 Completion 批次。不支持的非文本或未知历史会拒绝切换，避免静默丢失记录；加密供应商状态不可移植。
 
@@ -778,7 +784,7 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 ### Responses 故障排查
 
 - 部分模型始终启用思考，不接受 `reasoning.effort: "none"`。迁移前的 `think_level: default` 会按 `none` 的别名导入，**不是服务端默认值**。可在该模型配置 `thinking.efforts` 排除 `none`，并用 `thinking.defaultLevel` 指定支持的启动档位。若服务端仍拒绝请求，在交互模式执行允许的 `/effort low` 后重新提交任务；需要改变普通新启动的默认值时，在 `/effort` 菜单选择支持档位并按 ⌥ + S / Ctrl + S 保存到 `agent.db`。已恢复的 session 保留其保存的档位，需要执行 `/effort low`；仅修改全局默认值不会覆盖已恢复的档位。
-- 流式终止错误区分 `response.failed`、`response.incomplete` 与 `error`，仅展示白名单内的错误码／未完成原因；服务端原始 message、param、未知 code/reason 均不回显。`invalid_request` 提示检查模型支持的思考档位和请求参数；`max_output_tokens` 表示输出截断，`content_filter` 表示内容过滤。失败不自动重试、不降级协议、不提交未完成的回答，也不执行该批次工具。
+- 流式终止错误区分 `response.failed`、`response.incomplete` 与 `error`，仅展示白名单内的错误码／未完成原因；服务端原始 message、param、未知 code/reason 均不回显。`invalid_request` 提示检查模型支持的思考档位和请求参数；`max_output_tokens` 表示输出截断，`content_filter` 表示内容过滤。失败遵循统一有界重试及角色 fallback，不提交未完成的回答，也不执行该批次工具。
 
 ## 请求统计
 
@@ -839,7 +845,7 @@ Requests 列表以旗帜图标（悬停提示 Session first request）、行左�
 错误详情默认启用，无需 `debug: true`，与普通事件写入同一 `pp.yyyy-mm-dd.number.log`：
 
 - AI JSON／结构解析错误保存原始解析错误及失败分片；协议校验失败、流中断、超时和连接错误保存错误详情。`ai_request_failed` 带协议、模型、耗时及最近分片，最多 32 条、合计 64 KiB，每条最多 16 KiB，超限标记 `[truncated]` 并记录丢弃条数。正文可能包含部分回答、思考和工具调用，用于排查兼容性问题。
-- HTTP 非成功响应记录状态码、`x-request-id` 和最多 64 KiB 错误正文；读取最多等待一秒，`body_complete`／`body_read_failed` 标明完整性。建连重试另记次数、等待时长和错误详情，仍按原规则分类重试。
+- HTTP 非成功响应记录状态码、`x-request-id` 和最多 64 KiB 错误正文；读取最多等待一秒，`body_complete`／`body_read_failed` 标明完整性。重试另记次数、等待时长和错误详情，遵循统一的次数与等待预算。
 - 工具失败保存错误及调用参数；任务、模型请求、启动／退出和配置不可用保存错误链。panic 保存位置、消息和强制捕获的回溯。正常取消不作为 AI 错误记录。
 - 实际使用的 API key／访问令牌、已知凭据字段和 Bearer 认证值会遮蔽，单个详情字段最多 64 KiB；终端仍使用原有简短、脱敏的错误。错误现场可能含项目代码、文件路径或其他业务内容，应按敏感日志管理，不要直接公开分享。
 

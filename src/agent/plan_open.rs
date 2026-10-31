@@ -122,6 +122,7 @@ impl Agent {
             &self.current_model.reference,
             self.think_level,
         )?;
+        let role_route = self.catalog.role_route(crate::config::ModelRole::Plan);
         let config = self.catalog.resolve(&selection.model)?;
         let client = crate::llm::OpenAiClient::new(&config)?;
         let prompt = selection_prompt(intent, &verified.id, &verified.path, &verified.content);
@@ -144,6 +145,7 @@ impl Agent {
             session.set_tools(definitions);
             super::turn::append_user_to(&mut session, &prompt);
             let metadata = Metadata {
+                role_route: role_route.as_ref(),
                 cwd: self.tools.cwd(),
                 model_reference: &selection.model,
                 think_level: selection.effort,
@@ -169,6 +171,7 @@ impl Agent {
         // 调整随候选会话一起被覆盖。
         self.ensure_plan_mcp_shutdown(cancellation)?;
         // 完整提交后才替换当前会话；只有真正切换才清除撤销内存资格。
+        self.role_route = role_route;
         self.session = session;
         self.client = client;
         self.current_model = crate::config::ModelChoice {

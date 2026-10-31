@@ -16,6 +16,7 @@ fn model_roles_plan_applies_once_and_manual_model_and_effort_survive_continuatio
             .save_model_role(
                 ModelRole::Plan,
                 Some(RoleAssignment {
+                    fallback: None,
                     enabled: true,
                     model: "fixture/planner".into(),
                     effort: ThinkLevel::High,

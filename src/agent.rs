@@ -1,5 +1,6 @@
 pub(crate) mod context;
 mod debug;
+mod fallback;
 mod history;
 pub(crate) mod input;
 mod mcp_management;
@@ -91,6 +92,7 @@ impl Bootstrap {
 }
 
 pub(crate) struct Agent {
+    role_route: Option<crate::config::RoleRoute>,
     pub(crate) runtime_models: Option<crate::model_control::Binding>,
     pub(crate) subagent_control: std::sync::Arc<std::sync::Mutex<Option<crate::subagent::Binding>>>,
     client: OpenAiClient,
@@ -381,7 +383,9 @@ impl Agent {
         let mut session = Session::new(config.model, config.protocol, initial_system, edit_mode);
         session.set_tools(tools.all_definitions(crate::plan::WorkMode::Execute));
         session.set_think_level(think_level);
+        let role_route = catalog.role_route(crate::config::ModelRole::Default);
         Ok(Self {
+            role_route,
             client,
             runtime_models: None,
             subagent_control: Default::default(),
@@ -480,6 +484,7 @@ impl Agent {
             });
         }
         let agent = Self {
+            role_route: checkpoint.role_route,
             client,
             runtime_models: None,
             subagent_control: Default::default(),
@@ -670,6 +675,7 @@ impl Agent {
         session.set_tools(self.tools.all_definitions(self.workflow.mode));
         session.set_think_level(self.think_level);
         let metadata = Metadata {
+            role_route: self.role_route.as_ref(),
             cwd: self.tools.cwd(),
             model_reference: &self.current_model.reference,
             think_level: self.think_level,
@@ -911,6 +917,16 @@ impl Agent {
         self.journal.think(level)?;
         self.session.set_think_level(level);
         self.think_level = level;
+        if let Some(route) = &mut self.role_route {
+            if self.current_model.reference == route.primary.model {
+                route.primary.effort = level;
+            } else if let Some(fallback) = &mut route.fallback {
+                fallback.effort = level;
+            }
+        }
+        if self.role_route.is_some() {
+            self.checkpoint_route()?;
+        }
         Ok(())
     }
 
@@ -926,6 +942,17 @@ impl Agent {
         {
             self.catalog = catalog;
         }
+        if self
+            .role_route
+            .as_ref()
+            .is_some_and(|route| self.catalog.role_route(route.role).is_none())
+        {
+            let previous = self.role_route.take();
+            if let Err(error) = self.checkpoint_route() {
+                self.role_route = previous;
+                return Err(error);
+            }
+        }
         let Some(target) = self
             .runtime_models
             .as_mut()
@@ -934,7 +961,19 @@ impl Agent {
             return Ok(());
         };
         let old_catalog = std::mem::replace(&mut self.catalog, (*target.catalog).clone());
-        if let Err(error) = self.switch_model_with_effort(&target.reference, target.effort) {
+        let old_route = self.role_route.take();
+        self.role_route = target.role.and_then(|role| self.catalog.role_route(role));
+        let changed = self
+            .switch_model_with_effort(&target.reference, target.effort)
+            .and_then(|changed| {
+                if !changed && old_route != self.role_route {
+                    self.checkpoint_route()
+                } else {
+                    Ok(())
+                }
+            });
+        if let Err(error) = changed {
+            self.role_route = old_route;
             self.catalog = old_catalog;
             let binding = self
                 .runtime_models
@@ -989,14 +1028,27 @@ impl Agent {
     }
 
     pub(crate) fn switch_model(&mut self, reference: &str) -> Result<()> {
-        self.switch_model_with_effort(reference, None)
+        let previous = self.role_route.take();
+        let result = self
+            .switch_model_with_effort(reference, None)
+            .and_then(|changed| {
+                if !changed && previous.is_some() {
+                    self.checkpoint_route()
+                } else {
+                    Ok(())
+                }
+            });
+        if result.is_err() {
+            self.role_route = previous;
+        }
+        result
     }
 
     pub(super) fn switch_model_with_effort(
         &mut self,
         reference: &str,
         effort: Option<ThinkLevel>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.journal.check()?;
         let config = self.catalog.resolve(reference)?;
         if let Some(level) = effort {
@@ -1014,7 +1066,7 @@ impl Agent {
             && config.context_window == self.current_model.context_window
             && effort.is_none_or(|level| level == self.think_level)
         {
-            return Ok(());
+            return Ok(false);
         }
         let target_level = effort.unwrap_or_else(|| {
             config.thinking.explicit_default().unwrap_or_else(|| {
@@ -1061,6 +1113,7 @@ impl Agent {
             definitions.iter().map(|tool| tool.name.clone()).collect(),
         )?;
         let metadata = Metadata {
+            role_route: self.role_route.as_ref(),
             cwd: self.tools.cwd(),
             model_reference: &choice.reference,
             think_level: target_level,
@@ -1117,7 +1170,7 @@ impl Agent {
         self.think_level = target_level;
         self.last_request = None;
         self.pending_instructions = None;
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn reset(&mut self) {
@@ -1289,6 +1342,8 @@ impl Agent {
                 bail!("{error}");
             }
             ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
+            self.apply_runtime_models()?;
+            self.restore_role_primary(emit)?;
             self.ensure_task_plan_lease()?;
             self.prepare_plan_task(prompt)?;
             self.ensure_task_plan_lease()?;
@@ -1451,6 +1506,7 @@ impl Agent {
 
     fn persist_pending_input(&mut self, user: Option<&str>) -> Result<()> {
         let metadata = Metadata {
+            role_route: self.role_route.as_ref(),
             cwd: self.tools.cwd(),
             model_reference: &self.current_model.reference,
             think_level: self.think_level,
@@ -1531,6 +1587,7 @@ impl Agent {
                 continue;
             }
             let metadata = Metadata {
+                role_route: self.role_route.as_ref(),
                 cwd: self.tools.cwd(),
                 model_reference: &self.current_model.reference,
                 think_level: self.think_level,
@@ -1583,11 +1640,25 @@ impl Agent {
             };
             let finished = match &mut self.session {
                 Session::Completion(request) => {
-                    completion_turn(resources, request, &metadata, update, cancellation, emit)?
+                    completion_turn(resources, request, &metadata, update, cancellation, emit)
                 }
                 Session::Response(request) => {
-                    response_turn(resources, request, &metadata, update, cancellation, emit)?
+                    response_turn(resources, request, &metadata, update, cancellation, emit)
                 }
+            };
+            let finished = match finished {
+                Ok(finished) => finished,
+                Err(error) if crate::llm::model_request_failed(&error) => {
+                    cancellation::check(cancellation)?;
+                    self.pending_instructions = None;
+                    if self.activate_fallback(emit)? {
+                        claim_boundary = false;
+                        request_count -= 1;
+                        continue;
+                    }
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
             };
             self.pending_instructions = None;
             self.journal.commit((&self.session).into())?;

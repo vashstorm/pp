@@ -321,7 +321,25 @@ impl Agent {
         );
         self.commit_workflow(previous)?;
         self.ensure_plan_mcp_shutdown(cancellation)?;
-        self.switch_model_with_effort(&selection.model, Some(selection.effort))?;
+        let previous_route = self.role_route.take();
+        self.role_route = if selection.enabled {
+            self.catalog.role_route(crate::config::ModelRole::Plan)
+        } else {
+            previous_route.clone()
+        };
+        let changed = self
+            .switch_model_with_effort(&selection.model, Some(selection.effort))
+            .and_then(|changed| {
+                if !changed && previous_route != self.role_route {
+                    self.checkpoint_route()
+                } else {
+                    Ok(())
+                }
+            });
+        if let Err(error) = changed {
+            self.role_route = previous_route;
+            return Err(error);
+        }
         Ok(self.workflow.clone())
     }
 
@@ -816,6 +834,7 @@ impl Agent {
             // the synced commit so the stored state matches the handoff.
             self.refresh_instructions()?;
             let metadata = Metadata {
+                role_route: self.role_route.as_ref(),
                 cwd: self.tools.cwd(),
                 model_reference: &self.current_model.reference,
                 think_level: self.think_level,
@@ -917,6 +936,7 @@ impl Agent {
             session.set_tools(definitions);
             super::turn::append_user_to(&mut session, &prompt);
             let metadata = Metadata {
+                role_route: self.role_route.as_ref(),
                 cwd: self.tools.cwd(),
                 model_reference: &self.current_model.reference,
                 think_level: self.think_level,

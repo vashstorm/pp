@@ -245,7 +245,7 @@ fn context_auto_compact_capacity_gate_follows_the_current_model_both_protocols()
             &server,
             dir.path(),
             &[("open", None), ("tight", Some(80_000))],
-            r#"{"default_model":"fixture/open"}"#,
+            r#"{"default_model":"fixture/open","rate_limit_retry_budget_seconds":0}"#,
         );
 
         // Five large batches put the history over 80% of the configured

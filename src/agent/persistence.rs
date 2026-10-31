@@ -61,6 +61,7 @@ impl RestoredSession {
 }
 
 pub(super) struct Checkpoint {
+    pub(super) role_route: Option<crate::config::RoleRoute>,
     version: u32,
     id: String,
     created_at_ms: u64,
@@ -104,6 +105,7 @@ impl SessionRef<'_> {
 
 #[derive(Serialize)]
 pub(super) struct Metadata<'a> {
+    pub(super) role_route: Option<&'a crate::config::RoleRoute>,
     pub(super) cwd: &'a Path,
     pub(super) model_reference: &'a str,
     pub(super) think_level: ThinkLevel,
@@ -731,7 +733,9 @@ impl SessionJournal {
         }
         if self.capture_thinking && self.active.is_some() && self.first_error.is_none() {
             match event {
-                AgentEvent::AssistantStarted => self.thinking.clear(),
+                AgentEvent::AssistantStarted | AgentEvent::ModelAttemptFailed { .. } => {
+                    self.thinking.clear()
+                }
                 AgentEvent::ThinkingDelta { text } => self.thinking.push_str(text),
                 _ => {}
             }
@@ -1064,6 +1068,7 @@ pub(crate) fn load(
                     has_tree |= state.tree.is_some();
                     let header = header.as_ref().expect("header checked");
                     let saved = Checkpoint {
+                        role_route: state.role_route,
                         version: state.version,
                         id: header.id.clone(),
                         created_at_ms: parse_timestamp(&header.timestamp)?,
@@ -1262,6 +1267,23 @@ fn validate_checkpoint(saved: &Checkpoint, id: &str) -> Result<()> {
             .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty()),
         "invalid saved model reference"
     );
+    if let Some(route) = &saved.role_route {
+        crate::config::RoleAssignment {
+            enabled: true,
+            model: route.primary.model.clone(),
+            effort: route.primary.effort,
+            fallback: route.fallback.clone(),
+        }
+        .validate()?;
+        ensure!(
+            saved.model_reference == route.primary.model
+                || route
+                    .fallback
+                    .as_ref()
+                    .is_some_and(|f| f.model == saved.model_reference),
+            "saved model does not match its role route"
+        );
+    }
     saved.tool_limits.validate()?;
     saved.workflow.validate()?;
     if let Some(source) = &saved.prompt_source {

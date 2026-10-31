@@ -330,7 +330,7 @@ fn bang_shell_tui_busy_and_plan_reject() {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        let mut pty = bang_shell_start(&server, home.path(), project.path(), protocol, "");
+        let mut pty = bang_shell_start(&server, home.path(), project.path(), protocol, ",\"rate_limit_retry_budget_seconds\":0");
         let forbidden = project.path().join("forbidden");
 
         // 忙碌：模型请求已到达但被挂住，提交 !command 只拒绝并保留草稿。

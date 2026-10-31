@@ -288,6 +288,7 @@ fn replay_native_history_and_repair_only_on_append() {
         );
         session.set_think_level(ThinkLevel::None);
         let metadata = Metadata {
+            role_route: None,
             cwd: dir.path(),
             model_reference: "fixture/primary",
             think_level: ThinkLevel::None,
@@ -343,6 +344,7 @@ fn incomplete_native_commit_never_restores_projections_or_model_audit() {
         );
         session.set_think_level(ThinkLevel::None);
         let metadata = Metadata {
+            role_route: None,
             cwd: dir.path(),
             model_reference: "fixture/primary",
             think_level: ThinkLevel::None,
@@ -477,6 +479,7 @@ fn context_failed_history_replacement_restores_native_memory_and_disk() {
             }
         }
         let metadata = Metadata {
+            role_route: None,
             cwd: agent.tools.cwd(),
             model_reference: &agent.current_model.reference,
             think_level: agent.think_level,
@@ -602,6 +605,7 @@ fn write_failure_preserves_settings_and_blocks_requests_until_reset() {
                 Some(async_openai::types::responses::ReasoningSummary::Detailed);
         }
         let metadata = Metadata {
+            role_route: None,
             cwd: agent.tools.cwd(),
             model_reference: &agent.current_model.reference,
             think_level: agent.think_level,
@@ -685,6 +689,7 @@ fn initial_creation_failure_is_latched_without_a_session() {
         EditMode::Replace,
     );
     let metadata = Metadata {
+        role_route: None,
         cwd: dir.path(),
         model_reference: "fixture/primary",
         think_level: ThinkLevel::None,
@@ -720,6 +725,7 @@ fn rejects_complete_corruption_and_locked_files() {
         EditMode::Replace,
     );
     let metadata = Metadata {
+        role_route: None,
         cwd: dir.path(),
         model_reference: "fixture/primary",
         think_level: ThinkLevel::None,
@@ -786,6 +792,7 @@ fn plan_workflow() -> WorkflowState {
 
 fn test_metadata(dir: &std::path::Path) -> Metadata<'_> {
     Metadata {
+        role_route: None,
         cwd: dir,
         model_reference: "fixture/primary",
         think_level: ThinkLevel::None,

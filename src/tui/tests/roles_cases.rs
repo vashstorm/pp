@@ -30,6 +30,7 @@ fn roles_saved_snapshot_updates_preferences_only_and_failure_keeps_previous_role
     app.current_model = Some(app.choices[0].clone());
     app.open_roles();
     let assignment = RoleAssignment {
+        fallback: None,
         enabled: true,
         model: app.choices[1].reference.clone(),
         effort: ThinkLevel::High,

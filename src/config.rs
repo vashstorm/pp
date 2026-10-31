@@ -10,7 +10,7 @@ use std::{
 use crate::{models, yaml};
 
 mod roles;
-pub(crate) use roles::{ModelRole, ModelRoles, RoleAssignment};
+pub(crate) use roles::{ModelRole, ModelRoles, RoleAssignment, RoleModel, RoleRoute};
 
 // Deliberately not Debug: this owns the API credential.
 pub(crate) struct Config {
@@ -254,15 +254,7 @@ impl ModelPreferences {
     /// 沿用 settings.yml 四字段的既有校验规则；可用性由 ModelCatalog 在入口校验。
     pub(crate) fn validate(&self) -> Result<()> {
         for assignment in self.model_roles.values() {
-            ensure!(
-                assignment
-                    .model
-                    .split_once('/')
-                    .is_some_and(
-                        |(provider, model)| !provider.trim().is_empty() && !model.trim().is_empty()
-                    ),
-                "model_roles model must use provider/model"
-            );
+            assignment.validate()?;
         }
         ensure!(
             self.favorite_models.iter().all(|reference| {

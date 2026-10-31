@@ -49,6 +49,7 @@ pub(crate) enum RequestRetryReason {
     HttpStatus(u16),
     Timeout,
     Connection,
+    ModelError,
 }
 
 impl std::fmt::Display for RequestRetryReason {
@@ -58,6 +59,7 @@ impl std::fmt::Display for RequestRetryReason {
             Self::HttpStatus(status) => write!(formatter, "HTTP status {status}"),
             Self::Timeout => formatter.write_str("request timed out"),
             Self::Connection => formatter.write_str("connection failed"),
+            Self::ModelError => formatter.write_str("model response failed"),
         }
     }
 }
@@ -152,6 +154,15 @@ pub(crate) enum AgentEvent {
         elapsed_ms: u64,
         usage: Option<crate::context::TokenUsage>,
         success: bool,
+    },
+    ModelAttemptFailed {
+        attempt: u32,
+    },
+    ModelRouteChanged {
+        model: String,
+        effort: crate::config::ThinkLevel,
+        fallback: bool,
+        temporary: bool,
     },
     AssistantStarted,
     ThinkingDelta {

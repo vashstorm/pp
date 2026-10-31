@@ -1,4 +1,4 @@
-use crate::config::{ModelChoice, ModelRole, ModelRoles, RoleAssignment, ThinkLevel};
+use crate::config::{ModelChoice, ModelRole, ModelRoles, RoleAssignment, RoleModel, ThinkLevel};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{
     Frame,
@@ -15,7 +15,7 @@ const TEXT: Color = Color::Rgb(205, 207, 214);
 const MUTED: Color = Color::Rgb(98, 104, 118);
 const GREEN: Color = Color::Rgb(131, 207, 126);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
     Roles,
     Models,
@@ -32,12 +32,13 @@ pub(super) struct Panel {
     choices: Vec<ModelChoice>,
     roles: ModelRoles,
     providers: Vec<String>,
-    fallback: String,
-    fallback_effort: ThinkLevel,
+    default_model: String,
+    default_effort: ThinkLevel,
     view: View,
     sidebar: usize,
     sidebar_focus: bool,
     role_index: usize,
+    editing_fallback: bool,
     selected: usize,
     query: String,
     pending: Option<RoleAssignment>,
@@ -54,19 +55,20 @@ impl Panel {
     pub(super) fn new(
         choices: Vec<ModelChoice>,
         roles: ModelRoles,
-        fallback: String,
+        default_model: String,
         effort: ThinkLevel,
     ) -> Self {
         let mut panel = Self {
             choices: vec![],
             roles,
             providers: vec![],
-            fallback,
-            fallback_effort: effort,
+            default_model,
+            default_effort: effort,
             view: View::Roles,
             sidebar: 0,
             sidebar_focus: true,
             role_index: 0,
+            editing_fallback: false,
             selected: 0,
             query: String::new(),
             pending: None,
@@ -96,10 +98,22 @@ impl Panel {
             .min(self.model_indices().len().saturating_sub(1));
     }
 
-    pub(super) fn update_roles(&mut self, roles: ModelRoles, fallback: String, effort: ThinkLevel) {
+    pub(super) fn update_roles(
+        &mut self,
+        roles: ModelRoles,
+        default_model: String,
+        effort: ThinkLevel,
+    ) {
+        let selected = (self.role(), self.on_fallback());
         self.roles = roles;
-        self.fallback = fallback;
-        self.fallback_effort = effort;
+        let rows = self.rows();
+        self.role_index = rows
+            .iter()
+            .position(|r| *r == selected)
+            .or_else(|| rows.iter().position(|r| *r == (selected.0, false)))
+            .unwrap_or(0);
+        self.default_model = default_model;
+        self.default_effort = effort;
     }
 
     pub(super) fn saved(&mut self) {
@@ -116,8 +130,58 @@ impl Panel {
         self.message = super::display_text(&message).into_owned();
     }
 
+    fn rows(&self) -> Vec<(ModelRole, bool)> {
+        ModelRole::ALL
+            .into_iter()
+            .flat_map(|role| {
+                std::iter::once((role, false)).chain(
+                    self.roles
+                        .get(&role)
+                        .and_then(|a| a.fallback.as_ref())
+                        .map(|_| (role, true)),
+                )
+            })
+            .collect()
+    }
+
     fn role(&self) -> ModelRole {
-        ModelRole::ALL[self.role_index.min(ModelRole::ALL.len() - 1)]
+        self.rows()
+            .get(self.role_index)
+            .map_or(ModelRole::Default, |r| r.0)
+    }
+
+    fn on_fallback(&self) -> bool {
+        self.rows().get(self.role_index).is_some_and(|r| r.1)
+    }
+
+    fn selected_model(&self) -> RoleModel {
+        let assignment = self.effective();
+        if self.editing_fallback {
+            assignment.fallback.unwrap_or(RoleModel {
+                model: String::new(),
+                effort: self.default_effort,
+            })
+        } else {
+            RoleModel {
+                model: assignment.model,
+                effort: assignment.effort,
+            }
+        }
+    }
+
+    fn clear_selected(&self) -> Action {
+        let Some(mut assignment) = self.roles.get(&self.role()).cloned() else {
+            return Action::None;
+        };
+        if self.on_fallback() {
+            assignment.fallback = None;
+        } else {
+            assignment.model.clear();
+            assignment.enabled = false;
+        }
+        let assignment =
+            (!assignment.model.is_empty() || assignment.fallback.is_some()).then_some(assignment);
+        Action::Save(self.role(), assignment)
     }
 
     fn content_offset(&self) -> u16 {
@@ -129,14 +193,18 @@ impl Panel {
             .get(&self.role())
             .cloned()
             .unwrap_or_else(|| RoleAssignment {
+                fallback: None,
                 enabled: false,
-                model: self.fallback.clone(),
-                effort: self.fallback_effort,
+                model: self.default_model.clone(),
+                effort: self.default_effort,
             })
     }
 
     fn toggle_role(&self) -> Action {
         let mut assignment = self.effective();
+        if assignment.model.is_empty() {
+            return Action::None;
+        }
         assignment.enabled = !assignment.enabled;
         Action::Save(self.role(), Some(assignment))
     }
@@ -164,7 +232,7 @@ impl Panel {
     }
 
     fn begin_models(&mut self) {
-        let selected = self.effective().model;
+        let selected = self.selected_model().model;
         self.sidebar = 1;
         self.sidebar_focus = false;
         self.view = View::Models;
@@ -183,25 +251,45 @@ impl Panel {
             self.message = "Model is no longer available; select a model again".into();
             return;
         };
-        let old = self.effective().effort;
+        let old = self.selected_model().effort;
+        let other = self.roles.get(&self.role());
+        if if self.editing_fallback {
+            other.is_some_and(|a| a.model == model)
+        } else {
+            other
+                .and_then(|a| a.fallback.as_ref())
+                .is_some_and(|f| f.model == model)
+        } {
+            self.message = "Primary and fallback must use different models".into();
+            return;
+        }
         let effort = if choice.thinking.supports(old) {
             old
         } else {
-            choice.thinking.effective_default(self.fallback_effort)
+            choice.thinking.effective_default(self.default_effort)
         };
         self.selected = choice
             .thinking
             .levels()
             .position(|level| level == effort)
             .unwrap_or(0);
-        self.pending = Some(RoleAssignment {
-            enabled: self
-                .roles
-                .get(&self.role())
-                .is_none_or(|assignment| assignment.enabled),
-            model,
-            effort,
-        });
+        let mut assignment = self
+            .roles
+            .get(&self.role())
+            .cloned()
+            .unwrap_or(RoleAssignment {
+                enabled: !self.editing_fallback,
+                model: String::new(),
+                effort: self.default_effort,
+                fallback: None,
+            });
+        if self.editing_fallback {
+            assignment.fallback = Some(RoleModel { model, effort });
+        } else {
+            assignment.model = model;
+            assignment.effort = effort;
+        }
+        self.pending = Some(assignment);
         self.view = View::Effort;
         self.sidebar_focus = false;
         self.scroll = 0;
@@ -212,15 +300,26 @@ impl Panel {
         self.pending
             .as_ref()
             .and_then(|assignment| {
-                self.choices
-                    .iter()
-                    .find(|choice| choice.reference == assignment.model)
+                self.choices.iter().find(|choice| {
+                    choice.reference
+                        == if self.editing_fallback {
+                            assignment
+                                .fallback
+                                .as_ref()
+                                .map_or("", |f| f.model.as_str())
+                        } else {
+                            assignment.model.as_str()
+                        }
+                })
             })
             .map(|choice| choice.thinking.levels().collect())
             .unwrap_or_default()
     }
 
     fn activate_sidebar(&mut self) {
+        if self.view == View::Roles {
+            self.editing_fallback = self.on_fallback();
+        }
         self.view = if self.sidebar == 0 {
             View::Roles
         } else {
@@ -266,9 +365,9 @@ impl Panel {
                         let content_y = self.body.y + self.content_offset();
                         let row = usize::from(mouse.row.saturating_sub(content_y)) + self.scroll;
                         if self.view == View::Roles {
-                            if mouse.row >= content_y && row < ModelRole::ALL.len() {
+                            if mouse.row >= content_y && row < self.rows().len() {
                                 self.role_index = row;
-                                if mouse.column == self.body.x + 2 {
+                                if mouse.column == self.body.x + 2 && !self.on_fallback() {
                                     return self.toggle_role();
                                 }
                             }
@@ -320,7 +419,10 @@ impl Panel {
                     KeyCode::Tab if self.sidebar_focus => self.sidebar_focus = false,
                     KeyCode::Enter if self.sidebar_focus => self.sidebar_focus = false,
                     KeyCode::Enter if key.kind == KeyEventKind::Press => match self.view {
-                        View::Roles => self.begin_models(),
+                        View::Roles => {
+                            self.editing_fallback = self.on_fallback();
+                            self.begin_models();
+                        }
                         View::Models => {
                             if let Some(&index) = self.model_indices().get(self.selected) {
                                 self.begin_effort(self.choices[index].reference.clone());
@@ -330,13 +432,31 @@ impl Panel {
                             if let Some(&effort) = self.efforts().get(self.selected)
                                 && let Some(mut assignment) = self.pending.clone()
                             {
-                                assignment.effort = effort;
+                                if self.editing_fallback {
+                                    if let Some(fallback) = &mut assignment.fallback {
+                                        fallback.effort = effort;
+                                    }
+                                } else {
+                                    assignment.effort = effort;
+                                }
                                 return Action::Save(self.role(), Some(assignment));
                             }
                         }
                     },
-                    KeyCode::Char('e') if self.view == View::Roles && !self.sidebar_focus => {
-                        self.begin_effort(self.effective().model)
+                    KeyCode::Char('f') if self.view == View::Roles && !self.sidebar_focus => {
+                        self.editing_fallback = true;
+                        self.begin_models();
+                    }
+                    KeyCode::Char('x')
+                        if self.view == View::Roles
+                            && !self.sidebar_focus
+                            && key.kind == KeyEventKind::Press =>
+                    {
+                        return self.clear_selected();
+                    }
+                    KeyCode::Char('e' | 't') if self.view == View::Roles && !self.sidebar_focus => {
+                        self.editing_fallback = self.on_fallback();
+                        self.begin_effort(self.selected_model().model)
                     }
                     KeyCode::Delete | KeyCode::Backspace
                         if self.view == View::Roles
@@ -508,15 +628,15 @@ impl Panel {
                 "Model roles — Space or click the dot to toggle; only selected roles are offered to the model".to_owned()
             }
             View::Models => format!(
-                "Select a model for {} · type to search · Enter to choose effort",
-                self.role().name()
+                "Select a model for {}{} · type to search · Enter to choose effort",
+                self.role().name(), if self.editing_fallback { " · fallback" } else { "" }
             ),
             View::Effort => format!(
                 "{} · {}",
                 self.role().name(),
                 self.pending
                     .as_ref()
-                    .map_or("", |assignment| assignment.model.as_str())
+                    .map_or("", |assignment| if self.editing_fallback { assignment.fallback.as_ref().map_or("", |f| f.model.as_str()) } else { assignment.model.as_str() })
             ),
         };
         frame.render_widget(
@@ -538,11 +658,11 @@ impl Panel {
         );
         match self.view {
             View::Roles => {
-                let roles = ModelRole::ALL;
+                let roles = self.rows();
                 self.scroll = self
                     .role_index
                     .saturating_sub(usize::from(content.height.saturating_sub(1)));
-                for (row, role) in roles
+                for (row, (role, is_fallback)) in roles
                     .into_iter()
                     .skip(self.scroll)
                     .take(usize::from(content.height))
@@ -551,12 +671,19 @@ impl Panel {
                     let configured = self.roles.get(&role);
                     let enabled = configured.is_some_and(|assignment| assignment.enabled);
                     let assignment = configured.cloned().unwrap_or_else(|| RoleAssignment {
+                        fallback: None,
                         enabled: false,
-                        model: self.fallback.clone(),
-                        effort: self.fallback_effort,
+                        model: self.default_model.clone(),
+                        effort: self.default_effort,
                     });
+                    let (model, effort) = if is_fallback {
+                        let fallback = assignment.fallback.as_ref().expect("备用行来自已配置模型");
+                        (&fallback.model, fallback.effort)
+                    } else {
+                        (&assignment.model, assignment.effort)
+                    };
                     let selected = !self.sidebar_focus && self.role_index == row + self.scroll;
-                    let color = if !enabled {
+                    let color = if !enabled || (is_fallback && !selected) {
                         MUTED
                     } else {
                         match role {
@@ -574,27 +701,27 @@ impl Panel {
                             Style::default().fg(if enabled { GOLD } else { MUTED }),
                         ),
                         Span::styled(
-                            format!("{} {:<8} ", if enabled { "●" } else { "○" }, role.name()),
+                            if is_fallback {
+                                "          ↳ ".to_owned()
+                            } else {
+                                format!("{} {:<8} ", if enabled { "●" } else { "○" }, role.name())
+                            },
                             Style::default().fg(color),
                         ),
                     ];
-                    if configured.is_none() {
+                    if configured.is_none() && !is_fallback {
                         spans.push(Span::styled("auto → ", Style::default().fg(MUTED)));
                     }
                     spans.extend(model_spans(
-                        &assignment.model,
+                        if model.is_empty() { "(not set)" } else { model },
                         if enabled && selected { GOLD } else { color },
                     ));
                     let y = content.y + row as u16;
-                    let effort_width =
-                        (assignment.effort.as_str().len() as u16 + 3).min(content.width);
+                    let effort_width = (effort.as_str().len() as u16 + 3).min(content.width);
                     let model_width = content.width.saturating_sub(effort_width + 1);
                     frame.render_widget(Line::from(spans), Rect::new(content.x, y, model_width, 1));
                     frame.render_widget(
-                        Line::styled(
-                            format!("◴ {}", assignment.effort.as_str()),
-                            Style::default().fg(color),
-                        ),
+                        Line::styled(format!("◴ {}", effort.as_str()), Style::default().fg(color)),
                         Rect::new(content.right() - effort_width, y, effort_width, 1),
                     );
                 }
@@ -667,7 +794,7 @@ impl Panel {
         } else if !self.message.is_empty() {
             &self.message
         } else {
-            "↑↓ Move · Space Toggle · Enter Configure/Save · e Effort · Delete Clear · Esc Back"
+            "↑/↓ rows · Enter pick · f fallback · x clear · t thinking · Space toggle · Delete remove · Esc back"
         };
         frame.render_widget(
             Line::styled(hint, Style::default().fg(MUTED)),
@@ -734,6 +861,7 @@ mod tests {
         panel.roles.insert(
             ModelRole::Fast,
             RoleAssignment {
+                fallback: None,
                 enabled: true,
                 model: "fixture/two".into(),
                 effort: ThinkLevel::None,
@@ -812,6 +940,7 @@ mod tests {
     fn roles_only_enabled_rows_are_colored_and_space_or_dot_toggles_preserving_assignment() {
         let mut panel = panel();
         let mut value = RoleAssignment {
+            fallback: None,
             enabled: true,
             model: "fixture/two".into(),
             effort: ThinkLevel::None,
@@ -860,5 +989,75 @@ mod tests {
         assert!(on.enabled);
         assert_eq!(on.model, value.model);
         assert_eq!(on.effort, value.effort);
+    }
+    #[test]
+    fn fallback_roles_shortcuts_select_clear_and_preserve_disabled_primary() {
+        let mut panel = panel();
+        panel.roles.insert(
+            ModelRole::Default,
+            RoleAssignment {
+                enabled: true,
+                model: "fixture/one".into(),
+                effort: ThinkLevel::High,
+                fallback: Some(RoleModel {
+                    model: "fixture/two".into(),
+                    effort: ThinkLevel::None,
+                }),
+            },
+        );
+        key(&mut panel, KeyCode::Right);
+        key(&mut panel, KeyCode::Down);
+        assert!(panel.on_fallback());
+        assert_eq!(panel.role(), ModelRole::Default);
+        key(&mut panel, KeyCode::Char('t'));
+        assert_eq!(panel.efforts(), [ThinkLevel::None]);
+        let Action::Save(_, Some(updated)) = key(&mut panel, KeyCode::Enter) else {
+            panic!("应保存独立 thinking");
+        };
+        assert_eq!(updated.effort, ThinkLevel::High);
+        panel.saved();
+        let Action::Save(_, Some(updated)) = key(&mut panel, KeyCode::Char('x')) else {
+            panic!("应仅清除备用模型");
+        };
+        assert!(updated.fallback.is_none());
+        assert!(!updated.model.is_empty());
+        key(&mut panel, KeyCode::Up);
+        let Action::Save(_, Some(updated)) = key(&mut panel, KeyCode::Char('x')) else {
+            panic!("应保留备用配置");
+        };
+        assert!(updated.model.is_empty());
+        assert!(updated.fallback.is_some());
+        assert!(!updated.enabled);
+        panel.roles.insert(ModelRole::Default, updated);
+        assert!(matches!(key(&mut panel, KeyCode::Char(' ')), Action::None));
+        key(&mut panel, KeyCode::Enter);
+        key(&mut panel, KeyCode::Enter);
+        let Action::Save(_, Some(updated)) = key(&mut panel, KeyCode::Enter) else {
+            panic!("应补齐主模型");
+        };
+        assert!(!updated.enabled);
+        assert!(updated.fallback.is_some());
+        panel.saved();
+        key(&mut panel, KeyCode::Char('f'));
+        assert!(panel.editing_fallback);
+        key(&mut panel, KeyCode::Esc);
+        assert_eq!(panel.view, View::Roles);
+        for (width, height) in [(140, 24), (70, 7), (12, 4)] {
+            draw(&mut panel, width, height);
+        }
+    }
+    #[test]
+    fn fallback_roles_can_be_configured_before_primary() {
+        let mut panel = panel();
+        key(&mut panel, KeyCode::Right);
+        key(&mut panel, KeyCode::Char('f'));
+        key(&mut panel, KeyCode::Enter);
+        let Action::Save(ModelRole::Default, Some(assignment)) = key(&mut panel, KeyCode::Enter)
+        else {
+            panic!("缺主模型时应允许保存备用");
+        };
+        assert!(assignment.model.is_empty());
+        assert!(!assignment.enabled);
+        assert_eq!(assignment.fallback.unwrap().model, "fixture/one");
     }
 }

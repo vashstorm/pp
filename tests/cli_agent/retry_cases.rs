@@ -267,7 +267,7 @@ fn request_retry_recovers_transport_failure_and_timeout_on_either_protocol() {
 }
 
 #[test]
-fn request_retry_does_not_retry_permanent_http_errors_with_default_budget() {
+fn request_retry_recovers_permanent_http_errors_with_default_budget() {
     for responses in [false, true] {
         for status in [400, 401, 403, 404, 422] {
             let server = server();
@@ -288,18 +288,26 @@ fn request_retry_does_not_retry_permanent_http_errors_with_default_budget() {
             } else {
                 "/v1/chat/completions"
             };
-            let (request, _) = receive_at(&server, path);
+            let (request, first_body) = receive_at(&server, path);
             request
                 .respond(
                     Response::from_string("private-error-body fixture-key")
-                        .with_status_code(status),
+                        .with_status_code(status)
+                        .with_header(Header::from_bytes("Retry-After", "0").unwrap()),
                 )
                 .unwrap();
+            let (request, retry_body) = receive_at(&server, path);
+            assert_eq!(first_body, retry_body);
+            if responses {
+                response_final(request, "recovered");
+            } else {
+                final_reply(request, "recovered");
+            }
             let output = cli.finish();
-            assert!(!output.status.success());
+            assert!(output.status.success());
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(stderr.contains(&format!("HTTP status {status}")));
-            assert!(!stderr.contains("retrying") && !stderr.contains("fixture-key"));
+            assert!(stderr.contains("retrying") && !stderr.contains("fixture-key"));
             no_more(&server);
         }
     }

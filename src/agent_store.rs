@@ -16,7 +16,7 @@ pub(crate) use migration::initialize;
 
 const UNAVAILABLE: &str = "Agent database unavailable.";
 const UNSUPPORTED_VERSION: &str = "Agent database schema version is not supported.";
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 static USAGE_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -47,8 +47,12 @@ CREATE TABLE IF NOT EXISTS favorite_models (
 CREATE TABLE IF NOT EXISTS model_roles (
     role TEXT PRIMARY KEY CHECK(role IN ('default','fast','slow','vision','plan','review')),
     enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
-    model_reference TEXT NOT NULL,
-    effort TEXT NOT NULL CHECK(effort IN ('none','low','medium','high','xhigh','max'))
+    model_reference TEXT NULL,
+    fallback_reference TEXT NULL,
+    fallback_effort TEXT NULL CHECK(fallback_effort IS NULL OR fallback_effort IN ('none','low','medium','high','xhigh','max')),
+    effort TEXT NOT NULL CHECK(effort IN ('none','low','medium','high','xhigh','max')),
+    CHECK((fallback_reference IS NULL) = (fallback_effort IS NULL)),
+    CHECK(enabled=0 OR model_reference IS NOT NULL)
 );
 CREATE TABLE IF NOT EXISTS model_usage (
     model_reference TEXT PRIMARY KEY,
@@ -104,6 +108,18 @@ impl AgentStore {
                      SELECT provider, generation, access_token, refresh_token,
                             expires_at, account_id, api_endpoint, device_id FROM auth_credentials_v1;
                      DROP TABLE auth_credentials_v1;",
+                )
+                .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+            }
+            if version == 1 || version == 2 {
+                tx.execute_batch("ALTER TABLE model_roles RENAME TO model_roles_v2;")
+                    .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+                tx.execute_batch(SCHEMA)
+                    .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+                tx.execute_batch(
+                    "INSERT INTO model_roles(role,enabled,model_reference,effort)
+                    SELECT role,enabled,model_reference,effort FROM model_roles_v2;
+                    DROP TABLE model_roles_v2;",
                 )
                 .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
             }
@@ -243,6 +259,8 @@ impl AgentStore {
         )
         .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
         if let Some(effort) = default_role {
+            let duplicate: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM model_roles WHERE role='default' AND fallback_reference=?1)", params![reference], |row| row.get(0)).map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+            ensure!(!duplicate, "role primary and fallback must differ");
             tx.execute(
                 "UPDATE model_roles SET model_reference=?1, effort=?2 WHERE role='default'",
                 params![reference, effort.as_str()],
@@ -304,18 +322,23 @@ impl AgentStore {
             .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
         match assignment {
             Some(assignment) => {
+                assignment.validate()?;
                 tx.execute(
-                    "INSERT INTO model_roles(role, enabled, model_reference, effort)
-                     VALUES (?1, ?2, ?3, ?4)
+                    "INSERT INTO model_roles(role, enabled, model_reference, effort, fallback_reference, fallback_effort)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                      ON CONFLICT(role) DO UPDATE SET
                         enabled=excluded.enabled,
                         model_reference=excluded.model_reference,
-                        effort=excluded.effort",
+                        effort=excluded.effort,
+                        fallback_reference=excluded.fallback_reference,
+                        fallback_effort=excluded.fallback_effort",
                     params![
                         role_name(role),
                         assignment.enabled as i64,
-                        assignment.model,
+                        (!assignment.model.is_empty()).then_some(&assignment.model),
                         assignment.effort.as_str(),
+                        assignment.fallback.as_ref().map(|f| &f.model),
+                        assignment.fallback.as_ref().map(|f| f.effort.as_str()),
                     ],
                 )
                 .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
@@ -445,28 +468,39 @@ fn read_favorites(conn: &Connection) -> Result<Vec<String>> {
 
 fn read_roles(conn: &Connection) -> Result<ModelRoles> {
     let mut statement = conn
-        .prepare("SELECT role, enabled, model_reference, effort FROM model_roles")
+        .prepare("SELECT role, enabled, model_reference, effort, fallback_reference, fallback_effort FROM model_roles")
         .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
     let rows = statement
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })
         .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
     let mut roles = ModelRoles::new();
     for row in rows {
-        let (name, enabled, model, effort) = row.map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+        let (name, enabled, model, effort, fallback, fallback_effort) =
+            row.map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
         let role = parse_role(&name).ok_or_else(|| anyhow::anyhow!(UNAVAILABLE))?;
         let effort: ThinkLevel = effort.parse().map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
         roles.insert(
             role,
             RoleAssignment {
+                fallback: match (fallback, fallback_effort) {
+                    (Some(model), Some(effort)) => Some(crate::config::RoleModel {
+                        model,
+                        effort: effort.parse().map_err(|_| anyhow::anyhow!(UNAVAILABLE))?,
+                    }),
+                    (None, None) => None,
+                    _ => return Err(anyhow::anyhow!(UNAVAILABLE)),
+                },
                 enabled: enabled != 0,
-                model,
+                model: model.unwrap_or_default(),
                 effort,
             },
         );
@@ -510,6 +544,7 @@ mod tests {
             .set_model_role(
                 ModelRole::Fast,
                 Some(&RoleAssignment {
+                    fallback: None,
                     enabled: true,
                     model: "fixture/gamma".into(),
                     effort: ThinkLevel::Low,
@@ -540,6 +575,7 @@ mod tests {
             .set_model_role(
                 ModelRole::Default,
                 Some(&RoleAssignment {
+                    fallback: None,
                     enabled: true,
                     model: "fixture/one".into(),
                     effort: ThinkLevel::High,
@@ -684,6 +720,7 @@ mod tests {
         old.set_model_role(
             ModelRole::Fast,
             Some(&RoleAssignment {
+                fallback: None,
                 enabled: true,
                 model: "fixture/fast".into(),
                 effort: ThinkLevel::Low,
@@ -752,5 +789,49 @@ mod tests {
         }
         let error = AgentStore::open(&path).err().unwrap();
         assert_eq!(error.to_string(), UNSUPPORTED_VERSION);
+    }
+    #[test]
+    fn fallback_sqlite_v2_migration_preserves_roles_preferences_and_usage() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.db");
+        {
+            let conn = crate::sqlite::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(AUTH_SCHEMA).unwrap();
+            conn.execute_batch("DROP TABLE model_roles;
+                CREATE TABLE model_roles(role TEXT PRIMARY KEY, enabled INTEGER NOT NULL, model_reference TEXT NOT NULL, effort TEXT NOT NULL);
+                INSERT INTO model_roles VALUES ('fast',1,'fixture/one','low');
+                UPDATE preferences SET default_model='fixture/one',think_level='high';
+                INSERT INTO model_usage VALUES ('fixture/one',7);
+                INSERT INTO favorite_models VALUES ('fixture/one',0);
+                INSERT INTO auth_credentials(provider,generation,access_token) VALUES ('glm','test-gen','test-token');").unwrap();
+            conn.pragma_update(None, "user_version", 2).unwrap();
+        }
+        let mut store = AgentStore::open(&path).unwrap();
+        let mut value = store.preferences().unwrap().model_roles[&ModelRole::Fast].clone();
+        assert_eq!(value.model, "fixture/one");
+        assert!(value.fallback.is_none());
+        value.enabled = false;
+        value.model.clear();
+        value.fallback = Some(crate::config::RoleModel {
+            model: "fixture/two".into(),
+            effort: ThinkLevel::High,
+        });
+        store.set_model_role(ModelRole::Fast, Some(&value)).unwrap();
+        drop(store);
+        let store = AgentStore::open(&path).unwrap();
+        assert_eq!(
+            store.preferences().unwrap().model_roles[&ModelRole::Fast],
+            value
+        );
+        assert_eq!(
+            store.preferences().unwrap().favorite_models,
+            ["fixture/one"]
+        );
+        assert_eq!(store.model_usage().unwrap()["fixture/one"], 7);
+        assert_eq!(
+            store.load_auth().unwrap().credentials[&crate::auth::Provider::Glm].access_token,
+            "test-token"
+        );
     }
 }

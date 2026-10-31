@@ -415,167 +415,82 @@ fn api_error(status: u16, code: Option<&str>) -> OpenAIError {
 }
 
 #[test]
-fn request_retry_wait_honors_header_exponential_fallback_and_budget() {
+fn request_retry_policy_shares_attempt_cap_budget_and_error_boundary() {
+    let delay = |error: anyhow::Error, waited, budget, attempt| {
+        let mut state = RequestAttempts::new(budget);
+        state.waited = waited;
+        state.attempt = attempt;
+        state.finish(&Err::<(), _>(error));
+        state.delay
+    };
     let budget = Duration::from_secs(300);
-    let no_header = api_error(429, None);
-    assert_eq!(
-        request_retry_wait(&no_header, Duration::ZERO, budget, 0),
-        Some(Duration::from_secs(1))
-    );
-    assert_eq!(
-        request_retry_wait(&no_header, Duration::ZERO, budget, 1),
-        Some(Duration::from_secs(2))
-    );
-    assert_eq!(
-        request_retry_wait(&no_header, Duration::ZERO, budget, 3),
-        Some(Duration::from_secs(8))
-    );
-    let header = api_error(429, Some("pp-retry-after:7"));
-    assert_eq!(
-        request_retry_wait(&header, Duration::ZERO, budget, 0),
-        Some(Duration::from_secs(7))
-    );
-    // Zero seconds means the provider allows an immediate retry.
-    assert_eq!(
-        request_retry_wait(
-            &api_error(429, Some("pp-retry-after:0")),
-            Duration::ZERO,
-            budget,
-            5
-        ),
-        Some(Duration::ZERO)
-    );
-    // Waits are clipped to the remaining budget.
-    assert_eq!(
-        request_retry_wait(&header, Duration::from_secs(296), budget, 0),
-        Some(Duration::from_secs(4))
-    );
-    // 预算耗尽、关闭重试、达到次数上限及永久错误均停止重试。
-    assert_eq!(request_retry_wait(&header, budget, budget, 0), None);
-    assert_eq!(
-        request_retry_wait(&header, Duration::ZERO, Duration::ZERO, 0),
-        None
-    );
-    assert_eq!(
-        request_retry_wait(&no_header, Duration::ZERO, budget, 9),
-        None
-    );
-    assert_eq!(
-        request_retry_wait(&api_error(400, None), Duration::ZERO, budget, 0),
-        None
-    );
-    // Only the middleware's own marker counts as a Retry-After value.
-    assert_eq!(
-        request_retry_wait(&api_error(429, Some("7")), Duration::ZERO, budget, 0),
-        Some(Duration::from_secs(1))
-    );
-}
-
-#[test]
-fn request_retry_classifies_transient_statuses_and_rejects_permanent_errors() {
-    use crate::events::RequestRetryReason;
-    for status in [408, 409, 429, 500, 502, 503, 504, 599] {
-        let error = api_error(status, Some("pp-retry-after:3"));
-        assert!(request_retry_reason(&error).is_some(), "{status}");
+    for (attempt, seconds) in [(1, 1), (2, 2), (4, 8)] {
         assert_eq!(
-            request_retry_wait(&error, Duration::ZERO, Duration::from_secs(10), 0),
-            Some(Duration::from_secs(3)),
-            "{status}"
+            delay(
+                provider_failure(api_error(400, None), "fixture"),
+                Duration::ZERO,
+                budget,
+                attempt
+            ),
+            Some(Duration::from_secs(seconds))
+        );
+    }
+    for status in [302, 400, 401, 403, 408, 409, 429, 500, 599] {
+        assert_eq!(
+            delay(
+                provider_failure(api_error(status, Some("pp-retry-after:0")), "fixture"),
+                Duration::ZERO,
+                budget,
+                9
+            ),
+            Some(Duration::ZERO)
         );
         assert_eq!(
-            request_retry_wait(&error, Duration::ZERO, Duration::ZERO, 0),
+            delay(
+                provider_failure(api_error(status, None), "fixture"),
+                Duration::ZERO,
+                budget,
+                10
+            ),
             None
         );
     }
     assert_eq!(
-        request_retry_reason(&api_error(503, None)),
-        Some(RequestRetryReason::HttpStatus(503))
+        delay(
+            provider_failure(api_error(503, Some("pp-retry-after:7")), "fixture"),
+            Duration::from_secs(296),
+            budget,
+            1
+        ),
+        Some(Duration::from_secs(4))
     );
-    for status in [302, 400, 401, 403, 404, 422] {
-        assert!(
-            request_retry_reason(&api_error(status, None)).is_none(),
-            "{status}"
-        );
-    }
-    assert!(
-        request_retry_reason(&OpenAIError::InvalidArgument("private argument".into())).is_none()
-    );
-    let invalid_json = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
-    assert!(
-        request_retry_reason(&OpenAIError::JSONDeserialize(
-            invalid_json,
-            "private body".into()
-        ))
-        .is_none()
-    );
-}
-
-#[test]
-fn request_retry_attempt_cap_and_cancellation_stop_reopening() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    for cancel in [false, true] {
-        let token = CancellationToken::new();
-        let mut attempts = 1;
-        let mut events = 0;
-        let error = runtime
-            .block_on(open_with_request_retry(
-                &token,
-                Duration::from_secs(30),
-                "fixture",
-                &mut |event| {
-                    if let AgentEvent::RequestRetrying { .. } = event {
-                        events += 1;
-                        if cancel {
-                            token.cancel();
-                        }
-                    }
-                },
-                Err::<(), _>(api_error(503, Some("pp-retry-after:0"))),
-                || {
-                    attempts += 1;
-                    std::future::ready(Err(api_error(503, Some("pp-retry-after:0"))))
-                },
-            ))
-            .unwrap_err();
-        if cancel {
-            assert_eq!(attempts, 1);
-            assert_eq!(events, 1);
-            assert!(error.downcast_ref::<Cancelled>().is_some());
-        } else {
-            assert_eq!(attempts, 10);
-            assert_eq!(events, 9);
-            assert!(error.to_string().contains("gave up after 9 retries"));
-        }
-    }
-}
-
-#[test]
-fn opening_error_notes_exhausted_budget_only_after_retries() {
     assert_eq!(
-        opening_error(api_error(429, None), "Chat Completions", Duration::ZERO, 0).to_string(),
-        "Chat Completions HTTP status 429 Too Many Requests"
+        delay(
+            provider_failure(api_error(503, None), "fixture"),
+            budget,
+            budget,
+            1
+        ),
+        None
     );
-    let message = opening_error(
-        api_error(429, None),
-        "Chat Completions",
-        Duration::from_secs(3),
-        2,
-    )
-    .to_string();
-    assert!(message.contains("HTTP status 429"));
-    assert!(message.contains("gave up after 2 retries and 3s of backoff"));
     assert_eq!(
-        opening_error(
-            api_error(500, None),
-            "Chat Completions",
-            Duration::from_secs(3),
-            2
-        )
-        .to_string(),
-        "Chat Completions HTTP status 500 Internal Server Error (gave up after 2 retries and 3s of backoff)"
+        delay(
+            provider_failure(api_error(503, None), "fixture"),
+            Duration::ZERO,
+            Duration::ZERO,
+            1
+        ),
+        None
+    );
+    assert_eq!(delay(Cancelled.into(), Duration::ZERO, budget, 1), None);
+    assert_eq!(
+        delay(
+            anyhow::anyhow!("local journal failure"),
+            Duration::ZERO,
+            budget,
+            1
+        ),
+        None
     );
 }
 

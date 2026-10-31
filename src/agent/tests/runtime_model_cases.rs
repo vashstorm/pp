@@ -17,6 +17,7 @@ fn fixture(dir: &std::path::Path, protocol: &str) -> Agent {
 }
 fn role() -> Option<RoleAssignment> {
     Some(RoleAssignment {
+        fallback: None,
         enabled: true,
         model: "other/two".into(),
         effort: ThinkLevel::Low,
@@ -168,4 +169,77 @@ fn runtime_model_role_save_failure_does_not_publish_target() {
             .iter()
             .any(|report| matches!(report, Report::Failed { revision: 0, .. }))
     );
+}
+
+#[test]
+fn fallback_route_restores_primary_after_resume_and_manual_selection_clears_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = fixture(dir.path(), "completion");
+    let assignment = RoleAssignment {
+        enabled: true,
+        model: "fixture/one".into(),
+        effort: ThinkLevel::Low,
+        fallback: Some(crate::config::RoleModel {
+            model: "other/two".into(),
+            effort: ThinkLevel::High,
+        }),
+    };
+    let service = Service::start(agent.model_catalog()).unwrap();
+    agent.runtime_models = Some(Binding::main(service.registry.clone()));
+    assert!(service.submit(Change::Role(ModelRole::Default, Some(assignment))));
+    service.flush();
+    agent.apply_runtime_models().unwrap();
+    assert!(agent.activate_fallback(&mut |_| {}).unwrap());
+    assert_eq!(agent.current_model.reference, "other/two");
+    assert!(!agent.activate_fallback(&mut |_| {}).unwrap());
+    let catalog = agent.model_catalog();
+    let id = agent.session_id().unwrap().to_owned();
+    drop(agent);
+    let sessions = dir.path().join("sessions");
+    let restored = persistence::load(&sessions, &sessions.join(".locks"), Some(&id), true).unwrap();
+    let mut agent = Agent::restore(
+        catalog.clone(),
+        Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
+        restored,
+    )
+    .unwrap();
+    agent.restore_role_primary(&mut |_| {}).unwrap();
+    assert_eq!(agent.current_model.reference, "fixture/one");
+    assert_eq!(agent.think_level, ThinkLevel::Low);
+    assert!(
+        serde_json::to_string(&agent.session)
+            .unwrap()
+            .contains("committed context marker")
+    );
+    agent.switch_model("fixture/one").unwrap();
+    assert!(agent.role_route.is_none());
+    drop(agent);
+    let restored = persistence::load(&sessions, &sessions.join(".locks"), Some(&id), true).unwrap();
+    assert!(restored.checkpoint.role_route.is_none());
+}
+
+#[test]
+fn fallback_checkpoint_failure_keeps_model_and_native_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = fixture(dir.path(), "completion");
+    agent.role_route = Some(crate::config::RoleRoute {
+        role: ModelRole::Default,
+        primary: crate::config::RoleModel {
+            model: "fixture/one".into(),
+            effort: agent.think_level,
+        },
+        fallback: Some(crate::config::RoleModel {
+            model: "other/two".into(),
+            effort: ThinkLevel::Low,
+        }),
+    });
+    let before = serde_json::to_value(&agent.session).unwrap();
+    let path = dir
+        .path()
+        .join("sessions")
+        .join(format!("{}.jsonl", agent.session_id().unwrap()));
+    agent.journal.use_read_only_file(&path);
+    assert!(agent.activate_fallback(&mut |_| {}).is_err());
+    assert_eq!(agent.current_model.reference, "fixture/one");
+    assert_eq!(serde_json::to_value(&agent.session).unwrap(), before);
 }

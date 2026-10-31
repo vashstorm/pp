@@ -241,7 +241,7 @@ fn tui_runtime_input_cancel_pauses_queue_and_rejects_busy_cleanup() {
 fn tui_runtime_input_provider_error_pauses_queue_until_resume() {
     for protocol in ["completion", "response"] {
         let server = server();
-        let (_home, mut pty) = runtime_input_start(&server, protocol, "");
+        let (_home, mut pty) = runtime_input_start(&server, protocol, "rate_limit_retry_budget_seconds: 0\n");
         let mut stream = runtime_input_live(&mut pty, &server, protocol, "error-task-U");
 
         pty.input("ES\r");

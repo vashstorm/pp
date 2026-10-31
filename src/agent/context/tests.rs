@@ -899,6 +899,9 @@ fn context_responses_retention_rejects_invalid_history() {
 #[test]
 fn context_automatic_candidate_must_shrink_and_be_strictly_below_threshold() {
     let mut spec = SummarySpec {
+        edit_mode: crate::config::EditMode::Replace,
+        fallback: None,
+        fallback_used: &std::cell::Cell::new(false),
         system: None,
         cutoff: 0,
         instruction: "",

@@ -45,6 +45,7 @@ mod tests {
                 (
                     role,
                     RoleAssignment {
+                        fallback: None,
                         enabled: enabled.contains(&role),
                         model: "fixture/primary".into(),
                         effort: ThinkLevel::None,

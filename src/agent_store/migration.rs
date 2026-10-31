@@ -115,12 +115,14 @@ fn import(
         }
         for (role, assignment) in &preferences.model_roles {
             tx.execute(
-                "INSERT INTO model_roles(role,enabled,model_reference,effort) VALUES (?1,?2,?3,?4)",
+                "INSERT INTO model_roles(role,enabled,model_reference,effort,fallback_reference,fallback_effort) VALUES (?1,?2,?3,?4,?5,?6)",
                 params![
                     role_name(*role),
                     assignment.enabled,
-                    assignment.model,
-                    assignment.effort.as_str()
+                    (!assignment.model.is_empty()).then_some(&assignment.model),
+                    assignment.effort.as_str(),
+                    assignment.fallback.as_ref().map(|f| &f.model),
+                    assignment.fallback.as_ref().map(|f| f.effort.as_str())
                 ],
             )?;
         }

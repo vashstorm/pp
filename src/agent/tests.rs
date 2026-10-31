@@ -58,6 +58,7 @@ pub(super) fn seed_session(agent: &mut Agent, user: &str) {
         .session
         .set_tools(agent.tools.all_definitions(agent.workflow.mode));
     let metadata = Metadata {
+        role_route: None,
         cwd: agent.tools.cwd(),
         model_reference: &agent.current_model.reference,
         think_level: agent.think_level,

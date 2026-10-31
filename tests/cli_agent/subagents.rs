@@ -521,3 +521,76 @@ fn subagent_mixed_batch_starts_async_siblings_before_waiting_for_blocking_role()
     let output = cli.finish();
     assert!(output.status.success(), "{output:?}");
 }
+
+#[test]
+fn fallback_subagent_uses_its_role_backup_without_switching_parent() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let backup_protocol = if protocol == "completion" {
+            "response"
+        } else {
+            "completion"
+        };
+        let provider = |protocol, model| {
+            json!({"api_key":"fixture-key","protocol":protocol,
+            "base_url":format!("http://{}/v1", server.server_addr()),"models":{"model":{"model":model}}})
+        };
+        let models = json!({"providers":{"first":provider(protocol,"main"),"second":provider(backup_protocol,"backup")}});
+        let settings = json!({"rate_limit_retry_budget_seconds":0,"default_model":"first/model",
+            "model_roles":{"fast":{"model":"first/model","effort":"none","fallback":{"model":"second/model","effort":"high"}}}});
+        let cli = Cli::start_with(
+            home.path(),
+            Some("delegate with fallback"),
+            &settings.to_string(),
+            &models.to_string(),
+        );
+        let (request, _) = receive_sub(&server, protocol);
+        sub_call(
+            request,
+            protocol,
+            "spawn",
+            "task",
+            json!({"context":"fallback context", "tasks":[{"task":"child work","role":"fast"}]}),
+        );
+        let mut failed_child = 0;
+        let mut backup_child = 0;
+        loop {
+            let mut request = server
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            if is_child(&body) {
+                if body["model"] == "main" {
+                    failed_child += 1;
+                    request.respond(Response::empty(503)).unwrap();
+                } else {
+                    assert_eq!(body["model"], "backup");
+                    backup_child += 1;
+                    sub_final(request, backup_protocol, "child-fallback-complete");
+                }
+            } else {
+                assert_eq!(body["model"], "main");
+                let delivered = body.to_string().contains("child-fallback-complete");
+                sub_final(
+                    request,
+                    protocol,
+                    if delivered {
+                        "parent-complete"
+                    } else {
+                        "Waiting for child."
+                    },
+                );
+                if delivered {
+                    break;
+                }
+            }
+        }
+        let output = cli.finish();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!((failed_child, backup_child), (1, 1));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("parent-complete"));
+        no_more(&server);
+    }
+}

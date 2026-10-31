@@ -136,6 +136,7 @@ fn resume_preparation_preserves_current_session_and_releases_failed_candidate() 
             ..Default::default()
         }));
         let metadata = Metadata {
+            role_route: None,
             cwd: agent.tools.cwd(),
             model_reference: &agent.current_model.reference,
             think_level: agent.think_level,

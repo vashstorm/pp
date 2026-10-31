@@ -30,6 +30,85 @@ mod streaming;
 
 use streaming::{ChatChunk, ChatStream, ResponseEvent, ResponsesStream};
 
+/// 模型边界错误与本地事务错误分开，防止重试磁盘写入或工具副作用。
+#[derive(Debug)]
+struct ModelFailure {
+    message: String,
+    reason: crate::events::RequestRetryReason,
+    retry_after: Option<u64>,
+}
+impl std::fmt::Display for ModelFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for ModelFailure {}
+
+pub(crate) const EMPTY_SUMMARY: &str = "context compaction failed: expected a non-empty summary";
+
+pub(crate) fn model_request_failed(error: &anyhow::Error) -> bool {
+    error.is::<ModelFailure>()
+}
+
+fn provider_failure(error: OpenAIError, api: &str) -> anyhow::Error {
+    let reason =
+        request_retry_reason(&error).unwrap_or(crate::events::RequestRetryReason::ModelError);
+    let retry_after = retry_after_seconds(&error);
+    let error = redacted_error(error, api);
+    let message = error.to_string();
+    ModelFailure {
+        message,
+        reason,
+        retry_after,
+    }
+    .into()
+}
+
+struct RequestAttempts {
+    attempt: u32,
+    waited: Duration,
+    budget: Duration,
+    delay: Option<Duration>,
+    started: Instant,
+    request_context: Option<crate::stats::RequestSnapshot>,
+    pending: Option<crate::stats::Observation>,
+    pending_open: bool,
+    partial: bool,
+    summary: bool,
+}
+impl RequestAttempts {
+    fn new(budget: Duration) -> Self {
+        Self {
+            attempt: 0,
+            waited: Duration::ZERO,
+            budget,
+            delay: None,
+            started: Instant::now(),
+            request_context: None,
+            pending: None,
+            pending_open: false,
+            partial: false,
+            summary: false,
+        }
+    }
+    fn finish<T>(&mut self, result: &Result<T>) {
+        self.delay = result
+            .as_ref()
+            .err()
+            .and_then(|e| e.downcast_ref::<ModelFailure>())
+            .and_then(|error| {
+                if self.attempt >= REQUEST_MAX_ATTEMPTS || self.waited >= self.budget {
+                    return None;
+                }
+                let delay = error
+                    .retry_after
+                    .map(Duration::from_secs)
+                    .unwrap_or_else(|| Duration::from_secs(1 << (self.attempt - 1)));
+                Some(delay.min(self.budget - self.waited))
+            });
+    }
+}
+
 pub(crate) struct OpenAiClient {
     auth: Option<crate::auth::Config>,
     client: Client<OpenAIConfig>,
@@ -82,6 +161,50 @@ impl OpenAiClient {
         self.stats_context = Some(context);
         self.stats_key = None;
     }
+    pub(crate) fn model_reference(&self) -> &str {
+        &self.model_reference
+    }
+
+    pub(crate) fn copy_stats_context(&self, target: &mut Self) {
+        target.stats_context = self.stats_context.clone().map(|mut context| {
+            context.model_reference = target.model_reference.clone();
+            context
+        });
+    }
+
+    fn finish_backoff(
+        &mut self,
+        attempts: &mut RequestAttempts,
+        model: &str,
+        protocol: &str,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) {
+        if !attempts.pending_open {
+            return;
+        }
+        attempts.pending_open = false;
+        self.record_model_usage();
+        if let Some(mut observation) = attempts.pending.take() {
+            observation.request_context = attempts.request_context.take();
+            if let Some(context) = &self.stats_context {
+                let cancelled: Result<()> = Err(Cancelled.into());
+                self.stats_key = crate::stats::save(
+                    context,
+                    model,
+                    protocol,
+                    observation,
+                    attempts.started,
+                    &cancelled,
+                );
+            }
+        }
+        emit(AgentEvent::ModelRequestFinished {
+            elapsed_ms: elapsed_millis(attempts.started),
+            usage: None,
+            success: false,
+        });
+    }
+
     pub(crate) fn take_stats_key(&mut self) -> Option<String> {
         self.stats_key.take()
     }
@@ -338,15 +461,130 @@ impl OpenAiClient {
         on_request_sent: &mut dyn FnMut() -> Result<()>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<CompletionTurn> {
+        self.complete_request(request, cancellation, on_request_sent, emit, false)
+    }
+
+    pub(crate) fn complete_summary(
+        &mut self,
+        request: &CreateChatCompletionRequest,
+        cancellation: &CancellationToken,
+        on_request_sent: &mut dyn FnMut() -> Result<()>,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<CompletionTurn> {
+        self.complete_request(request, cancellation, on_request_sent, emit, true)
+    }
+
+    fn complete_request(
+        &mut self,
+        request: &CreateChatCompletionRequest,
+        cancellation: &CancellationToken,
+        on_request_sent: &mut dyn FnMut() -> Result<()>,
+        emit: &mut dyn FnMut(AgentEvent),
+        summary: bool,
+    ) -> Result<CompletionTurn> {
+        let mut attempts = RequestAttempts::new(self.rate_limit_retry_budget);
+        attempts.summary = summary;
+        let mut sent = false;
+        let mut once_sent = || {
+            if sent {
+                return Ok(());
+            }
+            on_request_sent()?;
+            sent = true;
+            Ok(())
+        };
+        loop {
+            if cancellation.is_cancelled() && attempts.attempt > 0 {
+                self.finish_backoff(&mut attempts, &request.model, "chat-completions", emit);
+                return Err(Cancelled.into());
+            }
+            attempts.attempt += 1;
+            if attempts.attempt > 1 && !attempts.pending_open {
+                emit(AgentEvent::AssistantStarted);
+            }
+            let outcome =
+                self.complete_attempt(request, cancellation, &mut once_sent, emit, &mut attempts);
+            if let Err(error) = &outcome
+                && model_request_failed(error)
+                && attempts.partial
+            {
+                emit(AgentEvent::ModelAttemptFailed {
+                    attempt: attempts.attempt,
+                });
+            }
+            let Some(delay) = attempts.delay.take() else {
+                return outcome.map_err(|mut error| {
+                    if attempts.attempt > 1
+                        && let Some(failure) = error.downcast_mut::<ModelFailure>()
+                    {
+                        failure.message = format!(
+                            "{} (gave up after {} retries and {}s of backoff)",
+                            failure.message,
+                            attempts.attempt - 1,
+                            attempts.waited.as_secs()
+                        );
+                    }
+                    error
+                });
+            };
+            let reason = outcome
+                .as_ref()
+                .err()
+                .and_then(|e| e.downcast_ref::<ModelFailure>())
+                .expect("重试只接受模型错误")
+                .reason;
+            tracing::warn!(event = "ai_request_retry", pid = std::process::id(), attempt = attempts.attempt, wait_ms = elapsed_duration(delay), reason = %reason);
+            emit(AgentEvent::RequestRetrying {
+                reason,
+                attempt: attempts.attempt,
+                wait_ms: elapsed_duration(delay),
+            });
+            attempts.waited += delay;
+            let waited = self
+                .runtime
+                .as_ref()
+                .expect("请求已初始化 runtime")
+                .block_on(async {
+                    cancellation
+                        .run_until_cancelled(tokio::time::sleep(delay))
+                        .await
+                        .ok_or(Cancelled)
+                });
+            if waited.is_err() {
+                self.finish_backoff(&mut attempts, &request.model, "chat-completions", emit);
+                return Err(Cancelled.into());
+            }
+        }
+    }
+
+    fn complete_attempt(
+        &mut self,
+        request: &CreateChatCompletionRequest,
+        cancellation: &CancellationToken,
+        on_request_sent: &mut dyn FnMut() -> Result<()>,
+        emit: &mut dyn FnMut(AgentEvent),
+        attempts: &mut RequestAttempts,
+    ) -> Result<CompletionTurn> {
         self.ensure_ready()?;
         let wire = auth::wire_request(request, self.auth.as_ref().map(|auth| auth.provider))?;
         let (initiator, has_images) = auth::request_metadata(&wire);
         self.prepare_auth(cancellation, initiator, has_images)?;
-        let started_at = Instant::now();
+        let new_request = attempts.attempt == 1 || !attempts.pending_open;
+        if new_request {
+            attempts.started = Instant::now();
+        }
+        let started_at = attempts.started;
         let record = !cancellation.is_cancelled() && self.stats_context.is_some();
         let mut observation = crate::stats::Observation::new();
-        emit(AgentEvent::ModelRequestStarted);
+        let mut partial = false;
+        if new_request {
+            emit(AgentEvent::ModelRequestStarted);
+        }
         let mut progress = |event: AgentEvent| {
+            if matches!(&event, AgentEvent::AssistantDelta { text, .. } | AgentEvent::ThinkingDelta { text } if !text.is_empty())
+            {
+                partial = true;
+            }
             if record {
                 observation.event(&event, started_at);
             }
@@ -357,11 +595,12 @@ impl OpenAiClient {
             .runtime
             .as_ref()
             .expect("ensure_ready leaves a runtime in place");
-        let budget = self.rate_limit_retry_budget;
         let mut output = ChatStream::default();
         let mut failure_context = crate::logging::FailureContext::default();
         let mut snapshot = serde_json::Value::Null;
         let mut attempted = false;
+        let mut stream_opened = false;
+        let mut local_failure = false;
         let result: Result<CompletionTurn> = runtime.block_on(async {
             // The BYOT future borrows its resource; bind it so retries can
             // create further futures from the same borrow.
@@ -375,27 +614,23 @@ impl OpenAiClient {
                 .await;
             // Persist the accepted request exactly once, before judging the
             // opening outcome; a callback failure takes precedence.
-            on_request_sent()?;
+            if let Err(error) = on_request_sent() {
+                local_failure = true;
+                return Err(error);
+            }
             let opened = match opened {
                 Some(opened) => opened,
                 None => return Err(Cancelled.into()),
             };
-            let mut stream = open_with_request_retry(
-                cancellation,
-                budget,
-                "Chat Completions",
-                &mut progress,
-                opened,
-                || chat.create_stream_byot::<_, serde_json::Value>(&wire),
-            )
-            .await?;
+            let mut stream = opened.map_err(|error| provider_failure(error, "Chat Completions"))?;
+            stream_opened = true;
             loop {
                 match cancellation.run_until_cancelled(stream.next()).await {
                     None => return Err(Cancelled.into()),
                     Some(None) => break,
                     Some(Some(chunk)) => {
                         let chunk =
-                            chunk.map_err(|error| redacted_error(error, "Chat Completions"))?;
+                            chunk.map_err(|error| provider_failure(error, "Chat Completions"))?;
                         failure_context.push(&chunk.to_string());
                         output.push(ChatChunk::decode(chunk)?, &mut progress)?;
                     }
@@ -411,6 +646,37 @@ impl OpenAiClient {
             }
             Ok(turn)
         });
+        let result = result.and_then(|turn| {
+            if attempts.summary {
+                ensure!(
+                    !turn.refusal
+                        && turn
+                            .message
+                            .tool_calls
+                            .as_ref()
+                            .is_none_or(|calls| calls.is_empty()),
+                    "{EMPTY_SUMMARY}"
+                );
+            }
+            Ok(turn)
+        });
+        let result = result.map_err(|error| {
+            if local_failure
+                || error.is::<Cancelled>()
+                || model_request_failed(&error)
+                || !attempted
+            {
+                error
+            } else {
+                let message = error.to_string();
+                tracing::error!(event = "model_response_error", pid = std::process::id(), detail = %crate::logging::diagnostic_text(&format!("{error:#}")));
+                ModelFailure { message, reason: crate::events::RequestRetryReason::ModelError, retry_after: None }.into()
+            }
+        });
+        attempts.partial = partial;
+        attempts.finish(&result);
+        let save_attempt = stream_opened || attempts.delay.is_none();
+        attempts.pending_open = attempted && !save_attempt;
         let elapsed_ms = elapsed_millis(started_at);
         failure_context.log(
             "Chat Completions",
@@ -418,13 +684,18 @@ impl OpenAiClient {
             &result,
             elapsed_ms,
         );
-        // 逻辑请求级使用计数：attempted 只在首次发送尝试内置位，建连重试不重复置位，
-        // 因此发送后的失败/取消恰好计一次；发送前取消与授权校验失败不计数。
-        // 必须发生在 stats 保存之前。
-        if attempted {
+        // 纯建连失败合并为一组；流已经打开的失败独立统计。发送前取消不计数。
+        // 计数写入先于 stats，退避中取消由 finish_backoff 收尾。
+        if attempted && save_attempt {
             self.record_model_usage();
         }
         if record {
+            if attempted
+                && attempts.request_context.is_none()
+                && let Some(context) = &self.stats_context
+            {
+                attempts.request_context = context.capture(&wire);
+            }
             if snapshot.is_null() {
                 snapshot = output.stats_snapshot();
             }
@@ -446,25 +717,33 @@ impl OpenAiClient {
             observation.output = snapshot;
             if let Some(context) = &self.stats_context {
                 if attempted {
-                    observation.request_context = context.capture(&wire);
+                    observation.request_context = attempts.request_context.take();
                 }
-                self.stats_key = crate::stats::save(
-                    context,
-                    &request.model,
-                    "chat-completions",
-                    observation,
-                    started_at,
-                    &result,
-                );
+                if save_attempt {
+                    attempts.pending = None;
+                    self.stats_key = crate::stats::save(
+                        context,
+                        &request.model,
+                        "chat-completions",
+                        observation,
+                        started_at,
+                        &result,
+                    );
+                } else {
+                    attempts.request_context = observation.request_context.take();
+                    attempts.pending = Some(observation);
+                }
             }
         }
         // Every outcome, including cancellation and callback failures, closes the
         // request exactly once with the authoritative usage when there is one.
-        emit(AgentEvent::ModelRequestFinished {
-            elapsed_ms,
-            usage: result.as_ref().ok().and_then(|turn| turn.usage),
-            success: result.is_ok(),
-        });
+        if save_attempt {
+            emit(AgentEvent::ModelRequestFinished {
+                elapsed_ms,
+                usage: result.as_ref().ok().and_then(|turn| turn.usage),
+                success: result.is_ok(),
+            });
+        }
         result
     }
 
@@ -475,15 +754,140 @@ impl OpenAiClient {
         on_request_sent: &mut dyn FnMut() -> Result<()>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<ResponseTurn> {
+        self.respond_request(request, cancellation, on_request_sent, emit, false)
+    }
+
+    pub(crate) fn respond_summary(
+        &mut self,
+        request: &CreateResponse,
+        cancellation: &CancellationToken,
+        on_request_sent: &mut dyn FnMut() -> Result<()>,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<ResponseTurn> {
+        self.respond_request(request, cancellation, on_request_sent, emit, true)
+    }
+
+    fn respond_request(
+        &mut self,
+        request: &CreateResponse,
+        cancellation: &CancellationToken,
+        on_request_sent: &mut dyn FnMut() -> Result<()>,
+        emit: &mut dyn FnMut(AgentEvent),
+        summary: bool,
+    ) -> Result<ResponseTurn> {
+        let mut attempts = RequestAttempts::new(self.rate_limit_retry_budget);
+        attempts.summary = summary;
+        let mut sent = false;
+        let mut once_sent = || {
+            if sent {
+                return Ok(());
+            }
+            on_request_sent()?;
+            sent = true;
+            Ok(())
+        };
+        loop {
+            if cancellation.is_cancelled() && attempts.attempt > 0 {
+                self.finish_backoff(
+                    &mut attempts,
+                    request.model.as_deref().unwrap_or_default(),
+                    "responses",
+                    emit,
+                );
+                return Err(Cancelled.into());
+            }
+            attempts.attempt += 1;
+            if attempts.attempt > 1 && !attempts.pending_open {
+                emit(AgentEvent::AssistantStarted);
+            }
+            let outcome =
+                self.respond_attempt(request, cancellation, &mut once_sent, emit, &mut attempts);
+            if let Err(error) = &outcome
+                && model_request_failed(error)
+                && attempts.partial
+            {
+                emit(AgentEvent::ModelAttemptFailed {
+                    attempt: attempts.attempt,
+                });
+            }
+            let Some(delay) = attempts.delay.take() else {
+                return outcome.map_err(|mut error| {
+                    if attempts.attempt > 1
+                        && let Some(failure) = error.downcast_mut::<ModelFailure>()
+                    {
+                        failure.message = format!(
+                            "{} (gave up after {} retries and {}s of backoff)",
+                            failure.message,
+                            attempts.attempt - 1,
+                            attempts.waited.as_secs()
+                        );
+                    }
+                    error
+                });
+            };
+            let reason = outcome
+                .as_ref()
+                .err()
+                .and_then(|e| e.downcast_ref::<ModelFailure>())
+                .expect("重试只接受模型错误")
+                .reason;
+            tracing::warn!(event = "ai_request_retry", pid = std::process::id(), attempt = attempts.attempt, wait_ms = elapsed_duration(delay), reason = %reason);
+            emit(AgentEvent::RequestRetrying {
+                reason,
+                attempt: attempts.attempt,
+                wait_ms: elapsed_duration(delay),
+            });
+            attempts.waited += delay;
+            let waited = self
+                .runtime
+                .as_ref()
+                .expect("请求已初始化 runtime")
+                .block_on(async {
+                    cancellation
+                        .run_until_cancelled(tokio::time::sleep(delay))
+                        .await
+                        .ok_or(Cancelled)
+                });
+            if waited.is_err() {
+                self.finish_backoff(
+                    &mut attempts,
+                    request.model.as_deref().unwrap_or_default(),
+                    "responses",
+                    emit,
+                );
+                return Err(Cancelled.into());
+            }
+        }
+    }
+
+    fn respond_attempt(
+        &mut self,
+        request: &CreateResponse,
+        cancellation: &CancellationToken,
+        on_request_sent: &mut dyn FnMut() -> Result<()>,
+        emit: &mut dyn FnMut(AgentEvent),
+        attempts: &mut RequestAttempts,
+    ) -> Result<ResponseTurn> {
         self.ensure_ready()?;
         let wire = auth::wire_request(request, self.auth.as_ref().map(|auth| auth.provider))?;
         let (initiator, has_images) = auth::request_metadata(&wire);
         self.prepare_auth(cancellation, initiator, has_images)?;
-        let started_at = Instant::now();
+        let new_request = attempts.attempt == 1 || !attempts.pending_open;
+        if new_request {
+            attempts.started = Instant::now();
+        }
+        let started_at = attempts.started;
         let record = !cancellation.is_cancelled() && self.stats_context.is_some();
         let mut observation = crate::stats::Observation::new();
-        emit(AgentEvent::ModelRequestStarted);
+        let mut partial = false;
+        if new_request {
+            emit(AgentEvent::ModelRequestStarted);
+        }
         let mut progress = |event: AgentEvent| {
+            if matches!(&event, AgentEvent::AssistantDelta { text, .. } | AgentEvent::ThinkingDelta { text } if !text.is_empty())
+            {
+                partial = true;
+            }
             if record {
                 observation.event(&event, started_at);
             }
@@ -499,8 +903,9 @@ impl OpenAiClient {
         let mut stop_reason = None;
         let mut reported_usage = None;
         let mut failure_context = crate::logging::FailureContext::default();
-        let budget = self.rate_limit_retry_budget;
         let mut attempted = false;
+        let mut stream_opened = false;
+        let mut local_failure = false;
         let result: Result<ResponseTurn> = runtime.block_on(async {
             let responses = client.responses();
             let opened = cancellation
@@ -509,20 +914,13 @@ impl OpenAiClient {
                     responses.create_stream_byot::<_, ResponseEvent>(&wire).await
                 })
                 .await;
-            on_request_sent()?;
+            if let Err(error) = on_request_sent() { local_failure = true; return Err(error); }
             let opened = match opened {
                 Some(opened) => opened,
                 None => return Err(Cancelled.into()),
             };
-            let mut stream = open_with_request_retry(
-                cancellation,
-                budget,
-                "Responses",
-                &mut progress,
-                opened,
-                || responses.create_stream_byot::<_, ResponseEvent>(&wire),
-            )
-            .await?;
+            let mut stream = opened.map_err(|error| provider_failure(error, "Responses"))?;
+            stream_opened = true;
             let mut output = ResponsesStream::default();
             loop {
                 match cancellation.run_until_cancelled(stream.next()).await {
@@ -531,7 +929,7 @@ impl OpenAiClient {
                         bail!("Responses protocol: stream ended before response.completed")
                     }
                     Some(Some(event)) => {
-                        let ResponseEvent(event, written, raw) = event.map_err(|error| redacted_error(error, "Responses"))?;
+                        let ResponseEvent(event, written, raw) = event.map_err(|error| provider_failure(error, "Responses"))?;
                         failure_context.push(&raw);
                         if record {
                             use async_openai::types::responses::ResponseStreamEvent;
@@ -570,13 +968,45 @@ impl OpenAiClient {
                 }
             }
         });
+        let result = result.and_then(|turn| {
+            if attempts.summary {
+                ensure!(
+                    !turn.refusal && !turn.has_calls && !turn.text.trim().is_empty(),
+                    "{EMPTY_SUMMARY}"
+                );
+            }
+            Ok(turn)
+        });
+        let result = result.map_err(|error| {
+            if local_failure
+                || error.is::<Cancelled>()
+                || model_request_failed(&error)
+                || !attempted
+            {
+                error
+            } else {
+                let message = error.to_string();
+                tracing::error!(event = "model_response_error", pid = std::process::id(), detail = %crate::logging::diagnostic_text(&format!("{error:#}")));
+                ModelFailure { message, reason: crate::events::RequestRetryReason::ModelError, retry_after: None }.into()
+            }
+        });
+        attempts.partial = partial;
+        attempts.finish(&result);
+        let save_attempt = stream_opened || attempts.delay.is_none();
+        attempts.pending_open = attempted && !save_attempt;
         let elapsed_ms = elapsed_millis(started_at);
         failure_context.log("Responses", &self.model_reference, &result, elapsed_ms);
         // 与 complete 相同的逻辑请求级计数边界；必须在 stats 保存之前。
-        if attempted {
+        if attempted && save_attempt {
             self.record_model_usage();
         }
         if record {
+            if attempted
+                && attempts.request_context.is_none()
+                && let Some(context) = &self.stats_context
+            {
+                attempts.request_context = context.capture(&wire);
+            }
             observation.usage = result
                 .as_ref()
                 .ok()
@@ -590,25 +1020,33 @@ impl OpenAiClient {
             };
             if let Some(context) = &self.stats_context {
                 if attempted {
-                    observation.request_context = context.capture(&wire);
+                    observation.request_context = attempts.request_context.take();
                 }
-                self.stats_key = crate::stats::save(
-                    context,
-                    request.model.as_deref().unwrap_or_default(),
-                    "responses",
-                    observation,
-                    started_at,
-                    &result,
-                );
+                if save_attempt {
+                    attempts.pending = None;
+                    self.stats_key = crate::stats::save(
+                        context,
+                        request.model.as_deref().unwrap_or_default(),
+                        "responses",
+                        observation,
+                        started_at,
+                        &result,
+                    );
+                } else {
+                    attempts.request_context = observation.request_context.take();
+                    attempts.pending = Some(observation);
+                }
             }
         }
         // The stream may still be open on the wire (or already cancelled); the
         // finish event reports this request, not HTTP EOF.
-        emit(AgentEvent::ModelRequestFinished {
-            elapsed_ms,
-            usage: result.as_ref().ok().and_then(|turn| turn.usage),
-            success: result.is_ok(),
-        });
+        if save_attempt {
+            emit(AgentEvent::ModelRequestFinished {
+                elapsed_ms,
+                usage: result.as_ref().ok().and_then(|turn| turn.usage),
+                success: result.is_ok(),
+            });
+        }
         result
     }
 }
@@ -750,104 +1188,19 @@ fn retry_after_seconds(error: &OpenAIError) -> Option<u64> {
         .ok()
 }
 
-/// 只分类建连阶段的临时错误；流开始后的错误不进入重试循环。
+/// 分类已脱敏的供应商错误；协议和流解析错误使用 ModelError。
 fn request_retry_reason(error: &OpenAIError) -> Option<crate::events::RequestRetryReason> {
     use crate::events::RequestRetryReason;
     match error {
         OpenAIError::ApiError(response) => match response.status_code.as_u16() {
             429 => Some(RequestRetryReason::RateLimited),
-            status @ (408 | 409 | 500..=599) => Some(RequestRetryReason::HttpStatus(status)),
-            _ => None,
+            status => Some(RequestRetryReason::HttpStatus(status)),
         },
         OpenAIError::Reqwest(error) if error.is_timeout() => Some(RequestRetryReason::Timeout),
         OpenAIError::Reqwest(error) if error.is_connect() || error.is_request() => {
             Some(RequestRetryReason::Connection)
         }
         _ => None,
-    }
-}
-
-/// 优先使用 Retry-After 整数秒，否则从 1 秒开始指数退避；等待截断到剩余预算。
-fn request_retry_wait(
-    error: &OpenAIError,
-    waited: Duration,
-    budget: Duration,
-    attempt: u32,
-) -> Option<Duration> {
-    request_retry_reason(error)?;
-    if budget.is_zero() || waited >= budget || attempt >= REQUEST_MAX_ATTEMPTS - 1 {
-        return None;
-    }
-    // 上方尝试次数限制保证移位不会溢出。
-    let backoff = match retry_after_seconds(error) {
-        Some(seconds) => Duration::from_secs(seconds),
-        None => Duration::from_secs(1 << attempt),
-    };
-    Some(backoff.min(budget - waited))
-}
-
-/// 重试结束后仍只展示脱敏错误，并补充实际重试次数和累计等待时长。
-fn opening_error(error: OpenAIError, api: &str, waited: Duration, retries: u32) -> anyhow::Error {
-    if retries == 0 {
-        return redacted_error(error, api);
-    }
-    anyhow::anyhow!(
-        "{} (gave up after {} retries and {}s of backoff)",
-        redacted_error(error, api),
-        retries,
-        waited.as_secs()
-    )
-}
-
-/// 仅重开尚未返回 SSE 流的请求；持久化回调已执行一次，等待和重开均可取消。
-async fn open_with_request_retry<S, F, Fut>(
-    cancellation: &CancellationToken,
-    budget: Duration,
-    api: &str,
-    progress: &mut dyn FnMut(AgentEvent),
-    mut opened: Result<S, OpenAIError>,
-    mut reopen: F,
-) -> Result<S>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<S, OpenAIError>>,
-{
-    let mut waited = Duration::ZERO;
-    let mut retries = 0u32;
-    loop {
-        let error = match opened {
-            Ok(stream) => return Ok(stream),
-            Err(error) => error,
-        };
-        let Some(delay) = request_retry_wait(&error, waited, budget, retries) else {
-            return Err(opening_error(error, api, waited, retries));
-        };
-        retries += 1;
-        waited += delay;
-        tracing::warn!(
-            event = "ai_request_retry",
-            pid = std::process::id(),
-            api,
-            attempt = retries,
-            wait_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-            error = crate::logging::diagnostic_text(&format!("{error:#}")),
-        );
-        progress(AgentEvent::RequestRetrying {
-            reason: request_retry_reason(&error).expect("重试条件已确认临时错误"),
-            attempt: retries,
-            wait_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-        });
-        match cancellation
-            .run_until_cancelled(tokio::time::sleep(delay))
-            .await
-        {
-            Some(()) => {}
-            None => return Err(Cancelled.into()),
-        }
-        match cancellation.run_until_cancelled(reopen()).await {
-            Some(next) => opened = next,
-            None => return Err(Cancelled.into()),
-        }
     }
 }
 
@@ -1044,3 +1397,7 @@ fn response_text(output: &[OutputItem]) -> String {
 
 #[cfg(test)]
 mod tests;
+
+fn elapsed_duration(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}

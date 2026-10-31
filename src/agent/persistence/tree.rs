@@ -542,6 +542,7 @@ mod tests {
 
     fn metadata(dir: &std::path::Path) -> Metadata<'_> {
         Metadata {
+            role_route: None,
             cwd: dir,
             model_reference: "fixture/model",
             think_level: ThinkLevel::None,
@@ -911,6 +912,7 @@ mod tests {
         for protocol in [Protocol::Completion, Protocol::Response] {
             let dir = tempfile::tempdir().unwrap();
             let metadata = Metadata {
+                role_route: None,
                 cwd: dir.path(),
                 model_reference: "fixture/model",
                 think_level: ThinkLevel::None,
@@ -1006,6 +1008,7 @@ mod tests {
         for protocol in [Protocol::Completion, Protocol::Response] {
             let dir = tempfile::tempdir().unwrap();
             let metadata = Metadata {
+                role_route: None,
                 cwd: dir.path(),
                 model_reference: "fixture/model",
                 think_level: ThinkLevel::None,

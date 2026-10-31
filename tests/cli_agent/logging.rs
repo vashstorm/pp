@@ -868,7 +868,7 @@ fn debug_logging_keeps_first_prompt_when_provider_rejects_request() {
     let cli = Cli::start_with(
         home.path(),
         Some("debug failed request marker\nsecond line with \"quotes\" and \\path"),
-        r#"{"debug":true}"#,
+        r#"{"debug":true,"rate_limit_retry_budget_seconds":0}"#,
         &fixture_models(&server),
     );
     let (request, _) = receive(&server);

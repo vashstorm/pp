@@ -6,6 +6,8 @@ use std::{path::Path, sync::Arc};
 
 #[derive(Serialize, Deserialize)]
 struct SavedChild {
+    #[serde(default)]
+    role_route: Option<crate::config::RoleRoute>,
     version: u32,
     session: Session,
     model: String,
@@ -140,6 +142,10 @@ impl Agent {
             }
             let sessions = binding.directory().join("sessions");
             let mut child = Agent {
+                role_route: record
+                    .spec
+                    .model_role
+                    .and_then(|role| catalog.role_route(role)),
                 runtime_models: runtime_models
                     .as_ref()
                     .map(|runtime| runtime.child(record.spec.model_role, record.id.clone())),
@@ -203,6 +209,7 @@ impl Agent {
                     },
                     "subagent actual model or protocol changed; refusing implicit resume"
                 );
+                child.role_route = saved.role_route;
                 child.session = saved.session;
                 child.think_level = saved.thinking;
                 if saved.version == 2
@@ -304,6 +311,7 @@ impl Agent {
         crate::subagent::atomic_json(
             path,
             &SavedChild {
+                role_route: self.role_route.clone(),
                 version: 2,
                 session: serde_json::from_value(serde_json::to_value(&self.session)?)?,
                 model: self.current_model.reference.clone(),

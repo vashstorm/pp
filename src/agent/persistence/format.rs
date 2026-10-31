@@ -103,6 +103,8 @@ pub(super) enum CustomRef<'a> {
 #[serde(rename_all = "camelCase")]
 pub(super) struct StateRef<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_route: Option<&'a crate::config::RoleRoute>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tree: Option<&'a super::tree::Selection>,
     pub version: u32,
     pub model_reference: &'a str,
@@ -122,6 +124,7 @@ impl<'a> StateRef<'a> {
         workflow: &'a WorkflowState,
     ) -> Self {
         Self {
+            role_route: metadata.role_route,
             tree: None,
             version: 1,
             model_reference: metadata.model_reference,
@@ -228,6 +231,8 @@ pub(super) enum Custom {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct State {
+    #[serde(default)]
+    pub role_route: Option<crate::config::RoleRoute>,
     #[serde(default)]
     pub tree: Option<super::tree::Selection>,
     pub version: u32,

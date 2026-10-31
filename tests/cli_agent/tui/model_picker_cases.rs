@@ -351,3 +351,73 @@ fn tui_model_panel_search_focus_height_and_scroll_keep_query_out_of_history() {
     pty.finish();
     no_more(&server);
 }
+
+#[test]
+fn fallback_tui_row_shortcuts_persist_primary_and_backup_independently() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_path(dir.path(), "settings.yml"),
+        "rate_limit_retry_budget_seconds: 0\n",
+    )
+    .unwrap();
+    let models = json!({"providers":{"fixture":slash_provider(&server, "fixture", "completion", json!({
+        "one":{"model":"one"}, "two":{"model":"two"}
+    }))}});
+    std::fs::write(config_path(dir.path(), "models.yml"), models.to_string()).unwrap();
+    let mut pty = Pty::start_with_existing_files(dir.path());
+    pty.ready_model("fixture/one");
+    pty.input("/Roles\r");
+    pty.text("Model roles");
+    pty.input("\x1b[C\r");
+    pty.text("Select a model for DEFAULT");
+    pty.input("one\r");
+    pty.text("Choose an effort");
+    pty.input("\r");
+    pty.wait_for("主模型已保存", |s| {
+        s.contents().contains("Model roles") && !s.contents().contains("Choose an effort")
+    });
+    pty.input("f");
+    pty.text("Select a model for DEFAULT");
+    pty.input("two\r");
+    pty.text("Choose an effort");
+    pty.input("\r");
+    pty.wait_for("备用行已显示", |s| {
+        s.contents().contains('↳') && s.contents().contains("Model roles")
+    });
+    let db = rusqlite::Connection::open_with_flags(
+        config_path(dir.path(), "agent.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let read = || {
+        db.query_row("SELECT enabled,model_reference,fallback_reference FROM model_roles WHERE role='default'", [], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,Option<String>>(1)?, r.get::<_,Option<String>>(2)?))).unwrap()
+    };
+    assert_eq!(
+        read(),
+        (1, Some("fixture/one".into()), Some("fixture/two".into()))
+    );
+    pty.input("x");
+    pty.wait_for("主模型清除后保留备用", |s| {
+        s.contents().contains("(not set)") && s.contents().contains('↳')
+    });
+    assert_eq!(read(), (0, None, Some("fixture/two".into())));
+    pty.input("\x1b[Bx");
+    pty.wait_for("备用清除后删除空角色", |s| {
+        !s.contents().contains('↳') && !s.contents().contains("(not set)")
+    });
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM model_roles WHERE role='default'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    pty.input("\x1b");
+    pty.ready();
+    no_more(&server);
+    pty.input("\x03");
+    pty.finish();
+}

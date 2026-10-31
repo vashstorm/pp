@@ -188,6 +188,11 @@ pp stats
 
 输入 `/Roles` 配置 DEFAULT、FAST、SLOW、VISION、PLAN、REVIEW 各自的 model 和 effort；`/model` 只切换当前模型。圆点表示启用状态，Space 或点击圆点切换，未选中的 Role 灰显且不会进入 prompt。进入 Plan 默认采用已启用的 PLAN，计划审阅及 reviewer 子任务默认采用已启用的 REVIEW，主 Agent 也可在子任务中显式指定模型 Role。[配置与使用 →](docs/guide.md#模型-roles)
 
+每个角色可配置一个 fallback，并独立设置 thinking。在 `/Roles` 中用 ↑/↓ 选择主模型或备用行，Enter 选模，`f` 设置备用，`x` 清除当前行，`t`（兼容 `e`）调整 thinking。清空主模型会禁用角色并保留 fallback；补齐后仍需手动启用。Delete／Backspace 删除整个角色配置。
+
+模型错误（含流中断）从本轮请求的安全消息边界重试，不重复已完成的工具。每个模型最多发送 10 次，同时受 `rate_limit_retry_budget_seconds` 等待预算限制；fallback 独立获得相同额度。预算为 0 时不重试，仍允许发送一次备用请求。取消、本地配置、持久化和清理错误直接停止。备用模型沿用至本任务结束，下一独立任务恢复主模型；手动 `/model` 解除角色 fallback 绑定。失败输出保留可见标记，但不进入有效模型历史。已有角色配置通过事务迁移至 `agent.db` schema v3。
+
+
 | 扩展 | 入口 | 说明 |
 | --- | --- | --- |
 | [项目指令](docs/guide.md#项目级-agentsmd) | 当前工作目录的 `AGENTS.md` | 每次模型请求前刷新项目规则 |

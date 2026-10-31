@@ -34,7 +34,7 @@ use super::{
 };
 
 const UNSUPPORTED_HISTORY: &str = "cannot compact: unsupported or incomplete history";
-const EMPTY_SUMMARY: &str = "context compaction failed: expected a non-empty summary";
+const EMPTY_SUMMARY: &str = crate::llm::EMPTY_SUMMARY;
 const RETAINED_SUFFIX_MAX_TOKENS: u64 = 16384;
 const SUMMARY_MAX_TOKENS: u64 = 2048;
 
@@ -328,6 +328,12 @@ fn candidate_accepted(spec: &SummarySpec<'_>, after_tokens: u64) -> bool {
 /// Everything the protocol-specific compaction needs; built by
 /// [`Agent::compact_impl`] once per attempt.
 struct SummarySpec<'a> {
+    fallback: Option<(
+        &'a crate::config::ModelCatalog,
+        &'a crate::config::RoleModel,
+    )>,
+    fallback_used: &'a std::cell::Cell<bool>,
+    edit_mode: crate::config::EditMode,
     cutoff: usize,
     instruction: &'a str,
     output_limit: u32,
@@ -338,18 +344,84 @@ struct SummarySpec<'a> {
     system: Option<&'a str>,
 }
 
+/// 只在主摘要请求失败后复制已裁出的摘要前缀；保留后缀从不复制或转换。
+fn summarize_fallback(
+    result: Result<String>,
+    make_session: impl FnOnce() -> Session,
+    client: &OpenAiClient,
+    journal: &mut SessionJournal,
+    spec: &SummarySpec<'_>,
+    cancellation: &CancellationToken,
+) -> Result<String> {
+    cancellation::check(cancellation)?;
+    let error = match result {
+        Ok(text) => return Ok(text),
+        Err(error) => error,
+    };
+    let Some((catalog, target)) = spec
+        .fallback
+        .filter(|_| crate::llm::model_request_failed(&error))
+    else {
+        return Err(summary_error(error));
+    };
+    let mut session = make_session();
+    let mut alternate = OpenAiClient::new(&catalog.resolve(client.model_reference())?)?;
+    client.copy_stats_context(&mut alternate);
+    let window = super::fallback::switch_scratch_model(
+        &mut alternate,
+        &mut session,
+        catalog,
+        target,
+        spec.edit_mode,
+    )?;
+    session.set_tools(Vec::new());
+    let mut sent = || journal.check();
+    let result = match &mut session {
+        Session::Completion(request) => {
+            request.max_completion_tokens = Some(spec.output_limit);
+            if let Some(window) = window {
+                ensure!(
+                    u128::from(estimate_tokens(request)?) + u128::from(spec.output_limit)
+                        <= u128::from(window),
+                    "cannot compact: summary request exceeds context window"
+                );
+            }
+            alternate
+                .complete_summary(request, cancellation, &mut sent, &mut |_| {})
+                .and_then(completion_summary_text)
+        }
+        Session::Response(request) => {
+            request.max_output_tokens = Some(spec.output_limit);
+            if let Some(window) = window {
+                ensure!(
+                    u128::from(estimate_tokens(request)?) + u128::from(spec.output_limit)
+                        <= u128::from(window),
+                    "cannot compact: summary request exceeds context window"
+                );
+            }
+            alternate
+                .respond_summary(request, cancellation, &mut sent, &mut |_| {})
+                .and_then(response_summary_text)
+        }
+    };
+    journal.track_stats(alternate.take_stats_key(), false);
+    let text = result.map_err(summary_error)?;
+    cancellation::check(cancellation)?;
+    spec.fallback_used.set(true);
+    Ok(text)
+}
+
 fn summarize_completion_request(
     client: &mut OpenAiClient,
     request: &CreateChatCompletionRequest,
     journal: &mut SessionJournal,
-    context_window: Option<u64>,
-    output_limit: u32,
+    spec: &SummarySpec<'_>,
     cancellation: &CancellationToken,
 ) -> Result<String> {
-    if let Some(window) = context_window {
+    if let Some(window) = spec.context_window {
         let estimated = estimate_tokens(request)?;
         ensure!(
-            u128::from(estimated) + u128::from(output_limit) <= u128::from(window),
+            u128::from(estimated) + u128::from(spec.output_limit) <= u128::from(window),
             "cannot compact: summary request exceeds context window"
         );
     }
@@ -360,26 +432,31 @@ fn summarize_completion_request(
     );
     let started = std::time::Instant::now();
     let mut on_request_sent = || journal.check();
-    let outcome = client.complete(request, cancellation, &mut on_request_sent, &mut |_| {});
+    let outcome = client.complete_summary(request, cancellation, &mut on_request_sent, &mut |_| {});
     journal.track_stats(client.take_stats_key(), false);
     log_model_request_finished("completion", started, &outcome);
-    let turn = outcome.map_err(summary_error)?;
-    cancellation::check(cancellation)?;
-    completion_summary_text(turn)
+    let result = outcome.and_then(completion_summary_text);
+    summarize_fallback(
+        result,
+        || Session::Completion(Box::new(request.clone())),
+        client,
+        journal,
+        spec,
+        cancellation,
+    )
 }
 
 fn summarize_response_request(
     client: &mut OpenAiClient,
     request: &CreateResponse,
     journal: &mut SessionJournal,
-    context_window: Option<u64>,
-    output_limit: u32,
+    spec: &SummarySpec<'_>,
     cancellation: &CancellationToken,
 ) -> Result<String> {
-    if let Some(window) = context_window {
+    if let Some(window) = spec.context_window {
         let estimated = estimate_tokens(request)?;
         ensure!(
-            u128::from(estimated) + u128::from(output_limit) <= u128::from(window),
+            u128::from(estimated) + u128::from(spec.output_limit) <= u128::from(window),
             "cannot compact: summary request exceeds context window"
         );
     }
@@ -390,12 +467,18 @@ fn summarize_response_request(
     );
     let started = std::time::Instant::now();
     let mut on_request_sent = || journal.check();
-    let outcome = client.respond(request, cancellation, &mut on_request_sent, &mut |_| {});
+    let outcome = client.respond_summary(request, cancellation, &mut on_request_sent, &mut |_| {});
     journal.track_stats(client.take_stats_key(), false);
     log_model_request_finished("response", started, &outcome);
-    let turn = outcome.map_err(summary_error)?;
-    cancellation::check(cancellation)?;
-    response_summary_text(turn)
+    let result = outcome.and_then(response_summary_text);
+    summarize_fallback(
+        result,
+        || Session::Response(Box::new(request.clone())),
+        client,
+        journal,
+        spec,
+        cancellation,
+    )
 }
 
 /// Restores the saved old prefix around the rejected candidate:
@@ -459,14 +542,7 @@ fn compact_completion(
             ..Default::default()
         },
     ));
-    let result = summarize_completion_request(
-        client,
-        &*request,
-        journal,
-        spec.context_window,
-        spec.output_limit,
-        cancellation,
-    );
+    let result = summarize_completion_request(client, &*request, journal, spec, cancellation);
     // Restore the stashed controls before judging the outcome.
     request.tools = tools;
     request.tool_choice = tool_choice;
@@ -553,14 +629,7 @@ fn compact_response(
         content: spec.instruction.into(),
         ..Default::default()
     }));
-    let result = summarize_response_request(
-        client,
-        &*request,
-        journal,
-        spec.context_window,
-        spec.output_limit,
-        cancellation,
-    );
+    let result = summarize_response_request(client, &*request, journal, spec, cancellation);
     // Restore the stashed controls before judging the outcome.
     request.tools = tools;
     request.tool_choice = tool_choice;
@@ -694,7 +763,17 @@ impl Agent {
         } else {
             None
         };
+        let fallback_used = std::cell::Cell::new(false);
+        let fallback = self
+            .role_route
+            .as_ref()
+            .filter(|route| route.primary.model == self.current_model.reference)
+            .and_then(|route| route.fallback.as_ref())
+            .map(|target| (&self.catalog, target));
         let spec = SummarySpec {
+            edit_mode: self.tools.edit_mode(),
+            fallback,
+            fallback_used: &fallback_used,
             cutoff,
             instruction: &instruction,
             output_limit: summary_output_limit(budget),
@@ -706,6 +785,7 @@ impl Agent {
         };
         emit(AgentEvent::CompactionStarted { automatic });
         let metadata = Metadata {
+            role_route: self.role_route.as_ref(),
             cwd: self.tools.cwd(),
             model_reference: &self.current_model.reference,
             think_level: self.think_level,
@@ -747,6 +827,9 @@ impl Agent {
             other => return Ok(other),
         };
         self.last_request = None;
+        if fallback_used.get() {
+            self.activate_fallback(emit)?;
+        }
         emit(AgentEvent::CompactionFinished {
             before_tokens,
             after_tokens,

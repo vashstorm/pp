@@ -979,6 +979,38 @@ fn run_cli_task(
                 &mut err_broken,
                 &mut first_error,
             ),
+            AgentEvent::ModelAttemptFailed { attempt } => {
+                if visible && !newline {
+                    cli_write(stdout, "\n", &mut out_broken, &mut first_error);
+                }
+                cli_write(
+                    stderr,
+                    &format!(
+                        "Model attempt {attempt} failed; partial output is excluded from history.\n"
+                    ),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+                visible = false;
+                newline = true;
+            }
+            AgentEvent::ModelRouteChanged {
+                model, fallback, ..
+            } => {
+                cli_write(
+                    stderr,
+                    &format!(
+                        "{}: {model}\n",
+                        if fallback {
+                            "Using fallback model"
+                        } else {
+                            "Restoring primary model"
+                        }
+                    ),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+            }
             AgentEvent::AssistantStarted => {
                 visible = false;
                 content = false;

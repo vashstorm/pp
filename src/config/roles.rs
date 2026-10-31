@@ -39,9 +39,54 @@ impl ModelRole {
 pub(crate) struct RoleAssignment {
     #[serde(default = "role_enabled_by_default")]
     pub(crate) enabled: bool,
+    #[serde(default)]
     pub(crate) model: String,
     #[serde(default)]
     pub(crate) effort: ThinkLevel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) fallback: Option<RoleModel>,
+}
+
+/// 单个模型及其独立思考档位；空主模型在数据库中表示为 NULL。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RoleModel {
+    pub(crate) model: String,
+    pub(crate) effort: ThinkLevel,
+}
+
+/// 记录角色来源与任务开始时的主备选择，不能由实际模型名称反推。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RoleRoute {
+    pub(crate) role: ModelRole,
+    pub(crate) primary: RoleModel,
+    pub(crate) fallback: Option<RoleModel>,
+}
+
+impl RoleAssignment {
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.enabled || !self.model.is_empty(),
+            "role primary model is required before enabling"
+        );
+        for model in std::iter::once(self.model.as_str())
+            .filter(|m| !m.is_empty())
+            .chain(self.fallback.iter().map(|m| m.model.as_str()))
+        {
+            ensure!(
+                model
+                    .split_once('/')
+                    .is_some_and(|(p, m)| !p.trim().is_empty() && !m.trim().is_empty()),
+                "model_roles model must use provider/model"
+            );
+        }
+        ensure!(
+            self.fallback.as_ref().is_none_or(|f| f.model != self.model),
+            "role primary and fallback must differ"
+        );
+        Ok(())
+    }
 }
 
 fn role_enabled_by_default() -> bool {
@@ -51,6 +96,21 @@ fn role_enabled_by_default() -> bool {
 pub(crate) type ModelRoles = BTreeMap<ModelRole, RoleAssignment>;
 
 impl ModelCatalog {
+    pub(crate) fn role_route(&self, role: ModelRole) -> Option<RoleRoute> {
+        let assignment = self
+            .model_roles()
+            .get(&role)
+            .filter(|a| a.enabled && !a.model.is_empty())?;
+        Some(RoleRoute {
+            role,
+            primary: RoleModel {
+                model: assignment.model.clone(),
+                effort: assignment.effort,
+            },
+            fallback: assignment.fallback.clone(),
+        })
+    }
+
     pub(crate) fn model_roles(&self) -> &ModelRoles {
         &self.preferences.model_roles
     }
@@ -69,6 +129,7 @@ impl ModelCatalog {
             .filter(|assignment| assignment.enabled)
             .cloned()
             .unwrap_or_else(|| RoleAssignment {
+                fallback: None,
                 enabled: false,
                 model: model.to_owned(),
                 effort,
@@ -88,22 +149,17 @@ impl ModelCatalog {
         assignment: Option<RoleAssignment>,
     ) -> Result<()> {
         if let Some(assignment) = &assignment {
-            // 禁用的 Role 同样保持复合引用约束，避免下次启动偏好校验失败。
-            ensure!(
-                assignment
-                    .model
-                    .split_once('/')
-                    .is_some_and(
-                        |(provider, model)| !provider.trim().is_empty() && !model.trim().is_empty()
-                    ),
-                "model_roles model must use provider/model"
-            );
+            assignment.validate()?;
             if assignment.enabled {
-                let config = self.resolve(&assignment.model)?;
-                ensure!(
-                    config.thinking.supports(assignment.effort),
-                    "role effort is not supported by the selected model"
-                );
+                for (model, effort) in std::iter::once((&assignment.model, assignment.effort))
+                    .chain(assignment.fallback.iter().map(|f| (&f.model, f.effort)))
+                {
+                    let config = self.resolve(model)?;
+                    ensure!(
+                        config.thinking.supports(effort),
+                        "role effort is not supported by the selected model"
+                    );
+                }
             }
         }
         let mut store = crate::agent_store::AgentStore::open(&self.agent_db_path)?;
@@ -148,6 +204,7 @@ mod tests {
 
     fn assignment(model: &str, effort: ThinkLevel) -> RoleAssignment {
         RoleAssignment {
+            fallback: None,
             enabled: true,
             model: model.into(),
             effort,
@@ -325,5 +382,49 @@ mod tests {
             assert!(!restored.model_roles()[&role].enabled);
             assert_eq!(restored.model_roles()[&role].model, "fixture/two");
         }
+    }
+    #[test]
+    fn fallback_roles_roundtrip_missing_primary_and_validation_are_atomic() {
+        let (dir, mut catalog) = fixture();
+        let mut value = assignment("fixture/two", ThinkLevel::High);
+        value.fallback = Some(RoleModel {
+            model: "fixture/one".into(),
+            effort: ThinkLevel::Low,
+        });
+        catalog
+            .save_model_role(ModelRole::Fast, Some(value.clone()))
+            .unwrap();
+        let restored = ModelCatalog::from_files(
+            &dir.path().join("settings.yml"),
+            &dir.path().join("models.yml"),
+        )
+        .unwrap();
+        assert_eq!(restored.model_roles()[&ModelRole::Fast], value);
+        let mut invalid = value.clone();
+        invalid.fallback.as_mut().unwrap().model = invalid.model.clone();
+        assert!(
+            catalog
+                .save_model_role(ModelRole::Fast, Some(invalid))
+                .is_err()
+        );
+        assert_eq!(catalog.model_roles()[&ModelRole::Fast], value);
+        value.model.clear();
+        assert!(
+            catalog
+                .save_model_role(ModelRole::Fast, Some(value.clone()))
+                .is_err()
+        );
+        value.enabled = false;
+        catalog
+            .save_model_role(ModelRole::Fast, Some(value.clone()))
+            .unwrap();
+        assert!(catalog.role_route(ModelRole::Fast).is_none());
+        catalog.reload_models().unwrap();
+        assert_eq!(catalog.model_roles()[&ModelRole::Fast], value);
+        value.model = "fixture/two".into();
+        catalog
+            .save_model_role(ModelRole::Fast, Some(value))
+            .unwrap();
+        assert!(!catalog.model_roles()[&ModelRole::Fast].enabled);
     }
 }

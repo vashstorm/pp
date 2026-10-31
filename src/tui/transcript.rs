@@ -398,7 +398,8 @@ impl Transcript {
                 ReplayRecord::Event(event) => {
                     match &event {
                         AgentEvent::AssistantStarted => assistant_running = true,
-                        AgentEvent::AssistantFinished { .. } => assistant_running = false,
+                        AgentEvent::AssistantFinished { .. }
+                        | AgentEvent::ModelAttemptFailed { .. } => assistant_running = false,
                         _ => {}
                     }
                     self.progress(event);
@@ -495,6 +496,8 @@ impl Transcript {
     fn progress_phase(&mut self, event: &AgentEvent) {
         if let Some(activity) = &mut self.activity {
             match event {
+                AgentEvent::ModelAttemptFailed { .. } => activity.phase("Model attempt failed"),
+                AgentEvent::ModelRouteChanged { .. } => activity.phase("Switching to fallback"),
                 AgentEvent::AssistantStarted => activity.phase("Requesting model"),
                 AgentEvent::ThinkingDelta { .. } => activity.phase("Thinking"),
                 AgentEvent::AssistantDelta { .. } => activity.phase("Responding"),
@@ -591,6 +594,35 @@ impl Transcript {
                     text.push_str(&palette::display_text(&item.content));
                 }
                 self.append("Note", &text);
+            }
+            AgentEvent::ModelAttemptFailed { attempt } => {
+                for index in [self.assistant.take(), self.thinking.take()]
+                    .into_iter()
+                    .flatten()
+                {
+                    self.entries[index].status = EntryStatus::Failed;
+                }
+                self.append(
+                    "Error",
+                    &format!(
+                        "Model attempt {attempt} failed; partial output is excluded from history."
+                    ),
+                );
+            }
+            AgentEvent::ModelRouteChanged {
+                model, fallback, ..
+            } => {
+                self.append(
+                    "Note",
+                    &format!(
+                        "{}: {model}",
+                        if fallback {
+                            "Using fallback model"
+                        } else {
+                            "Restoring primary model"
+                        }
+                    ),
+                );
             }
             AgentEvent::AssistantStarted => {
                 self.assistant = None;

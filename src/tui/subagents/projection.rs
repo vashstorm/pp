@@ -541,6 +541,32 @@ impl Projection {
                     );
                 }
             }
+            AgentEvent::ModelAttemptFailed { attempt } => {
+                self.set_current(agent, "Model attempt failed");
+                self.insert_lifecycle(
+                    agent,
+                    run,
+                    offset,
+                    timestamp,
+                    "Failed attempt",
+                    format!("Attempt {attempt} failed; partial output is excluded from history"),
+                    RowStatus::Error,
+                    1,
+                );
+            }
+            AgentEvent::ModelRouteChanged { model, .. } => {
+                self.set_current(agent, &format!("Fallback: {model}"));
+                self.insert_lifecycle(
+                    agent,
+                    run,
+                    offset,
+                    timestamp,
+                    "Fallback",
+                    model.clone(),
+                    RowStatus::Pending,
+                    1,
+                );
+            }
             AgentEvent::RequestRetrying {
                 reason,
                 attempt,

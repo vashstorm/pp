@@ -37,6 +37,12 @@ const REVIEW_CONTEXT: &str = "Plan review context limit reached.";
 
 const REVIEW_INSTRUCTIONS: &str = include_str!("../prompts/plan-review.md");
 
+struct ReviewModels {
+    reference: String,
+    window: Option<u64>,
+    fallback: Option<crate::config::RoleModel>,
+}
+
 impl Agent {
     /// 使用 REVIEW Role 独立审阅已保存计划，将报告写入 `workflow.review`。
     ///
@@ -68,6 +74,7 @@ impl Agent {
         )?;
         let config = self.catalog.resolve(&selection.model)?;
         let metadata = Metadata {
+            role_route: None,
             cwd: self.tools.cwd(),
             model_reference: &selection.model,
             think_level: selection.effort,
@@ -93,13 +100,12 @@ impl Agent {
         session.set_tools(self.tools.review_definitions());
         session.set_think_level(selection.effort);
         append_user_to(&mut session, &review_prompt(&document));
-        let outcome = self.review_loop(
-            &mut client,
-            &mut session,
-            config.context_window,
-            cancellation,
-            emit,
-        );
+        let mut models = ReviewModels {
+            reference: selection.model.clone(),
+            window: config.context_window,
+            fallback: selection.fallback.clone().filter(|_| selection.enabled),
+        };
+        let outcome = self.review_loop(&mut client, &mut session, &mut models, cancellation, emit);
         if outcome.is_err() {
             client.cancel_pending_io();
         }
@@ -108,7 +114,7 @@ impl Agent {
         let report = PlanReviewReport {
             plan_id: document.id.clone(),
             revision: document.revision,
-            model_reference: selection.model,
+            model_reference: models.reference,
             content,
         };
         let previous = self.workflow.clone();
@@ -121,7 +127,7 @@ impl Agent {
         &self,
         client: &mut OpenAiClient,
         session: &mut Session,
-        context_window: Option<u64>,
+        models: &mut ReviewModels,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<String> {
@@ -135,7 +141,7 @@ impl Agent {
             };
             let system = self.review_system_for(model)?;
             set_review_system(session, &system);
-            if let Some(window) = context_window {
+            if let Some(window) = models.window {
                 let estimated = estimate_tokens(session)?;
                 ensure!(
                     u128::from(estimated) < u128::from(window),
@@ -147,14 +153,66 @@ impl Agent {
                 Session::Completion(request) => {
                     let mut sent = || -> Result<()> { Ok(()) };
                     let outcome = client.complete(request, cancellation, &mut sent, emit);
-                    let turn: CompletionTurn = outcome?;
+                    let turn: CompletionTurn = match outcome {
+                        Ok(turn) => turn,
+                        Err(error)
+                            if crate::llm::model_request_failed(&error)
+                                && models.fallback.is_some() =>
+                        {
+                            cancellation::check(cancellation)?;
+                            let target = models.fallback.take().expect("已确认备用模型");
+                            models.window = super::fallback::switch_scratch_model(
+                                client,
+                                session,
+                                &self.catalog,
+                                &target,
+                                self.tools.edit_mode(),
+                            )?;
+                            session.set_tools(self.tools.review_definitions());
+                            models.reference = target.model.clone();
+                            emit(AgentEvent::ModelRouteChanged {
+                                model: target.model,
+                                effort: target.effort,
+                                fallback: true,
+                                temporary: true,
+                            });
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
                     cancellation::check(cancellation)?;
                     self.completion_review_round(client, request, turn, cancellation, emit)?
                 }
                 Session::Response(request) => {
                     let mut sent = || -> Result<()> { Ok(()) };
                     let outcome = client.respond(request, cancellation, &mut sent, emit);
-                    let turn: ResponseTurn = outcome?;
+                    let turn: ResponseTurn = match outcome {
+                        Ok(turn) => turn,
+                        Err(error)
+                            if crate::llm::model_request_failed(&error)
+                                && models.fallback.is_some() =>
+                        {
+                            cancellation::check(cancellation)?;
+                            let target = models.fallback.take().expect("已确认备用模型");
+                            models.window = super::fallback::switch_scratch_model(
+                                client,
+                                session,
+                                &self.catalog,
+                                &target,
+                                self.tools.edit_mode(),
+                            )?;
+                            session.set_tools(self.tools.review_definitions());
+                            models.reference = target.model.clone();
+                            emit(AgentEvent::ModelRouteChanged {
+                                model: target.model,
+                                effort: target.effort,
+                                fallback: true,
+                                temporary: true,
+                            });
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
                     cancellation::check(cancellation)?;
                     self.response_review_round(client, request, turn, cancellation, emit)?
                 }
@@ -372,6 +430,7 @@ mod tests {
         journal_workflow, plan_workflow, response_stream, runtime_input_agent, seed_session,
         write_plan_file,
     };
+    use crate::config::ThinkLevel;
     use crate::plan::{PlanStatus, WorkMode};
     use serde_json::{Value, json};
 
@@ -402,6 +461,7 @@ mod tests {
                 .save_model_role(
                     crate::config::ModelRole::Review,
                     Some(crate::config::RoleAssignment {
+                        fallback: None,
                         enabled: true,
                         model: "audit/review".into(),
                         effort: crate::config::ThinkLevel::High,
@@ -438,6 +498,76 @@ mod tests {
             assert_eq!(report.model_reference, "audit/review");
             assert_eq!(agent.current_model.reference, "fixture/one");
             assert_eq!(serde_json::to_value(&agent.session).unwrap(), main);
+        }
+    }
+
+    #[test]
+    fn fallback_plan_review_switches_scratch_protocol_without_changing_main() {
+        for protocol in ["completion", "response"] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let address = server.server_addr().to_string();
+            let dir = tempfile::tempdir().unwrap();
+            let (mut agent, token) = ready_reviewer(dir.path(), protocol, &address);
+            let backup_protocol = if protocol == "completion" {
+                "response"
+            } else {
+                "completion"
+            };
+            let path = dir.path().join("models.yml");
+            let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            models["providers"]["audit"] = json!({"api_key":"fixture-key","protocol":backup_protocol,
+                "base_url":format!("http://{address}/v1"),"models":{"backup":{"model":"review-backup"}}});
+            std::fs::write(path, models.to_string()).unwrap();
+            agent.reload_models().unwrap();
+            agent
+                .save_model_role(
+                    crate::config::ModelRole::Review,
+                    Some(crate::config::RoleAssignment {
+                        enabled: true,
+                        model: "fixture/one".into(),
+                        effort: ThinkLevel::None,
+                        fallback: Some(crate::config::RoleModel {
+                            model: "audit/backup".into(),
+                            effort: ThinkLevel::High,
+                        }),
+                    }),
+                )
+                .unwrap();
+            let before = serde_json::to_value(&agent.session).unwrap();
+            let handle = std::thread::spawn(move || {
+                let request = server
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                request.respond(tiny_http::Response::empty(503)).unwrap();
+                let mut request = server
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    request.url(),
+                    if backup_protocol == "completion" {
+                        "/v1/chat/completions"
+                    } else {
+                        "/v1/responses"
+                    }
+                );
+                let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                assert_eq!(body["model"], "review-backup");
+                final_for(backup_protocol, request, REPORT, false);
+            });
+            let report = agent
+                .review_plan(
+                    token,
+                    &InputQueue::default(),
+                    &CancellationToken::new(),
+                    &mut |_| {},
+                )
+                .unwrap();
+            handle.join().unwrap();
+            assert_eq!(report.model_reference, "audit/backup");
+            assert_eq!(agent.current_model.reference, "fixture/one");
+            assert_eq!(serde_json::to_value(&agent.session).unwrap(), before);
         }
     }
 
