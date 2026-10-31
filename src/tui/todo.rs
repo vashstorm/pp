@@ -200,12 +200,12 @@ impl Panel {
         ];
         let hint = controls
             .iter()
-            .find(|hint| summary.width() + Span::raw(hint.as_str()).width() + 2 <= width);
+            .find(|hint| summary.width() + Span::raw(hint.as_str()).width() + 3 <= width);
         let hint = match hint {
             Some(hint) => hint.as_str(),
             None => {
                 summary.spans.truncate(1);
-                if summary.width() + Span::raw(TOGGLE_HINT).width() + 1 > width {
+                if summary.width() + Span::raw(TOGGLE_HINT).width() + 3 > width {
                     return if Span::raw(TOGGLE_HINT).width() <= width {
                         Line::styled(TOGGLE_HINT, Style::default().fg(palette::MUTED))
                     } else {
@@ -215,8 +215,9 @@ impl Panel {
                 TOGGLE_HINT
             }
         };
-        let gap = width.saturating_sub(summary.width() + Span::raw(hint).width());
-        summary.spans.push(Span::raw(" ".repeat(gap)));
+        summary
+            .spans
+            .push(Span::styled(" · ", Style::default().fg(palette::DIM)));
         summary.spans.push(Span::styled(
             hint.to_owned(),
             Style::default().fg(palette::MUTED),
@@ -545,8 +546,10 @@ mod tests {
                 assert!(title.contains(TOGGLE_HINT));
                 if width == 80 {
                     let action = if expanded { "collapse" } else { "expand" };
-                    assert!(title.contains(&format!("{TOGGLE_HINT} {action}")));
-                    assert!(title.contains("0/1"));
+                    assert_eq!(
+                        title.trim_end(),
+                        format!("TODO · 0/1 · {TOGGLE_HINT} {action}")
+                    );
                 }
             }
         }

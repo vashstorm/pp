@@ -63,6 +63,7 @@ impl Panel {
                 TreeBlock {
                     entries,
                     label: Line::from(vec![
+                        Span::raw(" "),
                         Span::styled("• ", Style::default().fg(ACCENT)),
                         Span::styled(
                             role(node.kind),
@@ -72,6 +73,7 @@ impl Panel {
                                 Kind::Tools => MUTED,
                             }),
                         ),
+                        Span::raw(" "),
                     ]),
                 }
             })
