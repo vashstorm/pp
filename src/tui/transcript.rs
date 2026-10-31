@@ -27,6 +27,7 @@ mod entry;
 mod native;
 mod recorded;
 mod render;
+mod scroll;
 mod tree_layout;
 
 static NEXT_NATIVE_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -175,6 +176,12 @@ struct TreeLayout {
     groups: Vec<TreeGroup>,
 }
 
+#[derive(Clone, Copy)]
+struct BrowseAnchor {
+    entry: usize,
+    row: usize,
+}
+
 #[derive(Default)]
 pub(super) struct Transcript {
     native_generation: u64,
@@ -188,6 +195,9 @@ pub(super) struct Transcript {
     thinking: Option<usize>,
     running_tools: Vec<(String, usize)>,
     offset: usize,
+    browse_anchor: Option<BrowseAnchor>,
+    // 上一帧的几何信息独立保留，流式事件使 layout 失效后仍能处理滚轮。
+    displayed_heights: Vec<usize>,
     total: usize,
     viewport_height: usize,
     viewport_width: u16,
@@ -242,12 +252,15 @@ impl Transcript {
 
     pub(super) fn follow(&mut self) {
         self.follow_bottom = true;
+        self.browse_anchor = None;
     }
 
     pub(super) fn begin_browse(&mut self) {
         self.prepare_layout(self.viewport_width);
         self.offset = self.total.saturating_sub(self.viewport_height);
         self.follow_bottom = true;
+        self.browse_anchor = None;
+        self.remember_heights();
     }
 
     pub(super) fn set_terminal_rows(&mut self, rows: u16) {
@@ -923,25 +936,7 @@ impl Transcript {
     }
 
     pub(super) fn toggle_tool_output(&mut self) {
-        // 锚定卡片而不是整个会话的绝对行号，避免前面卡片高度变化将浏览位置推走。
-        let anchor = if !self.follow_bottom && self.viewport_width > 0 {
-            self.prepare_layout(self.viewport_width);
-            let mut row = self.offset;
-            self.entries.iter().enumerate().find_map(|(index, entry)| {
-                let height = entry.layout.as_ref()?.height;
-                if height == 0 {
-                    return None;
-                }
-                if row <= height {
-                    Some((index, row))
-                } else {
-                    row -= height + 1;
-                    None
-                }
-            })
-        } else {
-            None
-        };
+        self.ensure_browse_anchor();
         self.tools_expanded = !self.tools_expanded;
         for entry in &mut self.entries {
             if entry.is_collapsible_tool() {
@@ -949,21 +944,10 @@ impl Transcript {
                 entry.layout = None;
             }
         }
-        if let Some((index, row)) = anchor {
+        if self.browse_anchor.is_some() {
             self.prepare_layout(self.viewport_width);
-            self.offset = self.entries[..index]
-                .iter()
-                .filter_map(|entry| entry.layout.as_ref())
-                .filter(|layout| layout.height > 0)
-                .map(|layout| layout.height + 1)
-                .sum::<usize>()
-                + row.min(
-                    self.entries[index]
-                        .layout
-                        .as_ref()
-                        .expect("layout initialized")
-                        .height,
-                );
+            self.resolve_browse_anchor();
+            self.remember_heights();
         }
     }
 
@@ -974,12 +958,14 @@ impl Transcript {
     pub(super) fn scroll_up(&mut self, lines: usize) {
         self.offset = self.offset.saturating_sub(lines);
         self.follow_bottom = false;
+        self.capture_browse_anchor();
     }
 
     pub(super) fn scroll_down(&mut self, lines: usize) {
         let bottom = self.total.saturating_sub(self.viewport_height);
         self.offset = self.offset.saturating_add(lines).min(bottom);
         self.follow_bottom = self.offset == bottom;
+        self.capture_browse_anchor();
     }
 
     pub(super) fn entry_count(&self) -> usize {
@@ -1005,6 +991,8 @@ impl Transcript {
         let bottom = self.total.saturating_sub(self.viewport_height);
         self.offset = offset.min(bottom);
         self.follow_bottom = self.offset == bottom;
+        self.remember_heights();
+        self.capture_browse_anchor();
         true
     }
 
@@ -1015,24 +1003,7 @@ impl Transcript {
         if width == self.viewport_width {
             return;
         }
-        let anchor = if !self.follow_bottom && self.viewport_width > 0 {
-            self.prepare_layout(self.viewport_width);
-            let mut row = self.offset;
-            self.entries.iter().enumerate().find_map(|(index, entry)| {
-                let height = entry.layout.as_ref()?.height;
-                if height == 0 {
-                    return None;
-                }
-                if row <= height {
-                    Some((index, row))
-                } else {
-                    row -= height + 1;
-                    None
-                }
-            })
-        } else {
-            None
-        };
+        self.ensure_browse_anchor();
         self.viewport_width = width;
         for entry in &mut self.entries {
             entry.layout = None;
@@ -1042,20 +1013,8 @@ impl Transcript {
         }
         self.read_groups_key = None;
         self.prepare_layout(width);
-        if let Some((index, row)) = anchor {
-            let preceding = self.entries[..index]
-                .iter()
-                .filter_map(|entry| entry.layout.as_ref())
-                .filter(|layout| layout.height > 0)
-                .map(|layout| layout.height + 1)
-                .sum::<usize>();
-            let height = self.entries[index]
-                .layout
-                .as_ref()
-                .map_or(0, |layout| layout.height);
-            self.offset = preceding + row.min(height);
-            self.follow_bottom = false;
-        }
+        self.resolve_browse_anchor();
+        self.remember_heights();
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
@@ -1065,14 +1024,17 @@ impl Transcript {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        self.ensure_browse_anchor();
         self.prepare_layout(area.width);
         let bottom = self.total.saturating_sub(self.viewport_height);
         self.offset = if self.follow_bottom {
             bottom
         } else {
+            self.resolve_browse_anchor();
             self.offset.min(bottom)
         };
         self.render(frame.buffer_mut(), area, self.offset);
+        self.remember_heights();
     }
 }
 

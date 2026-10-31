@@ -1,6 +1,9 @@
 //! 正文排版服务。队列按消息合并，UI 只读取已经完成的不可变结果。
 use super::transcript::{EntryLayout, LayoutContent, LayoutLine};
-use ratatui::{style::Style, text::Line};
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
@@ -47,7 +50,34 @@ struct Shared {
     stopped: AtomicBool,
     changed: AtomicBool,
     #[cfg(test)]
-    gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    gate: Mutex<Option<TestGate>>,
+}
+#[cfg(test)]
+struct TestGate {
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+pub(super) struct TestPause {
+    entered: std::sync::mpsc::Receiver<()>,
+    release: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(test)]
+impl TestPause {
+    pub fn wait(&self) {
+        self.entered
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("后台排版应进入暂停点");
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestPause {
+    fn drop(&mut self) {
+        let _ = self.release.send(());
+    }
 }
 struct Job {
     id: u64,
@@ -57,8 +87,8 @@ struct Job {
     width: u16,
     muted: bool,
     slot: Weak<Mutex<Option<Rendered>>>,
-    latest: Weak<AtomicU64>,
 }
+#[derive(Clone)]
 struct Rendered {
     epoch: u64,
     version: u64,
@@ -100,9 +130,12 @@ impl Worker {
                         continue;
                     };
                     #[cfg(test)]
-                    if let Some(gate) = state.gate.lock().unwrap_or_else(|e| e.into_inner()).take()
                     {
-                        let _ = gate.recv();
+                        let gate = state.gate.lock().unwrap_or_else(|e| e.into_inner()).take();
+                        if let Some(gate) = gate {
+                            let _ = gate.entered.send(());
+                            let _ = gate.release.recv();
+                        }
                     }
                     super::markdown::highlight_context(job.id, job.epoch);
                     let lines = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -148,13 +181,7 @@ impl Worker {
                         lines
                     }))
                     .unwrap_or_else(|_| plain(&job.text, job.width, job.muted));
-                    if job
-                        .latest
-                        .upgrade()
-                        .is_none_or(|latest| latest.load(Ordering::Acquire) != job.version)
-                    {
-                        continue;
-                    }
+                    // 已完成的追加版本仍可用于展示；最新版本资格由 Ticket 单独判断。
                     let mut result = slot.lock().unwrap_or_else(|e| e.into_inner());
                     if result
                         .as_ref()
@@ -181,6 +208,19 @@ impl Worker {
     }
     pub fn changed(&self) -> bool {
         self.shared.changed.swap(false, Ordering::AcqRel)
+    }
+    #[cfg(test)]
+    pub fn pause(&self) -> TestPause {
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        *self.shared.gate.lock().unwrap() = Some(TestGate {
+            entered,
+            release: gate,
+        });
+        TestPause {
+            entered: waiting,
+            release,
+        }
     }
     pub fn pending(&self) -> bool {
         !self
@@ -214,9 +254,9 @@ pub(super) struct Ticket {
     revision: u64,
     snapshot_revision: u64,
     fallback: Option<Arc<EntryLayout>>,
+    displayed: Option<Rendered>,
     width: u16,
     slot: Arc<Mutex<Option<Rendered>>>,
-    latest: Arc<AtomicU64>,
     pub exact: bool,
 }
 impl Default for Ticket {
@@ -229,9 +269,9 @@ impl Default for Ticket {
             revision: 1,
             snapshot_revision: 0,
             fallback: None,
+            displayed: None,
             width: 0,
             slot: Arc::new(Mutex::new(None)),
-            latest: Arc::new(AtomicU64::new(0)),
             exact: false,
         }
     }
@@ -254,19 +294,23 @@ impl Drop for Ticket {
 impl Ticket {
     pub fn invalidate(&mut self, replaced: bool) {
         self.revision += 1;
+        self.exact = false;
         if replaced {
             self.epoch += 1;
+            self.displayed = None;
         }
     }
     pub fn layout(&mut self, text: &str, width: u16, muted: bool) -> Arc<EntryLayout> {
         if self.revision != self.snapshot_revision || width != self.width || self.version == 0 {
             self.version += 1;
-            self.latest.store(self.version, Ordering::Release);
             if self.revision != self.snapshot_revision {
                 self.source = Arc::from(text);
                 self.snapshot_revision = self.revision;
             }
             self.fallback = None;
+            if self.width != width {
+                self.displayed = None;
+            }
             self.width = width;
             self.exact = false;
             CURRENT.with(|current| {
@@ -280,7 +324,6 @@ impl Ticket {
                         width,
                         muted,
                         slot: Arc::downgrade(&self.slot),
-                        latest: Arc::downgrade(&self.latest),
                     });
                     shared.wake.notify_one();
                 }
@@ -290,11 +333,16 @@ impl Ticket {
         if let Some(result) = result
             .as_ref()
             .filter(|r| r.epoch == self.epoch && r.width == width)
+            && self
+                .displayed
+                .as_ref()
+                .is_none_or(|old| result.version >= old.version)
         {
+            self.displayed = Some(result.clone());
+        }
+        if let Some(result) = &self.displayed {
             self.exact = result.version == self.version;
-            if self.exact {
-                return result.layout.clone();
-            }
+            return result.layout.clone();
         }
         // 回退只排版有限尾部；完整正文仍由后台处理，不能用于历史提交。
         if let Some(layout) = &self.fallback {
@@ -329,7 +377,7 @@ fn plain(text: &str, width: u16, muted: bool) -> Vec<Line<'static>> {
         Style::default()
     };
     super::transcript::wrap_block(
-        Line::styled(super::display_text(text).into_owned(), style),
+        Line::from(Span::styled(super::display_text(text).into_owned(), style)),
         width,
         "",
     )
@@ -343,10 +391,86 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
+    fn layout_worker_plain_preserves_lines_tabs_and_unicode() {
+        let rows = plain("first\n\n中\t🙂\n", 80, false);
+        assert_eq!(
+            rows.iter().map(Line::to_string).collect::<Vec<_>>(),
+            ["first", "", "中  🙂", ""]
+        );
+    }
+
+    #[test]
+    fn layout_worker_initial_tail_keeps_utf8_boundaries_and_empty_lines() {
+        let worker = Worker::start().unwrap();
+        let pause = worker.pause();
+        let mut ticket = Ticket::default();
+        let text = format!("{}🙂\n\nend", "中".repeat(3000));
+        let preview = ticket.layout(&text, 8, false);
+        pause.wait();
+        let rows = preview
+            .lines
+            .iter()
+            .map(|line| {
+                let LayoutContent::Styled(line) = &line.content else {
+                    panic!("应为预览行")
+                };
+                line.to_string()
+            })
+            .collect::<Vec<_>>();
+        assert!(rows[0].starts_with('中'));
+        assert!(!rows.join("").contains('\u{fffd}'));
+        assert!(rows.join("").contains('🙂'));
+        assert_eq!(&rows[rows.len() - 2..], &["", "end"]);
+        assert!(!ticket.exact);
+        drop(pause);
+    }
+
+    #[test]
+    fn layout_worker_publishes_intermediate_append_without_marking_it_exact() {
+        let worker = Worker::start().unwrap();
+        let first = worker.pause();
+        let mut ticket = Ticket::default();
+        ticket.layout("**first**", 80, false);
+        first.wait();
+        let second = worker.pause();
+        ticket.invalidate(false);
+        ticket.layout("**first**\n\nsecond", 80, false);
+        drop(first);
+        second.wait();
+        let intermediate = ticket.layout("**first**\n\nsecond", 80, false);
+        assert!(!ticket.exact);
+        let LayoutContent::Styled(line) = &intermediate.lines[0].content else {
+            panic!("应为 Markdown 行");
+        };
+        assert_eq!(line.to_string(), "first");
+        assert!(line.spans.iter().any(|span| {
+            span.style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        }));
+        drop(second);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            ticket.layout("**first**\n\nsecond", 80, false);
+            if ticket.exact {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "应最终完成最新排版");
+            std::thread::yield_now();
+        }
+        let third = worker.pause();
+        ticket.invalidate(false);
+        assert!(!ticket.exact, "追加后立即撤销最新版本资格");
+        let retained = ticket.layout("**first**\n\nsecond\n\nthird", 80, false);
+        assert_eq!(retained.height, 3);
+        assert!(!ticket.exact);
+        drop(third);
+    }
+
+    #[test]
     fn layout_worker_blocked_render_does_not_block_input_or_commit_preview() {
         let worker = Worker::start().unwrap();
-        let (release, gate) = std::sync::mpsc::channel();
-        *worker.shared.gate.lock().unwrap() = Some(gate);
+        let pause = worker.pause();
         let mut app = crate::tui::App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
         app.state = crate::tui::State::Running;
         app.show_welcome = false;
@@ -367,14 +491,13 @@ mod tests {
         assert!(app.conversation.next_native_batch(100, 1, true).is_none());
         app.handle(Event::Paste("可继续输入🙂".into()), &mut false);
         assert_eq!(app.input.lines(), &["可继续输入🙂"]);
-        release.send(()).unwrap();
+        drop(pause);
     }
 
     #[test]
     fn layout_worker_unchanged_revision_reuses_snapshot_fallback_and_job() {
         let worker = Worker::start().unwrap();
-        let (release, gate) = std::sync::mpsc::channel();
-        *worker.shared.gate.lock().unwrap() = Some(gate);
+        let pause = worker.pause();
         let mut ticket = Ticket::default();
         let first = ticket.layout("正文🙂", 80, false);
         let source = ticket.source.clone();
@@ -386,14 +509,13 @@ mod tests {
         ticket.invalidate(false);
         ticket.layout("正文🙂新增", 80, false);
         assert_eq!(ticket.version, version + 1);
-        release.send(()).unwrap();
+        drop(pause);
     }
 
     #[test]
     fn layout_worker_rejects_replacement_and_width_mismatch() {
         let worker = Worker::start().unwrap();
-        let (release, gate) = std::sync::mpsc::channel();
-        *worker.shared.gate.lock().unwrap() = Some(gate);
+        let pause = worker.pause();
         let mut ticket = Ticket::default();
         ticket.layout("old", 80, false);
         let old_epoch = ticket.epoch;
@@ -421,6 +543,6 @@ mod tests {
         assert!(ticket.exact);
         ticket.layout("new", 40, false);
         assert!(!ticket.exact);
-        release.send(()).unwrap();
+        drop(pause);
     }
 }

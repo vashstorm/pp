@@ -22,6 +22,7 @@ include!("plan_review_tui.rs");
 include!("tree_tui.rs");
 include!("runtime_input_tui.rs");
 include!("runtime_responsiveness_tui.rs");
+include!("scroll_stream_tui.rs");
 include!("runtime_roles_tui.rs");
 include!("menu_tui.rs");
 include!("native_tui.rs");
