@@ -1,9 +1,8 @@
 use crate::tui::{
-    Agent, App, Context, EscapeTap, InputQueue, Instant, Level, NotificationOptions, Notifications,
-    Path, Result, ResumeState, State, ThinkLevel, Transcript, WorkerCommand, WorkerEvent,
-    WorkflowState, commands, editor, files, merge_startup_notice, mpsc, publish_prepared,
-    publish_transition_failure, push_runtime_snapshot, push_workflow_snapshot, request_ask, skills,
-    statusline, thread, usage_snapshot,
+    Agent, App, Context, EscapeTap, InputQueue, Instant, Level, Path, Result, ResumeState, State,
+    ThinkLevel, Transcript, WorkerCommand, WorkerEvent, WorkflowState, commands, editor, files,
+    mpsc, publish_prepared, publish_transition_failure, push_runtime_snapshot,
+    push_workflow_snapshot, request_ask, skills, statusline, thread, usage_snapshot,
 };
 use std::collections::BTreeMap;
 
@@ -22,7 +21,6 @@ impl App {
             skills,
             commands::FileCommands::default(),
             Path::new("."),
-            NotificationOptions::default(),
             Some(history_path),
         )?;
         app.history_dir = Some(dir);
@@ -34,14 +32,8 @@ impl App {
         skills: crate::skills::SharedSkills,
         file_commands: commands::FileCommands,
         cwd: &Path,
-        notification_options: NotificationOptions,
         history_path: Option<std::path::PathBuf>,
     ) -> Result<Self> {
-        let diagnostics = skills
-            .lock()
-            .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
-            .diagnostics
-            .clone();
         let mut app = Self {
             stream: Default::default(),
             review_stream: Default::default(),
@@ -61,7 +53,6 @@ impl App {
             conversation: Transcript::with_read_preview(
                 agent.as_ref().is_ok_and(Agent::read_tool_result_preview),
             ),
-            notifications: Notifications::new(notification_options),
             show_welcome: true,
             input: editor(),
             shell_mode: false,
@@ -151,44 +142,23 @@ impl App {
             review_transcript: None,
             plan_review_pending: None,
         };
-        let mut startup_notice = None;
-        // 启动持久输入 recall：LoadInputs 必须排在任何 AppendInput 之前。
-        if let Some(message) = app.start_history(history_path) {
-            merge_startup_notice(&mut startup_notice, message);
-        }
+        // 恢复历史会重建 Transcript，启动诊断须在安装完成后追加。
+        let history_error = app.start_history(history_path);
         match agent {
             Ok(agent) => app.install_agent(agent)?,
             Err(error) => {
                 let error = format!("{error:#}");
-                startup_notice = Some((
+                app.notify(
                     Level::Error,
                     format!(
                         "{error}\nConfiguration unavailable; model tasks are disabled. Use /login to authorize a subscription, or fix the config files. /quit still exits cleanly."
                     ),
-                ));
+                );
                 app.unavailable = Some(error);
             }
         }
-        if !diagnostics.is_empty() {
-            merge_startup_notice(
-                &mut startup_notice,
-                format!(
-                    "Skill scan issues: {}. Use /skills for details.",
-                    diagnostics.len()
-                ),
-            );
-        }
-        if !app.file_commands.diagnostics.is_empty() {
-            merge_startup_notice(
-                &mut startup_notice,
-                format!(
-                    "Command scan issues: {}. Use /help for details.",
-                    app.file_commands.diagnostics.len()
-                ),
-            );
-        }
-        if let Some((level, message)) = startup_notice {
-            app.notify(level, message);
+        if let Some(message) = history_error {
+            app.notify(Level::Error, message);
         }
         Ok(app)
     }
@@ -208,20 +178,14 @@ impl App {
         let default_think_level = agent.default_think_level();
         let mcp_cleanup = agent.mcp_cleanup()?;
         self.mcp_view = agent.mcp_view();
-        let warnings = self.mcp_view.warnings();
-        if !warnings.is_empty() {
-            self.notify(Level::Error, warnings.join("\n"));
-        }
+        let mut startup_errors = self.mcp_view.warnings();
         self.background_cleanup = Some(agent.background_cleanup());
         self.choices = agent.model_choices();
         self.favorite_models = agent.favorite_models().to_vec();
         // 首次安装没有旧快照可保留；读取失败保留空缓存并单独提示，不阻断模型任务。
         match agent.model_usage() {
             Ok(usage) => self.model_usage = usage,
-            Err(error) => self.notify(
-                Level::Error,
-                format!("Could not load model usage: {error:#}"),
-            ),
+            Err(error) => startup_errors.push(format!("Could not load model usage: {error:#}")),
         }
         self.model_roles = agent.model_roles().clone();
         self.default_model_reference = Some(agent.default_model_reference().to_owned());
@@ -597,18 +561,19 @@ impl App {
                 think_level,
                 default_think_level,
             );
-            self.session_id = Some(id.clone());
-            let notice = match error {
-                Some(error) => (Level::Error, format!("Resumed session: {id}\n{error}")),
-                None => (Level::Normal, format!("Resumed session: {id}")),
-            };
-            self.notify(notice.0, notice.1);
+            self.session_id = Some(id);
+            if let Some(error) = error {
+                self.notify(Level::Error, error);
+            }
         } else {
             self.current_model = Some(current_model);
             self.think_level = think_level;
             self.default_think_level = default_think_level;
         }
         self.unavailable = None;
+        for message in startup_errors {
+            self.notify(Level::Error, message);
+        }
         Ok(())
     }
 }

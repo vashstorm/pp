@@ -252,7 +252,7 @@ fn run(args: Args) -> Result<()> {
         .ok()
         .filter(|_| use_tui)
         .and_then(|dir| config::read_settings(&dir.join("settings.yml")).ok())
-        .map(|settings| (settings.notification_options(), settings.tui))
+        .map(|settings| settings.tui)
         .unwrap_or_default();
     let file_commands = if args.prompt.is_none() {
         match &global_dir {

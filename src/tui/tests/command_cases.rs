@@ -171,7 +171,7 @@ fn completed_turn_uses_worker_timing_and_preserves_draft() {
         let mut app = app();
         app.state = State::Running;
         app.show_welcome = false;
-        app.notifications.clear();
+        app.conversation = app.conversation.fresh();
         app.input.insert_str("下一轮草稿");
         let cursor = app.input.cursor();
         let (events, receiver) = mpsc::channel();
@@ -334,7 +334,7 @@ fn task_cancel_committed_completion_wins_and_next_token_is_independent() {
 }
 
 #[test]
-fn session_and_task_failure_notifications_never_enter_transcript() {
+fn notification_task_failure_enters_transcript_without_session_noise() {
     let mut app = app();
     app.state = State::Running;
     app.show_welcome = false;
@@ -351,8 +351,7 @@ fn session_and_task_failure_notifications_never_enter_transcript() {
         .send(WorkerEvent::SessionStarted("fixture-session".into()))
         .unwrap();
     app.receive();
-    assert_notification(&mut app, statusline::ACCENT);
-    assert!(draw(&mut app, 100, 30).contains("Session: fixture-session"));
+    assert!(!draw(&mut app, 100, 30).contains("Session: fixture-session"));
     sender
         .send(WorkerEvent::completed(
             Instant::now(),
@@ -371,33 +370,53 @@ fn session_and_task_failure_notifications_never_enter_transcript() {
     let history = String::from_utf8_lossy(&scrollback);
     assert!(history.contains("partial answer"));
     assert!(!history.contains("fixture-session"));
-    assert!(!history.contains("request failed"));
-    app.notifications
-        .tick(Instant::now() + Duration::from_millis(10000));
+    assert_eq!(history.matches("request failed").count(), 1);
     let screen = draw(&mut app, 100, 30);
     assert!(screen.contains("partial answer"));
-    assert!(!screen.contains("request failed"));
+    assert!(screen.contains("request failed"));
     assert!(!screen.contains("Session:"));
     assert_eq!(app.input.lines(), &["保留草稿🙂"]);
     assert_eq!(app.input.cursor(), cursor);
 }
 
 #[test]
-fn startup_and_worker_errors_are_popups_without_dismissing_welcome() {
+fn notification_startup_and_worker_errors_remain_in_message_history() {
     let mut app = App::new(Err(anyhow::anyhow!("fixture configuration unavailable"))).unwrap();
     assert_notification(&mut app, Color::Rgb(224, 108, 117));
     assert!(draw(&mut app, 100, 30).contains("fixture configuration unavailable"));
-    assert!(app.show_welcome);
+    assert!(!app.show_welcome);
     app.input.insert_str("草稿");
     app.fail_worker();
     assert_notification(&mut app, Color::Rgb(224, 108, 117));
     assert!(draw(&mut app, 100, 30).contains("agent worker channel closed"));
     assert!(matches!(app.state, State::Unavailable));
-    app.notifications
-        .tick(Instant::now() + Duration::from_millis(10000));
     let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("▄▄▄██▀▀██"));
-    assert!(!screen.contains("configuration unavailable"));
-    assert!(!screen.contains("channel closed"));
+    assert!(!screen.contains("▄▄▄██▀▀██"));
+    assert!(screen.contains("configuration unavailable"));
+    assert!(screen.contains("channel closed"));
     assert_eq!(app.input.lines(), &["草稿"]);
+}
+
+#[test]
+fn notification_filters_routine_feedback_and_keeps_independent_errors() {
+    let mut app = app();
+    let before = draw(&mut app, 100, 30);
+    app.notify(Level::Normal, "routine success".into());
+    app.notify(Level::Error, " \n\t".into());
+    let (events, receiver) = mpsc::channel();
+    app.events = Some(receiver);
+    events
+        .send(WorkerEvent::Progress(AgentEvent::RequestRetrying {
+            reason: crate::events::RequestRetryReason::HttpStatus(503),
+            attempt: 1,
+            wait_ms: 30_000,
+        }))
+        .unwrap();
+    app.receive();
+    assert_eq!(draw(&mut app, 100, 30), before);
+    app.notify(Level::Error, "first failure".into());
+    app.notify(Level::Error, "second failure".into());
+    let screen = draw(&mut app, 100, 30);
+    assert!(screen.contains("first failure"));
+    assert!(screen.contains("second failure"));
 }

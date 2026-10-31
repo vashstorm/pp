@@ -45,7 +45,12 @@ fn tui_roles_configures_model_and_effort_without_switching_current_session() {
     pty.input("two\r");
     pty.text("Choose an effort for this role");
     pty.input("\x1b[B\x1b[B\x1b[B\r");
-    pty.text("Role configuration saved");
+    pty.wait_for("角色已保存且返回角色列表", |screen| {
+        let text = screen.contents();
+        text.contains("Model roles")
+            && !text.contains("Choose an effort for this role")
+            && !text.contains("Saving…")
+    });
     let database = rusqlite::Connection::open_with_flags(
         config_path(dir.path(), "agent.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,

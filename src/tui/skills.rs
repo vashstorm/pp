@@ -92,6 +92,7 @@ pub(super) struct Panel {
     choices: BTreeMap<String, bool>,
     detail_scroll: u16,
     pub(super) busy: bool,
+    error: Option<String>,
 }
 pub(super) enum Action {
     None,
@@ -113,8 +114,13 @@ impl Panel {
             entries: skills.entries,
             diagnostics: skills.diagnostics,
             busy: false,
+            error: None,
         }
     }
+    pub(super) fn set_error(&mut self, message: String) {
+        self.error = Some(super::display_text(&message).into_owned());
+    }
+
     fn draft(&self) -> Selection {
         let mut choices = self.choices.clone();
         choices.extend(
@@ -133,6 +139,7 @@ impl Panel {
     }
 
     pub(super) fn apply_preview(&mut self, snapshot: Skills) {
+        self.error = None;
         self.choices = self.draft().skills.into_iter().collect();
         self.entries = snapshot.entries;
         self.diagnostics = snapshot.diagnostics;
@@ -332,9 +339,16 @@ impl Panel {
             Rect::new(inner.x, list_area.bottom(), inner.width, detail_height),
         );
         frame.render_widget(
-            Line::raw(
-                "Tab/←→ tabs · ↑↓ select · Space toggle · Enter save · Esc cancel · r rescan",
-            ),
+            if let Some(error) = &self.error {
+                Line::styled(
+                    error.as_str(),
+                    Style::default().fg(super::transcript_style::REMOVED),
+                )
+            } else {
+                Line::raw(
+                    "Tab/←→ tabs · ↑↓ select · Space toggle · Enter save · Esc cancel · r rescan",
+                )
+            },
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
     }

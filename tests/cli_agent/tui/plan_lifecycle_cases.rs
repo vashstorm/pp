@@ -116,7 +116,8 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
         });
         plan_wait_mode(&mut pty, "Plan");
         pty.input("/plan view\r");
-        pty.text("No saved plan.");
+        pty.draft("");
+        assert!(!pty.parser.screen().contents().contains("No saved plan."));
         no_more(&fixture);
         pty.input("/model second/primary\r");
         pty.ready_model("second/primary");

@@ -529,52 +529,47 @@ fn label_color(screen: &vt100::Screen, label: &str) -> vt100::Color {
     panic!("missing label {label}: {}", screen.contents());
 }
 
+fn tui_session_is_locked(home: &Path, id: &str) -> bool {
+    let Ok(file) = std::fs::File::open(home.join(".pp/run/sessions").join(format!("{id}.lock")))
+    else {
+        return false;
+    };
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => false,
+        Err(error) if error == rustix::io::Errno::WOULDBLOCK => true,
+        Err(error) => panic!("检查会话锁失败：{error}"),
+    }
+}
+
 fn notification_bounds(
     screen: &vt100::Screen,
     title: &str,
     color: vt100::Color,
 ) -> Option<(u16, u16, u16, u16)> {
     let (rows, cols) = screen.size();
-    let bottom = if screen.contents().contains("Resume session (") {
-        // 全屏会话面板没有底部编辑器，通知在快捷键提示上方。
-        rows.checked_sub(3)?
-    } else {
-        let input_top = (1..rows)
-            .find(|&row| {
-                screen
-                    .cell(row, 0)
-                    .is_some_and(|cell| cell.contents() == "❯")
-            })?
-            .checked_sub(1)?;
-        input_top.checked_sub(1)?
+    let right = cols.checked_sub(1)?;
+    let corner = |row, col, symbol| {
+        screen
+            .cell(row, col)
+            .is_some_and(|cell| cell.contents() == symbol && cell.fgcolor() == color)
     };
-    let right = cols.checked_sub(2)?;
-    for top in 0..bottom {
-        for left in 1..right {
-            let corner_matches = |row, col, symbol| {
-                screen
-                    .cell(row, col)
-                    .is_some_and(|cell| cell.contents() == symbol && cell.fgcolor() == color)
-            };
-            if !corner_matches(top, left, "╭")
-                || !corner_matches(top, right, "╮")
-                || !corner_matches(bottom, left, "╰")
-                || !corner_matches(bottom, right, "╯")
+    for top in 0..rows {
+        if !corner(top, 0, "╭") || !corner(top, right, "╮") {
+            continue;
+        }
+        let heading: String = (0..cols)
+            .filter_map(|col| screen.cell(top, col))
+            .map(|cell| cell.contents())
+            .collect();
+        if !heading.replace(' ', "").contains(title) {
+            continue;
+        }
+        for bottom in top + 1..rows {
+            if corner(bottom, 0, "╰")
+                && corner(bottom, right, "╯")
+                && (top + 1..bottom).all(|row| corner(row, 0, "│") && corner(row, right, "│"))
             {
-                continue;
-            }
-            let heading: String = (left..=right)
-                .filter_map(|col| screen.cell(top, col))
-                .map(|cell| cell.contents())
-                .collect();
-            let complete_border = (left..=right).all(|col| {
-                let cell = screen.cell(top, col).unwrap();
-                (cell.contents().trim().is_empty() || cell.fgcolor() == color)
-                    && screen.cell(bottom, col).unwrap().fgcolor() == color
-            }) && (top + 1..bottom)
-                .all(|row| corner_matches(row, left, "│") && corner_matches(row, right, "│"));
-            if heading.replace(' ', "").contains(title) && complete_border {
-                return Some((top, left, bottom, right));
+                return Some((top, 0, bottom, right));
             }
         }
     }
@@ -715,12 +710,8 @@ fn create_tool_session(server: &Server, home: &Path, protocol: &str) -> String {
     }
     pty.text("tui-remembered");
     pty.ready();
-    // 新 session 首次创建后，用绿色弹窗提示一次 Session ID。
-    pty.wait_for("新会话 ID 显示为绿色弹窗", |screen| {
-        notification_bounds(screen, "Note", vt100::Color::Rgb(127, 166, 106)).is_some()
-            && screen.contents().contains("Session:")
-            && !screen.contents().contains("│ Note")
-    });
+    // 会话标识不再产生常规提醒。
+    assert!(!pty.parser.screen().contents().contains("Session:"));
     pty.input("/quit\r");
     pty.wait_for("会话提示不进入退出后的终端历史", |screen| {
         !screen.alternate_screen()

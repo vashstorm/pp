@@ -254,7 +254,7 @@ fn replay_restores_visible_history_and_marks_interruption() {
     ]);
     let text = screen(&render(&mut transcript, 100, 30));
     assert!(text.contains("final answer"));
-    assert_eq!(error.as_deref(), Some("task failed"));
+    assert!(error.is_none());
     assert!(!text.contains("task failed"));
     assert!(!text.contains("Previous request was interrupted."));
 }

@@ -1247,7 +1247,7 @@ fn ask_tui_schema_survives_new_model_switch_and_resume() {
     let id = saved_session_id(home.path());
     let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
     resumed.wait_for("startup resume replays the seed answer", |screen| {
-        screen.contents().contains("Resumed session:")
+        input_is_ready(screen)
             && screen.contents().contains("resume seed answer")
     });
     resumed.input("ask after resume task\r");
@@ -1379,9 +1379,6 @@ fn ask_tui_interrupted_ask_replays_without_reopening() {
         let text = screen.contents();
         text.contains("Previous request was interrupted.")
             && !text.contains("Other (type your own)")
-    });
-    resumed.wait_for("error popup fades", |screen| {
-        notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_none()
     });
     assert!(
         input_is_ready(resumed.parser.screen()),

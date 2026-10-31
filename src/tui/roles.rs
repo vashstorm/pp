@@ -113,7 +113,7 @@ impl Panel {
     }
 
     pub(super) fn runtime_status(&mut self, message: String) {
-        self.message = message;
+        self.message = super::display_text(&message).into_owned();
     }
 
     fn role(&self) -> ModelRole {

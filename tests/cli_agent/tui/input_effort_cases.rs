@@ -74,7 +74,7 @@ fn tui_shortcuts_preserve_drafts_and_send_selected_effort_to_both_apis() {
         pty.input("\x7f");
         pty.draft("busy-中");
         super::super::think::finish_request(request, protocol);
-        pty.text("Session:");
+        pty.completed();
         pty.ready_effort("xhigh");
         pty.input("\x01\x0b\x1b[Z");
         pty.ready_effort("max");

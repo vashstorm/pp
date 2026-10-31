@@ -17,7 +17,6 @@ impl App {
         self.menu = None;
         self.menu_dismissed = true;
 
-        self.notifications.clear();
         if self.bootstrap.is_some() && matches!(self.state, State::Ready) {
             self.reload_model_catalog();
         }

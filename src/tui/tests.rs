@@ -4,7 +4,8 @@ use ratatui::{Terminal, backend::TestBackend, style::Modifier};
 
 fn app() -> App {
     let mut app = App::new(Err(anyhow::anyhow!("fixture configuration unavailable"))).unwrap();
-    app.notifications = Notifications::default();
+    app.conversation = app.conversation.fresh();
+    app.show_welcome = true;
     app
 }
 
@@ -122,8 +123,6 @@ fn folding_fixture(app: &mut App) {
 }
 
 fn assert_notification(app: &mut App, color: Color) {
-    app.notifications
-        .tick(Instant::now() + Duration::from_millis(200));
     let buffer = draw_buffer(app, 100, 30);
     assert!(
         buffer
@@ -169,7 +168,6 @@ fn file_picker_fixture() -> FilePickerFixture {
         crate::skills::Skills::default().shared(),
         commands::FileCommands::default(),
         dir.path(),
-        NotificationOptions::default(),
         None,
     )
     .unwrap();
@@ -182,7 +180,7 @@ fn file_picker_fixture() -> FilePickerFixture {
     let (sender, commands) = mpsc::channel();
     app.commands = Some(sender);
     app.state = State::Ready;
-    app.notifications.clear();
+    app.conversation = app.conversation.fresh();
     (app, scans, replies, commands)
 }
 
@@ -230,11 +228,11 @@ fn file_commands_app(files: commands::FileCommands) -> (App, mpsc::Receiver<Work
         shared,
         files,
         Path::new("."),
-        NotificationOptions::default(),
         None,
     )
     .unwrap();
-    app.notifications = Notifications::default();
+    app.conversation = app.conversation.fresh();
+    app.show_welcome = true;
     let (sender, requests) = mpsc::channel();
     app.commands = Some(sender);
     app.state = State::Ready;

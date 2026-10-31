@@ -94,16 +94,15 @@ fn resume_history_collect_order(pty: &mut Pty, markers: &[&str]) -> Vec<String> 
     found.into_iter().map(|(marker, _, _, _)| marker).collect()
 }
 
-// Common fence for a successful interactive resume: green notification with
-// the resumed id, replayed turns visible, welcome page gone.
-fn resume_history_wait_resumed(pty: &mut Pty, id: &str, replayed: &[&str]) {
+// 恢复成功以对话可见、欢迎页关闭和输入就绪为栅栏。
+fn resume_history_wait_resumed(pty: &mut Pty, _id: &str, replayed: &[&str]) {
     pty.wait_for(
-        "resumed session notification with replayed turns",
+        "恢复的对话可见且没有常规提示",
         |screen| {
             let text = screen.contents();
-            notification_bounds(screen, "Note", vt100::Color::Rgb(127, 166, 106)).is_some()
-                && text.contains("Resumed session:")
-                && text.split_whitespace().collect::<String>().contains(id)
+            input_is_ready(screen)
+                && !text.contains("Resumed session:")
+                && !text.contains("Resume session (")
                 && replayed.iter().all(|expected| text.contains(expected))
                 && !text.contains("█▀▀█")
         },
@@ -322,7 +321,7 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
             pty.diagnostics()
         );
         pty.input("\x0f");
-        pty.text("Tool output expansion: enabled");
+
         // 展开会增加卡片高度；先浏览到开头，不依赖展开后的 viewport 位置。
         for _ in 0..80 {
             pty.drain();

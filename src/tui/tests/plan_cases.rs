@@ -469,7 +469,7 @@ fn plan_old_subcommands_are_rejected_locally_in_tui() {
         let screen = draw(&mut app, 120, 30);
         assert!(screen.contains("Use /plan to toggle; manage plans with /plan-list."));
         app.input = editor();
-        app.notifications.clear();
+        app.conversation = app.conversation.fresh();
     }
 }
 

@@ -10,7 +10,11 @@ fn runtime_role_save(pty: &mut Pty, role: usize, model: &str) {
     pty.input(&format!("{model}\r"));
     pty.text("Choose an effort for this role");
     pty.input("\r");
-    pty.text("Role configuration saved");
+    pty.wait_for("角色已保存且返回角色列表", |screen| {
+        let text = screen.contents();
+        text.contains("Model roles") && !text.contains("Choose an effort for this role")
+            && !text.contains("Saving…")
+    });
     pty.input("\x1b");
 }
 

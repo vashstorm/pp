@@ -747,13 +747,10 @@ fn shortcuts_model_picker_restores_history_draft_on_cancel_failure_and_success()
         if !succeeds {
             assert_notification(&mut app, Color::Rgb(224, 108, 117));
             assert!(draw(&mut app, 100, 30).contains("fixture switch failure"));
-            app.notifications
-                .tick(Instant::now() + Duration::from_millis(10000));
         }
         let screen = draw(&mut app, 100, 30);
         assert!(!screen.contains("Current model:"));
-        assert!(!screen.contains("fixture switch failure"));
-        assert!(!screen.contains("╭"));
+        assert!(screen.contains("fixture switch failure"));
         assert!(
             screen
                 .lines()
@@ -967,10 +964,8 @@ fn effort_ctrl_s_saves_highlighted_level_without_changing_current_level() {
     app.receive();
     assert_eq!(app.input.lines(), &["新草稿"]);
     assert_eq!(app.think_level, ThinkLevel::High);
-    assert_notification(&mut app, statusline::ACCENT);
-    let pending = std::mem::take(&mut app.notifications);
     let baseline = draw(&mut app, 100, 30);
-    app.notifications = pending;
+    assert!(!baseline.contains("Default thinking effort saved:"));
     let snapshot = draw_buffer(&mut app, 100, 30);
     let mut scrollback = Vec::new();
     app.conversation
@@ -979,10 +974,6 @@ fn effort_ctrl_s_saves_highlighted_level_without_changing_current_level() {
     assert!(
         !String::from_utf8_lossy(&scrollback)
             .contains("Default thinking effort saved: xhigh (takes effect next launch)")
-    );
-    assert!(
-        app.notifications
-            .tick(Instant::now() + Duration::from_millis(10000))
     );
     assert_eq!(draw(&mut app, 100, 30), baseline);
     assert_eq!(app.input.lines(), &["新草稿"]);
@@ -1177,7 +1168,7 @@ fn sqlite_model_menu_orders_favorites_then_usage() {
 
     // 偏好已提交但随后的快照读取失败：保存成功与刷新失败分别提示，不伪装保存失败。
     app.receive_event_for_test(WorkerEvent::DefaultModelSaved(Ok("p/one-b".into())));
-    assert!(draw(&mut app, 130, 30).contains("Default model saved: p/one-b"));
+    assert!(!draw(&mut app, 130, 30).contains("Default model saved:"));
     app.receive_event_for_test(WorkerEvent::ModelsReloaded(Err(anyhow::anyhow!(
         "Agent database unavailable."
     ))));

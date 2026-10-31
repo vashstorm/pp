@@ -1,251 +1,88 @@
 use super::*;
 
 #[test]
-fn tui_notification_fades_without_input_and_preserves_draft() {
-    let server = server();
+fn tui_notification_error_scrolls_into_native_history_and_preserves_draft() {
+    let fixture = server();
     let home = tempfile::tempdir().unwrap();
     std::fs::write(
         config_path(home.path(), "models.yml"),
-        fixture_models(&server),
+        fixture_models(&fixture),
     )
     .unwrap();
     std::fs::write(
         config_path(home.path(), "settings.yml"),
-        r#"{"default_model":"fixture/primary","notification_timeout_seconds":2}"#,
+        r#"{"notification_timeout_seconds":1}"#,
     )
     .unwrap();
     let mut pty = Pty::start_with_existing_files(home.path());
-    pty.ready_effort("no think");
-    pty.text("▄▄▄██▀▀██");
-    let background: Vec<_> = (0..26)
-        .map(|row| {
-            (0..100)
-                .map(|col| {
-                    let cell = pty.parser.screen().cell(row, col).unwrap();
-                    (cell.contents().to_owned(), cell.fgcolor(), cell.bgcolor())
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
-
+    pty.ready();
     pty.input("/bogus\r");
-    let red = vt100::Color::Rgb(224, 108, 117);
-    pty.wait_for(
-        "full red error border above the input at the right edge",
+    pty.wait_for("错误以完整红框进入消息区", |screen| {
+        notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
+            && screen.contents().contains("unknown command; use /help")
+    });
+    pty.input("\x01\x0b草稿🙂");
+    pty.draft("草稿🙂");
+    let cursor = pty.parser.screen().cursor_position();
+    let since = Instant::now();
+    pty.wait_for_timeout(
+        "错误超过旧过期时长仍保留",
+        Duration::from_secs(4),
         |screen| {
-            notification_bounds(screen, "Error", red).is_some()
+            since.elapsed() >= Duration::from_millis(1100)
                 && screen.contents().contains("unknown command; use /help")
         },
     );
-    let (top, left, bottom, right) =
-        notification_bounds(pty.parser.screen(), "Error", red).unwrap();
-    assert_eq!(bottom, 25);
-    assert_eq!(right, 98);
-    pty.draft("/bogus");
-
-    pty.input("\x01\x0b草稿🙂");
+    assert_eq!(pty.parser.screen().cursor_position(), cursor);
+    pty.resize(12, 35);
     pty.draft("草稿🙂");
-    pty.resize(4, 20);
-    pty.wait_for(
-        "tiny terminal preserves the draft without an overlapping popup",
-        |screen| {
-            screen
-                .contents()
-                .lines()
-                .any(|line| line.starts_with("❯ 草稿🙂"))
-                && !screen.contents().contains("Error")
-        },
-    );
     pty.resize(30, 100);
-    pty.ready_model("fixture/primary");
-    pty.ready_effort("no think");
-    pty.draft("草稿🙂");
-    pty.wait_for(
-        "active error notification survives restoring the terminal size",
-        |screen| {
-            notification_bounds(screen, "Error", red).is_some()
-                && !screen.hide_cursor()
-                && screen.cursor_position() == (27, 8)
-        },
-    );
-    let cursor = pty.parser.screen().cursor_position();
-    // 真实 SGR 鼠标事件进入弹框，顶边点击也只保持悬停。
-    pty.input(&format!("\x1b[<35;{};{}M", right, top + 2));
-    pty.input(&format!(
-        "\x1b[<0;{};{}M\x1b[<0;{};{}m",
-        right - 1,
-        top + 1,
-        right - 1,
-        top + 1
-    ));
-    pty.wait_for(
-        "悬停隐藏倒计时且不再显示复制按钮",
-        |screen| {
-            let text = screen.contents();
-            notification_bounds(screen, "Error", red).is_some()
-                && !text.contains(" 2s ")
-                && !text.contains(" 1s ")
-                && !text.contains("[Copy]")
-                && !text.contains("[Sent]")
-        },
-    );
-    pty.draft("草稿🙂");
-    assert_eq!(pty.parser.screen().cursor_position(), cursor);
-    let hovered_at = Instant::now();
-    pty.wait_for_timeout(
-        "鼠标停留超过配置时长后弹框仍然存在",
-        Duration::from_secs(4),
-        |screen| {
-            hovered_at.elapsed() >= Duration::from_millis(2200)
-                && !screen.contents().contains(" 2s ")
-                && !screen.contents().contains(" 1s ")
-                && notification_bounds(screen, "Error", red).is_some()
-        },
-    );
-    pty.input("\x1b[<35;1;1M");
-    // 移出后重新从两秒开始，无需后续输入即可更新倒计时并恢复背景。
-    let left_at = Instant::now();
-    pty.text(" 2s ");
-    pty.text(" 1s ");
-    pty.wait_for_timeout(
-        "空闲错误弹框到期后恢复覆盖区域",
-        Duration::from_secs(4),
-        |screen| {
-            !screen.contents().contains("Error")
-                && !screen.contents().contains("unknown command; use /help")
-                && (top..=bottom).all(|row| {
-                    (left..=right).all(|col| {
-                        let cell = screen.cell(row, col).unwrap();
-                        let original = &background[usize::from(row)][usize::from(col)];
-                        cell.contents().trim_end() == original.0.trim_end()
-                            && (original.0.trim().is_empty() || cell.fgcolor() == original.1)
-                            && cell.bgcolor() == original.2
-                    })
-                })
-        },
-    );
-    assert!(left_at.elapsed() >= Duration::from_millis(1900));
-    pty.draft("草稿🙂");
-    assert!(!pty.parser.screen().hide_cursor());
-    assert_eq!(pty.parser.screen().cursor_position(), cursor);
-    pty.ready_effort("no think");
-
-    pty.input("\x01\x0b/effort low");
-    pty.text(if cfg!(target_os = "macos") {
-        "⌥ + S"
-    } else {
-        "Ctrl + S"
+    pty.wait_for("恢复窗口后错误仍完整显示", |screen| {
+        notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
     });
-    pty.function_key('s');
-    let green = vt100::Color::Rgb(127, 166, 106);
-    pty.wait_for(
-        "full green save notification above the input at the right edge",
-        |screen| {
-            notification_bounds(screen, "Note", green).is_some()
-                && screen
-                    .contents()
-                    .contains("Default thinking effort saved: low")
-        },
-    );
-    pty.ready_effort("no think");
-    let saved = std::fs::read_to_string(config_path(home.path(), "settings.yml")).unwrap();
-    assert!(!saved.contains("think_level"));
-    assert!(saved.contains("notification_timeout_seconds"));
-    let database = rusqlite::Connection::open_with_flags(
-        config_path(home.path(), "agent.db"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .unwrap();
-    let think_level: String = database
-        .query_row(
-            "SELECT think_level FROM preferences WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(think_level, "low");
-    pty.input("草稿🙂");
     pty.draft("草稿🙂");
-    let cursor = pty.parser.screen().cursor_position();
-    pty.wait_for_timeout(
-        "保存默认档位弹框无需输入即可到期消失",
-        Duration::from_secs(4),
-        |screen| {
-            let text = screen.contents();
-            !text.contains("Default thinking effort saved:")
-                && !text.contains("Note")
-                && !text.contains("│ Note")
-                && text.contains("▄▄▄██▀▀██")
-        },
-    );
-    pty.draft("草稿🙂");
-    assert_eq!(pty.parser.screen().cursor_position(), cursor);
-    assert!(!pty.parser.screen().hide_cursor());
-    pty.ready_effort("no think");
-    // 先观察完整命令，再等待 Reset ACK 清空输入，避免把 Ctrl-K 的中间空帧当作重置完成。
-    pty.input("\x01\x0b/new");
-    pty.draft("/new");
-    pty.input("\r");
-    pty.draft("");
-    pty.input("/bogus\r");
-    pty.wait_for("新会话保留两秒通知配置", |screen| {
-        notification_bounds(screen, "Error", red).is_some() && screen.contents().contains(" 2s ")
-    });
     pty.input("\x03");
-    assert!(
-        !pty.raw
-            .windows(b"\x1b]52;".len())
-            .any(|bytes| bytes == b"\x1b]52;")
-    );
+    pty.wait_for("退出后终端恢复", |screen| {
+        !screen.bracketed_paste() && !screen.hide_cursor()
+    });
+    let (history, _) = pty.native_history();
+    assert_eq!(history.matches("unknown command; use /help").count(), 1);
+    assert!(!history.contains(" 1s "));
     pty.finish();
-    no_more(&server);
+    no_more(&fixture);
 }
 
 #[test]
-fn tui_notification_settings_work_without_models_and_invalid_settings_use_defaults() {
-    let red = vt100::Color::Rgb(224, 108, 117);
-    for (settings, label) in [
-        (r#"{"notification_timeout_seconds":2}"#, Some(" 2s ")),
+fn tui_notification_deprecated_settings_keep_startup_errors_and_redaction() {
+    for (settings, expected) in [
+        (
+            r#"{"notification_timeout_seconds":2}"#,
+            "Configuration unavailable",
+        ),
         (
             r#"{"notification_show_countdown":false,"notification_timeout_seconds":2}"#,
-            None,
+            "Configuration unavailable",
         ),
         (
             r#"{"notification_timeout_seconds":"private-invalid-value"}"#,
-            Some(" 10s "),
+            "invalid YAML settings",
         ),
     ] {
         let home = tempfile::tempdir().unwrap();
         std::fs::write(config_path(home.path(), "settings.yml"), settings).unwrap();
         let mut pty = Pty::start_with_existing_files(home.path());
         pty.wait_for(
-            "模型不可用时仍按通知设置显示启动错误",
+            "启动错误使用消息区红框且不再有倒计时",
             |screen| {
-                let text = screen.contents();
-                notification_bounds(screen, "Error", red).is_some()
-                    && text.contains(if label == Some(" 10s ") {
-                        "invalid YAML settings"
-                    } else {
-                        "Configuration unavailable"
-                    })
-                    && label.is_none_or(|label| text.contains(label))
+                notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
+                    && screen.contents().contains(expected)
             },
         );
         let text = pty.parser.screen().contents();
-        assert!(!text.contains("[Copy]"));
         assert!(!text.contains("private-invalid-value"));
-        if label.is_none() {
-            assert!(!text.contains(" 2s "));
-        }
+        assert!(!text.contains(" 2s ") && !text.contains(" 10s "));
         pty.input("草稿🙂");
         pty.draft("草稿🙂");
-        if label != Some(" 10s ") {
-            pty.wait_for("自定义时长无需输入即可到期", |screen| {
-                !screen.contents().contains("Configuration unavailable")
-            });
-            pty.draft("草稿🙂");
-            assert!(!pty.parser.screen().hide_cursor());
-        }
         pty.input("\x03");
         pty.finish();
     }
@@ -267,16 +104,13 @@ fn tui_notification_startup_skill_warning_keeps_welcome_and_full_diagnostics() {
     .unwrap();
     std::fs::write(config_path(home.path(), "bad-root"), "not a directory").unwrap();
     let mut pty = Pty::start_with_existing_files(home.path());
-    let yellow = vt100::Color::Rgb(229, 192, 92);
-    pty.wait_for(
-        "full yellow startup summary with welcome still visible",
-        |screen| {
-            let text = screen.contents();
-            notification_bounds(screen, "Important", yellow).is_some()
-                && text.contains("Skill scan issues: 1. Use /skills for details.")
-                && text.contains("▄▄▄██▀▀██")
-                && input_is_ready(screen)
-        },
+    pty.ready();
+    pty.text("▄▄▄██▀▀██");
+    assert!(
+        !pty.parser
+            .screen()
+            .contents()
+            .contains("Skill scan issues:")
     );
     assert!(
         !pty.parser
@@ -813,5 +647,97 @@ fn tui_tips_keeps_all_entries_and_leaves_active_jsonl_unchanged() {
         pty.input("/quit\r");
         pty.finish();
         no_more(&server);
+    }
+}
+
+#[test]
+fn tui_notification_errors_stay_local_and_do_not_replay_after_resume() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&fixture, Some(protocol)),
+        )
+        .unwrap();
+        let mut pty = Pty::start_with_existing_files(home.path());
+        pty.ready();
+        pty.input("/bogus\r");
+        pty.text("unknown command; use /help");
+        pty.input("\x01\x0bnotification failure task\r");
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        request
+            .respond(
+                Response::from_string("private-provider-error fixture-key").with_status_code(400),
+            )
+            .unwrap();
+        pty.wait_for(
+            "任务失败显示红框且保留本地命令错误",
+            |screen| {
+                screen.contents().contains("HTTP status 400")
+                    && screen.contents().contains("unknown command; use /help")
+                    && notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117))
+                        .is_some()
+                    && input_is_ready(screen)
+            },
+        );
+        assert!(
+            !pty.parser
+                .screen()
+                .contents()
+                .contains("private-provider-error")
+        );
+        pty.input("notification recovery task\r");
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        let sent = body.to_string();
+        assert!(!sent.contains("unknown command; use /help"));
+        assert!(!sent.contains("HTTP status 400"));
+        plan_final(request, protocol, "notification recovery answer");
+        pty.text("notification recovery answer");
+        pty.completed();
+        let id = saved_session_id(home.path());
+        pty.input("\x03");
+        pty.wait_for("退出后错误仅保留一次", |screen| {
+            !screen.bracketed_paste() && !screen.hide_cursor()
+        });
+        let (history, _) = pty.native_history();
+        assert_eq!(history.matches("unknown command; use /help").count(), 1);
+        assert_eq!(history.matches("HTTP status 400").count(), 1);
+        pty.finish();
+        let journal = std::fs::read_to_string(
+            home.path()
+                .join(".pp/agent/sessions")
+                .join(format!("{id}.jsonl")),
+        )
+        .unwrap();
+        assert!(!journal.contains("unknown command; use /help"));
+        // 既有 pp.error 失败元数据保持不变；没有新增本地消息卡片记录。
+        let error_entries: Vec<Value> = journal
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|entry| entry.to_string().contains("HTTP status 400"))
+            .collect();
+        assert_eq!(error_entries.len(), 1);
+        assert_eq!(error_entries[0]["customType"], "pp.error");
+        let mut resumed = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
+        resumed.text("notification recovery answer");
+        resumed.ready();
+        assert!(
+            !resumed
+                .parser
+                .screen()
+                .contents()
+                .contains("unknown command; use /help")
+        );
+        assert!(
+            !resumed
+                .parser
+                .screen()
+                .contents()
+                .contains("HTTP status 400")
+        );
+        resumed.input("\x03");
+        resumed.finish();
+        no_more(&fixture);
     }
 }

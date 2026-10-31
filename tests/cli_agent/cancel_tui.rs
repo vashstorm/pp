@@ -1294,7 +1294,7 @@ fn background_status_stop_lifecycle_displays_states_and_keeps_foreground_footer(
 }
 
 #[test]
-fn request_retry_tui_notifies_and_cancels_backoff_before_recovering() {
+fn request_retry_tui_stays_quiet_and_cancels_backoff_before_recovering() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
@@ -1315,9 +1315,13 @@ fn request_retry_tui_notifies_and_cancels_backoff_before_recovering() {
                     .with_header(Header::from_bytes("Retry-After", "30").unwrap()),
             )
             .unwrap();
-        pty.wait_for("重试通知展示等待时长与 HTTP 状态", |screen| {
-            let text = screen.contents();
-            text.contains("Retrying in 30s") && text.contains("HTTP status 503")
+        // 日志作为已进入退避的栅栏；TUI 不再显示自动重试通知。
+        pty.wait_for("请求已进入可取消的重试等待", |screen| {
+            let retry_logged = std::fs::read_dir(home.path().join(".pp/logs")).unwrap()
+                .filter_map(Result::ok)
+                .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+                .any(|text| text.contains("ai_request_retry"));
+            retry_logged && !screen.contents().contains("Retrying in")
         });
         pty.input("\x1b");
         cancel_wait_cancelled_ready(&mut pty);

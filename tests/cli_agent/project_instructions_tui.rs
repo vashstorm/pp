@@ -59,7 +59,9 @@ fn instruction_cards_paged_text(pty: &mut Pty) -> String {
 // 失败请求的错误文案经过通知弹窗，长路径会按词折行；按空格合并后再匹配。
 fn instruction_cards_wait_error(pty: &mut Pty, needle: &str) {
     pty.wait_for("请求失败提示可见且输入恢复", |screen| {
-        input_is_ready(screen) && screen.contents().replace('\n', " ").contains(needle)
+        input_is_ready(screen) && screen.contents().chars()
+            .filter(|ch| !ch.is_whitespace() && *ch != '│').collect::<String>()
+            .contains(&needle.split_whitespace().collect::<String>())
     });
 }
 

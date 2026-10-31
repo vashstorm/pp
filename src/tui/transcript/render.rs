@@ -39,7 +39,7 @@ impl Transcript {
             entry.display = display;
             entry.layout = None;
         }
-        let padding = if compact || entry.is_file_read() {
+        let padding = if compact || entry.is_file_read() || entry.kind == EntryKind::Error {
             0
         } else if matches!(entry.kind, EntryKind::Bash | EntryKind::Read) || entry.is_search() {
             4
@@ -196,6 +196,7 @@ impl Transcript {
                 let read = entry.kind == EntryKind::Read;
                 let edit = entry.is_edit();
                 let file_read = entry.is_file_read();
+                let error = entry.kind == EntryKind::Error;
                 let search = entry.is_search();
                 let think = entry.kind == EntryKind::Think;
                 let background = if bash {
@@ -333,12 +334,16 @@ impl Transcript {
                             )
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
-                    } else if !think && entry.kind != EntryKind::Activity && background.is_none() {
+                    } else if !think
+                        && !error
+                        && entry.kind != EntryKind::Activity
+                        && background.is_none()
+                    {
                         Span::styled("│", Style::default().fg(entry.kind.color()))
                             .render(Rect::new(area.x, row, 1, 1), buffer);
                     }
                 }
-                let padding = if compact || file_read {
+                let padding = if compact || file_read || error {
                     0
                 } else if bash
                     || search
@@ -357,7 +362,7 @@ impl Transcript {
                 {
                     let target = Rect::new(
                         area.x
-                            + if file_read {
+                            + if file_read || error {
                                 0
                             } else if edit
                                 && !compact

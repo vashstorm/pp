@@ -40,15 +40,6 @@ fn resume_boundary_journal(home: &Path, id: &str) -> std::path::PathBuf {
     resume_boundary_sessions_dir(home).join(format!("{id}.jsonl"))
 }
 
-// Short-lived notifications keep later screen assertions from racing the
-// popup that a failed or successful resume renders above the input.
-fn resume_boundary_quick_notifications(home: &Path) {
-    crate::write_settings(home,
-        r#"{"notification_timeout_seconds":1}"#,
-    )
-    .unwrap();
-}
-
 // Drive one real session (completion protocol) in the given cwd under the
 // shared HOME and return its saved ID.
 fn resume_boundary_create_session_with(
@@ -480,7 +471,7 @@ fn tui_slash_resume_ignores_invalid_session_entries() {
         &resume_boundary_journal(home.path(), &clean_id),
         std::time::SystemTime::now() + Duration::from_secs(3600),
     );
-    resume_boundary_quick_notifications(home.path());
+
 
     let mut pty = Pty::start_with_args(launch.path(), home.path(), &[]);
     pty.ready();
@@ -495,7 +486,7 @@ fn tui_slash_resume_ignores_invalid_session_entries() {
     );
     pty.input("\r");
     pty.wait_for("恢复干净会话", |screen| {
-        screen.contents().contains("Resumed session:")
+        input_is_ready(screen) && !screen.contents().contains("Resume session (")
             && screen.contents().contains("clean valid session")
             && screen.contents().contains("clean answer")
     });
@@ -550,7 +541,7 @@ fn tui_slash_resume_corrupted_native_record_keeps_current_session() {
         std::time::SystemTime::now() + Duration::from_secs(3600),
     );
     let before = std::fs::read(&broken_journal).unwrap();
-    resume_boundary_quick_notifications(home.path());
+
 
     let mut pty = Pty::start_with_args(launch.path(), home.path(), &[]);
     pty.ready();
@@ -565,14 +556,14 @@ fn tui_slash_resume_corrupted_native_record_keeps_current_session() {
     pty.input("\r");
     let red = vt100::Color::Rgb(224, 108, 117);
     pty.wait_for("恢复失败显示错误弹窗", |screen| {
-        notification_bounds(screen, "Error", red).is_some()
-            && !screen.contents().contains("Resumed session:")
+        screen.contents().contains("Failed to resume session:")
+            && screen.contents().contains("Resume session (")
     });
     // 失败保留列表，可取消重选。
     pty.text("Resume session");
     resume_boundary_close(&mut pty);
-    pty.wait_for("错误弹窗淡出", |screen| {
-        notification_bounds(screen, "Error", red).is_none()
+    pty.wait_for("关闭列表后主消息栏保留红框错误", |screen| {
+        notification_bounds(screen, "Error", red).is_some()
     });
 
     // 取消后旧对话完整，只出现一次。
@@ -621,7 +612,7 @@ fn tui_slash_resume_locked_session_keeps_current_session_and_cwd() {
         home.path().join(".pp/run/sessions").join(format!("{locked_id}.lock")),
     ).unwrap();
     rustix::fs::flock(&guard, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
-    resume_boundary_quick_notifications(home.path());
+
 
     let mut pty = Pty::start_with_args(launch.path(), home.path(), &[]);
     pty.ready();
@@ -636,13 +627,13 @@ fn tui_slash_resume_locked_session_keeps_current_session_and_cwd() {
     pty.input("\r");
     let red = vt100::Color::Rgb(224, 108, 117);
     pty.wait_for("持锁会话恢复失败显示错误弹窗", |screen| {
-        notification_bounds(screen, "Error", red).is_some()
-            && !screen.contents().contains("Resumed session:")
+        screen.contents().contains("Failed to resume session:")
+            && screen.contents().contains("Resume session (")
     });
     pty.text("Resume session");
     resume_boundary_close(&mut pty);
-    pty.wait_for("错误弹窗淡出", |screen| {
-        notification_bounds(screen, "Error", red).is_none()
+    pty.wait_for("关闭列表后主消息栏保留红框错误", |screen| {
+        notification_bounds(screen, "Error", red).is_some()
     });
 
     // cwd 未切换：相对路径 write 工具仍落在 launch 目录；上下文保留。
@@ -698,7 +689,7 @@ fn tui_slash_resume_missing_saved_cwd_still_restores_history() {
         &resume_boundary_journal(home.path(), &gone_id),
         std::time::SystemTime::now() + Duration::from_secs(3600),
     );
-    resume_boundary_quick_notifications(home.path());
+
 
     let mut pty = Pty::start_with_args(launch.path(), home.path(), &[]);
     pty.ready();
@@ -727,7 +718,7 @@ fn tui_slash_resume_selecting_current_session_is_a_noop() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     let launch = tempfile::tempdir().unwrap();
-    resume_boundary_quick_notifications(home.path());
+
     std::fs::write(
         config_path(home.path(), "models.yml"),
         fixture_models(&server),
@@ -792,7 +783,7 @@ fn tui_slash_resume_interrupted_session_replays_partial_text_once() {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         let path = api_path(protocol);
-        resume_boundary_quick_notifications(home.path());
+
         std::fs::write(
             config_path(home.path(), "models.yml"),
             response_models(&server, Some(protocol)),
@@ -825,9 +816,7 @@ fn tui_slash_resume_interrupted_session_replays_partial_text_once() {
                     .contains("Previous request was interrupted.")
         });
         pty.ready();
-        pty.wait_for("错误弹窗淡出", |screen| {
-            notification_bounds(screen, "Error", red).is_none()
-        });
+        assert!(notification_bounds(pty.parser.screen(), "Error", red).is_some());
         let text = pty.parser.screen().contents();
         assert_eq!(text.matches("interrupted resume input").count(), 1);
         assert_eq!(text.matches("partial-resume-marker").count(), 1);
@@ -902,11 +891,8 @@ fn tui_slash_resume_navigates_beyond_viewport_and_survives_resize() {
     pty.input("\r");
     pty.wait_for("恢复最旧会话", |screen| {
         let text = screen.contents();
-        text.contains("Resumed session:")
-            && text
-                .split_whitespace()
-                .collect::<String>()
-                .contains(&base_id)
+        input_is_ready(screen) && !text.contains("Resume session (")
+            && tui_session_is_locked(home.path(), &base_id)
     });
     pty.ready();
     no_more(&server);
@@ -928,11 +914,8 @@ fn tui_slash_resume_navigates_beyond_viewport_and_survives_resize() {
     let second_oldest = clones[0].clone();
     pty.wait_for("resize 后恢复倒数第二项", |screen| {
         let text = screen.contents();
-        text.contains("Resumed session:")
-            && text
-                .split_whitespace()
-                .collect::<String>()
-                .contains(&second_oldest)
+        input_is_ready(screen) && !text.contains("Resume session (")
+            && tui_session_is_locked(home.path(), &second_oldest)
     });
     pty.ready();
     pty.input("/quit\r");
@@ -1011,7 +994,7 @@ fn tui_slash_resume_mcp_servers_reap_after_cross_session_exit() {
         pty.text("mcp project marker");
         pty.input("\r");
         pty.wait_for("跨目录恢复保存会话", |screen| {
-            screen.contents().contains("Resumed session:")
+            input_is_ready(screen) && !screen.contents().contains("Resume session (")
                 && screen.contents().contains("mcp project marker")
                 && screen.contents().contains("mcp project answer")
         });
@@ -1050,7 +1033,7 @@ fn tui_slash_resume_filters_current_folder_searches_and_deletes_saved_session() 
         "可删除的旧会话", "saved preview marker");
     let journal = resume_boundary_journal(home.path(), &id);
     let original = std::fs::read(&journal).unwrap();
-    resume_boundary_quick_notifications(home.path());
+
     let mut pty = Pty::start_with_args(launch.path(), home.path(), &[]);
     pty.ready();
     pty.input("current scope marker\r");

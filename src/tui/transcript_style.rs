@@ -9,6 +9,7 @@ pub(super) const CODE: Color = Color::Rgb(229, 193, 255);
 pub(super) const CODE_BLOCK: Color = Color::Rgb(156, 220, 254);
 pub(super) const LINK: Color = Color::Rgb(0, 136, 250);
 pub(super) const ADDED: Color = Color::Rgb(137, 210, 129);
+pub(super) const ERROR_BORDER: Color = Color::Rgb(224, 108, 117);
 pub(super) const REMOVED: Color = Color::Rgb(252, 58, 75);
 pub(super) const TOOL_PENDING_BG: Color = Color::Rgb(29, 33, 41);
 pub(super) const TOOL_SUCCESS_BG: Color = Color::Rgb(22, 26, 31);

@@ -196,7 +196,7 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         pty.text("line-59-last");
         // 首轮任务完成后显示会话弹框，翻到底部后再验证下一任务跟随输出。
         pty.input("\x1b[6~");
-        pty.text("Session:");
+        pty.completed();
         pty.resize(4, 20);
         pty.resize(30, 100);
         pty.draft("draft-中");

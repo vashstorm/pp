@@ -420,7 +420,9 @@ fn plan_list_continues_in_fresh_context() {
 
         // c：以仅携带计划的新会话继续；未输入前零模型请求。
         pty.input("c");
-        pty.text("Opened plan draft");
+        pty.wait_for("新会话已打开计划草稿", |screen| {
+            input_is_ready(screen) && !screen.contents().contains("Plans ·")
+        });
         plan_wait_mode(&mut pty, "Plan");
         no_more(&fixture);
         let after = std::fs::read_dir(&sessions).unwrap().count();

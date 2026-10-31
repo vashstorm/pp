@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn command_error_is_transient_and_preserves_editor_and_welcome() {
+fn notification_command_error_stays_in_history_and_preserves_editor() {
     let mut app = app();
     app.state = State::Ready;
     app.show_welcome = true;
@@ -11,13 +11,11 @@ fn command_error_is_transient_and_preserves_editor_and_welcome() {
     assert_notification(&mut app, Color::Rgb(224, 108, 117));
     assert_eq!(app.input.lines(), &["/bogus"]);
     assert_eq!(app.input.cursor(), cursor);
-    assert!(app.show_welcome);
+    assert!(!app.show_welcome);
     assert!(draw(&mut app, 100, 30).contains("Error"));
-    app.notifications
-        .tick(Instant::now() + Duration::from_millis(10000));
     let screen = draw(&mut app, 100, 30);
-    assert!(!screen.contains("unknown command"));
-    assert!(!screen.contains("╭"));
+    assert!(screen.contains("unknown command"));
+    assert!(screen.contains("╭"));
 }
 
 #[test]
@@ -34,25 +32,23 @@ fn startup_skill_summary_keeps_complete_diagnostics_in_panel() {
         shared.clone(),
         commands::FileCommands::default(),
         Path::new("."),
-        NotificationOptions::default(),
         Some(history_dir.path().join("history.db")),
     )
     .unwrap();
-    // 配置错误与 skill 诊断合并到同一个启动弹窗。
-    app.show_welcome = true;
+    // 非致命 skill 诊断仅保留在管理面板，不合并进启动错误。
     assert_notification(&mut app, Color::Rgb(224, 108, 117));
     let screen = draw(&mut app, 100, 30).replace(' ', "");
-    assert!(screen.contains("Skillscanissues:2.Use/skillsfordetails."));
-    assert!(app.show_welcome);
+    assert!(!screen.contains("Skillscanissues"));
+    assert!(screen.contains("fixtureunavailable"));
+    assert!(!app.show_welcome);
     assert_eq!(shared.lock().unwrap().diagnostics.len(), 2);
     app.skill_panel = Some(skills::Panel::new(shared.lock().unwrap().clone()));
-    app.notifications = Notifications::default();
+    app.conversation = app.conversation.fresh();
+    app.show_welcome = true;
     let screen = draw(&mut app, 100, 30).replace(' ', "");
     assert!(screen.contains("skill根路径必须是目录：first"));
     assert!(screen.contains("seconddiagnostic"));
     assert!(!screen.contains("Skillscanissues"));
-    app.notifications
-        .tick(Instant::now() + Duration::from_millis(10000));
     app.skill_panel = None;
     assert!(!draw(&mut app, 100, 30).contains("Skill scan issues"));
 }
@@ -164,7 +160,7 @@ fn file_command_esc_keeps_draft_and_startup_notice_keeps_error_level() {
     assert!(app.menu.is_none());
     assert_eq!(app.input.lines(), &["/rev"]);
 
-    // 命令诊断与配置错误合并进同一个启动弹窗，并保留 Error 严重级别。
+    // 非致命命令诊断不再形成启动通知，完整详情仍在 /help。
     let mut files = review_files();
     files.diagnostics = vec![
         "commands/broken.md: Invalid command metadata".into(),
@@ -177,16 +173,16 @@ fn file_command_esc_keeps_draft_and_startup_notice_keeps_error_level() {
         shared,
         files,
         Path::new("."),
-        NotificationOptions::default(),
         Some(history_dir.path().join("history.db")),
     )
     .unwrap();
-    app.show_welcome = true;
     assert_notification(&mut app, Color::Rgb(224, 108, 117));
     let screen = draw(&mut app, 100, 30).replace(' ', "");
-    assert!(screen.contains("Commandscanissues:2.Use/helpfordetails."));
+    assert!(!screen.contains("Commandscanissues"));
+    assert!(screen.contains("fixtureunavailable"));
     // /help 附加用户命令说明与完整命令诊断。
-    app.notifications = Notifications::default();
+    app.conversation = app.conversation.fresh();
+    app.show_welcome = true;
     app.state = State::Ready;
     app.show_help();
     let buffer = draw_buffer(&mut app, 100, 30);
@@ -621,4 +617,43 @@ fn streaming_frame_batches_flush_before_completion_and_cancel() {
             "{screen}"
         );
     }
+}
+
+#[test]
+fn notification_skill_save_failure_keeps_panel_draft_and_full_message() {
+    let mut app = app();
+    app.state = State::Ready;
+    app.input.insert_str("main draft");
+    app.skill_panel = Some(skills::Panel::new(crate::skills::Skills::default()));
+    let (requests, _receiver) = mpsc::channel();
+    let (sender, replies) = mpsc::channel();
+    app.skill_worker = skills::Worker { requests, replies };
+    let mut dirty = false;
+    app.handle(key(KeyCode::Char(' ')), &mut dirty);
+    let before = draw(&mut app, 100, 30);
+    let error = format!("save failed\n{}", "complete details\n".repeat(15));
+    sender
+        .send(skills::Reply {
+            result: Err(anyhow::anyhow!(error)),
+            saved: true,
+            preview: false,
+            open_sources: false,
+        })
+        .unwrap();
+    app.receive();
+    let shown = draw(&mut app, 100, 30);
+    assert!(shown.contains("save failed"));
+    assert!(shown.contains("Skills"));
+    assert_eq!(shown.contains("[x] claude"), before.contains("[x] claude"));
+    assert!(app.skill_panel.is_some());
+    app.handle(key(KeyCode::Esc), &mut dirty);
+    assert_eq!(app.input.lines(), &["main draft"]);
+    let mut history = Vec::new();
+    let buffer = draw_buffer(&mut app, 100, 30);
+    app.conversation
+        .write_full_for_test(&mut history, &buffer)
+        .unwrap();
+    let text = String::from_utf8_lossy(&history);
+    assert_eq!(text.matches("save failed").count(), 1);
+    assert_eq!(text.matches("complete details").count(), 15);
 }

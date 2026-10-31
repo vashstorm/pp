@@ -136,15 +136,15 @@ fn favorite_models_save_reload_toggle_and_fail_without_changing_state() {
 }
 
 #[test]
-fn notification_options_validate_overrides() {
+fn deprecated_notification_options_validate_overrides() {
     let settings = load(
         Some(r#"{"notification_show_countdown":false,"notification_timeout_seconds":3}"#),
         Some(VALID_MODELS),
     )
     .unwrap()
     .settings;
-    assert!(!settings.notification_options().show_countdown);
-    assert_eq!(settings.notification_options().timeout_seconds, 3);
+    assert!(!settings.notification_show_countdown);
+    assert_eq!(settings.notification_timeout_seconds, 3);
     for value in [
         json!(0),
         json!(-1),

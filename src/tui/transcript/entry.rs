@@ -18,6 +18,7 @@ impl EntryKind {
             Self::Read => Color::Reset,
             Self::Diff | Self::Ask => palette::ACCENT,
             Self::Data => Color::Reset,
+            Self::Error => palette::ERROR_BORDER,
         }
     }
 
@@ -476,6 +477,52 @@ impl TranscriptEntry {
                 width,
                 height: 0,
                 lines: Vec::new(),
+            }));
+            return;
+        }
+        if self.kind == EntryKind::Error {
+            let border_style = Style::default().fg(palette::ERROR_BORDER);
+            let mut rows = Vec::new();
+            // 极窄窗口优先保留正文；空间恢复后重新生成完整外框。
+            if width >= 6 {
+                let title = if width >= 9 { " Error " } else { "" };
+                rows.push(Line::styled(
+                    format!(
+                        "╭{title}{}╮",
+                        "─".repeat(usize::from(width) - title.len() - 2)
+                    ),
+                    border_style,
+                ));
+            }
+            let inner = if width >= 6 { width - 4 } else { width };
+            for mut line in wrap_block(block_line(self.text.clone(), Style::default()), inner, "") {
+                if width >= 6 {
+                    let padding = usize::from(inner).saturating_sub(line.width());
+                    line.spans.insert(0, Span::styled("│ ", border_style));
+                    line.spans.push(Span::styled(
+                        format!("{} │", " ".repeat(padding)),
+                        border_style,
+                    ));
+                }
+                rows.push(line);
+            }
+            if width >= 6 {
+                rows.push(Line::styled(
+                    format!("╰{}╯", "─".repeat(usize::from(width) - 2)),
+                    border_style,
+                ));
+            }
+            let lines: Vec<_> = rows
+                .into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                })
+                .collect();
+            self.layout = Some(std::sync::Arc::new(EntryLayout {
+                width,
+                height: lines.len(),
+                lines,
             }));
             return;
         }

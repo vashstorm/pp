@@ -553,7 +553,12 @@ fn context_tui_esc_cancel_during_held_summary_preserves_draft_and_history() {
         pty.input("context-draft-保留");
         pty.draft("context-draft-保留");
         pty.input("\x1b");
-        pty.text("Context compaction cancelled.");
+        pty.wait_for("压缩取消后回到输入状态", |screen| {
+            let text = screen.contents();
+            input_is_ready(screen)
+                && !text.contains("Compacting context...")
+                && !text.contains("Cancelling context...")
+        });
         pty.ready();
         assert!(!pty.parser.screen().contents().contains("Compacting context..."));
         pty.draft("context-draft-保留");

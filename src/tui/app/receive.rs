@@ -1,7 +1,7 @@
 use crate::tui::{
     AgentEvent, App, CompactionOutcome, Instant, Level, PlanEnterAction, PlanLocation,
     PlanOpenIntent, RunOutcome, State, TryRecvError, WorkMode, WorkerCommand, WorkerEvent, ask,
-    editor, format_wait, plan, plan_list, plan_location_from_path, skills,
+    editor, plan, plan_list, plan_location_from_path, skills,
 };
 
 impl App {
@@ -36,7 +36,6 @@ impl App {
                             panel.show_sources();
                         }
                     }
-                    self.notifications.clear();
                 }
                 Ok(_) => {
                     self.skill_panel = None;
@@ -230,20 +229,8 @@ impl App {
                             self.token_speed.clear();
                             self.conversation.progress(event);
                         }
-                        // 请求重试只显示脱敏原因与等待时长，不进入 Transcript。
-                        AgentEvent::RequestRetrying {
-                            reason,
-                            attempt,
-                            wait_ms,
-                        } => {
-                            self.notify(
-                                Level::Important,
-                                format!(
-                                    "Retrying in {} (attempt {attempt}; {reason})",
-                                    format_wait(wait_ms)
-                                ),
-                            );
-                        }
+                        // 自动重试保持原执行逻辑，不追加常规提醒。
+                        AgentEvent::RequestRetrying { .. } => {}
                         // 输入确认由 App 直接回显；不进 Transcript progress，不重复记录历史。
                         AgentEvent::UserInputAccepted { text, .. } => {
                             self.append("You", &text);
@@ -349,7 +336,7 @@ impl App {
                     self.history_browser = false;
                     self.conversation = self.conversation.fresh();
                     self.clear_input();
-                    self.notifications.clear();
+
                     self.show_welcome = true;
                     self.state = State::Ready;
                     self.session_id = None;
@@ -585,10 +572,7 @@ impl App {
                             self.usage = None;
                             self.token_speed.clear();
                             match self.resume_note.take() {
-                                Some(error) => self.notify(
-                                    Level::Error,
-                                    format!("Resumed session: {}\n{error}", state.id),
-                                ),
+                                Some(error) => self.notify(Level::Error, error),
                                 None => self.notify(
                                     Level::Normal,
                                     format!("Resumed session: {}", state.id),

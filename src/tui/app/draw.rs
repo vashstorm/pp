@@ -85,20 +85,14 @@ impl App {
                 self.think_level,
             );
             panel.draw(frame, area);
-            self.notifications.draw(
-                frame,
-                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
-            );
+
             return;
         }
         if !self.native_render && self.ask_panel.is_none() && self.subagent_panel.is_some() {
             if let Some(panel) = &mut self.subagent_panel {
                 panel.draw(frame, area, &mut self.child_drafts);
             }
-            self.notifications.draw(
-                frame,
-                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
-            );
+
             return;
         }
         if !self.native_render
@@ -117,20 +111,14 @@ impl App {
             && let Some(panel) = &mut self.skill_panel
         {
             panel.draw(frame, area);
-            self.notifications.draw(
-                frame,
-                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
-            );
+
             return;
         }
         if !self.native_render
             && let Some(panel) = &mut self.session_panel
         {
             panel.draw(frame, area);
-            self.notifications.draw(
-                frame,
-                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
-            );
+
             return;
         }
         if !self.native_render
@@ -155,10 +143,7 @@ impl App {
                 ),
                 Rect::new(area.x, area.bottom() - 1, area.width, 1),
             );
-            self.notifications.draw(
-                frame,
-                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
-            );
+
             return;
         }
         if !self.native_render
@@ -184,10 +169,7 @@ impl App {
                 ),
                 Rect::new(area.x, area.bottom() - 1, area.width, 1),
             );
-            self.notifications.draw(
-                frame,
-                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
-            );
+
             return;
         }
         if !self.native_render
@@ -223,10 +205,7 @@ impl App {
                 ),
                 Rect::new(area.x, area.bottom() - 1, area.width, 1),
             );
-            self.notifications.draw(
-                frame,
-                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
-            );
+
             return;
         }
         if !self.native_render
@@ -246,10 +225,7 @@ impl App {
                 ),
                 Rect::new(area.x, area.bottom() - 1, area.width, 1),
             );
-            self.notifications.draw(
-                frame,
-                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
-            );
+
             return;
         }
         let MainLayout {
@@ -400,15 +376,6 @@ impl App {
         {
             panel.draw(frame, ask_area);
         }
-        self.notifications.draw(
-            frame,
-            Rect::new(
-                area.x,
-                area.y,
-                area.width,
-                menu_area.y.min(ask_area.y).saturating_sub(area.y),
-            ),
-        );
     }
 
     pub(in crate::tui) fn draw_input_status(&self, frame: &mut Frame, area: Rect) {

@@ -101,9 +101,13 @@ fn plan_toggle_waits_for_prompt_and_preserves_drafts() {
 
         // 裸 /plan 只待命：无计划绑定、无 Markdown 文件、无模型请求。
         pty.input("/plan\r");
-        pty.wait_for("standby notification", |screen| {
-            cancel_normalize(screen).contains("Planmodeisactive.")
-        });
+        pty.draft("");
+        assert!(
+            !pty.parser
+                .screen()
+                .contents()
+                .contains("Plan mode is active.")
+        );
         plan_wait_mode(&mut pty, "Plan");
         no_more(&fixture);
         for location in ["drafts", "plans", "done"] {

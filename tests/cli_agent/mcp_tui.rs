@@ -71,8 +71,13 @@ fn mcp_tui_list_is_read_only_and_core_completion_updates_runtime() {
     no_more(&provider);
     pty.input("\x1b");
     pty.ready();
-    pty.input("/mcp disable local\r");
-    pty.text("MCP state updated");
+    pty.input("/mcp disable local");
+    pty.draft("/mcp disable local");
+    pty.input("\r");
+    pty.wait_for("MCP 管理完成并恢复输入", |screen| {
+        screen.contents().lines().any(|line| line.trim() == "❯")
+            && !screen.contents().contains("Managing MCP servers…")
+    });
     pty.input("task without MCP\r");
     let (request, body) = receive(&provider);
     assert!(!body["tools"].to_string().contains("mcp__local__"));
@@ -82,8 +87,13 @@ fn mcp_tui_list_is_read_only_and_core_completion_updates_runtime() {
     final_reply(request, "task complete");
     pty.text("task complete");
     pty.ready();
-    pty.input("\x01\x0b/mcp enable local\r");
-    pty.text("MCP state updated");
+    pty.input("\x01\x0b/mcp enable local");
+    pty.draft("/mcp enable local");
+    pty.input("\r");
+    pty.wait_for("MCP 管理完成并恢复输入", |screen| {
+        screen.contents().lines().any(|line| line.trim() == "❯")
+            && !screen.contents().contains("Managing MCP servers…")
+    });
     pty.input("task with MCP\r");
     let (request, body) = receive(&provider);
     assert!(body["tools"].to_string().contains("mcp__local__echo"));

@@ -1,7 +1,21 @@
-// 等待条件是「保存结果可见且输入恢复」：弹框内容出现且输入行重新就绪，
-// 不再断言颜色或几何位置。
-fn effort_save_popup(screen: &vt100::Screen, message: &str) -> bool {
+// 保存失败保留在消息区；不再依赖临时浮层。
+fn effort_save_error(screen: &vt100::Screen, message: &str) -> bool {
     screen.contents().contains(message) && input_is_ready(screen)
+}
+
+fn effort_wait_saved(pty: &mut Pty, home: &std::path::Path, level: &str) {
+    pty.wait_for("默认思考档位已提交且输入恢复", |screen| {
+        read_agent_preferences(home).think_level == level && input_is_ready(screen)
+    });
+    assert!(!pty.parser.screen().contents().contains("Default thinking effort saved:"));
+}
+
+fn model_wait_saved(pty: &mut Pty, home: &std::path::Path, reference: &str) {
+    pty.wait_for("默认模型已提交并更新菜单标记", |screen| {
+        read_agent_preferences(home).default_model.as_deref() == Some(reference)
+            && screen.contents().contains(&format!("{reference} "))
+    });
+    assert!(!pty.parser.screen().contents().contains("Default model saved:"));
 }
 
 // 迁移完成后 agent.db 是偏好权威；用只读连接核对已提交的值，
@@ -115,7 +129,7 @@ fn sqlite_default_model_picker_keeps_draft_and_persists_across_restart() {
         pty.input("\x01\x0bsecond");
         pty.text("gateway/team/secondary");
         pty.input("\x13");
-        pty.text("Default model saved: gateway/team/secondary");
+        model_wait_saved(&mut pty, home.path(), "gateway/team/secondary");
         pty.ready_model("fixture/primary");
         pty.ready_effort("high");
         pty.model_search("second");
@@ -156,7 +170,7 @@ fn sqlite_default_model_picker_keeps_draft_and_persists_across_restart() {
         let (request, body) = receive_at(&server, api_path(protocol));
         assert_eq!(body["model"], "second-model");
         super::think::finish_request(request, protocol);
-        restarted.text("Session:");
+        restarted.completed();
         restarted.ready_model("gateway/team/secondary");
         restarted.input("草稿🙂");
         restarted.draft("草稿🙂");
@@ -167,7 +181,7 @@ fn sqlite_default_model_picker_keeps_draft_and_persists_across_restart() {
         restarted.input("fixture/primary");
         restarted.model_search("fixture/primary");
         restarted.input("\x13");
-        restarted.text("Default model saved: fixture/primary");
+        model_wait_saved(&mut restarted, home.path(), "fixture/primary");
         restarted.ready_model("gateway/team/secondary");
         restarted.text("fixture/primary ");
         restarted.input("\x01\x0b");
@@ -202,7 +216,7 @@ fn sqlite_default_model_picker_keeps_draft_and_persists_across_restart() {
         restarted.input("fixture/primary");
         restarted.text("❯ fixture/primary");
         restarted.input("\x13");
-        restarted.text("Default model saved: fixture/primary");
+        model_wait_saved(&mut restarted, home.path(), "fixture/primary");
         assert_eq!(
             read_agent_preferences(home.path()).default_model.as_deref(),
             Some("fixture/primary")
@@ -225,7 +239,7 @@ fn sqlite_default_model_saves_without_settings_file_and_recovers_from_busy_datab
     pty.input("/model\r");
     pty.text("fixture/primary ");
     pty.input("\x13");
-    pty.text("Default model saved: fixture/primary");
+    model_wait_saved(&mut pty, home.path(), "fixture/primary");
     pty.ready_model("fixture/primary");
     pty.model_search("");
     pty.text("fixture/primary ");
@@ -254,7 +268,7 @@ fn sqlite_default_model_saves_without_settings_file_and_recovers_from_busy_datab
     pty.function_key('p');
     pty.text("fixture/primary ");
     pty.input("\x13");
-    pty.text("Default model saved: fixture/primary");
+    model_wait_saved(&mut pty, home.path(), "fixture/primary");
     assert_eq!(
         read_agent_preferences(home.path()).default_model.as_deref(),
         Some("fixture/primary")
@@ -279,7 +293,7 @@ fn sqlite_preference_save_ignores_invalid_settings_file() {
     pty.input("/model\r");
     pty.text("fixture/primary ");
     pty.input("\x13");
-    pty.text("Default model saved: fixture/primary");
+    model_wait_saved(&mut pty, home.path(), "fixture/primary");
     pty.ready_model("fixture/primary");
     pty.model_search("");
     pty.text("fixture/primary ");
@@ -322,9 +336,7 @@ fn sqlite_effort_selection_persists_across_restart() {
         pty.text("high (default)");
         pty.input("\x1b[B");
         pty.function_key('s');
-        pty.wait_for("xhigh 保存结果可见且输入恢复", |screen| {
-            effort_save_popup(screen, "Default thinking effort saved: xhigh")
-        });
+        effort_wait_saved(&mut pty, home.path(), "xhigh");
         pty.ready_effort("high");
         pty.input("/effort ");
         pty.text("xhigh (default)");
@@ -366,9 +378,7 @@ fn sqlite_effort_selection_persists_across_restart() {
             "Ctrl + S"
         });
         restarted.function_key('s');
-        restarted.wait_for("重启后 no think 保存结果可见且输入恢复", |screen| {
-            effort_save_popup(screen, "Default thinking effort saved: no think")
-        });
+        effort_wait_saved(&mut restarted, home.path(), "none");
         assert_eq!(read_agent_preferences(home.path()).think_level, "none");
         restarted.ready_effort("xhigh");
         restarted.input("\x03");
@@ -405,9 +415,7 @@ fn sqlite_effort_save_reports_busy_database_and_recovers() {
         "Ctrl + S"
     });
     pty.function_key('s');
-    pty.wait_for("新建数据库后 low 保存结果可见且输入恢复", |screen| {
-        effort_save_popup(screen, "Default thinking effort saved: low")
-    });
+    effort_wait_saved(&mut pty, home.path(), "low");
     pty.ready_effort("no think");
     assert!(!path.exists());
     assert_eq!(read_agent_preferences(home.path()).think_level, "low");
@@ -422,7 +430,7 @@ fn sqlite_effort_save_reports_busy_database_and_recovers() {
     });
     pty.function_key('s');
     pty.wait_for("保存失败弹框可见且输入恢复", |screen| {
-        effort_save_popup(screen, "Failed to save default thinking effort")
+        effort_save_error(screen, "Failed to save default thinking effort")
     });
     assert_sanitized_database_error(pty.parser.screen());
     pty.ready_effort("no think");
@@ -446,9 +454,7 @@ fn sqlite_effort_save_reports_busy_database_and_recovers() {
         "Ctrl + S"
     });
     pty.function_key('s');
-    pty.wait_for("忙碌解除后 max 保存结果可见且输入恢复", |screen| {
-        effort_save_popup(screen, "Default thinking effort saved: max")
-    });
+    effort_wait_saved(&mut pty, home.path(), "max");
     assert_eq!(read_agent_preferences(home.path()).think_level, "max");
     pty.input("draft after failure");
     pty.draft("draft after failure");
@@ -696,9 +702,7 @@ fn sqlite_global_effort_save_keeps_model_policy_default() {
     pty.text("high (default)");
     pty.input("\x1b[A");
     pty.function_key('s');
-    pty.wait_for("low 全局默认保存结果可见且输入恢复", |screen| {
-        effort_save_popup(screen, "Default thinking effort saved: low")
-    });
+    effort_wait_saved(&mut pty, home.path(), "low");
     assert_eq!(read_agent_preferences(home.path()).think_level, "low");
     assert!(
         !std::fs::read_to_string(&settings)

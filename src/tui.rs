@@ -44,7 +44,7 @@ use crate::{
     },
     cancellation::{CancellationToken, RunOutcome},
     commands::{self, COMMANDS, Command, PlanCommand},
-    config::{ModelChoice, NotificationOptions, ThinkLevel},
+    config::{ModelChoice, ThinkLevel},
     events::AgentEvent,
     plan::{
         ExecutionContext, PlanLocation, PlanReview, PlanReviewReport, PlanStatus, ReviewToken,
@@ -56,7 +56,7 @@ use crate::{
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use menu::{MenuEvent, MenuItem, SelectionMenu};
-use notification::{Level, MouseAction, Notifications};
+use notification::Level;
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -98,7 +98,7 @@ pub(crate) fn run(
     skills: crate::skills::SharedSkills,
     file_commands: commands::FileCommands,
     auto_continue: bool,
-    options: (NotificationOptions, crate::config::TuiSettings),
+    options: crate::config::TuiSettings,
     bootstrap: Option<crate::agent::Bootstrap>,
 ) -> Result<()> {
     // 初始化中途失败和 panic 同样恢复终端模式。
@@ -110,7 +110,7 @@ pub(crate) fn run(
     let history_path = bootstrap
         .as_ref()
         .map(|bootstrap| bootstrap.dir.join("history.db"));
-    let mut app = App::new_with_skills(agent, skills, file_commands, cwd, options.0, history_path)?;
+    let mut app = App::new_with_skills(agent, skills, file_commands, cwd, history_path)?;
     app.bootstrap = bootstrap;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c：Execute 保持原继续行为；Plan/Draft 提示继续输入；Plan/Ready 进入审阅。
@@ -132,7 +132,7 @@ pub(crate) fn run(
     app.renderer = Some(render_worker::Worker::start().context("starting layout worker")?);
     let mut dirty = true;
     let mut generation = app.conversation.native_generation();
-    let mut clock = frame_clock::FrameClock::new(options.1.max_fps);
+    let mut clock = frame_clock::FrameClock::new(options.max_fps);
     loop {
         let input_started = Instant::now();
         let mut input_changed = false;
@@ -156,7 +156,6 @@ pub(crate) fn run(
             .as_ref()
             .is_some_and(render_worker::Worker::changed);
         dirty |= workspace.receive();
-        dirty |= app.notifications.tick(Instant::now());
         dirty |= app.conversation.tick(Instant::now());
         dirty |= app.hub_tick();
         dirty |= app.review_transcript_tick(Instant::now());
@@ -166,6 +165,11 @@ pub(crate) fn run(
             if let Some(cancellation) = &app.active_cancellation {
                 cancellation.cancel();
             }
+            let cleanup = app.shutdown_background_tasks();
+            if let Err(error) = &cleanup {
+                app.notify(Level::Error, format!("{error:#}"));
+            }
+            app.shutdown_history();
             paint_surface(
                 &mut app,
                 &workspace.context,
@@ -174,14 +178,12 @@ pub(crate) fn run(
                 true,
             )
             .context("finishing terminal transcript")?;
-            app.shutdown_background_tasks()?;
-            app.shutdown_history();
             surface
                 .finish(canvas.backend().buffer().area.height)
                 .context("restoring shell cursor")?;
             drop(_guard);
             crate::write_resume_hint(&mut io::stderr(), app.session_id.as_deref())?;
-            return Ok(());
+            return cleanup;
         }
         if dirty && clock.ready(Instant::now()) {
             clock.started(Instant::now());
@@ -673,7 +675,6 @@ struct App {
     native_render: bool,
     normal_snapshot: Option<ratatui::buffer::Buffer>,
     history_browser: bool,
-    notifications: Notifications,
     show_welcome: bool,
     input: TextArea<'static>,
     shell_mode: bool,
@@ -795,15 +796,6 @@ fn usage_snapshot(agent: &Agent) -> Option<WorkerEvent> {
         .context_usage()
         .ok()
         .map(|usage| WorkerEvent::Progress(AgentEvent::ContextUpdated { usage }))
-}
-
-// 合并启动弹窗摘要：保留最高严重程度，摘要始终显示在既有提示之前。
-fn merge_startup_notice(startup_notice: &mut Option<(Level, String)>, summary: String) {
-    *startup_notice = Some(match startup_notice.take() {
-        None => (Level::Important, summary),
-        Some((Level::Error, message)) => (Level::Error, format!("{summary}\n{message}")),
-        Some((_, message)) => (Level::Important, format!("{summary}\n{message}")),
-    });
 }
 
 fn editor() -> TextArea<'static> {

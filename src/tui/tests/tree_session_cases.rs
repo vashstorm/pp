@@ -317,22 +317,17 @@ fn sqlite_resume_ignores_stale_search_replies() {
 }
 
 #[test]
-fn notification_overlay_preserves_welcome_draft_and_cursor() {
+fn notification_error_preserves_draft_cursor_and_status() {
     let mut app = app();
-    app.show_welcome = true;
     app.input.insert_str("草稿🙂");
     let cursor = app.input.cursor();
     let before = draw(&mut app, 100, 30);
-    let now = Instant::now();
-    app.notifications
-        .show(Level::Error, "temporary error".into(), now);
-    app.notifications.tick(now + Duration::from_millis(200));
+    app.notify(Level::Error, "persistent error".into());
     let shown = draw(&mut app, 100, 30);
-    assert!(shown.contains("temporary error"));
-    assert!(app.show_welcome);
+    assert!(shown.contains("persistent error"));
+    assert!(!app.show_welcome);
     assert_eq!(app.input.cursor(), cursor);
     assert_eq!(app.input.lines(), &["草稿🙂"]);
     assert_eq!(shown.lines().last(), before.lines().last());
-    assert!(app.notifications.tick(now + Duration::from_millis(10000)));
-    assert_eq!(draw(&mut app, 100, 30), before);
+    assert_eq!(draw(&mut app, 100, 30), shown);
 }

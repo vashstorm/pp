@@ -26,7 +26,9 @@ fn tree_tui_startup_double_escape_keeps_editor_without_screen_switch() {
             thread::sleep(Duration::from_millis(10));
         }
         pty.input("\x1b");
-        pty.text("No entries found in session tree.");
+        context_tui_paste(&mut pty, "焦点栅栏");
+        pty.input("\x01\x0b");
+        pty.draft("");
         let output = String::from_utf8_lossy(&pty.raw[before..]);
         assert!(!output.contains("\x1b[?1049h"), "空会话不应进入备用屏幕");
         assert!(!output.contains("Loading session tree"));

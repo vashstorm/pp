@@ -217,21 +217,6 @@ fn default_notification_timeout_seconds() -> u64 {
     10
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct NotificationOptions {
-    pub(crate) show_countdown: bool,
-    pub(crate) timeout_seconds: u64,
-}
-
-impl Default for NotificationOptions {
-    fn default() -> Self {
-        Self {
-            show_countdown: default_notification_show_countdown(),
-            timeout_seconds: default_notification_timeout_seconds(),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct TuiSettings {
@@ -320,8 +305,11 @@ pub(crate) struct Settings {
     pub(crate) tools: ToolsSettings,
     #[serde(default)]
     pub(crate) debug: bool,
+    /// 已弃用：仅为旧配置保留类型校验，不再控制 TUI 显示。
+    #[allow(dead_code)]
     #[serde(default = "default_notification_show_countdown")]
     pub(crate) notification_show_countdown: bool,
+    /// 已弃用：沿用旧值校验，错误卡片不再自动消失。
     #[serde(default = "default_notification_timeout_seconds")]
     pub(crate) notification_timeout_seconds: u64,
     #[serde(default = "default_skill_dirs")]
@@ -351,13 +339,6 @@ pub(crate) struct Settings {
 }
 
 impl Settings {
-    pub(crate) fn notification_options(&self) -> NotificationOptions {
-        NotificationOptions {
-            show_countdown: self.notification_show_countdown,
-            timeout_seconds: self.notification_timeout_seconds,
-        }
-    }
-
     pub(crate) fn tool_limits(&self) -> ToolLimits {
         ToolLimits {
             read_max_bytes: self.read_max_bytes,

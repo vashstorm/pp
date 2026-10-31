@@ -49,6 +49,7 @@ pub(super) struct Panel {
     reset_selection: bool,
     dirty: bool,
     error: Option<String>,
+    feedback: Option<String>,
 }
 
 impl Panel {
@@ -69,6 +70,7 @@ impl Panel {
             reset_selection: true,
             dirty: false,
             error: None,
+            feedback: None,
         }
     }
 
@@ -84,6 +86,7 @@ impl Panel {
         self.request_id = self.request_id.wrapping_add(1);
         self.pending = true;
         self.error = None;
+        self.feedback = None;
         (self.request_id, self.scope(), self.query.clone())
     }
 
@@ -147,7 +150,12 @@ impl Panel {
         true
     }
 
+    pub(super) fn set_feedback(&mut self, message: String) {
+        self.feedback = Some(super::display_text(&message).into_owned());
+    }
+
     pub(super) fn restore_started(&mut self) {
+        self.feedback = None;
         self.phase = Phase::Restoring;
     }
     pub(super) fn restore_failed(&mut self) {
@@ -186,6 +194,7 @@ impl Panel {
         if let Some(session) = self.sessions.get(self.selected)
             && Some(session.id.as_str()) != self.current_id.as_deref()
         {
+            self.feedback = None;
             self.phase = Phase::ConfirmDelete(self.selected);
         }
     }
@@ -315,8 +324,10 @@ impl Panel {
         };
         frame.render_widget(
             Line::styled(
-                hint,
-                Style::default().fg(if matches!(self.phase, Phase::ConfirmDelete(_)) {
+                self.feedback.as_deref().unwrap_or(hint),
+                Style::default().fg(if self.feedback.is_some() {
+                    super::transcript_style::ERROR_BORDER
+                } else if matches!(self.phase, Phase::ConfirmDelete(_)) {
                     ACCENT
                 } else {
                     MUTED
@@ -619,6 +630,12 @@ mod tests {
         panel.key(key(KeyCode::Delete));
         assert!(matches!(panel.phase, Phase::Ready), "不能删除当前会话");
         panel.key(key(KeyCode::Down));
+        panel.set_feedback("Previous restore failed".into());
+        assert!(
+            render(&mut panel, 100, 20)
+                .0
+                .contains("Previous restore failed")
+        );
         panel.key(key(KeyCode::Delete));
         assert!(
             render(&mut panel, 100, 20)

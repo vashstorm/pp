@@ -66,7 +66,5 @@ fn roles_saved_snapshot_updates_preferences_only_and_failure_keeps_previous_role
     app.receive();
     assert_eq!(app.model_roles[&ModelRole::Fast], assignment);
     assert!(!app.roles_panel.as_ref().unwrap().busy);
-    app.notifications
-        .tick(Instant::now() + Duration::from_millis(200));
     assert!(draw(&mut app, 130, 30).contains("role-save-failed"));
 }

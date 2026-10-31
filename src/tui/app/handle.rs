@@ -1,7 +1,7 @@
 use crate::tui::{
     App, CancellationToken, CursorMove, Event, FUNCTION_MODIFIER, Instant, KeyCode, KeyEventKind,
-    KeyModifiers, Level, MOUSE_SCROLL_LINES, MenuAction, MenuEvent, MouseAction, MouseEventKind,
-    PendingKind, State, WorkerCommand, editor, plan, sessions, skills, tree,
+    KeyModifiers, Level, MOUSE_SCROLL_LINES, MenuAction, MenuEvent, MouseEventKind, PendingKind,
+    State, WorkerCommand, editor, plan, sessions, skills, tree,
 };
 
 impl App {
@@ -77,14 +77,6 @@ impl App {
             }
             *dirty = true;
             return false;
-        }
-        if let Event::Mouse(mouse) = event {
-            let (changed, action) = self.notifications.mouse(mouse, Instant::now());
-            *dirty |= changed;
-            match action {
-                MouseAction::Consumed => return false,
-                MouseAction::Ignored => {}
-            }
         }
         match event {
             Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {

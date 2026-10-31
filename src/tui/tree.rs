@@ -28,6 +28,7 @@ pub(super) struct Panel {
     reveal: bool,
     pub pending: bool,
     loading: bool,
+    error: Option<String>,
 }
 
 impl Panel {
@@ -42,7 +43,12 @@ impl Panel {
             reveal: true,
             pending: false,
             loading: true,
+            error: None,
         }
+    }
+
+    pub(super) fn set_error(&mut self, message: String) {
+        self.error = Some(super::display_text(&message).into_owned());
     }
 
     pub fn is_loading(&self) -> bool {
@@ -191,7 +197,9 @@ impl Panel {
     }
 
     pub fn draw_status(&self, frame: &mut Frame, area: Rect) {
-        let status = if self.loading {
+        let status = if let Some(error) = &self.error {
+            error.clone()
+        } else if self.loading {
             "Loading session tree…".into()
         } else if self.pending {
             "Rewinding conversation…".into()
@@ -205,7 +213,17 @@ impl Panel {
                 self.visible.len()
             )
         };
-        frame.render_widget(Line::styled(status, Style::default().fg(MUTED)), area);
+        frame.render_widget(
+            Line::styled(
+                status,
+                Style::default().fg(if self.error.is_some() {
+                    super::transcript_style::ERROR_BORDER
+                } else {
+                    MUTED
+                }),
+            ),
+            area,
+        );
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {

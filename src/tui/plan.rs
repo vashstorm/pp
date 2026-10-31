@@ -105,6 +105,7 @@ struct BodyLayout {
 pub(super) struct Panel {
     document: PlanDocument,
     report: Option<PlanReviewReport>,
+    error: Option<String>,
     token: Option<ReviewToken>,
     tab: Tab,
     focus: Focus,
@@ -135,6 +136,7 @@ impl Panel {
         Self {
             document,
             report: None,
+            error: None,
             token: None,
             tab: Tab::Plan,
             focus: Focus::Body,
@@ -146,6 +148,21 @@ impl Panel {
             toc_viewport: 0,
             discussion: None,
             viewport: 0,
+        }
+    }
+
+    pub(super) fn set_error(&mut self, message: String) {
+        self.error = Some(super::display_text(&message).into_owned());
+    }
+
+    fn hint(&self, fallback: &str) -> Line<'static> {
+        if let Some(error) = &self.error {
+            Line::styled(
+                error.rsplit(": ").next().unwrap_or(error).to_owned(),
+                Style::default().fg(super::transcript_style::ERROR_BORDER),
+            )
+        } else {
+            Line::styled(format!(" {fallback}"), Style::default().fg(MUTED))
         }
     }
 
@@ -699,10 +716,7 @@ impl Panel {
         }
 
         if footer_height > 0 {
-            frame.render_widget(
-                Line::styled(format!(" {READONLY_HINT}"), Style::default().fg(MUTED)),
-                footer,
-            );
+            frame.render_widget(self.hint(READONLY_HINT), footer);
         }
         if actions_height > 0 {
             self.draw_actions(frame, actions_area);
@@ -820,7 +834,7 @@ impl Panel {
         }
         if show_hint {
             frame.render_widget(
-                Line::styled(format!(" {HINT}"), Style::default().fg(DIM)),
+                self.hint(HINT),
                 Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
             );
         }

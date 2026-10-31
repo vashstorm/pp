@@ -472,6 +472,7 @@ mod tests {
         let worker = Worker::start().unwrap();
         let pause = worker.pause();
         let mut app = crate::tui::App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
+        app.conversation = app.conversation.fresh();
         app.state = crate::tui::State::Running;
         app.show_welcome = false;
         app.native_render = true;

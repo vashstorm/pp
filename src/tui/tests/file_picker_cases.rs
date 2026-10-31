@@ -8,7 +8,6 @@ fn file_picker_activation_filters_without_rescanning() {
         crate::skills::Skills::default().shared(),
         commands::FileCommands::default(),
         dir.path(),
-        NotificationOptions::default(),
         None,
     )
     .unwrap();

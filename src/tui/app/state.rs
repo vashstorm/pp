@@ -13,7 +13,30 @@ impl App {
     }
 
     pub(in crate::tui) fn notify(&mut self, level: Level, message: String) {
-        self.notifications.show(level, message, Instant::now());
+        if level != Level::Error || message.trim().is_empty() {
+            return;
+        }
+        self.show_welcome = false;
+        self.conversation.append_error(&message);
+        if let Some(review) = &mut self.review_transcript {
+            review.append_error(&message);
+        }
+        // 全屏面板继续保留草稿和选择，只在已有提示区反馈失败。
+        if let Some(panel) = &mut self.session_panel {
+            panel.set_feedback(message.clone());
+        }
+        if let Some(panel) = &mut self.tree_panel {
+            panel.set_error(message.clone());
+        }
+        if let Some(panel) = &mut self.roles_panel {
+            panel.runtime_status(message.clone());
+        }
+        if let Some(panel) = &mut self.plan_panel {
+            panel.set_error(message.clone());
+        }
+        if let Some(panel) = &mut self.skill_panel {
+            panel.set_error(message);
+        }
     }
 
     pub(in crate::tui) fn append(&mut self, label: &str, text: &str) {

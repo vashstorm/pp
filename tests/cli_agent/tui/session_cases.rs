@@ -9,13 +9,11 @@ fn tui_session_resume_replays_history_without_request() {
         let path = api_path(protocol);
 
         let mut pty = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
-        pty.wait_for("恢复的对话与绿色恢复提示弹窗", |screen| {
+        pty.wait_for("恢复的对话且没有常规提醒", |screen| {
             let text = screen.contents();
             text.contains("remember tui-marker")
                 && text.contains("tui-remembered")
-                && notification_bounds(screen, "Note", vt100::Color::Rgb(127, 166, 106)).is_some()
-                && text.contains("Resumed session:")
-                && text.split_whitespace().collect::<String>().contains(&id)
+                && !text.contains("Resumed session:")
         });
         // 无欢迎页；工具卡片重放保存的退出状态，不伪造 wall duration。
         let text = pty.parser.screen().contents();

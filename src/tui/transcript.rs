@@ -68,6 +68,7 @@ pub(super) enum EntryKind {
     Diff,
     Ask,
     Data,
+    Error,
     Activity,
 }
 
@@ -282,6 +283,20 @@ impl Transcript {
             .push(TranscriptEntry::new(kind, title, text.into(), None));
     }
 
+    /// 本地错误仅进入可见历史，不生成模型消息或持久事件。
+    pub(super) fn append_error(&mut self, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        self.read_groups_key = None;
+        self.entries.push(TranscriptEntry::new(
+            EntryKind::Error,
+            "Error".into(),
+            text.into(),
+            None,
+        ));
+    }
+
     pub(super) fn append_tips(&mut self) {
         let mut entry =
             TranscriptEntry::new(EntryKind::Data, String::new(), crate::tips::text(), None);
@@ -358,12 +373,11 @@ impl Transcript {
         activity.entry.layout = None;
     }
 
-    /// 按日志顺序恢复可见对话，并返回最后一条错误供弹窗展示。
+    /// 按日志顺序恢复可见对话，仅报告未完成请求，不重放旧错误提醒。
     /// 输入回忆是独立持久数据：回放只重建可见正文，不生成输入记录。
     pub(super) fn replay(&mut self, records: Vec<ReplayRecord>) -> Option<String> {
         self.replaying = true;
         let mut assistant_running = false;
-        let mut last_error = None;
         for record in records {
             match record {
                 ReplayRecord::User(text) => self.append("You", &text),
@@ -375,24 +389,22 @@ impl Transcript {
                     }
                     self.progress(event);
                 }
-                ReplayRecord::Error(message) => {
+                ReplayRecord::Error(_message) => {
                     assistant_running = false;
                     self.fail();
-                    last_error = Some(message);
                 }
                 ReplayRecord::Cancelled => {
                     self.cancel();
                     assistant_running = false;
-                    last_error = None;
                 }
             }
         }
         self.replaying = false;
         if assistant_running || self.assistant.is_some() || !self.running_tools.is_empty() {
             self.fail();
-            last_error = Some("Previous request was interrupted.".into());
+            return Some("Previous request was interrupted.".into());
         }
-        last_error
+        None
     }
 
     pub(super) fn append_tree_node(

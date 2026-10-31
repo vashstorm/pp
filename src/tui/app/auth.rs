@@ -28,7 +28,7 @@ impl App {
         self.menu = None;
         self.file_query = None;
         self.menu_dismissed = true;
-        self.notifications.clear();
+
         self.auth_panel = Some(auth::Panel::new(logout));
         self.request_auth(Request::List);
         true
