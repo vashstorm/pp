@@ -194,6 +194,7 @@ fn completed_turn_uses_worker_timing_and_preserves_draft() {
         let expected = format!("✻ Completed · {duration} · done 19:06");
         let screen = draw(&mut app, 100, 30);
         assert!(screen.contains(&expected), "{screen}");
+        assert_eq!(app.conversation.task_duration().as_deref(), Some(duration));
         assert_eq!(screen.matches("Completed ·").count(), 1);
         assert!(screen.find("finished answer").unwrap() < screen.find(&expected).unwrap());
         assert!(matches!(app.state, State::Ready));
@@ -217,10 +218,15 @@ fn cancelled_and_failed_turns_have_no_completion_summary() {
         let (events, receiver) = mpsc::channel();
         app.events = Some(receiver);
         events
-            .send(WorkerEvent::completed(Instant::now(), result))
+            .send(WorkerEvent::Completed {
+                result,
+                elapsed: Duration::from_secs(65),
+                finished_at: chrono::Local::now(),
+            })
             .unwrap();
         app.receive();
         assert!(!draw(&mut app, 100, 30).contains("Completed ·"));
+        assert_eq!(app.conversation.task_duration().as_deref(), Some("1m 5s"));
     }
 }
 
@@ -261,7 +267,7 @@ fn task_cancel_waits_for_completed_and_preserves_editable_draft() {
     assert_eq!(app.input_history, history);
     assert!(matches!(app.state, State::Cancelling));
     let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("ESC Cancelling"));
+    assert!(screen.contains("\u{f12b7} Cancelling"));
     assert_eq!(screen.matches("Cancelling").count(), 1);
     assert!(screen.contains("secondary intact"));
     app.handle(Event::Paste("新".into()), &mut dirty);

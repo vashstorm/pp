@@ -391,7 +391,7 @@ impl App {
                 Style::default().fg(color),
             ));
         }
-        if let Some(elapsed) = self.conversation.running_duration() {
+        if let Some(elapsed) = self.conversation.task_duration() {
             let text = if fields.is_empty() {
                 format!(" {elapsed} ")
             } else {

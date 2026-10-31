@@ -311,11 +311,15 @@ impl Transcript {
         self.activity = Some(Activity::new(Instant::now()));
     }
 
-    pub(super) fn running_duration(&self) -> Option<String> {
-        self.activity
-            .as_ref()
-            .filter(|activity| activity.running)
-            .map(|activity| Activity::format_duration(activity.run_seconds))
+    pub(super) fn task_duration(&self) -> Option<String> {
+        self.activity.as_ref().and_then(|activity| {
+            let seconds = if activity.running {
+                Some(activity.run_seconds)
+            } else {
+                activity.seconds
+            };
+            seconds.map(Activity::format_duration)
+        })
     }
 
     pub(super) fn tick(&mut self, now: Instant) -> bool {

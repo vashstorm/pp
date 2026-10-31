@@ -9,10 +9,10 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
     for turn in 1..=2 {
         pty.input(&format!("task {turn}\r"));
         let (request, _) = pty.request(&server);
-        pty.text("ESC Requesting model");
+        pty.text("\u{f12b7} Requesting model");
         let letter_color = |screen: &vt100::Screen, offset| {
-            let (row, column) = context_tui_locate(screen, "ESC Requesting model").unwrap();
-            screen.cell(row, column + 4 + offset).unwrap().fgcolor()
+            let (row, column) = context_tui_locate(screen, "\u{f12b7} Requesting model").unwrap();
+            screen.cell(row, column + 2 + offset).unwrap().fgcolor()
         };
         pty.wait_for("扫光到达首字", |screen| {
             letter_color(screen, 0) == vt100::Color::Rgb(254, 188, 56)
@@ -31,8 +31,8 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
         );
         pty.wait_for("等待网络时秒表持续更新", |screen| {
             let text = screen.contents();
-            text.contains("ESC Requesting model")
-                && text.matches("ESC ").count() == 1
+            text.contains("\u{f12b7} Requesting model")
+                && text.matches("\u{f12b7} ").count() == 1
                 && text.lines().any(|line| {
                     line.contains("Ctx ") && line.contains(" · ") && line.trim_end().ends_with('s')
                 })
@@ -53,11 +53,27 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
         });
         let text = pty.parser.screen().contents();
         assert!(text.find(&format!("answer {turn}")).unwrap() < text.find('✻').unwrap());
+        let duration = text
+            .split_once("✻ Completed · ")
+            .unwrap()
+            .1
+            .split_once(" · done ")
+            .unwrap()
+            .0;
+        assert!(
+            text.lines().any(|line| {
+                line.contains("Ctx ") && line.trim_end().ends_with(&format!("· {duration}"))
+            }),
+            "完成后 statusline 必须保留最终耗时：{text}"
+        );
     }
     pty.input("/new\r");
     pty.wait_for("新会话清空完成提示", |screen| {
         input_is_ready(screen) && !screen.contents().contains("Completed ·")
     });
+    let text = pty.parser.screen().contents();
+    let context = text.lines().find(|line| line.contains("Ctx ")).unwrap();
+    assert!(!context.split_once("Ctx ").unwrap().1.contains('·'));
     pty.input("\x03");
     pty.finish();
     no_more(&server);

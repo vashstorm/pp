@@ -139,7 +139,7 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         let mut stream = SseReply::new(request);
         streaming_delta(&mut stream, protocol, "first-中");
         pty.text("first-中");
-        pty.text("ESC Responding");
+        pty.text("\u{f12b7} Responding");
         pty.drain();
         assert!(input_is_ready(pty.parser.screen()));
         assert!(!pty.parser.screen().contents().contains("-last"));
@@ -228,8 +228,11 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         pty.drain();
         assert!(input_is_ready(pty.parser.screen()));
         assert!(!pty.parser.screen().contents().contains("out-firstout-last"));
-        pty.text("ESC Running bash");
-        assert_eq!(pty.parser.screen().contents().matches("ESC ").count(), 1);
+        pty.text("\u{f12b7} Running bash");
+        assert_eq!(
+            pty.parser.screen().contents().matches("\u{f12b7} ").count(),
+            1
+        );
         no_more(&server);
         std::fs::write(dir.path().join("release"), "").unwrap();
         let (request, body) = receive_at(&server, path);

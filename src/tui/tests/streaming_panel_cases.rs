@@ -263,8 +263,17 @@ fn activity_duration_follows_context_and_yields_space_on_narrow_screens() {
     let narrow = render_status(&app, 20);
     assert!(narrow.trim_end().ends_with("Ctx 100/40.0k"), "{narrow}");
     assert!(!narrow.contains("1m") && !narrow.contains("25s"));
-    app.conversation.cancel();
-    assert!(!render_status(&app, 100).contains("25s"));
+    app.conversation
+        .finish_run("Completed", Duration::from_secs(85), chrono::Local::now());
+    assert!(
+        !app.conversation
+            .tick(Instant::now() + Duration::from_secs(3600))
+    );
+    assert!(
+        render_status(&app, 100)
+            .trim_end()
+            .ends_with("Ctx 100/40.0k · 1m 25s")
+    );
     app.conversation.begin_run();
     assert!(
         render_status(&app, 100)

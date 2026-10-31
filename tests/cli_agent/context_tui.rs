@@ -1236,7 +1236,7 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
                 let lines: Vec<&str> = contents.lines().collect();
                 lines.windows(2).any(|pair| {
                     pair[0].contains(" Ctx ")
-                        && pair[0].trim_end().ends_with("/40.0k")
+                        && pair[0].trim_end().ends_with(if columns == 20 { "/40.0k" } else { "s" })
                         && pair[1].starts_with('❯')
                 })
             });

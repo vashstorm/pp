@@ -1069,9 +1069,9 @@ impl Activity {
     pub(super) fn refresh(&mut self) {
         self.entry.text = if self.running {
             if self.waiting_started.is_some() {
-                format!("ESC {} · {}", self.label, self.duration_text())
+                format!("\u{f12b7} {} · {}", self.label, self.duration_text())
             } else {
-                format!("ESC {}", self.label)
+                format!("\u{f12b7} {}", self.label)
             }
         } else {
             format!("✻ {} · {}", self.label, self.duration_text())
@@ -1081,12 +1081,15 @@ impl Activity {
 
     pub(super) fn sweep_line(text: &str, frame: u128) -> Line<'static> {
         let base = Style::default().fg(palette::DIM);
-        let label = text.strip_prefix("ESC ").unwrap_or(text);
+        let label = text.strip_prefix("\u{f12b7} ").unwrap_or(text);
         let line = Line::raw(label);
         let graphemes: Vec<_> = line.styled_graphemes(base).collect();
         // 金色光带从首字移至末字，尾部留出短暂停顿后重新开始。
         let head = (frame % (graphemes.len() as u128 + 8)) as usize;
-        let mut spans = vec![Span::styled("ESC ", base.add_modifier(Modifier::BOLD))];
+        let mut spans = vec![Span::styled(
+            "\u{f12b7} ",
+            base.add_modifier(Modifier::BOLD),
+        )];
         spans.extend(graphemes.into_iter().enumerate().map(|(index, grapheme)| {
             let color = match index.abs_diff(head) {
                 0 | 1 => palette::ACCENT,
