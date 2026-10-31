@@ -143,16 +143,16 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
         {
             let screen = pty.parser.screen();
             for (label, color) in [
-                ("● Read", vt100::Color::Rgb(248, 248, 243)),
+                ("● Read", vt100::Color::Rgb(145, 183, 218)),
                 ("(2)", vt100::Color::Rgb(96, 102, 114)),
                 ("├─", vt100::Color::Rgb(96, 102, 114)),
-                ("one:1-20", vt100::Color::Rgb(244, 191, 84)),
-                ("two:2-20", vt100::Color::Rgb(244, 191, 84)),
+                ("one:1-20", vt100::Color::Rgb(190, 198, 212)),
+                ("two:2-20", vt100::Color::Rgb(190, 198, 212)),
             ] {
                 let (row, col) = ask_panel_find(screen, label);
                 let cell = screen.cell(row, col).unwrap();
                 assert_eq!(cell.fgcolor(), color, "{label}");
-                assert_eq!(cell.bgcolor(), vt100::Color::Rgb(40, 42, 53), "{label}");
+                assert_eq!(cell.bgcolor(), vt100::Color::Rgb(22, 26, 31), "{label}");
                 assert!(!cell.bold(), "{label}");
             }
             assert!(!screen.contents().contains(" · ok"));

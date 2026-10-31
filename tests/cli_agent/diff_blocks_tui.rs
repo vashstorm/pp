@@ -152,7 +152,7 @@ fn transcript_blocks_diff_replace_edit_and_write_cards() {
                 && text.contains("   2│keep")
                 && diff_blocks_screen_colored(screen, "old", DIFF_BLOCKS_REMOVED)
                 && diff_blocks_screen_colored(screen, "new", DIFF_BLOCKS_ADDED)
-                && diff_blocks_screen_colored(screen, "Edit:", vt100::Color::Rgb(244, 191, 84))
+                && diff_blocks_screen_colored(screen, "Edit:", vt100::Color::Rgb(212, 180, 131))
         });
         assert_eq!(
             std::fs::read_to_string(project.path().join("demo.txt")).unwrap(),

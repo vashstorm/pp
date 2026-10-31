@@ -85,7 +85,15 @@ fn instruction_cards_match_reference_layout_and_colors() {
         assert!(!text.contains("hidden line"), "{text}");
         assert_eq!(buffer[(0, 0)].fg, palette::READ_BORDER);
         assert_eq!(buffer[(3, 0)].fg, palette::ADDED);
-        assert_eq!(buffer[(5, 0)].fg, palette::READ_TEXT);
+        assert_eq!(
+            buffer[(5, 0)].fg,
+            if skill {
+                palette::SKILL_TITLE
+            } else {
+                palette::READ_TITLE
+            }
+        );
+        assert_eq!(buffer[(10, 0)].fg, palette::READ_TEXT);
         let cell = |needle: &str| {
             let row = text.lines().position(|line| line.contains(needle)).unwrap() as u16;
             &buffer[(2, row)]

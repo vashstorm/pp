@@ -400,7 +400,7 @@ fn grep_reference_layout_colors_and_replay() {
         assert!(text.contains("   *634│ function formatSummary() {"));
         assert!(!text.contains("abc123") && !text.contains(" · ok"));
         assert_eq!(buffer[(0, 0)].fg, palette::GREP_BORDER);
-        assert_eq!(buffer[(2, 1)].fg, palette::GREP_TITLE);
+        assert_eq!(buffer[(2, 1)].fg, palette::SEARCH_TITLE);
         assert_eq!(buffer[(10, 1)].fg, palette::GREP_TEXT);
         assert_eq!(buffer[(2, 2)].fg, palette::GREP_META);
         assert_eq!(buffer[(2, 3)].fg, palette::GREP_TITLE);
@@ -571,8 +571,22 @@ fn streaming_category_colors_and_statuses_preserve_default_body() {
         transcript.entries.push(entry);
         let buffer = render(&mut transcript, 60, 8);
         assert_eq!(buffer[(0, 0)].symbol(), "│");
-        assert_eq!(buffer[(0, 0)].fg, kind.color());
-        assert_eq!(buffer[(2, 0)].fg, kind.color());
+        assert_eq!(
+            buffer[(0, 0)].fg,
+            if tool {
+                palette::TOOL_BORDER
+            } else {
+                kind.color()
+            }
+        );
+        assert_eq!(
+            buffer[(2, 0)].fg,
+            if tool {
+                palette::ACTIVITY
+            } else {
+                kind.color()
+            }
+        );
         assert!(buffer[(2, 0)].modifier.contains(Modifier::BOLD));
         assert_eq!(buffer[(4, 1)].fg, Color::Reset);
         if tool {
@@ -824,7 +838,7 @@ fn bash_card_and_thinking_match_reference_and_keep_full_output() {
     }
     assert!(!text.contains("line-00"));
     assert_eq!(buffer[(0, 0)].fg, BASH_BORDER);
-    assert_eq!(buffer[(2, 1)].fg, palette::ADDED);
+    assert_eq!(buffer[(2, 1)].fg, palette::SHELL_TITLE);
     assert_eq!(buffer[(4, 1)].fg, palette::TOOL_COMMAND);
     assert!(text.contains("Bash · done"));
     assert_eq!(buffer[(2, 1)].bg, BASH_BACKGROUND);

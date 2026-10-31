@@ -51,8 +51,8 @@ pub(super) struct NativeBatch {
     pub rows: Vec<Vec<ratatui::buffer::Cell>>,
 }
 
-const BASH_BACKGROUND: Color = Color::Rgb(22, 27, 33);
-const BASH_BORDER: Color = Color::Rgb(76, 85, 98);
+const BASH_BACKGROUND: Color = palette::TOOL_BG;
+const BASH_BORDER: Color = palette::TOOL_BORDER;
 const MUTED_TEXT: Color = Color::Rgb(110, 117, 129);
 const USER_BACKGROUND: Color = Color::Rgb(48, 42, 63);
 const ASSISTANT_BACKGROUND: Color = Color::Rgb(35, 39, 50);

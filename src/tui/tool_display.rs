@@ -169,7 +169,7 @@ pub(super) fn grep_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     let mut spans = vec![
         Span::styled(
             format!("{} Grep: ", palette::tool_icon("grep")),
-            text.fg(palette::GREP_TITLE),
+            text.fg(palette::tool_accent("grep")),
         ),
         Span::styled(pattern, text),
     ];
@@ -235,7 +235,7 @@ pub(super) fn glob_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
         Line::from(vec![
             Span::styled(
                 format!("{} Glob: ", palette::tool_icon("glob")),
-                style.fg(palette::GREP_TITLE),
+                style.fg(palette::tool_accent("glob")),
             ),
             Span::styled(
                 view.arguments["path"].as_str().unwrap_or(".").to_owned(),

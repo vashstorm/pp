@@ -11,29 +11,39 @@ pub(super) const LINK: Color = Color::Rgb(0, 136, 250);
 pub(super) const ADDED: Color = Color::Rgb(137, 210, 129);
 pub(super) const ERROR_BORDER: Color = Color::Rgb(224, 108, 117);
 pub(super) const REMOVED: Color = Color::Rgb(252, 58, 75);
+// 工具共享中性底色与边框；主题色只用于名称、图标等少量标识。
+pub(super) const TOOL_BG: Color = Color::Rgb(22, 26, 31);
+pub(super) const TOOL_BORDER: Color = Color::Rgb(65, 72, 83);
+pub(super) const READ_TITLE: Color = Color::Rgb(145, 183, 218);
+pub(super) const SEARCH_TITLE: Color = Color::Rgb(131, 184, 172);
+pub(super) const GLOB_TITLE: Color = Color::Rgb(156, 185, 201);
+pub(super) const WRITE_TITLE: Color = Color::Rgb(165, 189, 143);
+pub(super) const SHELL_TITLE: Color = Color::Rgb(197, 187, 139);
+pub(super) const SKILL_TITLE: Color = Color::Rgb(182, 160, 210);
+pub(super) const MCP_TITLE: Color = Color::Rgb(194, 158, 175);
 pub(super) const TOOL_PENDING_BG: Color = Color::Rgb(29, 33, 41);
 pub(super) const TOOL_SUCCESS_BG: Color = Color::Rgb(22, 26, 31);
 pub(super) const TOOL_ERROR_BG: Color = Color::Rgb(41, 29, 29);
 pub(super) const ASK_BG: Color = Color::Rgb(40, 42, 54);
 pub(super) const ASK_BORDER: Color = Color::Rgb(39, 135, 165);
 pub(super) const ASK_TAB_BG: Color = Color::Rgb(60, 63, 75);
-pub(super) const READ_BG: Color = Color::Rgb(22, 26, 31);
-pub(super) const READ_BORDER: Color = Color::Rgb(76, 85, 98);
+pub(super) const READ_BG: Color = TOOL_BG;
+pub(super) const READ_BORDER: Color = TOOL_BORDER;
 pub(super) const READ_TEXT: Color = Color::Rgb(190, 190, 185);
 pub(super) const READ_ACCENT: Color = Color::Rgb(204, 153, 51);
-pub(super) const READ_SUMMARY_BG: Color = Color::Rgb(40, 42, 53);
-pub(super) const READ_SUMMARY_TITLE: Color = Color::Rgb(248, 248, 243);
-pub(super) const READ_SUMMARY_PATH: Color = Color::Rgb(244, 191, 84);
+pub(super) const READ_SUMMARY_BG: Color = TOOL_BG;
+pub(super) const READ_SUMMARY_TITLE: Color = READ_TITLE;
+pub(super) const READ_SUMMARY_PATH: Color = ACTIVITY;
 pub(super) const READ_SUMMARY_META: Color = Color::Rgb(96, 102, 114);
-pub(super) const GREP_BG: Color = Color::Rgb(22, 26, 31);
-pub(super) const GREP_BORDER: Color = Color::Rgb(62, 76, 88);
+pub(super) const GREP_BG: Color = TOOL_BG;
+pub(super) const GREP_BORDER: Color = TOOL_BORDER;
 pub(super) const GREP_TITLE: Color = Color::Rgb(156, 220, 254);
 pub(super) const GREP_TEXT: Color = Color::Rgb(190, 198, 212);
 pub(super) const GREP_META: Color = Color::Rgb(119, 125, 136);
 pub(super) const TOOL_COMMAND: Color = Color::Rgb(220, 226, 235);
-pub(super) const EDIT_BG: Color = Color::Rgb(23, 26, 31);
-pub(super) const EDIT_BORDER: Color = Color::Rgb(62, 66, 73);
-pub(super) const EDIT_TITLE: Color = Color::Rgb(244, 191, 84);
+pub(super) const EDIT_BG: Color = TOOL_BG;
+pub(super) const EDIT_BORDER: Color = TOOL_BORDER;
+pub(super) const EDIT_TITLE: Color = Color::Rgb(212, 180, 131);
 pub(super) const EDIT_TEXT: Color = Color::Rgb(248, 248, 243);
 pub(super) const EDIT_META: Color = Color::Rgb(120, 125, 135);
 pub(super) const EDIT_ADDED: Color = Color::Rgb(153, 208, 137);
@@ -48,6 +58,21 @@ pub(super) const SYNTAX_COMMENT: Color = Color::Rgb(106, 153, 85);
 pub(super) const SYNTAX_FUNCTION: Color = Color::Rgb(220, 220, 170);
 pub(super) const SYNTAX_CONSTANT: Color = Color::Rgb(79, 193, 255);
 pub(super) const SYNTAX_TAG: Color = Color::Rgb(86, 156, 214);
+
+pub(super) fn tool_accent(name: &str) -> Color {
+    match name {
+        "read" => READ_TITLE,
+        "grep" | "plan_search" => SEARCH_TITLE,
+        "find" | "glob" | "plan_find" => GLOB_TITLE,
+        "edit" => EDIT_TITLE,
+        "write" => WRITE_TITLE,
+        "bash" | "bash_task" => SHELL_TITLE,
+        "ask" => Color::Rgb(140, 191, 195),
+        "todo" | "plan_write" | "plan_submit" => Color::Rgb(168, 173, 208),
+        name if name.starts_with("mcp__") => MCP_TITLE,
+        _ => ACTIVITY,
+    }
+}
 
 // 统一使用 Nerd Font Font Awesome 单列字形；加一列空白为图标预留两列。
 pub(super) fn tool_icon(name: &str) -> &'static str {

@@ -293,7 +293,7 @@ impl Transcript {
                             ratatui::text::Line::from(vec![
                                 Span::styled(
                                     format!(" {title} "),
-                                    Style::default().fg(palette::GREP_TITLE).bg(card_bg),
+                                    Style::default().fg(entry.tool_accent()).bg(card_bg),
                                 ),
                                 Span::styled(
                                     format!("· {status} "),
@@ -339,7 +339,12 @@ impl Transcript {
                         && entry.kind != EntryKind::Activity
                         && background.is_none()
                     {
-                        Span::styled("│", Style::default().fg(entry.kind.color()))
+                        let color = if entry.tool.is_some() {
+                            palette::TOOL_BORDER
+                        } else {
+                            entry.kind.color()
+                        };
+                        Span::styled("│", Style::default().fg(color))
                             .render(Rect::new(area.x, row, 1, 1), buffer);
                     }
                 }

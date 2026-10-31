@@ -176,6 +176,31 @@ impl AskBlock {
 }
 
 impl TranscriptEntry {
+    pub(super) fn tool_accent(&self) -> Color {
+        if self.tool.as_deref() == Some("read")
+            && tool_display::is_skill_read(&self.arguments, self.result.as_ref())
+        {
+            palette::SKILL_TITLE
+        } else {
+            palette::tool_accent(self.tool.as_deref().unwrap_or_default())
+        }
+    }
+
+    fn tool_title(&self, text: &str) -> Line<'static> {
+        let (label, detail) = text
+            .find(" · ")
+            .map_or((text, ""), |end| text.split_at(end));
+        Line::from(vec![
+            Span::styled(
+                label.to_owned(),
+                Style::default()
+                    .fg(self.tool_accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(detail.to_owned(), Style::default().fg(palette::ACTIVITY)),
+        ])
+    }
+
     pub(super) fn is_collapsible_tool(&self) -> bool {
         self.tool.is_some() && self.kind != EntryKind::Ask
     }
@@ -296,7 +321,10 @@ impl TranscriptEntry {
                 },
                 meta,
             ),
-            Span::styled(palette::display_text(path).into_owned(), style),
+            Span::styled(
+                palette::display_text(path).into_owned(),
+                style.fg(palette::ACTIVITY),
+            ),
         ];
         if let EntryBody::Diff(FileDiff::Text { added, removed, .. }) = &self.body {
             spans.extend([
@@ -401,22 +429,46 @@ impl TranscriptEntry {
                 };
                 spans.push(Span::styled(" · ", Style::default().fg(color)));
             }
-            spans.push(Span::styled(text, Style::default().fg(palette::READ_TEXT)));
+            if range.start == 0 {
+                let (label, path) = text
+                    .find(' ')
+                    .map_or((text.as_ref(), ""), |end| text.split_at(end));
+                spans.push(Span::styled(
+                    label.to_owned(),
+                    Style::default()
+                        .fg(self.tool_accent())
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    path.to_owned(),
+                    Style::default().fg(palette::READ_TEXT),
+                ));
+            } else {
+                spans.push(Span::styled(text, Style::default().fg(palette::READ_TEXT)));
+            }
             spans.push(Span::raw(" "));
             return Line::from(spans).style(Style::default().bg(palette::READ_BG));
         }
         if matches!(source, Source::Title) {
-            let mut spans = vec![Span::styled(
-                text,
-                Style::default()
-                    .fg(self.kind.color())
-                    .add_modifier(Modifier::BOLD),
-            )];
+            let mut spans = if self.tool.is_some() {
+                if range.start == 0 {
+                    self.tool_title(text.as_ref()).spans
+                } else {
+                    vec![Span::styled(text, Style::default().fg(palette::ACTIVITY))]
+                }
+            } else {
+                vec![Span::styled(
+                    text,
+                    Style::default()
+                        .fg(self.kind.color())
+                        .add_modifier(Modifier::BOLD),
+                )]
+            };
             if self.tool.is_some() && title_end && self.display_title.is_none() {
                 let (status, color) = match self.status {
-                    EntryStatus::Running => (" · running", Color::Yellow),
-                    EntryStatus::Complete => (" · ok", Color::Green),
-                    EntryStatus::Failed => (" · failed", Color::Red),
+                    EntryStatus::Running => (" · running", palette::ACCENT),
+                    EntryStatus::Complete => (" · ok", palette::ADDED),
+                    EntryStatus::Failed => (" · failed", palette::REMOVED),
                 };
                 spans.push(Span::styled(status, Style::default().fg(color)));
             }
@@ -561,15 +613,11 @@ impl TranscriptEntry {
                 EntryStatus::Complete => ("ok", palette::ADDED),
                 EntryStatus::Failed => ("failed", palette::REMOVED),
             };
-            let header = Line::from(vec![
-                Span::styled(
-                    self.title.clone(),
-                    Style::default()
-                        .fg(palette::ACCENT)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!(" · {status}"), Style::default().fg(color)),
-            ]);
+            let mut header = self.tool_title(&self.title);
+            header.spans.push(Span::styled(
+                format!(" · {status}"),
+                Style::default().fg(color),
+            ));
             lines.extend(
                 wrap_block(header, width, "")
                     .into_iter()
@@ -600,7 +648,7 @@ impl TranscriptEntry {
                     .flat_map(|command| {
                         let line = if let Some(text) = command.strip_prefix("$ ") {
                             Line::from(vec![
-                                Span::styled("$ ", style.fg(palette::ADDED)),
+                                Span::styled("$ ", style.fg(self.tool_accent())),
                                 Span::styled(text.to_owned(), style),
                             ])
                             .style(style)
