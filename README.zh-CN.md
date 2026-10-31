@@ -216,4 +216,4 @@ cargo fmt --check
 
 ## 子 Agent
 
-使用 `/agents` 查看角色，`/subagents` 查看状态、历史、消耗并追问、取消或恢复任务。支持批量异步派发、独立上下文、两层递归、结构化结果及可选 worktree 隔离，子任务沿用父审批规则。详见[子 Agent 使用说明](docs/subagents.md)。
+使用 `/agents` 查看角色，`/subagents`（或 `Alt+A`）打开 Agent Hub，查看 Agents、完整 Activity、消耗与独立详情，并追问、取消或恢复任务。支持批量异步派发、独立上下文、两层递归、结构化结果及可选 worktree 隔离，子任务沿用父审批规则。详见[子 Agent 使用说明](docs/subagents.md)。

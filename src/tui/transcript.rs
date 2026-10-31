@@ -951,6 +951,82 @@ impl Transcript {
         self.follow_bottom = self.offset == bottom;
     }
 
+    pub(super) fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 定位到指定条目；隐藏的 read 组落到其可见组首。返回是否可用。
+    pub(super) fn reveal_entry(&mut self, index: usize) -> bool {
+        if index >= self.entries.len() || self.viewport_width == 0 {
+            return false;
+        }
+        self.prepare_layout(self.viewport_width);
+        let mut target = index;
+        while target > 0 && self.entries[target].hidden {
+            target -= 1;
+        }
+        let offset = self.entries[..target]
+            .iter()
+            .filter_map(|entry| entry.layout.as_ref())
+            .filter(|layout| layout.height > 0)
+            .map(|layout| layout.height + 1)
+            .sum::<usize>();
+        let bottom = self.total.saturating_sub(self.viewport_height);
+        self.offset = offset.min(bottom);
+        self.follow_bottom = self.offset == bottom;
+        true
+    }
+
+    /// 换宽后按"条目索引 + 条目内行偏移"恢复可见锚点；follow 时保持底部。
+    /// 只重排派生布局，不重建条目或正文。
+    pub(super) fn resize_preserving_anchor(&mut self, width: u16) {
+        let width = width.max(1);
+        if width == self.viewport_width {
+            return;
+        }
+        let anchor = if !self.follow_bottom && self.viewport_width > 0 {
+            self.prepare_layout(self.viewport_width);
+            let mut row = self.offset;
+            self.entries.iter().enumerate().find_map(|(index, entry)| {
+                let height = entry.layout.as_ref()?.height;
+                if height == 0 {
+                    return None;
+                }
+                if row <= height {
+                    Some((index, row))
+                } else {
+                    row -= height + 1;
+                    None
+                }
+            })
+        } else {
+            None
+        };
+        self.viewport_width = width;
+        for entry in &mut self.entries {
+            entry.layout = None;
+        }
+        if let Some(activity) = &mut self.activity {
+            activity.entry.layout = None;
+        }
+        self.read_groups_key = None;
+        self.prepare_layout(width);
+        if let Some((index, row)) = anchor {
+            let preceding = self.entries[..index]
+                .iter()
+                .filter_map(|entry| entry.layout.as_ref())
+                .filter(|layout| layout.height > 0)
+                .map(|layout| layout.height + 1)
+                .sum::<usize>();
+            let height = self.entries[index]
+                .layout
+                .as_ref()
+                .map_or(0, |layout| layout.height);
+            self.offset = preceding + row.min(height);
+            self.follow_bottom = false;
+        }
+    }
+
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         self.viewport_width = area.width;
         self.viewport_bottom = area.bottom();

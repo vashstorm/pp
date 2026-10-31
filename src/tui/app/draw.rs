@@ -91,16 +91,14 @@ impl App {
             );
             return;
         }
-        if !self.native_render
-            && self.ask_panel.is_none()
-            && let Some(panel) = &mut self.subagent_panel
-        {
-            panel.binding = self
-                .subagent_control
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            panel.draw(frame, area);
+        if !self.native_render && self.ask_panel.is_none() && self.subagent_panel.is_some() {
+            if let Some(panel) = &mut self.subagent_panel {
+                panel.draw(frame, area, &mut self.child_drafts);
+            }
+            self.notifications.draw(
+                frame,
+                Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2)),
+            );
             return;
         }
         if !self.native_render

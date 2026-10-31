@@ -92,6 +92,9 @@ fn tui_runtime_role_changes_switch_children_at_their_own_committed_boundary() {
         assert_eq!(body["model"], "three");
         assert!(body.to_string().contains("child resumed safely"));
         ask_final_reply(request, protocol, "parent resumed safely");
+        // 详情现在是一层独立视图：Esc 先回 roster，再关闭 Hub。
+        pty.input("\x1b");
+        pty.text("j/k select");
         pty.input("\x1b");
         pty.text("parent resumed safely");
         pty.completed();

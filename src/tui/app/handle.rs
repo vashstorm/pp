@@ -23,19 +23,22 @@ impl App {
             *dirty = true;
             return false;
         }
-        if self.ask_panel.is_none()
-            && let Some(panel) = &mut self.subagent_panel
-        {
-            if let Event::Key(key) = event {
-                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    return true;
-                }
-                let close = panel.key(key);
-                self.subagent_autowake |= panel.wake_parent;
-                panel.wake_parent = false;
-                if close {
-                    self.subagent_panel = None;
-                }
+        if self.ask_panel.is_none() && self.subagent_panel.is_some() {
+            if let Event::Key(key) = &event
+                && key.code == KeyCode::Char('c')
+                && key.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                return true;
+            }
+            if crate::tui::app::hub::is_hub_toggle(&event) {
+                self.close_hub();
+                *dirty = true;
+                return false;
+            }
+            let (close, commands) = self.hub_handle(event);
+            self.apply_hub_commands(commands);
+            if close {
+                self.close_hub();
             }
             *dirty = true;
             return false;
@@ -88,6 +91,16 @@ impl App {
                 let control = key.modifiers.contains(KeyModifiers::CONTROL);
                 if control && key.code == KeyCode::Char('c') {
                     return key.kind == KeyEventKind::Press;
+                }
+                // Alt+A 只在主视图切换 Hub；未获得绑定时也允许打开空态。
+                if key.code == KeyCode::Char('a')
+                    && key.modifiers.contains(KeyModifiers::ALT)
+                    && key.kind == KeyEventKind::Press
+                    && self.hub_toggle_allowed()
+                {
+                    self.open_hub(false);
+                    *dirty = true;
+                    return false;
                 }
                 *dirty = true;
                 if let Some(panel) = &mut self.changes_panel {

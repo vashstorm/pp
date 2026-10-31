@@ -64,6 +64,8 @@ impl App {
         self.menu_dismissed = true;
         self.show_welcome = false;
         self.refresh_candidates(false);
+        // 换根/换历史后解绑旧观察 epoch；同一根的草稿与控制 ACK 保留。
+        self.hub_sync_root();
         error
     }
 

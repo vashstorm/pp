@@ -158,6 +158,7 @@ pub(crate) fn run(
         dirty |= workspace.receive();
         dirty |= app.notifications.tick(Instant::now());
         dirty |= app.conversation.tick(Instant::now());
+        dirty |= app.hub_tick();
         dirty |= app.review_transcript_tick(Instant::now());
         dirty |= app.token_speed.tick(Instant::now());
         if quit {
@@ -736,6 +737,14 @@ struct App {
     subagent_panel: Option<subagents::Panel>,
     subagent_autowake: bool,
     subagent_control: std::sync::Arc<std::sync::Mutex<Option<crate::subagent::Binding>>>,
+    // Hub 观察线程与根/view epoch；草稿只保留在当前根内。
+    hub_worker: Option<subagents::Worker>,
+    hub_root_epoch: u64,
+    hub_view_epoch: u64,
+    hub_request: u64,
+    hub_bound: Option<crate::subagent::Binding>,
+    hub_sends: BTreeMap<u64, app::hub::HubSend>,
+    child_drafts: subagents::Drafts,
     plan_list_panel: Option<plan_list::Panel>,
     // 列表动作读取 selection 后继续执行的后续步骤。
     plan_list_pending: Option<plan_list::PendingOp>,

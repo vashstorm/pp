@@ -393,6 +393,12 @@ impl Pty {
         self.wait_for(text, |screen| screen.contents().contains(text));
     }
 
+    /// 当前可见屏幕文本（先排空已到达的输出）。
+    fn contents(&mut self) -> String {
+        self.drain();
+        self.parser.screen().contents()
+    }
+
     fn wait_for_raw(&mut self, expected: &[u8]) {
         let deadline = Instant::now() + DEADLINE;
         loop {

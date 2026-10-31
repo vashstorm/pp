@@ -229,17 +229,9 @@ impl App {
             }
         }
         if matches!(command, Some(Command::Agents | Command::Subagents)) {
-            self.subagent_panel = Some(crate::tui::subagents::Panel {
-                binding: self
-                    .subagent_control
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone(),
-                roles: matches!(command, Some(Command::Agents)),
-                ..Default::default()
-            });
             self.remember_input();
             self.clear_input();
+            self.open_hub(matches!(command, Some(Command::Agents)));
             return false;
         }
         if matches!(command, Some(Command::Login | Command::Logout)) {

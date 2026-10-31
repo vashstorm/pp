@@ -2,6 +2,7 @@ mod auth;
 mod draw;
 mod handle;
 mod history;
+pub(super) mod hub;
 mod init;
 mod input;
 mod navigation;

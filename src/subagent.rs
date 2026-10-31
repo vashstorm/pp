@@ -1,8 +1,13 @@
 //! 子 Agent 的身份、调度、结果投递与持久生命周期。
 mod catalog;
+mod observe;
 #[cfg(test)]
 mod tests;
 mod workspace;
+
+pub(crate) use observe::{EventCursor, EventPage, HubEvent, HubSnapshot, ObservedEntry};
+#[cfg(test)]
+pub(crate) use observe::{HubAgent, ObservedRecord};
 
 use crate::{
     agent::{Agent, input::InputQueue},
@@ -18,10 +23,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
-    io::Write,
+    fs,
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, Weak, mpsc},
+    sync::{Arc, Condvar, Mutex, Weak, atomic::AtomicU64, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -125,6 +129,11 @@ struct ChangeSink {
     serial: Arc<Mutex<()>>,
 }
 struct Inner {
+    // 进程内观察修订号：仅驱动 UI 增量刷新，不持久化。
+    revision: AtomicU64,
+    // 每个 agent 一条整行追加锁；worker 持有自己的 Arc。
+    appends: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
+    observe_errors: Mutex<BTreeMap<String, String>>,
     runtime_models: Mutex<Option<crate::model_control::Binding>>,
     model_roles: Mutex<crate::config::ModelRoles>,
     state: Mutex<State>,
@@ -182,7 +191,9 @@ impl Inner {
         lock(&self.dir).clone()
     }
     fn save(&self, state: &State) -> Result<()> {
-        atomic_json(&self.directory().join("registry.json"), &state.disk)
+        atomic_json(&self.directory().join("registry.json"), &state.disk)?;
+        self.bump_revision();
+        Ok(())
     }
 }
 pub(crate) struct RootOptions {
@@ -274,6 +285,9 @@ impl Binding {
             );
         }
         let inner = Arc::new(Inner {
+            revision: AtomicU64::new(1),
+            appends: Mutex::new(BTreeMap::new()),
+            observe_errors: Mutex::new(BTreeMap::new()),
             runtime_models: Mutex::new(None),
             model_roles: Mutex::new(Default::default()),
             state: Mutex::new(State {
@@ -633,6 +647,18 @@ impl Binding {
             }
             self.inner.save(&state)?;
         }
+        for (record, run_id, _, _) in &records {
+            self.inner.observe(
+                &record.id,
+                Some(run_id),
+                record.generation,
+                None,
+                None,
+                Some(HubEvent::RunState {
+                    status: "queued".into(),
+                }),
+            );
+        }
         let mut results = Vec::new();
         for (record, run_id, task, blocking) in records {
             let result = self.launch(record, &run_id, task, token);
@@ -688,6 +714,7 @@ impl Binding {
         record.generation += 1;
         record.status = if run.is_empty() { "idle" } else { "running" }.into();
         let generation = record.generation;
+        let status = record.status.clone();
         state.disk.agents.insert(record.id.clone(), record.clone());
         let input = InputQueue::default();
         input.begin_run()?;
@@ -720,6 +747,16 @@ impl Binding {
                 cancellation: token,
             })?;
         }
+        drop(state);
+        // 新实例建立后发布实际 Agent 状态；已存在实例的运行转换由 worker 发布。
+        self.inner.observe(
+            &id,
+            None,
+            generation,
+            None,
+            None,
+            Some(HubEvent::AgentState { status }),
+        );
         Ok(())
     }
     fn settle(&self, run: &str, result: Value, duration_ms: u64) -> Result<()> {
@@ -735,8 +772,24 @@ impl Binding {
         .into();
         r.result = Some(result);
         r.duration_ms = duration_ms;
+        let agent_id = r.agent_id.clone();
+        let status = r.status.clone();
+        let generation = state
+            .disk
+            .agents
+            .get(&agent_id)
+            .map_or(0, |record| record.generation);
         self.inner.save(&state)?;
         self.inner.changed.notify_all();
+        drop(state);
+        self.inner.observe(
+            &agent_id,
+            Some(run),
+            generation,
+            None,
+            None,
+            Some(HubEvent::RunState { status }),
+        );
         Ok(())
     }
     pub(crate) fn pending(&self) -> bool {
@@ -839,24 +892,9 @@ impl Binding {
             state.disk.agents.len()
         )
     }
+    /// 行模式 CLI 与既有消费者读取的 JSON 形状：agents 保持扁平的 Record 字段。
     pub(crate) fn snapshots(&self) -> Value {
-        let runtime = lock(&self.inner.runtime_models).clone();
-        let state = lock(&self.inner.state);
-        let agents = state
-            .disk
-            .agents
-            .values()
-            .map(|record| {
-                let mut value = json!(record);
-                value["model_change"] = json!(runtime.as_ref().and_then(|binding| {
-                    binding
-                        .registry
-                        .describe(&record.id, record.spec.model_role)
-                }));
-                value
-            })
-            .collect::<Vec<_>>();
-        json!({"agents":agents,"runs":state.disk.runs.values().collect::<Vec<_>>()})
+        serde_json::to_value(self.hub_snapshot()).unwrap_or_else(|_| json!({"agents":[],"runs":[]}))
     }
     pub(crate) fn uri(
         &self,
@@ -1006,8 +1044,23 @@ impl Binding {
                 cost: None,
             },
         );
+        let generation = state
+            .disk
+            .agents
+            .get(&record.id)
+            .map_or(record.generation, |current| current.generation);
         self.inner.save(&state)?;
         drop(state);
+        self.inner.observe(
+            &record.id,
+            Some(&run),
+            generation,
+            None,
+            None,
+            Some(HubEvent::RunState {
+                status: "queued".into(),
+            }),
+        );
         if let Err(error) = self.launch(record.clone(), &run, text.into(), token) {
             self.settle(&run, json!({"ok":false,"error":format!("{error:#}")}), 0)?;
             return Err(error);
@@ -1050,16 +1103,38 @@ impl Binding {
             agent.status = "aborted".into();
             agent.generation += 1;
         }
-        if action == "kill" {
+        let killed = if action == "kill" {
             if let Some(live) = state.live.remove(id) {
                 state.retiring.insert(id.to_owned());
                 live.cancellation.cancel();
             }
-        } else if let Some(live) = state.live.get(id) {
-            live.cancellation.cancel();
-        }
+            true
+        } else {
+            if let Some(live) = state.live.get(id) {
+                live.cancellation.cancel();
+            }
+            false
+        };
+        let generation = state
+            .disk
+            .agents
+            .get(id)
+            .map_or(0, |record| record.generation);
         self.inner.save(&state)?;
         self.inner.changed.notify_all();
+        drop(state);
+        if killed {
+            self.inner.observe(
+                id,
+                None,
+                generation,
+                None,
+                None,
+                Some(HubEvent::AgentState {
+                    status: "aborted".into(),
+                }),
+            );
+        }
         Ok(json!({"ok":true}))
     }
     pub(crate) fn cancel_owned(&self) -> Result<()> {
@@ -1183,22 +1258,43 @@ fn worker(
     }
     impl Drop for WorkerExit {
         fn drop(&mut self) {
-            let mut state = lock(&self.inner.state);
-            state.workers = state.workers.saturating_sub(1);
-            state.retiring.remove(&self.id);
-            if state
-                .disk
-                .agents
-                .get(&self.id)
-                .is_some_and(|r| r.generation == self.generation)
+            let parked;
             {
-                state.live.remove(&self.id);
-                if let Some(record) = state.disk.agents.get_mut(&self.id) {
-                    record.status = "parked".into();
+                let mut state = lock(&self.inner.state);
+                state.workers = state.workers.saturating_sub(1);
+                state.retiring.remove(&self.id);
+                parked = state
+                    .disk
+                    .agents
+                    .get(&self.id)
+                    .is_some_and(|r| r.generation == self.generation && r.status != "parked");
+                if state
+                    .disk
+                    .agents
+                    .get(&self.id)
+                    .is_some_and(|r| r.generation == self.generation)
+                {
+                    state.live.remove(&self.id);
+                    if let Some(record) = state.disk.agents.get_mut(&self.id) {
+                        record.status = "parked".into();
+                    }
+                    let _ = self.inner.save(&state);
                 }
-                let _ = self.inner.save(&state);
+                self.inner.changed.notify_all();
             }
-            self.inner.changed.notify_all();
+            // 只在实际状态转换时发布一次 parked。
+            if parked {
+                self.inner.observe(
+                    &self.id,
+                    None,
+                    self.generation,
+                    None,
+                    None,
+                    Some(HubEvent::AgentState {
+                        status: "parked".into(),
+                    }),
+                );
+            }
         }
     }
     let _exit = WorkerExit {
@@ -1216,18 +1312,36 @@ fn worker(
         ) {
             Ok(cwd) => record.spec.cwd = cwd,
             Err(error) => {
-                let mut state = lock(&inner.state);
-                for run in state
-                    .disk
-                    .runs
-                    .values_mut()
-                    .filter(|r| r.agent_id == record.id && r.status == "queued")
+                let failed;
                 {
-                    run.status = "failed".into();
-                    run.result = Some(json!({"ok":false,"error":format!("{error:#}")}));
+                    let mut state = lock(&inner.state);
+                    failed = state
+                        .disk
+                        .runs
+                        .values_mut()
+                        .filter(|r| r.agent_id == record.id && r.status == "queued")
+                        .map(|run| {
+                            run.status = "failed".into();
+                            run.result = Some(json!({"ok":false,"error":format!("{error:#}")}));
+                            run.id.clone()
+                        })
+                        .collect::<Vec<_>>();
+                    let _ = inner.save(&state);
+                    inner.changed.notify_all();
                 }
-                let _ = inner.save(&state);
-                inner.changed.notify_all();
+                // 隔离 workspace prepare 失败不是 settle 路径，必须单独发布。
+                for run in failed {
+                    inner.observe(
+                        &record.id,
+                        Some(&run),
+                        generation,
+                        None,
+                        None,
+                        Some(HubEvent::RunState {
+                            status: "failed".into(),
+                        }),
+                    );
+                }
                 return;
             }
         }
@@ -1279,24 +1393,84 @@ fn worker(
                     .status = "running".into();
                 binding.inner.save(&state)?;
             }
+            binding.inner.observe(
+                &record.id,
+                Some(&work.run),
+                generation,
+                None,
+                None,
+                Some(HubEvent::RunState {
+                    status: "running".into(),
+                }),
+            );
             let native = agent.as_mut().context("agent initialization failed")?;
             let mut sequence = 0u64;
             let mut requests = 0usize;
             let mut tokens = 0u64;
             let mut cost = record.spec.cost.map(|_| 0.0);
-            let outcome=native.run(&work.task,&work.cancellation,Some(&input),&mut |event| {
-                sequence+=1;
-                match &event { AgentEvent::AssistantFinished{text}if !text.trim().is_empty()=>last=text.clone(), AgentEvent::ModelRequestStarted=>requests+=1, AgentEvent::ModelRequestFinished{usage:Some(usage),..}=>{
-                    tokens+=usage.input_tokens+usage.output_tokens;
-                    let current_price = lock(&binding.inner.state).disk.agents.get(&record.id).and_then(|r| r.spec.cost);
-                    cost=cost.zip(current_price).and_then(|(total,price)|{
-                        let cached=usage.cached_tokens?;let written=usage.cache_write_tokens.unwrap_or(0);
-                        let uncached=usage.input_tokens.checked_sub(cached)?.checked_sub(written)?;
-                        Some(total+(uncached as f64*price.input+cached as f64*price.cache_read+if written==0{0.0}else{written as f64*price.cache_write?}+usage.output_tokens as f64*price.output)/1e6)
-                    });
-                }, AgentEvent::ModelRequestFinished{usage:None,..}=>cost=None, _=>{} }
-                if matches!(event,AgentEvent::ModelRequestStarted|AgentEvent::ModelRequestFinished{..}){let mut state=lock(&binding.inner.state);if let Some(run)=state.disk.runs.get_mut(&work.run){run.requests=requests;run.tokens=tokens;run.cost=cost;}}
-                if let Ok(mut file)=OpenOptions::new().create(true).append(true).open(binding.inner.directory().join(format!("{}.events.jsonl",record.id))) { let _=writeln!(file,"{}",json!({"root_id":binding.inner.directory().file_name().map(|n|n.to_string_lossy().into_owned()),"agent_id":record.id,"run_id":work.run,"generation":generation,"sequence":sequence,"event":event})); }
+            let outcome = native.run(&work.task, &work.cancellation, Some(&input), &mut |event| {
+                sequence += 1;
+                match &event {
+                    AgentEvent::AssistantFinished { text } if !text.trim().is_empty() => {
+                        last = text.clone()
+                    }
+                    AgentEvent::ModelRequestStarted => requests += 1,
+                    AgentEvent::ModelRequestFinished {
+                        usage: Some(usage), ..
+                    } => {
+                        tokens += usage.input_tokens + usage.output_tokens;
+                        let current_price = lock(&binding.inner.state)
+                            .disk
+                            .agents
+                            .get(&record.id)
+                            .and_then(|r| r.spec.cost);
+                        cost = cost.zip(current_price).and_then(|(total, price)| {
+                            let cached = usage.cached_tokens?;
+                            let written = usage.cache_write_tokens.unwrap_or(0);
+                            let uncached = usage
+                                .input_tokens
+                                .checked_sub(cached)?
+                                .checked_sub(written)?;
+                            Some(
+                                total
+                                    + (uncached as f64 * price.input
+                                        + cached as f64 * price.cache_read
+                                        + if written == 0 {
+                                            0.0
+                                        } else {
+                                            written as f64 * price.cache_write?
+                                        }
+                                        + usage.output_tokens as f64 * price.output)
+                                        / 1e6,
+                            )
+                        });
+                    }
+                    AgentEvent::ModelRequestFinished { usage: None, .. } => cost = None,
+                    _ => {}
+                }
+                if matches!(
+                    event,
+                    AgentEvent::ModelRequestStarted | AgentEvent::ModelRequestFinished { .. }
+                ) {
+                    {
+                        let mut state = lock(&binding.inner.state);
+                        if let Some(run) = state.disk.runs.get_mut(&work.run) {
+                            run.requests = requests;
+                            run.tokens = tokens;
+                            run.cost = cost;
+                        }
+                    }
+                    binding.inner.bump_revision();
+                }
+                // 整条 JSON + 换行在同一把 agent 追加锁内写出，控制线程不会与之交错。
+                binding.inner.observe(
+                    &record.id,
+                    Some(&work.run),
+                    generation,
+                    Some(sequence),
+                    Some(&event),
+                    None,
+                );
             });
             native.save_child(
                 &binding
@@ -1424,20 +1598,40 @@ fn worker(
                 .join(format!("{}.session.json", record.id)),
         );
     }
-    let mut state = lock(&binding.inner.state);
-    if state
-        .disk
-        .agents
-        .get(&record.id)
-        .is_some_and(|r| r.generation == generation)
+    let parked;
     {
-        state.live.remove(&record.id);
-        if let Some(r) = state.disk.agents.get_mut(&record.id) {
-            r.status = "parked".into();
+        let mut state = lock(&binding.inner.state);
+        parked = state
+            .disk
+            .agents
+            .get(&record.id)
+            .is_some_and(|r| r.generation == generation && r.status != "parked");
+        if state
+            .disk
+            .agents
+            .get(&record.id)
+            .is_some_and(|r| r.generation == generation)
+        {
+            state.live.remove(&record.id);
+            if let Some(r) = state.disk.agents.get_mut(&record.id) {
+                r.status = "parked".into();
+            }
+            let _ = binding.inner.save(&state);
         }
-        let _ = binding.inner.save(&state);
+        binding.inner.changed.notify_all();
     }
-    binding.inner.changed.notify_all();
+    if parked {
+        binding.inner.observe(
+            &record.id,
+            None,
+            generation,
+            None,
+            None,
+            Some(HubEvent::AgentState {
+                status: "parked".into(),
+            }),
+        );
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
