@@ -45,16 +45,15 @@ fn plan_list_filters_previews_and_preserves_input() {
     pty.ready();
     plan_wait_execute(&mut pty);
 
-    // 打开列表：三个目录的条目、标题、分类、进度与空任务占位。
+    // 打开列表：三个目录的标题、紧凑时间与 All 分类标记。
     plan_list_open(&mut pty);
     pty.wait_for("三目录条目齐全", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("fix-config.md")
-            && text.contains("修复配置")
-            && text.contains("0/2")
-            && text.contains("approved.md")
-            && text.contains("completed.md")
-            && text.contains("—")
+        text.contains("修复配置")
+            && !text.contains("0/2")
+            && text.contains("Approvedplan")
+            && text.contains("Completedplan")
+            && text.contains("justnow")
             && text.contains("[Draft]")
             && text.contains("[Plan]")
             && text.contains("[Done]")
@@ -66,39 +65,40 @@ fn plan_list_filters_previews_and_preserves_input() {
     pty.input("\x1b[C");
     pty.wait_for("Drafts 分类只显示草稿", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("fix-config.md")
-            && !text.contains("approved.md")
-            && !text.contains("completed.md")
+        text.contains("修复配置")
+            && !text.contains("Approvedplan")
+            && !text.contains("Completedplan")
+            && !text.contains("[Draft]")
     });
     pty.input("\x1b[D");
     pty.wait_for("回到 All 显示全部", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("fix-config.md")
-            && text.contains("approved.md")
-            && text.contains("completed.md")
+        text.contains("修复配置")
+            && text.contains("Approvedplan")
+            && text.contains("Completedplan")
     });
 
     // 搜索：多词 AND、大小写无关；Enter 回列表后 query 继续过滤。
     pty.input("/Completed");
     pty.wait_for("搜索命中唯一条目", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("completed.md")
-            && !text.contains("fix-config.md")
-            && !text.contains("approved.md")
+        text.contains("Completedplan")
+            && !text.contains("修复配置")
+            && !text.contains("Approvedplan")
     });
     pty.input("\r");
     pty.wait_for("搜索退出但过滤保留", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("completed.md") && !text.contains("fix-config.md")
+        text.contains("Completedplan") && !text.contains("修复配置")
             && text.contains("Search:Completed")
     });
     // 重新进入搜索后 Ctrl+U 才清空 query。
     pty.input("/\x15");
     pty.wait_for("Ctrl+U 清空恢复全部", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("fix-config.md")
-            && text.contains("approved.md")
-            && text.contains("completed.md")
+        text.contains("修复配置")
+            && text.contains("Approvedplan")
+            && text.contains("Completedplan")
             && !text.contains("Search:Completed")
     });
 
@@ -106,7 +106,7 @@ fn plan_list_filters_previews_and_preserves_input() {
     pty.input("修复");
     pty.wait_for("选中 fix-config", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("fix-config.md") && !text.contains("approved.md")
+        text.contains("修复配置") && !text.contains("Approvedplan")
     });
     pty.input("\r");
     pty.input("\r");
@@ -119,7 +119,7 @@ fn plan_list_filters_previews_and_preserves_input() {
     pty.input("\x1b");
     pty.wait_for("预览返回列表且保留状态", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("Planlist") && text.contains("fix-config.md")
+        text.contains("Planlist") && text.contains("修复配置")
             && text.contains("Search:修复")
     });
 
@@ -127,11 +127,11 @@ fn plan_list_filters_previews_and_preserves_input() {
     pty.input("\x1b[15~");
     pty.wait_for("F5 刷新完成", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("fix-config.md") && text.contains("Search:修复")
+        text.contains("修复配置") && text.contains("Search:修复")
     });
     pty.resize(50, 120);
     pty.wait_for("resize 后列表仍渲染", |screen| {
-        cancel_normalize(screen).contains("fix-config.md")
+        cancel_normalize(screen).contains("修复配置")
     });
 
     // 关闭恢复主输入；打开菜单已保存载入会话，但整个浏览过程零模型请求。
@@ -172,13 +172,13 @@ fn plan_list_rename_and_delete_are_conflict_safe() {
     plan_list_open(&mut pty);
     pty.wait_for("草稿条目齐全", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("old-name.md") && text.contains("taken.md") && text.contains("link.md")
+        text.contains("Oldplan") && text.contains("taken[Draft]") && text.contains("link.md")
     });
 
     // 重命名：预填文件名，Ctrl+U 清空后输入新名；保持正文与 checkbox。
     pty.input("/old-name");
     pty.wait_for("选中 old-name", |screen| {
-        cancel_normalize(screen).contains("old-name.md")
+        cancel_normalize(screen).contains("Oldplan")
     });
     pty.input("\r");
     pty.input("r");
@@ -195,7 +195,7 @@ fn plan_list_rename_and_delete_are_conflict_safe() {
     pty.input("/\x15");
     pty.wait_for("重命名后列表更新", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("renamed-plan.md") && !text.contains("old-name.md")
+        text.contains("Oldplan") && !text.contains("rename>")
     });
     assert!(!project.path().join(".pp/drafts/old-name.md").exists());
     assert_eq!(
@@ -214,7 +214,7 @@ fn plan_list_rename_and_delete_are_conflict_safe() {
     pty.input("r\x15taken.md\r");
     pty.wait_for("重名冲突后回到列表", |screen| {
         let text = cancel_normalize(screen);
-        !text.contains("rename>") && text.contains("renamed-plan.md")
+        !text.contains("rename>") && text.contains("Oldplan")
     });
     assert_eq!(
         std::fs::read_to_string(project.path().join(".pp/drafts/taken.md")).unwrap(),
@@ -255,15 +255,15 @@ fn plan_list_rename_and_delete_are_conflict_safe() {
     pty.input("\x1b");
     pty.wait_for("关闭审阅面板", |screen| !screen.alternate_screen());
     plan_list_open(&mut pty);
-    pty.wait_for("当前绑定标记 Current", |screen| {
+    pty.wait_for("当前绑定计划显示标题", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("create-canary.md") && text.contains("Current")
+        text.contains("Createcanary") && !text.contains("Current")
     });
 
     // 确认删除：完整相对路径与提示文案；默认 Cancel。
     pty.input("/create-canary");
     pty.wait_for("选中当前绑定", |screen| {
-        cancel_normalize(screen).contains("create-canary.md")
+        cancel_normalize(screen).contains("Createcanary")
     });
     pty.input("\r");
     pty.input("d");
@@ -275,7 +275,7 @@ fn plan_list_rename_and_delete_are_conflict_safe() {
     pty.input("\r");
     pty.wait_for("默认 Cancel 关闭确认框", |screen| {
         let text = cancel_normalize(screen);
-        !text.contains("Deletetheplanfileonly") && text.contains("create-canary.md")
+        !text.contains("Deletetheplanfileonly") && text.contains("Createcanary")
     });
     assert!(project.path().join(".pp/drafts/create-canary.md").exists());
 
@@ -289,7 +289,7 @@ fn plan_list_rename_and_delete_are_conflict_safe() {
     pty.input("/\x15");
     pty.wait_for("删除后列表移除条目", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("renamed-plan.md") && !text.contains("create-canary.md")
+        text.contains("Oldplan") && !text.contains("Createcanary")
     });
     assert!(!project.path().join(".pp/drafts/create-canary.md").exists());
 
@@ -414,7 +414,7 @@ fn plan_list_continues_in_fresh_context() {
         plan_list_open(&mut pty);
         pty.wait_for("两份草稿条目齐全", |screen| {
             let text = cancel_normalize(screen);
-            text.contains("continue-listed.md") && text.contains("other-draft.md")
+            text.contains("Continuelisted") && text.contains("Otherdraft")
         });
         no_more(&fixture);
 
@@ -491,24 +491,24 @@ fn plan_list_execution_requires_new_local_approval() {
         plan_list_open(&mut pty);
         pty.wait_for("未登记文件纳管显示", |screen| {
             let text = cancel_normalize(screen);
-            text.contains("listed-exec.md") && text.contains("finished.md")
+            text.contains("Listedexec") && text.contains("Finished")
         });
         no_more(&fixture);
 
         // Done 条目只读：e 没有执行入口，零请求且列表保持。
         pty.input("\x1b[B");
         pty.wait_for("选中 done 条目", |screen| {
-            cancel_normalize(screen).contains("finished.md")
+            cancel_normalize(screen).contains("Finished")
         });
         pty.input("e");
         no_more(&fixture);
         pty.wait_for("Done 无执行动作", |screen| {
             let text = cancel_normalize(screen);
-            text.contains("Planlist") && text.contains("finished.md")
+            text.contains("Planlist") && text.contains("Finished")
         });
         pty.input("\x1b[A");
         pty.wait_for("回到 drafts 条目", |screen| {
-            cancel_normalize(screen).contains("listed-exec.md")
+            cancel_normalize(screen).contains("Listedexec")
         });
 
         // e 打开完整六项菜单；已勾选进度原样展示，打开菜单零模型请求。
@@ -601,7 +601,7 @@ fn plan_list_enter_opens_six_actions_for_drafts_and_plans_and_only_displays_done
             pty.ready();
             plan_list_open(&mut pty);
             pty.wait_for("选中计划已加载", |screen| {
-                screen.contents().contains("selected.md")
+                screen.contents().contains("Selected plan")
                     && !screen.contents().contains("Loading plans")
             });
             pty.input("\r");
@@ -681,7 +681,7 @@ fn plan_list_six_actions_use_the_selected_plan_and_leave_the_list() {
             pty.ready();
             plan_list_open(&mut pty);
             pty.wait_for("选中计划已加载", |screen| {
-                screen.contents().contains("selected.md")
+                screen.contents().contains("Selected actions")
                     && !screen.contents().contains("Loading plans")
             });
             pty.input("\r");
@@ -780,12 +780,12 @@ fn plan_list_delete_after_open_keeps_planning_free_of_todos() {
         plan_wait_execute(&mut pty);
         plan_list_open(&mut pty);
         pty.wait_for("计划列表加载完成", |screen| {
-            cancel_normalize(screen).contains("fix-config.md")
+            cancel_normalize(screen).contains("修复配置")
         });
         pty.input("/fix-config");
         pty.wait_for("筛选待删草稿", |screen| {
             let text = cancel_normalize(screen);
-            text.contains("fix-config.md") && !text.contains("approved.md")
+            text.contains("修复配置") && !text.contains("Approvedplan")
         });
         pty.input("\r\r");
         pty.wait_for("打开草稿详情", |screen| {

@@ -122,9 +122,7 @@ impl App {
         self.menu = None;
         self.menu_dismissed = true;
         self.plan_list_pending = None;
-        self.plan_list_panel = Some(plan_list::Panel::new(
-            self.workflow.plan.as_ref().map(|plan| plan.id.clone()),
-        ));
+        self.plan_list_panel = Some(plan_list::Panel::new());
         if !self.send(WorkerCommand::ListPlans, State::ListingPlans) {
             self.plan_list_panel = None;
         }

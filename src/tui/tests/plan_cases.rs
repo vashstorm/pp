@@ -407,7 +407,7 @@ fn plan_list_new_plan_confirms_discard_and_reenters_standby() {
         plan: Some(plan),
         ..Default::default()
     };
-    app.plan_list_panel = Some(plan_list::Panel::new(None));
+    app.plan_list_panel = Some(plan_list::Panel::new());
     app.plan_list_new_plan();
     assert!(requests.try_recv().is_err());
     app.handle(key(KeyCode::Esc), &mut false);

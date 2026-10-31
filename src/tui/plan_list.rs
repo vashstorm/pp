@@ -24,6 +24,21 @@ const CONFIRM_HINT: &str = "Tab/arrows select · Enter confirm · Esc cancel";
 const DELETE_NOTICE: &str = "Delete the plan file only; code and sessions are not rolled back.";
 /// 空列表仍提供新建入口；其余空态说明当前分类/过滤。
 const EMPTY_NEW_PLAN: &str = "No saved plans. Press n to start a new plan.";
+const ROW_BG: Color = Color::Rgb(40, 42, 54);
+const ALTERNATE_ROW_BG: Color = Color::Rgb(49, 51, 63);
+const SELECTED_BG: Color = Color::Rgb(98, 164, 245);
+const SELECTED_FG: Color = Color::Rgb(35, 38, 49);
+const AGE_FG: Color = Color::Rgb(158, 161, 168);
+const TITLE_COLORS: [Color; 8] = [
+    Color::Rgb(137, 180, 250),
+    Color::Rgb(137, 220, 235),
+    Color::Rgb(166, 227, 161),
+    Color::Rgb(249, 226, 175),
+    Color::Rgb(245, 194, 231),
+    Color::Rgb(180, 190, 254),
+    Color::Rgb(242, 143, 173),
+    Color::Rgb(250, 179, 135),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Phase {
@@ -140,7 +155,6 @@ struct ConfirmDelete {
 pub(super) struct Panel {
     phase: Phase,
     listing: PlanListing,
-    current_id: Option<String>,
     tab: Tab,
     query: String,
     searching: bool,
@@ -155,11 +169,10 @@ pub(super) struct Panel {
 }
 
 impl Panel {
-    pub(super) fn new(current_id: Option<String>) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             phase: Phase::Loading,
             listing: PlanListing::default(),
-            current_id,
             tab: Tab::All,
             query: String::new(),
             searching: false,
@@ -796,42 +809,59 @@ impl Panel {
             let entry = &self.listing.entries[index];
             let selected = row == self.selected;
             let marker = if selected { "❯ " } else { "  " };
-            let marker_style = if selected {
-                Style::default().fg(ACCENT)
+            let row_style = if selected {
+                Style::default().fg(SELECTED_FG).bg(SELECTED_BG)
             } else {
-                Style::default()
+                Style::default().bg(if row % 2 == 0 {
+                    ROW_BG
+                } else {
+                    ALTERNATE_ROW_BG
+                })
             };
-            let mut spans = vec![Span::styled(marker, marker_style)];
+            // 选中行统一使用深色文字，保证时间、标题与状态在浅蓝底上清晰可读。
+            let text_style = |color| {
+                if selected {
+                    Style::default()
+                } else {
+                    Style::default().fg(color)
+                }
+            };
+            let age = format!("{:<10}  ", format_age(entry.modified, now));
+            let prefix_width = 2 + age.len();
+            let mut spans = vec![Span::raw(marker), Span::styled(age, text_style(AGE_FG))];
             if let Some(error) = &entry.error {
                 spans.push(Span::styled(
                     display_text(&entry.file_name).into_owned(),
-                    Style::default().fg(REMOVED),
+                    text_style(REMOVED),
                 ));
                 spans.push(Span::styled(
                     format!("  {}", display_text(error)),
-                    Style::default().fg(REMOVED),
+                    text_style(REMOVED),
                 ));
             } else {
-                spans.push(Span::raw(display_text(&entry.file_name).into_owned()));
+                let badge = if self.tab == Tab::All {
+                    format!(" [{}]", category_label(entry.location))
+                } else {
+                    String::new()
+                };
+                let title_width =
+                    usize::from(area.width).saturating_sub(prefix_width + badge.len());
+                let color_index = entry.id.bytes().fold(0usize, |hash, byte| {
+                    hash.wrapping_mul(31).wrapping_add(usize::from(byte))
+                }) % TITLE_COLORS.len();
                 spans.push(Span::styled(
-                    format!("  {}", display_text(&entry.title)),
-                    Style::default().fg(MUTED),
+                    truncate_title(&display_text(&entry.title), title_width),
+                    text_style(TITLE_COLORS[color_index]),
                 ));
                 spans.push(Span::styled(
-                    format!("  [{}]", category_label(entry.location)),
-                    Style::default().fg(category_color(entry.location)),
+                    badge,
+                    text_style(category_color(entry.location)),
                 ));
-                spans.push(Span::raw(format!("  {}", progress_label(entry))));
-                spans.push(Span::styled(
-                    format!("  {}", format_age(entry.modified, now)),
-                    Style::default().fg(MUTED),
-                ));
-                if Some(entry.id.as_str()) == self.current_id.as_deref() {
-                    spans.push(Span::styled("  Current", Style::default().fg(ACCENT)));
-                }
             }
-            let line = Line::from(spans);
-            frame.render_widget(line, Rect::new(area.x, y, area.width, 1));
+            frame.render_widget(
+                Paragraph::new(Line::from(spans)).style(row_style),
+                Rect::new(area.x, y, area.width, 1),
+            );
         }
     }
 }
@@ -856,23 +886,36 @@ fn category_color(location: PlanLocation) -> Color {
     }
 }
 
-fn progress_label(entry: &PlanListEntry) -> String {
-    if entry.total == 0 {
-        "—".to_owned()
-    } else {
-        format!("{}/{}", entry.completed, entry.total)
+fn truncate_title(title: &str, width: usize) -> String {
+    if Line::from(title).width() <= width {
+        return title.to_owned();
     }
+    if width == 0 {
+        return String::new();
+    }
+    let mut result = String::new();
+    let mut used = 0;
+    for grapheme in title.graphemes(true) {
+        let next = Span::raw(grapheme).width();
+        if used + next > width - 1 {
+            break;
+        }
+        result.push_str(grapheme);
+        used += next;
+    }
+    result.push('…');
+    result
 }
 
 fn format_age(time: SystemTime, now: SystemTime) -> String {
     let seconds = now.duration_since(time).unwrap_or_default().as_secs();
     let (value, unit) = match seconds {
         0..60 => return "just now".into(),
-        60..3600 => (seconds / 60, "minute"),
-        3600..86_400 => (seconds / 3600, "hour"),
-        _ => (seconds / 86_400, "day"),
+        60..3600 => (seconds / 60, "m"),
+        3600..86_400 => (seconds / 3600, "h"),
+        _ => (seconds / 86_400, "d"),
     };
-    format!("{value} {unit}{} ago", if value == 1 { "" } else { "s" })
+    format!("{value}{unit} ago")
 }
 
 #[cfg(test)]
@@ -913,7 +956,7 @@ mod tests {
     }
 
     fn ready_panel(entries: Vec<PlanListEntry>) -> Panel {
-        let mut panel = Panel::new(None);
+        let mut panel = Panel::new();
         panel.set_listing(listing(entries));
         panel
     }
@@ -955,7 +998,7 @@ mod tests {
                 .map(|x| &buffer[(x, row)])
                 .find(|cell| cell.symbol() == "[")
                 .expect("分类标记应可见");
-            assert_eq!(cell.fg, color);
+            assert_eq!(cell.fg, if row == 3 { SELECTED_FG } else { color });
         }
         for selected in 0..4 {
             let terminal = draw(&mut panel, 100);
@@ -980,6 +1023,70 @@ mod tests {
             }
             panel.key(key(KeyCode::Right));
         }
+    }
+
+    #[test]
+    fn compact_rows_align_titles_fill_background_and_only_label_all_tab() {
+        let now = SystemTime::now();
+        let mut entries = vec![
+            entry("a", "draft-file.md", PlanLocation::Drafts, "修复配置", 0, 2),
+            entry("b", "plan-file.md", PlanLocation::Plans, "Ready", 1, 2),
+            entry("c", "done-file.md", PlanLocation::Done, "Finished", 2, 2),
+        ];
+        for (entry, age) in entries.iter_mut().zip([1380, 3600, 86400]) {
+            entry.modified = now - std::time::Duration::from_secs(age);
+        }
+        let mut panel = ready_panel(entries);
+        let terminal = draw(&mut panel, 70);
+        let buffer = terminal.backend().buffer();
+        for (row, age, title, bg) in [
+            (3, "23m ago", "修", SELECTED_BG),
+            (4, "1h ago", "R", ALTERNATE_ROW_BG),
+            (5, "1d ago", "F", ROW_BG),
+        ] {
+            let text = row_text(buffer, row);
+            assert!(text.contains(age), "{text}");
+            assert!(!text.contains(".md") && !text.contains("/2"), "{text}");
+            assert_eq!(buffer[(14, row)].symbol(), title);
+            for x in 0..70 {
+                // 宽字符的后续单元由 Ratatui 重置，不会作为独立字符输出。
+                if x > 0 && Span::raw(buffer[(x - 1, row)].symbol()).width() > 1 {
+                    continue;
+                }
+                assert_eq!(buffer[(x, row)].bg, bg);
+            }
+        }
+        panel.key(key(KeyCode::Down));
+        let terminal = draw(&mut panel, 70);
+        assert_eq!(terminal.backend().buffer()[(69, 3)].bg, ROW_BG);
+        assert_eq!(terminal.backend().buffer()[(69, 4)].bg, SELECTED_BG);
+        for title in ["修复配置", "Ready", "Finished"] {
+            panel.key(key(KeyCode::Right));
+            let terminal = draw(&mut panel, 70);
+            let text = row_text(terminal.backend().buffer(), 3);
+            assert!(text.replace(' ', "").contains(title), "{text}");
+            assert!(!text.contains('['), "{text}");
+        }
+    }
+
+    #[test]
+    fn long_unicode_title_keeps_all_tab_badge_on_one_row() {
+        let mut panel = ready_panel(vec![entry(
+            "a",
+            "long.md",
+            PlanLocation::Drafts,
+            "修复👩‍💻配置e\u{301}以及后续功能",
+            0,
+            1,
+        )]);
+        let terminal = draw(&mut panel, 34);
+        let buffer = terminal.backend().buffer();
+        let text = row_text(buffer, 3);
+        assert!(
+            text.replace(' ', "").contains("修复👩‍💻配置e\u{301}…[Draft]"),
+            "{text}"
+        );
+        assert!(row_text(buffer, 4).trim().is_empty());
     }
 
     #[test]
@@ -1329,7 +1436,7 @@ mod tests {
             Action::Message(_)
         ));
         // 加载中除 Esc 外不接收按键。
-        let mut loading = Panel::new(None);
+        let mut loading = Panel::new();
         assert!(matches!(loading.key(key(KeyCode::Char('n'))), Action::None));
         assert!(matches!(loading.key(key(KeyCode::Esc)), Action::Close));
     }
