@@ -1305,9 +1305,7 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
     }
     if kind == EntryKind::Bash || matches!(name, "grep" | "find") {
         let mut lines = Vec::new();
-        if let Some(status) = background_status(result) {
-            lines.push(status);
-        }
+        // 后台状态已在 Bash footer 展示，不占用输出正文和尾窗行数。
         for (field, label) in [("stdout", "stdout"), ("stderr", "stderr")] {
             if let Some(text) = result
                 .get(field)

@@ -566,11 +566,6 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                 );
                 prefix.append(&mut rows);
                 rows = prefix;
-            } else if !expanded && view.running {
-                // 运行时固定正文窗口并预留提示行，新内容从底部进入，避免边框随输出增长移动。
-                let mut window = vec![Line::styled("", style); limit + 1 - total];
-                window.append(&mut rows);
-                rows = window;
             }
             rows
         }
@@ -1256,8 +1251,13 @@ mod tests {
     }
 
     #[test]
-    fn bash_running_window_scrolls_without_growing_and_expansion_keeps_all_output() {
-        for (terminal_rows, limit) in [(24, 6), (30, 10), (80, 10)] {
+    fn bash_running_window_grows_then_scrolls_and_expansion_keeps_all_output() {
+        for (name, terminal_rows, limit) in [
+            ("bash", 24, 6),
+            ("bash", 30, 10),
+            ("bash", 80, 10),
+            ("bash_task", 30, 10),
+        ] {
             let content = (0..24)
                 .map(|i| format!("output-{i:02}\n"))
                 .collect::<Vec<_>>();
@@ -1267,7 +1267,7 @@ mod tests {
                     accumulated.push_str(&content[count - 1]);
                 }
                 let view = |running, expanded| View {
-                    name: "bash",
+                    name,
                     text: &accumulated,
                     arguments: &Value::Null,
                     result: None,
@@ -1281,7 +1281,7 @@ mod tests {
                     },
                 };
                 let rows = body(view(true, false), 100, Style::default());
-                assert_eq!(rows.len(), limit + 1);
+                assert_eq!(rows.len(), count.min(limit) + usize::from(count > limit));
                 if count > 0 {
                     assert_eq!(
                         rows.last().unwrap().to_string(),

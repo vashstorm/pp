@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn bash_background_snapshot_counts_only_output_rows() {
+    for name in ["bash", "bash_task"] {
+        for count in [0_usize, 3, 20] {
+            let mut transcript = Transcript::new();
+            tool(
+                &mut transcript,
+                "snapshot",
+                name,
+                json!({"mode":"background"}),
+            );
+            let output = (0..count)
+                .map(|i| format!("snapshot-{i:02}\n"))
+                .collect::<String>();
+            transcript.progress(AgentEvent::ToolFinished {
+                id: "snapshot".into(),
+                result: json!({"ok":true,"task_id":"bg-1","status":"running","stdout":output,"stderr":""}),
+            });
+            let rendered = screen(&render(&mut transcript, 100, 30));
+            assert_eq!(rendered.matches("Task bg-1: running").count(), 1);
+            let entry = &transcript.entries[0];
+            assert_eq!(entry.text, output.trim_end_matches('\n'));
+            assert_eq!(
+                entry.layout.as_ref().unwrap().height,
+                4 + count.min(10) + usize::from(count > 10)
+            );
+        }
+    }
+}
+
+#[test]
 fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
     let mut transcript = Transcript::new();
     let started = Instant::now() - Duration::from_secs(85);

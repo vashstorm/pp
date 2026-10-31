@@ -66,16 +66,19 @@ fn bang_shell_wait_done(pty: &mut Pty) {
 }
 
 #[test]
-fn bash_running_output_scrolls_inside_fixed_window_both_protocols() {
+fn bash_running_output_grows_then_scrolls_both_protocols() {
     for protocol in ["completion", "response"] {
         let provider = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         // 文件门闩由屏幕断言后显式放行，轮询间隔不用于推测输出或绘制阶段。
         std::fs::write(project.path().join("scroll-output.sh"), r#"
+while [[ ! -e scroll-start ]]; do sleep 0.01; done
 for i in {0..2}; do printf 'scroll-line-%02d\n' "$i"; done
 while [[ ! -e scroll-next ]]; do sleep 0.01; done
 for i in {3..15}; do printf 'scroll-line-%02d\n' "$i"; done
+while [[ ! -e scroll-again ]]; do sleep 0.01; done
+for i in {16..19}; do printf 'scroll-line-%02d\n' "$i"; done
 while [[ ! -e scroll-finish ]]; do sleep 0.01; done
 "#).unwrap();
         let mut pty = ask_tui_start(&provider, home.path(), project.path(), protocol);
@@ -90,17 +93,26 @@ while [[ ! -e scroll-finish ]]; do sleep 0.01; done
             response_call("scroll", "bash", args)
         };
         ask_reply_calls(request, protocol, json!([tool]));
+        pty.text("Elapsed:");
+        let row_of = |screen: &vt100::Screen, needle: &str| {
+            screen.contents().lines().position(|line| line.contains(needle)).unwrap()
+        };
+        assert_eq!(
+            row_of(pty.parser.screen(), "Elapsed:") - row_of(pty.parser.screen(), "Output"),
+            1,
+            "尚无输出时不预留空行"
+        );
+        std::fs::write(project.path().join("scroll-start"), "").unwrap();
         pty.wait_for("初始输出与运行边框已绘制", |screen| {
             let text = screen.contents();
             text.contains("scroll-line-02") && text.contains("Elapsed:")
         });
-        let row_of = |screen: &vt100::Screen, needle: &str| {
-            screen.contents().lines().position(|line| line.contains(needle)).unwrap()
-        };
-        let anchors = ["$ bash scroll-output.sh", "Output", "scroll-line-02", "Elapsed:"]
-            .map(|needle| row_of(pty.parser.screen(), needle));
         assert!(!pty.parser.screen().alternate_screen());
-        assert_eq!(anchors[3] - anchors[1], 12, "10 行正文及一行提示");
+        assert_eq!(
+            row_of(pty.parser.screen(), "Elapsed:") - row_of(pty.parser.screen(), "Output"),
+            4,
+            "只有三行输出时仅显示三行"
+        );
 
         std::fs::write(project.path().join("scroll-next"), "").unwrap();
         pty.wait_for("固定窗口自动移出旧行并显示最新行", |screen| {
@@ -111,20 +123,32 @@ while [[ ! -e scroll-finish ]]; do sleep 0.01; done
         let text = screen.contents();
         assert!(text.contains("scroll-line-06") && !text.contains("scroll-line-05"), "{text}");
         assert!(text.contains("6 earlier lines, showing 10 of 16"), "{text}");
-        for (needle, row) in ["$ bash scroll-output.sh", "Output", "scroll-line-15", "Elapsed:"]
+        let anchors = ["$ bash scroll-output.sh", "Output", "scroll-line-15", "Elapsed:"]
+            .map(|needle| row_of(screen, needle));
+        assert_eq!(anchors[3] - anchors[1], 12, "10 行正文及一行提示");
+        assert!(!screen.alternate_screen());
+        pty.draft("保留输入草稿");
+
+        std::fs::write(project.path().join("scroll-again"), "").unwrap();
+        pty.wait_for("窗口已满后继续滚动而不等待命令结束", |screen| {
+            let text = screen.contents();
+            text.contains("scroll-line-19") && !text.contains("scroll-line-06")
+        });
+        let screen = pty.parser.screen();
+        let text = screen.contents();
+        assert!(text.contains("scroll-line-10") && !text.contains("scroll-line-09"), "{text}");
+        assert!(text.contains("10 earlier lines, showing 10 of 20"), "{text}");
+        for (needle, row) in ["$ bash scroll-output.sh", "Output", "scroll-line-19", "Elapsed:"]
             .into_iter().zip(anchors)
         {
             assert_eq!(row_of(screen, needle), row, "{protocol}: {needle}\n{text}");
         }
-        assert!(!screen.alternate_screen());
-        pty.draft("保留输入草稿");
-
         std::fs::write(project.path().join("scroll-finish"), "").unwrap();
         let (request, body) = pty.request_at(&provider, api_path(protocol));
         let outputs = cancel_tool_outputs(&body, protocol);
         assert_eq!(outputs.len(), 1);
         let stdout = outputs[0].1["stdout"].as_str().unwrap();
-        assert!(stdout.contains("scroll-line-00") && stdout.contains("scroll-line-15"));
+        assert!(stdout.contains("scroll-line-00") && stdout.contains("scroll-line-19"));
         ask_final_reply(request, protocol, "fixed output done");
         pty.text("fixed output done");
         pty.ready();
@@ -133,6 +157,53 @@ while [[ ! -e scroll-finish ]]; do sleep 0.01; done
             screen.contents().contains("scroll-line-00")
         });
         pty.draft("保留输入草稿");
+        pty.input("\x03");
+        pty.finish();
+        no_more(&provider);
+    }
+}
+
+#[test]
+fn bash_task_output_snapshot_keeps_bounded_tail_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let provider = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = ask_tui_start(&provider, home.path(), project.path(), protocol);
+        pty.input("background output\r");
+        let (request, _) = pty.request_at(&provider, api_path(protocol));
+        let args = json!({"command":"for i in {0..19}; do printf 'task-line-%02d\\n' \"$i\"; done; touch task-output-ready", "mode":"background"});
+        let make_call = |id: &str, name: &str, args: Value| {
+            if protocol == "completion" {
+                call(id, name, args)
+            } else {
+                response_call(id, name, args)
+            }
+        };
+        ask_reply_calls(request, protocol, json!([make_call("start", "bash", args)]));
+        let (request, body) = pty.request_at(&provider, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        let task_id = outputs.last().unwrap().1["task_id"].as_str().unwrap();
+        pty.wait_for("后台命令已写完输出", |_| project.path().join("task-output-ready").is_file());
+        let args = json!({"task_id":task_id, "action":"stop"});
+        ask_reply_calls(request, protocol, json!([make_call("stop", "bash_task", args)]));
+        let (request, body) = pty.request_at(&provider, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        let stdout = outputs.last().unwrap().1["stdout"].as_str().unwrap();
+        assert!(stdout.contains("task-line-00") && stdout.contains("task-line-19"));
+        pty.wait_for("Bash task 快照仅显示最新十行", |screen| {
+            let text = screen.contents();
+            text.contains("bash_task") && text.contains("task-line-19")
+                && text.contains("10 earlier lines, showing 10 of 20")
+                && !text.contains("task-line-09")
+        });
+        pty.input("保留快照草稿");
+        pty.draft("保留快照草稿");
+        pty.function_key('o');
+        pty.text("task-line-00");
+        pty.draft("保留快照草稿");
+        ask_final_reply(request, protocol, "snapshot done");
+        pty.text("snapshot done");
         pty.input("\x03");
         pty.finish();
         no_more(&provider);
