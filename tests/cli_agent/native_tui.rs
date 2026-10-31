@@ -12,6 +12,50 @@ fn native_wait_complete(pty: &mut Pty, prefix: &str, count: usize) {
 // 原生历史必须在运行中提交；退出只收尾，不能重新输出早期会话。
 
 #[test]
+fn native_tui_streaming_keeps_input_cursor_visible_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let provider = server();
+        let (_home, mut pty) = context_tui_start(&provider, protocol, 100_000, 80);
+        pty.input("cursor-stream-task\r");
+        let (request, _) = pty.request_at(&provider, api_path(protocol));
+        let mut stream = SseReply::new(request);
+        let mut answer = String::from("cursor-stream-start");
+        streaming_delta(&mut stream, protocol, &answer);
+        pty.text(&answer);
+        let draft = "cursor-draft 中";
+        pty.input(draft);
+        pty.draft(draft);
+        let before = pty.raw.len();
+        for batch in 0..3 {
+            // 每批等待可见标记，完成后继续核对原生历史提交。
+            let delta = (0..40).map(|line| format!("\n\ncursor-stream-{batch}-{line:03}"))
+                .collect::<String>();
+            answer.push_str(&delta);
+            streaming_delta(&mut stream, protocol, &delta);
+            pty.text(&format!("cursor-stream-{batch}-039"));
+            pty.wait_for("流式输出后草稿光标保持可见", |screen| {
+                !screen.hide_cursor()
+                    && screen.contents().lines().position(|line| line.contains(draft))
+                        == Some(usize::from(screen.cursor_position().0))
+            });
+        }
+        streaming_complete(&mut stream, protocol, &answer);
+        stream.finish();
+        pty.completed();
+        pty.draft(draft);
+        for batch in 0..3 {
+            native_wait_complete(&mut pty, &format!("cursor-stream-{batch}-"), 40);
+        }
+        let output = String::from_utf8_lossy(&pty.raw[before..]);
+        assert!(!output.contains("\x1b[?25l"), "流式输出重复隐藏光标：{output:?}");
+        assert!(!output.contains("\x1b[?25h"), "流式输出重复显示光标：{output:?}");
+        pty.input("\x03");
+        pty.finish();
+        no_more(&provider);
+    }
+}
+
+#[test]
 fn native_tui_long_history_exits_without_replay_both_protocols() {
     for protocol in ["completion", "response"] {
         let provider = server();
@@ -57,7 +101,8 @@ fn native_tui_new_clears_native_history_without_deleting_saved_session() {
         .collect::<Vec<_>>().join("\n");
     final_reply(request, &answer);
     pty.text("native-old-079");
-    pty.ready();
+    // 草稿回显只证明输入可编辑，清理命令需要等待模型任务完成。
+    pty.completed();
     pty.input("reset-barrier");
     pty.draft("reset-barrier");
     native_wait_complete(&mut pty, "native-old-", 80);

@@ -826,7 +826,8 @@ fn tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_l
                 response_final(request, "persist recovery answer");
             }
             resumed.text("persist recovery answer");
-            resumed.ready();
+            // 输入框在运行中也可编辑；等待本次任务完成后才能执行空闲命令。
+            resumed.completed();
             resume_boundary_open(&mut resumed);
             resumed.wait_for("完成新任务后列表标记为 done", |screen| {
                 screen.contents().contains("✓ done")
