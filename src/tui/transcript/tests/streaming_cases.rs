@@ -36,7 +36,8 @@ fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
     let started = Instant::now() - Duration::from_secs(85);
     transcript.activity = Some(Activity::new(started));
     transcript.tick(started + Duration::from_secs(85));
-    assert!(screen(&render(&mut transcript, 100, 30)).contains("Requesting model · 1m 25s"));
+    assert!(screen(&render(&mut transcript, 100, 30)).contains("ESC Requesting model"));
+    assert_eq!(transcript.running_duration().as_deref(), Some("1m 25s"));
 
     for id in ["ask-1", "ask-2"] {
         transcript.progress(AgentEvent::ToolStarted {
@@ -52,7 +53,8 @@ fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
             .waiting_started
             .unwrap();
         assert!(screen(&render(&mut transcript, 100, 30)).contains("Waiting for input · 0s"));
-        assert!(!transcript.tick(waiting + Duration::from_millis(999)));
+        transcript.tick(waiting + Duration::from_millis(999));
+        assert!(screen(&render(&mut transcript, 100, 30)).contains("Waiting for input · 0s"));
         transcript.tick(waiting + Duration::from_secs(85));
         assert!(screen(&render(&mut transcript, 100, 30)).contains("Waiting for input · 1m 25s"));
         transcript.progress(AgentEvent::ToolFinished {
@@ -68,16 +70,16 @@ fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
                 .is_none()
         );
         transcript.tick(started + Duration::from_secs(85));
-        assert!(
-            screen(&render(&mut transcript, 100, 30)).contains("Processing tool result · 1m 25s")
-        );
+        assert!(screen(&render(&mut transcript, 100, 30)).contains("ESC Processing tool result"));
+        assert_eq!(transcript.running_duration().as_deref(), Some("1m 25s"));
         assert_eq!(transcript.activity.as_ref().unwrap().started, Some(started));
     }
     transcript.waiting_for_input();
     transcript.cancelling();
     transcript.waiting_for_input();
     transcript.tick(started + Duration::from_secs(85));
-    assert!(screen(&render(&mut transcript, 100, 30)).contains("Cancelling · 1m 25s"));
+    assert!(screen(&render(&mut transcript, 100, 30)).contains("ESC Cancelling"));
+    assert_eq!(transcript.running_duration().as_deref(), Some("1m 25s"));
     transcript.cancel();
     assert!(!transcript.tick(Instant::now() + Duration::from_secs(3600)));
 }
@@ -98,11 +100,7 @@ fn activity_duration_carries_seconds_minutes_and_hours() {
         (86400, "24h 0m 0s"),
     ] {
         transcript.tick(started + Duration::from_secs(seconds));
-        let text = screen(&render(&mut transcript, 100, 30));
-        assert!(
-            text.contains(&format!("Requesting model · {expected}")),
-            "{text}"
-        );
+        assert_eq!(transcript.running_duration().as_deref(), Some(expected));
     }
 }
 
@@ -112,13 +110,17 @@ fn activity_timer_ticks_without_events_and_stops_on_failure() {
     transcript.append("You", "waiting task");
     transcript.begin_run();
     let started = transcript.activity.as_ref().unwrap().started.unwrap();
-    assert!(!transcript.tick(started + Duration::from_millis(999)));
+    assert!(!transcript.tick(started + Duration::from_millis(79)));
+    assert!(transcript.tick(started + Duration::from_millis(80)));
     assert!(transcript.tick(started + Duration::from_secs(1)));
-    assert!(!transcript.tick(started + Duration::from_millis(1500)));
+    assert!(!transcript.tick(started + Duration::from_secs(1)));
     let text = screen(&render(&mut transcript, 100, 30));
-    assert!(text.contains("✻ Requesting model · 1s"));
+    assert!(text.contains("ESC Requesting model"));
+    assert!(!text.contains("model ·"));
+    assert_eq!(transcript.running_duration().as_deref(), Some("1s"));
     assert_eq!(transcript.entries.len(), 1);
     transcript.fail();
+    assert!(transcript.running_duration().is_none());
     assert!(!transcript.tick(started + Duration::from_secs(90)));
     assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Failed ·"));
 }
@@ -171,29 +173,31 @@ fn activity_follows_latest_message_across_model_and_tool_phases() {
         let started = transcript.activity.as_ref().unwrap().started.unwrap();
         transcript.tick(started + Duration::from_secs(5));
         let text = screen(&render(&mut transcript, 100, 30));
-        assert!(text.contains(&format!("✻ {label} · 5s")), "{text}");
-        assert_eq!(text.matches('✻').count(), 1);
-        assert!(text.find("run task").unwrap() < text.find('✻').unwrap());
+        assert!(text.contains(&format!("ESC {label}")), "{text}");
+        assert_eq!(transcript.running_duration().as_deref(), Some("5s"));
+        assert_eq!(text.matches("ESC ").count(), 1);
+        assert!(text.find("run task").unwrap() < text.find("ESC ").unwrap());
         if text.contains("answer content") {
-            assert!(text.find("answer content").unwrap() < text.find('✻').unwrap());
+            assert!(text.find("answer content").unwrap() < text.find("ESC ").unwrap());
         }
     }
     transcript.cancelling();
     transcript.progress(AgentEvent::ThinkingDelta {
         text: "late delta".into(),
     });
-    assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Cancelling ·"));
+    assert!(screen(&render(&mut transcript, 100, 30)).contains("ESC Cancelling"));
     transcript.cancel();
     assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Cancelled ·"));
     transcript.begin_run();
     transcript.append("You", "next task");
     let text = screen(&render(&mut transcript, 100, 30));
-    assert_eq!(text.matches('✻').count(), 1);
-    assert!(text.contains("✻ Requesting model · 0s"));
-    assert!(text.find("next task").unwrap() < text.find('✻').unwrap());
+    assert_eq!(text.matches("ESC ").count(), 1);
+    assert!(text.contains("ESC Requesting model"));
+    assert_eq!(transcript.running_duration().as_deref(), Some("0s"));
+    assert!(text.find("next task").unwrap() < text.find("ESC ").unwrap());
     // 窄屏也只占一行；恢复宽度后显示完整状态。
     let text = screen(&render(&mut transcript, 18, 40));
-    assert_eq!(text.lines().filter(|line| line.contains('✻')).count(), 1);
+    assert_eq!(text.lines().filter(|line| line.contains("ESC ")).count(), 1);
     assert_eq!(
         transcript
             .activity
@@ -206,7 +210,38 @@ fn activity_follows_latest_message_across_model_and_tool_phases() {
             .height,
         1
     );
-    assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Requesting model · 0s"));
+    assert!(screen(&render(&mut transcript, 100, 30)).contains("ESC Requesting model"));
+}
+
+#[test]
+fn activity_sweep_moves_from_first_to_last_without_shifting_text() {
+    let started = Instant::now();
+    let mut transcript = Transcript::new();
+    transcript.activity = Some(Activity::new(started));
+    let initial = render(&mut transcript, 100, 10);
+    assert_eq!(initial[(6, 0)].fg, palette::ACCENT);
+    assert_eq!(initial[(21, 0)].fg, palette::DIM);
+    assert!(initial[(2, 0)].modifier.contains(Modifier::BOLD));
+    for index in 0..16_u16 {
+        transcript.tick(started + Duration::from_millis(u64::from(index) * 80));
+        let buffer = render(&mut transcript, 100, 10);
+        assert_eq!(screen(&buffer), screen(&initial));
+        assert_eq!(buffer[(6 + index, 0)].fg, palette::ACCENT);
+    }
+    transcript.tick(started + Duration::from_millis(24 * 80));
+    assert_eq!(render(&mut transcript, 100, 10)[(6, 0)].fg, palette::ACCENT);
+    assert_eq!(render(&mut transcript, 12, 10).area.width, 12);
+    assert_eq!(screen(&render(&mut transcript, 100, 10)), screen(&initial));
+    let activity = transcript.activity.as_mut().unwrap();
+    activity.phase("读取 e\u{301} 中😀");
+    assert_eq!(
+        Activity::sweep_line("ESC 读取 e\u{301} 中😀", 4).to_string(),
+        "ESC 读取 e\u{301} 中😀"
+    );
+    render(&mut transcript, 12, 10);
+    render(&mut transcript, 100, 10);
+    transcript.cancel();
+    assert!(!transcript.tick(started + Duration::from_secs(90)));
 }
 
 #[test]

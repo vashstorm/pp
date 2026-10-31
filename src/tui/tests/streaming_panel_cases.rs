@@ -230,6 +230,56 @@ fn effort_menu_filters_completes_and_cancels_without_changing_level() {
 }
 
 #[test]
+fn activity_duration_follows_context_and_yields_space_on_narrow_screens() {
+    let mut app = app();
+    app.usage = Some(crate::context::ContextUsage {
+        estimated_tokens: 100,
+        context_window: Some(40000),
+        auto_compact: false,
+        threshold_percent: 80,
+        last_request: None,
+    });
+    app.conversation.begin_run();
+    app.conversation
+        .tick(Instant::now() + Duration::from_secs(85));
+    let render_status = |app: &App, width| {
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|frame| app.draw_input_status(frame, frame.area()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    assert!(
+        render_status(&app, 100)
+            .trim_end()
+            .ends_with("Ctx 100/40.0k · 1m 25s")
+    );
+    let narrow = render_status(&app, 20);
+    assert!(narrow.trim_end().ends_with("Ctx 100/40.0k"), "{narrow}");
+    assert!(!narrow.contains("1m") && !narrow.contains("25s"));
+    app.conversation.cancel();
+    assert!(!render_status(&app, 100).contains("25s"));
+    app.conversation.begin_run();
+    assert!(
+        render_status(&app, 100)
+            .trim_end()
+            .ends_with("Ctx 100/40.0k · 0s")
+    );
+    app.conversation = app.conversation.fresh();
+    assert!(
+        render_status(&app, 100)
+            .trim_end()
+            .ends_with("Ctx 100/40.0k")
+    );
+}
+
+#[test]
 fn token_speed_completion_and_worker_fallback_preserve_success() {
     let mut app = app();
     app.usage = Some(crate::context::ContextUsage {

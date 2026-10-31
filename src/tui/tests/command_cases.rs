@@ -261,7 +261,7 @@ fn task_cancel_waits_for_completed_and_preserves_editable_draft() {
     assert_eq!(app.input_history, history);
     assert!(matches!(app.state, State::Cancelling));
     let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("✻ Cancelling ·"));
+    assert!(screen.contains("ESC Cancelling"));
     assert_eq!(screen.matches("Cancelling").count(), 1);
     assert!(screen.contains("secondary intact"));
     app.handle(Event::Paste("新".into()), &mut dirty);

@@ -9,7 +9,18 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
     for turn in 1..=2 {
         pty.input(&format!("task {turn}\r"));
         let (request, _) = pty.request(&server);
-        pty.text("✻ Requesting model ·");
+        pty.text("ESC Requesting model");
+        let letter_color = |screen: &vt100::Screen, offset| {
+            let (row, column) = context_tui_locate(screen, "ESC Requesting model").unwrap();
+            screen.cell(row, column + 4 + offset).unwrap().fgcolor()
+        };
+        pty.wait_for("扫光到达首字", |screen| {
+            letter_color(screen, 0) == vt100::Color::Rgb(254, 188, 56)
+        });
+        pty.wait_for("扫光到达末字且首字恢复灰色", |screen| {
+            letter_color(screen, 0) == vt100::Color::Rgb(95, 102, 115)
+                && letter_color(screen, 15) == vt100::Color::Rgb(254, 188, 56)
+        });
         assert_eq!(
             pty.parser
                 .screen()
@@ -20,7 +31,11 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
         );
         pty.wait_for("等待网络时秒表持续更新", |screen| {
             let text = screen.contents();
-            text.contains("✻ Requesting model · 1s") && text.matches('✻').count() == 1
+            text.contains("ESC Requesting model")
+                && text.matches("ESC ").count() == 1
+                && text.lines().any(|line| {
+                    line.contains("Ctx ") && line.contains(" · ") && line.trim_end().ends_with('s')
+                })
         });
         final_reply(request, &format!("answer {turn}"));
         pty.wait_for("每轮完成提示与明亮加粗样式", |screen| {

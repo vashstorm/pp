@@ -110,6 +110,7 @@ pub(super) struct LayoutLine {
 
 enum EntryBody {
     Plain,
+    Activity(u128),
     Tips,
     Markdown(super::markdown::MarkdownDocument),
     Diff(FileDiff),
@@ -158,6 +159,7 @@ struct Activity {
     waiting_started: Option<Instant>,
     label: String,
     seconds: Option<u64>,
+    run_seconds: u64,
     running: bool,
 }
 
@@ -309,6 +311,13 @@ impl Transcript {
         self.activity = Some(Activity::new(Instant::now()));
     }
 
+    pub(super) fn running_duration(&self) -> Option<String> {
+        self.activity
+            .as_ref()
+            .filter(|activity| activity.running)
+            .map(|activity| Activity::format_duration(activity.run_seconds))
+    }
+
     pub(super) fn tick(&mut self, now: Instant) -> bool {
         let mut changed = self
             .activity
@@ -361,6 +370,7 @@ impl Transcript {
         activity.started = None;
         activity.waiting_started = None;
         activity.running = false;
+        activity.entry.body = EntryBody::Plain;
         activity.label = label.into();
         activity.seconds = elapsed.map(|elapsed| elapsed.as_secs());
         activity.entry.text = format!(

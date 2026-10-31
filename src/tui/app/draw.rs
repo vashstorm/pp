@@ -2,6 +2,7 @@ use crate::tui::{
     Alignment, App, Block, Borders, Color, Frame, Line, Rect, StatusContext, Style, changes, menu,
     plan_list, platform_text, statusline, transcript_style, tree, welcome,
 };
+use ratatui::text::Span;
 
 /// 主屏幕和原生历史提交共用的几何结果，TODO 永远不进入对话 viewport。
 pub(in crate::tui) struct MainLayout {
@@ -379,12 +380,32 @@ impl App {
     }
 
     pub(in crate::tui) fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
-        // 上下文固定在右端；压缩等临时状态显示在它左侧，空间不足时优先保留上下文。
+        // 总耗时紧随 Ctx；空间不足时整块隐藏耗时，优先保留上下文。
         let usage_style = Style::default().bg(Color::Rgb(26, 27, 38));
         let mut right = area.right();
+        let mut fields = Vec::new();
         if let Some(usage) = self.usage.as_ref() {
             let (text, color) = statusline::context_field(usage);
-            let line = Line::styled(format!(" {text} "), usage_style.fg(color))
+            fields.push(Span::styled(
+                format!(" {text} "),
+                Style::default().fg(color),
+            ));
+        }
+        if let Some(elapsed) = self.conversation.running_duration() {
+            let text = if fields.is_empty() {
+                format!(" {elapsed} ")
+            } else {
+                format!("· {elapsed} ")
+            };
+            if fields.iter().map(Span::width).sum::<usize>() + Line::from(text.as_str()).width()
+                <= usize::from(area.width)
+            {
+                fields.push(Span::styled(text, Style::default().fg(Color::DarkGray)));
+            }
+        }
+        if !fields.is_empty() {
+            let line = Line::from(fields)
+                .style(usage_style)
                 .alignment(Alignment::Right);
             let width = u16::try_from(line.width())
                 .unwrap_or(u16::MAX)
