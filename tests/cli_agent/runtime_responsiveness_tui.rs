@@ -17,7 +17,7 @@ fn tui_runtime_responsiveness_continuous_thinking_unicode_paste_and_cursor() {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(
                 config_path(dir.path(), "settings.yml"),
-                r#"{"think_level":"high"}"#,
+                r#"{"tui":{"max_fps":60}}"#,
             )
             .unwrap();
             std::fs::write(
@@ -95,6 +95,9 @@ fn tui_runtime_responsiveness_continuous_thinking_unicode_paste_and_cursor() {
                 latencies.push(started.elapsed());
             }
             latencies.sort();
+            if std::env::var_os("PP_TUI_PERF_ASSERT").is_some() {
+                assert!(latencies[18] <= Duration::from_millis(50));
+            }
             println!(
                 "METRIC protocol={protocol} code={code} samples=20 input_p95_ms={}",
                 latencies[18].as_millis()
@@ -109,6 +112,9 @@ fn tui_runtime_responsiveness_continuous_thinking_unicode_paste_and_cursor() {
             let cancelled = Instant::now();
             pty.input("\x1b");
             pty.text("Cancelled");
+            if std::env::var_os("PP_TUI_PERF_ASSERT").is_some() {
+                assert!(cancelled.elapsed() <= Duration::from_millis(100));
+            }
             println!(
                 "METRIC protocol={protocol} code={code} esc_ms={}",
                 cancelled.elapsed().as_millis()

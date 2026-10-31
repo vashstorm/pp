@@ -246,13 +246,13 @@ fn run(args: Args) -> Result<()> {
     let migration_error = global_dir.as_ref().ok().and_then(|dir| {
         agent_store::initialize(dir, &cancellation::CancellationToken::new()).err()
     });
-    // 通知设置独立于模型初始化；无效设置的诊断仍由既有启动路径呈现。
-    let notification_options = global_dir
+    // 显示设置独立于模型初始化；无效设置的诊断仍由既有启动路径呈现。
+    let tui_settings = global_dir
         .as_ref()
         .ok()
         .filter(|_| use_tui)
         .and_then(|dir| config::read_settings(&dir.join("settings.yml")).ok())
-        .map(|settings| settings.notification_options())
+        .map(|settings| (settings.notification_options(), settings.tui))
         .unwrap_or_default();
     let file_commands = if args.prompt.is_none() {
         match &global_dir {
@@ -375,7 +375,7 @@ fn run(args: Args) -> Result<()> {
             skills,
             file_commands,
             continue_requested,
-            notification_options,
+            tui_settings,
             bootstrap,
         );
     }

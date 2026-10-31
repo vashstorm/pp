@@ -43,6 +43,8 @@ impl App {
             .diagnostics
             .clone();
         let mut app = Self {
+            stream: Default::default(),
+            review_stream: Default::default(),
             renderer: None,
             model_control: None,
             pending_model: None,

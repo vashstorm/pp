@@ -8,9 +8,8 @@
 //! splits a grapheme: a single grapheme wider than the available columns keeps
 //! its own physical line and is clipped by the viewport.
 //!
-//! Streaming: the parent re-parses the full accumulated source for dirty
-//! entries, so late reference definitions, list continuations and setext
-//! headings correctly reflow earlier text. Nothing here caches across frames.
+//! 流式更新完整解析累计正文，保留后置引用、列表续行与 Setext 标题语义。
+//! 后台按语义块与宽度复用物理行，避免未变化块重复换行。
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -39,8 +38,10 @@ const CELL_SEPARATOR_WIDTH: usize = 3;
 
 pub(super) struct MarkdownDocument {
     blocks: Vec<Block>,
+    cached: Vec<Option<(u16, Vec<Line<'static>>)>>,
 }
 
+#[derive(PartialEq)]
 enum Block {
     /// Lines with resolved hanging prefixes (list markers, quote bars).
     Paragraph(Vec<WrapLine>, Option<usize>),
@@ -53,12 +54,14 @@ enum Block {
 /// One logical source line: styled spans plus the prefix shown on its first
 /// physical line (`first`, e.g. `• `, `│ `) and on wrapped continuations
 /// (`rest`, the hanging indent).
+#[derive(PartialEq)]
 struct WrapLine {
     first: Vec<Span<'static>>,
     rest: Vec<Span<'static>>,
     spans: Vec<Span<'static>>,
 }
 
+#[derive(PartialEq)]
 struct CodeBlock {
     lang: Option<String>,
     /// 已着色的每行 spans（tab 已展开；高亮失败时为纯色单 span）。
@@ -68,6 +71,7 @@ struct CodeBlock {
     rest: Vec<Span<'static>>,
 }
 
+#[derive(PartialEq)]
 struct TableBlock {
     aligns: Vec<Alignment>,
     header: Vec<Cell>,
@@ -119,7 +123,10 @@ pub(super) fn parse_instruction(source: &str) -> MarkdownDocument {
         blocks.push(Block::Rule(Vec::new()));
     }
     blocks.extend(parse_styled(&metadata[offset..], true).blocks);
-    MarkdownDocument { blocks }
+    MarkdownDocument {
+        blocks,
+        cached: Vec::new(),
+    }
 }
 
 fn parse_styled(source: &str, instruction: bool) -> MarkdownDocument {
@@ -185,6 +192,50 @@ fn parse_styled(source: &str, instruction: bool) -> MarkdownDocument {
 }
 
 impl MarkdownDocument {
+    // 保留全篇语义解析，只复用语义相等块的物理行。
+    pub(super) fn update(&mut self, source: &str) {
+        let mut next = parse(source);
+        next.cached = next
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(i, block)| {
+                if self.blocks.get(i) == Some(block) {
+                    self.cached.get_mut(i).and_then(Option::take)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        *self = next;
+    }
+    pub(super) fn layout_cached(&mut self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+        self.cached.resize_with(self.blocks.len(), || None);
+        let mut out = Vec::new();
+        let mut previous_group = None;
+        for (i, block) in self.blocks.iter().enumerate() {
+            let group = match block {
+                Block::Paragraph(_, group) => *group,
+                _ => None,
+            };
+            if i > 0 && (group.is_none() || group != previous_group) {
+                out.push(Line::from(""));
+            }
+            previous_group = group;
+            let slot = &mut self.cached[i];
+            if slot.as_ref().is_none_or(|(w, _)| *w != width) {
+                let mut rows = Vec::new();
+                layout_block(block, usize::from(width), &mut rows);
+                *slot = Some((width, rows));
+            }
+            out.extend(slot.as_ref().expect("块排版已完成").1.iter().cloned());
+        }
+        out
+    }
+
     /// Physical lines for `width` terminal columns. `width == 0` yields no
     /// lines. Lines are already wrapped; draw without a second wrap pass.
     pub(super) fn layout(&self, width: u16) -> Vec<Line<'static>> {
@@ -240,34 +291,7 @@ impl MarkdownDocument {
             }
             previous_group = group;
             on_block(block, out.len());
-            match block {
-                Block::Paragraph(lines, _) | Block::Heading(lines, _) => {
-                    layout_paragraph(lines, width, &mut out);
-                }
-                Block::Code(cb) => layout_code(cb, width, &mut out),
-                Block::Rule(prefix) => {
-                    let mut spans = fit_prefix(prefix, width);
-                    let available = width.saturating_sub(spans_width(&spans)).max(1);
-                    spans.extend(rule_line(available).spans);
-                    out.push(Line::from(spans));
-                }
-                Block::Table(tb) => {
-                    let first = fit_prefix(&tb.first, width);
-                    let rest = fit_prefix(&tb.rest, width);
-                    let available = width
-                        .saturating_sub(spans_width(&first).max(spans_width(&rest)))
-                        .max(1);
-                    let mut rows = Vec::new();
-                    layout_table(tb, available, &mut rows);
-                    for (index, row) in rows.into_iter().enumerate() {
-                        let prefix = if index == 0 { &first } else { &rest };
-                        let mut spans =
-                            fit_prefix(prefix, width.saturating_sub(row.width()).saturating_add(1));
-                        spans.extend(row.spans);
-                        out.push(Line::from(spans));
-                    }
-                }
-            }
+            layout_block(block, width, &mut out);
         }
         out
     }
@@ -370,6 +394,7 @@ impl<'a> Builder<'a> {
         self.flush_block();
         MarkdownDocument {
             blocks: std::mem::take(&mut self.blocks),
+            cached: Vec::new(),
         }
     }
 
@@ -1372,3 +1397,76 @@ fn trim_cell(cell: &mut Cell) {
 
 #[cfg(test)]
 mod tests;
+
+fn layout_block(block: &Block, width: usize, out: &mut Vec<Line<'static>>) {
+    match block {
+        Block::Paragraph(lines, _) | Block::Heading(lines, _) => {
+            layout_paragraph(lines, width, out);
+        }
+        Block::Code(cb) => layout_code(cb, width, out),
+        Block::Rule(prefix) => {
+            let mut spans = fit_prefix(prefix, width);
+            let available = width.saturating_sub(spans_width(&spans)).max(1);
+            spans.extend(rule_line(available).spans);
+            out.push(Line::from(spans));
+        }
+        Block::Table(tb) => {
+            let first = fit_prefix(&tb.first, width);
+            let rest = fit_prefix(&tb.rest, width);
+            let available = width
+                .saturating_sub(spans_width(&first).max(spans_width(&rest)))
+                .max(1);
+            let mut rows = Vec::new();
+            layout_table(tb, available, &mut rows);
+            for (index, row) in rows.into_iter().enumerate() {
+                let prefix = if index == 0 { &first } else { &rest };
+                let mut spans =
+                    fit_prefix(prefix, width.saturating_sub(row.width()).saturating_add(1));
+                spans.extend(row.spans);
+                out.push(Line::from(spans));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    #[test]
+    fn markdown_block_cache_reduces_layout_work() {
+        let prefix = "Stable paragraph with **bold** and 中文🙂.\n\n".repeat(100);
+        let mut document = parse(&format!("{prefix}tail"));
+        document.layout_cached(80);
+        let mut cached_builds = 0;
+        let mut full_builds = 0;
+        for i in 0..20 {
+            let source = format!("{prefix}tail{}", "x".repeat(i + 1));
+            document.update(&source);
+            cached_builds += document.cached.iter().filter(|slot| slot.is_none()).count();
+            full_builds += document.blocks.len();
+            assert_eq!(document.layout_cached(80), parse(&source).layout(80));
+        }
+        assert_eq!(cached_builds, 20);
+        assert_eq!(full_builds, 2020);
+        println!("METRIC cached_block_builds={cached_builds} full_block_builds={full_builds}");
+    }
+
+    #[test]
+    fn markdown_block_cache_matches_full_semantics_after_updates_and_resize() {
+        let mut document = parse("稳定段落中文🙂\n\n[link][id]\n\ntitle");
+        document.layout_cached(40);
+        document.update("稳定段落中文🙂\n\n[link][id]\n\ntitle\n---\n\n[id]: https://example.com\n\n```rust\nlet x = 1;");
+        assert!(document.cached[0].is_some());
+        assert!(document.cached[1].is_none());
+        for source in [
+            "稳定段落中文🙂\n\n[link][id]\n\ntitle\n---\n\n[id]: https://example.com\n\n```rust\nlet x = 1;",
+            "- item\n\n  continuation\n\n| 表 | 值 |\n| - | - |\n| 🙂 | 中文 |",
+            "替换正文\n\n> quote\n\n```rust\nlet x = 2;\n```",
+        ] {
+            document.update(source);
+            for width in [80, 12, 40, 0] {
+                assert_eq!(document.layout_cached(width), parse(source).layout(width));
+            }
+        }
+    }
+}

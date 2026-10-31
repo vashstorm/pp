@@ -6,6 +6,7 @@ mod auth_tests;
 mod changes;
 mod edit_diff;
 mod files;
+mod frame_clock;
 mod history;
 mod markdown;
 mod mcp;
@@ -21,6 +22,7 @@ mod scrollback;
 mod sessions;
 mod skills;
 mod statusline;
+mod stream_buffer;
 mod subagents;
 mod surface;
 mod tips;
@@ -96,7 +98,7 @@ pub(crate) fn run(
     skills: crate::skills::SharedSkills,
     file_commands: commands::FileCommands,
     auto_continue: bool,
-    notification_options: NotificationOptions,
+    options: (NotificationOptions, crate::config::TuiSettings),
     bootstrap: Option<crate::agent::Bootstrap>,
 ) -> Result<()> {
     // 初始化中途失败和 panic 同样恢复终端模式。
@@ -108,14 +110,7 @@ pub(crate) fn run(
     let history_path = bootstrap
         .as_ref()
         .map(|bootstrap| bootstrap.dir.join("history.db"));
-    let mut app = App::new_with_skills(
-        agent,
-        skills,
-        file_commands,
-        cwd,
-        notification_options,
-        history_path,
-    )?;
+    let mut app = App::new_with_skills(agent, skills, file_commands, cwd, options.0, history_path)?;
     app.bootstrap = bootstrap;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c：Execute 保持原继续行为；Plan/Draft 提示继续输入；Plan/Ready 进入审阅。
@@ -137,7 +132,7 @@ pub(crate) fn run(
     app.renderer = Some(render_worker::Worker::start().context("starting layout worker")?);
     let mut dirty = true;
     let mut generation = app.conversation.native_generation();
-    let mut last_paint = Instant::now() - Duration::from_millis(33);
+    let mut clock = frame_clock::FrameClock::new(options.1.max_fps);
     loop {
         let input_started = Instant::now();
         let mut input_changed = false;
@@ -166,6 +161,7 @@ pub(crate) fn run(
         dirty |= app.review_transcript_tick(Instant::now());
         dirty |= app.token_speed.tick(Instant::now());
         if quit {
+            app.flush_stream();
             if let Some(cancellation) = &app.active_cancellation {
                 cancellation.cancel();
             }
@@ -186,7 +182,9 @@ pub(crate) fn run(
             crate::write_resume_hint(&mut io::stderr(), app.session_id.as_deref())?;
             return Ok(());
         }
-        if dirty && (input_changed || last_paint.elapsed() >= Duration::from_millis(33)) {
+        if dirty && clock.ready(Instant::now()) {
+            clock.started(Instant::now());
+            app.flush_stream();
             if generation != app.conversation.native_generation() {
                 surface.reset_history();
                 generation = app.conversation.native_generation();
@@ -200,11 +198,10 @@ pub(crate) fn run(
                 false,
             )
             .context("drawing terminal")?;
-            last_paint = Instant::now();
         }
         let wait = if dirty {
-            Duration::from_millis(33)
-                .saturating_sub(last_paint.elapsed())
+            clock
+                .remaining(Instant::now())
                 .min(Duration::from_millis(5))
         } else if app
             .renderer
@@ -241,7 +238,6 @@ fn paint_surface(
     }
     let alternate = !exiting && app.needs_alternate();
     app.native_render = !alternate;
-    let mut backlog = false;
     if !alternate {
         let conversation_height = app.main_layout(area).conversation.height;
         loop {
@@ -273,8 +269,7 @@ fn paint_surface(
             surface.paint(buffer, cursor, false, &batch.rows)?;
             app.conversation.acknowledge_native_batch(batch);
             if !exiting {
-                backlog = true;
-                break;
+                return Ok(true);
             }
         }
     }
@@ -293,7 +288,7 @@ fn paint_surface(
         rendered.as_ref().expect("rendered frame")
     };
     surface.paint(buffer, cursor, alternate, &[])?;
-    Ok(backlog)
+    Ok(false)
 }
 
 enum WorkerCommand {
@@ -661,6 +656,8 @@ impl EscapeTap {
 }
 
 struct App {
+    stream: stream_buffer::StreamBuffer,
+    review_stream: stream_buffer::StreamBuffer,
     renderer: Option<render_worker::Worker>,
     model_control: Option<crate::model_control::Service>,
     pending_model: Option<(u64, String)>,
@@ -836,6 +833,7 @@ impl App {
         events.send(event).expect("test channel");
         let original = self.events.replace(receiver);
         self.receive();
+        self.flush_stream();
         self.events = original;
     }
 }

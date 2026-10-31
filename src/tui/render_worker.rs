@@ -57,6 +57,7 @@ struct Job {
     width: u16,
     muted: bool,
     slot: Weak<Mutex<Option<Rendered>>>,
+    latest: Weak<AtomicU64>,
 }
 struct Rendered {
     epoch: u64,
@@ -106,18 +107,14 @@ impl Worker {
                     super::markdown::highlight_context(job.id, job.epoch);
                     let lines = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let index = documents.iter().position(
-                            |(id, epoch, text, _): &(
+                            |(id, _epoch, _text, _): &(
                                 u64,
                                 u64,
                                 Arc<str>,
                                 super::markdown::MarkdownDocument,
-                            )| {
-                                *id == job.id
-                                    && *epoch == job.epoch
-                                    && text.as_ref() == job.text.as_ref()
-                            },
+                            )| { *id == job.id },
                         );
-                        let document =
+                        let mut document =
                             index.and_then(|i| documents.remove(i)).unwrap_or_else(|| {
                                 (
                                     job.id,
@@ -126,7 +123,15 @@ impl Worker {
                                     super::markdown::parse(&job.text),
                                 )
                             });
-                        let mut lines = document.3.layout(job.width);
+                        if document.1 != job.epoch {
+                            document.3 = super::markdown::parse(&job.text);
+                            document.1 = job.epoch;
+                            document.2 = job.text.clone();
+                        } else if !Arc::ptr_eq(&document.2, &job.text) {
+                            document.3.update(&job.text);
+                            document.2 = job.text.clone();
+                        }
+                        let mut lines = document.3.layout_cached(job.width);
                         if job.muted {
                             for line in &mut lines {
                                 *line = std::mem::take(line).style(
@@ -143,6 +148,13 @@ impl Worker {
                         lines
                     }))
                     .unwrap_or_else(|_| plain(&job.text, job.width, job.muted));
+                    if job
+                        .latest
+                        .upgrade()
+                        .is_none_or(|latest| latest.load(Ordering::Acquire) != job.version)
+                    {
+                        continue;
+                    }
                     let mut result = slot.lock().unwrap_or_else(|e| e.into_inner());
                     if result
                         .as_ref()
@@ -199,8 +211,12 @@ pub(super) struct Ticket {
     epoch: u64,
     version: u64,
     source: Arc<str>,
+    revision: u64,
+    snapshot_revision: u64,
+    fallback: Option<Arc<EntryLayout>>,
     width: u16,
     slot: Arc<Mutex<Option<Rendered>>>,
+    latest: Arc<AtomicU64>,
     pub exact: bool,
 }
 impl Default for Ticket {
@@ -210,8 +226,12 @@ impl Default for Ticket {
             epoch: 0,
             version: 0,
             source: Arc::from(""),
+            revision: 1,
+            snapshot_revision: 0,
+            fallback: None,
             width: 0,
             slot: Arc::new(Mutex::new(None)),
+            latest: Arc::new(AtomicU64::new(0)),
             exact: false,
         }
     }
@@ -232,13 +252,21 @@ impl Drop for Ticket {
     }
 }
 impl Ticket {
+    pub fn invalidate(&mut self, replaced: bool) {
+        self.revision += 1;
+        if replaced {
+            self.epoch += 1;
+        }
+    }
     pub fn layout(&mut self, text: &str, width: u16, muted: bool) -> Arc<EntryLayout> {
-        if text != self.source.as_ref() || width != self.width || self.version == 0 {
-            if !text.starts_with(self.source.as_ref()) {
-                self.epoch += 1;
-            }
+        if self.revision != self.snapshot_revision || width != self.width || self.version == 0 {
             self.version += 1;
-            self.source = Arc::from(text);
+            self.latest.store(self.version, Ordering::Release);
+            if self.revision != self.snapshot_revision {
+                self.source = Arc::from(text);
+                self.snapshot_revision = self.revision;
+            }
+            self.fallback = None;
             self.width = width;
             self.exact = false;
             CURRENT.with(|current| {
@@ -252,6 +280,7 @@ impl Ticket {
                         width,
                         muted,
                         slot: Arc::downgrade(&self.slot),
+                        latest: Arc::downgrade(&self.latest),
                     });
                     shared.wake.notify_one();
                 }
@@ -268,11 +297,16 @@ impl Ticket {
             }
         }
         // 回退只排版有限尾部；完整正文仍由后台处理，不能用于历史提交。
+        if let Some(layout) = &self.fallback {
+            return layout.clone();
+        }
         let start = text.len().saturating_sub(8192);
         let start = (start..=text.len())
             .find(|&i| text.is_char_boundary(i))
             .unwrap_or(text.len());
-        Arc::new(prepared(plain(&text[start..], width, muted), width))
+        let layout = Arc::new(prepared(plain(&text[start..], width, muted), width));
+        self.fallback = Some(layout.clone());
+        layout
     }
 }
 fn prepared(lines: Vec<Line<'static>>, width: u16) -> EntryLayout {
@@ -337,6 +371,25 @@ mod tests {
     }
 
     #[test]
+    fn layout_worker_unchanged_revision_reuses_snapshot_fallback_and_job() {
+        let worker = Worker::start().unwrap();
+        let (release, gate) = std::sync::mpsc::channel();
+        *worker.shared.gate.lock().unwrap() = Some(gate);
+        let mut ticket = Ticket::default();
+        let first = ticket.layout("正文🙂", 80, false);
+        let source = ticket.source.clone();
+        let version = ticket.version;
+        let second = ticket.layout("正文🙂", 80, false);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(&source, &ticket.source));
+        assert_eq!(version, ticket.version);
+        ticket.invalidate(false);
+        ticket.layout("正文🙂新增", 80, false);
+        assert_eq!(ticket.version, version + 1);
+        release.send(()).unwrap();
+    }
+
+    #[test]
     fn layout_worker_rejects_replacement_and_width_mismatch() {
         let worker = Worker::start().unwrap();
         let (release, gate) = std::sync::mpsc::channel();
@@ -344,6 +397,7 @@ mod tests {
         let mut ticket = Ticket::default();
         ticket.layout("old", 80, false);
         let old_epoch = ticket.epoch;
+        ticket.invalidate(true);
         ticket.layout("new", 80, false);
         *ticket.slot.lock().unwrap() = Some(Rendered {
             epoch: old_epoch,

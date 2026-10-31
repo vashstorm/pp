@@ -16,6 +16,8 @@
 
 pp is a Pi-style terminal coding agent written in Rust. It lets models read projects, edit files, search code, and run commands across multiple turns, directly in your terminal.
 
+TUI rendering defaults to a maximum of 60 FPS. Set `tui.max_fps` in `~/.pp/agent/settings.yml` to an integer from 1 to 120 and restart to change it. Input and cancellation are processed independently of rendering; streamed text is batched for display.
+
 ## Features
 
 | Feature | Description |

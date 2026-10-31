@@ -1114,3 +1114,26 @@ fn sqlite_concurrent_preferences_preserve_all_writers_and_failures_keep_memory()
     assert_eq!(first.default_think_level(), ThinkLevel::High);
     assert_eq!(first.default_reference(), "fixture/secondary");
 }
+
+#[test]
+fn tui_max_fps_defaults_and_strict_limits() {
+    let settings: Settings = yaml::parse("{}", "settings").unwrap();
+    assert_eq!(settings.tui.max_fps, 60);
+    for fps in [1, 30, 60, 120] {
+        let settings: Settings =
+            yaml::parse(&format!("tui: {{max_fps: {fps}}}"), "settings").unwrap();
+        settings.validate().unwrap();
+    }
+    for text in ["tui: {max_fps: 0}", "tui: {max_fps: 121}"] {
+        let settings: Settings = yaml::parse(text, "settings").unwrap();
+        assert!(settings.validate().is_err());
+    }
+    for text in [
+        "tui: null",
+        "tui: {max_fps: 1.5}",
+        "tui: {max_fps: '60'}",
+        "tui: {unknown: 60}",
+    ] {
+        assert!(yaml::parse::<Settings>(text, "settings").is_err());
+    }
+}

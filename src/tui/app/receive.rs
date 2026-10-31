@@ -5,6 +5,17 @@ use crate::tui::{
 };
 
 impl App {
+    pub(in crate::tui) fn flush_stream(&mut self) {
+        if let Some(event) = self.review_stream.take()
+            && let Some(review) = &mut self.review_transcript
+        {
+            review.progress(event);
+        }
+        if let Some(event) = self.stream.take() {
+            self.conversation.progress(event);
+        }
+    }
+
     pub(in crate::tui) fn receive(&mut self) -> bool {
         let mut changed = self.poll_history();
         changed |= self.poll_model_control();
@@ -94,7 +105,20 @@ impl App {
             let Some(events) = &self.events else {
                 break;
             };
-            match events.try_recv() {
+            let incoming = events.try_recv();
+            if !matches!(
+                &incoming,
+                Ok(WorkerEvent::Progress(
+                    AgentEvent::ThinkingDelta { .. }
+                        | AgentEvent::AssistantDelta { .. }
+                        | AgentEvent::ModelOutputProgress { .. }
+                )) | Ok(WorkerEvent::ReviewProgress(
+                    AgentEvent::ThinkingDelta { .. } | AgentEvent::AssistantDelta { .. }
+                )) | Err(TryRecvError::Empty)
+            ) {
+                self.flush_stream();
+            }
+            match incoming {
                 Ok(WorkerEvent::DialogFinished { call_id }) => {
                     if self.ask_id.as_deref() == Some(call_id.as_str()) {
                         self.ask_panel = None;
@@ -168,6 +192,20 @@ impl App {
                 Ok(WorkerEvent::Progress(event)) => {
                     // 用量快照由 App 缓存，供状态栏渲染；不进入 Transcript。
                     match event {
+                        event @ (AgentEvent::ThinkingDelta { .. }
+                        | AgentEvent::AssistantDelta { .. }) => {
+                            if let Some(previous) = self.review_stream.take()
+                                && let Some(review) = &mut self.review_transcript
+                            {
+                                review.progress(previous);
+                            }
+                            if let Some(previous) = self.stream.push(event) {
+                                self.conversation.progress(previous);
+                            }
+                            if self.stream.is_full() {
+                                self.flush_stream();
+                            }
+                        }
                         AgentEvent::TodoStateUpdated { state } => self.todo_panel.update(state),
                         AgentEvent::ContextUpdated { usage } => self.usage = Some(usage),
                         AgentEvent::ModelRequestStarted => self.token_speed.start(Instant::now()),
@@ -819,7 +857,22 @@ impl App {
                 }
                 Ok(WorkerEvent::ReviewProgress(event)) => {
                     // 审查进度只进独立 review transcript：不更新用量/主对话/派发。
-                    if let Some(review) = &mut self.review_transcript {
+                    if let Some(event) = self.stream.take() {
+                        self.conversation.progress(event);
+                    }
+                    if matches!(
+                        &event,
+                        AgentEvent::ThinkingDelta { .. } | AgentEvent::AssistantDelta { .. }
+                    ) {
+                        if let Some(previous) = self.review_stream.push(event)
+                            && let Some(review) = &mut self.review_transcript
+                        {
+                            review.progress(previous);
+                        }
+                        if self.review_stream.is_full() {
+                            self.flush_stream();
+                        }
+                    } else if let Some(review) = &mut self.review_transcript {
                         review.progress(event);
                     }
                     changed = true;

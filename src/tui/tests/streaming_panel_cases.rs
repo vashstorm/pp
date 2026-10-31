@@ -581,3 +581,44 @@ fn skills_panel_cancels_edits_preserves_draft_and_rejects_busy_management() {
     assert!(!app.skills_pending);
     assert_eq!(app.input.lines(), &["/skills"]);
 }
+
+#[test]
+fn streaming_frame_batches_flush_before_completion_and_cancel() {
+    for outcome in [RunOutcome::Completed, RunOutcome::Cancelled] {
+        let mut app = app();
+        app.state = State::Running;
+        app.show_welcome = false;
+        let (sender, receiver) = mpsc::sync_channel(512);
+        app.events = Some(receiver);
+        sender
+            .send(WorkerEvent::Progress(AgentEvent::AssistantStarted))
+            .unwrap();
+        for _ in 0..10 {
+            sender
+                .send(WorkerEvent::Progress(AgentEvent::ThinkingDelta {
+                    text: "中🙂".into(),
+                }))
+                .unwrap();
+        }
+        app.receive();
+        assert!(app.stream.take().is_some());
+        for _ in 0..10 {
+            sender
+                .send(WorkerEvent::Progress(AgentEvent::AssistantDelta {
+                    text: "part".into(),
+                    refusal: false,
+                }))
+                .unwrap();
+        }
+        sender
+            .send(WorkerEvent::completed(Instant::now(), Ok(outcome)))
+            .unwrap();
+        app.receive();
+        assert!(app.stream.take().is_none());
+        let screen = draw(&mut app, 100, 30);
+        assert!(
+            screen.contains("partpartpartpartpartpartpartpartpartpart"),
+            "{screen}"
+        );
+    }
+}

@@ -546,6 +546,7 @@ impl Transcript {
                     let entry = &mut self.entries[index];
                     entry.text.push_str(&text);
                     entry.markdown_dirty = true;
+                    entry.render.invalidate(false);
                     entry.layout = None;
                 } else {
                     self.read_groups_key = None;
@@ -570,6 +571,7 @@ impl Transcript {
                     entry.text.push_str(&text);
                 }
                 entry.markdown_dirty = true;
+                entry.render.invalidate(false);
                 entry.layout = None;
             }
             AgentEvent::AssistantFinished { text } => {
@@ -581,11 +583,14 @@ impl Transcript {
                 } else {
                     let index = self.assistant_entry();
                     let entry = &mut self.entries[index];
+                    if entry.visible_text() != text {
+                        entry.render.invalidate(true);
+                        entry.markdown_dirty = true;
+                        entry.layout = None;
+                    }
                     entry.text = text;
                     entry.refusal.clear();
-                    entry.markdown_dirty = true;
                     entry.status = EntryStatus::Complete;
-                    entry.layout = None;
                 }
                 self.assistant = None;
                 self.thinking = None;

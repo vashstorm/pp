@@ -275,6 +275,7 @@ fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenA
         context_window: None,
         agent_db_path: dir.path().join("agent.db"),
         settings: crate::config::Settings {
+            tui: Default::default(),
             task: Default::default(),
             grep: Default::default(),
             read: Default::default(),

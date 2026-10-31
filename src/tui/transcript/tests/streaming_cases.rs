@@ -980,6 +980,46 @@ fn streaming_resize_reflows_without_losing_text_or_follow_state() {
 }
 
 #[test]
+fn streaming_completion_preserves_exact_markdown_layout_when_visible_text_is_unchanged() {
+    let _worker = crate::tui::render_worker::Worker::start().unwrap();
+    let text = format!(
+        "# Preserved heading\n\n{}\n```rust\nlet value = 1;\n```",
+        "**正文** with Unicode 🙂 and `inline code`.\n\n".repeat(200)
+    );
+    assert!(text.len() > 8192);
+    for refusal in [false, true] {
+        let mut transcript = Transcript::new();
+        transcript.progress(AgentEvent::AssistantStarted);
+        delta(&mut transcript, &text, refusal);
+        let entry = &mut transcript.entries[0];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            entry.ensure_layout(80);
+            if entry.render.exact {
+                break;
+            }
+            assert!(Instant::now() < deadline, "等待流式 Markdown 排版超时");
+            std::thread::yield_now();
+        }
+        let layout = entry.layout.as_ref().unwrap().clone();
+        let before = entry_text(entry, 80);
+        assert!(before.contains("Preserved heading"));
+        assert!(!before.contains("**"));
+        assert!(!before.contains("```"));
+
+        transcript.progress(AgentEvent::AssistantFinished { text: text.clone() });
+
+        let entry = &mut transcript.entries[0];
+        let after = entry_text(entry, 80);
+        assert_eq!(entry.status, EntryStatus::Complete);
+        assert!(entry.refusal.is_empty());
+        assert!(entry.render.exact, "相同正文完成后应保留精确排版");
+        assert!(Arc::ptr_eq(&layout, entry.layout.as_ref().unwrap()));
+        assert_eq!(before, after);
+    }
+}
+
+#[test]
 fn streaming_completion_refusal_and_empty_turns_do_not_duplicate_cards() {
     let mut transcript = Transcript::new();
     transcript.progress(AgentEvent::AssistantStarted);

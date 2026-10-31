@@ -114,6 +114,9 @@ edit: replace
 # 通知倒计时及自动消失时长，修改后重启生效
 notification_show_countdown: true
 notification_timeout_seconds: 10
+# 所有正常画面的最大帧率，整数 1..=120；修改后重启生效
+tui:
+  max_fps: 60
 # 相对路径以 ~/.pp/agent 为基准；空列表关闭自定义目录扫描
 skill_dirs:
   - ~/.pp/agent/skills

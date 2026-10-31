@@ -232,6 +232,18 @@ impl Default for NotificationOptions {
     }
 }
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct TuiSettings {
+    pub(crate) max_fps: u16,
+}
+
+impl Default for TuiSettings {
+    fn default() -> Self {
+        Self { max_fps: 60 }
+    }
+}
+
 #[derive(Clone, Copy, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReadDisplaySettings {
@@ -297,6 +309,8 @@ impl ModelPreferences {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
     #[serde(default)]
+    pub(crate) tui: TuiSettings,
+    #[serde(default)]
     pub(crate) task: crate::subagent::Settings,
     #[serde(default)]
     pub(crate) grep: GrepSettings,
@@ -354,6 +368,10 @@ impl Settings {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            (1..=120).contains(&self.tui.max_fps),
+            "tui.max_fps must be between 1 and 120"
+        );
         ensure!(
             self.notification_timeout_seconds > 0,
             "notification_timeout_seconds must be greater than zero"
@@ -437,6 +455,7 @@ fn default_settings() -> Settings {
         task: Default::default(),
         grep: GrepSettings::default(),
         read: ReadDisplaySettings::default(),
+        tui: TuiSettings::default(),
         tools: ToolsSettings::default(),
         debug: false,
         notification_show_countdown: default_notification_show_countdown(),
