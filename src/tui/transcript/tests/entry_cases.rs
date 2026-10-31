@@ -1,6 +1,49 @@
 use super::*;
 
 #[test]
+fn mcp_preview_renders_content_and_structured_results_and_expands_details() {
+    for structured in [false, true] {
+        let mut transcript = Transcript::new();
+        tool(
+            &mut transcript,
+            "arch",
+            "mcp__codebase__get_architecture",
+            json!({}),
+        );
+        let data = json!({"total_nodes": 42, "clusters": [{
+            "label": "Agent", "members": 12, "top_nodes": ["run", "save"],
+            "detail": {"retained": "expanded detail"}
+        }]});
+        let result = if structured {
+            json!({"ok": true, "result": {"structuredContent": data, "content": []}})
+        } else {
+            json!({"ok": true, "result": {"content": [{"type":"text", "text":data.to_string()}]}})
+        };
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "arch".into(),
+            result: result.clone(),
+        });
+        let collapsed = screen(&render(&mut transcript, 110, 30));
+        for expected in [
+            "total_nodes: 42",
+            "clusters: 1 item",
+            "label: Agent",
+            "members: 12",
+            "Ctrl + O to expand",
+        ] {
+            assert!(collapsed.contains(expected), "{collapsed}");
+        }
+        assert!(!collapsed.contains("expanded detail"));
+        transcript.toggle_tool_output();
+        let expanded = screen(&render(&mut transcript, 110, 30));
+        assert!(expanded.contains("expanded detail"), "{expanded}");
+        assert_eq!(transcript.entries[0].result.as_ref(), Some(&result));
+        transcript.toggle_tool_output();
+        assert_eq!(screen(&render(&mut transcript, 110, 30)), collapsed);
+    }
+}
+
+#[test]
 fn tool_folding_is_global_without_layout_and_future_output_inherits_it() {
     let mut transcript = Transcript::with_read_preview(true);
     for name in [

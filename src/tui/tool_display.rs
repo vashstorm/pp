@@ -9,6 +9,8 @@ use ratatui::{
 };
 use serde_json::Value;
 
+mod mcp_preview;
+
 const READ_LINES: usize = 3;
 // 指令卡片（自动 AGENTS 加载与技能正文读取）固定预览 10 个逻辑行。
 const INSTRUCTION_LINES: usize = 10;
@@ -607,6 +609,12 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                 });
             let output = output
                 .filter(|text| !text.is_empty())
+                .or_else(|| {
+                    view.result
+                        .and_then(|r| r["result"].get("structuredContent"))
+                        .filter(|value| !value.is_null())
+                        .map(Value::to_string)
+                })
                 .unwrap_or_else(|| text.into());
             with_arguments(
                 generic(&output, true, expanded, width, style),
@@ -1026,6 +1034,9 @@ fn plan_search(view: &View<'_>, width: u16, style: Style) -> Vec<Line<'static>> 
 
 fn generic(text: &str, mcp: bool, expanded: bool, width: u16, style: Style) -> Vec<Line<'static>> {
     if let Ok(value @ (Value::Object(_) | Value::Array(_))) = serde_json::from_str(text) {
+        if mcp && !expanded {
+            return wrap(mcp_preview::preview(&value, width), width, style);
+        }
         let (tree, truncated) = json_tree(&value, expanded);
         if mcp || !expanded || !truncated {
             let mut rows = wrap(tree, width, style);
@@ -1379,7 +1390,7 @@ mod tests {
     fn json_limits_keep_multiline_strings_and_generic_full_fallback() {
         let value = json!({"a":{"b":{"c":{"d":{"e":{"f":{"deep":"kept in full fallback"}}}}}},"message":"first\nsecond\nthird"});
         let content = value.to_string();
-        let collapsed = output("mcp__test__json", &content, false, false, 100);
+        let collapsed = output("custom", &content, false, false, 100);
         assert!(!collapsed.contains("kept in full fallback"));
         assert!(collapsed.contains('…'));
         let full = output("custom", &content, true, false, 100);
