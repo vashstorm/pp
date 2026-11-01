@@ -7,6 +7,33 @@ use serde_json::json;
 use std::time::{Duration, Instant};
 
 #[test]
+fn detail_bash_task_poll_anchors_reuse_the_original_card_across_pages() {
+    let mut detail = Detail::new("a1", 1, Transcript::new());
+    let runs = [run("r1", "running")];
+    detail.ingest(&page(vec![
+        event(0, "r1", tool("start", "bash", json!({"command":"service","mode":"background"}))),
+        event(1, "r1", AgentEvent::ToolFinished {
+            id: "start".into(), result: json!({"ok":true,"task_id":"bg-1","status":"running","output":"before"}),
+        }),
+    ], true), &runs, &BTreeSet::new(), 10_000);
+    let original = detail.by_tool[&("r1".into(), "start".into())];
+    detail.ingest(&page(vec![
+        event(2, "r1", tool("poll", "bash_task", json!({"action":"status","task_id":"bg-1"}))),
+        event(3, "r1", AgentEvent::ToolFinished {
+            id: "poll".into(), result: json!({"ok":true,"task_id":"bg-1","status":"exited","output":"after"}),
+        }),
+    ], false), &runs, &BTreeSet::new(), 10_000);
+    assert_eq!(detail.by_tool[&("r1".into(), "poll".into())], original);
+    assert_eq!(detail.by_offset[&2], original);
+    assert_eq!(detail.transcript.entry_count(), original + 1);
+    let screen = text(&mut detail.transcript);
+    assert!(
+        screen.contains("after") && !screen.contains("before"),
+        "{screen}"
+    );
+}
+
+#[test]
 fn artifact_live_output_preview_replaces_body_after_history_catches_up() {
     let mut detail = Detail::new("a1", 1, Transcript::new());
     let running = run("r1", "running");

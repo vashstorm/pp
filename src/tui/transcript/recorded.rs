@@ -15,6 +15,7 @@ impl Transcript {
         now_ms: u64,
         now: Instant,
     ) {
+        self.background_bash.clear();
         let mut activity = Activity::new(now);
         activity.label = label.into();
         activity.started = recorded_start(timestamp_ms, now_ms, now);
@@ -39,8 +40,7 @@ impl Transcript {
         self.replaying = true;
         self.progress(event);
         self.replaying = replaying;
-        if let Some(index) = started {
-            let entry = &mut self.entries[index];
+        if let Some(entry) = started.and_then(|index| self.entries.get_mut(index)) {
             entry.started = recorded_start(timestamp_ms, now_ms, now);
             if entry.kind == EntryKind::Bash {
                 entry.update_bash_footer(entry.started.map(|started| now.duration_since(started)));

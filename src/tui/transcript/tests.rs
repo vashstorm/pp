@@ -144,6 +144,7 @@ fn todo_snapshot_event(
     }
 }
 
+mod bash_task_cases;
 mod diff_cases;
 mod entry_cases;
 mod instruction_cases;

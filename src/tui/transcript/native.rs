@@ -144,6 +144,8 @@ impl Transcript {
             .iter()
             .chain(self.thinking.iter())
             .chain(self.running_tools.iter().map(|(_, index)| index))
+            // 后台进程结束后仍可能被再次查询；当前任务收尾前不冻结原框。
+            .chain(self.background_bash.values())
         {
             frontier = frontier.min(*index);
         }

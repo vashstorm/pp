@@ -193,9 +193,12 @@ impl Detail {
                 if after > before {
                     self.by_offset.insert(entry.start_offset, before);
                 }
-                if let AgentEvent::ToolStarted { id, .. } = event {
-                    // ToolStarted 总是追加一张卡片；原位更新沿用同一索引。
-                    self.by_tool.insert((run.clone(), id.clone()), before);
+                if let AgentEvent::ToolStarted { id, .. } = event
+                    && let Some(index) = self.transcript.tool_index(id)
+                {
+                    // 后台查询可复用已有卡片，锚点跟随真实工具索引。
+                    self.by_offset.insert(entry.start_offset, index);
+                    self.by_tool.insert((run.clone(), id.clone()), index);
                 }
             }
             (None, Some(HubEvent::RunState { status })) if !run.is_empty() => {

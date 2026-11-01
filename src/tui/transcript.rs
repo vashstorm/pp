@@ -14,7 +14,7 @@ use serde_json::Value;
 #[cfg(test)]
 use std::io::{self, Write};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     ops::Range,
     sync::{
         Arc,
@@ -23,6 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod bash_tasks;
 mod entry;
 mod native;
 mod recorded;
@@ -197,6 +198,8 @@ pub(super) struct Transcript {
     assistant: Option<usize>,
     thinking: Option<usize>,
     running_tools: Vec<(String, usize)>,
+    // 同一轮用户任务中的后台进程共用原始 Bash 卡片。
+    background_bash: BTreeMap<String, usize>,
     offset: usize,
     browse_anchor: Option<BrowseAnchor>,
     // 上一帧的几何信息独立保留，流式事件使 layout 失效后仍能处理滚轮。
@@ -308,6 +311,7 @@ impl Transcript {
     }
 
     pub(super) fn begin_run(&mut self) {
+        self.background_bash.clear();
         self.activity = Some(Activity::new(Instant::now()));
     }
 
@@ -327,9 +331,14 @@ impl Transcript {
             .activity
             .as_mut()
             .is_some_and(|activity| activity.tick(now));
-        for (_, index) in &self.running_tools {
+        for index in self
+            .running_tools
+            .iter()
+            .map(|(_, index)| index)
+            .chain(self.background_bash.values())
+        {
             let entry = &mut self.entries[*index];
-            if entry.kind == EntryKind::Bash {
+            if entry.kind == EntryKind::Bash && entry.status == EntryStatus::Running {
                 changed |= entry.update_bash_footer(
                     entry
                         .started
@@ -368,6 +377,7 @@ impl Transcript {
         elapsed: Option<Duration>,
         finished_at: Option<chrono::DateTime<chrono::Local>>,
     ) {
+        self.background_bash.clear();
         let activity = self
             .activity
             .get_or_insert_with(|| Activity::new(Instant::now()));
@@ -415,6 +425,7 @@ impl Transcript {
             }
         }
         self.replaying = false;
+        self.background_bash.clear();
         if assistant_running || self.assistant.is_some() || !self.running_tools.is_empty() {
             self.fail();
             return Some("Previous request was interrupted.".into());
@@ -427,6 +438,8 @@ impl Transcript {
         records: Vec<ReplayRecord>,
         fallback: &str,
     ) -> Range<usize> {
+        // 树节点独立预览，不能让后一个节点改写前一个节点的卡片。
+        self.background_bash.clear();
         let start = self.entries.len();
         self.replay(records);
         self.read_groups_key = None;
@@ -699,6 +712,19 @@ impl Transcript {
                     .then(|| crate::interaction::AskArgs::parse(&arguments).ok())
                     .flatten();
                 let arguments = serde_json::from_str::<Value>(&arguments).ok();
+                if name == "bash_task"
+                    && let Some(index) = arguments
+                        .as_ref()
+                        .and_then(|args| self.background_bash_index(args))
+                {
+                    let entry = &mut self.entries[index];
+                    entry.stdout.clear();
+                    entry.stderr.clear();
+                    entry.status = EntryStatus::Running;
+                    entry.layout = None;
+                    self.running_tools.push((id, index));
+                    return;
+                }
                 let detail = arguments.as_ref().and_then(|args| {
                     args.get(match name.as_str() {
                         "bash" => "command",
@@ -819,6 +845,10 @@ impl Transcript {
             AgentEvent::ToolOutput { id, stream, text } => {
                 if let Some(index) = self.tool_index(&id) {
                     let entry = &mut self.entries[index];
+                    if entry.kind == EntryKind::Bash && entry.result.is_some() {
+                        // 后台快照替换累计输出，不和上一轮正文重复拼接。
+                        entry.text.clear();
+                    }
                     match stream {
                         OutputStream::Stdout => entry.stdout.push_str(&text),
                         OutputStream::Stderr => entry.stderr.push_str(&text),
@@ -833,16 +863,20 @@ impl Transcript {
             AgentEvent::ToolOutputSnapshot { id, output } => {
                 if let Some(index) = self.tool_index(&id) {
                     let entry = &mut self.entries[index];
+                    if entry.kind == EntryKind::Bash {
+                        entry.text.clear();
+                    }
                     entry.stdout = output;
                     entry.stderr.clear();
                     entry.layout = None;
                     entry.display_title = None;
                 }
             }
-            AgentEvent::ToolFinished { id, result } => {
+            AgentEvent::ToolFinished { id, mut result } => {
                 if let Some(position) = self.running_tools.iter().position(|(call, _)| call == &id)
                 {
                     let (_, index) = self.running_tools.remove(position);
+                    self.merge_background_bash_result(index, &mut result);
                     let entry = &mut self.entries[index];
                     entry.status = if result.get("ok").and_then(Value::as_bool) == Some(false)
                         || (entry.kind == EntryKind::Bash
@@ -851,6 +885,8 @@ impl Transcript {
                                 || result["cancelled"] == true))
                     {
                         EntryStatus::Failed
+                    } else if entry.kind == EntryKind::Bash && result["status"] == "running" {
+                        EntryStatus::Running
                     } else {
                         EntryStatus::Complete
                     };
@@ -957,7 +993,7 @@ impl Transcript {
             .is_some_and(|index| self.entries[index].kind == EntryKind::Ask)
     }
 
-    fn tool_index(&self, id: &str) -> Option<usize> {
+    pub(in crate::tui) fn tool_index(&self, id: &str) -> Option<usize> {
         self.running_tools
             .iter()
             .find(|(call, _)| call == id)
@@ -965,6 +1001,7 @@ impl Transcript {
     }
 
     pub(super) fn fail(&mut self) {
+        self.background_bash.clear();
         if let Some(activity) = &mut self.activity {
             activity.stop("Failed");
         }

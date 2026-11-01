@@ -164,7 +164,7 @@ while [[ ! -e scroll-finish ]]; do sleep 0.01; done
 }
 
 #[test]
-fn bash_task_output_snapshot_keeps_bounded_tail_both_protocols() {
+fn bash_task_polls_reuse_one_card_and_keep_bounded_tail_both_protocols() {
     for protocol in ["completion", "response"] {
         let provider = server();
         let home = tempfile::tempdir().unwrap();
@@ -181,10 +181,23 @@ fn bash_task_output_snapshot_keeps_bounded_tail_both_protocols() {
             }
         };
         ask_reply_calls(request, protocol, json!([make_call("start", "bash", args)]));
-        let (request, body) = pty.request_at(&provider, api_path(protocol));
+        let (mut request, body) = pty.request_at(&provider, api_path(protocol));
         let outputs = cancel_tool_outputs(&body, protocol);
-        let task_id = outputs.last().unwrap().1["task_id"].as_str().unwrap();
+        let task_id = outputs.last().unwrap().1["task_id"].as_str().unwrap().to_owned();
         pty.wait_for("后台命令已写完输出", |_| project.path().join("task-output-ready").is_file());
+        for poll in 0..5 {
+            ask_reply_calls(request, protocol, json!([make_call(
+                &format!("poll-{poll}"), "bash_task", json!({"task_id":task_id,"action":"status"})
+            )]));
+            let (next, body) = pty.request_at(&provider, api_path(protocol));
+            request = next;
+            let outputs = cancel_tool_outputs(&body, protocol);
+            assert_eq!(outputs.last().unwrap().1["task_id"], task_id);
+            pty.text(&format!("Task {task_id}:"));
+            let history = pty.native_history().0;
+            assert_eq!(history.lines().filter(|line| line.contains('╭') && line.contains("Bash")).count(), 1, "{history}");
+            assert!(!history.contains("bash_task ·"), "{history}");
+        }
         let args = json!({"task_id":task_id, "action":"stop"});
         ask_reply_calls(request, protocol, json!([make_call("stop", "bash_task", args)]));
         let (request, body) = pty.request_at(&provider, api_path(protocol));
@@ -193,7 +206,7 @@ fn bash_task_output_snapshot_keeps_bounded_tail_both_protocols() {
         assert!(stdout.contains("task-line-00") && stdout.contains("task-line-19"));
         pty.wait_for("Bash task 快照仅显示最新十行", |screen| {
             let text = screen.contents();
-            text.contains("bash_task") && text.contains("task-line-19")
+            text.contains("task-line-19")
                 && text.contains("10 earlier lines, showing 10 of 20")
                 && !text.contains("task-line-09")
         });
@@ -204,6 +217,20 @@ fn bash_task_output_snapshot_keeps_bounded_tail_both_protocols() {
         pty.draft("保留快照草稿");
         ask_final_reply(request, protocol, "snapshot done");
         pty.text("snapshot done");
+        pty.completed();
+        // Ctrl + O 使用备用屏幕浏览；返回主屏幕后才能核对原生历史提交。
+        pty.input("\x1b");
+        pty.wait_for("退出工具展开浏览", |screen| !screen.alternate_screen());
+        let deadline = Instant::now() + DEADLINE;
+        let history = loop {
+            let history = pty.native_history().0;
+            if history.lines().any(|line| line.contains('╭') && line.contains("Bash")) {
+                break history;
+            }
+            assert!(Instant::now() < deadline, "Bash 卡片未提交到原生历史：{history}");
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(history.lines().filter(|line| line.contains('╭') && line.contains("Bash")).count(), 1, "{history}");
         pty.input("\x03");
         pty.finish();
         no_more(&provider);
