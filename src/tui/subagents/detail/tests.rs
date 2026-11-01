@@ -242,6 +242,7 @@ fn fixture() -> Vec<AgentEvent> {
             path: "a.rs".into(),
             diff: FileDiff::Text {
                 created: false,
+                deleted: false,
                 added: 1,
                 removed: 1,
                 hunks: vec![DiffHunk {
@@ -273,6 +274,7 @@ fn fixture() -> Vec<AgentEvent> {
             path: "new.rs".into(),
             diff: FileDiff::Text {
                 created: true,
+                deleted: false,
                 added: 1,
                 removed: 0,
                 hunks: vec![DiffHunk {

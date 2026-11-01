@@ -54,7 +54,8 @@ pub(crate) enum Original {
 #[derive(Debug)]
 struct FileChange {
     original: Original,
-    latest: Vec<u8>,
+    latest: Option<Vec<u8>>,
+    resource: bool,
     interleaved: bool,
     sources: std::collections::BTreeSet<String>,
 }
@@ -89,21 +90,48 @@ impl TaskChanges {
     /// records remain stored so later writes cannot replace the first baseline
     /// or erase evidence of intervening changes.
     pub(crate) fn record(&mut self, path: PathBuf, before: Original, latest: Vec<u8>) {
+        self.record_change(path, before, Some(latest), false);
+    }
+
+    /// 资源操作必须记录真实存在性，不能把删除伪装为写入空文件。
+    pub(crate) fn record_resource(
+        &mut self,
+        path: PathBuf,
+        before: Original,
+        after: Option<Vec<u8>>,
+    ) {
+        self.record_change(path, before, after, true);
+    }
+
+    fn record_change(
+        &mut self,
+        path: PathBuf,
+        before: Original,
+        latest: Option<Vec<u8>>,
+        resource: bool,
+    ) {
         match self.files.entry(path) {
             Entry::Vacant(entry) => {
                 entry.insert(FileChange {
                     original: before,
                     latest,
+                    resource,
                     interleaved: false,
                     sources: Default::default(),
                 });
             }
             Entry::Occupied(mut entry) => {
                 let change = entry.get_mut();
-                if !matches!(&before, Original::Bytes(bytes) if bytes == &change.latest) {
+                let matches = match (&before, &change.latest) {
+                    (Original::Bytes(before), Some(latest)) => before == latest,
+                    (Original::Missing, None) => true,
+                    _ => false,
+                };
+                if !matches {
                     change.interleaved = true;
                 }
                 change.latest = latest;
+                change.resource |= resource;
             }
         }
         self.advance_revision();
@@ -129,7 +157,8 @@ impl TaskChanges {
         let change = self.files.get(&token.path).context(STALE)?;
         let original = change.original_for_undo()?;
         let target = workspace.target(&token.path, false).context(CONFLICT)?;
-        let warning = target.restore_if_unchanged(&change.latest, original)?;
+        let warning =
+            target.restore_if_unchanged(change.latest.as_deref().context(CONFLICT)?, original)?;
 
         // A directory-sync warning still means the restore committed. Failed
         // restores return above without consuming the baseline or token.
@@ -147,7 +176,11 @@ impl TaskChanges {
             .iter()
             .filter(|(_, change)| {
                 change.interleaved
-                    || !matches!(&change.original, Original::Bytes(bytes) if bytes == &change.latest)
+                    || !match (&change.original, &change.latest) {
+                        (Original::Bytes(before), Some(after)) => before == after,
+                        (Original::Missing, None) => true,
+                        _ => false,
+                    }
             })
             .map(|(path, change)| {
                 let undo = change
@@ -155,7 +188,9 @@ impl TaskChanges {
                     .and_then(|_| {
                         workspace
                             .target(path, false)
-                            .and_then(|target| target.ensure_matches(&change.latest))
+                            .and_then(|target| {
+                                target.ensure_matches(change.latest.as_deref().context(CONFLICT)?)
+                            })
                             .context(CONFLICT)
                     })
                     .map(|()| UndoToken {
@@ -183,6 +218,10 @@ impl TaskChanges {
 impl FileChange {
     fn original_for_undo(&self) -> Result<Option<&[u8]>> {
         ensure!(
+            !self.resource,
+            "Resource operation affects multiple paths; single-file undo is unavailable."
+        );
+        ensure!(
             !self.interleaved,
             "File changed outside this task between tool writes; undo is unavailable."
         );
@@ -196,28 +235,7 @@ impl FileChange {
     }
 
     fn diff(&self) -> FileDiff {
-        let before = match &self.original {
-            Original::Missing => None,
-            Original::Bytes(bytes) => match std::str::from_utf8(bytes) {
-                Ok(text) => Some(text),
-                Err(_) => {
-                    return FileDiff::Unavailable {
-                        reason: "Previous content is not UTF-8; text diff unavailable.".into(),
-                    };
-                }
-            },
-            Original::Unavailable => {
-                return FileDiff::Unavailable {
-                    reason: "Previous content could not be read; text diff unavailable.".into(),
-                };
-            }
-        };
-        match std::str::from_utf8(&self.latest) {
-            Ok(after) => diff::build(before, after),
-            Err(_) => FileDiff::Unavailable {
-                reason: "Latest content is not UTF-8; text diff unavailable.".into(),
-            },
-        }
+        diff::committed(&self.original, self.latest.as_deref())
     }
 }
 
@@ -278,7 +296,7 @@ mod tests {
         assert!(view.files[0].undo.is_ok());
         assert!(matches!(
             &view.files[0].diff,
-            FileDiff::Text { created: true, added: 0, removed: 0, hunks } if hunks.is_empty()
+            FileDiff::Text { created: true, added: 0, removed: 0, hunks, .. } if hunks.is_empty()
         ));
     }
 
@@ -346,6 +364,7 @@ mod tests {
             added,
             removed,
             hunks,
+            ..
         } = &view.files[0].diff
         else {
             panic!("text diff expected");
@@ -446,5 +465,51 @@ mod tests {
         assert!(next.task_id > cleared.task_id);
         assert!(next.revision > cleared.revision);
         assert_ne!(next.files[0].undo.as_ref().unwrap(), first_token);
+    }
+
+    #[test]
+    fn lsp_edits_deleted_empty_file_retains_existence_and_blocks_undo() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = save::Workspace::open(directory.path()).unwrap();
+        let mut changes = TaskChanges::default();
+        changes.record_resource("empty".into(), Original::Bytes(Vec::new()), None);
+        let view = changes.view(&workspace);
+        assert_eq!(view.files[0].path, PathBuf::from("empty"));
+        assert!(matches!(&view.files[0].diff,
+            FileDiff::Text { created:false, deleted:true, added:0, removed:0, hunks } if hunks.is_empty()));
+        assert!(view.files[0].undo.is_err());
+    }
+
+    #[test]
+    fn lsp_edits_rename_records_both_ends_and_keeps_resource_undo_block() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = save::Workspace::open(directory.path()).unwrap();
+        fs::write(directory.path().join("new"), b"renamed\n").unwrap();
+        let mut changes = TaskChanges::default();
+        changes.record_resource("old".into(), Original::Bytes(b"original\n".to_vec()), None);
+        changes.record_resource("new".into(), Original::Missing, Some(b"renamed\n".to_vec()));
+        changes.record(
+            "new".into(),
+            Original::Bytes(b"renamed\n".to_vec()),
+            b"edited\n".to_vec(),
+        );
+        fs::write(directory.path().join("new"), b"edited\n").unwrap();
+        let view = changes.view(&workspace);
+        assert_eq!(
+            view.files
+                .iter()
+                .map(|file| file.path.as_path())
+                .collect::<Vec<_>>(),
+            vec![std::path::Path::new("new"), std::path::Path::new("old")]
+        );
+        assert!(view.files.iter().all(|file| file.undo.is_err()));
+        assert!(matches!(
+            &view.files[1].diff,
+            FileDiff::Text {
+                deleted: true,
+                removed: 1,
+                ..
+            }
+        ));
     }
 }

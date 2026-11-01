@@ -666,6 +666,45 @@ MCP 按当前用户权限运行，没有文件系统沙箱。服务 stderr 丢�
 cargo nextest run --locked -E 'test(mcp_) | test(slash_mcp)'
 ```
 
+## LSP 语义导航与修改建议
+
+`lsp` 是语义信息源，提供 `definition`、`type_definition`、`implementation`、`references`、`hover`、`symbols`、`diagnostics`、`rename`、`rename_file`、`code_actions`、`format`、`status`、`reload`、`capabilities`。AI 获取建议后重新读取文件，用 edit/write 执行文本修改，用 bash 移动文件或运行检查，再查询诊断验证。
+
+行为设置在 `~/.pp/agent/settings.yml`：
+
+```yaml
+lsp:
+  enabled: true
+  lazy: true
+  diagnosticsOnWrite: true
+  diagnosticsOnEdit: false
+  diagnosticsDeduplicate: true
+  requestTimeout: 10         # 秒，5..=300
+```
+
+`formatOnWrite:false` 仅为旧配置兼容保留；`true` 会提示迁移到 `format` 建议查询和普通文件工具。write/edit 始终原样提交 AI 提供的内容。
+
+服务器定义按内置 → `~/.pp/agent/lsp.json` → `<启动目录>/.pp/lsp.json` 浅合并，数组／对象整项替换；也支持直接以服务器名称为键的顶层映射：
+
+```json
+{"servers":{"rust-analyzer":{"command":"rust-analyzer","args":[],"fileTypes":[".rs"],"rootMarkers":["Cargo.toml"]}}}
+```
+
+配置拒绝重复键和未知字段；LSP 配置错误在工具内报告，不阻止 Agent 启动。修复磁盘配置后使用 `reload`，它会重新读取配置并重建目标连接，不调用服务器私有命令。客户端身份包含 cwd、命令、参数和初始化选项；`idleTimeoutMs` 缺失或为 0 时不自动回收。
+
+- rename、rename_file、format 始终返回建议，不写盘、不移动文件。code_actions 默认列出动作；`query` 筛选类型，`selection` 按 0-based 序号或标题子串选择并 resolve。原始 `request` 入口已移除；旧 `apply=false` 兼容接受，`apply=true` 明确拒绝。
+- 建议带来源服务器、原始编辑与版本、基线／候选文本及 diff；原始 LSP 坐标为从 0 开始的 UTF-16 位置。版本、范围和重叠先校验；资源操作保持原有顺序，在虚拟状态中验证。多服务器建议独立呈现，失败和覆盖不完整明确标记，AI 须比较冲突并重新读取文件后操作。
+- 服务器 `workspace/applyEdit` 一律回复 `applied:false`；不执行任何 `workspace/executeCommand`。命令型 code action 不可执行，edit 与 command 并存时提示建议可能不完整。
+- diagnostics 接受文件与有界 glob（最多 20 个文件），不执行 CLI adapter。`file:"*"` 不再运行 cargo／tsc／go／pyright；需要全项目检查时由 AI 使用 bash。Biome／SwiftLint 的旧 CLI 适配器不再自动运行。
+- 信息与建议查询属于 Read 档，Plan／Review 和只读子 Agent 也可使用；reload 属于 Write 档。实际修改沿用文件／bash 工具的权限，分步执行不保证跨工具原子性，bash 副作用也不增加 `/changes` 跟踪。
+- 保存后同步真实提交的内容，最多等待 500ms 内联诊断，未完成的交给后台。迟到报告不会主动请求模型，下一次普通请求才注入 `LSP diagnostics (late)`。自动报告按消息身份去重，显式查询返回完整报告；旧会话冻结报告继续兼容恢复。
+
+语言服务器进程本身不是文件系统沙箱；上述规则约束 pp 的调用和提交行为。
+
+```sh
+cargo nextest run --locked -E 'test(lsp_)'
+```
+
 ## 上下文用量与压缩
 
 - **用量可见，不增加查询命令。** TUI 输入栏上沿右对齐，依次显示速度、任务短标题、上下文、输入/输出、缓存读/写、费用、耗时，各组使用 Nerd Font 图标并以 ` · ` 分隔，不显示 In/Out/CRead/CWrite 等文字标签。上下文固定紫色，已知容量显示 `󱂬 81.6%/500K`；容量未知显示当前估算量和 `?`。末尾独立健康图标低于配置压缩阈值时为绿色勾选、达到阈值为黄色警告、达到 100% 为红色叉号，容量未知为灰色问号。数量达到千/百万使用 K/M，保留一位小数并去掉无意义的 `.0`（如 `999`、`1K`、`12.3K`、`1M`）；速度始终保留一位小数（如 `30.2 tok/s`、`1.0K tok/s`）。CLI 的完整整数用量与输出协议保持不变。读取用量快照不发送网络请求。

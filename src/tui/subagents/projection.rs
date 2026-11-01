@@ -592,6 +592,40 @@ impl Projection {
                 self.streams.entry(agent.to_owned()).or_default().context = Some(*usage);
             }
             AgentEvent::ModelRequestStarted => self.set_current(agent, "Requesting model"),
+            AgentEvent::LspDiagnostics { id, report } => {
+                // 投影按 agent/run 流隔离：只显示该子 Agent owner 的报告。
+                let total = report.total();
+                let summary = format!(
+                    "{} · {} {}",
+                    report.path,
+                    total,
+                    if total == 1 {
+                        "diagnostic"
+                    } else {
+                        "diagnostics"
+                    }
+                );
+                self.insert_lifecycle(
+                    agent,
+                    run,
+                    offset,
+                    timestamp,
+                    if id.is_none() {
+                        "LSP diagnostics (late)"
+                    } else {
+                        "LSP diagnostics"
+                    },
+                    truncate(&summary),
+                    if report.has_issues() {
+                        RowStatus::Error
+                    } else if report.all_clean() {
+                        RowStatus::Success
+                    } else {
+                        RowStatus::Pending
+                    },
+                    1,
+                );
+            }
             AgentEvent::TodoStateUpdated { .. }
             | AgentEvent::TodoReminder { .. }
             | AgentEvent::TodoSnapshot { .. }

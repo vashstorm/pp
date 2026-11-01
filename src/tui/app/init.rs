@@ -120,6 +120,7 @@ impl App {
             task_status_view: Default::default(),
             task_status: None,
             mcp_cleanup: None,
+            lsp_cleanup: None,
             mcp_view: Default::default(),
             mcp_panel: None,
             background_cleanup: None,
@@ -185,6 +186,10 @@ impl App {
         let think_level = agent.think_level();
         let default_think_level = agent.default_think_level();
         let mcp_cleanup = agent.mcp_cleanup()?;
+        // LSP 清理句柄与 Registry 必须在 Agent move 进 worker 前取得；
+        // Registry clone 只共享客户端，不取得停止所有权。
+        let lsp_cleanup = agent.lsp_cleanup();
+        let lsp_registry = agent.lsp_registry();
         self.mcp_view = agent.mcp_view();
         let mut startup_errors = self.mcp_view.warnings();
         self.background_cleanup = Some(agent.background_cleanup());
@@ -199,6 +204,7 @@ impl App {
         self.default_model_reference = Some(agent.default_model_reference().to_owned());
         let (commands, receiver) = mpsc::channel();
         let (sender, events) = mpsc::sync_channel(256);
+        let warm_events = sender.clone();
         self.subagent_control = agent.subagent_control.clone();
         let dialog_lock = std::sync::Arc::new(crate::interaction::DialogQueue::default());
         let ask_lock = dialog_lock.clone();
@@ -227,7 +233,31 @@ impl App {
         thread::Builder::new()
             .name("pp-agent".into())
             .spawn(move || {
-                while let Ok(command) = receiver.recv() {
+                // 空闲时以 50ms 超时轮询迟到诊断：只发布 Progress，不续跑
+                // 模型、不把 Ready 改成 Running，也不伪造工具调用。
+                let mut last_poll_error: Option<String> = None;
+                loop {
+                    let command = match receiver.recv_timeout(std::time::Duration::from_millis(50))
+                    {
+                        Ok(command) => command,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            let mut emit = |event| {
+                                let _ = sender.send(WorkerEvent::Progress(event));
+                            };
+                            match agent.poll_lsp_diagnostics(&mut emit) {
+                                Ok(()) => last_poll_error = None,
+                                Err(error) => {
+                                    let message = format!("{error:#}");
+                                    if last_poll_error.as_deref() != Some(message.as_str()) {
+                                        last_poll_error = Some(message.clone());
+                                        let _ = sender.send(WorkerEvent::LspPollFailed(message));
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
                     agent.enable_task_status(task_status_view.clone());
                     let started = Instant::now();
                     let mut emit = |event| {
@@ -572,6 +602,11 @@ impl App {
         self.events = Some(events);
         self.state = State::Ready;
         self.mcp_cleanup = Some(mcp_cleanup);
+        if let Some(cleanup) = lsp_cleanup {
+            self.install_lsp_cleanup(cleanup);
+        }
+        // lazy=false 时在清理句柄与退出链路安装完成后后台预热；UI 不等待。
+        prewarm_lsp(lsp_registry, warm_events);
         self.usage = usage;
         if let Some(id) = session_id {
             let choices = std::mem::take(&mut self.choices);
@@ -597,4 +632,21 @@ impl App {
         }
         Ok(())
     }
+}
+
+/// `lazy=false` 时的后台预热：只启动已发现的真实 language server，
+/// 不运行 CLI adapter/工作区 checker，也不阻塞 UI 或模型任务。
+fn prewarm_lsp(registry: Option<crate::lsp::Registry>, events: mpsc::SyncSender<WorkerEvent>) {
+    let Some(registry) = registry else { return };
+    if !registry.enabled() || registry.is_lazy() {
+        return;
+    }
+    let _ = thread::Builder::new()
+        .name("pp-lsp-warm".into())
+        .spawn(move || {
+            let cancellation = crate::cancellation::CancellationToken::new();
+            for (server, error) in registry.warmup(&cancellation) {
+                let _ = events.try_send(WorkerEvent::LspWarmupFailed { server, error });
+            }
+        });
 }

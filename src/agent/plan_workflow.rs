@@ -320,6 +320,7 @@ impl Agent {
             },
         );
         self.commit_workflow(previous)?;
+        self.cancel_lsp_diagnostics();
         self.ensure_plan_mcp_shutdown(cancellation)?;
         let previous_route = self.role_route.take();
         self.role_route = if selection.enabled {
@@ -979,6 +980,7 @@ impl Agent {
             return Err(self.abort_execution_preparation(registry, error));
         }
         self.session = session;
+        self.reset_lsp_diagnostics();
         self.journal = journal;
         self.tools.artifacts = Default::default();
         if let Some(id) = self.journal.id() {
@@ -1045,6 +1047,7 @@ impl Agent {
         )?;
         restored.journal.history_replaced();
         self.session = restored.checkpoint.session;
+        self.reset_lsp_diagnostics();
         self.workflow = restored.checkpoint.workflow;
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));

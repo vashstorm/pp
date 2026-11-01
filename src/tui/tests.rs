@@ -47,6 +47,7 @@ fn changes_view(blocked: bool) -> ChangesView {
             path: path.clone(),
             diff: crate::events::FileDiff::Text {
                 created: false,
+                deleted: false,
                 added: 1,
                 removed: 1,
                 hunks: vec![crate::events::DiffHunk {
@@ -330,6 +331,7 @@ mod changes_cases;
 mod command_cases;
 mod file_picker_cases;
 mod input_cases;
+mod lsp_cases;
 mod model_menu_cases;
 mod plan_cases;
 mod roles_cases;

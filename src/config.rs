@@ -302,6 +302,8 @@ pub(crate) struct Settings {
     #[serde(default)]
     pub(crate) tools: ToolsSettings,
     #[serde(default)]
+    pub(crate) lsp: crate::lsp::Settings,
+    #[serde(default)]
     pub(crate) debug: bool,
     /// 已弃用：仅为旧配置保留类型校验，不再控制 TUI 显示。
     #[allow(dead_code)]
@@ -348,6 +350,7 @@ impl Settings {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        self.lsp.validate()?;
         ensure!(
             (1..=120).contains(&self.tui.max_fps),
             "tui.max_fps must be between 1 and 120"
@@ -407,6 +410,7 @@ const APPROVAL_TOOL_NAMES: &[&str] = &[
     "read",
     "grep",
     "glob",
+    "lsp",
     "todo",
     "ask",
     "edit",
@@ -437,6 +441,7 @@ fn default_settings() -> Settings {
         read: ReadDisplaySettings::default(),
         tui: TuiSettings::default(),
         tools: ToolsSettings::default(),
+        lsp: Default::default(),
         debug: false,
         notification_show_countdown: default_notification_show_countdown(),
         notification_timeout_seconds: default_notification_timeout_seconds(),
@@ -484,6 +489,18 @@ impl ModelCatalog {
 
     pub(crate) fn mcp_path(&self) -> PathBuf {
         self.settings_path.with_file_name("mcp.json")
+    }
+
+    /// 用户级 LSP 服务器定义与 settings.yml 放在同一配置目录。
+    ///
+    /// Agent 安装 Registry 时显式传入此路径，Registry 本身不再读取 HOME，
+    /// 因而测试可用临时目录完整隔离。
+    pub(crate) fn lsp_path(&self) -> PathBuf {
+        self.settings_path.with_file_name("lsp.json")
+    }
+
+    pub(crate) fn lsp_settings(&self) -> crate::lsp::Settings {
+        self.settings.lsp
     }
 
     pub(crate) fn read_tool_result_preview(&self) -> bool {

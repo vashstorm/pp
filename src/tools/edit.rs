@@ -1,6 +1,6 @@
 //! 两种编辑模式的纯暂存入口；磁盘提交由 Tools 负责。
-use super::{diff, hashline, replace};
-use crate::{config::EditMode, events::FileDiff};
+use super::{hashline, replace};
+use crate::config::EditMode;
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
@@ -25,7 +25,6 @@ pub(super) enum Request {
 pub(super) struct Staged {
     pub output: String,
     pub count: usize,
-    pub diff: FileDiff,
 }
 impl Request {
     pub(super) fn parse(mode: EditMode, arguments: &str) -> Result<Self> {
@@ -58,11 +57,6 @@ impl Request {
             Self::Hashline(p) => (p.edits.len(), hashline::apply(source, &p.edits)?),
             Self::Replace { edits, .. } => (edits.len(), replace::apply(source, edits)?),
         };
-        let diff = diff::build(Some(source), &output);
-        Ok(Staged {
-            output,
-            count,
-            diff,
-        })
+        Ok(Staged { output, count })
     }
 }

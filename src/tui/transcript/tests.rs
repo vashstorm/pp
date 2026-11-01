@@ -149,6 +149,7 @@ mod diff_cases;
 mod entry_cases;
 mod instruction_cases;
 mod layout_cases;
+mod lsp_cases;
 mod native_cases;
 mod scroll_cases;
 mod streaming_cases;

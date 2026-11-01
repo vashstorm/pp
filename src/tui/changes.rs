@@ -329,11 +329,14 @@ fn file_row(file: &ChangedFile) -> Line<'static> {
     match &file.diff {
         FileDiff::Text {
             created,
+            deleted,
             added,
             removed,
             ..
         } => {
-            spans.push(Span::raw(if *created {
+            spans.push(Span::raw(if *deleted {
+                "  Deleted  "
+            } else if *created {
                 "  Created  "
             } else {
                 "  Modified  "
@@ -451,6 +454,7 @@ mod tests {
             sources: Vec::new(),
             path: path.into(),
             diff: FileDiff::Text {
+                deleted: false,
                 created,
                 added: count,
                 removed: usize::from(!created),

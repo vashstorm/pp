@@ -68,6 +68,11 @@ impl Agent {
         let changes = self.tools.changes.clone();
         let write_lock = self.tools.write_lock.clone();
         let artifacts = self.tools.artifacts.clone();
+        // 非隔离子 Agent 共享父 Registry；隔离子 Agent 使用实际 prepare 后的 cwd
+        // 新建独立 Registry。settings 与用户配置路径都从当前会话冻结。
+        let lsp = self.tools.lsp.clone();
+        let lsp_settings = self.catalog.lsp_settings();
+        let lsp_path = self.catalog.lsp_path();
         let root_dir = self.journal.directory().join(format!("{id}.subagents"));
 
         let plan = self
@@ -123,9 +128,23 @@ impl Agent {
             tools.approval = approval.clone();
             tools.approval.label(record.name.clone(), binding.clone());
             tools.mcp_proxy = Some(mcp.clone());
+            if !record.spec.isolated
+                && let Some(parent) = lsp.as_ref()
+                && same_workspace(&record.spec.cwd, parent.cwd())
+            {
+                tools.install_shared_lsp(parent.clone());
+            } else if lsp_settings.enabled {
+                tools.install_lsp(crate::lsp::Registry::new(
+                    record.spec.cwd.clone(),
+                    Some(lsp_path.clone()),
+                    lsp_settings,
+                ));
+            }
+            // 只读角色（Plan/scout/reviewer）不能通过子 Agent 默认 Execute 绕过。
+            tools.set_lsp_readonly(record.spec.readonly);
             let mut allowed = record.spec.tools.clone();
             if plan_mode {
-                allowed.retain(|name| matches!(name.as_str(), "read" | "grep" | "glob"));
+                allowed.retain(|name| matches!(name.as_str(), "read" | "grep" | "glob" | "lsp"));
             }
             tools.allowed_tools = Some(allowed);
             tools.yield_schema = record.spec.output_schema.clone();
@@ -199,6 +218,7 @@ impl Agent {
                 workflow: Default::default(),
                 plan_cleanup_error: None,
                 plan_lease: None,
+                lsp_injected: Default::default(),
             };
             if let Some(saved) = saved {
                 ensure!(
@@ -356,6 +376,14 @@ impl Agent {
         binding.acknowledge(&ids)?;
         Ok(changed)
     }
+}
+
+fn same_workspace(left: &Path, right: &Path) -> bool {
+    left == right
+        || matches!(
+            (std::fs::canonicalize(left), std::fs::canonicalize(right)),
+            (Ok(left), Ok(right)) if left == right
+        )
 }
 
 fn consumed_results(session: &Session) -> Result<std::collections::BTreeSet<String>> {

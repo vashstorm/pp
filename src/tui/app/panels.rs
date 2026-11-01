@@ -810,13 +810,27 @@ impl App {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        if let Some(binding) = binding {
-            binding.shutdown()?;
+        // 每条链路都要尝试回收；首个错误保留 CleanupError 类型返回给退出码。
+        let mut failure: Option<anyhow::Error> = None;
+        if let Some(binding) = binding
+            && let Err(error) = binding.shutdown()
+        {
+            failure.get_or_insert(error);
         }
-        if let Some(cleanup) = &self.background_cleanup {
-            cleanup.shutdown()?;
+        if let Some(cleanup) = &self.background_cleanup
+            && let Err(error) = cleanup.shutdown()
+        {
+            failure.get_or_insert(error);
         }
-        Ok(())
+        if let Some(mut cleanup) = self.lsp_cleanup.take()
+            && let Err(error) = cleanup.stop()
+        {
+            failure.get_or_insert(error);
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     pub(in crate::tui) fn close_ask_on_exit(&mut self) {

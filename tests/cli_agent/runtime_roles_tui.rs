@@ -12,7 +12,8 @@ fn runtime_role_save(pty: &mut Pty, role: usize, model: &str) {
     pty.input("\r");
     pty.wait_for("角色已保存且返回角色列表", |screen| {
         let text = screen.contents();
-        text.contains("Model roles") && !text.contains("Choose an effort for this role")
+        text.contains("Model roles")
+            && !text.contains("Choose an effort for this role")
             && !text.contains("Saving…")
     });
     pty.input("\x1b");
@@ -86,7 +87,10 @@ fn tui_runtime_role_changes_switch_children_at_their_own_committed_boundary() {
         pty.ready_model("fixture/three");
         pty.input("/subagents\r");
         pty.text("parked");
-        pty.input("eresume saved child\r");
+        pty.input("e");
+        // 详情异步加载完成后才输入，避免把正文按键发送给 roster。
+        pty.text("task / a1");
+        pty.input("resume saved child\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert_eq!(body["model"], "two");
         assert!(body.to_string().contains("child changed safely"));

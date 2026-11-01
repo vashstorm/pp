@@ -1,13 +1,14 @@
+use crate::cancellation::{CancellationToken, check};
 use anyhow::{Context, Result, ensure};
 use rustix::{
-    fs::{self, AtFlags, FileType, Mode, OFlags},
+    fs::{self, AtFlags, Dir, FileType, Mode, OFlags, RawMode},
     io::Errno,
 };
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
     io::{self, Read, Write},
-    os::unix::fs::MetadataExt,
+    os::unix::{ffi::OsStrExt, fs::MetadataExt},
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::SystemTime,
@@ -30,6 +31,45 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 /// `save_new` 碰撞的统一计划文案；计划正文与登记表都不得覆盖既有文件，
 /// 也不得把碰撞伪装成保存失败以外的其他错误。
 const PLAN_SAVE_NEW_CONFLICT: &str = "Plan file name already exists; choose another file_name.";
+
+/// 资源事务递归操作的上限：普通文件最多 1000 个。目录本身不占配额——
+/// 一个普通文件配一个子目录的合法树仍要能通过；符号链接与特殊文件在
+/// 逐节点检查中直接拒绝。
+pub(crate) const RESOURCE_FILE_LIMIT: usize = 1000;
+
+/// 目录深度上限：只为防止空目录链无限递归/爆栈（文件配额已不再约束
+/// 目录），不是文件数量限制。
+const RESOURCE_MAX_DEPTH: usize = 1000;
+
+/// 排他新建的冲突说明；计划保存与普通 write 各自提供明确原因。
+#[derive(Clone, Copy)]
+enum NewConflict {
+    Message(&'static str),
+}
+
+/// 资源节点类型：`lstat` 语义，不跟随符号链接。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EntryKind {
+    File,
+    Directory,
+    Missing,
+}
+
+/// 目录快照的一项：普通文件带内容，目录内容为 `None`。相对路径用于
+/// 重命名两端与递归删除的逐节点记录；`permissions` 是快照时的权限位
+/// （`st_mode & 0o7777`），重建时用来保留可执行位，不能丢。
+pub(crate) struct DirectoryEntry {
+    pub(crate) relative: PathBuf,
+    pub(crate) content: Option<Vec<u8>>,
+    pub(crate) permissions: Option<u32>,
+}
+
+/// 只读资源句柄：父目录按 NOFOLLOW 打开，读取时核对最终节点类型。
+pub(crate) struct ResourceTarget {
+    parent: File,
+    name: OsString,
+    mode: Option<Mode>,
+}
 
 impl Workspace {
     pub(crate) fn open(path: &Path) -> Result<Self> {
@@ -79,25 +119,27 @@ impl Workspace {
     }
 
     pub(crate) fn directory(&self, parts: &[OsString], create: bool) -> Result<File> {
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         let mut parent = self.root.try_clone()?;
         for part in parts {
-            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-            let fd = match fs::openat(&parent, part, flags, Mode::empty()) {
-                Ok(fd) => fd,
+            let next = match fs::openat(&parent, part, flags, Mode::empty()) {
+                Ok(fd) => File::from(fd),
                 Err(Errno::NOENT) if create => {
                     match fs::mkdirat(&parent, part, Mode::from_raw_mode(0o777)) {
                         Ok(()) | Err(Errno::EXIST) => {}
                         Err(error) => return Err(error).context("creating parent directory"),
                     }
-                    fs::openat(&parent, part, flags, Mode::empty())
-                        .context("opening created directory without symlinks")?
+                    File::from(
+                        fs::openat(&parent, part, flags, Mode::empty())
+                            .context("opening created directory without symlinks")?,
+                    )
                 }
                 Err(error) => {
                     return Err(error)
                         .context("opening parent directory (symlink paths are forbidden)");
                 }
             };
-            parent = File::from(fd);
+            parent = next;
         }
         Ok(parent)
     }
@@ -223,6 +265,198 @@ impl Workspace {
             Err(error) => return Err(error).context("checking write/edit target"),
         };
         Ok(Target { parent, name, mode })
+    }
+
+    /// 资源事务入口：解析最终名的父目录。`create=false` 时缺失的父目录
+    /// 表示目标尚不存在（`Ok(None)`），preview 因此不会创建任何目录；
+    /// 已存在的每一级都以 NOFOLLOW 目录句柄验证，符号链接祖先仍是错误。
+    pub(crate) fn resource_target(
+        &self,
+        path: &Path,
+        create: bool,
+    ) -> Result<Option<ResourceTarget>> {
+        let mut parts = self.components(path)?;
+        let name = parts.pop().context("resource path requires a file name")?;
+        let parent = match self.directory(&parts, create) {
+            Ok(parent) => parent,
+            Err(error) if !create && is_missing(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mode = match fs::statat(&parent, &name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile => {
+                Some(Mode::from_raw_mode(stat.st_mode))
+            }
+            _ => None,
+        };
+        Ok(Some(ResourceTarget { parent, name, mode }))
+    }
+
+    /// 与 [`Self::walk_directory`] 相同，但在每个节点前检查取消信号，让
+    /// 长目录遍历可以中止而不是先读完整个快照。
+    pub(crate) fn walk_directory_cancellable(
+        &self,
+        path: &Path,
+        limit: usize,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<DirectoryEntry>> {
+        self.walk_directory_bounded(path, limit, Some(cancellation))
+    }
+
+    fn walk_directory_bounded(
+        &self,
+        path: &Path,
+        limit: usize,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<Vec<DirectoryEntry>> {
+        let target = self
+            .resource_target(path, false)?
+            .context("directory does not exist")?;
+        ensure!(
+            target.kind()? == EntryKind::Directory,
+            "resource path must be a directory"
+        );
+        let dir = target.open_directory()?;
+        let mut entries = Vec::new();
+        let mut files = 0_usize;
+        walk_entries(
+            &dir,
+            Path::new(""),
+            &mut entries,
+            &mut files,
+            limit,
+            cancellation,
+        )?;
+        Ok(entries)
+    }
+}
+
+/// 递归快照的公用遍历：调用方已经用 NOFOLLOW 打开目录句柄。
+fn walk_entries(
+    dir: &File,
+    prefix: &Path,
+    entries: &mut Vec<DirectoryEntry>,
+    files: &mut usize,
+    limit: usize,
+    cancellation: Option<&CancellationToken>,
+) -> Result<()> {
+    let mut names = Vec::new();
+    for entry in Dir::read_from(dir)? {
+        let entry = entry.context("listing directory")?;
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        names.push(OsStr::from_bytes(name.to_bytes()).to_os_string());
+    }
+    names.sort();
+    for name in names {
+        if let Some(cancellation) = cancellation {
+            check(cancellation)?;
+        }
+        let relative = prefix.join(&name);
+        let stat = fs::statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW)?;
+        match FileType::from_raw_mode(stat.st_mode) {
+            FileType::RegularFile => {
+                // 只有普通文件占配额；目录不计数，合法树不会被目录数挤爆。
+                *files += 1;
+                ensure!(
+                    *files <= limit,
+                    "directory contains more than {limit} regular files; resource operation refused"
+                );
+                let file = File::from(fs::openat(
+                    dir,
+                    &name,
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )?);
+                entries.push(DirectoryEntry {
+                    relative,
+                    content: Some(read_regular_file(file)?),
+                    permissions: Some(permission_bits(stat.st_mode)),
+                });
+            }
+            FileType::Directory => {
+                ensure!(
+                    relative.components().count() <= RESOURCE_MAX_DEPTH,
+                    "directory nesting exceeds {RESOURCE_MAX_DEPTH} levels; resource operation refused"
+                );
+                let file = File::from(fs::openat(
+                    dir,
+                    &name,
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )?);
+                entries.push(DirectoryEntry {
+                    relative: relative.clone(),
+                    content: None,
+                    permissions: Some(permission_bits(stat.st_mode)),
+                });
+                walk_entries(&file, &relative, entries, files, limit, cancellation)?;
+            }
+            _ => anyhow::bail!(
+                "directory contains a symlink or special file; resource operation refused"
+            ),
+        }
+    }
+    Ok(())
+}
+
+impl ResourceTarget {
+    fn as_target(&self) -> Result<Target> {
+        Ok(Target {
+            parent: self.parent.try_clone()?,
+            name: self.name.clone(),
+            mode: self.mode,
+        })
+    }
+
+    /// NOFOLLOW `lstat`：缺失返回 `Missing`；符号链接与特殊文件是错误，
+    /// 不把“看起来像文件”的名字当作普通文件。
+    pub(crate) fn kind(&self) -> Result<EntryKind> {
+        match fs::statat(&self.parent, &self.name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => match FileType::from_raw_mode(stat.st_mode) {
+                FileType::RegularFile => Ok(EntryKind::File),
+                FileType::Directory => Ok(EntryKind::Directory),
+                _ => anyhow::bail!(
+                    "resource target must be a regular file or directory; symlinks and special files are forbidden"
+                ),
+            },
+            Err(Errno::NOENT) => Ok(EntryKind::Missing),
+            Err(error) => Err(error).context("checking resource target"),
+        }
+    }
+
+    /// 当前目标的权限位（`st_mode & 0o7777`，NOFOLLOW）；缺失返回 `None`，
+    /// 符号链接与特殊文件是错误。快照与回滚重建都用它保留可执行位。
+    pub(crate) fn permissions(&self) -> Result<Option<u32>> {
+        match fs::statat(&self.parent, &self.name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => match FileType::from_raw_mode(stat.st_mode) {
+                FileType::RegularFile | FileType::Directory => {
+                    Ok(Some(permission_bits(stat.st_mode)))
+                }
+                _ => anyhow::bail!(
+                    "resource target must be a regular file or directory; symlinks and special files are forbidden"
+                ),
+            },
+            Err(Errno::NOENT) => Ok(None),
+            Err(error) => Err(error).context("reading resource permissions"),
+        }
+    }
+
+    pub(crate) fn read(&self) -> Result<Vec<u8>> {
+        self.as_target()?.read()
+    }
+
+    /// 以 NOFOLLOW 打开目录本身，供递归遍历与移除。
+    pub(crate) fn open_directory(&self) -> Result<File> {
+        let fd = fs::openat(
+            &self.parent,
+            &self.name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .context("opening directory without symlinks")?;
+        Ok(File::from(fd))
     }
 }
 
@@ -352,7 +586,14 @@ impl Target {
         content: &[u8],
         conflict: &'static str,
     ) -> Result<Option<String>> {
-        self.save_checked_conflict(content, &SystemSave, true, None, conflict)
+        self.save_checked_conflict(
+            content,
+            &SystemSave,
+            true,
+            None,
+            NewConflict::Message(conflict),
+            None,
+        )
     }
 
     /// 与 `save_if_unchanged` 完全相同的基线比较保存，但冲突文案由调用方提供。
@@ -362,12 +603,25 @@ impl Target {
         content: &[u8],
         conflict: &'static str,
     ) -> Result<Option<String>> {
+        self.save_if_unchanged_custom_with_permissions(expected, content, conflict, None)
+    }
+
+    /// 与 [`Self::save_if_unchanged_custom`] 相同，但显式设置提交后的权限位；
+    /// 用于回滚时连可执行位一起还原。
+    pub(crate) fn save_if_unchanged_custom_with_permissions(
+        &self,
+        expected: &[u8],
+        content: &[u8],
+        conflict: &'static str,
+        permissions: Option<u32>,
+    ) -> Result<Option<String>> {
         self.save_checked_conflict(
             content,
             &SystemSave,
             false,
             Some((expected, conflict)),
-            PLAN_SAVE_NEW_CONFLICT,
+            NewConflict::Message(PLAN_SAVE_NEW_CONFLICT),
+            permissions,
         )
     }
 
@@ -415,7 +669,8 @@ impl Target {
             operations,
             new_only,
             expected,
-            PLAN_SAVE_NEW_CONFLICT,
+            NewConflict::Message(PLAN_SAVE_NEW_CONFLICT),
+            None,
         )
     }
 
@@ -425,7 +680,8 @@ impl Target {
         operations: &impl SaveOperations,
         new_only: bool,
         expected: Option<(&[u8], &'static str)>,
-        new_only_conflict: &'static str,
+        new_only_conflict: NewConflict,
+        permissions: Option<u32>,
     ) -> Result<Option<String>> {
         let (temporary, mut file) = self.create_temporary()?;
         let cleanup = Temporary {
@@ -435,8 +691,15 @@ impl Target {
         operations
             .write(&mut file, content)
             .context("writing atomic save file; target unchanged")?;
-        if !new_only && let Some(mode) = self.mode {
-            fs::fchmod(&file, mode).context("preserving target permissions; target unchanged")?;
+        // 显式权限位优先（回滚重建被删/被移动的节点）；否则非排他提交保留
+        // 既有目标权限，排他创建交给 umask。
+        let target_mode = match permissions {
+            Some(bits) => Some(Mode::from_raw_mode(bits as RawMode)),
+            None if !new_only => self.mode,
+            None => None,
+        };
+        if let Some(mode) = target_mode {
+            fs::fchmod(&file, mode).context("setting target permissions; target unchanged")?;
         }
         operations
             .sync_file(&file)
@@ -454,7 +717,9 @@ impl Target {
         };
         if let Err(error) = committed {
             if new_only && error.kind() == io::ErrorKind::AlreadyExists {
-                anyhow::bail!(new_only_conflict);
+                match new_only_conflict {
+                    NewConflict::Message(message) => anyhow::bail!(message),
+                }
             }
             return Err(error).context("committing atomic save; target unchanged");
         }
@@ -539,6 +804,12 @@ impl Target {
         fs::unlinkat(&self.parent, &self.name, AtFlags::empty()).context("removing target")?;
         Ok(())
     }
+}
+
+/// `st_mode` 的权限位（含 setuid/setgid/sticky 的低 12 位），供快照重建时
+/// 还原可执行位；不把文件类型位带进权限。
+fn permission_bits(mode: RawMode) -> u32 {
+    (mode as u32) & 0o7777
 }
 
 /// 判断错误链中是否只是“路径不存在”；搬迁源缺失属于幂等完成语义。

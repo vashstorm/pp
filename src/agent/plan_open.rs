@@ -173,6 +173,7 @@ impl Agent {
         // 完整提交后才替换当前会话；只有真正切换才清除撤销内存资格。
         self.role_route = role_route;
         self.session = session;
+        self.reset_lsp_diagnostics();
         self.client = client;
         self.current_model = crate::config::ModelChoice {
             reference: selection.model,

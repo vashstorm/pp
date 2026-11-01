@@ -71,6 +71,8 @@ pub(super) enum EntryKind {
     Data,
     Error,
     Activity,
+    /// LSP 专用卡片：内联工具结果或迟到的独立诊断。
+    Lsp,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +118,8 @@ enum EntryBody {
     Markdown(super::markdown::MarkdownDocument),
     Diff(FileDiff),
     Ask(AskBlock),
+    /// LSP 工具卡片：可读正文与按路径累积的多文件变更。
+    Lsp(super::lsp::Block),
 }
 
 struct AskBlock {
@@ -149,6 +153,8 @@ struct TranscriptEntry {
     bash_timeout_seconds: Option<u64>,
     arguments: Value,
     result: Option<Value>,
+    /// 内联或迟到报告；每个路径保留最新一份，按出现顺序展示在正文之后。
+    diagnostics: Vec<crate::lsp::DiagnosticReport>,
     display: DisplayContext,
     display_title: Option<String>,
     hidden: bool,
@@ -520,7 +526,8 @@ impl Transcript {
                 AgentEvent::ToolFinished { .. } => activity.phase("Processing tool result"),
                 AgentEvent::ToolOutput { .. }
                 | AgentEvent::ToolOutputSnapshot { .. }
-                | AgentEvent::FileChanged { .. } => {}
+                | AgentEvent::FileChanged { .. }
+                | AgentEvent::LspDiagnostics { .. } => {}
                 // 后台自动加载不改变活动阶段，不伪装成模型工具执行。
                 AgentEvent::ProjectInstructionsLoaded { .. } => {}
                 AgentEvent::TodoSnapshot { .. } | AgentEvent::TodoStateUpdated { .. } => {}
@@ -711,6 +718,7 @@ impl Transcript {
                     .then(|| crate::interaction::AskArgs::parse(&arguments).ok())
                     .flatten();
                 let arguments = serde_json::from_str::<Value>(&arguments).ok();
+                let lsp_block = (name == "lsp").then(crate::tui::lsp::Block::default);
                 if name == "bash_task"
                     && let Some(index) = arguments
                         .as_ref()
@@ -744,6 +752,8 @@ impl Transcript {
                     EntryKind::Diff
                 } else if name == "ask" {
                     EntryKind::Ask
+                } else if name == "lsp" {
+                    EntryKind::Lsp
                 } else if name == "read"
                     && arguments
                         .as_ref()
@@ -759,7 +769,9 @@ impl Transcript {
                     .and_then(|args| args.get("args"))
                     .and_then(Value::as_array)
                     .filter(|args| args.iter().all(Value::is_string));
-                let title = if name == "bash_task" {
+                let title = if name == "lsp" {
+                    crate::tui::lsp::tool_title(arguments.as_ref().unwrap_or(&Value::Null))
+                } else if name == "bash_task" {
                     let args = arguments.as_ref();
                     format!(
                         "bash_task · {} · {}",
@@ -811,7 +823,7 @@ impl Transcript {
                 } else {
                     title
                 };
-                let title = if name == "bash" || kind == EntryKind::Read {
+                let title = if name == "bash" || name == "lsp" || kind == EntryKind::Read {
                     title
                 } else {
                     format!("{} {title}", palette::tool_icon(&name))
@@ -827,18 +839,56 @@ impl Transcript {
                 if let Some(args) = ask_args {
                     entry.body = EntryBody::Ask(AskBlock::new(args));
                 }
+                if let Some(block) = lsp_block {
+                    entry.body = EntryBody::Lsp(block);
+                }
                 entry.status = EntryStatus::Running;
                 self.read_groups_key = None;
                 self.running_tools.push((id, self.entries.len()));
                 self.entries.push(entry);
             }
-            AgentEvent::FileChanged { id, path: _, diff } => {
+            AgentEvent::FileChanged { id, path, diff } => {
                 if let Some(index) = self.tool_index(&id) {
                     let entry = &mut self.entries[index];
                     if entry.kind == EntryKind::Diff {
                         entry.body = EntryBody::Diff(diff);
                         entry.layout = None;
+                    } else if let EntryBody::Lsp(block) = &mut entry.body {
+                        // LSP 的 rename/资源操作会按路径依次通知；卡片累积全部
+                        // 文件，不能只保留最后一条 FileChanged。
+                        block.record_change(path, diff);
+                        entry.layout = None;
+                        entry.display_title = None;
                     }
+                }
+            }
+            AgentEvent::LspDiagnostics { id, report } => {
+                if let Some(id) = id {
+                    // 内联报告属于当前工具调用（工具结果仍是模型权威）；
+                    // 这里只把同一份结构化报告附到卡片正文之后。
+                    if let Some(index) = self.tool_index(&id) {
+                        let entry = &mut self.entries[index];
+                        if entry.tool.as_deref() == Some("lsp")
+                            && !matches!(entry.body, EntryBody::Lsp(_))
+                        {
+                            entry.body = EntryBody::Lsp(crate::tui::lsp::Block::default());
+                        }
+                        entry.set_diagnostic(report);
+                    }
+                } else {
+                    // `id = None` 是保存后的迟到报告：追加独立卡片，不改写已冻结
+                    // 的历史卡片，也不启动新的模型请求。
+                    let mut entry = TranscriptEntry::new(
+                        EntryKind::Lsp,
+                        crate::tui::lsp::late_title(),
+                        String::new(),
+                        None,
+                    );
+                    entry.display = self.display;
+                    entry.expanded = self.tools_expanded;
+                    entry.set_diagnostic(report);
+                    self.read_groups_key = None;
+                    self.entries.push(entry);
                 }
             }
             AgentEvent::ToolOutput { id, stream, text } => {
@@ -925,6 +975,26 @@ impl Transcript {
                                 format!("⟨Resolved path: {}⟩", palette::display_text(path));
                         }
                     }
+                    if entry.tool.as_deref() == Some("lsp") {
+                        // 工具结果是内联权威；结构化 diagnostics 直接渲染，
+                        // 同一份内容的可读正文不再重复；其他动作展示 content。
+                        let reports = crate::tui::lsp::reports_from_result(&result);
+                        let text = tool_result(entry.kind, "lsp", &result);
+                        let content = reports
+                            .is_empty()
+                            .then_some(text)
+                            .filter(|text| !text.is_empty());
+                        if let EntryBody::Lsp(block) = &mut entry.body {
+                            block.set_content(content);
+                        } else {
+                            let mut block = crate::tui::lsp::Block::default();
+                            block.set_content(content);
+                            entry.body = EntryBody::Lsp(block);
+                        }
+                        for report in reports {
+                            entry.set_diagnostic(report);
+                        }
+                    }
                     if let EntryBody::Ask(block) = &mut entry.body {
                         if !block.finish(&result) {
                             entry.body = EntryBody::Plain;
@@ -946,6 +1016,8 @@ impl Transcript {
                                 .and_then(Value::as_str)
                                 .map(|warning| format!("Warning: {warning}"))
                                 .unwrap_or_default()
+                        } else if matches!(entry.body, EntryBody::Lsp(_)) {
+                            String::new()
                         } else {
                             tool_result(
                                 entry.kind,
@@ -953,6 +1025,11 @@ impl Transcript {
                                 &result,
                             )
                         };
+                    }
+                    if entry.diagnostics.is_empty() {
+                        for report in crate::tui::lsp::reports_from_result(&result) {
+                            entry.set_diagnostic(report);
+                        }
                     }
                     entry.result = Some(result);
                     if entry.kind == EntryKind::Bash {
@@ -1239,7 +1316,7 @@ pub(super) fn diff_layout(diff: &FileDiff, width: u16, expanded: bool) -> Vec<Li
     diff_layout_styled(diff, width, expanded, None)
 }
 
-fn diff_layout_styled(
+pub(super) fn diff_layout_styled(
     diff: &FileDiff,
     width: u16,
     expanded: bool,
@@ -1248,6 +1325,7 @@ fn diff_layout_styled(
     let mut rows = Vec::new();
     let FileDiff::Text {
         created,
+        deleted,
         added,
         removed,
         hunks,
@@ -1262,9 +1340,10 @@ fn diff_layout_styled(
         }
         unreachable!();
     };
-    if edit_path.is_none() {
+    if edit_path.is_none() || *deleted {
         rows.extend(wrap_block(
             Line::from(vec![
+                Span::raw(if *deleted { "Deleted · " } else { "" }),
                 Span::styled(format!("+{added}"), Style::default().fg(palette::ADDED)),
                 Span::raw(" "),
                 Span::styled(format!("-{removed}"), Style::default().fg(palette::REMOVED)),
@@ -1278,7 +1357,9 @@ fn diff_layout_styled(
     if total == 0 {
         rows.extend(wrap_block(
             block_line(
-                if *created {
+                if *deleted {
+                    "Deleted empty file."
+                } else if *created {
                     "Created empty file."
                 } else {
                     "No content changes."
@@ -1460,6 +1541,17 @@ fn background_status(result: &Value) -> Option<String> {
 }
 
 fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
+    if name == "lsp" {
+        if let Some(content) = result["content"].as_str() {
+            return content.to_owned();
+        }
+        if let Some(error) = result.get("error") {
+            return error
+                .as_str()
+                .map_or_else(|| error.to_string(), str::to_owned);
+        }
+        return String::new();
+    }
     if matches!(name, "grep" | "glob")
         && let Some(content) = result["content"].as_str()
     {

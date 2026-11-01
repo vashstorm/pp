@@ -951,6 +951,24 @@ impl App {
                     }
                     changed = true;
                 }
+                Ok(WorkerEvent::LspWarmupFailed { server, error }) => {
+                    self.notify(
+                        Level::Error,
+                        format!(
+                            "LSP {} unavailable: {}",
+                            crate::tui::display_text(&server),
+                            crate::tui::display_text(&error)
+                        ),
+                    );
+                    changed = true;
+                }
+                Ok(WorkerEvent::LspPollFailed(error)) => {
+                    self.notify(
+                        Level::Error,
+                        format!("LSP diagnostics: {}", crate::tui::display_text(&error)),
+                    );
+                    changed = true;
+                }
                 Ok(WorkerEvent::Cleanup(cleanup)) => {
                     // 错误路径上 registry 可能被保留/部分更新；刷新退出清理句柄。
                     self.install_mcp_cleanup(cleanup);

@@ -12,6 +12,14 @@ impl App {
         self.mcp_cleanup = Some(cleanup);
     }
 
+    /// 同一 Registry 重装只移交清理权；换 Registry 时旧 guard 在赋值时 Drop 回收。
+    pub(in crate::tui) fn install_lsp_cleanup(&mut self, cleanup: crate::lsp::Cleanup) {
+        if let Some(previous) = &mut self.lsp_cleanup {
+            previous.supersede(&cleanup);
+        }
+        self.lsp_cleanup = Some(cleanup);
+    }
+
     pub(in crate::tui) fn notify(&mut self, level: Level, message: String) {
         if level != Level::Error || message.trim().is_empty() {
             return;

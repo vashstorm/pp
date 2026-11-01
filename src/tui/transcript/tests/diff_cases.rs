@@ -12,6 +12,7 @@ fn committed_diff_survives_result_and_replay_without_reconstructing_old_logs() {
         id: "edit-1".into(),
         path: "demo.txt".into(),
         diff: FileDiff::Text {
+            deleted: false,
             created: false,
             added: 1,
             removed: 1,
@@ -84,16 +85,14 @@ fn edit_card_reference_layout_colors_inline_changes_and_narrow_widths() {
     transcript.progress(AgentEvent::FileChanged {
             id: "edit".into(),
             path: "src/agent/read_tests.rs".into(),
-            diff: FileDiff::Text {
-                created: false, added: 2, removed: 1,
-                hunks: vec![DiffHunk { lines: vec![
-                    DiffLine { kind: DiffLineKind::Context, old_line: Some(162), new_line: Some(162), text: "        let document = crate::plan::PlanDocument::new().unwrap();\n".into() },
-                    DiffLine { kind: DiffLineKind::Added, old_line: None, new_line: Some(163), text: "        let execute_workflow = crate::plan::WorkflowState::default();\n".into() },
-                    DiffLine { kind: DiffLineKind::Context, old_line: Some(163), new_line: Some(164), text: "        for workflow in [\"execute\", \"plan\", \"review\"] {\n".into() },
-                    DiffLine { kind: DiffLineKind::Removed, old_line: Some(165), new_line: None, text: "                \"execute\" => crate::tools::ToolPolicy::Execute,\n".into() },
-                    DiffLine { kind: DiffLineKind::Added, old_line: None, new_line: Some(166), text: "                \"execute\" => crate::tools::ToolPolicy::Execute { workflow: &execute_workflow },\n".into() },
-                ] }],
-            },
+            diff: FileDiff::Text { deleted: false, created: false, added: 2, removed: 1,
+            hunks: vec![DiffHunk { lines: vec![
+                DiffLine { kind: DiffLineKind::Context, old_line: Some(162), new_line: Some(162), text: "        let document = crate::plan::PlanDocument::new().unwrap();\n".into() },
+                DiffLine { kind: DiffLineKind::Added, old_line: None, new_line: Some(163), text: "        let execute_workflow = crate::plan::WorkflowState::default();\n".into() },
+                DiffLine { kind: DiffLineKind::Context, old_line: Some(163), new_line: Some(164), text: "        for workflow in [\"execute\", \"plan\", \"review\"] {\n".into() },
+                DiffLine { kind: DiffLineKind::Removed, old_line: Some(165), new_line: None, text: "                \"execute\" => crate::tools::ToolPolicy::Execute,\n".into() },
+                DiffLine { kind: DiffLineKind::Added, old_line: None, new_line: Some(166), text: "                \"execute\" => crate::tools::ToolPolicy::Execute { workflow: &execute_workflow },\n".into() },
+            ] }], },
         });
     transcript.progress(AgentEvent::ToolFinished {
         id: "edit".into(),
@@ -149,6 +148,7 @@ fn diff_preview_caps_hunks_and_wrapped_rows_but_full_mode_keeps_tail() {
         text,
     };
     let diff = FileDiff::Text {
+        deleted: false,
         created: false,
         added: 9,
         removed: 0,
@@ -170,6 +170,7 @@ fn diff_preview_caps_hunks_and_wrapped_rows_but_full_mode_keeps_tail() {
             .any(|row| row.to_string().contains("hunk-9"))
     );
     let diff = FileDiff::Text {
+        deleted: false,
         created: false,
         added: 1,
         removed: 0,

@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc::SyncSender,
     thread,
+    time::{Duration, Instant},
 };
 
 mod bash;
@@ -21,7 +22,7 @@ pub(crate) use bash::BackgroundCleanup;
 pub(crate) mod approval;
 pub(crate) mod changes;
 pub(crate) use changes::{ChangedFile, ChangesView, UndoResult, UndoToken};
-mod diff;
+pub(crate) mod diff;
 mod edit;
 mod glob;
 mod grep;
@@ -37,12 +38,26 @@ pub(crate) mod todo;
 #[cfg(test)]
 const OUTPUT_LIMIT: usize = 65_536;
 
+/// 提交后同步已启动客户端的单次预算：与内联诊断等待同一上限；自动诊断开启时
+/// 受管 worker 会用后台预算再次同步，自动诊断关闭时这里就是唯一的有界同步。
+const POST_SAVE_SYNC: Duration = Duration::from_millis(500);
+/// `write` 的目标在读取基线之后被外部创建：拒绝覆盖而不是无条件替换。
+const WRITE_NEW_CONFLICT: &str = "File appeared after the write started; write refused instead of overwriting it. Read the file and use edit.";
+
 pub(crate) struct Tools {
     pub(crate) artifacts: output::Store,
     pub(crate) ask_handler: Option<crate::interaction::SharedAskHandler>,
     pub(crate) approval: approval::Gate,
     pub(crate) mcp: crate::mcp::Registry,
     pub(crate) mcp_proxy: Option<crate::mcp::Registry>,
+    pub(crate) lsp: Option<crate::lsp::Registry>,
+    /// 仅根/独立 Registry 的 owner 持有；借用父 Registry 的子 Agent 保持 `None`，
+    /// Drop 时不会停止父进程。
+    lsp_cleanup: Option<crate::lsp::Cleanup>,
+    /// 强制只读：readonly 子 Agent 只拿到受限动作表，执行层同样拒绝写动作。
+    pub(crate) lsp_readonly: bool,
+    /// 保存联动与迟到诊断的本 Agent owner；子 Agent 必须各自新建，不共享 inbox。
+    pub(crate) lsp_owner: crate::lsp::writethrough::Owner,
     pub(crate) subagent: Option<crate::subagent::Binding>,
     pub(crate) allowed_tools: Option<Vec<String>>,
     pub(crate) yield_schema: Option<Value>,
@@ -118,6 +133,16 @@ struct WriteArgs {
     path: String,
     content: String,
 }
+
+/// `write` 的提交基线：只有目标确实可读时才允许精确比较后提交。
+///
+/// 不可读的目标（权限、竞态替换）没有可比较的基线：沿用既有的原子替换边界，
+/// diff 如实标记为 `Unavailable`，绝不伪造一份空内容当作基线。
+enum WriteBaseline {
+    Existing(Vec<u8>),
+    Missing,
+    Unavailable,
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BashArgs {
@@ -164,6 +189,10 @@ impl Tools {
             artifacts: Default::default(),
             ask_handler: None,
             mcp_proxy: None,
+            lsp: None,
+            lsp_cleanup: None,
+            lsp_readonly: false,
+            lsp_owner: crate::lsp::writethrough::Owner::new(),
             subagent: None,
             allowed_tools: None,
             yield_schema: None,
@@ -181,6 +210,91 @@ impl Tools {
             background_tasks: Default::default(),
             limits: ToolLimits::default(),
         })
+    }
+
+    pub(crate) fn workspace(&self) -> &save::Workspace {
+        &self.workspace
+    }
+
+    pub(crate) fn lsp_registry(&self) -> Option<&crate::lsp::Registry> {
+        self.lsp.as_ref()
+    }
+
+    /// 根/独立 owner 安装 Registry：保留退出清理权。`enabled=false` 时既
+    /// 不暴露工具也不持有清理，完全跳过发现与投递。
+    pub(crate) fn install_lsp(&mut self, registry: crate::lsp::Registry) {
+        if !registry.enabled() {
+            self.lsp = None;
+            self.lsp_cleanup = None;
+            return;
+        }
+        let cleanup = registry.cleanup();
+        // 同一 Registry 重装（Plan↔Execute 保留客户端）只移交清理权；
+        // 换成另一个 Registry 时旧句柄在离开作用域时回收旧进程。
+        if let Some(mut previous) = self.lsp_cleanup.take() {
+            previous.supersede(&cleanup);
+        }
+        self.lsp_cleanup = Some(cleanup);
+        self.lsp = Some(registry);
+    }
+
+    /// 子 Agent 借用父 Registry：共享同一批客户端，但永不取得停止父进程的
+    /// 清理权，Drop 也不会回收父服务器。
+    pub(crate) fn install_shared_lsp(&mut self, registry: crate::lsp::Registry) {
+        debug_assert!(
+            self.lsp_cleanup.is_none(),
+            "child tools must not own an LSP cleanup handle"
+        );
+        self.lsp = registry.enabled().then_some(registry);
+    }
+
+    /// 向 TUI 等外部持有者发放新的清理句柄；只有 owner 安装后才能取得。
+    /// 同一 Registry 的多个句柄由 `Cleanup::supersede` 移交，不会重复回收。
+    pub(crate) fn lsp_cleanup(&self) -> Option<crate::lsp::Cleanup> {
+        self.lsp_cleanup.as_ref()?;
+        self.lsp.as_ref().map(crate::lsp::Registry::cleanup)
+    }
+
+    pub(crate) fn set_lsp_readonly(&mut self, readonly: bool) {
+        self.lsp_readonly = readonly;
+    }
+
+    /// LSP 工具 schema：只有已安装 Registry 时才出现；受限模式同时裁掉
+    /// schema 与执行层动作，隐藏 schema 从不作为授权边界。
+    fn lsp_definition(&self, read_only: bool) -> Option<FunctionObject> {
+        self.lsp
+            .as_ref()
+            .map(|_| crate::lsp::tool::definition(read_only))
+    }
+
+    /// 调用者已完成安全提交，并传入工作区规范相对路径；此处不再读盘。
+    pub(crate) fn record_committed_file(
+        &self,
+        call_id: &str,
+        path: PathBuf,
+        before: changes::Original,
+        after: Option<Vec<u8>>,
+        resource: bool,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) {
+        let diff = diff::committed(&before, after.as_deref());
+        let mut changes = self.changes.lock().unwrap_or_else(|e| e.into_inner());
+        if resource {
+            changes.record_resource(path.clone(), before, after);
+        } else if let Some(after) = after {
+            changes.record(path.clone(), before, after);
+        }
+        changes.source(
+            &path,
+            self.subagent.as_ref().map_or("Main", |b| b.owner.as_str()),
+        );
+        drop(changes);
+        self.snapshots.borrow_mut().invalidate(&path);
+        emit(AgentEvent::FileChanged {
+            id: call_id.to_owned(),
+            path: path.display().to_string(),
+            diff,
+        });
     }
 
     pub(crate) fn begin_changes_task(&self) {
@@ -209,13 +323,120 @@ impl Tools {
     }
 
     pub(crate) fn undo_file(&self, token: &UndoToken) -> Result<UndoResult> {
-        let result = self
-            .changes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .undo(&self.workspace, token)?;
-        self.snapshots.borrow_mut().invalidate(&token.path);
+        let registry = self.lsp_save_registry();
+        let absolute = registry.map(|registry| registry.cwd().join(&token.path));
+        // 撤销也是一次路径 mutation：旧诊断先失效，且必须在写锁之前完成。
+        if let (Some(registry), Some(absolute)) = (registry, &absolute) {
+            registry.diagnostics().mutate(absolute);
+        }
+        let mut result = {
+            let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let result = self
+                .changes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .undo(&self.workspace, token)?;
+            self.snapshots.borrow_mut().invalidate(&token.path);
+            result
+        };
+        // 锁已释放；撤销不格式化、不重新诊断，只让已启动客户端看到恢复后的磁盘。
+        if let (Some(registry), Some(absolute)) = (registry, &absolute) {
+            let warnings = crate::lsp::writethrough::sync_saved(
+                registry,
+                absolute,
+                false,
+                Instant::now() + POST_SAVE_SYNC,
+                &CancellationToken::new(),
+            );
+            if !warnings.is_empty() {
+                let merged = warnings.join("; ");
+                result.warning = Some(match result.warning.take() {
+                    Some(existing) => format!("{existing}; {merged}"),
+                    None => merged,
+                });
+            }
+        }
         Ok(result)
+    }
+
+    /// 本会话可自动联动的 LSP Registry：禁用与只读 session 都不介入普通写入。
+    fn lsp_save_registry(&self) -> Option<&crate::lsp::Registry> {
+        self.lsp
+            .as_ref()
+            .filter(|registry| registry.enabled() && !self.lsp_readonly)
+    }
+
+    /// 提交之后同步已启动客户端：只更新 overlay/通知，失败只作为警告。
+    fn sync_after_save(
+        &self,
+        path: &Path,
+        created: bool,
+        cancellation: &CancellationToken,
+    ) -> Vec<String> {
+        let Some(registry) = self.lsp_save_registry() else {
+            return Vec::new();
+        };
+        crate::lsp::writethrough::sync_saved(
+            registry,
+            path,
+            created,
+            Instant::now() + POST_SAVE_SYNC,
+            cancellation,
+        )
+    }
+
+    /// 最终提交且 diff 已发布之后：同步客户端并按设置采集内联诊断。
+    ///
+    /// 返回普通警告；`Cancelled`/`CleanupError` 仍保留类型向上传播。
+    #[allow(clippy::too_many_arguments)]
+    fn finish_lsp_save(
+        &self,
+        call_id: &str,
+        origin: &str,
+        path: &Path,
+        created: bool,
+        ticket: Option<crate::lsp::writethrough::Ticket>,
+        formatter: Option<crate::lsp::FormatterStatus>,
+        diagnostics: bool,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+        result: &mut Value,
+    ) -> Result<Vec<String>> {
+        let Some(registry) = self.lsp_save_registry() else {
+            return Ok(Vec::new());
+        };
+        let (Some(ticket), true) = (ticket, diagnostics) else {
+            return Ok(self.sync_after_save(path, created, cancellation));
+        };
+        let mut warnings = Vec::new();
+        match registry.diagnostics().collect_after_save(
+            registry,
+            &self.lsp_owner,
+            ticket,
+            origin,
+            created,
+            formatter,
+        ) {
+            Ok(Some(report)) => {
+                // diff 已在上一步发布；内联诊断事件只负责展示同一份报告。
+                emit(AgentEvent::LspDiagnostics {
+                    id: Some(call_id.to_owned()),
+                    report: report.clone(),
+                });
+                result["diagnostics"] = json!(&report);
+                result["content"] = json!(crate::lsp::diagnostics::render(
+                    &report,
+                    Some(crate::lsp::diagnostics::AUTO_MESSAGE_LIMIT),
+                ));
+            }
+            Ok(None) => warnings.push(format!(
+                "Diagnostics for {} are still running in the background; a late report will follow.",
+                path.display()
+            )),
+            Err(error) if is_control_lsp_error(&error) => return Err(error),
+            Err(error) => warnings.push(format!("Diagnostics were not collected: {error:#}")),
+        }
+        Ok(warnings)
     }
 
     pub(crate) fn stop_background_tasks(&self) -> Result<()> {
@@ -262,6 +483,9 @@ impl Tools {
                 definitions.push(glob::definition());
                 definitions.push(grep::definition());
                 definitions.extend(self.mcp_proxy.as_ref().unwrap_or(&self.mcp).definitions());
+                if let Some(definition) = self.lsp_definition(self.lsp_readonly) {
+                    definitions.push(definition);
+                }
                 definitions
             }
             WorkMode::Plan => {
@@ -276,6 +500,9 @@ impl Tools {
                 definitions.push(glob::definition());
                 definitions.push(grep::definition());
                 definitions.extend(Self::plan_definitions());
+                if let Some(definition) = self.lsp_definition(true) {
+                    definitions.push(definition);
+                }
                 definitions
             }
         };
@@ -298,7 +525,9 @@ impl Tools {
             .into_iter()
             .filter(|definition| {
                 let name = definition.name.as_str();
-                PLAN_BASE_TOOLS.contains(&name) || PLAN_SEARCH_TOOLS.contains(&name)
+                PLAN_BASE_TOOLS.contains(&name)
+                    || PLAN_SEARCH_TOOLS.contains(&name)
+                    || name == "lsp"
             })
             .collect()
     }
@@ -443,6 +672,7 @@ impl Tools {
             "grep" => "grep",
             "glob" => "glob",
             "todo" => "todo",
+            "lsp" => "lsp",
             "plan_search" | "plan_find" | "plan_write" | "plan_submit" => "plan_tool",
             _ => "external",
         };
@@ -576,11 +806,14 @@ impl Tools {
         let allowed = match &policy {
             ToolPolicy::Execute { .. } => !is_plan_tool(name),
             ToolPolicy::Review => {
-                PLAN_BASE_TOOLS.contains(&name) || PLAN_SEARCH_TOOLS.contains(&name)
+                PLAN_BASE_TOOLS.contains(&name)
+                    || PLAN_SEARCH_TOOLS.contains(&name)
+                    || name == "lsp" && self.lsp.is_some()
             }
             ToolPolicy::Plan { .. } => {
                 PLAN_BASE_TOOLS.contains(&name)
                     || PLAN_SEARCH_TOOLS.contains(&name)
+                    || name == "lsp" && self.lsp.is_some()
                     || self.subagent.is_some() && matches!(name, "task" | "wait")
                     || is_plan_tool(name)
                     || name == "ask" && self.ask_handler.is_some()
@@ -597,6 +830,21 @@ impl Tools {
                     ToolPolicy::Plan { .. } => "Tool is not available in Plan mode.".to_owned(),
                 }
             );
+        }
+        // 未安装（enabled=false 或 Agent 未初始化 LSP）时显式调用直接失败，
+        // 既不进入审批也不尝试发现服务器。
+        if name == "lsp" && self.lsp.is_none() {
+            bail!("lsp is not available; LSP is disabled or not installed.");
+        }
+        // LSP 的动作级授权在执行层完成：受限模式（Plan/Review/readonly
+        // 子 Agent）连写动作的参数都不解析就拒绝，且必须先于审批门，
+        // 避免受限 Agent 通过审批提示绕过白名单。schema 裁剪只是提示。
+        let lsp_access = match &policy {
+            ToolPolicy::Execute { .. } if !self.lsp_readonly => crate::lsp::tool::Access::Execute,
+            _ => crate::lsp::tool::Access::ReadOnly,
+        };
+        if name == "lsp" {
+            crate::lsp::tool::validate_access(arguments, lsp_access)?;
         }
         // 审批门只作用于 Execute；Plan/Review 的白名单门禁已是完整授权边界。
         // 与 Plan/Review 门禁一样在参数解析与分发之前执行，失败由
@@ -693,18 +941,24 @@ impl Tools {
                 Ok(result.value)
             }
             "edit" => {
-                let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
                 let request = edit::Request::parse(self.edit_mode, arguments)?;
                 let path = request.path().to_owned();
                 ensure!(!path.starts_with("artifact://"), "artifacts are read-only");
                 let target = self.workspace.target(Path::new(&path), false)?;
-                let bytes = target.read()?;
-                let source = std::str::from_utf8(&bytes).context("edit requires a UTF-8 file")?;
                 let normalized_path = self
                     .workspace
                     .components(Path::new(&path))?
                     .into_iter()
                     .collect::<PathBuf>();
+                let registry = self.lsp_save_registry();
+                let absolute = registry
+                    .map(|registry| registry.cwd().join(&normalized_path))
+                    .unwrap_or_else(|| self.cwd.join(&normalized_path));
+                // 旧诊断在新 mutation 的第一时间失效；必须早于写锁与客户端 operation。
+                let ticket = registry.map(|registry| registry.diagnostics().mutate(&absolute));
+                let guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+                let bytes = target.read()?;
+                let source = std::str::from_utf8(&bytes).context("edit requires a UTF-8 file")?;
                 if let edit::Request::Hashline(patch) = &request {
                     self.snapshots.borrow_mut().validate(
                         &normalized_path,
@@ -713,43 +967,53 @@ impl Tools {
                         &patch.edits,
                     )?;
                 }
-                let edit::Staged {
-                    output,
-                    count,
-                    diff,
-                } = request.stage(source)?;
-                let warning = target.save_if_unchanged(&bytes, output.as_bytes())?;
-                let bytes_written = output.len();
-                self.snapshots.borrow_mut().invalidate(&normalized_path);
-                self.changes
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .record(
-                        normalized_path.clone(),
-                        changes::Original::Bytes(bytes),
-                        output.into_bytes(),
-                    );
-                self.changes
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .source(
-                        &normalized_path,
-                        self.subagent.as_ref().map_or("Main", |b| b.owner.as_str()),
-                    );
-                emit(AgentEvent::FileChanged {
-                    id: call_id.to_owned(),
-                    path,
-                    diff,
-                });
+                let edit::Staged { output, count } = request.stage(source)?;
+                crate::cancellation::check(cancellation)?;
+                let saved_warning = target.save_if_unchanged(&bytes, output.as_bytes())?;
+                let final_bytes = output.into_bytes();
+                let bytes_written = final_bytes.len();
+                // 记录与 diff 使用本次实际提交的内容。
+                self.record_committed_file(
+                    call_id,
+                    normalized_path,
+                    changes::Original::Bytes(bytes),
+                    Some(final_bytes),
+                    false,
+                    emit,
+                );
+                drop(guard);
+                if cancellation.is_cancelled() {
+                    // 已提交的副作用保留，沿用现有取消链。
+                    return Err(Cancelled.into());
+                }
                 let mut result =
                     json!({"ok":true,"edits_applied":count,"bytes_written":bytes_written});
-                if let Some(warning) = warning {
-                    result["warning"] = json!(warning);
+                let mut warnings = Vec::new();
+                if let Some(warning) = saved_warning {
+                    warnings.push(warning);
+                }
+                let diagnostics = registry.is_some_and(|registry| {
+                    registry.settings().diagnostics_on_edit
+                        && !registry.servers_for_file(&absolute).is_empty()
+                });
+                warnings.extend(self.finish_lsp_save(
+                    call_id,
+                    "edit",
+                    &absolute,
+                    false,
+                    ticket,
+                    None,
+                    diagnostics,
+                    cancellation,
+                    emit,
+                    &mut result,
+                )?);
+                if !warnings.is_empty() {
+                    result["warning"] = json!(warnings.join("; "));
                 }
                 Ok(result)
             }
             "write" => {
-                let _write = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
                 let args: WriteArgs =
                     serde_json::from_str(arguments).context("invalid write arguments")?;
                 ensure!(
@@ -758,51 +1022,80 @@ impl Tools {
                 );
                 ensure!(!args.path.trim().is_empty(), "path must not be blank");
                 let target = self.workspace.target(Path::new(&args.path), true)?;
-                let before = target.read_optional();
                 let normalized_path = self
                     .workspace
                     .components(Path::new(&args.path))?
                     .into_iter()
                     .collect::<PathBuf>();
-                let warning = target.save(args.content.as_bytes())?;
-                self.snapshots.borrow_mut().invalidate(&normalized_path);
-                let diff = match &before {
-                    Ok(None) => diff::build(None, &args.content),
-                    Ok(Some(bytes)) => match std::str::from_utf8(bytes) {
-                        Ok(source) => diff::build(Some(source), &args.content),
-                        Err(_) => crate::events::FileDiff::Unavailable {
-                            reason: "Previous content is not UTF-8; text diff unavailable.".into(),
-                        },
-                    },
-                    Err(_) => crate::events::FileDiff::Unavailable {
-                        reason: "Previous content could not be read; text diff unavailable.".into(),
-                    },
+                let registry = self.lsp_save_registry();
+                let absolute = registry
+                    .map(|registry| registry.cwd().join(&normalized_path))
+                    .unwrap_or_else(|| self.cwd.join(&normalized_path));
+                // 旧诊断在新 mutation 的第一时间失效；必须早于写锁与客户端 operation。
+                let ticket = registry.map(|registry| registry.diagnostics().mutate(&absolute));
+                let guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+                // 精确基线：可读的目标只在内容未变化时提交，绝不无条件覆盖外部改动。
+                let baseline = match target.read_optional() {
+                    Ok(Some(bytes)) => WriteBaseline::Existing(bytes),
+                    Ok(None) => WriteBaseline::Missing,
+                    // 快照失败不阻止提交；diff 必须如实标记为不可用。
+                    Err(_) => WriteBaseline::Unavailable,
                 };
-                let original = match before {
-                    Ok(None) => changes::Original::Missing,
-                    Ok(Some(bytes)) => changes::Original::Bytes(bytes),
-                    Err(_) => changes::Original::Unavailable,
+                crate::cancellation::check(cancellation)?;
+                let created = matches!(&baseline, WriteBaseline::Missing);
+                let saved_warning = match &baseline {
+                    WriteBaseline::Existing(bytes) => {
+                        target.save_if_unchanged(bytes, args.content.as_bytes())
+                    }
+                    WriteBaseline::Missing => {
+                        target.save_new_with_conflict(args.content.as_bytes(), WRITE_NEW_CONFLICT)
+                    }
+                    WriteBaseline::Unavailable => target.save(args.content.as_bytes()),
+                }?;
+                let final_bytes = args.content.into_bytes();
+                let bytes_written = final_bytes.len();
+                // 记录与 diff 使用本次实际提交的内容。
+                let original = match baseline {
+                    WriteBaseline::Existing(bytes) => changes::Original::Bytes(bytes),
+                    WriteBaseline::Missing => changes::Original::Missing,
+                    WriteBaseline::Unavailable => changes::Original::Unavailable,
                 };
-                let bytes_written = args.content.len();
-                self.changes
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .record(normalized_path.clone(), original, args.content.into_bytes());
-                self.changes
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .source(
-                        &normalized_path,
-                        self.subagent.as_ref().map_or("Main", |b| b.owner.as_str()),
-                    );
-                emit(AgentEvent::FileChanged {
-                    id: call_id.to_owned(),
-                    path: args.path,
-                    diff,
-                });
+                self.record_committed_file(
+                    call_id,
+                    normalized_path,
+                    original,
+                    Some(final_bytes),
+                    false,
+                    emit,
+                );
+                drop(guard);
+                if cancellation.is_cancelled() {
+                    // 已提交的副作用保留，沿用现有取消链。
+                    return Err(Cancelled.into());
+                }
                 let mut result = json!({"ok":true,"bytes_written":bytes_written});
-                if let Some(warning) = warning {
-                    result["warning"] = json!(warning);
+                let mut warnings = Vec::new();
+                if let Some(warning) = saved_warning {
+                    warnings.push(warning);
+                }
+                let diagnostics = registry.is_some_and(|registry| {
+                    registry.settings().diagnostics_on_write
+                        && !registry.servers_for_file(&absolute).is_empty()
+                });
+                warnings.extend(self.finish_lsp_save(
+                    call_id,
+                    "write",
+                    &absolute,
+                    created,
+                    ticket,
+                    None,
+                    diagnostics,
+                    cancellation,
+                    emit,
+                    &mut result,
+                )?);
+                if !warnings.is_empty() {
+                    result["warning"] = json!(warnings.join("; "));
                 }
                 Ok(result)
             }
@@ -857,6 +1150,9 @@ impl Tools {
                 Some(&self.artifacts),
             ),
             "glob" => glob::run(&self.cwd, arguments, cancellation),
+            "lsp" => {
+                crate::lsp::tool::run(self, arguments, call_id, lsp_access, cancellation, emit)
+            }
             "find" | "plan_find" => bail!("{name} is no longer available; use glob"),
             "plan_write" | "plan_submit" => {
                 // Only ToolPolicy::Plan passes the gate for plan tools; the
@@ -972,6 +1268,13 @@ impl Tools {
             },
         }
     }
+}
+
+/// 控制流错误必须保留类型；普通诊断失败只作为状态说明。
+fn is_control_lsp_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<Cancelled>() || cause.is::<CleanupError>())
 }
 
 fn emit_background_snapshot(call_id: &str, snapshot: &Value, emit: &mut dyn FnMut(AgentEvent)) {
@@ -1115,6 +1418,13 @@ impl Drop for Tools {
             {
                 tracing::error!(error=%error,"MCP exit cleanup failed");
             }
+        }
+        // 只有根/独立 Registry 的 owner 持有该句柄；显式 stop 由调用方负责
+        // 上报错误，这里只做兜底回收。
+        if let Some(mut cleanup) = self.lsp_cleanup.take()
+            && let Err(error) = cleanup.stop()
+        {
+            tracing::error!(error=%error,"LSP exit cleanup failed");
         }
     }
 }

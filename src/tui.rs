@@ -8,6 +8,7 @@ mod edit_diff;
 mod files;
 mod frame_clock;
 mod history;
+mod lsp;
 mod markdown;
 mod mcp;
 mod menu;
@@ -447,6 +448,13 @@ enum WorkerEvent {
     Workflow(WorkflowState),
     // 转换失败后重取当前 registry 的退出清理句柄；覆盖被保留的 prepared registry。
     Cleanup(crate::mcp::Cleanup),
+    // lazy=false 后台预热失败：单服务器隔离，正常工具不受影响。
+    LspWarmupFailed {
+        server: String,
+        error: String,
+    },
+    // 空闲轮询迟到诊断时的错误；去重后交给 UI 提示，不终止会话。
+    LspPollFailed(String),
     // 执行准备一次性交接：UI 安装清理句柄并经 reply 确认后 worker 才继续。
     ExecutionPrepared {
         workflow: WorkflowState,
@@ -772,6 +780,7 @@ struct App {
     task_status_view: crate::task_status::View,
     task_status: Option<crate::task_status::Snapshot>,
     mcp_cleanup: Option<crate::mcp::Cleanup>,
+    lsp_cleanup: Option<crate::lsp::Cleanup>,
     mcp_view: crate::mcp::View,
     mcp_panel: Option<mcp::Panel>,
     background_cleanup: Option<crate::tools::BackgroundCleanup>,

@@ -252,6 +252,7 @@ impl Snapshot {
             .iter()
             .any(|tool| tool.starts_with("mcp__"))
             .into();
+        runtime["has_lsp"] = context.tools.iter().any(|tool| tool == "lsp").into();
         runtime["has_writes"] =
             (runtime["has_write"] == true || runtime["has_edit"] == true).into();
         runtime["hashline"] = (context.edit_mode == "hashline").into();
@@ -500,5 +501,34 @@ mod tests {
         saved["version"] = 1.into();
         saved["unexpected"] = true.into();
         assert!(serde_json::from_value::<Snapshot>(saved).is_err());
+    }
+
+    #[test]
+    fn system_prompt_lsp_guidance_follows_installed_tool() {
+        let cwd = tempfile::tempdir().unwrap();
+        let compose = |tools: Vec<String>| {
+            Snapshot::bundled()
+                .compose(
+                    &RenderContext::new(cwd.path(), "model", EditMode::Replace, "execute", tools),
+                    ToolLimits::default(),
+                    "",
+                    "",
+                    "",
+                )
+                .unwrap()
+        };
+        let enabled = compose(vec!["read".into(), "lsp".into()]);
+        assert!(
+            enabled.contains("Use lsp for semantic code navigation"),
+            "{enabled}"
+        );
+        assert!(enabled.contains("not a filesystem sandbox"), "{enabled}");
+        assert!(enabled.contains("file=\"*\""), "{enabled}");
+        let disabled = compose(vec!["read".into()]);
+        assert!(
+            !disabled.contains("Use lsp for semantic code navigation"),
+            "{disabled}"
+        );
+        assert!(!disabled.contains("not a filesystem sandbox"), "{disabled}");
     }
 }

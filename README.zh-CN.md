@@ -204,6 +204,7 @@ pp stats
 | [系统提示词](docs/guide.md#系统提示词) | `cwd/.pp/` 或 `~/.pp/agent/` | `SYSTEM.md`／`SYSTEM_TEMPLATE.md` 替换基础指令，`APPEND_SYSTEM.md` 追加正文 |
 | [提示词命令](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | 将 Markdown 模板展开为 `/命令 参数` |
 | [MCP 工具](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`、`/mcp` | 发现 Claude／Codex 用户级 stdio 服务，查看状态、启停、重连和重载 |
+| [语言服务器](docs/guide.md#lsp-语义导航与修改建议) | `~/.pp/agent/lsp.json`、`settings.yml` 的 `lsp:` | 语义导航、诊断和修改建议；AI 重新读取文件后通过 edit/write/bash 执行 |
 
 ## 开发
 

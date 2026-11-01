@@ -3,6 +3,7 @@ mod debug;
 mod fallback;
 mod history;
 pub(crate) mod input;
+mod lsp;
 mod mcp_management;
 pub(crate) mod persistence;
 pub(crate) mod plan_management;
@@ -120,6 +121,8 @@ pub(crate) struct Agent {
     /// run/continue until a successful `/plan` retry clears it.
     plan_cleanup_error: Option<String>,
     plan_lease: Option<crate::tools::plan_catalog::PlanLease>,
+    /// 本次运行已追加但尚未完成 native commit 的迟到报告，避免错误重试复制正文。
+    lsp_injected: std::collections::HashSet<u64>,
 }
 
 /// Everything the UI must adopt after a mode transition that replaced the
@@ -289,6 +292,20 @@ impl Session {
 }
 
 impl Agent {
+    /// 按当前 settings 安装一次共享 Registry；配置无效只让 LSP 不可用，
+    /// 不阻止 Agent 启动。
+    fn install_lsp(tools: &mut Tools, catalog: &ModelCatalog) {
+        if !catalog.lsp_settings().enabled || tools.lsp_registry().is_some() {
+            return;
+        }
+        let registry = crate::lsp::Registry::new(
+            tools.cwd().to_path_buf(),
+            Some(catalog.lsp_path()),
+            catalog.lsp_settings(),
+        );
+        tools.install_lsp(registry);
+    }
+
     pub(crate) fn bash_timeout_seconds(&self) -> u64 {
         self.tools.limits.bash_timeout_seconds
     }
@@ -298,6 +315,28 @@ impl Agent {
     }
     pub(crate) fn mcp_cleanup(&self) -> Result<crate::mcp::Cleanup> {
         self.tools.mcp.cleanup()
+    }
+
+    /// TUI 后台预热使用的 Registry 克隆；`enabled=false` 时为 `None`。
+    /// 克隆共享同一批受管理进程，不转移任何清理权。
+    pub(crate) fn lsp_registry(&self) -> Option<crate::lsp::Registry> {
+        self.tools.lsp_registry().cloned()
+    }
+
+    /// TUI/CLI 可持有的共享清理句柄；每次调用返回新的 armed 句柄，
+    /// supersede 只能解除同一 Registry 的旧句柄。
+    pub(crate) fn lsp_cleanup(&self) -> Option<crate::lsp::Cleanup> {
+        self.tools.lsp_cleanup()
+    }
+
+    /// 显式回收全部 language server；仅 Registry owner 生效，借用父 Registry
+    /// 的子 Agent 不会停掉父进程。错误保留 `CleanupError` 类型，调用方必须
+    /// 合并进退出错误而不能降级为普通工具失败。
+    pub(crate) fn stop_lsp(&self) -> Result<()> {
+        match self.tools.lsp_cleanup() {
+            Some(mut cleanup) => cleanup.stop(),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn background_cleanup(&self) -> crate::tools::BackgroundCleanup {
@@ -333,6 +372,7 @@ impl Agent {
             &CancellationToken::new(),
             true,
         )?;
+        Self::install_lsp(&mut tools, &catalog);
         let current_model = ModelChoice {
             reference: catalog.default_reference().to_owned(),
             model: config.model.clone(),
@@ -412,6 +452,7 @@ impl Agent {
             workflow: crate::plan::WorkflowState::default(),
             plan_cleanup_error: None,
             plan_lease: None,
+            lsp_injected: Default::default(),
         })
     }
 
@@ -480,6 +521,7 @@ impl Agent {
             &CancellationToken::new(),
             checkpoint.workflow.mode == crate::plan::WorkMode::Execute,
         )?;
+        Self::install_lsp(&mut tools, &catalog);
         checkpoint
             .session
             .set_tools(tools.all_definitions(checkpoint.workflow.mode));
@@ -521,6 +563,7 @@ impl Agent {
             workflow: checkpoint.workflow,
             plan_cleanup_error: None,
             plan_lease: None,
+            lsp_injected: Default::default(),
         };
         if let Some(source) = &agent.prompt_source {
             let context = crate::system_prompt::RenderContext::new(
@@ -731,6 +774,7 @@ impl Agent {
             return Err(error);
         }
         self.session = session;
+        self.reset_lsp_diagnostics();
         self.tools.clear_changes();
         self.last_request = None;
         self.pending_instructions = None;
@@ -1188,6 +1232,7 @@ impl Agent {
             return;
         }
         self.plan_lease = None;
+        self.reset_lsp_diagnostics();
         self.tools.clear_changes();
         self.workflow = crate::plan::WorkflowState {
             mode: self.workflow.mode,
@@ -1493,6 +1538,9 @@ impl Agent {
         result: Result<RunOutcome>,
         cancellation: &CancellationToken,
     ) -> Result<RunOutcome> {
+        if cancellation.is_cancelled() || result.is_err() {
+            self.cancel_lsp_diagnostics();
+        }
         if cancellation.is_cancelled() {
             if let Some(binding) = &self.tools.subagent {
                 binding.cancel_owned()?;
@@ -1604,6 +1652,7 @@ impl Agent {
                 true,
             )?;
             self.refresh_instructions()?;
+            self.receive_lsp_diagnostics(emit)?;
             // 补充边界：仅首次普通请求前，以及上一轮完整回复/整批工具结果成功提交之后。
             let claimed = match (input, claim_boundary) {
                 (Some(queue), true) => queue.claim_steering(false)?,

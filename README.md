@@ -203,6 +203,7 @@ The linked guides below are in Chinese.
 | [System prompts](docs/guide.md#系统提示词) | `cwd/.pp/` or `~/.pp/agent/` | Replace base instructions with `SYSTEM.md` or `SYSTEM_TEMPLATE.md`, or append with `APPEND_SYSTEM.md` |
 | [Prompt commands](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | Expand Markdown templates with `/command arguments` |
 | [MCP tools](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`, `/mcp` | Discover user-level Claude/Codex stdio servers, inspect status, enable, disable, reconnect, and reload |
+| [Language servers](docs/guide.md#lsp-语义导航与修改建议) | `~/.pp/agent/lsp.json`, `settings.yml` `lsp:` | Semantic navigation, diagnostics, and modification suggestions; the AI applies changes with edit/write/bash |
 
 ## Development
 

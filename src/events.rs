@@ -12,6 +12,8 @@ pub(crate) enum OutputStream {
 pub(crate) enum FileDiff {
     Text {
         created: bool,
+        #[serde(default)]
+        deleted: bool,
         added: usize,
         removed: usize,
         hunks: Vec<DiffHunk>,
@@ -202,4 +204,84 @@ pub(crate) enum AgentEvent {
         id: String,
         result: serde_json::Value,
     },
+    /// LSP 诊断的展示副本。`id` 为当前工具调用时是内联报告；`None` 表示
+    /// 保存后迟到完成的后台报告。事件只冻结展示，不触发新的模型请求。
+    LspDiagnostics {
+        #[serde(default)]
+        id: Option<String>,
+        report: crate::lsp::DiagnosticReport,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lsp_diagnostics_event_round_trips_inline_and_late() {
+        let report = crate::lsp::DiagnosticReport {
+            path: "src/a.rs".into(),
+            origin: "write".into(),
+            owner: "root".into(),
+            servers: vec![crate::lsp::ServerReport {
+                server: "rust-analyzer".into(),
+                status: crate::lsp::ReportStatus::ReportedIssues,
+                note: None,
+                diagnostics: vec![crate::lsp::ReportDiagnostic {
+                    line: 3,
+                    column: 2,
+                    end_line: 3,
+                    end_column: 4,
+                    severity: 1,
+                    message: "expected i32".into(),
+                    code: None,
+                    source: None,
+                    line_only: false,
+                }],
+            }],
+            formatter: None,
+            deduplicated: 0,
+            omitted: 0,
+            at_ms: 7,
+        };
+        let value = serde_json::to_value(AgentEvent::LspDiagnostics {
+            id: Some("call-1".into()),
+            report: report.clone(),
+        })
+        .unwrap();
+        let restored: AgentEvent = serde_json::from_value(value).unwrap();
+        match restored {
+            AgentEvent::LspDiagnostics {
+                id: Some(id),
+                report: restored,
+            } => {
+                assert_eq!(id, "call-1");
+                assert_eq!(restored.path, "src/a.rs");
+                assert!(restored.has_issues());
+            }
+            _ => panic!("inline LSP diagnostics must round trip"),
+        }
+        let value = serde_json::to_value(AgentEvent::LspDiagnostics { id: None, report }).unwrap();
+        assert!(matches!(
+            serde_json::from_value::<AgentEvent>(value).unwrap(),
+            AgentEvent::LspDiagnostics { id: None, .. }
+        ));
+    }
+
+    #[test]
+    fn lsp_edits_old_journal_text_diff_preserves_non_deleted_file() {
+        let event: AgentEvent = serde_json::from_value(serde_json::json!({
+            "file_changed": {"id":"old","path":"empty","diff":{
+                "kind":"text","created":false,"added":0,"removed":0,"hunks":[]
+            }}
+        }))
+        .unwrap();
+        assert!(matches!(
+            event,
+            AgentEvent::FileChanged {
+                diff: FileDiff::Text { deleted: false, .. },
+                ..
+            }
+        ));
+    }
 }

@@ -33,6 +33,7 @@ fn tree_blocks_preserve_markdown_tool_batch_and_geometry_when_selection_moves() 
                 path: "a.txt".into(),
                 diff: FileDiff::Text {
                     created: true,
+                    deleted: false,
                     added: 1,
                     removed: 0,
                     hunks: vec![crate::events::DiffHunk {

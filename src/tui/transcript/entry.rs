@@ -17,6 +17,7 @@ impl EntryKind {
             Self::Grep => Color::Cyan,
             Self::Read => Color::Reset,
             Self::Diff | Self::Ask => palette::ACCENT,
+            Self::Lsp => palette::ACCENT,
             Self::Data => Color::Reset,
             Self::Error => palette::ERROR_BORDER,
         }
@@ -202,7 +203,8 @@ impl TranscriptEntry {
     }
 
     pub(super) fn is_collapsible_tool(&self) -> bool {
-        self.tool.is_some() && self.kind != EntryKind::Ask
+        // 迟到诊断没有工具调用 ID，但同样可以用 Ctrl + O 展开完整报告。
+        self.kind == EntryKind::Lsp || (self.tool.is_some() && self.kind != EntryKind::Ask)
     }
 
     pub(super) fn new(kind: EntryKind, title: String, text: String, tool: Option<String>) -> Self {
@@ -225,6 +227,7 @@ impl TranscriptEntry {
             bash_timeout_seconds: None,
             arguments: Value::Null,
             result: None,
+            diagnostics: Vec::new(),
             display: DisplayContext::default(),
             display_title: None,
             hidden: false,
@@ -292,6 +295,20 @@ impl TranscriptEntry {
 
     pub(super) fn is_edit(&self) -> bool {
         self.tool.as_deref() == Some("edit")
+    }
+
+    /// 同一路径只保留最新报告；内联事件、工具结果与后续同步不会叠成重复卡片。
+    pub(super) fn set_diagnostic(&mut self, report: crate::lsp::DiagnosticReport) {
+        if let Some(existing) = self
+            .diagnostics
+            .iter_mut()
+            .find(|existing| existing.path == report.path)
+        {
+            *existing = report;
+        } else {
+            self.diagnostics.push(report);
+        }
+        self.layout = None;
     }
 
     pub(super) fn is_search(&self) -> bool {
@@ -610,6 +627,25 @@ impl TranscriptEntry {
         }
         if edit {
             lines.push(border(Source::Title));
+        } else if self.kind == EntryKind::Lsp {
+            let (status, color) = match self.status {
+                EntryStatus::Running => ("running", palette::ACCENT),
+                EntryStatus::Complete => ("ok", palette::ADDED),
+                EntryStatus::Failed => ("failed", palette::REMOVED),
+            };
+            let mut header = self.tool_title(&self.title);
+            header.spans.push(Span::styled(
+                format!(" · {status}"),
+                Style::default().fg(color),
+            ));
+            lines.extend(
+                wrap_block(header, width, "")
+                    .into_iter()
+                    .map(|line| LayoutLine {
+                        content: LayoutContent::Styled(line),
+                        height: 1,
+                    }),
+            );
         } else if matches!(self.kind, EntryKind::Diff | EntryKind::Ask) {
             let (status, color) = match self.status {
                 EntryStatus::Running => ("running", palette::ACCENT),
@@ -750,14 +786,19 @@ impl TranscriptEntry {
                     }),
                 );
             }
-        } else if !read && !self.kind.hides_title() && !matches!(self.body, EntryBody::Tips) {
+        } else if !read
+            && self.kind != EntryKind::Lsp
+            && !self.kind.hides_title()
+            && !matches!(self.body, EntryBody::Tips)
+        {
             self.add_lines(Source::Title, &mut lines);
         }
         if bash {
             lines.push(border(Source::Divider));
         }
         let tool_body = self.is_collapsible_tool()
-            && !(self.tool.as_deref() == Some("edit") && matches!(self.body, EntryBody::Diff(_)));
+            && !(self.tool.as_deref() == Some("edit") && matches!(self.body, EntryBody::Diff(_)))
+            && !matches!(self.body, EntryBody::Lsp(_));
         if tool_body {
             let mut text = self.visible_text().to_owned();
             if !self.stdout.is_empty() {
@@ -881,6 +922,15 @@ impl TranscriptEntry {
                     }),
                 );
             }
+        } else if let EntryBody::Lsp(block) = &self.body {
+            lines.extend(
+                crate::tui::lsp::body(block, width, self.expanded || self.display.full)
+                    .into_iter()
+                    .map(|line| LayoutLine {
+                        content: LayoutContent::Styled(line),
+                        height: 1,
+                    }),
+            );
         } else if !self.visible_text().is_empty() {
             if self.kind == EntryKind::Ask {
                 lines.extend(
@@ -911,6 +961,20 @@ impl TranscriptEntry {
         if !tool_body && !self.stderr.is_empty() {
             self.add_lines(Source::StderrLabel, &mut lines);
             self.add_lines(Source::Stderr, &mut lines);
+        }
+        if !self.diagnostics.is_empty() {
+            lines.extend(
+                crate::tui::lsp::diagnostics_lines(
+                    &self.diagnostics,
+                    width,
+                    self.expanded || self.display.full,
+                )
+                .into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }),
+            );
         }
         if bash {
             lines.push(border(Source::Bottom));

@@ -154,9 +154,8 @@ fn tui_think_level_updates_status_and_rejects_changes_while_busy() {
     });
     final_reply(request, "first answer");
     pty.text("first answer");
-    // The draft's menu appears only after Completed, unlike the input
-    // border/status which also remain visible while the worker is busy.
-    pty.text("Light thinking");
+    // 补全在忙碌时也可见；只有本轮完成标记能证明 worker 已到提交边界。
+    pty.completed_after("first answer");
     pty.draft("/effort low");
     pty.input("\r");
     pty.wait_for("完成后切换到 low", |screen| {
@@ -172,6 +171,9 @@ fn tui_think_level_updates_status_and_rejects_changes_while_busy() {
     assert_eq!(body["reasoning_effort"], "low");
     final_reply(request, "second answer");
     pty.text("second answer");
+    // 和第一轮一样，只有本轮完成标记能证明 worker 已到提交边界；否则下面的
+    // `/effort …\r` 会在 Running 状态被当作 steering 丢弃，草稿与菜单留在屏幕上。
+    pty.completed_after("second answer");
     pty.input("/effort ");
     pty.text("Light thinking (current)");
     pty.input("\x01\x0b");

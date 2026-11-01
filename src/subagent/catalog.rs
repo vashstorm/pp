@@ -85,7 +85,9 @@ pub(crate) fn discover(cwd: &Path, user: &Path, settings: &Settings) -> Result<V
     ] {
         found.entry(name.to_owned()).or_insert_with(|| Definition {
             name: name.to_owned(), description: description.to_owned(),
-            tools: readonly.then(|| vec!["read".into(), "grep".into(), "glob".into()]),
+            tools: readonly.then(|| {
+                vec!["read".into(), "grep".into(), "glob".into(), "lsp".into()]
+            }),
             model: None, thinking: None,
             spawns: Some(if readonly { vec![] } else { vec!["*".into()] }),
             blocking: false, output: None,

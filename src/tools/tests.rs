@@ -226,6 +226,8 @@ mod background_cases;
 mod changes_cases;
 mod edit_cases;
 mod file_cases;
+mod lsp_cases;
+mod lsp_save_cases;
 mod policy_cases;
 mod streaming_cases;
 mod todo_cases;

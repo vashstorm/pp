@@ -76,7 +76,7 @@ fn input_is_ready(screen: &vt100::Screen) -> bool {
         .any(|line| line.starts_with('❯'))
 }
 
-struct Pty {
+pub(super) struct Pty {
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     master: Box<dyn MasterPty + Send>,
     // Keep the slave open until termios has been checked after the child exits.
@@ -101,17 +101,17 @@ fn terminal_flags(master: &dyn MasterPty) -> [u128; 4] {
 }
 
 impl Pty {
-    fn start(server: &Server, cwd: &Path) -> Self {
+    pub(super) fn start(server: &Server, cwd: &Path) -> Self {
         std::fs::write(config_path(cwd, "settings.yml"), fixture_settings()).unwrap();
         std::fs::write(config_path(cwd, "models.yml"), fixture_models(server)).unwrap();
         Self::start_with_existing_files(cwd)
     }
 
-    fn start_with_existing_files(cwd: &Path) -> Self {
+    pub(super) fn start_with_existing_files(cwd: &Path) -> Self {
         Self::start_with_args(cwd, cwd, &[])
     }
 
-    fn start_with_args(cwd: &Path, home: &Path, args: &[&str]) -> Self {
+    pub(super) fn start_with_args(cwd: &Path, home: &Path, args: &[&str]) -> Self {
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
         command.cwd(cwd);
         command.env("HOME", home);
@@ -197,14 +197,14 @@ impl Pty {
         pty
     }
 
-    fn input(&mut self, text: &str) {
+    pub(super) fn input(&mut self, text: &str) {
         let writer = self.writer.as_mut().unwrap();
         writer.write_all(text.as_bytes()).unwrap();
         writer.flush().unwrap();
     }
 
     /// P/S/Q/R/T 按平台发送 Option 或 Ctrl；O 始终使用 Ctrl。
-    fn function_key(&mut self, character: char) {
+    pub(super) fn function_key(&mut self, character: char) {
         let bytes: &str = if cfg!(target_os = "macos") {
             match character {
                 'p' => "\x1bp",
@@ -292,7 +292,7 @@ impl Pty {
         });
     }
 
-    fn ready_model(&mut self, expected: &str) {
+    pub(super) fn ready_model(&mut self, expected: &str) {
         self.wait_for("空闲输入框和所选模型", |screen| {
             let text = screen.contents();
             input_is_ready(screen)
@@ -303,7 +303,7 @@ impl Pty {
         });
     }
 
-    fn ready(&mut self) {
+    pub(super) fn ready(&mut self) {
         self.wait_for("空闲输入框", |screen| {
             let text = screen.contents();
             input_is_ready(screen)
@@ -314,14 +314,14 @@ impl Pty {
         });
     }
 
-    fn completed(&mut self) {
+    pub(super) fn completed(&mut self) {
         self.wait_for("task completion committed", |screen| {
             input_is_ready(screen) && screen.contents().contains("✻ Completed")
         });
     }
 
     /// 等待本轮回答后面的提交标记，避免把旧轮次的 Completed 当成空闲栅栏。
-    fn completed_after(&mut self, marker: &str) {
+    pub(super) fn completed_after(&mut self, marker: &str) {
         self.wait_for("本轮回答与完成标记均已提交", |screen| {
             let text = screen.contents();
             input_is_ready(screen)
@@ -379,7 +379,7 @@ impl Pty {
         }
     }
 
-    fn native_history(&mut self) -> (String, Vec<u8>) {
+    pub(super) fn native_history(&mut self) -> (String, Vec<u8>) {
         self.drain();
         let mut screen = self.parser.screen().clone();
         screen.set_scrollback(usize::MAX);
@@ -409,7 +409,11 @@ impl Pty {
         )
     }
 
-    fn wait_for(&mut self, description: &str, condition: impl Fn(&vt100::Screen) -> bool) {
+    pub(super) fn wait_for(
+        &mut self,
+        description: &str,
+        condition: impl Fn(&vt100::Screen) -> bool,
+    ) {
         self.wait_for_timeout(description, DEADLINE, condition);
     }
 
@@ -434,12 +438,12 @@ impl Pty {
         }
     }
 
-    fn text(&mut self, text: &str) {
+    pub(super) fn text(&mut self, text: &str) {
         self.wait_for(text, |screen| screen.contents().contains(text));
     }
 
     /// 当前可见屏幕文本（先排空已到达的输出）。
-    fn contents(&mut self) -> String {
+    pub(super) fn contents(&mut self) -> String {
         self.drain();
         self.parser.screen().contents()
     }
@@ -476,7 +480,7 @@ impl Pty {
         }
     }
 
-    fn request_at(&mut self, server: &Server, path: &str) -> (Request, Value) {
+    pub(super) fn request_at(&mut self, server: &Server, path: &str) -> (Request, Value) {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| receive_at(server, path))) {
             Ok(request) => request,
             Err(_) => {
@@ -486,7 +490,7 @@ impl Pty {
         }
     }
 
-    fn finish(mut self) {
+    pub(super) fn finish(mut self) {
         let deadline = Instant::now() + DEADLINE;
         let status = loop {
             self.drain();
@@ -775,6 +779,8 @@ mod file_picker_cases;
 mod input_editing_cases;
 #[path = "tui/input_effort_cases.rs"]
 mod input_effort_cases;
+#[path = "tui/lsp_cases.rs"]
+mod lsp_cases;
 #[path = "tui/model_picker_cases.rs"]
 mod model_picker_cases;
 #[path = "tui/model_switch_cases.rs"]

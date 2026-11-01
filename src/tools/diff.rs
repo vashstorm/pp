@@ -41,11 +41,46 @@ pub(super) fn build(before: Option<&str>, after: &str) -> FileDiff {
         }
     }
     FileDiff::Text {
+        deleted: false,
         created: before.is_none(),
         added,
         removed,
         hunks,
     }
+}
+
+/// 从真实提交前后的存在性与字节构造 diff；删除空文件也有独立的删除标记。
+pub(crate) fn committed(before: &super::changes::Original, after: Option<&[u8]>) -> FileDiff {
+    use super::changes::Original;
+    let before = match before {
+        Original::Missing => None,
+        Original::Bytes(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => Some(text),
+            Err(_) => {
+                return FileDiff::Unavailable {
+                    reason: "Previous content is not UTF-8; text diff unavailable.".into(),
+                };
+            }
+        },
+        Original::Unavailable => {
+            return FileDiff::Unavailable {
+                reason: "Previous content could not be read; text diff unavailable.".into(),
+            };
+        }
+    };
+    let after_text = match after.map(std::str::from_utf8).transpose() {
+        Ok(text) => text.unwrap_or(""),
+        Err(_) => {
+            return FileDiff::Unavailable {
+                reason: "Latest content is not UTF-8; text diff unavailable.".into(),
+            };
+        }
+    };
+    let mut result = build(before, after_text);
+    if let FileDiff::Text { deleted, .. } = &mut result {
+        *deleted = after.is_none();
+    }
+    result
 }
 
 #[cfg(test)]
@@ -64,6 +99,7 @@ mod tests {
             added,
             removed,
             hunks,
+            ..
         } = diff
         else {
             panic!("text diff expected");
@@ -162,6 +198,7 @@ mod tests {
             added,
             removed,
             hunks,
+            ..
         } = diff
         else {
             panic!("text diff expected");
@@ -176,6 +213,7 @@ mod tests {
             added,
             removed,
             hunks,
+            ..
         } = diff
         else {
             panic!("text diff expected");
@@ -190,6 +228,7 @@ mod tests {
             added,
             removed,
             hunks,
+            ..
         } = diff
         else {
             panic!("text diff expected");

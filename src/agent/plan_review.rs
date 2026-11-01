@@ -871,7 +871,7 @@ mod tests {
                 assert!(
                     tools
                         .iter()
-                        .all(|name| matches!(*name, "read" | "grep" | "glob"))
+                        .all(|name| matches!(*name, "read" | "grep" | "glob" | "lsp"))
                 );
                 calls_for(
                     &serving,

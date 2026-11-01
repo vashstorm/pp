@@ -16,6 +16,8 @@ mod stats;
 
 #[path = "cli_agent/ask.rs"]
 mod ask;
+#[path = "cli_agent/lsp.rs"]
+mod lsp;
 #[path = "cli_agent/mcp.rs"]
 mod mcp;
 #[path = "cli_agent/subagents.rs"]

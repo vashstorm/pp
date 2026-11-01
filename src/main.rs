@@ -10,6 +10,7 @@ mod history;
 mod interaction;
 mod llm;
 mod logging;
+mod lsp;
 mod mcp;
 mod model_control;
 mod models;
@@ -34,6 +35,9 @@ use crossterm::style::Stylize;
 use std::{
     io::{self, BufRead, IsTerminal, Write},
     process::ExitCode,
+    sync::mpsc,
+    thread,
+    time::Duration,
 };
 
 #[derive(Parser)]
@@ -220,6 +224,88 @@ fn run_gc(days: u32) -> Result<()> {
         locks_total - locks_removed
     )?;
     Ok(())
+}
+
+/// 行模式 stdin 的逐行读取结果；专用线程只负责 I/O，命令仍在主线程分发。
+enum CliInput {
+    Line(String),
+    Eof,
+    Error(io::Error),
+}
+
+/// 空闲轮询周期：既驱动迟到 LSP 诊断展示，也让主线程保持对输入的响应。
+const CLI_IDLE_TICK: Duration = Duration::from_millis(50);
+
+fn cli_input_lines() -> Result<mpsc::Receiver<CliInput>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::Builder::new()
+        .name("pp-stdin".into())
+        .spawn(move || {
+            let stdin = io::stdin();
+            loop {
+                let mut line = String::new();
+                match stdin.lock().read_line(&mut line) {
+                    Ok(0) => {
+                        let _ = sender.send(CliInput::Eof);
+                        break;
+                    }
+                    Ok(_) => {
+                        if sender.send(CliInput::Line(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sender.send(CliInput::Error(error));
+                        break;
+                    }
+                }
+            }
+        })
+        .context("starting stdin reader")?;
+    Ok(receiver)
+}
+
+/// CLI 各正常/错误退出边界显式回收 language server；`CleanupError` 保持类型并
+/// 合并进返回错误，不能只依赖 Tools 的 Drop 兜底。
+fn stop_cli_lsp(agent: Option<&agent::Agent>, result: Result<()>) -> Result<()> {
+    let stop = match agent {
+        Some(agent) => agent.stop_lsp(),
+        None => Ok(()),
+    };
+    match (result, stop) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(error)) | (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(stop)) => {
+            if stop.is::<cancellation::CleanupError>() {
+                Err(stop.context(format!("{error:#}")))
+            } else {
+                Err(error.context(format!("stopping language servers: {stop:#}")))
+            }
+        }
+    }
+}
+
+/// stderr 上的 LSP 报告；正文与助手输出分开，控制字符先经显示过滤。
+fn cli_lsp_report(
+    report: &crate::lsp::DiagnosticReport,
+    late: bool,
+    stderr: &mut impl Write,
+    broken: &mut bool,
+    first_error: &mut Option<io::Error>,
+) {
+    let body =
+        crate::lsp::diagnostics::render(report, Some(crate::lsp::diagnostics::AUTO_MESSAGE_LIMIT));
+    let label = if late {
+        "LSP diagnostics (late)"
+    } else {
+        "LSP diagnostics"
+    };
+    cli_write(
+        stderr,
+        &format!("{label}\n{}\n", crate::tui::display_text(&body)),
+        broken,
+        first_error,
+    );
 }
 
 fn run(args: Args) -> Result<()> {
@@ -415,15 +501,23 @@ fn run(args: Args) -> Result<()> {
     }
     if let Some(prompt) = args.prompt {
         let mut agent = agent?;
-        let result = run_cli_task(&mut agent, Some(&prompt), &mut stdout, &mut stderr);
-        write_resume_hint(&mut stderr, agent.session_id())?;
-        return result;
+        // -p 不启动空闲轮询，也不等待迟到诊断；任务结束即显式回收服务器。
+        let task = run_cli_task(&mut agent, Some(&prompt), &mut stdout, &mut stderr);
+        let hint = write_resume_hint(&mut stderr, agent.session_id()).map_err(anyhow::Error::from);
+        let result = match (task, hint) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        };
+        return stop_cli_lsp(Some(&agent), result);
     }
     if continue_requested {
         let active = agent
             .as_mut()
             .map_err(|error| anyhow::anyhow!("{error:#}"))?;
-        run_cli_task(active, None, &mut stdout, &mut stderr)?;
+        if let Err(error) = run_cli_task(active, None, &mut stdout, &mut stderr) {
+            return stop_cli_lsp(Some(&*active), Err(error));
+        }
     }
     writeln!(stderr, "pp — use /help for commands")?;
     if let Err(error) = &agent {
@@ -433,15 +527,69 @@ fn run(args: Args) -> Result<()> {
             "Configuration unavailable; model tasks are disabled. Fix the config files and restart pp. /quit still exits cleanly."
         )?;
     }
-    let mut stdin = io::stdin().lock();
-    let mut line = String::new();
+    let input = match cli_input_lines() {
+        Ok(input) => input,
+        Err(error) => return stop_cli_lsp(agent.as_ref().ok(), Err(error)),
+    };
+    let mut prompt_shown = false;
     loop {
-        write!(stderr, "> ")?;
-        stderr.flush()?;
-        line.clear();
-        if stdin.read_line(&mut line).context("reading stdin")? == 0 {
-            break;
+        if !prompt_shown {
+            write!(stderr, "> ")?;
+            stderr.flush()?;
+            prompt_shown = true;
         }
+        let line = match input.recv_timeout(CLI_IDLE_TICK) {
+            Ok(CliInput::Line(line)) => {
+                prompt_shown = false;
+                line
+            }
+            Ok(CliInput::Eof) => break,
+            Ok(CliInput::Error(error)) => {
+                return stop_cli_lsp(agent.as_ref().ok(), Err(error).context("reading stdin"));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // 空闲时只展示迟到诊断，不续跑模型、不自动继续会话。
+                let polled = match agent.as_mut() {
+                    Ok(active) => {
+                        let mut reports = Vec::new();
+                        let polled = active.poll_lsp_diagnostics(&mut |event| reports.push(event));
+                        let mut broken = false;
+                        let mut first_error = None;
+                        if !reports.is_empty() {
+                            if prompt_shown {
+                                cli_write(&mut stderr, "\n", &mut broken, &mut first_error);
+                            }
+                            for event in reports {
+                                if let events::AgentEvent::LspDiagnostics { report, .. } = event {
+                                    cli_lsp_report(
+                                        &report,
+                                        true,
+                                        &mut stderr,
+                                        &mut broken,
+                                        &mut first_error,
+                                    );
+                                }
+                            }
+                            if prompt_shown {
+                                write!(stderr, "> ")?;
+                                stderr.flush()?;
+                            }
+                        }
+                        match (polled, first_error) {
+                            (Ok(()), None) => Ok(()),
+                            (Ok(()), Some(error)) => Err(error).context("writing LSP diagnostics"),
+                            (Err(error), _) => Err(error),
+                        }
+                    }
+                    Err(_) => Ok(()),
+                };
+                if let Err(error) = polled {
+                    return stop_cli_lsp(agent.as_ref().ok(), Err(error));
+                }
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         let prompt = line.trim();
         if prompt.is_empty() {
             continue;
@@ -504,7 +652,7 @@ fn run(args: Args) -> Result<()> {
                             Ok(view) => writeln!(stderr, "{}", view.text())?,
                             Err(error) => {
                                 if error.is::<crate::cancellation::CleanupError>() {
-                                    return Err(error);
+                                    return stop_cli_lsp(Some(&*agent), Err(error));
                                 }
                                 writeln!(stderr, "error: {error:#}")?;
                             }
@@ -619,7 +767,7 @@ fn run(args: Args) -> Result<()> {
                         .chain()
                         .any(|cause| cause.is::<cancellation::CleanupError>())
                     {
-                        return Err(error);
+                        return stop_cli_lsp(Some(&*agent), Err(error));
                     }
                     writeln!(stderr, "error: {error:#}")?;
                 }
@@ -727,11 +875,13 @@ fn run(args: Args) -> Result<()> {
             },
         }
     }
-    if let Some(id) = agent.as_ref().ok().and_then(|agent| agent.session_id()) {
-        writeln!(stderr)?;
-        write_resume_hint(&mut stderr, Some(id))?;
-    }
-    Ok(())
+    let hint = match agent.as_ref().ok().and_then(|agent| agent.session_id()) {
+        Some(id) => writeln!(stderr)
+            .and_then(|()| write_resume_hint(&mut stderr, Some(id)))
+            .map_err(anyhow::Error::from),
+        None => Ok(()),
+    };
+    stop_cli_lsp(agent.as_ref().ok(), hint)
 }
 
 fn write_resume_hint(
@@ -1205,6 +1355,18 @@ fn run_cli_task(
                         &mut first_error,
                     );
                 }
+                // 内联 LspDiagnostics 只来自 write/edit；lsp 工具正文在这里展示。
+                let lsp_content = current_tool
+                    .as_ref()
+                    .is_some_and(|(current_id, name)| current_id == &id && name.as_str() == "lsp");
+                if lsp_content && let Some(content) = result["content"].as_str() {
+                    cli_write(
+                        stderr,
+                        &format!("\n{}\n", crate::tui::display_text(content)),
+                        &mut err_broken,
+                        &mut first_error,
+                    );
+                }
                 if let Some((current_id, name)) = current_tool.take()
                     && current_id == id
                 {
@@ -1290,6 +1452,15 @@ fn run_cli_task(
                         "{reason}; retrying in {} (attempt {attempt})\n",
                         crate::tui::format_wait(wait_ms)
                     ),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+            }
+            AgentEvent::LspDiagnostics { id, report } => {
+                cli_lsp_report(
+                    &report,
+                    id.is_none(),
+                    stderr,
                     &mut err_broken,
                     &mut first_error,
                 );

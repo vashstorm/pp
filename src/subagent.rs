@@ -110,13 +110,15 @@ struct Live {
     sender: mpsc::Sender<Work>,
     input: InputQueue,
     cancellation: CancellationToken,
+    /// 该 worker 发布的记录代次；只有它才能移除自己的 Live 槽。
+    generation: u64,
 }
 struct State {
     disk: Disk,
     live: BTreeMap<String, Live>,
     active: usize,
     workers: usize,
-    retiring: BTreeSet<String>,
+    retiring: BTreeMap<String, u64>,
     permits: std::collections::VecDeque<u64>,
     next_permit: u64,
     stopping: bool,
@@ -135,6 +137,9 @@ struct Inner {
     // 每个 agent 一条整行追加锁；worker 持有自己的 Arc。
     appends: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     observe_errors: Mutex<BTreeMap<String, String>>,
+    /// 独立子 Registry 清理失败后保留可重试句柄，并向父 Agent 传播 typed error。
+    lsp_cleanup: Mutex<Vec<crate::lsp::Cleanup>>,
+    cleanup_errors: Mutex<Vec<anyhow::Error>>,
     output_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
     runtime_models: Mutex<Option<crate::model_control::Binding>>,
     model_roles: Mutex<crate::config::ModelRoles>,
@@ -167,6 +172,9 @@ struct Work {
     task: String,
     cancellation: CancellationToken,
 }
+
+/// 持久 worker 的空闲轮询周期：既检查空闲 TTL，也让迟到 LSP 诊断及时上报。
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 fn now() -> u64 {
     std::time::SystemTime::now()
@@ -292,6 +300,8 @@ impl Binding {
             revision: AtomicU64::new(1),
             appends: Mutex::new(BTreeMap::new()),
             observe_errors: Mutex::new(BTreeMap::new()),
+            lsp_cleanup: Mutex::new(Vec::new()),
+            cleanup_errors: Mutex::new(Vec::new()),
             output_previews: Mutex::new(BTreeMap::new()),
             runtime_models: Mutex::new(None),
             model_roles: Mutex::new(Default::default()),
@@ -548,6 +558,7 @@ impl Binding {
                     "read",
                     "grep",
                     "glob",
+                    "lsp",
                     "edit",
                     "write",
                     "bash",
@@ -564,7 +575,7 @@ impl Binding {
                 tools.extend(lock(&self.inner.mcp_names).iter().cloned());
             }
             if plan {
-                tools.retain(|t| matches!(t.as_str(), "read" | "grep" | "glob"));
+                tools.retain(|t| matches!(t.as_str(), "read" | "grep" | "glob" | "lsp"));
             }
             if self.depth > 0 {
                 let state = lock(&self.inner.state);
@@ -600,7 +611,7 @@ impl Binding {
                 output_schema: output,
                 cwd: self.cwd.clone(),
                 depth: self.depth + 1,
-                readonly: plan,
+                readonly: plan || matches!(role, "scout" | "reviewer"),
                 isolated: item.isolated,
                 cost: None,
             };
@@ -701,9 +712,19 @@ impl Binding {
         let token = parent_token.child_token();
         let mut state = lock(&self.inner.state);
         ensure!(
-            !state.stopping && !state.retiring.contains(&record.id),
+            !state.stopping,
             "Agent is shutting down; resume is temporarily unavailable"
         );
+        // 已决定退出的 worker 仍可能持有 Live，但它不再读取队列；视同已停泊，
+        // 由新 worker 接管，避免新任务被排进无人消费的通道。
+        if state
+            .retiring
+            .get(&record.id)
+            .is_some_and(|generation| *generation == record.generation)
+        {
+            state.live.remove(&record.id);
+            state.retiring.remove(&record.id);
+        }
         if let Some(live) = state.live.get_mut(&record.id) {
             if run.is_empty() {
                 return Ok(());
@@ -732,6 +753,7 @@ impl Binding {
                 sender: sender.clone(),
                 input: input.clone(),
                 cancellation: token.clone(),
+                generation,
             },
         );
         self.inner.save(&state)?;
@@ -1013,9 +1035,17 @@ impl Binding {
         ensure!(!text.trim().is_empty(), "message must not be empty");
         let mut state = lock(&self.inner.state);
         ensure!(
-            !state.stopping && !state.retiring.contains(&record.id),
+            !state.stopping,
             "Agent is shutting down; follow-up is temporarily unavailable"
         );
+        if state
+            .retiring
+            .get(&record.id)
+            .is_some_and(|generation| *generation == record.generation)
+        {
+            state.live.remove(&record.id);
+            state.retiring.remove(&record.id);
+        }
         if let Some(live) = state.live.get(&record.id).filter(|_| {
             state.disk.runs.values().any(|r| {
                 r.agent_id == record.id && matches!(r.status.as_str(), "queued" | "running")
@@ -1111,9 +1141,10 @@ impl Binding {
             agent.status = "aborted".into();
             agent.generation += 1;
         }
+        let worker_generation = agent.generation.saturating_sub(u64::from(action == "kill"));
         let killed = if action == "kill" {
             if let Some(live) = state.live.remove(id) {
-                state.retiring.insert(id.to_owned());
+                state.retiring.insert(id.to_owned(), worker_generation);
                 live.cancellation.cancel();
             }
             true
@@ -1166,6 +1197,7 @@ impl Binding {
             let running = lock(&self.inner.state).disk.runs.values().any(|r| {
                 r.owner == self.owner && matches!(r.status.as_str(), "queued" | "running")
             });
+            self.check_lsp_cleanup()?;
             if !running {
                 return Ok(());
             }
@@ -1195,9 +1227,33 @@ impl Binding {
             );
             self.sleep();
         }
+        self.check_lsp_cleanup()?;
         lock(&self.inner.factory).take();
         Ok(())
     }
+    pub(crate) fn check_lsp_cleanup(&self) -> Result<()> {
+        let handles = std::mem::take(&mut *lock(&self.inner.lsp_cleanup));
+        let mut errors = std::mem::take(&mut *lock(&self.inner.cleanup_errors));
+        let mut pending = Vec::new();
+        for mut handle in handles {
+            if let Err(error) = handle.stop() {
+                pending.push(handle);
+                errors.push(error);
+            }
+        }
+        lock(&self.inner.lsp_cleanup).extend(pending);
+        let mut errors = errors.into_iter();
+        if let Some(mut error) = errors.next() {
+            for additional in errors {
+                error = error.context(format!(
+                    "Additional subagent cleanup failure: {additional:#}"
+                ));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub(crate) fn permit(&self, token: &CancellationToken) -> Result<Permit> {
         if self.owner == "Main" {
             return Ok(Permit(None));
@@ -1250,6 +1306,29 @@ impl Drop for Permit {
     }
 }
 
+/// 空闲 worker 退出前在状态锁内摘除自己的 Live 槽：只有确认没有排队工作时才
+/// 允许退出，`launch`/`followup` 因此不会把新任务排进无人消费的通道。
+fn detach_idle_worker(inner: &Inner, id: &str, generation: u64) -> bool {
+    let mut state = lock(&inner.state);
+    let queued = state
+        .disk
+        .runs
+        .values()
+        .any(|run| run.agent_id == id && matches!(run.status.as_str(), "queued" | "running"));
+    if queued
+        || !state
+            .live
+            .get(id)
+            .is_some_and(|live| live.generation == generation)
+    {
+        return false;
+    }
+    state.live.remove(id);
+    drop(state);
+    inner.changed.notify_all();
+    true
+}
+
 fn worker(
     weak: Weak<Inner>,
     record: Record,
@@ -1270,7 +1349,9 @@ fn worker(
             {
                 let mut state = lock(&self.inner.state);
                 state.workers = state.workers.saturating_sub(1);
-                state.retiring.remove(&self.id);
+                if state.retiring.get(&self.id) == Some(&self.generation) {
+                    state.retiring.remove(&self.id);
+                }
                 parked = state
                     .disk
                     .agents
@@ -1366,22 +1447,50 @@ fn worker(
         readonly: record.spec.readonly,
     };
     let mut agent: Option<Agent> = None;
-    let ttl = if binding.inner.settings.idle_ttl_ms == 0 {
-        Duration::from_secs(86400 * 365)
-    } else {
-        Duration::from_millis(binding.inner.settings.idle_ttl_ms)
-    };
-    let receive = || {
-        if binding.inner.settings.idle_ttl_ms == 0 {
-            receiver
-                .recv()
-                .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
-        } else {
-            receiver.recv_timeout(ttl)
-        }
-    };
-    while let Ok(work) = receive() {
+    // 空闲 TTL 从最后一次真实 work 结束开始计算；50ms 诊断 tick 不能续命。
+    let idle_ttl = (binding.inner.settings.idle_ttl_ms != 0)
+        .then(|| Duration::from_millis(binding.inner.settings.idle_ttl_ms));
+    let mut idle_since = Instant::now();
+    // 迟到诊断沿用其所属 run 的 id，并延续该 run 的 event sequence。
+    let mut late_sequences: BTreeMap<String, u64> = BTreeMap::new();
+    loop {
+        let work = match receiver.recv_timeout(IDLE_POLL_INTERVAL) {
+            Ok(work) => work,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if idle_ttl.is_some_and(|ttl| idle_since.elapsed() >= ttl)
+                    && detach_idle_worker(&binding.inner, &record.id, generation)
+                {
+                    break;
+                }
+                if let Some(native) = agent.as_mut() {
+                    // 只追加报告事件：不改 run 状态/结果/请求数，也不向父模型投递。
+                    let polled = native.poll_lsp_diagnostics_with_run(&mut |origin, event| {
+                        let sequence = origin.map(|run| {
+                            let sequence = late_sequences.entry(run.to_owned()).or_insert(0);
+                            *sequence += 1;
+                            *sequence
+                        });
+                        binding.inner.observe(
+                            &record.id,
+                            origin,
+                            generation,
+                            sequence,
+                            Some(&event),
+                            None,
+                        );
+                    });
+                    if let Err(error) = polled {
+                        lock(&binding.inner.cleanup_errors).push(error);
+                        let _ = detach_idle_worker(&binding.inner, &record.id, generation);
+                        break;
+                    }
+                }
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         let started = Instant::now();
+        let mut run_sequence = 0u64;
         let _ = input.begin_run();
         let mut last = String::new();
         let outcome = (|| -> Result<Value> {
@@ -1414,12 +1523,12 @@ fn worker(
             );
             let native = agent.as_mut().context("agent initialization failed")?;
             native.set_task_accounting(work.accounting.clone());
-            let mut sequence = 0u64;
+            native.set_lsp_run_id(Some(work.run.clone()));
             let mut requests = 0usize;
             let mut tokens = 0u64;
             let mut cost = record.spec.cost.map(|_| 0.0);
             let outcome = native.run(&work.task, &work.cancellation, Some(&input), &mut |event| {
-                sequence += 1;
+                run_sequence += 1;
                 match &event {
                     AgentEvent::AssistantFinished { text } if !text.trim().is_empty() => {
                         last = text.clone()
@@ -1477,7 +1586,7 @@ fn worker(
                     &record.id,
                     Some(&work.run),
                     generation,
-                    Some(sequence),
+                    Some(run_sequence),
                     Some(&event),
                     None,
                 );
@@ -1544,11 +1653,7 @@ fn worker(
                             if let Some(after) = change.after {
                                 tracker.record(path.to_owned(), before, after);
                             } else {
-                                tracker.record(
-                                    path.to_owned(),
-                                    crate::tools::changes::Original::Unavailable,
-                                    Vec::new(),
-                                );
+                                tracker.record_resource(path.to_owned(), before, None);
                             }
                             tracker.source(path, &record.id);
                         }
@@ -1577,6 +1682,9 @@ fn worker(
         if let Err(e) = binding.settle(&work.run, result, started.elapsed().as_millis() as u64) {
             tracing::error!(error=%e,"subagent result persist failed");
         }
+        // 只有真实 work 结束才重置空闲基线；诊断 tick 不能延长 TTL。
+        idle_since = Instant::now();
+        late_sequences.insert(work.run.clone(), run_sequence);
         let mut state = lock(&binding.inner.state);
         if let Some(current) = state
             .disk
@@ -1598,6 +1706,18 @@ fn worker(
                 .is_none_or(|r| r.generation != generation)
         {
             break;
+        }
+    }
+    if let Some(native) = agent.as_mut() {
+        // park/退出时取消该 owner 的等待；共享父 Registry 的 worker 不停父进程。
+        native.cancel_lsp_diagnostics();
+        if record.spec.isolated
+            && let Err(error) = native.stop_lsp()
+        {
+            if let Some(cleanup) = native.lsp_cleanup() {
+                lock(&binding.inner.lsp_cleanup).push(cleanup);
+            }
+            lock(&binding.inner.cleanup_errors).push(error);
         }
     }
     if let Some(agent) = agent {
