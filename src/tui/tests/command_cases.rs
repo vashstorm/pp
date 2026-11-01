@@ -191,12 +191,12 @@ fn completed_turn_uses_worker_timing_and_preserves_draft() {
             })
             .unwrap();
         app.receive();
-        let expected = format!("✻ Completed · {duration} · done 19:06");
+        let expected = "✻ Completed · done 19:06";
         let screen = draw(&mut app, 100, 30);
-        assert!(screen.contains(&expected), "{screen}");
+        assert!(screen.contains(expected), "{screen}");
         assert_eq!(app.conversation.task_duration().as_deref(), Some(duration));
         assert_eq!(screen.matches("Completed ·").count(), 1);
-        assert!(screen.find("finished answer").unwrap() < screen.find(&expected).unwrap());
+        assert!(screen.find("finished answer").unwrap() < screen.find(expected).unwrap());
         assert!(matches!(app.state, State::Ready));
         assert_eq!(app.input.lines(), &["下一轮草稿"]);
         assert_eq!(app.input.cursor(), cursor);

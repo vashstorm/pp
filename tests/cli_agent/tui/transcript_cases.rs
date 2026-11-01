@@ -55,19 +55,20 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
         });
         let text = pty.parser.screen().contents();
         assert!(text.find(&format!("answer {turn}")).unwrap() < text.find('✻').unwrap());
-        let duration = text
+        let finished_at = text
             .split_once("✻ Completed · ")
             .unwrap()
             .1
-            .split_once(" · done ")
+            .lines()
+            .next()
             .unwrap()
-            .0;
+            .trim();
+        assert!(finished_at.starts_with("done "), "{text}");
         assert!(
             text.lines().any(|line| {
                 line.contains("\u{f10ac} ")
-                    && line
-                        .trim_end()
-                        .ends_with(&format!("\u{f051b} {}", duration.replace(' ', "")))
+                    && line.contains("\u{f051b} ")
+                    && line.trim_end().ends_with('s')
             }),
             "完成后 statusline 必须保留最终耗时：{text}"
         );

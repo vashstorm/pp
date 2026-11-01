@@ -388,8 +388,7 @@ impl Transcript {
         activity.label = label.into();
         activity.seconds = elapsed.map(|elapsed| elapsed.as_secs());
         activity.entry.text = format!(
-            "✻ {label} · {} · done {}",
-            activity.duration_text(),
+            "✻ {label} · done {}",
             finished_at
                 .map(|time| time.format("%H:%M").to_string())
                 .unwrap_or_else(|| "—".into())
