@@ -75,6 +75,7 @@ struct RequestAttempts {
     pending_open: bool,
     partial: bool,
     summary: bool,
+    accounting_id: u64,
 }
 impl RequestAttempts {
     fn new(budget: Duration) -> Self {
@@ -89,6 +90,7 @@ impl RequestAttempts {
             pending_open: false,
             partial: false,
             summary: false,
+            accounting_id: 0,
         }
     }
     fn finish<T>(&mut self, result: &Result<T>) {
@@ -118,6 +120,7 @@ pub(crate) struct OpenAiClient {
     rate_limit_retry_budget: Duration,
     stats_context: Option<crate::stats::RequestContext>,
     stats_key: Option<String>,
+    task_accounting: Option<crate::task_status::Ledger>,
     model_reference: String,
     // 复用的 agent.db 连接；构造时打开失败则整个客户端周期不计数并按需警告，不做重开回退。
     usage_store: Option<crate::agent_store::AgentStore>,
@@ -165,7 +168,18 @@ impl OpenAiClient {
         &self.model_reference
     }
 
+    pub(crate) fn set_task_accounting(&mut self, ledger: Option<crate::task_status::Ledger>) {
+        self.task_accounting = ledger;
+    }
+
+    fn settle_task_request(&self, id: u64, usage: Option<TokenUsage>) {
+        if let Some(ledger) = &self.task_accounting {
+            ledger.settle(id, &self.model_reference, usage);
+        }
+    }
+
     pub(crate) fn copy_stats_context(&self, target: &mut Self) {
+        target.task_accounting = self.task_accounting.clone();
         target.stats_context = self.stats_context.clone().map(|mut context| {
             context.model_reference = target.model_reference.clone();
             context
@@ -184,6 +198,7 @@ impl OpenAiClient {
         }
         attempts.pending_open = false;
         self.record_model_usage();
+        self.settle_task_request(attempts.accounting_id, None);
         if let Some(mut observation) = attempts.pending.take() {
             observation.request_context = attempts.request_context.take();
             if let Some(context) = &self.stats_context {
@@ -250,6 +265,7 @@ impl OpenAiClient {
             rate_limit_retry_budget,
             stats_context: None,
             stats_key: None,
+            task_accounting: None,
             model_reference: config.model_reference.clone(),
             // 构造期打开失败保持静默；实际计数失败时才发脱敏警告。
             usage_store: crate::agent_store::AgentStore::open(&config.agent_db_path).ok(),
@@ -572,6 +588,7 @@ impl OpenAiClient {
         let new_request = attempts.attempt == 1 || !attempts.pending_open;
         if new_request {
             attempts.started = Instant::now();
+            attempts.accounting_id = crate::task_status::request_id();
         }
         let started_at = attempts.started;
         let record = !cancellation.is_cancelled() && self.stats_context.is_some();
@@ -636,7 +653,7 @@ impl OpenAiClient {
                     }
                 }
             }
-            if record {
+            if record || self.task_accounting.is_some() {
                 snapshot = output.stats_snapshot();
             }
             let written = output.cache_write_tokens;
@@ -689,6 +706,26 @@ impl OpenAiClient {
         if attempted && save_attempt {
             self.record_model_usage();
         }
+        if snapshot.is_null() && (record || self.task_accounting.is_some()) {
+            snapshot = output.stats_snapshot();
+        }
+        let accounting_usage = result
+            .as_ref()
+            .ok()
+            .and_then(|turn| turn.usage)
+            .or_else(|| {
+                let usage = &snapshot["usage"];
+                Some(TokenUsage {
+                    input_tokens: usage["prompt_tokens"].as_u64()?,
+                    output_tokens: usage["completion_tokens"].as_u64()?,
+                    cached_tokens: usage["prompt_tokens_details"]["cached_tokens"].as_u64(),
+                    cache_write_tokens: usage["prompt_tokens_details"]["cache_write_tokens"]
+                        .as_u64(),
+                })
+            });
+        if attempted && save_attempt {
+            self.settle_task_request(attempts.accounting_id, accounting_usage);
+        }
         if record {
             if attempted
                 && attempts.request_context.is_none()
@@ -700,20 +737,7 @@ impl OpenAiClient {
                 snapshot = output.stats_snapshot();
             }
             observation.stop_reason = snapshot["finish_reason"].as_str().map(str::to_owned);
-            observation.usage = result
-                .as_ref()
-                .ok()
-                .and_then(|turn| turn.usage)
-                .or_else(|| {
-                    let usage = &snapshot["usage"];
-                    Some(TokenUsage {
-                        input_tokens: usage["prompt_tokens"].as_u64()?,
-                        output_tokens: usage["completion_tokens"].as_u64()?,
-                        cached_tokens: usage["prompt_tokens_details"]["cached_tokens"].as_u64(),
-                        cache_write_tokens: usage["prompt_tokens_details"]["cache_write_tokens"]
-                            .as_u64(),
-                    })
-                });
+            observation.usage = accounting_usage;
             observation.output = snapshot;
             if let Some(context) = &self.stats_context {
                 if attempted {
@@ -875,6 +899,7 @@ impl OpenAiClient {
         let new_request = attempts.attempt == 1 || !attempts.pending_open;
         if new_request {
             attempts.started = Instant::now();
+            attempts.accounting_id = crate::task_status::request_id();
         }
         let started_at = attempts.started;
         let record = !cancellation.is_cancelled() && self.stats_context.is_some();
@@ -1000,6 +1025,14 @@ impl OpenAiClient {
         if attempted && save_attempt {
             self.record_model_usage();
         }
+        let accounting_usage = result
+            .as_ref()
+            .ok()
+            .and_then(|turn| turn.usage)
+            .or(reported_usage);
+        if attempted && save_attempt {
+            self.settle_task_request(attempts.accounting_id, accounting_usage);
+        }
         if record {
             if attempted
                 && attempts.request_context.is_none()
@@ -1007,11 +1040,7 @@ impl OpenAiClient {
             {
                 attempts.request_context = context.capture(&wire);
             }
-            observation.usage = result
-                .as_ref()
-                .ok()
-                .and_then(|turn| turn.usage)
-                .or(reported_usage);
+            observation.usage = accounting_usage;
             observation.stop_reason = stop_reason;
             observation.output = if snapshot.is_null() {
                 serde_json::json!({"tool_argument_deltas":tool_deltas})

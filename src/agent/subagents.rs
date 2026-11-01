@@ -25,6 +25,7 @@ impl Agent {
             self.stop_subagents()?;
         }
         if let Some(binding) = &mut self.tools.subagent {
+            binding.accounting = self.task_status.accounting.clone();
             binding.set_runtime_models(self.runtime_models.clone());
             if let Some(catalog) = self
                 .runtime_models
@@ -152,6 +153,7 @@ impl Agent {
                     .as_ref()
                     .map(|runtime| runtime.child(record.spec.model_role, record.id.clone())),
                 subagent_control: Default::default(),
+                task_status: Default::default(),
                 client: OpenAiClient::new(&config)?,
                 tools,
                 session: Session::new(
@@ -252,7 +254,7 @@ impl Agent {
             );
             Ok(())
         });
-        let binding = Binding::root(
+        let mut binding = Binding::root(
             crate::subagent::RootOptions {
                 dir: root_dir,
                 user: crate::config::global_dir()?,
@@ -265,6 +267,7 @@ impl Agent {
             factory,
             validator,
         )?;
+        binding.accounting = self.task_status.accounting.clone();
         binding.allow_mcp(
             self.tools
                 .mcp

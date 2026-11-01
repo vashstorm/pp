@@ -2,7 +2,6 @@ use crate::tui::{
     Alignment, App, Block, Borders, Color, Frame, Line, Rect, StatusContext, Style, changes, menu,
     plan_list, platform_text, statusline, transcript_style, tree, welcome,
 };
-use ratatui::text::Span;
 
 /// 主屏幕和原生历史提交共用的几何结果，TODO 永远不进入对话 viewport。
 pub(in crate::tui) struct MainLayout {
@@ -412,39 +411,11 @@ impl App {
     }
 
     pub(in crate::tui) fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
-        // 总耗时紧随 Ctx；空间不足时整块隐藏耗时，优先保留上下文。
         let usage_style = Style::default().bg(Color::Rgb(26, 27, 38));
         let mut right = area.right();
-        let mut fields = Vec::new();
-        if let Some(usage) = self.usage.as_ref() {
-            let (text, color) = statusline::context_field(usage);
-            fields.push(Span::styled(
-                format!(" {text} "),
-                Style::default().fg(color),
-            ));
-        }
-        if let Some(elapsed) = self.conversation.task_duration() {
-            let text = if fields.is_empty() {
-                format!(" {elapsed} ")
-            } else {
-                format!("· {elapsed} ")
-            };
-            if fields.iter().map(Span::width).sum::<usize>() + Line::from(text.as_str()).width()
-                <= usize::from(area.width)
-            {
-                fields.push(Span::styled(text, Style::default().fg(Color::DarkGray)));
-            }
-        }
-        if !fields.is_empty() {
-            let line = Line::from(fields)
-                .style(usage_style)
-                .alignment(Alignment::Right);
-            let width = u16::try_from(line.width())
-                .unwrap_or(u16::MAX)
-                .min(area.width);
-            right -= width;
-            frame.render_widget(line, Rect::new(right, area.y, width, 1));
-        }
+        let context_width = self.usage.as_ref().map_or(0, |usage| {
+            u16::try_from(statusline::context_field(usage).width() + 2).unwrap_or(u16::MAX)
+        });
         let extra = self
             .secondary_status
             .as_deref()
@@ -454,9 +425,11 @@ impl App {
                     .alignment(Alignment::Right)
             });
         let extra_width = extra.as_ref().map_or(0, |line| {
-            u16::try_from(line.width())
-                .unwrap_or(u16::MAX)
-                .min((right - area.x).min(area.width / 2))
+            u16::try_from(line.width()).unwrap_or(u16::MAX).min(
+                (right - area.x)
+                    .saturating_sub(context_width)
+                    .min(area.width / 2),
+            )
         });
         let mut left = area.x;
         if let Some(snapshot) = &self.queue_snapshot
@@ -475,16 +448,20 @@ impl App {
                 ),
                 Style::default().fg(Color::DarkGray),
             );
-            let width = u16::try_from(line.width())
-                .unwrap_or(u16::MAX)
-                .min((right - left).saturating_sub(extra_width));
+            let width = u16::try_from(line.width()).unwrap_or(u16::MAX).min(
+                (right - left)
+                    .saturating_sub(extra_width)
+                    .saturating_sub(context_width),
+            );
             frame.render_widget(line, Rect::new(left, area.y, width, 1));
             left += width;
         }
         if let Some(usage) = self.usage.as_ref() {
             let metrics = statusline::metric_fields(
-                usage.last_request.as_ref(),
+                usage,
                 self.token_speed.value(),
+                self.task_status.as_ref(),
+                self.conversation.task_duration().as_deref(),
                 (right - left).saturating_sub(extra_width),
             )
             .style(usage_style);

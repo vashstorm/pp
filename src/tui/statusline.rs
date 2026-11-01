@@ -1,5 +1,5 @@
 use crate::config::{ModelChoice, ThinkLevel};
-use crate::context::{ContextUsage, TokenUsage};
+use crate::context::ContextUsage;
 use anyhow::{Context, Result};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -13,6 +13,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 pub(super) const ACCENT: Color = Color::Rgb(127, 166, 106);
 // Shell 模式：草稿以 `!` 开头时输入框上下边框的颜色，区分于普通输入。
@@ -24,8 +25,8 @@ const MIN_AFTER_MODE: usize = FIELD_ICON_WIDTH + 1;
 const MODEL: Color = Color::Rgb(223, 167, 209);
 const DIRECTORY: Color = Color::Rgb(36, 174, 181);
 const GIT: Color = Color::Rgb(204, 167, 72);
-pub(super) const CONTEXT: Color = Color::Rgb(122, 162, 247);
-const SPEED: Color = Color::Rgb(224, 175, 104);
+pub(super) const CONTEXT: Color = Color::Rgb(187, 154, 247);
+const SPEED: Color = Color::Rgb(255, 95, 162);
 const INPUT: Color = Color::Rgb(125, 207, 255);
 const OUTPUT: Color = Color::Rgb(158, 206, 106);
 const CACHE_READ: Color = Color::Rgb(187, 154, 247);
@@ -38,10 +39,17 @@ const THINK_ICON: &str = "\u{f0766}";
 const PLAN_ICON: &str = "\u{f0132}";
 const DIRECTORY_ICON: &str = "\u{f07c}";
 const GIT_ICON: &str = "\u{f126}";
-const SPEED_ICON: &str = "\u{f0e7}";
-const INPUT_ICON: &str = "\u{f019}";
-const OUTPUT_ICON: &str = "\u{f093}";
-const CACHE_ICON: &str = "\u{f1c0}";
+const SPEED_ICON: &str = "\u{f04c5}";
+const IO_ICON: &str = "\u{f04e2}";
+const CACHE_ICON: &str = "\u{f01bc}";
+const TITLE_ICON: &str = "\u{f09a9}";
+const CONTEXT_ICON: &str = "\u{f10ac}";
+const COST_ICON: &str = "\u{f01c1}";
+const TIMER_ICON: &str = "\u{f051b}";
+const HEALTHY_ICON: &str = "\u{f05e0}";
+const WARNING_ICON: &str = "\u{f0026}";
+const EXCEEDED_ICON: &str = "\u{f0159}";
+const UNKNOWN_ICON: &str = "\u{f02d7}";
 const ICON_WIDTH: usize = 2;
 // 分隔符与图标列在宽度预算中的固定开销。
 const SEPARATOR_WIDTH: usize = 3;
@@ -49,106 +57,181 @@ const FIELD_ICON_WIDTH: usize = ICON_WIDTH + 1;
 // 目录字段低于该宽度时先隐藏 git、再缩短模型，而不是把目录挤成空。
 const MIN_DIRECTORY: usize = 8;
 
-/// 满 1000 使用 k，满 100 万使用 m，缩写后保留一位小数；CLI 仍用完整整数。
+/// 满千使用 K、满百万使用 M，去掉无意义的 .0；CLI 仍用完整整数。
 fn abbreviate_tokens(tokens: u64) -> String {
-    if tokens >= 1000 {
-        abbreviate_metric(tokens as f64)
-    } else {
+    if tokens < 1000 {
         tokens.to_string()
+    } else {
+        abbreviate_metric(tokens as f64)
     }
 }
 
 fn abbreviate_metric(value: f64) -> String {
-    if value >= 1_000_000.0 {
-        format!("{:.1}m", value / 1_000_000.0)
+    let (value, unit) = if value >= 1_000_000.0 {
+        (value / 1_000_000.0, "M")
     } else if value >= 1000.0 {
-        format!("{:.1}k", value / 1000.0)
+        (value / 1000.0, "K")
     } else {
-        format!("{value:.1}")
-    }
+        (value, "")
+    };
+    let text = format!("{value:.1}");
+    format!("{}{unit}", text.strip_suffix(".0").unwrap_or(&text))
 }
 
-/// 输入栏上沿的上下文用量：容量未知时只显示当前估算值。
-pub(super) fn context_field(usage: &ContextUsage) -> (String, Color) {
-    let percent = usage.percent();
+fn field(icon: &str, text: String, color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{icon} "), Style::default().fg(color)),
+        Span::styled(text, Style::default().fg(color)),
+    ])
+}
+
+/// Ctx 数值固定紫色，只有末尾的健康图标根据配置阈值变化。
+pub(super) fn context_field(usage: &ContextUsage) -> Line<'static> {
     let text = match usage.context_window {
         Some(window) => format!(
-            "Ctx {}/{}",
-            abbreviate_tokens(usage.estimated_tokens),
-            abbreviate_tokens(window),
+            "{:.1}%/{}",
+            usage.estimated_tokens as f64 * 100.0 / window as f64,
+            abbreviate_tokens(window)
         ),
-        None => format!("Ctx {}", abbreviate_tokens(usage.estimated_tokens)),
+        None => format!("{}/?", abbreviate_tokens(usage.estimated_tokens)),
     };
-    let color = match percent {
-        Some(percent) if percent >= 100 => Color::Red,
-        Some(percent) if percent >= u128::from(usage.threshold_percent) => Color::Yellow,
-        _ => CONTEXT,
+    let (icon, color) = match usage.percent() {
+        Some(percent) if percent >= 100 => (EXCEEDED_ICON, Color::Red),
+        Some(percent) if percent >= u128::from(usage.threshold_percent) => {
+            (WARNING_ICON, Color::Yellow)
+        }
+        Some(_) => (HEALTHY_ICON, OUTPUT),
+        None => (UNKNOWN_ICON, Color::DarkGray),
     };
-    (text, color)
+    let mut line = field(CONTEXT_ICON, text, CONTEXT);
+    line.spans
+        .push(Span::styled(format!(" {icon}"), Style::default().fg(color)));
+    line
 }
 
-/// 输入栏上沿的 token 指标：速度 → 输入 → 输出 → 缓存读 → 缓存写，末尾衔接 Ctx。
-/// 空间不足时按 CWrite → CRead → In → Out → speed 整字段降级，不切开图标或文字。
+fn pair_field(icon: &str, left: String, right: String, colors: (Color, Color)) -> Line<'static> {
+    let mut line = field(icon, left, colors.0);
+    line.spans
+        .push(Span::styled("/", Style::default().fg(Color::DarkGray)));
+    line.spans
+        .push(Span::styled(right, Style::default().fg(colors.1)));
+    line
+}
+
+fn title_field(text: &str, width: usize) -> Line<'static> {
+    let truncated = Line::from(text).width() > width;
+    let budget = width.saturating_sub(usize::from(truncated));
+    let mut title = String::new();
+    for grapheme in text.graphemes(true) {
+        if Line::from(format!("{title}{grapheme}")).width() > budget {
+            break;
+        }
+        title.push_str(grapheme);
+    }
+    if truncated {
+        title.push('…');
+    }
+    field(TITLE_ICON, title, PLAN_MODE)
+}
+
+fn cost_field(task: &crate::task_status::Snapshot) -> Option<Line<'static>> {
+    if task.cost <= 0.0 || !task.cost.is_finite() {
+        return None;
+    }
+    let text = if task.cost < 0.0001 {
+        "<0.0001 USD".into()
+    } else {
+        format!("{:.4} USD", task.cost)
+    };
+    let mut line = field(COST_ICON, text, Color::Red);
+    if task.incomplete {
+        line.spans.push(Span::styled(
+            format!(" {WARNING_ICON}"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    Some(line)
+}
+
+fn join_fields(fields: &[Option<Line<'static>>]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for line in fields.iter().flatten() {
+        if spans.is_empty() {
+            spans.push(Span::raw(" "));
+        } else {
+            spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+        }
+        spans.extend(line.spans.iter().cloned());
+    }
+    if !spans.is_empty() {
+        spans.push(Span::raw(" "));
+    }
+    Line::from(spans)
+}
+
+/// 所有指标共享显示列预算：先缩短标题，再按整组降级，最后保留 Ctx。
 pub(super) fn metric_fields(
-    usage: Option<&TokenUsage>,
+    usage: &ContextUsage,
     speed: Option<(f64, bool)>,
+    task: Option<&crate::task_status::Snapshot>,
+    elapsed: Option<&str>,
     width: u16,
 ) -> Line<'static> {
     let speed_text = speed.map_or_else(
-        || "— Tok/s".to_owned(),
-        |(rate, _)| format!("{} Tok/s", abbreviate_metric(rate)),
-    );
-    // 缺失用量显示 —，显式的 0 仍显示 0。
-    let (input_text, output_text, read_text, write_text) = usage.map_or_else(
-        || {
-            (
-                "—".to_owned(),
-                "—".to_owned(),
-                "—".to_owned(),
-                "—".to_owned(),
-            )
-        },
-        |usage| {
-            (
-                abbreviate_tokens(usage.input_tokens),
-                abbreviate_tokens(usage.output_tokens),
-                usage
-                    .cached_tokens
-                    .map_or_else(|| "—".to_owned(), abbreviate_tokens),
-                usage
-                    .cache_write_tokens
-                    .map_or_else(|| "—".to_owned(), abbreviate_tokens),
-            )
+        || "— tok/s".into(),
+        |(rate, _)| {
+            let rate = if rate >= 1_000_000.0 {
+                format!("{:.1}M", rate / 1_000_000.0)
+            } else if rate >= 1000.0 {
+                format!("{:.1}K", rate / 1000.0)
+            } else {
+                format!("{rate:.1}")
+            };
+            format!("{rate} tok/s")
         },
     );
-    let fields = [
-        (SPEED_ICON, SPEED, speed_text),
-        (INPUT_ICON, INPUT, format!("In {input_text}")),
-        (OUTPUT_ICON, OUTPUT, format!("Out {output_text}")),
-        (CACHE_ICON, CACHE_READ, format!("CRead {read_text}")),
-        (CACHE_ICON, CACHE_WRITE, format!("CWrite {write_text}")),
+    let count = |value: Option<u64>| value.map_or_else(|| "—".into(), abbreviate_tokens);
+    let last = usage.last_request;
+    let mut fields = [
+        Some(field(SPEED_ICON, speed_text, SPEED)),
+        task.and_then(|t| t.title.as_ref())
+            .map(|title| title_field(title, 32)),
+        Some(context_field(usage)),
+        Some(pair_field(
+            IO_ICON,
+            count(last.map(|u| u.input_tokens)),
+            count(last.map(|u| u.output_tokens)),
+            (INPUT, OUTPUT),
+        )),
+        Some(pair_field(
+            CACHE_ICON,
+            count(last.and_then(|u| u.cached_tokens)),
+            count(last.and_then(|u| u.cache_write_tokens)),
+            (CACHE_READ, CACHE_WRITE),
+        )),
+        task.and_then(cost_field),
+        elapsed.map(|text| field(TIMER_ICON, text.replace(' ', ""), Color::DarkGray)),
     ];
-    let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
-    let mut spans = Vec::with_capacity(1 + fields.len() * 3);
-    spans.push(Span::raw(" "));
-    for (icon, color, text) in fields {
-        let style = Style::default().fg(color);
-        spans.push(Span::styled(format!("{icon} "), style));
-        spans.push(Span::styled(text, style));
-        spans.push(separator());
+    let budget = usize::from(width);
+    let mut line = join_fields(&fields);
+    if line.width() > budget
+        && let Some(title) = fields[1].as_ref()
+    {
+        let text = title.spans[1].content.as_ref();
+        let available = Line::from(text)
+            .width()
+            .saturating_sub(line.width() - budget);
+        fields[1] = (available >= 2).then(|| title_field(text, available));
+        line = join_fields(&fields);
     }
-    let mut line = Line::from(spans);
-    let mut keep = [true; 5];
-    for remove in [4, 3, 1, 2, 0] {
-        if line.width() <= usize::from(width) {
+    for remove in [1, 4, 3, 0, 5, 6, 2] {
+        if line.width() <= budget {
             return line;
         }
-        // 每个完整字段包含自己的图标、数值和后续分隔符。
-        let start = 1 + keep[..remove].iter().filter(|&&kept| kept).count() * 3;
-        line.spans.drain(start..start + 3);
-        keep[remove] = false;
+        fields[remove] = None;
+        line = join_fields(&fields);
     }
-    Line::default()
+    line
 }
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
@@ -562,24 +645,25 @@ pub(super) fn primary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::TokenUsage;
 
     #[test]
     fn context_abbreviation_uses_thousands_and_millions_with_one_decimal() {
         for (tokens, expected) in [
             (0, "0"),
             (999, "999"),
-            (1000, "1.0k"),
-            (1050, "1.1k"),
-            (9999, "10.0k"),
-            (10000, "10.0k"),
-            (10999, "11.0k"),
-            (12345, "12.3k"),
-            (128000, "128.0k"),
-            (999900, "999.9k"),
-            (1_000_000, "1.0m"),
-            (1_240_000, "1.2m"),
-            (1_280_000, "1.3m"),
-            (1_000_000_000, "1000.0m"),
+            (1000, "1K"),
+            (1050, "1.1K"),
+            (9999, "10K"),
+            (10000, "10K"),
+            (10999, "11K"),
+            (12345, "12.3K"),
+            (128000, "128K"),
+            (999900, "999.9K"),
+            (1_000_000, "1M"),
+            (1_240_000, "1.2M"),
+            (1_280_000, "1.3M"),
+            (1_000_000_000, "1000M"),
         ] {
             assert_eq!(abbreviate_tokens(tokens), expected);
         }
@@ -746,20 +830,6 @@ mod tests {
         assert_eq!(speed.value(), None);
     }
 
-    fn metric_usage(
-        input_tokens: u64,
-        output_tokens: u64,
-        cached_tokens: Option<u64>,
-        cache_write_tokens: Option<u64>,
-    ) -> TokenUsage {
-        TokenUsage {
-            input_tokens,
-            output_tokens,
-            cached_tokens,
-            cache_write_tokens,
-        }
-    }
-
     fn line_text(line: &Line<'_>) -> String {
         line.spans
             .iter()
@@ -791,180 +861,203 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn metric_fields_hide_estimate_marker_and_preserve_unknown_speed() {
-        let usage = metric_usage(0, 0, Some(0), Some(0));
-        let text = |speed| line_text(&metric_fields(Some(&usage), speed, 200));
-        assert!(text(None).contains(" \u{f0e7} — Tok/s · "));
-        assert!(!text(None).contains('~'));
-        assert!(text(Some((0.0, false))).contains("\u{f0e7} 0.0 Tok/s"));
-        assert!(text(Some((150.0, false))).contains("\u{f0e7} 150.0 Tok/s"));
-        assert!(!text(Some((150.0, false))).contains('~'));
-        assert!(text(Some((42.5, true))).contains("\u{f0e7} 42.5 Tok/s"));
-        assert_eq!(text(Some((42.5, true))), text(Some((42.5, false))));
-        assert!(text(Some((999.0, false))).contains("\u{f0e7} 999.0 Tok/s"));
-        assert!(text(Some((1000.0, true))).contains("\u{f0e7} 1.0k Tok/s"));
-        assert!(text(Some((12345.0, false))).contains("\u{f0e7} 12.3k Tok/s"));
-        assert!(text(Some((1_000_000.0, false))).contains("\u{f0e7} 1.0m Tok/s"));
-        assert!(text(Some((1_280_000.0, true))).contains("\u{f0e7} 1.3m Tok/s"));
+    fn status_usage() -> ContextUsage {
+        ContextUsage {
+            estimated_tokens: 408_000,
+            context_window: Some(500_000),
+            auto_compact: true,
+            threshold_percent: 80,
+            last_request: Some(TokenUsage {
+                input_tokens: 12_300,
+                output_tokens: 2_100,
+                cached_tokens: Some(8_000),
+                cache_write_tokens: Some(0),
+            }),
+        }
     }
 
     #[test]
-    fn metric_fields_distinguish_missing_usage_from_zero() {
-        let missing = line_text(&metric_fields(None, Some((12.0, false)), 200));
-        assert!(missing.contains("In —"));
-        assert!(missing.contains("Out —"));
-        assert!(missing.contains("CRead —"));
-        assert!(missing.contains("CWrite —"));
-        assert!(!missing.contains("In 0"));
-
-        let absent_cached = metric_usage(0, 0, None, None);
-        let text = line_text(&metric_fields(Some(&absent_cached), None, 200));
-        assert!(text.contains("In 0"));
-        assert!(text.contains("Out 0"));
-        assert!(text.contains("CRead —"));
-        assert!(text.contains("CWrite —"));
-
-        let zero_cached = metric_usage(1000, 9999, Some(0), Some(0));
-        let text = line_text(&metric_fields(Some(&zero_cached), None, 200));
-        assert!(text.contains("In 1.0k"));
-        assert!(text.contains("Out 10.0k"));
-        assert!(text.contains("CRead 0"));
-        assert!(text.contains("CWrite 0"));
-
-        let abbreviated = metric_usage(12000, 10800, Some(10000), Some(1500));
-        let text = line_text(&metric_fields(Some(&abbreviated), Some((1.0, false)), 200));
-        assert!(text.contains("In 12.0k"));
-        assert!(text.contains("Out 10.8k"));
-        assert!(text.contains("CRead 10.0k"));
-        assert!(text.contains("CWrite 1.5k"));
-
-        let millions = metric_usage(2_280_000, 1_000_000, Some(1_240_000), Some(1_000_000));
-        let text = line_text(&metric_fields(Some(&millions), None, 200));
-        assert!(text.contains("In 2.3m"));
-        assert!(text.contains("Out 1.0m"));
-        assert!(text.contains("CRead 1.2m"));
-        assert!(text.contains("CWrite 1.0m"));
-    }
-
-    #[test]
-    fn metric_fields_keep_cache_read_and_write_independent() {
-        for (read, write, expected_read, expected_write) in [
-            (Some(40), Some(120), "CRead 40", "CWrite 120"),
-            (None, Some(0), "CRead —", "CWrite 0"),
-            (Some(0), None, "CRead 0", "CWrite —"),
+    fn metric_fields_order_units_and_independent_pair_colors() {
+        let usage = status_usage();
+        let task = crate::task_status::Snapshot {
+            title: Some("修复会话历史".into()),
+            cost: 0.0123,
+            ..Default::default()
+        };
+        let line = metric_fields(&usage, Some((30.2, true)), Some(&task), Some("1m 25s"), 240);
+        assert_eq!(
+            line_text(&line),
+            format!(
+                " {SPEED_ICON} 30.2 tok/s · {TITLE_ICON} 修复会话历史 · {CONTEXT_ICON} 81.6%/500K {WARNING_ICON} · {IO_ICON} 12.3K/2.1K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.0123 USD · {TIMER_ICON} 1m25s "
+            )
+        );
+        for (text, color) in [
+            ("30.2 tok/s", SPEED),
+            ("修复会话历史", PLAN_MODE),
+            ("81.6%/500K", CONTEXT),
+            ("12.3K", INPUT),
+            ("2.1K", OUTPUT),
+            ("8K", CACHE_READ),
+            ("0", CACHE_WRITE),
+            ("0.0123 USD", Color::Red),
+            ("1m25s", Color::DarkGray),
         ] {
-            let usage = metric_usage(12000, 300, read, write);
-            let line = metric_fields(Some(&usage), None, 200);
-            for (label, color) in [
-                (expected_read, Color::Rgb(187, 154, 247)),
-                (expected_write, Color::Rgb(255, 158, 100)),
-            ] {
-                let index = line
-                    .spans
+            assert_eq!(
+                line.spans
                     .iter()
-                    .position(|span| span.content == label)
-                    .unwrap();
-                assert_eq!(line.spans[index].style.fg, Some(color));
-                assert_eq!(line.spans[index - 1].content, format!("{CACHE_ICON} "));
-                assert_eq!(line.spans[index - 1].style.fg, Some(color));
+                    .find(|span| span.content == text)
+                    .unwrap()
+                    .style
+                    .fg,
+                Some(color),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn metric_fields_distinguish_missing_usage_and_independent_zero_cache() {
+        let mut usage = status_usage();
+        usage.last_request = None;
+        let text = line_text(&metric_fields(&usage, None, None, None, 240));
+        assert!(text.contains(&format!("{IO_ICON} —/—")));
+        assert!(text.contains(&format!("{CACHE_ICON} —/—")));
+        for (read, write, expected) in [
+            (None, Some(0), "—/0"),
+            (Some(0), None, "0/—"),
+            (Some(0), Some(0), "0/0"),
+        ] {
+            usage.last_request = Some(TokenUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cached_tokens: read,
+                cache_write_tokens: write,
+            });
+            let text = line_text(&metric_fields(&usage, None, None, None, 240));
+            assert!(text.contains(&format!("{IO_ICON} 0/0")));
+            assert!(text.contains(&format!("{CACHE_ICON} {expected}")));
+        }
+    }
+
+    #[test]
+    fn metric_fields_speed_preserves_decimal_and_title_graphemes() {
+        let usage = status_usage();
+        for (rate, expected) in [
+            (999.0, "999.0 tok/s"),
+            (1000.0, "1.0K tok/s"),
+            (1_000_000.0, "1.0M tok/s"),
+        ] {
+            assert!(
+                line_text(&metric_fields(&usage, Some((rate, false)), None, None, 200))
+                    .contains(expected)
+            );
+        }
+        assert_eq!(
+            line_text(&title_field("🙂👩‍💻标题", 5)),
+            format!("{TITLE_ICON} 🙂👩‍💻…")
+        );
+    }
+
+    #[test]
+    fn context_health_changes_only_the_final_icon() {
+        let mut usage = status_usage();
+        for (tokens, icon, color) in [
+            (399_999, HEALTHY_ICON, OUTPUT),
+            (400_000, WARNING_ICON, Color::Yellow),
+            (499_999, WARNING_ICON, Color::Yellow),
+            (500_000, EXCEEDED_ICON, Color::Red),
+            (600_000, EXCEEDED_ICON, Color::Red),
+        ] {
+            usage.estimated_tokens = tokens;
+            let line = context_field(&usage);
+            assert!(line_text(&line).ends_with(icon));
+            assert!(
+                line.spans[..2]
+                    .iter()
+                    .all(|span| span.style.fg == Some(CONTEXT))
+            );
+            assert_eq!(line.spans.last().unwrap().style.fg, Some(color));
+        }
+        usage.context_window = None;
+        let line = context_field(&usage);
+        assert_eq!(
+            line_text(&line),
+            format!("{CONTEXT_ICON} 600K/? {UNKNOWN_ICON}")
+        );
+        assert_eq!(line.spans.last().unwrap().style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn metric_fields_positive_cost_small_amount_and_partial_marker() {
+        let mut task = crate::task_status::Snapshot::default();
+        for amount in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            task.cost = amount;
+            assert!(cost_field(&task).is_none());
+        }
+        task.cost = 0.000001;
+        task.incomplete = true;
+        let line = cost_field(&task).unwrap();
+        assert_eq!(
+            line_text(&line),
+            format!("{COST_ICON} <0.0001 USD {WARNING_ICON}")
+        );
+        assert_eq!(line.spans[1].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn metric_fields_shrink_title_then_drop_whole_groups_by_priority() {
+        let usage = status_usage();
+        let task = crate::task_status::Snapshot {
+            title: Some("需要保留中文以及🙂的长任务标题以验证显示宽度".into()),
+            cost: 0.02,
+            ..Default::default()
+        };
+        let render = |width| {
+            metric_fields(
+                &usage,
+                Some((30.2, false)),
+                Some(&task),
+                Some("1m 25s"),
+                width,
+            )
+        };
+        let full = render(240);
+        let full_width = full.width() as u16;
+        let shrunk = render(full_width - 2);
+        assert!(line_text(&shrunk).contains(TITLE_ICON));
+        assert!(line_text(&shrunk).contains('…'));
+        let removal_order = [
+            TITLE_ICON,
+            CACHE_ICON,
+            IO_ICON,
+            SPEED_ICON,
+            COST_ICON,
+            TIMER_ICON,
+            CONTEXT_ICON,
+        ];
+        let mut previous = 0;
+        for width in (0..=full_width).rev() {
+            let line = render(width);
+            assert!(line.width() <= usize::from(width));
+            let text = line_text(&line);
+            let missing = removal_order
+                .iter()
+                .take_while(|icon| !text.contains(**icon))
+                .count();
+            assert!(missing >= previous, "宽度下降不能恢复已隐藏的字段");
+            previous = missing;
+            for icon in &removal_order[missing..] {
+                assert!(text.contains(icon), "不能跳过降级优先级: {text}");
+            }
+            for pair in ["12.3K/2.1K", "8K/0"] {
+                let icon = if pair.starts_with("12") {
+                    IO_ICON
+                } else {
+                    CACHE_ICON
+                };
+                assert_eq!(text.contains(icon), text.contains(pair));
             }
         }
-    }
-
-    #[test]
-    fn metric_fields_drop_whole_fields_cache_write_then_read_then_in_then_out_then_speed() {
-        let usage = metric_usage(12000, 300, Some(40), Some(120));
-        let speed = Some((150.0, false));
-        let fields = [
-            ("\u{f0e7}", "150.0 Tok/s"),
-            ("\u{f019}", "In 12.0k"),
-            ("\u{f093}", "Out 300"),
-            ("\u{f1c0}", "CRead 40"),
-            ("\u{f1c0}", "CWrite 120"),
-        ];
-        // 移除顺序 CWrite → CRead → In → Out → speed；所有宽度均保留完整字段。
-        let kept_states = [
-            vec![0, 1, 2, 3, 4],
-            vec![0, 1, 2, 3],
-            vec![0, 1, 2],
-            vec![0, 2],
-            vec![0],
-            vec![],
-        ];
-        let candidates: Vec<String> = kept_states
-            .iter()
-            .map(|kept| {
-                if kept.is_empty() {
-                    return String::new();
-                }
-                let mut text = String::from(" ");
-                for (position, index) in kept.iter().enumerate() {
-                    if position > 0 {
-                        text.push_str(" · ");
-                    }
-                    text.push_str(fields[*index].0);
-                    text.push(' ');
-                    text.push_str(fields[*index].1);
-                }
-                text.push_str(" · ");
-                text
-            })
-            .collect();
-        let widths: Vec<usize> = candidates
-            .iter()
-            .map(|text| Line::from(text.as_str()).width())
-            .collect();
-        for pair in widths.windows(2) {
-            assert!(pair[0] > pair[1], "每次降级都必须严格变窄: {widths:?}");
-        }
-        for width in 0..=u16::try_from(widths[0] + 2).unwrap() {
-            let line = metric_fields(Some(&usage), speed, width);
-            assert!(
-                line.width() <= usize::from(width),
-                "宽度 {width} 放不下 {line:?}"
-            );
-            let expected = widths
-                .iter()
-                .position(|candidate| *candidate <= usize::from(width))
-                .unwrap();
-            assert_eq!(line_text(&line), candidates[expected], "宽度 {width}");
-        }
-    }
-
-    #[test]
-    fn metric_fields_fit_display_columns_not_utf8_bytes() {
-        let usage = metric_usage(12000, 300, Some(40), Some(120));
-        let speed = Some((150.0, false));
-        let full = metric_fields(Some(&usage), speed, u16::MAX);
-        let text = line_text(&full);
-        assert!(
-            text.len() > full.width(),
-            "Nerd 图标是多字节 UTF-8，但只占少量显示列"
-        );
-        let width = u16::try_from(full.width()).unwrap();
-        assert_eq!(line_text(&metric_fields(Some(&usage), speed, width)), text);
-        let narrower = line_text(&metric_fields(Some(&usage), speed, width - 1));
-        assert!(!narrower.contains("CWrite 120"), "{narrower}");
-        assert!(narrower.contains("CRead 40"), "{narrower}");
-        assert!(Line::from(narrower.as_str()).width() < full.width());
-    }
-
-    #[test]
-    fn metric_fields_are_empty_when_no_field_fits() {
-        let usage = metric_usage(12000, 300, Some(40), Some(120));
-        let first = (0..=200)
-            .find(|width| !metric_fields(Some(&usage), None, *width).spans.is_empty())
-            .unwrap();
-        assert!(first > 0);
-        for width in 0..first {
-            let line = metric_fields(Some(&usage), None, width);
-            assert!(line.spans.is_empty(), "宽度 {width}: {line:?}");
-            assert_eq!(line.width(), 0);
-        }
-        let line = metric_fields(Some(&usage), None, first);
-        assert_eq!(line.width(), usize::from(first));
-        assert_eq!(line_text(&line), " \u{f0e7} — Tok/s · ");
+        assert!(line_text(&full).len() > full.width());
     }
 }

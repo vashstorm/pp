@@ -11,6 +11,7 @@ mod plan_review;
 mod plan_sync;
 mod plan_workflow;
 mod subagents;
+mod task_status;
 mod todo;
 mod tool_images;
 mod turn;
@@ -92,6 +93,7 @@ impl Bootstrap {
 }
 
 pub(crate) struct Agent {
+    task_status: task_status::Runtime,
     role_route: Option<crate::config::RoleRoute>,
     pub(crate) runtime_models: Option<crate::model_control::Binding>,
     pub(crate) subagent_control: std::sync::Arc<std::sync::Mutex<Option<crate::subagent::Binding>>>,
@@ -389,6 +391,7 @@ impl Agent {
             client,
             runtime_models: None,
             subagent_control: Default::default(),
+            task_status: Default::default(),
             session,
             tools,
             auto_compact: config.settings.auto_compact,
@@ -491,6 +494,7 @@ impl Agent {
             client,
             runtime_models: None,
             subagent_control: Default::default(),
+            task_status: Default::default(),
             tools,
             session: checkpoint.session,
             auto_compact: config.settings.auto_compact,
@@ -1168,6 +1172,8 @@ impl Agent {
                 return Err(error);
             }
         }
+        let mut client = client;
+        client.set_task_accounting(self.task_status.accounting.clone());
         self.client = client;
         self.current_model = choice;
         self.think_level = target_level;
@@ -1377,6 +1383,7 @@ impl Agent {
             self.prepare_plan_task(prompt)?;
             self.ensure_task_plan_lease()?;
             self.refresh_instructions()?;
+            self.begin_task_status(prompt, cancellation);
             self.publish_context(emit)?;
             self.tools.begin_changes_task();
             if let Some(prepared) = prepared {
@@ -1409,6 +1416,7 @@ impl Agent {
             self.ensure_task_plan_lease()?;
             self.prepare_plan_task("")?;
             self.ensure_task_plan_lease()?;
+            self.continue_task_status();
             self.run_loop(None, input, cancellation, emit)
         })();
         self.finish_task("continue", started, result, cancellation, input, emit)
@@ -1425,6 +1433,8 @@ impl Agent {
         input: Option<&InputQueue>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
+        self.finish_task_title();
+        self.set_task_accounting(None);
         let result = self.close_queue(input, result);
         let mut result = self.finish_run(result, cancellation);
         if let Err(error) = self.refresh_plan_progress(emit) {

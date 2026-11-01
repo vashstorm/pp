@@ -7,6 +7,7 @@ include!("cancel_mcp_tui.rs");
 include!("resume_tui.rs");
 include!("resume_boundaries.rs");
 include!("context_tui.rs");
+include!("statusline_tui.rs");
 include!("project_instructions_tui.rs");
 include!("diff_blocks_tui.rs");
 include!("changes_tui.rs");
@@ -33,6 +34,37 @@ use std::{
     path::Path,
     sync::mpsc::{self, Receiver},
 };
+
+// 仅 TUI 夹具自动处理旁路标题；CLI 仍严格拒绝任何额外请求。
+fn receive(server: &Server) -> (Request, Value) {
+    receive_at(server, "/v1/chat/completions")
+}
+// 通用夹具自动处理新增的旁路标题请求；标题专用测试使用 raw 接口控制并发。
+fn receive_at(server: &Server, path: &str) -> (Request, Value) {
+    loop {
+        let (request, body) = receive_raw(server);
+        if !is_task_title(&body) {
+            assert_eq!(request.url(), path);
+            return (request, body);
+        }
+        if request.url().ends_with("responses") {
+            response_final(request, "Task");
+        } else {
+            final_reply(request, "Task");
+        }
+    }
+}
+
+fn no_more(server: &Server) {
+    while let Some(mut request) = server.recv_timeout(Duration::from_millis(100)).unwrap() {
+        let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+        assert!(
+            is_task_title(&body),
+            "unexpected extra model request: {body}"
+        );
+        let _ = request.respond(Response::empty(204));
+    }
+}
 
 const DEADLINE: Duration = Duration::from_secs(5);
 // portable-pty sets CLOEXEC after openpty; do not spawn another child in that window.
@@ -273,9 +305,10 @@ impl Pty {
 
     fn ready(&mut self) {
         self.wait_for("空闲输入框", |screen| {
+            let text = screen.contents();
             input_is_ready(screen)
-                && !screen
-                    .contents()
+                && !text.contains("\u{f12b7} ")
+                && !text
                     .lines()
                     .any(|line| line.trim_start().starts_with("✻ ") && !line.contains(" · done "))
         });

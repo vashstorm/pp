@@ -34,7 +34,9 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
             text.contains("\u{f12b7} Requesting model")
                 && text.matches("\u{f12b7} ").count() == 1
                 && text.lines().any(|line| {
-                    line.contains("Ctx ") && line.contains(" · ") && line.trim_end().ends_with('s')
+                    line.contains("\u{f10ac} ")
+                        && line.contains(" · ")
+                        && line.trim_end().ends_with('s')
                 })
         });
         final_reply(request, &format!("answer {turn}"));
@@ -62,7 +64,10 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
             .0;
         assert!(
             text.lines().any(|line| {
-                line.contains("Ctx ") && line.trim_end().ends_with(&format!("· {duration}"))
+                line.contains("\u{f10ac} ")
+                    && line
+                        .trim_end()
+                        .ends_with(&format!("\u{f051b} {}", duration.replace(' ', "")))
             }),
             "完成后 statusline 必须保留最终耗时：{text}"
         );
@@ -72,8 +77,11 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
         input_is_ready(screen) && !screen.contents().contains("Completed ·")
     });
     let text = pty.parser.screen().contents();
-    let context = text.lines().find(|line| line.contains("Ctx ")).unwrap();
-    assert!(!context.split_once("Ctx ").unwrap().1.contains('·'));
+    let context = text
+        .lines()
+        .find(|line| line.contains("\u{f10ac} "))
+        .unwrap();
+    assert!(!context.contains("\u{f051b}"));
     pty.input("\x03");
     pty.finish();
     no_more(&server);

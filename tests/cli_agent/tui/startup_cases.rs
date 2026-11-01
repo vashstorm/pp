@@ -198,13 +198,13 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
             12,
         );
     }
-    let context_start = lines[26].find(" Ctx ").expect("用量显示在输入栏上沿");
-    assert!(!lines[26][context_start..].contains('/'));
+    let context_start = lines[26].find(" \u{f10ac} ").expect("用量显示在输入栏上沿");
+    assert!(lines[26][context_start..].contains("/?"));
     assert!(!lines[26][context_start..].contains('%'));
     assert!(lines[27].starts_with('❯'));
     assert_eq!(lines[28], "─".repeat(100));
     // 上沿右端显示用量，底部保留模型与思考级别。
-    assert!(!lines[29].contains("Ctx "));
+    assert!(!lines[29].contains("\u{f10ac} "));
     assert!(lines[29].contains("fixture/primary"));
     assert!(lines[29].contains("off"));
     assert!(!text.contains("│ Note"));
@@ -296,7 +296,7 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
                 && text
                     .lines()
                     .nth(8)
-                    .is_some_and(|line| line.contains("Ctx "))
+                    .is_some_and(|line| line.contains("\u{f10ac} "))
     });
     let compact = pty.parser.screen();
     assert_eq!(

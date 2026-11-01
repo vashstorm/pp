@@ -151,6 +151,7 @@ struct Inner {
 }
 #[derive(Clone)]
 pub(crate) struct Binding {
+    pub(crate) accounting: Option<crate::task_status::Ledger>,
     inner: Arc<Inner>,
     pub owner: String,
     pub depth: usize,
@@ -161,6 +162,7 @@ pub(crate) struct Binding {
     pub readonly: bool,
 }
 struct Work {
+    accounting: Option<crate::task_status::Ledger>,
     run: String,
     task: String,
     cancellation: CancellationToken,
@@ -314,6 +316,7 @@ impl Binding {
             plan_mode,
         });
         Ok(Self {
+            accounting: None,
             inner,
             owner: "Main".into(),
             depth: 0,
@@ -708,6 +711,7 @@ impl Binding {
             live.cancellation = token.clone();
             live.input.begin_run()?;
             live.sender.send(Work {
+                accounting: self.accounting.clone(),
                 run: run.into(),
                 task,
                 cancellation: token,
@@ -745,6 +749,7 @@ impl Binding {
         }
         if !run.is_empty() {
             sender.send(Work {
+                accounting: self.accounting.clone(),
                 run: run.into(),
                 task,
                 cancellation: token,
@@ -1350,6 +1355,7 @@ fn worker(
         }
     }
     let binding = Binding {
+        accounting: None,
         inner,
         owner: record.id.clone(),
         depth: record.spec.depth,
@@ -1407,6 +1413,7 @@ fn worker(
                 }),
             );
             let native = agent.as_mut().context("agent initialization failed")?;
+            native.set_task_accounting(work.accounting.clone());
             let mut sequence = 0u64;
             let mut requests = 0usize;
             let mut tokens = 0u64;

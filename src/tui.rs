@@ -769,6 +769,8 @@ struct App {
     // 最近一次 ContextUpdated 快照；渲染直接使用，不逐帧重新估算。
     usage: Option<crate::context::ContextUsage>,
     token_speed: statusline::TokenSpeed,
+    task_status_view: crate::task_status::View,
+    task_status: Option<crate::task_status::Snapshot>,
     mcp_cleanup: Option<crate::mcp::Cleanup>,
     mcp_view: crate::mcp::View,
     mcp_panel: Option<mcp::Panel>,

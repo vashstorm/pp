@@ -147,15 +147,28 @@ fn server() -> Server {
 fn receive(server: &Server) -> (Request, Value) {
     receive_at(server, "/v1/chat/completions")
 }
-fn receive_at(server: &Server, path: &str) -> (Request, Value) {
+fn receive_raw(server: &Server) -> (Request, Value) {
     let mut request = server
         .recv_timeout(Duration::from_secs(5))
         .unwrap()
         .expect("missing CLI request");
-    assert_eq!(request.url(), path);
     let body = serde_json::from_reader(request.as_reader()).unwrap();
     (request, body)
 }
+fn is_task_title(body: &Value) -> bool {
+    body["instructions"]
+        .as_str()
+        .or_else(|| body["messages"][0]["content"].as_str())
+        .is_some_and(|text| {
+            text.starts_with("Generate a short task title for a terminal statusline.")
+        })
+}
+fn receive_at(server: &Server, path: &str) -> (Request, Value) {
+    let (request, body) = receive_raw(server);
+    assert_eq!(request.url(), path);
+    (request, body)
+}
+
 struct SseReply {
     writer: Box<dyn Write + Send>,
 }
@@ -235,6 +248,7 @@ fn no_more(server: &Server) {
         "unexpected extra model request"
     );
 }
+
 fn authorization(request: &Request) -> String {
     request
         .headers()

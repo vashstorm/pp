@@ -265,6 +265,43 @@ pub(crate) struct ModelCost {
     pub(crate) output: f64,
 }
 
+#[derive(Default, serde::Serialize)]
+pub(crate) struct TokenCost {
+    pub(crate) input: f64,
+    pub(crate) cache_read: f64,
+    pub(crate) cache_write: f64,
+    pub(crate) output: f64,
+}
+
+impl TokenCost {
+    pub(crate) fn total(&self) -> f64 {
+        self.input + self.cache_read + self.cache_write + self.output
+    }
+}
+
+impl ModelCost {
+    /// 与统计页面共享严格计价：未知缓存量不能按零计费。
+    pub(crate) fn calculate(self, usage: crate::context::TokenUsage) -> Option<TokenCost> {
+        let cached = usage.cached_tokens?;
+        let written = usage.cache_write_tokens?;
+        let uncached = usage
+            .input_tokens
+            .checked_sub(cached)?
+            .checked_sub(written)?;
+        let cost = TokenCost {
+            input: uncached as f64 * (self.input / 1e6),
+            cache_read: cached as f64 * (self.cache_read / 1e6),
+            cache_write: if written == 0 {
+                0.0
+            } else {
+                written as f64 * (self.cache_write? / 1e6)
+            },
+            output: usage.output_tokens as f64 * (self.output / 1e6),
+        };
+        cost.total().is_finite().then_some(cost)
+    }
+}
+
 fn deserialize_optional_rate<'de, D>(deserializer: D) -> std::result::Result<Option<f64>, D::Error>
 where
     D: serde::Deserializer<'de>,

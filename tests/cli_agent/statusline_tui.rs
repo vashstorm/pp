@@ -1,0 +1,338 @@
+// 标题专用测试直接控制旁路请求，不使用通用夹具的自动标题响应。
+fn statusline_home(server: &Server, protocol: &str, fast: bool) -> tempfile::TempDir {
+    let home = tempfile::tempdir().unwrap();
+    let other = if protocol == "completion" {
+        "response"
+    } else {
+        "completion"
+    };
+    let role = if fast {
+        "model_roles:\n  fast: {model: title/fast, effort: none}\n"
+    } else {
+        ""
+    };
+    std::fs::write(config_path(home.path(), "settings.yml"), format!("default_model: main/primary\nrate_limit_retry_budget_seconds: 0\nauto_compact: false\n{role}")).unwrap();
+    let model = |name: &str, rate: f64| json!({"model":name,"context_window":40000,"cost":{"input":rate,"cacheRead":rate,"cacheWrite":rate,"output":rate}});
+    std::fs::write(config_path(home.path(), "models.yml"), json!({"providers":{
+        "main":slash_provider(server,"main",protocol,json!({"primary":model("main-model",1.0)})),
+        "title":slash_provider(server,"title",other,json!({"fast":model("title-model",2.0)}))
+    }}).to_string()).unwrap();
+    home
+}
+
+fn statusline_start(server: &Server, protocol: &str, fast: bool) -> (tempfile::TempDir, Pty) {
+    let home = statusline_home(server, protocol, fast);
+    let mut pty = Pty::start_with_existing_files(home.path());
+    pty.ready();
+    pty.resize(30, 180);
+    (home, pty)
+}
+
+fn statusline_requests(server: &Server) -> ((Request, Value), (Request, Value)) {
+    let first = receive_raw(server);
+    let second = receive_raw(server);
+    if is_task_title(&first.1) {
+        assert!(!is_task_title(&second.1));
+        (second, first)
+    } else {
+        assert!(is_task_title(&second.1));
+        (first, second)
+    }
+}
+
+fn statusline_reply_usage(request: Request, protocol: &str, text: &str) {
+    let mut stream = SseReply::new(request);
+    streaming_delta(&mut stream, protocol, text);
+    context_tui_stream_usage(&mut stream, protocol, text);
+    stream.finish();
+}
+
+fn statusline_reply_calls_usage(request: Request, protocol: &str, mut calls: Value) {
+    let mut stream = SseReply::new(request);
+    if protocol == "completion" {
+        for (index, call) in calls.as_array_mut().unwrap().iter_mut().enumerate() {
+            call["index"] = json!(index);
+        }
+        stream.event(chat_chunk(
+            json!({"role":"assistant","tool_calls":calls}),
+            None,
+        ));
+        stream.event(chat_chunk(json!({}), Some("tool_calls")));
+        stream.event(json!({"id":"chatcmpl-cost", "object":"chat.completion.chunk", "created":1,
+            "model":"main-model", "choices":[], "usage":{"prompt_tokens":12000,"completion_tokens":300,
+            "total_tokens":12300,"prompt_tokens_details":{"cached_tokens":40,"cache_write_tokens":120}}}));
+        stream.frame("[DONE]");
+    } else {
+        let mut response = response_body(calls);
+        response["usage"] = json!({"input_tokens":12000,"output_tokens":300,"total_tokens":12300,
+            "input_tokens_details":{"cached_tokens":40,"cache_write_tokens":120},"output_tokens_details":{"reasoning_tokens":0}});
+        stream
+            .event(json!({"type":"response.completed","sequence_number":100,"response":response}));
+    }
+    stream.finish();
+}
+
+#[test]
+fn task_status_cost_includes_nested_subagents_without_double_counting_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let (home, mut pty) = statusline_start(&fixture, protocol, false);
+        let agents = home.path().join(".pp/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("task.md"), "---\nname: task\ndescription: Blocking cost fixture\nblocking: true\nspawns: [\"*\"]\n---\nComplete the assignment.").unwrap();
+        pty.input("root task with descendants\r");
+        let ((root, _), (title, _)) = statusline_requests(&fixture);
+        statusline_reply_usage(title, protocol, "嵌套任务计费");
+        pty.text("嵌套任务计费");
+        let spawn = |task| {
+            json!([hub_call(
+                protocol,
+                "spawn-cost",
+                "task",
+                json!({"context":"cost inheritance", "tasks":[{"task":task}]})
+            )])
+        };
+        statusline_reply_calls_usage(root, protocol, spawn("child-cost-marker"));
+        let (child, body) = pty.request_at(&fixture, api_path(protocol));
+        assert!(hub_is_child(&body), "{body}");
+        assert!(body.to_string().contains("child-cost-marker"));
+        statusline_reply_calls_usage(child, protocol, spawn("nested-cost-marker"));
+        let (nested, body) = pty.request_at(&fixture, api_path(protocol));
+        assert!(!is_task_title(&body));
+        assert!(hub_is_child(&body), "{body}");
+        assert!(body.to_string().contains("nested-cost-marker"));
+        assert!(body.to_string().contains("You are subagent a2."));
+        statusline_reply_usage(nested, protocol, "nested-cost-answer");
+        let (child, body) = pty.request_at(&fixture, api_path(protocol));
+        assert!(!is_task_title(&body));
+        assert!(hub_is_child(&body), "{body}");
+        assert!(body.to_string().contains("nested-cost-answer"));
+        statusline_reply_usage(child, protocol, "child-cost-answer");
+        let (root, body) = pty.request_at(&fixture, api_path(protocol));
+        assert!(!hub_is_child(&body));
+        assert!(body.to_string().contains("child-cost-answer"));
+        statusline_reply_usage(root, protocol, "root-cost-answer");
+        pty.completed_after("root-cost-answer");
+        // 标题 + 根两次 + 子两次 + 孙一次，共六次模型请求。
+        pty.wait_for("根任务累计全部层级费用", |screen| {
+            screen.contents().contains("0.0738 USD")
+        });
+        assert!(
+            !pty.parser
+                .screen()
+                .contents()
+                .contains("0.0738 USD \u{f0026}")
+        );
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
+fn task_status_title_parallel_fast_both_protocols_cost_and_history_isolation() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let (home, mut pty) = statusline_start(&fixture, protocol, true);
+        pty.input("修复会话历史 sqlite\r");
+        // 两个请求都在任何响应前到达，证明标题不会阻塞主请求。
+        let ((main, body), (title, title_body)) = statusline_requests(&fixture);
+        let title_protocol = if protocol == "completion" {
+            "response"
+        } else {
+            "completion"
+        };
+        assert_eq!(body["model"], "main-model");
+        assert_eq!(title_body["model"], "title-model");
+        assert!(title_body["tools"].is_null());
+        assert!(title_body["tool_choice"].is_null());
+        assert_eq!(title.url(), api_path(title_protocol));
+        assert!(!body.to_string().contains("Generate a short task title"));
+        statusline_reply_usage(title, title_protocol, "修复会话历史");
+        pty.wait_for("后台标题和费用先于主回复到达", |screen| {
+            let text = screen.contents();
+            text.contains("修复会话历史")
+                && text.contains("0.0246 USD")
+                && text.contains("\u{f04e2} —/—")
+        });
+        assert!(
+            context_tui_speed(pty.parser.screen()).is_none(),
+            "标题不能污染主请求速度"
+        );
+        statusline_reply_usage(main, protocol, "statusline-main-answer");
+        pty.completed_after("statusline-main-answer");
+        pty.wait_for("主请求与标题费用只累计一次", |screen| {
+            screen.contents().contains("0.0369 USD")
+        });
+        let screen = pty.parser.screen();
+        let (row, col) = context_tui_locate(screen, "0.0369 USD").unwrap();
+        assert_eq!(
+            screen.cell(row, col).unwrap().fgcolor(),
+            vt100::Color::Idx(1)
+        );
+        let (title_row, title_col) = context_tui_locate(screen, "\u{f09a9} 修复会话历史").unwrap();
+        assert_eq!(title_row, row);
+        assert_eq!(
+            screen.cell(row, title_col).unwrap().fgcolor(),
+            vt100::Color::Rgb(254, 188, 56)
+        );
+        let sessions = home.path().join(".pp/agent/sessions");
+        let journal = std::fs::read_dir(sessions)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+            .unwrap();
+        let history = std::fs::read_to_string(journal.path()).unwrap();
+        assert!(!history.contains("Generate a short task title"));
+        assert!(!history.contains("task_title"));
+        let db = rusqlite::Connection::open(home.path().join(".pp/stats/stats.db")).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM requests WHERE purpose='task_title'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM request_payloads WHERE request_json IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        pty.input("/new\r");
+        pty.wait_for("新会话清空标题和费用", |screen| {
+            let text = screen.contents();
+            text.contains("0.0%/40K")
+                && !text.contains("\u{f09a9}")
+                && !text.contains(" USD")
+                && !text.contains("\u{f051b}")
+        });
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
+fn task_status_title_without_fast_cancel_and_next_generation_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let (_home, mut pty) = statusline_start(&fixture, protocol, false);
+        pty.input("first task\r");
+        let ((main, _), (old_title, title_body)) = statusline_requests(&fixture);
+        assert_eq!(title_body["model"], "main-model");
+        let mut stream = SseReply::new(main);
+        streaming_delta(&mut stream, protocol, "first-task-partial");
+        pty.text("first-task-partial");
+        pty.input("\x1b");
+        // 标题仍被服务端握住时，取消必须完成并恢复输入。
+        cancel_wait_cancelled_ready(&mut pty);
+        pty.input("second task\r");
+        let ((main, body), (title, _)) = statusline_requests(&fixture);
+        assert!(!body.to_string().contains("Generate a short task title"));
+        let _ = old_title.respond(Response::empty(204));
+        drop(stream);
+        statusline_reply_usage(title, protocol, "第二任务标题");
+        pty.text("第二任务标题");
+        statusline_reply_usage(main, protocol, "second-task-answer");
+        pty.completed_after("second-task-answer");
+        pty.wait_for("新任务费用不包含已取消的旧任务", |screen| {
+            screen.contents().contains("0.0246 USD")
+        });
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
+fn task_status_title_failure_is_hidden_and_marks_partial_positive_cost() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let (_home, mut pty) = statusline_start(&fixture, protocol, false);
+        pty.input("title failure task\r");
+        let ((main, _), (title, _)) = statusline_requests(&fixture);
+        title
+            .respond(Response::from_string("{}").with_status_code(500))
+            .unwrap();
+        statusline_reply_usage(main, protocol, "main-still-completes");
+        pty.completed_after("main-still-completes");
+        pty.wait_for("已知费用大于零时带部分费用提示", |screen| {
+            screen.contents().contains("0.0123 USD \u{f0026}")
+        });
+        assert!(!pty.parser.screen().contents().contains("\u{f09a9}"));
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
+fn task_status_title_fallback_cross_protocol_retains_no_tools_and_actual_price() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = statusline_home(&fixture, protocol, true);
+        std::fs::write(config_path(home.path(), "settings.yml"), "default_model: main/primary\nrate_limit_retry_budget_seconds: 0\nauto_compact: false\nmodel_roles:\n  fast: {model: title/fast, effort: none, fallback: {model: main/primary, effort: none}}\n").unwrap();
+        let mut pty = Pty::start_with_existing_files(home.path());
+        pty.ready();
+        pty.resize(30, 180);
+        pty.input("fallback title task\r");
+        let ((main, _), (title, _)) = statusline_requests(&fixture);
+        title
+            .respond(Response::from_string("{}").with_status_code(500))
+            .unwrap();
+        let (title, body) = receive_raw(&fixture);
+        assert!(is_task_title(&body));
+        assert_eq!(title.url(), api_path(protocol));
+        assert_eq!(body["model"], "main-model");
+        assert!(body["tools"].is_null() && body["tool_choice"].is_null());
+        statusline_reply_usage(title, protocol, "备用标题");
+        pty.text("备用标题");
+        statusline_reply_usage(main, protocol, "fallback-main-answer");
+        pty.completed_after("fallback-main-answer");
+        pty.wait_for(
+            "备用标题按实际模型计价并标记失败请求未知费用",
+            |screen| screen.contents().contains("0.0246 USD \u{f0026}"),
+        );
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
+fn task_status_cost_survives_statistics_write_failure_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let (home, mut pty) = statusline_start(&fixture, protocol, false);
+        pty.input("statistics unavailable task\r");
+        let ((main, _), (title, _)) = statusline_requests(&fixture);
+        statusline_reply_usage(title, protocol, "独立费用快照");
+        pty.wait_for("标题请求完成并保存统计", |screen| {
+            screen.contents().contains("0.0123 USD")
+        });
+        // 金额先于统计落盘更新，等待标题本身发布作为写入完成栅栏。
+        pty.text("独立费用快照");
+        let db = rusqlite::Connection::open(home.path().join(".pp/stats/stats.db")).unwrap();
+        db.execute_batch("DROP TABLE request_payloads;").unwrap();
+        statusline_reply_usage(main, protocol, "statistics-failure-main-answer");
+        pty.completed_after("statistics-failure-main-answer");
+        pty.wait_for("统计写失败不影响费用累计", |screen| {
+            screen.contents().contains("0.0246 USD")
+        });
+        assert!(
+            !pty.parser
+                .screen()
+                .contents()
+                .contains("0.0246 USD \u{f0026}")
+        );
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}

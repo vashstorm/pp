@@ -117,6 +117,8 @@ impl App {
             session_id: None,
             usage: None,
             token_speed: statusline::TokenSpeed::default(),
+            task_status_view: Default::default(),
+            task_status: None,
             mcp_cleanup: None,
             mcp_view: Default::default(),
             mcp_panel: None,
@@ -220,11 +222,13 @@ impl App {
         // 经 set_workflow 走统一入口：恢复的计划正文必须同步种子进度缓存，
         // 否则 /plan view 正文未变时不重算，标题停留 0/0。
         self.set_workflow(agent.workflow().clone());
+        let task_status_view = self.task_status_view.clone();
         // Deliberately detached: quitting must not wait for HTTP or foreground tools.
         thread::Builder::new()
             .name("pp-agent".into())
             .spawn(move || {
                 while let Ok(command) = receiver.recv() {
+                    agent.enable_task_status(task_status_view.clone());
                     let started = Instant::now();
                     let mut emit = |event| {
                         let _ = sender.send(WorkerEvent::Progress(event));
@@ -253,6 +257,7 @@ impl App {
                             call_id,
                             cancellation,
                         } => {
+                            task_status_view.clear();
                             let result =
                                 agent.run_shell(&command, &call_id, &cancellation, &mut emit);
                             let cleanup_failed = result.as_ref().is_err_and(|error| {

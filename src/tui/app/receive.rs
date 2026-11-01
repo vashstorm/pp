@@ -18,6 +18,11 @@ impl App {
 
     pub(in crate::tui) fn receive(&mut self) -> bool {
         let mut changed = self.receive_resources();
+        let task_status = self.task_status_view.snapshot();
+        if self.task_status != task_status {
+            self.task_status = task_status;
+            changed = true;
+        }
         changed |= self.poll_history();
         changed |= self.poll_model_control();
         changed |= self.receive_auth();
@@ -353,6 +358,8 @@ impl App {
                     changed = true;
                 }
                 Ok(WorkerEvent::Reset) => {
+                    self.task_status_view.clear();
+                    self.task_status = None;
                     self.todo_panel = Default::default();
                     self.close_ask_on_exit();
                     self.history_browser = false;

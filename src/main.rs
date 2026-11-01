@@ -21,6 +21,7 @@ mod sqlite;
 mod stats;
 mod subagent;
 mod system_prompt;
+mod task_status;
 mod tips;
 mod tools;
 mod tui;

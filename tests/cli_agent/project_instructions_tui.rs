@@ -508,7 +508,7 @@ fn agents_tui_init_submit_cancel_then_run_with_latest_rules_both_protocols() {
         pty.draft("/init");
         no_more(&fixture);
         pty.input("\r");
-        let (request, body) = project_instructions::receive_for(&fixture, protocol);
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert!(body.to_string().contains("Create or update AGENTS.md"));
         pty.text("/init");
         pty.input("\x1b");
@@ -517,7 +517,7 @@ fn agents_tui_init_submit_cancel_then_run_with_latest_rules_both_protocols() {
         no_more(&fixture);
         std::fs::write(cwd.path().join("AGENTS.md"), "tui-latest-project-rule").unwrap();
         pty.input("after-init-cancellation\r");
-        let (request, body) = project_instructions::receive_for(&fixture, protocol);
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert!(project_instructions::system(&body, protocol).contains("tui-latest-project-rule"));
         project_instructions::finish_request(request, protocol, "agents-tui-done");
         pty.text("agents-tui-done");
@@ -558,7 +558,7 @@ fn agents_tui_resume_history_keeps_current_directory_rules_both_protocols() {
         pty.ready();
         std::fs::write(current.path().join("AGENTS.md"), "current-directory-rule-refreshed").unwrap();
         pty.input("agents-resumed-task\r");
-        let (request, body) = project_instructions::receive_for(&fixture, protocol);
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
         system_prompt::assert_live(&body, protocol, "execute");
         let system = project_instructions::system(&body, protocol);
         assert!(system.contains("current-append-only"));

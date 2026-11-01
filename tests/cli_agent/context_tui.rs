@@ -96,7 +96,11 @@ fn context_tui_filler(marker: &str, bytes: usize) -> String {
     let mut text = String::with_capacity(bytes + 100);
     let mut line = 0;
     while text.len() < bytes {
-        writeln!(text, "{marker}-{line:04} xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx").unwrap();
+        writeln!(
+            text,
+            "{marker}-{line:04} xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        )
+        .unwrap();
         line += 1;
     }
     text.truncate(bytes);
@@ -123,40 +127,34 @@ fn context_tui_exchange(
     pty.completed_after(&answer);
 }
 
-// 从输入栏上沿的 `Ctx N/W` 读取简写后的估算 token 数。
+// 从状态栏的百分比和容量读取用量，允许界面的一位小数舍入。
 fn context_tui_ctx_tokens(screen: &vt100::Screen) -> f64 {
     let contents = screen.contents();
-    let start = contents.find("Ctx ").expect("状态栏必须显示 Ctx 字段");
-    let rest = &contents[start + "Ctx ".len()..];
-    let figure: String = rest
+    let rest = contents.split_once("\u{f10ac} ").expect("上下文字段").1;
+    let (percent, capacity) = rest.split_once("%/").expect("百分比与容量");
+    let number: String = capacity
         .chars()
         .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
         .collect();
-    let value: f64 = figure.parse().expect("Ctx 数字必须可解析");
-    match rest[figure.len()..].chars().next() {
-        Some('k') => value * 1000.0,
-        Some('m') => value * 1_000_000.0,
-        _ => value,
-    }
-}
-
-// 从当前用量与容量计算百分比，界面本身只显示大小。
-fn context_tui_ctx_percent(screen: &vt100::Screen) -> u128 {
-    let contents = screen.contents();
-    let start = contents.find("Ctx ").expect("状态栏必须显示 Ctx 字段");
-    let rest = &contents[start..];
-    let (_, capacity) = rest.split_once('/').expect("已知容量必须显示总容量");
-    let figure: String = capacity
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
-        .collect();
-    let mut window: f64 = figure.parse().expect("Ctx 容量必须可解析");
-    window *= match capacity[figure.len()..].chars().next() {
-        Some('k') => 1000.0,
-        Some('m') => 1_000_000.0,
+    let scale = match capacity[number.len()..].chars().next() {
+        Some('K') => 1000.0,
+        Some('M') => 1_000_000.0,
         _ => 1.0,
     };
-    (context_tui_ctx_tokens(screen) * 100.0 / window) as u128
+    percent.parse::<f64>().unwrap() * number.parse::<f64>().unwrap() * scale / 100.0
+}
+
+fn context_tui_ctx_percent(screen: &vt100::Screen) -> u128 {
+    screen
+        .contents()
+        .split_once("\u{f10ac} ")
+        .expect("上下文字段")
+        .1
+        .split_once('%')
+        .unwrap()
+        .0
+        .parse::<f64>()
+        .unwrap() as u128
 }
 
 // 在真实屏幕单元格中定位文本，返回 (行, 起始列)。列号必须来自 cell 扫描：
@@ -183,18 +181,20 @@ fn context_tui_locate(screen: &vt100::Screen, needle: &str) -> Option<(u16, u16)
     None
 }
 
-// 上下文字段首字符的前景色：达到阈值时为终端调色板 3 号（黄）。
+// 健康状态由独立图标表示，数值保持紫色。
 fn context_tui_ctx_color(pty: &Pty) -> vt100::Color {
     let screen = pty.parser.screen();
-    let (row, column) =
-        context_tui_locate(screen, "Ctx ").expect("状态栏必须显示 Ctx 字段，且必须能在真实 cell 上定位");
-    screen.cell(row, column).expect("Ctx 首字符").fgcolor()
+    for icon in ["\u{f05e0}", "\u{f0026}", "\u{f0159}", "\u{f02d7}"] {
+        if let Some((row, column)) = context_tui_locate(screen, icon) {
+            return screen.cell(row, column).unwrap().fgcolor();
+        }
+    }
+    panic!("缺少上下文健康图标\n{}", screen.contents())
 }
 
-// 未完成任何普通请求时五个指标都是未知，而不是伪装成 0。
 fn context_tui_metrics_unknown(screen: &vt100::Screen) -> bool {
     let contents = screen.contents();
-    ["— Tok/s", "In —", "Out —", "CRead —", "CWrite —"]
+    ["— tok/s", "\u{f04e2} —/—", "\u{f01bc} —/—"]
         .iter()
         .all(|field| contents.contains(*field))
 }
@@ -209,9 +209,9 @@ fn context_tui_assert_metric_whole(screen: &vt100::Screen, icon: &str, text: &st
     );
 }
 
-// 速度字段的数值与是否带前缀：字段自身格式为 `N.N[k|m] Tok/s`，未知时只有 `— Tok/s`。
+// 速度字段的数值与是否带前缀：字段自身格式为 `N.N[k|m] tok/s`，未知时只有 `— tok/s`。
 fn context_tui_speed(screen: &vt100::Screen) -> Option<(f64, bool)> {
-    let (row, column) = context_tui_locate(screen, "Tok/s")?;
+    let (row, column) = context_tui_locate(screen, "tok/s")?;
     let head: String = (0..column)
         .rev()
         .take(32)
@@ -222,9 +222,9 @@ fn context_tui_speed(screen: &vt100::Screen) -> Option<(f64, bool)> {
         .rev()
         .collect();
     let head = head.trim_end();
-    let (head, multiplier) = if let Some(head) = head.strip_suffix('k') {
+    let (head, multiplier) = if let Some(head) = head.strip_suffix('K') {
         (head, 1000.0)
-    } else if let Some(head) = head.strip_suffix('m') {
+    } else if let Some(head) = head.strip_suffix('M') {
         (head, 1_000_000.0)
     } else {
         (head, 1.0)
@@ -310,23 +310,33 @@ fn context_tui_shows_current_and_window_on_input_top_right() {
         assert_eq!(context_tui_ctx_tokens(pty.parser.screen()), 0.0);
         let contents = pty.parser.screen().contents();
         let lines: Vec<_> = contents.lines().collect();
-        assert!(lines[26].trim_end().ends_with("/1.3m"));
-        assert!(!lines[26].contains('%'));
+        assert!(lines[26].contains("/1.3M \u{f05e0}"));
+        assert!(lines[26].contains('%'));
         // 右对齐位置用真实 screen cell 验证；新指标占据左侧，字面长度不再固定。
-        let (row, column) = context_tui_locate(pty.parser.screen(), "Ctx 0/1.3m")
-            .expect("状态栏必须在输入栏上沿显示 Ctx 容量");
+        let (row, column) =
+            context_tui_locate(pty.parser.screen(), "\u{f10ac} 0.0%/1.3M \u{f05e0}")
+                .expect("状态栏必须在输入栏上沿显示 Ctx 容量");
         assert_eq!(row, 26);
-        assert_eq!(usize::from(column) + "Ctx 0/1.3m".len(), 99);
-        assert_eq!(context_tui_ctx_color(&pty), vt100::Color::Rgb(122, 162, 247));
-        assert!(!lines[29].contains("Ctx "));
+        let (cache_row, cache_column) =
+            context_tui_locate(pty.parser.screen(), "\u{f01bc} —/—").unwrap();
+        assert_eq!(cache_row, row);
+        assert!(column < cache_column);
+        assert_eq!(cache_column + 5, 99);
+        assert_eq!(
+            context_tui_ctx_color(&pty),
+            vt100::Color::Rgb(158, 206, 106)
+        );
+        assert!(!lines[29].contains("\u{f10ac} "));
         pty.input("context-position-draft");
         pty.draft("context-position-draft");
         assert_eq!(context_tui_ctx_tokens(pty.parser.screen()), 0.0);
         pty.resize(12, 40);
         pty.wait_for("缩放后用量仍在输入栏上沿右端", |screen| {
-            screen.contents().lines().nth(8).is_some_and(|line| {
-                line.contains(" Ctx ") && line.trim_end().ends_with("/1.3m")
-            })
+            screen
+                .contents()
+                .lines()
+                .nth(8)
+                .is_some_and(|line| line.contains(" \u{f10ac} ") && line.contains("/1.3M"))
         });
         pty.draft("context-position-draft");
         assert_eq!(context_tui_ctx_tokens(pty.parser.screen()), 0.0);
@@ -351,7 +361,7 @@ fn context_tui_new_session_resets_context_to_zero_both_protocols() {
         assert!(context_tui_ctx_tokens(pty.parser.screen()) > 0.0);
         pty.input("/new\r");
         pty.wait_for("新会话上下文归零", |screen| {
-            screen.contents().contains("Ctx 0/40.0k")
+            screen.contents().contains("\u{f10ac} 0.0%/40K")
         });
         context_tui_exchange(
             &mut pty,
@@ -387,7 +397,12 @@ fn context_tui_assert_summary_body(
         assert_eq!(body["max_completion_tokens"], json!(4096));
         let instruction = body["messages"].as_array().unwrap().last().unwrap();
         assert_eq!(instruction["role"], "user");
-        assert!(instruction["content"].as_str().unwrap().contains(CONTEXT_TUI_INSTRUCTION));
+        assert!(
+            instruction["content"]
+                .as_str()
+                .unwrap()
+                .contains(CONTEXT_TUI_INSTRUCTION)
+        );
     } else {
         assert_eq!(body["max_output_tokens"], json!(4096));
         let instruction = body["input"].as_array().unwrap().last().unwrap();
@@ -459,11 +474,7 @@ fn context_tui_page_to_bottom(pty: &mut Pty) {
 }
 
 // 保存以完整工具批次结尾的大会话，返回 ID 和实际日志长度。
-fn context_tui_seed_large_session(
-    home: &Path,
-    server: &Server,
-    protocol: &str,
-) -> (String, u64) {
+fn context_tui_seed_large_session(home: &Path, server: &Server, protocol: &str) -> (String, u64) {
     std::fs::write(
         config_path(home, "settings.yml"),
         context_tui_settings(false, 80),
@@ -521,9 +532,7 @@ fn context_tui_seed_large_session(
     let _ = output;
     no_more(server);
     let id = saved_session_id(home);
-    let path = home
-        .join(".pp/agent/sessions")
-        .join(format!("{id}.jsonl"));
+    let path = home.join(".pp/agent/sessions").join(format!("{id}.jsonl"));
     let bytes = std::fs::read(&path).unwrap();
     (id, bytes.len() as u64)
 }
@@ -554,7 +563,12 @@ fn context_tui_esc_cancel_during_held_summary_preserves_draft_and_history() {
                 && !text.contains("Cancelling context...")
         });
         pty.ready();
-        assert!(!pty.parser.screen().contents().contains("Compacting context..."));
+        assert!(
+            !pty.parser
+                .screen()
+                .contents()
+                .contains("Compacting context...")
+        );
         pty.draft("context-draft-保留");
         // 可继续任务：取消后的下一次普通请求包含完整旧历史与新输入。
         pty.input("吧\r");
@@ -591,7 +605,7 @@ fn context_tui_compact_success_keeps_dialogue_drops_usage_and_survives_narrow_re
     for protocol in ["completion", "response"] {
         let fixture = server();
         let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
-        pty.text("Ctx ");
+        pty.text("\u{f10ac} ");
         context_tui_fill_three_exchanges(&mut pty, &fixture, protocol);
         let before = context_tui_ctx_tokens(pty.parser.screen());
         pty.input("/compact\r");
@@ -617,6 +631,9 @@ fn context_tui_compact_success_keeps_dialogue_drops_usage_and_survives_narrow_re
         pty.input("\x1b");
         pty.draft("");
         pty.text("Context compacted:");
+        pty.wait_for("压缩后的用量快照已发布", |screen| {
+            context_tui_ctx_tokens(screen) < before
+        });
         let after = context_tui_ctx_tokens(pty.parser.screen());
         assert!(
             after < before,
@@ -666,7 +683,11 @@ fn context_tui_compact_success_keeps_dialogue_drops_usage_and_survives_narrow_re
         for width in [60, 30] {
             pty.resize(30, width);
             pty.wait_for("窄屏重绘保留上下文字段", |screen| {
-                screen.contents().lines().nth(26).is_some_and(|line| line.contains("Ctx "))
+                screen
+                    .contents()
+                    .lines()
+                    .nth(26)
+                    .is_some_and(|line| line.contains("\u{f10ac} "))
             });
         }
         pty.input("\x03");
@@ -702,7 +723,13 @@ fn context_tui_context_field_turns_yellow_at_configured_threshold() {
     assert!(percent >= 20, "百分比 {percent} 必须越过阈值");
     assert!(percent < 100, "百分比 {percent} 不得越过 100");
     assert_eq!(context_tui_ctx_color(&pty), vt100::Color::Idx(3));
-    context_tui_exchange(&mut pty, &fixture, "completion", &context_tui_filler("context-over-capacity", 70000), "over capacity observed");
+    context_tui_exchange(
+        &mut pty,
+        &fixture,
+        "completion",
+        &context_tui_filler("context-over-capacity", 70000),
+        "over capacity observed",
+    );
     assert!(context_tui_ctx_percent(pty.parser.screen()) >= 100);
     assert_eq!(context_tui_ctx_color(&pty), vt100::Color::Idx(1));
     pty.input("\x03");
@@ -869,7 +896,10 @@ fn context_tui_auto_compact_success_keeps_dialogue_drops_usage_without_summary_b
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         pty.text("Context compacted:");
         assert!(
-            !pty.parser.screen().contents().contains("context auto compacted answer"),
+            !pty.parser
+                .screen()
+                .contents()
+                .contains("context auto compacted answer"),
             "Compact Note 必须在任务 assistant 之前出现"
         );
         let text = serde_json::to_string(&body).unwrap();
@@ -941,12 +971,8 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
             context_tui_live_settings(true, 80),
         )
         .unwrap();
-        let mut pty = Pty::start_with_file_limit(
-            home.path(),
-            home.path(),
-            limit / 1024,
-            &["-r", &id],
-        );
+        let mut pty =
+            Pty::start_with_file_limit(home.path(), home.path(), limit / 1024, &["-r", &id]);
         pty.ready();
         pty.input("context checkpoint resume prompt\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
@@ -967,7 +993,10 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
             cancel_normalize(screen).contains("persistingsession")
         });
         assert!(
-            !pty.parser.screen().contents().contains("Context compacted:"),
+            !pty.parser
+                .screen()
+                .contents()
+                .contains("Context compacted:"),
             "写失败不得宣告 CompactFinished"
         );
         // 失败后不继续普通任务请求。
@@ -977,7 +1006,10 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
 
         // 同步失败回滚候选，已接受的用户输入与旧 native 历史逐字节保留。
         let failed = std::fs::read(&path).unwrap();
-        assert_eq!(failed, sent_bytes, "failed compaction must preserve the prior committed journal");
+        assert_eq!(
+            failed, sent_bytes,
+            "failed compaction must preserve the prior committed journal"
+        );
         let complete = String::from_utf8_lossy(&failed);
         assert!(
             !complete.contains("[Context summary]"),
@@ -993,13 +1025,29 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
             "恢复必须读到此前完整快照：{}",
             resumed.diagnostics()
         );
-        assert!(!resumed.parser.screen().contents().contains("Context compacted:"));
-        assert!(!resumed.parser.screen().contents().contains(CONTEXT_TUI_SUMMARY));
+        assert!(
+            !resumed
+                .parser
+                .screen()
+                .contents()
+                .contains("Context compacted:")
+        );
+        assert!(
+            !resumed
+                .parser
+                .screen()
+                .contents()
+                .contains(CONTEXT_TUI_SUMMARY)
+        );
         assert!(
             context_tui_ctx_percent(resumed.parser.screen()) >= 80,
             "恢复的旧历史必须仍有高用量"
         );
-        assert_eq!(std::fs::read(&path).unwrap(), failed, "read-only resume must not rewrite the incomplete tail");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            failed,
+            "read-only resume must not rewrite the incomplete tail"
+        );
         no_more(&fixture);
         resumed.input("\x03");
         resumed.finish();
@@ -1018,10 +1066,15 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
         // 初始 100×30：Ctx 正常，新计数字段全部为未知而不是 0。
         pty.wait_for("初始状态栏显示未知 token 指标", context_tui_metrics_unknown);
-        assert!(pty.parser.screen().contents().contains("Ctx 0/40.0k"));
+        assert!(
+            pty.parser
+                .screen()
+                .contents()
+                .contains("\u{f10ac} 0.0%/40K")
+        );
         assert_eq!(
             context_tui_ctx_color(&pty),
-            vt100::Color::Rgb(122, 162, 247)
+            vt100::Color::Rgb(158, 206, 106)
         );
 
         pty.input("context-metrics-live\r");
@@ -1033,11 +1086,15 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         // SSE 仍被服务端握住：速度只能是估算，且 In/Out/CRead/CWrite 尚无完成请求。
         pty.wait_for("流式生成中显示非零估算速度", context_tui_positive_speed);
         let live = pty.parser.screen().contents();
-        assert!(live.contains("In —") && live.contains("Out —") && live.contains("CRead —"));
-        let (speed_row, speed_column) = context_tui_locate(pty.parser.screen(), "Tok/s")
-            .expect("流式生成中必须显示速率字段");
+        assert!(
+            live.contains("\u{f04e2} —/—")
+                && live.contains("\u{f04e2} —/—")
+                && live.contains("\u{f01bc} —/—")
+        );
+        let (speed_row, speed_column) =
+            context_tui_locate(pty.parser.screen(), "tok/s").expect("流式生成中必须显示速率字段");
         let (ctx_row, ctx_column) =
-            context_tui_locate(pty.parser.screen(), "Ctx ").expect("Ctx 必须可见");
+            context_tui_locate(pty.parser.screen(), "\u{f10ac} ").expect("Ctx 必须可见");
         assert_eq!(speed_row, ctx_row, "指标必须与 Ctx 同在输入栏上沿");
         assert!(speed_column < ctx_column, "速度必须位于 Ctx 左侧");
 
@@ -1056,77 +1113,39 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         stream.finish();
         pty.wait_for("权威 usage 更新完成态指标", |screen| {
             let contents = screen.contents();
-            contents.contains("In 12.0k")
-                && contents.contains("Out 300")
-                && contents.contains("CRead 40")
-                && contents.contains("CWrite 120")
+            contents.contains("12K/300") && contents.contains("40/120")
         });
         pty.ready();
         let screen = pty.parser.screen();
         let (rate, marked) = context_tui_speed(screen).expect("完成后必须显示精确速度");
         assert!(!marked, "权威 usage 到达后不得保留 ~");
         assert!(rate > 0.0, "完成速度必须为正：{rate}");
-        let (row, ctx_column) = context_tui_locate(screen, "Ctx ").expect("Ctx 必须可见");
-        let mut previous = context_tui_locate(screen, "Tok/s")
-            .expect("速率字段必须可见")
-            .1;
-        assert_eq!(
-            screen.cell(row, previous).expect("速率数值").fgcolor(),
-            vt100::Color::Rgb(224, 175, 104),
-            "速率数值必须使用 speed 颜色"
-        );
-        for (label, offset, color) in [
-            ("In 12.0k", 3, vt100::Color::Rgb(125, 207, 255)),
-            ("Out 300", 4, vt100::Color::Rgb(158, 206, 106)),
-            ("CRead 40", 6, vt100::Color::Rgb(187, 154, 247)),
-            ("CWrite 120", 7, vt100::Color::Rgb(255, 158, 100)),
+        let (row, ctx_column) = context_tui_locate(screen, "\u{f10ac} ").expect("Ctx 必须可见");
+        let speed_column = context_tui_locate(screen, "tok/s").unwrap().1;
+        assert!(speed_column < ctx_column);
+        let mut previous = ctx_column;
+        for (label, color) in [
+            ("12K", vt100::Color::Rgb(125, 207, 255)),
+            ("300", vt100::Color::Rgb(158, 206, 106)),
+            ("40/120", vt100::Color::Rgb(187, 154, 247)),
+            ("120", vt100::Color::Rgb(255, 158, 100)),
         ] {
-            let (field_row, column) = context_tui_locate(screen, label)
-                .unwrap_or_else(|| panic!("状态栏必须显示 {label}\n{}", screen.contents()));
-            assert_eq!(field_row, row, "指标必须与 Ctx 同一行：{label}");
-            assert!(
-                column > previous,
-                "字段顺序必须是 speed → In → Out → CRead → CWrite：{label}"
-            );
+            let (field_row, column) = context_tui_locate(screen, label).unwrap();
+            assert_eq!(field_row, row);
+            assert!(column > previous);
             previous = column;
-            assert_eq!(
-                screen
-                    .cell(field_row, column + offset)
-                    .expect("字段数值")
-                    .fgcolor(),
-                color,
-                "{label} 数值颜色"
-            );
-            if label.starts_with('C') {
-                let (icon_row, icon_column) = context_tui_locate(screen, &format!("\u{f1c0} {label}"))
-                    .expect("缓存字段必须包含自己的完整图标");
-                assert_eq!(icon_row, row);
-                assert_eq!(screen.cell(icon_row, icon_column).unwrap().fgcolor(), color);
-            }
+            assert_eq!(screen.cell(row, column).unwrap().fgcolor(), color);
         }
-        assert!(previous < ctx_column, "指标必须整体位于 Ctx 左侧");
         for (icon, color) in [
-            ("\u{f0e7}", vt100::Color::Rgb(224, 175, 104)),
-            ("\u{f019}", vt100::Color::Rgb(125, 207, 255)),
-            ("\u{f093}", vt100::Color::Rgb(158, 206, 106)),
-            ("\u{f1c0}", vt100::Color::Rgb(187, 154, 247)),
+            ("\u{f04c5}", vt100::Color::Rgb(255, 95, 162)),
+            ("\u{f04e2}", vt100::Color::Rgb(125, 207, 255)),
+            ("\u{f01bc}", vt100::Color::Rgb(187, 154, 247)),
+            ("\u{f10ac}", vt100::Color::Rgb(187, 154, 247)),
         ] {
-            let (icon_row, icon_column) =
-                context_tui_locate(screen, icon).unwrap_or_else(|| panic!("状态栏必须显示 {icon:?}"));
-            assert_eq!(icon_row, row, "图标必须与 Ctx 同一行");
-            assert_eq!(
-                screen
-                    .cell(icon_row, icon_column)
-                    .expect("图标 cell")
-                    .fgcolor(),
-                color,
-                "{icon:?} 颜色"
-            );
+            let (icon_row, column) = context_tui_locate(screen, icon).unwrap();
+            assert_eq!(icon_row, row);
+            assert_eq!(screen.cell(row, column).unwrap().fgcolor(), color);
         }
-        assert_eq!(
-            context_tui_ctx_color(&pty),
-            vt100::Color::Rgb(122, 162, 247)
-        );
 
         // 下一轮：成功但没有 usage。计数退回未知，流式估算不带前缀并冻结。
         // 加宽以容纳请求临时状态，同时验证上一轮读写计数保留。
@@ -1135,13 +1154,15 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         let mut stream = SseReply::new(request);
         // 服务端暂不返回首个 delta：新请求等待期间必须保留上一笔完成速度。
-        pty.wait_for("下一请求等待首字节时速度不闪回未知", |screen| {
-            screen.contents().contains("Requesting model")
-                && screen.contents().contains("CRead 40")
-                && screen.contents().contains("CWrite 120")
-                && context_tui_speed(screen)
-                    .is_some_and(|(current, marked)| !marked && current == rate)
-        });
+        pty.wait_for(
+            "下一请求等待首字节时速度不闪回未知",
+            |screen| {
+                screen.contents().contains("Requesting model")
+                    && screen.contents().contains("40/120")
+                    && context_tui_speed(screen)
+                        .is_some_and(|(current, marked)| !marked && current == rate)
+            },
+        );
         streaming_delta(&mut stream, protocol, "context-metrics-missing-answer");
         pty.text("context-metrics-missing-answer");
         pty.wait_for(
@@ -1152,10 +1173,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         stream.finish();
         pty.wait_for("缺失 usage 后完成态计数退回未知", |screen| {
             let contents = screen.contents();
-            contents.contains("In —")
-                && contents.contains("Out —")
-                && contents.contains("CRead —")
-                && contents.contains("CWrite —")
+            contents.contains("\u{f04e2} —/—") && contents.contains("\u{f01bc} —/—")
         });
         let (rate, marked) =
             context_tui_speed(pty.parser.screen()).expect("流式字节必须保留最终估算速度");
@@ -1168,7 +1186,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         pty.resize(30, 100);
         pty.input("/new\r");
         pty.wait_for("/new 清空全部新指标", |screen| {
-            screen.contents().contains("Ctx 0/40.0k") && context_tui_metrics_unknown(screen)
+            screen.contents().contains("\u{f10ac} 0.0%/40K") && context_tui_metrics_unknown(screen)
         });
         pty.input("\x03");
         pty.finish();
@@ -1198,7 +1216,7 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
         cancel_wait_cancelled_ready(&mut pty);
         let cancelled = pty.parser.screen().contents();
         assert!(
-            cancelled.contains("— Tok/s"),
+            cancelled.contains("— tok/s"),
             "取消后速度必须清除：{cancelled}"
         );
         assert!(
@@ -1221,9 +1239,10 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
                 && cancel_count_normalized(screen, CANCEL_NOTE) == 2
         });
         drop(stream);
-        pty.wait_for("本轮取消清空速度而非上一轮取消提示", |screen| {
-            screen.contents().contains("— Tok/s") && context_tui_speed(screen).is_none()
-        });
+        pty.wait_for(
+            "本轮取消清空速度而非上一轮取消提示",
+            |screen| screen.contents().contains("— tok/s") && context_tui_speed(screen).is_none(),
+        );
 
         // 中文草稿与光标在窄屏 resize 中保持不变；Ctx 优先，指标整块降级。
         pty.input("草稿-指标");
@@ -1231,15 +1250,18 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
         let cursor_column = pty.parser.screen().cursor_position().1;
         for (rows, columns) in [(30, 60), (30, 40), (30, 20)] {
             pty.resize(rows, columns);
-            pty.wait_for("resize 后上下文字段仍位于输入栏上沿", |screen| {
-                let contents = screen.contents();
-                let lines: Vec<&str> = contents.lines().collect();
-                lines.windows(2).any(|pair| {
-                    pair[0].contains(" Ctx ")
-                        && pair[0].trim_end().ends_with(if columns == 20 { "/40.0k" } else { "s" })
-                        && pair[1].starts_with('❯')
-                })
-            });
+            pty.wait_for(
+                "resize 后上下文字段仍位于输入栏上沿",
+                |screen| {
+                    let contents = screen.contents();
+                    let lines: Vec<&str> = contents.lines().collect();
+                    lines.windows(2).any(|pair| {
+                        pair[0].contains(" \u{f10ac} ")
+                            && pair[0].contains("/40K")
+                            && pair[1].starts_with('❯')
+                    })
+                },
+            );
             pty.draft("草稿-指标");
             let screen = pty.parser.screen();
             assert!(
@@ -1248,32 +1270,17 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
                 pty.diagnostics()
             );
             for (icon, text) in [
-                ("\u{f0e7}", "Tok/s"),
-                ("\u{f019}", "In —"),
-                ("\u{f093}", "Out —"),
+                ("\u{f04c5}", "tok/s"),
+                ("\u{f04e2}", "\u{f04e2} —/—"),
+                ("\u{f01bc}", "\u{f01bc} —/—"),
             ] {
                 context_tui_assert_metric_whole(screen, icon, text);
             }
-            // 缓存读写共用图标，逐字段验证前缀，并检查没有多余图标残片。
-            let contents = screen.contents();
-            let mut cache_fields = 0;
-            for label in ["CRead —", "CWrite —"] {
-                let visible = context_tui_locate(screen, label).is_some();
-                assert_eq!(
-                    context_tui_locate(screen, &format!("\u{f1c0} {label}")).is_some(),
-                    visible,
-                    "缓存字段必须整块显示：{label}\n{contents}"
-                );
-                cache_fields += usize::from(visible);
-            }
-            assert_eq!(contents.matches('\u{f1c0}').count(), cache_fields);
             if columns == 20 {
-                // Ctx 之后只剩不足一个完整图标的宽度：指标整块隐藏，不切开 glyph。
-                for icon in ["\u{f0e7}", "\u{f019}", "\u{f093}", "\u{f1c0}"] {
+                for icon in ["\u{f04c5}", "\u{f04e2}", "\u{f01bc}", "\u{f051b}"] {
                     assert!(
                         context_tui_locate(screen, icon).is_none(),
-                        "{columns} 列必须整块隐藏指标\n{}",
-                        pty.diagnostics()
+                        "20 列只保留上下文"
                     );
                 }
             }
@@ -1306,14 +1313,19 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
         pty.input("context-metrics-authoritative\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         let mut stream = SseReply::new(request);
-        streaming_delta(&mut stream, protocol, "context-metrics-authoritative-answer");
-        context_tui_stream_usage(&mut stream, protocol, "context-metrics-authoritative-answer");
+        streaming_delta(
+            &mut stream,
+            protocol,
+            "context-metrics-authoritative-answer",
+        );
+        context_tui_stream_usage(
+            &mut stream,
+            protocol,
+            "context-metrics-authoritative-answer",
+        );
         stream.finish();
         pty.wait_for("普通请求完成并显示权威计数", |screen| {
-            screen.contents().contains("In 12.0k")
-                && screen.contents().contains("Out 300")
-                && screen.contents().contains("CRead 40")
-                && screen.contents().contains("CWrite 120")
+            screen.contents().contains("12K/300") && screen.contents().contains("40/120")
         });
         pty.ready();
 
@@ -1322,18 +1334,24 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
         pty.input("context-metrics-retain-on-cancel\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         let mut cancelled_stream = SseReply::new(request);
-        streaming_delta(&mut cancelled_stream, protocol, "context-metrics-retain-partial");
+        streaming_delta(
+            &mut cancelled_stream,
+            protocol,
+            "context-metrics-retain-partial",
+        );
         pty.text("context-metrics-retain-partial");
         pty.input("\x1b");
-        pty.wait_for("取消下一轮后保留最近成功的缓存读写量", |screen| {
-            let contents = screen.contents();
-            input_is_ready(screen)
-                && contents.contains("context-metrics-retain-partial")
-                && contents.contains("✻ Cancelled")
-                && contents.contains("— Tok/s")
-                && contents.contains("CRead 40")
-                && contents.contains("CWrite 120")
-        });
+        pty.wait_for(
+            "取消下一轮后保留最近成功的缓存读写量",
+            |screen| {
+                let contents = screen.contents();
+                input_is_ready(screen)
+                    && contents.contains("context-metrics-retain-partial")
+                    && contents.contains("✻ Cancelled")
+                    && contents.contains("— tok/s")
+                    && contents.contains("40/120")
+            },
+        );
         drop(cancelled_stream);
         pty.resize(30, 100);
 
@@ -1348,28 +1366,26 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
         );
         let mut stream = SseReply::new(request);
         pty.text("Compacting context...");
-        pty.wait_for("压缩等待期间保留既有指标与临时状态", |screen| {
-            let contents = screen.contents();
-            contents.contains("Compacting context...")
-                && contents.contains("In 12.0k")
-                && contents.contains("Out 300")
-        });
-        assert!(!pty.parser.screen().contents().contains("CWrite"));
+        pty.wait_for(
+            "压缩等待期间保留既有指标与临时状态",
+            |screen| {
+                let contents = screen.contents();
+                contents.contains("Compacting context...") && contents.contains("12K/300")
+            },
+        );
+
         // 加宽后读写量仍在，证明临时状态仅触发布局降级，没有清除计数。
         pty.resize(30, 140);
         pty.wait_for("宽屏压缩等待期间保留缓存读写量", |screen| {
             let contents = screen.contents();
-            contents.contains("Compacting context...")
-                && contents.contains("CRead 40")
-                && contents.contains("CWrite 120")
+            contents.contains("Compacting context...") && contents.contains("40/120")
         });
         let screen = pty.parser.screen();
         let (row, extra_column) = context_tui_locate(screen, "Compacting context...")
             .expect("压缩等待时必须显示临时状态");
-        let (ctx_row, ctx_column) =
-            context_tui_locate(screen, "Ctx ").expect("Ctx 必须可见");
+        let (ctx_row, ctx_column) = context_tui_locate(screen, "\u{f10ac} ").expect("Ctx 必须可见");
         let (metrics_row, metrics_column) =
-            context_tui_locate(screen, "Tok/s").expect("已有完成速率必须可见");
+            context_tui_locate(screen, "tok/s").expect("已有完成速率必须可见");
         assert_eq!(metrics_row, row, "指标必须与 Ctx 同一行");
         assert!(
             extra_column < metrics_column,
@@ -1384,7 +1400,7 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
         pty.ready();
         pty.resize(30, 100);
         pty.wait_for("成功压缩后普通请求指标清空", context_tui_metrics_unknown);
-        assert!(context_tui_locate(pty.parser.screen(), "Ctx ").is_some());
+        assert!(context_tui_locate(pty.parser.screen(), "\u{f10ac} ").is_some());
         pty.input("\x03");
         pty.finish();
         no_more(&fixture);

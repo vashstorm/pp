@@ -527,8 +527,23 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
         for phase in ["headers", "sse"] {
             let raw = CancelRawModel::start();
             let home = tempfile::tempdir().unwrap();
-            std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
-            std::fs::write(config_path(home.path(), "models.yml"), raw.models(protocol)).unwrap();
+            // 原始 TCP fixture 只观察主请求；独立标题服务保持挂起，随任务取消。
+            let title_server = server();
+            let mut settings: Value = serde_json::from_str(CANCEL_SETTINGS).unwrap();
+            settings["model_roles"] = json!({"fast":{"model":"title/fast","effort":"none"}});
+            let mut models: Value = serde_json::from_str(&raw.models(protocol)).unwrap();
+            models["providers"]["title"] = slash_provider(
+                &title_server,
+                "title",
+                protocol,
+                json!({"fast":{"model":"title-model"}}),
+            );
+            std::fs::write(
+                config_path(home.path(), "settings.yml"),
+                settings.to_string(),
+            )
+            .unwrap();
+            std::fs::write(config_path(home.path(), "models.yml"), models.to_string()).unwrap();
             let mut pty = Pty::start_with_existing_files(home.path());
             pty.ready();
             pty.input("cancel idle prompt\r");
@@ -605,7 +620,7 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
             raw.assert_silent();
             let database = super::stats::database(home.path());
             let statuses: Vec<String> = database
-                .prepare("SELECT status FROM requests ORDER BY id")
+                .prepare("SELECT status FROM requests WHERE purpose!='task_title' ORDER BY id")
                 .unwrap()
                 .query_map([], |r| r.get(0))
                 .unwrap()
@@ -613,11 +628,16 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
                 .unwrap();
             assert_eq!(statuses, ["aborted", "ok"]);
             let contexts = super::stats::contexts(home.path());
-            assert_eq!(contexts[0]["request"], first_body);
-            assert!(contexts[1].is_null());
+            let captured: Vec<_> = contexts
+                .iter()
+                .filter_map(|context| context.get("request"))
+                .collect();
+            assert_eq!(captured, [&first_body]);
+            let invalid_titles: i64 = database.query_row("SELECT COUNT(*) FROM requests WHERE purpose='task_title' AND status!='aborted'", [], |r| r.get(0)).unwrap();
+            assert_eq!(invalid_titles, 0);
             let ttft: Option<f64> = database
                 .query_row(
-                    "SELECT ttft_ms FROM requests WHERE status='aborted'",
+                    "SELECT ttft_ms FROM requests WHERE status='aborted' AND purpose!='task_title'",
                     [],
                     |r| r.get(0),
                 )
@@ -1318,7 +1338,8 @@ fn request_retry_tui_stays_quiet_and_cancels_backoff_before_recovering() {
             .unwrap();
         // 日志作为已进入退避的栅栏；TUI 不再显示自动重试通知。
         pty.wait_for("请求已进入可取消的重试等待", |screen| {
-            let retry_logged = std::fs::read_dir(home.path().join(".pp/logs")).unwrap()
+            let retry_logged = std::fs::read_dir(home.path().join(".pp/logs"))
+                .unwrap()
                 .filter_map(Result::ok)
                 .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
                 .any(|text| text.contains("ai_request_retry"));

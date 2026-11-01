@@ -57,31 +57,20 @@ impl Pricing {
     }
     pub fn cost(&self, r: &RequestRow) -> Option<Cost> {
         let p = self.rates.get(&r.model_reference)?;
-        let input = r.input_tokens?;
-        let output = r.output_tokens?;
-        let cached = r.cached_tokens?;
-        let written = r.cache_write_tokens?;
-        if input < 0
-            || output < 0
-            || cached < 0
-            || written < 0
-            || cached > input
-            || written > input - cached
-        {
-            return None;
+        crate::models::ModelCost {
+            input: p.input,
+            cache_read: p.cached_input,
+            cache_write: p.cache_write,
+            output: p.output,
         }
-        let cost = Cost {
-            input: (input - cached - written) as f64 * (p.input / 1e6),
-            cache_write: if written == 0 {
-                0.0
-            } else {
-                written as f64 * (p.cache_write? / 1e6)
-            },
-            cache_read: cached as f64 * (p.cached_input / 1e6),
-            output: output as f64 * (p.output / 1e6),
-        };
-        cost.total().is_finite().then_some(cost)
+        .calculate(crate::context::TokenUsage {
+            input_tokens: r.input_tokens?.try_into().ok()?,
+            output_tokens: r.output_tokens?.try_into().ok()?,
+            cached_tokens: Some(r.cached_tokens?.try_into().ok()?),
+            cache_write_tokens: Some(r.cache_write_tokens?.try_into().ok()?),
+        })
     }
+
     pub fn request(&self, r: &RequestRow) -> Result<Value> {
         let mut value = serde_json::to_value(r)?;
         let cost = self.cost(r);
@@ -90,18 +79,7 @@ impl Pricing {
         Ok(value)
     }
 }
-#[derive(Default, Serialize)]
-pub(super) struct Cost {
-    input: f64,
-    cache_read: f64,
-    cache_write: f64,
-    output: f64,
-}
-impl Cost {
-    pub(super) fn total(&self) -> f64 {
-        self.input + self.cache_read + self.cache_write + self.output
-    }
-}
+pub(super) use crate::models::TokenCost as Cost;
 #[derive(Default)]
 pub(super) struct Aggregate {
     requests: u64,
