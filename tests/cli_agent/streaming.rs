@@ -617,6 +617,8 @@ enum RunBoundary {
 // not revive the service, and can start a fresh background task with a
 // different id.
 
+#[path = "streaming/artifact_cases.rs"]
+mod artifact_cases;
 #[path = "streaming/background_cases.rs"]
 mod background_cases;
 #[path = "streaming/edit_cases.rs"]

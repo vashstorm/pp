@@ -5,9 +5,10 @@ mod observe;
 mod tests;
 mod workspace;
 
-pub(crate) use observe::{EventCursor, EventPage, HubEvent, HubSnapshot, ObservedEntry};
 #[cfg(test)]
-pub(crate) use observe::{HubAgent, ObservedRecord};
+pub(crate) use observe::HubAgent;
+pub(crate) use observe::ObservedRecord;
+pub(crate) use observe::{EventCursor, EventPage, HubEvent, HubSnapshot, ObservedEntry};
 
 use crate::{
     agent::{Agent, input::InputQueue},
@@ -134,6 +135,7 @@ struct Inner {
     // 每个 agent 一条整行追加锁；worker 持有自己的 Arc。
     appends: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     observe_errors: Mutex<BTreeMap<String, String>>,
+    output_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
     runtime_models: Mutex<Option<crate::model_control::Binding>>,
     model_roles: Mutex<crate::config::ModelRoles>,
     state: Mutex<State>,
@@ -288,6 +290,7 @@ impl Binding {
             revision: AtomicU64::new(1),
             appends: Mutex::new(BTreeMap::new()),
             observe_errors: Mutex::new(BTreeMap::new()),
+            output_previews: Mutex::new(BTreeMap::new()),
             runtime_models: Mutex::new(None),
             model_roles: Mutex::new(Default::default()),
             state: Mutex::new(State {

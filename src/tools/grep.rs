@@ -30,7 +30,7 @@ const MAX_OUTPUT: usize = 50 * 1024;
 const MAX_LINE: usize = 512;
 
 pub(super) fn definition() -> FunctionObject {
-    FunctionObject { name: "grep".into(), description: Some("Search local files with regex: Rust regex then PCRE2, with literal fallback. path accepts semicolon-separated files, directories, globs and exclusions (!glob); default '.'. File paths may include line ranges such as src/main.rs:20-40. Defaults to case-sensitive, includes hidden files and respects ignore files. skip paginates matching files. Results are bounded and indicate truncation; narrow the path or pattern for more. Hashline file headings contain path and TAG: use [path#TAG] for edit; only complete returned lines are editable. No shell or subprocess.".into()), parameters: Some(json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"gitignore":{"type":"boolean"},"skip":{"type":["number","null"]}},"required":["pattern"],"additionalProperties":false})), ..Default::default() }
+    FunctionObject { name: "grep".into(), description: Some("Search local files or one artifact://<numeric-id> URI with regex: Rust regex then PCRE2, with literal fallback. Artifact searches return URI sources and no edit anchors; running logs use a per-call snapshot. Single-line artifact search covers the saved log; multi-line search has the existing 4 MiB cap with a warning. path accepts semicolon-separated files, directories, globs and exclusions (!glob); default '.'. File paths may include line ranges such as src/main.rs:20-40. Defaults to case-sensitive, includes hidden files and respects ignore files. skip paginates matching files. Results are bounded and indicate truncation; narrow the path or pattern for more. Hashline file headings contain path and TAG: use [path#TAG] for edit; only complete returned lines are editable. No shell or subprocess.".into()), parameters: Some(json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"gitignore":{"type":"boolean"},"skip":{"type":["number","null"]}},"required":["pattern"],"additionalProperties":false})), ..Default::default() }
 }
 
 #[derive(Deserialize)]
@@ -793,6 +793,7 @@ fn grouped_header(
     output
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     cwd: &Path,
     settings: GrepSettings,
@@ -801,8 +802,25 @@ pub(super) fn run(
     snapshots: &mut hashline::Store,
     arguments: &str,
     token: &CancellationToken,
+    artifacts: Option<&super::output::Store>,
 ) -> Result<Value> {
-    let args: Args = serde_json::from_str(arguments).context("invalid grep arguments")?;
+    let mut args: Args = serde_json::from_str(arguments).context("invalid grep arguments")?;
+    let uri = args
+        .path
+        .as_deref()
+        .filter(|p| p.starts_with("artifact://"))
+        .map(str::to_owned);
+    let artifact = uri
+        .as_ref()
+        .map(|uri| {
+            artifacts
+                .context("no session artifacts available")?
+                .snapshot(uri, token)
+        })
+        .transpose()?;
+    if let Some(snapshot) = &artifact {
+        args.path = Some(snapshot.path.to_string_lossy().into_owned());
+    }
     ensure!(!args.pattern.trim().is_empty(), "Pattern must not be empty");
     let skip = args.skip.unwrap_or(0.0);
     ensure!(
@@ -829,7 +847,10 @@ pub(super) fn run(
     let mut total = 0;
     let mut internal_limit = false;
     let mut warnings = Vec::new();
-    for target in targets {
+    for mut target in targets {
+        if let Some(uri) = &uri {
+            target.display = uri.clone();
+        }
         check(token, deadline)?;
         let large = fs::metadata(&target.path).is_ok_and(|m| m.len() > MAX_FILE);
         if large && (multiline || !target.explicit) {
@@ -837,7 +858,7 @@ pub(super) fn run(
         }
         let in_page =
             single || (found.len() >= skip && found.len() < skip.saturating_add(FILE_LIMIT));
-        let capture_snapshot = mode == EditMode::Hashline && in_page;
+        let capture_snapshot = mode == EditMode::Hashline && in_page && artifact.is_none();
         let result = match &compiled {
             Compiled::Rust(m) => run_file(
                 m,
@@ -1063,9 +1084,11 @@ pub(super) fn run(
         }
         content.push_str(&notice);
     }
-    Ok(
-        json!({"ok":true,"content":content,"details":{"matchCount":visible_matches,"fileCount":file_details.len(),"fileMatches":file_details,"fileLimitReached":file_limit,"perFileLimitReached":page.iter().any(|f|f.capped),"linesTruncated":line_cut,"truncated":file_limit || internal_limit || byte_cut || line_cut || page.iter().any(|f|f.capped),"scopePath":args.path.unwrap_or_else(||".".into())}}),
-    )
+    let mut result = json!({"ok":true,"content":content,"details":{"matchCount":visible_matches,"fileCount":file_details.len(),"fileMatches":file_details,"fileLimitReached":file_limit,"perFileLimitReached":page.iter().any(|f|f.capped),"linesTruncated":line_cut,"truncated":file_limit || internal_limit || byte_cut || line_cut || page.iter().any(|f|f.capped),"scopePath":uri.or(args.path).unwrap_or_else(||".".into())}});
+    if let Some(snapshot) = artifact {
+        result["artifact"] = snapshot.metadata;
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -1081,6 +1104,7 @@ mod tests {
             store,
             &args.to_string(),
             &CancellationToken::new(),
+            None,
         )
         .unwrap()
     }
@@ -1219,6 +1243,7 @@ mod boundary_tests {
             &mut hashline::Store::default(),
             &args.to_string(),
             &CancellationToken::new(),
+            None,
         )
         .unwrap()
     }
@@ -1284,6 +1309,7 @@ mod boundary_tests {
                 &mut hashline::Store::default(),
                 &json!({"pattern":"needle","path":path}).to_string(),
                 token,
+                None,
             )
         };
         assert!(call("link", &CancellationToken::new()).is_err());

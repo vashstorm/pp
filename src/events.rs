@@ -194,6 +194,10 @@ pub(crate) enum AgentEvent {
         stream: OutputStream,
         text: String,
     },
+    ToolOutputSnapshot {
+        id: String,
+        output: String,
+    },
     ToolFinished {
         id: String,
         result: serde_json::Value,

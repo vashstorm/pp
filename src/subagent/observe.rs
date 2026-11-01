@@ -33,6 +33,8 @@ pub(crate) struct HubAgent {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct HubSnapshot {
+    #[serde(skip)]
+    pub output_previews: Vec<ObservedRecord>,
     pub agents: Vec<HubAgent>,
     pub runs: Vec<super::Run>,
     /// 观察日志健康提示；不进入旧 snapshots wire。
@@ -144,6 +146,29 @@ impl Inner {
         event: Option<&AgentEvent>,
         hub: Option<HubEvent>,
     ) {
+        if matches!(event, Some(AgentEvent::ToolOutputSnapshot { .. })) {
+            lock(&self.output_previews).insert(
+                agent_id.to_owned(),
+                ObservedRecord {
+                    root_id: None,
+                    agent_id: agent_id.to_owned(),
+                    run_id: run_id.map(str::to_owned),
+                    generation,
+                    sequence,
+                    timestamp_ms: Some(now()),
+                    event: event.cloned(),
+                    hub: None,
+                },
+            );
+            self.bump_revision();
+            return;
+        }
+        if matches!(
+            event,
+            Some(AgentEvent::ToolStarted { .. } | AgentEvent::ToolFinished { .. })
+        ) {
+            lock(&self.output_previews).remove(agent_id);
+        }
         let gate = self.append_lock(agent_id);
         let root = self
             .directory()
@@ -236,6 +261,10 @@ impl Binding {
             .map(|(agent, message)| format!("{agent}: {message}"))
             .collect();
         HubSnapshot {
+            output_previews: lock(&self.inner.output_previews)
+                .values()
+                .cloned()
+                .collect(),
             agents,
             runs,
             warnings,
@@ -601,5 +630,55 @@ mod tests {
         assert!(value["runs"].as_array().unwrap().is_empty());
         let legacy = binding.snapshots();
         assert_eq!(legacy["agents"][0]["id"], "a1");
+    }
+
+    #[test]
+    fn artifact_output_previews_replace_in_memory_without_appending_event_log() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path(), "a1");
+        binding.inner.observe(
+            "a1",
+            Some("r1"),
+            1,
+            Some(1),
+            Some(&AgentEvent::ToolStarted {
+                id: "bash".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            }),
+            None,
+        );
+        for i in 0..20 {
+            binding.inner.observe(
+                "a1",
+                Some("r1"),
+                1,
+                Some(i + 2),
+                Some(&AgentEvent::ToolOutputSnapshot {
+                    id: "bash".into(),
+                    output: format!("current-{i}"),
+                }),
+                None,
+            );
+        }
+        let snapshot = binding.hub_snapshot();
+        assert_eq!(snapshot.output_previews.len(), 1);
+        assert!(
+            matches!(&snapshot.output_previews[0].event,Some(AgentEvent::ToolOutputSnapshot { output, .. }) if output == "current-19")
+        );
+        assert_eq!(read_all(&binding, "a1").len(), 1);
+        binding.inner.observe(
+            "a1",
+            Some("r1"),
+            1,
+            Some(22),
+            Some(&AgentEvent::ToolFinished {
+                id: "bash".into(),
+                result: serde_json::json!({"ok":true,"output":"final"}),
+            }),
+            None,
+        );
+        assert!(binding.hub_snapshot().output_previews.is_empty());
+        assert_eq!(read_all(&binding, "a1").len(), 2);
     }
 }

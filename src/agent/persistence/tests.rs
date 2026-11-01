@@ -77,6 +77,9 @@ fn deletion_rejects_locked_sessions_symlinks_and_invalid_ids() {
     let link_id = format!("2026-10-17T01-02-03-{}", "b".repeat(32));
     let path = dir.path().join(format!("{id}.jsonl"));
     fs::write(&path, "original bytes").unwrap();
+    let artifacts = dir.path().join(format!("{id}.artifacts"));
+    fs::create_dir(&artifacts).unwrap();
+    fs::write(artifacts.join("0.bash.log"), "saved output").unwrap();
     let guard = SessionLock::acquire(&dir.path().join(".locks"), &id).unwrap();
     assert!(
         delete(dir.path(), &dir.path().join(".locks"), &id)
@@ -85,6 +88,7 @@ fn deletion_rejects_locked_sessions_symlinks_and_invalid_ids() {
             .contains("already in use")
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), "original bytes");
+    assert!(artifacts.exists());
     drop(guard);
     let link = dir.path().join(format!("{link_id}.jsonl"));
     symlink(&path, &link).unwrap();
@@ -93,6 +97,7 @@ fn deletion_rejects_locked_sessions_symlinks_and_invalid_ids() {
     assert!(delete(dir.path(), &dir.path().join(".locks"), "../escape").is_err());
     delete(dir.path(), &dir.path().join(".locks"), &id).unwrap();
     assert!(!path.exists());
+    assert!(!artifacts.exists());
     assert!(delete(dir.path(), &dir.path().join(".locks"), &id).is_err());
 }
 

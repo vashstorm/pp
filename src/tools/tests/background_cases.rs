@@ -15,7 +15,7 @@ fn background_natural_exit_cancellation_and_tools_drop_reap_descendants() {
     });
     assert_eq!(terminal["status"], "failed");
     assert_eq!(terminal["exit_code"], 7);
-    assert_eq!(terminal["stdout"], "retained");
+    assert_eq!(terminal["output"], "retained");
     wait_until_gone(
         background_marker(&dir.path().join("natural.pid"))
             .parse()
@@ -38,7 +38,7 @@ fn background_natural_exit_cancellation_and_tools_drop_reap_descendants() {
     });
     assert_eq!(cancelled["status"], "cancelled");
     assert_eq!(cancelled["ok"], false);
-    assert_eq!(cancelled["stdout"], "cancelled-output");
+    assert_eq!(cancelled["output"], "cancelled-output");
     assert_eq!(
         cancelled["error"],
         "Background task cancelled; side effects were not rolled back."
@@ -80,9 +80,9 @@ fn background_survives_foreground_deadline_and_stops_group() {
         "bash",
         json!({"command":format!("kill -0 {parent} && kill -0 {child} && printf alive")}),
     );
-    assert_eq!(alive["stdout"], "alive");
+    assert_eq!(alive["output"], "alive");
     assert_eq!(alive["exit_code"], 0);
-    let running = background_wait(&tools, id, |value| value["stdout"] == "ready");
+    let running = background_wait(&tools, id, |value| value["output"] == "ready");
     assert_eq!(running["status"], "running");
     assert!(Path::new(&scratch).exists());
     let stopped = execute(&tools, "bash_task", json!({"task_id":id,"action":"stop"}));
@@ -96,75 +96,34 @@ fn background_survives_foreground_deadline_and_stops_group() {
         stopped
     );
     let next = execute(&tools, "bash", json!({"command":"printf next"}));
-    assert_eq!(next["stdout"], "next");
+    assert_eq!(next["output"], "next");
 }
 
 #[test]
 fn background_output_is_bounded_without_blocking_progress() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-    for (command, lines) in [
-        (
-            "printf '%70000s' ''; printf '%70000s' '' >&2; printf done > completed; exit 7",
-            false,
-        ),
-        (
-            "for ((i=0;i<10000;i++)); do printf 'out\\n'; printf 'err\\n' >&2; done; printf done > completed; exit 7",
-            true,
-        ),
+    tools.artifacts.bind(dir.path(), "background").unwrap();
+    for command in [
+        "printf '%70000s' ''; printf '%70000s' '' >&2; printf done > completed; exit 7",
+        "for ((i=0;i<10000;i++)); do printf 'out\\n'; printf 'err\\n' >&2; done; printf done > completed; exit 7",
     ] {
         let started = execute(
             &tools,
             "bash",
             json!({"mode":"background","command":command}),
         );
-        let id = started["task_id"].as_str().unwrap();
-        let terminal = background_wait(&tools, id, |value| value["status"] != "running");
-        assert_eq!(terminal["exit_code"], 7, "{terminal}");
-        assert_eq!(terminal["stdout_truncated"], true);
-        assert_eq!(terminal["stderr_truncated"], true);
-        let stdout = terminal["stdout"].as_str().unwrap();
-        let stderr = terminal["stderr"].as_str().unwrap();
-        if lines {
-            assert_eq!(stdout.lines().count() + stderr.lines().count(), 500);
-            assert!(stdout.lines().all(|line| line == "out"));
-            assert!(stderr.lines().all(|line| line == "err"));
-        } else {
-            assert_eq!(stdout, " ".repeat(OUTPUT_LIMIT));
-            assert_eq!(stderr, " ".repeat(OUTPUT_LIMIT));
-        }
+        let terminal = background_wait(&tools, started["task_id"].as_str().unwrap(), |v| {
+            v["status"] != "running"
+        });
+        assert_eq!(terminal["exit_code"], 7);
+        assert_eq!(terminal["truncated"], true);
+        assert!(terminal["output"].as_str().unwrap().len() <= 50 * 1024 + 128);
+        assert_eq!(terminal["artifact"]["complete"], true);
         assert_eq!(
             fs::read_to_string(dir.path().join("completed")).unwrap(),
             "done"
         );
-        fs::remove_file(dir.path().join("completed")).unwrap();
-    }
-    // Byte accounting precedes line accounting. An unterminated retained
-    // line keeps its allowance across arbitrary pipe reads.
-    for count in [OUTPUT_LIMIT, OUTPUT_LIMIT + 1] {
-        let started = execute(
-            &tools,
-            "bash",
-            json!({"mode":"background","command":format!("printf '%{count}s' ''")}),
-        );
-        let terminal = background_wait(&tools, started["task_id"].as_str().unwrap(), |value| {
-            value["status"] != "running"
-        });
-        assert_eq!(terminal["stdout"], " ".repeat(OUTPUT_LIMIT));
-        assert_eq!(terminal["stdout_truncated"], count > OUTPUT_LIMIT);
-        assert_eq!(terminal["stderr_truncated"], false);
-    }
-    for count in [500, 501] {
-        let started = execute(
-            &tools,
-            "bash",
-            json!({"mode":"background","command":format!("for ((i=0;i<{count};i++)); do printf 'line\\n'; done")}),
-        );
-        let terminal = background_wait(&tools, started["task_id"].as_str().unwrap(), |value| {
-            value["status"] != "running"
-        });
-        assert_eq!(terminal["stdout"], "line\n".repeat(500));
-        assert_eq!(terminal["stdout_truncated"], count > 500);
     }
     let started = execute(
         &tools,
@@ -172,16 +131,22 @@ fn background_output_is_bounded_without_blocking_progress() {
         json!({"mode":"background","command":"printf '\\344'; printf first >&2; while [ ! -f release ]; do sleep 0.01; done; printf '\\270\\255-tail\\360\\237'; printf second >&2; sleep 60"}),
     );
     let id = started["task_id"].as_str().unwrap();
-    let partial = background_wait(&tools, id, |value| value["stderr"] == "first");
-    assert_eq!(partial["stdout"], "");
+    let partial = background_wait(&tools, id, |v| v["output"] == "first");
+    assert_eq!(partial["truncated"], false);
     fs::write(dir.path().join("release"), "go").unwrap();
-    let complete = background_wait(&tools, id, |value| {
-        value["stderr"] == "firstsecond" && value["stdout"] == "中-tail"
+    background_wait(&tools, id, |v| {
+        let text = v["output"].as_str().unwrap();
+        text.contains("中-tail") && text.contains("second")
     });
-    assert_eq!(complete["stdout"], "中-tail");
     let stopped = execute(&tools, "bash_task", json!({"task_id":id,"action":"stop"}));
-    assert_eq!(stopped["stdout"], "中-tail�");
-    assert_eq!(stopped["stdout_truncated"], false);
+    let text = stopped["output"].as_str().unwrap();
+    assert!(
+        text.contains("first")
+            && text.contains("中-tail")
+            && text.contains("second")
+            && text.ends_with('�')
+    );
+    assert_eq!(stopped["truncated"], false);
 }
 
 #[test]
@@ -202,8 +167,8 @@ fn background_terminal_status_retains_output_and_unknown_ids_fail() {
             if code == 0 { "exited" } else { "failed" }
         );
         assert_eq!(terminal["exit_code"], code);
-        assert_eq!(terminal["stdout"], "out");
-        assert_eq!(terminal["stderr"], "err");
+        assert!(terminal["output"].as_str().unwrap().contains("out"));
+        assert!(terminal["output"].as_str().unwrap().contains("err"));
         assert_eq!(
             execute(&tools, "bash_task", json!({"task_id":id,"action":"stop"})),
             terminal
@@ -252,6 +217,7 @@ fn background_terminal_status_retains_output_and_unknown_ids_fail() {
 fn drains_both_large_pipes_without_deadlock() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    tools.artifacts.bind(dir.path(), "large").unwrap();
     let result = execute(
         &tools,
         "bash",
@@ -259,76 +225,57 @@ fn drains_both_large_pipes_without_deadlock() {
     );
     assert_eq!(result["ok"], true);
     assert_eq!(result["exit_code"], 0);
-    assert_eq!(result["stdout_truncated"], true);
-    assert_eq!(result["stderr_truncated"], true);
-    assert_eq!(result["stdout"].as_str().unwrap().len(), OUTPUT_LIMIT);
-    assert_eq!(result["stderr"].as_str().unwrap().len(), OUTPUT_LIMIT);
+    assert_eq!(result["total_bytes"], 200000);
+    assert_eq!(result["truncated"], true);
+    assert_eq!(result["artifact"]["complete"], true);
+    assert!(result["output"].as_str().unwrap().len() < 1024);
 }
 
 #[test]
-fn bash_line_limit_is_shared_by_both_pipes_and_matches_live_output() {
+fn bash_output_budget_is_shared_by_both_pipes() {
     let workflow = WorkflowState::default();
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    let token = CancellationToken::new();
-    let execution = tools.execute(
-            "bash",
-            &json!({"command":"for ((i=0;i<10000;i++)); do printf 'out\\n'; printf 'err\\n' >&2; done; printf done > completed; exit 7"}).to_string(),
-            "line-limit",
-            ToolPolicy::Execute { workflow: &workflow },
-            &token,
-            &mut |event| {
-                if let AgentEvent::ToolOutput { stream, text, .. } = event {
-                    match stream {
-                        OutputStream::Stdout => stdout.push_str(&text),
-                        OutputStream::Stderr => stderr.push_str(&text),
-                    }
-                }
-            },
-        );
-    assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+    tools.artifacts.bind(dir.path(), "budget").unwrap();
+    let mut snapshots = Vec::new();
+    let execution = tools.execute("bash",&json!({"command":"for ((i=0;i<10000;i++)); do printf 'out\\n'; printf 'err\\n' >&2; done; printf done > completed; exit 7"}).to_string(),"budget",ToolPolicy::Execute { workflow: &workflow },&CancellationToken::new(),&mut |event| {
+        if let AgentEvent::ToolOutputSnapshot { output, .. } = event { snapshots.push(output); }
+    });
+    assert!(execution.stop_error.is_none());
     let result: Value = serde_json::from_str(&execution.output).unwrap();
-    assert_eq!(stdout.lines().count() + stderr.lines().count(), 500);
-    assert_eq!(result["stdout"], stdout);
-    assert_eq!(result["stderr"], stderr);
-    assert_eq!(result["stdout_truncated"], true);
-    assert_eq!(result["stderr_truncated"], true);
-    assert_eq!(result["ok"], false);
+    assert!(!snapshots.is_empty());
+    assert!(snapshots.iter().all(|s| s.len() <= 50 * 1024 + 128));
+    assert_eq!(result["total_bytes"], 80000);
+    assert_eq!(result["truncated"], true);
     assert_eq!(result["exit_code"], 7);
     assert_eq!(result["timed_out"], false);
     assert_eq!(result["cancelled"], false);
+    assert_eq!(result["artifact"]["complete"], true);
     assert_eq!(
         fs::read_to_string(dir.path().join("completed")).unwrap(),
         "done"
     );
-
-    let next = execute(&tools, "bash", json!({"command":"printf 'next\\n'"}));
-    assert_eq!(next["stdout"], "next\n");
-    assert_eq!(next["stdout_truncated"], false);
-    assert_eq!(next["stderr_truncated"], false);
+    assert_eq!(
+        execute(&tools, "bash", json!({"command":"printf 'next\\n'"}))["output"],
+        "next\n"
+    );
 }
 
 #[test]
-fn bash_exactly_500_lines_are_not_truncated() {
+fn bash_line_count_no_longer_truncates_at_500() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-    for redirect in ["", " >&2"] {
-        let result = execute(
-            &tools,
-            "bash",
-            json!({"command":format!("for ((i=0;i<500;i++)); do printf 'line\\n'{redirect}; done")}),
-        );
-        let stream = if redirect.is_empty() {
-            "stdout"
-        } else {
-            "stderr"
-        };
-        assert_eq!(result[stream], "line\n".repeat(500));
-        assert_eq!(result["stdout_truncated"], false);
-        assert_eq!(result["stderr_truncated"], false);
-        assert_eq!(result["ok"], true);
+    for count in [500, 501, 1000] {
+        for redirect in ["", " >&2"] {
+            let result = execute(
+                &tools,
+                "bash",
+                json!({"command":format!("for ((i=0;i<{count};i++)); do printf 'line\\n'{redirect}; done")}),
+            );
+            assert_eq!(result["output"], "line\n".repeat(count));
+            assert_eq!(result["truncated"], false);
+            assert_eq!(result["ok"], true);
+        }
     }
 }
 
@@ -352,8 +299,8 @@ fn bash_deadline_stops_silent_and_term_resistant_process_groups() {
         assert!(start.elapsed() < Duration::from_secs(4));
         assert!(!dir.path().join("late").exists());
         if command.contains("printf before") {
-            assert_eq!(result["stdout"], "before");
-            assert_eq!(result["stderr"], "error");
+            assert!(result["output"].as_str().unwrap().contains("before"));
+            assert!(result["output"].as_str().unwrap().contains("error"));
         }
         assert!(!fs::read_dir(dir.path()).unwrap().any(|entry| {
             entry
@@ -384,7 +331,7 @@ fn bash_watchdog_runs_while_output_callback_is_blocked_and_temp_defaults_are_loc
         },
         &token,
         &mut |event| {
-            if matches!(event, AgentEvent::ToolOutput { .. }) && !blocked {
+            if matches!(event, AgentEvent::ToolOutputSnapshot { .. }) && !blocked {
                 blocked = true;
                 thread::sleep(Duration::from_millis(3200));
             }
@@ -403,7 +350,7 @@ fn bash_watchdog_runs_while_output_callback_is_blocked_and_temp_defaults_are_loc
         json!({"command":"printf '%s\n%s\n' \"$TMPDIR\" \"$XDG_CACHE_HOME\"; printf cache > \"$XDG_CACHE_HOME/kept\"; printf scratch > \"$TMPDIR/removed\""}),
     );
     assert_eq!(result["ok"], true, "{result}");
-    for path in result["stdout"].as_str().unwrap().lines() {
+    for path in result["output"].as_str().unwrap().lines() {
         assert!(Path::new(path).starts_with(tools.cwd()));
     }
     assert!(dir.path().join(".pp-cache/kept").exists());
@@ -451,7 +398,7 @@ fn bash_cancel_stops_term_resistant_group_and_reports_cancelled() {
     assert_eq!(result["ok"], false, "{result}");
     assert_eq!(result["cancelled"], true, "{result}");
     assert_eq!(result["timed_out"], false, "{result}");
-    assert!(result["stdout"].as_str().unwrap().contains("cancel-ready"));
+    assert!(result["output"].as_str().unwrap().contains("cancel-ready"));
     marker.join().unwrap();
     let bash_pid: u32 = fs::read_to_string(dir.path().join("bash.pid"))
         .unwrap()

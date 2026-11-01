@@ -58,6 +58,18 @@ struct Terminal {
 }
 
 impl Detail {
+    pub(super) fn output_preview(&mut self, record: &crate::subagent::ObservedRecord) {
+        if self.caught_up
+            && self.active_run.as_ref() == record.run_id.as_ref()
+            && record
+                .run_id
+                .as_ref()
+                .is_none_or(|id| !self.terminal.contains_key(id))
+            && let Some(event @ AgentEvent::ToolOutputSnapshot { .. }) = &record.event
+        {
+            self.transcript.progress(event.clone());
+        }
+    }
     pub(super) fn new(agent: &str, view: u64, transcript: Transcript) -> Self {
         Self {
             agent: agent.to_owned(),

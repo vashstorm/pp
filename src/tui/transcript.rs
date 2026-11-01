@@ -506,7 +506,9 @@ impl Transcript {
                     activity.phase(&format!("Running {}", name.replace(char::is_control, " ")))
                 }
                 AgentEvent::ToolFinished { .. } => activity.phase("Processing tool result"),
-                AgentEvent::ToolOutput { .. } | AgentEvent::FileChanged { .. } => {}
+                AgentEvent::ToolOutput { .. }
+                | AgentEvent::ToolOutputSnapshot { .. }
+                | AgentEvent::FileChanged { .. } => {}
                 // 后台自动加载不改变活动阶段，不伪装成模型工具执行。
                 AgentEvent::ProjectInstructionsLoaded { .. } => {}
                 AgentEvent::TodoSnapshot { .. } | AgentEvent::TodoStateUpdated { .. } => {}
@@ -826,6 +828,15 @@ impl Transcript {
                     if entry.tool.as_deref() == Some("read") {
                         self.read_groups_key = None;
                     }
+                }
+            }
+            AgentEvent::ToolOutputSnapshot { id, output } => {
+                if let Some(index) = self.tool_index(&id) {
+                    let entry = &mut self.entries[index];
+                    entry.stdout = output;
+                    entry.stderr.clear();
+                    entry.layout = None;
+                    entry.display_title = None;
                 }
             }
             AgentEvent::ToolFinished { id, result } => {
@@ -1432,6 +1443,13 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
     }
     if kind == EntryKind::Bash || matches!(name, "grep" | "find") {
         let mut lines = Vec::new();
+        if let Some(output) = result["output"].as_str() {
+            lines.push(output.trim_end_matches('\n').to_owned());
+        }
+        let notice = crate::tools::output::notice(result);
+        if !notice.is_empty() {
+            lines.push(notice);
+        }
         // 后台状态已在 Bash footer 展示，不占用输出正文和尾窗行数。
         for (field, label) in [("stdout", "stdout"), ("stderr", "stderr")] {
             if let Some(text) = result

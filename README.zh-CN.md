@@ -30,6 +30,8 @@ TUI 默认最大帧率为 60 FPS。可在 `~/.pp/agent/settings.yml` 中将 `tui
 | **按需扩展** | 项目 `AGENTS.md`、技能、Markdown 提示词命令、基于本地标准输入输出的 MCP 工具 |
 | **用量可见** | 上下文估算与压缩，本地请求、词元、费用和耗时统计 |
 
+Bash 合并 stdout/stderr，默认返回最多 50 KiB 的头尾预览。超限或超长行被裁剪时保存为 `artifact://<id>`，模型可用 `read` 行选择器或 `grep` 继续查看；后台运行中的读取按每次调用冻结快照。资源由根会话与子 Agent 共享，恢复后仍可读取，删除会话时清理，`pp gc` 不按天数删除。日志默认上限 16 MiB，并明确报告中间省略和保存失败。配置与完整性边界见 [Bash 输出与 artifact 资源](docs/guide.md#bash-输出与-artifact-资源)。
+
 ## 快速开始
 
 ### 1. 构建

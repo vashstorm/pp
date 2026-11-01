@@ -324,6 +324,15 @@ impl Panel {
                 self.error = Some(message);
             }
         }
+        if let Some(detail) = &mut self.detail
+            && let Some(snapshot) = self.projection.snapshot()
+        {
+            for preview in &snapshot.output_previews {
+                if preview.agent_id == detail.agent {
+                    detail.output_preview(preview);
+                }
+            }
+        }
     }
 
     pub(super) fn tick(&mut self, now_ms: u64, instant: std::time::Instant) {
@@ -1617,6 +1626,7 @@ mod tests {
 
     fn snapshot(agents: Vec<Record>, runs: Vec<Run>) -> HubSnapshot {
         HubSnapshot {
+            output_previews: Vec::new(),
             agents: agents
                 .into_iter()
                 .map(|record| HubAgent {

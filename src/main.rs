@@ -772,11 +772,63 @@ fn cli_write(
     }
 }
 
+// 头尾窗口滚动后停止追加，结束时仅补显示最终尾窗，避免反复打印头部。
+fn cli_output_delta(output: &str, previous: &mut String, finished: bool) -> String {
+    if let Some(delta) = output.strip_prefix(previous.as_str()) {
+        let delta = delta.to_owned();
+        *previous = output.to_owned();
+        delta
+    } else if finished {
+        let tail = output
+            .find("[OUTPUT TRUNCATED:")
+            .map_or(output, |offset| &output[offset..]);
+        format!("\n[Final output preview]\n{tail}")
+    } else {
+        String::new()
+    }
+}
+
+fn cli_output_text(output: &str, previous: &mut String, finished: bool, label: &str) -> String {
+    let delta = cli_output_delta(output, previous, finished);
+    if delta.is_empty() {
+        if finished && !previous.is_empty() && !previous.ends_with('\n') {
+            "\n".into()
+        } else {
+            String::new()
+        }
+    } else {
+        format!(
+            "[{label} output] {delta}{}",
+            if finished && !delta.ends_with('\n') {
+                "\n"
+            } else {
+                ""
+            }
+        )
+    }
+}
+
+fn cli_output_result(value: &serde_json::Value, previous: &mut String, label: &str) -> String {
+    let mut text = cli_output_text(
+        value["output"].as_str().unwrap_or_default(),
+        previous,
+        true,
+        label,
+    );
+    let notice = tools::output::notice(value);
+    if !notice.is_empty() {
+        text.push_str(&notice);
+        text.push('\n');
+    }
+    text
+}
+
 fn run_cli_shell(agent: &mut agent::Agent, command: &str, stderr: &mut impl Write) -> Result<()> {
     use events::{AgentEvent, OutputStream};
     let mut broken = false;
     let mut first_error = None;
     let mut newline = true;
+    let mut streamed_output = String::new();
     let result = agent.run_shell(
         command,
         "local-shell-cli",
@@ -784,6 +836,11 @@ fn run_cli_shell(agent: &mut agent::Agent, command: &str, stderr: &mut impl Writ
         &mut |event| match event {
             AgentEvent::ToolStarted { .. } => {
                 cli_write(stderr, "shell: running\n", &mut broken, &mut first_error)
+            }
+            AgentEvent::ToolOutputSnapshot { output, .. } => {
+                let delta = cli_output_text(&output, &mut streamed_output, false, "shell");
+                cli_write(stderr, &delta, &mut broken, &mut first_error);
+                newline = delta.ends_with('\n');
             }
             AgentEvent::ToolOutput { stream, text, .. } => {
                 let label = match stream {
@@ -799,6 +856,14 @@ fn run_cli_shell(agent: &mut agent::Agent, command: &str, stderr: &mut impl Writ
                 newline = text.ends_with('\n');
             }
             AgentEvent::ToolFinished { result, .. } => {
+                if result["output"].is_string() {
+                    cli_write(
+                        stderr,
+                        &cli_output_result(&result, &mut streamed_output, "shell"),
+                        &mut broken,
+                        &mut first_error,
+                    );
+                }
                 if !newline {
                     cli_write(stderr, "\n", &mut broken, &mut first_error);
                 }
@@ -953,6 +1018,7 @@ fn run_cli_task(
     let mut current_tool = None;
     let mut thinking_newline = true;
     let mut context_usage = None;
+    let mut streamed_output = String::new();
     let mut emit = |event: AgentEvent| {
         // 运行时指标事件只服务 TUI，CLI 不输出，也不得触发思考换行。
         if matches!(
@@ -1054,9 +1120,14 @@ fn run_cli_task(
                     &mut err_broken,
                     &mut first_error,
                 );
+                streamed_output.clear();
                 current_tool = Some((id, name));
             }
             AgentEvent::FileChanged { .. } => {}
+            AgentEvent::ToolOutputSnapshot { output, .. } => {
+                let delta = cli_output_text(&output, &mut streamed_output, false, "bash");
+                cli_write(stderr, &delta, &mut err_broken, &mut first_error);
+            }
             AgentEvent::ToolOutput { id, stream, text } => {
                 let name = current_tool
                     .as_ref()
@@ -1074,6 +1145,14 @@ fn run_cli_task(
                 );
             }
             AgentEvent::ToolFinished { id, result } => {
+                if result["output"].is_string() {
+                    cli_write(
+                        stderr,
+                        &cli_output_result(&result, &mut streamed_output, "bash"),
+                        &mut err_broken,
+                        &mut first_error,
+                    );
+                }
                 if current_tool.as_ref().is_some_and(|(current_id, name)| {
                     current_id == &id && matches!(name.as_str(), "grep" | "glob" | "todo")
                 }) && let Some(content) = result["content"]

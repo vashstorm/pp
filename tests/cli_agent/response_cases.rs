@@ -122,7 +122,7 @@ fn responses_tool_batches_preserve_output_history_and_reset_instructions() {
     let bash = response_result(&input[8], "b");
     assert_eq!(bash["ok"], true);
     assert_eq!(bash["exit_code"], 0);
-    assert_eq!(bash["stdout"].as_str().unwrap().trim(), "1");
+    assert_eq!(bash["output"].as_str().unwrap().trim(), "1");
     assert_eq!(
         std::fs::read(dir.path().join("demo.txt")).unwrap(),
         b"hello from responses\n"

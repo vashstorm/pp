@@ -508,7 +508,7 @@ impl Projection {
                     );
                 }
             }
-            AgentEvent::ToolOutput { .. } => {}
+            AgentEvent::ToolOutput { .. } | AgentEvent::ToolOutputSnapshot { .. } => {}
             AgentEvent::UserInputAccepted { text, .. } => self.insert_lifecycle(
                 agent,
                 run,
@@ -1340,6 +1340,7 @@ mod tests {
 
     fn snapshot(agents: Vec<Record>, runs: Vec<Run>) -> HubSnapshot {
         HubSnapshot {
+            output_previews: Vec::new(),
             agents: agents
                 .into_iter()
                 .map(|record| HubAgent {

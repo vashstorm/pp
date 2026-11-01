@@ -86,7 +86,7 @@ fn tool_folding_ctrl_o_globally_toggles_during_ask_and_new_tools_inherit() {
         assert_eq!(outputs.len(), 4);
         assert!(outputs[0].1["content"].as_str().unwrap().contains("fold-first-19"));
         assert!(outputs[1].1["content"].as_str().unwrap().contains("fold-second-19"));
-        assert!(outputs[2].1["stdout"].as_str().unwrap().contains("fold-bash-00"));
+        assert!(outputs[2].1["output"].as_str().unwrap().contains("fold-bash-00"));
         assert_eq!(outputs[3].1["answers"][0]["selected_options"], json!(["Postgres"]));
         ask_reply_calls(request, protocol, json!([
             mk_call("third", "read", json!({"path":"third"}))

@@ -147,7 +147,7 @@ while [[ ! -e scroll-finish ]]; do sleep 0.01; done
         let (request, body) = pty.request_at(&provider, api_path(protocol));
         let outputs = cancel_tool_outputs(&body, protocol);
         assert_eq!(outputs.len(), 1);
-        let stdout = outputs[0].1["stdout"].as_str().unwrap();
+        let stdout = outputs[0].1["output"].as_str().unwrap();
         assert!(stdout.contains("scroll-line-00") && stdout.contains("scroll-line-19"));
         ask_final_reply(request, protocol, "fixed output done");
         pty.text("fixed output done");
@@ -189,7 +189,7 @@ fn bash_task_output_snapshot_keeps_bounded_tail_both_protocols() {
         ask_reply_calls(request, protocol, json!([make_call("stop", "bash_task", args)]));
         let (request, body) = pty.request_at(&provider, api_path(protocol));
         let outputs = cancel_tool_outputs(&body, protocol);
-        let stdout = outputs.last().unwrap().1["stdout"].as_str().unwrap();
+        let stdout = outputs.last().unwrap().1["output"].as_str().unwrap();
         assert!(stdout.contains("task-line-00") && stdout.contains("task-line-19"));
         pty.wait_for("Bash task 快照仅显示最新十行", |screen| {
             let text = screen.contents();
@@ -238,19 +238,18 @@ fn bang_shell_tui_output_and_history() {
         // stdout/stderr 双流 + 14 行输出 + exit 7：以卡片 footer 判定结束。
         pty.input("!printf 'tui-out-marker\\n'; printf 'tui-err-marker\\n' >&2; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do printf 'fold-%02d\\n' \"$i\"; done; exit 7\r");
         bang_shell_wait_footer(&mut pty, "exit 7 卡片 footer", "Exit: 7");
-        pty.wait_for("折叠卡片显示尾部行与 stderr 段", |screen| {
+        pty.wait_for("折叠卡片显示合并输出尾部", |screen| {
             let text = screen.contents();
             text.contains("(Ctrl + O to expand)")
-                && text.contains("[stderr]")
-                && text.contains("tui-err-marker")
                 && text.contains("fold-14")
-                && !text.contains("fold-06")
+                && !text.contains("fold-04")
         });
         // Ctrl + O 展开完整输出。
         pty.input("\x0f");
         pty.wait_for("展开后可见最早输出行", |screen| {
             let text = screen.contents();
             text.contains("fold-01") && text.contains("fold-06")
+                && text.contains("tui-out-marker") && text.contains("tui-err-marker")
         });
 
         // 第二条命令成功执行。

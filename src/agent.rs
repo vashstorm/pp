@@ -465,6 +465,9 @@ impl Agent {
         }
         let client = OpenAiClient::new(&config)?;
         tools.limits = checkpoint.tool_limits;
+        if let Some(id) = journal.id() {
+            let _ = tools.artifacts.bind(journal.directory(), id);
+        }
         // 审批配置沿用当前 settings.yml，不恢复 checkpoint 中的旧值；
         // 会话级授权本来就不序列化。
         tools.approval.set_config(config.settings.tools.clone());
@@ -1185,6 +1188,7 @@ impl Agent {
             ..Default::default()
         };
         self.journal.reset();
+        self.tools.artifacts = Default::default();
         if let Some(debug) = &mut self.debug {
             debug.set_prompt_recorded(false);
         }

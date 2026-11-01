@@ -173,8 +173,8 @@ fn bang_shell_cli_is_local_and_streams() {
         let mut cli = protocol.start(&server, dir.path());
         assert_no_session(dir.path());
         cli.input("!printf out-first; printf err-first >&2; while [[ ! -e release ]]; do sleep 0.01; done; printf out-last\n");
-        cli.wait_for(Pipe::Stderr, "[shell stdout] out-first");
-        cli.wait_for(Pipe::Stderr, "[shell stderr] err-first");
+        cli.wait_for(Pipe::Stderr, "[shell output] out-first");
+        cli.wait_for(Pipe::Stderr, "[shell output] err-first");
         // 栅栏仍未释放:给“提前完成”留出一个有界观察窗口。
         thread::sleep(Duration::from_millis(200));
         assert_shell_gated(&cli);
@@ -185,7 +185,7 @@ fn bang_shell_cli_is_local_and_streams() {
         assert_no_session(dir.path());
 
         std::fs::write(dir.path().join("release"), b"").unwrap();
-        cli.wait_for(Pipe::Stderr, "[shell stdout] out-last");
+        cli.wait_for(Pipe::Stderr, "[shell output] out-last");
         cli.wait_for(Pipe::Stderr, "shell: exit 0");
         let finished = cli.text(Pipe::Stderr);
         assert_no_task_notifications(&finished);
@@ -250,12 +250,12 @@ fn bang_shell_cli_failure_timeout_and_cwd() {
         cli.input("!\n");
         cli.wait_for(Pipe::Stderr, "usage: !command");
         cli.input("!printf bang-failure; exit 7\n");
-        cli.wait_for(Pipe::Stderr, "[shell stdout] bang-failure");
+        cli.wait_for(Pipe::Stderr, "[shell output] bang-failure");
         cli.wait_for(Pipe::Stderr, "shell: exit 7");
         cli.input("!cd /; pwd\n");
-        cli.wait_for(Pipe::Stderr, "[shell stdout] /\n");
+        cli.wait_for(Pipe::Stderr, "[shell output] /\n");
         cli.input("!pwd\n");
-        cli.wait_for(Pipe::Stderr, &format!("[shell stdout] {}\n", cwd.display()));
+        cli.wait_for(Pipe::Stderr, &format!("[shell output] {}\n", cwd.display()));
         cli.input("/quit\n");
         let output = cli.finish();
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -263,17 +263,17 @@ fn bang_shell_cli_failure_timeout_and_cwd() {
         assert!(output.stdout.is_empty(), "{stderr}");
         for (marker, count) in [
             ("usage: !command", 1),
-            ("[shell stdout] bang-failure", 1),
+            ("[shell output] bang-failure", 1),
             ("shell: exit 7", 1),
             // cd 在本次调用内生效(打印 “/”),但不得持续到下一条命令。
-            ("[shell stdout] /\n", 1),
+            ("[shell output] /\n", 1),
             ("shell: running", 3),
         ] {
             assert_eq!(stderr.matches(marker).count(), count, "{stderr}");
         }
         assert_eq!(
             stderr
-                .matches(&format!("[shell stdout] {}\n", cwd.display()))
+                .matches(&format!("[shell output] {}\n", cwd.display()))
                 .count(),
             1,
             "{stderr}"
@@ -295,7 +295,7 @@ fn bang_shell_cli_failure_timeout_and_cwd() {
         cancel_wait_pid_dead(&dir.path().join("timed-shell.pid"));
         cancel_assert_no_scratch(dir.path());
         cli.input("!printf recovered\n");
-        cli.wait_for(Pipe::Stderr, "[shell stdout] recovered");
+        cli.wait_for(Pipe::Stderr, "[shell output] recovered");
         cli.wait_for(Pipe::Stderr, "shell: exit 0");
         cli.input("/quit\n");
         let output = cli.finish();
@@ -304,7 +304,7 @@ fn bang_shell_cli_failure_timeout_and_cwd() {
         assert!(output.stdout.is_empty(), "{stderr}");
         for (marker, count) in [
             ("shell: timed out", 1),
-            ("[shell stdout] recovered", 1),
+            ("[shell output] recovered", 1),
             ("shell: exit 0", 1),
         ] {
             assert_eq!(stderr.matches(marker).count(), count, "{stderr}");

@@ -34,8 +34,8 @@ fn file_boundaries_and_strict_arguments() {
     );
     assert_eq!(failure["ok"], false);
     assert_eq!(failure["exit_code"], 7);
-    assert_eq!(failure["stdout"], "out");
-    assert_eq!(failure["stderr"], "err");
+    assert!(failure["output"].as_str().unwrap().contains("out"));
+    assert!(failure["output"].as_str().unwrap().contains("err"));
 }
 
 #[test]

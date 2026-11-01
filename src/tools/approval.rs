@@ -370,6 +370,7 @@ mod tests {
 
     fn settings(mode: ApprovalMode, policy: &[(&str, ApprovalPolicy)]) -> ToolsSettings {
         ToolsSettings {
+            output: Default::default(),
             approval_mode: mode,
             approval: policy
                 .iter()

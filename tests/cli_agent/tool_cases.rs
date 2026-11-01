@@ -27,7 +27,7 @@ fn dependent_batch_and_cross_turn_memory() {
     let bash = result(&messages[5], "b");
     assert_eq!(bash["ok"], true);
     assert_eq!(bash["exit_code"], 0);
-    assert_eq!(bash["stdout"].as_str().unwrap().trim(), "1");
+    assert_eq!(bash["output"].as_str().unwrap().trim(), "1");
     assert_eq!(
         std::fs::read_to_string(dir.path().join("demo.txt")).unwrap(),
         "hello from rust agent\n"

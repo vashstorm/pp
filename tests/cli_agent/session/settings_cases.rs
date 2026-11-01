@@ -388,7 +388,7 @@ fn session_restore_keeps_saved_edit_mode_and_execution_limits() {
         assert_eq!(bash["timed_out"], true);
         assert_eq!(bash["ok"], false);
         assert!(
-            !bash["stdout"]
+            !bash["output"]
                 .as_str()
                 .unwrap()
                 .contains("should-not-appear")

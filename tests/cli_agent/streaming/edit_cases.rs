@@ -341,8 +341,8 @@ fn hardened_tools_recover_after_limits_timeout_and_rejected_edits_in_both_protoc
         let timeout = protocol.tool_result(&body, "timeout");
         assert_eq!(timeout["ok"], false);
         assert_eq!(timeout["timed_out"], true);
-        assert_eq!(timeout["stdout"], "before");
-        assert_eq!(timeout["stderr"], "error");
+        assert!(timeout["output"].as_str().unwrap().contains("before"));
+        assert!(timeout["output"].as_str().unwrap().contains("error"));
         assert!(!dir.path().join("late").exists());
         assert_eq!(protocol.tool_result(&body, "after-timeout")["ok"], true);
         protocol.calls_reply(

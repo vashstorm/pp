@@ -6,6 +6,75 @@ use ratatui::{Terminal as TestTerminal, backend::TestBackend, buffer::Buffer};
 use serde_json::json;
 use std::time::{Duration, Instant};
 
+#[test]
+fn artifact_live_output_preview_replaces_body_after_history_catches_up() {
+    let mut detail = Detail::new("a1", 1, Transcript::new());
+    let running = run("r1", "running");
+    let start = page(
+        vec![
+            state(0, "r1", "running", None),
+            event(1, "r1", tool("b", "bash", json!({"command":"work"}))),
+        ],
+        true,
+    );
+    detail.ingest(
+        &start,
+        std::slice::from_ref(&running),
+        &BTreeSet::new(),
+        10000,
+    );
+    let preview = event(
+        2,
+        "r1",
+        AgentEvent::ToolOutputSnapshot {
+            id: "b".into(),
+            output: "old-preview".into(),
+        },
+    )
+    .record;
+    detail.output_preview(&preview);
+    assert!(!text(&mut detail.transcript).contains("old-preview"));
+    detail.ingest(
+        &page(vec![], false),
+        std::slice::from_ref(&running),
+        &BTreeSet::new(),
+        10000,
+    );
+    detail.output_preview(&preview);
+    assert!(text(&mut detail.transcript).contains("old-preview"));
+    let next = event(
+        3,
+        "r1",
+        AgentEvent::ToolOutputSnapshot {
+            id: "b".into(),
+            output: "latest-preview".into(),
+        },
+    )
+    .record;
+    detail.output_preview(&next);
+    let screen = text(&mut detail.transcript);
+    assert!(screen.contains("latest-preview") && !screen.contains("old-preview"));
+    detail.ingest(
+        &page(
+            vec![event(
+                4,
+                "r1",
+                AgentEvent::ToolFinished {
+                    id: "b".into(),
+                    result: json!({"ok":true,"output":"final-output"}),
+                },
+            )],
+            false,
+        ),
+        &[running],
+        &BTreeSet::new(),
+        10000,
+    );
+    detail.output_preview(&preview);
+    let screen = text(&mut detail.transcript);
+    assert!(screen.contains("final-output") && !screen.contains("old-preview"));
+}
+
 fn run(id: &str, status: &str) -> Run {
     Run {
         id: id.into(),

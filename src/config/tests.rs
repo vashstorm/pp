@@ -1,4 +1,26 @@
 use super::*;
+
+#[test]
+fn artifact_settings_defaults_validation_and_checkpoint_compatibility() {
+    let defaults = ToolLimits::default();
+    let mut old = serde_json::to_value(defaults).unwrap();
+    old.as_object_mut().unwrap().remove("output");
+    let restored: ToolLimits = serde_json::from_value(old).unwrap();
+    assert_eq!(restored.output.artifact_spill_threshold, 51200);
+    assert_eq!(restored.output.artifact_max_bytes, 16777216);
+    let settings = load(Some(r#"{"tools":{"artifactSpillThreshold":128,"artifactHeadBytes":100,"outputMaxColumns":0,"artifactMaxBytes":0}}"#),Some(VALID_MODELS)).unwrap().settings;
+    assert_eq!(settings.tool_limits().output.artifact_spill_threshold, 128);
+    assert_eq!(settings.tool_limits().output.output_max_columns, 0);
+    for bad in [
+        r#"{"tools":{"artifactSpillThreshold":0}}"#,
+        r#"{"tools":{"artifactMaxBytes":-1}}"#,
+        r#"{"tools":{"artifactMaxBytes":1.5}}"#,
+        r#"{"tools":{"artifactHeadByte":10}}"#,
+        r#"{"tools":{"artifactHeadBytes":null}}"#,
+    ] {
+        assert!(load(Some(bad), Some(VALID_MODELS)).is_err(), "{bad}");
+    }
+}
 use serde_json::json;
 
 #[test]

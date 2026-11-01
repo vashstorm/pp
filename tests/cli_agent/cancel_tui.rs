@@ -219,7 +219,7 @@ fn cancel_assert_paired_results(body: &Value, protocol: &str) {
     assert_eq!(bash["ok"], false);
     assert_eq!(bash["cancelled"], true);
     assert_eq!(bash["timed_out"], false);
-    assert!(bash["stdout"].as_str().unwrap().contains("cancel-ready"));
+    assert!(bash["output"].as_str().unwrap().contains("cancel-ready"));
     let skipped = &outputs[2].1;
     assert_eq!(skipped["ok"], false);
     assert_eq!(skipped["cancelled"], true);

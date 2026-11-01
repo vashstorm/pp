@@ -217,13 +217,7 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         }
         pty.wait_for("both live pipe bodies", |s| {
             let text = s.contents();
-            let body = |expected: &str| {
-                // 右侧通知可覆盖同一行，按左侧可见的管道正文断言。
-                text.lines().any(|line| {
-                    line.trim_start_matches([' ', '│']).split([' ', '│']).next() == Some(expected)
-                })
-            };
-            body("out-first") && body("err-first")
+            text.contains("out-first") && text.contains("err-first")
         });
         pty.drain();
         assert!(input_is_ready(pty.parser.screen()));
@@ -241,8 +235,12 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         } else {
             response_result(body["input"].as_array().unwrap().last().unwrap(), "b")
         };
-        assert_eq!(tool["stdout"], "out-firstout-last");
-        assert_eq!(tool["stderr"], "err-first");
+        let combined = tool["output"].as_str().unwrap();
+        assert!(
+            combined.contains("out-first")
+                && combined.contains("out-last")
+                && combined.contains("err-first")
+        );
         assert_eq!(tool["exit_code"], 0);
         if protocol == "completion" {
             final_reply(request, "bash-complete");

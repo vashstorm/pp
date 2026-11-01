@@ -719,6 +719,7 @@ impl SessionJournal {
         if matches!(
             event,
             AgentEvent::ContextUpdated { .. }
+                | AgentEvent::ToolOutputSnapshot { .. }
                 | AgentEvent::TodoStateUpdated { .. }
                 | AgentEvent::PlanProgressUpdated { .. }
                 | AgentEvent::CompactionStarted { .. }
@@ -962,7 +963,9 @@ pub(crate) fn delete(dir: &Path, lock_dir: &Path, id: &str) -> Result<()> {
         current.is_file() && current.dev() == metadata.dev() && current.ino() == metadata.ino(),
         "session changed before deletion"
     );
-    fs::remove_file(path).context("deleting session")
+    fs::remove_file(path).context("deleting session")?;
+    crate::tools::output::Store::remove(dir, id)
+        .context("session deleted, but artifact cleanup failed")
 }
 
 pub(crate) fn load(

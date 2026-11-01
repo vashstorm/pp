@@ -243,26 +243,27 @@ fn streaming_bash_both_pipes_are_live_and_failed_tool_does_not_stop_batch() {
         cli.wait_for(Pipe::Stderr, "out-first");
         cli.wait_for(Pipe::Stderr, "err-first");
         cli.assert_running();
-        assert!(cli.text(Pipe::Stderr).contains("[bash stdout]"));
-        assert!(cli.text(Pipe::Stderr).contains("[bash stderr]"));
+        assert!(!cli.text(Pipe::Stderr).contains("out-last"));
         assert!(cli.text(Pipe::Stderr).contains("tool bash: running"));
         assert!(!cli.text(Pipe::Stderr).contains("out-last"));
         assert!(!dir.path().join("after-failure").exists());
         no_more(&server);
         std::fs::write(dir.path().join("release"), "go").unwrap();
         let (request, body) = protocol.receive(&server);
-        assert_eq!(
-            protocol.tool_result(&body, "live"),
-            json!({
-                "ok":true, "stdout":"out-firstout-last", "stderr":"err-first",
-                "exit_code":0, "timed_out":false, "cancelled":false, "stdout_truncated":false, "stderr_truncated":false
-            })
+        let live = protocol.tool_result(&body, "live");
+        assert_eq!(live["exit_code"], 0);
+        assert_eq!(live["truncated"], false);
+        let combined = live["output"].as_str().unwrap();
+        assert!(
+            combined.contains("out-first")
+                && combined.contains("out-last")
+                && combined.contains("err-first")
         );
         let failed = protocol.tool_result(&body, "bad");
         assert_eq!(failed["ok"], false);
         assert_eq!(failed["exit_code"], 7);
-        assert_eq!(failed["stdout"], "failed-out");
-        assert_eq!(failed["stderr"], "failed-err");
+        assert!(failed["output"].as_str().unwrap().contains("failed-out"));
+        assert!(failed["output"].as_str().unwrap().contains("failed-err"));
         assert_eq!(protocol.tool_result(&body, "after")["ok"], true);
         assert_eq!(
             std::fs::read_to_string(dir.path().join("after-failure")).unwrap(),
@@ -965,8 +966,7 @@ fn streaming_empty_bash_has_no_invented_output_or_assistant_turn() {
         );
         let (request, body) = protocol.receive(&server);
         let tool = protocol.tool_result(&body, "empty");
-        assert_eq!(tool["stdout"], "");
-        assert_eq!(tool["stderr"], "");
+        assert_eq!(tool["output"], "");
         assert_eq!(tool["exit_code"], 0);
         protocol.final_reply(request, "empty-complete");
         let output = cli.finish();

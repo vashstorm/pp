@@ -23,27 +23,26 @@ fn streaming_utf8_fragments_match_whole_lossy_decoding() {
 }
 
 #[test]
-fn streaming_exact_cap_and_truncated_utf8_keep_live_and_result_equal() {
+fn streaming_pipe_draining_keeps_utf8_past_old_cap() {
     for count in [OUTPUT_LIMIT - 1, OUTPUT_LIMIT, OUTPUT_LIMIT + 1] {
         let bytes = vec![b'x'; count];
         let (text, live, truncated, received) = stream_capture(&bytes, PIPE_CHUNK_SIZE);
-        assert_eq!(received, count.min(OUTPUT_LIMIT));
-        assert_eq!(text, "x".repeat(count.min(OUTPUT_LIMIT)));
+        assert_eq!(received, count);
+        assert_eq!(text, "x".repeat(count));
         assert_eq!(live, text);
-        assert_eq!(truncated, count > OUTPUT_LIMIT);
+        assert!(!truncated);
     }
-    // The retained boundary can split a character. EOF of retained bytes
-    // must produce the same single replacement as one-shot lossy decoding.
+    // 管道层不再截断；跨越旧限额的字符也必须保持完整。
     for prefix in [OUTPUT_LIMIT - 1, OUTPUT_LIMIT - 2, OUTPUT_LIMIT - 3] {
         let mut bytes = vec![b'a'; prefix];
         bytes.extend_from_slice("中😀".as_bytes());
         bytes.resize(bytes.len() + OUTPUT_LIMIT * 2, b'z');
         for chunk_size in [1, 7, PIPE_CHUNK_SIZE] {
             let (text, live, truncated, received) = stream_capture(&bytes, chunk_size);
-            assert_eq!(text, String::from_utf8_lossy(&bytes[..OUTPUT_LIMIT]));
+            assert_eq!(text, String::from_utf8_lossy(&bytes));
             assert_eq!(live, text);
-            assert!(truncated);
-            assert_eq!(received, OUTPUT_LIMIT);
+            assert!(!truncated);
+            assert_eq!(received, bytes.len());
         }
     }
 }
@@ -57,8 +56,7 @@ fn streaming_bash_reports_both_pipes_before_exit_without_newlines() {
             "command":"printf 'out-first'; printf 'err-first' >&2; for ((i=0;i<200;i++)); do [[ -e release ]] && break; sleep 0.01; done; printf 'out-last'"
         })
         .to_string();
-    let mut stdout = String::new();
-    let mut stderr = String::new();
+    let mut observed = String::new();
     let mut released = false;
     let mut started = false;
     let mut finished = false;
@@ -83,18 +81,14 @@ fn streaming_bash_reports_both_pipes_before_exit_without_newlines() {
                 assert_eq!(arguments, args);
                 started = true;
             }
-            AgentEvent::ToolOutput { id, stream, text } => {
+            AgentEvent::ToolOutputSnapshot { id, output } => {
                 assert!(started && !finished);
                 assert_eq!(id, "live-call");
-                assert!(!text.is_empty());
                 if !released {
-                    assert!(!text.contains("out-last"), "output arrived only after exit");
+                    assert!(!output.contains("out-last"));
                 }
-                match stream {
-                    OutputStream::Stdout => stdout.push_str(&text),
-                    OutputStream::Stderr => stderr.push_str(&text),
-                }
-                if !released && stdout == "out-first" && stderr == "err-first" {
+                observed = output;
+                if !released && observed.contains("out-first") && observed.contains("err-first") {
                     fs::write(dir.path().join("release"), "").unwrap();
                     released = true;
                 }
@@ -102,8 +96,12 @@ fn streaming_bash_reports_both_pipes_before_exit_without_newlines() {
             AgentEvent::ToolFinished { id, result } => {
                 assert!(started && released && !finished);
                 assert_eq!(id, "live-call");
-                assert_eq!(result["stdout"], stdout);
-                assert_eq!(result["stderr"], stderr);
+                let output = result["output"].as_str().unwrap();
+                assert!(
+                    output.contains("out-first")
+                        && output.contains("out-last")
+                        && output.contains("err-first")
+                );
                 assert_eq!(result["exit_code"], 0);
                 finished = true;
             }
@@ -113,7 +111,6 @@ fn streaming_bash_reports_both_pipes_before_exit_without_newlines() {
     assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
     let result: Value = serde_json::from_str(&execution.output).unwrap();
     assert!(released && finished);
-    assert_eq!(stdout, "out-firstout-last");
-    assert_eq!(stderr, "err-first");
+    assert!(observed.contains("out-first") && observed.contains("err-first"));
     assert_eq!(result["ok"], true);
 }

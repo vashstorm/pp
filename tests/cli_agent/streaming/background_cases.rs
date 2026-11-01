@@ -49,7 +49,7 @@ fn background_service_lifecycle_in_both_protocols() {
             let status = protocol.tool_result(&body, &call_id);
             assert_eq!(status["ok"], true, "{protocol:?}: {status}");
             assert_eq!(status["status"], "running", "{protocol:?}: {status}");
-            if let Some((_, tail)) = status["stdout"]
+            if let Some((_, tail)) = status["output"]
                 .as_str()
                 .and_then(|text| text.split_once("pp stats: http://"))
             {
@@ -79,12 +79,27 @@ fn background_service_lifecycle_in_both_protocols() {
             request,
             json!([protocol.call("probe", "bash", json!({"command": probe_command}))]),
         );
-        let (request, body) = protocol.receive(&server);
+        let (mut request, body) = protocol.receive(&server);
         let probe = protocol.tool_result(&body, "probe");
         assert_eq!(probe["ok"], true, "{protocol:?}: {probe}");
         assert_eq!(probe["exit_code"], 0, "{protocol:?}: {probe}");
         assert_eq!(probe["timed_out"], false, "{protocol:?}: {probe}");
-        let stdout = probe["stdout"].as_str().unwrap();
+        let captured;
+        let stdout = if let Some(uri) = probe["artifact"]["uri"].as_str() {
+            protocol.calls_reply(
+                request,
+                json!([protocol.call("probe-log", "read", json!({"path":format!("{uri}:raw")}))]),
+            );
+            let (next, body) = protocol.receive(&server);
+            request = next;
+            captured = protocol.tool_result(&body, "probe-log")["content"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            captured.as_str()
+        } else {
+            probe["output"].as_str().unwrap()
+        };
         let (payload, tail) = stdout.rsplit_once("\nHTTP_STATUS:").unwrap_or_else(|| {
             panic!("{protocol:?}: probe output missing status marker: {stdout}")
         });
@@ -126,7 +141,7 @@ fn background_service_lifecycle_in_both_protocols() {
         let after = protocol.tool_result(&body, "after");
         assert_eq!(after["ok"], true, "{protocol:?}: {after}");
         assert_eq!(after["exit_code"], 0, "{protocol:?}: {after}");
-        assert_eq!(after["stdout"], "task-continues", "{protocol:?}: {after}");
+        assert_eq!(after["output"], "task-continues", "{protocol:?}: {after}");
         protocol.final_reply(request, "background-service-verified");
         let output = cli.finish();
         assert!(output.status.success(), "{protocol:?}: {output:?}");

@@ -1,4 +1,67 @@
 use super::*;
+
+#[test]
+fn artifact_child_output_is_readable_from_parent_in_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let models = if protocol == "completion" {
+            fixture_models(&server)
+        } else {
+            response_models(&server, Some("response"))
+        };
+        let cli = Cli::start_with(
+            dir.path(),
+            Some("inspect child artifact"),
+            "tools:\n  artifactSpillThreshold: 16\n",
+            &models,
+        );
+        let (request, _) = receive_sub(&server, protocol);
+        sub_call(
+            request,
+            protocol,
+            "spawn",
+            "task",
+            json!({"context":"produce and inspect child logs","tasks":[{"task":"produce a log"}]}),
+        );
+        let mut produced = false;
+        let mut reading = false;
+        loop {
+            let (request, body) = receive_sub(&server, protocol);
+            if is_child(&body) {
+                if !produced {
+                    produced = true;
+                    sub_call(
+                        request,
+                        protocol,
+                        "log",
+                        "bash",
+                        json!({"command":"printf 'child-artifact-marker\\nmore child output\\n'"}),
+                    );
+                } else {
+                    assert!(body.to_string().contains("artifact://0"));
+                    sub_final(request, protocol, "saved child log at artifact://0");
+                }
+            } else if reading {
+                assert!(body.to_string().contains("child-artifact-marker"));
+                sub_final(request, protocol, "child log verified");
+                break;
+            } else if body.to_string().contains("saved child log at artifact://0") {
+                reading = true;
+                sub_call(
+                    request,
+                    protocol,
+                    "read-child",
+                    "read",
+                    json!({"path":"artifact://0:raw:1-1"}),
+                );
+            } else {
+                sub_final(request, protocol, "Waiting for child output.");
+            }
+        }
+        assert!(cli.finish().status.success());
+    }
+}
 fn receive_sub(server: &Server, protocol: &str) -> (Request, Value) {
     receive_at(
         server,

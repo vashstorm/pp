@@ -980,6 +980,10 @@ impl Agent {
         }
         self.session = session;
         self.journal = journal;
+        self.tools.artifacts = Default::default();
+        if let Some(id) = self.journal.id() {
+            let _ = self.tools.artifacts.bind(self.journal.directory(), id);
+        }
         self.workflow = candidate_workflow;
         self.tools.clear_changes();
         self.last_request = None;
@@ -1045,6 +1049,10 @@ impl Agent {
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));
         self.journal = restored.journal;
+        self.tools.artifacts = Default::default();
+        if let Some(id) = self.journal.id() {
+            let _ = self.tools.artifacts.bind(self.journal.directory(), id);
+        }
         self.pending_project_load = None;
         self.reported_project_load = super::turn::reported_project_load(&restored.replay);
         self.replay = restored.replay;

@@ -66,6 +66,7 @@ impl Agent {
         let ask = self.tools.ask_handler.clone();
         let changes = self.tools.changes.clone();
         let write_lock = self.tools.write_lock.clone();
+        let artifacts = self.tools.artifacts.clone();
         let root_dir = self.journal.directory().join(format!("{id}.subagents"));
 
         let plan = self
@@ -111,6 +112,7 @@ impl Agent {
                 "subagent thinking is not supported by the target model"
             );
             let mut tools = Tools::new(record.spec.cwd.clone(), config.settings.edit)?;
+            tools.artifacts = artifacts.clone();
             tools.limits = config.settings.tool_limits();
             tools.skills = skills.clone();
             if !record.spec.isolated {

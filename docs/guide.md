@@ -769,13 +769,13 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 - `write(path, content)`：创建缺失父目录，并创建或完整覆盖 UTF-8 文件，允许空内容。write/edit 均在目标所在目录排他创建临时文件，完整写入、保留原文件权限（含可执行位）、同步临时文件后，以一次原子重命名提交。创建、部分写入、同步或重命名失败均保留原文件；新建失败不会留下残缺目标，已创建的空父目录允许保留。edit 在临时文件同步完成后、重命名前精确比较读取时的原始字节；目标变化、消失、不可读或变为特殊文件时拒绝覆盖并清理临时文件。这不是跨进程 CAS，比较到重命名之间仍有竞态窗口。重命名是提交点，之后父目录同步失败返回 `ok:true` 并附 `warning`，不能当作尚未修改。失败路径清理临时文件；TUI `/changes` 提供当前进程最近任务的逐文件安全撤销（见上节），不提供持久备份、跨文件事务、跨进程并发隔离或断电恢复保证。
 - `grep({"pattern":"needle","path":"src/**/*.rs"})` 在进程内搜索本地文件；支持 `case`、`gitignore`、`skip`，默认区分大小写、包含隐藏文件并遵守 ignore。`path` 支持分号分隔、glob、`!` 排除及单文件行范围；不支持网页、压缩包和技能 URI。配置 `grep: {contextBefore: 1, contextAfter: 3}` 调整上下文。每页最多 20 个文件，多文件每文件最多 20 条匹配，单文件最多 200 条；正文和长行有独立上限及提示。
 - `glob({"path":"src/**/*.rs"})` 查找路径，支持 `hidden`、`gitignore`、`limit`；默认包含隐藏路径、遵守忽略规则，最多返回 200 项和 50 KiB。扫描在文件操作之间检查取消及五秒期限，超时返回不完整结果；没有文件系统沙箱。
-- 默认前台 `bash({"command":"..."})`：以启动目录为工作目录执行 `bash -c`，关闭 stdin，并建立独立进程组。stdout/stderr 无需等待换行或进程退出即可实时显示；保留跨分块的 UTF-8 字符，无效字节采用 lossy 解码。两流合计最多保留 500 行，同时每流最多保留 65,536 个原始字节，先达到的限制生效；按 `\n` 分行，非空且没有末尾换行的片段也计一行。仅在确有超出内容时标记对应流截断；实时显示与返回输出使用相同限制，多余内容持续排空，命令继续执行。仅保证各流内部顺序，不保证跨流顺序；500 行额度按接收分块的顺序分配。返回退出码、输出、截断标记和 `timed_out`，信号退出时退出码为 null。
+- 默认前台 `bash({"command":"..."})`：以启动目录执行 `bash -c`，关闭 stdin，建立独立进程组。stdout/stderr 按收集器接收顺序合并，不保证跨流真实写入顺序；无需等待换行即可显示有界头尾快照。返回合并的 `output`、退出码、输出计数、截断标记、`timed_out` 与 `cancelled`，信号退出的退出码为 null。超限日志通过下述 artifact 机制继续读取，旧会话的 stdout/stderr 分流结果仍可回放。
 - 工具参数严格校验：缺失／额外字段、非法 JSON、空白路径／命令、未知工具及文件／进程错误均返回 `ok:false`，供模型修正。bash 非零退出同样失败并保留输出。
 - 前台 bash 的 `bash_timeout_seconds` 默认 120，与模型请求超时独立，模型不能通过工具参数延长。`{"command":"..."}` 和显式 `"mode":"foreground"` 保持相同契约。独立监督线程在超时时向进程组发送 TERM，等待 1 秒后发送 KILL 并回收直接子进程；可停止的非阻塞管道读取避免后代持有管道导致无限等待。超时返回 `ok:false, timed_out:true`，保留已捕获输出，不回滚 shell 修改。正常结束也清理同一进程组的残留后代；主动脱离进程组的进程不受保证。TUI Esc 取消通过 TERM→1 秒宽限→KILL／wait 停止受控进程组，前台结果为 `ok:false, cancelled:true, timed_out:false`；正常／超时前台结果的 `cancelled` 为 false。
 - 跨工具调用验证服务时使用 `bash({"command":"exec server ...","mode":"background"})`，保存返回的 `task_id`（如 `bg-1`）。后台没有固定执行超时，但只属于当前用户任务：最终回答、拒绝、请求预算耗尽、错误、Esc 取消或 TUI 受控退出前自动停止并清理。运行中补充沿用当前任务的后台服务；独立 FollowUp 结束时单独收尾。不会跨独立任务、会话恢复或应用重启保留；历史 ID 不会复活进程。服务应保持在受管进程组内，优先 `exec server`，不要 daemonize／setsid。shell `&` 不是受管理后台模式。
 - `bash_task({"task_id":"bg-1","action":"status"})` 立即返回当前累计日志／状态，不等待就绪；`"action":"stop"` 发出本任务的停止请求并等待 TERM／KILL／wait、worker 和 scratch 收尾，不取消整个用户任务。验证完成后显式 stop；已终结任务的 status／stop 保留原终态，stop 幂等。仅接受本管理器当前任务的 ID，不接受任意 PID；上一用户任务的 ID 已清除，新 ID 不复用。mode/action 仅接受上述小写枚举，拒绝 null、额外字段和空白 command／task_id。
 - 后台 start／status／stop 共用快照：`ok`、`task_id`、`status`、真实 `exit_code`（或 null）、`stdout`／`stderr` 和两流 `*_truncated`。状态为 `running|exited|stopped|cancelled|failed`；前三者 `ok:true`，后两者 `ok:false`。自然 exit 0 为 exited，非零／信号退出为 failed；显式停止为 stopped，用户取消为 cancelled。仅实际出错时附 error／warning，无前台 timed_out 字段。真实进程清理失败会停止 agent，普通命令非零退出不会被误当作清理失败。
-- `running` 仅表示进程受管理，不表示服务 ready；通过 status 取得日志，再以后续实际 HTTP／功能请求验证，不自动探测端口、不重启。后台日志沿用共用 500 行和每流 65,536 原始字节限额，超过后持续读取并丢弃，不阻塞服务。运行中暂不显示不完整 UTF-8 尾字符，终态 lossy 解码剩余尾字节。后台 worker 不主动推送日志；每次 start／status／stop 用该次 call_id 展示累计快照，因此重复 status 可重复展示同一日志。CLI 将日志与 `task bg-N: status` 写到 stderr，stdout 仍只包含模型回答。TUI 卡片显示 `Task bg-N: status`，卡片完成仅表示本次工具调用完成，不表示服务退出。
+- `running` 仅表示进程受管理，不表示服务 ready；通过 status 取得累计头尾快照，再以后续实际 HTTP／功能请求验证，不自动探测端口、不重启。前后台共用输出预算与 artifact 收集器；每条后台命令超限后只有一个稳定 URI，运行中可按快照读取，结束、stop、取消及任务自动回收时封存。CLI 将日志与 `task bg-N: status` 写到 stderr，stdout 仍只包含模型回答。TUI 卡片显示 `Task bg-N: status`，卡片完成仅表示本次工具调用完成，不表示服务退出。
 - bash 默认将 `TMPDIR`、`TMP`、`TEMP` 设置为项目内每个命令独立的 `.pp-tmp-*` 目录；前台调用结束后清理，后台随任务存活直到进程收尾后清理；`XDG_CACHE_HOME` 设置为项目内 `.pp-cache` 并保留缓存，二者均已加入忽略规则。这是默认位置而非权限隔离；不遵守这些变量的程序仍可能使用其他位置。清理失败通过结果中的 `warning` 报告。
 - Esc 取消会关闭本地模型连接及 SDK 后台网络任务；下一任务惰性创建新的 runtime／HTTP 连接池。流式半成品只保留展示，不进入原生历史或执行未完成工具调用。已开始的同步 read/edit/write 操作允许完成并保留真实结果；同批剩余调用不执行，但仍按 call_id 追加取消结果。只有终止／回收成功且原生批次与终态同步保存成功才显示取消；真实清理失败或持久化错误优先报告错误。只能保证本地连接及同进程组受控工作停止，不能撤销供应商远端计算、计费、外部副作用或主动脱离进程组的进程。
 - 工具按序执行，write → read 等批内依赖按顺序可见。先保存完整模型输出，再按对应 call ID 逐项追加结果；普通工具失败不会跳过其余调用。取消和真实进程清理失败按前述规则处理。
@@ -785,6 +785,36 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 - 切模型保留用户／助手文字、系统指令、工具 call ID／参数及结果。Completion 之间保留原生消息；同一配置供应商的 Responses 之间保留含加密思考的原生输出。跨协议或跨 Responses 供应商时转换可读历史，去掉 item ID、重放元数据和不透明加密思考；可读思考转为助手文本，交错消息／调用转换为 Completion 批次。不支持的非文本或未知历史会拒绝切换，避免静默丢失记录；加密供应商状态不可移植。
 
 取消回归通过真实 loopback HTTP、PTY 和进程组验证：两协议 headers 前／SSE 空闲取消在下一任务前关闭旧连接，write→bash→write 保留已完成结果并补齐未执行调用，MCP 仅在下一任务调用时重建并拒绝 schema 变化，重建中 Ctrl + C 仍回收替换进程；取消终态可恢复为 aborted，后续完成可变为 done，持久化失败不误报取消。独立 100×30 实际 TUI smoke 使用临时 Python loopback fixture：TERM-resistant bash 两个受控 PID 均停止，中文草稿和光标保留，下一任务收到 `cancelled:true, timed_out:false` 与原 stdout 并回复 `smoke recovered`，共两次 HTTP，最后 Ctrl + C 以 0 退出并恢复终端属性。未使用真实供应商，Linux 未在本次环境实机验证。
+
+
+### Bash 输出与 artifact 资源
+
+测试、构建和检查直接执行原命令。不要为了缩短输出追加 `head`／`tail`／`grep` 管道或重定向；确有功能需要的管道仍应使用 `set -o pipefail` 并检查退出码。
+
+`tools:` 支持以下启动时配置：
+
+```yaml
+tools:
+  artifactSpillThreshold: 51200
+  artifactHeadBytes: 20480
+  outputMaxColumns: 768
+  artifactMaxBytes: 16777216
+```
+
+`artifactSpillThreshold` 为正整数，控制返回正文的字节预算；`artifactHeadBytes` 最多占其一半，其余保留滚动尾部。预算不包含简短省略提示。`outputMaxColumns` 控制每行返回字节上限，`0` 关闭。字符在 UTF-8 边界保留；终端控制序列被去除，进度回车规范为换行，制表符保留。超出正文预算或出现单行裁剪时，原有规范化正文与后续日志保存为 `artifact://<数字ID>`，不受返回正文的行宽限制。
+
+`artifactMaxBytes` 是每份保存文件的容量上限，`0` 不限；达到上限后保留开头最多 3 MiB（且不超过容量一半）和滚动尾部，中间加入省略标记。很小的容量可能只容纳简短标记，元数据始终报告不完整。模型工具结果中的 `artifact.complete`、`elided_bytes`、`capturing` 和 `capture_error` 分别说明完整性、中间省略、是否仍在采集及保存失败。保存失败不改变命令退出码，不自动重跑命令，也不把不完整日志宣称为完整输出。
+
+```json
+{"path":"artifact://3:raw:100-160"}
+{"path":"artifact://3:-30"}
+```
+
+上例为 `read` 的范围和尾部读取；继续分页使用返回的 `next_path`，遵守普通 read 字节／行数限制。`grep({"path":"artifact://3","pattern":"FAILED"})` 搜索保存日志；单行搜索覆盖完整资源，多行搜索仍限制前 4 MiB 并提示。资源不提供可编辑 hashline 标签，也不能通过 write/edit 修改。运行中每次 read/grep 固定一个快照，元数据带 `snapshot_version`；后续调用可能看到增长或移动后的尾窗，不保证跨调用分页一致。
+
+文件保存在 `~/.pp/agent/sessions/<ID>.artifacts/`，根会话与子 Agent 共用数字编号；新建与 Plan Fresh 使用新资源空间，恢复、压缩、树导航和保留上下文执行仍使用所属会话资源。日志包含工具原文，应与会话正文一并管理。删除会话同时清理资源，清理失败报告部分完成；`pp gc` 不按天数删除这些资源。崩溃遗留 `.partial` 仅能恢复当时已经写入磁盘的部分，始终标记未完成；超过磁盘容量后仍在内存滚动的尾部不保证在崩溃后保留。
+
+运行中预览事件只更新内存，不逐帧写入主会话或子 Agent 观察日志；结束结果保存有限正文与资源元数据。TUI 默认折叠尾部，Ctrl + O 展开已保留内容，额外日志通过 read/grep 读取；界面绘制不读取资源文件。
 
 ## HTTP 协议
 

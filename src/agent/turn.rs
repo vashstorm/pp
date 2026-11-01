@@ -377,6 +377,14 @@ pub(super) fn completion_turn(
             if let (Some(binding), Some(id)) = (&tools.subagent, journal.id()) {
                 binding.bind_session(journal.directory(), id);
             }
+            if tools
+                .subagent
+                .as_ref()
+                .is_none_or(|binding| binding.depth == 0)
+                && let Some(id) = journal.id()
+            {
+                let _ = tools.artifacts.bind(journal.directory(), id);
+            }
             publish_project_load(
                 update.pending_project_load,
                 update.reported_project_load,
@@ -564,6 +572,14 @@ pub(super) fn response_turn(
             )?;
             if let (Some(binding), Some(id)) = (&tools.subagent, journal.id()) {
                 binding.bind_session(journal.directory(), id);
+            }
+            if tools
+                .subagent
+                .as_ref()
+                .is_none_or(|binding| binding.depth == 0)
+                && let Some(id) = journal.id()
+            {
+                let _ = tools.artifacts.bind(journal.directory(), id);
             }
             publish_project_load(
                 update.pending_project_load,

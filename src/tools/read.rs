@@ -21,6 +21,37 @@ use url::{UrlInput, UrlReader};
 
 pub(crate) const MAX_INPUT_BYTES: usize = 20 * 1024 * 1024;
 
+pub(super) fn artifact(
+    path: &str,
+    cwd: &Path,
+    limits: ToolLimits,
+    mode: EditMode,
+    store: &super::output::Store,
+    cancellation: &CancellationToken,
+) -> Result<ReadResult> {
+    let target = Target::parse(path, cwd)?;
+    let snapshot = store.snapshot(&target.source, cancellation)?;
+    let mut cache = WebCache::default();
+    let mut fetch = |_: &str, _: &CancellationToken| anyhow::bail!("artifact 不支持网络读取");
+    let mut result = FileReader.read(
+        FileInput {
+            target,
+            path: snapshot.path.clone(),
+            allow_directory: true,
+        },
+        &mut ReadContext {
+            limits,
+            mode,
+            cache: &mut cache,
+            fetch: &mut fetch,
+            cancellation,
+            snapshots: None,
+        },
+    )?;
+    result.value["artifact"] = snapshot.metadata;
+    Ok(result)
+}
+
 pub(crate) struct HttpResponse {
     pub(crate) bytes: Vec<u8>,
     pub(crate) final_url: String,

@@ -130,6 +130,8 @@ impl std::str::FromStr for ThinkLevel {
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct ToolLimits {
+    #[serde(default)]
+    pub(crate) output: crate::tools::output::OutputSettings,
     pub(crate) read_max_bytes: usize,
     pub(crate) read_max_lines: usize,
     pub(crate) bash_timeout_seconds: u64,
@@ -159,6 +161,8 @@ impl Default for GrepSettings {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ToolsSettings {
+    #[serde(flatten)]
+    pub(crate) output: crate::tools::output::OutputSettings,
     #[serde(rename = "approvalMode")]
     pub(crate) approval_mode: crate::tools::approval::ApprovalMode,
     pub(crate) approval: std::collections::BTreeMap<String, crate::tools::approval::ApprovalPolicy>,
@@ -166,6 +170,7 @@ pub(crate) struct ToolsSettings {
 
 impl ToolLimits {
     pub(crate) fn validate(&self) -> Result<()> {
+        self.output.validate()?;
         ensure!(
             self.read_max_bytes > 0,
             "read_max_bytes must be greater than zero"
@@ -195,6 +200,7 @@ impl Default for ToolLimits {
             read_max_lines: default_read_max_lines(),
             bash_timeout_seconds: default_bash_timeout_seconds(),
             grep: GrepSettings::default(),
+            output: Default::default(),
         }
     }
 }
@@ -337,6 +343,7 @@ impl Settings {
             read_max_lines: self.read_max_lines,
             bash_timeout_seconds: self.bash_timeout_seconds,
             grep: self.grep,
+            output: self.tools.output,
         }
     }
 

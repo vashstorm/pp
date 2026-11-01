@@ -1,4 +1,4 @@
-use super::{StreamText, drain_pipe, emit_output};
+use super::{drain_pipe, output::OutputSink};
 use crate::cancellation::{CancellationToken, CleanupError};
 use crate::events::{AgentEvent, OutputStream};
 use anyhow::{Context, Result};
@@ -25,27 +25,12 @@ use std::{
 const POLL: Duration = Duration::from_millis(5);
 const IDLE_POLL: Duration = Duration::from_millis(50);
 const GRACE: Duration = Duration::from_secs(1);
-const OUTPUT_LINE_LIMIT: usize = 500;
-
 /// Distinguishes a real exit from the two supervised stop reasons; a single
 /// bool cannot keep timeout and cancellation apart when both race.
 enum Termination {
     Exited,
     TimedOut,
     Cancelled,
-}
-
-fn retain_lines<'a>(bytes: &'a [u8], at_line_start: &mut bool, remaining: &mut usize) -> &'a [u8] {
-    for (index, byte) in bytes.iter().enumerate() {
-        if *at_line_start {
-            if *remaining == 0 {
-                return &bytes[..index];
-            }
-            *remaining -= 1;
-        }
-        *at_line_start = *byte == b'\n';
-    }
-    bytes
 }
 
 struct ProcessGroup {
@@ -177,6 +162,7 @@ fn reader(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     cwd: &Path,
     cache: &Path,
@@ -185,6 +171,7 @@ pub(super) fn run(
     call_id: &str,
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
+    sink: OutputSink,
 ) -> Result<Value> {
     let mut process = Command::new("bash");
     process.arg("-c").arg(command);
@@ -196,6 +183,7 @@ pub(super) fn run(
         call_id,
         cancellation,
         emit,
+        sink,
     )
     .context("running bash")
 }
@@ -250,6 +238,7 @@ fn spawn_command(cwd: &Path, cache: &Path, mut command: Command) -> Result<Spawn
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_command(
     cwd: &Path,
     cache: &Path,
@@ -258,6 +247,7 @@ pub(super) fn run_command(
     call_id: &str,
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
+    mut sink: OutputSink,
 ) -> Result<Value> {
     let SpawnedCommand {
         process,
@@ -268,79 +258,72 @@ pub(super) fn run_command(
     let stop = AtomicBool::new(false);
     let done = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
-    let mut stdout_text = StreamText::default();
-    let mut stderr_text = StreamText::default();
-    let mut remaining_lines = OUTPUT_LINE_LIMIT;
-    let mut stdout_line_start = true;
-    let mut stderr_line_start = true;
-    let mut stdout_line_truncated = false;
-    let mut stderr_line_truncated = false;
-    let (status, termination, stdout_truncated, stderr_truncated) =
-        thread::scope(|scope| -> Result<_> {
-            let (sender, receiver) = sync_channel(16);
-            let err_sender = sender.clone();
-            let out =
-                scope.spawn(|| reader(stdout, OutputStream::Stdout, sender, &stop, &done, &failed));
-            let err = scope.spawn(|| {
-                reader(
-                    stderr,
-                    OutputStream::Stderr,
-                    err_sender,
-                    &stop,
-                    &done,
-                    &failed,
-                )
-            });
-            let monitor = scope.spawn(|| {
-                process.supervise(
-                    Duration::from_secs(timeout_seconds),
-                    &stop,
-                    &done,
-                    &failed,
-                    cancellation,
-                )
-            });
-            for (stream, bytes) in receiver {
-                let (at_line_start, truncated) = match stream {
-                    OutputStream::Stdout => (&mut stdout_line_start, &mut stdout_line_truncated),
-                    OutputStream::Stderr => (&mut stderr_line_start, &mut stderr_line_truncated),
-                };
-                let retained = retain_lines(&bytes, at_line_start, &mut remaining_lines);
-                *truncated |= retained.len() < bytes.len();
-                let text = match stream {
-                    OutputStream::Stdout => stdout_text.append(retained),
-                    OutputStream::Stderr => stderr_text.append(retained),
-                };
-                emit_output(call_id, stream, text, emit);
+    let outcome = thread::scope(|scope| -> Result<_> {
+        let (sender, receiver) = sync_channel(16);
+        let err_sender = sender.clone();
+        let out =
+            scope.spawn(|| reader(stdout, OutputStream::Stdout, sender, &stop, &done, &failed));
+        let err = scope.spawn(|| {
+            reader(
+                stderr,
+                OutputStream::Stderr,
+                err_sender,
+                &stop,
+                &done,
+                &failed,
+            )
+        });
+        let monitor = scope.spawn(|| {
+            process.supervise(
+                Duration::from_secs(timeout_seconds),
+                &stop,
+                &done,
+                &failed,
+                cancellation,
+            )
+        });
+        let mut last_preview = Instant::now() - Duration::from_millis(50);
+        let mut dirty = false;
+        loop {
+            match receiver.recv_timeout(Duration::from_millis(50)) {
+                Ok((stream, bytes)) => {
+                    sink.append(stream, &bytes);
+                    dirty = true;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
-            emit_output(call_id, OutputStream::Stdout, stdout_text.finish(), emit);
-            emit_output(call_id, OutputStream::Stderr, stderr_text.finish(), emit);
-            let (status, termination) = monitor
-                .join()
-                .map_err(|_| anyhow::anyhow!("command supervisor thread failed"))??;
-            let out = out
-                .join()
-                .map_err(|_| anyhow::anyhow!("command stdout reader thread failed"))??;
-            let err = err
-                .join()
-                .map_err(|_| anyhow::anyhow!("command stderr reader thread failed"))??;
-            Ok((
-                status,
-                termination,
-                out || stdout_line_truncated,
-                err || stderr_line_truncated,
-            ))
-        })?;
+            if dirty && last_preview.elapsed() >= Duration::from_millis(50) {
+                emit(AgentEvent::ToolOutputSnapshot {
+                    id: call_id.to_owned(),
+                    output: sink.preview(),
+                });
+                last_preview = Instant::now();
+                dirty = false;
+            }
+        }
+        let status = monitor
+            .join()
+            .map_err(|_| anyhow::anyhow!("command supervisor thread failed"))??;
+        out.join()
+            .map_err(|_| anyhow::anyhow!("command stdout reader thread failed"))??;
+        err.join()
+            .map_err(|_| anyhow::anyhow!("command stderr reader thread failed"))??;
+        Ok(status)
+    });
+    // 即使进程回收失败，也先封存已经观察到的输出。
+    sink.finish();
+    let (status, termination) = outcome?;
     let (ok, timed_out, cancelled) = match termination {
         Termination::Exited => (status.success(), false, false),
         Termination::TimedOut => (false, true, false),
         Termination::Cancelled => (false, false, true),
     };
-    let mut result = json!({
-        "ok":ok, "exit_code":status.code(), "timed_out":timed_out, "cancelled":cancelled,
-        "stdout":stdout_text.text, "stderr":stderr_text.text,
-        "stdout_truncated":stdout_truncated, "stderr_truncated":stderr_truncated,
-    });
+    let mut result = sink.value();
+    result["ok"] = json!(ok);
+    result["exit_code"] = json!(status.code());
+    result["timed_out"] = json!(timed_out);
+    result["cancelled"] = json!(cancelled);
     if cancelled {
         result["error"] = json!("Command cancelled; side effects were not rolled back.");
     }
@@ -386,72 +369,32 @@ struct BackgroundTask {
     worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
-#[derive(Clone)]
 struct BackgroundState {
     status: &'static str,
     exit_code: Option<i32>,
-    stdout: BackgroundOutput,
-    stderr: BackgroundOutput,
-    remaining_lines: usize,
+    output: OutputSink,
     error: Option<String>,
     warning: Option<String>,
     cleanup_error: Option<String>,
 }
 
-#[derive(Clone)]
-struct BackgroundOutput {
-    bytes: Vec<u8>,
-    remaining_bytes: usize,
-    at_line_start: bool,
-    truncated: bool,
-}
-
-impl Default for BackgroundOutput {
-    fn default() -> Self {
-        Self {
-            bytes: Vec::new(),
-            remaining_bytes: super::OUTPUT_LIMIT,
-            at_line_start: true,
-            truncated: false,
-        }
-    }
-}
-
-impl BackgroundOutput {
-    fn append(&mut self, bytes: &[u8], remaining_lines: &mut usize) {
-        let keep = bytes.len().min(self.remaining_bytes);
-        self.remaining_bytes -= keep;
-        let retained = retain_lines(&bytes[..keep], &mut self.at_line_start, remaining_lines);
-        self.truncated |= keep < bytes.len() || retained.len() < keep;
-        self.bytes.extend_from_slice(retained);
-    }
-
-    fn text(&self, terminal: bool) -> String {
-        if terminal {
-            String::from_utf8_lossy(&self.bytes).into_owned()
-        } else {
-            let mut text = String::with_capacity(self.bytes.len());
-            super::decode_prefix(&self.bytes, &mut text);
-            text
-        }
-    }
-}
-
 impl BackgroundTask {
     fn snapshot(&self, id: &str) -> Result<Value> {
-        // Clone under the lock, then decode outside it so a large cumulative
-        // log does not block the worker draining the pipes.
-        let state = lock(&self.state).clone();
+        // 仅复制有界预览及状态，完整日志由独立资源快照读取。
+        let state = lock(&self.state);
         if let Some(error) = &state.cleanup_error {
             return Err(cleanup_error(error));
         }
-        let terminal = state.status != "running";
-        let mut value = json!({
+        let mut value = state.output.value();
+        let fields = json!({
             "ok": matches!(state.status, "running" | "exited" | "stopped"),
             "task_id": id, "status": state.status, "exit_code": state.exit_code,
-            "stdout": state.stdout.text(terminal), "stderr": state.stderr.text(terminal),
-            "stdout_truncated": state.stdout.truncated, "stderr_truncated": state.stderr.truncated,
+
         });
+        value
+            .as_object_mut()
+            .expect("输出总是对象")
+            .extend(fields.as_object().expect("状态总是对象").clone());
         if let Some(error) = &state.error {
             value["error"] = json!(error);
         }
@@ -477,12 +420,30 @@ impl BackgroundTask {
 }
 
 impl TaskManager {
+    #[cfg(test)]
     pub(super) fn start(
         &self,
         cwd: &Path,
         cache: &Path,
         command: &str,
         cancellation: &CancellationToken,
+    ) -> Result<Value> {
+        self.start_with_output(
+            cwd,
+            cache,
+            command,
+            cancellation,
+            OutputSink::new(Default::default(), Default::default()),
+        )
+    }
+
+    pub(super) fn start_with_output(
+        &self,
+        cwd: &Path,
+        cache: &Path,
+        command: &str,
+        cancellation: &CancellationToken,
+        sink: OutputSink,
     ) -> Result<Value> {
         let mut registry = lock(&self.registry);
         anyhow::ensure!(!registry.closed, "Background task manager is closed.");
@@ -501,9 +462,7 @@ impl TaskManager {
             state: Mutex::new(BackgroundState {
                 status: "running",
                 exit_code: None,
-                stdout: Default::default(),
-                stderr: Default::default(),
-                remaining_lines: OUTPUT_LINE_LIMIT,
+                output: sink,
                 error: None,
                 warning: None,
                 cleanup_error: None,
@@ -615,13 +574,14 @@ fn background_read(
         }
     };
     let mut state = lock(&task.state);
-    let BackgroundState {
-        stdout: out,
-        stderr: err,
-        remaining_lines,
-        ..
-    } = &mut *state;
-    if stdout { out } else { err }.append(&buffer[..count], remaining_lines);
+    state.output.append(
+        if stdout {
+            OutputStream::Stdout
+        } else {
+            OutputStream::Stderr
+        },
+        &buffer[..count],
+    );
     Ok(count)
 }
 
@@ -689,11 +649,10 @@ fn background_worker(spawned: SpawnedCommand, task: &BackgroundTask) {
         (&mut stdout as &mut dyn Read, true),
         (&mut stderr as &mut dyn Read, false),
     ] {
-        let mut remaining = super::OUTPUT_LIMIT + 1;
-        while remaining > 0 {
-            match background_read(pipe, task, is_stdout, remaining) {
+        loop {
+            match background_read(pipe, task, is_stdout, super::PIPE_CHUNK_SIZE) {
                 Ok(0) => break,
-                Ok(count) => remaining -= count,
+                Ok(_) => {}
                 Err(error) => {
                     output_error = Some(error);
                     break;
@@ -706,6 +665,7 @@ fn background_worker(spawned: SpawnedCommand, task: &BackgroundTask) {
         .err()
         .map(|error| format!("command finished, but temporary directory cleanup failed: {error}"));
     let mut state = lock(&task.state);
+    state.output.finish();
     state.warning = warning;
     match finished {
         Ok(status) => {
@@ -799,18 +759,9 @@ mod tests {
                     "stopped"
                 }
             );
-            for stream in ["stdout", "stderr"] {
-                assert_eq!(
-                    snapshot[stream],
-                    " ".repeat(super::super::OUTPUT_LIMIT),
-                    "{method}: {stream}"
-                );
-                assert_eq!(
-                    snapshot[format!("{stream}_truncated")],
-                    true,
-                    "{method}: {stream}"
-                );
-            }
+            assert_eq!(snapshot["truncated"], true);
+            assert_eq!(snapshot["total_bytes"], 64 * 4096 * 2);
+            assert!(snapshot["output"].as_str().unwrap().len() < 1024);
             assert!(!Path::new(&scratch).exists(), "临时目录未清理：{method}");
         }
     }
@@ -945,51 +896,5 @@ mod tests {
                     .starts_with(".pp-tmp-")
             }));
         }
-    }
-
-    #[test]
-    fn line_limit_handles_chunk_boundaries_and_unterminated_lines() {
-        for line in ["中😀\n", "\r\n", "\n"] {
-            for last_newline in [false, true] {
-                let mut exact = line.repeat(OUTPUT_LINE_LIMIT);
-                if !last_newline {
-                    exact.pop();
-                }
-                for excess in ["", "extra", "extra\n"] {
-                    let input = format!("{exact}{excess}");
-                    let expected = if last_newline { &exact } else { &input };
-                    for chunk_size in [1, 7, 4096] {
-                        let mut remaining = OUTPUT_LINE_LIMIT;
-                        let mut at_line_start = true;
-                        let mut output = Vec::new();
-                        let mut truncated = false;
-                        for bytes in input.as_bytes().chunks(chunk_size) {
-                            let retained = retain_lines(bytes, &mut at_line_start, &mut remaining);
-                            truncated |= retained.len() < bytes.len();
-                            output.extend_from_slice(retained);
-                        }
-                        assert_eq!(output, expected.as_bytes());
-                        assert_eq!(truncated, last_newline && !excess.is_empty());
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn shared_line_budget_keeps_an_already_started_line() {
-        let mut remaining = 1;
-        let mut stdout_line_start = true;
-        let mut stderr_line_start = true;
-        assert_eq!(
-            retain_lines(b"out", &mut stdout_line_start, &mut remaining),
-            b"out"
-        );
-        assert!(retain_lines(b"err\n", &mut stderr_line_start, &mut remaining).is_empty());
-        assert_eq!(
-            retain_lines(b"-end\nextra", &mut stdout_line_start, &mut remaining),
-            b"-end\n"
-        );
-        assert!(retain_lines(b"extra", &mut stdout_line_start, &mut remaining).is_empty());
     }
 }
