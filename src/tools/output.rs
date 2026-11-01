@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
@@ -227,7 +227,7 @@ fn publish(path: &Path, bytes: &[u8]) -> Result<()> {
 
 impl Store {
     pub fn bind(&self, sessions: &Path, id: &str) -> Result<()> {
-        let path = sessions.canonicalize()?.join(format!("{id}.artifacts"));
+        let path = sessions.canonicalize()?.join(id);
         let mut state = lock(&self.0);
         if state.directory.as_ref() == Some(&path) {
             return Ok(());
@@ -267,7 +267,7 @@ impl Store {
         directory(&dir)?;
         let id = state.next;
         state.next = id.checked_add(1).context("artifact IDs exhausted")?;
-        let path = dir.join(format!("{id}.bash.partial"));
+        let path = dir.join(format!("{id}.bash.log"));
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -358,36 +358,24 @@ impl Store {
             });
         }
         let path = dir.join(format!("{id}.bash.log"));
-        if path.symlink_metadata().is_ok() {
-            let file = regular(&path)?;
-            drop(file);
-            let metadata_path = dir.join(format!("{id}.meta.json"));
-            let metadata: Metadata = match regular(&metadata_path) {
-                Ok(file) => {
-                    serde_json::from_reader(file.take(4096)).context("invalid artifact metadata")?
-                }
-                Err(_) => Metadata::default(),
-            };
-            return Ok(Snapshot {
-                path,
-                metadata: json!({"uri":uri,"capturing":false,"snapshot_version":metadata.version,"complete":metadata.complete,"elided_bytes":metadata.elided_bytes}),
-                _temporary: None,
-            });
-        }
-        let partial = dir.join(format!("{id}.bash.partial"));
-        let file = regular(&partial).context("artifact not found or unavailable")?;
-        let mut temporary = tempfile::NamedTempFile::new()?;
-        copy(&mut file.take(u64::MAX), &mut temporary, token)?;
-        let path = temporary.path().canonicalize()?;
+        drop(regular(&path).context("artifact not found or unavailable")?);
+        let metadata_path = dir.join(format!("{id}.meta.json"));
+        let (metadata, interrupted): (Metadata, bool) = match regular(&metadata_path) {
+            Ok(file) => (
+                serde_json::from_reader(file.take(4096)).context("invalid artifact metadata")?,
+                false,
+            ),
+            Err(_) => (Metadata::default(), true),
+        };
         Ok(Snapshot {
             path,
-            metadata: json!({"uri":uri,"capturing":false,"complete":false,"interrupted":true}),
-            _temporary: Some(temporary),
+            metadata: json!({"uri":uri,"capturing":false,"snapshot_version":metadata.version,"complete":metadata.complete,"elided_bytes":metadata.elided_bytes,"interrupted":interrupted}),
+            _temporary: None,
         })
     }
 
     pub fn remove(sessions: &Path, id: &str) -> Result<()> {
-        let path = sessions.canonicalize()?.join(format!("{id}.artifacts"));
+        let path = sessions.canonicalize()?.join(id);
         match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
@@ -445,22 +433,23 @@ impl Capture {
 
     fn seal(&mut self) -> Result<()> {
         ensure!(!self.error, "artifact capture failed");
-        self.file.sync_data()?;
         let dir = self.path.parent().context("artifact directory missing")?;
-        let destination = dir.join(format!("{}.bash.log", self.id));
-        if let Some(window) = &self.window {
+        if let Some(window) = &self.window
+            && self.metadata.elided_bytes > 0
+        {
             let (content, omitted) = window.render(true);
             self.metadata.elided_bytes = omitted;
-            publish(&destination, content.as_bytes())?;
-        } else {
-            fs::hard_link(&self.path, &destination)?;
+            // 超出保存容量时在原文件写回头尾窗口；完整落盘后才发布完成元数据。
+            self.file.seek(SeekFrom::Start(0))?;
+            self.file.write_all(content.as_bytes())?;
+            self.file.set_len(content.len() as u64)?;
         }
+        self.file.sync_data()?;
         self.metadata.complete = self.metadata.elided_bytes == 0;
         publish(
             &dir.join(format!("{}.meta.json", self.id)),
             &serde_json::to_vec(&self.metadata)?,
         )?;
-        fs::remove_file(&self.path)?;
         Ok(())
     }
 }
@@ -648,6 +637,7 @@ impl OutputSink {
             }
         }
         self.inline.append(inline.as_bytes());
+        // 未溢出时只保留内存缓冲；首次溢出才创建资源文件并补写此前正文。
         if self.capture.is_none()
             && !self.capture_error
             && (self.column_dropped
@@ -764,6 +754,7 @@ pub(crate) fn notice(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
 
     fn fixture(settings: OutputSettings) -> (tempfile::TempDir, Store, OutputSink) {
         let dir = tempfile::tempdir().unwrap();
@@ -778,6 +769,48 @@ mod tests {
     }
 
     #[test]
+    fn artifact_log_is_created_only_on_first_overflow() {
+        for max in [0, 128] {
+            let (dir, store, mut sink) = fixture(OutputSettings {
+                artifact_spill_threshold: 12,
+                output_max_columns: 0,
+                artifact_max_bytes: max,
+                ..Default::default()
+            });
+            let root = dir.path().join("session");
+            assert!(!root.exists());
+            sink.append(OutputStream::Stdout, b"HEAD");
+            assert!(!root.exists());
+            sink.append(OutputStream::Stderr, b"1234TAIL");
+            assert!(!root.exists());
+            assert!(sink.value().get("artifact").is_none());
+
+            sink.append(OutputStream::Stdout, b"!");
+            assert_eq!(sink.value()["artifact"]["uri"], "artifact://0");
+            let log = root.join("0.bash.log");
+            let inode = fs::metadata(&log).unwrap().ino();
+            assert_eq!(fs::read(&log).unwrap(), b"HEAD1234TAIL!");
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+            assert!(!root.join("0.meta.json").exists());
+            sink.append(OutputStream::Stderr, b"END");
+            assert_eq!(fs::read(&log).unwrap(), b"HEAD1234TAIL!END");
+            sink.finish();
+            assert_eq!(fs::metadata(&log).unwrap().ino(), inode);
+            assert_eq!(fs::read(&log).unwrap(), b"HEAD1234TAIL!END");
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+            assert!(root.join("0.meta.json").is_file());
+            assert_eq!(
+                read(
+                    store
+                        .snapshot("artifact://0", &CancellationToken::new())
+                        .unwrap()
+                ),
+                "HEAD1234TAIL!END"
+            );
+        }
+    }
+
+    #[test]
     fn artifact_head_tail_boundaries_and_full_capture() {
         let settings = OutputSettings {
             artifact_spill_threshold: 12,
@@ -785,11 +818,18 @@ mod tests {
             output_max_columns: 0,
             ..Default::default()
         };
-        for count in [11, 12, 13, 4097] {
-            let (_dir, store, mut sink) = fixture(settings);
-            let text = format!("HEAD{}TAIL", "x".repeat(count - 8));
+        for count in [0, 11, 12, 13, 4097] {
+            let (dir, store, mut sink) = fixture(settings);
+            let text = if count == 0 {
+                String::new()
+            } else {
+                format!("HEAD{}TAIL", "x".repeat(count - 8))
+            };
             for chunk in text.as_bytes().chunks(3) {
                 sink.append(OutputStream::Stdout, chunk);
+            }
+            if count <= 12 {
+                assert!(!dir.path().join("session").exists());
             }
             sink.finish();
             let result = sink.value();
@@ -797,6 +837,7 @@ mod tests {
             if count <= 12 {
                 assert_eq!(result["output"], text);
                 assert!(result.get("artifact").is_none());
+                assert!(!dir.path().join("session").exists());
             } else {
                 let output = result["output"].as_str().unwrap();
                 assert!(output.starts_with("HEAD"));
@@ -868,11 +909,14 @@ mod tests {
         assert!(active.starts_with("0123456789abcdef"));
         assert!(active.ends_with("FINAL"));
         assert!(active.contains("ARTIFACT TRUNCATED"));
+        let log = dir.path().join("session/0.bash.log");
+        let inode = fs::metadata(&log).unwrap().ino();
         sink.finish();
+        assert_eq!(fs::metadata(&log).unwrap().ino(), inode);
         assert_eq!(sink.value()["artifact"]["uri"], uri);
         assert_eq!(sink.value()["artifact"]["complete"], false);
         assert!(
-            fs::metadata(dir.path().join("session.artifacts/0.bash.log"))
+            fs::metadata(dir.path().join("session/0.bash.log"))
                 .unwrap()
                 .len()
                 <= 128
@@ -890,11 +934,12 @@ mod tests {
         drop(restored);
         let resumed = Store::default();
         resumed.bind(dir.path(), "session").unwrap();
-        let partial = resumed
+        let interrupted = resumed
             .snapshot("artifact://1", &CancellationToken::new())
             .unwrap();
-        assert_eq!(partial.metadata["interrupted"], true);
-        assert_eq!(read(partial), "next-next-next");
+        assert_eq!(interrupted.metadata["interrupted"], true);
+        assert_eq!(interrupted.metadata["complete"], false);
+        assert_eq!(read(interrupted), "next-next-next");
     }
 
     #[test]
@@ -941,7 +986,7 @@ mod tests {
         ] {
             assert!(store.snapshot(uri, &CancellationToken::new()).is_err());
         }
-        let root = dir.path().join("session.artifacts");
+        let root = dir.path().join("session");
         fs::write(&root, "blocked").unwrap();
         sink.append(OutputStream::Stdout, b"large-output");
         sink.finish();
@@ -951,7 +996,7 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let outside = dir.path().join("outside");
         fs::write(&outside, "secret").unwrap();
-        std::os::unix::fs::symlink(&outside, root.join("0.bash.partial")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("0.bash.log")).unwrap();
         assert!(
             store
                 .snapshot("artifact://0", &CancellationToken::new())
@@ -981,7 +1026,7 @@ mod tests {
                 });
             }
         });
-        let logs = fs::read_dir(dir.path().join("session.artifacts"))
+        let logs = fs::read_dir(dir.path().join("session"))
             .unwrap()
             .filter(|e| {
                 e.as_ref()
@@ -993,22 +1038,23 @@ mod tests {
             .count();
         assert_eq!(logs, 12);
         Store::remove(dir.path(), "session").unwrap();
-        assert!(!dir.path().join("session.artifacts").exists());
+        assert!(!dir.path().join("session").exists());
     }
 
     #[test]
     fn artifact_write_and_publish_failures_do_not_advertise_complete_resources() {
-        for failure in ["write", "publish"] {
+        for failure in ["write", "seal", "publish"] {
             let (dir, store, mut sink) = fixture(OutputSettings {
                 artifact_spill_threshold: 8,
+                artifact_max_bytes: if failure == "seal" { 8 } else { 128 },
                 ..Default::default()
             });
             sink.append(OutputStream::Stdout, b"initial-output");
-            if failure == "write" {
+            if matches!(failure, "write" | "seal") {
                 let mut capture = lock(sink.capture.as_ref().unwrap());
                 capture.file = File::open(&capture.path).unwrap();
             } else {
-                fs::create_dir(dir.path().join("session.artifacts/0.bash.log")).unwrap();
+                fs::create_dir(dir.path().join("session/0.meta.json")).unwrap();
             }
             sink.append(OutputStream::Stderr, b"more-output");
             sink.finish();
@@ -1036,8 +1082,9 @@ mod tests {
         let uri = sink.value()["artifact"]["uri"].as_str().unwrap().to_owned();
         let saved = store.snapshot(&uri, &CancellationToken::new()).unwrap();
         assert!(!read(saved).contains('�'));
-        fs::remove_file(dir.path().join("session.artifacts/0.meta.json")).unwrap();
+        fs::remove_file(dir.path().join("session/0.meta.json")).unwrap();
         let interrupted = store.snapshot(&uri, &CancellationToken::new()).unwrap();
         assert_eq!(interrupted.metadata["complete"], false);
+        assert_eq!(interrupted.metadata["interrupted"], true);
     }
 }

@@ -77,7 +77,7 @@ fn deletion_rejects_locked_sessions_symlinks_and_invalid_ids() {
     let link_id = format!("2026-10-17T01-02-03-{}", "b".repeat(32));
     let path = dir.path().join(format!("{id}.jsonl"));
     fs::write(&path, "original bytes").unwrap();
-    let artifacts = dir.path().join(format!("{id}.artifacts"));
+    let artifacts = dir.path().join(&id);
     fs::create_dir(&artifacts).unwrap();
     fs::write(artifacts.join("0.bash.log"), "saved output").unwrap();
     let guard = SessionLock::acquire(&dir.path().join(".locks"), &id).unwrap();

@@ -95,6 +95,11 @@ fn artifact_background_live_read_is_stable_and_stop_seals_once() {
     let id = started["task_id"].as_str().unwrap();
     let status = background_wait(&tools, id, |v| v["artifact"]["uri"].is_string());
     let uri = status["artifact"]["uri"].as_str().unwrap().to_owned();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("root/0.bash.log")).unwrap(),
+        "initial-log-output\n"
+    );
+    assert_eq!(fs::read_dir(dir.path().join("root")).unwrap().count(), 1);
     let read = execute(&tools, "read", json!({"path":format!("{uri}:raw")}));
     assert_eq!(read["content"], "initial-log-output\n");
     assert_eq!(read["artifact"]["capturing"], true);
@@ -110,6 +115,7 @@ fn artifact_background_live_read_is_stable_and_stop_seals_once() {
     assert_eq!(stopped["artifact"]["uri"], uri);
     assert_eq!(stopped["artifact"]["complete"], true);
     assert_eq!(stopped["artifact"]["capturing"], false);
+    assert_eq!(fs::read_dir(dir.path().join("root")).unwrap().count(), 2);
     assert_eq!(
         execute(&tools, "read", json!({"path":format!("{uri}:raw")}))["content"],
         "initial-log-output\nafter-release\n"

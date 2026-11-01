@@ -13,6 +13,19 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
         let (request, _) = protocol.receive(&server);
         protocol.calls_reply(
             request,
+            json!([protocol.call("small", "bash", json!({"command":"printf small"}))]),
+        );
+        let (request, body) = protocol.receive(&server);
+        let small = protocol.tool_result(&body, "small");
+        assert_eq!(small["output"], "small");
+        assert!(small.get("artifact").is_none());
+        assert!(
+            std::fs::read_dir(config_path(dir.path(), "sessions"))
+                .unwrap()
+                .all(|entry| !entry.unwrap().file_type().unwrap().is_dir())
+        );
+        protocol.calls_reply(
+            request,
             json!([protocol.call(
                 "large",
                 "bash",
@@ -79,6 +92,10 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
             "journal unexpectedly retained the full log"
         );
         let id = session.file_stem().unwrap().to_str().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(session.with_extension("").join("0.bash.log")).unwrap(),
+            text
+        );
         let resumed = LiveCli::new(Cli::spawn(
             dir.path(),
             &["-r", id, "-p", "inspect saved logs"],
@@ -143,7 +160,7 @@ fn artifact_capture_failure_keeps_exit_status_in_both_protocols() {
             .find(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
             .unwrap()
             .path();
-        std::fs::write(session.with_extension("artifacts"), "blocked").unwrap();
+        std::fs::write(session.with_extension(""), "blocked").unwrap();
         protocol.calls_reply(
             request,
             json!([protocol.call(
