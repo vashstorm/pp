@@ -32,6 +32,7 @@ fn tui_todo_new_and_mode_switches_keep_old_lists_cleared() {
             pty.text("TODO · 0/2");
             plan_final(request, protocol, "Can you confirm?");
             pty.completed();
+            assert!(!pty.parser.screen().contents().contains("Todo · init"));
 
             if action == "new" {
                 pty.input("/new\r");
@@ -64,6 +65,7 @@ fn tui_todo_new_and_mode_switches_keep_old_lists_cleared() {
             plan_final(request, protocol, "No previous tasks remain.");
             pty.completed();
             assert!(!pty.parser.screen().contents().contains("TODO ·"));
+            assert!(!pty.parser.screen().contents().contains("Todo · view"));
         }
         pty.input("\x03");
         pty.finish();
@@ -173,6 +175,9 @@ fn plan_todo_approval_initializes_all_contexts_and_reminders_archive_same_bytes(
             let after = plan_todo_result(&body, protocol, "after-done");
             assert_eq!(after["phases"][0]["tasks"][0]["status"], "completed");
             assert_eq!(after["phases"][1]["tasks"][0]["status"], "in_progress");
+            pty.text("TODO · 1/2");
+            assert!(!pty.parser.screen().contents().contains("Todo · done"));
+            assert!(!pty.parser.screen().contents().contains("Todo · view"));
             assert_eq!(
                 std::fs::read(project.path().join("canary.txt")).unwrap(),
                 b"smoke bytes"

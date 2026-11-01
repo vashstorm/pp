@@ -956,7 +956,7 @@ pub(super) fn todo_checklist(
     rows
 }
 
-/// 成功调用只保留标题；失败不得把随结果携带的旧清单再次展开。
+/// 失败只展示诊断，不把随结果携带的旧清单再次展开。
 fn todo_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     if !view.failed {
         return Vec::new();

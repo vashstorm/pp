@@ -527,7 +527,10 @@ impl TranscriptEntry {
         {
             return;
         }
-        if self.hidden {
+        // 清单在固定 TODO 区展示，操作过程与成功结果不再生成历史卡片。
+        if self.hidden
+            || (self.tool.as_deref() == Some("todo") && self.status != EntryStatus::Failed)
+        {
             self.layout = Some(std::sync::Arc::new(EntryLayout {
                 width,
                 height: 0,

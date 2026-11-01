@@ -28,6 +28,7 @@ fn tui_todo_snapshots_never_create_history_cards() {
 fn tui_todo_tool_result_keeps_error_without_duplicate_list() {
     let mut transcript = Transcript::new();
     tool(&mut transcript, "todo-1", "todo", json!({"task":"A"}));
+    assert!(entry_text(&mut transcript.entries[0], 100).is_empty());
     // 开始时无法推断 op，标题保持 Todo。
     transcript.progress(AgentEvent::ToolFinished {
             id: "todo-1".into(),
@@ -51,17 +52,17 @@ fn tui_todo_tool_result_keeps_error_without_duplicate_list() {
 }
 
 #[test]
-fn tui_todo_success_keeps_only_operation_title() {
+fn tui_todo_running_and_success_never_create_history_cards() {
     let mut transcript = Transcript::new();
     // 空清单与旧格式成功结果均不在历史中展示正文。
     tool(&mut transcript, "todo-1", "todo", json!({"op":"view"}));
+    assert!(entry_text(&mut transcript.entries[0], 100).is_empty());
     transcript.progress(AgentEvent::ToolFinished {
         id: "todo-1".into(),
         result: json!({"ok":true,"op":"view","content":"Todo list is empty.","phases":[]}),
     });
     let text = entry_text(&mut transcript.entries[0], 100);
-    assert!(!text.contains("Todo list is empty."), "{text}");
-    assert!(text.contains("Todo · view"), "{text}");
+    assert!(text.is_empty(), "{text}");
 
     // 旧格式缺 phases 也不能把历史正文当作当前权威。
     tool(&mut transcript, "todo-2", "todo", json!({"op":"view"}));
@@ -70,7 +71,12 @@ fn tui_todo_success_keeps_only_operation_title() {
         result: json!({"ok":true,"op":"view","content":"fallback body"}),
     });
     let text = entry_text(&mut transcript.entries[1], 100);
-    assert!(!text.contains("fallback body"), "{text}");
+    assert!(text.is_empty(), "{text}");
+
+    transcript.toggle_tool_output();
+    transcript.display.full = true;
+    assert!(screen(&render(&mut transcript, 100, 20)).trim().is_empty());
+    assert_eq!(transcript.total, 0);
 
     // 完全缺失 content：退回 error 诊断。
     tool(&mut transcript, "todo-3", "todo", json!({"op":"done"}));
@@ -80,6 +86,54 @@ fn tui_todo_success_keeps_only_operation_title() {
     });
     let text = entry_text(&mut transcript.entries[2], 100);
     assert!(text.contains("todo failed clearly"), "{text}");
+}
+
+#[test]
+fn tui_todo_success_hidden_in_replay_and_native_history() {
+    let mut transcript = Transcript::new();
+    let records = || {
+        let mut records = answer("Before todo");
+        records.extend([
+            ReplayRecord::Event(AgentEvent::ToolStarted {
+                id: "done".into(),
+                name: "todo".into(),
+                arguments: json!({"op":"done","task":"Alpha"}).to_string(),
+            }),
+            ReplayRecord::Event(AgentEvent::ToolFinished {
+                id: "done".into(),
+                result: json!({"ok":true,"op":"done","content":"Overall: 1/1 done."}),
+            }),
+        ]);
+        records.extend(answer("After todo"));
+        records
+    };
+    let mut tree = Transcript::new();
+    let blocks = [TreeBlock {
+        entries: tree.append_tree_node(records(), ""),
+        label: Line::raw("Todo exchange"),
+    }];
+    let text = screen(&tree_render(
+        &mut tree,
+        &blocks,
+        &[0],
+        Some(0),
+        false,
+        100,
+        20,
+    ));
+    assert!(text.contains("After todo"), "{text}");
+    assert!(!text.contains("Todo · done"), "{text}");
+    assert!(transcript.replay(records()).is_none());
+    let text = screen(&render(&mut transcript, 100, 20));
+    assert!(
+        text.contains("Before todo") && text.contains("After todo"),
+        "{text}"
+    );
+    assert!(!text.contains("Todo · done"), "{text}");
+    let text = retire_native(&mut transcript, 100, 1, true);
+    assert!(text.contains("Before todo"), "{text}");
+    assert!(!text.contains("Todo · done"), "{text}");
+    assert!(!text.contains("Overall:"), "{text}");
 }
 
 #[test]
