@@ -94,12 +94,14 @@ const EFFORT_HINT: &str = platform_text(
 );
 const MOUSE_SCROLL_LINES: usize = 3;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     agent: Result<Agent>,
     cwd: &Path,
     skills: crate::skills::SharedSkills,
     file_commands: commands::FileCommands,
     auto_continue: bool,
+    open_resume: bool,
     options: crate::config::TuiSettings,
     bootstrap: Option<crate::agent::Bootstrap>,
 ) -> Result<()> {
@@ -129,6 +131,10 @@ pub(crate) fn run(
                 app.send_task(None);
             }
         }
+    }
+    // `pp -r`：启动后立即打开 /resume 会话选择面板，等同于空闲时提交 /resume。
+    if open_resume && matches!(app.state, State::Ready) {
+        app.open_session_panel();
     }
     let mut workspace = WorkspaceStatus::new(cwd)?;
     app.renderer = Some(render_worker::Worker::start().context("starting layout worker")?);

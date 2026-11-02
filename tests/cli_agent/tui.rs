@@ -122,6 +122,18 @@ impl Pty {
         Self::spawn(command)
     }
 
+    /// `pp -r` 等启动即进入备用屏幕面板的入口：跳过主屏幕就绪栅栏，
+    /// 由用例自行等待面板可见。
+    pub(super) fn start_with_args_in_alt_screen(cwd: &Path, home: &Path, args: &[&str]) -> Self {
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
+        command.cwd(cwd);
+        command.env("HOME", home);
+        for arg in args {
+            command.arg(arg);
+        }
+        Self::spawn_raw(command)
+    }
+
     // 持久化写失败：bash 的 ulimit -f 以 1024 字节为单位，忽略 SIGXFSZ 后写入返回 EFBIG。
     fn start_with_file_limit(cwd: &Path, home: &Path, blocks: u64, args: &[&str]) -> Self {
         let mut command = CommandBuilder::new("bash");
@@ -137,7 +149,24 @@ impl Pty {
         Self::spawn(command)
     }
 
-    fn spawn(mut command: CommandBuilder) -> Self {
+    fn spawn(command: CommandBuilder) -> Self {
+        let mut pty = Self::spawn_raw(command);
+        pty.wait_for("主屏幕、括号粘贴和 SGR 鼠标模式", |screen| {
+            !screen.alternate_screen()
+                && screen.bracketed_paste()
+                && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+                && screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr
+        });
+        assert_ne!(
+            terminal_flags(pty.master.as_ref()),
+            pty.original_flags,
+            "TUI did not enter raw mode\n{}",
+            pty.diagnostics()
+        );
+        pty
+    }
+
+    fn spawn_raw(mut command: CommandBuilder) -> Self {
         let spawn_guard = PTY_SPAWN.lock().unwrap_or_else(|error| error.into_inner());
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -171,7 +200,7 @@ impl Pty {
                 }
             }
         });
-        let mut pty = Self {
+        Self {
             child: Some(child),
             master: pair.master,
             slave: Some(pair.slave),
@@ -182,20 +211,7 @@ impl Pty {
             parse_pending: Vec::new(),
             raw: Vec::new(),
             original_flags,
-        };
-        pty.wait_for("主屏幕、括号粘贴和 SGR 鼠标模式", |screen| {
-            !screen.alternate_screen()
-                && screen.bracketed_paste()
-                && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
-                && screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr
-        });
-        assert_ne!(
-            terminal_flags(pty.master.as_ref()),
-            pty.original_flags,
-            "TUI did not enter raw mode\n{}",
-            pty.diagnostics()
-        );
-        pty
+        }
     }
 
     pub(super) fn input(&mut self, text: &str) {

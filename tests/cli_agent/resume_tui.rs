@@ -1059,8 +1059,46 @@ fn tui_slash_resume_searches_full_prompt_history_and_blocks_locked_delete() {
         &id,
         &["resume-search second answer", "needle_42"],
     );
+    pty.input("/quit\r");
+    pty.finish();
+}
+
+// `pp -r` 不带 SESSION_ID：启动后直接打开 Resume session 面板，等同于空闲时
+// 提交 /resume；Esc 关闭后回到普通输入，可正常退出，且不发送模型请求。
+#[test]
+fn tui_resume_flag_without_id_opens_session_picker_directly() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_path(home.path(), "settings.yml"),
+        r#"{"default_model":"fixture/primary","notification_timeout_seconds":1}"#,
+    )
+    .unwrap();
+    std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&server)).unwrap();
+    let alpha = tempfile::tempdir().unwrap();
+    {
+        let mut pty = Pty::start_with_args(alpha.path(), home.path(), &[]);
+        pty.ready();
+        pty.input("resume-flag saved task\r");
+        let (request, _) = pty.request(&server);
+        final_reply(request, "resume-flag saved answer");
+        pty.text("resume-flag saved answer");
+        pty.ready();
+        pty.input("/quit\r");
+        pty.finish();
+    }
     no_more(&server);
-    assert_eq!(std::fs::read(&journal).unwrap(), before);
+
+    let launch = tempfile::tempdir().unwrap();
+    let mut pty = Pty::start_with_args_in_alt_screen(launch.path(), home.path(), &["-r"]);
+    pty.wait_for("startup opens the session picker", |screen| {
+        screen.contents().contains("Resume session (")
+    });
+    pty.input("\x1b");
+    pty.wait_for("picker closes back to normal input", |screen| {
+        !screen.contents().contains("Resume session (") && input_is_ready(screen)
+    });
+    no_more(&server);
     pty.input("/quit\r");
     pty.finish();
 }

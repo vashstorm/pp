@@ -182,10 +182,10 @@ TODO 区固定在输入框正上方，使用灰色 `├─ / │ / └─` 树�
 
 </details>
 
-会话自动保存在 `~/.pp/agent/sessions/`。按完整标识恢复，或打开本地统计页面：
+会话自动保存在 `~/.pp/agent/sessions/`。`pp -r` 在终端界面直接打开会话选择面板；传入完整标识则跳过面板直接恢复，或打开本地统计页面：
 
 ```sh
-pp -r SESSION_ID
+pp -r [SESSION_ID]
 pp stats
 ```
 

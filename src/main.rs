@@ -44,7 +44,7 @@ use std::{
     disable_version_flag = true,
     args_conflicts_with_subcommands = true,
     about = "Minimal coding agent using OpenAI-compatible Responses or Chat Completions",
-    after_help = "Modes:\n  pp -p 'task'          run one task and exit\n  pp -c [SESSION_ID]    continue a saved session\n  pp                    interactive session (TUI on a terminal, line mode otherwise)\n\nUse `/login` and `/logout` in the TUI to manage subscription credentials, `pp stats --help` for statistics, or `pp gc [DAYS]` to remove data older than the given days (default 90)."
+    after_help = "Modes:\n  pp -p 'task'          run one task and exit\n  pp -r [SESSION_ID]    open the resume picker, or resume a saved session by ID\n  pp -c [SESSION_ID]    continue a saved session\n  pp                    interactive session (TUI on a terminal, line mode otherwise)\n\nUse `/login` and `/logout` in the TUI to manage subscription credentials, `pp stats --help` for statistics, or `pp gc [DAYS]` to remove data older than the given days (default 90)."
 )]
 struct Args {
     #[command(subcommand)]
@@ -70,14 +70,15 @@ struct Args {
     #[arg(long, value_name = "TEXT_OR_FILE", conflicts_with_all = ["resume", "continue_session"])]
     append_system_prompt: Option<String>,
 
-    /// Resume a saved session by exact ID and wait for input
+    /// Open the resume session picker, or resume a saved session by exact ID
     #[arg(
         short = 'r',
         long = "resume",
         value_name = "SESSION_ID",
+        num_args = 0..=1,
         conflicts_with = "continue_session"
     )]
-    resume: Option<String>,
+    resume: Option<Option<String>>,
 
     /// Continue a saved session by exact ID, or the most recently modified one
     #[arg(
@@ -237,8 +238,17 @@ fn run(args: Args) -> Result<()> {
     let continue_requested = args.continue_session.is_some();
     let resume_id = args
         .resume
-        .as_deref()
+        .as_ref()
+        .and_then(|id| id.as_deref())
         .or_else(|| args.continue_session.as_ref().and_then(|id| id.as_deref()));
+    // `pp -r` without an ID opens the TUI directly on the resume session picker;
+    // it still requires an interactive terminal like any other TUI entry.
+    let resume_picker = args.resume.is_some() && resume_id.is_none();
+    if resume_picker && (args.prompt.is_some() || !use_tui) {
+        anyhow::bail!(
+            "`-r` without a session ID opens the session picker and requires an interactive terminal; use `pp -r SESSION_ID` to resume directly."
+        );
+    }
     if let Some(id) = resume_id {
         agent::persistence::validate_id(id)?;
     }
@@ -268,7 +278,7 @@ fn run(args: Args) -> Result<()> {
     } else {
         commands::FileCommands::default()
     };
-    let restored = if args.resume.is_some() || continue_requested {
+    let restored = if resume_id.is_some() || continue_requested {
         let dir = global_dir
             .as_ref()
             .map_err(|error| anyhow::anyhow!("{error:#}"))?;
@@ -378,6 +388,7 @@ fn run(args: Args) -> Result<()> {
             skills,
             file_commands,
             continue_requested,
+            resume_picker,
             tui_settings,
             bootstrap,
         );
@@ -386,7 +397,7 @@ fn run(args: Args) -> Result<()> {
         // 去重状态已从有效回放重建；CLI 不保留展示正文。
         drop(agent.take_replay());
     }
-    let resumed_id = if args.resume.is_some() || continue_requested {
+    let resumed_id = if resume_id.is_some() || continue_requested {
         agent.as_ref().ok().and_then(|agent| agent.session_id())
     } else {
         None

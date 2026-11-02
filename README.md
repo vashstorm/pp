@@ -184,10 +184,10 @@ With `edit: hashline`, local reads and grep results provide a `[path#TAG]` file-
 
 </details>
 
-Sessions are saved automatically in `~/.pp/agent/sessions/`. Restore one by its full ID, or open the local statistics page:
+Sessions are saved automatically in `~/.pp/agent/sessions/`. `pp -r` opens the resume session picker directly in the TUI; pass a full ID to restore that session without the picker, or open the local statistics page:
 
 ```sh
-pp -r SESSION_ID
+pp -r [SESSION_ID]
 pp stats
 ```
 
