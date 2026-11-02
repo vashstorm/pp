@@ -1,6 +1,65 @@
 use super::*;
 
 #[test]
+fn wait_background_delivers_results_once_and_does_not_stream_progress_json() {
+    for protocol in PROTOCOLS {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let cli = protocol.start(&server, dir.path(), Some("wait for background output"));
+        let (request, _) = protocol.receive(&server);
+        protocol.calls_reply(request,json!([protocol.call("start","bash",json!({"command":"while [ ! -f release ]; do sleep 0.01; done; printf 'wait-protocol-result'","mode":"background"}))]));
+        let (request, body) = protocol.receive(&server);
+        let started = protocol.tool_result(&body, "start");
+        let id = started["task_id"].as_str().unwrap();
+        protocol.calls_reply(
+            request,
+            json!([protocol.call("peek", "wait", json!({"task_ids":[id],"timeout_ms":0}))]),
+        );
+        let (request, body) = protocol.receive(&server);
+        let peek = protocol.tool_result(&body, "peek");
+        assert_eq!(peek["pending"], true);
+        assert_eq!(peek["timed_out"], true);
+        // 第二个 wait 在同一批内执行，不能重复交付第一个 wait 的结果。
+        std::fs::write(dir.path().join("release"), "").unwrap();
+        protocol.calls_reply(
+            request,
+            json!([
+                protocol.call("wait", "wait", json!({"task_ids":[id],"timeout_ms":5000})),
+                protocol.call("again", "wait", json!({"task_ids":[id]}))
+            ]),
+        );
+        let (request, body) = protocol.receive(&server);
+        let result = protocol.tool_result(&body, "wait");
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(
+            result["background_results"][0]["output"],
+            "wait-protocol-result"
+        );
+        assert_eq!(
+            protocol.tool_result(&body, "again")["background_results"],
+            json!([])
+        );
+        protocol.calls_reply(
+            request,
+            json!([protocol.call("after-commit", "wait", json!({}))]),
+        );
+        let (request, body) = protocol.receive(&server);
+        assert_eq!(
+            protocol.tool_result(&body, "after-commit")["jobs"],
+            json!([])
+        );
+        protocol.final_reply(request, "wait protocol verified");
+        let output = cli.finish();
+        assert!(output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("\"background_results\"") && !stderr.contains("\"duration_ms\""),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
 fn background_service_lifecycle_in_both_protocols() {
     for protocol in PROTOCOLS {
         let server = server();

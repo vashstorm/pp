@@ -3,6 +3,7 @@ include!("effort_defaults.rs");
 include!("mcp_tui.rs");
 include!("shell_tui.rs");
 include!("cancel_tui.rs");
+include!("wait_tui.rs");
 include!("cancel_mcp_tui.rs");
 include!("resume_tui.rs");
 include!("resume_boundaries.rs");

@@ -3,6 +3,39 @@
 use super::*;
 
 impl Transcript {
+    pub(super) fn apply_wait_background(&mut self, result: &Value) {
+        for snapshot in result["background_results"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let Some(index) = snapshot["task_id"]
+                .as_str()
+                .and_then(|id| self.background_bash.get(id))
+                .copied()
+            else {
+                continue;
+            };
+            let entry = &mut self.entries[index];
+            entry.status = if snapshot["ok"] == false {
+                EntryStatus::Failed
+            } else {
+                EntryStatus::Complete
+            };
+            entry.text = tool_result(EntryKind::Bash, "bash", snapshot);
+            entry.result = Some(snapshot.clone());
+            entry.stdout.clear();
+            entry.stderr.clear();
+            entry.update_bash_footer(
+                entry
+                    .started
+                    .filter(|_| !self.replaying)
+                    .map(|s| s.elapsed()),
+            );
+            entry.layout = None;
+        }
+    }
+
     pub(super) fn background_bash_index(&self, arguments: &Value) -> Option<usize> {
         if !matches!(arguments["action"].as_str(), Some("status" | "stop")) {
             return None;

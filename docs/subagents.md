@@ -88,7 +88,7 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 
 | 接口 | 行为 |
 | --- | --- |
-| `wait` | 等待调用者拥有的 Run；可传 `run_ids` 和最多 60000 的 `timeout_ms`；超时不取消 |
+| `wait` | 等待自有子 Agent 或后台 Bash，任一目标结束即返回；支持 `run_ids`／`task_ids`，`timeout_ms` 为 0–1800000，默认 30 分钟；超时不取消 |
 | `read agent://<id>` | 查看当前 Run 与最近已发布结果；旧结果标记 `superseded` |
 | `write agent://<id>` | 通过 `content` 补充运行中指令，或开始后续 Run |
 | `read history://` | 列出当前根会话可访问的子 Agent |
@@ -97,6 +97,12 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 | `write proc://<run_id>/kill` | 取消该 Run，保留 Agent 上下文 |
 
 后台结果自动回到直接 owner。`wait` 与自动投递共用消费标识，父原生上下文提交成功后才确认消费；普通读取不会消费结果。父模型结束输出但仍有自有子任务时继续等待，结果到达后再汇总。
+
+`wait({})` 自动选择当前调用者拥有且尚未交付结果的目标；任一 ID 列表非空时仅等待显式指定目标，两个列表可以混用。目标集合在调用开始时冻结，新启动任务不会加入本次等待。`timeout_ms: 0` 立即返回快照，未知、其他 owner 或上一用户任务的后台 ID 整体报错，不消费其他有效结果。
+
+返回值保留 `ok`、`results` 和 `pending`，并增加 `background_results`、`jobs`、`timed_out`、`interrupted`。`results` 保留子 Agent 的 `delivery_marker`／`run` 信封；`background_results` 保存后台 Bash 终态、退出码、有限输出及 artifact 元数据；`jobs` 为本次目标的 ID、类型、标题、状态、耗时与交付状态。`ok` 表示等待调用成功，任务自身仍可能失败或取消。已交付目标再次等待只返回状态，查看正文使用不消费结果的读取接口。后台 Bash 仍只在显式等待时交付，不增加自动注入。
+
+Steering 会提前结束等待，返回 `interrupted:true`，输入仍在完整工具批次提交后领取；FollowUp 不打断等待。超时只返回 `timed_out:true`，不停止任务；Esc 沿用整任务取消。TUI 每 500ms 更新运行标识、耗时和任务状态，进度条表示已结束数量／目标总数，不表示任务内部的完成百分比。默认显示 8 项，Ctrl + O 展开；历史恢复只展示冻结快照。参见 [OMP wait 调研与适配](wait-research.md)。
 
 默认使用最后一条 assistant 消息作为结果。任务项可以提供 `output_schema`，角色也可声明 `output`；调用项优先。结构化 child 获得 `yield`，必须以 `{"data": ...}` 提交符合 JSON Schema 的结果；无效结果不会被标成成功。Schema 外部 HTTP/文件引用解析未开启。
 

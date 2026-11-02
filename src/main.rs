@@ -1275,9 +1275,14 @@ fn run_cli_task(
                 current_tool = Some((id, name));
             }
             AgentEvent::FileChanged { .. } => {}
-            AgentEvent::ToolOutputSnapshot { output, .. } => {
-                let delta = cli_output_text(&output, &mut streamed_output, false, "bash");
-                cli_write(stderr, &delta, &mut err_broken, &mut first_error);
+            AgentEvent::ToolOutputSnapshot { id, output } => {
+                if !current_tool
+                    .as_ref()
+                    .is_some_and(|(current_id, name)| current_id == &id && name == "wait")
+                {
+                    let delta = cli_output_text(&output, &mut streamed_output, false, "bash");
+                    cli_write(stderr, &delta, &mut err_broken, &mut first_error);
+                }
             }
             AgentEvent::ToolOutput { id, stream, text } => {
                 let name = current_tool
@@ -1296,6 +1301,32 @@ fn run_cli_task(
                 );
             }
             AgentEvent::ToolFinished { id, result } => {
+                if current_tool
+                    .as_ref()
+                    .is_some_and(|(current_id, name)| current_id == &id && name == "wait")
+                    && let Some(jobs) = result["jobs"].as_array()
+                {
+                    let running = jobs
+                        .iter()
+                        .filter(|job| matches!(job["status"].as_str(), Some("queued" | "running")))
+                        .count();
+                    let suffix = if result["interrupted"] == true {
+                        "; interrupted by steering"
+                    } else if result["timed_out"] == true {
+                        "; timed out"
+                    } else {
+                        ""
+                    };
+                    cli_write(
+                        stderr,
+                        &format!(
+                            "wait: {} settled, {running} running{suffix}\n",
+                            jobs.len() - running
+                        ),
+                        &mut err_broken,
+                        &mut first_error,
+                    );
+                }
                 if result["output"].is_string() {
                     cli_write(
                         stderr,

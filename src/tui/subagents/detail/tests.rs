@@ -112,6 +112,7 @@ fn run(id: &str, status: &str) -> Run {
         result: None,
         consumed: false,
         duration_ms: 12_000,
+        started_ms: 0,
         requests: 0,
         tokens: 0,
         cost: None,

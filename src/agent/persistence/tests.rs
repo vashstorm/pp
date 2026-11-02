@@ -2,6 +2,85 @@ use super::*;
 use crate::models::Protocol;
 
 #[test]
+fn wait_native_commit_failure_does_not_acknowledge_background_delivery() {
+    use crate::{
+        cancellation::CancellationToken,
+        tools::{ToolPolicy, Tools},
+    };
+    for protocol in [Protocol::Completion, Protocol::Response] {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let workflow = WorkflowState::default();
+        let token = CancellationToken::new();
+        let mut session = Session::new(
+            "fixture".into(),
+            protocol,
+            "system".into(),
+            EditMode::Replace,
+        );
+        let metadata = Metadata {
+            role_route: None,
+            cwd: dir.path(),
+            model_reference: "fixture/primary",
+            think_level: ThinkLevel::None,
+            edit_mode: EditMode::Replace,
+            tool_limits: ToolLimits::default(),
+            base_system: "system",
+            prompt_source: None,
+        };
+        let mut journal = SessionJournal::new(dir.path().join("sessions"));
+        journal
+            .sent(
+                &metadata,
+                (&session).into(),
+                &workflow,
+                Some("wait test"),
+                None,
+            )
+            .unwrap();
+        let path = dir
+            .path()
+            .join("sessions")
+            .join(format!("{}.jsonl", journal.id().unwrap()));
+        let execute = |name: &str, args: &str| {
+            tools.execute(
+                name,
+                args,
+                name,
+                ToolPolicy::Execute {
+                    workflow: &workflow,
+                },
+                &token,
+                &mut |_| {},
+            )
+        };
+        execute(
+            "bash",
+            r#"{"command":"printf 'unacknowledged-output'","mode":"background"}"#,
+        );
+        let result = execute("wait", r#"{"timeout_ms":5000}"#);
+        let value: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(
+            value["background_results"][0]["output"],
+            "unacknowledged-output"
+        );
+        journal.use_read_only_file(&path);
+        super::super::append_user_to(&mut session, "force a native append");
+        let committed = journal
+            .commit((&session).into())
+            .and_then(|()| tools.commit_wait_results());
+        assert!(committed.is_err());
+        // 下一批次释放预留后仍能读到同一完成结果，失败提交没有提前确认消费。
+        tools.start_wait_batch(None);
+        let again: serde_json::Value = serde_json::from_str(&execute("wait", "{}").output).unwrap();
+        assert_eq!(
+            again["background_results"][0]["output"],
+            "unacknowledged-output"
+        );
+    }
+}
+
+#[test]
 fn session_id_requires_calendar_time_and_lowercase_random_suffix() {
     for time in ["2026-10-17T01-02-03", "2024-02-29T23-59-59"] {
         assert!(validate_id(&format!("{time}-{}", "0123456789abcdef".repeat(2))).is_ok());

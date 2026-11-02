@@ -1366,6 +1366,7 @@ mod tests {
             result: None,
             consumed: false,
             duration_ms: 0,
+            started_ms: 0,
             requests: 0,
             tokens: 0,
             cost: None,

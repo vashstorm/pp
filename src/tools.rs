@@ -34,6 +34,7 @@ pub(crate) mod read;
 mod replace;
 pub(crate) mod save;
 pub(crate) mod todo;
+pub(crate) mod wait;
 
 #[cfg(test)]
 const OUTPUT_LIMIT: usize = 65_536;
@@ -71,6 +72,8 @@ pub(crate) struct Tools {
     web_cache: RefCell<read::WebCache>,
     snapshots: RefCell<hashline::Store>,
     background_tasks: bash::TaskManager,
+    wait_state: RefCell<wait::State>,
+    wait_input: RefCell<Option<InputQueue>>,
     pub(crate) limits: ToolLimits,
 }
 
@@ -208,6 +211,8 @@ impl Tools {
             web_cache: RefCell::default(),
             snapshots: RefCell::default(),
             background_tasks: Default::default(),
+            wait_state: RefCell::default(),
+            wait_input: RefCell::default(),
             limits: ToolLimits::default(),
         })
     }
@@ -440,7 +445,10 @@ impl Tools {
     }
 
     pub(crate) fn stop_background_tasks(&self) -> Result<()> {
-        self.background_tasks.stop_all()
+        self.background_tasks.stop_all()?;
+        self.wait_state.borrow_mut().clear_background();
+        self.wait_input.borrow_mut().take();
+        Ok(())
     }
 
     pub(crate) fn background_cleanup(&self) -> BackgroundCleanup {
@@ -508,6 +516,9 @@ impl Tools {
         };
         if let Some(binding) = &self.subagent {
             definitions.extend(binding.definitions(mode));
+            if mode == WorkMode::Plan {
+                definitions.push(wait::definition());
+            }
         }
         if self.yield_schema.is_some() {
             definitions.push(crate::subagent::yield_definition());
@@ -624,6 +635,7 @@ impl Tools {
                 ..Default::default()
             },
             todo::definition(),
+            wait::definition(),
         ]
     }
 
@@ -669,6 +681,7 @@ impl Tools {
             "write" => "write",
             "bash" => "bash",
             "bash_task" => "bash_task",
+            "wait" => "wait",
             "grep" => "grep",
             "glob" => "glob",
             "todo" => "todo",
@@ -701,6 +714,9 @@ impl Tools {
                 &mut images,
             ) {
                 Ok((result, change, todo)) => {
+                    if name == "task" {
+                        self.reserve_task_results(&result);
+                    }
                     plan_change = change;
                     todo_change = todo;
                     result
@@ -852,8 +868,13 @@ impl Tools {
         if matches!(policy, ToolPolicy::Execute { .. }) {
             self.approval.enforce(name, arguments, cancellation)?;
         }
+        if name == "wait" {
+            return self
+                .run_wait(arguments, call_id, cancellation, emit)
+                .map(|v| (v, None, None));
+        }
         if let Some(binding) = &self.subagent {
-            if matches!(name, "task" | "wait") {
+            if name == "task" {
                 let plan = matches!(policy, ToolPolicy::Plan { .. });
                 return Ok((
                     binding.execute(name, arguments, plan, cancellation)?,

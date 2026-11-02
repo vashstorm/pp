@@ -912,6 +912,13 @@ impl Transcript {
             AgentEvent::ToolOutputSnapshot { id, output } => {
                 if let Some(index) = self.tool_index(&id) {
                     let entry = &mut self.entries[index];
+                    if entry.tool.as_deref() == Some("wait") {
+                        if let Ok(snapshot) = serde_json::from_str::<Value>(&output) {
+                            entry.result = Some(snapshot);
+                            entry.layout = None;
+                        }
+                        return;
+                    }
                     if entry.kind == EntryKind::Bash {
                         entry.text.clear();
                     }
@@ -922,6 +929,12 @@ impl Transcript {
                 }
             }
             AgentEvent::ToolFinished { id, mut result } => {
+                if self
+                    .tool_index(&id)
+                    .is_some_and(|index| self.entries[index].tool.as_deref() == Some("wait"))
+                {
+                    self.apply_wait_background(&result);
+                }
                 if let Some(position) = self.running_tools.iter().position(|(call, _)| call == &id)
                 {
                     let (_, index) = self.running_tools.remove(position);

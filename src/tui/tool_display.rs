@@ -10,6 +10,8 @@ use ratatui::{
 use serde_json::Value;
 
 mod mcp_preview;
+mod wait;
+pub(super) use wait::render as wait_body;
 
 const READ_LINES: usize = 3;
 // 指令卡片（自动 AGENTS 加载与技能正文读取）固定预览 10 个逻辑行。

@@ -1625,6 +1625,7 @@ impl Agent {
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
         self.tools.yielded.borrow_mut().take();
+        self.tools.start_wait_batch(input);
         let mut request_count = 0usize;
         let mut claim_boundary = true;
         let mut reminder = todo::TodoReminderState::default();
@@ -1754,6 +1755,7 @@ impl Agent {
             };
             self.pending_instructions = None;
             self.journal.commit((&self.session).into())?;
+            self.tools.commit_wait_results()?;
             self.apply_runtime_models()?;
             if plan_dirty {
                 self.refresh_plan_progress(emit)?;

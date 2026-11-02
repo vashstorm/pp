@@ -363,6 +363,8 @@ fn cleanup_error(message: impl std::fmt::Display) -> anyhow::Error {
 }
 
 struct BackgroundTask {
+    label: String,
+    started: Instant,
     cancellation: CancellationToken,
     stop: CancellationToken,
     state: Mutex<BackgroundState>,
@@ -370,6 +372,7 @@ struct BackgroundTask {
 }
 
 struct BackgroundState {
+    duration_ms: Option<u64>,
     status: &'static str,
     exit_code: Option<i32>,
     output: OutputSink,
@@ -420,6 +423,43 @@ impl BackgroundTask {
 }
 
 impl TaskManager {
+    pub(super) fn wait_jobs(&self, ids: &[String]) -> Result<Vec<super::wait::Job>> {
+        let tasks = {
+            let registry = lock(&self.registry);
+            for id in ids {
+                anyhow::ensure!(
+                    registry.tasks.contains_key(id),
+                    "Unknown background task: {id}"
+                );
+            }
+            registry
+                .tasks
+                .iter()
+                .filter(|(id, _)| ids.is_empty() || ids.contains(id))
+                .map(|(id, task)| (id.clone(), task.clone()))
+                .collect::<Vec<_>>()
+        };
+        tasks
+            .into_iter()
+            .map(|(id, task)| {
+                let state = lock(&task.state);
+                if let Some(error) = &state.cleanup_error {
+                    return Err(cleanup_error(error));
+                }
+                Ok(super::wait::Job {
+                    id,
+                    r#type: "bash".into(),
+                    label: task.label.clone(),
+                    status: state.status.into(),
+                    duration_ms: state
+                        .duration_ms
+                        .unwrap_or_else(|| task.started.elapsed().as_millis() as u64),
+                    delivered: false,
+                })
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub(super) fn start(
         &self,
@@ -457,9 +497,12 @@ impl TaskManager {
         command_process.arg("-c").arg(command);
         let spawned = spawn_command(cwd, cache, command_process)?;
         let task = Arc::new(BackgroundTask {
+            label: command.chars().take(200).collect(),
+            started: Instant::now(),
             cancellation: cancellation.clone(),
             stop: CancellationToken::new(),
             state: Mutex::new(BackgroundState {
+                duration_ms: None,
                 status: "running",
                 exit_code: None,
                 output: sink,
@@ -666,6 +709,7 @@ fn background_worker(spawned: SpawnedCommand, task: &BackgroundTask) {
         .map(|error| format!("command finished, but temporary directory cleanup failed: {error}"));
     let mut state = lock(&task.state);
     state.output.finish();
+    state.duration_ms = Some(task.started.elapsed().as_millis() as u64);
     state.warning = warning;
     match finished {
         Ok(status) => {

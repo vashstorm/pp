@@ -601,6 +601,40 @@ impl TranscriptEntry {
             }));
             return;
         }
+        if self.tool.as_deref() == Some("wait")
+            && (self.result.is_none()
+                || self
+                    .result
+                    .as_ref()
+                    .is_some_and(|r| r["jobs"].is_array() || r["ok"] == false))
+        {
+            let lines = tool_display::wait_body(
+                tool_display::View {
+                    name: "wait",
+                    text: &self.text,
+                    arguments: &self.arguments,
+                    result: self.result.as_ref(),
+                    running: self.status == EntryStatus::Running,
+                    failed: self.status == EntryStatus::Failed,
+                    expanded: self.expanded,
+                    instruction_read: false,
+                    context: self.display,
+                },
+                width,
+            )
+            .into_iter()
+            .map(|line| LayoutLine {
+                content: LayoutContent::Styled(line),
+                height: 1,
+            })
+            .collect::<Vec<_>>();
+            self.layout = Some(std::sync::Arc::new(EntryLayout {
+                width,
+                height: lines.len(),
+                lines,
+            }));
+            return;
+        }
         let mut lines = Vec::new();
         let bash = self.kind == EntryKind::Bash;
         let user = self.kind == EntryKind::User;

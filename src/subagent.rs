@@ -94,6 +94,8 @@ pub(crate) struct Run {
     pub result: Option<Value>,
     pub consumed: bool,
     pub duration_ms: u64,
+    #[serde(default)]
+    pub started_ms: u64,
     pub requests: usize,
     pub tokens: u64,
     #[serde(default)]
@@ -398,12 +400,7 @@ impl Binding {
         catalog::discover(&self.cwd, &self.inner.user, &self.inner.settings)
     }
     pub(crate) fn definitions(&self, _mode: WorkMode) -> Vec<FunctionObject> {
-        let mut defs = vec![function(
-            "wait",
-            "Wait for owned subagent runs. Results are consumed once; inspection does not consume results.",
-            json!({"run_ids":{"type":"array","items":{"type":"string"}},"timeout_ms":{"type":"integer","minimum":0,"maximum":60000}}),
-            &[],
-        )];
+        let mut defs = Vec::new();
         if self.depth < self.inner.settings.max_recursion_depth
             && !self.spawns.is_empty()
             && !self.readonly
@@ -483,10 +480,6 @@ impl Binding {
             "task" => {
                 let args: Batch = serde_json::from_str(arguments)?;
                 self.spawn(args, plan, token)
-            }
-            "wait" => {
-                let args: Wait = serde_json::from_str(arguments)?;
-                self.wait(&args.run_ids, args.timeout_ms.min(60_000), token)
             }
             _ => bail!("unknown subagent tool"),
         }
@@ -655,6 +648,7 @@ impl Binding {
                         result: None,
                         consumed: false,
                         duration_ms: 0,
+                        started_ms: now(),
                         requests: 0,
                         tokens: 0,
                         cost: None,
@@ -842,8 +836,42 @@ impl Binding {
             .cloned()
             .collect()
     }
+    pub(crate) fn wait_jobs(&self, ids: &[String]) -> Result<Vec<crate::tools::wait::Job>> {
+        let state = lock(&self.inner.state);
+        for id in ids {
+            ensure!(
+                state
+                    .disk
+                    .runs
+                    .get(id)
+                    .is_some_and(|r| r.owner == self.owner),
+                "run does not belong to this agent"
+            );
+        }
+        Ok(state
+            .disk
+            .runs
+            .values()
+            .filter(|r| r.owner == self.owner && (ids.is_empty() || ids.contains(&r.id)))
+            .map(|r| crate::tools::wait::Job {
+                id: r.id.clone(),
+                r#type: "task".into(),
+                label: r.task.chars().take(200).collect(),
+                status: r.status.clone(),
+                delivered: r.consumed,
+                duration_ms: if matches!(r.status.as_str(), "queued" | "running")
+                    && r.started_ms > 0
+                {
+                    now().saturating_sub(r.started_ms)
+                } else {
+                    r.duration_ms
+                },
+            })
+            .collect())
+    }
     pub(crate) fn acknowledge(&self, ids: &[String]) -> Result<()> {
         let mut state = lock(&self.inner.state);
+        let mut previous = Vec::new();
         for id in ids {
             if let Some(run) = state
                 .disk
@@ -851,10 +879,17 @@ impl Binding {
                 .get_mut(id)
                 .filter(|r| r.owner == self.owner)
             {
+                previous.push((id.clone(), run.consumed));
                 run.consumed = true;
             }
         }
-        self.inner.save(&state)
+        if let Err(error) = self.inner.save(&state) {
+            for (id, consumed) in previous {
+                state.disk.runs.get_mut(&id).expect("已校验的 Run").consumed = consumed;
+            }
+            return Err(error);
+        }
+        Ok(())
     }
     pub(crate) fn wait(
         &self,
@@ -1077,6 +1112,7 @@ impl Binding {
                 result: None,
                 consumed: false,
                 duration_ms: 0,
+                started_ms: now(),
                 requests: 0,
                 tokens: 0,
                 cost: None,
@@ -1780,17 +1816,6 @@ struct Task {
     #[serde(default)]
     isolated: bool,
     output_schema: Option<Value>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Wait {
-    #[serde(default)]
-    run_ids: Vec<String>,
-    #[serde(default = "wait_default")]
-    timeout_ms: u64,
-}
-fn wait_default() -> u64 {
-    60000
 }
 fn function(name: &str, description: &str, properties: Value, required: &[&str]) -> FunctionObject {
     FunctionObject {

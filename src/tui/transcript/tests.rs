@@ -155,3 +155,4 @@ mod scroll_cases;
 mod streaming_cases;
 mod todo_cases;
 mod tree_cases;
+mod wait_cases;

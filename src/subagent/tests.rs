@@ -1,4 +1,156 @@
 use super::*;
+
+fn wait_fixture_run(id: &str, status: &str) -> Run {
+    Run {
+        id: id.into(),
+        agent_id: format!("agent-{id}"),
+        owner: "Main".into(),
+        status: status.into(),
+        task: format!("work {id}"),
+        result: (!matches!(status, "queued" | "running"))
+            .then(|| json!({"ok":true,"output":format!("answer-{id}")})),
+        consumed: false,
+        duration_ms: 0,
+        started_ms: now(),
+        requests: 0,
+        tokens: 0,
+        cost: None,
+    }
+}
+
+fn unified_wait(tools: &crate::tools::Tools, args: Value) -> Value {
+    let result = tools.execute(
+        "wait",
+        &args.to_string(),
+        "wait",
+        crate::tools::ToolPolicy::Execute {
+            workflow: &Default::default(),
+        },
+        &Default::default(),
+        &mut |_| {},
+    );
+    serde_json::from_str(&result.output).unwrap()
+}
+
+#[test]
+fn wait_subagent_reservations_acknowledge_only_after_commit_and_reject_other_owners() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding(dir.path(), Settings::default());
+    let mut tools =
+        crate::tools::Tools::new(dir.path().into(), crate::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(binding.clone());
+    let mut foreign = wait_fixture_run("foreign", "completed");
+    foreign.owner = "other".into();
+    {
+        let mut state = lock(&binding.inner.state);
+        state
+            .disk
+            .runs
+            .insert("r1".into(), wait_fixture_run("r1", "completed"));
+        state.disk.runs.insert("foreign".into(), foreign);
+    }
+    assert_eq!(
+        unified_wait(&tools, json!({"run_ids":["r1","foreign"]}))["ok"],
+        false
+    );
+    assert_eq!(binding.deliveries(&[]).len(), 1);
+    let first = unified_wait(&tools, json!({"run_ids":["r1","r1"]}));
+    assert_eq!(first["results"].as_array().unwrap().len(), 1);
+    assert_eq!(binding.deliveries(&[]).len(), 1);
+    assert_eq!(
+        unified_wait(&tools, json!({"run_ids":["r1"]}))["results"],
+        json!([])
+    );
+    tools.start_wait_batch(None);
+    assert_eq!(
+        unified_wait(&tools, json!({}))["results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // Registry 落盘失败也不提前提交内存中的 consumed 标记。
+    let path = binding.directory().join("registry.json");
+    fs::create_dir_all(binding.directory()).unwrap();
+    if path.exists() {
+        fs::remove_file(&path).unwrap();
+    }
+    fs::create_dir(&path).unwrap();
+    assert!(tools.commit_wait_results().is_err());
+    assert_eq!(binding.deliveries(&[]).len(), 1);
+    fs::remove_dir(&path).unwrap();
+    tools.commit_wait_results().unwrap();
+    assert!(binding.deliveries(&[]).is_empty());
+    assert_eq!(unified_wait(&tools, json!({}))["jobs"], json!([]));
+    assert_eq!(
+        unified_wait(&tools, json!({"run_ids":["r1"]}))["jobs"][0]["delivered"],
+        true
+    );
+    assert!(!lock(&binding.inner.state).disk.runs["foreign"].consumed);
+}
+
+#[test]
+fn wait_mixed_targets_return_child_result_without_waiting_for_background_bash() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding(dir.path(), Settings::default());
+    let mut tools =
+        crate::tools::Tools::new(dir.path().into(), crate::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(binding.clone());
+    lock(&binding.inner.state)
+        .disk
+        .runs
+        .insert("r1".into(), wait_fixture_run("r1", "running"));
+    let workflow = crate::plan::WorkflowState::default();
+    let policy = || crate::tools::ToolPolicy::Execute {
+        workflow: &workflow,
+    };
+    tools.execute(
+        "bash",
+        r#"{"command":"sleep 30","mode":"background"}"#,
+        "bg",
+        policy(),
+        &Default::default(),
+        &mut |_| {},
+    );
+    let mut updates = 0;
+    let result = tools.execute(
+        "wait",
+        r#"{"timeout_ms":5000}"#,
+        "wait",
+        policy(),
+        &Default::default(),
+        &mut |event| {
+            if let AgentEvent::ToolOutputSnapshot { output, .. } = event {
+                updates += 1;
+                let snapshot: Value = serde_json::from_str(&output).unwrap();
+                assert_eq!(snapshot["jobs"].as_array().unwrap().len(), 2);
+                binding
+                    .settle("r1", json!({"ok":true,"output":"child-mixed-result"}), 20)
+                    .unwrap();
+                // 新出现的 Run 不属于本次 wait 固定的目标集合。
+                lock(&binding.inner.state)
+                    .disk
+                    .runs
+                    .insert("r2".into(), wait_fixture_run("r2", "completed"));
+            }
+        },
+    );
+    assert_eq!(updates, 1);
+    let result: Value = serde_json::from_str(&result.output).unwrap();
+    assert_eq!(result["pending"], true);
+    assert_eq!(result["jobs"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        result["results"][0]["run"]["result"]["output"],
+        "child-mixed-result"
+    );
+    assert_eq!(result["results"].as_array().unwrap().len(), 1);
+    assert_eq!(result["background_results"], json!([]));
+    let only = unified_wait(&tools, json!({"run_ids":["r2"]}));
+    assert_eq!(only["pending"], false);
+    assert_eq!(only["jobs"].as_array().unwrap().len(), 1);
+    let plan = tools.all_definitions(WorkMode::Plan);
+    assert_eq!(plan.iter().filter(|d| d.name == "wait").count(), 1);
+}
 fn binding(dir: &Path, settings: Settings) -> Binding {
     Binding::root(
         RootOptions {
@@ -217,6 +369,7 @@ fn delivery_is_inspectable_until_ack_and_scoped_to_owner() {
         result: Some(json!({"ok":true,"output":"done"})),
         consumed: false,
         duration_ms: 0,
+        started_ms: 0,
         requests: 1,
         tokens: 2,
         cost: None,
@@ -266,6 +419,7 @@ fn persisted_running_work_becomes_interrupted_without_restarting() {
         result: None,
         consumed: false,
         duration_ms: 0,
+        started_ms: 0,
         requests: 0,
         tokens: 0,
         cost: None,
@@ -396,6 +550,7 @@ fn published_result_recovers_without_replaying_an_incomplete_registry_run() {
                 result: None,
                 consumed: false,
                 duration_ms: 0,
+                started_ms: 0,
                 requests: 0,
                 tokens: 0,
                 cost: None,
