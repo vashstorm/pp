@@ -31,6 +31,7 @@ use crate::{
             Command, Diagnostic, DocumentSymbol, Location, LocationLink, SymbolInformation,
             TextEdit, WorkspaceEdit,
         },
+        uri,
     },
     tools::{Tools, approval::Tier},
 };
@@ -650,7 +651,7 @@ fn parse_locations(value: &Value) -> Result<Vec<Location>> {
 }
 
 fn format_location(cwd: &Path, location: &Location) -> String {
-    let path = client::uri_to_path(&location.uri);
+    let path = uri::uri_to_path(&location.uri);
     let file = match &path {
         Some(path) => display_path(cwd, path),
         None => location.uri.clone(),
@@ -664,7 +665,7 @@ fn format_location(cwd: &Path, location: &Location) -> String {
 
 fn format_location_with_context(cwd: &Path, location: &Location) -> String {
     let header = format!("  {}", format_location(cwd, location));
-    let Some(path) = client::uri_to_path(&location.uri) else {
+    let Some(path) = uri::uri_to_path(&location.uri) else {
         return header;
     };
     let Ok(text) = client::read_document_text(&path) else {
@@ -1719,7 +1720,7 @@ fn rename_file(
         .iter()
         .map(|pair| {
             json!({
-        "oldUri":client::path_to_uri(&pair.old),"newUri":client::path_to_uri(&pair.new)})
+        "oldUri":uri::path_to_uri(&pair.old),"newUri":uri::path_to_uri(&pair.new)})
         })
         .collect();
     let definitions = all_real_servers(registry);
@@ -1786,7 +1787,7 @@ fn rename_file(
     value["details"]["suggestions"] = json!(suggestions);
     value["details"]["failures"] = json!(failures);
     value["details"]["conflicts"] = json!(conflicts);
-    value["details"]["move"] = json!({"kind":"rename","oldUri":client::path_to_uri(&source),"newUri":client::path_to_uri(&dest)});
+    value["details"]["move"] = json!({"kind":"rename","oldUri":uri::path_to_uri(&source),"newUri":uri::path_to_uri(&dest)});
     Ok(value)
 }
 

@@ -97,7 +97,7 @@ fn start_fixture(tools: &Tools) {
 }
 
 fn watched(events: &[Value], path: &Path, kind: u64) -> usize {
-    let uri = crate::lsp::client::path_to_uri(path);
+    let uri = crate::lsp::uri::path_to_uri(path);
     events
         .iter()
         .filter(|event| {

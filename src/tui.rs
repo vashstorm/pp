@@ -186,7 +186,7 @@ pub(crate) fn run(
                 .finish(canvas.backend().buffer().area.height)
                 .context("restoring shell cursor")?;
             drop(_guard);
-            crate::write_resume_hint(&mut io::stderr(), app.session_id.as_deref())?;
+            crate::cli::write_resume_hint(&mut io::stderr(), app.session_id.as_deref())?;
             return cleanup;
         }
         if dirty && clock.ready(Instant::now()) {

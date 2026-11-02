@@ -5,11 +5,12 @@ use crate::{
     cancellation::{CancellationToken, check},
     lsp::{
         Registry,
-        client::{position_offset, uri_to_path},
+        position::position_offset,
         types::{
             CreateFile, CreateFileOptions, DeleteFile, DeleteFileOptions, Position, Range,
             RenameFile, RenameFileOptions, TextDocumentEdit, TextEdit, WorkspaceEdit,
         },
+        uri::uri_to_path,
     },
     tools::{
         Tools,
@@ -37,7 +38,7 @@ pub(crate) fn validate_move(
     let edit = WorkspaceEdit {
         changes: None,
         document_changes: Some(vec![
-            serde_json::json!({"kind":"rename","oldUri":crate::lsp::client::path_to_uri(source),"newUri":crate::lsp::client::path_to_uri(dest)}),
+            serde_json::json!({"kind":"rename","oldUri":crate::lsp::uri::path_to_uri(source),"newUri":crate::lsp::uri::path_to_uri(dest)}),
         ]),
     };
     plan(tools, None, &edit, cancellation).map(|_| ())

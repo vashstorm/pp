@@ -156,7 +156,7 @@ impl Agent {
                     let turn: CompletionTurn = match outcome {
                         Ok(turn) => turn,
                         Err(error)
-                            if crate::llm::model_request_failed(&error)
+                            if crate::llm::retry::model_request_failed(&error)
                                 && models.fallback.is_some() =>
                         {
                             cancellation::check(cancellation)?;
@@ -189,7 +189,7 @@ impl Agent {
                     let turn: ResponseTurn = match outcome {
                         Ok(turn) => turn,
                         Err(error)
-                            if crate::llm::model_request_failed(&error)
+                            if crate::llm::retry::model_request_failed(&error)
                                 && models.fallback.is_some() =>
                         {
                             cancellation::check(cancellation)?;

@@ -1,5 +1,11 @@
+use super::parse::into_completion_turn;
+use super::retry::{RequestAttempts, provider_failure};
 use super::*;
+use crate::events::AgentEvent;
+use anyhow::bail;
 use async_openai::types::chat::ChatCompletionRequestAssistantMessageContent;
+use async_openai::types::chat::CreateChatCompletionRequest;
+use async_openai::types::responses::CreateResponse;
 use serde_json::{Value, json};
 use std::io::Write;
 

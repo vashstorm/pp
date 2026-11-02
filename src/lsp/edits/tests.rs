@@ -10,7 +10,7 @@ fn text_edits(value: Value) -> Vec<TextEdit> {
     serde_json::from_value(value).unwrap()
 }
 fn uri(path: &Path) -> String {
-    crate::lsp::client::path_to_uri(path)
+    crate::lsp::uri::path_to_uri(path)
 }
 fn edit(value: Value) -> WorkspaceEdit {
     serde_json::from_value(value).unwrap()

@@ -17,9 +17,11 @@ pub(crate) mod config;
 pub(crate) mod diagnostics;
 pub(crate) mod edits;
 pub(crate) mod format_options;
+pub(crate) mod position;
 pub(crate) mod tool;
 pub(crate) mod transport;
 pub(crate) mod types;
+pub(crate) mod uri;
 pub(crate) mod writethrough;
 
 #[cfg(test)]

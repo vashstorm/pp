@@ -625,7 +625,7 @@ pub(crate) fn sync_saved(
                 op.notify(
                     "workspace/didCreateFiles",
                     serde_json::json!({
-                        "files": [{"uri": super::client::path_to_uri(path)}]
+                        "files": [{"uri": super::uri::path_to_uri(path)}]
                     }),
                 )
             }) {

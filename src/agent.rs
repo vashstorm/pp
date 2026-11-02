@@ -1741,7 +1741,7 @@ impl Agent {
             };
             let finished = match finished {
                 Ok(finished) => finished,
-                Err(error) if crate::llm::model_request_failed(&error) => {
+                Err(error) if crate::llm::retry::model_request_failed(&error) => {
                     cancellation::check(cancellation)?;
                     self.pending_instructions = None;
                     if self.activate_fallback(emit)? {

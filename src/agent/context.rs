@@ -371,7 +371,7 @@ fn summarize_fallback(
     };
     let Some((catalog, target)) = spec
         .fallback
-        .filter(|_| crate::llm::model_request_failed(&error))
+        .filter(|_| crate::llm::retry::model_request_failed(&error))
     else {
         return Err(summary_error(error));
     };

@@ -1,6 +1,6 @@
 use super::*;
 use crate::context::TokenUsage;
-use crate::llm::into_completion_turn;
+use crate::llm::parse::into_completion_turn;
 use async_openai::types::chat::ChatCompletionRequestAssistantMessageContent;
 use serde_json::{Value, json};
 

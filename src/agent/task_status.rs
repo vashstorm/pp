@@ -128,7 +128,7 @@ impl Agent {
                         };
                         match result {
                             Err(error)
-                                if crate::llm::model_request_failed(&error)
+                                if crate::llm::retry::model_request_failed(&error)
                                     && fallback.is_some() =>
                             {
                                 fallback::switch_scratch_model(

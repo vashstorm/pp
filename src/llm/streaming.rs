@@ -1,4 +1,4 @@
-use super::{ResponseTurn, into_response_turn};
+use super::{ResponseTurn, parse::into_response_turn};
 use crate::events::AgentEvent;
 use anyhow::{Result, bail, ensure};
 use async_openai::types::{
