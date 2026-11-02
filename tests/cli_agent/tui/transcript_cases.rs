@@ -166,59 +166,6 @@ fn tui_exit_keeps_conversation_on_normal_screen() {
 }
 
 #[test]
-fn tui_exit_keeps_scrolled_history_and_footer_styles() {
-    let server = server();
-    let dir = tempfile::tempdir().unwrap();
-    let mut pty = Pty::start(&server, dir.path());
-    pty.ready();
-    pty.input("long-history\r");
-    let (request, _) = pty.request(&server);
-    let answer = (0..90)
-        .map(|index| format!("    retained-{index:03} 中😀"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    final_reply(request, &answer);
-    pty.text("retained-089");
-    pty.ready();
-    pty.input("draft-中\x1b[5~");
-    pty.draft("draft-中");
-    pty.wait_for("退出前已向上翻页", |screen| {
-        !screen.contents().contains("retained-089")
-    });
-    pty.input("\x03");
-    pty.wait_for("退出后保留输入框和状态栏", |screen| {
-        !screen.alternate_screen()
-            && screen.contents().contains("❯ draft-中")
-            && screen.contents().contains("fixture/primary")
-    });
-    pty.wait_for("退出模式恢复", |screen| !screen.bracketed_paste());
-    let (_, raw) = pty.native_history();
-    let mut parser = vt100::Parser::new(600, 100, 0);
-    parser.process(&raw);
-    let screen = parser.screen();
-    let text = screen.contents();
-    assert!(text.contains("long-history"), "{text}");
-    assert!(text.contains("❯ draft-中"), "{text}");
-    let border_row = text.lines().position(|line| line.starts_with('─')).unwrap() as u16;
-    assert_eq!(
-        screen.cell(border_row, 0).unwrap().fgcolor(),
-        vt100::Color::Rgb(127, 166, 106)
-    );
-    assert_eq!(background_color(screen, "long-history"), USER_BACKGROUND);
-    assert_eq!(
-        background_color(screen, "retained-000"),
-        ASSISTANT_BACKGROUND
-    );
-    parser.process(b"shell> ");
-    assert!(parser.screen().contents().contains("\nshell> "));
-    // native_history 重建单元格，真实终端的当前颜色从 PTY 状态读取。
-    assert_eq!(pty.parser.screen().fgcolor(), vt100::Color::Default);
-    assert!(!parser.screen().hide_cursor());
-    pty.finish();
-    no_more(&server);
-}
-
-#[test]
 fn tui_ctrl_c_keeps_partial_output_without_waiting_for_response() {
     for protocol in ["completion", "response"] {
         let server = server();

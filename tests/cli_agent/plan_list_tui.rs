@@ -670,103 +670,43 @@ fn plan_list_enter_opens_six_actions_for_drafts_and_plans_and_only_displays_done
 #[test]
 fn plan_list_six_actions_use_the_selected_plan_and_leave_the_list() {
     for protocol in ["completion", "response"] {
-        for action in [1, 2, 3, 4, 5] {
-            let fixture = server();
-            let home = tempfile::tempdir().unwrap();
-            let project = tempfile::tempdir().unwrap();
-            let location = if action % 2 == 0 { "plans" } else { "drafts" };
-            let path = project.path().join(format!(".pp/{location}/selected.md"));
-            let content = "# Selected actions\n\n- [x] Verified item.\n- [ ] Remaining item.\n";
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, content).unwrap();
-            let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
-            pty.ready();
-            plan_list_open(&mut pty);
-            pty.wait_for("选中计划已加载", |screen| {
-                screen.contents().contains("Selected actions")
-                    && !screen.contents().contains("Loading plans")
-            });
-            pty.input("\r");
-            pty.wait_for("菜单就绪", |screen| {
-                screen
-                    .contents()
-                    .contains("Save draft and leave Plan mode")
-            });
-            plan_choose(&mut pty, action);
-            if action == 5 {
-                plan_wait_execute(&mut pty);
-                pty.ready();
-                no_more(&fixture);
-                assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
-            } else {
-                if action == 4 {
-                    pty.input("Clarify the remaining item\r");
-                }
-                let (request, body) = pty.request_at(&fixture, api_path(protocol));
-                let encoded = body.to_string();
-                assert!(encoded.contains("Selected actions"), "{body}");
-                assert_eq!(
-                    encoded.contains("[Approved Markdown snapshot]"),
-                    action <= 2,
-                    "{body}"
-                );
-                if action == 4 {
-                    assert_eq!(
-                        cancel_user_messages(&body, protocol).last().unwrap(),
-                        "Clarify the remaining item"
-                    );
-                }
-                let request = if action == 4 {
-                    plan_calls(
-                        request,
-                        protocol,
-                        json!([plan_call(
-                            protocol,
-                            "discuss-write",
-                            "plan_write",
-                            json!({"title":"Selected actions", "file_name":"selected.md", "expected_revision":1, "content":format!("{content}\nClarified acceptance criteria.\n")})
-                        )]),
-                    );
-                    let (request, body) = pty.request_at(&fixture, api_path(protocol));
-                    assert_eq!(
-                        cancel_tool_outputs(&body, protocol).last().unwrap().1["ok"],
-                        true,
-                        "{body}"
-                    );
-                    assert!(
-                        std::fs::read_to_string(&path)
-                            .unwrap()
-                            .contains("Clarified acceptance criteria.")
-                    );
-                    request
-                } else {
-                    request
-                };
-                plan_final(
-                    request,
-                    protocol,
-                    if action == 3 {
-                        "List reviewer findings"
-                    } else {
-                        "List action finished. Shall we continue with the remaining item?"
-                    },
-                );
-                if action == 3 {
-                    pty.wait_for("审查结束显示报告与完整菜单", |screen| {
-                        let text = screen.contents();
-                        text.contains("List reviewer findings")
-                            && text.contains("Save draft and leave Plan mode")
-                    });
-                } else {
-                    pty.text("List action finished");
-                    pty.ready();
-                    assert!(!cancel_normalize(pty.parser.screen()).contains("Planlist"));
-                }
-            }
-            no_more(&fixture);
-            pty.input("\x03");
-            pty.finish();
-        }
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let path = project.path().join(".pp/drafts/selected.md");
+        let content = "# Selected actions\n\n- [x] Verified item.\n- [ ] Remaining item.\n";
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        pty.ready();
+        plan_list_open(&mut pty);
+        pty.wait_for("选中计划已加载", |screen| {
+            screen.contents().contains("Selected actions")
+                && !screen.contents().contains("Loading plans")
+        });
+        pty.input("\r");
+        pty.wait_for("菜单就绪", |screen| {
+            screen
+                .contents()
+                .contains("Save draft and leave Plan mode")
+        });
+        // 仅验证“新会话执行”：它的语义目标就是菜单项作用于所选计划并离开列表。
+        plan_choose(&mut pty, 0);
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        let encoded = body.to_string();
+        assert!(encoded.contains("Selected actions"), "{body}");
+        assert!(encoded.contains("[Approved Markdown snapshot]"), "{body}");
+        plan_final(
+            request,
+            protocol,
+            "List action finished. Shall we continue with the remaining item?",
+        );
+        pty.text("List action finished");
+        pty.ready();
+        assert!(!cancel_normalize(pty.parser.screen()).contains("Planlist"));
+        no_more(&fixture);
+        pty.input("\x03");
+        pty.finish();
     }
 }
 

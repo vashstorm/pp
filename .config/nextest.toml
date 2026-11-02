@@ -4,3 +4,9 @@ test-threads = "num-cpus"
 retries = 0
 # 收集全部单元与集成测试失败，不提前停止。
 fail-fast = false
+
+# 日常快速档：仅跳过 cli_agent 中真实 PTY 的 tui:: 用例（spawn 真实 pp 二进制），
+# 每个高开销类别保留一个冒烟用例；src/ 单元测试与其他集成用例照旧运行。
+# 与 -E 过滤取交集，定向跑 PTY 用例须加 --ignore-default-filter 或改用默认档。
+[profile.quick]
+default-filter = "not (binary_id(pp::cli_agent) and test(/^tui::/)) or test(/^(tui::streaming_cases::streaming_tui_both_protocols_live_colors_scroll_resize_and_bash|tui::transcript_cases::tui_exit_keeps_conversation_on_normal_screen|tui::plan_mode_cases::plan_tui_prompt_enters_before_request_and_reuses_plan_mode|tui::native_tui_streaming_keeps_input_cursor_visible_both_protocols|tui::ask_tui_single_space_selects_without_sending_until_enter|tui::context_tui_shows_current_and_window_on_input_top_right)$/)"

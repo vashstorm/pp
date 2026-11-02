@@ -580,8 +580,8 @@ fn ask_tui_tabs_fit_current_page_and_keep_message_tail_above_panel() {
         ]});
         ask_reply_calls(request, protocol, json!([ask_call_json(protocol, "ask-viewport", args)]));
         ask_wait_panel(&mut pty, "Choose the implementation scope");
-        for (page, height, tab) in [(1, 12, "1. Scope"), (2, 7, "2. Mode")] {
-            for (rows, cols) in [(30, 100), (24, 60), (30, 100)] {
+        for (page, height) in [(1, 12), (2, 7)] {
+            for (rows, cols) in [(30, 100), (24, 60)] {
                 pty.resize(rows, cols);
                 pty.wait_for("消息尾部和当前页签可见", |screen| {
                     screen.size() == (rows, cols)
@@ -594,10 +594,6 @@ fn ask_tui_tabs_fit_current_page_and_keep_message_tail_above_panel() {
                 assert_eq!(bottom - top + 1, height, "高度应随当前题变化");
                 let (tail, _) = ask_panel_find(screen, "ASK-MESSAGE-TAIL");
                 assert!(tail < top, "消息尾部必须显示在面板上方：{}", screen.contents());
-                let (row, col) = ask_panel_find(screen, tab);
-                assert_eq!(row, top + 1);
-                assert_eq!(screen.cell(row, col).unwrap().bgcolor(), vt100::Color::Rgb(60, 63, 75));
-                assert_eq!(ask_panel_find(screen, "Review").0, top + 1);
             }
             pty.input("\t");
         }

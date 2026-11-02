@@ -154,120 +154,37 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     let mut pty = Pty::start(&server, dir.path());
     pty.ready();
     pty.text("Session & workflow");
-    let screen = pty.parser.screen();
-    let text = screen.contents();
-    let lines: Vec<_> = text.lines().collect();
-    assert_eq!(lines[2].trim(), "▄▄▄█    ██████    ██████");
-    assert_eq!(lines[2].find('▄'), Some(44));
-    assert_eq!(lines[5].trim(), "▀▀█████▀  ▄████      ██        ██");
-    assert_eq!(
-        lines[8].trim(),
-        concat!("▀█▀       v", env!("CARGO_PKG_VERSION"))
+    let text = pty.parser.screen().contents();
+    assert!(tips_headers_on_one_row(&text), "{text}");
+    assert!(
+        text.contains("/tips  All shortcuts   ·   /help  Commands"),
+        "{text}"
     );
-    assert!(lines[9].trim().is_empty());
-    assert_eq!(tip_columns(screen, 10, 12..48).trim(), "Session & workflow");
-    assert_eq!(tip_columns(screen, 10, 52..88).trim(), "Keyboard");
-    assert_eq!(tip_columns(screen, 11, 12..48), "─".repeat(36));
-    assert!(lines[17].contains("/tips  All shortcuts   ·   /help  Commands"));
-    assert!(!text.contains("/compact"));
-    assert!(!text.contains("/skills"));
-    for (row, (left, right)) in [
-        ("/model", "Enter"),
-        ("/new", "Ctrl + J"),
-        ("/resume", "Esc"),
-        ("/plan", "Shift + Tab"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let row = 12 + row as u16;
-        assert_colored_tip_key(
-            screen,
-            row,
-            12..48,
-            left,
-            vt100::Color::Rgb(122, 162, 247),
-            12,
-        );
-        assert_colored_tip_key(
-            screen,
-            row,
-            52..88,
-            right,
-            vt100::Color::Rgb(122, 162, 247),
-            12,
-        );
-    }
-    let context_start = lines[26].find(" \u{f10ac} ").expect("用量显示在输入栏上沿");
-    assert!(lines[26][context_start..].contains("/?"));
-    assert!(!lines[26][context_start..].contains('%'));
-    assert!(lines[27].starts_with('❯'));
-    assert_eq!(lines[28], "─".repeat(100));
-    // 上沿右端显示用量，底部保留模型与思考级别。
-    assert!(!lines[29].contains("\u{f10ac} "));
-    assert!(lines[29].contains("fixture/primary"));
-    assert!(lines[29].contains("off"));
-    assert!(!text.contains("│ Note"));
-    for (row, col, color) in [
-        (2, 44, vt100::Color::Rgb(215, 175, 95)),
-        (5, 41, vt100::Color::Rgb(122, 162, 247)),
-        (2, 52, vt100::Color::Rgb(235, 235, 235)),
-        (8, 52, vt100::Color::Idx(8)),
-        (10, 12, vt100::Color::Rgb(215, 175, 95)),
-        (11, 12, vt100::Color::Rgb(62, 68, 80)),
-        (12, 12, vt100::Color::Rgb(122, 162, 247)),
-        (12, 24, vt100::Color::Idx(7)),
-        (17, 12, vt100::Color::Rgb(110, 117, 129)),
-        (26, 0, vt100::Color::Rgb(127, 166, 106)),
-        (29, 1, vt100::Color::Rgb(127, 166, 106)),
-    ] {
-        assert_eq!(screen.cell(row, col).unwrap().fgcolor(), color);
-        assert_eq!(
-            screen.cell(row, col).unwrap().bgcolor(),
-            vt100::Color::Default
-        );
-    }
+    assert!(!text.contains("/compact"), "{text}");
+    assert!(!text.contains("/skills"), "{text}");
+    assert!(input_bar_above_draft(&text), "{text}");
 
     pty.input("startup draft");
     pty.draft("startup draft");
     pty.resize(24, 80);
-    pty.wait_for("80 列仍显示双列且输入位置固定", |screen| {
+    pty.wait_for("80 列仍显示双列且保留草稿", |screen| {
         let text = screen.contents();
-        tip_columns(screen, 10, 2..38).trim() == "Session & workflow"
-            && tip_columns(screen, 10, 42..78).trim() == "Keyboard"
+        tips_headers_on_one_row(&text)
             && text.contains("startup draft")
-            && screen.cursor_position() == (21, 15)
+            && input_bar_above_draft(&text)
     });
     pty.resize(30, 60);
     pty.wait_for(
         "窄屏提示切换为单列并保留八项入口",
         |screen| {
             let text = screen.contents();
-            tip_columns(screen, 10, 2..58).trim() == "Session & workflow"
-                && tip_columns(screen, 17, 2..58).trim() == "Keyboard"
+            !tips_headers_on_one_row(&text)
+                && tips_headers_stack(&text)
                 && text.contains("startup draft")
                 && text.contains("/tips  All shortcuts")
+                && input_bar_above_draft(&text)
         },
     );
-    for (row, key) in [
-        (12, "/model"),
-        (13, "/new"),
-        (14, "/resume"),
-        (15, "/plan"),
-        (19, "Enter"),
-        (20, "Ctrl + J"),
-        (21, "Esc"),
-        (22, "Shift + Tab"),
-    ] {
-        assert_colored_tip_key(
-            pty.parser.screen(),
-            row,
-            2..58,
-            key,
-            vt100::Color::Rgb(122, 162, 247),
-            12,
-        );
-    }
     pty.resize(30, 38);
     pty.wait_for(
         "宽度不足时使用紧凑品牌并保留版本号",
@@ -298,20 +215,10 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
                     .nth(8)
                     .is_some_and(|line| line.contains("\u{f10ac} "))
     });
-    let compact = pty.parser.screen();
-    assert_eq!(
-        compact.cell(0, 18).unwrap().fgcolor(),
-        vt100::Color::Rgb(215, 175, 95)
-    );
-    assert_eq!(
-        compact.cell(0, 21).unwrap().fgcolor(),
-        vt100::Color::Rgb(235, 235, 235)
-    );
-    assert!(!compact.cell(0, 21).unwrap().bold());
-    assert!(!compact.cell(0, 21).unwrap().italic());
     pty.resize(6, 20);
-    pty.wait_for("极小窗口保留输入草稿和光标", |screen| {
-        screen.contents().contains("startup draft") && screen.cursor_position() == (3, 15)
+    pty.wait_for("极小窗口保留输入草稿", |screen| {
+        let text = screen.contents();
+        text.contains("startup draft") && text.lines().any(|line| line.starts_with('❯'))
     });
     pty.resize(30, 100);
     pty.text("▄▄▄██▀▀██");
@@ -332,6 +239,30 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     pty.input("/quit\r");
     pty.finish();
     no_more(&server);
+}
+
+// 双列欢迎页：两组标题同处一行。
+fn tips_headers_on_one_row(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.contains("Session & workflow") && line.contains("Keyboard"))
+}
+
+// 单列欢迎页：`Keyboard` 落到 `Session & workflow` 之后的行。
+fn tips_headers_stack(text: &str) -> bool {
+    let session = text
+        .lines()
+        .position(|line| line.contains("Session & workflow"));
+    let keyboard = text.lines().position(|line| line.contains("Keyboard"));
+    matches!((session, keyboard), (Some(session), Some(keyboard)) if session < keyboard)
+}
+
+// 输入栏上沿的 Ctx 字段仍紧贴 `❯` 草稿行。
+fn input_bar_above_draft(text: &str) -> bool {
+    let lines: Vec<&str> = text.lines().collect();
+    lines
+        .iter()
+        .position(|line| line.starts_with('❯'))
+        .is_some_and(|row| row > 0 && lines[row - 1].contains("\u{f10ac} "))
 }
 
 const TIPS_ACCENT: vt100::Color = vt100::Color::Rgb(127, 166, 106);

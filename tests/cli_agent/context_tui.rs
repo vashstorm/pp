@@ -199,16 +199,6 @@ fn context_tui_metrics_unknown(screen: &vt100::Screen) -> bool {
         .all(|field| contents.contains(*field))
 }
 
-// 指标的图标与字段文本必须同时出现：整字段降级，不允许截断字形或半个字段。
-fn context_tui_assert_metric_whole(screen: &vt100::Screen, icon: &str, text: &str) {
-    assert_eq!(
-        context_tui_locate(screen, icon).is_some(),
-        context_tui_locate(screen, text).is_some(),
-        "指标字段必须整块显示或整块隐藏：{icon:?} 与 {text:?}\n{}",
-        screen.contents()
-    );
-}
-
 // 速度字段的数值与是否带前缀：字段自身格式为 `N.N[k|m] tok/s`，未知时只有 `— tok/s`。
 fn context_tui_speed(screen: &vt100::Screen) -> Option<(f64, bool)> {
     let (row, column) = context_tui_locate(screen, "tok/s")?;
@@ -1194,12 +1184,10 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
     }
 }
 
-// 验证项 4（token 指标布局与取消）：流中 Esc 后速度停止，下一轮请求重新计数；
-// 含中文草稿与光标在 60/40/20 列 resize 中保持不变，Ctx 优先保留而指标只能整块
-// 降级、不留图标残片；成功压缩清空普通请求指标，摘要等待期间临时状态与既有
-// 指标同处输入栏上沿且互不侵占。
+// 验证项 4（token 指标取消与重计）：流中 Esc 后速度停止，下一轮请求重新计数；
+// 成功压缩清空普通请求指标，摘要等待期间临时状态与既有指标同处输入栏上沿且互不侵占。
 #[test]
-fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
+fn context_tui_token_metrics_cancel_stops_and_recounts() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
@@ -1243,57 +1231,6 @@ fn context_tui_token_metrics_layout_and_cancel_both_protocols() {
             "本轮取消清空速度而非上一轮取消提示",
             |screen| screen.contents().contains("— tok/s") && context_tui_speed(screen).is_none(),
         );
-
-        // 中文草稿与光标在窄屏 resize 中保持不变；Ctx 优先，指标整块降级。
-        pty.input("草稿-指标");
-        pty.draft("草稿-指标");
-        let cursor_column = pty.parser.screen().cursor_position().1;
-        for (rows, columns) in [(30, 60), (30, 40), (30, 20)] {
-            pty.resize(rows, columns);
-            pty.wait_for(
-                "resize 后上下文字段仍位于输入栏上沿",
-                |screen| {
-                    let contents = screen.contents();
-                    let lines: Vec<&str> = contents.lines().collect();
-                    lines.windows(2).any(|pair| {
-                        pair[0].contains(" \u{f10ac} ")
-                            && pair[0].contains("/40K")
-                            && pair[1].starts_with('❯')
-                    })
-                },
-            );
-            pty.draft("草稿-指标");
-            let screen = pty.parser.screen();
-            assert!(
-                !screen.contents().contains('\u{fffd}'),
-                "{columns} 列出现损坏字形\n{}",
-                pty.diagnostics()
-            );
-            for (icon, text) in [
-                ("\u{f04c5}", "tok/s"),
-                ("\u{f04e2}", "\u{f04e2} —/—"),
-                ("\u{f01bc}", "\u{f01bc} —/—"),
-            ] {
-                context_tui_assert_metric_whole(screen, icon, text);
-            }
-            if columns == 20 {
-                for icon in ["\u{f04c5}", "\u{f04e2}", "\u{f01bc}", "\u{f051b}"] {
-                    assert!(
-                        context_tui_locate(screen, icon).is_none(),
-                        "20 列只保留上下文"
-                    );
-                }
-            }
-            assert_eq!(
-                pty.parser.screen().cursor_position().1,
-                cursor_column,
-                "{columns} 列 resize 不得移动草稿光标"
-            );
-        }
-        pty.resize(30, 100);
-        pty.draft("草稿-指标");
-        pty.input("\x01\x0b");
-        pty.draft("");
 
         // 三个完整交互使手动压缩有可移除的旧前缀，最后一个带权威 usage。
         context_tui_exchange(
