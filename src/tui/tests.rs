@@ -330,6 +330,7 @@ mod ask_cases;
 mod changes_cases;
 mod command_cases;
 mod file_picker_cases;
+mod hub_cases;
 mod input_cases;
 mod lsp_cases;
 mod model_menu_cases;

@@ -65,6 +65,7 @@ pub(crate) const SECTIONS: &[Section] = &[
             tip("Tab", "complete input"),
             tip("Shift + Tab", "cycle thinking level"),
             tip("Ctrl + O", "toggle tool output"),
+            platform_tip("⌥ + A", "Alt + A", "toggle Agent Hub"),
             tip("Ctrl + A", "jump to line start"),
             tip("Ctrl + E", "jump to line end"),
             tip("Ctrl + K", "delete to line end"),

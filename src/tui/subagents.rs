@@ -7,7 +7,7 @@ mod detail;
 mod projection;
 mod worker;
 
-use super::transcript_style::{ACCENT, ACTIVITY, ADDED, ASK_BG, DIM, MUTED, READ_BORDER, REMOVED};
+use super::transcript_style::{ACCENT, ACTIVITY, ADDED, ASK_BG, ASK_BORDER, DIM, MUTED, REMOVED};
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
@@ -849,29 +849,53 @@ impl Panel {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(READ_BORDER))
-            .title(self.title())
-            .title_bottom(Line::from(Span::styled(
-                format!(" {} ", super::transcript_style::display_text(hints)),
-                Style::default().fg(DIM),
-            )));
+            .border_style(Style::default().fg(ASK_BORDER))
+            .title(self.title());
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
             return;
         }
-        let lead = inner.height.min(1);
+        let footer = inner.height.saturating_sub(1).min(2);
+        if footer == 2 {
+            self.draw_separator(frame, area, inner.bottom() - footer);
+        }
+        if footer > 0 {
+            let toggle = crate::shortcuts::platform_text("⌥ + A", "Alt + A");
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("{hints} · {toggle} toggle"),
+                    Style::default().fg(DIM),
+                ))),
+                Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
+            );
+        }
+        let lead = (inner.height - footer).min(2);
+        if lead == 2 {
+            self.draw_separator(frame, area, inner.y + 1);
+        }
         let body = Rect::new(
             inner.x,
             inner.y + lead,
             inner.width,
-            inner.height.saturating_sub(lead),
+            inner.height.saturating_sub(lead + footer),
         );
-        self.draw_lead(frame, Rect::new(inner.x, inner.y, inner.width, lead));
+        self.draw_lead(frame, Rect::new(inner.x, inner.y, inner.width, 1));
         match self.page {
             Page::Agents => self.draw_agents(frame, body),
             Page::Activity => self.draw_activity(frame, body),
         }
+    }
+
+    fn draw_separator(&self, frame: &mut Frame, area: Rect, y: u16) {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "├{}┤",
+                "─".repeat(area.width.saturating_sub(2) as usize)
+            ))
+            .style(Style::default().fg(ASK_BORDER)),
+            Rect::new(area.x, y, area.width, 1),
+        );
     }
 
     fn title(&self) -> Line<'static> {
@@ -886,7 +910,7 @@ impl Panel {
             )
         };
         Line::from(vec![
-            Span::styled(format!(" {TITLE} "), Style::default().fg(MUTED)),
+            Span::styled(format!(" {TITLE} "), Style::default().fg(ACCENT)),
             tab("1 Agents", self.page == Page::Agents),
             Span::styled("/", Style::default().fg(DIM)),
             tab("2 Activity", self.page == Page::Activity),
@@ -950,11 +974,29 @@ impl Panel {
     }
 
     fn draw_agents(&mut self, frame: &mut Frame, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
         let wide = area.width >= NARROW;
         let (roster, inspector) = if wide {
             let gap = 1;
             let target = (u32::from(area.width) * 58 / 100) as u16;
             let roster_width = target.clamp(ROSTER_MIN, area.width - gap - INSPECTOR_MIN);
+            frame.render_widget(
+                Block::default()
+                    .borders(Borders::LEFT)
+                    .border_style(Style::default().fg(ASK_BORDER)),
+                Rect::new(area.x + roster_width, area.y, 1, area.height),
+            );
+            // 分栏线与上下横线共用交点，避免边界断开。
+            for (y, symbol) in [(area.y.saturating_sub(1), "┬"), (area.bottom(), "┴")] {
+                if frame.area().contains((area.x + roster_width, y).into()) {
+                    frame.render_widget(
+                        Paragraph::new(symbol).style(Style::default().fg(ASK_BORDER)),
+                        Rect::new(area.x + roster_width, y, 1, 1),
+                    );
+                }
+            }
             (
                 Rect::new(area.x, area.y, roster_width, area.height),
                 Some(Rect::new(
@@ -1416,7 +1458,7 @@ impl Panel {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(READ_BORDER))
+            .border_style(Style::default().fg(ASK_BORDER))
             .title(" Agent Hub · role definitions ")
             .title_bottom(
                 Line::from(Span::styled(
@@ -1719,6 +1761,19 @@ mod tests {
             .draw(|frame| panel.draw(frame, frame.area(), &mut drafts))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
+        for (position, symbol) in [
+            ((0, 0), "╭"),
+            ((139, 39), "╯"),
+            ((0, 2), "├"),
+            ((81, 2), "┬"),
+            ((81, 20), "│"),
+            ((81, 37), "┴"),
+            ((139, 37), "┤"),
+        ] {
+            let cell = &buffer[position];
+            assert_eq!(cell.symbol(), symbol, "{position:?}");
+            assert_eq!(cell.fg, ASK_BORDER, "{position:?}");
+        }
         let mut found = None;
         for row in 0..40 {
             let line = (0..140)

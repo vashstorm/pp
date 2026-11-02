@@ -256,6 +256,7 @@ chmod 600 ~/.pp/agent/models.yml
 | 运行中排队为独立后续任务 | ⌥ + Enter | Alt + Enter |
 | 插入换行 | Ctrl + J | Ctrl + J |
 | 打开模型菜单 | ⌥ + P | Ctrl + P |
+| 打开／关闭 Agent Hub | ⌥ + A | Alt + A |
 | 保存菜单高亮模型为默认值 | Ctrl + S | Ctrl + S |
 | 保存菜单高亮思考档位为全局默认值 | ⌥ + S | Ctrl + S |
 | 循环允许的思考档位 | Shift + Tab | Shift + Tab |
@@ -1050,6 +1051,6 @@ nextest 不运行 doctest；当前只有 binary target，新增 library target �
 
 ## 子 Agent
 
-pp 支持批量异步委托、持续追问、驻留恢复、结构化结果和可选 worktree 隔离。用 `/agents` 查看角色，`/subagents`（或 `Alt+A`）打开 Agent Hub 查看和控制运行实例；输入框上方显示子任务摘要。子 Agent 沿用父会话审批规则，并保留适用的项目指令。
+pp 支持批量异步委托、持续追问、驻留恢复、结构化结果和可选 worktree 隔离。用 `/agents` 查看角色，`/subagents`（或 `⌥ + A / Alt + A`）打开 Agent Hub 查看和控制运行实例；输入框上方显示子任务摘要。子 Agent 沿用父会话审批规则，并保留适用的项目指令。
 
 完整配置、工具协议、权限与恢复行为见[子 Agent 使用说明](subagents.md)。

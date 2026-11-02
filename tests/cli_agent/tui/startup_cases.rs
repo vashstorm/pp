@@ -313,6 +313,7 @@ fn tips_shortcuts() -> Vec<&'static str> {
             "Shift + Tab",
             "Tab",
             "↑ / ↓",
+            "⌥ + A",
             "⌥ + Enter",
             "⌥ + P",
             "⌥ + PgUp/PgDn",
@@ -323,6 +324,7 @@ fn tips_shortcuts() -> Vec<&'static str> {
         ]
     } else {
         vec![
+            "Alt + A",
             "Alt + Enter",
             "Ctrl + A",
             "Ctrl + C",

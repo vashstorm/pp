@@ -152,6 +152,7 @@ printf '说明当前项目的构建方式\n' | pp
 | 排队为独立后续任务 | ⌥ + Enter | Alt + Enter |
 | 换行 | Ctrl + J | Ctrl + J |
 | 模型菜单 | ⌥ + P | Ctrl + P |
+| 打开／关闭 Agent Hub | ⌥ + A | Alt + A |
 | 收藏／取消收藏高亮模型 | Ctrl + F | Ctrl + F |
 | 循环思考档位 | Shift + Tab | Shift + Tab |
 | 展开／折叠工具输出 | Ctrl + O | Ctrl + O |
@@ -228,4 +229,4 @@ cargo fmt --check
 
 ## 子 Agent
 
-使用 `/agents` 查看角色，`/subagents`（或 `Alt+A`）打开 Agent Hub，查看 Agents、完整 Activity、消耗与独立详情，并追问、取消或恢复任务。支持批量异步派发、独立上下文、两层递归、结构化结果及可选 worktree 隔离，子任务沿用父审批规则。详见[子 Agent 使用说明](docs/subagents.md)。
+使用 `/agents` 查看角色，`/subagents`（或 `⌥ + A / Alt + A`）打开 Agent Hub，查看 Agents、完整 Activity、消耗与独立详情，并追问、取消或恢复任务。支持批量异步派发、独立上下文、两层递归、结构化结果及可选 worktree 隔离，子任务沿用父审批规则。详见[子 Agent 使用说明](docs/subagents.md)。

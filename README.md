@@ -156,6 +156,7 @@ Enter `!command` to run a local, non-interactive bash command in the project dir
 | Queue an independent follow-up task | ⌥ + Enter | Alt + Enter |
 | Insert a newline | Ctrl + J | Ctrl + J |
 | Open the model menu | ⌥ + P | Ctrl + P |
+| Toggle Agent Hub | ⌥ + A | Alt + A |
 | Toggle favorite for the highlighted model | Ctrl + F | Ctrl + F |
 | Cycle reasoning levels | Shift + Tab | Shift + Tab |
 | Expand / collapse tool output | Ctrl + O | Ctrl + O |

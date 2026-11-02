@@ -546,10 +546,19 @@ fn agent_hub_layout_tree_scope_and_follow() {
     hub_finish_child(&mut pty, &fixture, protocol, children.remove(0), "beta-output");
     // 140x40 分栏 + 80x24 单栏 + 极窄尺寸都不能越界。
     pty.resize(40, 140);
-    pty.input("/subagents\r");
+    // Option+A 优先于主输入补全；关闭后原草稿仍在。
+    pty.input("/sub");
+    pty.draft("/sub");
+    pty.text("View, follow up, and control subagents");
+    pty.input("\x1ba");
     pty.text("Alpha");
     let wide = pty.contents();
     assert!(wide.contains("Usage / Context") || wide.contains("Lineage"), "{wide}");
+    for (row, column, symbol) in [(0, 0, "╭"), (2, 81, "┬"), (20, 81, "│"), (37, 81, "┴")] {
+        let cell = pty.parser.screen().cell(row, column).unwrap();
+        assert_eq!(cell.contents(), symbol, "{wide}");
+        assert_eq!(cell.fgcolor(), vt100::Color::Rgb(39, 135, 165));
+    }
     pty.resize(24, 80);
     let narrow = pty.contents();
     assert!(narrow.contains("Alpha"));
@@ -623,6 +632,7 @@ fn agent_hub_layout_tree_scope_and_follow() {
     hub_escape(&mut pty, "j/k select");
     hub_clear_filter(&mut pty, "Alpha");
     hub_close(&mut pty);
+    pty.draft("/sub");
     let main = pty.contents();
     assert!(main.contains("task"), "{main}");
     // 真实 SGR 鼠标点击 roster 的可见物理行：打开该 Agent 的详情。

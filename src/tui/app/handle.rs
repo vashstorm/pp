@@ -175,9 +175,7 @@ impl App {
                     return key.kind == KeyEventKind::Press;
                 }
                 // Alt+A 只在主视图切换 Hub；未获得绑定时也允许打开空态。
-                if key.code == KeyCode::Char('a')
-                    && key.modifiers.contains(KeyModifiers::ALT)
-                    && key.kind == KeyEventKind::Press
+                if crate::tui::app::hub::is_hub_toggle(&Event::Key(key))
                     && self.hub_toggle_allowed()
                 {
                     self.open_hub(false);

@@ -35,6 +35,8 @@ impl App {
 
     /// 打开 Hub；未获得 Binding 时显示不可用空态而不是 panic。
     pub(in crate::tui) fn open_hub(&mut self, roles: bool) {
+        self.menu = None;
+        self.menu_dismissed = true;
         self.subagent_panel = Some(subagents::Panel::new(roles));
         self.ensure_hub_worker();
         let commands = self
@@ -298,7 +300,6 @@ impl App {
             && self.auth_panel.is_none()
             && self.roles_panel.is_none()
             && self.model_panel.is_none()
-            && self.menu.is_none()
             && self.plan_panel.is_none()
             && self.plan_list_panel.is_none()
             && self.plan_leave_confirmation.is_none()
@@ -326,6 +327,6 @@ impl App {
 pub(in crate::tui) fn is_hub_toggle(event: &CrosstermEvent) -> bool {
     matches!(event, CrosstermEvent::Key(key)
         if key.code == KeyCode::Char('a')
-            && key.modifiers.contains(KeyModifiers::ALT)
+            && key.modifiers == KeyModifiers::ALT
             && key.kind == KeyEventKind::Press)
 }
