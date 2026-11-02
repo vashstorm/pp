@@ -720,6 +720,7 @@ impl SessionJournal {
             event,
             AgentEvent::ContextUpdated { .. }
                 | AgentEvent::ToolOutputSnapshot { .. }
+                | AgentEvent::ToolPipelineSnapshot { .. }
                 | AgentEvent::TodoStateUpdated { .. }
                 | AgentEvent::PlanProgressUpdated { .. }
                 | AgentEvent::CompactionStarted { .. }

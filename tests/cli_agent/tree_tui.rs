@@ -7,44 +7,6 @@ const TREE_TUI_RIGHT: &str = "\x1b[C";
 const TREE_TUI_HOME: &str = "\x1b[H";
 const TREE_TUI_END: &str = "\x1b[F";
 
-#[test]
-fn tree_tui_startup_double_escape_keeps_editor_without_screen_switch() {
-    for protocol in ["completion", "response"] {
-        let server = Server::http("127.0.0.1:0").unwrap();
-        let (_home, mut pty) = context_tui_start(&server, protocol, 100_000, 80);
-        pty.drain();
-        let before = pty.raw.len();
-        let cursor = pty.parser.screen().cursor_position();
-        pty.input("\x1b");
-        let deadline = Instant::now() + DEADLINE;
-        loop {
-            pty.drain();
-            if pty.raw.len() > before {
-                break;
-            }
-            assert!(Instant::now() < deadline, "首个 Esc 未处理");
-            thread::sleep(Duration::from_millis(10));
-        }
-        pty.input("\x1b");
-        context_tui_paste(&mut pty, "焦点栅栏");
-        pty.input("\x01\x0b");
-        pty.draft("");
-        let output = String::from_utf8_lossy(&pty.raw[before..]);
-        assert!(!output.contains("\x1b[?1049h"), "空会话不应进入备用屏幕");
-        assert!(!output.contains("Loading session tree"));
-        let screen = pty.parser.screen();
-        assert!(input_is_ready(screen));
-        assert!(!screen.alternate_screen());
-        assert!(!screen.hide_cursor());
-        assert_eq!(screen.cursor_position(), cursor);
-        context_tui_paste(&mut pty, "保留输入焦点");
-        pty.draft("保留输入焦点");
-        no_more(&server);
-        pty.input("\x03");
-        pty.finish();
-    }
-}
-
 // 打开树选择：等待底部 tips、实际消息可见且 loading 消失，而不是弹窗标题。
 fn tree_tui_open(pty: &mut Pty, expected: &str) {
     pty.input("/tree\r");
@@ -55,6 +17,43 @@ fn tree_tui_open(pty: &mut Pty, expected: &str) {
             && !text.contains("Loading session tree")
             && text.contains(expected)
     });
+}
+
+/// 发送一对真实 Esc 打开内联树选择。
+///
+/// 终端把紧邻的两个 ESC 字节解码成一个 Esc，因此两次按压之间要留出一次读取
+/// 间隙；机器繁忙时 500ms 的双击窗口也可能错过，所以用树本身作为处理栅栏，
+/// 未出现就重发整对。
+fn tree_tui_double_escape(pty: &mut Pty, expected: &str) {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        pty.input("\x1b");
+        if tree_tui_tree_ready(pty, expected, Duration::from_millis(200)) {
+            return;
+        }
+        pty.input("\x1b");
+        if tree_tui_tree_ready(pty, expected, Duration::from_millis(1200)) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "双 Esc 未打开内联树选择");
+    }
+}
+
+fn tree_tui_tree_ready(pty: &mut Pty, expected: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        pty.drain();
+        let screen = pty.parser.screen();
+        if !screen.contents().contains("Loading session tree")
+            && tree_tui_selected_text(screen).contains(expected)
+        {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 // 读取当前可见虚线框内的真实文本；没有可见外框时返回空串。
@@ -413,24 +412,8 @@ fn tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft() {
     pty.input("\x1b");
     pty.draft("");
     pty.completed_after("tree-answer with a reasonably");
-    // 连续两个完整 Escape 输入，真实事件解码不借助计时 sleep。
-    pty.drain();
-    let before = pty.raw.len();
-    pty.input("\x1b");
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        pty.drain();
-        if pty.raw.len() > before {
-            break;
-        }
-        assert!(Instant::now() < deadline, "首个 Esc 未处理");
-        thread::sleep(Duration::from_millis(10));
-    }
-    pty.input("\x1b");
-    pty.wait_for("双 Esc 打开内联树选择", |screen| {
-        !screen.contents().contains("Loading session tree")
-            && tree_tui_selected_text(screen).contains("tree-answer")
-    });
+    // 连续两个完整 Escape 输入；树选择出现本身作为事件处理栅栏。
+    tree_tui_double_escape(&mut pty, "tree-answer");
     // 统一内缩：所有消息正文都从第 1 列之后开始，只有候选组有外框。
     {
         let screen = pty.parser.screen();

@@ -332,6 +332,11 @@ impl Panel {
                     detail.output_preview(preview);
                 }
             }
+            for preview in &snapshot.pipeline_previews {
+                if preview.agent_id == detail.agent {
+                    detail.pipeline_preview(preview);
+                }
+            }
         }
     }
 
@@ -1670,6 +1675,7 @@ mod tests {
     fn snapshot(agents: Vec<Record>, runs: Vec<Run>) -> HubSnapshot {
         HubSnapshot {
             output_previews: Vec::new(),
+            pipeline_previews: Vec::new(),
             agents: agents
                 .into_iter()
                 .map(|record| HubAgent {

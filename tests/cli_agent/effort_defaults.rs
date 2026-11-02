@@ -91,6 +91,31 @@ fn assert_sanitized_database_error(screen: &vt100::Screen) {
     }
 }
 
+// 模型列表按收藏与使用量排序，顺序会随会话历史变化；从屏幕读取实际行序与
+// 高亮项，让导航断言只依赖可见行为而不是某个固定排序。
+const PICKER_MODELS: [&str; 2] = ["fixture/primary", "gateway/team/secondary"];
+
+fn picker_row_order(screen: &vt100::Screen) -> Vec<&'static str> {
+    let text = screen.contents();
+    let mut rows: Vec<(usize, &'static str)> = PICKER_MODELS
+        .into_iter()
+        .filter_map(|model| {
+            text.lines()
+                .position(|line| line.contains(model))
+                .map(|row| (row, model))
+        })
+        .collect();
+    rows.sort_unstable();
+    rows.into_iter().map(|(_, model)| model).collect()
+}
+
+fn picker_selected(screen: &vt100::Screen) -> Option<&'static str> {
+    let text = screen.contents();
+    PICKER_MODELS
+        .into_iter()
+        .find(|model| text.lines().any(|line| line.contains('❯') && line.contains(model)))
+}
+
 #[test]
 fn sqlite_default_model_picker_keeps_draft_and_persists_across_restart() {
     for protocol in ["completion", "response"] {
@@ -186,8 +211,14 @@ fn sqlite_default_model_picker_keeps_draft_and_persists_across_restart() {
         restarted.text("fixture/primary ");
         restarted.input("\x01\x0b");
         restarted.model_search("");
-        restarted.input("\x1b[B\t");
-        restarted.model_search("fixture/primary");
+        restarted.input("\x1b[B");
+        // Down 从当前模型移动到列表末尾；读取真实高亮模型再验证 Tab 补全。
+        restarted.wait_for("模型列表高亮移动到末项", |screen| {
+            picker_selected(screen) == picker_row_order(screen).last().copied()
+        });
+        let tabbed = picker_selected(restarted.parser.screen()).expect("highlighted model");
+        restarted.input("\t");
+        restarted.model_search(tabbed);
         restarted.input("\x1b");
         restarted.draft("草稿🙂");
         assert_eq!(restarted.parser.screen().cursor_position(), cursor);

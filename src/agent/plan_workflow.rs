@@ -983,6 +983,8 @@ impl Agent {
         self.reset_lsp_diagnostics();
         self.journal = journal;
         self.tools.artifacts = Default::default();
+        // Fresh 交接是新会话根：规划会话的临时管道不迁移到执行会话。
+        self.tools.reset_pipe_store();
         if let Some(id) = self.journal.id() {
             let _ = self.tools.artifacts.bind(self.journal.directory(), id);
         }
@@ -1053,6 +1055,8 @@ impl Agent {
             .set_tools(self.tools.all_definitions(self.workflow.mode));
         self.journal = restored.journal;
         self.tools.artifacts = Default::default();
+        // 恢复的会话是新的有效根；不承诺旧临时管道正文跨恢复存在。
+        self.tools.reset_pipe_store();
         if let Some(id) = self.journal.id() {
             let _ = self.tools.artifacts.bind(self.journal.directory(), id);
         }

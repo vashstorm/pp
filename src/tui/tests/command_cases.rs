@@ -404,6 +404,37 @@ fn notification_startup_and_worker_errors_remain_in_message_history() {
 }
 
 #[test]
+fn pipe_store_binding_is_idempotent_and_bumps_epoch_only_on_new_root() {
+    let mut app = app();
+    app.state = State::Ready;
+    let first = crate::tools::PipeStore::new();
+    app.receive_event_for_test(WorkerEvent::PipeStoreBound {
+        store: first.clone(),
+    });
+    assert_eq!(app.pipe_store_epoch, 1);
+    assert!(
+        app.pipe_store
+            .as_ref()
+            .is_some_and(|store| store.same_instance(&first))
+    );
+    // 同一实例重复发布不产生新 epoch。
+    app.receive_event_for_test(WorkerEvent::PipeStoreBound {
+        store: first.clone(),
+    });
+    assert_eq!(app.pipe_store_epoch, 1);
+    let second = crate::tools::PipeStore::new();
+    app.receive_event_for_test(WorkerEvent::PipeStoreBound {
+        store: second.clone(),
+    });
+    assert_eq!(app.pipe_store_epoch, 2);
+    assert!(
+        app.pipe_store
+            .as_ref()
+            .is_some_and(|store| store.same_instance(&second))
+    );
+}
+
+#[test]
 fn notification_filters_routine_feedback_and_keeps_independent_errors() {
     let mut app = app();
     let before = draw(&mut app, 100, 30);

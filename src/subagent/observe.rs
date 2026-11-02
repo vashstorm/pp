@@ -35,6 +35,9 @@ pub(crate) struct HubAgent {
 pub(crate) struct HubSnapshot {
     #[serde(skip)]
     pub output_previews: Vec<ObservedRecord>,
+    /// 每个子 Agent 最近的管道阶段预览；与主输出预览分开有界保留。
+    #[serde(skip)]
+    pub pipeline_previews: Vec<ObservedRecord>,
     pub agents: Vec<HubAgent>,
     pub runs: Vec<super::Run>,
     /// 观察日志健康提示；不进入旧 snapshots wire。
@@ -146,8 +149,16 @@ impl Inner {
         event: Option<&AgentEvent>,
         hub: Option<HubEvent>,
     ) {
-        if matches!(event, Some(AgentEvent::ToolOutputSnapshot { .. })) {
-            lock(&self.output_previews).insert(
+        if let Some(
+            event @ (AgentEvent::ToolOutputSnapshot { .. }
+            | AgentEvent::ToolPipelineSnapshot { .. }),
+        ) = event
+        {
+            let previews = match event {
+                AgentEvent::ToolPipelineSnapshot { .. } => &self.pipeline_previews,
+                _ => &self.output_previews,
+            };
+            lock(previews).insert(
                 agent_id.to_owned(),
                 ObservedRecord {
                     root_id: None,
@@ -156,7 +167,7 @@ impl Inner {
                     generation,
                     sequence,
                     timestamp_ms: Some(now()),
-                    event: event.cloned(),
+                    event: Some(event.clone()),
                     hub: None,
                 },
             );
@@ -168,6 +179,7 @@ impl Inner {
             Some(AgentEvent::ToolStarted { .. } | AgentEvent::ToolFinished { .. })
         ) {
             lock(&self.output_previews).remove(agent_id);
+            lock(&self.pipeline_previews).remove(agent_id);
         }
         let gate = self.append_lock(agent_id);
         let root = self
@@ -262,6 +274,10 @@ impl Binding {
             .collect();
         HubSnapshot {
             output_previews: lock(&self.inner.output_previews)
+                .values()
+                .cloned()
+                .collect(),
+            pipeline_previews: lock(&self.inner.pipeline_previews)
                 .values()
                 .cloned()
                 .collect(),
@@ -660,12 +676,30 @@ mod tests {
                 }),
                 None,
             );
+            binding.inner.observe(
+                "a1",
+                Some("r1"),
+                1,
+                Some(i + 22),
+                Some(&AgentEvent::ToolPipelineSnapshot {
+                    id: "bash".into(),
+                    pipes: serde_json::json!({"run_id":"r1","revision":i}),
+                }),
+                None,
+            );
         }
         let snapshot = binding.hub_snapshot();
         assert_eq!(snapshot.output_previews.len(), 1);
         assert!(
             matches!(&snapshot.output_previews[0].event,Some(AgentEvent::ToolOutputSnapshot { output, .. }) if output == "current-19")
         );
+        // 阶段预览独立保留，不覆盖主输出预览。
+        assert_eq!(snapshot.pipeline_previews.len(), 1);
+        assert!(matches!(
+            &snapshot.pipeline_previews[0].event,
+            Some(AgentEvent::ToolPipelineSnapshot { pipes, .. })
+                if pipes["revision"] == 19
+        ));
         assert_eq!(read_all(&binding, "a1").len(), 1);
         binding.inner.observe(
             "a1",
@@ -678,7 +712,9 @@ mod tests {
             }),
             None,
         );
-        assert!(binding.hub_snapshot().output_previews.is_empty());
+        let snapshot = binding.hub_snapshot();
+        assert!(snapshot.output_previews.is_empty());
+        assert!(snapshot.pipeline_previews.is_empty());
         assert_eq!(read_all(&binding, "a1").len(), 2);
     }
 }

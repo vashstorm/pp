@@ -73,6 +73,7 @@ impl App {
         replay: Vec<crate::agent::persistence::ReplayRecord>,
     ) -> Option<String> {
         self.close_ask_on_exit();
+        self.close_pipes();
         self.subagent_autowake = false;
         self.token_speed.clear();
         self.task_status_view.clear();
@@ -122,6 +123,7 @@ impl App {
         self.tree_panel = None;
         self.roles_panel = None;
         self.changes_panel = None;
+        self.close_pipes();
         self.plan_list_panel = None;
         self.plan_list_pending = None;
         self.plan_reenter_standby = false;
@@ -575,6 +577,7 @@ impl App {
             || self.skill_panel.is_some()
             || self.session_panel.is_some()
             || self.changes_panel.is_some()
+            || self.pipes_panel.is_some()
             // 读取完成前保留主屏幕，空历史或读取失败时无需切换屏幕。
             || self.tree_panel.as_ref().is_some_and(|panel| !panel.is_loading())
             || self.plan_list_panel.is_some()

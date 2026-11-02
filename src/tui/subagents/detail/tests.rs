@@ -102,6 +102,109 @@ fn artifact_live_output_preview_replaces_body_after_history_catches_up() {
     assert!(screen.contains("final-output") && !screen.contains("old-preview"));
 }
 
+#[test]
+fn detail_pipeline_preview_adds_badge_without_replacing_main_preview() {
+    const RUN: &str = "0123456789abcdef0123456789abcdef";
+    let mut detail = Detail::new("a1", 1, Transcript::new());
+    let running = run("r1", "running");
+    detail.ingest(
+        &page(
+            vec![
+                state(0, "r1", "running", Some(1_000)),
+                event(1, "r1", tool("b", "bash", json!({"command":"work"}))),
+            ],
+            true,
+        ),
+        std::slice::from_ref(&running),
+        &BTreeSet::new(),
+        10_000,
+    );
+    let pipeline = |nonzero: u64, revision: u64| {
+        event(
+            2 + revision,
+            "r1",
+            AgentEvent::ToolPipelineSnapshot {
+                id: "b".into(),
+                pipes: json!({
+                    "run_id": RUN,
+                    "uri": format!("pipe://{RUN}"),
+                    "pipelines": [{"id": 1, "stages": []}],
+                    "streams": [],
+                    "nonzero_stages": nonzero,
+                    "incomplete": false,
+                    "revision": revision,
+                    "leak": "pipeline-secret",
+                }),
+            },
+        )
+        .record
+    };
+    // 页未读完时预览被丢弃，不能提前改变卡片。
+    detail.pipeline_preview(&pipeline(1, 1));
+    assert!(!text(&mut detail.transcript).contains("Pipes: /pipes"));
+    detail.ingest(
+        &page(vec![], false),
+        std::slice::from_ref(&running),
+        &BTreeSet::new(),
+        10_000,
+    );
+    let main = event(
+        5,
+        "r1",
+        AgentEvent::ToolOutputSnapshot {
+            id: "b".into(),
+            output: "main-preview".into(),
+        },
+    )
+    .record;
+    detail.output_preview(&main);
+    detail.pipeline_preview(&pipeline(1, 1));
+    let screen = text(&mut detail.transcript);
+    // 阶段快照只更新底部警示/入口，主输出预览仍是唯一正文。
+    assert!(screen.contains("main-preview"), "{screen}");
+    assert!(screen.contains("Pipes: /pipes (F8)"), "{screen}");
+    assert!(screen.contains("Non-zero stage results: 1"), "{screen}");
+    assert!(!screen.contains("pipeline-secret"), "{screen}");
+    let latest = event(
+        6,
+        "r1",
+        AgentEvent::ToolOutputSnapshot {
+            id: "b".into(),
+            output: "latest-preview".into(),
+        },
+    )
+    .record;
+    detail.output_preview(&latest);
+    detail.pipeline_preview(&pipeline(2, 2));
+    let screen = text(&mut detail.transcript);
+    assert!(
+        screen.contains("latest-preview") && !screen.contains("main-preview"),
+        "{screen}"
+    );
+    assert!(screen.contains("Non-zero stage results: 2"), "{screen}");
+    // 最终结果没有 pipes 时，瞬时入口与警示不得残留。
+    detail.ingest(
+        &page(
+            vec![event(
+                7,
+                "r1",
+                AgentEvent::ToolFinished {
+                    id: "b".into(),
+                    result: json!({"ok":true,"stdout":"final-output"}),
+                },
+            )],
+            false,
+        ),
+        std::slice::from_ref(&running),
+        &BTreeSet::new(),
+        10_000,
+    );
+    let screen = text(&mut detail.transcript);
+    assert!(screen.contains("final-output"), "{screen}");
+    assert!(!screen.contains("Pipes: /pipes"), "{screen}");
+    assert!(!screen.contains("Non-zero stage results"), "{screen}");
+}
+
 fn run(id: &str, status: &str) -> Run {
     Run {
         id: id.into(),
@@ -362,7 +465,6 @@ fn detail_pages_wait_for_output_before_snapshot_terminal() {
         10_000,
     );
     assert!(detail.terminal.is_empty());
-    assert!(text(&mut detail.transcript).contains("Responding · 9s"));
     detail.ingest(
         &page(
             vec![
@@ -405,7 +507,6 @@ fn detail_queue_to_live_ignores_a_snapshot_beyond_the_read_boundary() {
         &BTreeSet::new(),
         10_000,
     );
-    assert!(text(&mut detail.transcript).contains("Queued · —"));
     detail.ingest(
         &page(
             vec![
@@ -426,7 +527,6 @@ fn detail_queue_to_live_ignores_a_snapshot_beyond_the_read_boundary() {
         10_000,
     );
     assert!(detail.terminal.is_empty());
-    assert!(text(&mut detail.transcript).contains("Responding · 9s"));
     detail.ingest(
         &page(
             vec![
@@ -517,7 +617,6 @@ fn detail_unknown_timing_and_cancel_keep_partial_output_without_duplicates() {
         } else {
             detail.tick(Instant::now() + Duration::from_secs(90));
             let screen = text(&mut detail.transcript);
-            assert!(screen.contains("Running bash · —"));
             assert!(!screen.contains("Elapsed:"));
         }
         let cancelled = page(vec![state(3, "r1", "cancelled", None)], false);

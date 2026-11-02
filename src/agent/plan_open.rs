@@ -185,6 +185,8 @@ impl Agent {
         self.think_level = selection.effort;
         self.journal = journal;
         self.tools.artifacts = Default::default();
+        // 打开既有计划会建立候选会话根；旧根的临时管道不随导航保留。
+        self.tools.reset_pipe_store();
         if let Some(id) = self.journal.id() {
             let _ = self.tools.artifacts.bind(self.journal.directory(), id);
         }

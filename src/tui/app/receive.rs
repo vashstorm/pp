@@ -282,6 +282,20 @@ impl App {
                     self.session_id = Some(id);
                     changed = true;
                 }
+                Ok(WorkerEvent::PipeStoreBound { store }) => {
+                    // 同一实例重复发布是幂等的；换根才递增 epoch，面板据此丢弃旧回复。
+                    if self
+                        .pipe_store
+                        .as_ref()
+                        .is_none_or(|current| !current.same_instance(&store))
+                    {
+                        self.pipe_store = Some(store);
+                        self.pipe_store_epoch = self.pipe_store_epoch.wrapping_add(1);
+                        // 换根后旧面板只持有旧 store 的索引；关闭观察线程并释放正文。
+                        self.close_pipes();
+                        changed = true;
+                    }
+                }
                 Ok(WorkerEvent::ShellCompleted(result)) => {
                     self.active_cancellation = None;
                     self.secondary_status = None;
@@ -1038,6 +1052,7 @@ impl App {
                 }
             }
         }
+        changed |= self.pipes_tick();
         changed |= self.refresh_queue();
         changed |= self.dispatch_next(false);
         if changed {

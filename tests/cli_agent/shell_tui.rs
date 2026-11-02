@@ -429,9 +429,9 @@ fn bang_shell_tui_escape_reaps_process_group() {
     let mut pty = bang_shell_start(&server, home.path(), project.path(), "completion", "");
     let sessions = bang_shell_sessions_dir(home.path());
 
-    // 父 shell 与子 subshell 都忽略 TERM 并持续运行：Esc 必须用 grace 后的
+    // 显式外部 sh 及其子 subshell 都忽略 TERM 并持续运行：Esc 必须用 grace 后的
     // KILL 回收整个进程组。
-    pty.input("!trap '' TERM; (trap '' TERM; sleep 30) & child=$!; printf '%s' \"$$\" > shell-esc-parent.pid; printf '%s' \"$child\" > shell-esc-child.pid; printf 'shell-esc-ready\\n'; wait \"$child\"\r");
+    pty.input("!sh -c 'trap \"\" TERM; (trap \"\" TERM; sleep 30) & child=$!; printf \"%s\" \"$$\" > shell-esc-parent.pid; printf \"%s\" \"$child\" > shell-esc-child.pid; printf \"shell-esc-ready\\n\"; wait \"$child\"'\r");
     cancel_wait_pid_files(
         project.path(),
         &["shell-esc-parent.pid", "shell-esc-child.pid"],

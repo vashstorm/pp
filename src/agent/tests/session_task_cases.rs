@@ -182,8 +182,11 @@ fn resume_preparation_preserves_current_session_and_releases_failed_candidate() 
     assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_err());
     drop(candidate);
     assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_ok());
+    let before_resume_store = old.pipe_store();
     old.resume(&ids[1], &CancellationToken::new()).unwrap();
     assert_eq!(old.session_id(), Some(ids[1].as_str()));
+    // 恢复是新的有效会话根：临时管道 registry 换实例，旧 URI 不再解析。
+    assert!(!before_resume_store.same_instance(&old.pipe_store()));
     assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[0]), true).is_ok());
     assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_err());
 }
@@ -255,7 +258,7 @@ fn background_finish_run_reclaims_processes_for_every_outcome() {
     let mut previous = None;
     for outcome in [0, 1, 2] {
         let token = CancellationToken::new();
-        let started = agent.tools.execute("bash", &json!({"command":"printf '%s\\n%s' \"$$\" \"$TMPDIR\" > marker.pending; mv marker.pending marker; exec sleep 60","mode":"background"}).to_string(), "start", crate::tools::ToolPolicy::Execute { workflow: &agent.workflow }, &token, &mut |_| {});
+        let started = agent.tools.execute("bash", &json!({"command":"sh -c 'printf \"%s\\n%s\" \"$$\" \"$TMPDIR\" > marker.pending; mv marker.pending marker; exec sleep 60'","mode":"background"}).to_string(), "start", crate::tools::ToolPolicy::Execute { workflow: &agent.workflow }, &token, &mut |_| {});
         let snapshot: serde_json::Value = serde_json::from_str(&started.output).unwrap();
         let id = snapshot["task_id"].as_str().unwrap().to_owned();
         assert_ne!(previous.as_ref(), Some(&id));

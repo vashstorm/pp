@@ -334,6 +334,7 @@ mod hub_cases;
 mod input_cases;
 mod lsp_cases;
 mod model_menu_cases;
+mod pipes_cases;
 mod plan_cases;
 mod roles_cases;
 mod streaming_panel_cases;

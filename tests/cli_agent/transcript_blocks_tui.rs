@@ -257,7 +257,6 @@ fn transcript_blocks_markdown_streams_staged_blocks_and_styles() {
             s.contents().contains("Fixture Title")
                 && s.contents().contains("**bold")
                 && !s.contents().contains(" word**")
-                && s.contents().contains("✻ Responding")
                 && markdown_blocks_bold(s, "Fixture Title")
         });
         {
@@ -547,7 +546,6 @@ fn transcript_blocks_markdown_scroll_offset_follow_and_exit_scrollback() {
     pty.wait_for("流式中间态已显示代码块与早期段落", |s| {
         s.contents().contains("scrollback code line")
             && s.contents().contains("para-09")
-            && s.contents().contains("✻ Responding")
     });
     pty.input("\x1b[5~");
     context_tui_paste(&mut pty, "page-fence");

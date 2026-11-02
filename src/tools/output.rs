@@ -468,14 +468,14 @@ enum EscapeState {
 }
 
 #[derive(Default)]
-struct Normalizer {
+pub(crate) struct Normalizer {
     decoder: StreamText,
     escape: EscapeState,
     cr: bool,
 }
 
 impl Normalizer {
-    fn feed(&mut self, bytes: &[u8], finish: bool) -> String {
+    pub(crate) fn feed(&mut self, bytes: &[u8], finish: bool) -> String {
         let decoded = if finish {
             self.decoder.finish()
         } else {
@@ -747,6 +747,54 @@ fn recovery_notice(value: &Value) -> Option<String> {
     Some(format!(
         "{status} Use read({read}) for the last 80 saved lines, or grep with path=\"{uri}\" for targeted searches. Use read line selectors or next_path to inspect other saved ranges."
     ))
+}
+
+/// `result.pipes` 的有界阶段摘要；只读元数据，不访问 registry、没有阶段正文。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PipesStatus {
+    pub(crate) run_id: String,
+    pub(crate) uri: String,
+    pub(crate) nonzero_stages: u64,
+    pub(crate) incomplete: bool,
+}
+
+impl PipesStatus {
+    /// CLI 追加行：URI、非零阶段计数与观测/保留不完整提示。
+    pub(crate) fn notice(&self) -> String {
+        let mut status = format!("[pipes: {}", self.uri);
+        if self.nonzero_stages > 0 {
+            status.push_str(&format!(
+                " · Non-zero stage results: {}",
+                self.nonzero_stages
+            ));
+        }
+        if self.incomplete {
+            status.push_str(" · stage output incomplete");
+        }
+        status.push(']');
+        status
+    }
+}
+
+/// 从 `pipes` 元数据提取有界摘要；没有真实管道时返回 `None`，老结果保持原样。
+pub(crate) fn pipes_status(pipes: &Value) -> Option<PipesStatus> {
+    if !pipes.is_object() {
+        return None;
+    }
+    let run_id = pipes["run_id"].as_str()?;
+    let pipelines = pipes["pipelines"].as_array().map_or(0, Vec::len);
+    if pipelines == 0 && pipes["omitted_pipelines"].as_u64().unwrap_or(0) == 0 {
+        return None;
+    }
+    Some(PipesStatus {
+        run_id: run_id.to_owned(),
+        uri: pipes["uri"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("pipe://{run_id}")),
+        nonzero_stages: pipes["nonzero_stages"].as_u64().unwrap_or(0),
+        incomplete: pipes["incomplete"] == true || pipes["capture_error"].is_string(),
+    })
 }
 
 /// 仅从已保存元数据生成展示文案，不在 UI 访问文件。
@@ -1142,5 +1190,40 @@ mod tests {
         let interrupted = store.snapshot(&uri, &CancellationToken::new()).unwrap();
         assert_eq!(interrupted.metadata["complete"], false);
         assert_eq!(interrupted.metadata["interrupted"], true);
+    }
+
+    #[test]
+    fn pipes_status_is_bounded_and_absent_for_old_results() {
+        assert!(pipes_status(&Value::Null).is_none());
+        assert!(pipes_status(&json!({"ok":true,"stdout":"plain"})).is_none());
+        // 没有真实管道的 run 不占用卡片底部入口。
+        assert!(pipes_status(&json!({"run_id":"abc","uri":"pipe://abc"})).is_none());
+
+        let status = pipes_status(&json!({
+            "run_id":"abc",
+            "uri":"pipe://abc",
+            "pipelines":[{"id":1,"stages":[]}],
+            "streams":[{"id":0,"uri":"pipe://abc/0"}],
+            "nonzero_stages":2,
+            "incomplete":true
+        }))
+        .unwrap();
+        assert_eq!(status.uri, "pipe://abc");
+        assert_eq!(status.nonzero_stages, 2);
+        assert!(status.incomplete);
+        let notice = status.notice();
+        assert!(notice.contains("pipe://abc"), "{notice}");
+        assert!(notice.contains("Non-zero stage results: 2"), "{notice}");
+        assert!(notice.contains("stage output incomplete"), "{notice}");
+        assert!(!notice.contains("body-secret"), "{notice}");
+
+        let omitted = pipes_status(&json!({
+            "run_id":"def",
+            "pipelines":[],
+            "omitted_pipelines":3
+        }))
+        .unwrap();
+        assert_eq!(omitted.uri, "pipe://def");
+        assert!(!omitted.notice().contains("Non-zero"));
     }
 }

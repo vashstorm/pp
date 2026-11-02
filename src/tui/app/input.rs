@@ -17,6 +17,7 @@ impl App {
             && self.session_panel.is_none()
             && self.tree_panel.is_none()
             && self.changes_panel.is_none()
+            && self.pipes_panel.is_none()
             && self.plan_leave_confirmation.is_none()
             && (self.plan_list_panel.is_none() || self.plan_panel.is_some())
             && self.plan_panel.as_ref().is_none_or(|panel| {

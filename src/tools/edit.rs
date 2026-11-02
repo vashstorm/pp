@@ -44,6 +44,10 @@ impl Request {
             }
         };
         ensure!(!request.path().trim().is_empty(), "path must not be blank");
+        ensure!(
+            !super::read::is_pipe_uri(request.path()),
+            "pipe streams are read-only"
+        );
         Ok(request)
     }
     pub(super) fn path(&self) -> &str {
@@ -58,5 +62,24 @@ impl Request {
             Self::Replace { edits, .. } => (edits.len(), replace::apply(source, edits)?),
         };
         Ok(Staged { output, count })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pipeline_edit_rejects_pipe_streams_as_read_only() {
+        let arguments = serde_json::json!({
+            "path": "pipe://00112233445566778899aabbccddeeff/1",
+            "edits": [{"oldText": "a", "newText": "b"}],
+        })
+        .to_string();
+        let error = Request::parse(EditMode::Replace, &arguments)
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(error, "pipe streams are read-only");
     }
 }

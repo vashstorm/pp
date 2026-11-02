@@ -174,6 +174,25 @@ impl App {
                 if control && key.code == KeyCode::Char('c') {
                     return key.kind == KeyEventKind::Press;
                 }
+                // F8 是全局入口：即使面板已打开也重绑到最近的 run。
+                if key.code == KeyCode::F(8)
+                    && key.modifiers.is_empty()
+                    && self.pipes_entry_allowed()
+                {
+                    if key.kind == KeyEventKind::Press {
+                        self.open_pipes(None);
+                    }
+                    *dirty = true;
+                    return false;
+                }
+                // 面板独占按键：Esc 只关闭，Ctrl+O 等全局键不得穿透。
+                if let Some(panel) = &mut self.pipes_panel {
+                    let action = panel.key(key);
+                    self.escape_tap.reset();
+                    self.apply_pipes_action(action);
+                    *dirty = true;
+                    return false;
+                }
                 // Alt+A 只在主视图切换 Hub；未获得绑定时也允许打开空态。
                 if crate::tui::app::hub::is_hub_toggle(&Event::Key(key))
                     && self.hub_toggle_allowed()
@@ -811,6 +830,24 @@ impl App {
                     self.changes_panel
                         .as_mut()
                         .expect("active changes panel")
+                        .wheel(
+                            matches!(mouse.kind, MouseEventKind::ScrollUp),
+                            MOUSE_SCROLL_LINES,
+                        );
+                    *dirty = true;
+                }
+            }
+            Event::Paste(_) if self.pipes_panel.is_some() => {
+                *dirty = true;
+            }
+            Event::Mouse(mouse) if self.pipes_panel.is_some() => {
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) {
+                    self.pipes_panel
+                        .as_mut()
+                        .expect("active pipes panel")
                         .wheel(
                             matches!(mouse.kind, MouseEventKind::ScrollUp),
                             MOUSE_SCROLL_LINES,

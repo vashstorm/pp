@@ -266,18 +266,52 @@ impl Transcript {
                                 .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
                         if bash && matches!(line.source(), Some(Source::Bottom)) && area.width > 4 {
-                            Span::styled(
-                                format!(
-                                    " {} ",
-                                    tool_display::clip(
-                                        &entry.footer,
-                                        usize::from(area.width.saturating_sub(6)),
-                                        true
-                                    )
-                                ),
+                            let available = usize::from(area.width.saturating_sub(6));
+                            let warning_needed = !entry.footer_warning.is_empty();
+                            let warning_width =
+                                ratatui::text::Line::raw(entry.footer_warning.as_str()).width();
+                            let footer_budget = if warning_needed {
+                                available.saturating_sub(
+                                    warning_width + if entry.footer.is_empty() { 0 } else { 3 },
+                                )
+                            } else {
+                                available
+                            };
+                            let footer =
+                                tool_display::clip(&entry.footer, footer_budget, warning_needed);
+                            let footer_width = ratatui::text::Line::raw(footer.as_str()).width();
+                            let separator = if footer.is_empty() { "" } else { " · " };
+                            let remaining = available.saturating_sub(
+                                footer_width + ratatui::text::Line::raw(separator).width(),
+                            );
+                            let warning = if warning_needed {
+                                tool_display::clip(&entry.footer_warning, remaining, false)
+                            } else {
+                                String::new()
+                            };
+                            let mut spans = vec![Span::styled(
+                                format!(" {footer}"),
                                 Style::default().fg(palette::MUTED).bg(card_bg),
-                            )
-                            .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
+                            )];
+                            if !warning.is_empty() {
+                                if !separator.is_empty() {
+                                    spans.push(Span::styled(
+                                        separator.to_owned(),
+                                        Style::default().fg(palette::MUTED).bg(card_bg),
+                                    ));
+                                }
+                                spans.push(Span::styled(
+                                    format!("{warning} "),
+                                    Style::default().fg(palette::ACCENT).bg(card_bg),
+                                ));
+                            } else if !footer.is_empty() {
+                                spans.push(Span::styled(
+                                    " ",
+                                    Style::default().fg(palette::MUTED).bg(card_bg),
+                                ));
+                            }
+                            ratatui::text::Line::from(spans)
+                                .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
                         if bash && matches!(line.source(), Some(Source::Top)) && area.width > 4 {
                             let (status, color) = match entry.status {

@@ -7,6 +7,7 @@ mod init;
 mod input;
 mod navigation;
 mod panels;
+mod pipes;
 mod receive;
 mod resources;
 mod roles;

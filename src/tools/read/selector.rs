@@ -98,6 +98,7 @@ impl Target {
         if !web
             && !path.starts_with("skill://")
             && !path.starts_with("artifact://")
+            && !path.starts_with("pipe://")
             && cwd.join(path).symlink_metadata().is_ok()
         {
             return Ok(Self {

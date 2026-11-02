@@ -8,6 +8,7 @@ mod config;
 mod context;
 mod events;
 mod history;
+mod host_defaults;
 mod interaction;
 mod llm;
 mod logging;
@@ -134,6 +135,7 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    host_defaults::install(host_defaults::capture());
     let args = Args::parse();
     // gc reports the existing inventory without creating its own diagnostic log.
     let logging = if matches!(args.command, Some(Command::Gc { .. })) {

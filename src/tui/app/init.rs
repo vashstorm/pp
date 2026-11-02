@@ -1,7 +1,7 @@
 use crate::tui::{
     Agent, App, Context, EscapeTap, InputQueue, Instant, Level, Path, Result, ResumeState, State,
     ThinkLevel, Transcript, WorkerCommand, WorkerEvent, WorkflowState, commands, editor, files,
-    mpsc, publish_prepared, publish_transition_failure, push_runtime_snapshot,
+    mpsc, publish_pipe_store, publish_prepared, publish_transition_failure, push_runtime_snapshot,
     push_workflow_snapshot, request_ask, skills, statusline, thread, usage_snapshot,
 };
 use std::collections::BTreeMap;
@@ -134,6 +134,11 @@ impl App {
             hub_bound: None,
             hub_sends: BTreeMap::new(),
             child_drafts: Default::default(),
+            pipe_store: None,
+            pipe_store_epoch: 0,
+            pipes_panel: None,
+            pipes_worker: None,
+            pipes_view_epoch: 0,
             file_commands,
             file_worker: files::Worker::new(cwd)?,
             file_paths: Vec::new(),
@@ -204,6 +209,10 @@ impl App {
         self.default_model_reference = Some(agent.default_model_reference().to_owned());
         let (commands, receiver) = mpsc::channel();
         let (sender, events) = mpsc::sync_channel(256);
+        // 启动绑定：先于任何任务发布根 registry，面板可在运行中打开。
+        let _ = sender.send(WorkerEvent::PipeStoreBound {
+            store: agent.pipe_store(),
+        });
         let warm_events = sender.clone();
         self.subagent_control = agent.subagent_control.clone();
         let dialog_lock = std::sync::Arc::new(crate::interaction::DialogQueue::default());
@@ -341,6 +350,9 @@ impl App {
                         }
                         WorkerCommand::Reset => {
                             agent.reset();
+                            if !publish_pipe_store(&sender, &agent) {
+                                break;
+                            }
                             push_runtime_snapshot(&agent, &mut snapshots);
                             WorkerEvent::Reset
                         }
@@ -416,6 +428,9 @@ impl App {
                         WorkerCommand::NavigateTree(id) => {
                             let result = agent.navigate_tree(&id);
                             if result.is_ok() {
+                                if !publish_pipe_store(&sender, &agent) {
+                                    break;
+                                }
                                 push_runtime_snapshot(&agent, &mut snapshots);
                             }
                             WorkerEvent::TreeNavigated(result)
@@ -433,7 +448,10 @@ impl App {
                             let result = agent.resume(&id, &cancellation);
                             match result {
                                 Ok(preparation) => {
-                                    // 先交接清理句柄并等待 UI 确认，再补会话通知。
+                                    // 恢复已是新会话根：先重绑临时管道，再交接清理句柄。
+                                    if !publish_pipe_store(&sender, &agent) {
+                                        break;
+                                    }
                                     let prepared =
                                         publish_prepared(&sender, preparation, &cancellation);
                                     WorkerEvent::SessionResumed(match prepared {
@@ -473,6 +491,9 @@ impl App {
                         } => {
                             let result = agent.open_listed_plan(&selection, intent, &cancellation);
                             if result.is_ok() {
+                                if !publish_pipe_store(&sender, &agent) {
+                                    break;
+                                }
                                 push_runtime_snapshot(&agent, &mut snapshots);
                             }
                             WorkerEvent::ListedPlanOpened(result)
@@ -510,6 +531,10 @@ impl App {
                             };
                             match result {
                                 Ok(preparation) => {
+                                    // Keep 不改 store（同实例幂等）；Fresh 换根后立即发布。
+                                    if !publish_pipe_store(&sender, &agent) {
+                                        break;
+                                    }
                                     match publish_prepared(&sender, preparation, &cancellation) {
                                         Ok(()) => WorkerEvent::WorkflowChanged(Ok(agent
                                             .workflow()
@@ -540,6 +565,11 @@ impl App {
                                 &mut emit,
                             ) {
                                 Ok(preparation) => {
+                                    // Fresh 批准的交接已换 store；下一次任务（继续执行）
+                                    // 开始前必须先让 UI 重绑，Keep 由同实例判定跳过。
+                                    if !publish_pipe_store(&sender, &agent) {
+                                        break;
+                                    }
                                     match publish_prepared(&sender, preparation, &cancellation) {
                                         // UI 确认后才启动模型执行。
                                         Ok(()) => WorkerEvent::completed(

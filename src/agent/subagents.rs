@@ -68,6 +68,8 @@ impl Agent {
         let changes = self.tools.changes.clone();
         let write_lock = self.tools.write_lock.clone();
         let artifacts = self.tools.artifacts.clone();
+        // 临时管道正文属于根会话：子 Agent 只共享 registry，不另起一棵树。
+        let pipe_store = self.tools.pipe_store();
         // 非隔离子 Agent 共享父 Registry；隔离子 Agent 使用实际 prepare 后的 cwd
         // 新建独立 Registry。settings 与用户配置路径都从当前会话冻结。
         let lsp = self.tools.lsp.clone();
@@ -119,6 +121,7 @@ impl Agent {
             );
             let mut tools = Tools::new(record.spec.cwd.clone(), config.settings.edit)?;
             tools.artifacts = artifacts.clone();
+            tools.share_pipe_store(&pipe_store);
             tools.limits = config.settings.tool_limits();
             tools.skills = skills.clone();
             if !record.spec.isolated {

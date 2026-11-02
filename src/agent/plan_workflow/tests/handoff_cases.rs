@@ -278,6 +278,7 @@ fn plan_fresh_approval_starts_an_empty_session_and_keeps_source_readable() {
         seed_session(&mut agent, EXPLORATION);
         let planning_id = agent.session_id().unwrap().to_owned();
         let token = agent.read_plan().unwrap().token;
+        let planning_store = agent.pipe_store();
 
         let preparation = agent
             .approve_plan(
@@ -288,6 +289,8 @@ fn plan_fresh_approval_starts_an_empty_session_and_keeps_source_readable() {
                 &mut |_| {},
             )
             .unwrap();
+        // Fresh 交接换会话根：规划会话的临时管道不迁移到执行会话。
+        assert!(!planning_store.same_instance(&agent.pipe_store()));
         // A fresh session with an empty replay was handed over.
         assert!(matches!(&preparation.replay, Some(replay) if replay.is_empty()));
         let execution_id = preparation.session_id.clone().unwrap();
@@ -341,6 +344,7 @@ fn plan_fresh_approval_starts_an_empty_session_and_keeps_source_readable() {
         let id = agent.session_id().unwrap().to_owned();
         let path = dir.path().join("sessions").join(format!("{id}.jsonl"));
         agent.journal.use_read_only_file(&path);
+        let planning_store = agent.pipe_store();
         let error = err_message(agent.approve_plan(
             token,
             ExecutionContext::Fresh,
@@ -356,6 +360,8 @@ fn plan_fresh_approval_starts_an_empty_session_and_keeps_source_readable() {
             PlanStatus::Ready
         );
         assert_eq!(user_texts(&agent), vec![EXPLORATION.to_owned()]);
+        // 失败交接未换根：临时管道实例保持原样。
+        assert!(planning_store.same_instance(&agent.pipe_store()));
         let id = agent.workflow.plan.as_ref().unwrap().id.clone();
         assert_eq!(
             std::fs::read(plan_path(dir.path(), &id)).unwrap(),

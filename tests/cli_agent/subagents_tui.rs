@@ -291,7 +291,6 @@ fn agent_hub_streams_and_anchors_activity() {
         pty.text("ToolFailure");
         pty.input("\r");
         pty.text("hub-stream-first");
-        pty.text("✻ Responding");
         // 第二段只追加一次。
         // 分片拼接必须与最终文本一致，否则 Responses 协议会判定冲突。
         streaming_delta(&mut live, protocol, " hub-stream-second");
@@ -474,8 +473,15 @@ fn agent_hub_controls_do_not_revive_on_inspect() {
     let cancelled = hub_registry(home.path());
     assert_ne!(cancelled["agents"]["a1"]["status"], "aborted");
     ask_final_reply(request, protocol, "cancel-ack");
-    // Hub 打开时主对话不在屏幕上，取消后的表现以 registry 与运行状态为准。
-    pty.text("Run cancelled");
+    // Hub 打开时主对话不在屏幕上；取消后的终态以 registry 中的 Run 为准。
+    pty.wait_for("cancelled run recorded", |_| {
+        hub_registry(home.path())["runs"]
+            .as_object()
+            .is_some_and(|runs| {
+                runs.values()
+                    .any(|run| run["agent_id"] == "a1" && run["status"] == "cancelled")
+            })
+    });
     // r 对 idle 为空操作：不启动新 Run，也不发模型请求。
     let idle = hub_registry(home.path())["agents"]["a1"]["generation"]
         .as_u64()

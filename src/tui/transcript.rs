@@ -149,6 +149,10 @@ struct TranscriptEntry {
     layout: Option<Arc<EntryLayout>>,
     expanded: bool,
     footer: String,
+    /// 非零阶段/观测不完整等警示，绘制为底部边框的 warning 色 span。
+    footer_warning: String,
+    /// 有管道时保留有界元数据；正文只经 `/pipes` 或 `read pipe://` 获取。
+    pipes_badge: Option<PipesBadge>,
     started: Option<Instant>,
     bash_timeout_seconds: Option<u64>,
     arguments: Value,
@@ -158,6 +162,14 @@ struct TranscriptEntry {
     display: DisplayContext,
     display_title: Option<String>,
     hidden: bool,
+}
+
+/// Bash 卡片的管道入口：只保留有界元数据，不复制阶段正文。
+#[derive(Clone, PartialEq, Eq)]
+struct PipesBadge {
+    status: crate::tools::output::PipesStatus,
+    /// 恢复的历史结果不再保留临时正文，仅保留阶段状态。
+    restored: bool,
 }
 
 struct Activity {
@@ -526,6 +538,7 @@ impl Transcript {
                 AgentEvent::ToolFinished { .. } => activity.phase("Processing tool result"),
                 AgentEvent::ToolOutput { .. }
                 | AgentEvent::ToolOutputSnapshot { .. }
+                | AgentEvent::ToolPipelineSnapshot { .. }
                 | AgentEvent::FileChanged { .. }
                 | AgentEvent::LspDiagnostics { .. } => {}
                 // 后台自动加载不改变活动阶段，不伪装成模型工具执行。
@@ -891,6 +904,32 @@ impl Transcript {
                     self.entries.push(entry);
                 }
             }
+            // 运行中的阶段元数据只更新卡片底部的 `/pipes` 入口与警示；
+            // 主输出预览保持不变，完成后由 result.pipes 成为权威。
+            AgentEvent::ToolPipelineSnapshot { id, pipes } => {
+                if let Some(index) = self.tool_index(&id) {
+                    let replaying = self.replaying;
+                    let entry = &mut self.entries[index];
+                    if entry.kind == EntryKind::Bash && entry.result.is_none() {
+                        let badge =
+                            crate::tools::output::pipes_status(&pipes).map(|status| PipesBadge {
+                                status,
+                                restored: replaying,
+                            });
+                        if entry.pipes_badge != badge {
+                            entry.pipes_badge = badge;
+                            entry.update_bash_footer(
+                                entry
+                                    .started
+                                    .filter(|_| !replaying)
+                                    .map(|started| started.elapsed()),
+                            );
+                            entry.layout = None;
+                            entry.display_title = None;
+                        }
+                    }
+                }
+            }
             AgentEvent::ToolOutput { id, stream, text } => {
                 if let Some(index) = self.tool_index(&id) {
                     let entry = &mut self.entries[index];
@@ -1046,6 +1085,8 @@ impl Transcript {
                     }
                     entry.result = Some(result);
                     if entry.kind == EntryKind::Bash {
+                        // 最终结果优先于运行中的瞬时快照；没有真实管道时清空入口。
+                        entry.sync_pipes_badge(self.replaying);
                         entry.update_bash_footer(
                             entry
                                 .started

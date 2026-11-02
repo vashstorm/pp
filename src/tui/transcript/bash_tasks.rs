@@ -26,6 +26,7 @@ impl Transcript {
             entry.result = Some(snapshot.clone());
             entry.stdout.clear();
             entry.stderr.clear();
+            entry.sync_pipes_badge(false);
             entry.update_bash_footer(
                 entry
                     .started

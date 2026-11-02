@@ -98,6 +98,11 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Review latest-task edit/write changes and undo files (TUI)",
     },
     CommandSpec {
+        name: "/pipes",
+        usage: "/pipes [run-id]",
+        description: "Browse temporary pipeline stage streams for a bash run (TUI)",
+    },
+    CommandSpec {
         name: "/plan-list",
         usage: "/plan-list",
         description: "Manage saved plans: preview, continue, execute, rename, delete (TUI)",
@@ -143,6 +148,7 @@ pub(crate) enum Command<'a> {
     Resume,
     Tree,
     Changes,
+    Pipes(Option<&'a str>),
     Agents,
     Roles,
     Subagents,
@@ -184,6 +190,19 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/resume" => Command::Resume,
         "/tree" => Command::Tree,
         "/changes" => Command::Changes,
+        "/pipes" => {
+            ensure!(
+                argument.is_empty()
+                    || argument.len() == 32
+                        && argument
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "usage: /pipes [run-id]"
+            );
+            return Ok(Some(Command::Pipes(
+                (!argument.is_empty()).then_some(argument),
+            )));
+        }
         "/agents" => Command::Agents,
         "/Roles" | "/roles" => {
             ensure!(argument.is_empty(), "usage: /Roles");
@@ -551,6 +570,35 @@ mod tests {
             "/effort high extra",
         ] {
             assert!(parse(input, &FileCommands::default()).is_err());
+        }
+    }
+    #[test]
+    fn slash_pipes_accepts_zero_or_one_lowercase_hex_run_id() {
+        let files = FileCommands::default();
+        for input in ["/pipes", " /pipes  ", "/pipes\t"] {
+            assert_eq!(
+                parse(input, &files).unwrap(),
+                Some(Command::Pipes(None)),
+                "{input}"
+            );
+        }
+        let run = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            parse(&format!(" /pipes {run} "), &files).unwrap(),
+            Some(Command::Pipes(Some(run)))
+        );
+        for input in [
+            "/pipes 0123456789ABCDEF0123456789abcdef",
+            "/pipes 0123456789abcdef0123456789abcde",
+            "/pipes 0123456789abcdef0123456789abcdef0",
+            "/pipes 0123456789abcdef0123456789abcdeg",
+            "/pipes two ids",
+        ] {
+            assert_eq!(
+                parse(input, &files).unwrap_err().to_string(),
+                "usage: /pipes [run-id]",
+                "{input}"
+            );
         }
     }
 }

@@ -143,6 +143,8 @@ struct Inner {
     lsp_cleanup: Mutex<Vec<crate::lsp::Cleanup>>,
     cleanup_errors: Mutex<Vec<anyhow::Error>>,
     output_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
+    /// 管道阶段预览与主输出快照分开保留；种类之间不互相覆盖。
+    pipeline_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
     runtime_models: Mutex<Option<crate::model_control::Binding>>,
     model_roles: Mutex<crate::config::ModelRoles>,
     state: Mutex<State>,
@@ -305,6 +307,7 @@ impl Binding {
             lsp_cleanup: Mutex::new(Vec::new()),
             cleanup_errors: Mutex::new(Vec::new()),
             output_previews: Mutex::new(BTreeMap::new()),
+            pipeline_previews: Mutex::new(BTreeMap::new()),
             runtime_models: Mutex::new(None),
             model_roles: Mutex::new(Default::default()),
             state: Mutex::new(State {

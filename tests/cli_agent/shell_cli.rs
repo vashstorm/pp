@@ -173,8 +173,10 @@ fn bang_shell_cli_is_local_and_streams() {
         let mut cli = protocol.start(&server, dir.path());
         assert_no_session(dir.path());
         cli.input("!printf out-first; printf err-first >&2; while [[ ! -e release ]]; do sleep 0.01; done; printf out-last\n");
-        cli.wait_for(Pipe::Stderr, "[shell output] out-first");
-        cli.wait_for(Pipe::Stderr, "[shell output] err-first");
+        // 主输出是 stdout/stderr 合并的有界预览：同一批次内两路字节的相对顺序
+        // 由 reader 竞争决定，因此这里只要求两段内容都及时出现。
+        cli.wait_for(Pipe::Stderr, "out-first");
+        cli.wait_for(Pipe::Stderr, "err-first");
         // 栅栏仍未释放:给“提前完成”留出一个有界观察窗口。
         thread::sleep(Duration::from_millis(200));
         assert_shell_gated(&cli);
@@ -289,7 +291,7 @@ fn bang_shell_cli_failure_timeout_and_cwd() {
             r#"{"default_model":"fixture/primary","bash_timeout_seconds":1}"#,
             &fixture_models(&server),
         ));
-        cli.input("!echo $$ > timed-shell.pid; sleep 30\n");
+        cli.input("!sh -c 'echo $$ > timed-shell.pid; sleep 30'\n");
         cancel_wait_pid_files(dir.path(), &["timed-shell.pid"]);
         cli.wait_for(Pipe::Stderr, "shell: timed out");
         cancel_wait_pid_dead(&dir.path().join("timed-shell.pid"));

@@ -26,7 +26,9 @@ fn tui_streaming_completion_menus_remain_usable_both_protocols() {
         pty.text("");
         pty.text("fixture/primary");
         pty.input("\x1b");
-        runtime_input_empty_editor(&mut pty);
+        // 主输入框始终在面板下方可见；必须等搜索焦点真正归还，否则紧跟的
+        // Esc 会与下一个字符合并成 Alt 序列。
+        pty.draft("");
 
         pty.input("/think h");
         pty.text("Deep thinking");

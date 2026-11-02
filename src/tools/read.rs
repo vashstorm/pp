@@ -9,6 +9,8 @@ use std::path::Path;
 mod file;
 mod image;
 pub(crate) use image::decode_image;
+mod pipe;
+pub(crate) use pipe::{is_uri as is_pipe_uri, read as read_pipe};
 mod selector;
 mod text;
 mod url;

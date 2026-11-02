@@ -70,6 +70,20 @@ impl Detail {
             self.transcript.progress(event.clone());
         }
     }
+
+    /// 管道阶段预览与主输出快照分开到达，不能互相替换。
+    pub(super) fn pipeline_preview(&mut self, record: &crate::subagent::ObservedRecord) {
+        if self.caught_up
+            && self.active_run.as_ref() == record.run_id.as_ref()
+            && record
+                .run_id
+                .as_ref()
+                .is_none_or(|id| !self.terminal.contains_key(id))
+            && let Some(event @ AgentEvent::ToolPipelineSnapshot { .. }) = &record.event
+        {
+            self.transcript.progress(event.clone());
+        }
+    }
     pub(super) fn new(agent: &str, view: u64, transcript: Transcript) -> Self {
         Self {
             agent: agent.to_owned(),

@@ -625,5 +625,7 @@ mod background_cases;
 mod edit_cases;
 #[path = "streaming/lifecycle_cases.rs"]
 mod lifecycle_cases;
+#[path = "streaming/pipeline_cases.rs"]
+mod pipeline_cases;
 #[path = "streaming/read_cases.rs"]
 mod read_cases;

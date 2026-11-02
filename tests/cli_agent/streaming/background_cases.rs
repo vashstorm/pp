@@ -69,7 +69,7 @@ fn background_service_lifecycle_in_both_protocols() {
             protocol.start_with_settings(&server, dir.path(), Some("background service"), settings);
         let service_pid = dir.path().join("service.pid");
         let start_command = format!(
-            "printf '%s' $$ > service.pid && exec '{}' stats --port 0",
+            "sh -c 'printf \"%s\" \"$$\" > service.pid && exec \"$0\" stats --port 0' '{}'",
             env!("CARGO_BIN_EXE_pp").replace('\'', "'\\''")
         );
         let (request, _) = protocol.receive(&server);
@@ -248,7 +248,7 @@ fn background_task_cleanup_at_run_boundaries() {
                     "bash",
                     json!({
                         // TERM 清理同时写满两条管道；任务收尾必须持续排空至标记落盘。
-                        "command": "cleanup() { for ((i=0;i<64;i++)); do printf '%4096s' ''; printf '%4096s' '' >&2; done; printf done > cleanup.done; exit 0; }; trap cleanup TERM; printf '%s' $$ > service.pid; while :; do sleep 60 & wait $!; done",
+                        "command": "cleanup() { for ((i=0;i<64;i++)); do printf '%4096s' ''; printf '%4096s' '' >&2; done; printf done > cleanup.done; exit 0; }; trap cleanup TERM; sleep 60 & service=$!; printf '%s' \"$service\" > service.pid; wait \"$service\"; while :; do sleep 60 & wait $!; done",
                         "mode": "background"
                     })
                 )]),
@@ -272,12 +272,14 @@ fn background_task_cleanup_at_run_boundaries() {
                 }
             }
             cancel_wait_pid_dead(&service_pid);
+            // 任务收尾与 agent 运行边界异步可见：scratch 目录只在解释器（含
+            // TERM trap）结束后才删除，先以它同步，再断言 trap 的落盘标记。
+            cancel_assert_no_scratch(dir.path());
             assert_eq!(
                 std::fs::read_to_string(dir.path().join("cleanup.done")).unwrap(),
                 "done",
                 "{protocol:?} {boundary:?}: TERM 清理未完成"
             );
-            cancel_assert_no_scratch(dir.path());
             cli.assert_running();
 
             cli.input("next round\n");
@@ -294,7 +296,7 @@ fn background_task_cleanup_at_run_boundaries() {
                         "second-start",
                         "bash",
                         json!({
-                            "command": "printf '%s' $$ > second.pid && exec sleep 60",
+                            "command": "sh -c 'printf \"%s\" \"$$\" > second.pid && exec sleep 60'",
                             "mode": "background"
                         })
                     )

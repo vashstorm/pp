@@ -1413,3 +1413,33 @@ fn commit_plan_handoff_creation_failure_is_latched_without_a_session() {
     assert!(journal.id().is_none());
     assert_eq!(fs::read_to_string(blocked).unwrap(), "not a directory");
 }
+
+#[test]
+fn transient_pipeline_snapshots_never_reach_the_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Session::new(
+        "fixture".into(),
+        Protocol::Completion,
+        "system".into(),
+        EditMode::Replace,
+    );
+    let mut journal = SessionJournal::new(dir.path().join("sessions"));
+    journal
+        .sent(
+            &test_metadata(dir.path()),
+            (&session).into(),
+            &WorkflowState::default(),
+            Some("user"),
+            None,
+        )
+        .unwrap();
+    let id = journal.id().unwrap().to_owned();
+    let path = dir.path().join("sessions").join(format!("{id}.jsonl"));
+    let before = fs::read(&path).unwrap();
+    journal.event(&AgentEvent::ToolPipelineSnapshot {
+        id: "call".into(),
+        pipes: serde_json::json!({"run_id": "run"}),
+    });
+    // 瞬时预览不进入可恢复日志；最终结果里的 pipes 才是权威。
+    assert_eq!(fs::read(&path).unwrap(), before);
+}

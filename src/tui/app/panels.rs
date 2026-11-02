@@ -184,6 +184,7 @@ impl App {
         if self.skills_pending
             || self.skill_panel.is_some()
             || self.changes_panel.is_some()
+            || self.pipes_panel.is_some()
             || self.model_panel.is_some()
         {
             return false;
@@ -237,6 +238,14 @@ impl App {
                     return false;
                 }
             }
+        }
+        // /pipes 是纯本地面板：运行、取消与空闲都可打开，不进入 steering。
+        if let Some(Command::Pipes(run)) = &command {
+            let run = *run;
+            self.remember_input();
+            self.clear_input();
+            self.open_pipes(run);
+            return false;
         }
         let model_text = match &command {
             None => Some(prompt.as_str()),
@@ -474,6 +483,7 @@ impl App {
                     self.open_roles();
                 }
                 Some(Command::Agents | Command::Subagents) => unreachable!("handled above"),
+                Some(Command::Pipes(_)) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
                 Some(Command::TaskTest) => unreachable!("converted before the state match"),
                 Some(Command::Think(Some(level))) => {
@@ -797,6 +807,7 @@ impl App {
     }
 
     pub(in crate::tui) fn shutdown_background_tasks(&mut self) -> Result<()> {
+        self.close_pipes();
         self.changes_panel = None;
         self.plan_list_panel = None;
         self.plan_list_pending = None;

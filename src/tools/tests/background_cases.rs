@@ -23,13 +23,13 @@ fn background_natural_exit_cancellation_and_tools_drop_reap_descendants() {
         "natural-exit descendant",
     );
     let token = CancellationToken::new();
-    let execution = tools.execute("bash", &json!({"mode":"background","command":"trap '' TERM; sleep 60 & child=$!; printf '%s\\n%s' \"$$\" \"$child\" > cancelled.pending; mv cancelled.pending cancelled.pid; printf cancelled-output; wait \"$child\""}).to_string(), "cancel-start", ToolPolicy::Execute { workflow: &workflow }, &token, &mut |_| {});
+    let execution = tools.execute("bash", &json!({"mode":"background","command":"sh -c 'trap \"\" TERM; sleep 60 & child=$!; printf \"%s\\n%s\" \"$$\" \"$child\" > cancelled.pending; mv cancelled.pending cancelled.pid; printf cancelled-output; wait \"$child\"'"}).to_string(), "cancel-start", ToolPolicy::Execute { workflow: &workflow }, &token, &mut |_| {});
     let started: Value = serde_json::from_str(&execution.output).unwrap();
     let pids = background_marker(&dir.path().join("cancelled.pid"));
     let other = execute(
         &tools,
         "bash",
-        json!({"mode":"background","command":"printf '%s\\n%s' \"$$\" \"$TMPDIR\" > drop.pending; mv drop.pending drop.marker; exec sleep 60"}),
+        json!({"mode":"background","command":"sh -c 'printf \"%s\\n%s\" \"$$\" \"$TMPDIR\" > drop.pending; mv drop.pending drop.marker; exec sleep 60'"}),
     );
     let drop_marker = background_marker(&dir.path().join("drop.marker"));
     token.cancel();
@@ -68,7 +68,7 @@ fn background_survives_foreground_deadline_and_stops_group() {
     let started = execute(
         &tools,
         "bash",
-        json!({"mode":"background","command":"trap '' TERM; printf '%s' \"$$\" > parent.pid; sleep 60 & child=$!; printf '%s' \"$child\" > child.pid; printf '%s' \"$TMPDIR\" > scratch.path; printf ready; wait \"$child\""}),
+        json!({"mode":"background","command":"sh -c 'trap \"\" TERM; printf \"%s\" \"$$\" > parent.pid; sleep 60 & child=$!; printf \"%s\" \"$child\" > child.pid; printf \"%s\" \"$TMPDIR\" > scratch.path; printf ready; wait \"$child\"'"}),
     );
     let id = started["task_id"].as_str().unwrap();
     let parent = background_marker(&dir.path().join("parent.pid"));
@@ -282,19 +282,33 @@ fn bash_line_count_no_longer_truncates_at_500() {
 #[test]
 fn bash_deadline_stops_silent_and_term_resistant_process_groups() {
     use std::time::{Duration, Instant};
-    for command in [
-        "sleep 10; printf late > late",
-        "trap '' TERM; printf before; printf error >&2; (trap '' TERM; sleep 10; printf late > late) & wait",
-        "(sleep 10; printf late > late) & exit 0",
-        "trap '' TERM; while :; do printf 0123456789; printf abcdefghij >&2; done",
+    // `immediate`: 解释器自己立即以 0 退出（后台子 shell 仍持有输出写端）。
+    // 工具报告 shell 的真实终态，并在收尾时回收遗留组，不因此判为超时。
+    for (command, immediate) in [
+        ("sleep 10; printf late > late", false),
+        (
+            "trap '' TERM; printf before; printf error >&2; (trap '' TERM; sleep 10; printf late > late) & wait",
+            false,
+        ),
+        ("(sleep 10; printf late > late) & exit 0", true),
+        (
+            "trap '' TERM; while :; do printf 0123456789; printf abcdefghij >&2; done",
+            false,
+        ),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         tools.limits.bash_timeout_seconds = 1;
         let start = Instant::now();
         let result = execute(&tools, "bash", json!({"command":command}));
-        assert_eq!(result["ok"], false, "{result}");
-        assert_eq!(result["timed_out"], true, "{result}");
+        if immediate {
+            assert_eq!(result["ok"], true, "{result}");
+            assert_eq!(result["exit_code"], 0, "{result}");
+            assert_eq!(result["timed_out"], false, "{result}");
+        } else {
+            assert_eq!(result["ok"], false, "{result}");
+            assert_eq!(result["timed_out"], true, "{result}");
+        }
         assert_eq!(result["cancelled"], false, "{result}");
         assert!(start.elapsed() < Duration::from_secs(4));
         assert!(!dir.path().join("late").exists());
@@ -387,7 +401,7 @@ fn bash_cancel_stops_term_resistant_group_and_reports_cancelled() {
     };
     let execution = tools.execute(
             "bash",
-            &json!({"command":"trap '' TERM; printf 'cancel-ready\\n'; printf '%s' \"$$\" > bash.pid; sleep 30 & child=$!; printf '%s' \"$child\" > bash-child.pid; wait \"$child\""}).to_string(),
+            &json!({"command":"sh -c 'trap \"\" TERM; printf \"cancel-ready\\n\"; printf \"%s\" \"$$\" > bash.pid; sleep 30 & child=$!; printf \"%s\" \"$child\" > bash-child.pid; wait \"$child\"'"}).to_string(),
             "cancel-call",
             ToolPolicy::Execute { workflow: &workflow },
             &token,

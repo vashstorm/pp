@@ -67,6 +67,24 @@ fn todo_tree_navigation_restores_standalone_and_retains_current_plan_authority()
 }
 
 #[test]
+fn tree_navigation_and_reset_rebind_pipe_store_instance() {
+    for protocol in ["completion", "response"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+        // 两个历史边界产生可选目标；导航后旧根临时管道实例必须失效。
+        seed_session(&mut agent, "first history boundary");
+        let target = agent.session_tree().unwrap().tree.nodes[0].id.clone();
+        seed_session(&mut agent, "second history boundary");
+        let before_navigation = agent.pipe_store();
+        agent.navigate_tree(&target).unwrap();
+        assert!(!before_navigation.same_instance(&agent.pipe_store()));
+        let before_reset = agent.pipe_store();
+        agent.reset();
+        assert!(!before_reset.same_instance(&agent.pipe_store()));
+    }
+}
+
+#[test]
 fn plan_todo_committed_checkbox_survives_failed_journal_and_recovers_from_disk() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();

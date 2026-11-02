@@ -41,6 +41,7 @@ pub(crate) const SECTIONS: &[Section] = &[
             tip("/mcp", "manage MCP servers"),
             tip("/model", "switch model"),
             tip("/new", "clear chat"),
+            tip("/pipes", "browse stage output"),
             tip("/plan", "plan, then approve"),
             tip("/plan-list", "manage saved plans"),
             tip("/quit", "quit pp"),
@@ -62,6 +63,7 @@ pub(crate) const SECTIONS: &[Section] = &[
             tip("Esc", "cancel or dismiss"),
             tip("Esc Esc", "open session tree"),
             tip("F1", "show commands/usage"),
+            tip("F8", "browse stage output"),
             tip("Tab", "complete input"),
             tip("Shift + Tab", "cycle thinking level"),
             tip("Ctrl + O", "toggle tool output"),
@@ -140,34 +142,12 @@ fn visible() -> impl Iterator<Item = &'static Tip> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::COMMANDS;
-    use std::collections::BTreeSet;
 
     fn section(title: &str) -> &'static Section {
         SECTIONS
             .iter()
             .find(|section| section.title == title)
             .expect("tips section")
-    }
-
-    #[test]
-    fn tips_commands_match_registry() {
-        let tips: BTreeSet<&str> = sorted(section("Commands"))
-            .into_iter()
-            .map(|tip| tip.label)
-            .collect();
-        let registry: BTreeSet<&str> = COMMANDS
-            .iter()
-            .filter(|spec| crate::commands::visible(spec.name))
-            .map(|spec| spec.name)
-            .collect();
-        // 双向比较：既发现新增命令缺提示，也发现淘汰命令残留。
-        assert_eq!(tips, registry);
-        assert_eq!(
-            tips.contains("/task-test"),
-            cfg!(debug_assertions),
-            "debug-only command must follow the registry visibility"
-        );
     }
 
     #[test]

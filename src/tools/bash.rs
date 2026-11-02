@@ -1,165 +1,34 @@
-use super::{drain_pipe, output::OutputSink};
+mod host;
+mod relay;
+mod streams;
+mod supervisor;
+
+pub(crate) use streams::PipeStore;
+
+use super::output::OutputSink;
 use crate::cancellation::{CancellationToken, CleanupError};
-use crate::events::{AgentEvent, OutputStream};
+use crate::events::AgentEvent;
 use anyhow::{Context, Result};
-use rustix::{
-    fs::{OFlags, fcntl_getfl, fcntl_setfl},
-    process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid},
-};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    io::{self, Read},
-    os::{fd::AsFd, unix::process::CommandExt},
-    path::Path,
-    process::{Child, Command, ExitStatus, Stdio},
-    sync::{
-        Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc::{SyncSender, sync_channel},
-    },
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard},
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-const POLL: Duration = Duration::from_millis(5);
-const IDLE_POLL: Duration = Duration::from_millis(50);
-const GRACE: Duration = Duration::from_secs(1);
-/// Distinguishes a real exit from the two supervised stop reasons; a single
-/// bool cannot keep timeout and cancellation apart when both race.
-enum Termination {
-    Exited,
-    TimedOut,
-    Cancelled,
-}
-
-struct ProcessGroup {
-    child: Child,
-    group: Pid,
-    reaped: bool,
-}
-impl ProcessGroup {
-    fn signal(&self, signal: Signal) -> io::Result<()> {
-        match kill_process_group(self.group, signal) {
-            Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
-            // macOS 对仅剩僵尸进程的组返回 EPERM，确认直接子进程已退出后视为清理完成。
-            Err(rustix::io::Errno::PERM) if cfg!(target_os = "macos") && self.exited()? => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+fn new_pipe_run(store: &PipeStore, owner: &str) -> Result<streams::PipeRun> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).context("allocating pipeline run identifier")?;
+    let mut id = String::with_capacity(32);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(id, "{byte:02x}").expect("writing to a String cannot fail");
     }
-
-    fn exited(&self) -> io::Result<bool> {
-        loop {
-            match waitid(
-                WaitId::Pid(self.group),
-                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
-            ) {
-                Ok(status) => return Ok(status.is_some()),
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-
-    fn supervise(
-        mut self,
-        timeout: Duration,
-        stop: &AtomicBool,
-        readers: &AtomicUsize,
-        failed: &AtomicBool,
-        cancellation: &CancellationToken,
-    ) -> Result<(ExitStatus, Termination)> {
-        // 无论监督线程如何退出，都唤醒非阻塞管道读取线程。
-        struct Stop<'a>(&'a AtomicBool);
-        impl Drop for Stop<'_> {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::Release);
-            }
-        }
-        let _stop = Stop(stop);
-        let started = Instant::now();
-        loop {
-            // 清理整个组之前保留直接子进程的等待状态，防止 PID/进程组号被复用。
-            let exited = self.exited().context("checking command status")?;
-            if exited && readers.load(Ordering::Acquire) == 2 {
-                return Ok((self.finish()?, Termination::Exited));
-            }
-            if failed.load(Ordering::Acquire) {
-                return Ok((self.finish()?, Termination::Exited));
-            }
-            // 同一轮内取消优先于 deadline；超时一旦选定并发出 TERM，
-            // 后续 grace 期间的取消不再改判为取消。
-            if cancellation.is_cancelled() {
-                let status = self
-                    .terminate()
-                    .map_err(|error| anyhow::Error::new(CleanupError(error)))?;
-                return Ok((status, Termination::Cancelled));
-            }
-            if started.elapsed() >= timeout {
-                let status = self
-                    .terminate()
-                    .context("terminating timed out command process group")?;
-                return Ok((status, Termination::TimedOut));
-            }
-            thread::sleep(POLL);
-        }
-    }
-
-    fn terminate(&mut self) -> Result<ExitStatus> {
-        self.terminate_with_grace(|| thread::sleep(GRACE))
-    }
-
-    fn terminate_with_grace(&mut self, grace: impl FnOnce()) -> Result<ExitStatus> {
-        self.signal(Signal::TERM)
-            .context("terminating command process group")?;
-        grace();
-        self.finish()
-    }
-
-    fn finish(&mut self) -> Result<ExitStatus> {
-        self.signal(Signal::KILL)
-            .context("cleaning up command process group")?;
-        let status = self.child.wait().context("reaping command")?;
-        self.reaped = true;
-        Ok(status)
-    }
-}
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        // 正常结束也清理留在同一进程组的后台任务；异常路径负责回收直接子进程。
-        if !self.reaped {
-            let _ = self.signal(Signal::KILL);
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
-}
-
-fn nonblocking(pipe: &impl AsFd) -> Result<()> {
-    fcntl_setfl(pipe, fcntl_getfl(pipe)? | OFlags::NONBLOCK)
-        .context("configuring nonblocking command pipe")
-}
-
-fn reader(
-    pipe: impl Read,
-    stream: OutputStream,
-    sender: SyncSender<(OutputStream, Vec<u8>)>,
-    stop: &AtomicBool,
-    done: &AtomicUsize,
-    failed: &AtomicBool,
-) -> io::Result<bool> {
-    struct Done<'a>(&'a AtomicUsize);
-    impl Drop for Done<'_> {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::Release);
-        }
-    }
-    let _done = Done(done);
-    let result = drain_pipe(pipe, stream, sender, stop);
-    if result.is_err() {
-        failed.store(true, Ordering::Release);
-    }
-    result
+    store
+        .start_run(id, owner)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -172,165 +41,47 @@ pub(super) fn run(
     cancellation: &CancellationToken,
     emit: &mut dyn FnMut(AgentEvent),
     sink: OutputSink,
+    defaults: crate::host_defaults::HostDefaults,
+    pipe_store: &PipeStore,
 ) -> Result<Value> {
-    let mut process = Command::new("bash");
-    process.arg("-c").arg(command);
-    run_command(
-        cwd,
-        cache,
-        process,
-        timeout_seconds,
-        call_id,
-        cancellation,
-        emit,
-        sink,
+    let pipes = new_pipe_run(pipe_store, call_id)?;
+    let stop = CancellationToken::new();
+    let sink = Arc::new(Mutex::new(sink));
+    let outcome = host::run_host(
+        host::HostConfig {
+            cwd,
+            cache,
+            command,
+            timeout_seconds,
+            call_id,
+            cancellation,
+            stop: &stop,
+            umask: defaults.umask,
+            pipes: &pipes,
+        },
+        sink.clone(),
+        Some(emit),
     )
-    .context("running bash")
-}
-
-struct SpawnedCommand {
-    process: ProcessGroup,
-    stdout: std::process::ChildStdout,
-    stderr: std::process::ChildStderr,
-    scratch: tempfile::TempDir,
-}
-
-fn spawn_command(cwd: &Path, cache: &Path, mut command: Command) -> Result<SpawnedCommand> {
-    let scratch = tempfile::Builder::new()
-        .prefix(".pp-tmp-")
-        .tempdir_in(cwd)
-        .context("creating command temporary directory")?;
-    let child = command
-        .current_dir(cwd)
-        .env("TMPDIR", scratch.path())
-        .env("TMP", scratch.path())
-        .env("TEMP", scratch.path())
-        .env("XDG_CACHE_HOME", cache)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()
-        .context("starting command")?;
-    let group = Pid::from_raw(child.id() as i32).expect("a spawned child has a positive pid");
-    let mut process = ProcessGroup {
-        child,
-        group,
-        reaped: false,
+    .context("running embedded bash")?;
+    let mut result = lock(&sink).value();
+    result["pipes"] = pipes.pipes_json();
+    let (ok, timed_out, cancelled) = match outcome.termination {
+        host::Termination::Exited => (outcome.exit_code == Some(0), false, false),
+        host::Termination::TimedOut => (false, true, false),
+        host::Termination::Cancelled => (false, false, true),
+        host::Termination::Stopped => (false, false, false),
     };
-    let stdout = process
-        .child
-        .stdout
-        .take()
-        .context("opening command stdout")?;
-    let stderr = process
-        .child
-        .stderr
-        .take()
-        .context("opening command stderr")?;
-    nonblocking(&stdout)?;
-    nonblocking(&stderr)?;
-    Ok(SpawnedCommand {
-        process,
-        stdout,
-        stderr,
-        scratch,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn run_command(
-    cwd: &Path,
-    cache: &Path,
-    command: Command,
-    timeout_seconds: u64,
-    call_id: &str,
-    cancellation: &CancellationToken,
-    emit: &mut dyn FnMut(AgentEvent),
-    mut sink: OutputSink,
-) -> Result<Value> {
-    let SpawnedCommand {
-        process,
-        stdout,
-        stderr,
-        scratch,
-    } = spawn_command(cwd, cache, command)?;
-    let stop = AtomicBool::new(false);
-    let done = AtomicUsize::new(0);
-    let failed = AtomicBool::new(false);
-    let outcome = thread::scope(|scope| -> Result<_> {
-        let (sender, receiver) = sync_channel(16);
-        let err_sender = sender.clone();
-        let out =
-            scope.spawn(|| reader(stdout, OutputStream::Stdout, sender, &stop, &done, &failed));
-        let err = scope.spawn(|| {
-            reader(
-                stderr,
-                OutputStream::Stderr,
-                err_sender,
-                &stop,
-                &done,
-                &failed,
-            )
-        });
-        let monitor = scope.spawn(|| {
-            process.supervise(
-                Duration::from_secs(timeout_seconds),
-                &stop,
-                &done,
-                &failed,
-                cancellation,
-            )
-        });
-        let mut last_preview = Instant::now() - Duration::from_millis(50);
-        let mut dirty = false;
-        loop {
-            match receiver.recv_timeout(Duration::from_millis(50)) {
-                Ok((stream, bytes)) => {
-                    sink.append(stream, &bytes);
-                    dirty = true;
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-            if dirty && last_preview.elapsed() >= Duration::from_millis(50) {
-                emit(AgentEvent::ToolOutputSnapshot {
-                    id: call_id.to_owned(),
-                    output: sink.preview(),
-                });
-                last_preview = Instant::now();
-                dirty = false;
-            }
-        }
-        let status = monitor
-            .join()
-            .map_err(|_| anyhow::anyhow!("command supervisor thread failed"))??;
-        out.join()
-            .map_err(|_| anyhow::anyhow!("command stdout reader thread failed"))??;
-        err.join()
-            .map_err(|_| anyhow::anyhow!("command stderr reader thread failed"))??;
-        Ok(status)
-    });
-    // 即使进程回收失败，也先封存已经观察到的输出。
-    sink.finish();
-    let (status, termination) = outcome?;
-    let (ok, timed_out, cancelled) = match termination {
-        Termination::Exited => (status.success(), false, false),
-        Termination::TimedOut => (false, true, false),
-        Termination::Cancelled => (false, false, true),
-    };
-    let mut result = sink.value();
     result["ok"] = json!(ok);
-    result["exit_code"] = json!(status.code());
+    result["exit_code"] = json!(outcome.exit_code);
     result["timed_out"] = json!(timed_out);
     result["cancelled"] = json!(cancelled);
     if cancelled {
         result["error"] = json!("Command cancelled; side effects were not rolled back.");
     }
-    if let Err(error) = scratch.close() {
-        result["warning"] = json!(format!(
-            "command finished, but temporary directory cleanup failed: {error}"
-        ));
+    if !outcome.output_drained {
+        result["warning"] = json!(
+            "Command ended, but an inherited output descriptor remained open; captured output may be incomplete."
+        );
     }
     Ok(result)
 }
@@ -362,11 +113,30 @@ fn cleanup_error(message: impl std::fmt::Display) -> anyhow::Error {
     CleanupError(anyhow::anyhow!("{message}")).into()
 }
 
+/// 执行核心自身失败时是否属于“进程/临时资源无法收尾”。
+/// 这类错误不能降级成普通的命令失败，必须让调用方看到清理问题。
+fn is_cleanup_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<CleanupError>())
+}
+
+/// 后台任务线程独占的一份输入；路径与命令已复制，线程不借用调用方栈。
+struct BackgroundRun {
+    cwd: PathBuf,
+    cache: PathBuf,
+    command: String,
+    call_id: String,
+    umask: u32,
+    sink: Arc<Mutex<OutputSink>>,
+    cancellation: CancellationToken,
+}
+
 struct BackgroundTask {
     label: String,
     started: Instant,
-    cancellation: CancellationToken,
     stop: CancellationToken,
+    /// 运行中的管道 run 句柄；任务完成后由 [`BackgroundState::final_pipes`]
+    /// 取代并释放，避免已从 registry 淘汰的环形缓存仍被任务永久强引用。
+    pipes: Mutex<Option<streams::PipeRun>>,
     state: Mutex<BackgroundState>,
     worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
@@ -375,10 +145,12 @@ struct BackgroundState {
     duration_ms: Option<u64>,
     status: &'static str,
     exit_code: Option<i32>,
-    output: OutputSink,
+    output: Arc<Mutex<OutputSink>>,
     error: Option<String>,
     warning: Option<String>,
     cleanup_error: Option<String>,
+    /// 完成时从 run 复制出的有界阶段/流元数据（不含阶段正文）。
+    final_pipes: Option<Value>,
 }
 
 impl BackgroundTask {
@@ -388,7 +160,7 @@ impl BackgroundTask {
         if let Some(error) = &state.cleanup_error {
             return Err(cleanup_error(error));
         }
-        let mut value = state.output.value();
+        let mut value = lock(state.output.as_ref()).value();
         let fields = json!({
             "ok": matches!(state.status, "running" | "exited" | "stopped"),
             "task_id": id, "status": state.status, "exit_code": state.exit_code,
@@ -403,6 +175,15 @@ impl BackgroundTask {
         }
         if let Some(warning) = &state.warning {
             value["warning"] = json!(warning);
+        }
+        let final_pipes = state.final_pipes.clone();
+        drop(state);
+        // 运行中读同一份 live run；完成后只读有界元数据，不重新持有已可淘汰的
+        // run 状态与环形缓存。
+        let pipes =
+            final_pipes.or_else(|| lock(&self.pipes).as_ref().map(streams::PipeRun::pipes_json));
+        if let Some(pipes) = pipes {
+            value["pipes"] = pipes;
         }
         Ok(value)
     }
@@ -472,17 +253,24 @@ impl TaskManager {
             cwd,
             cache,
             command,
+            "test-background",
             cancellation,
+            crate::host_defaults::current(),
+            &PipeStore::new(),
             OutputSink::new(Default::default(), Default::default()),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn start_with_output(
         &self,
         cwd: &Path,
         cache: &Path,
         command: &str,
+        call_id: &str,
         cancellation: &CancellationToken,
+        defaults: crate::host_defaults::HostDefaults,
+        pipe_store: &PipeStore,
         sink: OutputSink,
     ) -> Result<Value> {
         let mut registry = lock(&self.registry);
@@ -493,30 +281,49 @@ impl TaskManager {
             .checked_add(1)
             .context("background task ID exhausted")?;
         let id = format!("bg-{next_id}");
-        let mut command_process = Command::new("bash");
-        command_process.arg("-c").arg(command);
-        let spawned = spawn_command(cwd, cache, command_process)?;
+        // 与前台一致：每个任务一个 run，共享根会话的临时管道存储。
+        let pipes = new_pipe_run(pipe_store, call_id)?;
+        let output = Arc::new(Mutex::new(sink));
         let task = Arc::new(BackgroundTask {
             label: command.chars().take(200).collect(),
             started: Instant::now(),
-            cancellation: cancellation.clone(),
             stop: CancellationToken::new(),
+            pipes: Mutex::new(Some(pipes)),
             state: Mutex::new(BackgroundState {
                 duration_ms: None,
                 status: "running",
                 exit_code: None,
-                output: sink,
+                output: output.clone(),
                 error: None,
                 warning: None,
                 cleanup_error: None,
+                final_pipes: None,
             }),
             worker: Mutex::new(None),
         });
         let worker_task = task.clone();
-        let worker = thread::Builder::new()
+        let run = BackgroundRun {
+            cwd: cwd.to_owned(),
+            cache: cache.to_owned(),
+            command: command.to_owned(),
+            call_id: call_id.to_owned(),
+            umask: defaults.umask,
+            sink: output,
+            cancellation: cancellation.clone(),
+        };
+        let worker = match thread::Builder::new()
             .name(format!("pp-{id}"))
-            .spawn(move || background_worker(spawned, &worker_task))
-            .context("starting background supervisor")?;
+            .spawn(move || background_worker(&worker_task, &run))
+        {
+            Ok(worker) => worker,
+            Err(error) => {
+                // 线程没有启动时解释器不会收尾，run 不能留在 running 状态。
+                if let Some(pipes) = lock(&task.pipes).take() {
+                    pipes.finish(streams::RunEnd::interrupted("host_setup_failed"));
+                }
+                return Err(error).context("starting background executor");
+            }
+        };
         *lock(&task.worker) = Some(worker);
         registry.next_id = next_id;
         registry.tasks.insert(id.clone(), task.clone());
@@ -601,145 +408,90 @@ fn stop_registry(registry: &Mutex<TaskRegistry>, close: bool) -> Result<()> {
     Ok(())
 }
 
-fn background_read(
-    pipe: &mut (impl Read + ?Sized),
-    task: &BackgroundTask,
-    stdout: bool,
-    max: usize,
-) -> Result<usize> {
-    let mut buffer = [0; super::PIPE_CHUNK_SIZE];
-    let count = loop {
-        match pipe.read(&mut buffer[..max.min(super::PIPE_CHUNK_SIZE)]) {
-            Ok(count) => break count,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(0),
-            Err(error) => return Err(error).context("reading background command output"),
-        }
+/// 后台任务线程：与前台共用同一个内嵌执行核心，但没有固定截止时间。
+fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
+    let Some(pipes) = lock(&task.pipes).as_ref().cloned() else {
+        // run 已被回收（仅可能来自启动失败路径），不再启动解释器。
+        return;
     };
-    let mut state = lock(&task.state);
-    state.output.append(
-        if stdout {
-            OutputStream::Stdout
-        } else {
-            OutputStream::Stderr
+    let result = host::run_host(
+        host::HostConfig {
+            cwd: &run.cwd,
+            cache: &run.cache,
+            command: &run.command,
+            // 后台任务只由父任务取消或显式 stop 收尾；时间上限等同于“不超时”。
+            timeout_seconds: u64::MAX,
+            call_id: &run.call_id,
+            cancellation: &run.cancellation,
+            stop: &task.stop,
+            umask: run.umask,
+            pipes: &pipes,
         },
-        &buffer[..count],
+        run.sink.clone(),
+        None,
     );
-    Ok(count)
-}
-
-fn background_worker(spawned: SpawnedCommand, task: &BackgroundTask) {
-    let SpawnedCommand {
-        mut process,
-        mut stdout,
-        mut stderr,
-        scratch,
-    } = spawned;
-    let mut reason = "failed";
-    let supervision = (|| -> Result<()> {
-        loop {
-            if process
-                .exited()
-                .context("checking background command status")?
-            {
-                reason = "exited";
-                break;
-            }
-            if task.cancellation.is_cancelled() {
-                reason = "cancelled";
-                break;
-            }
-            if task.stop.is_cancelled() {
-                reason = "stopped";
-                break;
-            }
-            let out = background_read(&mut stdout, task, true, super::PIPE_CHUNK_SIZE)?;
-            let err = background_read(&mut stderr, task, false, super::PIPE_CHUNK_SIZE)?;
-            if out + err == 0 {
-                thread::sleep(IDLE_POLL);
-            }
-        }
-        Ok(())
-    })();
-    let mut output_error = None;
-    let finished = if matches!(reason, "cancelled" | "stopped") {
-        process.terminate_with_grace(|| {
-            let started = Instant::now();
-            // worker 是两条管道的唯一读取者，TERM 宽限期内也必须继续排空。
-            // 每轮限制读取量并检查时限，持续输出不能推迟 KILL。
-            while started.elapsed() < GRACE {
-                let output = background_read(&mut stdout, task, true, super::PIPE_CHUNK_SIZE)
-                    .and_then(|out| {
-                        background_read(&mut stderr, task, false, super::PIPE_CHUNK_SIZE)
-                            .map(|err| out + err)
-                    });
-                match output {
-                    Ok(0) => thread::sleep(POLL),
-                    Ok(_) => {}
-                    Err(error) => {
-                        output_error = Some(error);
-                        break;
-                    }
-                }
-            }
-        })
-    } else {
-        process.finish()
-    };
-    // RAII also attempts reclamation on signal/wait errors, before publishing status.
-    drop(process);
-    for (pipe, is_stdout) in [
-        (&mut stdout as &mut dyn Read, true),
-        (&mut stderr as &mut dyn Read, false),
-    ] {
-        loop {
-            match background_read(pipe, task, is_stdout, super::PIPE_CHUNK_SIZE) {
-                Ok(0) => break,
-                Ok(_) => {}
-                Err(error) => {
-                    output_error = Some(error);
-                    break;
-                }
-            }
-        }
-    }
-    let warning = scratch
-        .close()
-        .err()
-        .map(|error| format!("command finished, but temporary directory cleanup failed: {error}"));
+    // 执行核心已封存本次 run；复制有界元数据并先发布到状态，再释放任务对
+    // run 的强引用。快照因此在任何时刻要么读到 live run，要么读到最终元数据，
+    // 不会出现“状态已完成但元数据缺失”的中间态。
+    let final_pipes = pipes.pipes_json();
     let mut state = lock(&task.state);
-    state.output.finish();
+    // 执行核心正常路径已封存；这里覆盖启动阶段就失败的路径。
+    lock(state.output.as_ref()).finish();
     state.duration_ms = Some(task.started.elapsed().as_millis() as u64);
-    state.warning = warning;
-    match finished {
-        Ok(status) => {
-            state.exit_code = status.code();
-            state.status = if reason == "exited" && !status.success() {
-                "failed"
-            } else {
-                reason
-            };
-            if state.status == "failed" {
-                state.error = Some(format!("Background command exited with {status}."));
+    state.final_pipes = Some(final_pipes);
+    match result {
+        Ok(outcome) => {
+            state.exit_code = outcome.exit_code;
+            match outcome.termination {
+                host::Termination::Exited => {
+                    let succeeded = outcome.exit_code == Some(0);
+                    state.status = if succeeded { "exited" } else { "failed" };
+                    state.error = (!succeeded).then(|| match outcome.exit_code {
+                        Some(code) => format!("Background command exited with status {code}."),
+                        None => "Background command was terminated by a signal.".to_owned(),
+                    });
+                }
+                host::Termination::Stopped => state.status = "stopped",
+                host::Termination::Cancelled => {
+                    state.status = "cancelled";
+                    state.error = Some(
+                        "Background task cancelled; side effects were not rolled back.".into(),
+                    );
+                }
+                host::Termination::TimedOut => {
+                    state.status = "failed";
+                    state.error = Some("Background command timed out.".into());
+                }
+            }
+            if !outcome.output_drained {
+                state.warning = Some(
+                    "Background command ended, but an inherited output descriptor remained open; captured output may be incomplete."
+                        .into(),
+                );
             }
         }
         Err(error) => {
             state.status = "failed";
-            state.cleanup_error = Some(format!("{error:#}"));
+            if is_cleanup_error(&error) {
+                state.cleanup_error = Some(format!("{error:#}"));
+            } else {
+                state.error = Some(format!("{error:#}"));
+            }
         }
     }
-    if reason == "cancelled" {
-        state.error = Some("Background task cancelled; side effects were not rolled back.".into());
-    }
-    if let Some(error) = supervision.err().or(output_error) {
-        state.status = "failed";
-        state.error = Some(format!("{error:#}"));
-    }
+    drop(state);
+    // 元数据已固化为最终快照；此后 registry 淘汰才能真正释放环形缓存。
+    drop(pipes);
+    lock(&task.pipes).take();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustix::process::Pid;
+    use std::time::Duration;
+
+    const POLL: Duration = Duration::from_millis(5);
 
     #[test]
     fn background_termination_drains_term_handler_output() {
@@ -794,7 +546,9 @@ mod tests {
                 "TERM 清理未完成：{method}"
             );
             let snapshot = task.snapshot(id).unwrap();
-            assert_eq!(snapshot["exit_code"], 0, "{method}: {snapshot}");
+            // 管理 TERM 会真实执行 trap（cleanup.done），但取消本身不可被 trap
+            // 的 `exit 0` 否决：逻辑 shell 以终止状态收尾。
+            assert_eq!(snapshot["exit_code"], 128 + 15, "{method}: {snapshot}");
             assert_eq!(
                 snapshot["status"],
                 if method == "cancel" {
@@ -818,7 +572,7 @@ mod tests {
             name: &str,
         ) -> (String, Vec<u32>, String) {
             let snapshot = manager.start(cwd, cwd,
-                &format!("trap '' TERM; sleep 60 & child=$!; printf '%s\\n%s\\n%s\\n' \"$$\" \"$child\" \"$TMPDIR\" > {name}; wait \"$child\""),
+                &format!("sh -c 'trap \"\" TERM; sleep 60 & child=$!; printf \"%s\\n%s\\n%s\\n\" \"$$\" \"$child\" \"$TMPDIR\" > {name}; wait \"$child\"'"),
                 &CancellationToken::new()).unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
             let text = loop {
@@ -919,7 +673,7 @@ mod tests {
                     manager.start(
                         dir.path(),
                         dir.path(),
-                        "printf '%s' $$ > race.pending; mv race.pending race.pid; exec sleep 60",
+                        "sh -c 'printf \"%s\" \"$$\" > race.pending; mv race.pending race.pid; exec sleep 60'",
                         &CancellationToken::new(),
                     )
                 });
@@ -940,5 +694,97 @@ mod tests {
                     .starts_with(".pp-tmp-")
             }));
         }
+    }
+
+    #[test]
+    fn background_completed_tasks_release_evicted_pipe_bodies() {
+        // 每个任务把超过单流 1 MiB 的正文送过管道；完成 run 只按 registry 上限保留。
+        const RUNS: usize = super::streams::MAX_COMPLETED_RUNS + 2;
+        const CHUNK: u64 = 65536;
+        const CHUNKS: usize = 24;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = PipeStore::new();
+        let manager = TaskManager::default();
+        let mut tasks = Vec::new();
+        for index in 0..RUNS {
+            let snapshot = manager
+                .start_with_output(
+                    dir.path(),
+                    dir.path(),
+                    "for ((i=0; i<24; i++)); do printf '%65536s' ''; done | cat > /dev/null",
+                    "test-background-pipes",
+                    &CancellationToken::new(),
+                    crate::host_defaults::current(),
+                    &store,
+                    OutputSink::new(Default::default(), Default::default()),
+                )
+                .unwrap();
+            let id = snapshot["task_id"].as_str().unwrap().to_owned();
+            let task = manager.task(&id).unwrap();
+            // 运行中由 live run 提供同一份元数据。
+            assert!(
+                snapshot["pipes"]["run_id"]
+                    .as_str()
+                    .is_some_and(|run_id| run_id.len() == 32),
+                "running task {index} lost its pipeline run"
+            );
+            let watch = lock(&task.pipes)
+                .as_ref()
+                .expect("running task must own its run handle")
+                .watch();
+            task.join().unwrap();
+            tasks.push((id, watch));
+        }
+
+        // 完成 run 只保留最近 MAX_COMPLETED_RUNS 条；更老的 URI 已失效。
+        assert_eq!(store.list().len(), super::streams::MAX_COMPLETED_RUNS);
+        for (index, (id, watch)) in tasks.iter().enumerate() {
+            let task = manager.task(id).unwrap();
+            let snapshot = task.snapshot(id).unwrap();
+            assert_eq!(snapshot["status"], "exited", "task {index}");
+            let pipes = &snapshot["pipes"];
+            assert_eq!(
+                pipes["streams"].as_array().unwrap().len(),
+                1,
+                "task {index}"
+            );
+            assert_eq!(
+                pipes["streams"][0]["total_bytes"].as_u64().unwrap(),
+                CHUNK * CHUNKS as u64,
+                "task {index}"
+            );
+            let retained = pipes["streams"][0]["retained_end"].as_u64().unwrap()
+                - pipes["streams"][0]["retained_start"].as_u64().unwrap();
+            assert_eq!(
+                retained,
+                super::streams::STREAM_RING_CAP as u64,
+                "task {index} must hold one capped ring body"
+            );
+            let run_id = pipes["run_id"].as_str().unwrap();
+            // 任务句柄完成后不再强引用 live run。
+            assert!(
+                lock(&task.pipes).is_none(),
+                "task {index} kept a live run handle"
+            );
+            if index < RUNS - super::streams::MAX_COMPLETED_RUNS {
+                assert!(
+                    store.snapshot(run_id).is_err(),
+                    "old run {index} must be evicted from the store"
+                );
+                // 淘汰后若任务仍持有 PipeRun，Ring 正文会绕过配额永久存活。
+                assert!(
+                    !watch.is_alive(),
+                    "task {index} still owns the evicted run body"
+                );
+            } else {
+                assert!(
+                    store.snapshot(run_id).is_ok(),
+                    "recent run {index} must remain readable"
+                );
+                assert!(watch.is_alive(), "recent run {index} must stay alive");
+            }
+        }
+        manager.stop_all().unwrap();
     }
 }

@@ -8,9 +8,9 @@
 
 const CANCEL_NOTE: &str = "Task cancelled. File changes were not rolled back.";
 const CANCEL_SETTINGS: &str = "{\"default_model\":\"fixture/primary\",\"request_timeout_seconds\":120,\"notification_timeout_seconds\":2}";
-// $$/$! 而非 BASHPID：macOS 旧 Bash 缺少 BASHPID；父 shell 忽略 TERM，
+// 显式外部 sh 提供独立 shell PID（内嵌 shell 不伪造 $$）；父 sh 忽略 TERM，
 // 证明取消路径用 grace 后的 KILL 回收整个进程组。
-const CANCEL_BATCH_COMMAND: &str = "trap '' TERM; printf 'cancel-ready\\n'; printf '%s' \"$$\" > bash.pid; sleep 30 & child=$!; printf '%s' \"$child\" > bash-child.pid; wait \"$child\"";
+const CANCEL_BATCH_COMMAND: &str = "sh -c 'trap \"\" TERM; printf \"cancel-ready\\n\"; printf \"%s\" \"$$\" > bash.pid; sleep 30 & child=$!; printf \"%s\" \"$child\" > bash-child.pid; wait \"$child\"'";
 
 fn cancel_normalize(screen: &vt100::Screen) -> String {
     screen.contents().split_whitespace().collect::<String>()
@@ -973,7 +973,7 @@ fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         let big = "A".repeat(400_000);
         let command =
-            "printf 'overflow-ready\\n'; printf '%s' \"$$\" > overflow-bash.pid; sleep 30";
+            "sh -c 'printf \"overflow-ready\\n\"; printf \"%s\" \"$$\" > overflow-bash.pid; sleep 30'";
         if protocol == "completion" {
             reply(
                 request,
@@ -1031,17 +1031,17 @@ fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
 // —— 后台任务 PTY 场景（计划 TUI 部分）：真实受管进程、PID 文件栅栏、
 // 可见屏幕断言，不测静态标题文案。 ——
 
-// 受管理的后台命令：父 shell 忽略 TERM，父子 PID 写入 marker 文件，
-// 停止路径必须用 grace 后的 KILL 回收整个进程组。
+// 受管理的后台命令：显式外部 sh 忽略 TERM，父 sh 与子 sleep 的 PID 写入
+// marker 文件，停止路径必须用 grace 后的 KILL 回收整个进程组。
 fn background_hold_command(parent_marker: &str, child_marker: &str, log: Option<&str>) -> String {
-    let mut command = String::from("trap '' TERM; ");
+    let mut script = String::from("trap \"\" TERM; ");
     if let Some(log) = log {
-        command.push_str(&format!("printf '{log}\\n'; "));
+        script.push_str(&format!("printf \"{log}\\n\"; "));
     }
-    command.push_str(&format!(
-        "printf '%s' \"$$\" > {parent_marker}; sleep 30 & child=$!; printf '%s' \"$child\" > {child_marker}; wait \"$child\""
+    script.push_str(&format!(
+        "printf \"%s\" \"$$\" > {parent_marker}; sleep 30 & child=$!; printf \"%s\" \"$child\" > {child_marker}; wait \"$child\""
     ));
-    command
+    format!("sh -c '{script}'")
 }
 
 // 按协议回复单个工具调用。
@@ -1246,7 +1246,7 @@ fn background_status_stop_lifecycle_displays_states_and_keeps_foreground_footer(
         };
         let (task_id, _snapshot, request) =
             background_start_and_wait(&mut pty, &fixture, protocol, project.path(), &start);
-        // status：卡片显示调用（action · task_id）、running 状态与累计日志。
+        // status：轮询复用原始 Bash 卡片（不新增调用卡片），显示 running 与累计日志。
         background_reply_call(
             request,
             protocol,
@@ -1256,15 +1256,15 @@ fn background_status_stop_lifecycle_displays_states_and_keeps_foreground_footer(
         );
         let (request, _) = pty.request_at(&fixture, path);
         pty.wait_for(
-            "status 卡片显示任务 ID、running 与累计日志",
+            "status 复用原始卡片显示 running 与累计日志",
             |screen| {
                 let text = cancel_normalize(screen);
-                text.contains(&format!("bash_task·status·{task_id}"))
+                !text.contains("bash_task·")
                     && text.contains("bg-lifecycle-log")
                     && text.contains(&format!("Task{task_id}:running"))
             },
         );
-        // stop：同步等待进程/scratch 回收后返回，卡片显示真实 stopped 终态。
+        // stop：同步等待进程/scratch 回收后返回，同一卡片显示真实 stopped 终态。
         background_reply_call(
             request,
             protocol,
@@ -1276,10 +1276,9 @@ fn background_status_stop_lifecycle_displays_states_and_keeps_foreground_footer(
         cancel_wait_pid_dead(&project.path().join("bg-life-parent.pid"));
         cancel_wait_pid_dead(&project.path().join("bg-life-child.pid"));
         cancel_assert_no_scratch(project.path());
-        pty.wait_for("stop 卡片显示 stopped 终态与调用标题", |screen| {
+        pty.wait_for("stop 复用卡片显示 stopped 终态", |screen| {
             let text = cancel_normalize(screen);
-            text.contains(&format!("Task{task_id}:stopped"))
-                && text.contains(&format!("bash_task·stop·{task_id}"))
+            !text.contains("bash_task·") && text.contains(&format!("Task{task_id}:stopped"))
         });
         // 信号停止是 stop 的预期结果：不得显示 Exit: null 冒充已结束。
         assert!(

@@ -14,6 +14,7 @@ mod mcp;
 mod menu;
 mod model;
 mod notification;
+mod pipes;
 mod plan;
 mod plan_leave;
 mod plan_list;
@@ -85,8 +86,8 @@ const STEERING_HINT: &str = platform_text(
     "Enter steer · Alt + Enter queue · Ctrl + Q pending messages · Ctrl + R resume queue",
 );
 const SHORTCUTS_TAIL: &str = platform_text(
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · ⌥ + T expand/collapse TODO · ⌥ + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · Ctrl + T expand/collapse TODO · Ctrl + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · F8 pipe streams · ⌥ + T expand/collapse TODO · ⌥ + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · F8 pipe streams · Ctrl + T expand/collapse TODO · Ctrl + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
 );
 const EFFORT_HINT: &str = platform_text(
     "Enter select · ⌥ + S set selected effort as default · Esc cancel",
@@ -419,6 +420,11 @@ enum WorkerEvent {
         finished_at: chrono::DateTime<chrono::Local>,
     },
     SessionStarted(String),
+    /// 根会话临时管道 registry 绑定。启动与换根后发布；接收端用
+    /// `same_instance` 判断是否真正换根并递增打开面板的 epoch。
+    PipeStoreBound {
+        store: crate::tools::PipeStore,
+    },
     // 压缩终态：与普通任务 Completed 是不同的判别值，不触发任务收尾展示。
     Compacted(Result<CompactionOutcome>),
     Reset,
@@ -483,6 +489,15 @@ fn publish_transition_failure(agent: &Agent, snapshots: &mut Vec<WorkerEvent>) {
     if let Ok(cleanup) = agent.mcp_cleanup() {
         snapshots.push(WorkerEvent::Cleanup(cleanup));
     }
+}
+
+/// 换根后立即发布新的临时管道 registry；接收端按实例身份过滤重复发布。
+fn publish_pipe_store(events: &mpsc::SyncSender<WorkerEvent>, agent: &Agent) -> bool {
+    events
+        .send(WorkerEvent::PipeStoreBound {
+            store: agent.pipe_store(),
+        })
+        .is_ok()
 }
 
 /// Publish the workflow snapshot so the UI never keeps a stale plan/mode.
@@ -772,6 +787,14 @@ struct App {
     hub_bound: Option<crate::subagent::Binding>,
     hub_sends: BTreeMap<u64, app::hub::HubSend>,
     child_drafts: subagents::Drafts,
+    /// worker 最近发布的根会话临时管道 registry；面板据此判断换根。
+    pipe_store: Option<crate::tools::PipeStore>,
+    /// 根会话实例代次；每次 `same_instance` 判定为换根时递增。
+    pipe_store_epoch: u64,
+    pipes_panel: Option<pipes::Panel>,
+    pipes_worker: Option<pipes::Worker>,
+    /// 面板 view 代次；选择 run/stream 或关闭时递增，旧回复直接丢弃。
+    pipes_view_epoch: u64,
     plan_list_panel: Option<plan_list::Panel>,
     // 列表动作读取 selection 后继续执行的后续步骤。
     plan_list_pending: Option<plan_list::PendingOp>,

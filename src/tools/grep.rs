@@ -805,6 +805,13 @@ pub(super) fn run(
     artifacts: Option<&super::output::Store>,
 ) -> Result<Value> {
     let mut args: Args = serde_json::from_str(arguments).context("invalid grep arguments")?;
+    if args
+        .path
+        .as_deref()
+        .is_some_and(|path| super::read::is_pipe_uri(path))
+    {
+        anyhow::bail!("Temporary pipe streams support read only; use read with a pipe:// URI.");
+    }
     let uri = args
         .path
         .as_deref()
@@ -1345,6 +1352,34 @@ mod boundary_tests {
         assert!(
             text.contains("No matches found") && text.contains("first 4 MiB"),
             "{text}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pipe_stream_tests {
+    use super::*;
+
+    #[test]
+    fn pipeline_grep_rejects_pipe_streams_with_read_only_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let workspace = save::Workspace::open(&cwd).unwrap();
+        let error = run(
+            &cwd,
+            GrepSettings::default(),
+            EditMode::Replace,
+            &workspace,
+            &mut hashline::Store::default(),
+            &json!({"pattern": "x", "path": "pipe://abc/1"}).to_string(),
+            &CancellationToken::new(),
+            None,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(
+            error.to_string(),
+            "Temporary pipe streams support read only; use read with a pipe:// URI."
         );
     }
 }

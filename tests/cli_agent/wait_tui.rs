@@ -20,7 +20,7 @@ fn wait_tui_start(
         protocol,
         "wait-start",
         "bash",
-        json!({"command":"printf '%s' $$ > wait.pid; printf 'wait-start-log\\n'; while [ ! -f wait-release ]; do sleep 0.01; done; printf 'wait-complete-log\\n'","mode":"background"}),
+        json!({"command":"sh -c 'printf \"%s\" \"$$\" > wait.pid; printf \"wait-start-log\\n\"; while [ ! -f wait-release ]; do sleep 0.01; done; printf \"wait-complete-log\\n\"'","mode":"background"}),
     );
     let (request, body) = pty.request_at(fixture, api_path(protocol));
     let result = cancel_tool_outputs(&body, protocol)

@@ -783,6 +783,206 @@ fn bash_footer_tracks_elapsed_and_renders_status_on_bottom_border() {
 }
 
 #[test]
+fn bash_footer_surfaces_pipeline_badge_and_warnings_outside_output() {
+    const RUN: &str = "0123456789abcdef0123456789abcdef";
+    let mut transcript = Transcript::new();
+    tool(
+        &mut transcript,
+        "p",
+        "bash",
+        json!({"command":"{ printf 'hidden\\nvisible\\n'; exit 7; } | tail -n 1"}),
+    );
+    transcript.progress(AgentEvent::ToolPipelineSnapshot {
+        id: "p".into(),
+        pipes: json!({
+            "run_id": RUN,
+            "uri": format!("pipe://{RUN}"),
+            "pipelines": [{"id": 1, "status": null, "stages": []}],
+            "streams": [],
+            "nonzero_stages": 1,
+            "incomplete": false,
+        }),
+    });
+    let buffer = render(&mut transcript, 120, 20);
+    let text = screen(&buffer);
+    assert!(text.contains("Non-zero stage results: 1"), "{text}");
+    assert!(text.contains("Pipes: /pipes (F8)"), "{text}");
+    // 摘要只占底部边框，不进主输出预览。
+    let entry = &transcript.entries[0];
+    assert!(!entry.text.contains("Non-zero") && !entry.text.contains("/pipes"));
+    assert_eq!(entry.footer_warning, "Non-zero stage results: 1");
+    let row = text
+        .lines()
+        .position(|line| line.contains("Non-zero"))
+        .unwrap() as u16;
+    let column = text
+        .lines()
+        .nth(usize::from(row))
+        .unwrap()
+        .find("Non-zero")
+        .unwrap() as u16;
+    assert_eq!(buffer[(column, row)].fg, palette::ACCENT);
+
+    // 最终 result.pipes 是权威：非零阶段归零后警示消失，入口仍在。
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "p".into(),
+        result: json!({
+            "ok": true,
+            "exit_code": 0,
+            "stdout": "visible\n",
+            "pipes": {
+                "run_id": RUN,
+                "uri": format!("pipe://{RUN}"),
+                "pipelines": [{"id": 1, "status": 0, "stages": []}],
+                "nonzero_stages": 0,
+                "incomplete": false,
+            },
+        }),
+    });
+    let text = screen(&render(&mut transcript, 120, 20));
+    assert!(text.contains("Pipes: /pipes (F8)"), "{text}");
+    assert!(!text.contains("Non-zero stage results"), "{text}");
+    assert!(transcript.entries[0].footer_warning.is_empty());
+    assert_eq!(transcript.entries[0].status, EntryStatus::Complete);
+}
+
+#[test]
+fn bash_footer_ignores_old_results_without_pipes() {
+    let mut transcript = Transcript::new();
+    tool(
+        &mut transcript,
+        "old",
+        "bash",
+        json!({"command":"echo old"}),
+    );
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "old".into(),
+        result: json!({"ok":true,"exit_code":0,"stdout":"old\n"}),
+    });
+    let text = screen(&render(&mut transcript, 100, 20));
+    assert!(text.contains("Wall:"), "{text}");
+    assert!(
+        !text.contains("Pipes:") && !text.contains("/pipes"),
+        "{text}"
+    );
+    assert!(transcript.entries[0].footer_warning.is_empty());
+}
+
+#[test]
+fn restored_bash_result_keeps_pipeline_status_but_marks_bodies_unavailable() {
+    const RUN: &str = "fedcba9876543210fedcba9876543210";
+    let mut transcript = Transcript::new();
+    let now = Instant::now();
+    transcript.progress_recorded(
+        AgentEvent::ToolStarted {
+            id: "restored".into(),
+            name: "bash".into(),
+            arguments: json!({"command":"false | true"}).to_string(),
+        },
+        Some(1_000),
+        2_000,
+        now,
+    );
+    transcript.progress_recorded(
+        AgentEvent::ToolFinished {
+            id: "restored".into(),
+            result: json!({
+                "ok": true,
+                "exit_code": 0,
+                "stdout": "",
+                "pipes": {
+                    "run_id": RUN,
+                    "uri": format!("pipe://{RUN}"),
+                    "pipelines": [{"id": 1, "status": 0, "stages": []}],
+                    "nonzero_stages": 1,
+                    "incomplete": false,
+                },
+            }),
+        },
+        Some(1_500),
+        2_000,
+        now,
+    );
+    let entry = &transcript.entries[0];
+    assert_eq!(entry.status, EntryStatus::Complete);
+    assert!(
+        entry.footer.contains("Pipes: /pipes (F8)"),
+        "{}",
+        entry.footer
+    );
+    assert_eq!(
+        entry.pipes_badge.as_ref().unwrap().status.uri,
+        format!("pipe://{RUN}")
+    );
+    assert!(
+        entry.footer.contains("temporary pipe bodies unavailable"),
+        "{}",
+        entry.footer
+    );
+    assert_eq!(entry.footer_warning, "Non-zero stage results: 1");
+    let text = screen(&render(&mut transcript, 140, 20));
+    assert!(text.contains("Non-zero stage results: 1"), "{text}");
+    assert!(text.contains("temporary pipe bodies unavailable"), "{text}");
+}
+
+#[test]
+fn background_bash_pipeline_badge_tracks_status_snapshots() {
+    const RUN: &str = "aaaabbbbccccddddaaaabbbbccccdddd";
+    let mut transcript = Transcript::new();
+    tool(
+        &mut transcript,
+        "bg",
+        "bash",
+        json!({"command":"service | tail -n 1","mode":"background"}),
+    );
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "bg".into(),
+        result: json!({
+            "ok": true,
+            "task_id": "task-1",
+            "status": "running",
+            "exit_code": null,
+            "pipes": {
+                "run_id": RUN,
+                "uri": format!("pipe://{RUN}"),
+                "pipelines": [{"id": 1, "status": null, "stages": []}],
+                "nonzero_stages": 0,
+            },
+        }),
+    });
+    assert!(transcript.entries[0].footer.contains("Pipes: /pipes (F8)"));
+    assert!(transcript.entries[0].footer_warning.is_empty());
+
+    // status/wait 快照与启动结果共用同一 badge；正文仍只有后台输出预览。
+    tool(&mut transcript, "wait", "wait", json!({}));
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "wait".into(),
+        result: json!({
+            "ok": true,
+            "background_results": [{
+                "task_id": "task-1",
+                "status": "exited",
+                "exit_code": 0,
+                "output": "last\n",
+                "pipes": {
+                    "run_id": RUN,
+                    "uri": format!("pipe://{RUN}"),
+                    "pipelines": [{"id": 1, "status": 0, "stages": []}],
+                    "nonzero_stages": 1,
+                    "incomplete": true,
+                },
+            }],
+        }),
+    });
+    assert_eq!(
+        transcript.entries[0].footer_warning,
+        "Non-zero stage results: 1 · stage output incomplete"
+    );
+    assert!(transcript.entries[0].footer.contains("Task task-1"));
+    assert!(!transcript.entries[0].text.contains("/pipes"));
+}
+
+#[test]
 fn bash_background_footer_does_not_invent_a_timeout() {
     let mut transcript = Transcript::new();
     tool(

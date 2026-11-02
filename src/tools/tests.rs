@@ -226,9 +226,11 @@ fn todo_call(tools: &Tools, workflow: &WorkflowState, arguments: Value) -> ToolE
 mod background_cases;
 mod changes_cases;
 mod edit_cases;
+mod embedded_shell;
 mod file_cases;
 mod lsp_cases;
 mod lsp_save_cases;
+mod pipeline;
 mod policy_cases;
 mod streaming_cases;
 mod todo_cases;

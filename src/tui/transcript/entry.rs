@@ -223,6 +223,8 @@ impl TranscriptEntry {
             layout: None,
             expanded: false,
             footer: String::new(),
+            footer_warning: String::new(),
+            pipes_badge: None,
             started: Some(Instant::now()),
             bash_timeout_seconds: None,
             arguments: Value::Null,
@@ -280,13 +282,43 @@ impl TranscriptEntry {
         } else if self.status == EntryStatus::Failed {
             parts.push("failed".into());
         }
+        if let Some(badge) = &self.pipes_badge {
+            parts.push("Pipes: /pipes (F8)".into());
+            if badge.restored {
+                parts.push("temporary pipe bodies unavailable".into());
+            }
+        }
+        let footer_warning = self.pipes_badge.as_ref().map_or_else(String::new, |badge| {
+            let mut warnings = Vec::new();
+            if badge.status.nonzero_stages > 0 {
+                warnings.push(format!(
+                    "Non-zero stage results: {}",
+                    badge.status.nonzero_stages
+                ));
+            }
+            if badge.status.incomplete {
+                warnings.push("stage output incomplete".into());
+            }
+            warnings.join(" · ")
+        });
         let footer = parts.join(" · ");
-        if self.footer == footer {
+        if self.footer == footer && self.footer_warning == footer_warning {
             return false;
         }
         self.footer = footer;
+        self.footer_warning = footer_warning;
         self.layout = None;
         true
+    }
+
+    /// 以最终 `result.pipes` 为准重建 `/pipes` 入口；没有真实管道时清空。
+    pub(super) fn sync_pipes_badge(&mut self, restored: bool) {
+        self.pipes_badge = self
+            .result
+            .as_ref()
+            .and_then(|result| result.get("pipes"))
+            .and_then(crate::tools::output::pipes_status)
+            .map(|status| super::PipesBadge { status, restored });
     }
 
     pub(super) fn is_file_read(&self) -> bool {

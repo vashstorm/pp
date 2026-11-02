@@ -343,6 +343,11 @@ impl Agent {
         self.tools.background_cleanup()
     }
 
+    /// 根会话临时管道 registry；子 Agent 共享同一实例。
+    pub(crate) fn pipe_store(&self) -> crate::tools::PipeStore {
+        self.tools.pipe_store()
+    }
+
     #[cfg(test)]
     pub(crate) fn new(catalog: ModelCatalog, tools: Tools, sessions_dir: PathBuf) -> Result<Self> {
         let lock_dir = sessions_dir.join(".locks");
@@ -509,6 +514,8 @@ impl Agent {
         }
         let client = OpenAiClient::new(&config)?;
         tools.limits = checkpoint.tool_limits;
+        // 恢复不承诺旧进程的临时管道正文：显式换一个空 registry。
+        tools.reset_pipe_store();
         if let Some(id) = journal.id() {
             let _ = tools.artifacts.bind(journal.directory(), id);
         }
@@ -776,6 +783,8 @@ impl Agent {
         self.session = session;
         self.reset_lsp_diagnostics();
         self.tools.clear_changes();
+        // 导航到另一会话根：旧根的临时管道正文不能跨根复用。
+        self.tools.reset_pipe_store();
         self.last_request = None;
         self.pending_instructions = None;
         self.pending_project_load = None;
@@ -1240,6 +1249,8 @@ impl Agent {
         };
         self.journal.reset();
         self.tools.artifacts = Default::default();
+        // /new 是新的会话根：旧临时管道正文与 URI 一律失效。
+        self.tools.reset_pipe_store();
         if let Some(debug) = &mut self.debug {
             debug.set_prompt_recorded(false);
         }
