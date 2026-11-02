@@ -95,6 +95,13 @@ fn artifact_background_live_read_is_stable_and_stop_seals_once() {
     let id = started["task_id"].as_str().unwrap();
     let status = background_wait(&tools, id, |v| v["artifact"]["uri"].is_string());
     let uri = status["artifact"]["uri"].as_str().unwrap().to_owned();
+    assert!(status["notice"].as_str().unwrap().contains("snapshot"));
+    assert!(
+        status["notice"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("{uri}:-80"))
+    );
     assert_eq!(
         fs::read_to_string(dir.path().join("root/0.bash.log")).unwrap(),
         "initial-log-output\n"
@@ -115,6 +122,12 @@ fn artifact_background_live_read_is_stable_and_stop_seals_once() {
     assert_eq!(stopped["artifact"]["uri"], uri);
     assert_eq!(stopped["artifact"]["complete"], true);
     assert_eq!(stopped["artifact"]["capturing"], false);
+    assert!(
+        stopped["notice"]
+            .as_str()
+            .unwrap()
+            .contains("Full saved output")
+    );
     assert_eq!(fs::read_dir(dir.path().join("root")).unwrap().count(), 2);
     assert_eq!(
         execute(&tools, "read", json!({"path":format!("{uri}:raw")}))["content"],

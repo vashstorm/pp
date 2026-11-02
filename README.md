@@ -32,6 +32,8 @@ TUI rendering defaults to a maximum of 60 FPS. Set `tui.max_fps` in `~/.pp/agent
 
 Bash merges stdout/stderr and returns a bounded head/tail preview (50 KiB by default). Oversized or column-truncated output is saved as `artifact://<id>`; use `read` with line selectors or `grep` with that URI to inspect it. Background logs can be read while running, using a snapshot per call. Artifacts are shared by the root session and its subagents, survive resume, and are removed when that session is deleted; `pp gc` does not expire them. Saved logs default to a 16 MiB cap and explicitly report omitted bytes or capture failures. See [Bash artifacts](docs/guide.md#bash-输出与-artifact-资源) for configuration and completeness limits.
 
+Model-facing Bash results also include a recovery notice with a concrete `read` example when an artifact is available, or explain when capture failed. Notices distinguish complete logs, growing snapshots, and incomplete head/tail samples.
+
 ## Quick start
 
 ### 1. Build

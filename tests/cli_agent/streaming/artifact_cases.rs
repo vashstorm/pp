@@ -19,6 +19,7 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
         let small = protocol.tool_result(&body, "small");
         assert_eq!(small["output"], "small");
         assert!(small.get("artifact").is_none());
+        assert!(small.get("notice").is_none());
         assert!(
             std::fs::read_dir(config_path(dir.path(), "sessions"))
                 .unwrap()
@@ -40,6 +41,18 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
         assert!(command["output"].as_str().unwrap().len() <= 51200 + 128);
         assert!(!command["output"].as_str().unwrap().contains("record-05000"));
         let uri = command["artifact"]["uri"].as_str().unwrap();
+        let notice = command["notice"].as_str().unwrap();
+        let suggested_read: Value = serde_json::from_str(
+            notice
+                .split_once("read(")
+                .unwrap()
+                .1
+                .split_once(')')
+                .unwrap()
+                .0,
+        )
+        .unwrap();
+        assert_eq!(suggested_read["path"], format!("{uri}:-80"));
         protocol.calls_reply(
             request,
             json!([
@@ -53,7 +66,7 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
                     "grep",
                     json!({"path":uri,"pattern":"record-05000"})
                 ),
-                protocol.call("tail", "read", json!({"path":format!("{uri}:-1")}))
+                protocol.call("tail", "read", suggested_read)
             ]),
         );
         let (request, body) = protocol.receive(&server);
@@ -71,6 +84,7 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
                 .unwrap()
                 .contains("record-10000")
         );
+        assert_eq!(protocol.tool_result(&body, "tail")["lines_read"], 80);
         protocol.final_reply(request, "failure inspected");
         let output = cli.finish();
         assert!(
@@ -175,6 +189,9 @@ fn artifact_capture_failure_keeps_exit_status_in_both_protocols() {
         assert_eq!(value["ok"], false);
         assert!(value["capture_error"].is_string());
         assert!(value.get("artifact").is_none());
+        let notice = value["notice"].as_str().unwrap();
+        assert!(notice.contains("unavailable"));
+        assert!(!notice.contains("read("));
         protocol.final_reply(request, "exit code preserved");
         assert!(cli.finish().status.success());
     }

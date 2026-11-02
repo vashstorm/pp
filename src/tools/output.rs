@@ -715,8 +715,38 @@ impl OutputSink {
         if self.capture_error {
             value["capture_error"] = json!("Artifact capture failed; full output is unavailable.");
         }
+        if let Some(notice) = recovery_notice(&value) {
+            value["notice"] = notice.into();
+        }
         value
     }
+}
+
+/// 模型结果中的补读指引；保留结构化元数据，不把终端展示文案混入日志正文。
+fn recovery_notice(value: &Value) -> Option<String> {
+    if value["capture_error"].is_string() {
+        return Some("Artifact capture failed; full saved output is unavailable. No artifact is available for recovery.".into());
+    }
+    let artifact = &value["artifact"];
+    let uri = artifact["uri"].as_str()?;
+    let capturing = artifact["capturing"] == true;
+    let elided = artifact["elided_bytes"].as_u64().unwrap_or(0);
+    let mut status = if capturing {
+        "Saved output is still growing; each read/grep uses one snapshot.".to_owned()
+    } else if artifact["complete"] == true {
+        "Full saved output is available.".to_owned()
+    } else {
+        "Saved output is incomplete.".to_owned()
+    };
+    if elided > 0 {
+        status.push_str(&format!(
+            " The artifact is a head/tail sample with {elided} bytes omitted; missing middle bytes cannot be recovered from it."
+        ));
+    }
+    let read = json!({"path":format!("{uri}:-80")});
+    Some(format!(
+        "{status} Use read({read}) for the last 80 saved lines, or grep with path=\"{uri}\" for targeted searches. Use read line selectors or next_path to inspect other saved ranges."
+    ))
 }
 
 /// 仅从已保存元数据生成展示文案，不在 UI 访问文件。
@@ -784,9 +814,16 @@ mod tests {
             sink.append(OutputStream::Stderr, b"1234TAIL");
             assert!(!root.exists());
             assert!(sink.value().get("artifact").is_none());
+            assert!(sink.value().get("notice").is_none());
 
             sink.append(OutputStream::Stdout, b"!");
             assert_eq!(sink.value()["artifact"]["uri"], "artifact://0");
+            assert!(
+                sink.value()["notice"]
+                    .as_str()
+                    .unwrap()
+                    .contains("snapshot")
+            );
             let log = root.join("0.bash.log");
             let inode = fs::metadata(&log).unwrap().ino();
             assert_eq!(fs::read(&log).unwrap(), b"HEAD1234TAIL!");
@@ -844,6 +881,12 @@ mod tests {
                 assert!(output.ends_with("TAIL"));
                 assert!(output.len() < 100);
                 assert_eq!(result["artifact"]["complete"], true);
+                assert!(
+                    result["notice"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Full saved output")
+                );
                 assert_eq!(
                     read(
                         store
@@ -903,6 +946,11 @@ mod tests {
             &format!("{}FINAL", "middle-".repeat(40)).into_bytes(),
         );
         assert_eq!(read(before), "0123456789abcdef-INITIAL");
+        let notice = sink.value()["notice"].as_str().unwrap().to_owned();
+        assert!(notice.contains("snapshot"));
+        assert!(notice.contains("head/tail sample"));
+        assert!(notice.contains("cannot be recovered"));
+        assert!(!notice.contains("Full saved output"));
         let active = store.snapshot(&uri, &CancellationToken::new()).unwrap();
         assert_eq!(active.metadata["capturing"], true);
         let active = read(active);
@@ -915,6 +963,10 @@ mod tests {
         assert_eq!(fs::metadata(&log).unwrap().ino(), inode);
         assert_eq!(sink.value()["artifact"]["uri"], uri);
         assert_eq!(sink.value()["artifact"]["complete"], false);
+        let notice = sink.value()["notice"].as_str().unwrap().to_owned();
+        assert!(notice.contains("incomplete"));
+        assert!(notice.contains("head/tail sample"));
+        assert!(!notice.contains("still growing"));
         assert!(
             fs::metadata(dir.path().join("session/0.bash.log"))
                 .unwrap()
@@ -992,6 +1044,10 @@ mod tests {
         sink.finish();
         assert!(sink.value()["capture_error"].is_string());
         assert!(sink.value().get("artifact").is_none());
+        let notice = sink.value()["notice"].as_str().unwrap().to_owned();
+        assert!(notice.contains("unavailable"));
+        assert!(!notice.contains("read("));
+        assert!(!notice.contains("artifact://"));
         fs::remove_file(&root).unwrap();
         fs::create_dir(&root).unwrap();
         let outside = dir.path().join("outside");
