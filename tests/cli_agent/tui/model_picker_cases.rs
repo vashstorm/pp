@@ -1,6 +1,58 @@
 use super::*;
 
 #[test]
+fn tui_roles_favorites_sort_persist_across_restart_and_can_be_removed() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_path(home.path(), "settings.yml"),
+        "default_model: fixture/one\n",
+    )
+    .unwrap();
+    let models = json!({"providers":{"fixture":slash_provider(
+        &server, "fixture", "completion", json!({
+            "one":{"model":"vendor-one"}, "two":{"model":"vendor-two"}
+        })
+    )}});
+    std::fs::write(config_path(home.path(), "models.yml"), models.to_string()).unwrap();
+
+    let mut pty = Pty::start_with_existing_files(home.path());
+    pty.ready_model("fixture/one");
+    pty.input("/Roles\r");
+    pty.text("Model roles");
+    pty.input("\x1b[B\x1b[C\x1b[B\x06");
+    pty.wait_for("收藏已保存、置顶且保留选中模型", |screen| {
+        let text = screen.contents();
+        text.contains("❯ fixture/two ")
+            && text.find("fixture/two") < text.find("fixture/one")
+            && read_agent_preferences(home.path()).favorites == ["fixture/two"]
+    });
+    pty.input("\x03");
+    pty.finish();
+
+    let mut pty = Pty::start_with_existing_files(home.path());
+    pty.ready_model("fixture/one");
+    pty.input("/Roles\r");
+    pty.text("Model roles");
+    pty.input("\x1b[B\x1b[C");
+    pty.text("❯ fixture/two ");
+    pty.input("\x06");
+    pty.wait_for(
+        "取消收藏恢复目录顺序且保留选中模型",
+        |screen| {
+            let text = screen.contents();
+            text.contains("❯ fixture/two")
+                && !text.contains("fixture/two ")
+                && text.find("fixture/one") < text.find("fixture/two")
+                && read_agent_preferences(home.path()).favorites.is_empty()
+        },
+    );
+    no_more(&server);
+    pty.input("\x03");
+    pty.finish();
+}
+
+#[test]
 fn tui_roles_configures_model_and_effort_without_switching_current_session() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();

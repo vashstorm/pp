@@ -145,6 +145,7 @@ impl App {
                             self.default_think_level = listing.default_effort;
                             if let Some(panel) = &mut self.roles_panel {
                                 panel.update_choices(self.choices.clone());
+                                panel.update_favorites(self.favorite_models.clone());
                             }
                             self.refresh_candidates(false);
                         }
@@ -463,8 +464,16 @@ impl App {
                     changed = true;
                 }
                 Ok(WorkerEvent::FavoriteModelsSaved(result)) => {
+                    if let Some(panel) = &mut self.roles_panel {
+                        panel.busy = false;
+                    }
                     match result {
-                        Ok(favorites) => self.favorite_models = favorites,
+                        Ok(favorites) => {
+                            self.favorite_models = favorites;
+                            if let Some(panel) = &mut self.roles_panel {
+                                panel.update_favorites(self.favorite_models.clone());
+                            }
+                        }
                         Err(error) => self.notify(
                             Level::Error,
                             format!("Failed to save favorite models: {error:#}"),
