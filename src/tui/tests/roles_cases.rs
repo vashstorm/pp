@@ -2,6 +2,58 @@ use super::*;
 use crate::config::{ModelRole, RoleAssignment};
 
 #[test]
+fn roles_favorites_commit_before_reorder_and_keep_focus_after_success_or_failure() {
+    let (mut app, requests, events) = plan_app();
+    app.choices = favorite_model_choices();
+    app.current_model = Some(app.choices[0].clone());
+    app.favorite_models = vec![app.choices[3].reference.clone()];
+    app.open_roles();
+    let mut dirty = false;
+    for code in [KeyCode::Down, KeyCode::Right, KeyCode::Down] {
+        app.handle(key(code), &mut dirty);
+    }
+    let selected = app.choices[0].reference.clone();
+    app.handle(control('f'), &mut dirty);
+    assert!(
+        matches!(requests.try_recv(), Ok(WorkerCommand::ToggleFavoriteModel(reference)) if reference == selected)
+    );
+    assert_eq!(app.favorite_models.len(), 1);
+    assert!(app.roles_panel.as_ref().unwrap().busy);
+    for event in [control('f'), key(KeyCode::Enter)] {
+        app.handle(event, &mut dirty);
+    }
+    assert!(requests.try_recv().is_err());
+    events
+        .send(WorkerEvent::FavoriteModelsSaved(Ok(vec![
+            app.choices[3].reference.clone(),
+            selected.clone(),
+        ])))
+        .unwrap();
+    app.receive();
+    assert!(!app.roles_panel.as_ref().unwrap().busy);
+    let text = draw(&mut app, 140, 30);
+    assert!(text.contains(&format!("❯ {selected} ")));
+    assert!(text.find(&selected).unwrap() < text.find(&app.choices[3].reference).unwrap());
+    app.handle(control('f'), &mut dirty);
+    assert!(
+        matches!(requests.try_recv(), Ok(WorkerCommand::ToggleFavoriteModel(reference)) if reference == selected)
+    );
+    events
+        .send(WorkerEvent::FavoriteModelsSaved(Err(anyhow::anyhow!(
+            "favorite-save-failed"
+        ))))
+        .unwrap();
+    app.receive();
+    assert_eq!(app.favorite_models.len(), 2);
+    assert!(!app.roles_panel.as_ref().unwrap().busy);
+    let text = draw(&mut app, 140, 30);
+    assert!(text.contains(&format!("❯ {selected} ")));
+    assert!(text.contains("favorite-save-failed"));
+    assert_eq!(app.current_model.as_ref().unwrap().reference, selected);
+    assert!(app.model_roles.is_empty());
+}
+
+#[test]
 fn roles_command_opens_separate_hub_and_model_command_keeps_existing_picker() {
     let (mut app, requests, _) = plan_app();
     app.choices = favorite_model_choices();

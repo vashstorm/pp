@@ -7,6 +7,7 @@ impl App {
         }
         self.roles_panel = Some(roles::Panel::new(
             self.choices.clone(),
+            self.favorite_models.clone(),
             self.model_roles.clone(),
             self.current_model
                 .as_ref()
@@ -28,6 +29,26 @@ impl App {
             roles::Action::Close => {
                 self.roles_panel = None;
                 self.menu_dismissed = true;
+            }
+            roles::Action::Favorite(reference) => {
+                if !matches!(self.state, State::Ready) {
+                    self.notify(
+                        Level::Error,
+                        "Favorite models can be changed when the agent is idle".into(),
+                    );
+                    return;
+                }
+                if self.send(
+                    WorkerCommand::ToggleFavoriteModel(reference),
+                    State::SavingModelSettings,
+                ) {
+                    if let Some(panel) = &mut self.roles_panel {
+                        panel.busy = true;
+                        panel.runtime_status(String::new());
+                    }
+                } else {
+                    self.notify(Level::Error, "Model preferences service unavailable".into());
+                }
             }
             roles::Action::Save(role, assignment) => {
                 if let Some(control) = &self.model_control {

@@ -36,10 +36,12 @@ pub(super) enum Action {
     None,
     Close,
     Save(ModelRole, Option<RoleAssignment>),
+    Favorite(String),
 }
 
 pub(super) struct Panel {
     choices: Vec<ModelChoice>,
+    favorites: Vec<String>,
     roles: ModelRoles,
     providers: Vec<String>,
     default_model: String,
@@ -64,12 +66,14 @@ pub(super) struct Panel {
 impl Panel {
     pub(super) fn new(
         choices: Vec<ModelChoice>,
+        favorites: Vec<String>,
         roles: ModelRoles,
         default_model: String,
         effort: ThinkLevel,
     ) -> Self {
         let mut panel = Self {
             choices: vec![],
+            favorites,
             roles,
             providers: vec![],
             default_model,
@@ -106,6 +110,23 @@ impl Panel {
         self.selected = self
             .selected
             .min(self.model_indices().len().saturating_sub(1));
+    }
+
+    pub(super) fn update_favorites(&mut self, favorites: Vec<String>) {
+        if self.favorites == favorites {
+            return;
+        }
+        let selected = (self.view == View::Models)
+            .then(|| self.model_indices().get(self.selected).copied())
+            .flatten();
+        self.favorites = favorites;
+        if let Some(selected) = selected {
+            self.selected = self
+                .model_indices()
+                .iter()
+                .position(|&index| index == selected)
+                .unwrap_or(0);
+        }
     }
 
     pub(super) fn update_roles(
@@ -225,7 +246,8 @@ impl Panel {
             .checked_sub(2)
             .and_then(|index| self.providers.get(index));
         let query = self.query.to_lowercase();
-        self.choices
+        let mut indices: Vec<_> = self
+            .choices
             .iter()
             .enumerate()
             .filter(|(_, choice)| {
@@ -238,7 +260,10 @@ impl Panel {
                     || choice.model.to_lowercase().contains(&query))
             })
             .map(|(index, _)| index)
-            .collect()
+            .collect();
+        // 稳定排序：收藏模型优先，同组保持模型目录中的顺序。
+        indices.sort_by_key(|&index| !self.favorites.contains(&self.choices[index].reference));
+        indices
     }
 
     fn begin_models(&mut self) {
@@ -404,6 +429,18 @@ impl Panel {
                         return Action::Close;
                     }
                     return Action::None;
+                }
+                if key.code == KeyCode::Char('f')
+                    && key.modifiers == KeyModifiers::CONTROL
+                    && self.view == View::Models
+                    && !self.sidebar_focus
+                    && key.kind == KeyEventKind::Press
+                {
+                    return self
+                        .model_indices()
+                        .get(self.selected)
+                        .map(|&index| Action::Favorite(self.choices[index].reference.clone()))
+                        .unwrap_or(Action::None);
                 }
                 if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
                     return Action::None;
@@ -780,6 +817,9 @@ impl Panel {
                         &self.choices[index].reference,
                         if selected { GOLD } else { TEXT },
                     ));
+                    if self.favorites.contains(&self.choices[index].reference) {
+                        spans.push(Span::styled(" ", super::menu::model_icon_style("")));
+                    }
                     frame.render_widget(
                         Line::from(spans),
                         Rect::new(content.x, content.y + row as u16, content.width, 1),
@@ -819,6 +859,8 @@ impl Panel {
             "Saving…"
         } else if !self.message.is_empty() {
             &self.message
+        } else if self.view == View::Models {
+            "↑/↓ rows · Enter pick · Ctrl + F favorite · type to search · Esc back"
         } else {
             "↑/↓ rows · Enter pick · f fallback · x clear · t thinking · Space toggle · Delete remove · Esc back"
         };
@@ -863,6 +905,7 @@ mod tests {
             .collect();
         Panel::new(
             choices,
+            vec![],
             ModelRoles::new(),
             "fixture/one".into(),
             ThinkLevel::High,
@@ -879,6 +922,55 @@ mod tests {
             .draw(|frame| panel.draw(frame, frame.area()))
             .unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn model_favorites_sort_with_filters_and_preserve_selection() {
+        let mut panel = panel();
+        panel.begin_models();
+        panel.selected = 1;
+        panel.update_favorites(vec!["fixture/two".into(), "unavailable/model".into()]);
+        assert_eq!(panel.model_indices(), vec![1, 0]);
+        assert_eq!(panel.selected, 0);
+        let buffer = draw(&mut panel, 140, 24);
+        let text = buffer
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("❯ fixture/two "));
+        assert!(text.contains("Ctrl + F favorite"));
+        panel.sidebar = 2;
+        panel.query = "TWO".into();
+        assert_eq!(panel.model_indices(), vec![1]);
+        panel.update_favorites(vec![]);
+        assert_eq!(panel.model_indices(), vec![1]);
+        assert_eq!(panel.selected, 0);
+        panel.query.clear();
+        assert_eq!(panel.model_indices(), vec![0, 1]);
+    }
+
+    #[test]
+    fn favorite_shortcut_only_handles_model_rows_and_key_presses() {
+        let mut panel = panel();
+        let shortcut = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+        assert!(matches!(panel.handle(Event::Key(shortcut)), Action::None));
+        panel.begin_models();
+        for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+            assert!(matches!(
+                panel.handle(Event::Key(KeyEvent { kind, ..shortcut })),
+                Action::None
+            ));
+        }
+        assert!(
+            matches!(panel.handle(Event::Key(shortcut)), Action::Favorite(reference) if reference == "fixture/one")
+        );
+        assert!(panel.query.is_empty());
+        panel.query = "missing".into();
+        assert!(matches!(panel.handle(Event::Key(shortcut)), Action::None));
+        panel.query.clear();
+        panel.sidebar_focus = true;
+        assert!(matches!(panel.handle(Event::Key(shortcut)), Action::None));
     }
 
     #[test]
