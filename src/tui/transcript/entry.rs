@@ -332,9 +332,9 @@ impl TranscriptEntry {
             Span::styled(format!("{} Edit: ", palette::tool_icon("edit")), style),
             Span::styled(
                 if path.ends_with(".rs") {
-                    "\u{e7a8} "
+                    "\u{f1617} "
                 } else {
-                    "\u{f1c9} "
+                    "\u{f022e} "
                 },
                 meta,
             ),

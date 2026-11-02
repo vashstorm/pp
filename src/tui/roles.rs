@@ -8,12 +8,22 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+use super::transcript_style as palette;
+
 const BG: Color = Color::Rgb(40, 42, 54);
 const BORDER: Color = Color::Rgb(36, 126, 155);
 const GOLD: Color = Color::Rgb(255, 191, 51);
 const TEXT: Color = Color::Rgb(205, 207, 214);
 const MUTED: Color = Color::Rgb(98, 104, 118);
 const GREEN: Color = Color::Rgb(131, 207, 126);
+// 与状态栏／transcript 一致：Nerd Font Material Design 图标占一列，其后保留一列空白。
+const ROLES_ICON: &str = "\u{f000e}";
+const MODELS_ICON: &str = "\u{f0279}";
+const PROVIDER_ICON: &str = "\u{f048d}";
+const ENABLED_ICON: &str = "\u{f0521}";
+const DISABLED_ICON: &str = "\u{f0522}";
+const FALLBACK_ICON: &str = "\u{f060d}";
+const SEARCH_ICON: &str = "\u{f0349}";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
@@ -544,9 +554,11 @@ impl Panel {
                     ));
                 }
                 let active = self.sidebar == index;
-                let (label, count) = match index {
+                let (icon, icon_color, name, count) = match index {
                     0 => (
-                        "♧ Roles".to_owned(),
+                        ROLES_ICON,
+                        if active { GOLD } else { TEXT },
+                        "Roles".to_owned(),
                         format!(
                             "{}/6",
                             self.roles
@@ -555,11 +567,18 @@ impl Panel {
                                 .count()
                         ),
                     ),
-                    1 => ("☷ All models".to_owned(), self.choices.len().to_string()),
+                    1 => (
+                        MODELS_ICON,
+                        if active { GOLD } else { TEXT },
+                        "All models".to_owned(),
+                        self.choices.len().to_string(),
+                    ),
                     _ => {
                         let provider = &self.providers[index - 2];
                         (
-                            format!("● {provider}"),
+                            PROVIDER_ICON,
+                            GREEN,
+                            super::display_text(provider).into_owned(),
                             self.choices
                                 .iter()
                                 .filter(|choice| {
@@ -578,23 +597,15 @@ impl Panel {
                 } else {
                     "  "
                 };
-                let used = Line::from(format!("{prefix}{label}{count}")).width();
+                let used = Line::from(format!("{prefix}{icon} {name}{count}")).width();
                 let gap = usize::from(sidebar_width.saturating_sub(2))
                     .saturating_sub(used)
                     .max(1);
-                let mut spans = vec![Span::styled(prefix, Style::default().fg(GOLD))];
-                if index >= 2 {
-                    spans.push(Span::styled("● ", Style::default().fg(GREEN)));
-                    spans.push(Span::styled(
-                        super::display_text(&self.providers[index - 2]).into_owned(),
-                        Style::default().fg(if active { GOLD } else { TEXT }),
-                    ));
-                } else {
-                    spans.push(Span::styled(
-                        label,
-                        Style::default().fg(if active { GOLD } else { TEXT }),
-                    ));
-                }
+                let mut spans = vec![
+                    Span::styled(prefix, Style::default().fg(GOLD)),
+                    Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
+                    Span::styled(name, Style::default().fg(if active { GOLD } else { TEXT })),
+                ];
                 spans.push(Span::styled(
                     format!("{}{count}", " ".repeat(gap)),
                     Style::default().fg(MUTED),
@@ -625,7 +636,7 @@ impl Panel {
         );
         let header = match self.view {
             View::Roles => {
-                "Model roles — Space or click the dot to toggle; only selected roles are offered to the model".to_owned()
+                "Model roles — Space or click the switch icon to toggle; only enabled roles are offered to the model".to_owned()
             }
             View::Models => format!(
                 "Select a model for {}{} · type to search · Enter to choose effort",
@@ -683,7 +694,7 @@ impl Panel {
                         (&assignment.model, assignment.effort)
                     };
                     let selected = !self.sidebar_focus && self.role_index == row + self.scroll;
-                    let color = if !enabled || (is_fallback && !selected) {
+                    let color = if !enabled {
                         MUTED
                     } else {
                         match role {
@@ -695,18 +706,26 @@ impl Panel {
                             ModelRole::Review => Color::Rgb(187, 154, 247),
                         }
                     };
+                    let marker = if is_fallback {
+                        FALLBACK_ICON
+                    } else if enabled {
+                        ENABLED_ICON
+                    } else {
+                        DISABLED_ICON
+                    };
+                    let label = if is_fallback {
+                        format!("         {marker} ")
+                    } else {
+                        format!("{marker} {:<8} ", role.name())
+                    };
                     let mut spans = vec![
                         Span::styled(
                             if selected { "❯ " } else { "  " },
                             Style::default().fg(if enabled { GOLD } else { MUTED }),
                         ),
                         Span::styled(
-                            if is_fallback {
-                                "          ↳ ".to_owned()
-                            } else {
-                                format!("{} {:<8} ", if enabled { "●" } else { "○" }, role.name())
-                            },
-                            Style::default().fg(color),
+                            label,
+                            Style::default().fg(if is_fallback { MUTED } else { color }),
                         ),
                     ];
                     if configured.is_none() && !is_fallback {
@@ -714,21 +733,28 @@ impl Panel {
                     }
                     spans.extend(model_spans(
                         if model.is_empty() { "(not set)" } else { model },
-                        if enabled && selected { GOLD } else { color },
+                        color,
                     ));
                     let y = content.y + row as u16;
-                    let effort_width = (effort.as_str().len() as u16 + 3).min(content.width);
-                    let model_width = content.width.saturating_sub(effort_width + 1);
-                    frame.render_widget(Line::from(spans), Rect::new(content.x, y, model_width, 1));
-                    frame.render_widget(
-                        Line::styled(format!("◴ {}", effort.as_str()), Style::default().fg(color)),
-                        Rect::new(content.right() - effort_width, y, effort_width, 1),
+                    let effort_line = Line::styled(
+                        format!("{} {}", palette::think_icon(effort), effort.as_str()),
+                        Style::default().fg(color),
                     );
+                    let effort_width = effort_line.width().min(usize::from(content.width)) as u16;
+                    let model_width = content.width.saturating_sub(effort_width + 1);
+                    let model_line = Line::from(spans);
+                    let model_end = model_line.width().min(usize::from(model_width)) as u16;
+                    let effort_x = content.x + model_end + u16::from(content.width > effort_width);
+                    frame.render_widget(model_line, Rect::new(content.x, y, model_width, 1));
+                    frame.render_widget(effort_line, Rect::new(effort_x, y, effort_width, 1));
                 }
             }
             View::Models => {
                 frame.render_widget(
-                    Line::styled(format!(" {}", self.query), Style::default().fg(GOLD)),
+                    Line::styled(
+                        format!("{SEARCH_ICON} {}", self.query),
+                        Style::default().fg(GOLD),
+                    ),
                     Rect::new(self.body.x, self.body.y + 1, self.body.width, 1),
                 );
                 let indices = self.model_indices();
@@ -895,6 +921,110 @@ mod tests {
         for (width, height) in [(80, 12), (42, 8), (12, 4), (1, 1), (140, 24)] {
             draw(&mut panel, width, height);
         }
+    }
+
+    #[test]
+    fn roles_icons_match_statusline_glyphs_without_moving_the_click_column() {
+        let mut panel = panel();
+        panel.sidebar_focus = false;
+        panel.roles.insert(
+            ModelRole::Default,
+            RoleAssignment {
+                enabled: true,
+                model: "fixture/one".into(),
+                effort: ThinkLevel::High,
+                fallback: Some(RoleModel {
+                    model: "fixture/two".into(),
+                    effort: ThinkLevel::None,
+                }),
+            },
+        );
+        let buffer = draw(&mut panel, 140, 24);
+        let text = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        for icon in [
+            ROLES_ICON,
+            MODELS_ICON,
+            PROVIDER_ICON,
+            ENABLED_ICON,
+            DISABLED_ICON,
+            FALLBACK_ICON,
+        ] {
+            assert!(text.contains(icon), "面板应显示 Nerd Font 图标：{icon}");
+            assert!(
+                icon.chars()
+                    .next()
+                    .is_some_and(|glyph| ('\u{f0000}'..='\u{ffffd}').contains(&glyph)),
+                "图标应与状态栏一样使用 Material Design 字形：{icon}"
+            );
+            assert_eq!(Span::raw(icon).width(), 1, "图标布局宽度应为一列：{icon}");
+        }
+        // effort 标签复用状态栏的思考档位图标。
+        assert!(text.contains(palette::think_icon(ThinkLevel::High)));
+        assert!(text.contains(palette::think_icon(ThinkLevel::None)));
+        let x = panel.body.x;
+        let y = panel.body.y + panel.content_offset();
+        assert_eq!(
+            buffer[(x + 2, y)].symbol(),
+            ENABLED_ICON,
+            "启用图标必须落在鼠标点击列"
+        );
+        assert_eq!(buffer[(x + 11, y + 1)].symbol(), FALLBACK_ICON);
+        assert_eq!(buffer[(x + 11, y + 1)].fg, MUTED);
+        assert!(!text.contains("FALLBACK"), "备用行只显示缩进箭头");
+        for (row, model, effort) in [
+            (y, "fixture/one", ThinkLevel::High),
+            (y + 1, "fixture/two", ThinkLevel::None),
+        ] {
+            let model_x = x + 13;
+            assert_eq!(buffer[(model_x + 8, row)].fg, GREEN);
+            let effort_x = model_x + model.len() as u16 + 1;
+            assert_eq!(
+                buffer[(effort_x, row)].symbol(),
+                palette::think_icon(effort)
+            );
+            let rendered_effort = (effort_x + 2..effort_x + 2 + effort.as_str().len() as u16)
+                .map(|col| buffer[(col, row)].symbol())
+                .collect::<String>();
+            assert_eq!(rendered_effort, effort.as_str(), "主备各自显示 effort");
+        }
+        // 长引用不能挤掉 effort，窄面板仍可查看主备各自的档位。
+        panel.roles.get_mut(&ModelRole::Default).unwrap().model =
+            format!("fixture/{}", "long-model".repeat(10));
+        panel
+            .roles
+            .get_mut(&ModelRole::Default)
+            .unwrap()
+            .fallback
+            .as_mut()
+            .unwrap()
+            .model = format!("fixture/{}", "long-backup".repeat(10));
+        for width in [42, 80, 140] {
+            let buffer = draw(&mut panel, width, 24);
+            let y = panel.body.y + panel.content_offset();
+            for (row, effort) in [(y, "high"), (y + 1, "none")] {
+                let text = (panel.body.x..panel.body.right())
+                    .map(|col| buffer[(col, row)].symbol())
+                    .collect::<String>();
+                assert!(text.ends_with(effort), "长模型名仍应保留 effort：{text}");
+            }
+        }
+        draw(&mut panel, 140, 24);
+        let Action::Save(ModelRole::Default, Some(off)) =
+            panel.handle(Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: x + 2,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            }))
+        else {
+            panic!("点击开关图标应切换启用状态");
+        };
+        assert!(!off.enabled);
+        assert!(off.fallback.is_some(), "切换不能丢失备用模型");
     }
 
     #[test]

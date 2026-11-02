@@ -15,6 +15,8 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::transcript_style as palette;
+
 pub(super) const ACCENT: Color = Color::Rgb(127, 166, 106);
 // Shell 模式：草稿以 `!` 开头时输入框上下边框的颜色，区分于普通输入。
 pub(super) const SHELL_MODE: Color = Color::Rgb(255, 121, 198);
@@ -35,7 +37,6 @@ const CACHE_WRITE: Color = Color::Rgb(255, 158, 100);
 // Paper Plane 的首字母与应用名 pp 对应。
 const APP_ICON: &str = "\u{f1d8}";
 const MODEL_ICON: &str = "\u{ec19}";
-const THINK_ICON: &str = "\u{f0766}";
 const PLAN_ICON: &str = "\u{f0132}";
 const DIRECTORY_ICON: &str = "\u{f07c}";
 const GIT_ICON: &str = "\u{f126}";
@@ -547,14 +548,7 @@ pub(super) fn primary(
         ThinkLevel::Max => "max",
     };
     // 思考级别统一使用 Nerd Font Material Design 图标，避免混用普通圆形字形导致宽度不一。
-    let think_icon = match think_level {
-        ThinkLevel::None => THINK_ICON,
-        ThinkLevel::Low => "\u{f0a9f}",
-        ThinkLevel::Medium => "\u{f0aa1}",
-        ThinkLevel::High => "\u{f0aa3}",
-        ThinkLevel::Xhigh => "\u{f0aa5}",
-        ThinkLevel::Max => "\u{f0238}",
-    };
+    let think_icon = palette::think_icon(think_level);
     let icon = |glyph, color| Span::styled(format!("{glyph} "), Style::default().fg(color));
     let model_src = model.map_or("—", |choice| choice.reference.as_str());
     let think_width = Line::from(think).width();

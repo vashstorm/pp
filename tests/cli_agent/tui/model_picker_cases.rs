@@ -373,7 +373,7 @@ fn fallback_tui_row_shortcuts_persist_primary_and_backup_independently() {
     pty.text("Select a model for DEFAULT");
     pty.input("one\r");
     pty.text("Choose an effort");
-    pty.input("\r");
+    pty.input("\x1b[B\x1b[B\x1b[B\r");
     pty.wait_for("主模型已保存", |s| {
         s.contents().contains("Model roles") && !s.contents().contains("Choose an effort")
     });
@@ -381,10 +381,35 @@ fn fallback_tui_row_shortcuts_persist_primary_and_backup_independently() {
     pty.text("Select a model for DEFAULT");
     pty.input("two\r");
     pty.text("Choose an effort");
-    pty.input("\r");
+    pty.input("\x1b[A\x1b[A\x1b[A\r");
     pty.wait_for("备用行已显示", |s| {
-        s.contents().contains('↳') && s.contents().contains("Model roles")
+        let text = s.contents();
+        text.contains('\u{f060d}')
+            && text.contains("Model roles")
+            && text
+                .lines()
+                .any(|line| line.contains("fixture/one") && line.contains("high"))
+            && text
+                .lines()
+                .any(|line| line.contains("fixture/two") && line.contains("none"))
     });
+    let text = pty.parser.screen().contents();
+    assert!(!text.contains("FALLBACK"));
+    let (row, line) = text
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains("fixture/two"))
+        .unwrap();
+    let model_col = line[..line.find("two").unwrap()].chars().count() as u16;
+    assert_eq!(
+        pty.parser
+            .screen()
+            .cell(row as u16, model_col)
+            .unwrap()
+            .fgcolor(),
+        vt100::Color::Rgb(131, 207, 126),
+        "未聚焦的备用模型也应随启用的 Role 高亮"
+    );
     let db = rusqlite::Connection::open_with_flags(
         config_path(dir.path(), "agent.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -399,12 +424,21 @@ fn fallback_tui_row_shortcuts_persist_primary_and_backup_independently() {
     );
     pty.input("x");
     pty.wait_for("主模型清除后保留备用", |s| {
-        s.contents().contains("(not set)") && s.contents().contains('↳')
+        s.contents().contains("(not set)") && s.contents().contains('\u{f060d}')
     });
+    assert_eq!(
+        pty.parser
+            .screen()
+            .cell(row as u16, model_col)
+            .unwrap()
+            .fgcolor(),
+        vt100::Color::Rgb(98, 104, 118),
+        "角色禁用后备用模型随之灰显"
+    );
     assert_eq!(read(), (0, None, Some("fixture/two".into())));
     pty.input("\x1b[Bx");
     pty.wait_for("备用清除后删除空角色", |s| {
-        !s.contents().contains('↳') && !s.contents().contains("(not set)")
+        !s.contents().contains('\u{f060d}') && !s.contents().contains("(not set)")
     });
     assert_eq!(
         db.query_row(

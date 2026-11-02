@@ -1,3 +1,4 @@
+use crate::config::ThinkLevel;
 use ratatui::style::Color;
 use std::borrow::Cow;
 
@@ -74,23 +75,35 @@ pub(super) fn tool_accent(name: &str) -> Color {
     }
 }
 
-// 统一使用 Nerd Font Font Awesome 单列字形；加一列空白为图标预留两列。
+// 与底部状态栏一致，使用 Nerd Font Material Design 双列字形；图标后保留一列空白。
 pub(super) fn tool_icon(name: &str) -> &'static str {
     match name {
-        "read" => "\u{f15c}",
-        "edit" => "\u{f040}",
-        "write" => "\u{f0c7}",
-        "bash_task" => "\u{f085}",
-        "grep" => "\u{f002}",
-        "find" | "glob" => "\u{f07b}",
-        "ask" => "\u{f059}",
-        "plan_search" => "\u{f0b0}",
-        "plan_find" => "\u{f14e}",
-        "plan_write" => "\u{f0cb}",
-        "plan_submit" => "\u{f00c}",
-        "todo" => "\u{f0ae}",
-        name if name.starts_with("mcp__") => "\u{f1e6}",
-        _ => "\u{f12e}",
+        "read" => "\u{f0219}",
+        "edit" => "\u{f03eb}",
+        "write" => "\u{f0193}",
+        "bash_task" => "\u{f08d6}",
+        "grep" => "\u{f0349}",
+        "find" | "glob" => "\u{f024b}",
+        "ask" => "\u{f02d7}",
+        "plan_search" => "\u{f0232}",
+        "plan_find" => "\u{f018b}",
+        "plan_write" => "\u{f0279}",
+        "plan_submit" => "\u{f012c}",
+        "todo" => "\u{f0756}",
+        name if name.starts_with("mcp__") => "\u{f06a5}",
+        _ => "\u{f1064}",
+    }
+}
+
+// 思考级别统一使用 Nerd Font Material Design 图标，状态栏与角色面板共用同一组字形。
+pub(super) fn think_icon(level: ThinkLevel) -> &'static str {
+    match level {
+        ThinkLevel::None => "\u{f0766}",
+        ThinkLevel::Low => "\u{f0a9f}",
+        ThinkLevel::Medium => "\u{f0aa1}",
+        ThinkLevel::High => "\u{f0aa3}",
+        ThinkLevel::Xhigh => "\u{f0aa5}",
+        ThinkLevel::Max => "\u{f0238}",
     }
 }
 

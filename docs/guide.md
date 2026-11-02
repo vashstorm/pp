@@ -140,7 +140,7 @@ bash_timeout_seconds: 120
 
 在 TUI 输入 `/Roles`（也接受 `/roles`），打开独立的模型角色配置页；`/model` 仍只切换当前会话的模型。配置页采用深色双栏布局：左侧为 Roles、全部模型和供应商导航，右侧为角色、模型或 effort 选择区。
 
-首批角色为 `DEFAULT`、`FAST`、`SLOW`、`VISION`、`PLAN`、`REVIEW`，直接列出全部六项，暂不分类。每项可保存一个主模型和一个 fallback，各自使用独立的 `provider/model` 与 effort；`FAST` 对应参考界面中的 SMOL。圆点是启用标识：`●` 为选中，`○` 为未选中；方向箭头仅表示键盘焦点。选中的 Role 显示彩色，未选中的整行灰显，光标移动不会改变启用状态。Space 或点击圆点切换启用状态，取消选中会保留 model/effort。Enter 配置模型及受支持的 effort；首次配置默认启用，修改已取消选中的配置不会重新启用。`↑/↓` 在主模型行与缩进的 `↳` 备用行之间选择，Enter 修改当前行；`f` 设置当前角色的 fallback，`t`（兼容 `e`）单独调整当前行 thinking，`x` 清除当前行，Delete／Backspace 删除整个角色配置，Esc 逐级返回。主备模型不能相同；清空主模型会禁用角色并保留 fallback，补齐后仍需手动启用。修改已启用角色的模型或 effort 后，配置提交到 `agent.db` 才发布待生效修订。DEFAULT 只作用于主 Agent；其他角色由绑定该角色的子 Agent 各自在下一安全边界应用，包括嵌套子 Agent。已有的无角色子 Agent 保持创建时的配置；取消选中或删除角色不会取消、重绑已有子 Agent。
+首批角色为 `DEFAULT`、`FAST`、`SLOW`、`VISION`、`PLAN`、`REVIEW`，直接列出全部六项，暂不分类。每项可保存一个主模型和一个 fallback，各自使用独立的 `provider/model` 与 effort；`FAST` 对应参考界面中的 SMOL。启用状态用与状态栏同源的 Nerd Font 开关图标表示（开启／关闭两态）；方向箭头仅表示键盘焦点。已启用的 Role 主备模型均高亮，禁用时整行灰显，光标移动不会改变启用状态。Space 或点击开关图标切换启用状态，取消选中会保留 model/effort。Enter 配置模型及受支持的 effort；首次配置默认启用，修改已取消选中的配置不会重新启用。主模型和备用模型名后紧跟各自的 effort，备用行只显示缩进箭头。`↑/↓` 在主模型行与备用行之间选择，Enter 修改当前行；`f` 设置当前角色的 fallback，`t`（兼容 `e`）单独调整当前行 thinking，`x` 清除当前行，Delete／Backspace 删除整个角色配置，Esc 逐级返回。主备模型不能相同；清空主模型会禁用角色并保留 fallback，补齐后仍需手动启用。修改已启用角色的模型或 effort 后，配置提交到 `agent.db` 才发布待生效修订。DEFAULT 只作用于主 Agent；其他角色由绑定该角色的子 Agent 各自在下一安全边界应用，包括嵌套子 Agent。已有的无角色子 Agent 保持创建时的配置；取消选中或删除角色不会取消、重绑已有子 Agent。
 
 Role 配置保存在 `~/.pp/agent/agent.db`，只能通过 TUI 的 `/Roles` 面板修改，不写入 `settings.yml`，也没有可编辑的 YAML 形式；面板的每次启用、选模和 effort 修改都在数据库事务中提交，提交成功才更新目录快照。取消选中与重新选中都会保留已配置的 model/effort，`settings.yml` 中的旧 `model_roles` 只在首次迁移时读取。
 

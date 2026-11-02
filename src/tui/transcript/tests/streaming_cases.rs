@@ -639,7 +639,7 @@ fn thinking_and_assistant_share_background_but_not_foreground() {
 }
 
 #[test]
-fn tool_icons_are_distinct_and_keep_two_column_prefixes_across_card_styles() {
+fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
     let names = [
         "read",
         "edit",
@@ -659,7 +659,13 @@ fn tool_icons_are_distinct_and_keep_two_column_prefixes_across_card_styles() {
     for name in names {
         let icon = palette::tool_icon(name);
         assert!(icons.insert(icon), "工具图标应独立：{name}");
-        assert_eq!(Span::raw(icon).width(), 1, "图标应占一列：{name}");
+        assert!(
+            icon.chars()
+                .next()
+                .is_some_and(|glyph| ('\u{f0000}'..='\u{ffffd}').contains(&glyph)),
+            "图标应与状态栏一样使用 Material Design 字形：{name}"
+        );
+        assert_eq!(Span::raw(icon).width(), 1, "图标布局宽度应为一列：{name}");
         let mut transcript = Transcript::new();
         tool(
             &mut transcript,
