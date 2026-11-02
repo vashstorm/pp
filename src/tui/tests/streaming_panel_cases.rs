@@ -255,10 +255,10 @@ fn activity_duration_follows_context_and_yields_space_on_narrow_screens() {
         "{:?}",
         render_status(&app, 100)
     );
-    assert!(render_status(&app, 100).contains("\u{f10ac} 0.2%/40K \u{f05e0}"));
+    assert!(render_status(&app, 100).contains("\u{f2d0} 0.2%/40K \u{f05e0}"));
     let narrow = render_status(&app, 20);
     assert!(
-        narrow.trim_end().ends_with("\u{f10ac} 0.2%/40K \u{f05e0}"),
+        narrow.trim_end().ends_with("\u{f2d0} 0.2%/40K \u{f05e0}"),
         "{narrow}"
     );
     assert!(!narrow.contains("1m") && !narrow.contains("25s"));
@@ -280,7 +280,7 @@ fn activity_duration_follows_context_and_yields_space_on_narrow_screens() {
             .ends_with("\u{f051b} 0s")
     );
     app.conversation = app.conversation.fresh();
-    assert!(render_status(&app, 100).contains("\u{f10ac} 0.2%/40K \u{f05e0}"));
+    assert!(render_status(&app, 100).contains("\u{f2d0} 0.2%/40K \u{f05e0}"));
 }
 
 #[test]

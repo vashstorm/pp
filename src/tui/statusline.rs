@@ -25,7 +25,7 @@ const MIN_AFTER_MODE: usize = FIELD_ICON_WIDTH + 1;
 const MODEL: Color = Color::Rgb(223, 167, 209);
 const DIRECTORY: Color = Color::Rgb(36, 174, 181);
 const GIT: Color = Color::Rgb(204, 167, 72);
-pub(super) const CONTEXT: Color = Color::Rgb(187, 154, 247);
+pub(super) const CONTEXT: Color = Color::Rgb(115, 218, 202);
 const SPEED: Color = Color::Rgb(255, 95, 162);
 const INPUT: Color = Color::Rgb(125, 207, 255);
 const OUTPUT: Color = Color::Rgb(158, 206, 106);
@@ -43,7 +43,7 @@ const SPEED_ICON: &str = "\u{f04c5}";
 const IO_ICON: &str = "\u{f04e2}";
 const CACHE_ICON: &str = "\u{f01bc}";
 const TITLE_ICON: &str = "\u{f09a9}";
-const CONTEXT_ICON: &str = "\u{f10ac}";
+const CONTEXT_ICON: &str = "\u{f2d0}";
 const COST_ICON: &str = "\u{f01c1}";
 const TIMER_ICON: &str = "\u{f051b}";
 const HEALTHY_ICON: &str = "\u{f05e0}";
@@ -85,7 +85,7 @@ fn field(icon: &str, text: String, color: Color) -> Line<'static> {
     ])
 }
 
-/// Ctx 数值固定紫色，只有末尾的健康图标根据配置阈值变化。
+/// Ctx 数值固定青绿色，只有末尾的健康图标根据配置阈值变化。
 pub(super) fn context_field(usage: &ContextUsage) -> Line<'static> {
     let text = match usage.context_window {
         Some(window) => format!(
@@ -210,7 +210,7 @@ pub(super) fn metric_fields(
             (CACHE_READ, CACHE_WRITE),
         )),
         task.and_then(cost_field),
-        elapsed.map(|text| field(TIMER_ICON, text.replace(' ', ""), Color::DarkGray)),
+        elapsed.map(|text| field(TIMER_ICON, text.replace(' ', ""), Color::White)),
     ];
     let budget = usize::from(width);
     let mut line = join_fields(&fields);
@@ -900,7 +900,7 @@ mod tests {
             ("8K", CACHE_READ),
             ("0", CACHE_WRITE),
             ("0.0123 USD", Color::Red),
-            ("1m25s", Color::DarkGray),
+            ("1m25s", Color::White),
         ] {
             assert_eq!(
                 line.spans
