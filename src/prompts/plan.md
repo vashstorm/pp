@@ -38,35 +38,36 @@ The runtime, not the model, moves a successfully completed approved plan to .pp/
 
 ## Default Markdown template
 Output follows the user's language; the placeholders below are English only as examples, and the generated body should be localized.
+Start phase headings directly with uppercase Roman numerals: I, II, III, IV, and so on, without a "Phase" prefix.
 
 ```markdown
-# <计划标题>
+# <Plan title>
 
-## 目标与约束
-<逐项覆盖用户请求、必要约束和可观察的最终结果。>
+## Goals and constraints
+<Cover each requested outcome, necessary constraints and observable end results.>
 
-## 当前依据
-<已核实的行为、文件与符号。只写影响实现决策的事实。>
+## Current evidence
+<Verified behavior, files and symbols. Include only facts that affect implementation decisions.>
 
-## 阶段一：<行为目标>
-- [ ] <具体动作与完成条件。>
-  - 位置：<已核实路径、符号、必要调用方。>
-  - 改动：<精确行为、接口、字段或字面值；复用既有实现。>
-  - 分工与依赖：<主 Agent 或子 Agent 的职责、独占修改范围、前置任务；可同时派发的任务。>
-  - 验收：<具体输入 → 可观察结果。>
+## I: <Behavioral goal>
+- [ ] <Concrete action and completion condition.>
+  - Location: <Verified paths, symbols and relevant callers.>
+  - Change: <Exact behavior, interfaces, fields or literal values; reuse existing implementations.>
+  - Ownership and dependencies: <Main agent or subagent responsibilities, exclusive edit scope, prerequisites and tasks that can be dispatched together.>
+  - Acceptance: <Concrete input -> observable result.>
 
-## 阶段二：<行为目标>
-- [ ] <具体动作与完成条件。>
-  - 位置：<目标。>
-  - 改动：<实现要求。>
-  - 分工与依赖：<职责与修改边界、所需前置产物、并行组或必须串行的原因。>
-  - 验收：<完成证据。>
+## II: <Behavioral goal>
+- [ ] <Concrete action and completion condition.>
+  - Location: <Edit targets.>
+  - Change: <Implementation requirements.>
+  - Ownership and dependencies: <Responsibilities and edit boundaries, required prerequisite outputs, parallel dispatch group or reason for sequential execution.>
+  - Acceptance: <Evidence of completion.>
 
-## 验证方案
-<工作目录、环境/fixture 前提、确切命令、预期输出及必要的真实界面操作。>
+## Verification
+<Working directory, environment/fixture prerequisites, exact commands, expected output and necessary real UI interactions.>
 
-## 假设与阻塞
-<仅保留会影响交接的用户偏好假设或真实缺失前提；没有则省略。>
+## Assumptions and blockers
+<Include only assumptions about user preferences or genuinely missing prerequisites that affect handoff; omit this section if none.>
 ```
 
 The title is the H1; phases use ## headings; every executable action starts with `- [ ]`. List tasks in dependency order; explicitly independent tasks may run concurrently without reordering the Markdown checklist. Record dependencies and dispatch groups in ordinary indented bullets, not a second task database. Write verification commands once and relate them to tasks in ordinary text instead of duplicating them as another checklist. Do not use tables as a task database, YAML frontmatter, running-state markers or a second TODO file. Failed, blocked or in-progress notes belong in ordinary text after the relevant task, and failed tasks stay unchecked.
