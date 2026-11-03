@@ -93,6 +93,7 @@ struct Rendered {
     epoch: u64,
     version: u64,
     width: u16,
+    source: Arc<str>,
     layout: Arc<EntryLayout>,
 }
 
@@ -191,6 +192,7 @@ impl Worker {
                             epoch: job.epoch,
                             version: job.version,
                             width: job.width,
+                            source: job.text,
                             layout: Arc::new(prepared(lines, job.width)),
                         });
                     }
@@ -338,24 +340,76 @@ impl Ticket {
                 .as_ref()
                 .is_none_or(|old| result.version >= old.version)
         {
+            if self
+                .displayed
+                .as_ref()
+                .is_none_or(|old| old.version != result.version)
+            {
+                self.fallback = None;
+            }
             self.displayed = Some(result.clone());
         }
+        drop(result);
         if let Some(result) = &self.displayed {
             self.exact = result.version == self.version;
-            return result.layout.clone();
+            if self.exact {
+                return result.layout.clone();
+            }
         }
-        // 回退只排版有限尾部；完整正文仍由后台处理，不能用于历史提交。
         if let Some(layout) = &self.fallback {
             return layout.clone();
         }
-        let start = text.len().saturating_sub(8192);
-        let start = (start..=text.len())
-            .find(|&i| text.is_char_boundary(i))
-            .unwrap_or(text.len());
-        let layout = Arc::new(prepared(plain(&text[start..], width, muted), width));
+        // 已排版前缀保持样式，新增尾部立即预览，不等待后台排版。
+        // 预览只处理有限尾部，不能用于历史提交。
+        let layout = Arc::new(match &self.displayed {
+            Some(result) if text.starts_with(result.source.as_ref()) => {
+                append_preview(result, &text[result.source.len()..], width, muted)
+            }
+            _ => prepared(plain(preview_tail(text), width, muted), width),
+        });
         self.fallback = Some(layout.clone());
         layout
     }
+}
+
+fn preview_tail(text: &str) -> &str {
+    let start = text.len().saturating_sub(8192);
+    let start = (start..=text.len())
+        .find(|&i| text.is_char_boundary(i))
+        .unwrap_or(text.len());
+    &text[start..]
+}
+
+fn append_preview(result: &Rendered, suffix: &str, width: u16, muted: bool) -> EntryLayout {
+    let mut lines: Vec<_> = result
+        .layout
+        .lines
+        .iter()
+        .map(|line| match &line.content {
+            LayoutContent::Styled(line) => line.clone(),
+            _ => unreachable!("后台正文排版仅包含样式行"),
+        })
+        .collect();
+    if suffix.is_empty() {
+        return prepared(lines, width);
+    }
+    let tail = preview_tail(suffix);
+    let mut line = if tail.len() == suffix.len() && !result.source.ends_with('\n') {
+        lines.pop().unwrap_or_default()
+    } else {
+        Line::default()
+    };
+    if tail.len() != suffix.len() {
+        line.spans.push(Span::raw("…\n"));
+    }
+    let style = if muted {
+        Style::default().fg(ratatui::style::Color::Rgb(110, 117, 129))
+    } else {
+        Style::default()
+    };
+    line.spans.push(Span::styled(tail.to_owned(), style));
+    lines.extend(super::transcript::wrap_block(line, width, ""));
+    prepared(lines, width)
 }
 fn prepared(lines: Vec<Line<'static>>, width: u16) -> EntryLayout {
     EntryLayout {
@@ -426,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_worker_publishes_intermediate_append_without_marking_it_exact() {
+    fn layout_worker_previews_latest_append_while_preserving_rendered_styles() {
         let worker = Worker::start().unwrap();
         let first = worker.pause();
         let mut ticket = Ticket::default();
@@ -448,6 +502,7 @@ mod tests {
                 .add_modifier
                 .contains(ratatui::style::Modifier::BOLD)
         }));
+        assert_eq!(layout_text(&intermediate), "first\n\nsecond");
         drop(second);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -461,10 +516,89 @@ mod tests {
         let third = worker.pause();
         ticket.invalidate(false);
         assert!(!ticket.exact, "追加后立即撤销最新版本资格");
-        let retained = ticket.layout("**first**\n\nsecond\n\nthird", 80, false);
-        assert_eq!(retained.height, 3);
+        let preview = ticket.layout("**first**\n\nsecond\n\nthird", 80, false);
+        third.wait();
+        assert_eq!(layout_text(&preview), "first\n\nsecond\n\nthird");
+        assert!(!ticket.exact);
+        ticket.invalidate(false);
+        let preview = ticket.layout("**first**\n\nsecond\n\nthird 中🙂", 80, false);
+        assert_eq!(layout_text(&preview), "first\n\nsecond\n\nthird 中🙂");
         assert!(!ticket.exact);
         drop(third);
+    }
+
+    fn layout_text(layout: &EntryLayout) -> String {
+        layout
+            .lines
+            .iter()
+            .map(|line| match &line.content {
+                LayoutContent::Styled(line) => line.to_string(),
+                _ => panic!("应为样式行"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn layout_worker_append_preview_wraps_unicode_tabs_and_newlines() {
+        for (source, suffix, expected) in [
+            ("**ab**", "中🙂", "ab中\n🙂"),
+            ("**ab**", "\t中", "ab  \n中"),
+            ("**ab**", "\n\n中\n", "ab\n\n中\n"),
+            ("**ab**\n", "中", "ab\n中"),
+        ] {
+            let worker = Worker::start().unwrap();
+            let pause = worker.pause();
+            let mut ticket = Ticket::default();
+            ticket.layout(source, 4, true);
+            pause.wait();
+            *ticket.slot.lock().unwrap() = Some(Rendered {
+                epoch: ticket.epoch,
+                version: ticket.version,
+                width: 4,
+                source: Arc::from(source),
+                layout: Arc::new(prepared(vec![Line::raw("ab")], 4)),
+            });
+            ticket.layout(source, 4, true);
+            ticket.invalidate(false);
+            let preview = ticket.layout(&format!("{source}{suffix}"), 4, true);
+            assert_eq!(layout_text(&preview), expected);
+            assert!(!ticket.exact);
+            assert!(Arc::ptr_eq(
+                &preview,
+                &ticket.layout(&format!("{source}{suffix}"), 4, true)
+            ));
+            drop(pause);
+        }
+    }
+
+    #[test]
+    fn layout_worker_append_preview_bounds_tail_without_losing_prefix() {
+        let result = Rendered {
+            epoch: 0,
+            version: 1,
+            width: 80,
+            source: Arc::from("**prefix**"),
+            layout: Arc::new(prepared(vec![Line::raw("prefix")], 80)),
+        };
+        let suffix = format!("{}🙂\n\nlatest", "中".repeat(4000));
+        let preview = append_preview(&result, &suffix, 80, true);
+        let text = layout_text(&preview);
+        assert!(text.starts_with("prefix\n…\n"));
+        assert!(text.ends_with("🙂\n\nlatest"));
+        assert!(!text.contains('\u{fffd}'));
+        assert!(text.len() < 9000);
+        let LayoutContent::Styled(last) = &preview.lines.last().unwrap().content else {
+            panic!("应为样式行");
+        };
+        assert_eq!(
+            last.spans[0].style.fg,
+            Some(ratatui::style::Color::Rgb(110, 117, 129))
+        );
+        assert_eq!(
+            layout_text(&append_preview(&result, "", 80, true)),
+            "prefix"
+        );
     }
 
     #[test]
@@ -526,6 +660,7 @@ mod tests {
             epoch: old_epoch,
             version: u64::MAX,
             width: 80,
+            source: Arc::from("old"),
             layout: Arc::new(prepared(vec![Line::raw("stale")], 80)),
         });
         let rows = ticket.layout("new", 80, false);
@@ -538,6 +673,7 @@ mod tests {
             epoch: ticket.epoch,
             version: ticket.version,
             width: 80,
+            source: Arc::from("new"),
             layout: Arc::new(prepared(vec![Line::raw("new")], 80)),
         });
         ticket.layout("new", 80, false);

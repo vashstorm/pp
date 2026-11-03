@@ -16,6 +16,42 @@ fn wait_exact(transcript: &mut Transcript, width: u16) -> Buffer {
 }
 
 #[test]
+fn streaming_scroll_live_tail_updates_before_background_layout_finishes() {
+    let worker = Worker::start().unwrap();
+    for thinking in [false, true] {
+        let mut transcript = Transcript::new();
+        transcript.progress(AgentEvent::AssistantStarted);
+        let event = |text: &str| {
+            if thinking {
+                AgentEvent::ThinkingDelta { text: text.into() }
+            } else {
+                AgentEvent::AssistantDelta {
+                    text: text.into(),
+                    refusal: false,
+                }
+            }
+        };
+        transcript.progress(event("**stable prefix**\n\n"));
+        wait_exact(&mut transcript, 60);
+        let pause = worker.pause();
+        transcript.progress(event("live-tail-中"));
+        let first = render(&mut transcript, 60, 8);
+        pause.wait();
+        assert!(screen(&first).contains("live-tail-中"));
+        transcript.progress(event("🙂-newest"));
+        let second = render(&mut transcript, 60, 8);
+        assert!(screen(&second).contains("live-tail-中"));
+        assert!(screen(&second).contains("🙂"));
+        assert!(screen(&second).contains("-newest"));
+        assert!(!screen(&second).contains("**stable prefix**"));
+        assert!(!transcript.entries[0].render.exact);
+        assert!(transcript.next_native_batch(60, 8, true).is_none());
+        drop(pause);
+        assert!(screen(&wait_exact(&mut transcript, 60)).contains("-newest"));
+    }
+}
+
+#[test]
 fn streaming_scroll_keeps_markdown_snapshot_and_long_position_while_pending() {
     let worker = Worker::start().unwrap();
     for thinking in [false, true] {
