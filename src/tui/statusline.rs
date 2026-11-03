@@ -174,6 +174,7 @@ fn join_fields(fields: &[Option<Line<'static>>]) -> Line<'static> {
 pub(super) fn metric_fields(
     usage: &ContextUsage,
     speed: Option<(f64, bool)>,
+    live_output: Option<u64>,
     task: Option<&crate::task_status::Snapshot>,
     elapsed: Option<&str>,
     width: u16,
@@ -193,6 +194,8 @@ pub(super) fn metric_fields(
     );
     let count = |value: Option<u64>| value.map_or_else(|| "—".into(), abbreviate_tokens);
     let last = usage.last_request;
+    // 生成中的请求还没有服务端 usage：先用已接收字节估算，完成后回落到权威 usage。
+    let output_tokens = live_output.or_else(|| last.map(|usage| usage.output_tokens));
     let mut fields = [
         Some(field(SPEED_ICON, speed_text, SPEED)),
         task.and_then(|t| t.title.as_ref())
@@ -201,7 +204,7 @@ pub(super) fn metric_fields(
         Some(pair_field(
             IO_ICON,
             count(last.map(|u| u.input_tokens)),
-            count(last.map(|u| u.output_tokens)),
+            count(output_tokens),
             (INPUT, OUTPUT),
         )),
         Some(pair_field(
@@ -323,6 +326,12 @@ impl TokenSpeed {
     /// 返回缓存速率；`bool` 表示是否为估算值。
     pub(super) fn value(&self) -> Option<(f64, bool)> {
         self.displayed_rate
+    }
+
+    /// 生成中按项目统一的 `/3` 字节启发式估算本次请求的输出 token；
+    /// 请求结束后返回 `None`，交给服务端 usage 校正。
+    pub(super) fn live_output_tokens(&self) -> Option<u64> {
+        (self.started_at.is_some() && self.output_bytes > 0).then(|| self.output_bytes.div_ceil(3))
     }
 
     pub(super) fn is_active(&self) -> bool {
@@ -824,6 +833,29 @@ mod tests {
         assert_eq!(speed.value(), None);
     }
 
+    #[test]
+    fn token_speed_live_output_grows_with_bytes_and_stops_at_usage() {
+        let base = Instant::now();
+        let mut speed = TokenSpeed::default();
+        assert_eq!(speed.live_output_tokens(), None, "未开始请求时不估算");
+        speed.start(base);
+        assert_eq!(speed.live_output_tokens(), None, "尚无输出时保留上一个数字");
+        speed.progress(600, base + Duration::from_millis(10));
+        assert_eq!(speed.live_output_tokens(), Some(200));
+        speed.progress(900, base + Duration::from_millis(20));
+        assert_eq!(speed.live_output_tokens(), Some(300), "随已接收字节增长");
+        speed.finish(1000, Some(280), true);
+        assert_eq!(
+            speed.live_output_tokens(),
+            None,
+            "完成后必须交给权威 usage，而不是保留估算"
+        );
+        speed.start(base);
+        speed.progress(30, base);
+        speed.finish(1000, None, false);
+        assert_eq!(speed.live_output_tokens(), None, "失败或取消不保留估算");
+    }
+
     fn line_text(line: &Line<'_>) -> String {
         line.spans
             .iter()
@@ -878,7 +910,14 @@ mod tests {
             cost: 0.0123,
             ..Default::default()
         };
-        let line = metric_fields(&usage, Some((30.2, true)), Some(&task), Some("1m 25s"), 240);
+        let line = metric_fields(
+            &usage,
+            Some((30.2, true)),
+            None,
+            Some(&task),
+            Some("1m 25s"),
+            240,
+        );
         assert_eq!(
             line_text(&line),
             format!(
@@ -913,7 +952,7 @@ mod tests {
     fn metric_fields_distinguish_missing_usage_and_independent_zero_cache() {
         let mut usage = status_usage();
         usage.last_request = None;
-        let text = line_text(&metric_fields(&usage, None, None, None, 240));
+        let text = line_text(&metric_fields(&usage, None, None, None, None, 240));
         assert!(text.contains(&format!("{IO_ICON} —/—")));
         assert!(text.contains(&format!("{CACHE_ICON} —/—")));
         for (read, write, expected) in [
@@ -927,10 +966,29 @@ mod tests {
                 cached_tokens: read,
                 cache_write_tokens: write,
             });
-            let text = line_text(&metric_fields(&usage, None, None, None, 240));
+            let text = line_text(&metric_fields(&usage, None, None, None, None, 240));
             assert!(text.contains(&format!("{IO_ICON} 0/0")));
             assert!(text.contains(&format!("{CACHE_ICON} {expected}")));
         }
+    }
+
+    #[test]
+    fn metric_fields_live_output_overrides_last_usage_until_request_finishes() {
+        let usage = status_usage();
+        // 生成中：仅 out 换成实时估算，in 与缓存仍是最近一次完成的请求。
+        let text = line_text(&metric_fields(&usage, None, Some(4200), None, None, 240));
+        assert!(text.contains(&format!("{IO_ICON} 12.3K/4.2K")), "{text}");
+        assert!(text.contains(&format!("{CACHE_ICON} 8K/0")), "{text}");
+        // 没有估算时回落到最近一次 usage。
+        let text = line_text(&metric_fields(&usage, None, None, None, None, 240));
+        assert!(text.contains(&format!("{IO_ICON} 12.3K/2.1K")), "{text}");
+        // 首个请求没有历史 usage 时，in/缓存保持未知，out 也随流式增长。
+        let first = ContextUsage {
+            last_request: None,
+            ..usage
+        };
+        let text = line_text(&metric_fields(&first, None, Some(260), None, None, 240));
+        assert!(text.contains(&format!("{IO_ICON} —/260")), "{text}");
     }
 
     #[test]
@@ -942,8 +1000,15 @@ mod tests {
             (1_000_000.0, "1.0M tok/s"),
         ] {
             assert!(
-                line_text(&metric_fields(&usage, Some((rate, false)), None, None, 200))
-                    .contains(expected)
+                line_text(&metric_fields(
+                    &usage,
+                    Some((rate, false)),
+                    None,
+                    None,
+                    None,
+                    200
+                ))
+                .contains(expected)
             );
         }
         assert_eq!(
@@ -1010,6 +1075,7 @@ mod tests {
             metric_fields(
                 &usage,
                 Some((30.2, false)),
+                None,
                 Some(&task),
                 Some("1m 25s"),
                 width,

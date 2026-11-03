@@ -1073,13 +1073,17 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         let first = format!("context-metrics-live-one {}", "x".repeat(600));
         streaming_delta(&mut stream, protocol, &first);
         pty.text("context-metrics-live-one");
-        // SSE 仍被服务端握住：速度只能是估算，且 In/Out/CRead/CWrite 尚无完成请求。
+        // SSE 仍被服务端握住：速度只能是估算；in 与缓存尚无完成的请求，out 按已接收字节增长。
         pty.wait_for("流式生成中显示非零估算速度", context_tui_positive_speed);
+        let first_out = first.len().div_ceil(3);
+        pty.wait_for("生成中的 out 按已接收字节估算", |screen| {
+            let live = screen.contents();
+            live.contains(&format!("\u{f04e2} —/{first_out}")) && live.contains("\u{f01bc} —/—")
+        });
         let live = pty.parser.screen().contents();
         assert!(
-            live.contains("\u{f04e2} —/—")
-                && live.contains("\u{f04e2} —/—")
-                && live.contains("\u{f01bc} —/—")
+            !live.contains("\u{f04e2} —/—"),
+            "生成中的 out 不能继续显示未知：{live}"
         );
         let (speed_row, speed_column) =
             context_tui_locate(pty.parser.screen(), "tok/s").expect("流式生成中必须显示速率字段");
@@ -1088,12 +1092,21 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         assert_eq!(speed_row, ctx_row, "指标必须与 Ctx 同在输入栏上沿");
         assert!(speed_column < ctx_column, "速度必须位于 Ctx 左侧");
 
-        streaming_delta(&mut stream, protocol, " context-metrics-live-two");
+        let second = " context-metrics-live-two";
+        streaming_delta(&mut stream, protocol, second);
         pty.text("context-metrics-live-two");
         assert!(
             context_tui_speed(pty.parser.screen()).is_some_and(|(_, marked)| !marked),
             "流式速度不得带 ~ 前缀"
         );
+        // 第二个 delta 到达后估算必须增长，而不是停在首个分片的值。
+        let grown_out = (first.len() + second.len()).div_ceil(3);
+        assert!(grown_out > first_out);
+        pty.wait_for("生成中的 out 随分片增长", |screen| {
+            screen
+                .contents()
+                .contains(&format!("\u{f04e2} —/{grown_out}"))
+        });
 
         context_tui_stream_usage(
             &mut stream,

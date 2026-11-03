@@ -73,6 +73,33 @@ fn statusline_reply_calls_usage(request: Request, protocol: &str, mut calls: Val
 }
 
 #[test]
+fn statusline_out_grows_live_and_settles_on_server_usage_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let (_home, mut pty) = statusline_start(&fixture, protocol, false);
+        pty.input("live out task\r");
+        let ((main, _), (title, _)) = statusline_requests(&fixture);
+        statusline_reply_usage(title, protocol, "实时输出");
+        let mut stream = SseReply::new(main);
+        // 19 字节正文；本次请求尚未收尾时，out 只能来自字节估算。
+        streaming_delta(&mut stream, protocol, "statusline-live-out");
+        pty.text("statusline-live-out");
+        pty.wait_for("生成中的 out 按已接收字节实时增长", |screen| {
+            screen.contents().contains("\u{f04e2} —/7")
+        });
+        context_tui_stream_usage(&mut stream, protocol, "statusline-live-out");
+        stream.finish();
+        pty.completed_after("statusline-live-out");
+        pty.wait_for("请求完成后 out 改用服务端 usage", |screen| {
+            screen.contents().contains("\u{f04e2} 12K/300")
+        });
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
 fn task_status_cost_includes_nested_subagents_without_double_counting_both_protocols() {
     for protocol in ["completion", "response"] {
         let fixture = server();

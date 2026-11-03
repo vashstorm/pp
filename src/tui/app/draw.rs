@@ -485,6 +485,7 @@ impl App {
             let metrics = statusline::metric_fields(
                 usage,
                 self.token_speed.value(),
+                self.token_speed.live_output_tokens(),
                 self.task_status.as_ref(),
                 self.conversation.task_duration().as_deref(),
                 (right - left).saturating_sub(extra_width),
