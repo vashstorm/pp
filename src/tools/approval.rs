@@ -163,17 +163,22 @@ impl Gate {
     }
 
     /// 单次工具调用的审批决策。决策顺序：
-    /// 1) 用户 policy（Deny 拒绝、Allow 旁路一切后续检查）
-    /// 2) bash 内置关键命令强制 prompt（无会话级选项）
-    /// 3) 用户 policy `Prompt` 强制 prompt（无会话级选项）
-    /// 4) 生效模式按 tier 放行或进入 prompt（`lsp` 的 tier 结合动作参数）
-    /// 5) 会话级授权命中放行，否则 prompt（无 handler 时 fail-closed）
+    /// 1) YOLO 无条件跳过审批，包括显式 policy 和关键命令检查
+    /// 2) 用户 policy（Deny 拒绝、Allow 旁路一切后续检查）
+    /// 3) bash 内置关键命令强制 prompt（无会话级选项）
+    /// 4) 用户 policy `Prompt` 强制 prompt（无会话级选项）
+    /// 5) 生效模式按 tier 放行或进入 prompt（`lsp` 的 tier 结合动作参数）
+    /// 6) 会话级授权命中放行，否则 prompt（无 handler 时 fail-closed）
     pub(crate) fn enforce(
         &self,
         name: &str,
         arguments: &str,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        let mode = self.effective_mode();
+        if mode == ApprovalMode::Yolo {
+            return Ok(());
+        }
         match self.config.policy.get(name) {
             Some(ApprovalPolicy::Allow) => return Ok(()),
             Some(ApprovalPolicy::Deny) => {
@@ -205,7 +210,6 @@ impl Gate {
                 cancellation,
             );
         }
-        let mode = self.effective_mode();
         let needs_prompt = match (mode, tier_of_arguments(name, arguments)) {
             (ApprovalMode::Yolo, _) => false,
             (ApprovalMode::Write, Tier::Read | Tier::Write) => false,
@@ -265,7 +269,7 @@ impl Gate {
 
 // ---- bash 内置关键命令检查 ----
 // 匹配前对命令做 trim + 连续空白折叠；reason 脱敏，不回显命令原文。
-// 对齐 OMP 关键清单的最小子集；只对 `bash` 工具生效，所有模式（含 yolo）。
+// 对齐 OMP 关键清单的最小子集；只对非 YOLO 模式的 `bash` 工具生效。
 
 type DestructiveMatcher = fn(&str) -> bool;
 
@@ -547,13 +551,13 @@ mod tests {
     #[test]
     fn lsp_policy_overrides_action_tiers() {
         // 显式 tools.approval.lsp 优先于动作分档：deny 拦只读动作。
-        let denied = gate(ApprovalMode::Yolo, &[("lsp", ApprovalPolicy::Deny)]);
+        let denied = gate(ApprovalMode::Write, &[("lsp", ApprovalPolicy::Deny)]);
         enforce(&denied, "lsp", &lsp_read("definition")).unwrap_err();
         // allow 旁路写入动作的审批。
         let allowed = gate(ApprovalMode::AlwaysAsk, &[("lsp", ApprovalPolicy::Allow)]);
         enforce(&allowed, "lsp", &lsp_write("rename")).unwrap();
         // prompt 强制每次询问，优先于动作分档。
-        let prompted = gate(ApprovalMode::Yolo, &[("lsp", ApprovalPolicy::Prompt)]);
+        let prompted = gate(ApprovalMode::Write, &[("lsp", ApprovalPolicy::Prompt)]);
         enforce(&prompted, "lsp", &lsp_read("hover")).unwrap_err();
     }
 
@@ -597,13 +601,35 @@ mod tests {
     }
 
     #[test]
-    fn yolo_allows_everything_non_destructive_without_handler() {
+    fn yolo_allows_all_tool_tiers_without_handler() {
         let gate = Gate::new();
         enforce(&gate, "read", r#"{"path":"a"}"#).unwrap();
         enforce(&gate, "edit", r#"{"input":"x"}"#).unwrap();
         enforce(&gate, "bash", &bash("echo hi")).unwrap();
         enforce(&gate, "mcp__local__tool", "{}").unwrap();
         enforce(&gate, "unknown_tool", "{}").unwrap();
+    }
+
+    #[test]
+    fn yolo_bypasses_explicit_policies_without_calling_handler() {
+        for policy in [
+            ApprovalPolicy::Allow,
+            ApprovalPolicy::Prompt,
+            ApprovalPolicy::Deny,
+        ] {
+            for name in [
+                "read",
+                "write",
+                "bash",
+                "lsp",
+                "mcp__local__tool",
+                "unknown_tool",
+            ] {
+                let mut gate = gate(ApprovalMode::Yolo, &[(name, policy)]);
+                gate.set_handler(Box::new(|_, _| panic!("YOLO 不应触发审批回调")));
+                enforce(&gate, name, &bash("rm -rf /")).unwrap();
+            }
+        }
     }
 
     #[test]
@@ -668,34 +694,42 @@ mod tests {
 
     #[test]
     fn user_policy_allow_bypasses_destructive_check() {
-        let gate = gate(ApprovalMode::Yolo, &[("bash", ApprovalPolicy::Allow)]);
+        let gate = gate(ApprovalMode::AlwaysAsk, &[("bash", ApprovalPolicy::Allow)]);
         enforce(&gate, "bash", &bash("rm -rf /")).unwrap();
     }
 
     #[test]
-    fn user_policy_deny_blocks_even_under_yolo() {
-        let gate = gate(ApprovalMode::Yolo, &[("bash", ApprovalPolicy::Deny)]);
-        let error = enforce(&gate, "bash", &bash("echo hi")).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("blocked by tools.approval policy."),
-            "{error}"
-        );
+    fn user_policy_deny_blocks_in_non_yolo_modes() {
+        for mode in [ApprovalMode::Write, ApprovalMode::AlwaysAsk] {
+            let gate = gate(mode, &[("bash", ApprovalPolicy::Deny)]);
+            let error = enforce(&gate, "bash", &bash("echo hi")).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("blocked by tools.approval policy."),
+                "{error}"
+            );
+        }
     }
 
     #[test]
     fn user_policy_prompt_forces_prompt_every_time_without_session_grant() {
-        let mut gate = gate(ApprovalMode::Yolo, &[("bash", ApprovalPolicy::Prompt)]);
-        gate.set_handler(session_handler());
+        let mut gate = gate(ApprovalMode::Write, &[("bash", ApprovalPolicy::Prompt)]);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&seen);
+        gate.set_handler(Box::new(move |request, _| {
+            recorded.lock().unwrap().push(request.session_grant);
+            Ok(ApprovalDecision::ApproveSession)
+        }));
         enforce(&gate, "bash", &bash("echo one")).unwrap();
         // ApproveSession 不建立会话授权：强制 prompt 每次都问。
         enforce(&gate, "bash", &bash("echo two")).unwrap();
         enforce(&gate, "bash", &bash("echo three")).unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![false, false, false]);
     }
 
     #[test]
-    fn destructive_commands_prompt_even_under_yolo_and_never_persist_grants() {
+    fn destructive_commands_bypass_yolo_but_prompt_in_other_modes() {
         for command in [
             "rm -rf /",
             "rm -fr /tmp/../",
@@ -710,17 +744,30 @@ mod tests {
             "mkfs.ext4 /dev/sda1",
             "dd if=/dev/zero of=/dev/sda",
         ] {
-            let mut gate = Gate::new();
-            gate.set_handler(session_handler());
-            enforce(&gate, "bash", &bash(command)).unwrap();
-            // 关键命令 prompt 不提供会话级选项，下一调用仍要询问。
-            enforce(&gate, "bash", &bash(command)).unwrap();
+            enforce(&Gate::new(), "bash", &bash(command)).unwrap();
+            for mode in [ApprovalMode::Write, ApprovalMode::AlwaysAsk] {
+                let mut gate = gate(mode, &[]);
+                let seen = Arc::new(Mutex::new(Vec::new()));
+                let recorded = Arc::clone(&seen);
+                gate.set_handler(Box::new(move |request, _| {
+                    recorded.lock().unwrap().push(request.session_grant);
+                    Ok(ApprovalDecision::ApproveSession)
+                }));
+                enforce(&gate, "bash", &bash(command)).unwrap();
+                // 关键命令不提供会话级选项，下一调用仍须询问。
+                enforce(&gate, "bash", &bash(command)).unwrap();
+                assert_eq!(*seen.lock().unwrap(), vec![false, false]);
+            }
         }
     }
 
     #[test]
     fn non_destructive_similar_commands_do_not_prompt() {
-        let gate = Gate::new();
+        let mut gate = gate(ApprovalMode::Write, &[]);
+        // 已有普通 bash 授权；误命中关键命令仍会因缺少 handler 而失败。
+        gate.set_handler(session_handler());
+        enforce(&gate, "bash", &bash("echo hi")).unwrap();
+        gate.handler = None;
         enforce(&gate, "bash", &bash("rm -rf ./build")).unwrap();
         enforce(&gate, "bash", &bash("cat /etc/passwd")).unwrap();
         enforce(&gate, "bash", &bash("curl http://example.com")).unwrap();
@@ -731,11 +778,17 @@ mod tests {
 
     #[test]
     fn malformed_bash_arguments_skip_destructive_check() {
-        let gate = Gate::new();
+        let gate = gate(ApprovalMode::AlwaysAsk, &[]);
         // 解析失败交给正式参数解析，不在此处拦截。
-        enforce(&gate, "bash", "{broken").unwrap();
-        enforce(&gate, "bash", r#"{"other":1}"#).unwrap();
-        enforce(&gate, "bash", r#"{"command":42}"#).unwrap();
+        for arguments in ["{broken", r#"{"other":1}"#, r#"{"command":42}"#] {
+            assert_eq!(destructive_reason(arguments), None);
+            assert!(
+                enforce(&gate, "bash", arguments)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("no interactive UI")
+            );
+        }
     }
 
     #[test]
@@ -750,10 +803,10 @@ mod tests {
 
     #[test]
     fn flag_override_replaces_configured_mode() {
-        let mut configured = gate(ApprovalMode::Write, &[]);
+        let mut configured = gate(ApprovalMode::Write, &[("bash", ApprovalPolicy::Deny)]);
         configured.set_override(ApprovalMode::Yolo);
         assert_eq!(configured.effective_mode(), ApprovalMode::Yolo);
-        enforce(&configured, "bash", &bash("echo hi")).unwrap();
+        enforce(&configured, "bash", &bash("rm -rf /")).unwrap();
         let mut overridden = gate(ApprovalMode::Yolo, &[]);
         overridden.set_override(ApprovalMode::AlwaysAsk);
         assert_eq!(overridden.effective_mode(), ApprovalMode::AlwaysAsk);

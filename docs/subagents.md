@@ -123,7 +123,7 @@ Steering 与 FollowUp 在等待期间保留队列，批次全部结束并成功�
 
 共享写入与隔离合并统一记录来源。正常 edit/write 和可验证的隔离文件修改沿用条件 undo；shell 的任意修改、隔离删除等无法保证撤销的情况会明确禁用 undo。工作区隔离不提供 OS 沙箱。
 
-子 Agent 继承父审批模式、显式 allow/deny/prompt 和根会话授权。审批与 `ask` 带子 Agent 身份进入同一条 FIFO 交互队列。无 TUI 时，需要交互的调用返回错误，不读取后续 stdin 充当答复。
+子 Agent 继承父审批模式、显式 allow/deny/prompt 和根会话授权。YOLO 模式跳过全部工具审批，包括显式 prompt/deny 规则与 bash 危险命令确认；其他模式继续应用这些规则。审批与 `ask` 带子 Agent 身份进入同一条 FIFO 交互队列。无 TUI 时，需要交互的调用返回错误，不读取后续 stdin 充当答复。
 
 Plan 可派发只读 child，禁止隔离、修改、MCP 和再次派发。MCP 连接由父方管理，child 使用代理；取消排队请求不会在之后启动该请求，取消已发出的调用不会由 child 关闭同伴连接。
 

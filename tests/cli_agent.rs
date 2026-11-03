@@ -14,6 +14,8 @@ mod shell_cli;
 #[path = "cli_agent/stats.rs"]
 mod stats;
 
+#[path = "cli_agent/approval.rs"]
+mod approval;
 #[path = "cli_agent/ask.rs"]
 mod ask;
 #[path = "cli_agent/lsp.rs"]

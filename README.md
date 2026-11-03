@@ -111,7 +111,7 @@ pp -p 'Read the current project and explain its structure without changing files
 printf 'Explain how to build the current project\n' | pp
 ```
 
-> **Permissions and data**: API keys are stored in plain text in the model configuration. Read, shell, search, and MCP tools run with your user permissions, without a filesystem sandbox or per-action confirmation. The write/edit save layer restricts paths to the working directory and rejects symbolic links. Sessions and statistics may contain source code and conversations; treat them as sensitive data. [Full permissions guide (Chinese) →](docs/guide.md#工具执行与权限)
+> **Permissions and data**: API keys are stored in plain text in the model configuration. Read, shell, search, and MCP tools run with your user permissions, without a filesystem sandbox. The default YOLO mode bypasses all tool approvals, including dangerous-command checks and explicit prompt/deny policies. The write/edit save layer restricts paths to the working directory and rejects symbolic links. Sessions and statistics may contain source code and conversations; treat them as sensitive data. [Full permissions guide (Chinese) →](docs/guide.md#工具执行与权限)
 
 ## Everyday use
 
