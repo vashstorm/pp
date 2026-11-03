@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn tui_pasted_long_line_expands_input_and_reflows_on_resize() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let mut pty = Pty::start(&server, dir.path());
+    pty.ready();
+    pty.resize(30, 14);
+    let text = "abcdefghijklmnopqrstuvwxyz";
+    pty.input(&format!("\x1b[200~{text}\x1b[201~"));
+    let wrapped = |screen: &vt100::Screen| {
+        let rows: Vec<_> = screen.rows(0, 14).collect();
+        rows[25].trim_end() == "❯ abcdefghijkl"
+            && rows[26].trim_end() == "  mnopqrstuvwx"
+            && rows[27].trim_end() == "  yz"
+            && !screen.hide_cursor()
+            && screen.cursor_position() == (27, 4)
+    };
+    pty.wait_for("粘贴后输入框立即展开为三行", wrapped);
+    no_more(&server);
+    pty.resize(30, 40);
+    pty.wait_for("窗口变宽后输入框收回为一行", |screen| {
+        let rows: Vec<_> = screen.rows(0, 40).collect();
+        rows[27].trim_end() == format!("❯ {text}") && screen.cursor_position() == (27, 28)
+    });
+    pty.resize(30, 14);
+    pty.wait_for("窗口变窄后重新显示三行", wrapped);
+    pty.input("\r");
+    let (request, body) = pty.request(&server);
+    assert_eq!(body["messages"][1]["content"], text);
+    final_reply(request, "paste-ok");
+    pty.text("paste-ok");
+    pty.resize(30, 100);
+    pty.ready();
+    pty.input("\x03");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
 fn tui_input_history_and_control_keys_edit_the_submitted_buffer() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();

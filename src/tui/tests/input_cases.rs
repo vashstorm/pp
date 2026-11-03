@@ -374,6 +374,81 @@ fn input_arrows_move_between_wrapped_lines_before_history() {
 }
 
 #[test]
+fn input_paste_height_tracks_wrapped_rows_on_first_draw() {
+    for (text, width, rows) in [
+        ("", 14, 1),
+        ("abcdefghijkl", 14, 1),
+        ("abcdefghijklmnopqrstuvwxyz", 14, 3),
+        ("hello world again", 14, 2),
+        ("中文测试中文测试中文测试中", 14, 3),
+        ("🙂🙂🙂🙂🙂🙂🙂", 14, 2),
+        ("e\u{301}".repeat(13).as_str(), 14, 2),
+        ("a\tb\tc\td", 14, 2),
+        ("abcdefghijklmnop\n\nlast", 14, 4),
+        ("abcdefghijklmnopqrstuvwxyz", 9, 4),
+    ] {
+        let mut app = app();
+        let mut dirty = false;
+        app.handle(Event::Paste(text.into()), &mut dirty);
+        let cursor = app.input.cursor();
+        let screen = draw(&mut app, width, 16);
+        assert_eq!(
+            app.main_layout(Rect::new(0, 0, width, 16))
+                .conversation
+                .height,
+            13 - rows,
+            "输入框应按折行后的行数增长：{text:?}"
+        );
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(app.input_text(), text);
+        assert_eq!(app.input.scroll_offset(), (0, 0));
+        if text == "abcdefghijklmnopqrstuvwxyz" && width == 14 {
+            assert!(screen.contains("❯ abcdefghijkl"));
+            assert!(screen.contains("  mnopqrstuvwx"));
+            assert!(screen.contains("  yz"));
+        }
+    }
+}
+
+#[test]
+fn input_wrapped_height_caps_at_six_rows_and_shrinks_after_editing() {
+    let mut app = app();
+    let mut dirty = false;
+    let text = "a".repeat(100);
+    app.handle(Event::Paste(text.clone()), &mut dirty);
+    draw(&mut app, 14, 16);
+    assert_eq!(
+        app.main_layout(Rect::new(0, 0, 14, 16)).conversation.height,
+        7
+    );
+    assert_eq!(app.input.scroll_offset(), (3, 0));
+    app.input.move_cursor(CursorMove::Jump(0, 0));
+    app.input.start_selection();
+    app.input.move_cursor(CursorMove::Jump(0, 24));
+    let selection = app.input.selection_range();
+    draw(&mut app, 14, 16);
+    assert_eq!(app.input.selection_range(), selection);
+    assert_eq!(app.input.scroll_offset(), (2, 0));
+    app.input.cancel_selection();
+    app.handle(control('a'), &mut dirty);
+    app.handle(control('k'), &mut dirty);
+    draw(&mut app, 14, 16);
+    assert_eq!(app.input_text(), "");
+    assert_eq!(
+        app.main_layout(Rect::new(0, 0, 14, 16)).conversation.height,
+        12
+    );
+    assert_eq!(app.input.scroll_offset(), (0, 0));
+    app.handle(control('u'), &mut dirty);
+    draw(&mut app, 14, 16);
+    assert_eq!(app.input_text(), text);
+    assert_eq!(
+        app.main_layout(Rect::new(0, 0, 14, 16)).conversation.height,
+        7
+    );
+}
+
+#[test]
 fn input_native_cursor_follows_unicode_wrapping_scrolling_and_resize() {
     for (text, width, height, expected) in [
         ("", 100, 30, (2, 27)),
@@ -401,7 +476,7 @@ fn input_native_cursor_follows_unicode_wrapping_scrolling_and_resize() {
 
     let mut app = app();
     app.input.insert_str("abcdefghijklmnopqrstuvwxyz");
-    for (width, column, top) in [(14, 4, 2), (40, 28, 0), (9, 7, 3)] {
+    for (width, column, top) in [(14, 4, 0), (40, 28, 0), (9, 7, 0)] {
         let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
         terminal
             .draw(|frame| app.draw(frame, &StatusContext::default()))
