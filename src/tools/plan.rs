@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
 
-use super::{plan_catalog, save};
+use super::{WriteArgs, plan_catalog, save};
 
 /// Tool-visible outcome of the dedicated plan tools. The protocol-agnostic
 /// caller applies it to the borrowed workflow state at the batch commit
@@ -22,20 +22,11 @@ pub(crate) enum PlanChange {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PlanWriteArgs {
-    title: String,
-    file_name: String,
-    content: String,
-    expected_revision: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct PlanSubmitArgs {
     expected_revision: u64,
 }
 
-const NAME_COLLISION: &str = "Plan file name already exists; choose another file_name.";
+const NAME_COLLISION: &str = "Plan file name already exists; choose another plan path.";
 const RENAME_BOUND: &str = "Rename plans through /plan-list.";
 const MOVED_PLAN: &str = "Plan file moved; reopen it from /plan-list.";
 
@@ -47,73 +38,84 @@ pub(crate) fn run(
     arguments: &str,
 ) -> Result<(Value, Option<PlanChange>)> {
     match name {
-        "plan_write" => {
-            let args: PlanWriteArgs =
-                serde_json::from_str(arguments).context("invalid plan_write arguments")?;
-            // 列表中 Plans 的计划接受讨论后降为 Draft，允许修改原文件；
-            // 待审阅或已交接的 Plans 仍不可被规划工具直接修改。
-            ensure!(
-                document.location != PlanLocation::Plans
-                    || document.status == plan::PlanStatus::Draft,
-                "This plan is awaiting pre-execution review; choose a draft from /plan-list to plan again."
-            );
+        "write" => {
+            let args: WriteArgs =
+                serde_json::from_str(arguments).context("invalid write arguments")?;
+            ensure_writable(document)?;
             write(workspace, document, args)
         }
         "plan_submit" => {
             let args: PlanSubmitArgs =
                 serde_json::from_str(arguments).context("invalid plan_submit arguments")?;
-            ensure!(
-                document.location != PlanLocation::Plans
-                    || document.status == plan::PlanStatus::Draft,
-                "This plan is awaiting pre-execution review; choose a draft from /plan-list to plan again."
-            );
+            ensure_writable(document)?;
             submit(workspace, document, input, args)
         }
         _ => bail!("Tool is not available in Plan mode."),
     }
 }
 
+/// Plans 中只有重新进入讨论的 Draft 可以保存或提交。
+fn ensure_writable(document: &PlanDocument) -> Result<()> {
+    ensure!(
+        document.location != PlanLocation::Plans || document.status == plan::PlanStatus::Draft,
+        "This plan is awaiting pre-execution review; choose a draft from /plan-list to plan again."
+    );
+    Ok(())
+}
+
 fn write(
     workspace: &save::Workspace,
     document: &PlanDocument,
-    args: PlanWriteArgs,
+    args: WriteArgs,
 ) -> Result<(Value, Option<PlanChange>)> {
-    ensure!(
-        args.expected_revision == document.revision,
-        "Plan revision changed; review the latest plan before writing."
-    );
-    let title = args.title.trim();
-    plan::validate_title(title)?;
-    plan::validate_content(&args.content)?;
-    if document.revision == 0 {
-        // 首存：AI 命名走严格 kebab 规则，并在登记事务内发布正文。
-        plan::validate_file_name(&args.file_name)?;
-        let file_name = args.file_name;
+    let components = workspace.components(Path::new(&args.path))?;
+    let requested = components.iter().collect::<std::path::PathBuf>();
+    // 路径校验先于目录创建；Plan 的 write 不能写任意项目文件或登记文件。
+    let (file_name, path) = if document.revision == 0 {
+        ensure!(
+            components.len() == 3 && components[0] == ".pp" && components[1] == "drafts",
+            "Tool is not available in Plan mode."
+        );
+        let file_name = components[2]
+            .to_str()
+            .context("Plan file name must be valid UTF-8.")?
+            .to_owned();
+        plan::validate_file_name(&file_name)?;
         let path = plan::path_for(&file_name, PlanLocation::Drafts);
+        (file_name, path)
+    } else {
+        let (file_name, path) = bound_target(workspace, document)?;
+        ensure!(
+            requested.parent() == Path::new(&path).parent(),
+            "Tool is not available in Plan mode."
+        );
+        ensure!(requested == Path::new(&path), "{RENAME_BOUND}");
+        (file_name, path)
+    };
+    plan::validate_content(&args.content)?;
+    let title = plan::plan_display_title(&args.content, &file_name);
+    plan::validate_title(&title)?;
+    if document.revision == 0 {
         let warning = first_save(workspace, &document.id, &file_name, args.content.as_bytes())?;
         return Ok((
             success(&path, 1, warning),
             Some(PlanChange::Written {
-                title: title.to_owned(),
+                title,
                 file_name,
                 content: args.content,
             }),
         ));
     }
-    // 已绑定名称的后续写入：以登记表 canonical 名称/位置校验，file_name
-    // 必须与绑定值一致；改名只能通过 /plan-list。
-    let (file_name, path) = bound_target(workspace, document)?;
-    ensure!(args.file_name == file_name, "{RENAME_BOUND}");
     let target = verified_target(workspace, &path, document.content.as_bytes())?;
-    if title == document.title && args.content == document.content {
+    if args.content == document.content {
         return Ok((success(&path, document.revision, None), None));
     }
     let revision = document.next_revision()?;
-    let warning = target.save(args.content.as_bytes())?;
+    let warning = target.save_if_unchanged(document.content.as_bytes(), args.content.as_bytes())?;
     Ok((
         success(&path, revision, warning),
         Some(PlanChange::Written {
-            title: title.to_owned(),
+            title,
             file_name,
             content: args.content,
         }),
@@ -207,7 +209,7 @@ fn first_save(
     match plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog) {
         Ok(registration_warning) => Ok(warning.or(registration_warning)),
         Err(error) => {
-            bail!("Plan file saved but registration failed; retry the same plan_write. ({error:#})")
+            bail!("Plan file saved but registration failed; retry the same write. ({error:#})")
         }
     }
 }
@@ -286,7 +288,7 @@ fn success(path: &str, revision: u64, warning: Option<String>) -> Value {
 
 /// Opens the current plan file through the safe NOFOLLOW handle and verifies
 /// the on-disk bytes still match the registered snapshot; an external edit is
-/// surfaced, never clobbered. Shared by plan_write and plan_submit.
+/// surfaced, never clobbered. Shared by write and plan_submit.
 fn verified_target(
     workspace: &save::Workspace,
     path: &str,
@@ -396,17 +398,10 @@ mod tests {
         document
     }
 
-    fn write_args(
-        title: &str,
-        file_name: &str,
-        content: &str,
-        expected_revision: u64,
-    ) -> PlanWriteArgs {
-        PlanWriteArgs {
-            title: title.to_owned(),
-            file_name: file_name.to_owned(),
+    fn write_args(file_name: &str, content: &str) -> WriteArgs {
+        WriteArgs {
+            path: plan::path_for(file_name, PlanLocation::Drafts),
             content: content.to_owned(),
-            expected_revision,
         }
     }
 
@@ -441,7 +436,7 @@ mod tests {
         let (value, change) = write(
             &workspace,
             &document,
-            write_args("  Spaced  ", file_name, "- [ ] task\n", 0),
+            write_args(file_name, "# Spaced\n\n- [ ] task\n"),
         )
         .unwrap();
         assert_eq!(value, json!({"ok":true,"path":path,"revision":1}));
@@ -455,10 +450,10 @@ mod tests {
         };
         assert_eq!(title, "Spaced");
         assert_eq!(changed_name, file_name);
-        assert_eq!(content, "- [ ] task\n");
+        assert_eq!(content, "# Spaced\n\n- [ ] task\n");
         assert_eq!(
             std::fs::read(dir.path().join(&path)).unwrap(),
-            b"- [ ] task\n"
+            b"# Spaced\n\n- [ ] task\n"
         );
         // 首存完成即登记当前 ID/名称/位置。
         let snapshot = plan_catalog::load_catalog(&workspace).unwrap();
@@ -487,7 +482,7 @@ mod tests {
             let error = write(
                 &workspace,
                 &other,
-                write_args("Title", "dir-collision.md", "- [ ] task", 0),
+                write_args("dir-collision.md", "- [ ] task"),
             )
             .unwrap_err();
             assert_eq!(error.to_string(), NAME_COLLISION);
@@ -504,12 +499,7 @@ mod tests {
             PlanLocation::Drafts,
         );
         let other = plan_document(0, "", "");
-        let error = write(
-            &workspace,
-            &other,
-            write_args("Title", registered, "- [ ] task", 0),
-        )
-        .unwrap_err();
+        let error = write(&workspace, &other, write_args(registered, "- [ ] task")).unwrap_err();
         assert_eq!(error.to_string(), NAME_COLLISION);
         assert!(
             !dir.path()
@@ -520,12 +510,7 @@ mod tests {
         // 非法命名（路径逃逸、非 kebab）在触碰磁盘前被拒绝。
         for bad in ["../escape.md", "Nested/name.md", "Not-Kebab.md", "ab.md.md"] {
             let other = plan_document(0, "", "");
-            let error = write(
-                &workspace,
-                &other,
-                write_args("Title", bad, "- [ ] task", 0),
-            )
-            .unwrap_err();
+            let error = write(&workspace, &other, write_args(bad, "- [ ] task")).unwrap_err();
             assert!(!error.to_string().is_empty(), "{bad}");
         }
     }
@@ -590,42 +575,25 @@ mod tests {
         let (value, change) = write(
             &workspace,
             &document,
-            write_args("Title", "create-canary.md", content, 1),
+            write_args("create-canary.md", content),
         )
         .unwrap();
         assert_eq!(value, json!({"ok":true,"path":path,"revision":1}));
         assert!(change.is_none());
 
         // 后续写入 file_name 必须等于绑定值；改名走 /plan-list。
-        let error = write(
-            &workspace,
-            &document,
-            write_args("Title", "renamed.md", content, 1),
-        )
-        .unwrap_err();
+        let error = write(&workspace, &document, write_args("renamed.md", content)).unwrap_err();
         assert_eq!(error.to_string(), RENAME_BOUND);
 
         // A distinct write increments the revision and reports the change.
         let (value, change) = write(
             &workspace,
             &document,
-            write_args("Title", "create-canary.md", "- [ ] task\n- [ ] second\n", 1),
+            write_args("create-canary.md", "- [ ] task\n- [ ] second\n"),
         )
         .unwrap();
         assert_eq!(value, json!({"ok":true,"path":path,"revision":2}));
         assert!(matches!(change, Some(PlanChange::Written { .. })));
-
-        // Stale expected_revision is refused before any disk access.
-        let error = write(
-            &workspace,
-            &document,
-            write_args("Title", "create-canary.md", content, 0),
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Plan revision changed; review the latest plan before writing."
-        );
 
         // External bytes are never clobbered.
         let external = plan_document(1, "Title", content);
@@ -634,7 +602,7 @@ mod tests {
         let error = write(
             &workspace,
             &external,
-            write_args("Title", "create-canary.md", "- [ ] new\n", 1),
+            write_args("create-canary.md", "- [ ] new\n"),
         )
         .unwrap_err();
         assert_eq!(
@@ -652,28 +620,18 @@ mod tests {
         let error = write(
             &workspace,
             &last,
-            write_args("Title", "create-canary.md", "- [ ] new\n", u64::MAX),
+            write_args("create-canary.md", "- [ ] new\n"),
         )
         .unwrap_err();
         assert_eq!(error.to_string(), "Plan revision limit reached.");
 
-        // Invalid titles and NUL content are refused without side effects.
+        // NUL 正文不允许落盘。
         let current = plan_document(1, "Title", content);
         std::fs::write(dir.path().join(current.path().unwrap()), content).unwrap();
         let error = write(
             &workspace,
             &current,
-            write_args("bad\0title", "create-canary.md", content, 1),
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Plan title must contain 1 to 120 characters without control characters."
-        );
-        let error = write(
-            &workspace,
-            &current,
-            write_args("Title", "create-canary.md", "bad\0content", 1),
+            write_args("create-canary.md", "bad\0content"),
         )
         .unwrap_err();
         assert_eq!(error.to_string(), "Plan content must not contain NUL.");
@@ -705,12 +663,10 @@ mod tests {
         let (value, change) = write(
             &workspace,
             &legacy,
-            write_args(
-                "Title",
-                &format!("{}.md", legacy.id),
-                "- [ ] task\n- [ ] two\n",
-                1,
-            ),
+            WriteArgs {
+                path: legacy_path.clone(),
+                content: "- [ ] task\n- [ ] two\n".into(),
+            },
         )
         .unwrap();
         assert_eq!(value, json!({"ok":true,"path":legacy_path,"revision":2}));
@@ -736,7 +692,7 @@ mod tests {
         let error = write(
             &workspace,
             &conflicting,
-            write_args("Title", "create-canary.md", content, 1),
+            write_args("create-canary.md", content),
         )
         .unwrap_err();
         assert_eq!(error.to_string(), MOVED_PLAN);
@@ -759,13 +715,12 @@ mod tests {
         );
         let content = "- [ ] task\n\nClarified acceptance criteria.\n";
         let arguments = serde_json::json!({
-            "title": "Selected plan", "file_name": "create-canary.md",
-            "expected_revision": 1, "content": content
+            "path": path, "content": content
         })
         .to_string();
         for status in [plan::PlanStatus::Ready, plan::PlanStatus::Executed] {
             document.status = status;
-            assert!(run(&workspace, &document, None, "plan_write", &arguments).is_err());
+            assert!(run(&workspace, &document, None, "write", &arguments).is_err());
             assert!(
                 run(
                     &workspace,
@@ -778,7 +733,7 @@ mod tests {
             );
         }
         document.status = plan::PlanStatus::Draft;
-        let (result, change) = run(&workspace, &document, None, "plan_write", &arguments).unwrap();
+        let (result, change) = run(&workspace, &document, None, "write", &arguments).unwrap();
         assert_eq!(result["revision"], 2);
         assert!(matches!(change, Some(PlanChange::Written { .. })));
         document.revision = 2;

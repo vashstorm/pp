@@ -650,7 +650,6 @@ fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
         "ask",
         "plan_search",
         "plan_find",
-        "plan_write",
         "plan_submit",
         "mcp__fixture__tool",
         "unknown_tool",

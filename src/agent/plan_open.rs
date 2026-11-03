@@ -501,7 +501,7 @@ mod tests {
                 .iter()
                 .filter_map(|tool| tool["function"]["name"].as_str().or(tool["name"].as_str()))
                 .collect();
-            assert!(names.contains(&"plan_write"));
+            assert!(names.contains(&"write"));
             assert!(!names.contains(&"bash"));
         }
     }

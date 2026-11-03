@@ -71,7 +71,7 @@ pub(super) fn tool_accent(name: &str) -> Color {
         "write" => WRITE_TITLE,
         "bash" | "bash_task" => SHELL_TITLE,
         "ask" => Color::Rgb(140, 191, 195),
-        "todo" | "plan_write" | "plan_submit" => Color::Rgb(168, 173, 208),
+        "todo" | "plan_submit" => Color::Rgb(168, 173, 208),
         name if name.starts_with("mcp__") => MCP_TITLE,
         _ => ACTIVITY,
     }
@@ -89,7 +89,6 @@ pub(super) fn tool_icon(name: &str) -> &'static str {
         "ask" => "\u{f02d7}",
         "plan_search" => "\u{f0232}",
         "plan_find" => "\u{f018b}",
-        "plan_write" => "\u{f0279}",
         "plan_submit" => "\u{f012c}",
         "todo" => "\u{f0756}",
         name if name.starts_with("mcp__") => "\u{f06a5}",

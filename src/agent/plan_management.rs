@@ -730,38 +730,7 @@ fn entry_from_scan(id: &str, file: &ScannedFile, workspace: &Workspace) -> PlanL
     }
 }
 
-/// 首个 H1 文本；缺失/空白时回退文件名（去掉 `.md` 后缀）。显示标题修剪
-/// 后约束在 1..=120 字符，不改正文。
-pub(crate) fn plan_display_title(content: &str, file_name: &str) -> String {
-    let heading = first_h1(content)
-        .map(|text| text.trim().to_owned())
-        .filter(|text| !text.is_empty());
-    let fallback = file_name.strip_suffix(".md").unwrap_or(file_name);
-    let title = heading.unwrap_or_else(|| fallback.trim().to_owned());
-    if title.is_empty() {
-        return fallback.chars().take(120).collect();
-    }
-    title.chars().take(120).collect()
-}
-
-/// 提取首个一级标题的纯文本（Text/Code 事件拼接）；没有则返回 `None`。
-fn first_h1(content: &str) -> Option<String> {
-    use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-    let mut inside = false;
-    let mut text = String::new();
-    for event in Parser::new_ext(content, Options::empty()) {
-        match event {
-            Event::Start(Tag::Heading {
-                level: HeadingLevel::H1,
-                ..
-            }) => inside = true,
-            Event::End(TagEnd::Heading(HeadingLevel::H1)) if inside => return Some(text),
-            Event::Text(value) | Event::Code(value) if inside => text.push_str(&value),
-            _ => {}
-        }
-    }
-    None
-}
+pub(crate) use crate::plan::plan_display_title;
 
 fn generate_id() -> Result<String> {
     let mut bytes = [0_u8; 16];

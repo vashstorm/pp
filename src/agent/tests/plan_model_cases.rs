@@ -23,9 +23,8 @@ fn plan_submit_seals_batch_without_another_model_request() {
             tool_call_for(
                 &serving,
                 request,
-                "plan_write",
-                &json!({"title":"Create hello","file_name":"create-canary.md","content":content,"expected_revision":0})
-                    .to_string(),
+                "write",
+                &json!({"path":".pp/drafts/create-canary.md","content":content}).to_string(),
             );
             let mut request = server
                 .recv_timeout(std::time::Duration::from_secs(5))
@@ -37,8 +36,8 @@ fn plan_submit_seals_batch_without_another_model_request() {
                 ("shell", "bash", json!({"command":"touch forbidden"})),
                 (
                     "rewrite",
-                    "plan_write",
-                    json!({"title":"Wrong","file_name":"create-canary.md","content":"- [ ] wrong","expected_revision":1}),
+                    "write",
+                    json!({"path":".pp/drafts/create-canary.md","content":"- [ ] wrong"}),
                 ),
             ];
             if serving == "completion" {

@@ -77,8 +77,8 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                 ("review-ask", "ask", ask_single_arguments()),
                 (
                     "review-plan-write",
-                    "plan_write",
-                    json!({"title":"Wrong","file_name":"create-canary.md","content":"- [x] wrong","expected_revision":1}),
+                    "write",
+                    json!({"path":".pp/drafts/create-canary.md","content":"- [x] wrong"}),
                 ),
                 (
                     "review-submit",

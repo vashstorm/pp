@@ -123,7 +123,7 @@ pub(crate) enum ToolPolicy<'a> {
 /// In-process research tools; also used by the independent reviewer.
 const PLAN_SEARCH_TOOLS: &[&str] = &["glob"];
 /// Plan-mode-only tools that mutate the review boundary.
-const PLAN_WRITE_TOOLS: &[&str] = &["plan_write", "plan_submit"];
+const PLAN_WRITE_TOOLS: &[&str] = &["plan_submit"];
 /// Research tools Plan mode keeps from the ordinary Execute list.
 const PLAN_BASE_TOOLS: &[&str] = &["read", "grep"];
 
@@ -522,13 +522,19 @@ impl Tools {
                 // Plan 和 Review 共用只读搜索工具。
                 let mut definitions: Vec<_> = Self::definitions(self.edit_mode)
                     .into_iter()
-                    .filter(|definition| PLAN_BASE_TOOLS.contains(&definition.name.as_str()))
+                    .filter(|definition| {
+                        PLAN_BASE_TOOLS.contains(&definition.name.as_str())
+                            || definition.name == "write"
+                    })
                     .collect();
                 if self.ask_handler.is_some() {
                     definitions.push(crate::interaction::definition());
                 }
                 definitions.push(glob::definition());
                 definitions.push(grep::definition());
+                if let Some(write) = definitions.iter_mut().find(|tool| tool.name == "write") {
+                    write.description = Some("Save the complete Markdown plan using path and content. On the first save choose .pp/drafts/<descriptive-kebab-case-name>.md; later saves must use the exact bound plan path. Only this plan may be written in Plan mode. The title comes from the first H1, falling back to the file name. The runtime registers the plan, advances its revision, refuses name collisions and external changes, and returns path and revision. Renaming is only possible through /plan-list.".into());
+                }
                 definitions.extend(Self::plan_definitions());
                 if let Some(definition) = self.lsp_definition(true) {
                     definitions.push(definition);
@@ -567,22 +573,6 @@ impl Tools {
 
     fn plan_definitions() -> Vec<FunctionObject> {
         vec![
-            FunctionObject {
-                name: "plan_write".into(),
-                description: Some("Create or replace the plan document for this task. file_name is a short, descriptive English kebab-case Markdown name you choose on the first save, such as fix-config-loading.md; the file is written under .pp/drafts/ and the same file_name must be repeated unchanged on every later write — renaming is only possible through /plan-list, and a collision refuses the write instead of overwriting. content is the complete Markdown plan; implementation steps must be standard Markdown task list items (- [ ]) with a clear action and completion condition each. expected_revision must equal the current plan revision. The write fails if the plan file was changed externally.".into()),
-                parameters: Some(json!({
-                    "type":"object",
-                    "properties":{
-                        "title":{"type":"string","minLength":1},
-                        "file_name":{"type":"string","minLength":4,"maxLength":100,"pattern":"^[a-z0-9]+(?:-[a-z0-9]+)*\\.md$"},
-                        "content":{"type":"string","minLength":1},
-                        "expected_revision":{"type":"integer","minimum":0}
-                    },
-                    "required":["title","file_name","content","expected_revision"],
-                    "additionalProperties":false
-                })),
-                ..Default::default()
-            },
             FunctionObject {
                 name: "plan_submit".into(),
                 description: Some("Submit the current plan for user review and approval. The submitted draft stays in .pp/drafts/; only the local review actions move it forward. expected_revision must equal the current plan revision. After a successful submission no further tools run in this batch; the user reviews the plan before any execution starts. Never ask the user to approve in chat; only plan_submit requests review.".into()),
@@ -708,7 +698,7 @@ impl Tools {
             "glob" => "glob",
             "todo" => "todo",
             "lsp" => "lsp",
-            "plan_search" | "plan_find" | "plan_write" | "plan_submit" => "plan_tool",
+            "plan_search" | "plan_find" | "plan_submit" => "plan_tool",
             _ => "external",
         };
         tracing::info!(event = "tool_started", pid, tool);
@@ -853,6 +843,7 @@ impl Tools {
                     || PLAN_SEARCH_TOOLS.contains(&name)
                     || name == "lsp" && self.lsp.is_some()
                     || self.subagent.is_some() && matches!(name, "task" | "wait")
+                    || name == "write"
                     || is_plan_tool(name)
                     || name == "ask" && self.ask_handler.is_some()
             }
@@ -1068,6 +1059,13 @@ impl Tools {
                 Ok(result)
             }
             "write" => {
+                if let ToolPolicy::Plan {
+                    document, input, ..
+                } = policy
+                {
+                    return plan::run(&self.workspace, document, input, name, arguments)
+                        .map(|(value, change)| (value, change, None));
+                }
                 let args: WriteArgs =
                     serde_json::from_str(arguments).context("invalid write arguments")?;
                 ensure!(!read::is_pipe_uri(&args.path), "pipe streams are read-only");
@@ -1214,7 +1212,7 @@ impl Tools {
                 crate::lsp::tool::run(self, arguments, call_id, lsp_access, cancellation, emit)
             }
             "find" | "plan_find" => bail!("{name} is no longer available; use glob"),
-            "plan_write" | "plan_submit" => {
+            "plan_submit" => {
                 // Only ToolPolicy::Plan passes the gate for plan tools; the
                 // outcome is reported to the caller instead of mutating any
                 // workflow state here.

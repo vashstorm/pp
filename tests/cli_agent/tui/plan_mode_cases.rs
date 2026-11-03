@@ -42,7 +42,7 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
                             | "lsp"
                             | "ask"
                             | "todo"
-                            | "plan_write"
+                            | "write"
                             | "plan_submit"
                             | "task"
                             | "wait"
@@ -168,8 +168,8 @@ fn plan_toggle_waits_for_prompt_and_preserves_drafts() {
                 plan_call(
                     protocol,
                     "second-write",
-                    "plan_write",
-                    json!({"title":"Create canary","file_name":"second-canary.md","content":PLAN_TUI_BODY,"expected_revision":0})
+                    "write",
+                    json!({"path":".pp/drafts/second-canary.md","content":PLAN_TUI_BODY})
                 ),
                 plan_call(
                     protocol,

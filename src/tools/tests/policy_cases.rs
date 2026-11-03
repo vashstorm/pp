@@ -162,10 +162,6 @@ fn review_policy_is_read_only() {
         ("write", json!({"path":"out.txt","content":"x"}).to_string()),
         ("edit", "{}".to_owned()),
         ("bash", json!({"command":"echo hi"}).to_string()),
-        (
-            "plan_write",
-            json!({"title":"t","content":"c","expected_revision":0}).to_string(),
-        ),
         ("plan_submit", json!({"expected_revision":1}).to_string()),
         ("unknown_mcp", "{}".to_owned()),
     ];
@@ -209,7 +205,7 @@ fn execute_policy_rejects_dedicated_plan_tools() {
     let workflow = WorkflowState::default();
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-    for name in ["plan_write", "plan_submit"] {
+    for name in ["plan_submit"] {
         let execution = tools.execute(
             name,
             "{}",
@@ -242,19 +238,19 @@ fn plan_tools_report_changes_through_execute_and_seal_the_queue() {
     let mut document = plan_document();
     let plan_path = ".pp/drafts/create-canary.md".to_owned();
 
-    // First write creates the named draft path and reports Written.
+    // 首次 write 登记当前计划并回传 Written，不加入普通文件撤销记录。
     let execution = tools.execute(
-            "plan_write",
-            &json!({"title":"Plan","file_name":"create-canary.md","content":content,"expected_revision":0}).to_string(),
-            "write-call",
-            ToolPolicy::Plan {
-                document: &document,
-                sealed: false,
-                input: None,
-            },
-            &CancellationToken::new(),
-            &mut |_| {},
-        );
+        "write",
+        &json!({"path":".pp/drafts/create-canary.md","content":content}).to_string(),
+        "write-call",
+        ToolPolicy::Plan {
+            document: &document,
+            sealed: false,
+            input: None,
+        },
+        &CancellationToken::new(),
+        &mut |_| {},
+    );
     assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
     let result: Value = serde_json::from_str(&execution.output).unwrap();
     assert_eq!(result["path"].as_str(), Some(plan_path.as_str()));
@@ -268,25 +264,32 @@ fn plan_tools_report_changes_through_execute_and_seal_the_queue() {
         content.as_bytes()
     );
 
-    // Mirror the caller applying the change to its workflow snapshot.
+    assert!(tools.changes_view().files.is_empty());
+    let Some(PlanChange::Written { title, .. }) = &execution.plan_change else {
+        panic!("计划写入必须返回 Written");
+    };
+    assert_eq!(title, "create-canary");
+
+    // 模拟调用方将写入结果提交到工作流快照。
     document.revision = 1;
-    document.title = "Plan".into();
+    document.title = "create-canary".into();
     document.file_name = Some("create-canary.md".into());
     document.content = content.to_owned();
 
-    // Identical title/name/content is a no-op without a change or bump.
+    // 相同正文不产生变更，也不增加修订号。
     let execution = tools.execute(
-            "plan_write",
-            &json!({"title":"Plan","file_name":"create-canary.md","content":content,"expected_revision":1}).to_string(),
-            "noop-call",
-            ToolPolicy::Plan {
-                document: &document,
-                sealed: false,
-                input: None,
-            },
-            &CancellationToken::new(),
-            &mut |_| {},
-        );
+        "write",
+        &json!({"path":dir.path().join(".pp/drafts/./create-canary.md"),"content":content})
+            .to_string(),
+        "noop-call",
+        ToolPolicy::Plan {
+            document: &document,
+            sealed: false,
+            input: None,
+        },
+        &CancellationToken::new(),
+        &mut |_| {},
+    );
     assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
     let result: Value = serde_json::from_str(&execution.output).unwrap();
     assert_eq!(result, json!({"ok":true,"path":plan_path,"revision":1}));
@@ -375,4 +378,74 @@ fn plan_file_isolation_and_is_plan_path() {
         std::fs::read(dir.path().join("canary.txt")).unwrap(),
         b"unchanged\n"
     );
+}
+
+#[test]
+fn plan_write_uses_common_write_schema_and_rejects_removed_tool_and_old_arguments() {
+    let dir = tempfile::tempdir().unwrap();
+    let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    let ordinary = Tools::definitions(EditMode::Replace)
+        .into_iter()
+        .find(|tool| tool.name == "write")
+        .unwrap();
+    for mode in [WorkMode::Execute, WorkMode::Plan] {
+        let definitions = tools.all_definitions(mode);
+        assert!(!definitions.iter().any(|tool| tool.name == "plan_write"));
+        let write = definitions
+            .iter()
+            .find(|tool| tool.name == "write")
+            .unwrap();
+        assert_eq!(write.parameters, ordinary.parameters);
+    }
+    assert!(
+        !tools
+            .review_definitions()
+            .iter()
+            .any(|tool| tool.name == "write")
+    );
+
+    let document = plan_document();
+    for (name, arguments) in [
+        (
+            "plan_write",
+            json!({"title":"Removed","file_name":"removed.md","content":"- [ ] forbidden","expected_revision":0}),
+        ),
+        (
+            "write",
+            json!({"path":".pp/drafts/removed.md","content":"- [ ] forbidden","expected_revision":0}),
+        ),
+        (
+            "write",
+            json!({"path":".pp/drafts/removed.md","content":"- [ ] forbidden","title":"Old argument"}),
+        ),
+        (
+            "write",
+            json!({"path":".pp/plans/removed.md","content":"- [ ] forbidden"}),
+        ),
+        (
+            "write",
+            json!({"path":".pp/drafts/nested/removed.md","content":"- [ ] forbidden"}),
+        ),
+        (
+            "write",
+            json!({"path":".pp/plan-catalog.json","content":"{}"}),
+        ),
+    ] {
+        let execution = tools.execute(
+            name,
+            &arguments.to_string(),
+            "removed-call",
+            ToolPolicy::Plan {
+                document: &document,
+                sealed: false,
+                input: None,
+            },
+            &CancellationToken::new(),
+            &mut |_| {},
+        );
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(result["ok"], false, "{name}: {result}");
+        assert!(execution.plan_change.is_none());
+    }
+    assert!(!dir.path().join(".pp").exists());
 }

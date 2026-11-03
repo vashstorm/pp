@@ -406,21 +406,21 @@ fn plan_ai_filename_is_stable_and_never_overwrites() {
             calls.push(plan_call(
                 protocol,
                 &format!("collision-{location}"),
-                "plan_write",
-                json!({"title":"Canary","file_name":format!("occupied-{location}.md"),"content":PLAN_TUI_BODY,"expected_revision":0}),
+                "write",
+                json!({"path":format!(".pp/drafts/occupied-{location}.md"),"content":PLAN_TUI_BODY}),
             ));
         }
         calls.push(plan_call(
             protocol,
             "bad-path",
-            "plan_write",
-            json!({"title":"Canary","file_name":"../escape.md","content":PLAN_TUI_BODY,"expected_revision":0}),
+            "write",
+            json!({"path":".pp/drafts/../escape.md","content":PLAN_TUI_BODY}),
         ));
         calls.push(plan_call(
             protocol,
             "named-save",
-            "plan_write",
-            json!({"title":"Canary","file_name":"create-canary.md","content":PLAN_TUI_BODY,"expected_revision":0}),
+            "write",
+            json!({"path":".pp/drafts/create-canary.md","content":PLAN_TUI_BODY}),
         ));
         plan_calls(request, protocol, json!(calls));
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
@@ -434,7 +434,7 @@ fn plan_ai_filename_is_stable_and_never_overwrites() {
             assert_eq!(output["ok"], false);
             assert_eq!(
                 output["error"],
-                "Plan file name already exists; choose another file_name."
+                "Plan file name already exists; choose another plan path."
             );
             assert_eq!(
                 std::fs::read(
@@ -463,14 +463,14 @@ fn plan_ai_filename_is_stable_and_never_overwrites() {
                 plan_call(
                     protocol,
                     "stable-save",
-                    "plan_write",
-                    json!({"title":"Canary","file_name":"create-canary.md","content":revised,"expected_revision":1})
+                    "write",
+                    json!({"path":".pp/drafts/create-canary.md","content":revised})
                 ),
                 plan_call(
                     protocol,
                     "rename-refused",
-                    "plan_write",
-                    json!({"title":"Canary","file_name":"another-name.md","content":"- [ ] wrong","expected_revision":2})
+                    "write",
+                    json!({"path":".pp/drafts/another-name.md","content":"- [ ] wrong"})
                 )
             ]),
         );

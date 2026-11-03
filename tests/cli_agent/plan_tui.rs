@@ -131,10 +131,17 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
     assert!(
         names.iter().all(|name| matches!(
             *name,
-            "read" | "ask" | "grep" | "glob" | "lsp" | "plan_write" | "plan_submit" | "task" | "wait"
+            "read" | "ask" | "grep" | "glob" | "lsp" | "write" | "plan_submit" | "task" | "wait"
         )),
         "{body}"
     );
+    assert!(names.contains(&"write"), "{body}");
+    let write = body["tools"].as_array().unwrap().iter().find_map(|tool| {
+        let definition = if protocol == "completion" { &tool["function"] } else { tool };
+        (definition["name"] == "write").then_some(definition)
+    }).unwrap();
+    assert_eq!(write["parameters"]["required"], json!(["path", "content"]));
+    assert_eq!(write["parameters"]["properties"].as_object().unwrap().len(), 2);
     plan_calls(
         request,
         protocol,
@@ -142,8 +149,8 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
             plan_call(
                 protocol,
                 "plan-write",
-                "plan_write",
-                json!({"title":"Create canary","file_name":"create-canary.md","content":content,"expected_revision":0})
+                "write",
+                json!({"path":".pp/drafts/create-canary.md","content":content})
             ),
             plan_call(
                 protocol,
@@ -160,8 +167,8 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
             plan_call(
                 protocol,
                 "sealed-write",
-                "plan_write",
-                json!({"title":"Wrong","file_name":"create-canary.md","content":"- [ ] wrong","expected_revision":1})
+                "write",
+                json!({"path":".pp/drafts/create-canary.md","content":"- [ ] wrong"})
             )
         ]),
     );

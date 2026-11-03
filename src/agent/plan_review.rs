@@ -885,8 +885,8 @@ mod tests {
                         ("ask", "ask", json!({"questions":[]})),
                         (
                             "plan-write",
-                            "plan_write",
-                            json!({"title":"X","content":"- [ ] x","expected_revision":1}),
+                            "write",
+                            json!({"path":".pp/drafts/create-canary.md","content":"- [ ] x"}),
                         ),
                         ("mystery", "mcp_unknown", json!({})),
                     ],

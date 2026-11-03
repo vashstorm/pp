@@ -272,6 +272,15 @@ fn skill_read_execution_and_disablement_apply_to_every_workflow() {
                 );
                 let result: Value = serde_json::from_str(&execution.output).unwrap();
                 assert_eq!(result["ok"], false, "{name}: {result}");
+                // Plan 的 write 已开放，非法 JSON 应进入参数校验；Review 仍在门禁拒绝。
+                let error = if name == "write"
+                    && arguments == "{"
+                    && error == "Tool is not available in Plan mode."
+                {
+                    "invalid write arguments: EOF while parsing an object at line 1 column 1"
+                } else {
+                    error
+                };
                 assert_eq!(result["error"], error, "{name}: {result}");
             }
         }

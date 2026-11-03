@@ -366,8 +366,8 @@ fn plan_tui_pending_input_never_crosses_review_into_execute() {
                 plan_call(
                     protocol,
                     "pending-write",
-                    "plan_write",
-                    json!({"title":"Pending","file_name":"create-canary.md","content":PLAN_TUI_BODY,"expected_revision":0})
+                    "write",
+                    json!({"path":".pp/drafts/create-canary.md","content":PLAN_TUI_BODY})
                 ),
                 plan_call(
                     protocol,
@@ -458,8 +458,8 @@ fn plan_tui_discussion_preserves_main_draft_and_does_not_force_a_rewrite() {
                 plan_call(
                     protocol,
                     "discuss-write",
-                    "plan_write",
-                    json!({"title":"Canary","file_name":"create-canary.md","content":PLAN_TUI_BODY,"expected_revision":0})
+                    "write",
+                    json!({"path":".pp/drafts/create-canary.md","content":PLAN_TUI_BODY})
                 ),
                 plan_call(
                     protocol,

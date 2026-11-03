@@ -386,7 +386,7 @@ fn plan_list_continues_in_fresh_context() {
         pty.input("SENTINEL-CANARY alpha\r");
         let (request, plan_body) = pty.request_at(&fixture, api_path(protocol));
         let names = plan_list_tool_names(protocol, &plan_body);
-        assert!(names.contains(&"plan_write".to_owned()), "{plan_body}");
+        assert!(names.contains(&"write".to_owned()), "{plan_body}");
         assert!(!names.contains(&"bash".to_owned()), "{plan_body}");
         plan_calls(
             request,
@@ -394,8 +394,8 @@ fn plan_list_continues_in_fresh_context() {
             json!([plan_call(
                 protocol,
                 "listed-write",
-                "plan_write",
-                json!({"title":"Continue listed","file_name":"continue-listed.md","content":draft,"expected_revision":0})
+                "write",
+                json!({"path":".pp/drafts/continue-listed.md","content":draft})
             )]),
         );
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
@@ -451,7 +451,7 @@ fn plan_list_continues_in_fresh_context() {
         assert!(system.contains("PLAN MODE"), "{system}");
         assert!(!system.contains("SENTINEL-CANARY"), "{system}");
         let names = plan_list_tool_names(protocol, &body);
-        assert!(names.contains(&"plan_write".to_owned()), "{body}");
+        assert!(names.contains(&"write".to_owned()), "{body}");
         assert!(!names.contains(&"bash".to_owned()), "{body}");
         plan_final(request, protocol, "Continued planning.");
         pty.text("Continued planning.");

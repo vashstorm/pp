@@ -330,11 +330,11 @@ fn plan_todo_draft_refuses_all_todo_calls_and_never_creates_snapshots() {
         plan_enter(&mut pty, &fixture);
         pty.input("readonly draft preview\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let write = json!({"title":"Todo preview","file_name":"create-canary.md","content":TODO_TUI_BODY,"expected_revision":0});
+        let write = json!({"path":".pp/drafts/create-canary.md","content":TODO_TUI_BODY});
         let mut calls = vec![plan_call(
             protocol,
             "draft-write",
-            "plan_write",
+            "write",
             write.clone(),
         )];
         for op in [
@@ -342,9 +342,8 @@ fn plan_todo_draft_refuses_all_todo_calls_and_never_creates_snapshots() {
         ] {
             calls.push(plan_call(protocol, &format!("deny-{op}"), "todo", json!({"op":op,"task":"Write canary bytes.","phase":"Write","items":["unapproved"]})));
         }
-        let mut no_op = write;
-        no_op["expected_revision"] = json!(1);
-        calls.push(plan_call(protocol, "noop-write", "plan_write", no_op));
+        let no_op = write;
+        calls.push(plan_call(protocol, "noop-write", "write", no_op));
         calls.push(plan_call(
             protocol,
             "draft-view",
@@ -600,8 +599,8 @@ fn tui_todo_plan_keeps_hud_empty_until_approved_execution() {
             json!([plan_call(
                 protocol,
                 "preview-fixed",
-                "plan_write",
-                json!({"title":"Todo integration","file_name":"create-canary.md","content":TODO_TUI_BODY,"expected_revision":0})
+                "write",
+                json!({"path":".pp/drafts/create-canary.md","content":TODO_TUI_BODY})
             )]),
         );
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
