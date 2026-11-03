@@ -719,6 +719,7 @@ impl SessionJournal {
         if matches!(
             event,
             AgentEvent::ContextUpdated { .. }
+                | AgentEvent::EditArgumentsDelta { .. }
                 | AgentEvent::ToolOutputSnapshot { .. }
                 | AgentEvent::ToolPipelineSnapshot { .. }
                 | AgentEvent::TodoStateUpdated { .. }

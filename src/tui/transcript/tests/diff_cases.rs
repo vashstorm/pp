@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn edit_preview_is_temporary_bounded_and_never_committed_to_native_history() {
+    let mut transcript = Transcript::new();
+    transcript.begin_run();
+    for text in [
+        r#"{"path":"demo.rs","edits":[{"oldText":"old","newText":"hel"#,
+        "lo中",
+    ] {
+        transcript.progress(AgentEvent::EditArgumentsDelta {
+            index: 0,
+            text: text.into(),
+        });
+    }
+    let text = screen(&render(&mut transcript, 100, 15));
+    assert!(
+        text.contains("preview · not saved") && text.contains("+ hello中"),
+        "{text}"
+    );
+    assert!(transcript.next_native_batch(100, 1, false).is_none());
+    assert!(transcript.next_native_batch(100, 1, true).is_none());
+    transcript.progress(AgentEvent::ModelAttemptFailed {
+        attempt: 1,
+        model: String::new(),
+        error: String::new(),
+    });
+    let text = screen(&render(&mut transcript, 100, 15));
+    assert!(
+        !text.contains("hello中") && !text.contains("not saved"),
+        "{text}"
+    );
+    transcript.progress(AgentEvent::EditArgumentsDelta {
+        index: 0,
+        text: format!("{{\"input\":\"{}", "中".repeat(40_000)),
+    });
+    let index = transcript.edit_previews[&0];
+    assert!(transcript.entries[index].text.len() <= 64 * 1024);
+    let before = transcript.entries[index].text.clone();
+    transcript.progress(AgentEvent::EditArgumentsDelta {
+        index: 0,
+        text: "SHOULD-NOT-APPEND".into(),
+    });
+    assert_eq!(transcript.entries[index].text, before);
+    assert!(screen(&render(&mut transcript, 100, 15)).contains("preview limit reached"));
+    transcript.finish_run("Cancelled", Duration::ZERO, chrono::Local::now());
+    let text = screen(&render(&mut transcript, 100, 15));
+    assert!(!text.contains("not saved"), "{text}");
+    transcript.progress(AgentEvent::EditArgumentsDelta {
+        index: 1,
+        text: r#"{"input":"discard"#.into(),
+    });
+    transcript.progress(AgentEvent::AssistantFinished {
+        text: String::new(),
+    });
+    assert!(transcript.edit_previews.is_empty());
+}
+
+#[test]
 fn committed_diff_survives_result_and_replay_without_reconstructing_old_logs() {
     let mut transcript = Transcript::new();
     transcript.progress(AgentEvent::ToolStarted {

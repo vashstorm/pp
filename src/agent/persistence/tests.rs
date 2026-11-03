@@ -1441,6 +1441,10 @@ fn transient_pipeline_snapshots_never_reach_the_journal() {
         pipes: serde_json::json!({"run_id": "run"}),
         preview: Some("瞬时阶段正文".into()),
     });
+    journal.event(&AgentEvent::EditArgumentsDelta {
+        index: 0,
+        text: "临时编辑参数".into(),
+    });
     // 瞬时预览不进入可恢复日志；最终结果里的 pipes 才是权威。
     assert_eq!(fs::read(&path).unwrap(), before);
 }

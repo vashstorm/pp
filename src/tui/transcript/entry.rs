@@ -386,7 +386,9 @@ impl TranscriptEntry {
             ]);
         } else if self.status != EntryStatus::Complete {
             spans.push(Span::styled(
-                if self.status == EntryStatus::Failed {
+                if matches!(self.body, EntryBody::EditPreview { .. }) {
+                    " · preview · not saved "
+                } else if self.status == EntryStatus::Failed {
                     " · failed "
                 } else {
                     " · running "
@@ -864,6 +866,7 @@ impl TranscriptEntry {
             lines.push(border(Source::Divider));
         }
         let tool_body = self.is_collapsible_tool()
+            && !matches!(self.body, EntryBody::EditPreview { .. })
             && !(self.tool.as_deref() == Some("edit") && matches!(self.body, EntryBody::Diff(_)))
             && !matches!(self.body, EntryBody::Lsp(_));
         if tool_body {
@@ -912,6 +915,20 @@ impl TranscriptEntry {
                     },
                     width,
                     style,
+                )
+                .into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }),
+            );
+        } else if let EntryBody::EditPreview { truncated } = self.body {
+            lines.extend(
+                super::edit_preview::layout(
+                    &self.text,
+                    width,
+                    self.expanded || self.display.full,
+                    truncated,
                 )
                 .into_iter()
                 .map(|line| LayoutLine {

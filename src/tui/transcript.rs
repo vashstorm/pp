@@ -24,6 +24,7 @@ use std::{
 };
 
 mod bash_tasks;
+mod edit_preview;
 mod entry;
 mod native;
 mod recorded;
@@ -113,6 +114,9 @@ pub(super) struct LayoutLine {
 
 enum EntryBody {
     Plain,
+    EditPreview {
+        truncated: bool,
+    },
     Activity(u128),
     Tips,
     Markdown(super::markdown::MarkdownDocument),
@@ -218,6 +222,7 @@ pub(super) struct Transcript {
     assistant: Option<usize>,
     thinking: Option<usize>,
     running_tools: Vec<(String, usize)>,
+    edit_previews: BTreeMap<u32, usize>,
     // 同一轮用户任务中的后台进程共用原始 Bash 卡片。
     background_bash: BTreeMap<String, usize>,
     offset: usize,
@@ -397,6 +402,7 @@ impl Transcript {
         elapsed: Option<Duration>,
         finished_at: Option<chrono::DateTime<chrono::Local>>,
     ) {
+        self.clear_edit_previews();
         self.background_bash.clear();
         let activity = self
             .activity
@@ -533,6 +539,7 @@ impl Transcript {
                 AgentEvent::AssistantStarted => activity.phase("Requesting model"),
                 AgentEvent::ThinkingDelta { .. } => activity.phase("Thinking"),
                 AgentEvent::AssistantDelta { .. } => activity.phase("Responding"),
+                AgentEvent::EditArgumentsDelta { .. } => activity.phase("Generating edit"),
                 AgentEvent::AssistantFinished { .. } => activity.phase("Processing response"),
                 AgentEvent::ToolStarted { name, .. } => {
                     activity.phase(&format!("Running {}", name.replace(char::is_control, " ")))
@@ -564,10 +571,21 @@ impl Transcript {
     }
 
     pub(super) fn progress(&mut self, event: AgentEvent) {
+        if matches!(
+            event,
+            AgentEvent::AssistantStarted
+                | AgentEvent::AssistantFinished { .. }
+                | AgentEvent::ModelAttemptFailed { .. }
+        ) {
+            self.clear_edit_previews();
+        }
         if !self.replaying {
             self.progress_phase(&event);
         }
         match event {
+            AgentEvent::EditArgumentsDelta { index, text } => {
+                self.preview_edit(index, &text);
+            }
             // 用量更新不产生对话条目。
             AgentEvent::ContextUpdated { .. } | AgentEvent::PlanProgressUpdated { .. } => {}
             // 运行时指标只服务状态栏，不产生对话条目。

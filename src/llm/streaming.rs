@@ -321,6 +321,7 @@ pub(super) struct ChatStream {
     content: String,
     refusal: String,
     calls: BTreeMap<u32, ChatCompletionMessageToolCall>,
+    edit_emitted: BTreeMap<u32, usize>,
     finish_reason: Option<FinishReason>,
     termination: Option<ChatTermination>,
     usage: Option<CompletionUsage>,
@@ -429,6 +430,17 @@ impl ChatStream {
                     if let Some(arguments) = function.arguments {
                         bytes = bytes.saturating_add(arguments.len() as u64);
                         call.function.arguments.push_str(&arguments);
+                    }
+                }
+                if call.function.name == "edit" {
+                    let sent = self.edit_emitted.entry(delta.index).or_default();
+                    let tail = &call.function.arguments[*sent..];
+                    if !tail.is_empty() {
+                        emit(AgentEvent::EditArgumentsDelta {
+                            index: delta.index,
+                            text: tail.to_owned(),
+                        });
+                        *sent = call.function.arguments.len();
                     }
                 }
             }
@@ -547,6 +559,7 @@ struct Item {
 #[derive(Default)]
 pub(super) struct ResponsesStream {
     items: BTreeMap<usize, Item>,
+    edit_items: BTreeMap<u32, String>,
     output_index: usize,
     content_index: usize,
     content: String,
@@ -750,9 +763,31 @@ impl ResponsesStream {
                     });
                 }
             }
-            // Tool arguments produce no visible text but still advance generation.
+            ResponseStreamEvent::ResponseOutputItemAdded(event) => {
+                if let OutputItem::FunctionCall(call) = event.item
+                    && call.name == "edit"
+                    && !self.edit_items.contains_key(&event.output_index)
+                {
+                    if !call.arguments.is_empty() {
+                        emit(AgentEvent::EditArgumentsDelta {
+                            index: event.output_index,
+                            text: call.arguments,
+                        });
+                    }
+                    self.edit_items
+                        .insert(event.output_index, call.id.unwrap_or_default());
+                }
+            }
             ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(event) => {
                 bytes = bytes.saturating_add(event.delta.len() as u64);
+                if self.edit_items.get(&event.output_index) == Some(&event.item_id)
+                    && !event.delta.is_empty()
+                {
+                    emit(AgentEvent::EditArgumentsDelta {
+                        index: event.output_index,
+                        text: event.delta,
+                    });
+                }
             }
             // 新增项和注释不能触发工具执行，也不计入输出字节。
             _ => {}

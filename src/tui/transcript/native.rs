@@ -120,7 +120,13 @@ impl Transcript {
     }
 
     fn native_frontier(&self, exiting: bool) -> usize {
-        let mut frontier = self.entries.len();
+        // 临时参数预览在退出时也不能冻结进原生历史。
+        let mut frontier = self
+            .edit_previews
+            .values()
+            .copied()
+            .min()
+            .unwrap_or(self.entries.len());
         if crate::tui::render_worker::enabled()
             && let Some(index) = self
                 .entries

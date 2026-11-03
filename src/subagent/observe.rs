@@ -149,6 +149,9 @@ impl Inner {
         event: Option<&AgentEvent>,
         hub: Option<HubEvent>,
     ) {
+        if matches!(event, Some(AgentEvent::EditArgumentsDelta { .. })) {
+            return;
+        }
         if let Some(
             event @ (AgentEvent::ToolOutputSnapshot { .. }
             | AgentEvent::ToolPipelineSnapshot { .. }),

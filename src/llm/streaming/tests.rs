@@ -81,6 +81,65 @@ fn arguments_delta(value: &str) -> ResponseStreamEvent {
 }
 
 #[test]
+fn streaming_edit_arguments_are_incremental_and_do_not_authorize_execution() {
+    let mut stream = ChatStream::default();
+    let mut events = Vec::new();
+    // 工具名分片、参数先于工具名补齐，均只发布尚未显示的参数。
+    for delta in [
+        json!({"tool_calls":[{"index":2,"id":"edit-call","type":"function","function":{"name":"ed","arguments":"{\"path\":"}}]}),
+        json!({"tool_calls":[{"index":2,"function":{"name":"it","arguments":"\"demo\""}}]}),
+        json!({"tool_calls":[{"index":2,"function":{"arguments":",\"edits\":["}}]}),
+        json!({"tool_calls":[{"index":0,"id":"other","type":"function","function":{"name":"write","arguments":"{}"}}]}),
+    ] {
+        stream
+            .push(chat(delta, None), &mut |event| events.push(event))
+            .unwrap();
+    }
+    let previews: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::EditArgumentsDelta { index, text } => Some((*index, text.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        previews,
+        vec![(2, r#"{"path":"demo""#), (2, r#","edits":["#)]
+    );
+    assert!(stream.finish().is_err());
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolStarted { .. } | AgentEvent::FileChanged { .. }
+    )));
+
+    let mut stream = ResponsesStream::default();
+    let mut events = Vec::new();
+    let item = json!({"type":"function_call","id":"fc","call_id":"edit-call","name":"edit","arguments":""});
+    stream.push(event(json!({"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":item})), &mut |event| events.push(event)).unwrap();
+    for text in [r#"{"input":"[demo#ABCD]\n"#, "PUT 1.=1:\\n+中"] {
+        assert!(
+            stream
+                .push(arguments_delta(text), &mut |event| events.push(event))
+                .unwrap()
+                .is_none()
+        );
+    }
+    // done 是重复副本，不再次发布参数；非 Edit 项也不发布预览。
+    stream.push(event(json!({"type":"response.function_call_arguments.done","sequence_number":2,"item_id":"fc","output_index":0,"arguments":"{}","name":"edit"})), &mut |event| events.push(event)).unwrap();
+    let previews: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::EditArgumentsDelta { index, text } => Some((*index, text.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        previews,
+        vec![(0, r#"{"input":"[demo#ABCD]\n"#), (0, "PUT 1.=1:\\n+中")]
+    );
+}
+
+#[test]
 fn streaming_responses_command_code_content_index_alias_is_narrow_and_preserves_raw() {
     for (kind, payload) in [
         ("response.content_part.added", json!({"part":text("")})),

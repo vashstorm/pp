@@ -529,6 +529,7 @@ pub(crate) fn run_cli_task(
         if matches!(
             &event,
             AgentEvent::ModelRequestStarted
+                | AgentEvent::EditArgumentsDelta { .. }
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. }
                 | AgentEvent::UserInputAccepted { .. }
@@ -855,6 +856,7 @@ pub(crate) fn run_cli_task(
                 );
             }
             AgentEvent::ModelRequestStarted
+            | AgentEvent::EditArgumentsDelta { .. }
             | AgentEvent::ModelOutputProgress { .. }
             | AgentEvent::ModelRequestFinished { .. }
             | AgentEvent::UserInputAccepted { .. }
