@@ -99,12 +99,20 @@ fn tui_exit_keeps_conversation_on_normal_screen() {
         let (request, _) = pty.request(&server);
         final_reply(request, "retained-answer 中😀\n    indented code");
         pty.text("retained-answer");
+        assert_eq!(
+            label_color(pty.parser.screen(), "retained-answer"),
+            vt100::Color::Rgb(250, 250, 250)
+        );
         pty.ready();
         let id = resume_boundary_session_ids(dir.path()).pop().unwrap();
         let resume_hint = format!("Resume with: pp --resume {id}");
         if exit == "\x03" {
             pty.input("unsubmitted-draft");
             pty.draft("unsubmitted-draft");
+            assert_eq!(
+                label_color(pty.parser.screen(), "unsubmitted-draft"),
+                vt100::Color::Rgb(250, 250, 250)
+            );
         } else {
             pty.input("/quit");
             pty.draft("/quit");

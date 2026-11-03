@@ -3,6 +3,7 @@ use ratatui::style::Color;
 use std::borrow::Cow;
 
 pub(super) const ACCENT: Color = Color::Rgb(254, 188, 56);
+pub(super) const TEXT: Color = Color::Rgb(250, 250, 250);
 pub(super) const ACTIVITY: Color = Color::Rgb(190, 198, 212);
 pub(super) const MUTED: Color = Color::Rgb(119, 125, 136);
 pub(super) const DIM: Color = Color::Rgb(95, 102, 115);

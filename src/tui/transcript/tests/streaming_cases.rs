@@ -588,7 +588,7 @@ fn streaming_category_colors_and_statuses_preserve_default_body() {
             }
         );
         assert!(buffer[(2, 0)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(4, 1)].fg, Color::Reset);
+        assert_eq!(buffer[(4, 1)].fg, palette::TEXT);
         if tool {
             assert!(buffer[(4, 1)].modifier.contains(Modifier::DIM));
         }
@@ -632,7 +632,7 @@ fn thinking_and_assistant_share_background_but_not_foreground() {
     });
 
     let buffer = render(&mut transcript, 60, 4);
-    assert_eq!(buffer[(2, 0)].fg, Color::Reset);
+    assert_eq!(buffer[(2, 0)].fg, palette::TEXT);
     assert_eq!(buffer[(2, 0)].bg, ASSISTANT_BACKGROUND);
     assert_eq!(buffer[(2, 2)].fg, MUTED_TEXT);
     assert_eq!(buffer[(2, 2)].bg, ASSISTANT_BACKGROUND);

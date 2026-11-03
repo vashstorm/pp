@@ -396,7 +396,8 @@ impl Transcript {
                         area.width - padding,
                         height,
                     );
-                    let paragraph = Paragraph::new(entry.line(line));
+                    let paragraph =
+                        Paragraph::new(entry.line(line)).style(Style::default().fg(palette::TEXT));
                     let paragraph = if matches!(line.content, LayoutContent::Source { .. }) {
                         paragraph.wrap(Wrap { trim: false })
                     } else {

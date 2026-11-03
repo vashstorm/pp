@@ -867,6 +867,7 @@ fn usage_snapshot(agent: &Agent) -> Option<WorkerEvent> {
 
 fn editor() -> TextArea<'static> {
     let mut editor = TextArea::default();
+    editor.set_style(Style::default().fg(transcript_style::TEXT));
     editor.set_wrap_mode(WrapMode::WordOrGlyph);
     editor.set_cursor_line_style(Style::default());
     editor.set_cursor_style(Style::default());
