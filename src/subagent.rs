@@ -373,6 +373,15 @@ impl Binding {
     pub(crate) fn set_model_roles(&self, roles: crate::config::ModelRoles) {
         *lock(&self.inner.model_roles) = roles;
     }
+    fn enabled_subagent_model_roles(&self) -> crate::config::ModelRoles {
+        lock(&self.inner.model_roles)
+            .iter()
+            .filter(|(role, assignment)| {
+                **role != crate::config::ModelRole::Plan && assignment.enabled
+            })
+            .map(|(role, assignment)| (*role, assignment.clone()))
+            .collect()
+    }
     pub(crate) fn allow_mcp(&self, names: Vec<String>) {
         *lock(&self.inner.mcp_names) = names;
     }
@@ -415,11 +424,7 @@ impl Binding {
                 .map(|d| format!("{}: {}", d.name, d.description))
                 .collect::<Vec<_>>()
                 .join("; ");
-            let enabled_roles = lock(&self.inner.model_roles)
-                .iter()
-                .filter(|(_, assignment)| assignment.enabled)
-                .map(|(role, assignment)| (*role, assignment.clone()))
-                .collect::<crate::config::ModelRoles>();
+            let enabled_roles = self.enabled_subagent_model_roles();
             let model_roles = enabled_roles
                 .iter()
                 .map(|(role, assignment)| {
@@ -505,17 +510,17 @@ impl Binding {
             self.set_model_roles(catalog.model_roles().clone());
         }
         let roles = self.roles()?;
-        // 整批使用同一份启用状态；旧 prompt 或手写调用也不能绕过取消选中。
-        let enabled_roles = lock(&self.inner.model_roles)
-            .iter()
-            .filter(|(_, assignment)| assignment.enabled)
-            .map(|(role, assignment)| (*role, assignment.clone()))
-            .collect::<crate::config::ModelRoles>();
+        // 整批使用同一份可用角色快照；旧 prompt 或手写调用也必须通过校验。
+        let enabled_roles = self.enabled_subagent_model_roles();
         let mut names = BTreeSet::new();
         let mut prepared = Vec::new();
         for item in batch.tasks {
             cancellation::check(token)?;
             if let Some(model_role) = item.role {
+                ensure!(
+                    model_role != crate::config::ModelRole::Plan,
+                    "model role PLAN is reserved for plan mode and cannot be used by subagents"
+                );
                 ensure!(
                     enabled_roles.contains_key(&model_role),
                     "model role {} is not selected; enable it in /Roles first",

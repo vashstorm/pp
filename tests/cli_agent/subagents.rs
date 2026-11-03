@@ -1,6 +1,69 @@
 use super::*;
 
 #[test]
+fn subagent_plan_role_is_hidden_and_rejected_in_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let models = if protocol == "completion" {
+            fixture_models(&server)
+        } else {
+            response_models(&server, Some("response"))
+        };
+        let settings = json!({"model_roles":{
+            "plan":{"model":"fixture/primary","effort":"high"},
+            "fast":{"model":"fixture/primary","effort":"low"}
+        }});
+        let cli = Cli::start_with(
+            home.path(),
+            Some("check reserved plan role"),
+            &settings.to_string(),
+            &models,
+        );
+        let (request, body) = receive_sub(&server, protocol);
+        let task = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| {
+                if protocol == "completion" {
+                    &tool["function"]
+                } else {
+                    tool
+                }
+            })
+            .find(|tool| tool["name"] == "task")
+            .unwrap();
+        assert_eq!(
+            task.pointer("/parameters/properties/tasks/items/properties/role/enum")
+                .unwrap(),
+            &json!(["fast"])
+        );
+        assert!(!task["description"].as_str().unwrap().contains("plan="));
+        sub_call(
+            request,
+            protocol,
+            "reserved-plan",
+            "task",
+            json!({"context":"no dispatch on invalid batch","tasks":[
+                {"role":"fast","task":"valid child"},
+                {"role":"plan","task":"invalid child"}
+            ]}),
+        );
+        let (request, body) = receive_sub(&server, protocol);
+        assert!(!is_child(&body));
+        assert!(
+            body.to_string().contains("PLAN is reserved for plan mode"),
+            "{body}"
+        );
+        sub_final(request, protocol, "reserved plan role rejected");
+        let output = cli.finish();
+        assert!(output.status.success(), "{output:?}");
+        no_more(&server);
+    }
+}
+
+#[test]
 fn artifact_child_output_is_readable_from_parent_in_both_protocols() {
     for protocol in ["completion", "response"] {
         let server = server();

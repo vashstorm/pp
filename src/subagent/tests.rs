@@ -219,6 +219,70 @@ fn model_roles_subagent_explicit_selection_and_default_reviewer_route_are_indepe
 }
 
 #[test]
+fn model_roles_plan_is_never_offered_or_dispatched_to_subagents() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding(dir.path(), Settings::default());
+    for enabled in [false, true] {
+        for include_fast in [false, true] {
+            let mut roles = BTreeMap::from([(
+                crate::config::ModelRole::Plan,
+                crate::config::RoleAssignment {
+                    fallback: None,
+                    enabled,
+                    model: "fixture/planner-only-marker".into(),
+                    effort: ThinkLevel::High,
+                },
+            )]);
+            if include_fast {
+                roles.insert(
+                    crate::config::ModelRole::Fast,
+                    crate::config::RoleAssignment {
+                        fallback: None,
+                        enabled: true,
+                        model: "fixture/fast".into(),
+                        effort: ThinkLevel::Low,
+                    },
+                );
+            }
+            binding.set_model_roles(roles);
+            for mode in [WorkMode::Execute, WorkMode::Plan] {
+                let task = binding
+                    .definitions(mode)
+                    .into_iter()
+                    .find(|def| def.name == "task")
+                    .unwrap();
+                let parameters = task.parameters.unwrap();
+                let role = parameters.pointer("/properties/tasks/items/properties/role");
+                if include_fast {
+                    assert_eq!(role.unwrap()["enum"], json!(["fast"]));
+                } else {
+                    assert!(role.is_none());
+                    assert!(!task.description.as_ref().unwrap().contains("model role"));
+                }
+                assert!(!task.description.unwrap().contains("planner-only-marker"));
+                let error = binding
+                    .execute(
+                        "task",
+                        &json!({"context":"test","tasks":[
+                            {"task":"valid task"},
+                            {"task":"reject reserved role","role":"plan"}
+                        ]})
+                        .to_string(),
+                        mode == WorkMode::Plan,
+                        &Default::default(),
+                    )
+                    .unwrap_err();
+                assert!(error.to_string().contains("PLAN is reserved for plan mode"));
+                let state = lock(&binding.inner.state);
+                assert!(state.disk.agents.is_empty());
+                assert!(state.disk.runs.is_empty());
+                assert_eq!(state.disk.next_id, 0);
+            }
+        }
+    }
+}
+
+#[test]
 fn model_roles_unselected_roles_are_absent_from_prompt_schema_and_rejected_before_dispatch() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), Settings::default());

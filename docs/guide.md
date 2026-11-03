@@ -140,13 +140,13 @@ bash_timeout_seconds: 120
 
 在 TUI 输入 `/Roles`（也接受 `/roles`），打开独立的模型角色配置页；`/model` 仍只切换当前会话的模型。配置页采用深色双栏布局：左侧为 Roles、全部模型和供应商导航，右侧为角色、模型或 effort 选择区。
 
-首批角色为 `DEFAULT`、`FAST`、`SLOW`、`VISION`、`PLAN`、`REVIEW`，直接列出全部六项，暂不分类。每项可保存一个主模型和一个 fallback，各自使用独立的 `provider/model` 与 effort；`FAST` 对应参考界面中的 SMOL。启用状态用角色行前的 Nerd Font Material Design 圆形图标表示（实心圆启用／空心圆停用）；方向箭头仅表示键盘焦点。已启用的 Role 主备模型均高亮，禁用时整行灰显，光标移动不会改变启用状态。Space 或点击圆形图标切换启用状态，取消选中会保留 model/effort。Enter 配置模型及受支持的 effort；首次配置默认启用，修改已取消选中的配置不会重新启用。主模型和备用模型名后紧跟各自的 effort，备用行只显示缩进箭头。`↑/↓` 在主模型行与备用行之间选择，Enter 修改当前行；`f` 设置当前角色的 fallback，`t`（兼容 `e`）单独调整当前行 thinking，`x` 清除当前行，Delete／Backspace 删除整个角色配置，Esc 逐级返回。主备模型不能相同；清空主模型会禁用角色并保留 fallback，补齐后仍需手动启用。修改已启用角色的模型或 effort 后，配置提交到 `agent.db` 才发布待生效修订。DEFAULT 只作用于主 Agent；其他角色由绑定该角色的子 Agent 各自在下一安全边界应用，包括嵌套子 Agent。已有的无角色子 Agent 保持创建时的配置；取消选中或删除角色不会取消、重绑已有子 Agent。
+首批角色为 `DEFAULT`、`FAST`、`SLOW`、`VISION`、`PLAN`、`REVIEW`，直接列出全部六项，暂不分类。每项可保存一个主模型和一个 fallback，各自使用独立的 `provider/model` 与 effort；`FAST` 对应参考界面中的 SMOL。启用状态用角色行前的 Nerd Font Material Design 圆形图标表示（实心圆启用／空心圆停用）；方向箭头仅表示键盘焦点。已启用的 Role 主备模型均高亮，禁用时整行灰显，光标移动不会改变启用状态。Space 或点击圆形图标切换启用状态，取消选中会保留 model/effort。Enter 配置模型及受支持的 effort；首次配置默认启用，修改已取消选中的配置不会重新启用。主模型和备用模型名后紧跟各自的 effort，备用行只显示缩进箭头。`↑/↓` 在主模型行与备用行之间选择，Enter 修改当前行；`f` 设置当前角色的 fallback，`t`（兼容 `e`）单独调整当前行 thinking，`x` 清除当前行，Delete／Backspace 删除整个角色配置，Esc 逐级返回。主备模型不能相同；清空主模型会禁用角色并保留 fallback，补齐后仍需手动启用。修改已启用角色的模型或 effort 后，配置提交到 `agent.db` 才发布待生效修订。DEFAULT 的更新只作用于主 Agent；PLAN 仅用于进入 Plan 模式时选择模型；FAST、SLOW、VISION、REVIEW 的更新由绑定该角色的子 Agent 各自在下一安全边界应用，包括嵌套子 Agent。已有的无角色子 Agent 保持创建时的配置；取消选中或删除角色不会取消、重绑已有子 Agent。
 
 Role 配置保存在 `~/.pp/agent/agent.db`，只能通过 TUI 的 `/Roles` 面板修改，不写入 `settings.yml`，也没有可编辑的 YAML 形式；面板的每次启用、选模和 effort 修改都在数据库事务中提交，提交成功才更新目录快照。取消选中与重新选中都会保留已配置的 model/effort，`settings.yml` 中的旧 `model_roles` 只在首次迁移时读取。
 
-已启用的 `DEFAULT` 优先用于新启动会话；未设置或未选中时沿用已保存的默认模型与全局默认 effort（同样存于 `agent.db`）。未选中的模型 Role 不会进入 prompt 或 task 的可选枚举；全部未选中时不暴露 `role` 参数，显式调用未启用的 Role 会在派发前返回错误。自动 Plan/Review 路由未启用时保留原有模型及 effort。迁移自旧配置的 Role 条目省略 `enabled` 时按已选中读取。显式配置的模型不可用或 effort 不受支持时返回错误，不悄悄替换；已移除模型或禁用 Role 的引用仍可保留。清除 DEFAULT 后，新启动回到原有默认设置；当前会话不强制回退模型。
+已启用的 `DEFAULT` 优先用于新启动会话；未设置或未选中时沿用已保存的默认模型与全局默认 effort（同样存于 `agent.db`）。PLAN 始终不进入子 Agent 的 prompt 角色列表或 task 的可选枚举，显式调用 `role: "plan"` 会在整批派发前返回错误。其他未选中的模型 Role 也不会进入 prompt 或 task 的可选枚举；没有可供子 Agent 选择的已启用 Role 时不暴露 `role` 参数，显式调用未启用的 Role 会在派发前返回错误。自动 Plan/Review 路由未启用时保留原有模型及 effort。迁移自旧配置的 Role 条目省略 `enabled` 时按已选中读取。显式配置的模型不可用或 effort 不受支持时返回错误，不悄悄替换；已移除模型或禁用 Role 的引用仍可保留。清除 DEFAULT 后，新启动回到原有默认设置；当前会话不强制回退模型。
 
-- 主 Agent 可在 `task.tasks[]` 中指定 `role: "fast"` 等模型角色；`agent` 仍选择 task、scout、reviewer 等任务定义。已启用的显式模型角色优先于任务定义的选模。
+- 主 Agent 可在 `task.tasks[]` 中指定 PLAN 以外的已启用模型角色，例如 `role: "fast"`；`agent` 仍选择 task、scout、reviewer 等任务定义。已启用的显式模型角色优先于任务定义的选模。
 - 从 Execute 进入 Plan，或从 `/plan-list` 打开新的规划会话时，采用已启用 PLAN 的 model 和 effort。同一 Plan 内继续讨论不会重复套用 PLAN，用户用 `/model` 或 `/effort` 的手动选择会保留；恢复会话沿用已保存的实际模型。
 - 计划面板的独立审阅使用已启用的 REVIEW；代码审查的 `agent: "reviewer"` 子任务也默认使用已启用的 REVIEW，主 Agent 可以显式指定其他 `role` 覆盖。独立计划审阅不会改变主会话模型。角色配置本身不自动发起审查。
 - `VISION` 是可选模型角色，不改变模型自身的图像输入能力。
