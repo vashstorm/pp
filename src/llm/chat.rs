@@ -72,6 +72,8 @@ impl OpenAiClient {
             {
                 emit(AgentEvent::ModelAttemptFailed {
                     attempt: attempts.attempt,
+                    model: request.model.clone(),
+                    error: error.to_string(),
                 });
             }
             let Some(delay) = attempts.delay.take() else {

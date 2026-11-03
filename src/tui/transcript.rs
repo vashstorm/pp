@@ -629,19 +629,27 @@ impl Transcript {
                 }
                 self.append("Note", &text);
             }
-            AgentEvent::ModelAttemptFailed { attempt } => {
+            AgentEvent::ModelAttemptFailed {
+                attempt,
+                model,
+                error,
+            } => {
                 for index in [self.assistant.take(), self.thinking.take()]
                     .into_iter()
                     .flatten()
                 {
                     self.entries[index].status = EntryStatus::Failed;
                 }
-                self.append(
-                    "Error",
-                    &format!(
-                        "Model attempt {attempt} failed; partial output is excluded from history."
-                    ),
+                let mut text = format!(
+                    "Model attempt {attempt} failed; partial output is excluded from history."
                 );
+                if !model.is_empty() {
+                    text.push_str(&format!("\nModel: {model}"));
+                }
+                if !error.is_empty() {
+                    text.push_str(&format!("\nReason: {error}"));
+                }
+                self.append_error(&text);
             }
             AgentEvent::ModelRouteChanged {
                 model, fallback, ..

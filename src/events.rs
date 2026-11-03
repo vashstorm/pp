@@ -159,6 +159,10 @@ pub(crate) enum AgentEvent {
     },
     ModelAttemptFailed {
         attempt: u32,
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        error: String,
     },
     ModelRouteChanged {
         model: String,

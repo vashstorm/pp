@@ -48,6 +48,52 @@ fn styled_rows_preserve_graphemes_and_neutralize_terminal_controls() {
 }
 
 #[test]
+fn model_attempt_errors_render_details_in_red_cards_and_replay_legacy_events() {
+    let mut transcript = Transcript::new();
+    transcript.progress(AgentEvent::AssistantStarted);
+    transcript.progress(AgentEvent::ThinkingDelta {
+        text: "partial thinking".into(),
+    });
+    delta(&mut transcript, "partial answer", false);
+    transcript.progress(AgentEvent::ModelAttemptFailed {
+        attempt: 3,
+        model: "deepseek/deepseek-v4.1-flash".into(),
+        error: "decoding Responses response: missing field `content_index` (event: response.content_part.added)".into(),
+    });
+    assert!(
+        transcript.entries[..2]
+            .iter()
+            .all(|entry| entry.status == EntryStatus::Failed)
+    );
+    assert_eq!(transcript.entries[2].kind, EntryKind::Error);
+    for width in [100, 36] {
+        let buffer = render(&mut transcript, width, 100);
+        let rows = screen(&buffer);
+        let top = rows
+            .lines()
+            .position(|row| row.starts_with("╭ Error "))
+            .unwrap() as u16;
+        assert_eq!(buffer[(0, top)].fg, palette::ERROR_BORDER);
+        let bottom = top + transcript.entries[2].layout.as_ref().unwrap().height as u16 - 1;
+        for y in top..=bottom {
+            assert_eq!(buffer[(0, y)].fg, palette::ERROR_BORDER);
+            assert_eq!(buffer[(width - 1, y)].fg, palette::ERROR_BORDER);
+        }
+        let unwrapped = rows.replace([' ', '\n', '│'], "");
+        assert!(unwrapped.contains("Model:deepseek/deepseek-v4.1-flash"));
+        assert!(unwrapped.contains("missingfield`content_index`"));
+        assert!(unwrapped.contains("response.content_part.added"));
+    }
+    let legacy: AgentEvent =
+        serde_json::from_value(json!({"model_attempt_failed":{"attempt":2}})).unwrap();
+    let mut restored = Transcript::new();
+    restored.replay(vec![ReplayRecord::Event(legacy)]);
+    assert_eq!(restored.entries[0].kind, EntryKind::Error);
+    assert!(restored.entries[0].text.contains("Model attempt 2 failed"));
+    assert!(!restored.entries[0].text.contains("Reason:"));
+}
+
+#[test]
 fn notification_error_card_wraps_full_plain_text_and_survives_resize_and_folding() {
     let mut transcript = Transcript::new();
     let text = format!(

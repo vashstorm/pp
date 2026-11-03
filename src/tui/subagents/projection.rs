@@ -543,7 +543,11 @@ impl Projection {
                     );
                 }
             }
-            AgentEvent::ModelAttemptFailed { attempt } => {
+            AgentEvent::ModelAttemptFailed {
+                attempt,
+                model,
+                error,
+            } => {
                 self.set_current(agent, "Model attempt failed");
                 self.insert_lifecycle(
                     agent,
@@ -551,7 +555,7 @@ impl Projection {
                     offset,
                     timestamp,
                     "Failed attempt",
-                    format!("Attempt {attempt} failed; partial output is excluded from history"),
+                    format!("Attempt {attempt} failed; partial output is excluded from history\nModel: {model}\nReason: {error}"),
                     RowStatus::Error,
                     1,
                 );

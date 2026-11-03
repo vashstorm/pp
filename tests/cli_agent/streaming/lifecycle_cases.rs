@@ -674,6 +674,37 @@ fn streaming_responses_command_code_alias_completes_and_commits_history() {
 }
 
 #[test]
+fn streaming_responses_partial_failure_displays_model_event_and_missing_field() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Protocol::Responses.start(&server, dir.path(), Some("task"));
+    let (request, _) = Protocol::Responses.receive(&server);
+    let mut stream = SseReply::new(request);
+    stream.event(
+        json!({"type":"response.reasoning_summary_text.delta", "sequence_number":0,
+        "item_id":"rs", "output_index":0, "summary_index":0, "delta":"thinking"}),
+    );
+    stream.event(
+        json!({"type":"response.content_part.added", "sequence_number":1,
+        "item_id":"private-id", "output_index":0,
+        "part":{"type":"output_text", "text":"private-text", "annotations":[]}}),
+    );
+    stream.finish();
+    let output = cli.finish();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Model attempt 1 failed"), "{stderr}");
+    assert!(stderr.contains("Model: fixture-model"), "{stderr}");
+    assert!(stderr.contains("missing field `content_index`"), "{stderr}");
+    assert!(
+        stderr.contains("event: response.content_part.added"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("private-"), "{stderr}");
+    no_more(&server);
+}
+
+#[test]
 fn streaming_responses_function_arguments_invalid_or_missing_final_still_fail() {
     for stage in ["added", "done", "completed"] {
         for arguments in [None, Some(Value::Null), Some(json!({})), Some(json!(7))] {
@@ -719,9 +750,7 @@ fn streaming_responses_function_arguments_invalid_or_missing_final_still_fail() 
             let output = cli.finish();
             assert!(!output.status.success(), "{stage}: {output:?}");
             let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                stderr.contains("decoding Responses response: invalid JSON or response structure")
-            );
+            assert!(stderr.contains("decoding Responses response:"));
             assert!(!stderr.contains("private-"));
             assert!(!stderr.contains("tool write: running"));
             assert!(output.stdout.is_empty());
@@ -755,7 +784,7 @@ fn streaming_responses_annotations_invalid_values_still_fail() {
         assert!(!output.status.success(), "{output:?}");
         assert!(output.stdout.is_empty());
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("decoding Responses response: invalid JSON or response structure"));
+        assert!(stderr.contains("decoding Responses response:"), "{stderr}");
         assert!(!stderr.contains("private-"));
         no_more(&server);
     }

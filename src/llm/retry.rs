@@ -151,11 +151,101 @@ pub(super) fn redacted_error(error: OpenAIError, api: &str) -> anyhow::Error {
                 error.column()
             )
         }
-        OpenAIError::JSONDeserialize(..) => {
-            anyhow::anyhow!("decoding {api} response: invalid JSON or response structure")
-        }
+        OpenAIError::JSONDeserialize(error, raw) => response_decode_error(&error, &raw, api),
         _ => anyhow::anyhow!("{api} HTTP request failed"),
     }
+}
+
+fn response_decode_error(error: &serde_json::Error, raw: &str, api: &str) -> anyhow::Error {
+    // 只展示已知字段和事件名称；错误值、完整分片和供应商正文留在诊断日志。
+    const FIELDS: &[&str] = &[
+        "type",
+        "sequence_number",
+        "item_id",
+        "output_index",
+        "content_index",
+        "summary_index",
+        "part",
+        "delta",
+        "text",
+        "refusal",
+        "annotations",
+        "item",
+        "id",
+        "role",
+        "status",
+        "content",
+        "arguments",
+        "call_id",
+        "name",
+        "response",
+        "object",
+        "created_at",
+        "model",
+        "output",
+        "usage",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "input_tokens_details",
+        "cached_tokens",
+    ];
+    let message = error.to_string();
+    let missing = message
+        .strip_prefix("missing field `")
+        .and_then(|rest| rest.split('`').next())
+        .filter(|field| FIELDS.contains(field));
+    let reason = if let Some(field) = missing {
+        format!("missing field `{field}`")
+    } else {
+        match error.classify() {
+            serde_json::error::Category::Eof => "incomplete JSON",
+            serde_json::error::Category::Syntax => "invalid JSON syntax",
+            _ if message.starts_with("unknown variant ") => "unsupported enum value",
+            _ if message.starts_with("invalid type:") => "invalid field type",
+            _ => "invalid JSON structure",
+        }
+        .to_owned()
+    };
+    let value = serde_json::from_str::<serde_json::Value>(raw).ok();
+    let event = value
+        .as_ref()
+        .and_then(|value| value.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|event| {
+            matches!(
+                *event,
+                "response.created"
+                    | "response.in_progress"
+                    | "response.completed"
+                    | "response.failed"
+                    | "response.incomplete"
+                    | "error"
+                    | "response.output_item.added"
+                    | "response.output_item.done"
+                    | "response.content_part.added"
+                    | "response.content_part.done"
+                    | "response.output_text.delta"
+                    | "response.output_text.done"
+                    | "response.refusal.delta"
+                    | "response.refusal.done"
+                    | "response.reasoning_summary_part.added"
+                    | "response.reasoning_summary_part.done"
+                    | "response.reasoning_summary_text.delta"
+                    | "response.reasoning_summary_text.done"
+                    | "response.reasoning_text.delta"
+                    | "response.reasoning_text.done"
+                    | "response.function_call_arguments.delta"
+                    | "response.function_call_arguments.done"
+            )
+        })
+        .unwrap_or("unknown event");
+    let location = if error.line() > 0 {
+        format!("; line {}, column {}", error.line(), error.column())
+    } else {
+        String::new()
+    };
+    anyhow::anyhow!("decoding {api} response: {reason} (event: {event}{location})")
 }
 
 /// middleware 通过自构造 code 标记传递 Retry-After 整数秒；错误正文仅写诊断日志。

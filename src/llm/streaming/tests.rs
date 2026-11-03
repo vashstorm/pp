@@ -128,6 +128,40 @@ fn streaming_responses_command_code_content_index_alias_is_narrow_and_preserves_
 }
 
 #[test]
+fn streaming_responses_decode_diagnostics_include_event_and_missing_field_without_values() {
+    for (raw, expected) in [
+        (
+            json!({"type":"response.content_part.added", "sequence_number":1,
+            "item_id":"private-id", "output_index":0, "part":text("private-text")}),
+            "missing field `content_index`",
+        ),
+        (
+            json!({"type":"response.output_text.delta", "sequence_number":1,
+            "item_id":"private-id", "output_index":0, "content_index":"private-index",
+            "delta":"private-text"}),
+            "invalid field type",
+        ),
+        (json!({"type":"private-event"}), "unsupported enum value"),
+    ] {
+        let raw = raw.to_string();
+        let error = serde_json::from_str::<ResponseEvent>(&raw).err().unwrap();
+        let error = crate::llm::retry::redacted_error(
+            async_openai::error::OpenAIError::JSONDeserialize(error, raw.clone()),
+            "Responses",
+        )
+        .to_string();
+        assert!(error.contains(expected), "{error}");
+        if raw.contains("response.content_part.added") {
+            assert!(
+                error.contains("event: response.content_part.added"),
+                "{error}"
+            );
+        }
+        assert!(!error.contains("private-"), "{error}");
+    }
+}
+
+#[test]
 fn streaming_responses_pending_function_arguments_accept_null_only_at_start() {
     for arguments in [
         None,

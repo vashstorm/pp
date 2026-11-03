@@ -551,14 +551,18 @@ pub(crate) fn run_cli_task(
                 &mut err_broken,
                 &mut first_error,
             ),
-            AgentEvent::ModelAttemptFailed { attempt } => {
+            AgentEvent::ModelAttemptFailed {
+                attempt,
+                model,
+                error,
+            } => {
                 if visible && !newline {
                     cli_write(stdout, "\n", &mut out_broken, &mut first_error);
                 }
                 cli_write(
                     stderr,
                     &format!(
-                        "Model attempt {attempt} failed; partial output is excluded from history.\n"
+                        "Model attempt {attempt} failed; partial output is excluded from history.\nModel: {model}\nReason: {error}\n"
                     ),
                     &mut err_broken,
                     &mut first_error,
