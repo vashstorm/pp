@@ -176,7 +176,8 @@ impl App {
                             Level::Normal,
                             format!("{agent} switched to {}", model.reference),
                         );
-                    } else {
+                    } else if revision >= self.model_revision {
+                        self.model_revision = revision;
                         self.current_model = Some(model);
                         self.think_level = effort;
                         self.usage = None;

@@ -433,7 +433,11 @@ enum WorkerEvent {
     DefaultThinkLevelSaved(Result<ThinkLevel>),
     DefaultModelSaved(Result<String>),
     ModelRolesSaved(Result<(crate::config::ModelRoles, String, ThinkLevel)>),
-    ModelState(ModelChoice, ThinkLevel),
+    ModelState {
+        revision: u64,
+        model: ModelChoice,
+        effort: ThinkLevel,
+    },
     FavoriteModelsSaved(Result<Vec<String>>),
     SessionDeleted(Result<()>),
     SessionResumed(Result<ResumeState>),
@@ -502,10 +506,7 @@ fn publish_pipe_store(events: &mpsc::SyncSender<WorkerEvent>, agent: &Agent) -> 
 
 /// Publish the workflow snapshot so the UI never keeps a stale plan/mode.
 fn push_workflow_snapshot(agent: &Agent, snapshots: &mut Vec<WorkerEvent>) {
-    snapshots.push(WorkerEvent::ModelState(
-        agent.current_model().clone(),
-        agent.think_level(),
-    ));
+    snapshots.push(WorkerEvent::model_state(agent));
     snapshots.push(WorkerEvent::Workflow(agent.workflow().clone()));
 }
 
@@ -583,6 +584,17 @@ fn request_ask(
 }
 
 impl WorkerEvent {
+    fn model_state(agent: &Agent) -> Self {
+        Self::ModelState {
+            revision: agent
+                .runtime_models
+                .as_ref()
+                .map_or(0, |binding| binding.seen),
+            model: agent.current_model().clone(),
+            effort: agent.think_level(),
+        }
+    }
+
     fn completed(started: Instant, result: Result<RunOutcome>) -> Self {
         Self::Completed {
             result,
@@ -702,6 +714,8 @@ struct App {
     review_stream: stream_buffer::StreamBuffer,
     renderer: Option<render_worker::Worker>,
     model_control: Option<crate::model_control::Service>,
+    // 控制报告与 worker 快照走不同通道；旧快照不能覆盖已应用的新选择。
+    model_revision: u64,
     pending_model: Option<(u64, String)>,
     auth_worker: auth::Worker,
     auth_panel: Option<auth::Panel>,

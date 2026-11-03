@@ -417,10 +417,17 @@ impl App {
                     self.state = State::Ready;
                     changed = true;
                 }
-                Ok(WorkerEvent::ModelState(model, effort)) => {
-                    self.current_model = Some(model);
-                    self.think_level = effort;
-                    changed = true;
+                Ok(WorkerEvent::ModelState {
+                    revision,
+                    model,
+                    effort,
+                }) => {
+                    if revision >= self.model_revision {
+                        self.model_revision = revision;
+                        self.current_model = Some(model);
+                        self.think_level = effort;
+                        changed = true;
+                    }
                 }
                 Ok(WorkerEvent::ModelRolesSaved(result)) => {
                     if let Some(panel) = &mut self.roles_panel {

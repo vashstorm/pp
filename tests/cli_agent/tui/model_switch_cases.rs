@@ -109,3 +109,88 @@ fn tui_model_switch_safe_boundary_and_failure() {
     no_more(&b);
     no_more(&bad);
 }
+
+#[test]
+fn tui_model_switch_survives_panels_and_tree_without_saving_default() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(home.path(), "settings.yml"),
+            "default_model: fixture/one\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            json!({"providers":{"fixture":slash_provider(&server,"fixture",protocol,json!({
+                "one":{"model":"one"},"two":{"model":"two"},"three":{"model":"three"}
+            }))}})
+            .to_string(),
+        )
+        .unwrap();
+        let mut pty = Pty::start_with_existing_files(home.path());
+        pty.ready_model("fixture/one");
+        context_tui_exchange(
+            &mut pty,
+            &server,
+            protocol,
+            "before switch",
+            "original answer",
+        );
+        for (reference, model) in [("fixture/two", "two"), ("fixture/three", "three")] {
+            pty.function_key('p');
+            pty.model_search("");
+            pty.input(reference);
+            pty.model_search(reference);
+            pty.input("\r");
+            pty.ready_model(reference);
+            tree_tui_open(&mut pty, "original answer");
+            pty.input("\x1b");
+            pty.ready_model(reference);
+            pty.input("/Roles\r");
+            pty.text("Model roles");
+            pty.input("\x1b");
+            pty.ready_model(reference);
+            pty.function_key('p');
+            pty.model_search("");
+            pty.input("\x1b");
+            pty.ready_model(reference);
+            pty.input("after panels\r");
+            let (request, body) = pty.request_at(&server, api_path(protocol));
+            assert_eq!(body["model"], model);
+            context_tui_final(request, protocol, "original answer");
+            pty.text("original answer");
+            pty.completed();
+            pty.ready_model(reference);
+        }
+        tree_tui_open(&mut pty, "original answer");
+        tree_tui_rewind(&mut pty, &[TREE_TUI_HOME, TREE_TUI_RIGHT], "after panels");
+        pty.ready_model("fixture/three");
+        pty.input("after rewind\r");
+        let (request, body) = pty.request_at(&server, api_path(protocol));
+        assert_eq!(body["model"], "three");
+        context_tui_final(request, protocol, "rewind answer");
+        pty.text("rewind answer");
+        pty.completed();
+        pty.input("\x03");
+        pty.finish();
+        let database = rusqlite::Connection::open_with_flags(
+            config_path(home.path(), "agent.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let saved: String = database
+            .query_row(
+                "SELECT default_model FROM preferences WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, "fixture/one");
+        let mut pty = Pty::start_with_existing_files(home.path());
+        pty.ready_model("fixture/one");
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
+}

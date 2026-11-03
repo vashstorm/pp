@@ -121,3 +121,46 @@ fn roles_saved_snapshot_updates_preferences_only_and_failure_keeps_previous_role
     assert!(!app.roles_panel.as_ref().unwrap().busy);
     assert!(draw(&mut app, 130, 30).contains("role-save-failed"));
 }
+
+#[test]
+fn model_switch_report_is_not_overwritten_by_an_older_worker_snapshot() {
+    use crate::model_control::{Binding, Report, Service};
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.yml");
+    let models = dir.path().join("models.yml");
+    std::fs::write(&settings, "{}").unwrap();
+    std::fs::write(
+        &models,
+        r#"{"providers":{"fixture":{"api_key":"fixture","models":{"one":{"model":"one"}}}}}"#,
+    )
+    .unwrap();
+    let catalog = crate::config::ModelCatalog::from_files(&settings, &models).unwrap();
+    let control = Service::start(catalog).unwrap();
+    let binding = Binding::main(control.registry.clone());
+    let (mut app, _requests, events) = plan_app();
+    app.choices = favorite_model_choices();
+    let old = app.choices[0].clone();
+    let selected = app.choices[1].clone();
+    app.current_model = Some(old.clone());
+    app.model_control = Some(control);
+    // worker 快照已排队，控制线程的新结果在 UI 下一次 receive 前到达。
+    events
+        .send(WorkerEvent::ModelState {
+            revision: 0,
+            model: old,
+            effort: ThinkLevel::Low,
+        })
+        .unwrap();
+    binding.report(Report::Applied {
+        agent: None,
+        revision: 1,
+        model: selected.clone(),
+        effort: ThinkLevel::High,
+    });
+    app.receive();
+    assert_eq!(
+        app.current_model.as_ref().unwrap().reference,
+        selected.reference
+    );
+    assert_eq!(app.think_level, ThinkLevel::High);
+}

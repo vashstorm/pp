@@ -39,6 +39,7 @@ impl App {
             review_stream: Default::default(),
             renderer: None,
             model_control: None,
+            model_revision: 0,
             pending_model: None,
             auth_worker: super::super::auth::Worker::new()?,
             auth_panel: None,
@@ -181,6 +182,7 @@ impl App {
             control.registry.clone(),
         ));
         self.model_control = Some(control);
+        self.model_revision = 0;
         self.input_limits = agent.input_limits();
         self.conversation
             .set_bash_timeout(agent.bash_timeout_seconds());
@@ -401,10 +403,7 @@ impl App {
                         }
                         WorkerCommand::ApplyModelTargets => {
                             let _ = agent.apply_runtime_models();
-                            WorkerEvent::ModelState(
-                                agent.current_model().clone(),
-                                agent.think_level(),
-                            )
+                            WorkerEvent::model_state(&agent)
                         }
                         WorkerCommand::SwitchModel(reference) => {
                             let result = agent
@@ -464,10 +463,7 @@ impl App {
                         }
                         WorkerCommand::EnterPlan { cancellation } => {
                             let result = agent.enter_plan(&cancellation);
-                            snapshots.push(WorkerEvent::ModelState(
-                                agent.current_model().clone(),
-                                agent.think_level(),
-                            ));
+                            snapshots.push(WorkerEvent::model_state(&agent));
                             if result.is_ok() {
                                 if let Some(event) = usage_snapshot(&agent) {
                                     snapshots.push(event);
