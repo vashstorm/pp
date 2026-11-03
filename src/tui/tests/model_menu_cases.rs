@@ -6,6 +6,7 @@ fn completion_states() -> impl Iterator<Item = State> {
         State::Ready,
         State::Running,
         State::RunningShell,
+        State::RunningTools,
         State::Cancelling,
         State::Compacting,
         State::Resetting,
@@ -35,19 +36,19 @@ fn completion_states() -> impl Iterator<Item = State> {
 fn command_menu_lists_debug_only_commands_in_debug_builds() {
     let mut app = app();
     let mut dirty = false;
-    app.handle(Event::Paste("/task-te".into()), &mut dirty);
+    app.handle(Event::Paste("/test-ui".into()), &mut dirty);
     if cfg!(debug_assertions) {
         // 过滤发生在 enumerate 之后：MenuItem 仍指向 COMMANDS 的真实下标。
         let values = menu_values(&app);
-        assert_eq!(values.len(), 1);
+        assert_eq!(values.len(), 1, "{values:?}");
         let MenuAction::Command(index) = values[0] else {
             panic!("unexpected menu action: {values:?}");
         };
-        assert_eq!(COMMANDS[index].name, "/task-test");
-        assert_eq!(app.menu.as_ref().unwrap().items()[0].label, "/task-test");
+        assert_eq!(COMMANDS[index].name, "/test-ui");
+        assert_eq!(app.menu.as_ref().unwrap().items()[0].label, "/test-ui");
     } else {
         assert!(app.menu.is_none());
-        assert_eq!(app.input.lines(), &["/task-te"]);
+        assert_eq!(app.input.lines(), &["/test-ui"]);
     }
 }
 

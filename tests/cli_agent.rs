@@ -23,8 +23,11 @@ mod mcp;
 #[path = "cli_agent/subagents.rs"]
 mod subagents;
 
-#[path = "cli_agent/task_test.rs"]
-mod task_test;
+#[path = "cli_agent/test_task.rs"]
+mod test_task;
+
+#[path = "cli_agent/tool_test.rs"]
+mod tool_test;
 
 fn config_path(home: &std::path::Path, name: &str) -> std::path::PathBuf {
     let dir = home.join(".pp/agent");

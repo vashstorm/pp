@@ -151,15 +151,15 @@ impl App {
         }
     }
 
-    // /init 与 /task-test 回显用户命令本身；其余展开命令回显展开正文。
+    // /init 与 /test-task 回显用户命令本身；其余展开命令回显展开正文。
     pub(in crate::tui) fn echoes_source(prompt: &str) -> bool {
-        matches!(prompt.trim(), "/init" | "/task-test")
+        matches!(prompt.trim(), "/init" | "/test-task")
     }
 
-    /// `/task-test` 的本地前置校验：通过时返回固定提示词，否则返回本地错误文案。
-    fn task_test_prompt(&self) -> std::result::Result<String, String> {
+    /// `/test-task` 的本地前置校验：通过时返回固定提示词，否则返回本地错误文案。
+    fn test_task_prompt(&self) -> std::result::Result<String, String> {
         if self.workflow.mode != crate::plan::WorkMode::Execute {
-            return Err("Exit Plan mode before using /task-test.".into());
+            return Err("Exit Plan mode before using /test-task.".into());
         }
         match self.state {
             State::Unavailable => {
@@ -170,11 +170,11 @@ impl App {
             }
             State::Ready | State::Running => {}
             _ => {
-                return Err("Finish or cancel the current task before using /task-test.".into());
+                return Err("Finish or cancel the current task before using /test-task.".into());
             }
         }
-        commands::task_test::ready(&self.model_roles).map_err(|error| error.to_string())?;
-        Ok(commands::task_test::PROMPT.to_owned())
+        commands::test_task::ready(&self.model_roles).map_err(|error| error.to_string())?;
+        Ok(commands::test_task::PROMPT.to_owned())
     }
 
     pub(in crate::tui) fn submit(&mut self, kind: PendingKind) -> bool {
@@ -230,14 +230,49 @@ impl App {
                 _ => {}
             }
         }
-        if matches!(command, Some(Command::TaskTest)) {
-            match self.task_test_prompt() {
+        if matches!(command, Some(Command::TestTask)) {
+            match self.test_task_prompt() {
                 Ok(expanded) => command = Some(Command::Prompt(expanded)),
                 Err(message) => {
                     self.notify(Level::Error, message);
                     return false;
                 }
             }
+        }
+        if let Some(local) = match &command {
+            Some(Command::ToolTest(selection)) => Some((selection.name(), Some(*selection))),
+            Some(Command::TestUi) => Some(("/test-ui", None)),
+            _ => None,
+        } {
+            let (name, selection) = local;
+            let pending = self.has_pending() || self.resources.ready.is_some();
+            if self.workflow.mode != crate::plan::WorkMode::Execute {
+                self.notify(Level::Error, format!("Exit Plan mode before using {name}."));
+                return false;
+            }
+            match self.state {
+                State::Unavailable => {
+                    if let Some(error) = self.unavailable.clone() {
+                        self.notify(Level::Error, error);
+                    }
+                }
+                State::Ready if !pending => {
+                    if let Some(selection) = selection {
+                        self.send_tool_test(selection, &prompt);
+                    } else {
+                        self.send_ui_test(&prompt);
+                    }
+                }
+                State::Ready => self.notify(
+                    Level::Error,
+                    format!("Resolve pending input before using {name}."),
+                ),
+                _ => self.notify(
+                    Level::Error,
+                    format!("Finish or cancel the current task before using {name}."),
+                ),
+            }
+            return false;
         }
         // /pipes 是纯本地面板：运行、取消与空闲都可打开，不进入 steering。
         if let Some(Command::Pipes(run)) = &command {
@@ -450,6 +485,7 @@ impl App {
             State::ManagingMcp
             | State::Running
             | State::RunningShell
+            | State::RunningTools
             | State::Cancelling
             | State::Compacting
             | State::Resetting
@@ -485,7 +521,10 @@ impl App {
                 Some(Command::Agents | Command::Subagents) => unreachable!("handled above"),
                 Some(Command::Pipes(_)) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
-                Some(Command::TaskTest) => unreachable!("converted before the state match"),
+                Some(Command::TestTask) => unreachable!("converted before the state match"),
+                Some(Command::ToolTest(_) | Command::TestUi) => {
+                    unreachable!("local tests handled before the state match")
+                }
                 Some(Command::Think(Some(level))) => {
                     self.set_think_level(level);
                 }

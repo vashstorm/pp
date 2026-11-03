@@ -170,7 +170,7 @@ impl App {
                         self.ask_cancellation = None;
                     }
                     if !cancellation.is_cancelled()
-                        && (matches!(self.state, State::Running)
+                        && (matches!(self.state, State::Running | State::RunningTools)
                             && self
                                 .active_cancellation
                                 .as_ref()
@@ -314,6 +314,84 @@ impl App {
                             );
                         }
                         self.notify(Level::Error, format!("{error:#}"));
+                    }
+                    changed = true;
+                }
+                Ok(WorkerEvent::ToolTestCompleted { result, elapsed }) => {
+                    self.active_cancellation = None;
+                    self.secondary_status = None;
+                    self.state = State::Ready;
+                    match result {
+                        Ok(calls) => self.append(
+                            "Note",
+                            &format!(
+                                "Local tool suite complete: {calls} tool calls in {:.1}s; expected fixture failures are display cases. The temporary workspace and managed processes were removed.",
+                                elapsed.as_secs_f64()
+                            ),
+                        ),
+                        Err(error)
+                            if error
+                                .chain()
+                                .any(|cause| cause.is::<crate::cancellation::Cancelled>()) =>
+                        {
+                            self.conversation.cancel();
+                        }
+                        Err(error)
+                            if error
+                                .chain()
+                                .any(|cause| cause.is::<crate::cancellation::CleanupError>()) =>
+                        {
+                            self.commands = None;
+                            self.events = None;
+                            self.state = State::Unavailable;
+                            self.unavailable = Some(
+                                "Execution unavailable: local tool fixture cleanup failed; restart pp."
+                                    .into(),
+                            );
+                            self.notify(Level::Error, format!("{error:#}"));
+                        }
+                        Err(error) => {
+                            self.conversation.fail();
+                            self.notify(Level::Error, format!("{error:#}"));
+                        }
+                    }
+                    changed = true;
+                }
+                Ok(WorkerEvent::UiTestCompleted { result, elapsed }) => {
+                    if self.token_speed.is_active() {
+                        self.token_speed.clear();
+                    }
+                    self.active_cancellation = None;
+                    self.secondary_status = None;
+                    self.state = State::Ready;
+                    match result {
+                        Ok(()) => {
+                            self.conversation.finish_run(
+                                "Mock UI complete",
+                                elapsed,
+                                chrono::Local::now(),
+                            );
+                            self.append(
+                                "Note",
+                                "Mock UI stream complete: fixed AgentEvent data at ~80 ms/token; no provider request, session record, or tool result was created.",
+                            );
+                        }
+                        Err(error)
+                            if error
+                                .chain()
+                                .any(|cause| cause.is::<crate::cancellation::Cancelled>()) =>
+                        {
+                            self.conversation.cancel();
+                            self.conversation.finish_run(
+                                "Cancelled",
+                                elapsed,
+                                chrono::Local::now(),
+                            );
+                        }
+                        Err(error) => {
+                            self.conversation.fail();
+                            self.notify(Level::Error, format!("{error:#}"));
+                        }
                     }
                     changed = true;
                 }

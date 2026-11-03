@@ -93,7 +93,19 @@ fn file_command_menu_ranks_matches_together_with_builtin_commands() {
         .iter()
         .map(|item| item.label.as_str())
         .collect();
-    assert_eq!(labels, ["/re", "/resume", "/review", "/tree", "/Roles"]);
+    assert_eq!(
+        labels,
+        [
+            "/re",
+            "/resume",
+            "/review",
+            "/tree",
+            "/test-read",
+            "/test-grep",
+            "/Roles",
+            "/test-write"
+        ]
+    );
     app.handle(key(KeyCode::Enter), &mut dirty);
     assert!(matches!(
         requests.try_recv(),

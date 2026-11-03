@@ -692,6 +692,7 @@ impl App {
                             self.state,
                             State::RunningShell
                                 | State::Running
+                                | State::RunningTools
                                 | State::Compacting
                                 | State::ReviewingPlan
                         )
@@ -714,6 +715,7 @@ impl App {
                         && matches!(
                             self.state,
                             State::Running
+                                | State::RunningTools
                                 | State::ManagingMcp
                                 | State::Compacting
                                 | State::ReviewingPlan
@@ -728,6 +730,9 @@ impl App {
                             }
                             State::Compacting => {
                                 self.secondary_status = Some("Cancelling context...".into());
+                            }
+                            State::RunningTools => {
+                                self.secondary_status = Some("Cancelling local test...".into());
                             }
                             State::ReviewingPlan => {
                                 // 取消 reviewer；保持 ReviewingPlan，等待 worker

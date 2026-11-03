@@ -1,12 +1,12 @@
-// Debug 构建的 /task-test：回显命令本身、显示子 Agent 摘要并真实派发固定批次。
-fn task_test_tui_roles() -> String {
+// Debug 构建的 /test-task：回显命令本身、显示子 Agent 摘要并真实派发固定批次。
+fn test_task_tui_roles() -> String {
     format!(
         "{}model_roles:\n  fast: {{model: fixture/primary, effort: none}}\n  slow: {{model: fixture/primary, effort: none}}\n  review: {{model: fixture/primary, effort: none}}\n",
         fixture_settings()
     )
 }
 
-fn task_test_tui_user_text(protocol: &str, body: &Value) -> String {
+fn test_task_tui_user_text(protocol: &str, body: &Value) -> String {
     let items = if protocol == "completion" {
         body["messages"].as_array()
     } else {
@@ -21,7 +21,7 @@ fn task_test_tui_user_text(protocol: &str, body: &Value) -> String {
         .join("\n")
 }
 
-fn task_test_tui_child(protocol: &str, body: &Value) -> bool {
+fn test_task_tui_child(protocol: &str, body: &Value) -> bool {
     let system = if protocol == "completion" {
         body["messages"][0].to_string()
     } else {
@@ -31,14 +31,14 @@ fn task_test_tui_child(protocol: &str, body: &Value) -> bool {
 }
 
 #[test]
-fn task_test_tui_echoes_command_and_shows_three_subagents() {
+fn test_task_tui_echoes_command_and_shows_three_subagents() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         std::fs::write(
             config_path(home.path(), "settings.yml"),
-            task_test_tui_roles(),
+            test_task_tui_roles(),
         )
         .unwrap();
         std::fs::write(
@@ -48,14 +48,14 @@ fn task_test_tui_echoes_command_and_shows_three_subagents() {
         .unwrap();
         let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
         pty.ready();
-        pty.input("/task-test\r");
+        pty.input("/test-task\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         // 回显命令本身，长提示词只作为展开正文发送。
-        pty.wait_for("用户块回显 /task-test 而非展开提示词", |screen| {
+        pty.wait_for("用户块回显 /test-task 而非展开提示词", |screen| {
             let text = screen.contents();
-            text.contains("/task-test") && !text.contains("Debug build self-test")
+            text.contains("/test-task") && !text.contains("Debug build self-test")
         });
-        let text = task_test_tui_user_text(protocol, &body);
+        let text = test_task_tui_user_text(protocol, &body);
         for marker in [
             "fast-rust-count",
             "slow-symbol-lookup",
@@ -66,7 +66,7 @@ fn task_test_tui_echoes_command_and_shows_three_subagents() {
             assert!(text.contains(marker), "missing {marker} in {text}");
         }
         let batch = json!({
-            "context": "/task-test debug scenario: read-only inspection of the current repository.",
+            "context": "/test-task debug scenario: read-only inspection of the current repository.",
             "tasks": [
                 {"name": "fast-rust-count", "agent": "scout", "role": "fast", "task": "Count regular Rust source files."},
                 {"name": "slow-symbol-lookup", "agent": "scout", "role": "slow", "task": "Find where AgentEvent is defined."},
@@ -85,7 +85,7 @@ fn task_test_tui_echoes_command_and_shows_three_subagents() {
         let mut acked = false;
         while children.len() < 3 || !acked {
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
-            if task_test_tui_child(protocol, &body) {
+            if test_task_tui_child(protocol, &body) {
                 children.push(request);
             } else {
                 assert!(!acked, "父会话不应在子 Agent 完成前重复请求");
@@ -122,7 +122,7 @@ fn task_test_tui_echoes_command_and_shows_three_subagents() {
 }
 
 #[test]
-fn task_test_tui_rejects_missing_roles_locally() {
+fn test_task_tui_rejects_missing_roles_locally() {
     let fixture = server();
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
@@ -134,11 +134,11 @@ fn task_test_tui_rejects_missing_roles_locally() {
     .unwrap();
     let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
     pty.ready();
-    pty.input("/task-test\r");
+    pty.input("/test-task\r");
     // 通知框按宽度换行，因此只断言首行片段与命令名。
     pty.text("Enable model roles FAST, SLOW, REVIEW");
     no_more(&fixture);
-    // 本地错误不消耗草稿：输入仍为 /task-test，用 Ctrl + C 退出。
+    // 本地错误不消耗草稿：输入仍为 /test-task，用 Ctrl + C 退出。
     pty.input("\x03");
     pty.finish();
 }

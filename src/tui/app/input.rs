@@ -700,6 +700,49 @@ impl App {
         }
     }
 
+    pub(in crate::tui) fn send_tool_test(
+        &mut self,
+        selection: crate::commands::ToolTest,
+        source: &str,
+    ) {
+        let cancellation = CancellationToken::new();
+        let name = selection.name();
+        if self.send_submission(
+            WorkerCommand::ToolTest {
+                selection,
+                cancellation: cancellation.clone(),
+            },
+            State::RunningTools,
+        ) {
+            self.active_cancellation = Some(cancellation);
+            self.append("You", source);
+            self.clear_input();
+            self.show_welcome = false;
+            self.history_browser = false;
+            self.conversation.follow();
+            self.secondary_status = Some(format!("Running local tool fixtures ({name})..."));
+        }
+    }
+
+    pub(in crate::tui) fn send_ui_test(&mut self, source: &str) {
+        let cancellation = CancellationToken::new();
+        if self.send_submission(
+            WorkerCommand::TestUi {
+                cancellation: cancellation.clone(),
+            },
+            State::RunningTools,
+        ) {
+            self.active_cancellation = Some(cancellation);
+            self.append("You", source);
+            self.clear_input();
+            self.show_welcome = false;
+            self.history_browser = false;
+            self.conversation.follow();
+            self.conversation.begin_run();
+            self.secondary_status = Some("Streaming mock UI at ~80 ms/token...".into());
+        }
+    }
+
     /// 手动压缩入口：命令本身不进对话、不伪造普通任务；沿用 slash 命令的
     /// 提交语义（成功后清空初始输入），压缩期间新输入的草稿不受影响。
     pub(in crate::tui) fn send_compaction(&mut self) {

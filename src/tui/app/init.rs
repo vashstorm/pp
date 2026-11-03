@@ -313,6 +313,36 @@ impl App {
                             }
                             continue;
                         }
+                        WorkerCommand::ToolTest {
+                            selection,
+                            cancellation,
+                        } => {
+                            task_status_view.clear();
+                            let result = agent
+                                .run_tool_test(selection, &cancellation, &mut emit)
+                                .map(|report| report.calls);
+                            let cleanup_failed = result.as_ref().is_err_and(|error| {
+                                error
+                                    .chain()
+                                    .any(|cause| cause.is::<crate::cancellation::CleanupError>())
+                            });
+                            let event = WorkerEvent::ToolTestCompleted {
+                                result,
+                                elapsed: started.elapsed(),
+                            };
+                            if sender.send(event).is_err() || cleanup_failed {
+                                break;
+                            }
+                            continue;
+                        }
+                        WorkerCommand::TestUi { cancellation } => {
+                            task_status_view.clear();
+                            let result = agent.run_ui_test(&cancellation, &mut emit);
+                            WorkerEvent::UiTestCompleted {
+                                result,
+                                elapsed: started.elapsed(),
+                            }
+                        }
                         WorkerCommand::RunInput {
                             prepared,
                             cancellation,

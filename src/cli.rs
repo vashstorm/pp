@@ -902,6 +902,262 @@ pub(crate) fn run_cli_task(
     result
 }
 
+pub(crate) fn run_cli_tool_test(
+    agent: &agent::Agent,
+    selection: commands::ToolTest,
+    stderr: &mut impl Write,
+) -> Result<()> {
+    use events::{AgentEvent, OutputStream};
+    let mut broken = false;
+    let mut first_error = None;
+    let mut current_tool: Option<String> = None;
+    let mut streamed_output = String::new();
+    cli_write(
+        stderr,
+        &format!(
+            "Local tool suite {}: fixed fixtures run in an isolated temporary workspace. Expected tool failures are display cases and do not stop the suite.\n",
+            selection.name()
+        ),
+        &mut broken,
+        &mut first_error,
+    );
+    let cancellation = cancellation::CancellationToken::new();
+    let result = agent.run_tool_test(selection, &cancellation, &mut |event| match event {
+        AgentEvent::ToolStarted {
+            name, arguments, ..
+        } => {
+            streamed_output.clear();
+            cli_write(
+                stderr,
+                &format!("\n[{name}] arguments: {arguments}\n"),
+                &mut broken,
+                &mut first_error,
+            );
+            current_tool = Some(name);
+        }
+        AgentEvent::ToolOutputSnapshot { output, .. } => {
+            let label = current_tool.as_deref().unwrap_or("tool");
+            let delta = cli_output_text(&output, &mut streamed_output, false, label);
+            cli_write(stderr, &delta, &mut broken, &mut first_error);
+        }
+        AgentEvent::ToolOutput { stream, text, .. } => {
+            let name = current_tool.as_deref().unwrap_or("tool");
+            let label = match stream {
+                OutputStream::Stdout => "stdout",
+                OutputStream::Stderr => "stderr",
+            };
+            cli_write(
+                stderr,
+                &format!("[{name} {label}] {text}"),
+                &mut broken,
+                &mut first_error,
+            );
+        }
+        AgentEvent::FileChanged { path, diff, .. } => {
+            cli_write(
+                stderr,
+                &cli_test_diff(&path, &diff),
+                &mut broken,
+                &mut first_error,
+            );
+        }
+        AgentEvent::ToolPipelineSnapshot { pipes, .. } => {
+            if let Some(status) = crate::tools::output::pipes_status(&pipes) {
+                cli_write(
+                    stderr,
+                    &format!("[pipeline] {}\n", status.notice()),
+                    &mut broken,
+                    &mut first_error,
+                );
+            }
+        }
+        AgentEvent::ToolFinished { result, .. } => {
+            let name = current_tool.take().unwrap_or_else(|| "tool".into());
+            if result["output"].is_string() {
+                let text = cli_output_result(&result, &mut streamed_output, &name);
+                cli_write(stderr, &text, &mut broken, &mut first_error);
+            }
+            if let Some(content) = result["content"].as_str() {
+                cli_write(
+                    stderr,
+                    &format!("\n{content}\n"),
+                    &mut broken,
+                    &mut first_error,
+                );
+            }
+            if let Some(code) = result["exit_code"].as_i64() {
+                cli_write(
+                    stderr,
+                    &format!("[{name}] exit {code}\n"),
+                    &mut broken,
+                    &mut first_error,
+                );
+            }
+            if let (Some(task_id), Some(status)) =
+                (result["task_id"].as_str(), result["status"].as_str())
+            {
+                cli_write(
+                    stderr,
+                    &format!("[{name}] task {task_id}: {status}\n"),
+                    &mut broken,
+                    &mut first_error,
+                );
+            }
+            if name == "wait"
+                && let Some(jobs) = result["jobs"].as_array()
+            {
+                for job in jobs {
+                    cli_write(
+                        stderr,
+                        &format!(
+                            "[wait] {} {} {}\n",
+                            job["type"].as_str().unwrap_or("job"),
+                            job["id"].as_str().unwrap_or("?"),
+                            job["status"].as_str().unwrap_or("unknown")
+                        ),
+                        &mut broken,
+                        &mut first_error,
+                    );
+                }
+            }
+            if result["stdout_truncated"] == true
+                || result["stderr_truncated"] == true
+                || result["truncated"] == true
+            {
+                cli_write(
+                    stderr,
+                    &format!(
+                        "[{name}] output truncated; follow the artifact or next path above.\n"
+                    ),
+                    &mut broken,
+                    &mut first_error,
+                );
+            }
+            if let Some(error) = result["error"].as_str() {
+                cli_write(
+                    stderr,
+                    &format!("[expected fixture failure] {name}: {error}\n"),
+                    &mut broken,
+                    &mut first_error,
+                );
+            }
+            cli_write(
+                stderr,
+                &format!(
+                    "[{name}] {}\n",
+                    if result["ok"] == true {
+                        "ok"
+                    } else {
+                        "failed (expected fixture case)"
+                    }
+                ),
+                &mut broken,
+                &mut first_error,
+            );
+        }
+        _ => {}
+    });
+    if let Some(error) = &first_error {
+        return Err(anyhow::anyhow!(error.to_string())).context("writing local tool test output");
+    }
+    match result {
+        Ok(report) => {
+            cli_write(
+                stderr,
+                &format!("Local tool suite complete: {} tool calls.\n", report.calls),
+                &mut broken,
+                &mut first_error,
+            );
+            if let Some(error) = first_error {
+                return Err(anyhow::anyhow!(error.to_string()))
+                    .context("writing local tool test output");
+            }
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn cli_test_diff(path: &str, diff: &events::FileDiff) -> String {
+    use events::{DiffLineKind, FileDiff};
+    match diff {
+        FileDiff::Unavailable { reason } => format!("file {path}: diff unavailable ({reason})\n"),
+        FileDiff::Text {
+            created,
+            added,
+            removed,
+            hunks,
+            ..
+        } => {
+            let mut text = format!(
+                "file {path}: {} (+{added} -{removed})\n",
+                if *created { "created" } else { "modified" }
+            );
+            for hunk in hunks {
+                text.push_str("@@\n");
+                for line in &hunk.lines {
+                    let marker = match line.kind {
+                        DiffLineKind::Context => ' ',
+                        DiffLineKind::Added => '+',
+                        DiffLineKind::Removed => '-',
+                    };
+                    text.push(marker);
+                    text.push_str(&line.text);
+                    text.push('\n');
+                }
+            }
+            text
+        }
+    }
+}
+
+pub(crate) fn run_cli_ui_test(
+    agent: &agent::Agent,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<()> {
+    use events::AgentEvent;
+    let (mut out_broken, mut err_broken) = (false, false);
+    let mut first_error = None;
+    let mut newline = true;
+    cli_write(
+        stderr,
+        "Mock UI stream: fixed AgentEvent data at ~80 ms/token; no provider request, session record, or tool result is created. Thinking is written to stderr.\n",
+        &mut err_broken,
+        &mut first_error,
+    );
+    let cancellation = cancellation::CancellationToken::new();
+    let result = agent.run_ui_test(&cancellation, &mut |event| match event {
+        AgentEvent::ThinkingDelta { text } => {
+            cli_write(stderr, &text, &mut err_broken, &mut first_error);
+        }
+        AgentEvent::AssistantDelta {
+            text,
+            refusal: false,
+        } => {
+            newline = text.ends_with('\n');
+            cli_write(stdout, &text, &mut out_broken, &mut first_error);
+        }
+        _ => {}
+    });
+    if !newline {
+        cli_write(stdout, "\n", &mut out_broken, &mut first_error);
+    }
+    if !result.is_ok() {
+        cli_write(stderr, "\n", &mut err_broken, &mut first_error);
+    }
+    cli_write(
+        stderr,
+        "Mock UI stream complete: no real model response was produced.\n",
+        &mut err_broken,
+        &mut first_error,
+    );
+    if let Some(error) = first_error {
+        return Err(anyhow::anyhow!(error.to_string())).context("writing mock UI output");
+    }
+    result
+}
+
 /// 行模式交互循环：逐行读取 stdin、分发 `/command` 并输出结果。
 pub(crate) fn run_line_mode(
     mut agent: Result<agent::Agent>,
@@ -1252,15 +1508,31 @@ pub(crate) fn run_line_mode(
                     writeln!(stderr, "error: {error:#}")?;
                 }
             }
-            Some(commands::Command::TaskTest) => {
-                if let Err(message) = commands::task_test::ready(agent.model_roles()) {
+            Some(commands::Command::TestTask) => {
+                if let Err(message) = commands::test_task::ready(agent.model_roles()) {
                     writeln!(stderr, "error: {message}")?;
                 } else if let Err(error) = run_cli_task(
                     agent,
-                    Some(commands::task_test::PROMPT),
+                    Some(commands::test_task::PROMPT),
                     &mut stdout,
                     &mut stderr,
                 ) {
+                    writeln!(stderr, "error: {error:#}")?;
+                }
+            }
+            Some(commands::Command::ToolTest(selection)) => {
+                if let Err(error) = run_cli_tool_test(agent, selection, &mut stderr) {
+                    if error
+                        .chain()
+                        .any(|cause| cause.is::<cancellation::CleanupError>())
+                    {
+                        return stop_cli_lsp(Some(&*agent), Err(error));
+                    }
+                    writeln!(stderr, "error: {error:#}")?;
+                }
+            }
+            Some(commands::Command::TestUi) => {
+                if let Err(error) = run_cli_ui_test(agent, &mut stdout, &mut stderr) {
                     writeln!(stderr, "error: {error:#}")?;
                 }
             }

@@ -1,6 +1,6 @@
 mod templates;
 pub(crate) use templates::{FileCommand, FileCommands};
-pub(crate) mod task_test;
+pub(crate) mod test_task;
 
 use crate::config::ThinkLevel;
 use anyhow::{Context, Result, bail, ensure};
@@ -108,9 +108,69 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Manage saved plans: preview, continue, execute, rename, delete (TUI)",
     },
     CommandSpec {
-        name: "/task-test",
-        usage: "/task-test",
+        name: "/test-task",
+        usage: "/test-task",
         description: "Debug build: dispatch a fixed FAST/SLOW/REVIEW subagent batch",
+    },
+    CommandSpec {
+        name: "/test-tools",
+        usage: "/test-tools",
+        description: "Debug build: run every local tool display scenario",
+    },
+    CommandSpec {
+        name: "/test-read",
+        usage: "/test-read",
+        description: "Debug build: local read tool scenarios",
+    },
+    CommandSpec {
+        name: "/test-write",
+        usage: "/test-write",
+        description: "Debug build: local write tool scenarios",
+    },
+    CommandSpec {
+        name: "/test-edit",
+        usage: "/test-edit",
+        description: "Debug build: local edit tool scenarios",
+    },
+    CommandSpec {
+        name: "/test-grep",
+        usage: "/test-grep",
+        description: "Debug build: local grep tool scenarios",
+    },
+    CommandSpec {
+        name: "/test-glob",
+        usage: "/test-glob",
+        description: "Debug build: local glob tool scenarios",
+    },
+    CommandSpec {
+        name: "/test-bash",
+        usage: "/test-bash",
+        description: "Debug build: local bash tool scenarios",
+    },
+    CommandSpec {
+        name: "/test-bash-task",
+        usage: "/test-bash-task",
+        description: "Debug build: local background bash scenarios",
+    },
+    CommandSpec {
+        name: "/test-wait",
+        usage: "/test-wait",
+        description: "Debug build: local wait tool scenarios",
+    },
+    CommandSpec {
+        name: "/test-todo",
+        usage: "/test-todo",
+        description: "Debug build: local todo tool scenarios",
+    },
+    CommandSpec {
+        name: "/test-ask",
+        usage: "/test-ask",
+        description: "Debug build: local ask panel scenario",
+    },
+    CommandSpec {
+        name: "/test-ui",
+        usage: "/test-ui",
+        description: "Debug build: slow mock thinking and Markdown stream",
     },
     CommandSpec {
         name: "/skills",
@@ -123,6 +183,53 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Exit pp",
     },
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolTest {
+    All,
+    Read,
+    Write,
+    Edit,
+    Grep,
+    Glob,
+    Bash,
+    BashTask,
+    Wait,
+    Todo,
+    Ask,
+}
+
+impl ToolTest {
+    pub(crate) const ALL: [Self; 11] = [
+        Self::All,
+        Self::Read,
+        Self::Write,
+        Self::Edit,
+        Self::Grep,
+        Self::Glob,
+        Self::Bash,
+        Self::BashTask,
+        Self::Wait,
+        Self::Todo,
+        Self::Ask,
+    ];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::All => "/test-tools",
+            Self::Read => "/test-read",
+            Self::Write => "/test-write",
+            Self::Edit => "/test-edit",
+            Self::Grep => "/test-grep",
+            Self::Glob => "/test-glob",
+            Self::Bash => "/test-bash",
+            Self::BashTask => "/test-bash-task",
+            Self::Wait => "/test-wait",
+            Self::Todo => "/test-todo",
+            Self::Ask => "/test-ask",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlanCommand<'a> {
@@ -153,7 +260,9 @@ pub(crate) enum Command<'a> {
     Roles,
     Subagents,
     PlanList,
-    TaskTest,
+    TestTask,
+    ToolTest(ToolTest),
+    TestUi,
     Login,
     Logout,
     Plan(PlanCommand<'a>),
@@ -221,12 +330,33 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
             ensure!(argument.is_empty(), "usage: /plan-list");
             Command::PlanList
         }
-        "/task-test" => {
+        "/test-task" => {
             ensure!(
                 cfg!(debug_assertions),
-                "/task-test requires a debug build of pp"
+                "/test-task requires a debug build of pp"
             );
-            Command::TaskTest
+            Command::TestTask
+        }
+        "/test-ui" => {
+            ensure!(
+                cfg!(debug_assertions),
+                "/test-ui requires a debug build of pp"
+            );
+            Command::TestUi
+        }
+        "/test-tools" | "/test-read" | "/test-write" | "/test-edit" | "/test-grep"
+        | "/test-glob" | "/test-bash" | "/test-bash-task" | "/test-wait" | "/test-todo"
+        | "/test-ask" => {
+            ensure!(
+                cfg!(debug_assertions),
+                "{name} requires a debug build of pp"
+            );
+            Command::ToolTest(
+                *ToolTest::ALL
+                    .iter()
+                    .find(|tool| tool.name() == name)
+                    .expect("registered local tool test"),
+            )
         }
         "/plan" => {
             return Ok(Some(Command::Plan(match argument {
@@ -330,7 +460,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
 
 /// release 构建隐藏 debug 专用命令；`/help` 与命令菜单共用同一判据。
 pub(crate) fn visible(name: &str) -> bool {
-    cfg!(debug_assertions) || name != "/task-test"
+    cfg!(debug_assertions) || !name.starts_with("/test-")
 }
 
 pub(crate) fn help(files: &FileCommands) -> String {
@@ -467,8 +597,21 @@ mod tests {
             ("/tree", Command::Tree),
             ("/plan-list", Command::PlanList),
             (" /plan-list ", Command::PlanList),
-            ("/task-test", Command::TaskTest),
-            (" /task-test ", Command::TaskTest),
+            ("/test-task", Command::TestTask),
+            (" /test-task ", Command::TestTask),
+            ("/test-ui", Command::TestUi),
+            (" /test-ui ", Command::TestUi),
+            ("/test-tools", Command::ToolTest(ToolTest::All)),
+            ("/test-read", Command::ToolTest(ToolTest::Read)),
+            ("/test-write", Command::ToolTest(ToolTest::Write)),
+            ("/test-edit", Command::ToolTest(ToolTest::Edit)),
+            ("/test-grep", Command::ToolTest(ToolTest::Grep)),
+            ("/test-glob", Command::ToolTest(ToolTest::Glob)),
+            ("/test-bash", Command::ToolTest(ToolTest::Bash)),
+            ("/test-bash-task", Command::ToolTest(ToolTest::BashTask)),
+            ("/test-wait", Command::ToolTest(ToolTest::Wait)),
+            ("/test-todo", Command::ToolTest(ToolTest::Todo)),
+            ("/test-ask", Command::ToolTest(ToolTest::Ask)),
             (" /resume ", Command::Resume),
             ("/quit", Command::Quit),
             ("/model", Command::Model(None)),
@@ -506,7 +649,19 @@ mod tests {
             "/tree",
             "/quit",
             "/plan-list",
-            "/task-test",
+            "/test-task",
+            "/test-ui",
+            "/test-tools",
+            "/test-read",
+            "/test-write",
+            "/test-edit",
+            "/test-grep",
+            "/test-glob",
+            "/test-bash",
+            "/test-bash-task",
+            "/test-wait",
+            "/test-todo",
+            "/test-ask",
         ] {
             assert_eq!(
                 parse(&format!("{command} extra"), &FileCommands::default())
@@ -520,11 +675,29 @@ mod tests {
     #[test]
     fn slash_help_lists_debug_only_commands_in_debug_builds() {
         let text = help(&FileCommands::default());
-        let listed = text
-            .contains("/task-test — Debug build: dispatch a fixed FAST/SLOW/REVIEW subagent batch");
-        assert_eq!(listed, cfg!(debug_assertions), "{text}");
-        assert_eq!(visible("/task-test"), cfg!(debug_assertions));
+        for name in std::iter::once("/test-task")
+            .chain(std::iter::once("/test-ui"))
+            .chain(ToolTest::ALL.into_iter().map(ToolTest::name))
+        {
+            assert_eq!(
+                text.lines()
+                    .any(|line| line.starts_with(&format!("{name} "))),
+                cfg!(debug_assertions),
+                "{name}\n{text}"
+            );
+            assert_eq!(visible(name), cfg!(debug_assertions), "{name}");
+        }
         assert!(visible("/help") && visible("/plan-list"));
+    }
+
+    #[test]
+    fn slash_old_task_test_name_is_unknown() {
+        assert_eq!(
+            parse("/task-test", &FileCommands::default())
+                .unwrap_err()
+                .to_string(),
+            "unknown command; use /help"
+        );
     }
 
     #[test]

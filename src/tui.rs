@@ -46,7 +46,7 @@ use crate::{
         plan_management::{PlanListing, PlanOpenIntent, PlanSelection},
     },
     cancellation::{CancellationToken, RunOutcome},
-    commands::{self, COMMANDS, Command, PlanCommand},
+    commands::{self, COMMANDS, Command, PlanCommand, ToolTest},
     config::{ModelChoice, ThinkLevel},
     events::AgentEvent,
     plan::{
@@ -316,6 +316,13 @@ enum WorkerCommand {
         call_id: String,
         cancellation: CancellationToken,
     },
+    ToolTest {
+        selection: ToolTest,
+        cancellation: CancellationToken,
+    },
+    TestUi {
+        cancellation: CancellationToken,
+    },
     RunInput {
         prepared: crate::user_input::UserInput,
         cancellation: CancellationToken,
@@ -414,6 +421,14 @@ enum WorkerEvent {
     },
     Progress(AgentEvent),
     ShellCompleted(Result<()>),
+    ToolTestCompleted {
+        result: Result<usize>,
+        elapsed: Duration,
+    },
+    UiTestCompleted {
+        result: Result<()>,
+        elapsed: Duration,
+    },
     Completed {
         result: Result<RunOutcome>,
         elapsed: Duration,
@@ -639,6 +654,7 @@ enum State {
     Ready,
     Running,
     RunningShell,
+    RunningTools,
     Cancelling,
     Compacting,
     Resetting,

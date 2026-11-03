@@ -54,7 +54,7 @@ fn task_test_child(body: &Value) -> bool {
 
 fn task_test_batch() -> Value {
     json!({
-        "context": "/task-test debug scenario: read-only inspection of the current repository.",
+        "context": "/test-task debug scenario: read-only inspection of the current repository.",
         "tasks": [
             {"name": "fast-rust-count", "agent": "scout", "role": "fast", "task": "Count regular Rust source files."},
             {"name": "slow-symbol-lookup", "agent": "scout", "role": "slow", "task": "Find where AgentEvent is defined."},
@@ -93,7 +93,7 @@ fn task_test_registry(home: &std::path::Path) -> Value {
 }
 
 #[test]
-fn task_test_reports_missing_roles_without_requests() {
+fn test_task_reports_missing_roles_without_requests() {
     for protocol in ["completion", "response"] {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
@@ -103,12 +103,12 @@ fn task_test_reports_missing_roles_without_requests() {
             fixture_settings(),
             &models_for(&server, protocol),
         );
-        cli.input("/task-test\n/quit\n");
+        cli.input("/test-task\n/quit\n");
         let output = cli.finish();
         assert!(output.status.success(), "{output:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("Enable model roles FAST, SLOW, REVIEW in /Roles before /task-test"),
+            stderr.contains("Enable model roles FAST, SLOW, REVIEW in /Roles before /test-task"),
             "{stderr}"
         );
         no_more(&server);
@@ -116,7 +116,7 @@ fn task_test_reports_missing_roles_without_requests() {
 }
 
 #[test]
-fn task_test_dispatches_fixed_batch_and_returns_three_results() {
+fn test_task_dispatches_fixed_batch_and_returns_three_results() {
     for protocol in ["completion", "response"] {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
@@ -126,7 +126,7 @@ fn task_test_dispatches_fixed_batch_and_returns_three_results() {
             &format!("{}{ROLES}", fixture_settings()),
             &models_for(&server, protocol),
         );
-        cli.input("/task-test\n");
+        cli.input("/test-task\n");
         let (request, body) = task_test_receive(&server, protocol);
         assert!(!task_test_child(&body));
         let text = task_test_user_text(protocol, &body);

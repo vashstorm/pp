@@ -49,7 +49,19 @@ pub(crate) const SECTIONS: &[Section] = &[
             tip("/Roles", "role model/effort"),
             tip("/skills", "toggle skills"),
             tip("/subagents", "control subagents"),
-            tip("/task-test", "debug subagent batch"),
+            tip("/test-ask", "debug ask panel"),
+            tip("/test-bash", "debug bash tool"),
+            tip("/test-bash-task", "debug bg bash"),
+            tip("/test-edit", "debug edit tool"),
+            tip("/test-glob", "debug glob tool"),
+            tip("/test-grep", "debug grep tool"),
+            tip("/test-read", "debug read tool"),
+            tip("/test-task", "debug subagent batch"),
+            tip("/test-todo", "debug todo tool"),
+            tip("/test-tools", "debug all tools"),
+            tip("/test-ui", "debug mock stream"),
+            tip("/test-wait", "debug wait tool"),
+            tip("/test-write", "debug write tool"),
             tip("/tips", "show all tips"),
             tip("/tree", "browse & rewind chat"),
         ],
@@ -88,7 +100,7 @@ pub(crate) const SECTIONS: &[Section] = &[
 
 /// 过滤出当前构建可见的条目，并按用户看到的键名（忽略大小写）稳定排序。
 ///
-/// 复用命令注册表的可见判据：它只对 debug 专用的 `/task-test` 返回 false，
+/// 复用命令注册表的可见判据：它只对 debug 专用的 `/test-*` 返回 false，
 /// 快捷键标签不以 `/` 开头，因此恒定通过。
 pub(crate) fn sorted(section: &'static Section) -> Vec<&'static Tip> {
     let mut tips: Vec<&'static Tip> = section

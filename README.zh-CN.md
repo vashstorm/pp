@@ -128,7 +128,7 @@ printf '说明当前项目的构建方式\n' | pp
 
 通过 `/Roles` 保存模型与思考档位后，Default 会让主 Agent 在下一个安全边界切换，不影响已有子 Agent；其他角色的变更由绑定该角色的子 Agent 各自在安全边界应用，包括嵌套子 Agent。没有角色绑定、仅在创建时继承模型的子 Agent 保持原配置。禁用或清除角色不会取消或重新绑定已有子 Agent；不监听其他 pp 进程的配置热更新。
 
-`/task-test` 只在 cargo debug 构建中提供。它要求已启用 FAST、SLOW、REVIEW 三个模型 Role，保持当前模型，并发送一个固定的只读批次：`scout`（role 为 `fast`）、`scout`（role 为 `slow`）与 `reviewer`，等待三份结果后汇总；不会修改仓库文件。release 构建下该命令在本地报错，且不出现在 `/help` 与 `/` 命令菜单中。
+所有 `/test-*` 命令只在 cargo debug 构建中提供，判据是编译期 `cfg!(debug_assertions)`，与 `debug` 设置无关；release 构建在本地拒绝全部 `/test-*`，且不在 `/help`、`/tips` 与 `/` 菜单中显示。`/test-tools` 按 read → write → edit → grep → glob → bash → bash-task → wait → todo → ask 顺序运行同一套固定场景：每次在启动目录下新建临时工作区并运行真实工具，预期 `ok:false` 卡片不会中断后续场景；取消、夹具初始化失败或受管进程清理失败会停止命令。默认套件不包含 LSP、MCP、Plan 工具或子 Agent `yield`，也不会请求模型。`/test-task` 是独立命令，要求 FAST、SLOW、REVIEW 三个模型 Role 已启用，并通过当前模型发送固定子 Agent 批次。`/test-ui` 不请求模型，而是以约 80 ms/token 输出固定的 `AgentEvent` 思考与 Markdown／代码增量，用于观察慢速渲染和 Esc 取消。`/test-ask` 需要交互式 TUI；工具测试仅在 Execute 模式、空闲且无 pending 输入时启动。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -136,7 +136,9 @@ printf '说明当前项目的构建方式\n' | pp
 | `/init` | 创建或更新当前项目的 `AGENTS.md` |
 | `/plan [prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，批准后执行（仅终端界面） |
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除（仅终端界面） |
-| `/task-test` | 仅 debug 构建：按固定场景派发 FAST／SLOW／REVIEW 三个只读子 Agent 并等待三份结果 |
+| `/test-task` | 仅 debug 构建：按固定场景派发 FAST／SLOW／REVIEW 三个只读子 Agent 并等待三份结果（需要模型 Role 与真实模型） |
+| `/test-tools`、`/test-read`、`/test-write`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 仅 debug 构建：在隔离临时工作区运行全部或单个固定工具场景；`/test-ask` 需要终端界面 |
+| `/test-ui` | 仅 debug 构建：以约 80 ms/token 输出慢速 mock 思考与 Markdown／代码流，不请求模型、不创建会话记录 |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |
 | `/resume`、`/tree` | 恢复会话，或回退当前历史（仅终端界面） |

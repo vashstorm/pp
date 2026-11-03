@@ -246,7 +246,10 @@ chmod 600 ~/.pp/agent/models.yml
 | `/changes` | 查看最近任务的 edit/write 净变更，逐文件安全撤销 | 仅 TUI |
 | `/plan [view\|prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，显式批准后执行 | 仅 TUI |
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除 | 仅 TUI |
-| `/task-test` | 派发固定的 `scout`（fast）、`scout`（slow）、`reviewer` 只读批次并等待三份结果；要求 FAST／SLOW／REVIEW 已启用，仅 debug 构建暴露 | TUI / 行模式 |
+| `/test-task` | 派发固定的 `scout`（fast）、`scout`（slow）、`reviewer` 只读批次并等待三份结果；要求 FAST／SLOW／REVIEW 已启用，仅 debug 构建暴露 | TUI / 行模式 |
+| `/test-tools` | 按 read → write → edit → grep → glob → bash → bash-task → wait → todo → ask 顺序运行全部固定本地工具场景 | TUI / 行模式 |
+| `/test-read`、`/test-write`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 只运行对应的固定工具场景；`/test-ask` 需要 TUI 答题，仅 debug 构建暴露 | TUI / 行模式 |
+| `/test-ui` | 以约 80 ms/token 输出固定 mock 思考与 Markdown／代码增量，不请求模型，仅 debug 构建暴露 | TUI / 行模式 |
 | `/quit` | 退出 | TUI / 行模式 |
 
 输入 `!命令` 在项目目录运行本地非交互 bash，不请求模型，命令和输出不进入模型上下文或会话文件。需要有效的 Agent 配置和 Execute 模式；Plan、忙碌或有待处理消息时不可运行。每条命令使用独立 shell，`cd` 和环境变量不跨命令保留；以当前用户权限执行，无文件系统沙箱。TUI 首个 `!` 仅进入 shell 模式，不显示在输入框中；后续 `!` 作为命令正文保留，历史回填会恢复模式并隐藏切换前缀。编辑时按 Esc 或在空输入框按 Backspace 退出模式，清空命令也会退出；命令运行时按 Esc 取消并等待进程回收。行模式仍输入完整的 `!命令`，输出写入 stderr，stdout 仍保留给模型回复。
@@ -352,7 +355,7 @@ bash／bash_task 的折叠 Output 区域按实际输出行数增长，没有数�
 - 滚轮每次滚动三条物理行，PgUp/PgDn 按页滚动，不移动输入光标或改变草稿，指针位于输入框时也生效。上翻进入临时备用屏幕，保留完整历史的浏览能力，新输出不抢占视口；滚回底部或按 Esc 返回主屏幕并恢复跟随。临时面板不提交为原生历史，错误卡片随消息提交，面板打开期间暂停主屏幕历史提交。运行中仍可编辑草稿，派发排队任务时保留新草稿和光标。
 - 命令、模型、思考级别和文件菜单展开时，滚轮仍滚动历史，不改变菜单选择。普通点击、拖动和水平滚轮不操作消息区。TUI 捕获鼠标，绕过捕获以使用终端原生选区／滚动历史所需的修饰键取决于终端。
 - 单行 slash 命令与行模式共用注册表，具体命令见上方速查表。未知名称及内置命令的非法参数只报本地错误，不发送模型。名称区分大小写；忽略首尾空白，`/model` 参数中的内部空格和 `/` 保持原样。多行 slash 草稿作为普通任务发送。
-- `/tips` 输出全部斜杠命令与全局快捷键，按 `Commands`、`Shortcuts` 两组展示并各自按忽略大小写的字母序排列；键名不超过 16 列、说明不超过 20 列，正文宽度足够（当前 78 列）时双列，否则单列。debug 构建额外包含 `/task-test`，release 构建不出现。首页仅展示其中的常用入口并补充 Enter 发送说明：命令和快捷键旁用简短说明交代用途，例如 `/plan` 先规划再批准修改、`/compact` 摘要较早上下文、`/tree` 浏览并回退会话历史。TUI 使用绿色加粗键名、灰色说明与随窗口宽度切换的双列／单列布局，支持滚动与退出 scrollback；行模式输出 `Tips:` 与两个分组标题的对齐单列。两种模式均支持；无需参数，不请求模型、不进入模型上下文，也不创建或追加会话 JSONL 日志。模型配置不可用时仍可使用。
+- `/tips` 输出全部斜杠命令与全局快捷键，按 `Commands`、`Shortcuts` 两组展示并各自按忽略大小写的字母序排列；键名不超过 16 列、说明不超过 20 列，正文宽度足够（当前 78 列）时双列，否则单列。debug 构建额外包含全部 `/test-*`，release 构建不出现。首页仅展示其中的常用入口并补充 Enter 发送说明：命令和快捷键旁用简短说明交代用途，例如 `/plan` 先规划再批准修改、`/compact` 摘要较早上下文、`/tree` 浏览并回退会话历史。TUI 使用绿色加粗键名、灰色说明与随窗口宽度切换的双列／单列布局，支持滚动与退出 scrollback；行模式输出 `Tips:` 与两个分组标题的对齐单列。两种模式均支持；无需参数，不请求模型、不进入模型上下文，也不创建或追加会话 JSONL 日志。模型配置不可用时仍可使用。
 - 退出时仅在内存中生成最终画面，切回主屏幕与完整会话回放使用同一次终端同步更新（DEC 2026）；支持该协议的终端会隐藏中间画面，减少闪烁。退出后仍保留完整历史、草稿和状态栏；不支持同步更新的终端按原有方式显示回放。
 - 流式正文最多约每 33 ms 更新一帧，输入优先按有界批次处理。正文 Markdown、代码高亮和折行由独立排版线程计算；期间显示有限纯文本尾部，完整正文始终保留。过期会话、替换正文或旧宽度的结果不能覆盖当前显示，原生历史仅在终稿布局就绪且输出成功后确认；每轮最多提交 64 行历史，避免连续刷屏阻塞输入。代码高亮复用完整行的语法状态，仅重算新增行和变化的末行，保留 500 行／64 KiB 护栏；LRU 最多 64 块、缓存源文本最多 8 MiB，窗口缩放只重新折行。
 - 输入框上方的选择菜单（`/` 命令补全、`/model `、`/effort `、`@` 文件选择、⌥ + Q / Ctrl + Q 待处理消息）统一使用 `src/tui/menu.rs` 中的 `SelectionMenu` 组件，业务层只提供选项数据和确认动作。统一贴着输入框上沿向上覆盖显示无外框的两列列表，左列按最长候选名称的实际显示宽度对齐（最多占终端一半宽度），与说明之间留八列空白，右列使用剩余宽度；选中行以浅蓝色文字和箭头突出，其余候选与说明为灰色，普通菜单的当前值显示 `(current)`，模型面板改用名称后的图标，菜单与输入框之间使用灰色分隔线。菜单打开、筛选、滚动或收起时不改变输入框与状态栏的位置，也不缩小对话视口或改变对话换行；菜单临时遮盖的正文在收起后原位恢复。多行草稿仍按原有规则决定输入框高度，短屏优先保留输入框。最多显示八行，窄屏截断说明，短屏随选择滚动。↑/↓、Home/End、PgUp/PgDn 导航且不循环，Tab 补全或打开目录但不提交（待处理消息列表中无操作），Enter 确认当前项；Esc 收起列表并保留草稿，普通补全菜单下次编辑时重新显示，队列列表须 ⌥ + Q / Ctrl + Q 显式打开。输入 `/` 展开命令菜单，内置命令和自定义命令均按名称进行忽略大小写的模糊匹配：输入字符只需按顺序出现，无需连续，例如 `/MDL` 匹配 `/model`、`/PLS` 匹配 `/plan-list`。候选依次优先显示完整匹配、前缀匹配、子串匹配和非连续匹配，同类保持原有顺序；左列直接显示 `/command`，不附加命令图标。Tab 补全或 Enter 确认时使用候选的原始名称。
@@ -427,13 +430,17 @@ Completed／Abandoned 且仍关联的计划保持只读投影，实际 Markdown 
 
 列表操作令牌同时绑定 ID、当时的实际路径和精确正文；其他会话重命名或搬迁后，即使正文未变，旧令牌也会被拒绝，须刷新列表并重新选择。按 ID 重新读取仍可找到新路径，但不会沿用旧的删除或重命名确认。
 
-### /task-test 自检（仅 debug 构建）
+### /test-* 本地自检（仅 debug 构建）
 
-`/task-test` 只在 cargo debug 构建中注册：判据是编译期 `cfg!(debug_assertions)`，与 `settings.yml` 的 `debug` 字段无关。release 构建下解析层直接报 `error: /task-test requires a debug build of pp`，且 `/help` 与 `/` 命令菜单都不显示该命令。
+所有 `/test-*` 命令只在 cargo debug 构建中注册：判据是编译期 `cfg!(debug_assertions)`，与 `settings.yml` 的 `debug` 字段无关。release 构建下解析层直接报各自 `requires a debug build of pp`，且 `/help`、`/tips` 与 `/` 命令菜单都不显示。/test-task 仍要求 FAST、SLOW、REVIEW 三个 Model Role 已启用，并通过当前模型发送固定只读子 Agent 批次；缺少 Role 或模型不可用时只报本地／模型错误，不伪造结果。
 
-命令要求 FAST、SLOW、REVIEW 三个 Model Role 都已启用；缺任何一个只显示本地错误（例如 `Enable model roles SLOW, REVIEW in /Roles before /task-test`），不发送任何模型请求、不消耗草稿。TUI 中另需 Execute 模式，且只在空闲或运行中提交（运行中按交互输入队列规则处理）；行模式使用当前 `agent.db` 的 Role 快照。
+`/test-tools` 按 read → write → edit → grep → glob → bash → bash-task → wait → todo → ask 顺序运行全部固定场景；各独立命令只运行对应场景。每次命令在启动目录下创建独立临时工作区，以当前 edit mode、读写限制和审批配置构造隔离 `Tools`，所有工具参数固定，不串联 `/test-task` 或 `/test-ui`。edit 场景分别覆盖 replace 与 hashline（包括真实 read TAG、成功后旧 TAG 的 stale 错误），bash/wait 场景从真实返回中提取 task id。fetch 闭包直接报错，从结构上禁止 read 网络请求。
 
-通过校验后，用户输入被替换为一个固定提示词：主模型不变，一次 `task` 调用派发三个只读子 Agent——`scout`（`role=fast`）、`scout`（`role=slow`）与 `reviewer`（已启用时默认走 REVIEW Role），等待三份结果后输出三行汇总。固定任务只做事只读检查，不改动仓库文件，也不依赖 `bash`、网络或 MCP；TUI 回显的是 `/task-test` 命令本身，输入框上方出现 `Subagents:` 摘要行，`/subagents` 面板可见三个实例。若 `scout`／`reviewer` 被自定义 `.pp/agents` 或 `task.disabled_agents` 禁用，命令不做预检，模型会把工具错误原样报告。
+预期 `ok:false` 是展示夹具，不会中断后续场景；取消、夹具初始化失败与受管进程清理失败会停止命令。正常退出前始终先停止后台进程，再释放隔离 `Tools` 并关闭临时目录；失败或取消同样清理，清理错误不被吞掉。该命令不写当前会话历史、journal、统计或 `/changes`，也不发送模型请求。默认套件不包含 LSP、MCP、`plan_write`／`plan_submit`／`yield`：LSP/MCP 依赖外部环境，计划工具会改变真实工作流，`yield` 仅属于子 Agent。
+
+工具测试与 `/test-ui` 只在 Execute 模式、空闲且无 pending 输入时启动，忙碌、Plan 或 Unavailable 时本地拒绝并保留草稿；Esc 复用普通取消。TUI 中真实工具卡片按普通 `Progress` 事件绘制，Ctrl + O 可展开／折叠；ask 场景一次提出三题，覆盖推荐单选、多选、带 preview 的选项和自由输入，答题后显示规范化答案。行模式中 `/test-ask` 保留既有 `ask requires interactive TUI mode` 作为预期失败并继续后续场景。
+
+`/test-ui` 不访问 provider、journal、统计或真实工具；它依次发送 `ModelRequestStarted`、一次 `AssistantStarted`、固定 thinking／assistant 增量、累计 UTF-8 字节数的 `ModelOutputProgress`，成功后发送完整 `AssistantFinished` 与 `ModelRequestFinished`。相邻 token 间隔约 80 ms，等待切成 5–10 ms 小段检查取消；Esc 后停止后续增量、不补 `AssistantFinished`，已输出部分保留。思考写 stderr、助手正文写 stdout（行模式），完成说明明确标注 mock 与限速。
 
 ### ask（仅 TUI）
 

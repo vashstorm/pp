@@ -288,7 +288,19 @@ const TIPS_COMMANDS: &[&str] = &[
     "/Roles",
     "/skills",
     "/subagents",
-    "/task-test",
+    "/test-ask",
+    "/test-bash",
+    "/test-bash-task",
+    "/test-edit",
+    "/test-glob",
+    "/test-grep",
+    "/test-read",
+    "/test-task",
+    "/test-todo",
+    "/test-tools",
+    "/test-ui",
+    "/test-wait",
+    "/test-write",
     "/tips",
     "/tree",
 ];
@@ -359,7 +371,7 @@ fn tips_commands() -> Vec<&'static str> {
     TIPS_COMMANDS
         .iter()
         .copied()
-        .filter(|label| cfg!(debug_assertions) || *label != "/task-test")
+        .filter(|label| cfg!(debug_assertions) || !label.starts_with("/test-"))
         .collect()
 }
 
@@ -505,7 +517,7 @@ fn tui_tips_keeps_all_entries_and_leaves_active_jsonl_unchanged() {
             key_field,
         );
         // 60 列：正文 58 列装不下两列，按字母顺序输出完整单列。
-        pty.resize(60, 60);
+        pty.resize(80, 60);
         let single: Vec<String> = commands
             .iter()
             .chain(&shortcuts)

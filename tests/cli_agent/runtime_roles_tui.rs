@@ -52,7 +52,7 @@ fn tui_runtime_role_changes_switch_children_at_their_own_committed_boundary() {
         while child.is_none() || parent.is_none() {
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
             assert_eq!(body["model"], "one");
-            if task_test_tui_child(protocol, &body) {
+            if test_task_tui_child(protocol, &body) {
                 child = Some(request);
             } else {
                 parent = Some(request);

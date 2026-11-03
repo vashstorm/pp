@@ -130,7 +130,7 @@ Each role supports one fallback with its own thinking level. In `/Roles`, use �
 Model failures, including interrupted streams, retry from the current request boundary without repeating completed tools. Each model allows at most 10 sends, bounded by `rate_limit_retry_budget_seconds`; the fallback gets an independent allowance. Zero disables retries but still permits one fallback send. Cancellation and local configuration, persistence, or cleanup failures stop immediately. A successful fallback remains active for the current task; the next independent task restores the primary. Manual `/model` selection detaches the role fallback. Failed partial output remains visibly marked and is excluded from valid model history. Existing role settings migrate transactionally to `agent.db` schema v3.
 
 
-`/task-test` exists only in cargo debug builds. It requires the FAST, SLOW, and REVIEW model roles to be enabled, keeps the current model, and sends one fixed read-only batch: `scout` with role `fast`, `scout` with role `slow`, and `reviewer`. It waits for all three results and never modifies repository files. Release builds reject it locally and hide it from `/help` and the `/` menu.
+All `/test-*` commands are debug-build-only local fixtures, gated by compile-time `cfg!(debug_assertions)` and independent of the `debug` setting. Release builds reject every `/test-*` name locally and hide it from `/help`, `/tips`, and the `/` menu. `/test-tools` runs the same fixed suites in read → write → edit → grep → glob → bash → bash-task → wait → todo → ask order; each suite runs real tools in a fresh temporary workspace below the startup cwd, and expected `ok:false` cards do not stop later scenarios. Cancellation, fixture setup failure, or managed-process cleanup failure stops the command. The suites do not cover LSP, MCP, Plan tools, or subagent `yield`, and they never call a provider. `/test-task` is separate: it requires the FAST, SLOW, and REVIEW model roles and sends the fixed subagent batch through the current model. `/test-ui` does not request a model; it streams fixed `AgentEvent` thinking and Markdown/code chunks at about 80 ms per token so slow rendering and Esc cancellation can be observed. `/test-ask` needs the interactive TUI, and tool tests require Execute mode, an idle session, and no pending input.
 
 | Command | Purpose |
 | --- | --- |
@@ -138,7 +138,9 @@ Model failures, including interrupted streams, retry from the current request bo
 | `/init` | Create or update the current project's `AGENTS.md` |
 | `/plan [prompt]` | Toggle Plan mode standby; view the plan or send a planning task immediately; execute after approval (TUI only) |
 | `/plan-list` | Manage saved plans: preview, continue, execute, rename, delete (TUI only) |
-| `/task-test` | Debug builds only: dispatch the fixed FAST/SLOW/REVIEW read-only subagent batch and wait for all three results |
+| `/test-task` | Debug builds only: dispatch the fixed FAST/SLOW/REVIEW read-only subagent batch and wait for all three results (requires the model roles and an LLM) |
+| `/test-tools`, `/test-read`, `/test-write`, `/test-edit`, `/test-grep`, `/test-glob`, `/test-bash`, `/test-bash-task`, `/test-wait`, `/test-todo`, `/test-ask` | Debug builds only: run all or one fixed local tool suite in an isolated temporary workspace; `/test-ask` needs the TUI |
+| `/test-ui` | Debug builds only: slow mock thinking and Markdown/code stream at about 80 ms/token; no provider request or session record |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | Manage MCP servers without restarting |
 | `/compact`, `/new` | Compact context or start a new session |
 | `/resume`, `/tree` | Restore a session or navigate back through current history (TUI only) |
