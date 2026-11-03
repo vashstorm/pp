@@ -427,6 +427,7 @@ impl App {
                     match action {
                         sessions::Action::None => {}
                         sessions::Action::Cancel => self.close_session_panel(),
+                        sessions::Action::Pin(index) => self.pin_session(index),
                         sessions::Action::Resume(index) => {
                             let id = self
                                 .session_panel

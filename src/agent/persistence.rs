@@ -898,6 +898,7 @@ pub(crate) struct SessionSummary {
     pub(crate) preview: String,
     pub(crate) bytes: u64,
     pub(crate) done: bool,
+    pub(crate) pinned: bool,
 }
 
 pub(crate) struct SessionListing {

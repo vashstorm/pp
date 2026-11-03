@@ -3,7 +3,7 @@
 //! 安全打开、WAL/外键/FULL/250ms 由 `crate::sqlite::open` 统一负责；本模块只拥有
 //! history.db 的固定 schema 与领域操作。所有存储错误都转换为不含 SQL 参数与正文
 //! 的固定领域提示。`input_history` 是独立持久数据（已接受的原始输入原文），
-//! `sessions`/`session_prompts` 及其 FTS 是会话日志的派生投影，可随时由
+//! `session_pins` 保存独立的用户置顶偏好；`sessions`/`session_prompts` 及其 FTS 是会话日志的派生投影，可随时由
 //! `sync_sessions`（persistence 索引模块）重建；派生行的删除绝不触碰 `input_history`。
 
 use crate::agent::persistence::SessionSummary;
@@ -102,6 +102,9 @@ CREATE TRIGGER IF NOT EXISTS session_prompts_ad AFTER DELETE ON session_prompts 
     INSERT INTO prompt_fts(prompt_fts,rowid,text_folded) VALUES ('delete',old.rowid,old.text_folded);
 END;";
 
+// 不关联派生行的外键，重建或重新同步索引不能丢失用户的置顶偏好。
+const PIN_SCHEMA: &str = "CREATE TABLE session_pins (session_id TEXT PRIMARY KEY NOT NULL);";
+
 /// 一条已接受的持久输入原文；`id` 为递增游标，供分页读取。
 pub(crate) struct InputEntry {
     pub id: i64,
@@ -124,7 +127,7 @@ impl Store {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(unavailable)?;
-        ensure!(version <= 2, UNSUPPORTED_VERSION);
+        ensure!(version <= 3, UNSUPPORTED_VERSION);
         if version < 1 {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -133,7 +136,7 @@ impl Store {
             let version: i64 = tx
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .map_err(unavailable)?;
-            ensure!(version <= 2, UNSUPPORTED_VERSION);
+            ensure!(version <= 3, UNSUPPORTED_VERSION);
             if version == 0 {
                 // 非 SQLite 识别的既有对象说明文件不是本模块创建的空库，拒绝覆盖。
                 let existing: i64 = tx
@@ -188,6 +191,33 @@ impl Store {
             }
             tx.commit().map_err(unavailable)?;
         }
+        if conn
+            .pragma_query_value::<i64, _>(None, "user_version", |row| row.get(0))
+            .map_err(unavailable)?
+            < 3
+        {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(unavailable)?;
+            let version: i64 = tx
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .map_err(unavailable)?;
+            if version == 2 {
+                tx.execute_batch(PIN_SCHEMA).map_err(unavailable)?;
+                tx.pragma_update(None, "user_version", 3)
+                    .map_err(unavailable)?;
+            }
+            tx.commit().map_err(unavailable)?;
+        }
+        ensure!(
+            conn.query_row(
+                "SELECT 1 FROM sqlite_master WHERE name='session_pins' AND type='table'",
+                [],
+                |_| Ok(())
+            )
+            .is_ok(),
+            CORRUPT
+        );
         Ok(Self { conn })
     }
 
@@ -277,7 +307,7 @@ impl Store {
     /// 会话目录检索。`cwd` 为 None 表示全部项目，否则按绝对路径精确相等过滤；
     /// 空查询返回 scope 内全部目录行。所有词都必须命中，且同一个词可命中
     /// summary/preview/id/cwd 或该会话任意一条 prompt（各词独立判断，
-    /// 不要求位于同一条消息）。结果按 (updated_at_secs, nanos, session_id) 降序。
+    /// 不要求位于同一条消息）。置顶优先，组内按 (updated_at_secs, nanos, session_id) 降序。
     pub(crate) fn search_sessions(
         &self,
         cwd: Option<&Path>,
@@ -289,7 +319,9 @@ impl Store {
         })];
         let mut sql = String::from(
             "SELECT s.session_id,s.cwd,s.updated_at_secs,s.updated_at_nanos,
-                    s.summary,s.preview,s.bytes,s.done FROM sessions s
+                    s.summary,s.preview,s.bytes,s.done,
+                    EXISTS(SELECT 1 FROM session_pins WHERE session_id=s.session_id) AS pinned
+             FROM sessions s
              WHERE (?1 IS NULL OR s.cwd=?1)",
         );
         for word in folded.split_whitespace() {
@@ -316,7 +348,7 @@ impl Store {
             )
             .expect("writing to String");
         }
-        sql.push_str(" ORDER BY s.updated_at_secs DESC,s.updated_at_nanos DESC,s.session_id DESC");
+        sql.push_str(" ORDER BY pinned DESC,s.updated_at_secs DESC,s.updated_at_nanos DESC,s.session_id DESC");
         let mut statement = self.conn.prepare(&sql).map_err(unavailable)?;
         let rows = statement
             .query_map(params_from_iter(values.iter()), |row| {
@@ -329,12 +361,14 @@ impl Store {
                     row.get::<_, String>(5)?,
                     row.get::<_, i64>(6)?,
                     row.get::<_, bool>(7)?,
+                    row.get::<_, bool>(8)?,
                 ))
             })
             .map_err(unavailable)?;
         let mut summaries = Vec::new();
         for row in rows {
-            let (id, cwd, secs, nanos, summary, preview, bytes, done) = row.map_err(unavailable)?;
+            let (id, cwd, secs, nanos, summary, preview, bytes, done, pinned) =
+                row.map_err(unavailable)?;
             let entry = SessionSummary {
                 id,
                 cwd: PathBuf::from(cwd),
@@ -343,11 +377,39 @@ impl Store {
                 preview,
                 bytes: u64::try_from(bytes).map_err(unavailable)?,
                 done,
+                pinned,
             };
             ensure!(entry.cwd.is_absolute(), UNAVAILABLE);
             summaries.push(entry);
         }
         Ok(summaries)
+    }
+
+    /// 只修改用户偏好，不改写会话日志或更新时间；显式目标值使重复请求保持幂等。
+    pub(crate) fn set_session_pinned(&mut self, id: &str, pinned: bool) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(unavailable)?;
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id=?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(unavailable)?;
+        ensure!(exists, "Saved session is no longer indexed.");
+        if pinned {
+            tx.execute(
+                "INSERT INTO session_pins(session_id) VALUES (?1) ON CONFLICT DO NOTHING",
+                [id],
+            )
+            .map_err(unavailable)?;
+        } else {
+            tx.execute("DELETE FROM session_pins WHERE session_id=?1", [id])
+                .map_err(unavailable)?;
+        }
+        tx.commit().map_err(unavailable)
     }
 
     /// 验收帮助（仅测试）：删除派生表数据后重新同步，验证投影可完整重建
@@ -545,7 +607,7 @@ mod tests {
         let path = root.path().join("history.db");
         {
             let store = Store::open(&path).unwrap();
-            store.conn.pragma_update(None, "user_version", 3).unwrap();
+            store.conn.pragma_update(None, "user_version", 4).unwrap();
         }
         let error = Store::open(&path).err().unwrap();
         assert_eq!(error.to_string(), UNSUPPORTED_VERSION);
@@ -722,6 +784,101 @@ mod tests {
 
     fn summary_ids(summaries: &[SessionSummary]) -> Vec<String> {
         summaries.iter().map(|entry| entry.id.clone()).collect()
+    }
+
+    #[test]
+    fn sqlite_session_pins_migrate_persist_and_survive_index_rebuild() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("history.db");
+        let sessions = root.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        // 从真实 v2 schema 升级，保留既有输入和会话索引。
+        let conn = crate::sqlite::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE input_history ADD COLUMN images TEXT NOT NULL DEFAULT '[]';",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.execute(
+            "INSERT INTO input_history(cwd,text,created_at_ms) VALUES ('/project','kept input',0)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut store = Store::open(&path).unwrap();
+        let ids: Vec<_> = (1..=3)
+            .map(|index| format!("2026-10-30T12-00-0{index}-0123456789abcdef0123456789abcdef"))
+            .collect();
+        let project = Path::new("/project");
+        for (index, id) in ids.iter().enumerate() {
+            write_session(
+                &sessions,
+                id,
+                if index == 1 {
+                    Path::new("/other")
+                } else {
+                    project
+                },
+                SystemTime::UNIX_EPOCH + Duration::from_secs(1000 + index as u64),
+                &[
+                    user_message(&format!("common title {index}")),
+                    assistant_message("ok", true),
+                ],
+            );
+        }
+        store
+            .sync_sessions(&sessions, &CancellationToken::new())
+            .unwrap();
+        let journal = sessions.join(format!("{}.jsonl", ids[0]));
+        let original = fs::read(&journal).unwrap();
+        let modified = fs::metadata(&journal).unwrap().modified().unwrap();
+        store.set_session_pinned(&ids[0], true).unwrap();
+        store.set_session_pinned(&ids[0], true).unwrap();
+        store.set_session_pinned(&ids[1], true).unwrap();
+        assert_eq!(
+            summary_ids(&store.search_sessions(None, "").unwrap()),
+            [ids[1].clone(), ids[0].clone(), ids[2].clone()]
+        );
+        assert_eq!(
+            summary_ids(&store.search_sessions(Some(project), "common").unwrap()),
+            [ids[0].clone(), ids[2].clone()]
+        );
+        assert!(
+            store.search_sessions(None, "absent").unwrap().is_empty(),
+            "pin 不能绕过搜索条件"
+        );
+        drop(store);
+        let mut store = Store::open(&path).unwrap();
+        store.rebuild_sessions(&sessions).unwrap();
+        let rows = store.search_sessions(None, "common").unwrap();
+        assert_eq!(
+            summary_ids(&rows),
+            [ids[1].clone(), ids[0].clone(), ids[2].clone()]
+        );
+        assert!(rows[0].pinned && rows[1].pinned && !rows[2].pinned);
+        assert_eq!(
+            store.load_inputs(project, None, 100).unwrap()[0].text,
+            "kept input"
+        );
+        store.set_session_pinned(&ids[0], false).unwrap();
+        assert_eq!(
+            summary_ids(&store.search_sessions(None, "").unwrap()),
+            [ids[1].clone(), ids[2].clone(), ids[0].clone()]
+        );
+        assert_eq!(fs::read(&journal).unwrap(), original);
+        assert_eq!(
+            fs::metadata(&journal).unwrap().modified().unwrap(),
+            modified
+        );
+        // 数据库锁竞争失败不能改变已提交的偏好。
+        let blocker = crate::sqlite::open(&path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let error = store.set_session_pinned(&ids[1], false).unwrap_err();
+        assert_eq!(error.to_string(), UNAVAILABLE);
+        blocker.execute_batch("ROLLBACK").unwrap();
+        assert!(store.search_sessions(None, "").unwrap()[0].pinned);
+        assert!(store.set_session_pinned("missing", true).is_err());
     }
 
     #[test]
@@ -933,6 +1090,6 @@ mod image_input_tests {
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 }

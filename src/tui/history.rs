@@ -38,6 +38,12 @@ pub(super) enum Request {
         cwd: Option<PathBuf>,
         query: String,
     },
+    SetSessionPinned {
+        panel_generation: u64,
+        request_id: u64,
+        id: String,
+        pinned: bool,
+    },
     Shutdown,
 }
 
@@ -52,6 +58,11 @@ pub(super) enum Reply {
         panel_generation: u64,
         request_id: u64,
         result: Result<SessionListing>,
+    },
+    SessionPinned {
+        panel_generation: u64,
+        request_id: u64,
+        result: Result<()>,
     },
 }
 
@@ -140,6 +151,16 @@ impl Worker {
                                     sessions,
                                     diagnostics: Vec::new(),
                                 }),
+                        },
+                        Request::SetSessionPinned {
+                            panel_generation,
+                            request_id,
+                            id,
+                            pinned,
+                        } => Reply::SessionPinned {
+                            panel_generation,
+                            request_id,
+                            result: store.set_session_pinned(&id, pinned),
                         },
                         Request::Shutdown => break,
                     };

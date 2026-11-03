@@ -90,6 +90,11 @@ impl App {
                     request_id,
                     result,
                 } => self.receive_session_search(panel_generation, request_id, result),
+                Reply::SessionPinned {
+                    panel_generation,
+                    request_id,
+                    result,
+                } => self.receive_session_pin(panel_generation, request_id, result),
             }
         }
         true
@@ -109,6 +114,53 @@ impl App {
             cwd,
             query,
         })
+    }
+
+    pub(in crate::tui) fn pin_session(&mut self, index: usize) {
+        let Some(panel) = &mut self.session_panel else {
+            return;
+        };
+        let panel_generation = panel.generation();
+        let Some((request_id, id, pinned)) = panel.pin_request(index) else {
+            return;
+        };
+        if !self.send_history(Request::SetSessionPinned {
+            panel_generation,
+            request_id,
+            id,
+            pinned,
+        }) {
+            self.receive_session_pin(
+                panel_generation,
+                request_id,
+                Err(anyhow::anyhow!("History database unavailable.")),
+            );
+        }
+    }
+
+    pub(in crate::tui) fn receive_session_pin(
+        &mut self,
+        panel_generation: u64,
+        request_id: u64,
+        result: Result<()>,
+    ) {
+        let Some(panel) = &mut self.session_panel else {
+            return;
+        };
+        if panel.generation() != panel_generation || !panel.pin_finished(request_id) {
+            return;
+        }
+        match result {
+            Ok(()) => {
+                let (request_id, cwd, query) = panel.refresh_request();
+                if !self.history_search(panel_generation, request_id, cwd, query)
+                    && let Some(panel) = &mut self.session_panel
+                {
+                    panel.fail(request_id, "Pin saved; session search unavailable.".into());
+                }
+            }
+            Err(_) => panel.set_feedback("Could not save session pin; please retry.".into()),
+        }
     }
 
     /// 打开/删除后先同步 JSONL 索引再搜索。

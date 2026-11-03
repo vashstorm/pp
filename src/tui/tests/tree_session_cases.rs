@@ -236,6 +236,7 @@ fn resume_cancelled_search_never_reopens_panel_and_keeps_editor_usable() {
                 preview: String::new(),
                 bytes: 0,
                 done: false,
+                pinned: false,
             }],
             diagnostics: Vec::new(),
         }),
@@ -265,6 +266,7 @@ fn sqlite_resume_ignores_stale_search_replies() {
                 preview: String::new(),
                 bytes: 0,
                 done: true,
+                pinned: false,
             }],
             diagnostics: Vec::new(),
         }

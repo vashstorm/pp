@@ -13,6 +13,21 @@ const ACCENT: Color = Color::Rgb(229, 177, 64);
 const BORDER: Color = Color::Rgb(57, 151, 192);
 const MUTED: Color = Color::Rgb(99, 105, 119);
 const SUCCESS: Color = Color::Rgb(133, 192, 117);
+const ROW_BG: Color = Color::Rgb(38, 40, 51);
+const STRIPE_BG: Color = Color::Rgb(48, 50, 62);
+const SELECTED_BG: Color = Color::Rgb(97, 163, 245);
+const SELECTED_FG: Color = Color::Rgb(38, 40, 51);
+const TIME_FG: Color = Color::Rgb(156, 158, 165);
+const TITLE_COLORS: [Color; 8] = [
+    Color::Rgb(139, 180, 250),
+    Color::Rgb(244, 174, 185),
+    Color::Rgb(242, 213, 153),
+    Color::Rgb(137, 216, 231),
+    Color::Rgb(182, 184, 250),
+    Color::Rgb(161, 218, 153),
+    Color::Rgb(205, 173, 238),
+    Color::Rgb(239, 193, 218),
+];
 
 pub(super) enum Phase {
     Loading,
@@ -20,6 +35,7 @@ pub(super) enum Phase {
     Restoring,
     ConfirmDelete(usize),
     Deleting,
+    Pinning,
 }
 
 pub(super) enum Action {
@@ -27,6 +43,7 @@ pub(super) enum Action {
     Cancel,
     Resume(usize),
     Delete(usize),
+    Pin(usize),
 }
 
 /// 全屏会话选择器。目录扫描与检索由独立 history worker 完成；面板只安装
@@ -47,6 +64,7 @@ pub(super) struct Panel {
     pending: bool,
     // 查询/范围变化后安装结果时重置选中；删除后的同步保留选中并夹取。
     reset_selection: bool,
+    selected_id: Option<String>,
     dirty: bool,
     error: Option<String>,
     feedback: Option<String>,
@@ -68,6 +86,7 @@ impl Panel {
             request_id: 0,
             pending: false,
             reset_selection: true,
+            selected_id: None,
             dirty: false,
             error: None,
             feedback: None,
@@ -128,9 +147,15 @@ impl Panel {
             self.selected = 0;
             self.offset = 0;
         } else {
-            self.selected = self.selected.min(self.sessions.len().saturating_sub(1));
+            self.selected = self
+                .selected_id
+                .take()
+                .and_then(|id| self.sessions.iter().position(|session| session.id == id))
+                .unwrap_or(self.selected)
+                .min(self.sessions.len().saturating_sub(1));
             self.offset = self.offset.min(self.sessions.len().saturating_sub(1));
         }
+        self.selected_id = None;
         true
     }
 
@@ -175,6 +200,26 @@ impl Panel {
         self.sessions.get(index).map(|session| session.id.as_str())
     }
 
+    pub(super) fn pin_request(&mut self, index: usize) -> Option<(u64, String, bool)> {
+        let session = self.sessions.get(index)?;
+        let id = session.id.clone();
+        let pinned = !session.pinned;
+        self.selected_id = Some(id.clone());
+        self.issue();
+        self.phase = Phase::Pinning;
+        Some((self.request_id, id, pinned))
+    }
+
+    /// 写入成功后重新查询排序；写入失败时保留原行和原选择。
+    pub(super) fn pin_finished(&mut self, request_id: u64) -> bool {
+        if request_id != self.request_id || !matches!(self.phase, Phase::Pinning) {
+            return false;
+        }
+        self.phase = Phase::Ready;
+        self.pending = false;
+        true
+    }
+
     pub(super) fn paste(&mut self, text: &str) {
         if matches!(self.phase, Phase::Loading | Phase::Ready) {
             self.query
@@ -201,7 +246,7 @@ impl Panel {
 
     pub(super) fn key(&mut self, key: KeyEvent) -> Action {
         match self.phase {
-            Phase::Restoring | Phase::Deleting => return Action::None,
+            Phase::Restoring | Phase::Deleting | Phase::Pinning => return Action::None,
             Phase::ConfirmDelete(index) => {
                 return match key.code {
                     KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
@@ -220,6 +265,12 @@ impl Panel {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => return Action::Cancel,
+            KeyCode::Char('p') if control && self.actionable() => {
+                if self.sessions.get(self.selected).is_some() {
+                    self.phase = Phase::Pinning;
+                    return Action::Pin(self.selected);
+                }
+            }
             KeyCode::Enter => {
                 if self.actionable() && self.sessions.get(self.selected).is_some() {
                     return Action::Resume(self.selected);
@@ -315,12 +366,13 @@ impl Panel {
             Phase::ConfirmDelete(_) => "Delete selected session?  Enter/y delete · Esc/n cancel",
             Phase::Deleting => "Deleting session…",
             Phase::Restoring => "Restoring session…",
+            Phase::Pinning => "Saving session pin…",
             _ if self.pending => "Searching sessions… · Esc cancel",
             _ if self.error.is_some() => "[type to retry · Esc cancel]",
             _ if self.all_projects => {
-                "[⌫/Delete delete · ↵ select · ← current folder · Esc cancel]"
+                "[Ctrl+P pin/unpin · Delete delete · ↵ select · ← current folder · Esc cancel]"
             }
-            _ => "[⌫/Delete delete · ↵ select · → all projects · Esc cancel]",
+            _ => "[Ctrl+P pin/unpin · Delete delete · ↵ select · → all projects · Esc cancel]",
         };
         frame.render_widget(
             Line::styled(
@@ -336,7 +388,8 @@ impl Panel {
             Rect::new(area.x, footer_y, area.width, 1),
         );
         let top = area.y.saturating_add(4);
-        let height = footer_y.saturating_sub(top);
+        let details_y = footer_y.saturating_sub(1);
+        let height = details_y.saturating_sub(top);
         if height == 0 {
             return;
         }
@@ -364,7 +417,7 @@ impl Panel {
             );
             return;
         }
-        self.page_size = usize::from((height.saturating_add(1) / 4).max(1));
+        self.page_size = usize::from(height);
         if self.selected < self.offset {
             self.offset = self.selected;
         }
@@ -375,6 +428,13 @@ impl Panel {
             .offset
             .min(self.sessions.len().saturating_sub(self.page_size));
         let now = SystemTime::now();
+        let time_width = self
+            .sessions
+            .iter()
+            .map(|session| format_age(session.updated_at, now).len())
+            .max()
+            .unwrap_or(0)
+            .max(8);
         for (row, session) in self
             .sessions
             .iter()
@@ -382,27 +442,53 @@ impl Panel {
             .skip(self.offset)
             .take(self.page_size)
         {
-            let current = Some(session.id.as_str()) == self.current_id.as_deref();
             let title = if session.summary.is_empty() {
                 "Untitled session"
             } else {
                 &session.summary
             };
-            let preview = if session.preview.is_empty() {
-                "(no messages)"
+            let selected = row == self.selected;
+            let background = if selected {
+                SELECTED_BG
+            } else if row % 2 == 0 {
+                STRIPE_BG
             } else {
-                &session.preview
+                ROW_BG
             };
-            let mut metadata = vec![Span::styled(
-                format!(
-                    "{}  ·  {}  ·  ",
-                    format_age(session.updated_at, now),
-                    format_size(session.bytes)
+            let foreground = if selected {
+                SELECTED_FG
+            } else {
+                title_color(&session.id)
+            };
+            let lines = Line::from(vec![
+                Span::raw(if selected { "› " } else { "  " }),
+                Span::styled(
+                    format!("{:<time_width$}  ", format_age(session.updated_at, now)),
+                    Style::default().fg(if selected { SELECTED_FG } else { TIME_FG }),
                 ),
-                Style::default().fg(MUTED),
-            )];
-            if current {
-                metadata.push(Span::styled("current  ·  ", Style::default().fg(ACCENT)));
+                Span::styled(
+                    if session.pinned { " " } else { "  " },
+                    Style::default().fg(if selected { SELECTED_FG } else { ACCENT }),
+                ),
+                Span::raw(super::display_text(title).into_owned()),
+            ]);
+            let row_area = Rect::new(area.x, top + (row - self.offset) as u16, area.width, 1);
+            frame.render_widget(
+                Paragraph::new(lines).style(Style::default().fg(foreground).bg(background)),
+                row_area,
+            );
+            // 宽字符的续列会被文本渲染重置，最后统一补齐整行背景。
+            frame
+                .buffer_mut()
+                .set_style(row_area, Style::default().bg(background));
+        }
+        if let Some(session) = self.sessions.get(self.selected) {
+            let mut metadata = Vec::new();
+            if session.pinned {
+                metadata.push(Span::styled(" pinned · ", Style::default().fg(ACCENT)));
+            }
+            if Some(session.id.as_str()) == self.current_id.as_deref() {
+                metadata.push(Span::styled("current · ", Style::default().fg(ACCENT)));
             }
             metadata.push(Span::styled(
                 if session.done {
@@ -412,27 +498,17 @@ impl Panel {
                 },
                 Style::default().fg(if session.done { SUCCESS } else { MUTED }),
             ));
-            let lines = [
-                Line::from(vec![
-                    Span::styled(
-                        if row == self.selected { "❯ " } else { "  " },
-                        Style::default().fg(ACCENT),
-                    ),
-                    Span::raw(title),
-                ]),
-                Line::styled(format!("  {preview}"), Style::default().fg(MUTED)),
-                Line::from(
-                    std::iter::once(Span::raw("  "))
-                        .chain(metadata)
-                        .collect::<Vec<_>>(),
-                ),
-            ];
-            let y = top + ((row - self.offset) * 4) as u16;
-            for (line, text) in lines.into_iter().enumerate() {
-                if y + (line as u16) < footer_y {
-                    frame.render_widget(text, Rect::new(area.x, y + line as u16, area.width, 1));
-                }
-            }
+            metadata.push(Span::raw(format!(
+                " · {} · {} · {} · {}",
+                format_size(session.bytes),
+                super::display_text(&session.preview),
+                super::display_text(&session.cwd.to_string_lossy()),
+                session.id
+            )));
+            frame.render_widget(
+                Paragraph::new(Line::from(metadata)).style(Style::default().fg(MUTED)),
+                Rect::new(area.x, details_y, area.width, 1),
+            );
         }
     }
 }
@@ -441,14 +517,21 @@ fn format_age(time: SystemTime, now: SystemTime) -> String {
     let seconds = now.duration_since(time).unwrap_or_default().as_secs();
     let (value, unit) = match seconds {
         0..60 => return "just now".into(),
-        60..3600 => (seconds / 60, "minute"),
-        3600..86400 => (seconds / 3600, "hour"),
-        86400..604800 => (seconds / 86400, "day"),
-        604800..2592000 => (seconds / 604800, "week"),
-        2592000..31536000 => (seconds / 2592000, "month"),
-        _ => (seconds / 31536000, "year"),
+        60..3600 => (seconds / 60, "m"),
+        3600..86400 => (seconds / 3600, "h"),
+        86400..604800 => (seconds / 86400, "d"),
+        604800..2592000 => (seconds / 604800, "w"),
+        2592000..31536000 => (seconds / 2592000, "mo"),
+        _ => (seconds / 31536000, "y"),
     };
-    format!("{value} {unit}{} ago", if value == 1 { "" } else { "s" })
+    format!("{value}{unit} ago")
+}
+
+fn title_color(id: &str) -> Color {
+    let hash = id.bytes().fold(0u64, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(u64::from(byte))
+    });
+    TITLE_COLORS[hash as usize % TITLE_COLORS.len()]
 }
 
 fn format_size(bytes: u64) -> String {
@@ -475,6 +558,7 @@ mod tests {
             bytes: 1536,
             updated_at: SystemTime::now() - Duration::from_secs(120),
             done: true,
+            pinned: false,
         }
     }
 
@@ -540,18 +624,25 @@ mod tests {
     }
 
     #[test]
-    fn resume_panel_matches_three_line_layout_and_searches_scopes() {
+    fn resume_panel_matches_single_line_layout_and_searches_scopes() {
         let mut panel = panel();
         let (screen, terminal) = render(&mut panel, 100, 30);
         let lines: Vec<_> = screen.lines().collect();
         assert!(lines[0].contains("Resume session (current folder)"));
         assert!(lines[2].starts_with("> "));
-        assert!(lines[4].starts_with("❯ 当前会话"));
-        assert!(lines[5].contains("answer for 当前会话"));
-        assert!(lines[6].contains("2 minutes ago  ·  1.5KB  ·  current  ·  ✓ done"));
-        assert!(lines[8].contains("修复 Rust 测试"));
-        assert_eq!(terminal.backend().buffer()[(0, 4)].fg, ACCENT);
-        assert_eq!(terminal.backend().buffer()[(2, 5)].fg, MUTED);
+        assert!(lines[4].starts_with("› 2m ago"));
+        assert!(lines[4].contains("当前会话"));
+        assert!(lines[5].contains("修复 Rust 测试"));
+        assert!(!lines[4..6].iter().any(|line| line.contains("answer for")));
+        assert!(lines[28].contains("current · ✓ done · 1.5KB"));
+        assert_eq!(terminal.backend().buffer()[(0, 4)].fg, SELECTED_FG);
+        assert_eq!(terminal.backend().buffer()[(99, 4)].bg, SELECTED_BG);
+        assert_eq!(terminal.backend().buffer()[(2, 5)].fg, TIME_FG);
+        assert_eq!(terminal.backend().buffer()[(99, 5)].bg, ROW_BG);
+        assert_eq!(
+            terminal.backend().buffer()[(14, 5)].fg,
+            title_color("alpha")
+        );
         assert_eq!(terminal.backend().cursor_position(), (2, 2).into());
 
         // 范围切换只发送新检索；等待期间旧行不可见也不能选择。
@@ -605,6 +696,84 @@ mod tests {
         );
         assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
         assert!(matches!(panel.key(key(KeyCode::Esc)), Action::Cancel));
+    }
+
+    #[test]
+    fn resume_pin_preserves_identity_after_reordering_and_rejects_repeated_actions() {
+        let mut panel = panel();
+        panel.key(key(KeyCode::Down));
+        let pin = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert!(matches!(panel.key(pin), Action::Pin(1)));
+        let (request_id, id, pinned) = panel.pin_request(1).unwrap();
+        assert_eq!(id, "alpha");
+        assert!(pinned);
+        assert!(!panel.sessions[1].pinned, "写入前不更新状态");
+        assert!(matches!(panel.key(pin), Action::None));
+        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+        panel.paste("ignored");
+        assert!(panel.query.is_empty());
+        assert!(!panel.pin_finished(request_id - 1));
+        assert!(panel.pin_finished(request_id));
+        let (search_id, _, _) = panel.refresh_request();
+        let mut alpha = summary("alpha", "/project", "修复 Rust 测试");
+        alpha.pinned = true;
+        assert!(panel.install(
+            search_id,
+            listing(vec![alpha, summary("current", "/project", "当前会话")])
+        ));
+        assert_eq!(panel.selected, 0);
+        let (screen, terminal) = render(&mut panel, 100, 20);
+        assert!(screen.lines().nth(4).unwrap().contains(" 修复 Rust 测试"));
+        assert_eq!(terminal.backend().buffer()[(12, 4)].symbol(), "");
+        assert_eq!(terminal.backend().buffer()[(14, 4)].symbol(), "修");
+        assert!(screen.contains(" pinned"));
+        assert_eq!(terminal.backend().buffer()[(99, 4)].bg, SELECTED_BG);
+        assert!(matches!(panel.key(pin), Action::Pin(0)));
+        let (request_id, id, pinned) = panel.pin_request(0).unwrap();
+        assert_eq!(id, "alpha");
+        assert!(!pinned);
+        assert!(panel.pin_finished(request_id));
+        panel.set_feedback("Could not save session pin; please retry.".into());
+        assert!(panel.sessions[0].pinned, "写入失败保持原状态和选择");
+        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(0)));
+
+        panel.paste("search");
+        search(&mut panel);
+        assert!(
+            matches!(panel.key(pin), Action::None),
+            "等待查询时禁止 pin 旧行"
+        );
+    }
+
+    #[test]
+    fn resume_rows_keep_title_alignment_stripes_and_clip_unicode() {
+        let mut panel = panel();
+        let (request_id, _, _) = panel.sync_request();
+        assert!(panel.install(
+            request_id,
+            listing(vec![
+                summary("one", "/project", &"长标题👩‍💻".repeat(40)),
+                summary("two", "/project", "第二行"),
+                summary("three", "/project", "第三行"),
+            ])
+        ));
+        // TUI 输出完整帧；TestBackend 的差分快照会重置宽字符续列，不能替代实际帧。
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        let completed = terminal
+            .draw(|frame| panel.draw(frame, frame.area()))
+            .unwrap();
+        let buffer = completed.buffer;
+        assert_eq!(buffer[(14, 4)].symbol(), "长");
+        assert_eq!(buffer[(14, 5)].symbol(), "第");
+        assert_eq!(buffer[(39, 5)].bg, ROW_BG);
+        assert_eq!(buffer[(39, 6)].bg, STRIPE_BG);
+        assert_eq!(buffer[(14, 6)].fg, title_color("three"));
+        panel.key(key(KeyCode::Down));
+        let completed = terminal
+            .draw(|frame| panel.draw(frame, frame.area()))
+            .unwrap();
+        assert_eq!(completed.buffer[(39, 4)].bg, STRIPE_BG);
+        assert_eq!(completed.buffer[(39, 5)].bg, SELECTED_BG);
     }
 
     #[test]
@@ -685,9 +854,14 @@ mod tests {
         );
         render(&mut panel, 100, 14);
         panel.key(key(KeyCode::PageDown));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(2)));
+        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(8)));
         panel.key(key(KeyCode::End));
-        assert!(render(&mut panel, 100, 10).0.contains("❯ session-19"));
+        let screen = render(&mut panel, 100, 10).0;
+        assert!(
+            screen
+                .lines()
+                .any(|line| line.starts_with('›') && line.contains("session-19"))
+        );
         render(&mut panel, 100, 40);
         panel.wheel(true);
         assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(18)));
@@ -710,12 +884,12 @@ mod tests {
         assert_eq!(format_age(now + Duration::from_secs(60), now), "just now");
         for (seconds, expected) in [
             (59, "just now"),
-            (60, "1 minute ago"),
-            (3600, "1 hour ago"),
-            (86400, "1 day ago"),
-            (604800, "1 week ago"),
-            (2592000, "1 month ago"),
-            (31536000, "1 year ago"),
+            (60, "1m ago"),
+            (3600, "1h ago"),
+            (86400, "1d ago"),
+            (604800, "1w ago"),
+            (2592000, "1mo ago"),
+            (31536000, "1y ago"),
         ] {
             assert_eq!(
                 format_age(now - Duration::from_secs(seconds), now),

@@ -145,6 +145,82 @@ fn resume_boundary_row(lines: &[String], needle: &str) -> usize {
 }
 
 #[test]
+fn tui_slash_resume_pins_persist_reorder_search_and_report_save_failure() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let launch = tempfile::tempdir().unwrap();
+    let older = resume_boundary_create_session(&server, home.path(), project.path(),
+        "pin older session", "older answer");
+    let newer = resume_boundary_create_session(&server, home.path(), project.path(),
+        "pin newer session", "newer answer");
+    let epoch = std::time::SystemTime::UNIX_EPOCH;
+    resume_boundary_set_modified(&resume_boundary_journal(home.path(), &older), epoch + Duration::from_secs(1000));
+    resume_boundary_set_modified(&resume_boundary_journal(home.path(), &newer), epoch + Duration::from_secs(2000));
+    let original = std::fs::read(resume_boundary_journal(home.path(), &older)).unwrap();
+
+    let mut pty = Pty::start_with_args(launch.path(), home.path(), &[]);
+    pty.ready();
+    resume_boundary_open(&mut pty);
+    pty.wait_for("新会话默认排在旧会话之前", |screen| {
+        let text = screen.contents();
+        text.lines().any(|line| line.starts_with('›') && line.contains("pin newer session"))
+            && text.contains("pin older session")
+    });
+    pty.input("\x1b[B");
+    pty.wait_for("选中旧会话", |screen| screen.contents().lines()
+        .any(|line| line.starts_with('›') && line.contains("pin older session")));
+
+    // 写锁失败明确反馈，不提前更新图钉标记、不改变选择；解除锁后可重试。
+    let blocker = rusqlite::Connection::open(home.path().join(".pp/agent/history.db")).unwrap();
+    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    pty.input("\x10");
+    pty.text("Could not save session pin; please retry.");
+    assert!(pty.parser.screen().contents().lines().any(|line|
+        line.starts_with('›') && line.contains("pin older session") && !line.contains('')));
+    blocker.execute_batch("ROLLBACK").unwrap();
+    pty.input("\x10");
+    pty.wait_for("旧会话置顶并保留选中", |screen| {
+        let rows: Vec<_> = screen.contents().lines().filter(|line| line.contains("pin older session") || line.contains("pin newer session")).map(str::to_owned).collect();
+        rows.len() == 2 && rows[0].starts_with('›') && rows[0].contains(" pin older session")
+    });
+    // 置顶不会绕过检索；清空查询后再次按 pin 优先排序。
+    pty.input("newer");
+    pty.wait_for("查询排除不匹配的置顶会话", |screen| {
+        let text = screen.contents();
+        text.contains("> newer") && text.contains("pin newer session") && !text.contains("pin older session")
+    });
+    pty.input("\x15");
+    pty.wait_for("清空查询仍保留置顶排序", |screen| screen.contents().lines()
+        .any(|line| line.starts_with('›') && line.contains(" pin older session")));
+    resume_boundary_close(&mut pty);
+    pty.input("/quit\r");
+    pty.finish();
+    assert_eq!(std::fs::read(resume_boundary_journal(home.path(), &older)).unwrap(), original);
+    assert_eq!(std::fs::metadata(resume_boundary_journal(home.path(), &older)).unwrap().modified().unwrap(), epoch + Duration::from_secs(1000));
+
+    // 新进程在当前目录范围也安装持久偏好；取消 pin 后仍选中旧 ID。
+    let mut pty = Pty::start_with_args_in_alt_screen(project.path(), home.path(), &["-r"]);
+    pty.wait_for("重启后置顶仍在当前目录列表首位", |screen| screen.contents().lines()
+        .any(|line| line.starts_with('›') && line.contains(" pin older session")));
+    pty.input("\x10");
+    pty.wait_for("取消置顶恢复时间排序并保留旧会话选择", |screen| {
+        let text = screen.contents();
+        let rows: Vec<_> = text.lines().filter(|line| line.contains("pin older session") || line.contains("pin newer session")).collect();
+        rows.len() == 2 && rows[0].contains("pin newer session")
+            && rows[1].starts_with('›') && rows[1].contains("pin older session") && !rows[1].contains('')
+    });
+    pty.input("\r");
+    pty.wait_for("排序变化后恢复原选中的会话", |screen| {
+        !screen.contents().contains("Resume session") && input_is_ready(screen)
+            && tui_session_is_locked(home.path(), &older)
+    });
+    pty.input("/quit\r");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
 fn tui_slash_resume_lists_all_directories_sorted_by_mtime() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
@@ -213,11 +289,14 @@ fn tui_slash_resume_lists_all_directories_sorted_by_mtime() {
     let beta_row = resume_boundary_row(&lines, "project beta");
     let alpha_row = resume_boundary_row(&lines, "project alpha");
     assert!(title_row < search_row && search_row < beta_row && beta_row < alpha_row);
-    assert_eq!(alpha_row - beta_row, 4, "每项包含标题、预览、元数据及空行");
-    assert!(lines[beta_row + 1].contains("beta answer"));
-    assert!(lines[alpha_row + 1].contains("alpha answer"));
-    assert!(lines[beta_row + 2].contains("ago") && lines[beta_row + 2].contains("✓ done"));
-    assert!(lines[alpha_row + 2].contains("ago") && lines[alpha_row + 2].contains("✓ done"));
+    assert_eq!(alpha_row - beta_row, 1, "每项只占一行");
+    assert!(lines[beta_row].contains("ago"));
+    assert!(lines[alpha_row].contains("ago"));
+    assert!(!lines[beta_row].contains("beta answer"));
+    assert!(!lines[alpha_row].contains("alpha answer"));
+    let screen = pty.parser.screen();
+    assert_eq!(screen.cell(beta_row as u16, 99).unwrap().bgcolor(), vt100::Color::Rgb(97, 163, 245));
+    assert_eq!(screen.cell(alpha_row as u16, 99).unwrap().bgcolor(), vt100::Color::Rgb(38, 40, 51));
     assert!(!lines.iter().any(|line| line.contains("fixture/primary")), "全屏面板隐藏编辑器和状态栏");
 
     // 列表是只读的：没有模型请求。
@@ -753,7 +832,7 @@ fn tui_slash_resume_navigates_beyond_viewport_and_survives_resize() {
     let mut pty = Pty::start_with_args(launch.path(), home.path(), &[]);
     pty.ready();
     // 小视口使 6 项列表超过一页。
-    pty.resize(10, 100);
+    pty.resize(9, 100);
     resume_boundary_open(&mut pty);
     pty.wait_for("小视口下的会话面板", |screen| {
         screen.contents().contains("Resume session")
@@ -920,7 +999,7 @@ fn tui_slash_resume_filters_current_folder_searches_and_deletes_saved_session() 
     pty.wait_for("当前目录仅显示当前会话和状态", |screen| {
         let text = screen.contents();
         text.contains("Resume session (current folder)") && text.contains("current scope marker")
-            && text.contains("current  ·  ✓ done") && !text.contains("saved preview marker")
+            && text.contains("current · ✓ done") && !text.contains("可删除的旧会话")
     });
     pty.input("\x1b[3~");
     pty.input("\r");
@@ -930,9 +1009,9 @@ fn tui_slash_resume_filters_current_folder_searches_and_deletes_saved_session() 
     assert!(resume_boundary_journal(home.path(), &current_id).exists());
 
     pty.input("/resume\r");
-    pty.text("current  ·  ✓ done");
+    pty.text("current · ✓ done");
     pty.input("\x1b[C");
-    pty.text("saved preview marker");
+    pty.text("可删除的旧会话");
     pty.input("\x1b[200~PREVIEW marker\x1b[201~");
     pty.wait_for("按回答预览搜索，大小写不敏感且多个词均需命中", |screen| {
         let text = screen.contents();
