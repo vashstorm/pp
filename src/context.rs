@@ -17,6 +17,9 @@ pub(crate) struct ContextUsage {
     pub(crate) estimated_tokens: u64,
     pub(crate) context_window: Option<u64>,
     pub(crate) last_request: Option<TokenUsage>,
+    /// 整个会话所有普通请求的服务端 output tokens 之和；只随会话根变化重置。
+    #[serde(default)]
+    pub(crate) session_output_tokens: u64,
     pub(crate) auto_compact: bool,
     pub(crate) threshold_percent: u8,
 }
@@ -178,6 +181,7 @@ mod tests {
             estimated_tokens: u64::MAX,
             context_window: Some(1),
             last_request: None,
+            session_output_tokens: 0,
             auto_compact: true,
             threshold_percent: 80,
         };

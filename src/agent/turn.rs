@@ -126,6 +126,8 @@ pub(super) struct TurnResources<'a> {
     pub(super) skills: &'a [crate::skills::SkillHeader],
     pub(super) client: &'a mut OpenAiClient,
     pub(super) last_request: &'a mut Option<TokenUsage>,
+    /// 会话累计 output tokens，与 `last_request` 同步更新。
+    pub(super) session_output_tokens: &'a mut u64,
     pub(super) tools: &'a Tools,
     pub(super) journal: &'a mut SessionJournal,
     pub(super) workflow: &'a mut crate::plan::WorkflowState,
@@ -156,6 +158,18 @@ pub(super) enum TurnOutcome {
     Continue,
     Completed { awaiting_user_answer: bool },
     PlanSubmitted,
+}
+
+/// 记录一次普通请求的用量：`last_request` 只保存最近一次，会话累计只增不减。
+fn record_usage(
+    last_request: &mut Option<TokenUsage>,
+    session_output_tokens: &mut u64,
+    usage: Option<TokenUsage>,
+) {
+    *last_request = usage;
+    if let Some(usage) = usage {
+        *session_output_tokens = session_output_tokens.saturating_add(usage.output_tokens);
+    }
 }
 
 /// Plan file tracked during execution: only an Execute-mode run with an
@@ -344,6 +358,7 @@ pub(super) fn completion_turn(
         client,
         skills,
         last_request,
+        session_output_tokens,
         tools,
         journal,
         workflow,
@@ -436,7 +451,7 @@ pub(super) fn completion_turn(
         request
             .messages
             .push(ChatCompletionRequestMessage::Assistant(response));
-        *last_request = usage;
+        record_usage(last_request, session_output_tokens, usage);
         return Ok(TurnOutcome::Completed {
             awaiting_user_answer,
         });
@@ -516,7 +531,7 @@ pub(super) fn completion_turn(
         }
     }
     tool_images::append_chat(&mut request.messages, attachments);
-    *last_request = usage;
+    record_usage(last_request, session_output_tokens, usage);
     if let Some(error) = stop_error {
         journal.commit(SessionRef::Completion(request))?;
         return Err(error);
@@ -540,6 +555,7 @@ pub(super) fn response_turn(
         client,
         skills,
         last_request,
+        session_output_tokens,
         tools,
         journal,
         workflow,
@@ -625,7 +641,7 @@ pub(super) fn response_turn(
     let start = input.len();
     input.extend(turn.output.into_iter().map(InputItem::from));
     if !turn.has_calls {
-        *last_request = turn.usage;
+        record_usage(last_request, session_output_tokens, turn.usage);
         return Ok(TurnOutcome::Completed {
             awaiting_user_answer,
         });
@@ -695,7 +711,7 @@ pub(super) fn response_turn(
             *plan_dirty = false;
         }
     }
-    *last_request = turn.usage;
+    record_usage(last_request, session_output_tokens, turn.usage);
     if let Some(error) = stop_error {
         journal.commit(SessionRef::Response(request))?;
         return Err(error);

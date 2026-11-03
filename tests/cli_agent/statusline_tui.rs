@@ -73,7 +73,7 @@ fn statusline_reply_calls_usage(request: Request, protocol: &str, mut calls: Val
 }
 
 #[test]
-fn statusline_out_grows_live_and_settles_on_server_usage_both_protocols() {
+fn statusline_out_accumulates_session_usage_across_requests_both_protocols() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let (_home, mut pty) = statusline_start(&fixture, protocol, false);
@@ -90,8 +90,21 @@ fn statusline_out_grows_live_and_settles_on_server_usage_both_protocols() {
         context_tui_stream_usage(&mut stream, protocol, "statusline-live-out");
         stream.finish();
         pty.completed_after("statusline-live-out");
-        pty.wait_for("请求完成后 out 改用服务端 usage", |screen| {
+        pty.wait_for("首个请求完成后 out 等于会话累计", |screen| {
             screen.contents().contains("\u{f04e2} 12K/300")
+        });
+        // 同一会话的第二个请求：out 在上一笔 300 上叠加，而不是重新从本次 usage 开始。
+        pty.input("second out task\r");
+        let ((main, _), (title, _)) = statusline_requests(&fixture);
+        statusline_reply_usage(title, protocol, "第二任务输出");
+        statusline_reply_usage(main, protocol, "statusline-second-out");
+        pty.completed_after("statusline-second-out");
+        pty.wait_for("第二次请求后 out 累计为整个会话", |screen| {
+            screen.contents().contains("\u{f04e2} 12K/600")
+        });
+        pty.input("/new\r");
+        pty.wait_for("新会话清空累计输出", |screen| {
+            screen.contents().contains("\u{f04e2} —/—")
         });
         pty.input("\x03");
         pty.finish();
@@ -232,9 +245,10 @@ fn task_status_title_parallel_fast_both_protocols_cost_and_history_isolation() {
             1
         );
         pty.input("/new\r");
-        pty.wait_for("新会话清空标题和费用", |screen| {
+        pty.wait_for("新会话清空标题、费用和累计输出", |screen| {
             let text = screen.contents();
             text.contains("0.0%/40K")
+                && text.contains("\u{f04e2} —/—")
                 && !text.contains("\u{f09a9}")
                 && !text.contains(" USD")
                 && !text.contains("\u{f051b}")

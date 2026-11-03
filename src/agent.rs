@@ -106,6 +106,8 @@ pub(crate) struct Agent {
     auto_compact: bool,
     auto_compact_threshold_percent: u8,
     last_request: Option<TokenUsage>,
+    /// 本次会话普通请求的 output tokens 累计；会话根变化才清空。
+    session_output_tokens: u64,
     catalog: ModelCatalog,
     current_model: ModelChoice,
     think_level: ThinkLevel,
@@ -444,6 +446,7 @@ impl Agent {
             auto_compact: config.settings.auto_compact,
             auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
             last_request: None,
+            session_output_tokens: 0,
             catalog,
             current_model,
             think_level,
@@ -551,6 +554,7 @@ impl Agent {
             auto_compact: config.settings.auto_compact,
             auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
             last_request: None,
+            session_output_tokens: 0,
             current_model: ModelChoice {
                 reference: checkpoint.model_reference,
                 model: config.model,
@@ -787,7 +791,7 @@ impl Agent {
         self.tools.clear_changes();
         // 导航到另一会话根：旧根的临时管道正文不能跨根复用。
         self.tools.reset_pipe_store();
-        self.last_request = None;
+        self.clear_session_usage();
         self.pending_instructions = None;
         self.pending_project_load = None;
         self.reported_project_load = reported_project_load(&replay);
@@ -903,9 +907,17 @@ impl Agent {
             estimated_tokens,
             context_window: self.current_model.context_window,
             last_request: self.last_request,
+            session_output_tokens: self.session_output_tokens,
             auto_compact: self.auto_compact,
             threshold_percent: self.auto_compact_threshold_percent,
         })
+    }
+
+    /// 会话根变化（新建、恢复、树导航、Plan 交接）同时丢弃最近请求指标与
+    /// 会话累计输出；切模型、effort 和压缩只清最近请求指标。
+    fn clear_session_usage(&mut self) {
+        self.last_request = None;
+        self.session_output_tokens = 0;
     }
 
     fn publish_context(&self, emit: &mut dyn FnMut(AgentEvent)) -> Result<()> {
@@ -1232,6 +1244,7 @@ impl Agent {
         self.client = client;
         self.current_model = choice;
         self.think_level = target_level;
+        // 切模型只丢弃最近请求指标，会话累计输出跨模型保留。
         self.last_request = None;
         self.pending_instructions = None;
         Ok(true)
@@ -1257,7 +1270,7 @@ impl Agent {
             debug.set_prompt_recorded(false);
         }
         self.replay.clear();
-        self.last_request = None;
+        self.clear_session_usage();
         self.pending_project_load = None;
         self.reported_project_load = None;
         match &mut self.session {
@@ -1737,6 +1750,7 @@ impl Agent {
                 client: &mut self.client,
                 skills: &self.request_skills,
                 last_request: &mut self.last_request,
+                session_output_tokens: &mut self.session_output_tokens,
                 tools: &self.tools,
                 journal: &mut self.journal,
                 workflow: &mut self.workflow,

@@ -192,7 +192,7 @@ impl Agent {
         }
         self.workflow = candidate_workflow;
         self.tools.clear_changes();
-        self.last_request = None;
+        self.clear_session_usage();
         self.pending_instructions = None;
         drop(verified);
         // Plan 候选未连接任何 MCP 服务：清理句柄是空快照，Drop 无副作用。

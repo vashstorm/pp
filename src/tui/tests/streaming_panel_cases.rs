@@ -243,6 +243,7 @@ fn activity_duration_follows_context_and_yields_space_on_narrow_screens() {
         auto_compact: false,
         threshold_percent: 80,
         last_request: None,
+        session_output_tokens: 0,
     });
     app.conversation.begin_run();
     app.conversation
@@ -304,6 +305,7 @@ fn token_speed_completion_and_worker_fallback_preserve_success() {
         auto_compact: false,
         threshold_percent: 80,
         last_request: None,
+        session_output_tokens: 0,
     });
     let (events, receiver) = mpsc::channel();
     app.events = Some(receiver);
@@ -350,6 +352,7 @@ fn token_speed_missing_usage_replaces_counts_but_failure_preserves_them() {
         estimated_tokens: 100,
         context_window: Some(40000),
         last_request: Some(usage),
+        session_output_tokens: 300,
         auto_compact: false,
         threshold_percent: 80,
     });

@@ -187,6 +187,7 @@ impl Agent {
                 auto_compact: config.settings.auto_compact,
                 auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
                 last_request: None,
+                session_output_tokens: 0,
                 catalog: catalog.clone(),
                 current_model: ModelChoice {
                     reference: actual_model.to_owned(),

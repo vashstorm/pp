@@ -194,8 +194,14 @@ pub(super) fn metric_fields(
     );
     let count = |value: Option<u64>| value.map_or_else(|| "—".into(), abbreviate_tokens);
     let last = usage.last_request;
-    // 生成中的请求还没有服务端 usage：先用已接收字节估算，完成后回落到权威 usage。
-    let output_tokens = live_output.or_else(|| last.map(|usage| usage.output_tokens));
+    // out 累计整个会话的服务端 output tokens；生成中的请求还没有 usage 时，
+    // 在累计值上叠加已接收字节的估算，完成后随累计值一起刷新。
+    let session_output = usage.session_output_tokens;
+    let output_tokens = match live_output {
+        Some(live) => Some(session_output.saturating_add(live)),
+        None if last.is_some() || session_output > 0 => Some(session_output),
+        None => None,
+    };
     let mut fields = [
         Some(field(SPEED_ICON, speed_text, SPEED)),
         task.and_then(|t| t.title.as_ref())
@@ -899,6 +905,7 @@ mod tests {
                 cached_tokens: Some(8_000),
                 cache_write_tokens: Some(0),
             }),
+            session_output_tokens: 45_678,
         }
     }
 
@@ -921,7 +928,7 @@ mod tests {
         assert_eq!(
             line_text(&line),
             format!(
-                " {SPEED_ICON} 30.2 tok/s · {TITLE_ICON} 修复会话历史 · {CONTEXT_ICON} 81.6%/500K {WARNING_ICON} · {IO_ICON} 12.3K/2.1K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.0123 USD · {TIMER_ICON} 1m25s "
+                " {SPEED_ICON} 30.2 tok/s · {TITLE_ICON} 修复会话历史 · {CONTEXT_ICON} 81.6%/500K {WARNING_ICON} · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.0123 USD · {TIMER_ICON} 1m25s "
             )
         );
         for (text, color) in [
@@ -929,7 +936,7 @@ mod tests {
             ("修复会话历史", PLAN_MODE),
             ("81.6%/500K", CONTEXT),
             ("12.3K", INPUT),
-            ("2.1K", OUTPUT),
+            ("45.7K", OUTPUT),
             ("8K", CACHE_READ),
             ("0", CACHE_WRITE),
             ("0.0123 USD", Color::Red),
@@ -952,9 +959,15 @@ mod tests {
     fn metric_fields_distinguish_missing_usage_and_independent_zero_cache() {
         let mut usage = status_usage();
         usage.last_request = None;
+        usage.session_output_tokens = 0;
         let text = line_text(&metric_fields(&usage, None, None, None, None, 240));
         assert!(text.contains(&format!("{IO_ICON} —/—")));
         assert!(text.contains(&format!("{CACHE_ICON} —/—")));
+        // 切模型或压缩清空最近请求指标，会话累计输出继续显示。
+        usage.session_output_tokens = 45_678;
+        let text = line_text(&metric_fields(&usage, None, None, None, None, 240));
+        assert!(text.contains(&format!("{IO_ICON} —/45.7K")), "{text}");
+        usage.session_output_tokens = 0;
         for (read, write, expected) in [
             (None, Some(0), "—/0"),
             (Some(0), None, "0/—"),
@@ -973,18 +986,19 @@ mod tests {
     }
 
     #[test]
-    fn metric_fields_live_output_overrides_last_usage_until_request_finishes() {
+    fn metric_fields_out_accumulates_session_usage_and_adds_live_estimate() {
         let usage = status_usage();
-        // 生成中：仅 out 换成实时估算，in 与缓存仍是最近一次完成的请求。
+        // 生成中：out 在会话累计上叠加实时估算，in 与缓存仍是最近一次完成的请求。
         let text = line_text(&metric_fields(&usage, None, Some(4200), None, None, 240));
-        assert!(text.contains(&format!("{IO_ICON} 12.3K/4.2K")), "{text}");
+        assert!(text.contains(&format!("{IO_ICON} 12.3K/49.9K")), "{text}");
         assert!(text.contains(&format!("{CACHE_ICON} 8K/0")), "{text}");
-        // 没有估算时回落到最近一次 usage。
+        // 没有估算时 out 就是会话累计，不回到单次请求的输出量。
         let text = line_text(&metric_fields(&usage, None, None, None, None, 240));
-        assert!(text.contains(&format!("{IO_ICON} 12.3K/2.1K")), "{text}");
-        // 首个请求没有历史 usage 时，in/缓存保持未知，out 也随流式增长。
+        assert!(text.contains(&format!("{IO_ICON} 12.3K/45.7K")), "{text}");
+        // 首个请求没有历史 usage 时，in/缓存保持未知，out 也只是本次实时估算。
         let first = ContextUsage {
             last_request: None,
+            session_output_tokens: 0,
             ..usage
         };
         let text = line_text(&metric_fields(&first, None, Some(260), None, None, 240));
@@ -1109,7 +1123,7 @@ mod tests {
             for icon in &removal_order[missing..] {
                 assert!(text.contains(icon), "不能跳过降级优先级: {text}");
             }
-            for pair in ["12.3K/2.1K", "8K/0"] {
+            for pair in ["12.3K/45.7K", "8K/0"] {
                 let icon = if pair.starts_with("12") {
                     IO_ICON
                 } else {

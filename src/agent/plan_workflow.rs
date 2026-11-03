@@ -990,7 +990,7 @@ impl Agent {
         }
         self.workflow = candidate_workflow;
         self.tools.clear_changes();
-        self.last_request = None;
+        self.clear_session_usage();
         self.pending_instructions = None;
         self.pending_project_load = None;
         self.reported_project_load = None;
@@ -1067,7 +1067,7 @@ impl Agent {
         if let Some(debug) = &mut self.debug {
             debug.set_prompt_recorded(true);
         }
-        self.last_request = None;
+        self.clear_session_usage();
         self.pending_instructions = None;
         Ok(ExecutionPreparation {
             workflow: self.workflow.clone(),

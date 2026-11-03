@@ -501,6 +501,7 @@ fn review_page_routes_progress_only_to_review_transcript_and_keeps_draft() {
         auto_compact: false,
         threshold_percent: 80,
         last_request: None,
+        session_output_tokens: 0,
     });
     app.receive_event_for_test(WorkerEvent::ReviewProgress(AgentEvent::AssistantDelta {
         text: "review finding".into(),
@@ -513,6 +514,7 @@ fn review_page_routes_progress_only_to_review_transcript_and_keeps_draft() {
             auto_compact: false,
             threshold_percent: 80,
             last_request: None,
+            session_output_tokens: 0,
         },
     }));
     // 主用量与派发不受审查影响；屏幕只显示审查流。

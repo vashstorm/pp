@@ -837,6 +837,7 @@ impl Agent {
             } => (before_tokens, after_tokens),
             other => return Ok(other),
         };
+        // 压缩只是重写历史，不改变会话身份：会话累计输出保留。
         self.last_request = None;
         if fallback_used.get() {
             self.activate_fallback(emit)?;

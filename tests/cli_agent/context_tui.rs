@@ -1046,9 +1046,9 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
 }
 
 // 验证项 4（token 指标，双协议）：流式生成期间在 Ctx 左侧显示不带前缀的非零估算
-// 速度；服务端权威 usage 到达后更新平均速度，In/Out/CRead/CWrite 使用最近一次已完成
-// 普通请求（input 仍含缓存命中总数，CRead/CWrite 只是其中的明细）；下一轮缺失 usage
-// 时计数退回未知而估算速度冻结；/new 清空全部新指标。
+// 速度；服务端权威 usage 到达后更新平均速度，In/CRead/CWrite 使用最近一次已完成
+// 普通请求，Out 累计整个会话（input 仍含缓存命中总数，CRead/CWrite 只是其中的明细）；
+// 下一轮缺失 usage 时最近请求指标退回未知而累计 out 保留，估算速度冻结；/new 清空全部新指标。
 #[test]
 fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
     for protocol in ["completion", "response"] {
@@ -1180,9 +1180,9 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         );
         streaming_complete(&mut stream, protocol, "context-metrics-missing-answer");
         stream.finish();
-        pty.wait_for("缺失 usage 后完成态计数退回未知", |screen| {
+        pty.wait_for("缺失 usage 后最近请求指标退回未知而累计 out 保留", |screen| {
             let contents = screen.contents();
-            contents.contains("\u{f04e2} —/—") && contents.contains("\u{f01bc} —/—")
+            contents.contains("\u{f04e2} —/300") && contents.contains("\u{f01bc} —/—")
         });
         let (rate, marked) =
             context_tui_speed(pty.parser.screen()).expect("流式字节必须保留最终估算速度");
@@ -1204,7 +1204,8 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
 }
 
 // 验证项 4（token 指标取消与重计）：流中 Esc 后速度停止，下一轮请求重新计数；
-// 成功压缩清空普通请求指标，摘要等待期间临时状态与既有指标同处输入栏上沿且互不侵占。
+// 成功压缩清空最近请求指标但保留会话累计 out，摘要等待期间临时状态与既有指标
+// 同处输入栏上沿且互不侵占。
 #[test]
 fn context_tui_token_metrics_cancel_stops_and_recounts() {
     for protocol in ["completion", "response"] {
@@ -1355,7 +1356,12 @@ fn context_tui_token_metrics_cancel_stops_and_recounts() {
         pty.text("Context compacted:");
         pty.ready();
         pty.resize(30, 100);
-        pty.wait_for("成功压缩后普通请求指标清空", context_tui_metrics_unknown);
+        pty.wait_for("成功压缩清空最近请求指标但保留累计 out", |screen| {
+            let contents = screen.contents();
+            contents.contains("— tok/s")
+                && contents.contains("\u{f04e2} —/300")
+                && contents.contains("\u{f01bc} —/—")
+        });
         assert!(context_tui_locate(pty.parser.screen(), "\u{f2d0} ").is_some());
         pty.input("\x03");
         pty.finish();
