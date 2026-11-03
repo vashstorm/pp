@@ -6,6 +6,58 @@ const PIPES_F8: &str = "\x1b[19~";
 const PIPES_PGUP: &str = "\x1b[5~";
 const PIPES_END: &str = "\x1b[4~";
 
+#[test]
+fn pipeline_llm_bash_card_streams_without_newlines_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let provider = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("typing-pipeline.sh"), r#"
+printf '\033[31m中'
+while [ ! -f first ]; do sleep 0.01; done
+printf '文\033[0m'
+while [ ! -f second ]; do sleep 0.01; done
+printf '\n'
+for i in {0..34}; do printf 'final-%02d\n' "$i"; done
+"#).unwrap();
+        let mut pty = ask_tui_start(&provider, home.path(), project.path(), protocol);
+        pty.input("stream pipeline\r");
+        let (request, _) = pty.request_at(&provider, api_path(protocol));
+        let args = json!({"command":"bash typing-pipeline.sh 2>&1 | cat | tail -30"});
+        let tool_call = if protocol == "completion" {
+            call("typing", "bash", args)
+        } else {
+            response_call("typing", "bash", args)
+        };
+        ask_reply_calls(request, protocol, json!([tool_call]));
+        pty.text("中");
+        assert!(!project.path().join("first").exists());
+        assert!(!pty.contents().contains("中文"));
+        std::fs::write(project.path().join("first"), "").unwrap();
+        pty.text("中文");
+        let live = pty.contents();
+        assert_eq!(live.matches("中文").count(), 1, "{protocol}: {live}");
+        assert!(!live.contains('�'), "{protocol}: {live}");
+        assert!(!project.path().join("second").exists());
+        std::fs::write(project.path().join("second"), "").unwrap();
+        let (request, body) = pty.request_at(&provider, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        let result = &outputs.last().unwrap().1;
+        assert_eq!(result["ok"], true, "{result}");
+        let output = result["output"].as_str().unwrap();
+        assert!(output.starts_with("final-05\n") && output.ends_with("final-34\n"), "{result}");
+        assert!(!output.contains("中文"), "阶段预览不能进入工具结果");
+        pty.text("final-34");
+        assert!(!pty.contents().contains("中文"));
+        ask_final_reply(request, protocol, "pipeline done");
+        pty.text("pipeline done");
+        pty.ready();
+        pty.input("\x03");
+        pty.finish();
+        no_more(&provider);
+    }
+}
+
 fn pipes_open(pty: &mut Pty) {
     pty.input(PIPES_F8);
     pty.wait_for("管道阶段面板打开", |screen| {
@@ -125,9 +177,9 @@ fn pipeline_bang_shell_live_stage_before_final_tail_output() {
     );
     pty.input(&command);
     pty.text("Elapsed:");
-    pty.wait_for("门闩未释放时 tail 尚无最终输出", |screen| {
+    pty.wait_for("门闩未释放时卡片显示上游实时输出", |screen| {
         let text = screen.contents();
-        text.contains("Elapsed:") && !text.contains("ALPHA") && !text.contains("OMEGA")
+        text.contains("Elapsed:") && text.contains("ALPHA") && !text.contains("OMEGA")
     });
 
     // /pipes 在 RunningShell 中仅本地面板：不进入 steering、不发送模型请求。
@@ -140,11 +192,11 @@ fn pipeline_bang_shell_live_stage_before_final_tail_output() {
     pipes_open(&mut pty);
     pty.text("ALPHA");
     pipes_close(&mut pty);
-    pty.wait_for("关闭面板后 shell 继续运行且主输出仍为空", |screen| {
+    pty.wait_for("关闭面板后卡片仍保留实时预览", |screen| {
         let text = screen.contents();
         !screen.alternate_screen()
             && text.contains("Elapsed:")
-            && !text.contains("ALPHA")
+            && text.contains("ALPHA")
             && !text.contains("OMEGA")
     });
     cancel_assert_no_request(&provider);

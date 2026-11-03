@@ -204,11 +204,13 @@ pub(crate) enum AgentEvent {
         id: String,
         output: String,
     },
-    /// 运行中的管道阶段元数据预览。瞬时事件：不写 journal、不并入主输出
-    /// 预览；调用完成后的 `result.pipes` 才是恢复权威。
+    /// 运行中的管道阶段预览。瞬时正文只用于卡片，不写 journal 或工具结果；
+    /// 调用完成后的 `result.pipes` 才是恢复权威。
     ToolPipelineSnapshot {
         id: String,
         pipes: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview: Option<String>,
     },
     ToolFinished {
         id: String,

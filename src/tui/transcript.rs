@@ -151,8 +151,10 @@ struct TranscriptEntry {
     footer: String,
     /// 非零阶段/观测不完整等警示，绘制为底部边框的 warning 色 span。
     footer_warning: String,
-    /// 有管道时保留有界元数据；正文只经 `/pipes` 或 `read pipe://` 获取。
+    /// 有管道时保留有界元数据。
     pipes_badge: Option<PipesBadge>,
+    /// 运行中的阶段正文；与命令真实输出独立，完成时丢弃。
+    pipeline_preview: Option<String>,
     started: Option<Instant>,
     bash_timeout_seconds: Option<u64>,
     arguments: Value,
@@ -912,13 +914,15 @@ impl Transcript {
                     self.entries.push(entry);
                 }
             }
-            // 运行中的阶段元数据只更新卡片底部的 `/pipes` 入口与警示；
-            // 主输出预览保持不变，完成后由 result.pipes 成为权威。
-            AgentEvent::ToolPipelineSnapshot { id, pipes } => {
+            AgentEvent::ToolPipelineSnapshot { id, pipes, preview } => {
                 if let Some(index) = self.tool_index(&id) {
                     let replaying = self.replaying;
                     let entry = &mut self.entries[index];
                     if entry.kind == EntryKind::Bash && entry.result.is_none() {
+                        if entry.pipeline_preview != preview {
+                            entry.pipeline_preview = preview;
+                            entry.layout = None;
+                        }
                         let badge =
                             crate::tools::output::pipes_status(&pipes).map(|status| PipesBadge {
                                 status,
@@ -941,6 +945,7 @@ impl Transcript {
             AgentEvent::ToolOutput { id, stream, text } => {
                 if let Some(index) = self.tool_index(&id) {
                     let entry = &mut self.entries[index];
+                    entry.pipeline_preview = None;
                     if entry.kind == EntryKind::Bash && entry.result.is_some() {
                         // 后台快照替换累计输出，不和上一轮正文重复拼接。
                         entry.text.clear();
@@ -959,6 +964,7 @@ impl Transcript {
             AgentEvent::ToolOutputSnapshot { id, output } => {
                 if let Some(index) = self.tool_index(&id) {
                     let entry = &mut self.entries[index];
+                    entry.pipeline_preview = None;
                     if entry.tool.as_deref() == Some("wait") {
                         if let Ok(snapshot) = serde_json::from_str::<Value>(&output) {
                             entry.result = Some(snapshot);
@@ -1012,6 +1018,7 @@ impl Transcript {
                     }
                     entry.stdout.clear();
                     entry.stderr.clear();
+                    entry.pipeline_preview = None;
                     if entry.tool.as_deref() == Some("read") {
                         // 开始时无法从参数识别的技能读取，完成后按结果来源兜底归类。
                         if entry.kind != EntryKind::Read

@@ -387,6 +387,7 @@ async fn run_interpreter(
                             (*callback)(AgentEvent::ToolPipelineSnapshot {
                                 id: config.call_id.to_owned(),
                                 pipes: config.pipes.pipes_json(),
+                                preview: config.pipes.preview(),
                             });
                         }
                         last_pipe_revision = pipe_revision;

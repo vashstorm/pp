@@ -1,6 +1,6 @@
 //! 前台 `bash` 工具的真实执行路径上的管道镜像回归。
 //!
-//! 这些用例只通过工具结果里的 `pipes` 元数据和 `PipeStore::read` 观察行为，
+//! 这些用例通过工具事件、结果里的 `pipes` 元数据和 `PipeStore::read` 观察行为，
 //! 不断言源码文本或内部 schema 文案。
 
 use super::*;
@@ -8,6 +8,45 @@ use std::time::{Duration, Instant};
 
 fn run_bash(tools: &Tools, command: &str) -> Value {
     execute(tools, "bash", json!({"command": command}))
+}
+
+#[test]
+fn pipeline_card_preview_streams_fragments_before_tail_finishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    let workflow = WorkflowState::default();
+    let mut fragments = Vec::new();
+    let command = "{ printf '\\033[31m中'; for ((i=0;i<500;i++)); do [[ -f first ]] && break; sleep 0.01; done; printf '文\\033[0m'; for ((i=0;i<500;i++)); do [[ -f second ]] && break; sleep 0.01; done; printf '\\nfinal\\n'; } 2>&1 | cat | tail -30";
+    let execution = tools.execute(
+        "bash",
+        &json!({"command": command}).to_string(),
+        "preview",
+        ToolPolicy::Execute {
+            workflow: &workflow,
+        },
+        &CancellationToken::new(),
+        &mut |event| {
+            if let AgentEvent::ToolPipelineSnapshot {
+                preview: Some(preview),
+                ..
+            } = event
+            {
+                if preview == "中" && fragments.is_empty() {
+                    fragments.push(preview);
+                    fs::write(dir.path().join("first"), "").unwrap();
+                } else if preview == "中文" && fragments.len() == 1 {
+                    fragments.push(preview);
+                    fs::write(dir.path().join("second"), "").unwrap();
+                }
+            }
+        },
+    );
+    assert!(execution.stop_error.is_none(), "{:?}", execution.stop_error);
+    assert_eq!(fragments, ["中", "中文"]);
+    let result: Value = serde_json::from_str(&execution.output).unwrap();
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["output"], "中文\nfinal\n");
+    assert!(result.get("preview").is_none());
 }
 
 fn pipes(result: &Value) -> &Value {

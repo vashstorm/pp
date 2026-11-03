@@ -125,6 +125,7 @@ fn detail_pipeline_preview_adds_badge_without_replacing_main_preview() {
             "r1",
             AgentEvent::ToolPipelineSnapshot {
                 id: "b".into(),
+                preview: None,
                 pipes: json!({
                     "run_id": RUN,
                     "uri": format!("pipe://{RUN}"),

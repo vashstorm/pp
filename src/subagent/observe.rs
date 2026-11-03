@@ -684,6 +684,7 @@ mod tests {
                 Some(&AgentEvent::ToolPipelineSnapshot {
                     id: "bash".into(),
                     pipes: serde_json::json!({"run_id":"r1","revision":i}),
+                    preview: None,
                 }),
                 None,
             );

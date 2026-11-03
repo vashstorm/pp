@@ -43,6 +43,8 @@ const MAX_EMPTY_RUNS: usize = 8;
 const MAX_PIPELINES_PER_RUN: usize = 16;
 const MAX_STAGES_PER_PIPELINE: usize = 32;
 const MAX_LABEL_BYTES: usize = 512;
+/// 卡片只复制最近一小段正文，避免每次刷新复制整个流缓存。
+const PREVIEW_BYTES: u64 = 50 * 1024;
 
 /// 临时管道 URI 的 scheme。
 pub(crate) const PIPE_URI_PREFIX: &str = "pipe://";
@@ -1231,6 +1233,40 @@ impl PipeRun {
         self.state.snapshot().to_json()
     }
 
+    /// 只预览最新顶层管道的第一条边，避免多级管道把同一正文重复展示。
+    pub(crate) fn preview(&self) -> Option<String> {
+        let pipeline = lock(&self.state.meta)
+            .pipelines
+            .iter()
+            .rev()
+            .find(|pipeline| pipeline.parent.is_none())?
+            .id;
+        let stream = lock(&self.state.streams)
+            .iter()
+            .find(|stream| stream.pipeline == pipeline && stream.producer_stage == 1)
+            .cloned()?;
+        let ring = lock(&stream.ring);
+        let start = ring.start().max(ring.end().saturating_sub(PREVIEW_BYTES));
+        let bytes = ring.read(start, ring.end());
+        drop(ring);
+        // 尾部窗口可能从 UTF-8 字符中间开始，丢弃残缺前缀。
+        let start = if start > 0 {
+            bytes
+                .iter()
+                .position(|byte| byte & 0xc0 != 0x80)
+                .unwrap_or(bytes.len())
+        } else {
+            0
+        };
+        // 复用主输出的解码与控制序列过滤；不完整字符留待后续快照显示。
+        let mut normalizer = crate::tools::output::Normalizer::default();
+        let mut preview = normalizer.feed(&bytes[start..], false);
+        if !stream.is_open() {
+            preview.push_str(&normalizer.feed(&[], true));
+        }
+        (!preview.is_empty()).then_some(preview)
+    }
+
     /// 封存本次 run：等待/停止中继、封闭剩余流、登记完成历史。
     ///
     /// 重复调用无副作用；返回最终快照。正常收尾先给中继一个观察 EOF 的宽限，
@@ -1332,6 +1368,59 @@ mod tests {
                 Err(error) => panic!("unexpected start_run error: {error}"),
             }
         }
+    }
+
+    #[test]
+    fn pipeline_card_preview_is_bounded_and_decodes_partial_utf8() {
+        let run = unique_run(&PipeStore::default());
+        let pipeline = run.observer().begin(None, 3, false, false).unwrap();
+        let stream = Arc::new(StreamState::new(
+            1,
+            pipeline,
+            1,
+            2,
+            "producer",
+            "cat",
+            Arc::new(|_| {}),
+        ));
+        run.state.push_stream(stream.clone());
+        stream.observe(b"\x1b[31mA\xff\xe4");
+        assert_eq!(run.preview().as_deref(), Some("A�"));
+        stream.observe(b"\xb8\xad\x1b[0m");
+        assert_eq!(run.preview().as_deref(), Some("A�中"));
+        let duplicate = Arc::new(StreamState::new(
+            2,
+            pipeline,
+            2,
+            3,
+            "cat",
+            "tail",
+            Arc::new(|_| {}),
+        ));
+        duplicate.observe(b"duplicate");
+        run.state.push_stream(duplicate);
+        let nested = run
+            .observer()
+            .begin(Some(pipeline), 2, false, false)
+            .unwrap();
+        let nested_stream = Arc::new(StreamState::new(
+            3,
+            nested,
+            1,
+            2,
+            "nested",
+            "cat",
+            Arc::new(|_| {}),
+        ));
+        nested_stream.observe(b"nested");
+        run.state.push_stream(nested_stream);
+        assert_eq!(run.preview().as_deref(), Some("A�中"));
+        stream.observe("中".repeat(PREVIEW_BYTES as usize).as_bytes());
+        let preview = run.preview().unwrap();
+        assert!(preview.len() <= PREVIEW_BYTES as usize);
+        assert!(preview.chars().all(|ch| ch == '中'));
+        run.observer().begin(None, 2, false, false).unwrap();
+        assert_eq!(run.preview(), None, "新管道不能沿用旧管道的预览");
     }
 
     fn edge(run: &PipeRun, pipeline: u64, index: usize) -> (OpenFile, OpenFile) {

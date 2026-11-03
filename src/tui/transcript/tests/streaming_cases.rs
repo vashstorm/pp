@@ -783,6 +783,58 @@ fn bash_footer_tracks_elapsed_and_renders_status_on_bottom_border() {
 }
 
 #[test]
+fn bash_pipeline_fragments_update_card_and_final_output_replaces_preview() {
+    let mut transcript = Transcript::new();
+    tool(
+        &mut transcript,
+        "p",
+        "bash",
+        json!({"command":"work | tail -30"}),
+    );
+    for preview in ["中", "中文", "中文片段"] {
+        transcript.progress(AgentEvent::ToolPipelineSnapshot {
+            id: "p".into(),
+            pipes: json!({}),
+            preview: Some(preview.into()),
+        });
+        let text = screen(&render(&mut transcript, 100, 20)).replace(' ', "");
+        assert_eq!(text.matches(preview).count(), 1, "{text}");
+        assert_eq!(transcript.entries[0].status, EntryStatus::Running);
+    }
+    transcript.progress(AgentEvent::ToolOutputSnapshot {
+        id: "p".into(),
+        output: "真实输出".into(),
+    });
+    let text = screen(&render(&mut transcript, 100, 20)).replace(' ', "");
+    assert!(
+        text.contains("真实输出") && !text.contains("中文片段"),
+        "{text}"
+    );
+    transcript.progress(AgentEvent::ToolPipelineSnapshot {
+        id: "p".into(),
+        pipes: json!({}),
+        preview: Some("继续增长".into()),
+    });
+    let text = screen(&render(&mut transcript, 100, 20)).replace(' ', "");
+    assert!(text.contains("继续增长"), "{text}");
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "p".into(),
+        result: json!({"ok":true,"exit_code":0,"output":"最终结果\n"}),
+    });
+    transcript.progress(AgentEvent::ToolPipelineSnapshot {
+        id: "p".into(),
+        pipes: json!({}),
+        preview: Some("迟到片段".into()),
+    });
+    let text = screen(&render(&mut transcript, 100, 20)).replace(' ', "");
+    assert!(text.contains("最终结果"), "{text}");
+    assert!(
+        !text.contains("继续增长") && !text.contains("迟到片段"),
+        "{text}"
+    );
+}
+
+#[test]
 fn bash_footer_surfaces_pipeline_badge_and_warnings_outside_output() {
     const RUN: &str = "0123456789abcdef0123456789abcdef";
     let mut transcript = Transcript::new();
@@ -794,6 +846,7 @@ fn bash_footer_surfaces_pipeline_badge_and_warnings_outside_output() {
     );
     transcript.progress(AgentEvent::ToolPipelineSnapshot {
         id: "p".into(),
+        preview: None,
         pipes: json!({
             "run_id": RUN,
             "uri": format!("pipe://{RUN}"),

@@ -225,6 +225,7 @@ impl TranscriptEntry {
             footer: String::new(),
             footer_warning: String::new(),
             pipes_badge: None,
+            pipeline_preview: None,
             started: Some(Instant::now()),
             bash_timeout_seconds: None,
             arguments: Value::Null,
@@ -879,6 +880,9 @@ impl TranscriptEntry {
                 }
                 text.push_str("[stderr]\n");
                 text.push_str(self.stderr.strip_suffix('\n').unwrap_or(&self.stderr));
+            }
+            if let Some(preview) = &self.pipeline_preview {
+                text.clone_from(preview);
             }
             let style = if bash {
                 Style::default().fg(MUTED_TEXT).bg(BASH_BACKGROUND)
