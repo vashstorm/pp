@@ -39,6 +39,7 @@ The runtime, not the model, moves a successfully completed approved plan to .pp/
 ## Default Markdown template
 Output follows the user's language; the placeholders below are English only as examples, and the generated body should be localized.
 Start phase headings directly with uppercase Roman numerals: I, II, III, IV, and so on, without a "Phase" prefix.
+The example shows independent tasks A and B, a downstream task C that depends only on A, and main-agent integration. Replace these with the actual work and dependencies; omit unnecessary tasks or sections. Headings organize the checklist, not global synchronization barriers. Labels such as A are part of the task text for document-local references, not runtime todo IDs; todo calls still require the complete actual task text.
 
 ```markdown
 # <Plan title>
@@ -49,19 +50,45 @@ Start phase headings directly with uppercase Roman numerals: I, II, III, IV, and
 ## Current evidence
 <Verified behavior, files and symbols. Include only facts that affect implementation decisions.>
 
-## I: <Behavioral goal>
-- [ ] <Concrete action and completion condition.>
+## Shared contracts and scheduling
+<Settled interfaces, data shapes, error behavior and existing implementations shared by the workstreams. If a contract requires an implementation change before other work can start, include that change as a prerequisite task below.>
+<Initially ready tasks, concurrent dispatch groups, exclusive edit ownership and any required isolation/reconciliation. Each task's own dependencies determine when it can start; do not wait for unrelated tasks or an entire section to finish. The main agent owns checklist updates, integration and final acceptance.>
+
+## I: <Independent workstreams>
+- [ ] A: <Concrete deliverable and completion condition for the first workstream.>
+  - Owner: <One subagent; use an available agent type and enabled model role where appropriate.>
+  - Depends on: <None, or exact prerequisite tasks and required outputs.>
+  - Parallel with: <B, once their respective prerequisites are satisfied.>
+  - Edit scope: <Exclusively owned files/symbols; shared contracts consumed read-only.>
   - Location: <Verified paths, symbols and relevant callers.>
   - Change: <Exact behavior, interfaces, fields or literal values; reuse existing implementations.>
-  - Ownership and dependencies: <Main agent or subagent responsibilities, exclusive edit scope, prerequisites and tasks that can be dispatched together.>
   - Acceptance: <Concrete input -> observable result.>
+  - Handoff: <Changed files, settled outputs and verification evidence needed by dependent tasks.>
 
-## II: <Behavioral goal>
-- [ ] <Concrete action and completion condition.>
-  - Location: <Edit targets.>
-  - Change: <Implementation requirements.>
-  - Ownership and dependencies: <Responsibilities and edit boundaries, required prerequisite outputs, parallel dispatch group or reason for sequential execution.>
-  - Acceptance: <Evidence of completion.>
+- [ ] B: <Concrete deliverable and completion condition for an independent workstream.>
+  - Owner: <A different subagent; the main agent may own a separate ready workstream.>
+  - Depends on: <None, or actual prerequisites; no dependency on A merely because it is listed first.>
+  - Parallel with: <A; C may also overlap if their edit scopes are disjoint.>
+  - Edit scope: <Exclusively owned files/symbols, disjoint from concurrent writers.>
+  - Location and change: <Verified targets, relevant callers, exact behavior and existing code to reuse.>
+  - Acceptance: <Concrete input -> observable result.>
+  - Handoff: <Changed files, outputs and verification evidence.>
+
+## II: <Dependent work, if needed>
+- [ ] C: <Deliverable that requires A's accepted output.>
+  - Owner: <An available subagent or the main agent.>
+  - Depends on: <A's specific accepted output; start as soon as it is available, even if B is still running.>
+  - Parallel with: <B or other independent ready tasks; state any actual edit conflict.>
+  - Edit scope: <Owned files/symbols; transfer ownership explicitly if reusing A's edit scope.>
+  - Location and change: <Verified targets, exact behavior and the contract consumed from A.>
+  - Acceptance and handoff: <Observable result, changed files and verification evidence for integration.>
+
+## III: Integration and final acceptance
+- [ ] <Integrate the required outputs and verify the requested end-to-end behavior.>
+  - Owner: Main agent.
+  - Depends on: <Only the tasks and accepted outputs actually needed for this integration.>
+  - Edit scope and change: <Shared wiring, affected callers, conflict reconciliation and compatibility checks within the approved scope.>
+  - Acceptance: <Cross-workstream behavior and the applicable checks from Verification below; inspect child changes and evidence before marking tasks complete.>
 
 ## Verification
 <Working directory, environment/fixture prerequisites, exact commands, expected output and necessary real UI interactions.>
