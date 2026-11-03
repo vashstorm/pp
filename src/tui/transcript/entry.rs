@@ -655,6 +655,7 @@ impl TranscriptEntry {
         let read = self.kind == EntryKind::Read;
         let edit = self.is_edit();
         let search = self.is_search();
+        let file_read = self.is_file_read();
         let border = |source| LayoutLine {
             content: LayoutContent::Source {
                 source,
@@ -666,7 +667,7 @@ impl TranscriptEntry {
         if bash || search {
             lines.push(border(Source::Top));
         }
-        if user {
+        if user || file_read {
             lines.push(border(Source::Padding));
         }
         if read {
@@ -786,11 +787,11 @@ impl TranscriptEntry {
                 .expect("read summary initialized");
             for (index, row) in summary.iter().enumerate() {
                 let continuation = if index == 0 {
-                    "   "
+                    "    "
                 } else if index + 1 < summary.len() {
-                    "   │  "
+                    "    │  "
                 } else {
-                    "      "
+                    "       "
                 };
                 lines.extend(
                     wrap_block(row.clone(), width, continuation)
@@ -1035,7 +1036,7 @@ impl TranscriptEntry {
             }
             lines.push(border(Source::Bottom));
         }
-        if user {
+        if user || file_read {
             lines.push(border(Source::Padding));
         }
         if edit {
@@ -1064,7 +1065,7 @@ impl TranscriptEntry {
         }));
     }
 
-    fn read_path_spans(&self, show_success: bool) -> Vec<Span<'static>> {
+    fn read_path_spans(&self) -> Vec<Span<'static>> {
         let path = self
             .result
             .as_ref()
@@ -1112,7 +1113,6 @@ impl TranscriptEntry {
             .unwrap_or_default();
         let status = match self.status {
             EntryStatus::Running => " · running",
-            EntryStatus::Complete if show_success => " · ok",
             EntryStatus::Complete => "",
             EntryStatus::Failed => " · failed",
         };
@@ -1147,7 +1147,7 @@ impl TranscriptEntry {
             EntryStatus::Failed => ("✗", palette::REMOVED),
         };
         let mut header = Line::from(vec![
-            Span::raw(" "),
+            Span::raw(if self.is_file_read() { "  " } else { " " }),
             Span::styled(icon, Style::default().fg(color)),
             Span::styled(
                 " Read",
@@ -1180,20 +1180,20 @@ impl TranscriptEntry {
                 " · ",
                 Style::default().fg(palette::READ_SUMMARY_META),
             ));
-            header.spans.extend(entries[0].read_path_spans(true));
+            header.spans.extend(entries[0].read_path_spans());
             rows.push(header);
         } else {
             rows.push(header);
             for (index, entry) in entries.iter().enumerate() {
                 let mut spans = vec![Span::styled(
                     if index + 1 == entries.len() {
-                        "   └─ "
+                        "    └─ "
                     } else {
-                        "   ├─ "
+                        "    ├─ "
                     },
                     Style::default().fg(palette::READ_SUMMARY_META),
                 )];
-                spans.extend(entry.read_path_spans(false));
+                spans.extend(entry.read_path_spans());
                 rows.push(Line::from(spans));
             }
         }
