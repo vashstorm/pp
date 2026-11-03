@@ -151,12 +151,19 @@ impl<W: Write> Surface<W> {
             // 与整帧一起提交到终端，避免实际 writer 在一帧中途被多次刷新。
             let mut output = Vec::new();
             output.sync_update(|writer| -> io::Result<()> {
+                if cursor.is_none() && visibility_changed {
+                    // 先隐藏，再滚屏、清屏或定位，避免重建期间暴露中间位置。
+                    queue!(writer, Hide)?;
+                }
                 if !started {
                     // 为主界面预留独立屏幕，将启动前的 shell 内容自然推入历史。
                     writer.write_all("\r\n".repeat(usize::from(buffer.area.height)).as_bytes())?;
                 }
                 if was_alternate && (!alternate || reset) {
                     queue!(writer, LeaveAlternateScreen)?;
+                    if cursor.is_none() {
+                        queue!(writer, Hide)?;
+                    }
                 }
                 if reset {
                     queue!(
@@ -168,9 +175,9 @@ impl<W: Write> Surface<W> {
                 }
                 if alternate && (!was_alternate || reset) {
                     queue!(writer, EnterAlternateScreen, Clear(ClearType::All))?;
-                }
-                if cursor.is_none() && visibility_changed {
-                    queue!(writer, Hide)?;
+                    if cursor.is_none() {
+                        queue!(writer, Hide)?;
+                    }
                 }
                 for cells in history {
                     let area = Rect::new(0, 0, buffer.area.width, 1);
@@ -386,6 +393,39 @@ mod tests {
         let output = String::from_utf8_lossy(&surface.writer);
         assert_eq!(output.matches("\x1b[?25l").count(), 1);
         assert_eq!(output.matches("\x1b[?25h").count(), 2);
+    }
+
+    #[test]
+    fn native_surface_history_rebuild_hides_cursor_before_any_movement() {
+        for reset in [false, true] {
+            let mut surface = Surface::new(Vec::new());
+            let mut parser = vt100::Parser::new(6, 24, 100);
+            if reset {
+                surface
+                    .paint(&frame("old session"), Some(Position::new(3, 4)), false, &[])
+                    .unwrap();
+                parser.process(&surface.writer);
+                surface.reset_history();
+            }
+            let before = surface.writer.len();
+            surface
+                .paint(
+                    &frame("restored session"),
+                    None,
+                    false,
+                    &[frame("committed").content[..24].to_vec()],
+                )
+                .unwrap();
+            // 逐字节消费，核对终端尚未处理完整帧时的光标状态。
+            for byte in &surface.writer[before..] {
+                let previous = parser.screen().cursor_position();
+                parser.process(&[*byte]);
+                if parser.screen().cursor_position() != previous {
+                    assert!(parser.screen().hide_cursor(), "重建时暴露了中间光标位置");
+                }
+            }
+            assert_frame(&parser, &frame("restored session"), None);
+        }
     }
 
     #[test]

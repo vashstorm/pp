@@ -141,6 +141,7 @@ pub(crate) fn run(
     app.renderer = Some(render_worker::Worker::start().context("starting layout worker")?);
     let mut dirty = true;
     let mut generation = app.conversation.native_generation();
+    let mut rebuilding_history = true;
     let mut clock = frame_clock::FrameClock::new(options.max_fps);
     loop {
         // 先采纳已经到达的后台结果，再用最新状态解释下一批按键。
@@ -186,6 +187,7 @@ pub(crate) fn run(
                 &workspace.context,
                 &mut canvas,
                 &mut surface,
+                &mut rebuilding_history,
                 true,
             )
             .context("finishing terminal transcript")?;
@@ -202,6 +204,7 @@ pub(crate) fn run(
             if generation != app.conversation.native_generation() {
                 surface.reset_history();
                 generation = app.conversation.native_generation();
+                rebuilding_history = true;
                 app.history_browser = false;
             }
             dirty = paint_surface(
@@ -209,6 +212,7 @@ pub(crate) fn run(
                 &workspace.context,
                 &mut canvas,
                 &mut surface,
+                &mut rebuilding_history,
                 false,
             )
             .context("drawing terminal")?;
@@ -242,6 +246,7 @@ fn paint_surface(
     context: &StatusContext,
     canvas: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
     surface: &mut surface::Surface<impl io::Write>,
+    rebuilding_history: &mut bool,
     exiting: bool,
 ) -> Result<bool> {
     let (width, height) = crossterm::terminal::size()?;
@@ -263,6 +268,10 @@ fn paint_surface(
                     thread::park_timeout(Duration::from_millis(1));
                     continue;
                 }
+                // 排版等待期间仍可能产生后续批次，不能在批次间隙显示光标。
+                if !app.conversation.render_pending() {
+                    *rebuilding_history = false;
+                }
                 break;
             };
             app.conversation.preview_native_batch(&batch);
@@ -276,9 +285,8 @@ fn paint_surface(
             } else {
                 rendered.as_ref().expect("rendered frame")
             };
-            let cursor = canvas
-                .backend()
-                .cursor_visible()
+            // 历史重建跨越多帧，只在全部批次提交后恢复输入光标。
+            let cursor = (canvas.backend().cursor_visible() && !*rebuilding_history)
                 .then(|| canvas.backend().cursor_position());
             surface.paint(buffer, cursor, false, &batch.rows)?;
             app.conversation.acknowledge_native_batch(batch);
@@ -292,9 +300,7 @@ fn paint_surface(
         app.draw(frame, context);
         rendered = Some(frame.buffer_mut().clone());
     })?;
-    let cursor = canvas
-        .backend()
-        .cursor_visible()
+    let cursor = (canvas.backend().cursor_visible() && (alternate || !*rebuilding_history))
         .then(|| canvas.backend().cursor_position());
     let buffer = if exiting {
         app.normal_snapshot.as_ref().expect("normal frame")
