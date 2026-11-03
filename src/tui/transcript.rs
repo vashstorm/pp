@@ -161,12 +161,13 @@ struct TranscriptEntry {
     pipeline_preview: Option<String>,
     started: Option<Instant>,
     bash_timeout_seconds: Option<u64>,
+    read_frame: usize,
     arguments: Value,
     result: Option<Value>,
     /// 内联或迟到报告；每个路径保留最新一份，按出现顺序展示在正文之后。
     diagnostics: Vec<crate::lsp::DiagnosticReport>,
     display: DisplayContext,
-    display_title: Option<String>,
+    display_title: Option<Vec<Line<'static>>>,
     hidden: bool,
 }
 
@@ -363,6 +364,18 @@ impl Transcript {
             .chain(self.background_bash.values())
         {
             let entry = &mut self.entries[*index];
+            if entry.tool.as_deref() == Some("read") && entry.status == EntryStatus::Running {
+                let frame = entry.started.map_or(0, |started| {
+                    (now.saturating_duration_since(started).as_millis() / 120 % 12) as usize
+                });
+                if entry.read_frame != frame {
+                    entry.read_frame = frame;
+                    entry.layout = None;
+                    entry.display_title = None;
+                    self.read_groups_key = None;
+                    changed = true;
+                }
+            }
             if entry.kind == EntryKind::Bash && entry.status == EntryStatus::Running {
                 changed |= entry.update_bash_footer(
                     entry

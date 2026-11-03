@@ -228,6 +228,7 @@ impl TranscriptEntry {
             pipeline_preview: None,
             started: Some(Instant::now()),
             bash_timeout_seconds: None,
+            read_frame: 0,
             arguments: Value::Null,
             result: None,
             diagnostics: Vec::new(),
@@ -371,10 +372,7 @@ impl TranscriptEntry {
                 },
                 meta,
             ),
-            Span::styled(
-                palette::display_text(path).into_owned(),
-                style.fg(palette::ACTIVITY),
-            ),
+            Span::styled(palette::display_text(path).into_owned(), style),
         ];
         if let EntryBody::Diff(FileDiff::Text { added, removed, .. }) = &self.body {
             spans.extend([
@@ -409,7 +407,7 @@ impl TranscriptEntry {
         match source {
             Source::Top | Source::Divider | Source::Bottom | Source::Padding => "",
             Source::Footer => &self.footer,
-            Source::Title => self.display_title.as_deref().unwrap_or(&self.title),
+            Source::Title => &self.title,
             Source::Text => self.visible_text(),
             Source::StdoutLabel => "[stdout]",
             Source::Stdout if self.kind == EntryKind::Bash => {
@@ -472,34 +470,15 @@ impl TranscriptEntry {
             return Line::styled(text, Style::default().fg(color).bg(BASH_BACKGROUND));
         }
         if self.kind == EntryKind::Read && matches!(source, Source::Title) {
-            let mut spans = Vec::new();
-            if title_end {
-                let color = match self.status {
-                    EntryStatus::Running => palette::ACCENT,
-                    EntryStatus::Complete => palette::ADDED,
-                    EntryStatus::Failed => palette::REMOVED,
-                };
-                spans.push(Span::styled(" · ", Style::default().fg(color)));
-            }
-            if range.start == 0 {
-                let (label, path) = text
-                    .find(' ')
-                    .map_or((text.as_ref(), ""), |end| text.split_at(end));
-                spans.push(Span::styled(
-                    label.to_owned(),
-                    Style::default()
-                        .fg(self.tool_accent())
-                        .add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::styled(
-                    path.to_owned(),
-                    Style::default().fg(palette::READ_TEXT),
-                ));
-            } else {
-                spans.push(Span::styled(text, Style::default().fg(palette::READ_TEXT)));
-            }
-            spans.push(Span::raw(" "));
-            return Line::from(spans).style(Style::default().bg(palette::READ_BG));
+            let mut header = self.read_header(1);
+            header.spans.push(Span::styled(
+                format!(
+                    " {} ",
+                    palette::display_text(text.strip_prefix("Read ").unwrap_or(&text))
+                ),
+                Style::default().fg(palette::READ_SUMMARY_PATH),
+            ));
+            return header.style(Style::default().bg(palette::READ_BG));
         }
         if matches!(source, Source::Title) {
             let mut spans = if self.tool.is_some() {
@@ -565,7 +544,7 @@ impl TranscriptEntry {
             && self.kind != EntryKind::Read
             && self.display_title.is_none()
         {
-            self.display_title = Some(self.read_summary(true));
+            self.display_title = Some(Self::read_summary(std::slice::from_ref(self)));
         }
         if self.markdown_dirty {
             self.body = EntryBody::Markdown(crate::tui::markdown::parse(self.visible_text()));
@@ -800,59 +779,26 @@ impl TranscriptEntry {
                 }),
             );
         } else if self.is_file_read() {
-            // 普通文件摘要使用无边框树形列表，分开绘制标题、数量、连线与路径。
-            for text in self.source(Source::Title).lines() {
-                let meta = Style::default().fg(palette::READ_SUMMARY_META);
-                let path = Style::default().fg(palette::READ_SUMMARY_PATH);
-                let (spans, continuation) = if let Some(count) = text.strip_prefix("● Read (") {
-                    (
-                        vec![
-                            Span::styled(
-                                "● Read",
-                                Style::default().fg(palette::READ_SUMMARY_TITLE),
-                            ),
-                            Span::styled(format!(" ({count}"), meta),
-                        ],
-                        "  ",
-                    )
-                } else if let Some(path_text) = text.strip_prefix("● Read · ") {
-                    (
-                        vec![
-                            Span::styled(
-                                "● Read",
-                                Style::default().fg(palette::READ_SUMMARY_TITLE),
-                            ),
-                            Span::styled(" · ", meta),
-                            Span::styled(path_text.to_owned(), path),
-                        ],
-                        "  ",
-                    )
-                } else if let Some((branch, path_text)) = text.split_once("─ ") {
-                    (
-                        vec![
-                            Span::styled(format!("{branch}─ "), meta),
-                            Span::styled(path_text.to_owned(), path),
-                        ],
-                        if branch.ends_with('├') {
-                            "  │  "
-                        } else {
-                            "     "
-                        },
-                    )
+            // 路径与参数保留独立 span，避免文件名中的冒号或空格干扰着色。
+            let summary = self
+                .display_title
+                .as_ref()
+                .expect("read summary initialized");
+            for (index, row) in summary.iter().enumerate() {
+                let continuation = if index == 0 {
+                    "   "
+                } else if index + 1 < summary.len() {
+                    "   │  "
                 } else {
-                    (vec![Span::styled(text.to_owned(), path)], "     ")
+                    "      "
                 };
                 lines.extend(
-                    wrap_block(
-                        Line::from(spans).style(Style::default().bg(palette::READ_SUMMARY_BG)),
-                        width,
-                        continuation,
-                    )
-                    .into_iter()
-                    .map(|line| LayoutLine {
-                        content: LayoutContent::Styled(line),
-                        height: 1,
-                    }),
+                    wrap_block(row.clone(), width, continuation)
+                        .into_iter()
+                        .map(|line| LayoutLine {
+                            content: LayoutContent::Styled(line),
+                            height: 1,
+                        }),
                 );
             }
         } else if !read
@@ -1118,7 +1064,7 @@ impl TranscriptEntry {
         }));
     }
 
-    pub(super) fn read_summary(&self, show_success: bool) -> String {
+    fn read_path_spans(&self, show_success: bool) -> Vec<Span<'static>> {
         let path = self
             .result
             .as_ref()
@@ -1179,10 +1125,82 @@ impl TranscriptEntry {
         } else {
             ""
         };
-        format!(
-            "● Read · {}{range}{image}{status}{truncated}",
-            palette::display_text(path)
-        )
+        vec![
+            Span::styled(
+                palette::display_text(path).into_owned(),
+                Style::default().fg(palette::READ_SUMMARY_PATH),
+            ),
+            Span::styled(
+                format!("{range}{image}{status}{truncated}"),
+                Style::default().fg(palette::ACTIVITY),
+            ),
+        ]
+    }
+
+    fn read_header(&self, count: usize) -> Line<'static> {
+        const CLOCKS: [&str; 12] = [
+            "🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛",
+        ];
+        let (icon, color) = match self.status {
+            EntryStatus::Running => (CLOCKS[self.read_frame], palette::ACCENT),
+            EntryStatus::Complete => ("✓", palette::ADDED),
+            EntryStatus::Failed => ("✗", palette::REMOVED),
+        };
+        let mut header = Line::from(vec![
+            Span::raw(" "),
+            Span::styled(icon, Style::default().fg(color)),
+            Span::styled(
+                " Read",
+                Style::default().fg(if self.is_file_read() {
+                    palette::READ_SUMMARY_TITLE
+                } else {
+                    self.tool_accent()
+                }),
+            ),
+        ]);
+        if count > 1 {
+            header.spans.push(Span::styled(
+                format!(" ({count})"),
+                Style::default().fg(palette::READ_SUMMARY_META),
+            ));
+        }
+        header
+    }
+
+    pub(super) fn read_summary(entries: &[Self]) -> Vec<Line<'static>> {
+        // 分组中仍有读取未完成时，组首跟随该条目的时钟帧。
+        let status_entry = entries
+            .iter()
+            .find(|entry| entry.status == EntryStatus::Running)
+            .unwrap_or(&entries[0]);
+        let mut header = status_entry.read_header(entries.len());
+        let mut rows = Vec::with_capacity(entries.len() + 1);
+        if entries.len() == 1 {
+            header.spans.push(Span::styled(
+                " · ",
+                Style::default().fg(palette::READ_SUMMARY_META),
+            ));
+            header.spans.extend(entries[0].read_path_spans(true));
+            rows.push(header);
+        } else {
+            rows.push(header);
+            for (index, entry) in entries.iter().enumerate() {
+                let mut spans = vec![Span::styled(
+                    if index + 1 == entries.len() {
+                        "   └─ "
+                    } else {
+                        "   ├─ "
+                    },
+                    Style::default().fg(palette::READ_SUMMARY_META),
+                )];
+                spans.extend(entry.read_path_spans(false));
+                rows.push(Line::from(spans));
+            }
+        }
+        for row in &mut rows {
+            row.style = Style::default().bg(palette::READ_SUMMARY_BG);
+        }
+        rows
     }
 
     pub(super) fn add_lines(&self, source: Source, lines: &mut Vec<LayoutLine>) {

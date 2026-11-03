@@ -133,7 +133,10 @@ fn read_group_cache_refreshes_status_and_failure_boundaries() {
     ] {
         assert!(text.contains(expected), "{expected}: {text}");
     }
-    assert!(!text.contains("Read ("), "{text}");
+    assert!(
+        !text.contains("Read (3)") && !text.contains("Read (2)"),
+        "{text}"
+    );
     transcript.progress(AgentEvent::ToolFinished {
         id: "three".into(),
         result: json!({"ok":true,"content":"three-body","lines_read":3,"truncated":true}),
@@ -146,7 +149,10 @@ fn read_group_cache_refreshes_status_and_failure_boundaries() {
     ] {
         assert!(text.contains(expected), "{expected}: {text}");
     }
-    assert!(!text.contains("Read ("), "{text}");
+    assert!(
+        !text.contains("Read (3)") && !text.contains("Read (2)"),
+        "{text}"
+    );
 
     let mut transcript = Transcript::new();
     for id in ["first", "second"] {
@@ -168,7 +174,90 @@ fn read_group_cache_refreshes_status_and_failure_boundaries() {
     ] {
         assert!(text.contains(expected), "{expected}: {text}");
     }
-    assert!(!text.contains("Read ("), "{text}");
+    assert!(
+        !text.contains("Read (3)") && !text.contains("Read (2)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn read_status_clock_animates_groups_and_stops_after_completion() {
+    for paths in [vec!["one"], vec!["one", "two"], vec!["skill://rust"]] {
+        let mut transcript = Transcript::new();
+        let started = Instant::now();
+        for path in &paths {
+            tool(&mut transcript, path, "read", json!({"path":path}));
+            transcript.entries.last_mut().unwrap().started = Some(started);
+        }
+        let initial = render(&mut transcript, 80, 20);
+        assert_eq!(
+            initial[(1 + if paths[0].starts_with("skill:") { 2 } else { 0 }, 0)].symbol(),
+            "🕐"
+        );
+        let count = if paths.len() > 1 {
+            format!("Read ({})", paths.len())
+        } else {
+            "Read".into()
+        };
+        assert!(screen(&initial).contains(&count));
+        assert!(!screen(&initial).contains("Read (1)"));
+        transcript.tick(started + Duration::from_millis(120));
+        let next = render(&mut transcript, 80, 20);
+        let icon_x = 1 + if paths[0].starts_with("skill:") { 2 } else { 0 };
+        assert_eq!(next[(icon_x, 0)].symbol(), "🕑");
+        assert_eq!(next[(icon_x + 2, 0)].symbol(), " ");
+        assert_eq!(next[(icon_x + 3, 0)].symbol(), "R");
+        if paths.len() == 2 {
+            transcript.progress(AgentEvent::ToolFinished {
+                id: "one".into(),
+                result: json!({"ok":true,"content":"body"}),
+            });
+            assert_eq!(render(&mut transcript, 80, 20)[(1, 0)].symbol(), "🕑");
+        }
+        transcript.progress(AgentEvent::ToolFinished {
+            id: paths.last().unwrap().to_string(),
+            result: json!({"ok":true,"content":"body"}),
+        });
+        let complete = render(&mut transcript, 80, 20);
+        assert_eq!(complete[(icon_x, 0)].symbol(), "✓");
+        assert_eq!(complete[(icon_x, 0)].fg, palette::ADDED);
+        assert_eq!(complete[(icon_x + 1, 0)].symbol(), " ");
+        assert_eq!(complete[(icon_x + 2, 0)].symbol(), "R");
+        assert!(!screen(&complete).contains("Read (1)"));
+        assert!(!transcript.tick(started + Duration::from_secs(2)));
+        assert_eq!(screen(&complete), screen(&render(&mut transcript, 80, 20)));
+    }
+}
+
+#[test]
+fn read_filename_color_preserves_colons_spaces_and_parameter_color() {
+    let mut transcript = Transcript::new();
+    let path = "dir/a:2 file.rs";
+    tool(
+        &mut transcript,
+        "read",
+        "read",
+        json!({"path":path,"offset":3,"limit":2}),
+    );
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "read".into(),
+        result: json!({"ok":true,"source":path,"lines_read":2,"truncated":true}),
+    });
+    let buffer = render(&mut transcript, 80, 10);
+    let text = screen(&buffer);
+    assert!(
+        text.contains("Read · dir/a:2 file.rs:3-4 · ok · truncated"),
+        "{text}"
+    );
+    let start = text.lines().next().unwrap().find(path).unwrap();
+    let start = Line::raw(&text[..start]).width();
+    for column in start..start + path.len() {
+        assert_eq!(buffer[(column as u16, 0)].fg, palette::READ_SUMMARY_PATH);
+    }
+    assert_eq!(
+        buffer[((start + path.len()) as u16, 0)].fg,
+        palette::ACTIVITY
+    );
 }
 
 #[test]
@@ -192,28 +281,29 @@ fn read_summary_matches_reference_layout_colors_and_wrapping() {
     assert_eq!(
         text.lines().take(5).map(str::trim_end).collect::<Vec<_>>(),
         [
-            "● Read (4)",
-            "  ├─ src/tools.rs:184-707",
-            "  ├─ src/agent/plan_workflow.rs:1-315",
-            "  ├─ src/events.rs:1-170",
-            "  └─ src/agent.rs:1430-1600",
+            " ✓ Read (4)",
+            "   ├─ src/tools.rs:184-707",
+            "   ├─ src/agent/plan_workflow.rs:1-315",
+            "   ├─ src/events.rs:1-170",
+            "   └─ src/agent.rs:1430-1600",
         ]
     );
-    assert_eq!(buffer[(0, 0)].fg, palette::READ_SUMMARY_TITLE);
-    assert_eq!(buffer[(7, 0)].fg, palette::READ_SUMMARY_META);
+    assert_eq!(buffer[(1, 0)].fg, palette::ADDED);
+    assert_eq!(buffer[(8, 0)].fg, palette::READ_SUMMARY_META);
     for row in 0..5 {
         for col in 0..80 {
             assert_eq!(buffer[(col, row)].bg, palette::READ_SUMMARY_BG);
             assert!(!buffer[(col, row)].modifier.contains(Modifier::BOLD));
         }
         if row > 0 {
-            assert_eq!(buffer[(2, row)].fg, palette::READ_SUMMARY_META);
-            assert_eq!(buffer[(5, row)].fg, palette::READ_SUMMARY_PATH);
+            assert_eq!(buffer[(3, row)].fg, palette::READ_SUMMARY_META);
+            assert_eq!(buffer[(6, row)].fg, palette::READ_SUMMARY_PATH);
         }
     }
+    assert_eq!(buffer[(18, 1)].fg, palette::ACTIVITY);
     let narrow = screen(&render(&mut transcript, 20, 20));
-    assert!(narrow.contains("  │  workflow.rs:1-3"), "{narrow}");
-    assert!(narrow.contains("  └─ src/agent.rs:14"), "{narrow}");
+    assert!(narrow.contains("   │  _workflow.rs:1"), "{narrow}");
+    assert!(narrow.contains("   └─ src/agent.rs:1"), "{narrow}");
     assert_eq!(transcript.entries.len(), 4);
     assert!(
         transcript

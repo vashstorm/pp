@@ -90,26 +90,7 @@ impl Transcript {
                     end += 1;
                 }
             }
-            let title = if end - index > 1 {
-                let mut title = format!("● Read ({})", end - index);
-                for (offset, entry) in self.entries[index..end].iter().enumerate() {
-                    let summary = entry.read_summary(false);
-                    let path = summary
-                        .split_once("Read · ")
-                        .map_or(summary.as_str(), |(_, path)| path);
-                    title.push_str(&format!(
-                        "\n  {} {path}",
-                        if index + offset + 1 == end {
-                            "└─"
-                        } else {
-                            "├─"
-                        }
-                    ));
-                }
-                title
-            } else {
-                self.entries[index].read_summary(true)
-            };
+            let title = TranscriptEntry::read_summary(&self.entries[index..end]);
             for (offset, entry) in self.entries[index..end].iter_mut().enumerate() {
                 let hidden = offset > 0;
                 let next_title = if hidden { None } else { Some(title.clone()) };
@@ -327,7 +308,7 @@ impl Transcript {
                             ratatui::text::Line::from(vec![
                                 Span::styled(
                                     format!(" {title} "),
-                                    Style::default().fg(entry.tool_accent()).bg(card_bg),
+                                    Style::default().fg(palette::BASH_TITLE).bg(card_bg),
                                 ),
                                 Span::styled(
                                     format!("· {status} "),

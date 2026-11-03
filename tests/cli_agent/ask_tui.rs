@@ -143,11 +143,14 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
         {
             let screen = pty.parser.screen();
             for (label, color) in [
-                ("● Read", vt100::Color::Rgb(145, 183, 218)),
+                ("✓", vt100::Color::Rgb(137, 210, 129)),
+                ("Read", vt100::Color::Rgb(145, 183, 218)),
                 ("(2)", vt100::Color::Rgb(96, 102, 114)),
                 ("├─", vt100::Color::Rgb(96, 102, 114)),
-                ("one:1-20", vt100::Color::Rgb(190, 198, 212)),
-                ("two:2-20", vt100::Color::Rgb(190, 198, 212)),
+                ("one", vt100::Color::Rgb(254, 188, 56)),
+                (":1-20", vt100::Color::Rgb(190, 198, 212)),
+                ("two", vt100::Color::Rgb(254, 188, 56)),
+                (":2-20", vt100::Color::Rgb(190, 198, 212)),
             ] {
                 let (row, col) = ask_panel_find(screen, label);
                 let cell = screen.cell(row, col).unwrap();

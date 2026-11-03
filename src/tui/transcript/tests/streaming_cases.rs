@@ -686,8 +686,16 @@ fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
             }
             for width in [80, 20, 80] {
                 let buffer = render(&mut transcript, width, 20);
-                // 普通 Read 摘要以实心圆替代文件图标，仍保留两列前缀。
-                let display_icon = if name == "read" { "●" } else { icon };
+                // 图标与标题之间仅保留一列 ASCII 空格。
+                let display_icon = if name == "read" {
+                    if transcript.entries[0].status == EntryStatus::Running {
+                        "🕐"
+                    } else {
+                        "✗"
+                    }
+                } else {
+                    icon
+                };
                 let row = (0..buffer.area.height)
                     .find_map(|row| {
                         (0..buffer.area.width)
@@ -698,7 +706,8 @@ fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
                 assert_eq!(buffer[(row.0 + 1, row.1)].symbol(), " ");
                 if width == 80 {
                     assert_eq!(
-                        buffer[(row.0 + 2, row.1)].symbol(),
+                        buffer[(row.0 + Span::raw(display_icon).width() as u16 + 1, row.1)]
+                            .symbol(),
                         if name == "read" {
                             "R".into()
                         } else if name == "grep" {
@@ -1100,6 +1109,9 @@ fn bash_card_and_thinking_match_reference_and_keep_full_output() {
     assert_eq!(buffer[(2, 1)].fg, palette::SHELL_TITLE);
     assert_eq!(buffer[(4, 1)].fg, palette::TOOL_COMMAND);
     assert!(text.contains("Bash · done"));
+    for column in 3..7 {
+        assert_eq!(buffer[(column, 0)].fg, palette::BASH_TITLE);
+    }
     assert_eq!(buffer[(2, 1)].bg, BASH_BACKGROUND);
     let think_row = text
         .lines()

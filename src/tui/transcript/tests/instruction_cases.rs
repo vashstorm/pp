@@ -67,9 +67,9 @@ fn instruction_cards_match_reference_layout_and_colors() {
         let text = screen(&buffer);
         assert!(
             text.contains(if skill {
-                "· Read skill://rust"
+                "✓ Read skill://rust"
             } else {
-                "· Read AGENTS.md"
+                "✓ Read AGENTS.md"
             }),
             "{text}"
         );
@@ -93,7 +93,7 @@ fn instruction_cards_match_reference_layout_and_colors() {
                 palette::READ_TITLE
             }
         );
-        assert_eq!(buffer[(10, 0)].fg, palette::READ_TEXT);
+        assert_eq!(buffer[(10, 0)].fg, palette::READ_SUMMARY_PATH);
         let cell = |needle: &str| {
             let row = text.lines().position(|line| line.contains(needle)).unwrap() as u16;
             &buffer[(2, row)]
