@@ -20,8 +20,9 @@ const GREEN: Color = Color::Rgb(131, 207, 126);
 const ROLES_ICON: &str = "\u{f000e}";
 const MODELS_ICON: &str = "\u{f0279}";
 const PROVIDER_ICON: &str = "\u{f048d}";
-const ENABLED_ICON: &str = "\u{f0521}";
-const DISABLED_ICON: &str = "\u{f0522}";
+// 角色行前使用全尺寸实心圆／空心圆，保持单列占位与点击位置不变。
+const ENABLED_ICON: &str = "\u{f0765}";
+const DISABLED_ICON: &str = "\u{f0766}";
 const FALLBACK_ICON: &str = "\u{f060d}";
 const SEARCH_ICON: &str = "\u{f0349}";
 
