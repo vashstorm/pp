@@ -3,7 +3,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-const MAX_MS: u64 = 1_800_000;
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(120 * 60);
 const PROGRESS: Duration = Duration::from_millis(500);
 const POLL: Duration = Duration::from_millis(25);
 
@@ -14,33 +14,9 @@ struct Args {
     run_ids: Vec<String>,
     #[serde(default)]
     task_ids: Vec<String>,
-    #[serde(default = "default_timeout")]
-    timeout_ms: u64,
-}
-fn default_timeout() -> u64 {
-    MAX_MS
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn wait_default_matches_the_schema_and_accepts_zero() {
-        assert_eq!(
-            serde_json::from_str::<Args>("{}").unwrap().timeout_ms,
-            MAX_MS
-        );
-        assert_eq!(
-            serde_json::from_str::<Args>(r#"{"timeout_ms":0}"#)
-                .unwrap()
-                .timeout_ms,
-            0
-        );
-        assert_eq!(
-            definition().parameters.unwrap()["properties"]["timeout_ms"]["maximum"],
-            MAX_MS
-        );
-    }
+    // 兼容旧调用；时限固定，模型不能通过此参数缩短等待。
+    #[serde(default, rename = "timeout_ms")]
+    _timeout_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,11 +51,10 @@ impl State {
 pub(super) fn definition() -> FunctionObject {
     FunctionObject {
         name: "wait".into(),
-        description: Some("Wait for the first settled owned background Bash task or subagent run, and return all newly settled results plus the remaining jobs. Optional run_ids/task_ids select targets; omit both to watch all undelivered owned work. timeout_ms defaults to 1800000 (30 minutes), accepts 0..=1800000; 0 reads a snapshot. Timeout or steering interrupts only the wait, not the jobs. Results are delivered once after context commit; use bash_task status or read for non-consuming inspection. Continue useful work before waiting. Running services may never exit: verify readiness with actual requests, then stop them explicitly.".into()),
+        description: Some("Wait until every selected owned background Bash task and subagent run has settled, then return all undelivered results. Optional run_ids/task_ids select targets; omit both to watch all undelivered owned work. The fixed timeout is 120 minutes; on timeout, unfinished selected jobs and their descendants are stopped and reaped before returning. Steering stays queued until the batch finishes. Esc cancels the parent task and its owned work. Results are delivered once after context commit; use bash_task status or read for non-consuming inspection. Continue useful work before waiting. Running services may never exit: verify readiness with actual requests, then stop them explicitly.".into()),
         parameters: Some(json!({"type":"object","properties":{
             "run_ids":{"type":"array","items":{"type":"string","minLength":1}},
-            "task_ids":{"type":"array","items":{"type":"string","minLength":1}},
-            "timeout_ms":{"type":"integer","minimum":0,"maximum":MAX_MS}
+            "task_ids":{"type":"array","items":{"type":"string","minLength":1}}
         },"additionalProperties":false})),
         ..Default::default()
     }
@@ -97,8 +72,7 @@ impl Tools {
         }
     }
 
-    pub(crate) fn start_wait_batch(&self, input: Option<&InputQueue>) {
-        *self.wait_input.borrow_mut() = input.cloned();
+    pub(crate) fn start_wait_batch(&self) {
         let mut state = self.wait_state.borrow_mut();
         state.runs.clear();
         state.tasks.clear();
@@ -148,11 +122,20 @@ impl Tools {
         token: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<Value> {
+        let started = Instant::now();
+        self.run_wait_with_elapsed(arguments, call_id, token, emit, || started.elapsed())
+    }
+
+    // 独立时间源让超时回归无需真实等待 120 分钟；生产入口始终使用单调时钟。
+    pub(crate) fn run_wait_with_elapsed(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        token: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+        mut elapsed: impl FnMut() -> Duration,
+    ) -> Result<Value> {
         let args: Args = serde_json::from_str(arguments).context("invalid wait arguments")?;
-        ensure!(
-            args.timeout_ms <= MAX_MS,
-            "timeout_ms must be in 0..=1800000"
-        );
         ensure!(
             args.run_ids
                 .iter()
@@ -180,30 +163,28 @@ impl Tools {
             .filter(|j| j.r#type == "bash")
             .map(|j| j.id.clone())
             .collect::<Vec<_>>();
-        let started = Instant::now();
         let mut next_progress = Duration::ZERO;
         loop {
-            crate::cancellation::check(token)?;
-            let jobs = self.wait_jobs(
+            let mut jobs = self.wait_jobs(
                 (!runs.is_empty()).then_some(runs.as_slice()),
                 (!tasks.is_empty()).then_some(tasks.as_slice()),
             )?;
+            let cancelled = token.is_cancelled();
+            let timed_out = elapsed() >= TIMEOUT && jobs.iter().any(Job::pending);
+            if cancelled || timed_out {
+                self.stop_wait_jobs(&jobs)?;
+                jobs = self.wait_jobs(
+                    (!runs.is_empty()).then_some(runs.as_slice()),
+                    (!tasks.is_empty()).then_some(tasks.as_slice()),
+                )?;
+            }
             let pending = jobs.iter().any(Job::pending);
-            let ready = jobs.iter().any(|job| !job.pending() && !job.delivered);
-            let interrupted = self
-                .wait_input
-                .borrow()
-                .as_ref()
-                .map(|q| q.has_steering())
-                .transpose()?
-                .unwrap_or(false);
-            let timed_out = started.elapsed() >= Duration::from_millis(args.timeout_ms)
-                && pending
-                && !ready
-                && !interrupted;
-            let mut result = json!({"ok":true,"results":[],"background_results":[],"jobs":jobs,
-                "pending":pending,"timed_out":timed_out,"interrupted":interrupted});
-            if ready || !pending || timed_out || interrupted {
+            let mut result = json!({"ok":!timed_out && !cancelled,"results":[],"background_results":[],"jobs":jobs,
+                "pending":pending,"timed_out":timed_out,"interrupted":false,"cancelled":cancelled});
+            if !pending {
+                if let Some(binding) = &self.subagent {
+                    binding.check_lsp_cleanup()?;
+                }
                 let mut state = self.wait_state.borrow_mut();
                 if let Some(binding) = &self.subagent {
                     let ready_runs = jobs
@@ -237,6 +218,11 @@ impl Tools {
                         .expect("结果数组")
                         .push(self.background_tasks.status(&job.id)?);
                 }
+                // 取消只发布最终展示，不消费结果；恢复后仍可交付已完成结果。
+                if cancelled {
+                    result["error"] = json!("Wait cancelled; owned work stopped.");
+                    return Ok(result);
+                }
                 // 先完成所有可能失败的快照，再整体预留，避免部分成功吞掉结果。
                 for entry in result["results"].as_array().expect("结果数组") {
                     state
@@ -250,16 +236,154 @@ impl Tools {
                 }
                 return Ok(result);
             }
-            if started.elapsed() >= next_progress {
+            if elapsed() >= next_progress {
                 emit(AgentEvent::ToolOutputSnapshot {
                     id: call_id.into(),
                     output: result.to_string(),
                 });
-                next_progress = started.elapsed() + PROGRESS;
+                next_progress = elapsed() + PROGRESS;
             }
-            thread::sleep(
-                POLL.min(Duration::from_millis(args.timeout_ms).saturating_sub(started.elapsed())),
-            );
+            thread::sleep(POLL.min(TIMEOUT.saturating_sub(elapsed())));
         }
+    }
+
+    /// 先通知子 Agent，再回收 Bash；即使其中一路失败，也继续尝试其余清理。
+    fn stop_wait_jobs(&self, jobs: &[Job]) -> Result<()> {
+        let runs = jobs
+            .iter()
+            .filter(|j| j.r#type == "task" && j.pending())
+            .map(|j| j.id.clone())
+            .collect::<Vec<_>>();
+        let mut errors = Vec::new();
+        if let Some(binding) = &self.subagent
+            && let Err(error) = binding.cancel_runs(&runs)
+        {
+            errors.push(error);
+        }
+        for job in jobs.iter().filter(|j| j.r#type == "bash" && j.pending()) {
+            if let Err(error) = self.background_tasks.stop(&job.id) {
+                errors.push(error);
+            }
+        }
+        if let Some(binding) = &self.subagent
+            && let Err(error) = binding.reap_runs(&runs)
+        {
+            errors.push(error);
+        }
+        let mut errors = errors.into_iter();
+        if let Some(mut error) = errors.next() {
+            for additional in errors {
+                error = error.context(format!("Additional wait cleanup failure: {additional:#}"));
+            }
+            return Err(CleanupError(error).into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_fixed_timeout_is_hidden_from_schema_and_legacy_values_are_ignored() {
+        assert_eq!(TIMEOUT, Duration::from_secs(7200));
+        assert!(
+            definition().parameters.unwrap()["properties"]
+                .get("timeout_ms")
+                .is_none()
+        );
+        for value in [0, 1, 1_800_001, u64::MAX] {
+            assert!(serde_json::from_value::<Args>(json!({"timeout_ms":value})).is_ok());
+        }
+        for value in [json!(-1), Value::Null, json!("0")] {
+            assert!(serde_json::from_value::<Args>(json!({"timeout_ms":value})).is_err());
+        }
+    }
+
+    #[test]
+    fn wait_timeout_reaps_selected_bash_preserves_output_and_leaves_other_jobs_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        let workflow = WorkflowState::default();
+        let execute = |name: &str, args: Value| {
+            let result = tools.execute(
+                name,
+                &args.to_string(),
+                name,
+                ToolPolicy::Execute {
+                    workflow: &workflow,
+                },
+                &Default::default(),
+                &mut |_| {},
+            );
+            assert!(result.stop_error.is_none());
+            serde_json::from_str::<Value>(&result.output).unwrap()
+        };
+        let finished = execute(
+            "bash",
+            json!({"command":"printf completed-output", "mode":"background"}),
+        );
+        let selected = execute(
+            "bash",
+            json!({"command":"printf partial-output; while [ ! -f release ]; do sleep 0.01; done", "mode":"background"}),
+        );
+        let other = execute("bash", json!({"command":"sleep 30", "mode":"background"}));
+        let finished_id = finished["task_id"].as_str().unwrap();
+        let selected_id = selected["task_id"].as_str().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if tools.background_tasks.status(finished_id).unwrap()["status"] == "exited"
+                && tools.background_tasks.status(selected_id).unwrap()["output"] == "partial-output"
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        let result = tools
+            .run_wait_with_elapsed(
+                &json!({"task_ids":[finished_id,selected_id],"timeout_ms":u64::MAX}).to_string(),
+                "timeout",
+                &Default::default(),
+                &mut |_| panic!("超时后不能继续发布运行快照"),
+                || TIMEOUT,
+            )
+            .unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["timed_out"], true);
+        assert_eq!(result["pending"], false);
+        assert_eq!(result["jobs"].as_array().unwrap().len(), 2);
+        assert!(
+            !result["jobs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|j| j["status"] == "running")
+        );
+        let outputs = result["background_results"].as_array().unwrap();
+        assert!(
+            outputs
+                .iter()
+                .any(|r| r["output"] == "completed-output" && r["status"] == "exited")
+        );
+        assert!(
+            outputs
+                .iter()
+                .any(|r| r["output"] == "partial-output" && r["status"] == "stopped")
+        );
+        assert_eq!(
+            tools
+                .background_tasks
+                .status(other["task_id"].as_str().unwrap())
+                .unwrap()["status"],
+            "running"
+        );
+        tools.commit_wait_results().unwrap();
+        assert_eq!(
+            execute("wait", json!({"task_ids":[selected_id]}))["background_results"],
+            json!([])
+        );
+        tools.stop_background_tasks().unwrap();
     }
 }

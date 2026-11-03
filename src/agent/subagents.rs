@@ -350,10 +350,50 @@ impl Agent {
     pub(crate) fn yielded(&self) -> Option<serde_json::Value> {
         self.tools.yielded.borrow().clone()
     }
+    /// 隐式等待也在整批完成后才交付结果；补充输入不能越过屏障。
+    pub(super) fn wait_owned_subagents(&mut self, token: &CancellationToken) -> Result<()> {
+        let Some(binding) = self.tools.subagent.clone() else {
+            return Ok(());
+        };
+        let ids = binding
+            .wait_jobs(&[])?
+            .into_iter()
+            .filter(|job| !job.delivered || job.pending())
+            .map(|job| job.id)
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let started = std::time::Instant::now();
+        loop {
+            cancellation::check(token)?;
+            self.apply_runtime_models()?;
+            if !binding
+                .wait_jobs(&ids)?
+                .iter()
+                .any(crate::tools::wait::Job::pending)
+            {
+                break;
+            }
+            if started.elapsed() >= crate::tools::wait::TIMEOUT {
+                binding.cancel_runs(&ids)?;
+                binding.reap_runs(&ids)?;
+                append_developer_to(&mut self.session,
+                    "Owned work exceeded the fixed 120-minute wait limit. Unfinished selected runs and their descendants were stopped and reaped; review the partial results.".into());
+                break;
+            }
+            binding.sleep();
+        }
+        cancellation::check(token)?;
+        self.receive_subagents()?;
+        Ok(())
+    }
+
     pub(super) fn receive_subagents(&mut self) -> Result<bool> {
         let Some(binding) = self.tools.subagent.clone() else {
             return Ok(false);
         };
+        binding.check_lsp_cleanup()?;
         let results = binding.deliveries(&[]);
         if results.is_empty() {
             return Ok(false);

@@ -498,15 +498,12 @@ fn wait_suite(suite: &mut Suite<'_>) -> Result<()> {
         .as_str()
         .context("short background fixture task id")?
         .to_owned();
-    suite.tools.start_wait_batch(None);
-    suite.call("wait", json!({"task_ids": [short], "timeout_ms": 5000}))?;
-    // The first wait may only publish the settled notification; a second call
-    // consumes and displays the delivered fixture result.
-    suite.call("wait", json!({"task_ids": [short], "timeout_ms": 5000}))?;
+    suite.tools.start_wait_batch();
+    suite.call("wait", json!({"task_ids": [short]}))?;
     let long = suite.call(
         "bash",
         json!({
-            "command": "printf 'wait-long-running\\n'; sleep 20; printf 'wait-long-end\\n'",
+            "command": "printf 'wait-long-running\\n'; sleep 1; printf 'wait-long-end\\n'",
             "mode": "background"
         }),
     )?;
@@ -514,9 +511,8 @@ fn wait_suite(suite: &mut Suite<'_>) -> Result<()> {
         .as_str()
         .context("long background fixture task id")?
         .to_owned();
-    suite.tools.start_wait_batch(None);
-    suite.call("wait", json!({"task_ids": [long], "timeout_ms": 0}))?;
-    suite.call("bash_task", json!({"task_id": long, "action": "stop"}))?;
+    suite.tools.start_wait_batch();
+    suite.call("wait", json!({"task_ids": [long]}))?;
     Ok(())
 }
 

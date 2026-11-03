@@ -1638,7 +1638,7 @@ impl Agent {
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
         self.tools.yielded.borrow_mut().take();
-        self.tools.start_wait_batch(input);
+        self.tools.start_wait_batch();
         let mut request_count = 0usize;
         let mut claim_boundary = true;
         let mut reminder = todo::TodoReminderState::default();
@@ -1779,13 +1779,7 @@ impl Agent {
                     && binding.pending()
                 {
                     self.tools.yielded.borrow_mut().take();
-                    while binding.pending() {
-                        cancellation::check(cancellation)?;
-                        self.apply_runtime_models()?;
-                        if !self.receive_subagents()? {
-                            binding.sleep();
-                        }
-                    }
+                    self.wait_owned_subagents(cancellation)?;
                     append_developer_to(&mut self.session,"Owned background work completed after your submitted result. Review the new results and submit a fresh final yield.".into());
                     continue;
                 }
@@ -1822,17 +1816,7 @@ impl Agent {
                 if let Some(binding) = self.tools.subagent.clone()
                     && binding.pending()
                 {
-                    while binding.pending() {
-                        cancellation::check(cancellation)?;
-                        self.apply_runtime_models()?;
-                        if self.receive_subagents()? {
-                            break;
-                        }
-                        if input.is_some_and(|q| q.has_steering().unwrap_or(false)) {
-                            break;
-                        }
-                        binding.sleep();
-                    }
+                    self.wait_owned_subagents(cancellation)?;
                     continue;
                 }
                 if self.tools.yield_schema.is_some() && self.tools.yielded.borrow().is_none() {

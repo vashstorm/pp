@@ -71,7 +71,7 @@ fn wait_native_commit_failure_does_not_acknowledge_background_delivery() {
             .and_then(|()| tools.commit_wait_results());
         assert!(committed.is_err());
         // 下一批次释放预留后仍能读到同一完成结果，失败提交没有提前确认消费。
-        tools.start_wait_batch(None);
+        tools.start_wait_batch();
         let again: serde_json::Value = serde_json::from_str(&execute("wait", "{}").output).unwrap();
         assert_eq!(
             again["background_results"][0]["output"],

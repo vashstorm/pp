@@ -61,7 +61,7 @@ fn wait_subagent_reservations_acknowledge_only_after_commit_and_reject_other_own
         unified_wait(&tools, json!({"run_ids":["r1"]}))["results"],
         json!([])
     );
-    tools.start_wait_batch(None);
+    tools.start_wait_batch();
     assert_eq!(
         unified_wait(&tools, json!({}))["results"]
             .as_array()
@@ -90,7 +90,7 @@ fn wait_subagent_reservations_acknowledge_only_after_commit_and_reject_other_own
 }
 
 #[test]
-fn wait_mixed_targets_return_child_result_without_waiting_for_background_bash() {
+fn wait_mixed_targets_wait_for_child_and_background_bash() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), Settings::default());
     let mut tools =
@@ -106,7 +106,7 @@ fn wait_mixed_targets_return_child_result_without_waiting_for_background_bash() 
     };
     tools.execute(
         "bash",
-        r#"{"command":"sleep 30","mode":"background"}"#,
+        r#"{"command":"while [ ! -f release ]; do sleep 0.01; done; printf mixed-bash","mode":"background"}"#,
         "bg",
         policy(),
         &Default::default(),
@@ -124,6 +124,17 @@ fn wait_mixed_targets_return_child_result_without_waiting_for_background_bash() 
                 updates += 1;
                 let snapshot: Value = serde_json::from_str(&output).unwrap();
                 assert_eq!(snapshot["jobs"].as_array().unwrap().len(), 2);
+                if updates > 1 {
+                    assert!(
+                        snapshot["jobs"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|job| job["id"] == "r1" && job["status"] == "completed")
+                    );
+                    fs::write(dir.path().join("release"), "").unwrap();
+                    return;
+                }
                 binding
                     .settle("r1", json!({"ok":true,"output":"child-mixed-result"}), 20)
                     .unwrap();
@@ -135,21 +146,141 @@ fn wait_mixed_targets_return_child_result_without_waiting_for_background_bash() 
             }
         },
     );
-    assert_eq!(updates, 1);
+    assert!(updates >= 2);
     let result: Value = serde_json::from_str(&result.output).unwrap();
-    assert_eq!(result["pending"], true);
+    assert_eq!(result["pending"], false);
     assert_eq!(result["jobs"].as_array().unwrap().len(), 2);
     assert_eq!(
         result["results"][0]["run"]["result"]["output"],
         "child-mixed-result"
     );
     assert_eq!(result["results"].as_array().unwrap().len(), 1);
-    assert_eq!(result["background_results"], json!([]));
+    assert_eq!(result["background_results"][0]["output"], "mixed-bash");
     let only = unified_wait(&tools, json!({"run_ids":["r2"]}));
     assert_eq!(only["pending"], false);
     assert_eq!(only["jobs"].as_array().unwrap().len(), 1);
     let plan = tools.all_definitions(WorkMode::Plan);
     assert_eq!(plan.iter().filter(|d| d.name == "wait").count(), 1);
+}
+
+#[test]
+fn wait_timeout_cancels_only_selected_runs_and_their_descendant_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding(dir.path(), Settings::default());
+    let mut tools =
+        crate::tools::Tools::new(dir.path().into(), crate::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(binding.clone());
+    let selected = CancellationToken::new();
+    let descendant = selected.child_token();
+    let unselected = CancellationToken::new();
+    {
+        let mut state = lock(&binding.inner.state);
+        state
+            .disk
+            .runs
+            .insert("r1".into(), wait_fixture_run("r1", "completed"));
+        for (id, token) in [("r2", &selected), ("r3", &unselected)] {
+            let run = wait_fixture_run(id, "running");
+            let (sender, _) = mpsc::channel();
+            state.live.insert(
+                run.agent_id.clone(),
+                Live {
+                    sender,
+                    input: InputQueue::default(),
+                    cancellation: token.clone(),
+                    generation: 1,
+                },
+            );
+            state.disk.runs.insert(id.into(), run);
+        }
+    }
+    let worker_binding = binding.clone();
+    let worker_token = selected.clone();
+    let worker = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !worker_token.is_cancelled() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        worker_binding
+            .settle(
+                "r2",
+                json!({"ok":false,"cancelled":true,"partial_output":"selected-partial"}),
+                15,
+            )
+            .unwrap();
+    });
+    let result = tools
+        .run_wait_with_elapsed(
+            r#"{"run_ids":["r1","r2"]}"#,
+            "timeout",
+            &Default::default(),
+            &mut |_| panic!("超时必须进入回收路径"),
+            || crate::tools::wait::TIMEOUT,
+        )
+        .unwrap();
+    worker.join().unwrap();
+    assert_eq!(result["timed_out"], true);
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["pending"], false);
+    assert_eq!(result["results"].as_array().unwrap().len(), 2);
+    assert!(descendant.is_cancelled());
+    assert!(!unselected.is_cancelled());
+    assert_eq!(
+        binding.wait_jobs(&["r3".into()]).unwrap()[0].status,
+        "running"
+    );
+    // 取消完成不等于消费成功；原生历史提交前结果仍可再次交付。
+    assert_eq!(binding.deliveries(&["r2".into()]).len(), 1);
+    tools.commit_wait_results().unwrap();
+    assert!(binding.deliveries(&["r1".into(), "r2".into()]).is_empty());
+}
+
+#[test]
+fn wait_cleanup_failure_is_a_stop_error_and_does_not_reserve_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding(dir.path(), Settings::default());
+    let mut tools =
+        crate::tools::Tools::new(dir.path().into(), crate::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(binding.clone());
+    lock(&binding.inner.cleanup_errors)
+        .push(crate::cancellation::CleanupError(anyhow::anyhow!("fixture cleanup failure")).into());
+    let workflow = Default::default();
+    let token = CancellationToken::new();
+    let start = tools.execute(
+        "bash",
+        r#"{"command":"sleep 30","mode":"background"}"#,
+        "start",
+        crate::tools::ToolPolicy::Execute {
+            workflow: &workflow,
+        },
+        &token,
+        &mut |_| {},
+    );
+    assert!(start.stop_error.is_none());
+    let result = tools.execute(
+        "wait",
+        "{}",
+        "wait",
+        crate::tools::ToolPolicy::Execute {
+            workflow: &workflow,
+        },
+        &token,
+        &mut |event| {
+            if matches!(event, AgentEvent::ToolOutputSnapshot { .. }) {
+                token.cancel();
+            }
+        },
+    );
+    assert!(
+        result
+            .stop_error
+            .unwrap()
+            .is::<crate::cancellation::CleanupError>()
+    );
+    tools.start_wait_batch();
+    let result = unified_wait(&tools, json!({}));
+    assert_eq!(result["background_results"].as_array().unwrap().len(), 1);
 }
 fn binding(dir: &Path, settings: Settings) -> Binding {
     Binding::root(

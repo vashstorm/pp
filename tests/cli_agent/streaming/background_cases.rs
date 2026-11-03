@@ -11,15 +11,7 @@ fn wait_background_delivers_results_once_and_does_not_stream_progress_json() {
         let (request, body) = protocol.receive(&server);
         let started = protocol.tool_result(&body, "start");
         let id = started["task_id"].as_str().unwrap();
-        protocol.calls_reply(
-            request,
-            json!([protocol.call("peek", "wait", json!({"task_ids":[id],"timeout_ms":0}))]),
-        );
-        let (request, body) = protocol.receive(&server);
-        let peek = protocol.tool_result(&body, "peek");
-        assert_eq!(peek["pending"], true);
-        assert_eq!(peek["timed_out"], true);
-        // 第二个 wait 在同一批内执行，不能重复交付第一个 wait 的结果。
+        // 同一原生批次的第二次 wait 不能重复交付结果。
         std::fs::write(dir.path().join("release"), "").unwrap();
         protocol.calls_reply(
             request,

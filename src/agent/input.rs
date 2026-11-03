@@ -200,6 +200,7 @@ impl InputQueue {
         Ok(true)
     }
 
+    #[cfg(test)]
     pub(crate) fn has_steering(&self) -> Result<bool> {
         Ok(self
             .lock()?

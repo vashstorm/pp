@@ -99,12 +99,14 @@ fn hub_dispatch(
     found.into_iter().map(Option::unwrap).collect()
 }
 
-/// 结束一个子 Agent 的首轮输出，并消费父方 autowake 请求。
+/// 结束子 Agent；只有整批完成后才消费父方继续请求。
 fn hub_finish_child(pty: &mut Pty, fixture: &Server, protocol: &str, child: Request, text: &str) {
     ask_final_reply(child, protocol, text);
     let (request, body) = pty.request_at(fixture, api_path(protocol));
     assert!(!hub_is_child(&body), "unexpected child request");
     ask_final_reply(request, protocol, "parent-ack");
+    pty.text("parent-ack");
+    pty.ready();
 }
 
 fn hub_last_user(body: &Value) -> Option<String> {
@@ -281,9 +283,7 @@ fn agent_hub_streams_and_anchors_activity() {
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert!(hub_body_text(&body).contains("hub-tool-fail"));
         ask_final_reply(request, protocol, "hub-recovered");
-        let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        ask_final_reply(request, protocol, "hub-parent-ok");
-        pty.text("hub-parent-ok");
+        cancel_assert_no_request(&fixture);
         // 先发第一段，再进入详情：无需额外按键即可看到。
         streaming_delta(&mut live, protocol, "hub-stream-first");
         pty.input("/subagents\r");
@@ -352,7 +352,7 @@ fn agent_hub_literal_input_drafts_and_parent_isolation() {
             ]}),
             &["child-one", "child-two"],
         );
-        hub_finish_child(&mut pty, &fixture, protocol, children.remove(0), "hub-first-output");
+        ask_final_reply(children.remove(0), protocol, "hub-first-output");
         hub_finish_child(&mut pty, &fixture, protocol, children.remove(0), "hub-second-output");
         // 主输入草稿必须贯穿整个 Hub 交互。
         pty.input("main draft text");
@@ -548,7 +548,7 @@ fn agent_hub_layout_tree_scope_and_follow() {
         ]}),
         &["alpha child work", "beta child work"],
     );
-    hub_finish_child(&mut pty, &fixture, protocol, children.remove(0), "alpha-output");
+    ask_final_reply(children.remove(0), protocol, "alpha-output");
     hub_finish_child(&mut pty, &fixture, protocol, children.remove(0), "beta-output");
     // 140x40 分栏 + 80x24 单栏 + 极窄尺寸都不能越界。
     pty.resize(40, 140);

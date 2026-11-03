@@ -77,7 +77,6 @@ pub(crate) struct Tools {
     snapshots: RefCell<hashline::Store>,
     background_tasks: bash::TaskManager,
     wait_state: RefCell<wait::State>,
-    wait_input: RefCell<Option<InputQueue>>,
     pub(crate) limits: ToolLimits,
     host_defaults: crate::host_defaults::HostDefaults,
     pipe_store: PipeStore,
@@ -218,7 +217,6 @@ impl Tools {
             snapshots: RefCell::default(),
             background_tasks: Default::default(),
             wait_state: RefCell::default(),
-            wait_input: RefCell::default(),
             limits: ToolLimits::default(),
             host_defaults: crate::host_defaults::current(),
             pipe_store: PipeStore::new(),
@@ -469,7 +467,6 @@ impl Tools {
     pub(crate) fn stop_background_tasks(&self) -> Result<()> {
         self.background_tasks.stop_all()?;
         self.wait_state.borrow_mut().clear_background();
-        self.wait_input.borrow_mut().take();
         Ok(())
     }
 

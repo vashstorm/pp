@@ -1,7 +1,28 @@
 use super::*;
 
+fn wait_events(
+    tools: &Tools,
+    args: Value,
+    token: &CancellationToken,
+    emit: &mut dyn FnMut(AgentEvent),
+) -> Value {
+    let workflow = WorkflowState::default();
+    let result = tools.execute(
+        "wait",
+        &args.to_string(),
+        "wait-test",
+        ToolPolicy::Execute {
+            workflow: &workflow,
+        },
+        token,
+        emit,
+    );
+    assert!(result.stop_error.is_none(), "{:?}", result.stop_error);
+    serde_json::from_str(&result.output).unwrap()
+}
+
 #[test]
-fn wait_background_timeout_selection_and_delivery_commit() {
+fn wait_background_ignores_legacy_timeout_and_delivers_only_after_commit() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
     assert_eq!(execute(&tools, "wait", json!({}))["jobs"], json!([]));
@@ -11,21 +32,30 @@ fn wait_background_timeout_selection_and_delivery_commit() {
         json!({"command":"while [ ! -f release ]; do sleep 0.01; done; printf 'first-result'", "mode":"background"}),
     );
     let id = held["task_id"].as_str().unwrap();
-    let zero = execute(&tools, "wait", json!({"timeout_ms":0}));
-    assert_eq!(zero["pending"], true);
-    assert_eq!(zero["timed_out"], true);
-    assert_eq!(zero["background_results"], json!([]));
-    assert_eq!(zero["jobs"][0]["type"], "bash");
-    fs::write(dir.path().join("release"), "").unwrap();
-    let done = execute(&tools, "wait", json!({"task_ids":[id],"timeout_ms":5000}));
+    let mut updates = 0;
+    let done = wait_events(
+        &tools,
+        json!({"task_ids":[id],"timeout_ms":0}),
+        &Default::default(),
+        &mut |event| {
+            if let AgentEvent::ToolOutputSnapshot { output, .. } = event {
+                let snapshot: Value = serde_json::from_str(&output).unwrap();
+                assert_eq!(snapshot["pending"], true);
+                assert_eq!(snapshot["background_results"], json!([]));
+                updates += 1;
+                fs::write(dir.path().join("release"), "").unwrap();
+            }
+        },
+    );
+    assert!(updates > 0);
     assert_eq!(done["ok"], true, "{done}");
     assert_eq!(done["pending"], false);
+    assert_eq!(done["timed_out"], false);
     assert_eq!(done["background_results"][0]["output"], "first-result");
     let repeated = execute(&tools, "wait", json!({"task_ids":[id]}));
     assert_eq!(repeated["background_results"], json!([]));
     assert_eq!(repeated["jobs"][0]["delivered"], true);
-    // 模拟原生历史提交失败：清除当前批次预留后，结果仍可交付。
-    tools.start_wait_batch(None);
+    tools.start_wait_batch();
     assert_eq!(
         execute(&tools, "wait", json!({}))["background_results"]
             .as_array()
@@ -34,7 +64,7 @@ fn wait_background_timeout_selection_and_delivery_commit() {
         1
     );
     tools.commit_wait_results().unwrap();
-    tools.start_wait_batch(None);
+    tools.start_wait_batch();
     assert_eq!(execute(&tools, "wait", json!({}))["jobs"], json!([]));
     assert_eq!(
         execute(&tools, "bash_task", json!({"task_id":id,"action":"status"}))["output"],
@@ -48,13 +78,13 @@ fn wait_background_timeout_selection_and_delivery_commit() {
 }
 
 #[test]
-fn wait_background_first_completion_collects_failures_without_stopping_siblings() {
+fn wait_background_collects_failures_only_after_every_sibling_settles() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
     let slow = execute(
         &tools,
         "bash",
-        json!({"command":"sleep 30", "mode":"background"}),
+        json!({"command":"while [ ! -f release ]; do sleep 0.01; done; printf sibling-result", "mode":"background"}),
     );
     let failed = execute(
         &tools,
@@ -68,19 +98,38 @@ fn wait_background_first_completion_collects_failures_without_stopping_siblings(
         execute(&tools, "wait", json!({"task_ids":[failed_id,"missing"]}))["ok"],
         false
     );
-    let result = execute(&tools, "wait", json!({}));
+    let mut observed_partial = false;
+    let result = wait_events(&tools, json!({}), &Default::default(), &mut |event| {
+        if let AgentEvent::ToolOutputSnapshot { output, .. } = event {
+            let snapshot: Value = serde_json::from_str(&output).unwrap();
+            assert_eq!(snapshot["pending"], true);
+            assert!(
+                snapshot["jobs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|job| job["status"] == "failed")
+            );
+            assert_eq!(snapshot["background_results"], json!([]));
+            observed_partial = true;
+            fs::write(dir.path().join("release"), "").unwrap();
+        }
+    });
+    assert!(observed_partial);
     assert_eq!(result["ok"], true);
-    assert_eq!(result["pending"], true);
-    assert_eq!(result["background_results"][0]["exit_code"], 7);
-    assert_eq!(result["background_results"][0]["output"], "failure-output");
-    let stopped = execute(
-        &tools,
-        "bash_task",
-        json!({"task_id":slow["task_id"],"action":"stop"}),
+    assert_eq!(result["pending"], false);
+    let results = result["background_results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .any(|r| r["exit_code"] == 7 && r["output"] == "failure-output")
     );
-    assert_eq!(stopped["status"], "stopped");
-    let result = execute(&tools, "wait", json!({"task_ids":[slow["task_id"]]}));
-    assert_eq!(result["background_results"][0]["status"], "stopped");
+    assert!(
+        results
+            .iter()
+            .any(|r| r["task_id"] == slow["task_id"] && r["output"] == "sibling-result")
+    );
 }
 
 #[test]
@@ -90,7 +139,6 @@ fn wait_validates_arguments_and_remains_available_without_subagents() {
     let definitions = tools.all_definitions(WorkMode::Execute);
     assert_eq!(definitions.iter().filter(|d| d.name == "wait").count(), 1);
     for args in [
-        json!({"timeout_ms":1800001}),
         json!({"timeout_ms":-1}),
         json!({"timeout_ms":null}),
         json!({"timeout_ms":"1"}),
@@ -123,7 +171,7 @@ fn wait_live_cancellation_and_multiple_settled_targets_preserve_results() {
     let started = execute(
         &tools,
         "bash",
-        json!({"command":"while [ ! -f release ]; do sleep 0.01; done; printf 'retained'","mode":"background"}),
+        json!({"command":"printf 'retained'; while [ ! -f release ]; do sleep 0.01; done","mode":"background"}),
     );
     let token = CancellationToken::new();
     let workflow = WorkflowState::default();
@@ -144,7 +192,7 @@ fn wait_live_cancellation_and_multiple_settled_targets_preserve_results() {
     assert!(result.output.contains("cancelled"));
     fs::write(dir.path().join("release"), "").unwrap();
     background_wait(&tools, started["task_id"].as_str().unwrap(), |r| {
-        r["status"] == "exited"
+        r["status"] == "stopped"
     });
     let second = execute(
         &tools,
@@ -164,20 +212,20 @@ fn wait_live_cancellation_and_multiple_settled_targets_preserve_results() {
 }
 
 #[test]
-fn wait_steering_interrupts_without_claiming_followup_or_stopping_background() {
+fn wait_steering_and_followup_remain_queued_until_the_batch_settles() {
     use crate::agent::input::PendingKind;
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
     let task = execute(
         &tools,
         "bash",
-        json!({"command":"sleep 30","mode":"background"}),
+        json!({"command":"while [ ! -f release ]; do sleep 0.01; done","mode":"background"}),
     );
     let queue = InputQueue::default();
     queue
         .enqueue(PendingKind::FollowUp, "later".into(), None, false)
         .unwrap();
-    tools.start_wait_batch(Some(&queue));
+    tools.start_wait_batch();
     let workflow = WorkflowState::default();
     let mut progress = 0;
     let result = tools.execute(
@@ -191,6 +239,10 @@ fn wait_steering_interrupts_without_claiming_followup_or_stopping_background() {
         &mut |event| {
             if matches!(event, AgentEvent::ToolOutputSnapshot { .. }) {
                 progress += 1;
+                if progress > 1 {
+                    fs::write(dir.path().join("release"), "").unwrap();
+                    return;
+                }
                 queue
                     .enqueue(
                         PendingKind::Steering,
@@ -203,10 +255,10 @@ fn wait_steering_interrupts_without_claiming_followup_or_stopping_background() {
         },
     );
     let value: Value = serde_json::from_str(&result.output).unwrap();
-    assert_eq!(progress, 1);
-    assert_eq!(value["interrupted"], true);
+    assert!(progress >= 2);
+    assert_eq!(value["interrupted"], false);
     assert_eq!(value["timed_out"], false);
-    assert_eq!(value["pending"], true);
+    assert_eq!(value["pending"], false);
     assert!(queue.has_steering().unwrap());
     assert_eq!(
         execute(
@@ -214,7 +266,7 @@ fn wait_steering_interrupts_without_claiming_followup_or_stopping_background() {
             "bash_task",
             json!({"task_id":task["task_id"],"action":"status"})
         )["status"],
-        "running"
+        "exited"
     );
 }
 

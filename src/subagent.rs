@@ -1220,6 +1220,53 @@ impl Binding {
         }
         Ok(json!({"ok":true}))
     }
+    /// 只取消当前 owner 明确选中的未完成 Run，空集合不代表全部。
+    pub(crate) fn cancel_runs(&self, ids: &[String]) -> Result<()> {
+        let state = lock(&self.inner.state);
+        for id in ids {
+            ensure!(
+                state
+                    .disk
+                    .runs
+                    .get(id)
+                    .is_some_and(|run| run.owner == self.owner),
+                "run does not belong to this agent"
+            );
+        }
+        for run in state.disk.runs.values().filter(|run| {
+            ids.contains(&run.id) && matches!(run.status.as_str(), "queued" | "running")
+        }) {
+            if let Some(live) = state.live.get(&run.agent_id) {
+                live.cancellation.cancel();
+            }
+        }
+        self.inner.changed.notify_all();
+        Ok(())
+    }
+
+    /// 终态由真实执行路径发布；不得靠改 registry 状态假装已经回收。
+    pub(crate) fn reap_runs(&self, ids: &[String]) -> Result<()> {
+        let started = Instant::now();
+        loop {
+            self.check_lsp_cleanup()?;
+            if ids.is_empty()
+                || !self
+                    .wait_jobs(ids)?
+                    .iter()
+                    .any(crate::tools::wait::Job::pending)
+            {
+                return Ok(());
+            }
+            if started.elapsed() >= Duration::from_secs(5) {
+                return Err(crate::cancellation::CleanupError(anyhow::anyhow!(
+                    "subagent stop cleanup timed out"
+                ))
+                .into());
+            }
+            self.sleep();
+        }
+    }
+
     pub(crate) fn cancel_owned(&self) -> Result<()> {
         let state = lock(&self.inner.state);
         for run in
@@ -1706,7 +1753,19 @@ fn worker(
             }
             Ok(value)
         });
-        let mut result=outcome.unwrap_or_else(|e|json!({"ok":false,"cancelled":work.cancellation.is_cancelled(),"error":format!("{e:#}"),"partial_output":last}));
+        let mut result = match outcome {
+            Ok(value) => value,
+            Err(error) => {
+                let result = json!({"ok":false,"cancelled":work.cancellation.is_cancelled(),"error":format!("{error:#}"),"partial_output":last});
+                if error
+                    .chain()
+                    .any(|cause| cause.is::<crate::cancellation::CleanupError>())
+                {
+                    lock(&binding.inner.cleanup_errors).push(error);
+                }
+                result
+            }
+        };
         let output_path = binding
             .inner
             .directory()

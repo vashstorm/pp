@@ -31,7 +31,9 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
     let framed = width >= 8;
     let inner = if framed { width - 4 } else { width };
     let mut body = Vec::new();
-    let suffix = if result.is_some_and(|r| r["interrupted"] == true) {
+    let suffix = if result.is_some_and(|r| r["cancelled"] == true) {
+        " · cancelled"
+    } else if result.is_some_and(|r| r["interrupted"] == true) {
         " · interrupted by steering"
     } else if result.is_some_and(|r| r["timed_out"] == true) {
         " · timed out"
@@ -125,6 +127,7 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
                     let value = &run["result"];
                     let mut text = value["output"]
                         .as_str()
+                        .or_else(|| value["partial_output"].as_str())
                         .map(str::to_owned)
                         .unwrap_or_else(|| value.to_string());
                     if let Some(error) = value["error"].as_str() {
