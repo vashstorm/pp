@@ -615,6 +615,65 @@ fn streaming_responses_annotations_default_only_when_missing() {
 }
 
 #[test]
+fn streaming_responses_command_code_alias_completes_and_commits_history() {
+    for annotations in [false, true] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let mut cli = Protocol::Responses.start(&server, dir.path(), None);
+        cli.input("first task\n");
+        let (request, _) = Protocol::Responses.receive(&server);
+        let mut stream = SseReply::new(request);
+        let mut part = json!({"type":"output_text", "text":"answer"});
+        if annotations {
+            part["annotations"] = json!([]);
+        }
+        let item = response_message("msg", json!([part]));
+        stream.event(
+            json!({"type":"response.reasoning_summary_text.delta", "sequence_number":0,
+            "item_id":"rs", "output_index":0, "summary_index":0, "delta":"thinking"}),
+        );
+        stream.event(
+            json!({"type":"response.content_part.added", "sequence_number":1,
+            "item_id":"msg", "output_index":0, "summary_index":0, "part":part}),
+        );
+        stream.event(
+            json!({"type":"response.output_text.delta", "sequence_number":2,
+            "item_id":"msg", "output_index":0, "summary_index":0, "delta":"answer"}),
+        );
+        stream.event(
+            json!({"type":"response.output_text.done", "sequence_number":3,
+            "item_id":"msg", "output_index":0, "summary_index":0, "text":"answer"}),
+        );
+        stream.event(
+            json!({"type":"response.content_part.done", "sequence_number":4,
+            "item_id":"msg", "output_index":0, "summary_index":0, "part":part}),
+        );
+        stream.event(
+            json!({"type":"response.output_item.done", "sequence_number":5,
+            "output_index":0, "item":item}),
+        );
+        Protocol::Responses.complete(&mut stream, json!([item]), false);
+        stream.finish();
+        cli.wait_for(Pipe::Stdout, "answer\n");
+        cli.input("second task\n");
+        let (request, body) = Protocol::Responses.receive(&server);
+        assert_eq!(body["input"][1]["content"][0]["text"], "answer");
+        assert_eq!(body["input"][1]["content"][0]["annotations"], json!([]));
+        Protocol::Responses.final_reply(request, "done");
+        cli.input("/quit\n");
+        let output = cli.finish();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, b"answer\ndone\n");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("failed") && !stderr.contains("retrying"),
+            "{stderr}"
+        );
+        no_more(&server);
+    }
+}
+
+#[test]
 fn streaming_responses_function_arguments_invalid_or_missing_final_still_fail() {
     for stage in ["added", "done", "completed"] {
         for arguments in [None, Some(Value::Null), Some(json!({})), Some(json!(7))] {

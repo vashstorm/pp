@@ -81,6 +81,53 @@ fn arguments_delta(value: &str) -> ResponseStreamEvent {
 }
 
 #[test]
+fn streaming_responses_command_code_content_index_alias_is_narrow_and_preserves_raw() {
+    for (kind, payload) in [
+        ("response.content_part.added", json!({"part":text("")})),
+        ("response.content_part.done", json!({"part":text("answer")})),
+        ("response.output_text.delta", json!({"delta":"answer"})),
+        ("response.output_text.done", json!({"text":"answer"})),
+        ("response.refusal.delta", json!({"delta":"refused"})),
+        ("response.refusal.done", json!({"refusal":"refused"})),
+    ] {
+        let mut value = json!({"type":kind, "sequence_number":1,
+            "item_id":"msg", "output_index":0, "summary_index":2});
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(payload.as_object().unwrap().clone());
+        let raw = value.to_string();
+        let decoded: ResponseEvent = serde_json::from_str(&raw).unwrap();
+        assert_eq!(decoded.2, raw, "诊断快照必须保留原始字段");
+        assert_eq!(serde_json::to_value(decoded.0).unwrap()["content_index"], 2);
+
+        value["content_index"] = json!(1);
+        let decoded: ResponseEvent = serde_json::from_str(&value.to_string()).unwrap();
+        assert_eq!(serde_json::to_value(decoded.0).unwrap()["content_index"], 1);
+        value.as_object_mut().unwrap().remove("content_index");
+        for index in [
+            Value::Null,
+            json!(-1),
+            json!(1.5),
+            json!("0"),
+            json!(4294967296_u64),
+        ] {
+            value["summary_index"] = index;
+            assert!(serde_json::from_str::<ResponseEvent>(&value.to_string()).is_err());
+        }
+        value.as_object_mut().unwrap().remove("summary_index");
+        assert!(serde_json::from_str::<ResponseEvent>(&value.to_string()).is_err());
+        value["summary_index"] = json!(0);
+        value["content_index"] = Value::Null;
+        assert!(serde_json::from_str::<ResponseEvent>(&value.to_string()).is_err());
+    }
+    // 思考摘要的索引仍沿用原有语义；不把错误的内容索引反向映射到摘要。
+    let raw = json!({"type":"response.reasoning_summary_text.delta", "sequence_number":1,
+        "item_id":"rs", "output_index":0, "content_index":0, "delta":"thinking"});
+    assert!(serde_json::from_str::<ResponseEvent>(&raw.to_string()).is_err());
+}
+
+#[test]
 fn streaming_responses_pending_function_arguments_accept_null_only_at_start() {
     for arguments in [
         None,

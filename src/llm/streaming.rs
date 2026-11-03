@@ -63,6 +63,9 @@ impl<'de> Deserialize<'de> for ResponseEvent {
             Err(error)
                 if error.is_data()
                     && (error.to_string().starts_with("missing field `annotations`")
+                        || error
+                            .to_string()
+                            .starts_with("missing field `content_index`")
                         || error.to_string().starts_with("missing field `arguments`")
                         || error
                             .to_string()
@@ -71,6 +74,7 @@ impl<'de> Deserialize<'de> for ResponseEvent {
         }
         let mut value: serde_json::Value =
             serde_json::from_str(raw.get()).map_err(D::Error::custom)?;
+        normalize_content_index(&mut value);
         if value.get("type").and_then(serde_json::Value::as_str)
             == Some("response.output_item.added")
             && let Some(item) = value.get_mut("item")
@@ -103,6 +107,32 @@ impl<'de> Deserialize<'de> for ResponseEvent {
         serde_json::from_value(value)
             .map(|event| Self(event, written, raw.get().to_owned()))
             .map_err(D::Error::custom)
+    }
+}
+
+fn normalize_content_index(value: &mut serde_json::Value) {
+    // Command Code 的 DeepSeek 流把内容索引写成 summary_index。
+    // 仅兼容内容事件的有效索引别名，不覆盖标准字段，也不猜测缺失的索引。
+    if !matches!(
+        value.get("type").and_then(serde_json::Value::as_str),
+        Some(
+            "response.content_part.added"
+                | "response.content_part.done"
+                | "response.output_text.delta"
+                | "response.output_text.done"
+                | "response.refusal.delta"
+                | "response.refusal.done"
+        )
+    ) || value.get("content_index").is_some()
+    {
+        return;
+    }
+    if let Some(index) = value
+        .get("summary_index")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|index| u32::try_from(index).ok())
+    {
+        value["content_index"] = index.into();
     }
 }
 
