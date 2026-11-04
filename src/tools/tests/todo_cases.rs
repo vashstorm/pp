@@ -61,6 +61,53 @@ fn todo_plan_policy_hides_and_refuses_every_operation() {
 }
 
 #[test]
+fn todo_executed_plan_preserves_parallel_work_without_changing_checkboxes() {
+    let dir = tempfile::tempdir().unwrap();
+    let content = "## First\n- [ ] A\n- [ ] B\n## Second\n- [ ] C\n";
+    let (tools, document, mut workflow) =
+        plan_todo_fixture(&dir, "todo-parallel.md", PlanStatus::Executed, content);
+    let path = dir.path().join(".pp/plans/todo-parallel.md");
+    for task in ["A", "B", "C"] {
+        let execution = todo_call(&tools, &workflow, json!({"op":"start","task":task}));
+        let result: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        let change = execution.todo_change.unwrap();
+        let plan = change.plan.unwrap();
+        assert_eq!(plan.revision, document.revision);
+        assert!(plan.content.is_none());
+        workflow.todos = change.phases;
+        // 实际文件投影也必须保留跨阶段的所有进行项。
+        workflow.todos = todo::project_plan_todos(&document, &workflow.todos, true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), content.as_bytes());
+    }
+    assert!(
+        workflow
+            .todos
+            .iter()
+            .flat_map(|phase| &phase.tasks)
+            .all(|task| task.status == todo::TodoStatus::InProgress)
+    );
+    let execution = todo_call(&tools, &workflow, json!({"op":"done","task":"A"}));
+    let change = execution.todo_change.unwrap();
+    assert_eq!(
+        change.phases[0].tasks[0].status,
+        todo::TodoStatus::Completed
+    );
+    assert_eq!(
+        change.phases[0].tasks[1].status,
+        todo::TodoStatus::InProgress
+    );
+    assert_eq!(
+        change.phases[1].tasks[0].status,
+        todo::TodoStatus::InProgress
+    );
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        content.replacen("[ ]", "[x]", 1)
+    );
+}
+
+#[test]
 fn todo_executed_plan_done_writes_checkbox_and_reports_change() {
     let dir = tempfile::tempdir().unwrap();
     let content = "## Write\n- [ ] Write canary bytes.\n  - Acceptance: read back.\n- [ ] Verify canary bytes.\n";

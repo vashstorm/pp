@@ -1,4 +1,4 @@
-//! 普通 todo 工具：严格复刻 oh-my-pi 的 schema、状态转换、诊断与 summary。
+//! 普通 todo 工具：沿用 oh-my-pi 的 schema、诊断与 summary，支持多个进行项。
 //!
 //! 参数解析/目标定位（`resolve_params`/`resolve`）与按序数的状态转换
 //! （`apply_operation`）刻意分离：普通路径先按完整原文定位出
@@ -30,8 +30,8 @@ const TODO_DESCRIPTION: &str = "\
 `todo` NEVER takes a turn of its own: emit it in the same response as your next real tool call (parallel tool calls), `init` beside the first read or action, `done`/`start` beside the next action or check. A response whose only call is `todo` wastes a full model round trip.
 Tasks identified by verbatim content, NEVER generated IDs (task-1). Unique, stable task/phase names; lost text: view, NEVER guess.
 Before work, init for 3+ steps, requested task sets, or new instructions. MUST list EVERY user item separately (phased/numbered/bulleted/N); NEVER omit or remember leftovers.
-After successful mutation: no active means earliest pending starts (phase order); multiple active means only earliest stays. Blocked NEVER starts automatically; unblock returns pending. Done out of order may rewind pointer but NEVER reopen completed. Mark done immediately; follow phase order.
-External waits (user/agent/service): block with optional reason suppresses stop reminder, starts next pending. Unblock when actionable; append a clearing task for agent-actionable blocker.";
+After successful mutation: preserve all active items; if none remain, earliest pending starts (phase order). Start changes only the addressed task, so call start for each actually running parallel item. Blocked NEVER starts automatically; unblock returns pending. Done out of order NEVER reopens completed work. Mark done immediately after verification; schedule work by dependencies rather than checklist order.
+Before wait, reconcile existing todos with observed progress: mark every actually running item in progress, mark verified work done, and record real blockers. A running delegated task is not blocked merely because the parent is waiting for its result; never mark it done at dispatch or solely from a child success report. Block only work that cannot proceed until an external prerequisite is resolved, with an optional reason. Unblock when actionable; append a clearing task for agent-actionable blockers only in standalone lists, never in an approved plan.";
 
 // =============================================================================
 // Models
@@ -906,15 +906,6 @@ pub(crate) fn apply_operation(current: &[TodoPhase], operation: &Operation) -> V
         }
         Operation::Start(target) => {
             let mut next = clone_phases(current);
-            for (phase_index, phase) in next.iter_mut().enumerate() {
-                for (task_index, task) in phase.tasks.iter_mut().enumerate() {
-                    if task.status == TodoStatus::InProgress
-                        && (phase_index, task_index) != (target.phase, target.task)
-                    {
-                        task.status = TodoStatus::Pending;
-                    }
-                }
-            }
             // Upstream allows explicitly re-opening closed/blocked tasks.
             next[target.phase].tasks[target.task].status = TodoStatus::InProgress;
             next
@@ -990,45 +981,22 @@ fn clone_phases(current: &[TodoPhase]) -> Vec<TodoPhase> {
         .collect()
 }
 
-/// After every non-view success: keep only the earliest active; with none,
-/// activate the earliest pending. Blocked never starts automatically and
-/// completed is never re-opened.
+/// 保留所有进行项；仅在没有进行项时启动最早的 pending。
+/// 不自动启动 blocked，也不重开 completed。
 pub(crate) fn normalize_in_progress(phases: &mut [TodoPhase]) {
-    if phases.iter().all(|phase| phase.tasks.is_empty()) {
+    if phases
+        .iter()
+        .flat_map(|phase| &phase.tasks)
+        .any(|task| task.status == TodoStatus::InProgress)
+    {
         return;
     }
-    let mut first_active: Option<(usize, usize)> = None;
-    let mut first_pending: Option<(usize, usize)> = None;
-    for (phase_index, phase) in phases.iter().enumerate() {
-        for (task_index, task) in phase.tasks.iter().enumerate() {
-            match task.status {
-                TodoStatus::InProgress if first_active.is_none() => {
-                    first_active = Some((phase_index, task_index))
-                }
-                TodoStatus::Pending if first_pending.is_none() => {
-                    first_pending = Some((phase_index, task_index))
-                }
-                _ => {}
-            }
-        }
-    }
-    match first_active {
-        Some((active_phase, active_task)) => {
-            for (phase_index, phase) in phases.iter_mut().enumerate() {
-                for (task_index, task) in phase.tasks.iter_mut().enumerate() {
-                    if task.status == TodoStatus::InProgress
-                        && (phase_index, task_index) != (active_phase, active_task)
-                    {
-                        task.status = TodoStatus::Pending;
-                    }
-                }
-            }
-        }
-        None => {
-            if let Some((phase_index, task_index)) = first_pending {
-                phases[phase_index].tasks[task_index].status = TodoStatus::InProgress;
-            }
-        }
+    if let Some(task) = phases
+        .iter_mut()
+        .flat_map(|phase| &mut phase.tasks)
+        .find(|task| task.status == TodoStatus::Pending)
+    {
+        task.status = TodoStatus::InProgress;
     }
 }
 
@@ -1060,9 +1028,7 @@ pub(crate) fn format_summary(phases: &[TodoPhase], errors: &[String], read_only:
         })
         .collect();
 
-    // The active phase is the EARLIEST one still holding open work, so the
-    // in-progress pointer can sit in a phase whose successors already have
-    // completed tasks.
+    // 阶段摘要取最早仍有未完成工作的阶段，不限制跨阶段并发执行。
     let current_index = phases
         .iter()
         .position(|phase| phase.tasks.iter().any(|task| task.status.is_open()))
@@ -1122,7 +1088,7 @@ pub(crate) fn format_summary(phases: &[TodoPhase], errors: &[String], read_only:
         done_in_current,
         current.tasks.len(),
         if worked_ahead {
-            " — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed)."
+            " — earliest phase with open tasks; later phases may run or finish independently (nothing was un-completed)."
         } else {
             "."
         }

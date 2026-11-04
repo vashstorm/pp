@@ -72,15 +72,23 @@ fn todo_native_batches_commit_each_transition_and_resume_standalone_state() {
                     "init",
                     json!({"op":"init","list":[{"phase":"First","items":["A","B"]},{"phase":"Second","items":["C"]}],"occurrence":1})
                 ),
+                todo_call(protocol, "start-b", json!({"op":"start","task":"B"})),
+                todo_call(protocol, "start-c", json!({"op":"start","task":"C"})),
                 todo_call(protocol, "done-b", json!({"op":"done","task":"B"})),
                 todo_call(protocol, "view", json!({"op":"view"}))
             ]),
         );
         let (request, body) = todo_receive(&fixture, protocol);
+        let started = todo_result(&body, protocol, "start-c");
+        for phase in started["phases"].as_array().unwrap() {
+            for task in phase["tasks"].as_array().unwrap() {
+                assert_eq!(task["status"], "in_progress");
+            }
+        }
         let viewed = todo_result(&body, protocol, "view");
         assert_eq!(viewed["phases"][0]["tasks"][0]["status"], "in_progress");
         assert_eq!(viewed["phases"][0]["tasks"][1]["status"], "completed");
-        assert_eq!(viewed["phases"][1]["tasks"][0]["status"], "pending");
+        assert_eq!(viewed["phases"][1]["tasks"][0]["status"], "in_progress");
         todo_calls(
             request,
             protocol,

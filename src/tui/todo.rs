@@ -726,6 +726,28 @@ mod tests {
     }
 
     #[test]
+    fn tui_todo_expanded_shows_all_parallel_items_in_progress() {
+        let mut panel = Panel::default();
+        panel.update(state(&[
+            ("A", TodoStatus::InProgress),
+            ("B", TodoStatus::InProgress),
+            ("C", TodoStatus::InProgress),
+            ("D", TodoStatus::InProgress),
+            ("E", TodoStatus::Pending),
+        ]));
+        panel.toggle();
+        let text = render(&mut panel, 100, 24);
+        assert_eq!(text.matches("(in progress)").count(), 4, "{text}");
+        for task in ["A", "B", "C", "D"] {
+            assert!(
+                text.contains(&format!("[ ] {task} (in progress)")),
+                "{text}"
+            );
+        }
+        assert!(!text.contains("E (in progress)"), "{text}");
+    }
+
+    #[test]
     fn tui_todo_full_checklist_keeps_duplicate_hints_and_all_states() {
         let mut panel = Panel::default();
         panel.update(state(&[

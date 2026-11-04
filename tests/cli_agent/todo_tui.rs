@@ -454,9 +454,12 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         assert_eq!(current.fgcolor(), vt100::Color::Rgb(255, 230, 109));
         assert!(pty.parser.screen().rows(0, 100).nth(25).unwrap().contains("PINNED_TASK_02"));
         assert_eq!(pty.parser.screen().cell(24, 7).unwrap().fgcolor(), vt100::Color::Rgb(119, 125, 136));
-        plan_calls(request, protocol, json!([plan_call(
-            protocol, "start-middle", "todo", json!({"op":"start","task":"PINNED_TASK_06"})
-        )]));
+        // 启动两个并行项；首项遇到依赖后，视口跟随最早的剩余进行项。
+        plan_calls(request, protocol, json!([
+            plan_call(protocol, "start-middle", "todo", json!({"op":"start","task":"PINNED_TASK_06"})),
+            plan_call(protocol, "start-parallel", "todo", json!({"op":"start","task":"PINNED_TASK_07"})),
+            plan_call(protocol, "block-first", "todo", json!({"op":"block","task":"PINNED_TASK_00","reason":"waiting on dependency"}))
+        ]));
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         pty.wait_for("进行项在三项窗口中间", |screen| {
             screen.rows(0, 100).nth(23).unwrap().contains("PINNED_TASK_05")
@@ -464,6 +467,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 && screen.rows(0, 100).nth(25).unwrap().contains("PINNED_TASK_07")
         });
         assert_eq!(pty.parser.screen().cell(24, 7).unwrap().fgcolor(), vt100::Color::Rgb(255, 230, 109));
+        assert_eq!(pty.parser.screen().cell(25, 7).unwrap().fgcolor(), vt100::Color::Rgb(255, 230, 109));
         let mut stream = SseReply::new(request);
         let answer = (0..70)
             .map(|i| format!("    pinned-stream-{i:03}\n"))
@@ -544,6 +548,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 .nth(22)
                 .is_some_and(|row| row.contains("TODO · 0/12"))
                 && screen.contents().contains("PINNED_TASK_06")
+                && screen.contents().contains("PINNED_TASK_07")
                 && !screen.contents().contains("PINNED_TASK_08")
         });
         pty.input("finish all tasks\r");
