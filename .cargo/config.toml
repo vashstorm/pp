@@ -1,0 +1,12 @@
+[build]
+jobs = 8
+rustflags = ["-Z", "threads=8"]
+
+[target.aarch64-apple-darwin]
+linker = "rust-lld"
+# target rustflags 会取代 build.rustflags，因此保留编译前端并行设置。
+rustflags = ["-Z", "threads=8", "-C", "linker-flavor=ld64.lld"]
+
+[target.x86_64-unknown-linux-gnu]
+# Rust 1.90 起默认通过 C 驱动使用自带 LLD，不额外启用不稳定的链接选项。
+rustflags = ["-Z", "threads=8"]

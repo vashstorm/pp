@@ -40,6 +40,8 @@ Model-facing Bash results also include a recovery notice with a concrete `read` 
 
 You need a nightly Rust toolchain that supports **Edition 2024**, and `bash` on your PATH. The dev profile uses Cranelift; install its component with `rustup component add rustc-codegen-cranelift-preview --toolchain nightly` before development builds or tests. The release profile uses LLVM.
 
+The checked-in `.cargo/config.toml` selects Rust's bundled LLD on macOS ARM64 (`aarch64-apple-darwin`); Linux x86_64 with glibc (`x86_64-unknown-linux-gnu`) uses the bundled LLD by default with Rust 1.90 or newer. This applies to builds and tests. No separate linker installation is needed; macOS still requires the Xcode Command Line Tools, and Linux requires a C toolchain. This does not provide a cross-compilation toolchain or SDK. Setting `RUSTFLAGS` overrides the configured target flags.
+
 ```sh
 cargo build --release --locked
 mkdir -p ~/.pp/agent

@@ -42,6 +42,8 @@ Bash 的模型结果还会在资源可用时附带含具体 `read` 示例的补�
 
 需要支持 **2024 版语言规范**的 nightly Rust 工具链，以及可在命令搜索路径中找到的 `bash`。dev profile 使用 Cranelift，开发构建或测试前请执行 `rustup component add rustc-codegen-cranelift-preview --toolchain nightly` 安装组件；release profile 使用 LLVM。
 
+仓库内的 `.cargo/config.toml` 在 macOS ARM64（`aarch64-apple-darwin`）上选择 Rust 工具链自带的 LLD；使用 glibc 的 Linux x86_64（`x86_64-unknown-linux-gnu`）在 Rust 1.90 及以上版本中默认使用自带 LLD。构建与测试均生效，无需额外安装链接器；macOS 仍需 Xcode Command Line Tools，Linux 仍需 C 工具链。这不提供交叉编译工具链或 SDK。设置 `RUSTFLAGS` 会覆盖配置中的目标参数。
+
 ```sh
 cargo build --release --locked
 mkdir -p ~/.pp/agent
