@@ -646,6 +646,53 @@ fn subagent_concurrency_limits_are_shared_across_batches() {
             no_more(&server);
 
             let (marker, request) = children.pop_first().unwrap();
+            let registry = std::fs::read_dir(config_path(dir.path(), "sessions"))
+                .unwrap()
+                .flatten()
+                .find(|e| e.path().extension().is_some_and(|x| x == "subagents"))
+                .unwrap()
+                .path()
+                .join("registry.json");
+            let assert_running_limit = || {
+                let state: Value =
+                    serde_json::from_slice(&std::fs::read(&registry).unwrap()).unwrap();
+                for kind in ["agents", "runs"] {
+                    let entries = state[kind].as_object().unwrap();
+                    assert_eq!(
+                        entries
+                            .values()
+                            .filter(|r| r["status"] == "running")
+                            .count(),
+                        limit,
+                        "{state}"
+                    );
+                    assert_eq!(
+                        entries.values().filter(|r| r["status"] == "queued").count(),
+                        1,
+                        "{state}"
+                    );
+                }
+            };
+            assert_running_limit();
+            // 同一 Run 的工具和后续请求必须继续持有名额，不能让排队 Agent 插入。
+            sub_call(
+                request,
+                protocol,
+                "concurrency-step",
+                "bash",
+                json!({"command":"printf lifecycle-step"}),
+            );
+            let (request, body) = receive_sub(&server, protocol);
+            assert!(is_child(&body), "{body}");
+            assert!(body.to_string().contains(&marker), "{body}");
+            assert!(!body.to_string().contains("concurrency-extra"), "{body}");
+            assert_eq!(
+                sub_tool_result(&body, protocol, "concurrency-step")["ok"],
+                true,
+                "{body}"
+            );
+            assert_running_limit();
+            no_more(&server);
             sub_final(request, protocol, &marker);
             let (extra, body) = receive_sub(&server, protocol);
             assert!(is_child(&body), "{body}");

@@ -891,6 +891,134 @@ fn cancelled_permit_wait_does_not_leak_capacity() {
     drop(permit);
     assert!(binding.permit(&Default::default()).is_ok());
 }
+
+#[test]
+fn run_permit_queues_initialization_and_releases_after_failure_or_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding(
+        dir.path(),
+        TaskSettings {
+            max_concurrency: 1,
+            ..Default::default()
+        },
+    );
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    *lock(&binding.inner.factory) = Some(Arc::new(move |record, _| {
+        entered_tx.send(record.id.clone())?;
+        lock(&release_rx).recv_timeout(Duration::from_secs(5))?;
+        bail!("fixture initialization failure")
+    }));
+    binding
+        .execute(
+            "task",
+            &json!({"context":"verify run permits", "tasks":[
+                {"task":"first"}, {"task":"second"}, {"task":"third"}
+            ]})
+            .to_string(),
+            false,
+            &Default::default(),
+        )
+        .unwrap();
+    let first = entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (cancelled, next) = {
+        let state = lock(&binding.inner.state);
+        assert_eq!(binding.inner.semaphore.available_permits(), 0);
+        assert_eq!(
+            state
+                .disk
+                .agents
+                .values()
+                .filter(|a| a.status == "running")
+                .count(),
+            1
+        );
+        let queued = state
+            .disk
+            .runs
+            .values()
+            .filter(|r| r.status == "queued")
+            .collect::<Vec<_>>();
+        assert_eq!(queued.len(), 2);
+        assert!(
+            queued
+                .iter()
+                .all(|r| state.disk.agents[&r.agent_id].status == "queued")
+        );
+        (queued[0].id.clone(), queued[1].agent_id.clone())
+    };
+    binding
+        .cancel_runs(std::slice::from_ref(&cancelled))
+        .unwrap();
+    binding.reap_runs(std::slice::from_ref(&cancelled)).unwrap();
+    assert_eq!(
+        lock(&binding.inner.state).disk.runs[&cancelled].status,
+        "cancelled"
+    );
+    assert!(entered_rx.try_recv().is_err());
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        next
+    );
+    // 已有 worker 的后续 Run 同样排队，不能绕过当前占用的名额。
+    let followup = binding.control(&first, "send", Some("follow-up")).unwrap();
+    let followup = followup["run_id"].as_str().unwrap();
+    {
+        let state = lock(&binding.inner.state);
+        assert_eq!(state.disk.runs[followup].status, "queued");
+        assert_eq!(state.disk.agents[&first].status, "queued");
+        let running = state
+            .disk
+            .runs
+            .values()
+            .find(|r| r.agent_id == next)
+            .unwrap()
+            .id
+            .clone();
+        drop(state);
+        binding.cancel_runs(&[running]).unwrap();
+    }
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        first
+    );
+    release_tx.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut state = lock(&binding.inner.state);
+    while state
+        .disk
+        .runs
+        .values()
+        .any(|r| matches!(r.status.as_str(), "queued" | "running"))
+    {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .expect("Run 未及时结束");
+        state = binding
+            .inner
+            .changed
+            .wait_timeout(state, remaining)
+            .unwrap()
+            .0;
+    }
+    assert_eq!(state.disk.runs[followup].status, "failed");
+    assert_eq!(
+        state
+            .disk
+            .runs
+            .values()
+            .filter(|r| r.status == "cancelled")
+            .count(),
+        2
+    );
+    drop(state);
+    binding.shutdown().unwrap();
+    assert_eq!(binding.inner.semaphore.available_permits(), 1);
+}
+
 #[test]
 fn persisted_running_work_becomes_interrupted_without_restarting() {
     let dir = tempfile::tempdir().unwrap();

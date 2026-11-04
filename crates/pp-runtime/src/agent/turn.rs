@@ -373,11 +373,6 @@ pub(super) fn completion_turn(
     );
     let request_started = std::time::Instant::now();
     let response = {
-        let _permit = tools
-            .subagent
-            .as_ref()
-            .map(|b| b.permit(cancellation))
-            .transpose()?;
         let journal = RefCell::new(&mut *journal);
         let emit = RefCell::new(&mut *emit);
         let mut sent = || {
@@ -570,11 +565,6 @@ pub(super) fn response_turn(
     );
     let request_started = std::time::Instant::now();
     let turn = {
-        let _permit = tools
-            .subagent
-            .as_ref()
-            .map(|b| b.permit(cancellation))
-            .transpose()?;
         let journal = RefCell::new(&mut *journal);
         let emit = RefCell::new(&mut *emit);
         let mut sent = || {

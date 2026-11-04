@@ -921,15 +921,6 @@ impl Tools {
                 }
             }
         }
-        let _permit = if !matches!(name, "task" | "wait" | "ask") {
-            self.subagent
-                .as_ref()
-                .map(|b| b.permit(cancellation))
-                .transpose()?
-        } else {
-            None
-        };
-
         match name {
             "yield" => {
                 let value: Value = serde_json::from_str(arguments)?;

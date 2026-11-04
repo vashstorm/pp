@@ -10,6 +10,7 @@ pub use observe::ObservedRecord;
 pub use observe::{EventCursor, EventPage, HubEvent, HubSnapshot, ObservedEntry};
 
 use pp_config::config::TaskSettings;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::agent::Agent;
 use crate::agent::input::InputQueue;
@@ -99,11 +100,8 @@ struct Live {
 struct State {
     disk: Disk,
     live: BTreeMap<String, Live>,
-    active: usize,
     workers: usize,
     retiring: BTreeMap<String, u64>,
-    permits: std::collections::VecDeque<u64>,
-    next_permit: u64,
     stopping: bool,
 }
 type Validator = dyn Fn(&mut Spec) -> Result<()> + Send + Sync;
@@ -131,6 +129,7 @@ struct Inner {
     state: Mutex<State>,
     changed: Condvar,
     settings: TaskSettings,
+    semaphore: Arc<Semaphore>,
     dir: Mutex<PathBuf>,
     user: PathBuf,
     factory: Mutex<Option<Arc<Factory>>>,
@@ -300,14 +299,12 @@ impl Binding {
             state: Mutex::new(State {
                 disk,
                 live: BTreeMap::new(),
-                active: 0,
                 workers: 0,
                 retiring: Default::default(),
-                permits: Default::default(),
-                next_permit: 0,
                 stopping: false,
             }),
             changed: Condvar::new(),
+            semaphore: Arc::new(Semaphore::new(settings.max_concurrency)),
             settings,
             dir: Mutex::new(dir),
             user,
@@ -775,10 +772,31 @@ impl Binding {
             state.live.remove(&record.id);
             state.retiring.remove(&record.id);
         }
-        if let Some(live) = state.live.get_mut(&record.id) {
+        if state.live.contains_key(&record.id) {
             if run.is_empty() {
                 return Ok(());
             }
+            state
+                .disk
+                .agents
+                .get_mut(&record.id)
+                .context("unknown agent")?
+                .status = "queued".into();
+            self.inner.save(&state)?;
+            self.inner.observe(
+                &record.id,
+                None,
+                record.generation,
+                None,
+                None,
+                Some(HubEvent::AgentState {
+                    status: "queued".into(),
+                }),
+            );
+            let live = state
+                .live
+                .get_mut(&record.id)
+                .context("missing live agent")?;
             live.cancellation = token.clone();
             live.input.begin_run()?;
             live.sender.send(Work {
@@ -790,7 +808,7 @@ impl Binding {
             return Ok(());
         }
         record.generation += 1;
-        record.status = if run.is_empty() { "idle" } else { "running" }.into();
+        record.status = if run.is_empty() { "idle" } else { "queued" }.into();
         let generation = record.generation;
         let status = record.status.clone();
         state.disk.agents.insert(record.id.clone(), record.clone());
@@ -810,25 +828,15 @@ impl Binding {
         state.workers += 1;
         let weak = Arc::downgrade(&self.inner);
         let id = record.id.clone();
-        let startup_token = token.clone();
         if let Err(error) = thread::Builder::new()
             .name(format!("pp-{id}"))
-            .spawn(move || worker(weak, record, generation, input, receiver, startup_token))
+            .spawn(move || worker(weak, record, generation, input, receiver))
         {
             state.workers = state.workers.saturating_sub(1);
             state.live.remove(&id);
             return Err(error.into());
         }
-        if !run.is_empty() {
-            sender.send(Work {
-                accounting: self.accounting.clone(),
-                run: run.into(),
-                task,
-                cancellation: token,
-            })?;
-        }
-        drop(state);
-        // 新实例建立后发布实际 Agent 状态；已存在实例的运行转换由 worker 发布。
+        // 在唤醒 worker 前发布排队状态，避免迟到的 queued 覆盖 running。
         self.inner.observe(
             &id,
             None,
@@ -837,6 +845,14 @@ impl Binding {
             None,
             Some(HubEvent::AgentState { status }),
         );
+        if !run.is_empty() {
+            sender.send(Work {
+                accounting: self.accounting.clone(),
+                run: run.into(),
+                task,
+                cancellation: token,
+            })?;
+        }
         Ok(())
     }
     fn settle(&self, run: &str, result: Value, duration_ms: u64) -> Result<()> {
@@ -859,9 +875,11 @@ impl Binding {
             .agents
             .get(&agent_id)
             .map_or(0, |record| record.generation);
+        if let Some(record) = state.disk.agents.get_mut(&agent_id) {
+            record.status = "idle".into();
+            record.updated_ms = now();
+        }
         self.inner.save(&state)?;
-        self.inner.changed.notify_all();
-        drop(state);
         self.inner.observe(
             &agent_id,
             Some(run),
@@ -870,6 +888,17 @@ impl Binding {
             None,
             Some(HubEvent::RunState { status }),
         );
+        self.inner.observe(
+            &agent_id,
+            None,
+            generation,
+            None,
+            None,
+            Some(HubEvent::AgentState {
+                status: "idle".into(),
+            }),
+        );
+        self.inner.changed.notify_all();
         Ok(())
     }
     pub(crate) fn pending(&self) -> bool {
@@ -1393,33 +1422,26 @@ impl Binding {
         Ok(())
     }
 
-    pub(crate) fn permit(&self, token: &CancellationToken) -> Result<Permit> {
-        if self.owner == "Main" {
-            return Ok(Permit(None));
-        }
-        let ticket = {
-            let mut state = lock(&self.inner.state);
-            state.next_permit += 1;
-            let ticket = state.next_permit;
-            state.permits.push_back(ticket);
-            ticket
+    fn permit(&self, token: &CancellationToken) -> Result<OwnedSemaphorePermit> {
+        use std::{
+            future::Future,
+            task::{Context as TaskContext, Poll, Waker},
         };
+
+        // 保留同一个 acquire future，让 Semaphore 管理 FIFO 和取消后的名额归还。
+        // 同步 worker 通过 unpark 唤醒，不需要额外的 Tokio runtime。
+        let mut acquire = std::pin::pin!(self.inner.semaphore.clone().acquire_owned());
+        let waker = Waker::from(Arc::new(PermitWake(thread::current())));
+        let mut context = TaskContext::from_waker(&waker);
         loop {
-            let mut state = lock(&self.inner.state);
-            if token.is_cancelled() || state.stopping {
-                state.permits.retain(|id| *id != ticket);
-                self.inner.changed.notify_all();
+            if token.is_cancelled() || lock(&self.inner.state).stopping {
                 return Err(pp_core::cancellation::Cancelled.into());
             }
-            if state.permits.front() == Some(&ticket)
-                && state.active < self.inner.settings.max_concurrency
-            {
-                state.permits.pop_front();
-                state.active += 1;
-                return Ok(Permit(Some(self.inner.clone())));
+            match acquire.as_mut().poll(&mut context) {
+                Poll::Ready(permit) => return Ok(permit?),
+                // 取消 token 不唤醒当前线程，保留有界 tick 检查取消与关闭。
+                Poll::Pending => thread::park_timeout(IDLE_POLL_INTERVAL),
             }
-            drop(state);
-            self.sleep();
         }
     }
     pub(crate) fn interaction<T>(
@@ -1434,14 +1456,13 @@ impl Binding {
         self.inner.settings.request_budget
     }
 }
-pub(crate) struct Permit(Option<Arc<Inner>>);
-impl Drop for Permit {
-    fn drop(&mut self) {
-        if let Some(inner) = &self.0 {
-            let mut state = lock(&inner.state);
-            state.active = state.active.saturating_sub(1);
-            inner.changed.notify_all();
-        }
+struct PermitWake(thread::Thread);
+impl std::task::Wake for PermitWake {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
     }
 }
 
@@ -1474,7 +1495,6 @@ fn worker(
     generation: u64,
     input: InputQueue,
     receiver: mpsc::Receiver<Work>,
-    startup_token: CancellationToken,
 ) {
     let Some(inner) = weak.upgrade() else { return };
     struct WorkerExit {
@@ -1531,50 +1551,7 @@ fn worker(
         generation,
     };
     let mut record = record;
-    if record.spec.isolated {
-        match workspace::prepare(
-            &record.spec.cwd,
-            &inner.directory(),
-            &record.id,
-            &startup_token,
-        ) {
-            Ok(cwd) => record.spec.cwd = cwd,
-            Err(error) => {
-                let failed;
-                {
-                    let mut state = lock(&inner.state);
-                    failed = state
-                        .disk
-                        .runs
-                        .values_mut()
-                        .filter(|r| r.agent_id == record.id && r.status == "queued")
-                        .map(|run| {
-                            run.status = "failed".into();
-                            run.result = Some(json!({"ok":false,"error":format!("{error:#}")}));
-                            run.id.clone()
-                        })
-                        .collect::<Vec<_>>();
-                    let _ = inner.save(&state);
-                    inner.changed.notify_all();
-                }
-                // 隔离 workspace prepare 失败不是 settle 路径，必须单独发布。
-                for run in failed {
-                    inner.observe(
-                        &record.id,
-                        Some(&run),
-                        generation,
-                        None,
-                        None,
-                        Some(HubEvent::RunState {
-                            status: "failed".into(),
-                        }),
-                    );
-                }
-                return;
-            }
-        }
-    }
-    let binding = Binding {
+    let mut binding = Binding {
         accounting: None,
         inner,
         owner: record.id.clone(),
@@ -1586,6 +1563,7 @@ fn worker(
         readonly: record.spec.readonly,
     };
     let mut agent: Option<Agent> = None;
+    let mut workspace_ready = !record.spec.isolated;
     // 空闲 TTL 从最后一次真实 work 结束开始计算；50ms 诊断 tick 不能续命。
     let idle_ttl = (binding.inner.settings.idle_ttl_ms != 0)
         .then(|| Duration::from_millis(binding.inner.settings.idle_ttl_ms));
@@ -1632,14 +1610,10 @@ fn worker(
         let mut run_sequence = 0u64;
         let _ = input.begin_run();
         let mut last = String::new();
+        // 名额覆盖初始化、全部模型轮次、工具执行与结果收尾；出错也由 RAII 释放。
+        let mut permit = None;
         let outcome = (|| -> Result<Value> {
-            cancellation::check(&work.cancellation)?;
-            if agent.is_none() {
-                let factory = lock(&binding.inner.factory)
-                    .clone()
-                    .context("supervisor stopped")?;
-                agent = Some(factory(&record, binding.clone())?);
-            }
+            permit = Some(binding.permit(&work.cancellation)?);
             {
                 let mut state = lock(&binding.inner.state);
                 state
@@ -1648,8 +1622,25 @@ fn worker(
                     .get_mut(&work.run)
                     .context("unknown run")?
                     .status = "running".into();
+                let current = state
+                    .disk
+                    .agents
+                    .get_mut(&record.id)
+                    .context("unknown agent")?;
+                current.status = "running".into();
+                current.updated_ms = now();
                 binding.inner.save(&state)?;
             }
+            binding.inner.observe(
+                &record.id,
+                None,
+                generation,
+                None,
+                None,
+                Some(HubEvent::AgentState {
+                    status: "running".into(),
+                }),
+            );
             binding.inner.observe(
                 &record.id,
                 Some(&work.run),
@@ -1660,6 +1651,23 @@ fn worker(
                     status: "running".into(),
                 }),
             );
+            cancellation::check(&work.cancellation)?;
+            if agent.is_none() {
+                if !workspace_ready {
+                    record.spec.cwd = workspace::prepare(
+                        &record.spec.cwd,
+                        &binding.inner.directory(),
+                        &record.id,
+                        &work.cancellation,
+                    )?;
+                    binding.cwd = record.spec.cwd.clone();
+                    workspace_ready = true;
+                }
+                let factory = lock(&binding.inner.factory)
+                    .clone()
+                    .context("supervisor stopped")?;
+                agent = Some(factory(&record, binding.clone())?);
+            }
             let native = agent.as_mut().context("agent initialization failed")?;
             native.set_task_accounting(work.accounting.clone());
             native.set_lsp_run_id(Some(work.run.clone()));
@@ -1836,19 +1844,7 @@ fn worker(
         // 只有真实 work 结束才重置空闲基线；诊断 tick 不能延长 TTL。
         idle_since = Instant::now();
         late_sequences.insert(work.run.clone(), run_sequence);
-        let mut state = lock(&binding.inner.state);
-        if let Some(current) = state
-            .disk
-            .agents
-            .get_mut(&record.id)
-            .filter(|r| r.generation == generation)
-        {
-            current.status = "idle".into();
-            current.updated_ms = now();
-        }
-        if binding.inner.save(&state).is_err() {
-            break;
-        }
+        let state = lock(&binding.inner.state);
         if state.stopping
             || state
                 .disk
@@ -1858,6 +1854,8 @@ fn worker(
         {
             break;
         }
+        drop(state);
+        drop(permit);
     }
     if let Some(native) = agent.as_mut() {
         // park/退出时取消该 owner 的等待；共享父 Registry 的 worker 不停父进程。
