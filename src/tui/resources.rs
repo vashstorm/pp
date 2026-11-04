@@ -5,6 +5,8 @@ use crate::{
     user_input::{self, Image, UserInput},
 };
 use anyhow::{Context, Result, ensure};
+
+pub(super) type Bindings = std::collections::BTreeMap<String, std::ops::Range<usize>>;
 use std::{
     path::PathBuf,
     sync::mpsc::{self, Receiver},
@@ -20,12 +22,14 @@ pub(super) enum Operation {
     },
     Paste(String),
     Clipboard,
+    References(Vec<user_input::Reference>),
 }
 
 pub(super) enum Output {
     Prepared(UserInput),
     Images(Vec<Image>),
     Text(String),
+    References(Vec<(std::ops::Range<usize>, Image)>),
 }
 
 pub(super) struct Job {
@@ -35,20 +39,21 @@ pub(super) struct Job {
     pub kind: super::PendingKind,
     pub cursor: ratatui_textarea::DataCursor,
     pub replace_paste: bool,
+    pub prepare_after: Option<String>,
 }
 
 #[derive(Clone)]
 struct BindingEdit {
     before: String,
     after: String,
-    previous: std::collections::BTreeSet<String>,
-    next: std::collections::BTreeSet<String>,
+    previous: Bindings,
+    next: Bindings,
 }
 
 #[derive(Default, Clone)]
 pub(super) struct Draft {
     images: Vec<Image>,
-    live: std::collections::BTreeSet<String>,
+    bindings: Bindings,
     undo: Vec<BindingEdit>,
     redo: Vec<BindingEdit>,
 }
@@ -62,69 +67,180 @@ pub(super) struct State {
     pub job: Option<Job>,
     pub next_image: u64,
     pub plan_discussion: bool,
-    pub live: std::collections::BTreeSet<String>,
+    pub bindings: Bindings,
     undo: Vec<BindingEdit>,
     redo: Vec<BindingEdit>,
+    pub epoch: u64,
 }
 
 impl State {
     pub fn snapshot_draft(&self) -> Draft {
         Draft {
             images: self.images.clone(),
-            live: self.live.clone(),
+            bindings: self.bindings.clone(),
             undo: self.undo.clone(),
             redo: self.redo.clone(),
         }
     }
 
     pub fn restore_draft(&mut self, draft: Draft) {
+        self.epoch = self.epoch.wrapping_add(1);
         self.images = draft.images;
-        self.live = draft.live;
+        self.bindings = draft.bindings;
         self.undo = draft.undo;
         self.redo = draft.redo;
     }
 
     pub fn set_images(&mut self, images: Vec<Image>) {
-        self.live = images.iter().map(|image| image.marker.clone()).collect();
+        for image in &images {
+            if let Some(number) = image
+                .marker
+                .rsplit_once('#')
+                .and_then(|(_, number)| number.parse::<u64>().ok())
+            {
+                self.next_image = self.next_image.max(number);
+            }
+        }
+        self.epoch = self.epoch.wrapping_add(1);
+        self.bindings.clear();
         self.images = images;
         self.undo.clear();
         self.redo.clear();
+    }
+
+    /// 仅对来自持久历史或待处理消息的可信附件恢复位置绑定。
+    pub fn bind_text(&mut self, text: &str) {
+        self.bindings = self
+            .images
+            .iter()
+            .filter_map(|image| {
+                image
+                    .source_range
+                    .as_ref()
+                    .map_or_else(
+                        || text.find(&image.marker),
+                        |range| {
+                            (text.get(range.clone()) == Some(image.marker.as_str()))
+                                .then_some(range.start)
+                        },
+                    )
+                    .map(|start| (image.marker.clone(), start..start + image.marker.len()))
+            })
+            .collect();
+    }
+
+    pub fn restore_input(&mut self, mut images: Vec<Image>, mut text: String) -> String {
+        // 旧历史只在召回草稿时转换显示，磁盘记录和协议历史保持原样。
+        for image in &mut images {
+            if let Some(number) = image
+                .marker
+                .strip_prefix("[图片 ")
+                .and_then(|s| s.strip_suffix(']'))
+                && let Ok(number) = number.parse::<u64>()
+            {
+                let marker = format!("{} #{number}", super::attachment_edit::ICON);
+                text = text.replacen(&image.marker, &marker, 1);
+                image.marker = marker;
+                self.next_image = self.next_image.max(number);
+            }
+        }
+        self.set_images(images);
+        self.bind_text(&text);
+        text
+    }
+
+    /// 一次用户编辑可能调用多个 textarea 原语，撤销必须回到同一事务边界。
+    pub fn undo_input(
+        &mut self,
+        input: &mut ratatui_textarea::TextArea<'static>,
+        redo: bool,
+    ) -> bool {
+        let stack = if redo { &mut self.redo } else { &mut self.undo };
+        let Some(edit) = stack.pop() else {
+            return if redo { input.redo() } else { input.undo() };
+        };
+        let target = if redo { &edit.after } else { &edit.before };
+        for _ in 0..1000 {
+            let changed = if redo { input.redo() } else { input.undo() };
+            if input.lines().join("\n") == *target {
+                break;
+            }
+            if !changed {
+                break;
+            }
+        }
+        if input.lines().join("\n") != *target {
+            // 原生历史容量耗尽时仍恢复完整事务，不能留下半个附件。
+            *input = super::editor();
+            input.insert_str(target);
+        }
+        self.bindings = if redo {
+            edit.next.clone()
+        } else {
+            edit.previous.clone()
+        };
+        if redo {
+            self.undo.push(edit);
+        } else {
+            self.redo.push(edit);
+        }
+        true
     }
 
     pub fn edited(
         &mut self,
         before: String,
         after: String,
-        previous: std::collections::BTreeSet<String>,
-        undo: bool,
-        redo: bool,
+        previous: Bindings,
+        range: Option<(usize, usize, usize)>,
     ) {
-        if before == after {
+        if before == after && range.is_none() {
             return;
         }
-        if undo {
-            if let Some(index) = self.undo.iter().rposition(|edit| edit.before == after) {
-                while self.undo.len() > index {
-                    let edit = self.undo.pop().expect("撤销记录");
-                    self.live = edit.previous.clone();
-                    self.redo.push(edit);
-                }
-                return;
+        self.shift_bindings(&before, &after, &previous, range);
+        self.record(before, after, previous);
+    }
+
+    pub fn shift_bindings(
+        &mut self,
+        before: &str,
+        after: &str,
+        previous: &Bindings,
+        range: Option<(usize, usize, usize)>,
+    ) {
+        let (start, end, inserted_end) =
+            range.unwrap_or_else(|| super::attachment_edit::changed_range(before, after));
+        let delta = inserted_end as isize - end as isize;
+        let mut next = Bindings::new();
+        for (marker, range) in previous {
+            let range = if range.end <= start {
+                range.clone()
+            } else if range.start >= end {
+                range.start.saturating_add_signed(delta)..range.end.saturating_add_signed(delta)
+            } else {
+                continue;
+            };
+            if after.get(range.clone()) == Some(marker.as_str()) {
+                next.insert(marker.clone(), range);
             }
-        } else if redo && let Some(index) = self.redo.iter().rposition(|edit| edit.after == after) {
-            while self.redo.len() > index {
-                let edit = self.redo.pop().expect("重做记录");
-                self.live = edit.next.clone();
-                self.undo.push(edit);
+        }
+        for (marker, range) in &self.bindings {
+            if !previous.contains_key(marker) && after.get(range.clone()) == Some(marker.as_str()) {
+                next.insert(marker.clone(), range.clone());
             }
+        }
+        self.bindings = next;
+    }
+
+    pub fn record(&mut self, before: String, after: String, previous: Bindings) {
+        if before == after && previous == self.bindings {
             return;
         }
-        self.live.retain(|marker| after.contains(marker));
         self.undo.push(BindingEdit {
             before,
             after,
             previous,
-            next: self.live.clone(),
+            next: self.bindings.clone(),
         });
         if self.undo.len() > 100 {
             self.undo.remove(0);
@@ -140,11 +256,20 @@ impl State {
     }
 
     pub fn active_images(&self, text: &str) -> Vec<Image> {
-        self.images
+        let mut images: Vec<_> = self
+            .images
             .iter()
-            .filter(|image| self.live.contains(&image.marker) && text.contains(&image.marker))
-            .cloned()
-            .collect()
+            .filter_map(|image| {
+                let range = self.bindings.get(&image.marker)?;
+                (text.get(range.clone()) == Some(image.marker.as_str())).then(|| {
+                    let mut image = image.clone();
+                    image.source_range = Some(range.clone());
+                    (range.start, image)
+                })
+            })
+            .collect();
+        images.sort_by_key(|(start, _)| *start);
+        images.into_iter().map(|(_, image)| image).collect()
     }
 }
 
@@ -186,6 +311,21 @@ pub(super) fn start(
                         }
                     }
                     Operation::Clipboard => clipboard(&cwd, &token)?,
+                    Operation::References(references) => {
+                        let mut replacements = Vec::new();
+                        for reference in references {
+                            check(&token)?;
+                            let path = user_input::resolve(
+                                reference.path.as_deref().expect("图片路径"),
+                                &cwd,
+                            )?;
+                            replacements.push((
+                                reference.start..reference.end,
+                                user_input::image_file(&path)?,
+                            ));
+                        }
+                        Output::References(replacements)
+                    }
                 };
                 check(&token)?;
                 Ok(output)
@@ -200,6 +340,7 @@ pub(super) fn start(
         kind,
         cursor,
         replace_paste: false,
+        prepare_after: None,
     })
 }
 

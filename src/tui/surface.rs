@@ -18,10 +18,73 @@ use ratatui::{
 };
 use std::{
     io::{self, Write},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 static ALTERNATE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static GRAPHICS: Mutex<GraphicsCleanup> = Mutex::new(GraphicsCleanup {
+    rows: Vec::new(),
+    kitty: Vec::new(),
+});
+
+#[derive(Default, Clone)]
+struct GraphicsCleanup {
+    rows: Vec<u16>,
+    kitty: Vec<(u32, bool)>,
+}
+
+impl GraphicsCleanup {
+    fn from_frame(buffer: &Buffer, graphics: &[Rect]) -> Self {
+        let mut cleanup = Self::default();
+        for area in graphics {
+            cleanup.rows.extend(area.top()..area.bottom());
+            if let Some(cell) = buffer.cell((area.x, area.y)) {
+                let symbol = cell.symbol();
+                if let Some((_, command)) = symbol.split_once("\x1b_G") {
+                    let header = command.split(';').next().unwrap_or_default();
+                    if let Some(id) = header.split(',').find_map(|part| {
+                        part.strip_prefix("i=")
+                            .and_then(|id| id.parse::<u32>().ok())
+                    }) {
+                        cleanup.kitty.push((id, symbol.contains("\x1bPtmux;")));
+                    }
+                }
+            }
+        }
+        cleanup.rows.sort_unstable();
+        cleanup.rows.dedup();
+        cleanup.kitty.sort_unstable();
+        cleanup.kitty.dedup();
+        cleanup
+    }
+
+    fn clear(&self, writer: &mut impl Write) -> io::Result<()> {
+        for (id, tmux) in &self.kitty {
+            // 仅删除当前 pp 帧拥有的图片，保留终端中其他应用的图像。
+            if *tmux {
+                write!(
+                    writer,
+                    "\x1bPtmux;\x1b\x1b_Ga=d,d=I,i={id},q=2\x1b\x1b\\\x1b\\"
+                )?;
+            } else {
+                write!(writer, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+            }
+        }
+        for row in &self.rows {
+            queue!(
+                writer,
+                ResetColor,
+                SetAttribute(Attribute::Reset),
+                MoveTo(0, *row),
+                Clear(ClearType::CurrentLine)
+            )?;
+        }
+        Ok(())
+    }
+}
 
 pub(super) fn initialize() -> io::Result<()> {
     let previous = std::panic::take_hook();
@@ -35,6 +98,10 @@ pub(super) fn initialize() -> io::Result<()> {
 
 pub(super) fn restore() {
     let mut stdout = io::stdout();
+    if let Ok(mut graphics) = GRAPHICS.lock() {
+        let _ = graphics.clear(&mut stdout);
+        *graphics = GraphicsCleanup::default();
+    }
     if ALTERNATE_ACTIVE.swap(false, Ordering::SeqCst) {
         let _ = execute!(stdout, LeaveAlternateScreen);
     }
@@ -77,6 +144,8 @@ pub(super) struct Surface<W: Write> {
     reset_pending: bool,
     started: bool,
     cursor: Option<Position>,
+    graphics: Vec<Rect>,
+    graphics_cleanup: GraphicsCleanup,
 }
 
 impl<W: Write> Surface<W> {
@@ -89,6 +158,8 @@ impl<W: Write> Surface<W> {
             reset_pending: false,
             started: false,
             cursor: None,
+            graphics: Vec::new(),
+            graphics_cleanup: GraphicsCleanup::default(),
         }
     }
 
@@ -97,6 +168,7 @@ impl<W: Write> Surface<W> {
     }
 
     /// 一批历史与对应尾帧在同一次短同步更新内提交。
+    #[cfg(test)]
     pub(super) fn paint(
         &mut self,
         buffer: &Buffer,
@@ -104,8 +176,31 @@ impl<W: Write> Surface<W> {
         alternate: bool,
         history: &[Vec<Cell>],
     ) -> io::Result<()> {
+        self.paint_images(buffer, cursor, alternate, history, &[])
+    }
+
+    pub(super) fn paint_images(
+        &mut self,
+        buffer: &Buffer,
+        cursor: Option<Position>,
+        alternate: bool,
+        history: &[Vec<Cell>],
+        graphics: &[Rect],
+    ) -> io::Result<()> {
         let reset = self.reset_pending;
         let switch = self.alternate != alternate;
+        let clear_graphics = !self.graphics.is_empty()
+            && (reset
+                || switch
+                || !history.is_empty()
+                || self.graphics != graphics
+                || self.previous.as_ref().is_none_or(|old| {
+                    old.area != buffer.area
+                        || self
+                            .graphics
+                            .iter()
+                            .any(|area| old.cell((area.x, area.y)) != buffer.cell((area.x, area.y)))
+                }));
         let previous = if reset {
             None
         } else if switch && !alternate {
@@ -117,6 +212,19 @@ impl<W: Write> Surface<W> {
         };
         let unknown = Buffer::empty(buffer.area);
         let previous = previous.filter(|old| old.area == buffer.area);
+        // 图形先从物理屏幕擦除，再以相同状态计算滚动和差分。
+        let cleaned = previous.filter(|_| clear_graphics && !switch).map(|old| {
+            let mut cleaned = old.clone();
+            for row in &self.graphics_cleanup.rows {
+                if *row < cleaned.area.bottom() {
+                    for x in cleaned.area.left()..cleaned.area.right() {
+                        cleaned[(x, *row)].reset();
+                    }
+                }
+            }
+            cleaned
+        });
+        let previous = cleaned.as_ref().or(previous);
         let cursor_known = self.started && !reset && !switch && previous.is_some();
         // 每次历史提交都会把整个可见屏幕上移一行，底部留下默认样式的空行。
         // 差分必须基于滚动后的物理屏幕，不能沿用滚动前的坐标或强制重发所有行。
@@ -146,11 +254,14 @@ impl<W: Write> Surface<W> {
         let redraw = !changes.is_empty();
         let structural = !started || reset || switch || !history.is_empty();
         let visibility_changed = !cursor_known || self.cursor.is_some() != cursor.is_some();
-        if structural || redraw || !cursor_known || self.cursor != cursor {
+        if clear_graphics || structural || redraw || !cursor_known || self.cursor != cursor {
             // backend 的定位和显隐方法会 flush；先写内存，使同步更新结束序列
             // 与整帧一起提交到终端，避免实际 writer 在一帧中途被多次刷新。
             let mut output = Vec::new();
             output.sync_update(|writer| -> io::Result<()> {
+                if clear_graphics {
+                    self.graphics_cleanup.clear(writer)?;
+                }
                 if cursor.is_none() && visibility_changed {
                     // 先隐藏，再滚屏、清屏或定位，避免重建期间暴露中间位置。
                     queue!(writer, Hide)?;
@@ -201,7 +312,21 @@ impl<W: Write> Surface<W> {
                 }
                 let mut backend = CrosstermBackend::new(writer);
                 if redraw {
-                    backend.draw(changes.into_iter())?;
+                    // 图形协议可能移动光标或改变样式；下一批文字必须显式重新定位。
+                    let mut text = Vec::new();
+                    for cell in changes {
+                        if cell.2.symbol().contains('\x1b') {
+                            if !text.is_empty() {
+                                backend.draw(text.drain(..))?;
+                            }
+                            backend.draw(std::iter::once(cell))?;
+                        } else {
+                            text.push(cell);
+                        }
+                    }
+                    if !text.is_empty() {
+                        backend.draw(text.into_iter())?;
+                    }
                 }
                 if let Some(cursor) = cursor {
                     // 正文写入也会移动物理光标，即使输入位置没变仍需恢复。
@@ -223,6 +348,7 @@ impl<W: Write> Surface<W> {
         }
         self.previous = Some(buffer.clone());
         if reset
+            || clear_graphics
             || self
                 .main
                 .as_ref()
@@ -239,6 +365,11 @@ impl<W: Write> Surface<W> {
         self.reset_pending = false;
         self.started = true;
         self.cursor = cursor;
+        self.graphics = graphics.to_vec();
+        self.graphics_cleanup = GraphicsCleanup::from_frame(buffer, graphics);
+        if let Ok(mut graphics) = GRAPHICS.lock() {
+            *graphics = self.graphics_cleanup.clone();
+        }
         Ok(())
     }
 
@@ -615,5 +746,73 @@ mod tests {
             assert!(!surface.started);
             assert_eq!(surface.cursor, None);
         }
+    }
+
+    fn graphics_frame() -> (Buffer, Rect) {
+        let mut buffer = frame("conversation");
+        let area = Rect::new(2, 1, 8, 2);
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                buffer[(x, y)].set_diff_option(CellDiffOption::Skip);
+            }
+        }
+        buffer[(area.x, area.y)]
+            .set_symbol("\x1b_Ga=T,i=123,q=2;AAAA\x1b\\X")
+            .set_diff_option(CellDiffOption::ForcedWidth(std::num::NonZeroU16::MIN));
+        (buffer, area)
+    }
+
+    #[test]
+    fn image_surface_hiding_graphics_erases_pixels_even_when_text_diff_is_empty() {
+        let (image, area) = graphics_frame();
+        let mut surface = Surface::new(Vec::new());
+        surface
+            .paint_images(&image, None, false, &[], &[area])
+            .unwrap();
+        let initial = surface.writer.len();
+        surface
+            .paint_images(&image, None, false, &[], &[area])
+            .unwrap();
+        assert_eq!(surface.writer.len(), initial);
+        surface
+            .paint_images(&frame("conversation"), None, false, &[], &[])
+            .unwrap();
+        let bytes = String::from_utf8_lossy(&surface.writer[initial..]);
+        assert!(bytes.contains("a=d,d=I,i=123"), "{bytes:?}");
+        assert_eq!(bytes.matches("\x1b[2K").count(), 2);
+        assert!(!bytes.contains("\x1b[3J"));
+        assert!(surface.graphics.is_empty());
+    }
+
+    #[test]
+    fn image_surface_scroll_and_screen_switch_clear_before_retransmitting() {
+        let (image, area) = graphics_frame();
+        let mut surface = Surface::new(Vec::new());
+        surface
+            .paint_images(&image, Some(Position::new(2, 4)), false, &[], &[area])
+            .unwrap();
+        let start = surface.writer.len();
+        let history = vec![Cell::new("h"); 24];
+        surface
+            .paint_images(
+                &image,
+                Some(Position::new(2, 4)),
+                false,
+                &[history],
+                &[area],
+            )
+            .unwrap();
+        let bytes = String::from_utf8_lossy(&surface.writer[start..]);
+        assert!(bytes.find("a=d,d=I").unwrap() < bytes.find("\r\n").unwrap());
+        assert!(bytes.find("\r\n").unwrap() < bytes.find("a=T,i=123").unwrap());
+        let start = surface.writer.len();
+        surface.paint(&frame("panel"), None, true, &[]).unwrap();
+        let bytes = String::from_utf8_lossy(&surface.writer[start..]);
+        assert!(bytes.find("a=d,d=I").unwrap() < bytes.find("\x1b[?1049h").unwrap());
+        assert!(surface.main.is_none());
+        surface
+            .paint_images(&image, None, false, &[], &[area])
+            .unwrap();
+        assert_eq!(surface.graphics, [area]);
     }
 }

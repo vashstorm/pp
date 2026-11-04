@@ -519,13 +519,14 @@ impl App {
             Ok(Some(message)) => {
                 self.close_pending_menu();
                 self.clear_input();
-                self.resources.set_images(
+                let source = self.resources.restore_input(
                     message
                         .prepared
                         .map(|input| input.images)
                         .unwrap_or_default(),
+                    message.source,
                 );
-                self.input.insert_str(message.source);
+                self.input.insert_str(source);
                 self.refresh_candidates(true);
                 if !self.has_pending() {
                     self.queue_paused = false;

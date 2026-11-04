@@ -769,6 +769,7 @@ impl App {
                 self.menu = None;
                 self.file_query = None;
                 self.menu_dismissed = true;
+                self.load_image_references(false, PendingKind::Steering);
             }
             MenuAction::McpSubcommand(index) => {
                 let (name, _, argument) = crate::mcp::SUBCOMMANDS[index];

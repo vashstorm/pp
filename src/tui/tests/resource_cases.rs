@@ -42,10 +42,10 @@ fn resource_images_delete_undo_and_manual_marker_never_forges_attachment() {
     assert_eq!(app.input_text(), "");
     assert!(app.resources.active_images(&app.input_text()).is_empty());
     app.handle(control('u'), &mut dirty);
-    assert_eq!(app.input_text(), "[图片 1]");
+    assert_eq!(app.input_text(), "\u{f03e} #1");
     assert_eq!(app.resources.active_images(&app.input_text()).len(), 1);
     app.handle(key(KeyCode::Backspace), &mut dirty);
-    app.handle(Event::Paste("[图片 1]".into()), &mut dirty);
+    app.handle(Event::Paste("\u{f03e} #1".into()), &mut dirty);
     assert!(app.resources.active_images(&app.input_text()).is_empty());
 }
 
@@ -68,7 +68,7 @@ fn resource_submission_sends_one_prepared_message_and_history_recalls_image() {
     );
     assert_eq!(prepared.images.len(), 2);
     assert!(app.input.is_empty());
-    assert_eq!(app.input_history, ["[图片 1][图片 2]"]);
+    assert_eq!(app.input_history, ["\u{f03e} #1\u{f03e} #2"]);
     app.show_history(0);
     assert_eq!(app.resources.active_images(&app.input_text()).len(), 2);
 }
@@ -141,10 +141,10 @@ fn resource_image_paste_paths_and_mixed_text_use_distinct_paths() {
     let mut dirty = false;
     app.handle(Event::Paste("my shot.png".into()), &mut dirty);
     settle(&mut app);
-    assert_eq!(app.input_text(), "[图片 1]");
+    assert_eq!(app.input_text(), "\u{f03e} #1");
     app.handle(Event::Paste(" explain my shot.png".into()), &mut dirty);
     settle(&mut app);
-    assert_eq!(app.input_text(), "[图片 1] explain my shot.png");
+    assert_eq!(app.input_text(), "\u{f03e} #1 explain my shot.png");
     assert_eq!(app.resources.active_images(&app.input_text()).len(), 1);
 }
 
@@ -216,8 +216,8 @@ fn resource_clipboard_pending_blocks_submit_and_image_summary_is_visible() {
     app.insert_input("draft".into());
     app.insert_images(vec![image()]);
     let screen = draw(&mut app, 120, 30);
-    assert!(screen.replace(' ', "").contains("[图片1]"), "{screen}");
-    assert!(screen.contains("2 x 3"));
+    assert!(screen.replace(' ', "").contains("\u{f03e}#1"), "{screen}");
+    assert!(screen.contains("2x3"));
     assert!(!screen.contains("base64"));
     let (_sender, receiver) = mpsc::channel();
     app.resources.job = Some(resources::Job {
@@ -227,10 +227,11 @@ fn resource_clipboard_pending_blocks_submit_and_image_summary_is_visible() {
         kind: PendingKind::Steering,
         cursor: app.input.cursor(),
         replace_paste: false,
+        prepare_after: None,
     });
     app.submit(PendingKind::Steering);
     assert!(commands.try_recv().is_err());
-    assert_eq!(app.input_text(), "draft[图片 1]");
+    assert_eq!(app.input_text(), "draft\u{f03e} #1");
 }
 
 #[test]
@@ -259,4 +260,166 @@ fn resource_model_picker_and_history_restore_attachment_undo_bindings() {
     assert_eq!(app.input_text(), "");
     app.handle(control('u'), &mut false);
     assert_eq!(app.resources.active_images(&app.input_text()).len(), 1);
+}
+
+#[test]
+fn resource_atomic_navigation_partial_selection_word_delete_and_undo() {
+    let (mut app, _, _) = resource_app();
+    app.insert_input("中文 ".into());
+    app.insert_images(vec![image()]);
+    let marker = app.resources.images[0].marker.clone();
+    let end = 3 + marker.chars().count();
+    app.handle(Event::Paste(" tail".into()), &mut false);
+    app.input.move_cursor(CursorMove::Jump(0, 3));
+    app.handle(key(KeyCode::Right), &mut false);
+    assert_eq!(app.input.cursor().1, end);
+    app.handle(key(KeyCode::Left), &mut false);
+    assert_eq!(app.input.cursor().1, 3);
+    app.input.move_cursor(CursorMove::Jump(0, 4));
+    app.input.start_selection();
+    app.input.move_cursor(CursorMove::Jump(0, (end - 1) as u16));
+    app.handle(Event::Paste("替换".into()), &mut false);
+    assert_eq!(app.input_text(), "中文 替换 tail");
+    assert!(app.resources.active_images(&app.input_text()).is_empty());
+    app.handle(control('u'), &mut false);
+    assert_eq!(app.input_text(), format!("中文 {marker} tail"));
+    assert_eq!(app.resources.active_images(&app.input_text()).len(), 1);
+    #[cfg(target_os = "macos")]
+    {
+        app.handle(control('r'), &mut false);
+        assert_eq!(app.input_text(), "中文 替换 tail");
+        assert!(app.resources.active_images(&app.input_text()).is_empty());
+        app.handle(control('u'), &mut false);
+    }
+    app.input.move_cursor(CursorMove::Jump(0, end as u16));
+    app.handle(control('w'), &mut false);
+    assert_eq!(app.input_text(), "中文  tail");
+    assert!(app.resources.active_images(&app.input_text()).is_empty());
+    app.handle(control('u'), &mut false);
+    assert_eq!(app.resources.active_images(&app.input_text()).len(), 1);
+}
+
+#[test]
+fn resource_atomic_multiline_cut_and_forged_duplicate_do_not_rebind() {
+    let (mut app, _, _) = resource_app();
+    app.insert_images(vec![image()]);
+    let first = app.resources.images[0].marker.clone();
+    app.handle(Event::Paste("\n中间\n".into()), &mut false);
+    app.insert_images(vec![image()]);
+    let original = app.input_text();
+    app.input.move_cursor(CursorMove::Jump(0, 1));
+    app.input.start_selection();
+    app.input.move_cursor(CursorMove::Jump(2, 2));
+    app.handle(control('x'), &mut false);
+    assert_eq!(app.input_text(), "");
+    assert_eq!(app.input.yank_text(), original);
+    assert!(app.resources.active_images(&app.input_text()).is_empty());
+    app.handle(control('u'), &mut false);
+    assert_eq!(app.input_text(), original);
+    assert_eq!(app.resources.active_images(&app.input_text()).len(), 2);
+    app.input.move_cursor(CursorMove::Jump(0, 0));
+    app.handle(Event::Paste(format!("{first} ")), &mut false);
+    let real = app.resources.bindings[&first].start;
+    assert_eq!(real, first.len() + 1);
+    app.remember_input();
+    let index = app.input_history.len() - 1;
+    app.clear_input();
+    app.show_history(index);
+    assert_eq!(app.resources.bindings[&first].start, real);
+    crate::tui::attachment_edit::jump(&mut app.input, real);
+    app.handle(key(KeyCode::Delete), &mut false);
+    assert!(app.input_text().contains(&first));
+    assert_eq!(app.resources.active_images(&app.input_text()).len(), 1);
+}
+
+#[test]
+fn resource_image_references_freeze_snapshot_keep_order_and_cancel_stale_loads() {
+    let (mut app, commands, dir) = resource_app();
+    let path = dir.path().join("shot.png");
+    image::DynamicImage::new_rgb8(3, 5).save(&path).unwrap();
+    app.handle(Event::Paste("before @shot.png after ".into()), &mut false);
+    settle(&mut app);
+    assert_eq!(app.resources.active_images(&app.input_text()).len(), 1);
+    assert!(app.input_text().contains("#1"));
+    assert!(!app.input_text().contains("@shot.png"));
+    std::fs::remove_file(&path).unwrap();
+    app.submit(PendingKind::Steering);
+    settle(&mut app);
+    let WorkerCommand::RunInput { prepared, .. } = commands.try_recv().unwrap() else {
+        panic!("应发送图片快照")
+    };
+    assert!(prepared.has_images());
+    assert!(prepared.images[0].summary.contains("3 x 5"));
+    image::DynamicImage::new_rgb8(3, 5).save(&path).unwrap();
+    app.state = State::Ready;
+    app.handle(Event::Paste("@shot.png ".into()), &mut false);
+    app.handle(key(KeyCode::Char('!')), &mut false);
+    settle(&mut app);
+    assert_eq!(app.input_text(), "@shot.png !");
+    assert!(app.resources.active_images(&app.input_text()).is_empty());
+}
+
+#[test]
+fn resource_legacy_attachment_recall_uses_new_marker_and_two_digit_ids_are_atomic() {
+    let (mut app, _, _) = resource_app();
+    let mut old = image();
+    old.marker = "[图片 9]".into();
+    app.input_history.push("解释 [图片 9]".into());
+    app.resources.history_images.insert(0, vec![old]);
+    app.show_history(0);
+    assert!(app.input_text().contains("\u{f03e} #9"));
+    assert!(!app.input_text().contains("[图片"));
+    app.insert_images(vec![image()]);
+    assert!(app.input_text().ends_with("\u{f03e} #10"));
+    app.handle(key(KeyCode::Backspace), &mut false);
+    assert!(app.input_text().ends_with("\u{f03e} #9"));
+    assert_eq!(app.resources.active_images(&app.input_text()).len(), 1);
+    let mut maximum = image();
+    maximum.marker = format!("\u{f03e} #{}", u64::MAX);
+    let source = app
+        .resources
+        .restore_input(vec![maximum.clone()], maximum.marker);
+    app.input = editor();
+    app.input.insert_str(source);
+    app.insert_images(vec![image()]);
+    assert_eq!(app.resources.active_images(&app.input_text()).len(), 2);
+}
+
+#[test]
+fn resource_identical_text_replacement_drops_binding_and_tiny_layouts_preserve_input() {
+    let (mut app, _, _) = resource_app();
+    app.insert_images(vec![image()]);
+    let marker = app.input_text();
+    app.input.move_cursor(CursorMove::Head);
+    app.input.start_selection();
+    app.input.move_cursor(CursorMove::End);
+    app.handle(Event::Paste(marker.clone()), &mut false);
+    assert_eq!(app.input_text(), marker);
+    assert!(app.resources.active_images(&app.input_text()).is_empty());
+    app.handle(control('u'), &mut false);
+    assert_eq!(app.resources.active_images(&app.input_text()).len(), 1);
+    for width in [1, 2, 6, 16, 80] {
+        for height in [1, 3, 10, 30] {
+            draw(&mut app, width, height);
+            assert_eq!(app.input_text(), marker);
+        }
+    }
+}
+
+#[test]
+fn resource_plan_image_reference_without_delimiter_prepares_snapshot_before_transition() {
+    let (mut app, commands, dir) = resource_app();
+    image::DynamicImage::new_rgb8(3, 5)
+        .save(dir.path().join("shot.png"))
+        .unwrap();
+    app.insert_input("/plan 分析 @shot.png".into());
+    app.submit(PendingKind::Steering);
+    settle(&mut app);
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(WorkerCommand::EnterPlan { .. })
+    ));
+    assert!(
+        matches!(&app.plan_after_enter, Some(PlanEnterAction::Prompt(_, Some(input))) if input.has_images())
+    );
 }

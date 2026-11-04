@@ -316,11 +316,12 @@ impl App {
             .get(&index)
             .cloned()
             .unwrap_or_default();
-        self.resources.set_images(images);
         self.file_query = None;
         self.input = crate::tui::editor();
         self.shell_mode = false;
-        let text = self.input_history[index].clone();
+        let text = self
+            .resources
+            .restore_input(images, self.input_history[index].clone());
         self.insert_input(text);
         self.history_index = Some(index);
         // 回填命令时先保持菜单关闭，让上下键可以连续浏览历史。

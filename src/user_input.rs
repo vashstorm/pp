@@ -22,26 +22,18 @@ pub(crate) struct Image {
     pub marker: String,
     pub summary: String,
     pub data_url: std::sync::Arc<str>,
+    /// 草稿来源中的精确位置；旧记录没有该字段，继续按旧标记恢复。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_range: Option<std::ops::Range<usize>>,
 }
 
 impl Image {
-    pub fn label(&self) -> String {
-        let fields: Vec<String> = ["Dimensions: ", "Bytes: ", "Format: ", "Image: "]
-            .into_iter()
-            .filter_map(|prefix| {
-                self.summary
-                    .lines()
-                    .find_map(|line| line.strip_prefix(prefix))
-                    .map(|value| {
-                        if prefix == "Bytes: " {
-                            format!("{value} B")
-                        } else {
-                            value.to_owned()
-                        }
-                    })
-            })
-            .collect();
-        format!("{} {}", self.marker, fields.join(" · "))
+    pub fn dimensions(&self) -> String {
+        self.summary
+            .lines()
+            .find_map(|line| line.strip_prefix("Dimensions: "))
+            .unwrap_or_default()
+            .replace(' ', "")
     }
 }
 
@@ -193,6 +185,7 @@ pub(crate) fn image_bytes(source: &str, bytes: &[u8]) -> Result<Image> {
     let result = read::decode_image(source, bytes)?;
     Ok(Image {
         marker: String::new(),
+        source_range: None,
         summary: result.value["content"].as_str().unwrap_or_default().into(),
         data_url: result
             .images
@@ -304,7 +297,37 @@ pub(crate) fn prepare(
         .map(|r| (r.start, r.end, r.path, None))
         .collect();
     for image in &images {
-        if let Some(start) = text.find(&image.marker) {
+        let start = image
+            .source_range
+            .as_ref()
+            .and_then(|range| {
+                if input.source.get(range.clone()) != Some(image.marker.as_str()) {
+                    return None;
+                }
+                let start = if let Some(offset) = input.source.find(text) {
+                    range.start.checked_sub(offset)?
+                } else if let Some(offset) = text.find(&input.source) {
+                    range.start.checked_add(offset)?
+                } else {
+                    // 模板展开后位置可能改变；只接受唯一的真实附件标记。
+                    let mut matches = text.match_indices(&image.marker);
+                    let (start, _) = matches.next()?;
+                    if matches.next().is_some() {
+                        return None;
+                    }
+                    start
+                };
+                let end = start.checked_add(image.marker.len())?;
+                (text.get(start..end) == Some(image.marker.as_str())).then_some(start)
+            })
+            .or_else(|| {
+                image
+                    .source_range
+                    .is_none()
+                    .then(|| text.find(&image.marker))
+                    .flatten()
+            });
+        if let Some(start) = start {
             // 代码中的图片占位仍对应真实附件；只信任草稿内部的关联。
             segments.retain(|(a, b, _, _)| *b <= start || *a >= start + image.marker.len());
             segments.push((start, start + image.marker.len(), None, Some(image)));
@@ -535,6 +558,21 @@ mod tests {
             .save(dir.path().join("shot.png"))
             .unwrap();
         let input = prepare_text("before @shot.png after", dir.path()).unwrap();
+        let mut bound = image_file(&dir.path().join("shot.png")).unwrap();
+        bound.marker = "#1".into();
+        for range in [usize::MAX..usize::MAX, 0..usize::MAX] {
+            bound.source_range = Some(range);
+            let input = prepare(
+                "#1".into(),
+                "#1",
+                vec![bound.clone()],
+                dir.path(),
+                ToolLimits::default(),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            assert!(!input.has_images());
+        }
         assert!(
             matches!(&input.parts[..], [Part::Text(before), Part::Image(url), Part::Text(after)] if before.contains("before") && url.starts_with("data:image/png;base64,") && after.contains("after"))
         );

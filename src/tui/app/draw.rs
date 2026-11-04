@@ -53,9 +53,9 @@ impl App {
         } else {
             self.resources.active_images(&self.input_text()).len()
         };
-        let attachments_height = (image_count.min(3) as u16
+        let attachments_height = (if image_count > 0 { 8 } else { 0 }
             + u16::from(self.resources.job.is_some()))
-        .min(available.saturating_sub(input_height));
+        .min(available.saturating_sub(input_height + 1));
         let above = available.saturating_sub(input_height + attachments_height);
         let base = Rect::new(area.x, area.y, area.width, above);
         let ask_height = if self.native_render {
@@ -109,6 +109,7 @@ impl App {
             review.set_terminal_rows(frame.area().height);
         }
         let area = frame.area();
+        self.image_view.begin_frame(area);
         self.todo_panel.area = Rect::default();
         if area.width == 0 || area.height == 0 {
             return;
@@ -308,21 +309,26 @@ impl App {
         } else {
             self.resources.active_images(&self.input_text())
         };
-        let mut summaries: Vec<Line<'_>> = images
-            .iter()
-            .take(3)
-            .map(|image| Line::styled(image.label(), Style::default().fg(Color::DarkGray)))
-            .collect();
-        if self.resources.job.is_some() {
-            summaries.insert(
-                0,
+        let loading = u16::from(self.resources.job.is_some() && attachments.height > 0);
+        if loading > 0 {
+            frame.render_widget(
                 Line::styled(
                     "正在准备输入资源… Esc 取消",
                     Style::default().fg(statusline::ACCENT),
                 ),
+                Rect::new(attachments.x, attachments.y, attachments.width, 1),
             );
         }
-        frame.render_widget(ratatui::widgets::Paragraph::new(summaries), attachments);
+        self.image_view.cards(
+            frame,
+            Rect::new(
+                attachments.x,
+                attachments.y + loading,
+                attachments.width,
+                attachments.height.saturating_sub(loading),
+            ),
+            &images,
+        );
         if subagents.height > 0
             && let Some(binding) = self
                 .subagent_control
@@ -352,6 +358,7 @@ impl App {
             menu_height,
         );
         self.todo_panel.draw(frame, todo);
+        let preview_area = conversation;
         let conversation =
             if self.show_welcome && self.plan_panel.is_none() && self.mcp_panel.is_none() {
                 welcome::draw(frame, conversation)
@@ -411,6 +418,27 @@ impl App {
         );
         if editor_area.width > 0 && editor_area.height > 0 {
             frame.render_widget(&self.input, editor_area);
+            if !self.resources.bindings.is_empty() {
+                let (top, left) = self.input.scroll_offset();
+                for row in 0..editor_area.height {
+                    for col in 0..editor_area.width {
+                        let cursor = self.input.screen_to_data(
+                            usize::from(row) + usize::from(top),
+                            usize::from(col) + usize::from(left),
+                        );
+                        let byte = crate::tui::attachment_edit::offset(&self.input, cursor);
+                        if self
+                            .resources
+                            .bindings
+                            .values()
+                            .any(|range| range.contains(&byte))
+                        {
+                            frame.buffer_mut()[(editor_area.x + col, editor_area.y + row)]
+                                .set_fg(crate::tui::attachment_edit::COLOR);
+                        }
+                    }
+                }
+            }
             // 渲染后获取折行和滚动偏移，让输入法与终端原生光标共享插入位置。
             let cursor = self.input.screen_cursor();
             let (top, left) = self.input.scroll_offset();
@@ -456,6 +484,9 @@ impl App {
         }
         if self.native_render {
             self.normal_snapshot = Some(frame.buffer_mut().clone());
+        }
+        if self.resource_input_available() && self.menu.is_none() {
+            self.image_view.preview(frame, preview_area);
         }
         if !self.native_render
             && let Some(panel) = &mut self.ask_panel

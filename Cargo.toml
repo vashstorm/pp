@@ -41,6 +41,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 ratatui = { version = "0.30.0", default-features = false, features = ["crossterm", "crossterm_0_29", "unstable-rendered-line-info"] }
 crossterm = "0.29.0"
 ratatui-textarea = "0.9.3"
+ratatui-image = { version = "=10.0.0", default-features = false, features = ["crossterm"] }
 unicode-normalization = "0.1"
 unicode-segmentation = "1"
 xxhash-rust = { version = "0.8", default-features = false, features = ["xxh32"] }
@@ -74,6 +75,14 @@ incremental = false
 
 [profile.dev.package.zune-jpeg]
 # Cranelift 尚不支持 JPEG 解码使用的部分 ARM NEON 指令。
+codegen-backend = "llvm"
+
+[profile.dev.package.base64-simd]
+# Cranelift 尚不支持图片协议编码使用的部分 ARM NEON 指令。
+codegen-backend = "llvm"
+
+[profile.dev.package.ratatui-image]
+# 内联的 SIMD 编码同样需要 LLVM，其他项目代码继续使用 Cranelift。
 codegen-backend = "llvm"
 
 [profile.release]

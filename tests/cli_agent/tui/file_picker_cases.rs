@@ -225,7 +225,7 @@ fn tui_image_path_paste_and_persistent_recall_send_real_images_both_protocols() 
         pty.ready_model("fixture/primary");
         pty.input(&format!("\x1b[200~{}\x1b[201~", path.display()));
         pty.wait_for("图片路径转为编号和摘要", |screen| {
-            screen.contents().contains("[图片 1]") && screen.contents().contains("2 x 3")
+            screen.contents().contains("\u{f03e} #1") && screen.contents().contains("2x3")
         });
         no_more(&server);
         pty.input("解释\r");
@@ -261,7 +261,7 @@ fn tui_image_path_paste_and_persistent_recall_send_real_images_both_protocols() 
         pty.ready_model("fixture/primary");
         pty.input("\x1b[A");
         pty.wait_for("重启后召回带图输入", |screen| {
-            screen.contents().contains("[图片 1]") && screen.contents().contains("2 x 3")
+            screen.contents().contains("\u{f03e} #1") && screen.contents().contains("2x3")
         });
         pty.input("\r");
         let (request, body) = pty.request_at(&server, api_path(protocol));
@@ -283,6 +283,104 @@ fn tui_image_path_paste_and_persistent_recall_send_real_images_both_protocols() 
             response_final(request, "image-recall-done");
         }
         pty.text("image-recall-done");
+        pty.completed();
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
+}
+
+#[test]
+fn tui_image_references_hover_atomic_delete_and_frozen_snapshots_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&server, Some(protocol)),
+        )
+        .unwrap();
+        let first = project.path().join("one.png");
+        let second = project.path().join("two.png");
+        image::RgbImage::from_pixel(884, 368, image::Rgb([230, 40, 70]))
+            .save(&first)
+            .unwrap();
+        image::DynamicImage::new_rgb8(4, 6).save(&second).unwrap();
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready_model("fixture/primary");
+        pty.input("\x1b[200~说明 @one.png @two.png \x1b[201~");
+        pty.wait_for("两张图片引用转换为缩略图", |screen| {
+            let text = screen.contents();
+            text.contains("#1")
+                && text.contains("#2")
+                && text.contains("884x368")
+                && text.contains("4x6")
+        });
+        let top = pty
+            .parser
+            .screen()
+            .rows(0, 100)
+            .position(|row| row.contains("#1") && row.contains('╭'))
+            .unwrap();
+        pty.input(&format!("\x1b[<35;4;{}M", top + 3));
+        let preview = |screen: &vt100::Screen| {
+            screen
+                .rows(0, 100)
+                .any(|row| row.contains("#1") && row.chars().filter(|c| *c == '─').count() > 70)
+        };
+        pty.wait_for("缩略图悬停显示大图", preview);
+        pty.wait_for("大图内容在缩略图以外的区域绘出", |screen| {
+            (0..top as u16).any(|row| {
+                (25..94).any(|col| {
+                    let cell = screen.cell(row, col).unwrap();
+                    cell.fgcolor() == vt100::Color::Rgb(230, 40, 70)
+                        || cell.bgcolor() == vt100::Color::Rgb(230, 40, 70)
+                })
+            })
+        });
+        pty.input("\x1b[<35;100;30M");
+        pty.wait_for("移出后关闭大图", |screen| !preview(screen));
+        pty.input("\x7f\x7f");
+        pty.wait_for("删除完整的第二张图片", |screen| {
+            let text = screen.contents();
+            text.contains("#1") && !text.contains("#2") && !text.contains("4x6")
+        });
+        pty.input("\x15");
+        pty.wait_for("撤销同时恢复标记和缩略图", |screen| {
+            screen.contents().contains("#2") && screen.contents().contains("4x6")
+        });
+        std::fs::remove_file(first).unwrap();
+        std::fs::remove_file(second).unwrap();
+        no_more(&server);
+        pty.input("\r");
+        let (request, body) = pty.request_at(&server, api_path(protocol));
+        let history = if protocol == "completion" {
+            body["messages"].as_array().unwrap()
+        } else {
+            body["input"].as_array().unwrap()
+        };
+        let user = history
+            .iter()
+            .find(|message| message["role"] == "user")
+            .unwrap();
+        assert_eq!(
+            user["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|part| part["type"] == "image_url" || part["type"] == "input_image")
+                .count(),
+            2
+        );
+        assert!(user.to_string().contains("说明"));
+        if protocol == "completion" {
+            final_reply(request, "images-snapshot-done");
+        } else {
+            response_final(request, "images-snapshot-done");
+        }
+        pty.text("images-snapshot-done");
         pty.completed();
         pty.input("\x03");
         pty.finish();

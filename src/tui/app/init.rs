@@ -57,6 +57,7 @@ impl App {
             show_welcome: true,
             input: editor(),
             resources: Default::default(),
+            image_view: crate::tui::images::View::new()?,
             input_limits: agent
                 .as_ref()
                 .map_or_else(|_| Default::default(), Agent::input_limits),

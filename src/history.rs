@@ -1075,6 +1075,7 @@ mod image_input_tests {
             marker: "[图片 1]".into(),
             summary: "fixture 2x3".into(),
             data_url: "data:image/png;base64,AA==".into(),
+            source_range: None,
         }];
         store
             .append_input_images(Path::new("/project"), "[图片 1]", &images, 2)

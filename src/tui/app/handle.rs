@@ -6,20 +6,40 @@ use crate::tui::{
 
 impl App {
     pub(in crate::tui) fn handle(&mut self, event: Event, dirty: &mut bool) -> bool {
+        match &event {
+            Event::Mouse(mouse) if self.resource_input_available() && self.menu.is_none() => {
+                let (handled, changed) = self.image_view.mouse(*mouse, Instant::now());
+                *dirty |= changed;
+                if handled {
+                    return false;
+                }
+            }
+            Event::Key(_) | Event::Paste(_) | Event::Resize(_, _) => {
+                *dirty |= self.image_view.close();
+            }
+            _ => {}
+        }
+        let load_references = matches!(&event, Event::Key(key) if matches!(key.code, KeyCode::Enter | KeyCode::Tab) || matches!(key.code, KeyCode::Char(c) if c.is_whitespace()))
+            || matches!(&event, Event::Paste(_));
         let clipboard_key = matches!(&event, Event::Key(key) if key.code == KeyCode::Char('v') && key.modifiers == KeyModifiers::CONTROL);
         let input_focused = self.completion_input_focused();
         // 普通文本输入不维护图片编辑记录，也不复制整个草稿。
         if self.resources.images.is_empty() && self.resources.job.is_none() && !clipboard_key {
+            let before = load_references.then(|| self.input_text());
             let quit = self.handle_inner(event, dirty);
+            if before.is_some_and(|before| before != self.input_text()) {
+                self.load_image_references(false, PendingKind::Steering);
+            }
             if input_focused != self.completion_input_focused() {
                 self.refresh_candidates(false);
             }
             return quit;
         }
         let before = self.input_text();
-        let previous = self.resources.live.clone();
+        let previous = self.resources.bindings.clone();
         let undo = matches!(&event, Event::Key(key) if key.code == KeyCode::Char('u') && key.modifiers == KeyModifiers::CONTROL);
-        let redo = matches!(&event, Event::Key(key) if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL);
+        let redo = FUNCTION_MODIFIER != KeyModifiers::CONTROL
+            && matches!(&event, Event::Key(key) if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL);
         if matches!(&event, Event::Key(key) if key.code == KeyCode::Esc)
             && self.resources.job.is_some()
         {
@@ -38,48 +58,55 @@ impl App {
             *dirty = true;
             return false;
         }
-        if let Event::Key(key) = &event
-            && key.modifiers.is_empty()
-            && matches!(key.code, KeyCode::Backspace | KeyCode::Delete)
-            && !self.input.is_selecting()
-            && self.resource_input_available()
-        {
-            let ratatui_textarea::DataCursor(row, col) = self.input.cursor();
-            let line = &self.input.lines()[row];
-            let active = self.resources.active_images(&before);
-            let marker = active
-                .iter()
-                .find(|image| {
-                    if let Some(byte) = line.find(&image.marker) {
-                        let start = line[..byte].chars().count();
-                        if key.code == KeyCode::Backspace {
-                            col == start + image.marker.chars().count()
-                        } else {
-                            col == start
-                        }
-                    } else {
-                        false
-                    }
-                })
-                .map(|image| image.marker.clone());
-            if let Some(marker) = marker {
-                if key.code == KeyCode::Backspace {
-                    for _ in marker.chars() {
-                        self.input.move_cursor(CursorMove::Back);
-                    }
-                }
-                self.input.delete_str(marker.chars().count());
-                self.resources
-                    .edited(before, self.input_text(), previous, false, false);
+        if self.resource_input_available() {
+            let cursor = crate::tui::attachment_edit::offset(&self.input, self.input.cursor());
+            crate::tui::attachment_edit::normalize(
+                &mut self.input,
+                &self.resources.bindings,
+                cursor,
+            );
+            if (undo || redo)
+                && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
+            {
+                self.resources.undo_input(&mut self.input, redo);
                 self.resources.cancel();
                 self.refresh_candidates(true);
                 *dirty = true;
                 return false;
             }
         }
+        let replacement = matches!(&event, Event::Paste(_));
+        let epoch = self.resources.epoch;
+        let selection = self.input.selection_range().map(|((a, b), (c, d))| {
+            crate::tui::attachment_edit::offset(&self.input, ratatui_textarea::DataCursor(a, b))
+                ..crate::tui::attachment_edit::offset(
+                    &self.input,
+                    ratatui_textarea::DataCursor(c, d),
+                )
+        });
+        let old_cursor = crate::tui::attachment_edit::offset(&self.input, self.input.cursor());
         let quit = self.handle_inner(event, dirty);
-        self.resources
-            .edited(before.clone(), self.input_text(), previous, undo, redo);
+        if epoch == self.resources.epoch {
+            let after = self.input_text();
+            let range = (before != after
+                || (replacement && selection.as_ref().is_some_and(|range| !range.is_empty())))
+            .then(|| {
+                crate::tui::attachment_edit::edited_range(
+                    &before,
+                    &after,
+                    old_cursor,
+                    crate::tui::attachment_edit::offset(&self.input, self.input.cursor()),
+                    selection,
+                )
+            });
+            self.resources
+                .edited(before.clone(), after, previous, range);
+            crate::tui::attachment_edit::normalize(
+                &mut self.input,
+                &self.resources.bindings,
+                old_cursor,
+            );
+        }
         if self
             .resources
             .job
@@ -88,6 +115,9 @@ impl App {
             || !self.resource_input_available()
         {
             self.resources.cancel();
+        }
+        if load_references && before != self.input_text() {
+            self.load_image_references(false, PendingKind::Steering);
         }
         if input_focused != self.completion_input_focused() {
             self.refresh_candidates(false);
@@ -340,7 +370,7 @@ impl App {
                             {
                                 self.input.insert_newline();
                             } else {
-                                self.input.input(key);
+                                self.edit_input(key);
                             }
                             self.refresh_candidates(true);
                         }
@@ -829,7 +859,7 @@ impl App {
                     }
                     KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => {
                         let cursor = self.input.cursor();
-                        self.input.input(key);
+                        self.edit_input(key);
                         // 先在显示行之间移动，越过首末显示行时才浏览历史。
                         if self.input.cursor() == cursor && self.model_picker_draft.is_none() {
                             self.navigate_history(key.code == KeyCode::Up);
@@ -838,7 +868,7 @@ impl App {
                         }
                     }
                     _ => {
-                        let edited = self.input.input(key);
+                        let edited = self.edit_input(key);
                         if edited && self.input.lines().iter().all(String::is_empty) {
                             self.shell_mode = false;
                         }

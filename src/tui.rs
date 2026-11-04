@@ -1,5 +1,6 @@
 mod app;
 mod ask;
+mod attachment_edit;
 mod auth;
 #[cfg(test)]
 mod auth_tests;
@@ -8,6 +9,8 @@ mod edit_diff;
 mod files;
 mod frame_clock;
 mod history;
+mod image_terminal;
+mod images;
 mod lsp;
 mod markdown;
 mod mcp;
@@ -109,6 +112,8 @@ pub(crate) fn run(
     // 初始化中途失败和 panic 同样恢复终端模式。
     let _guard = TerminalGuard;
     surface::initialize().context("initializing terminal")?;
+    // 能力探测独占 stdin，必须在 crossterm 首次读取事件之前完成。
+    let (picker, mut initial_events) = image_terminal::detect();
     let mut surface = surface::Surface::new(io::stdout());
     let mut canvas = ratatui::Terminal::new(ratatui::backend::TestBackend::new(1, 1))?;
     // 持久输入历史与 agent 配置目录同级；无可定位目录时明确只保留进程内回忆。
@@ -116,6 +121,7 @@ pub(crate) fn run(
         .as_ref()
         .map(|bootstrap| bootstrap.dir.join("history.db"));
     let mut app = App::new_with_skills(agent, skills, file_commands, cwd, history_path)?;
+    app.image_view.configure(picker);
     app.bootstrap = bootstrap;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c：Execute 保持原继续行为；Plan/Draft 提示继续输入；Plan/Ready 进入审阅。
@@ -146,9 +152,12 @@ pub(crate) fn run(
     loop {
         // 先采纳已经到达的后台结果，再用最新状态解释下一批按键。
         dirty |= app.receive();
+        let mut quit = false;
+        for event in initial_events.drain(..) {
+            quit |= app.handle(event, &mut dirty);
+        }
         let input_started = Instant::now();
         let mut input_changed = false;
-        let mut quit = false;
         for _ in 0..64 {
             if input_started.elapsed() >= Duration::from_millis(2)
                 || !event::poll(Duration::ZERO).context("polling terminal input")?
@@ -249,6 +258,10 @@ fn paint_surface(
     rebuilding_history: &mut bool,
     exiting: bool,
 ) -> Result<bool> {
+    app.image_view.suspended = exiting;
+    if exiting {
+        app.image_view.close();
+    }
     let (width, height) = crossterm::terminal::size()?;
     let area = Rect::new(0, 0, width.max(1), height.max(1));
     if canvas.backend().buffer().area != area {
@@ -288,7 +301,7 @@ fn paint_surface(
             // 历史重建跨越多帧，只在全部批次提交后恢复输入光标。
             let cursor = (canvas.backend().cursor_visible() && !*rebuilding_history)
                 .then(|| canvas.backend().cursor_position());
-            surface.paint(buffer, cursor, false, &batch.rows)?;
+            surface.paint_images(buffer, cursor, false, &batch.rows, &app.image_view.graphics)?;
             app.conversation.acknowledge_native_batch(batch);
             if !exiting {
                 return Ok(true);
@@ -307,7 +320,7 @@ fn paint_surface(
     } else {
         rendered.as_ref().expect("rendered frame")
     };
-    surface.paint(buffer, cursor, alternate, &[])?;
+    surface.paint_images(buffer, cursor, alternate, &[], &app.image_view.graphics)?;
     Ok(false)
 }
 
@@ -752,6 +765,7 @@ struct App {
     show_welcome: bool,
     input: TextArea<'static>,
     resources: resources::State,
+    image_view: images::View,
     input_limits: crate::config::ToolLimits,
     shell_mode: bool,
     input_history: Vec<String>,
@@ -892,6 +906,7 @@ fn editor() -> TextArea<'static> {
     editor.set_wrap_mode(WrapMode::WordOrGlyph);
     editor.set_cursor_line_style(Style::default());
     editor.set_cursor_style(Style::default());
+    editor.set_max_histories(1000);
     editor
 }
 

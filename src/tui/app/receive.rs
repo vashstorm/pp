@@ -18,6 +18,8 @@ impl App {
 
     pub(in crate::tui) fn receive(&mut self) -> bool {
         let mut changed = self.receive_resources();
+        let available = self.resource_input_available() && self.menu.is_none();
+        changed |= self.image_view.poll(Instant::now(), available);
         let task_status = self.task_status_view.snapshot();
         if self.task_status != task_status {
             self.task_status = task_status;
@@ -940,6 +942,7 @@ impl App {
                                     self.resources.set_images(prepared.images);
                                 }
                                 self.input.insert_str(format!("/plan {prompt}"));
+                                self.resources.bind_text(&self.input_text());
                                 self.refresh_candidates(true);
                             }
                             // 失败也可能已持久化 Plan（随后的 Workflow 快照纠正显示）；
