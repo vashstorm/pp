@@ -1,3 +1,5 @@
+cargo-features = ["codegen-backend"]
+
 [package]
 name = "pp"
 version = "0.1.0"
@@ -64,9 +66,15 @@ portable-pty = "0.9.0"
 vt100 = "0.16.2"
 
 [profile.dev]
-# opt-level = 2
+codegen-backend = "cranelift"
+opt-level = 0
+codegen-units = 16
 debug = "line-tables-only"
 incremental = false
+
+[profile.dev.package.zune-jpeg]
+# Cranelift 尚不支持 JPEG 解码使用的部分 ARM NEON 指令。
+codegen-backend = "llvm"
 
 [profile.release]
 opt-level = "z"

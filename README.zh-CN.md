@@ -40,7 +40,7 @@ Bash 的模型结果还会在资源可用时附带含具体 `read` 示例的补�
 
 ### 1. 构建
 
-需要支持 **2024 版语言规范**的 Rust 工具链，以及可在命令搜索路径中找到的 `bash`。
+需要支持 **2024 版语言规范**的 nightly Rust 工具链，以及可在命令搜索路径中找到的 `bash`。dev profile 使用 Cranelift，开发构建或测试前请执行 `rustup component add rustc-codegen-cranelift-preview --toolchain nightly` 安装组件；release profile 使用 LLVM。
 
 ```sh
 cargo build --release --locked

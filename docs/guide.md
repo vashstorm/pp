@@ -15,7 +15,15 @@
 
 ## 构建与运行
 
-需要支持 Rust Edition 2024 的工具链，支持 macOS/Linux，并要求 `bash` 位于 PATH 中。grep 和 glob 在进程内搜索，无需外部搜索程序；TUI 图标需要 Nerd Font，macOS 的 Option 快捷键需要终端启用 Alt/Meta。
+需要支持 Rust Edition 2024 的 nightly 工具链，支持 macOS/Linux，并要求 `bash` 位于 PATH 中。grep 和 glob 在进程内搜索，无需外部搜索程序；TUI 图标需要 Nerd Font，macOS 的 Option 快捷键需要终端启用 Alt/Meta。
+
+`dev` 显式使用 Cranelift 后端，`test` 继承此设置；`zune-jpeg` 单独使用 LLVM，避免当前 Cranelift 不支持的 ARM NEON 指令导致 JPEG 解码中止。首次开发构建或测试前安装组件，并确保当前工具链为 nightly（也可为 Cargo 命令显式添加 `+nightly`）：
+
+```sh
+rustup component add rustc-codegen-cranelift-preview --toolchain nightly
+```
+
+`cargo-features = ["codegen-backend"]` 启用实验配置语法，`[profile.dev]` 中的 `codegen-backend = "cranelift"` 才实际选择后端。可用 `cargo build --locked -vv` 检查实际执行的 rustc 命令是否包含 `-Z codegen-backend=cranelift`；若全部显示 `Fresh`，说明本次复用了缓存。Cranelift 侧重缩短编译时间，生成程序的运行性能可能低于 LLVM；`release` 继续使用 LLVM。
 
 ```sh
 cargo build --locked

@@ -38,7 +38,7 @@ Model-facing Bash results also include a recovery notice with a concrete `read` 
 
 ### 1. Build
 
-You need a Rust toolchain that supports **Edition 2024**, and `bash` on your PATH.
+You need a nightly Rust toolchain that supports **Edition 2024**, and `bash` on your PATH. The dev profile uses Cranelift; install its component with `rustup component add rustc-codegen-cranelift-preview --toolchain nightly` before development builds or tests. The release profile uses LLVM.
 
 ```sh
 cargo build --release --locked
