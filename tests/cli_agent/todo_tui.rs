@@ -664,3 +664,74 @@ fn tui_todo_plan_keeps_hud_empty_until_approved_execution() {
         no_more(&fixture);
     }
 }
+
+#[test]
+fn tui_model_picker_overlays_todo_and_restores_it_on_cancel() {
+    let fixture = server();
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let models: serde_json::Map<String, Value> = (0..25)
+        .map(|index| (format!("model-{index:02}"), json!({"model":format!("vendor-{index:02}")})))
+        .collect();
+    let config = json!({"providers":{"catalog":slash_provider(
+        &fixture, "catalog", "completion", Value::Object(models)
+    )}});
+    std::fs::write(config_path(home.path(), "models.yml"), config.to_string()).unwrap();
+    std::fs::write(
+        config_path(home.path(), "settings.yml"),
+        "default_model: catalog/model-00\n",
+    ).unwrap();
+    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    pty.ready_model("catalog/model-00");
+    pty.input("create overlay tasks\r");
+    let (request, _) = pty.request(&fixture);
+    let items: Vec<_> = (0..12).map(|i| format!("OVERLAY_TASK_{i:02}")).collect();
+    plan_calls(request, "completion", json!([plan_call(
+        "completion", "overlay-todos", "todo", json!({"op":"init","items":items})
+    )]));
+    let (request, _) = pty.request(&fixture);
+    final_reply(request, "Can you confirm?");
+    pty.completed();
+    for expanded in [false, true] {
+        if expanded {
+            pty.function_key('t');
+            pty.wait_for("TODO 已展开", |screen| {
+                screen.contents().contains("collapse") && screen.contents().contains("OVERLAY_TASK_00")
+            });
+        }
+        pty.input("/model ");
+        pty.wait_for("模型浮层紧贴输入框并覆盖 TODO", |screen| {
+            let text = screen.contents();
+            screen.alternate_screen()
+                && text.contains("catalog/model-10")
+                && screen.rows(0, 100).nth(25).is_some_and(|row| row.contains("favorite"))
+                && screen.rows(0, 100).nth(27).is_some_and(|row| row.trim() == "❯")
+                && !text.contains("TODO ·")
+                && !text.contains("OVERLAY_TASK_")
+        });
+        pty.input("\x1b[F");
+        pty.text("❯ catalog/model-24");
+        for (rows, cols) in [(16, 40), (6, 20), (30, 100)] {
+            pty.resize(rows, cols);
+            pty.wait_for("缩放后模型浮层仍覆盖 TODO 并保留选择", |screen| {
+                let text = screen.contents();
+                screen.size() == (rows, cols)
+                    && text.contains(if cols < 30 { "❯ catalog/" } else { "❯ catalog/model-24" })
+                    && !text.contains("TODO ·")
+                    && !text.contains("OVERLAY_TASK_")
+            });
+        }
+        pty.input("\x1b");
+        pty.wait_for("取消后恢复 TODO 和主输入框", |screen| {
+            !screen.alternate_screen()
+                && input_is_ready(screen)
+                && screen.contents().contains("TODO · 0/12")
+                && screen.contents().contains("OVERLAY_TASK_00")
+                && !screen.contents().contains('')
+        });
+        pty.draft("");
+    }
+    no_more(&fixture);
+    pty.input("\x03");
+    pty.finish();
+}

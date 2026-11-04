@@ -207,3 +207,98 @@ fn tui_todo_plan_hides_legacy_cache_and_deletion_clears_bound_state() {
     assert_eq!(app.plan_progress, (0, 0));
     assert!(!draw(&mut app, 100, 24).contains("TODO ·"));
 }
+
+#[test]
+fn model_panel_overlays_todo_and_tracks_multiline_input_without_relayout() {
+    for expanded in [false, true] {
+        for draft in ["draft", "draft\nsecond\nthird"] {
+            let mut app = app();
+            app.state = State::Ready;
+            install_todos(&mut app, 12);
+            if expanded {
+                app.todo_panel.toggle();
+            }
+            app.input.insert_str(draft);
+            app.choices = (0..25)
+                .map(|index| ModelChoice {
+                    reference: format!("fixture/model-{index:02}"),
+                    model: format!("vendor-{index:02}"),
+                    protocol: crate::models::Protocol::Response,
+                    thinking: crate::models::ModelThinking::default(),
+                    context_window: None,
+                })
+                .collect();
+            for (width, height) in [(100, 30), (40, 16), (100, 30)] {
+                let before = draw(&mut app, width, height);
+                let input_top = before
+                    .lines()
+                    .position(|line| line.starts_with("❯ draft"))
+                    .unwrap()
+                    - 1;
+                let conversation_height = app
+                    .main_layout(Rect::new(0, 0, width, height))
+                    .conversation
+                    .height;
+                assert!(before.contains("TODO · 0/12"), "{before}");
+                app.model_panel = Some(model::Panel::new("", app.choices.len()));
+                app.refresh_candidates(true);
+                let overlaid = draw(&mut app, width, height);
+                assert!(!overlaid.contains("TODO ·"), "{overlaid}");
+                assert!(!overlaid.contains("TODO_TASK_"), "{overlaid}");
+                assert!(
+                    overlaid
+                        .lines()
+                        .nth(input_top - 1)
+                        .unwrap()
+                        .contains("favorite"),
+                    "{overlaid}"
+                );
+                assert_eq!(
+                    overlaid.lines().skip(input_top).collect::<Vec<_>>(),
+                    before.lines().skip(input_top).collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    app.main_layout(Rect::new(0, 0, width, height))
+                        .conversation
+                        .height,
+                    conversation_height
+                );
+                let mut dirty = false;
+                app.handle(
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::ScrollDown,
+                        column: 5,
+                        row: app.todo_panel.area.y,
+                        modifiers: KeyModifiers::NONE,
+                    }),
+                    &mut dirty,
+                );
+                assert_eq!(active_menu(&app).selected_index(), Some(3));
+                app.handle(key(KeyCode::Esc), &mut dirty);
+                assert!(app.model_panel.is_none());
+                assert_eq!(draw(&mut app, width, height), before);
+                assert_eq!(app.input_text(), draft);
+                assert_eq!(app.todo_panel.expanded, expanded);
+            }
+        }
+    }
+}
+
+#[test]
+fn model_panel_keeps_incoming_ask_visible_and_focused() {
+    let mut app = app();
+    install_todos(&mut app, 10);
+    app.model_panel = Some(model::Panel::new("", 25));
+    app.refresh_candidates(true);
+    let (_reply, token) = ask_fixture(&mut app);
+    let text = draw(&mut app, 100, 30);
+    assert!(text.contains("Choose storage"), "{text}");
+    assert!(
+        text.contains("SQLite") && text.contains("Postgres"),
+        "{text}"
+    );
+    let mut dirty = false;
+    app.handle(key(KeyCode::Esc), &mut dirty);
+    assert!(token.is_cancelled());
+    assert!(app.model_panel.is_some());
+}

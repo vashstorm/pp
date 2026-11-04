@@ -338,18 +338,13 @@ impl App {
         {
             frame.render_widget(Line::from(binding.summary()), subagents);
         }
-        // 菜单只覆盖对话区，不盖住 TODO 或 ask。
+        // 普通补全菜单只覆盖对话区，不盖住 TODO 或 ask。
         let menu_height = if self.native_render {
             0
         } else {
             self.menu
                 .as_ref()
                 .map_or(0, |menu| menu.height(conversation.height))
-                .max(
-                    self.model_panel
-                        .as_ref()
-                        .map_or(0, |panel| panel.height(conversation.height)),
-                )
         };
         let menu_area = Rect::new(
             conversation.x,
@@ -465,11 +460,6 @@ impl App {
         {
             menu.draw(frame, menu_area);
         }
-        if !self.native_render
-            && let Some(panel) = &mut self.model_panel
-        {
-            panel.draw(frame, menu_area);
-        }
         if status.height > 0 {
             frame.render_widget(
                 statusline::primary(
@@ -487,6 +477,14 @@ impl App {
         }
         if self.resource_input_available() && self.menu.is_none() {
             self.image_view.preview(frame, preview_area);
+        }
+        if !self.native_render
+            && let Some(panel) = &mut self.model_panel
+        {
+            // 模型面板贴着输入框向上展开，覆盖 TODO 等底层内容。
+            let height = panel.height(input.y.saturating_sub(area.y));
+            let popup = Rect::new(input.x, input.y - height, input.width, height);
+            panel.draw(frame, popup);
         }
         if !self.native_render
             && let Some(panel) = &mut self.ask_panel
