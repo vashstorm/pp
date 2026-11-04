@@ -160,12 +160,12 @@ fn todo_done_phase_targets_whole_phase() {
 }
 
 #[test]
-fn todo_start_moves_other_active_to_pending_and_reopens() {
+fn todo_start_preserves_other_active_and_reopens() {
     let current = inited(&[("First", &["A", "B"]), ("Second", &["C"])]);
     let (_, change) = run(&current, r#"{"op":"start","task":"C"}"#);
     let next = change.unwrap().phases;
     assert_eq!(status_of(&next, "C"), TodoStatus::InProgress);
-    assert_eq!(status_of(&next, "A"), TodoStatus::Pending);
+    assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
 
     // Explicit re-open of a closed task is allowed upstream.
     let (_, change) = run(&next, r#"{"op":"done","task":"C"}"#);
@@ -173,6 +173,39 @@ fn todo_start_moves_other_active_to_pending_and_reopens() {
     let (_, change) = run(&next, r#"{"op":"start","task":"C"}"#);
     let next = change.unwrap().phases;
     assert_eq!(status_of(&next, "C"), TodoStatus::InProgress);
+    assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
+}
+
+#[test]
+fn todo_parallel_work_keeps_active_until_each_task_settles() {
+    let mut current = inited(&[("First", &["A", "B"]), ("Second", &["C", "D", "E"])]);
+    for task in ["B", "C", "D", "D"] {
+        let (value, change) = run(&current, &json!({"op":"start","task":task}).to_string());
+        assert_eq!(value["ok"], true);
+        current = change.unwrap().phases;
+    }
+    for task in ["A", "B", "C", "D"] {
+        assert_eq!(status_of(&current, task), TodoStatus::InProgress);
+    }
+    assert_eq!(status_of(&current, "E"), TodoStatus::Pending);
+
+    // 完成、阻塞及追加操作均不撤销其他并发项，也不提前启动后续工作。
+    for args in [
+        r#"{"op":"done","task":"B"}"#,
+        r#"{"op":"block","task":"C","reason":"dependency"}"#,
+        r#"{"op":"append","phase":"Second","items":["F"]}"#,
+    ] {
+        let (value, change) = run(&current, args);
+        assert_eq!(value["ok"], true);
+        current = change.unwrap().phases;
+        for task in ["A", "D"] {
+            assert_eq!(status_of(&current, task), TodoStatus::InProgress);
+        }
+        assert_eq!(status_of(&current, "E"), TodoStatus::Pending);
+    }
+    assert_eq!(status_of(&current, "B"), TodoStatus::Completed);
+    assert_eq!(status_of(&current, "C"), TodoStatus::Blocked);
+    assert_eq!(blocked_reason(&current, "C").as_deref(), Some("dependency"));
 }
 
 #[test]

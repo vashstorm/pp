@@ -381,32 +381,37 @@ fn todo_resume_syncs_checkboxes_and_carries_snapshot_once() {
     std::fs::create_dir_all(&sessions).unwrap();
     for protocol in ["completion", "response"] {
         // 正常缓存已经可信，且没有快照事件：resume 不能复制工具卡片内容。
-        let unchanged_dir = root.join("unchanged-exec");
-        std::fs::create_dir_all(&unchanged_dir).unwrap();
-        let (mut unchanged, _, _) = executed_todo_fixture(&unchanged_dir, protocol);
-        unchanged.journal = SessionJournal::new(sessions.clone());
-        seed_session(&mut unchanged, "already synchronized runtime");
-        let unchanged_id = unchanged.session_id().unwrap().to_owned();
-        let unchanged_document = unchanged.workflow.plan.as_ref().unwrap().clone();
-        let unchanged_current = root.join("unchanged-current");
-        std::fs::create_dir_all(unchanged_current.join(".pp/plans")).unwrap();
-        std::fs::write(
-            unchanged_current.join(unchanged_document.path().unwrap()),
-            &unchanged_document.content,
-        )
-        .unwrap();
-        drop(unchanged);
-        let mut resumed = fixture_agent(&unchanged_current, &sessions, protocol);
-        seed_session(&mut resumed, "current");
-        let preparation = resumed
-            .resume(&unchanged_id, &CancellationToken::new())
+        for concurrent in [false, true] {
+            let unchanged_dir = root.join(format!("unchanged-exec-{concurrent}"));
+            std::fs::create_dir_all(&unchanged_dir).unwrap();
+            let (mut unchanged, _, _) = executed_todo_fixture(&unchanged_dir, protocol);
+            if concurrent {
+                unchanged.workflow.todos[0].tasks[1].status =
+                    crate::tools::todo::TodoStatus::InProgress;
+                unchanged.workflow.todos[0].tasks[1].blocker = None;
+            }
+            let expected_states = task_states(&unchanged);
+            unchanged.journal = SessionJournal::new(sessions.clone());
+            seed_session(&mut unchanged, "already synchronized runtime");
+            let unchanged_id = unchanged.session_id().unwrap().to_owned();
+            let unchanged_document = unchanged.workflow.plan.as_ref().unwrap().clone();
+            let unchanged_current = root.join(format!("unchanged-current-{concurrent}"));
+            std::fs::create_dir_all(unchanged_current.join(".pp/plans")).unwrap();
+            std::fs::write(
+                unchanged_current.join(unchanged_document.path().unwrap()),
+                &unchanged_document.content,
+            )
             .unwrap();
-        assert!(preparation.todo_snapshot.is_none());
-        assert_eq!(
-            task_states(&resumed)[1].1,
-            crate::tools::todo::TodoStatus::Blocked
-        );
-        drop(resumed);
+            drop(unchanged);
+            let mut resumed = fixture_agent(&unchanged_current, &sessions, protocol);
+            seed_session(&mut resumed, "current");
+            let preparation = resumed
+                .resume(&unchanged_id, &CancellationToken::new())
+                .unwrap();
+            assert!(preparation.todo_snapshot.is_none());
+            assert_eq!(task_states(&resumed), expected_states);
+            drop(resumed);
+        }
         std::fs::create_dir_all(root.join("exec")).unwrap();
         let (mut source, _first, _second) = executed_todo_fixture(&root.join("exec"), protocol);
         source.journal = SessionJournal::new(sessions.clone());
