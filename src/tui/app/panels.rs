@@ -206,6 +206,10 @@ impl App {
         } else {
             None
         };
+        if matches!(command, Some(Command::Unknown)) {
+            // 未知命令静默忽略：不报错、不清空输入、不请求模型。
+            return false;
+        }
         if matches!(
             self.state,
             State::Running | State::Cancelling | State::ReviewingPlan
@@ -609,6 +613,7 @@ impl App {
                 ) => {
                     unreachable!()
                 }
+                Some(Command::Unknown) => unreachable!("ignored before the state match"),
                 // Plan 子命令在状态检查前已处理。
                 Some(Command::Plan(_)) => unreachable!("handled before the state match"),
                 Some(Command::PlanList) => unreachable!("handled before the state match"),

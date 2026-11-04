@@ -273,6 +273,8 @@ pub(crate) enum Command<'a> {
     Mcp(crate::mcp::Action),
     Shell(&'a str),
     Prompt(String),
+    /// 未注册的斜杠命令；消费者必须静默丢弃，不发送模型请求。
+    Unknown,
 }
 
 pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<Command<'a>>> {
@@ -437,11 +439,11 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
             )));
         }
         _ => {
-            let file: &FileCommand = files
-                .entries
-                .iter()
-                .find(|file| file.name == name)
-                .context("unknown command; use /help")?;
+            let file: Option<&FileCommand> = files.entries.iter().find(|file| file.name == name);
+            let Some(file) = file else {
+                // 未知命令静默忽略：不产生本地错误，也不作为普通提示词发送。
+                return Ok(Some(Command::Unknown));
+            };
             let prompt = file.expand(argument);
             ensure!(
                 !prompt.trim().is_empty(),
@@ -630,15 +632,17 @@ mod tests {
     }
 
     #[test]
-    fn slash_unknown_and_extra_arguments_are_local_errors() {
-        for input in ["/", "/bogus", "/Help", "/modelx"] {
+    fn slash_unknown_commands_are_silently_ignored() {
+        for input in ["/", "/bogus", "/Help", "/modelx", "/task-test"] {
             assert_eq!(
-                parse(input, &FileCommands::default())
-                    .unwrap_err()
-                    .to_string(),
-                "unknown command; use /help"
+                parse(input, &FileCommands::default()).unwrap(),
+                Some(Command::Unknown)
             );
         }
+    }
+
+    #[test]
+    fn slash_extra_arguments_are_local_errors() {
         for command in [
             "/help",
             "/tips",
@@ -688,16 +692,6 @@ mod tests {
             assert_eq!(visible(name), cfg!(debug_assertions), "{name}");
         }
         assert!(visible("/help") && visible("/plan-list"));
-    }
-
-    #[test]
-    fn slash_old_task_test_name_is_unknown() {
-        assert_eq!(
-            parse("/task-test", &FileCommands::default())
-                .unwrap_err()
-                .to_string(),
-            "unknown command; use /help"
-        );
     }
 
     #[test]

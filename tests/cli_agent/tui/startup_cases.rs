@@ -16,10 +16,10 @@ fn tui_notification_error_scrolls_into_native_history_and_preserves_draft() {
     .unwrap();
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready();
-    pty.input("/bogus\r");
+    pty.input("/help extra\r");
     pty.wait_for("错误以完整红框进入消息区", |screen| {
         notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
-            && screen.contents().contains("unknown command; use /help")
+            && screen.contents().contains("usage: /help")
     });
     pty.input("\x01\x0b草稿🙂");
     pty.draft("草稿🙂");
@@ -30,7 +30,7 @@ fn tui_notification_error_scrolls_into_native_history_and_preserves_draft() {
         Duration::from_secs(4),
         |screen| {
             since.elapsed() >= Duration::from_millis(1100)
-                && screen.contents().contains("unknown command; use /help")
+                && screen.contents().contains("usage: /help")
         },
     );
     assert_eq!(pty.parser.screen().cursor_position(), cursor);
@@ -46,8 +46,46 @@ fn tui_notification_error_scrolls_into_native_history_and_preserves_draft() {
         !screen.bracketed_paste() && !screen.hide_cursor()
     });
     let (history, _) = pty.native_history();
-    assert_eq!(history.matches("unknown command; use /help").count(), 1);
+    assert_eq!(history.matches("usage: /help").count(), 1);
     assert!(!history.contains(" 1s "));
+    pty.finish();
+    no_more(&fixture);
+}
+
+#[test]
+fn tui_unknown_command_is_silently_ignored() {
+    let fixture = server();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_path(home.path(), "models.yml"),
+        fixture_models(&fixture),
+    )
+    .unwrap();
+    std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+    let mut pty = Pty::start_with_existing_files(home.path());
+    pty.ready();
+    pty.input("/bogus\r");
+    // 草稿原样保留，且没有任何本地错误提示。
+    pty.draft("/bogus");
+    let screen = pty.parser.screen().contents();
+    assert!(!screen.contains("unknown command"));
+    assert!(!screen.contains("Error"));
+    // 清空草稿后提交真实任务：未知命令既未排队，也未发送给模型。
+    pty.input("\x7f\x7f\x7f\x7f\x7f\x7f");
+    pty.input("post typo smoke task\r");
+    let (request, body) = pty.request(&fixture);
+    let sent = body.to_string();
+    assert!(!sent.contains("/bogus"));
+    final_reply(request, "post typo smoke answer");
+    pty.text("post typo smoke answer");
+    pty.completed();
+    pty.input("\x03");
+    pty.wait_for("退出后终端恢复", |screen| {
+        !screen.bracketed_paste() && !screen.hide_cursor()
+    });
+    let (history, _) = pty.native_history();
+    assert!(!history.contains("unknown command"));
+    assert!(!history.contains("Error"));
     pty.finish();
     no_more(&fixture);
 }
@@ -611,8 +649,8 @@ fn tui_notification_errors_stay_local_and_do_not_replay_after_resume() {
         std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
         let mut pty = Pty::start_with_existing_files(home.path());
         pty.ready();
-        pty.input("/bogus\r");
-        pty.text("unknown command; use /help");
+        pty.input("/help extra\r");
+        pty.text("usage: /help");
         pty.input("\x01\x0bnotification failure task\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         request
@@ -624,7 +662,7 @@ fn tui_notification_errors_stay_local_and_do_not_replay_after_resume() {
             "任务失败显示红框且保留本地命令错误",
             |screen| {
                 screen.contents().contains("HTTP status 400")
-                    && screen.contents().contains("unknown command; use /help")
+                    && screen.contents().contains("usage: /help")
                     && notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117))
                         .is_some()
                     && input_is_ready(screen)
@@ -639,7 +677,7 @@ fn tui_notification_errors_stay_local_and_do_not_replay_after_resume() {
         pty.input("notification recovery task\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         let sent = body.to_string();
-        assert!(!sent.contains("unknown command; use /help"));
+        assert!(!sent.contains("usage: /help"));
         assert!(!sent.contains("HTTP status 400"));
         plan_final(request, protocol, "notification recovery answer");
         pty.text("notification recovery answer");
@@ -650,7 +688,7 @@ fn tui_notification_errors_stay_local_and_do_not_replay_after_resume() {
             !screen.bracketed_paste() && !screen.hide_cursor()
         });
         let (history, _) = pty.native_history();
-        assert_eq!(history.matches("unknown command; use /help").count(), 1);
+        assert_eq!(history.matches("usage: /help").count(), 1);
         assert_eq!(history.matches("HTTP status 400").count(), 1);
         pty.finish();
         let journal = std::fs::read_to_string(
@@ -659,7 +697,7 @@ fn tui_notification_errors_stay_local_and_do_not_replay_after_resume() {
                 .join(format!("{id}.jsonl")),
         )
         .unwrap();
-        assert!(!journal.contains("unknown command; use /help"));
+        assert!(!journal.contains("usage: /help"));
         // 既有 pp.error 失败元数据保持不变；没有新增本地消息卡片记录。
         let error_entries: Vec<Value> = journal
             .lines()
@@ -671,13 +709,7 @@ fn tui_notification_errors_stay_local_and_do_not_replay_after_resume() {
         let mut resumed = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
         resumed.text("notification recovery answer");
         resumed.ready();
-        assert!(
-            !resumed
-                .parser
-                .screen()
-                .contents()
-                .contains("unknown command; use /help")
-        );
+        assert!(!resumed.parser.screen().contents().contains("usage: /help"));
         assert!(
             !resumed
                 .parser

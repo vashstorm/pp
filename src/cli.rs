@@ -1248,6 +1248,10 @@ pub(crate) fn run_line_mode(
                 continue;
             }
         };
+        // 未知命令静默忽略，与 TUI 一致。
+        if matches!(command, Some(commands::Command::Unknown)) {
+            continue;
+        }
         if matches!(
             command,
             Some(commands::Command::Agents | commands::Command::Subagents)
@@ -1503,6 +1507,7 @@ pub(crate) fn run_line_mode(
                 | commands::Command::Logout
                 | commands::Command::Plan(_),
             ) => unreachable!(),
+            Some(commands::Command::Unknown) => unreachable!(),
             Some(commands::Command::Prompt(prompt)) => {
                 if let Err(error) = run_cli_task(agent, Some(&prompt), &mut stdout, &mut stderr) {
                     writeln!(stderr, "error: {error:#}")?;

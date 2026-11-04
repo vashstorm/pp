@@ -82,11 +82,12 @@ fn slash_local_commands_and_unavailable_help_never_request_models() {
         "gateway/team/secondary",
         "vendor-b",
         "response",
-        "unknown command; use /help",
         "model not found; use /model to list configured models",
     ] {
         assert!(stderr.contains(value), "{stderr}");
     }
+    // 未知命令静默忽略，不写 stderr。
+    assert!(!stderr.contains("unknown command"), "{stderr}");
     let listing = stderr.find("a/primary").unwrap();
     assert!(listing < stderr.find("gateway/team/secondary").unwrap());
     assert!(
@@ -204,7 +205,7 @@ fn slash_file_command_help_and_errors_stay_local() {
         "{stderr}"
     );
     assert!(!stderr.contains("/blank [arguments]"), "{stderr}");
-    assert!(stderr.contains("unknown command; use /help"), "{stderr}");
+    assert!(!stderr.contains("unknown command"), "{stderr}");
     assert!(stderr.contains("usage: /help"), "{stderr}");
     assert!(
         stderr.contains("command body must not be blank"),

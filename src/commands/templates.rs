@@ -365,8 +365,8 @@ mod tests {
             Some(Command::Prompt("!printf not-shell".into()))
         );
         assert_eq!(
-            parse("/unknown", &commands).unwrap_err().to_string(),
-            "unknown command; use /help"
+            parse("/unknown", &commands).unwrap(),
+            Some(Command::Unknown)
         );
         assert_eq!(parse("/good\nordinary task", &commands).unwrap(), None);
     }
@@ -451,7 +451,8 @@ mod tests {
             parse("/review auth", &commands).unwrap(),
             Some(Command::Prompt("Old auth".into()))
         );
-        assert!(parse("/added", &commands).is_err());
+        // 启动快照之后的同名文件不会被本轮加载；未收录的名称被视为未知命令。
+        assert_eq!(parse("/added", &commands).unwrap(), Some(Command::Unknown));
         let next = FileCommands::from_dir(dir.path());
         assert_eq!(
             parse("/review auth", &next).unwrap(),

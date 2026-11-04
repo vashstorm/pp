@@ -267,8 +267,8 @@ fn tui_slash_model_picker_preserves_history() {
     pty.ready_model("a/primary");
 
     pty.input("/bogus\r");
-    pty.text("unknown command; use /help");
     pty.draft("/bogus");
+    assert!(!pty.parser.screen().contents().contains("unknown command"));
     no_more(&a);
     no_more(&b);
     pty.input("\x7f\x7f\x7f\x7f\x7f\x7f");

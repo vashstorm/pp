@@ -1,21 +1,19 @@
 use super::*;
 
 #[test]
-fn notification_command_error_stays_in_history_and_preserves_editor() {
+fn unknown_command_is_silently_ignored_and_preserves_editor() {
     let mut app = app();
     app.state = State::Ready;
     app.show_welcome = true;
     app.input.insert_str("/bogus");
     let cursor = app.input.cursor();
     app.submit(PendingKind::Steering);
-    assert_notification(&mut app, Color::Rgb(224, 108, 117));
+    let screen = draw(&mut app, 100, 30);
+    assert!(!screen.contains("Error"));
+    assert!(!screen.contains("unknown command"));
+    assert!(app.show_welcome);
     assert_eq!(app.input.lines(), &["/bogus"]);
     assert_eq!(app.input.cursor(), cursor);
-    assert!(!app.show_welcome);
-    assert!(draw(&mut app, 100, 30).contains("Error"));
-    let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("unknown command"));
-    assert!(screen.contains("╭"));
 }
 
 #[test]
