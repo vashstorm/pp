@@ -469,7 +469,7 @@ impl Panel {
     }
 
     pub(super) fn wheel(&mut self, up: bool, lines: usize) {
-        self.scroll_by(up, lines);
+        self.scroll_by(!up, lines);
     }
 
     fn scroll_by(&mut self, down: bool, lines: usize) {
@@ -920,9 +920,14 @@ mod tests {
         }
         panel.key(key_event(KeyCode::Tab));
         assert_eq!(panel.focus, Focus::Body);
+        panel.wheel(true, usize::MAX);
+        render_panel(&mut panel, 14);
+        assert_eq!(panel.scroll[0], 0);
+        assert_eq!(panel.toc_selected[0], 0);
         panel.wheel(false, usize::MAX);
         render_panel(&mut panel, 14);
-        assert_eq!(panel.toc_selected[0], 0);
+        assert!(panel.scroll[0] > 0);
+        assert_eq!(panel.toc_selected[0], 1);
         panel.key(key_event(KeyCode::BackTab));
         assert_eq!(panel.focus, Focus::Toc);
         render_panel_size(&mut panel, 40, 14);
