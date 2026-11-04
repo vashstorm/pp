@@ -886,7 +886,12 @@ impl Transcript {
                 entry.arguments = arguments.unwrap_or(Value::Null);
                 if entry.tool.as_deref() == Some("bash") && entry.arguments["mode"] != "background"
                 {
-                    entry.bash_timeout_seconds = Some(self.bash_timeout_seconds);
+                    entry.bash_timeout_seconds = Some(
+                        entry.arguments["timeout_seconds"]
+                            .as_u64()
+                            .filter(|seconds| *seconds <= 3600)
+                            .unwrap_or(self.bash_timeout_seconds),
+                    );
                 }
                 entry.display = self.display;
                 entry.expanded = self.tools_expanded;

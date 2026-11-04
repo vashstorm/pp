@@ -299,6 +299,78 @@ fn edit_mode_survives_model_switch() {
 }
 
 #[test]
+fn bash_timeout_argument_works_in_both_protocols() {
+    for protocol in PROTOCOLS {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let cli = protocol.start_with_settings(
+            &server,
+            dir.path(),
+            Some("bash timeout arguments"),
+            r#"{"bash_timeout_seconds":1}"#,
+        );
+        let (request, body) = protocol.receive(&server);
+        let tool = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| match protocol {
+                Protocol::Chat => &tool["function"],
+                Protocol::Responses => tool,
+            })
+            .find(|tool| tool["name"] == "bash")
+            .unwrap();
+        let timeout = &tool["parameters"]["properties"]["timeout_seconds"];
+        assert_eq!(timeout["type"], "integer");
+        assert_eq!(timeout["minimum"], 0);
+        assert_eq!(timeout["maximum"], 3600);
+        assert_eq!(tool["parameters"]["required"], json!(["command"]));
+        protocol.calls_reply(
+            request,
+            json!([
+                protocol.call("invalid-timeout", "bash", json!({"command":"printf unexpected > invalid","timeout_seconds":3601})),
+                protocol.call("short-timeout", "bash", json!({"command":"printf before; sleep 10; printf unexpected > late","timeout_seconds":1}))
+            ]),
+        );
+        let (request, body) = protocol.receive(&server);
+        assert_eq!(protocol.tool_result(&body, "invalid-timeout")["ok"], false);
+        assert_eq!(
+            protocol.tool_result(&body, "short-timeout")["timed_out"],
+            true
+        );
+        assert!(!dir.path().join("invalid").exists());
+        assert!(!dir.path().join("late").exists());
+        protocol.calls_reply(
+            request,
+            json!([
+                protocol.call(
+                    "no-timeout",
+                    "bash",
+                    json!({"command":"sleep 1.2; printf unlimited","timeout_seconds":0})
+                ),
+                protocol.call(
+                    "long-timeout",
+                    "bash",
+                    json!({"command":"sleep 1.2; printf extended","timeout_seconds":3600})
+                )
+            ]),
+        );
+        let (request, body) = protocol.receive(&server);
+        for (id, output) in [("no-timeout", "unlimited"), ("long-timeout", "extended")] {
+            let result = protocol.tool_result(&body, id);
+            assert_eq!(result["ok"], true, "{protocol:?}: {result}");
+            assert_eq!(result["timed_out"], false);
+            assert_eq!(result["output"], output);
+        }
+        protocol.final_reply(request, "timeout verified");
+        let output = cli.finish();
+        assert!(output.status.success(), "{output:?}");
+        assert_clean_pipes(&output);
+        no_more(&server);
+    }
+}
+
+#[test]
 fn hardened_tools_recover_after_limits_timeout_and_rejected_edits_in_both_protocols() {
     for protocol in PROTOCOLS {
         let server = server();

@@ -180,12 +180,16 @@ fn run_host_inner(
         dirty: AtomicBool::new(false),
         closed: AtomicBool::new(false),
     });
-    let now = Instant::now();
-    let timeout = Duration::from_secs(config.timeout_seconds);
-    // 避免 u64 秒数在 Instant 上溢出的 panic；极大值等同于“不超时”。
-    let deadline = now
-        .checked_add(timeout)
-        .unwrap_or(now + Duration::from_secs(100 * 365 * 24 * 60 * 60));
+    // 0 表示无截止时间；取消和显式停止仍由监督器处理。
+    let deadline = if config.timeout_seconds == 0 {
+        None
+    } else {
+        Some(
+            Instant::now()
+                .checked_add(Duration::from_secs(config.timeout_seconds))
+                .context("command timeout is too large")?,
+        )
+    };
     let supervisor =
         Supervisor::new_with_stop(deadline, config.cancellation.clone(), config.stop.clone())
             .context("starting command supervisor")?;

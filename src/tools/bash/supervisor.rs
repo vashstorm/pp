@@ -89,7 +89,7 @@ impl StopReason {
 
 struct State {
     phase: Phase,
-    deadline: Instant,
+    deadline: Option<Instant>,
     explicit_stop: bool,
     interpreter_done: bool,
     stop: Option<StopReason>,
@@ -106,7 +106,7 @@ struct State {
 }
 
 impl State {
-    fn new(deadline: Instant) -> Self {
+    fn new(deadline: Option<Instant>) -> Self {
         Self {
             phase: Phase::Running,
             deadline,
@@ -261,10 +261,9 @@ pub(crate) struct Supervisor {
 }
 
 impl Supervisor {
-    /// Creates a supervisor whose deadline is an absolute instant. The
-    /// host-supplied stop token records `Termination::Stopped` when cancelled.
+    /// 创建带可选截止时间的监督器；None 仅关闭超时，不影响取消和显式停止。
     pub(crate) fn new_with_stop(
-        deadline: Instant,
+        deadline: Option<Instant>,
         parent_cancellation: CancellationToken,
         stop_cancellation: CancellationToken,
     ) -> io::Result<Arc<Self>> {
@@ -309,7 +308,11 @@ impl Supervisor {
         deadline: Instant,
         parent_cancellation: CancellationToken,
     ) -> io::Result<Arc<Self>> {
-        Self::new_with_stop(deadline, parent_cancellation, CancellationToken::new())
+        Self::new_with_stop(
+            Some(deadline),
+            parent_cancellation,
+            CancellationToken::new(),
+        )
     }
 
     /// Convenience constructor: the deadline is `timeout` from now and the
@@ -665,7 +668,9 @@ fn monitor(
                 } else {
                     let reason = if parent.is_cancelled() {
                         Some(StopReason::Cancelled)
-                    } else if !state.interpreter_done && now >= state.deadline {
+                    } else if !state.interpreter_done
+                        && state.deadline.is_some_and(|deadline| now >= deadline)
+                    {
                         Some(StopReason::TimedOut)
                     } else if stop_requested {
                         Some(StopReason::Stopped)
@@ -1419,12 +1424,8 @@ mod tests {
     fn embedded_shell_supervisor_parent_cancellation_reports_cancelled() {
         let cancellation = CancellationToken::new();
         let stop = CancellationToken::new();
-        let supervisor = Supervisor::new_with_stop(
-            Instant::now() + Duration::from_secs(30),
-            cancellation.clone(),
-            stop.clone(),
-        )
-        .expect("supervisor");
+        let supervisor = Supervisor::new_with_stop(None, cancellation.clone(), stop.clone())
+            .expect("supervisor");
         let spawned = supervisor
             .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
             .expect("spawn");
@@ -1445,12 +1446,8 @@ mod tests {
     #[test]
     fn embedded_shell_supervisor_stop_token_reports_stopped() {
         let stop = CancellationToken::new();
-        let supervisor = Supervisor::new_with_stop(
-            Instant::now() + Duration::from_secs(30),
-            CancellationToken::new(),
-            stop.clone(),
-        )
-        .expect("supervisor");
+        let supervisor = Supervisor::new_with_stop(None, CancellationToken::new(), stop.clone())
+            .expect("supervisor");
         let spawned = supervisor
             .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
             .expect("spawn");

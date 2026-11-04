@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn bash_timeout_argument_validates_range_before_running_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    for value in [
+        json!(-1),
+        json!(3601),
+        json!(u64::MAX),
+        json!(1.5),
+        json!("1"),
+        json!(null),
+        json!(true),
+    ] {
+        let result = execute(
+            &tools,
+            "bash",
+            json!({"command":"printf unexpected > marker","timeout_seconds":value}),
+        );
+        assert_eq!(result["ok"], false, "{value}: {result}");
+        assert!(!dir.path().join("marker").exists(), "{value}");
+    }
+}
+
+#[test]
+fn bash_timeout_argument_overrides_configured_deadline_and_zero_disables_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    tools.limits.bash_timeout_seconds = 1;
+    for seconds in [0, 3600] {
+        let result = execute(
+            &tools,
+            "bash",
+            json!({"command":"sleep 1.2; printf completed","timeout_seconds":seconds}),
+        );
+        assert_eq!(result["ok"], true, "{seconds}: {result}");
+        assert_eq!(result["timed_out"], false, "{seconds}: {result}");
+        assert_eq!(result["output"], "completed");
+    }
+    tools.limits.bash_timeout_seconds = 300;
+    let result = execute(
+        &tools,
+        "bash",
+        json!({"command":"printf before; sleep 10; printf unexpected > late","timeout_seconds":1}),
+    );
+    assert_eq!(result["ok"], false, "{result}");
+    assert_eq!(result["timed_out"], true, "{result}");
+    assert_eq!(result["output"], "before");
+    assert!(!dir.path().join("late").exists());
+}
+
+#[test]
 fn background_natural_exit_cancellation_and_tools_drop_reap_descendants() {
     let workflow = WorkflowState::default();
     let dir = tempfile::tempdir().unwrap();
@@ -401,7 +451,7 @@ fn bash_cancel_stops_term_resistant_group_and_reports_cancelled() {
     };
     let execution = tools.execute(
             "bash",
-            &json!({"command":"sh -c 'trap \"\" TERM; printf \"cancel-ready\\n\"; printf \"%s\" \"$$\" > bash.pid; sleep 30 & child=$!; printf \"%s\" \"$child\" > bash-child.pid; wait \"$child\"'"}).to_string(),
+            &json!({"command":"sh -c 'trap \"\" TERM; printf \"cancel-ready\\n\"; printf \"%s\" \"$$\" > bash.pid; sleep 30 & child=$!; printf \"%s\" \"$child\" > bash-child.pid; wait \"$child\"'", "timeout_seconds":0}).to_string(),
             "cancel-call",
             ToolPolicy::Execute { workflow: &workflow },
             &token,

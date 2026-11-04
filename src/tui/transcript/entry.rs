@@ -256,7 +256,11 @@ impl TranscriptEntry {
             });
         }
         if let Some(seconds) = self.bash_timeout_seconds {
-            parts.push(format!("Timeout: {seconds}s"));
+            parts.push(if seconds == 0 {
+                "Timeout: none".into()
+            } else {
+                format!("Timeout: {seconds}s")
+            });
         }
         if let Some(result) = &self.result {
             if let Some(artifact) = result.get("artifact_id").filter(|value| !value.is_null()) {

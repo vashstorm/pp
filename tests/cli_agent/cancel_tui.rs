@@ -154,7 +154,7 @@ fn cancel_drive_batch(
         (
             "batch-bash",
             "bash",
-            json!({"command":CANCEL_BATCH_COMMAND}),
+            json!({"command":CANCEL_BATCH_COMMAND,"timeout_seconds":0}),
         ),
         (
             "batch-skip",
@@ -183,6 +183,7 @@ fn cancel_drive_batch(
     }
     // 文件 marker 是进入 bash 执行阶段的栅栏，不用 sleep 猜测。
     cancel_wait_pid_files(project, &["bash.pid", "bash-child.pid"]);
+    pty.text("Timeout: none");
 }
 
 // 批次取消后的真实副作用：保留的文件不变、跳过的文件不存在、两个 PID 停止、

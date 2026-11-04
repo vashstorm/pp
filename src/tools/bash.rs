@@ -419,8 +419,8 @@ fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
             cwd: &run.cwd,
             cache: &run.cache,
             command: &run.command,
-            // 后台任务只由父任务取消或显式 stop 收尾；时间上限等同于“不超时”。
-            timeout_seconds: u64::MAX,
+            // 后台任务只由父任务取消或显式 stop 收尾。
+            timeout_seconds: 0,
             call_id: &run.call_id,
             cancellation: &run.cancellation,
             stop: &task.stop,

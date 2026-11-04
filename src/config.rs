@@ -212,7 +212,7 @@ fn default_read_max_lines() -> usize {
     2_000
 }
 fn default_bash_timeout_seconds() -> u64 {
-    120
+    300
 }
 
 fn default_notification_show_countdown() -> bool {

@@ -157,7 +157,17 @@ struct BashArgs {
     command: String,
     #[serde(default)]
     mode: BashMode,
+    #[serde(default, deserialize_with = "deserialize_bash_timeout")]
+    timeout_seconds: Option<u64>,
 }
+
+fn deserialize_bash_timeout<'de, D>(deserializer: D) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    u64::deserialize(deserializer).map(Some)
+}
+
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum BashMode {
@@ -633,8 +643,8 @@ impl Tools {
             },
             FunctionObject {
                 name: "bash".into(),
-                description: Some("Run a Bash-compatible embedded shell in startup cwd. Finite commands (tests, builds, installs, checks) MUST use default foreground mode, which uses configured bash_timeout_seconds, even when slow. Use background mode ONLY for persistent services that must stay alive across tool calls and require explicit termination when finished. Background mode returns a managed task_id, survives tool calls without a fixed deadline, and is stopped at the end of this user task. Running does not mean ready: use subsequent requests to verify the service, bash_task status for cumulative logs, and stop after verification. Managed external processes are cleaned up and the interpreter stops cooperatively; shell side effects are not rolled back, and deliberately detached descendants are not covered. No filesystem sandbox or independent shell PID: $$ fails, simple external background jobs expose real $!, exec ends the logical shell, and ulimit applies only to external children. stdout/stderr are merged in observed receive order. Main output is a bounded preview with artifact://<id> spillover. Result pipes metadata reports stage statuses and temporary pipe:// mirrors; read those URIs for bounded stage output, including while running. Mirroring does not drain upstream after downstream closes. Explicit external bash/sh internal pipelines are not observed. Run tests/builds/checks directly; do not pipe to head/tail/grep or redirect just to trim output.".into()),
-                parameters: Some(json!({"type":"object","properties":{"command":{"type":"string"},"mode":{"type":"string","enum":["foreground","background"]}},"required":["command"],"additionalProperties":false})),
+                description: Some("Run a Bash-compatible embedded shell in startup cwd. Finite commands (tests, builds, installs, checks) MUST use default foreground mode, even when slow. Optional timeout_seconds overrides the foreground timeout (integer 0-3600 seconds; 0 disables the deadline). If omitted, use configured bash_timeout_seconds (default 300 seconds). Use background mode ONLY for persistent services that must stay alive across tool calls and require explicit termination when finished. Background mode ignores timeout_seconds, returns a managed task_id, survives tool calls without a fixed deadline, and is stopped at the end of this user task. Running does not mean ready: use subsequent requests to verify the service, bash_task status for cumulative logs, and stop after verification. Managed external processes are cleaned up and the interpreter stops cooperatively; shell side effects are not rolled back, and deliberately detached descendants are not covered. No filesystem sandbox or independent shell PID: $$ fails, simple external background jobs expose real $!, exec ends the logical shell, and ulimit applies only to external children. stdout/stderr are merged in observed receive order. Main output is a bounded preview with artifact://<id> spillover. Result pipes metadata reports stage statuses and temporary pipe:// mirrors; read those URIs for bounded stage output, including while running. Mirroring does not drain upstream after downstream closes. Explicit external bash/sh internal pipelines are not observed. Run tests/builds/checks directly; do not pipe to head/tail/grep or redirect just to trim output.".into()),
+                parameters: Some(json!({"type":"object","properties":{"command":{"type":"string"},"mode":{"type":"string","enum":["foreground","background"]},"timeout_seconds":{"type":"integer","minimum":0,"maximum":3600,"description":"Foreground timeout in seconds; 0 disables it. Omit to use bash_timeout_seconds (default 300). Ignored in background mode."}},"required":["command"],"additionalProperties":false})),
                 ..Default::default()
             },
             FunctionObject {
@@ -1153,13 +1163,18 @@ impl Tools {
                 let args: BashArgs =
                     serde_json::from_str(arguments).context("invalid bash arguments")?;
                 ensure!(!args.command.trim().is_empty(), "command must not be blank");
+                ensure!(
+                    args.timeout_seconds.is_none_or(|seconds| seconds <= 3600),
+                    "timeout_seconds must be an integer between 0 and 3600"
+                );
                 let cache = self.workspace.cache_dir()?;
                 match args.mode {
                     BashMode::Foreground => bash::run(
                         &self.cwd,
                         &cache,
                         &args.command,
-                        self.limits.bash_timeout_seconds,
+                        args.timeout_seconds
+                            .unwrap_or(self.limits.bash_timeout_seconds),
                         call_id,
                         cancellation,
                         emit,

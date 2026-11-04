@@ -278,7 +278,7 @@ fn replay_restores_visible_history_and_marks_interruption() {
     let text = screen(&render(&mut transcript, 100, 30));
     assert!(text.contains("remember replay"));
     assert!(text.contains("replay"));
-    assert!(text.contains("Timeout: 120s"));
+    assert!(text.contains("Timeout: 300s"));
     assert!(!text.contains("Exit:"));
     assert!(!text.contains("Wall:"));
     assert_eq!(error.as_deref(), Some("Previous request was interrupted."));
@@ -725,6 +725,33 @@ fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
 }
 
 #[test]
+fn bash_footer_uses_per_call_timeout_and_renders_unlimited() {
+    for (seconds, expected) in [
+        (0, "Timeout: none"),
+        (1, "Timeout: 1s"),
+        (3600, "Timeout: 3600s"),
+    ] {
+        let mut transcript = Transcript::new();
+        transcript.set_bash_timeout(37);
+        tool(
+            &mut transcript,
+            "b",
+            "bash",
+            json!({"command":"sleep 10","timeout_seconds":seconds}),
+        );
+        let live = screen(&render(&mut transcript, 100, 20));
+        assert!(live.contains(expected), "{live}");
+        assert!(!live.contains("Timeout: 37s"), "{live}");
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "b".into(),
+            result: json!({"ok":true,"exit_code":0,"output":"done"}),
+        });
+        let text = screen(&render(&mut transcript, 100, 20));
+        assert!(text.contains(expected), "{text}");
+    }
+}
+
+#[test]
 fn bash_footer_tracks_elapsed_and_renders_status_on_bottom_border() {
     for (result, expected, border) in [
         (
@@ -1098,7 +1125,7 @@ fn bash_card_and_thinking_match_reference_and_keep_full_output() {
         "line-14",
         "line-23",
         "Wall:",
-        "Timeout: 120s",
+        "Timeout: 300s",
         "╰─",
         "Check the diff 中",
     ] {
@@ -1478,7 +1505,7 @@ fn streaming_tool_channels_results_and_reused_ids_are_calibrated() {
     assert_eq!(transcript.entries[0].status, EntryStatus::Failed);
     assert_eq!(transcript.entries[1].status, EntryStatus::Complete);
     assert_eq!(transcript.entries[1].text, "");
-    assert!(transcript.entries[1].footer.contains("Timeout: 120s"));
+    assert!(transcript.entries[1].footer.contains("Timeout: 300s"));
     assert!(!transcript.entries[1].footer.contains("Exit:"));
     tool(&mut transcript, "read", "read", json!({"path": "SKILL.md"}));
     transcript.progress(AgentEvent::ToolFinished {

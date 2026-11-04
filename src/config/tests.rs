@@ -195,6 +195,14 @@ fn deprecated_notification_options_validate_overrides() {
 
 #[test]
 fn tool_limits_validate_positive_overrides() {
+    assert_eq!(ToolLimits::default().bash_timeout_seconds, 300);
+    assert_eq!(
+        load(None, Some(VALID_MODELS))
+            .unwrap()
+            .settings
+            .bash_timeout_seconds,
+        300
+    );
     let settings = load(
         Some(r#"{"read_max_bytes":17,"read_max_lines":3,"bash_timeout_seconds":2}"#),
         Some(VALID_MODELS),
