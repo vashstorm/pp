@@ -558,8 +558,10 @@ impl TranscriptEntry {
         {
             return;
         }
+        // 等待回答时只显示交互面板；结束后再保留完整问答卡片。
         // 清单在固定 TODO 区展示，操作过程与成功结果不再生成历史卡片。
         if self.hidden
+            || (self.kind == EntryKind::Ask && self.status == EntryStatus::Running)
             || (self.tool.as_deref() == Some("todo") && self.status != EntryStatus::Failed)
         {
             self.layout = Some(std::sync::Arc::new(EntryLayout {

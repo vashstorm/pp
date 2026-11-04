@@ -543,7 +543,12 @@ impl Panel {
         let content_height = match self.page {
             Page::Question(index) => self.states[index]
                 .menu
-                .choices_height(inner_width, self.editor_height(index)),
+                .choices_height(inner_width, self.editor_height(index))
+                .saturating_add(
+                    self.question_lines(index, inner_width)
+                        .len()
+                        .min(usize::from(u16::MAX)) as u16,
+                ),
             Page::Review => {
                 self.layout_review(inner_width);
                 self.review
@@ -567,6 +572,17 @@ impl Panel {
             .as_ref()
             .filter(|(owner, _)| *owner == index)
             .map(|(_, editor)| editor.lines().len().clamp(1, 5) as u16)
+    }
+
+    fn question_lines(&self, index: usize, width: u16) -> Vec<Line<'static>> {
+        super::transcript::wrap_block(
+            Line::styled(
+                menu_text(&self.questions.questions[index].question),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            width,
+            "",
+        )
     }
 
     fn draw_tabs(&self, frame: &mut Frame, area: Rect) {
@@ -709,10 +725,24 @@ impl Panel {
             ..inner
         };
 
+        let question = self.question_lines(index, content_area.width);
+        // 短屏至少为当前选项或编辑器保留一行。
+        let question_h = question.len().min(usize::from(content_h.saturating_sub(1))) as u16;
+        for (row, line) in question.iter().take(usize::from(question_h)).enumerate() {
+            frame.render_widget(
+                line,
+                Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            );
+        }
+        let choices_area = Rect {
+            y: content_area.y + question_h,
+            height: content_area.height - question_h,
+            ..content_area
+        };
         let editor_height = self.editor_height(index);
         let editor_area = self.states[index]
             .menu
-            .draw_choices(frame, content_area, editor_height);
+            .draw_choices(frame, choices_area, editor_height);
         if let Some((_, editor)) = self.editor.as_mut()
             && let Some(editor_area) = editor_area
             && !editor_area.is_empty()
@@ -1242,7 +1272,7 @@ mod tests {
         for (width, height) in [(40, 24), (24, 12), (40, 24)] {
             let screen = render(&mut panel, width, height);
             assert!(screen.contains("󰐽 A"), "应显示选项：{screen}");
-            assert!(!screen.contains("Choose for q?"));
+            assert!(screen.contains("Choose for q?"));
             if width >= 40 {
                 assert!(screen.contains("Option description"));
             }
@@ -1331,27 +1361,33 @@ mod tests {
     }
 
     #[test]
-    fn single_page_omits_tabs_and_starts_choices_below_title() {
+    fn single_page_omits_tabs_and_shows_question_above_choices() {
         let mut q = question("confirm_commit", false, None, &["yes", "no"]);
         q.header = Some("Commit confirmation".into());
+        q.question = "Commit the changes?".into();
         let mut panel = panel(vec![q]);
         let screen = render(&mut panel, 80, 24);
         assert!(!screen.contains("confirm_commit"));
         assert!(!screen.contains("Commit confirmation"));
-        assert!(!screen.contains("Choose for"));
+        assert!(screen.contains("Commit the changes?"));
         assert!(!screen.contains("Tab/←/→"));
-        assert_eq!(panel.overlay.unwrap().height, 7, "单页应收回页签占用的一行");
+        assert_eq!(
+            panel.overlay.unwrap().height,
+            8,
+            "单页包含题干且不占用页签行"
+        );
         let rows: Vec<_> = screen.lines().collect();
         let title = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
-        assert!(rows[title + 1].contains("󰐽 yes"), "标题下方应直接显示选项");
+        assert!(rows[title + 1].contains("Commit the changes?"));
+        assert!(rows[title + 2].contains("󰐽 yes"), "题干下方应直接显示选项");
         let compact = render(&mut panel, 80, 5);
         assert!(!compact.contains("Tab next"));
 
         let mut custom_only = self::panel(vec![question("custom", false, None, &[])]);
         let screen = render(&mut custom_only, 80, 24);
-        assert_eq!(custom_only.overlay.unwrap().height, 5);
+        assert_eq!(custom_only.overlay.unwrap().height, 6);
         assert!(screen.contains(OTHER_LABEL));
-        assert!(screen.contains("╭ Ask"), "单页五行布局仍应使用完整边框");
+        assert!(screen.contains("╭ Ask"), "自由回答仍应使用完整边框");
     }
 
     #[test]
@@ -1409,6 +1445,30 @@ mod tests {
     }
 
     #[test]
+    fn question_wraps_and_changes_with_current_page() {
+        let mut first = question("first", false, None, &["A"]);
+        first.question = "请选择本次操作需要执行的完整检查范围，并确认后继续".into();
+        let mut panel = panel(vec![first, question("second", false, None, &["B"])]);
+        let wide = render(&mut panel, 80, 30);
+        let wide_height = panel.overlay.unwrap().height;
+        // TestBackend 为双宽字符保留空白占位单元格。
+        assert!(
+            wide.replace(' ', "")
+                .contains("请选择本次操作需要执行的完整检查范围，并确认后继续")
+        );
+        let narrow = render(&mut panel, 32, 30);
+        assert!(panel.overlay.unwrap().height > wide_height);
+        assert!(narrow.replace(' ', "").contains("请选择本次操作"));
+        assert!(narrow.replace(' ', "").contains("确认后继续"));
+        assert!(narrow.contains("󰐽 A"));
+        panel.key(key(KeyCode::Tab));
+        let second = render(&mut panel, 80, 30);
+        assert!(second.contains("Choose for second?"));
+        assert!(!second.contains("请选择本次操作"));
+        assert!(second.contains("󰐽 B"));
+    }
+
+    #[test]
     fn height_tracks_current_page_wrapping_editor_and_validation() {
         let mut long = question("long", false, None, &["A", "B", "C"]);
         for option in &mut long.options {
@@ -1418,26 +1478,26 @@ mod tests {
         let mut panel = panel(vec![long, question("short", false, None, &["D"])]);
         render(&mut panel, 100, 40);
         let long_height = panel.overlay.unwrap().height;
-        assert_eq!(long_height, 12, "三项名称与说明、Other 和五行框架");
+        assert_eq!(long_height, 13, "题干、三项名称与说明、Other 和五行框架");
         render(&mut panel, 32, 40);
-        assert_eq!(panel.overlay.unwrap().height, 15, "说明折行应计入实际高度");
+        assert_eq!(panel.overlay.unwrap().height, 16, "说明折行应计入实际高度");
         panel.key(key(KeyCode::Tab));
         render(&mut panel, 100, 40);
-        assert_eq!(panel.overlay.unwrap().height, 7, "短题不应沿用长题的高度");
+        assert_eq!(panel.overlay.unwrap().height, 8, "短题不应沿用长题的高度");
         panel.error = Some(REQUIRED_MESSAGE.into());
         let screen = render(&mut panel, 100, 40);
-        assert_eq!(panel.overlay.unwrap().height, 8);
+        assert_eq!(panel.overlay.unwrap().height, 9);
         assert!(screen.contains(REQUIRED_MESSAGE));
         panel.error = None;
         panel.key(key(KeyCode::End));
         panel.key(key(KeyCode::Enter));
         panel.paste("one\ntwo\nthree");
         let screen = render(&mut panel, 100, 40);
-        assert_eq!(panel.overlay.unwrap().height, 9);
+        assert_eq!(panel.overlay.unwrap().height, 10);
         assert!(screen.contains("three"));
         panel.key(key(KeyCode::Esc));
         render(&mut panel, 100, 40);
-        assert_eq!(panel.overlay.unwrap().height, 7, "丢弃编辑后应收回多行空间");
+        assert_eq!(panel.overlay.unwrap().height, 8, "丢弃编辑后应收回多行空间");
         panel.states[0].custom = "very long answer ".repeat(12);
         panel.page = Page::Review;
         render(&mut panel, 32, 40);

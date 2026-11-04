@@ -457,6 +457,73 @@ fn tool_toggle_anchors_history_and_exit_scrollback_expands_all_tools() {
 }
 
 #[test]
+fn ask_card_waits_for_completion_and_preserves_native_history() {
+    for outcome in ["answered", "cancelled", "interrupted", "invalid"] {
+        let mut transcript = Transcript::new();
+        transcript.append("Assistant", "previous-message");
+        tool(
+            &mut transcript,
+            "ask-card",
+            "ask",
+            json!({"questions":[{
+                "id":"db", "question":"Database question?",
+                "options":[{"label":"SQLite","preview":"preview-detail"}]
+            }]}),
+        );
+        for width in [80, 32, 80] {
+            let text = screen(&render(&mut transcript, width, 30));
+            assert!(text.contains("previous-message"));
+            for hidden in [
+                "Database question?",
+                "SQLite",
+                "preview-detail",
+                "ask · running",
+            ] {
+                assert!(!text.contains(hidden), "等待时不应显示 ask 卡片：{text}");
+            }
+            assert!(transcript.has_running_ask("ask-card"));
+            assert_eq!(transcript.entries[1].layout.as_ref().unwrap().height, 0);
+        }
+        let native = retire_native(&mut transcript, 80, 30, false);
+        assert!(!native.contains("Database question?"));
+        match outcome {
+            "answered" => transcript.progress(AgentEvent::ToolFinished {
+                id: "ask-card".into(),
+                result: json!({"ok":true,"answers":[{
+                    "id":"db","selected_options":["SQLite"],"custom_input":null
+                }]}),
+            }),
+            "cancelled" => transcript.progress(AgentEvent::ToolFinished {
+                id: "ask-card".into(),
+                result: json!({"ok":false,"cancelled":true}),
+            }),
+            "invalid" => transcript.progress(AgentEvent::ToolFinished {
+                id: "ask-card".into(),
+                result: json!({"ok":true,"answers":[]}),
+            }),
+            _ => transcript.fail(),
+        }
+        let text = screen(&render(&mut transcript, 80, 30));
+        assert!(!text.contains("ask · running"));
+        let expected = if outcome == "invalid" {
+            "invalid ask response"
+        } else {
+            "Database question?"
+        };
+        assert!(text.contains(expected), "结束后应保留记录：{text}");
+        // 后续消息把完整卡片推入原生历史，避免末行仍保留在可见尾部。
+        transcript.append("Assistant", "after-ask");
+        let native = retire_native(&mut transcript, 80, 1, true);
+        assert_eq!(
+            native.matches(expected).count(),
+            1,
+            "历史应只提交一次：{native}"
+        );
+        assert!(retire_native(&mut transcript, 80, 1, true).is_empty());
+    }
+}
+
+#[test]
 fn ask_details_stay_in_messages_after_answering_and_resize() {
     let args = crate::interaction::AskArgs::parse(
         &json!({"questions":[{

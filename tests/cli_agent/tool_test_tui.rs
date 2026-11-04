@@ -56,9 +56,10 @@ fn tui_tool_test_all_suites_three_question_ask_and_completion_note() {
     pty.wait_for("ask panel opens as the last tool fixture", |screen| {
         screen.contents().contains("Pick the recommended local fixture option.")
     });
-    // 查看带 preview 的第三项，再回到推荐项并确认。
-    pty.input("\x1b[B\x1b[B");
-    pty.text("preview");
+    // 等待时只显示交互面板，预览正文在提交后的问答卡片中保留。
+    pty.input("\x1b[B");
+    pty.text("❯ 󰐽 Preview option");
+    assert!(!pty.parser.screen().contents().contains("preview"));
     pty.input("\x1b[A\r");
     pty.text("Select several fixture labels.");
     pty.input(" \x1b[B \r");
@@ -69,6 +70,7 @@ fn tui_tool_test_all_suites_three_question_ask_and_completion_note() {
     });
     pty.input("\r");
     pty.text("Local tool suite complete:");
+    pty.text("preview");
     pty.wait_for("normalized answers and completion note stay visible", |screen| {
         let text = screen.contents();
         text.contains("Recommended option")

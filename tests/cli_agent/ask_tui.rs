@@ -530,7 +530,12 @@ fn ask_tui_single_space_selects_without_sending_until_enter() {
         {
             let screen = pty.parser.screen();
             let (top, _) = ask_panel_find(screen, "╭ Ask");
-            assert_eq!(ask_panel_find(screen, "SQLite (Recommended)").0, top + 1);
+            assert_eq!(ask_panel_find(screen, "Which database should the project use?").0, top + 1);
+            assert_eq!(ask_panel_find(screen, "SQLite (Recommended)").0, top + 2);
+            let text = screen.contents();
+            assert!(!text.contains("ask · running"), "等待时不应显示重复卡片：{text}");
+            assert_eq!(text.matches("Which database should the project use?").count(), 1);
+            assert_eq!(text.matches("Postgres").count(), 1);
             assert!(!screen.contents().contains("Tab/←/→ question"));
             assert!(!screen.contents().contains("Question 1"));
         }
@@ -548,6 +553,11 @@ fn ask_tui_single_space_selects_without_sending_until_enter() {
         no_more(&server);
         pty.input("\r");
         let (request, body) = pty.request_at(&server, api_path(protocol));
+        pty.wait_for("回答后问答卡片进入消息区", |screen| {
+            let text = screen.contents();
+            text.contains("storage · Which database should the project use?")
+                && text.contains("󰐾 Postgres") && !text.contains("╭ Ask")
+        });
         assert_eq!(
             cancel_tool_outputs(&body, protocol),
             vec![("ask-space".into(), json!({"ok":true,"answers":[{
@@ -581,22 +591,32 @@ fn ask_tui_tabs_fit_current_page_and_keep_message_tail_above_panel() {
             {"id":"short", "header":"Mode", "question":"Choose the execution mode",
              "options":[{"label":"Default", "preview":"ASK-MESSAGE-TAIL"}]}
         ]});
-        ask_reply_calls(request, protocol, json!([ask_call_json(protocol, "ask-viewport", args)]));
+        let calls = json!([ask_call_json(protocol, "ask-viewport", args)]);
+        if protocol == "completion" {
+            reply(request, json!({"role":"assistant","content":"ASSISTANT-MESSAGE-TAIL","tool_calls":calls}));
+        } else {
+            let mut output = vec![response_message("msg-tail", json!([response_text("ASSISTANT-MESSAGE-TAIL")]))];
+            output.extend(calls.as_array().unwrap().iter().cloned());
+            response_reply(request, json!(output));
+        }
         ask_wait_panel(&mut pty, "Choose the implementation scope");
-        for (page, height) in [(1, 12), (2, 7)] {
+        for (page, height) in [(1, 13), (2, 8)] {
             for (rows, cols) in [(30, 100), (24, 60)] {
                 pty.resize(rows, cols);
                 pty.wait_for("消息尾部和当前页签可见", |screen| {
                     screen.size() == (rows, cols)
                         && ask_page_active(screen, page, 2)
-                        && screen.contents().contains("ASK-MESSAGE-TAIL")
+                        && screen.contents().contains("ASSISTANT-MESSAGE-TAIL")
                 });
                 let screen = pty.parser.screen();
                 let (top, _) = ask_panel_find(screen, "╭ Ask");
                 let (bottom, _) = ask_panel_find(screen, "╰");
                 assert_eq!(bottom - top + 1, height, "高度应随当前题变化");
-                let (tail, _) = ask_panel_find(screen, "ASK-MESSAGE-TAIL");
+                let (tail, _) = ask_panel_find(screen, "ASSISTANT-MESSAGE-TAIL");
                 assert!(tail < top, "消息尾部必须显示在面板上方：{}", screen.contents());
+                let text = screen.contents();
+                assert!(!text.contains("ASK-MESSAGE-TAIL"), "未完成的 ask 详情不应进入消息区：{text}");
+                assert!(!text.contains("ask · running"));
             }
             pty.input("\t");
         }
@@ -631,13 +651,13 @@ fn ask_tui_choice_descriptions_and_inline_editor_survive_resize() {
         let (description_row, _) = ask_panel_find(screen, "Shared database");
         assert_eq!(description_row, row + 1, "说明应紧接对应选项显示");
         let (title_row, _) = ask_panel_find(screen, "╭ Ask");
-        assert_eq!(row, title_row + 2, "标题和页签下方直接显示选项");
+        assert_eq!(row, title_row + 3, "标题、页签和题干下方显示选项");
         assert_eq!(ask_panel_find(screen, "1. Database").0, title_row + 1);
         assert_eq!(ask_panel_find(screen, "Review").0, title_row + 1);
         let (next_row, _) = ask_panel_find(screen, "SQLite");
         assert_eq!(next_row, row + 2, "下一选项应紧接说明，不插入空行");
         let panel_text = screen.contents().lines().skip(usize::from(title_row)).collect::<Vec<_>>().join("\n");
-        assert!(!panel_text.contains("Choose a database"));
+        assert!(panel_text.contains("Choose a database"));
         assert!(panel_text.contains("1. Database"), "页签应显示题目标签");
         assert!(panel_text.contains("Shared database"));
         assert!(panel_text.contains("Embedded storage"));
