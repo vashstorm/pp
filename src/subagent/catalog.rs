@@ -7,6 +7,8 @@ use std::{collections::BTreeMap, fs, path::Path};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Definition {
+    #[serde(skip)]
+    pub model_role: Option<crate::config::ModelRole>,
     pub name: String,
     pub description: String,
     #[serde(default)]
@@ -27,7 +29,12 @@ pub(crate) struct Definition {
     pub source: String,
 }
 
-pub(crate) fn discover(cwd: &Path, user: &Path, settings: &Settings) -> Result<Vec<Definition>> {
+pub(crate) fn discover(
+    cwd: &Path,
+    user: &Path,
+    settings: &Settings,
+    roles: &crate::config::ModelRoles,
+) -> Result<Vec<Definition>> {
     let mut found = BTreeMap::new();
     let project = cwd
         .ancestors()
@@ -74,29 +81,29 @@ pub(crate) fn discover(cwd: &Path, user: &Path, settings: &Settings) -> Result<V
             }
         }
     }
-    for (name, description, readonly) in [
-        ("task", "Run an independent multi-step task", false),
-        ("scout", "Read-only investigation and code location", true),
-        (
-            "reviewer",
-            "Read-only review reporting concrete issues",
-            true,
-        ),
-    ] {
-        found.entry(name.to_owned()).or_insert_with(|| Definition {
-            name: name.to_owned(), description: description.to_owned(),
-            tools: readonly.then(|| {
-                vec!["read".into(), "grep".into(), "glob".into(), "lsp".into()]
-            }),
-            model: None, thinking: None,
-            spawns: Some(if readonly { vec![] } else { vec!["*".into()] }),
-            blocking: false, output: None,
-            prompt: if readonly { "Investigate without changing files. Report evidence and file references." } else { "Complete the assigned work thoroughly. Use tools as needed. Return a concise final result." }.into(),
-            source: "bundled".into(),
-        });
-    }
-    Ok(found
+    let mut definitions = found
         .into_values()
         .filter(|d| !settings.disabled_agents.contains(&d.name))
-        .collect())
+        .collect::<Vec<_>>();
+    definitions.extend(
+        roles
+            .iter()
+            .filter(|(role, assignment)| {
+                **role != crate::config::ModelRole::Plan && assignment.enabled
+            })
+            .map(|(role, assignment)| Definition {
+                model_role: Some(*role),
+                name: role.name().into(),
+                description: format!("{} · {}", assignment.model, assignment.effort.as_str()),
+                tools: None,
+                model: None,
+                thinking: None,
+                spawns: None,
+                blocking: false,
+                output: None,
+                prompt: String::new(),
+                source: "/Roles".into(),
+            }),
+    );
+    Ok(definitions)
 }

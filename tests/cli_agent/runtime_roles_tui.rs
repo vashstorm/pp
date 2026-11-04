@@ -89,7 +89,7 @@ fn tui_runtime_role_changes_switch_children_at_their_own_committed_boundary() {
         pty.text("parked");
         pty.input("e");
         // 详情异步加载完成后才输入，避免把正文按键发送给 roster。
-        pty.text("task / a1");
+        pty.text("fast / a1");
         pty.input("resume saved child\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert_eq!(body["model"], "two");

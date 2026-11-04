@@ -283,7 +283,7 @@ fn wait_cleanup_failure_is_a_stop_error_and_does_not_reserve_results() {
     assert_eq!(result["background_results"].as_array().unwrap().len(), 1);
 }
 fn binding(dir: &Path, settings: Settings) -> Binding {
-    Binding::root(
+    let binding = Binding::root(
         RootOptions {
             dir: dir.join("state"),
             user: dir.join("user"),
@@ -296,18 +296,31 @@ fn binding(dir: &Path, settings: Settings) -> Binding {
         Arc::new(|_, _| bail!("fixture factory")),
         Arc::new(|_| Ok(())),
     )
-    .unwrap()
+    .unwrap();
+    binding.set_model_roles(BTreeMap::from([(
+        crate::config::ModelRole::Default,
+        crate::config::RoleAssignment {
+            enabled: true,
+            model: "fixture/main".into(),
+            effort: ThinkLevel::None,
+            fallback: None,
+        },
+    )]));
+    binding
 }
 
 #[test]
-fn model_roles_subagent_explicit_selection_and_default_reviewer_route_are_independent() {
+fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), Settings::default());
     binding.set_model_roles(std::collections::BTreeMap::from([
         (
             crate::config::ModelRole::Fast,
             crate::config::RoleAssignment {
-                fallback: None,
+                fallback: Some(crate::config::RoleModel {
+                    model: "fixture/backup".into(),
+                    effort: ThinkLevel::Medium,
+                }),
                 enabled: true,
                 model: "fixture/fast".into(),
                 effort: ThinkLevel::Low,
@@ -327,25 +340,55 @@ fn model_roles_subagent_explicit_selection_and_default_reviewer_route_are_indepe
         .execute(
             "task",
             &json!({"context":"routing", "tasks":[
-                {"agent":"scout", "role":"fast", "task":"find"},
-                {"agent":"reviewer", "task":"review"},
-                {"agent":"reviewer", "role":"fast", "task":"quick review"},
-                {"task":"inherit parent model"}
+                {"role":"fast", "task":"find"},
+                {"role":"review", "task":"review"},
+                {"role":"fast", "readonly":true, "task":"quick review"}
             ]})
             .to_string(),
             false,
             &Default::default(),
         )
         .unwrap();
+    // 派发后修改配置不改变该批记录冻结的主备快照。
+    binding.set_model_roles(BTreeMap::new());
     let state = lock(&binding.inner.state);
     for (id, model, effort) in [
         ("a1", "fixture/fast", ThinkLevel::Low),
         ("a2", "fixture/review", ThinkLevel::High),
         ("a3", "fixture/fast", ThinkLevel::Low),
-        ("a4", "fixture/main", ThinkLevel::None),
     ] {
         assert_eq!(state.disk.agents[id].spec.model, model);
-        assert_eq!(state.disk.agents[id].spec.thinking, effort);
+        let spec = &state.disk.agents[id].spec;
+        assert_eq!(spec.thinking, effort);
+        let route = spec.role_route.as_ref().unwrap();
+        assert_eq!(route.primary.model, spec.model);
+        assert_eq!(route.primary.effort, spec.thinking);
+        assert_eq!(Some(route.role), spec.model_role);
+        assert_eq!(spec.definition, route.role.name().to_lowercase());
+    }
+    assert!(!state.disk.agents["a1"].spec.readonly);
+    assert!(state.disk.agents["a2"].spec.readonly);
+    assert!(state.disk.agents["a3"].spec.readonly);
+    assert_eq!(
+        state.disk.agents["a1"]
+            .spec
+            .role_route
+            .as_ref()
+            .unwrap()
+            .fallback
+            .as_ref()
+            .unwrap()
+            .model,
+        "fixture/backup"
+    );
+    for id in ["a2", "a3"] {
+        let spec = &state.disk.agents[id].spec;
+        assert!(spec.spawns.is_empty());
+        assert!(
+            spec.tools
+                .iter()
+                .all(|name| matches!(name.as_str(), "read" | "grep" | "glob" | "lsp"))
+        );
     }
 }
 
@@ -380,22 +423,24 @@ fn model_roles_plan_is_never_offered_or_dispatched_to_subagents() {
                 let task = binding
                     .definitions(mode)
                     .into_iter()
-                    .find(|def| def.name == "task")
-                    .unwrap();
-                let parameters = task.parameters.unwrap();
-                let role = parameters.pointer("/properties/tasks/items/properties/role");
-                if include_fast {
-                    assert_eq!(role.unwrap()["enum"], json!(["fast"]));
+                    .find(|def| def.name == "task");
+                if !include_fast {
+                    assert!(task.is_none());
                 } else {
-                    assert!(role.is_none());
-                    assert!(!task.description.as_ref().unwrap().contains("model role"));
+                    let task = task.unwrap();
+                    let parameters = task.parameters.unwrap();
+                    assert_eq!(
+                        parameters
+                            .pointer("/properties/tasks/items/properties/role/enum")
+                            .unwrap(),
+                        &json!(["fast"])
+                    );
+                    assert!(!task.description.unwrap().contains("planner-only-marker"));
                 }
-                assert!(!task.description.unwrap().contains("planner-only-marker"));
                 let error = binding
                     .execute(
                         "task",
                         &json!({"context":"test","tasks":[
-                            {"task":"valid task"},
                             {"task":"reject reserved role","role":"plan"}
                         ]})
                         .to_string(),
@@ -462,37 +507,25 @@ fn model_roles_unselected_roles_are_absent_from_prompt_schema_and_rejected_befor
             .contains("review model role")
     );
     for role in ["review", "vision"] {
-        assert!(binding.execute("task", &json!({"context":"test","tasks":[{"task":"valid"},{"task":"reject unselected role","role":role}]}).to_string(), false, &Default::default()).is_err());
+        assert!(binding.execute("task", &json!({"context":"test","tasks":[{"task":"valid","role":"fast"},{"task":"reject unselected role","role":role}]}).to_string(), false, &Default::default()).is_err());
     }
     assert!(lock(&binding.inner.state).disk.agents.is_empty());
     binding.set_model_roles(std::collections::BTreeMap::from([(
         crate::config::ModelRole::Review,
         inactive,
     )]));
-    let task = binding
-        .definitions(WorkMode::Execute)
-        .into_iter()
-        .find(|def| def.name == "task")
-        .unwrap();
+    assert!(binding.definitions(WorkMode::Execute).is_empty());
     assert!(
-        task.parameters
-            .unwrap()
-            .pointer("/properties/tasks/items/properties/role")
-            .is_none()
+        binding
+            .execute(
+                "task",
+                &json!({"context":"test","tasks":[{"task":"no default"}]}).to_string(),
+                false,
+                &Default::default()
+            )
+            .is_err()
     );
-    assert!(!task.description.unwrap().contains("model role"));
-    binding
-        .execute(
-            "task",
-            &json!({"context":"test","tasks":[{"agent":"reviewer","task":"ordinary review"}]})
-                .to_string(),
-            false,
-            &Default::default(),
-        )
-        .unwrap();
-    let state = lock(&binding.inner.state);
-    assert_eq!(state.disk.agents["a1"].spec.model, "fixture/main");
-    assert_eq!(state.disk.agents["a1"].spec.model_role, None);
+    assert!(lock(&binding.inner.state).disk.agents.is_empty());
 }
 #[test]
 fn schema_checks_nested_required_additional_properties_and_combinators() {
@@ -516,7 +549,69 @@ fn schema_checks_nested_required_additional_properties_and_combinators() {
     );
 }
 #[test]
-fn discovery_uses_project_then_user_then_bundled_and_skips_bad_files() {
+fn custom_agents_require_real_definitions_and_never_inherit_the_plan_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut binding = binding(dir.path(), Settings::default());
+    binding.model = "fixture/planner".into();
+    let schema = binding.definitions(WorkMode::Execute)[0]
+        .parameters
+        .clone()
+        .unwrap();
+    assert!(
+        schema
+            .pointer("/properties/tasks/items/properties/agent")
+            .is_none()
+    );
+    let project = dir.path().join(".pp/agents");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("scout.md"), "---\nname: scout\ndescription: configured scout\ntools: [read, grep, glob, lsp]\n---\nConfigured investigation prompt.").unwrap();
+    let definitions = binding.roles().unwrap();
+    let scout = definitions.iter().find(|def| def.name == "scout").unwrap();
+    assert!(scout.source.ends_with(".pp/agents/scout.md"));
+    assert!(scout.model_role.is_none());
+    let schema = binding.definitions(WorkMode::Execute)[0]
+        .parameters
+        .clone()
+        .unwrap();
+    assert_eq!(
+        schema
+            .pointer("/properties/tasks/items/properties/agent/enum")
+            .unwrap(),
+        &json!(["scout"])
+    );
+    for missing in ["task", "reviewer", "invented", "fast"] {
+        assert!(
+            binding
+                .execute(
+                    "task",
+                    &json!({"context":"test","tasks":[{"agent":missing,"task":"invalid"}]})
+                        .to_string(),
+                    false,
+                    &Default::default()
+                )
+                .is_err()
+        );
+    }
+    assert!(lock(&binding.inner.state).disk.agents.is_empty());
+    binding
+        .execute(
+            "task",
+            &json!({"context":"test","tasks":[{"agent":"scout","task":"inspect"}]}).to_string(),
+            true,
+            &Default::default(),
+        )
+        .unwrap();
+    let state = lock(&binding.inner.state);
+    let spec = &state.disk.agents["a1"].spec;
+    assert_eq!(spec.model, "fixture/main");
+    assert_eq!(spec.model_role, Some(crate::config::ModelRole::Default));
+    assert_eq!(spec.definition, "scout");
+    assert_eq!(spec.prompt, "Configured investigation prompt.");
+    assert!(spec.readonly);
+}
+
+#[test]
+fn custom_agent_discovery_preserves_project_priority_and_disabled_definitions() {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join(".pp/agents");
     let user = dir.path().join("user/agents");
@@ -524,18 +619,145 @@ fn discovery_uses_project_then_user_then_bundled_and_skips_bad_files() {
     fs::create_dir_all(&user).unwrap();
     for (path, label) in [(&project, "project"), (&user, "user")] {
         fs::write(
-            path.join("scout.md"),
-            format!("---\nname: scout\ndescription: {label}\ntools: []\n---\nRole"),
+            path.join("analyst.md"),
+            format!("---\nname: analyst\ndescription: {label}\ntools: []\n---\n{label} prompt"),
         )
         .unwrap();
     }
-    fs::write(project.join("invalid.md"), "bad").unwrap();
-    let roles =
-        catalog::discover(dir.path(), &dir.path().join("user"), &Settings::default()).unwrap();
-    let scout = roles.iter().find(|d| d.name == "scout").unwrap();
-    assert_eq!(scout.description, "project");
-    assert_eq!(scout.tools, Some(vec![]));
+    fs::write(project.join("invalid.md"), "invalid definition").unwrap();
+    let binding = binding(
+        dir.path(),
+        Settings {
+            disabled_agents: vec!["hidden".into()],
+            ..Default::default()
+        },
+    );
+    fs::write(
+        project.join("hidden.md"),
+        "---\nname: hidden\ndescription: hidden marker\n---\nHidden prompt",
+    )
+    .unwrap();
+    let definitions = binding.roles().unwrap();
+    let custom = definitions
+        .iter()
+        .filter(|def| def.model_role.is_none())
+        .collect::<Vec<_>>();
+    assert_eq!(custom.len(), 1);
+    assert_eq!(custom[0].name, "analyst");
+    assert_eq!(custom[0].description, "project");
+    assert_eq!(custom[0].tools, Some(vec![]));
+    let schema = binding.definitions(WorkMode::Execute)[0]
+        .parameters
+        .clone()
+        .unwrap();
+    assert_eq!(
+        schema
+            .pointer("/properties/tasks/items/properties/agent/enum")
+            .unwrap(),
+        &json!(["analyst"])
+    );
+    assert!(
+        binding
+            .execute(
+                "task",
+                &json!({"context":"test","tasks":[{"agent":"hidden","task":"reject"}]}).to_string(),
+                false,
+                &Default::default()
+            )
+            .is_err()
+    );
 }
+
+#[test]
+fn custom_agent_model_settings_and_explicit_role_have_defined_precedence() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join(".pp/agents");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("analyst.md"), "---\nname: analyst\ndescription: custom model marker\nmodel: fixture/definition\nthinking: high\ntools: [read, grep]\nspawns: []\noutput: {type: object}\n---\nCustom analysis prompt.").unwrap();
+    let binding = binding(
+        dir.path(),
+        Settings {
+            agent_models: BTreeMap::from([
+                ("analyst".into(), "fixture/override".into()),
+                ("ghost".into(), "fixture/ghost".into()),
+            ]),
+            ..Default::default()
+        },
+    );
+    binding.set_model_roles(BTreeMap::from([
+        (
+            crate::config::ModelRole::Default,
+            crate::config::RoleAssignment {
+                enabled: true,
+                model: "fixture/default".into(),
+                effort: ThinkLevel::Low,
+                fallback: None,
+            },
+        ),
+        (
+            crate::config::ModelRole::Fast,
+            crate::config::RoleAssignment {
+                enabled: true,
+                model: "fixture/fast".into(),
+                effort: ThinkLevel::Low,
+                fallback: None,
+            },
+        ),
+    ]));
+    assert!(binding.execute("task", &json!({"context":"test","tasks":[{"agent":"ghost","task":"reject fabricated definition"}]}).to_string(), false, &Default::default()).is_err());
+    binding
+        .execute(
+            "task",
+            &json!({"context":"test","tasks":[
+                {"agent":"analyst","task":"custom route"},
+                {"agent":"analyst","role":"fast","task":"explicit role"},
+                {"role":"fast","task":"system route"}
+            ]})
+            .to_string(),
+            false,
+            &Default::default(),
+        )
+        .unwrap();
+    let state = lock(&binding.inner.state);
+    let custom = &state.disk.agents["a1"].spec;
+    assert_eq!(custom.model, "fixture/override");
+    assert_eq!(custom.thinking, ThinkLevel::High);
+    assert_eq!(custom.model_role, None);
+    assert!(custom.role_route.is_none());
+    assert_eq!(custom.output_schema, Some(json!({"type":"object"})));
+    let explicit = &state.disk.agents["a2"].spec;
+    assert_eq!(explicit.model, "fixture/fast");
+    assert_eq!(explicit.thinking, ThinkLevel::Low);
+    assert_eq!(explicit.model_role, Some(crate::config::ModelRole::Fast));
+    assert_eq!(explicit.prompt, "Custom analysis prompt.");
+    assert_eq!(explicit.tools, vec!["read", "grep"]);
+    assert_eq!(state.disk.agents["a3"].spec.definition, "fast");
+    drop(state);
+    // 独立自定义模型不依赖系统 Role 是否启用，也不能借此选择 PLAN。
+    binding.set_model_roles(BTreeMap::new());
+    let schema = binding.definitions(WorkMode::Execute)[0]
+        .parameters
+        .clone()
+        .unwrap();
+    assert!(
+        schema
+            .pointer("/properties/tasks/items/properties/role")
+            .is_none()
+    );
+    assert_eq!(
+        schema
+            .pointer("/properties/tasks/items/properties/agent/enum")
+            .unwrap(),
+        &json!(["analyst"])
+    );
+    assert!(binding.execute("task", &json!({"context":"test","tasks":[{"agent":"analyst","role":"plan","task":"reject"}]}).to_string(), false, &Default::default()).is_err());
+    binding.execute("task", &json!({"context":"test","tasks":[{"agent":"analyst","task":"independent custom model"}]}).to_string(), false, &Default::default()).unwrap();
+    assert_eq!(
+        lock(&binding.inner.state).disk.agents["a4"].spec.model,
+        "fixture/override"
+    );
+}
+
 #[test]
 fn invalid_batch_has_no_dispatch_or_reserved_ids() {
     let dir = tempfile::tempdir().unwrap();
@@ -775,6 +997,7 @@ fn plan_mode_refuses_to_revive_a_writable_isolated_workspace() {
     Arc::get_mut(&mut binding.inner).unwrap().plan_mode = true;
     let spec = Spec {
         model_role: None,
+        role_route: None,
         definition: "task".into(),
         prompt: String::new(),
         context: String::new(),

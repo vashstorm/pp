@@ -166,8 +166,8 @@ fn subagent_tui_inspects_cancels_revives_and_sends_literal_followups() {
         pty.ready();
         // `/agents` 仍是角色定义只读页。
         pty.input("/agents\r");
-        pty.text("scout");
-        pty.text("bundled");
+        pty.text("DEFAULT");
+        pty.text("/Roles");
         pty.input("\x1b");
         pty.ready();
         pty.input("delegate terminal task\r");

@@ -1277,7 +1277,7 @@ pub(crate) fn run_line_mode(
                 } else {
                     writeln!(
                         stderr,
-                        "No subagents; see .pp/agents and ~/.pp/agent/agents for role definitions."
+                        "No subagents; use /Roles or configured .pp/agents and ~/.pp/agent/agents definitions."
                     )?;
                 }
             }

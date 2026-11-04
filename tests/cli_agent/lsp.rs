@@ -980,7 +980,7 @@ fn lsp_roundtrip_plan_readonly_denies_mutations_and_server_apply_edit() {
     lsp_no_more_tui(&provider);
 }
 
-/// scout/reviewer 与 Plan 同源：execution 层强制 ReadOnly，共享同一个真实
+/// 只读子 Agent 与 Plan 同源：execution 层强制 ReadOnly，共享同一个真实
 /// 服务器进程，拒绝全部 mutating 动作且不启动任何 checker。
 #[test]
 fn lsp_roundtrip_readonly_subagents_share_server_and_deny_mutations() {
@@ -1004,7 +1004,7 @@ fn lsp_roundtrip_readonly_subagents_share_server_and_deny_mutations() {
         json!([call(
             "spawn-readonly",
             "task",
-            json!({"context":"readonly","tasks":[{"agent":"scout","task":"inspect only"},{"agent":"reviewer","task":"review only"}]})
+            json!({"context":"readonly","tasks":[{"readonly":true,"task":"inspect only"},{"readonly":true,"task":"review only"}]})
         )]),
     );
     let mut children_done = 0;
@@ -1248,7 +1248,7 @@ fn lsp_roundtrip_parent_child_owner_reports_share_fixture() {
         json!([call(
             "spawn-owner",
             "task",
-            json!({"context":"owner check","tasks":[{"agent":"scout","task":"diagnostics only"}]})
+            json!({"context":"owner check","tasks":[{"readonly":true,"task":"diagnostics only"}]})
         )]),
     );
     let mut child_owner = None;
@@ -1375,7 +1375,7 @@ fn lsp_roundtrip_isolated_subagent_uses_separate_client() {
         json!([call(
             "spawn-isolated",
             "task",
-            json!({"context":"isolated","tasks":[{"agent":"scout","task":"isolated lookup","isolated":true}]})
+            json!({"context":"isolated","tasks":[{"readonly":true,"task":"isolated lookup","isolated":true}]})
         )]),
     );
     let mut child_done = false;

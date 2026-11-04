@@ -152,11 +152,11 @@ bash_timeout_seconds: 120
 
 Role 配置保存在 `~/.pp/agent/agent.db`，只能通过 TUI 的 `/Roles` 面板修改，不写入 `settings.yml`，也没有可编辑的 YAML 形式；面板的每次启用、选模和 effort 修改都在数据库事务中提交，提交成功才更新目录快照。取消选中与重新选中都会保留已配置的 model/effort，`settings.yml` 中的旧 `model_roles` 只在首次迁移时读取。
 
-已启用的 `DEFAULT` 优先用于新启动会话；未设置或未选中时沿用已保存的默认模型与全局默认 effort（同样存于 `agent.db`）。PLAN 始终不进入子 Agent 的 prompt 角色列表或 task 的可选枚举，显式调用 `role: "plan"` 会在整批派发前返回错误。其他未选中的模型 Role 也不会进入 prompt 或 task 的可选枚举；没有可供子 Agent 选择的已启用 Role 时不暴露 `role` 参数，显式调用未启用的 Role 会在派发前返回错误。自动 Plan/Review 路由未启用时保留原有模型及 effort。迁移自旧配置的 Role 条目省略 `enabled` 时按已选中读取。显式配置的模型不可用或 effort 不受支持时返回错误，不悄悄替换；已移除模型或禁用 Role 的引用仍可保留。清除 DEFAULT 后，新启动回到原有默认设置；当前会话不强制回退模型。
+已启用的 `DEFAULT` 优先用于新启动会话；未设置或未选中时沿用已保存的默认模型与全局默认 effort（同样存于 `agent.db`）。PLAN 始终不进入子 Agent 的 prompt 角色列表或 task 的可选枚举，显式调用 `role: "plan"` 会在整批派发前返回错误。其他未选中的模型 Role 也不会进入 prompt 或 task 的可选枚举；DEFAULT 尚未配置时，子 Agent 使用全局默认模型和有效默认 effort；显式停用 DEFAULT 后，普通任务不能省略 `role`，配置了独立模型的自定义 Agent 可继续使用。没有可用 Role 且没有自定义 Agent 时隐藏 `task` 工具，显式调用未启用的 Role 会在派发前返回错误。自动 Plan/Review 路由未启用时保留原有模型及 effort。迁移自旧配置的 Role 条目省略 `enabled` 时按已选中读取。显式配置的模型不可用或 effort 不受支持时返回错误，不悄悄替换；已移除模型或禁用 Role 的引用仍可保留。清除 DEFAULT 后，新启动回到原有默认设置；当前会话不强制回退模型。
 
-- 主 Agent 可在 `task.tasks[]` 中指定 PLAN 以外的已启用模型角色，例如 `role: "fast"`；`agent` 仍选择 task、scout、reviewer 等任务定义。已启用的显式模型角色优先于任务定义的选模。
+- 主 Agent 可在 `task.tasks[]` 中指定 PLAN 以外的已启用模型角色，例如 `role: "fast"`。`agent` 可选择实际存在且已加载的自定义定义，工具枚举和运行时都拒绝凭空编造的名称。显式 `role` 优先于自定义模型及 effort；未指定时采用自定义配置，再回退 DEFAULT，不继承父 Agent 当前模型；`readonly: true` 可为普通 Role 限制只读能力。
 - 从 Execute 进入 Plan，或从 `/plan-list` 打开新的规划会话时，采用已启用 PLAN 的 model 和 effort。同一 Plan 内继续讨论不会重复套用 PLAN，用户用 `/model` 或 `/effort` 的手动选择会保留；恢复会话沿用已保存的实际模型。
-- 计划面板的独立审阅使用已启用的 REVIEW；代码审查的 `agent: "reviewer"` 子任务也默认使用已启用的 REVIEW，主 Agent 可以显式指定其他 `role` 覆盖。独立计划审阅不会改变主会话模型。角色配置本身不自动发起审查。
+- 计划面板的独立审阅使用已启用的 REVIEW；代码审查通过 `role: "review"` 创建只读子任务，并使用 REVIEW 的 model、effort 和 fallback。独立计划审阅不会改变主会话模型。角色配置本身不自动发起审查。
 - `VISION` 是可选模型角色，不改变模型自身的图像输入能力。
 
 运行时 `/model` 与别名 `/models` 只修改主 Agent 的会话模型；`/Roles` 修改角色配置并保存。控制线程负责读取、校验和持久化，UI 不做这些 I/O。安全边界是当前回复及整批工具调用／结果已经提交，且尚未领取下一批 Steering、检查新模型容量和发送下一请求；空闲 Agent 立即应用，任务已完成则只更新模型，不额外请求模型。压缩和 Plan 审批交接期间延后，待事务完成再应用。切换复用同一 Agent 和任务，不重置预算、TODO 或文件变更快照；后台进程与其他角色的子 Agent 继续运行。
@@ -254,7 +254,7 @@ chmod 600 ~/.pp/agent/models.yml
 | `/changes` | 查看最近任务的 edit/write 净变更，逐文件安全撤销 | 仅 TUI |
 | `/plan [view\|prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，显式批准后执行 | 仅 TUI |
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除 | 仅 TUI |
-| `/test-task` | 派发固定的 `scout`（fast）、`scout`（slow）、`reviewer` 只读批次并等待三份结果；要求 FAST／SLOW／REVIEW 已启用，仅 debug 构建暴露 | TUI / 行模式 |
+| `/test-task` | 派发固定的 FAST、SLOW、REVIEW 只读批次并等待三份结果；要求 FAST／SLOW／REVIEW 已启用，仅 debug 构建暴露 | TUI / 行模式 |
 | `/test-tools` | 按 read → write → edit → grep → glob → bash → bash-task → wait → todo → ask 顺序运行全部固定本地工具场景 | TUI / 行模式 |
 | `/test-read`、`/test-write`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 只运行对应的固定工具场景；`/test-ask` 需要 TUI 答题，仅 debug 构建暴露 | TUI / 行模式 |
 | `/test-ui` | 以约 80 ms/token 输出固定 mock 思考与 Markdown／代码增量，不请求模型，仅 debug 构建暴露 | TUI / 行模式 |

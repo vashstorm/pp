@@ -96,6 +96,27 @@ fn role_enabled_by_default() -> bool {
 pub(crate) type ModelRoles = BTreeMap<ModelRole, RoleAssignment>;
 
 impl ModelCatalog {
+    /// 子 Agent 的默认路由来自全局默认配置，不继承主会话的临时模型。
+    pub(crate) fn subagent_roles(&self) -> ModelRoles {
+        let mut roles = self.model_roles().clone();
+        if !roles.contains_key(&ModelRole::Default)
+            && let Ok(config) = self.resolve(self.default_reference())
+        {
+            roles.insert(
+                ModelRole::Default,
+                RoleAssignment {
+                    enabled: true,
+                    model: self.default_reference().to_owned(),
+                    effort: config
+                        .thinking
+                        .effective_default(self.default_think_level()),
+                    fallback: None,
+                },
+            );
+        }
+        roles
+    }
+
     pub(crate) fn role_route(&self, role: ModelRole) -> Option<RoleRoute> {
         let assignment = self
             .model_roles()
@@ -175,6 +196,29 @@ impl ModelCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_roles_subagent_default_fallback_respects_explicit_disable() {
+        let (_dir, mut catalog) = fixture();
+        assert_eq!(
+            catalog.subagent_roles()[&ModelRole::Default].model,
+            catalog.default_reference()
+        );
+        catalog
+            .save_model_role(
+                ModelRole::Default,
+                Some(RoleAssignment {
+                    enabled: false,
+                    model: "fixture/two".into(),
+                    effort: ThinkLevel::High,
+                    fallback: None,
+                }),
+            )
+            .unwrap();
+        let roles = catalog.subagent_roles();
+        assert!(!roles[&ModelRole::Default].enabled);
+        assert_eq!(roles[&ModelRole::Default].model, "fixture/two");
+    }
 
     fn fixture() -> (tempfile::TempDir, ModelCatalog) {
         let dir = tempfile::tempdir().unwrap();

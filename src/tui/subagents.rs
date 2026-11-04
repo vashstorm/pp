@@ -1464,10 +1464,10 @@ impl Panel {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(ASK_BORDER))
-            .title(" Agent Hub · role definitions ")
+            .title(" Agent Hub · roles and agents ")
             .title_bottom(
                 Line::from(Span::styled(
-                    "Project > User > Built-in · Esc close",
+                    "/Roles + Agent files · Esc close",
                     Style::default().fg(DIM),
                 ))
                 .alignment(Alignment::Right),
@@ -1475,18 +1475,18 @@ impl Panel {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let mut lines = vec![Line::from(Span::styled(
-            "Role definitions (Project > User > Built-in)",
+            "System roles and configured agents",
             Style::default().fg(ACCENT),
         ))];
         match self.roles_state {
             RolesState::Loading => lines.push(Line::from(Span::styled(
-                "Loading role definitions…",
+                "Loading roles and agents…",
                 Style::default().fg(MUTED),
             ))),
             RolesState::Ready => {
                 if self.roles_rows.is_empty() {
                     lines.push(Line::from(Span::styled(
-                        "No role definitions found.",
+                        "No enabled roles or configured agents.",
                         Style::default().fg(MUTED),
                     )));
                 }
@@ -1626,6 +1626,7 @@ mod tests {
     fn spec(depth: usize) -> Spec {
         Spec {
             model_role: None,
+            role_route: None,
             definition: "task".into(),
             prompt: String::new(),
             context: String::new(),

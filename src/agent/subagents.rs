@@ -32,11 +32,11 @@ impl Agent {
                 .as_ref()
                 .and_then(|r| r.registry.catalog())
             {
-                binding.set_model_roles(catalog.model_roles().clone());
+                binding.set_model_roles(catalog.subagent_roles());
             }
             if binding.depth == 0 {
                 if self.runtime_models.is_none() {
-                    binding.set_model_roles(self.catalog.model_roles().clone());
+                    binding.set_model_roles(self.catalog.subagent_roles());
                 }
                 binding.set_runtime_models(self.runtime_models.clone());
                 binding.model = self.current_model.reference.clone();
@@ -143,7 +143,7 @@ impl Agent {
                     lsp_settings,
                 ));
             }
-            // 只读角色（Plan/scout/reviewer）不能通过子 Agent 默认 Execute 绕过。
+            // 只读任务不能通过子 Agent 默认 Execute 绕过。
             tools.set_lsp_readonly(record.spec.readonly);
             let mut allowed = record.spec.tools.clone();
             if plan_mode {
@@ -167,10 +167,12 @@ impl Agent {
             }
             let sessions = binding.directory().join("sessions");
             let mut child = Agent {
-                role_route: record
-                    .spec
-                    .model_role
-                    .and_then(|role| catalog.role_route(role)),
+                role_route: record.spec.role_route.clone().or_else(|| {
+                    record
+                        .spec
+                        .model_role
+                        .and_then(|role| catalog.role_route(role))
+                }),
                 runtime_models: runtime_models
                     .as_ref()
                     .map(|runtime| runtime.child(record.spec.model_role, record.id.clone())),
@@ -300,7 +302,7 @@ impl Agent {
                 .map(|d| d.name)
                 .collect(),
         );
-        binding.set_model_roles(self.catalog.model_roles().clone());
+        binding.set_model_roles(self.catalog.subagent_roles());
         binding.set_runtime_models(self.runtime_models.clone());
         binding.track_changes(
             self.tools.cwd().to_owned(),
@@ -316,12 +318,14 @@ impl Agent {
     }
     pub(crate) fn agent_definitions(&self) -> Result<Vec<crate::subagent::Definition>> {
         let config = self.catalog.resolve(&self.current_model.reference)?;
-        crate::subagent::discover_roles(
+        crate::subagent::catalog_definitions(
             self.tools.cwd(),
             &crate::config::global_dir()?,
             &config.settings.task,
+            &self.catalog.subagent_roles(),
         )
     }
+
     pub(crate) fn subagents(&self) -> Option<Binding> {
         self.tools.subagent.clone()
     }

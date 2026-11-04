@@ -201,7 +201,7 @@ pp stats
 
 ## 扩展能力
 
-输入 `/Roles` 配置 DEFAULT、FAST、SLOW、VISION、PLAN、REVIEW 各自的 model 和 effort；`/model` 只切换当前模型。角色前使用全尺寸圆形图标表示启用状态（实心启用／空心停用），保持单列占位；Space 或点击图标切换，未选中的 Role 灰显且不会进入 prompt。PLAN 仅用于进入 Plan 模式时选择模型，不提供给子 Agent 选择；计划审阅及 reviewer 子任务默认采用已启用的 REVIEW，主 Agent 也可在子任务中显式指定其他已启用的模型 Role。[配置与使用 →](docs/guide.md#模型-roles)
+输入 `/Roles` 配置 DEFAULT、FAST、SLOW、VISION、PLAN、REVIEW 各自的 model 和 effort；`/model` 只切换当前模型。角色前使用全尺寸圆形图标表示启用状态（实心启用／空心停用），保持单列占位；Space 或点击图标切换，未选中的 Role 灰显且不会进入 prompt。PLAN 仅用于进入 Plan 模式时选择模型，不提供给子 Agent 选择；计划审阅采用已启用的 REVIEW；子 Agent 通过 `role` 选择系统 Role，或通过 `agent` 选择实际存在且已加载的自定义定义，未知名称会在派发前拒绝；显式 Role 优先于自定义选模，`role: "review"` 为只读审查。省略 Role 使用自定义配置或 DEFAULT 对应配置，不继承父 Agent 当前的 PLAN 模型。[配置与使用 →](docs/guide.md#模型-roles)
 
 每个角色可配置一个 fallback，并独立设置 thinking。在 `/Roles` 中用 ↑/↓ 选择主模型或备用行，Enter 选模，`f` 设置备用，`x` 清除当前行，`t`（兼容 `e`）调整 thinking。清空主模型会禁用角色并保留 fallback；补齐后仍需手动启用。Delete／Backspace 删除整个角色配置。
 

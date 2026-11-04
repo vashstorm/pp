@@ -19,7 +19,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
-pub(crate) use catalog::{Definition, discover as discover_roles};
+pub(crate) use catalog::{Definition, discover as catalog_definitions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -58,6 +58,8 @@ impl Default for Settings {
 pub(crate) struct Spec {
     #[serde(default)]
     pub model_role: Option<crate::config::ModelRole>,
+    #[serde(default)]
+    pub role_route: Option<crate::config::RoleRoute>,
     pub definition: String,
     pub prompt: String,
     pub context: String,
@@ -374,7 +376,12 @@ impl Binding {
         *lock(&self.inner.model_roles) = roles;
     }
     fn enabled_subagent_model_roles(&self) -> crate::config::ModelRoles {
-        lock(&self.inner.model_roles)
+        let roles = lock(&self.inner.runtime_models)
+            .as_ref()
+            .and_then(|binding| binding.registry.catalog())
+            .map(|catalog| catalog.subagent_roles())
+            .unwrap_or_else(|| lock(&self.inner.model_roles).clone());
+        roles
             .iter()
             .filter(|(role, assignment)| {
                 **role != crate::config::ModelRole::Plan && assignment.enabled
@@ -409,74 +416,85 @@ impl Binding {
         }
     }
     pub(crate) fn roles(&self) -> Result<Vec<Definition>> {
-        catalog::discover(&self.cwd, &self.inner.user, &self.inner.settings)
+        catalog::discover(
+            &self.cwd,
+            &self.inner.user,
+            &self.inner.settings,
+            &self.enabled_subagent_model_roles(),
+        )
     }
     pub(crate) fn definitions(&self, _mode: WorkMode) -> Vec<FunctionObject> {
-        let mut defs = Vec::new();
-        if self.depth < self.inner.settings.max_recursion_depth
-            && !self.spawns.is_empty()
-            && !self.readonly
+        let roles = self.enabled_subagent_model_roles();
+        let custom = self
+            .roles()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|def| def.model_role.is_none())
+            .collect::<Vec<_>>();
+        if self.depth >= self.inner.settings.max_recursion_depth
+            || self.spawns.is_empty()
+            || self.readonly
+            || (roles.is_empty() && custom.is_empty())
         {
-            let roles = self
-                .roles()
-                .unwrap_or_default()
-                .iter()
-                .map(|d| format!("{}: {}", d.name, d.description))
-                .collect::<Vec<_>>()
-                .join("; ");
-            let enabled_roles = self.enabled_subagent_model_roles();
-            let model_roles = enabled_roles
-                .iter()
-                .map(|(role, assignment)| {
-                    format!(
-                        "{}={}:{}",
-                        role.name().to_lowercase(),
-                        assignment.model,
-                        assignment.effort.as_str()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
-            let model_role_names = enabled_roles
-                .keys()
-                .map(|role| role.name().to_lowercase())
-                .collect::<Vec<_>>();
-            let model_help = if model_role_names.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    " The optional role parameter chooses a model and effort. Available model roles: {model_roles}."
-                )
-            };
-            let review_help = if enabled_roles.contains_key(&crate::config::ModelRole::Review) {
-                " The reviewer agent defaults to the review model role."
-            } else {
-                ""
-            };
-            let mut def = function(
-                "task",
-                &format!(
-                    "Delegate independent tasks with explicit shared context. Tasks run asynchronously unless their agent type is blocking. Final results automatically return to you; use wait when blocked. Available agent types: {roles}.{model_help} Use agent=reviewer for code review after implementing a plan.{review_help}"
-                ),
-                json!({"context":{"type":"string"},"tasks":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"name":{"type":"string"},"agent":{"type":"string"},"role":{"type":"string","enum":model_role_names,"description":"Select one of the enabled model roles for an independent model and effort."},"task":{"type":"string"},"isolated":{"type":"boolean"},"output_schema":{},"model":{"type":"string"}},"required":["task"],"additionalProperties":false}}}),
-                &["context", "tasks"],
-            );
-            // 模型由 Agent 定义与模型 Role 控制，不开放单次任意模型覆盖。
-            if let Some(properties) = def
-                .parameters
-                .as_mut()
-                .and_then(|v| v.pointer_mut("/properties/tasks/items/properties"))
-                .and_then(Value::as_object_mut)
-            {
-                properties.remove("model");
-                if model_role_names.is_empty() {
-                    properties.remove("role");
-                }
-            }
-            defs.push(def);
+            return Vec::new();
         }
-        defs
+        let names = roles
+            .keys()
+            .map(|role| role.name().to_lowercase())
+            .collect::<Vec<_>>();
+        let help = roles
+            .iter()
+            .map(|(role, assignment)| {
+                format!(
+                    "{}={}:{}",
+                    role.name().to_lowercase(),
+                    assignment.model,
+                    assignment.effort.as_str()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let review_help = if roles.contains_key(&crate::config::ModelRole::Review) {
+            " Select role=review for read-only code review."
+        } else {
+            ""
+        };
+        let required =
+            if roles.contains_key(&crate::config::ModelRole::Default) || !custom.is_empty() {
+                vec!["task"]
+            } else {
+                vec!["task", "role"]
+            };
+        let custom_names = custom.iter().map(|def| &def.name).collect::<Vec<_>>();
+        let custom_help = custom
+            .iter()
+            .map(|def| format!("{}: {}", def.name, def.description))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let mut definition = function(
+            "task",
+            &format!(
+                "Delegate independent tasks with explicit shared context. Final results automatically return to you; use wait when blocked. Available model roles: {help}.{review_help} Available custom agents: {custom_help}. The optional agent selects only a listed custom definition; never invent agent names. Explicit role overrides the custom model and effort; otherwise use the custom configuration, then DEFAULT. Never inherit the parent's current model. Tasks are asynchronous unless the custom definition sets blocking=true. Plan-mode children are always read-only."
+            ),
+            json!({"context":{"type":"string"},"tasks":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"name":{"type":"string"},"agent":{"type":"string","enum":custom_names},"role":{"type":"string","enum":names},"task":{"type":"string"},"isolated":{"type":"boolean"},"readonly":{"type":"boolean","description":"Limit this task to read-only investigation without delegation."},"output_schema":{}},"required":required,"additionalProperties":false}}}),
+            &["context", "tasks"],
+        );
+        if let Some(properties) = definition
+            .parameters
+            .as_mut()
+            .and_then(|value| value.pointer_mut("/properties/tasks/items/properties"))
+            .and_then(Value::as_object_mut)
+        {
+            if custom.is_empty() {
+                properties.remove("agent");
+            }
+            if roles.is_empty() {
+                properties.remove("role");
+            }
+        }
+        vec![definition]
     }
+
     pub(crate) fn execute(
         &self,
         name: &str,
@@ -507,15 +525,25 @@ impl Binding {
             .as_ref()
             .and_then(|r| r.registry.catalog())
         {
-            self.set_model_roles(catalog.model_roles().clone());
+            self.set_model_roles(catalog.subagent_roles());
         }
-        let roles = self.roles()?;
         // 整批使用同一份可用角色快照；旧 prompt 或手写调用也必须通过校验。
         let enabled_roles = self.enabled_subagent_model_roles();
+        let definitions = self.roles()?;
         let mut names = BTreeSet::new();
         let mut prepared = Vec::new();
         for item in batch.tasks {
             cancellation::check(token)?;
+            let custom = item
+                .agent
+                .as_ref()
+                .map(|name| {
+                    definitions
+                        .iter()
+                        .find(|def| def.model_role.is_none() && &def.name == name)
+                        .context("unknown or disabled custom agent; select a listed definition")
+                })
+                .transpose()?;
             if let Some(model_role) = item.role {
                 ensure!(
                     model_role != crate::config::ModelRole::Plan,
@@ -527,15 +555,52 @@ impl Binding {
                     model_role.name()
                 );
             }
-            let role = item.agent.as_deref().unwrap_or("task");
+            let custom_model = custom.and_then(|def| {
+                self.inner
+                    .settings
+                    .agent_models
+                    .get(&def.name)
+                    .or(def.model.as_ref())
+            });
+            let model_role = item.role.or_else(|| {
+                custom_model
+                    .is_none()
+                    .then_some(crate::config::ModelRole::Default)
+            });
+            let assignment = model_role
+                .map(|role| {
+                    enabled_roles.get(&role).with_context(|| {
+                        format!(
+                            "model role {} is not selected; enable it in /Roles first",
+                            role.name()
+                        )
+                    })
+                })
+                .transpose()?;
+            let model = assignment
+                .map(|a| a.model.clone())
+                .or_else(|| custom_model.cloned())
+                .context("subagent model is required")?;
+            let thinking = if item.role.is_some() {
+                assignment.expect("显式 Role 已校验").effort
+            } else {
+                custom
+                    .and_then(|def| def.thinking)
+                    .or_else(|| assignment.map(|a| a.effort))
+                    .or_else(|| {
+                        enabled_roles
+                            .get(&crate::config::ModelRole::Default)
+                            .map(|a| a.effort)
+                    })
+                    .unwrap_or(ThinkLevel::None)
+            };
+            let role = custom
+                .map(|def| def.name.clone())
+                .unwrap_or_else(|| model_role.expect("系统任务具有 Role").name().to_lowercase());
             ensure!(
-                self.spawns.iter().any(|n| n == "*" || n == role),
+                self.spawns.iter().any(|name| name == "*" || name == &role),
                 "parent role does not allow spawning {role}"
             );
-            let def = roles
-                .iter()
-                .find(|d| d.name == role)
-                .context("unknown or disabled agent role")?;
             ensure!(
                 !item.task.trim().is_empty(),
                 "subagent task must not be empty"
@@ -550,12 +615,26 @@ impl Binding {
                 !plan || !item.isolated,
                 "plan mode does not allow workspace isolation"
             );
-            let output = item.output_schema.clone().or_else(|| def.output.clone());
+            let output = item
+                .output_schema
+                .clone()
+                .or_else(|| custom.and_then(|def| def.output.clone()));
             if let Some(schema) = &output {
                 validate_schema(schema)?;
             }
-            let mut tools = def.tools.clone().unwrap_or_else(|| {
-                vec![
+            let readonly = plan
+                || item.readonly
+                || model_role == Some(crate::config::ModelRole::Review)
+                || custom
+                    .and_then(|def| def.tools.as_ref())
+                    .is_some_and(|tools| {
+                        tools
+                            .iter()
+                            .all(|name| matches!(name.as_str(), "read" | "grep" | "glob" | "lsp"))
+                    });
+            let configured_tools = custom.and_then(|def| def.tools.as_ref());
+            let mut tools = configured_tools.cloned().unwrap_or_else(|| {
+                [
                     "read",
                     "grep",
                     "glob",
@@ -570,13 +649,13 @@ impl Binding {
                 ]
                 .into_iter()
                 .map(str::to_owned)
-                .collect()
+                .collect::<Vec<_>>()
             });
-            if def.tools.is_none() && !plan {
+            if configured_tools.is_none() && !readonly {
                 tools.extend(lock(&self.inner.mcp_names).iter().cloned());
             }
-            if plan {
-                tools.retain(|t| matches!(t.as_str(), "read" | "grep" | "glob" | "lsp"));
+            if readonly {
+                tools.retain(|name| matches!(name.as_str(), "read" | "grep" | "glob" | "lsp"));
             }
             if self.depth > 0 {
                 let state = lock(&self.inner.state);
@@ -586,44 +665,32 @@ impl Binding {
             }
             tools.retain(|t| t != "todo" && !t.starts_with("plan_"));
             let mut spec = Spec {
-                model_role: item.role.or_else(|| {
-                    (role == "reviewer"
-                        && enabled_roles.contains_key(&crate::config::ModelRole::Review))
-                    .then_some(crate::config::ModelRole::Review)
+                model_role,
+                role_route: model_role.zip(assignment).map(|(role, assignment)| crate::config::RoleRoute {
+                    role,
+                    primary: crate::config::RoleModel { model: model.clone(), effort: thinking },
+                    fallback: assignment.fallback.clone(),
                 }),
-                definition: role.into(),
-                prompt: def.prompt.clone(),
-                context: batch.context.clone(),
-                model: self
-                    .inner
-                    .settings
-                    .agent_models
-                    .get(role)
-                    .cloned()
-                    .or_else(|| def.model.clone())
-                    .unwrap_or_else(|| self.model.clone()),
-                thinking: def.thinking.unwrap_or(self.thinking),
-                tools,
-                spawns: if plan {
-                    vec![]
+                definition: role,
+                prompt: custom.map(|def| def.prompt.clone()).unwrap_or_else(|| if readonly {
+                    "Investigate without changing files. Report evidence and file references."
                 } else {
-                    def.spawns.clone().unwrap_or_default()
-                },
+                    "Complete the assigned work thoroughly. Use tools as needed. Return a concise final result."
+                }.into()),
+                context: batch.context.clone(),
+                model,
+                thinking,
+                tools,
+                spawns: if readonly { vec![] } else { custom.map(|def| def.spawns.clone().unwrap_or_default()).unwrap_or_else(|| vec!["*".into()]) },
                 output_schema: output,
                 cwd: self.cwd.clone(),
                 depth: self.depth + 1,
-                readonly: plan || matches!(role, "scout" | "reviewer"),
+                readonly,
                 isolated: item.isolated,
                 cost: None,
             };
-            if let Some(model_role) = spec.model_role
-                && let Some(assignment) = enabled_roles.get(&model_role)
-            {
-                spec.model = assignment.model.clone();
-                spec.thinking = assignment.effort;
-            }
             (self.inner.validate)(&mut spec)?;
-            prepared.push((item, spec, def.blocking));
+            prepared.push((item, spec, custom.is_some_and(|def| def.blocking)));
         }
         // 预检模型与能力在任何 worker 启动前完成。
         let mut records = Vec::new();
@@ -685,8 +752,7 @@ impl Binding {
                 self.settle(&run_id, json!({"ok":false,"error":format!("{error:#}")}), 0)?;
             }
             let agent_id = lock(&self.inner.state).disk.runs[&run_id].agent_id.clone();
-            let mut value = json!({"agent_id":agent_id,"run_id":run_id,"status":"queued","output_uri":format!("agent://{agent_id}")});
-            value["blocking"] = json!(blocking);
+            let value = json!({"agent_id":agent_id,"run_id":run_id,"status":"queued","output_uri":format!("agent://{agent_id}"),"blocking":blocking});
             results.push(value);
         }
         for value in &mut results {
@@ -1882,6 +1948,8 @@ struct Task {
     agent: Option<String>,
     #[serde(default)]
     isolated: bool,
+    #[serde(default)]
+    readonly: bool,
     output_schema: Option<Value>,
 }
 fn function(name: &str, description: &str, properties: Value, required: &[&str]) -> FunctionObject {

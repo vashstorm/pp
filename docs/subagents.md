@@ -8,11 +8,11 @@ pp 可以把独立工作交给多个子 Agent，并在主会话继续工作。�
 
 > 并行调查运行循环与持久化，分别报告证据，再汇总实现建议。
 
-- `/agents`：查看角色定义、描述和生效来源。
+- `/agents`：查看可用系统 Role、自定义 Agent 及其配置来源。
 - `/subagents`：打开 Agent Hub 的 Agents 页；主输入框上方显示子任务摘要。
 - `⌥ + A`（macOS）／`Alt + A`（Linux）：在主视图与 Agent Hub 之间切换，补全菜单展开时也可使用；保留主输入草稿，其他模态面板仍独占输入。未获得子 Agent 绑定时显示空态而不是报错。
 - Hub 使用蓝色外框、左右分栏线及顶部汇总／底部快捷键分隔线；窄终端保留单栏切换。
-- `/test-task`：cargo debug 构建专用的固定自检，要求 FAST／SLOW／REVIEW 已启用，派发 `scout`（fast）、`scout`（slow）、`reviewer` 三个只读子 Agent 并等待结果；详见[常用命令](guide.md#常用命令与快捷键)。
+- `/test-task`：cargo debug 构建专用的固定自检，要求 FAST／SLOW／REVIEW 已启用，派发 FAST、SLOW、REVIEW 三个只读子 Agent 并等待结果；详见[常用命令](guide.md#常用命令与快捷键)。
 
 Hub 分两页，`1`／`2` 切换：
 
@@ -24,7 +24,7 @@ Hub 分两页，`1`／`2` 切换：
 - 人工追问按普通文本发送，`/model` 等文本不会在 child 中执行本地命令。发送成功才清掉未修改的草稿，失败保留草稿并提示；父方在成功后按既有规则取回结果。
 - 详情与 Activity 使用与主对话相同的观察日志，历史超过 64 KiB 也能从头浏览；旧日志缺少时间戳时显示 `—`，不推算当前时间或费用。
 
-内置角色：`task` 可执行多步读写并继续委托，`scout` 只读调查，`reviewer` 只读审阅。只读角色从工具清单和执行入口同时限制写入、shell、MCP 与继续委托。
+子 Agent 可直接选择系统 Role，也可选择已加载的自定义 Agent。系统 Role 包括：DEFAULT、FAST、SLOW、VISION、REVIEW；PLAN 仅用于主 Agent 进入计划模式。REVIEW 始终只读，其他 Role 可用 `readonly: true` 限制为只读调查。Plan 中的所有子 Agent 强制只读。只读限制同时作用于工具清单和执行入口，禁止写入、shell、MCP 与继续委托。
 
 ## 配置
 
@@ -44,21 +44,25 @@ task:
 
 空闲 7 分钟后进入 `parked`，保留身份、结果、历史与隔离工作区；`idle_ttl_ms: 0` 关闭正常的空闲驻留计时。`request_budget: 0` 关闭请求预算；默认在 200 次请求时提示收尾，达到 300 次停止运行并保留已保存成果。
 
-`agent_models` 按角色名称覆盖模型，例如 `reviewer: provider/review-model`。模型优先级为角色配置覆盖、角色定义、派发时的父模型，模型引用及 thinking 必须在 pp 模型配置中有效。全局配置沿用 pp 的加载与模型重载时机。
+使用 `/Roles` 为系统角色配置主模型、effort 和可选备用模型。每个任务项通过 `role` 选择角色，例如 `{"role":"fast","readonly":true,"task":"定位实现"}`；可同时用 `agent` 选择实际存在的自定义定义。`agent` 的工具枚举只列已发现且启用的名称；未知、停用或不存在的名称在整批派发前拒绝，不自动补出 `scout`、`task`、`reviewer` 等定义。
 
-模型 Role 与上述 Agent 定义分开：使用 `/Roles` 为 DEFAULT、FAST、SLOW、VISION、PLAN、REVIEW 独立设置 model 和 effort。PLAN 仅用于进入 Plan 模式时选择模型，始终不进入子 Agent 的 prompt 角色列表和工具参数可选项，显式指定 `role: "plan"` 会在整批派发前报错。主 Agent 在每个任务项指定其他已启用的 `role`，例如 `{"agent":"scout","role":"fast","task":"定位实现"}`。已选中的显式 Role 优先于 `agent_models` 和 Agent 定义，并同时决定 effort；未配置或未选中的 Role 不进入 prompt 和工具参数可选项，显式指定会在派发前报错。Space 或点击圆点可切换启用状态，取消选中保留 model/effort。`agent: "reviewer"` 在未指定 `role` 时默认采用已选中的 REVIEW，适用于计划实现完成后的代码审查；未启用 REVIEW 时沿用既有选模规则。已派发实例继续使用保存的模型快照。详见[模型 Roles](guide.md#模型-roles)。
+选模优先级为显式 `role`、自定义 Agent 的模型配置、DEFAULT。显式 Role 同时决定 model、effort 和 fallback；未显式指定 Role 时，`task.agent_models` 按自定义名称覆盖定义中的 `model`，`thinking` 采用定义值，缺省采用 DEFAULT 的有效 effort（DEFAULT 不可用时为 none）。自定义 Agent 没有模型配置时使用 DEFAULT；无 `agent` 的普通任务省略 `role` 也使用 DEFAULT。所有路径都不继承父 Agent 当前的 PLAN 模型。
 
-## 自定义角色
+DEFAULT 尚未配置时使用全局默认模型及其有效默认 effort；显式停用 DEFAULT 后，需选择其他已启用 Role，或使用配置了独立模型的自定义 Agent。其他未配置或停用的系统 Role 不进入工具可选项，显式调用在整批派发前报错。既无可用系统 Role、也无自定义定义时隐藏 `task` 工具。
 
-发现顺序为最近的项目 `.pp/agents/*.md`、用户 `~/.pp/agent/agents/*.md`、内置定义；同名精确匹配，先发现者优先。无效自定义文件记录诊断后跳过。以下定义允许只读研究：
+PLAN 始终不进入子 Agent 的模型 Role 可选项，显式指定 `role: "plan"` 会在整批派发前报错。派发时冻结完整主备路由；后续 `/Roles` 更新仍遵循安全边界应用规则。详见[模型 Roles](guide.md#模型-roles)。
+
+## 自定义 Agent
+
+发现顺序为最近的项目 `.pp/agents/*.md`、用户 `~/.pp/agent/agents/*.md`；同名精确匹配，项目定义优先。无效文件记录诊断后跳过，`task.disabled_agents` 仅过滤自定义 Agent。定义必须真实存在且成功加载；模型不能仅通过 `agent` 参数或 `agent_models` 中的名称创建新角色。
 
 ````markdown
 ---
-name: api-reviewer
+name: api-auditor
 description: 审阅接口契约和兼容性
 model: provider/review-model
 thinking: high
-tools: [read, grep, glob]
+tools: [read, grep, glob, lsp]
 spawns: []
 blocking: false
 ---
@@ -66,9 +70,11 @@ blocking: false
 Review the assigned API contract. Report concrete compatibility issues and file references.
 ````
 
-`tools` 省略时采用通用工具集，显式 `[]` 禁用普通工具。`spawns` 列出允许派发的角色，`["*"]` 允许所有角色，省略或空列表禁止继续派发。child 能力还受父能力和工作模式限制。`blocking: true` 使该角色在派发调用中同步返回，其他项仍可后台运行。
+文件加载后可调用 `{"agent":"api-auditor","task":"审阅接口兼容性"}`；显式附加 `"role":"fast"` 会使用 FAST 的模型和 effort，同时保留该自定义 Agent 的提示词、工具和输出约束。
 
-普通 child 不复制父对话，只接收角色、任务、共享背景、适用的 `AGENTS.md`、可用 Skill 与相关批准计划。父 TODO 和计划状态仍由 Main 管理。
+`tools` 省略时采用通用工具集，显式 `[]` 禁用普通工具；仅含 read／grep／glob／lsp 的工具集自动应用只读限制。`spawns` 指定允许委托的自定义名称或系统 Role 小写名称，`["*"]` 允许全部；自定义定义省略或空列表禁止继续派发。子 Agent 能力仍受父能力和工作模式限制。`blocking: true` 在批次全部启动后等待该自定义任务，默认异步；普通异步任务可用 `wait` 等待结果。`output` 可定义结构化结果约束，任务项的 `output_schema` 优先。
+
+普通 child 不复制父对话，只接收系统 Role 对应的任务约束、任务、共享背景、适用的 `AGENTS.md`、可用 Skill 与相关批准计划。父 TODO 和计划状态仍由 Main 管理。
 
 ## 模型工具接口
 
@@ -78,8 +84,8 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 {
   "context": "Inspect the current repository and report file references.",
   "tasks": [
-    {"name": "Runtime", "agent": "scout", "task": "Explain the execution loop."},
-    {"name": "Persistence", "agent": "reviewer", "task": "Review persistence failure modes."}
+    {"name": "Runtime", "role": "fast", "readonly": true, "task": "Explain the execution loop."},
+    {"name": "Persistence", "role": "review", "task": "Review persistence failure modes."}
   ]
 }
 ```
@@ -104,7 +110,7 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 
 Steering 与 FollowUp 在等待期间保留队列，批次全部结束并成功提交后才按原规则领取。某个目标提前成功、失败或取消都不会放行其余目标。120 分钟期限到达后，先取消本批未完成目标及其派生工作，并等待真实回收，再返回 `ok:false, timed_out:true, pending:false`，保留已完成结果和可用的部分输出；清理失败升级 `CleanupError` 并停止父 Agent。Esc 取消整个当前任务，回收后恢复输入，取消不提前确认结果消费。TUI 每 500ms 更新同一个框中的运行标识、耗时和任务状态，进度条表示已结束数量／目标总数，不表示任务内部的完成百分比。默认显示 8 项，Ctrl + O 展开；整批结束后冻结最终快照，后续 wait 新建框。历史恢复展示持久化的最终快照，不重新查询当前任务。参见 [OMP wait 调研与适配](wait-research.md)。
 
-默认使用最后一条 assistant 消息作为结果。任务项可以提供 `output_schema`，角色也可声明 `output`；调用项优先。结构化 child 获得 `yield`，必须以 `{"data": ...}` 提交符合 JSON Schema 的结果；无效结果不会被标成成功。Schema 外部 HTTP/文件引用解析未开启。
+默认使用最后一条 assistant 消息作为结果。任务项可以提供 `output_schema`，也可采用自定义定义中的 `output`；任务项优先。结构化 child 获得 `yield`，必须以 `{"data": ...}` 提交符合 JSON Schema 的结果；无效结果不会被标成成功。Schema 外部 HTTP/文件引用解析未开启。
 
 完整结果独立保存为 JSON 文件。较长文本自动回传预览与 `output_path`，可使用普通 `read` 的范围分页读取完整文件。
 
@@ -115,7 +121,7 @@ Steering 与 FollowUp 在等待期间保留队列，批次全部结束并成功�
 ```json
 {
   "context": "Implement the assigned change and report validation.",
-  "tasks": [{"agent": "task", "task": "Implement the parser change.", "isolated": true}]
+  "tasks": [{"role": "default", "task": "Implement the parser change.", "isolated": true}]
 }
 ```
 

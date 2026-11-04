@@ -116,21 +116,16 @@ fn statusline_out_accumulates_session_usage_across_requests_both_protocols() {
 fn task_status_cost_includes_nested_subagents_without_double_counting_both_protocols() {
     for protocol in ["completion", "response"] {
         let fixture = server();
-        let (home, mut pty) = statusline_start(&fixture, protocol, false);
-        let agents = home.path().join(".pp/agents");
-        std::fs::create_dir_all(&agents).unwrap();
-        std::fs::write(agents.join("task.md"), "---\nname: task\ndescription: Blocking cost fixture\nblocking: true\nspawns: [\"*\"]\n---\nComplete the assignment.").unwrap();
+        let (_home, mut pty) = statusline_start(&fixture, protocol, false);
         pty.input("root task with descendants\r");
         let ((root, _), (title, _)) = statusline_requests(&fixture);
         statusline_reply_usage(title, protocol, "嵌套任务计费");
         pty.text("嵌套任务计费");
         let spawn = |task| {
-            json!([hub_call(
-                protocol,
-                "spawn-cost",
-                "task",
-                json!({"context":"cost inheritance", "tasks":[{"task":task}]})
-            )])
+            json!([
+                hub_call(protocol, "spawn-cost", "task", json!({"context":"cost inheritance", "tasks":[{"task":task}]})),
+                hub_call(protocol, "wait-cost", "wait", json!({}))
+            ])
         };
         statusline_reply_calls_usage(root, protocol, spawn("child-cost-marker"));
         let (child, body) = pty.request_at(&fixture, api_path(protocol));

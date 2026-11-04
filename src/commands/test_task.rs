@@ -10,8 +10,8 @@ use anyhow::{Result, ensure};
 /// 固定提示词与批次内容；真实子 Agent 批次是唯一可观察行为。
 pub(crate) const PROMPT: &str = r#"Debug build self-test for pp multi-subagent display and messaging. Follow these steps exactly.
 
-1. Call the `task` tool exactly once with this batch and do not change names, agents, roles, or task text:
-{"context":"/test-task debug scenario: read-only inspection of the current repository.","tasks":[{"name":"fast-rust-count","agent":"scout","role":"fast","task":"Count regular Rust source files (*.rs) under the current working directory, skipping target/ and .git/, and report the total number."},{"name":"slow-symbol-lookup","agent":"scout","role":"slow","task":"Use grep to find where the symbol AgentEvent is defined (struct, enum, trait, or type alias) and report the file path and line number, or state that it is absent."},{"name":"review-events-risk","agent":"reviewer","task":"Review src/events.rs and report one concrete risk in its event payload or serialization shape, citing file and line references. Propose no edits."}]}
+1. Call the `task` tool exactly once with this batch and do not change names, roles, read-only limits, or task text:
+{"context":"/test-task debug scenario: read-only inspection of the current repository.","tasks":[{"name":"fast-rust-count","readonly":true,"role":"fast","task":"Count regular Rust source files (*.rs) under the current working directory, skipping target/ and .git/, and report the total number."},{"name":"slow-symbol-lookup","readonly":true,"role":"slow","task":"Use grep to find where the symbol AgentEvent is defined (struct, enum, trait, or type alias) and report the file path and line number, or state that it is absent."},{"name":"review-events-risk","role":"review","task":"Review src/events.rs and report one concrete risk in its event payload or serialization shape, citing file and line references. Propose no edits."}]}
 2. Use the `wait` tool with every returned run id until all three results are delivered to you.
 3. Print a compact three-line summary: name, status, and one-line result for each subagent.
 4. Do not spawn additional subagents, do not modify files, and do not do any other work.

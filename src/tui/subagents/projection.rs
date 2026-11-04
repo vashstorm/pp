@@ -1334,6 +1334,7 @@ mod tests {
     fn spec(depth: usize) -> Spec {
         Spec {
             model_role: None,
+            role_route: None,
             definition: "task".into(),
             prompt: String::new(),
             context: String::new(),

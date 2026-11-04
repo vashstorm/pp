@@ -56,9 +56,9 @@ fn task_test_batch() -> Value {
     json!({
         "context": "/test-task debug scenario: read-only inspection of the current repository.",
         "tasks": [
-            {"name": "fast-rust-count", "agent": "scout", "role": "fast", "task": "Count regular Rust source files."},
-            {"name": "slow-symbol-lookup", "agent": "scout", "role": "slow", "task": "Find where AgentEvent is defined."},
-            {"name": "review-events-risk", "agent": "reviewer", "task": "Review src/events.rs."}
+            {"name": "fast-rust-count", "readonly": true, "role": "fast", "task": "Count regular Rust source files."},
+            {"name": "slow-symbol-lookup", "readonly": true, "role": "slow", "task": "Find where AgentEvent is defined."},
+            {"name": "review-events-risk", "role": "review", "task": "Review src/events.rs."}
         ]
     })
 }

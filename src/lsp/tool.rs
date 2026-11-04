@@ -36,7 +36,7 @@ use crate::{
     tools::{Tools, approval::Tier},
 };
 
-/// 只读会话（Plan/Review、scout/reviewer 等只读子 Agent）允许的动作全集。
+/// 只读会话（Plan/Review、只读子 Agent）允许的动作全集。
 const READONLY_ACTIONS: &[&str] = &[
     "diagnostics",
     "definition",

@@ -958,7 +958,7 @@ impl Agent {
     ) -> Result<()> {
         self.catalog.save_model_role(role, assignment)?;
         if let Some(binding) = &self.tools.subagent {
-            binding.set_model_roles(self.catalog.model_roles().clone());
+            binding.set_model_roles(self.catalog.subagent_roles());
         }
         Ok(())
     }

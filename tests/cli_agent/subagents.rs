@@ -37,7 +37,7 @@ fn subagent_plan_role_is_hidden_and_rejected_in_both_protocols() {
         assert_eq!(
             task.pointer("/parameters/properties/tasks/items/properties/role/enum")
                 .unwrap(),
-            &json!(["fast"])
+            &json!(["default", "fast"])
         );
         assert!(!task["description"].as_str().unwrap().contains("plan="));
         sub_call(
@@ -511,7 +511,7 @@ fn subagent_readonly_capabilities_reject_unadvertised_writes() {
             protocol,
             "spawn",
             "task",
-            json!({"context":"readonly","tasks":[{"agent":"scout","task":"inspect only"}]}),
+            json!({"context":"readonly","tasks":[{"readonly":true,"task":"inspect only"}]}),
         );
         let mut attempted = false;
         loop {
@@ -717,6 +717,146 @@ fn fallback_subagent_uses_its_role_backup_without_switching_parent() {
         assert!(output.status.success(), "{output:?}");
         assert_eq!((failed_child, backup_child), (1, 1));
         assert!(String::from_utf8_lossy(&output.stdout).contains("parent-complete"));
+        no_more(&server);
+    }
+}
+
+#[test]
+fn custom_agent_roundtrip_rejects_invented_names_and_respects_model_role_precedence() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let custom_protocol = if protocol == "completion" {
+            "response"
+        } else {
+            "completion"
+        };
+        let definitions = dir.path().join(".pp/agents");
+        std::fs::create_dir_all(&definitions).unwrap();
+        std::fs::write(definitions.join("analyst.md"), "---\nname: analyst\ndescription: configured analyst\nmodel: custom/special\nthinking: high\ntools: [read]\nspawns: []\n---\nconfigured-analysis-prompt-marker").unwrap();
+        let provider = |protocol, model| {
+            json!({"protocol":protocol,"api_key":"fixture-key",
+            "base_url":format!("http://{}/v1", server.server_addr()),"models":{"special":{"model":model}}})
+        };
+        let models = json!({"providers":{"main":provider(protocol,"main-model"),"custom":provider(custom_protocol,"custom-model")}});
+        let settings = json!({"default_model":"main/special","rate_limit_retry_budget_seconds":0,
+            "model_roles":{"fast":{"model":"main/special","effort":"low"}}});
+        let cli = Cli::start_with(
+            dir.path(),
+            Some("check configured custom agents"),
+            &settings.to_string(),
+            &models.to_string(),
+        );
+        let (request, body) = receive_sub(&server, protocol);
+        let task = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| {
+                if protocol == "completion" {
+                    &tool["function"]
+                } else {
+                    tool
+                }
+            })
+            .find(|tool| tool["name"] == "task")
+            .unwrap();
+        assert_eq!(
+            task.pointer("/parameters/properties/tasks/items/properties/agent/enum")
+                .unwrap(),
+            &json!(["analyst"])
+        );
+        sub_call(
+            request,
+            protocol,
+            "invalid-custom",
+            "task",
+            json!({"context":"atomic validation","tasks":[
+                {"agent":"analyst","task":"valid task"}, {"agent":"scout","task":"invented task"}
+            ]}),
+        );
+        let (request, body) = receive_sub(&server, protocol);
+        assert!(!is_child(&body));
+        assert!(
+            body.to_string()
+                .contains("unknown or disabled custom agent")
+        );
+        sub_call(
+            request,
+            protocol,
+            "configured-custom",
+            "task",
+            json!({"context":"configured tasks","tasks":[
+                {"agent":"analyst","task":"custom model task"},
+                {"agent":"analyst","role":"fast","task":"explicit fast task"}
+            ]}),
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        loop {
+            let (request, body) = receive_raw(&server);
+            if is_child(&body) {
+                let model = body["model"].as_str().unwrap();
+                assert!(seen.insert(model.to_owned()));
+                let (child_protocol, effort) = match model {
+                    "custom-model" => (custom_protocol, "high"),
+                    "main-model" => (protocol, "low"),
+                    _ => panic!("unexpected child model: {model}"),
+                };
+                assert_eq!(
+                    request.url(),
+                    if child_protocol == "completion" {
+                        "/v1/chat/completions"
+                    } else {
+                        "/v1/responses"
+                    }
+                );
+                assert_eq!(
+                    if child_protocol == "completion" {
+                        &body["reasoning_effort"]
+                    } else {
+                        &body["reasoning"]["effort"]
+                    },
+                    effort
+                );
+                assert!(
+                    body.to_string()
+                        .contains("configured-analysis-prompt-marker")
+                );
+                let tools = body["tools"].as_array().unwrap();
+                assert_eq!(tools.len(), 1);
+                assert_eq!(
+                    if child_protocol == "completion" {
+                        &tools[0]["function"]["name"]
+                    } else {
+                        &tools[0]["name"]
+                    },
+                    "read"
+                );
+                sub_final(
+                    request,
+                    child_protocol,
+                    &format!("configured-result-{model}"),
+                );
+            } else {
+                let done = body.to_string().contains("configured-result-main-model")
+                    && body.to_string().contains("configured-result-custom-model");
+                sub_final(
+                    request,
+                    protocol,
+                    if done {
+                        "configured-agents-complete"
+                    } else {
+                        "Waiting for configured agents."
+                    },
+                );
+                if done {
+                    break;
+                }
+            }
+        }
+        assert_eq!(seen.len(), 2);
+        let output = cli.finish();
+        assert!(output.status.success(), "{output:?}");
         no_more(&server);
     }
 }

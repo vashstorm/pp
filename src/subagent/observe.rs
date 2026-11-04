@@ -411,6 +411,7 @@ mod tests {
     fn spec() -> Spec {
         Spec {
             model_role: None,
+            role_route: None,
             definition: "task".into(),
             prompt: String::new(),
             context: String::new(),
@@ -449,11 +450,10 @@ mod tests {
             }),
         )
         .unwrap();
-        let user = dir.clone();
         Binding::root(
             RootOptions {
+                user: dir.clone(),
                 dir,
-                user,
                 cwd: PathBuf::from("."),
                 model: "fixture-model".into(),
                 thinking: ThinkLevel::None,
