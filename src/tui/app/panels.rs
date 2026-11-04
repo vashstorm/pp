@@ -732,10 +732,7 @@ impl App {
         }
         if matches!(
             action,
-            MenuAction::File(_)
-                | MenuAction::FileDirectory(_)
-                | MenuAction::FileParent
-                | MenuAction::FileCurrent
+            MenuAction::File(_) | MenuAction::FileDirectory(_) | MenuAction::FileParent
         ) && (self.file_query.is_none() || files::query(&self.input) != self.file_query)
         {
             self.refresh_candidates(false);
@@ -746,30 +743,6 @@ impl App {
                 if confirm {
                     self.recall_pending(id);
                 }
-            }
-            MenuAction::FileCurrent => {
-                let path = if self.file_directory.is_empty() {
-                    "./"
-                } else {
-                    &self.file_directory
-                };
-                files::insert(
-                    &mut self.input,
-                    self.file_query.as_ref().expect("当前引用"),
-                    path,
-                );
-                if self.input.lines()[self.input.cursor().0]
-                    .chars()
-                    .nth(self.input.cursor().1)
-                    == Some('"')
-                {
-                    self.input
-                        .move_cursor(ratatui_textarea::CursorMove::Forward);
-                }
-                self.input.insert_str(" ");
-                self.menu = None;
-                self.file_query = None;
-                self.menu_dismissed = true;
             }
             MenuAction::FileDirectory(index) => {
                 if let Some(path) = self.file_paths.get(index)

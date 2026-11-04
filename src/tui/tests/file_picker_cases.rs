@@ -36,8 +36,8 @@ fn file_picker_activation_filters_without_rescanning() {
 }
 
 #[test]
-fn file_picker_enter_and_tab_replace_only_current_reference() {
-    for confirm in [KeyCode::Enter, KeyCode::Tab] {
+fn file_picker_confirmation_keys_replace_only_current_reference() {
+    for confirm in [KeyCode::Enter, KeyCode::Tab, KeyCode::Right] {
         let (mut app, scans, replies, commands) = file_picker_fixture();
         let mut dirty = false;
         app.handle(
@@ -45,8 +45,9 @@ fn file_picker_enter_and_tab_replace_only_current_reference() {
             &mut dirty,
         );
         for _ in 0..9 {
-            app.handle(key(KeyCode::Left), &mut dirty);
+            app.input.move_cursor(CursorMove::Back);
         }
+        app.refresh_candidates(false);
         scans.try_recv().unwrap();
         replies.send(Ok(vec!["src/main.rs".into()])).unwrap();
         app.receive();
@@ -91,26 +92,39 @@ fn file_picker_directory_navigation_completes_draft_without_submitting() {
             .join(",")
     };
     assert_eq!(labels(&app), "docs/,src/,README.md");
+    let rendered = draw(&mut app, 100, 30);
+    assert_eq!(rendered.matches("README.md").count(), 1);
+    assert!(!rendered.contains("Enter/Tab"));
     let cursor = app.input.cursor();
     app.handle(key(KeyCode::Down), &mut dirty);
     app.handle(key(KeyCode::Enter), &mut dirty);
     assert_eq!(app.input.lines(), &["查看 @src/"]);
     assert_eq!(app.input.cursor(), (0, 8));
     assert_eq!(app.file_directory, "src/");
-    assert_eq!(labels(&app), "../,tui/,main.rs,引用当前目录");
+    assert_eq!(labels(&app), "../,tui/,main.rs");
     app.handle(key(KeyCode::Tab), &mut dirty);
     assert_eq!(app.file_directory, "src/tui/");
     assert_eq!(app.input.lines(), &["查看 @src/tui/"]);
     assert_eq!(app.input.cursor(), (0, 12));
-    assert_eq!(labels(&app), "../,menu.rs,引用当前目录");
-    app.handle(key(KeyCode::Home), &mut dirty);
-    app.handle(key(KeyCode::Enter), &mut dirty);
+    assert_eq!(labels(&app), "../,menu.rs");
+    for code in [KeyCode::Left, KeyCode::Right] {
+        let Event::Key(mut repeat) = key(code) else {
+            unreachable!();
+        };
+        repeat.kind = KeyEventKind::Repeat;
+        app.handle(Event::Key(repeat), &mut dirty);
+        assert_eq!(app.file_directory, "src/tui/");
+        assert_eq!(app.input.lines(), &["查看 @src/tui/"]);
+    }
+    app.handle(key(KeyCode::Left), &mut dirty);
     assert_eq!(app.file_directory, "src/");
     assert_eq!(app.input.lines(), &["查看 @src/"]);
-    app.handle(key(KeyCode::Home), &mut dirty);
-    app.handle(key(KeyCode::Tab), &mut dirty);
+    app.handle(key(KeyCode::Left), &mut dirty);
     assert!(app.file_directory.is_empty());
     assert_eq!(labels(&app), "docs/,src/,README.md");
+    assert_eq!(app.input.lines(), &["查看 @"]);
+    assert_eq!(app.input.cursor(), cursor);
+    app.handle(key(KeyCode::Left), &mut dirty);
     assert_eq!(app.input.lines(), &["查看 @"]);
     assert_eq!(app.input.cursor(), cursor);
     assert!(app.input_history.is_empty());
@@ -150,11 +164,7 @@ fn file_picker_nested_filtering_and_reactivation_reset_directory() {
     assert_eq!(app.file_directory, "src/tui/");
     assert_eq!(
         menu_values(&app),
-        [
-            MenuAction::FileParent,
-            MenuAction::File(1),
-            MenuAction::FileCurrent
-        ]
+        [MenuAction::FileParent, MenuAction::File(1)]
     );
     app.handle(key(KeyCode::Esc), &mut dirty);
     assert_eq!(app.input.lines(), &["@src/tui/"]);
@@ -175,6 +185,8 @@ fn file_picker_pending_blocks_confirmation_and_escape_ignores_late_reply() {
     scans.try_recv().unwrap();
     app.handle(key(KeyCode::Enter), &mut dirty);
     app.handle(key(KeyCode::Tab), &mut dirty);
+    app.handle(key(KeyCode::Right), &mut dirty);
+    app.handle(key(KeyCode::Left), &mut dirty);
     assert_eq!(app.input.lines(), &["查看 @"]);
     assert!(commands.try_recv().is_err());
     app.handle(key(KeyCode::Esc), &mut dirty);
@@ -212,8 +224,13 @@ fn file_picker_cursor_history_and_resize_preserve_draft_and_selection() {
     app.handle(control('e'), &mut dirty);
     scans.try_recv().unwrap();
     app.handle(key(KeyCode::Left), &mut dirty);
+    assert!(app.file_query.is_some());
+    app.handle(key(KeyCode::Esc), &mut dirty);
+    app.handle(key(KeyCode::Left), &mut dirty);
     assert!(app.file_query.is_none());
     app.handle(key(KeyCode::Right), &mut dirty);
+    assert!(app.file_query.is_none());
+    app.handle(key(KeyCode::Tab), &mut dirty);
     assert!(app.file_query.is_some());
     assert!(scans.try_recv().is_err());
     app.handle(control('a'), &mut dirty);
@@ -361,11 +378,16 @@ fn completion_plan_list_discussion_tracks_input_focus_and_late_scans() {
     app.handle(key(KeyCode::Tab), &mut false);
     assert!(app.completion_input_focused());
     scans.try_recv().unwrap();
-    replies.send(Ok(vec!["README.md".into()])).unwrap();
+    replies.send(Ok(vec!["src/README.md".into()])).unwrap();
     app.receive();
-    assert_eq!(menu_values(&app), [MenuAction::File(0)]);
-    app.handle(key(KeyCode::Tab), &mut false);
-    assert_eq!(app.input.lines(), &["查看 @README.md "]);
+    assert_eq!(menu_values(&app), [MenuAction::FileDirectory(0)]);
+    app.handle(key(KeyCode::Right), &mut false);
+    assert_eq!(app.input.lines(), &["查看 @src/"]);
+    app.handle(key(KeyCode::Left), &mut false);
+    assert_eq!(app.input.lines(), &["查看 @"]);
+    app.handle(key(KeyCode::Right), &mut false);
+    app.handle(key(KeyCode::Right), &mut false);
+    assert_eq!(app.input.lines(), &["查看 @src/README.md "]);
     assert!(app.plan_panel.is_some());
     assert!(requests.try_recv().is_err());
     app.clear_input();

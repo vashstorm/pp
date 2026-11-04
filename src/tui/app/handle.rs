@@ -247,6 +247,27 @@ impl App {
                         return false;
                     }
                 }
+                // 文件菜单独占左右方向键，普通聊天与计划讨论共用同一导航行为。
+                if self.completion_input_focused()
+                    && self.file_query.is_some()
+                    && (self.menu.is_some() || self.files_pending)
+                    && key.modifiers.is_empty()
+                    && matches!(key.code, KeyCode::Left | KeyCode::Right)
+                {
+                    if !self.files_pending && key.kind == KeyEventKind::Press {
+                        let action = if key.code == KeyCode::Left {
+                            (!self.file_directory.is_empty()).then_some(MenuAction::FileParent)
+                        } else {
+                            self.menu.as_ref().and_then(|menu| {
+                                menu.selected_index().map(|index| menu.items()[index].value)
+                            })
+                        };
+                        if let Some(action) = action {
+                            self.apply_menu_action(action, false);
+                        }
+                    }
+                    return false;
+                }
                 if self
                     .plan_panel
                     .as_ref()

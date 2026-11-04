@@ -167,14 +167,19 @@ fn resource_plan_command_prepares_before_transition_and_carries_snapshot() {
 }
 
 #[test]
-fn resource_directory_current_action_completes_without_submitting() {
-    let (mut app, commands, _) = resource_app();
-    app.insert_input("@folder/".into());
-    app.file_query = files::query(&app.input);
-    app.file_directory = "folder/".into();
-    app.apply_menu_action(MenuAction::FileCurrent, true);
+fn resource_directory_space_completes_without_submitting() {
+    let (mut app, scans, replies, commands) = file_picker_fixture();
+    app.handle(Event::Paste("@".into()), &mut false);
+    scans.try_recv().unwrap();
+    replies.send(Ok(vec!["folder/file.rs".into()])).unwrap();
+    app.receive();
+    app.handle(key(KeyCode::Right), &mut false);
+    assert_eq!(app.input_text(), "@folder/");
+    assert!(app.menu.is_some());
+    app.handle(key(KeyCode::Char(' ')), &mut false);
     assert_eq!(app.input_text(), "@folder/ ");
     assert!(app.file_query.is_none());
+    assert!(app.menu.is_none());
     assert!(commands.try_recv().is_err());
 }
 

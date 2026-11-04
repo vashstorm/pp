@@ -15,6 +15,7 @@ const MAX_ROWS: usize = 8;
 const MODEL_LABEL: Color = Color::Rgb(224, 230, 240);
 const MODEL_DETAIL: Color = Color::Rgb(170, 182, 200);
 const MODEL_SELECTED: Color = Color::Rgb(130, 200, 255);
+const FILE_SELECTED: Color = Color::Rgb(255, 190, 55);
 const FAVORITE: Color = Color::Rgb(254, 188, 56);
 const DEFAULT_MODEL: Color = Color::Rgb(187, 154, 247);
 const CURRENT_MODEL: Color = Color::Rgb(158, 206, 106);
@@ -67,6 +68,8 @@ pub(super) struct SelectionMenu<T> {
     empty_message: Option<&'static str>,
     max_rows: usize,
     scrollbar: bool,
+    single_column: bool,
+    left_padding: u16,
 }
 
 pub(super) enum MenuEvent<T> {
@@ -91,6 +94,8 @@ impl<T: Copy> SelectionMenu<T> {
             empty_message: None,
             max_rows: MAX_ROWS,
             scrollbar: false,
+            single_column: false,
+            left_padding: 0,
         }
     }
 
@@ -128,6 +133,19 @@ impl<T: Copy> SelectionMenu<T> {
             selected: Modifier::BOLD,
             current_suffix: "",
         };
+        self
+    }
+
+    pub(super) fn with_file_style(mut self) -> Self {
+        self.accent = FILE_SELECTED;
+        self.style = MenuStyle {
+            label: Color::White,
+            detail: Color::White,
+            selected: Modifier::BOLD,
+            current_suffix: "",
+        };
+        self.single_column = true;
+        self.left_padding = 4;
         self
     }
 
@@ -221,6 +239,11 @@ impl<T: Copy> SelectionMenu<T> {
             return;
         }
         frame.render_widget(Clear, area);
+        let padding = self.left_padding.min(area.width);
+        let area = Rect::new(area.x + padding, area.y, area.width - padding, area.height);
+        if area.width == 0 {
+            return;
+        }
         let hint_height = u16::from(self.hint.is_some() && area.height > 1);
         let mut rows_area = Rect::new(area.x, area.y, area.width, area.height - hint_height);
         if hint_height > 0 {
@@ -250,22 +273,25 @@ impl<T: Copy> SelectionMenu<T> {
         }
         let selected = self.selected_index();
         // 按名称的实际显示宽度对齐说明，宽终端不额外拉大两列间距。
-        let label_width = self
-            .items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| {
-                2 + item.icon.map_or(0, |icon| Line::from(icon).width() + 1)
-                    + Line::from(item.label.as_str()).width()
-                    + self
-                        .label_suffixes
-                        .get(index)
-                        .and_then(|suffix| *suffix)
-                        .map_or(0, |suffix| Line::from(suffix).width())
-            })
-            .max()
-            .unwrap_or(0)
-            .min(usize::from(area.width / 2)) as u16;
+        let label_width = if self.single_column {
+            rows_area.width
+        } else {
+            self.items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    2 + item.icon.map_or(0, |icon| Line::from(icon).width() + 1)
+                        + Line::from(item.label.as_str()).width()
+                        + self
+                            .label_suffixes
+                            .get(index)
+                            .and_then(|suffix| *suffix)
+                            .map_or(0, |suffix| Line::from(suffix).width())
+                })
+                .max()
+                .unwrap_or(0)
+                .min(usize::from(area.width / 2)) as u16
+        };
         let rows = self.items.iter().enumerate().map(|(index, item)| {
             let active = selected == Some(index);
             let emphasis = if active {
@@ -315,13 +341,20 @@ impl<T: Copy> SelectionMenu<T> {
             } else {
                 ""
             };
-            Row::new([
-                Cell::from(Line::from(label)),
-                Cell::from(format!("{}{current}", item.description)).style(detail_style),
-            ])
+            let mut cells = vec![Cell::from(Line::from(label))];
+            if !self.single_column {
+                cells
+                    .push(Cell::from(format!("{}{current}", item.description)).style(detail_style));
+            }
+            Row::new(cells)
         });
-        let table = Table::new(rows, [Constraint::Length(label_width), Constraint::Min(0)])
-            .column_spacing(8.min(area.width.saturating_sub(label_width)));
+        let widths = if self.single_column {
+            vec![Constraint::Min(0)]
+        } else {
+            vec![Constraint::Length(label_width), Constraint::Min(0)]
+        };
+        let table =
+            Table::new(rows, widths).column_spacing(8.min(area.width.saturating_sub(label_width)));
         frame.render_stateful_widget(table, rows_area, &mut self.selection);
         if let Some(area) = scrollbar_area {
             let mut state =
@@ -574,6 +607,45 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let last: String = (0..100).map(|x| buffer[(x, 3)].symbol()).collect();
         assert!(last.contains("❯ item-11"));
+    }
+
+    #[test]
+    fn file_style_renders_inset_single_column_with_yellow_selection() {
+        let mut entries = items(2);
+        entries[0].icon = None;
+        entries[0].label = "a-very-long-file-name-that-uses-the-whole-menu-width.rs".into();
+        let mut menu = SelectionMenu::new(entries, 1).with_file_style();
+        assert_eq!(menu.height(30), 2);
+        let mut terminal = Terminal::new(TestBackend::new(80, 3)).unwrap();
+        terminal
+            .draw(|frame| menu.draw(frame, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        assert!(row(0).contains(&menu.items()[0].label));
+        assert!(row(1).contains("❯ item-1"));
+        for y in 0..2 {
+            assert!((0..4).all(|x| buffer[(x, y)].symbol() == " "));
+            assert!(!row(y).contains("detail-"));
+        }
+        assert_eq!(buffer[(6, 0)].fg, Color::White);
+        assert_eq!(buffer[(4, 1)].symbol(), "❯");
+        assert_eq!(buffer[(4, 1)].fg, FILE_SELECTED);
+        assert_eq!(buffer[(6, 1)].fg, FILE_SELECTED);
+        assert!(buffer[(6, 1)].modifier.contains(Modifier::BOLD));
+        assert!(row(2).trim().is_empty());
+        menu.handle_key(press(KeyCode::Up));
+        terminal
+            .draw(|frame| menu.draw(frame, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(4, 0)].symbol(), "❯");
+        assert_eq!(buffer[(6, 0)].fg, FILE_SELECTED);
+        assert_eq!(buffer[(6, 1)].fg, Color::White);
+        for width in [1, 2, 4, 5, 20] {
+            let mut narrow = Terminal::new(TestBackend::new(width, 1)).unwrap();
+            narrow.draw(|frame| menu.draw(frame, frame.area())).unwrap();
+        }
     }
 
     #[test]

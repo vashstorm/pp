@@ -24,63 +24,90 @@ fn tui_file_picker_inserts_path_without_sending() {
     let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
     pty.ready_model("fixture/primary");
 
-    // 根菜单只显示直接子项；进入目录同步补全路径，但不发送草稿。
+    let has_item = |screen: &vt100::Screen, label: &str| {
+        screen
+            .contents()
+            .lines()
+            .any(|line| line.trim().trim_start_matches("❯ ").trim() == label)
+    };
+
+    // 根目录单列左缩进四列，选中项为黄色，其余文字亮白。
     pty.input("分析 @");
     pty.wait_for(
         "输入框上方列出根目录，不平铺后代文件",
         |screen| {
             let text = screen.contents();
-            text.find("❯ 分析 @").is_some_and(|draft| {
-                text.find("src/").is_some_and(|directory| directory < draft)
-                    && text.find("README.md").is_some_and(|file| file < draft)
-            }) && text.contains("Enter/Tab open/insert")
+            has_item(screen, "src/")
+                && has_item(screen, "README.md")
+                && text.matches("README.md").count() == 1
+                && !text.contains("Enter/Tab")
                 && !text.contains("src/main.rs")
                 && !text.contains("src/nested/")
         },
     );
+    for label in ["src/", "README.md"] {
+        let screen = pty.parser.screen();
+        let (row, col) = screen
+            .rows(0, screen.size().1)
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.find(label)
+                    .map(|byte| (row, line[..byte].chars().count()))
+            })
+            .unwrap();
+        assert_eq!(col, 6);
+        assert!((0..4).all(|x| screen.cell(row as u16, x).unwrap().contents() == " "));
+        let color = if label == "src/" {
+            assert_eq!(screen.cell(row as u16, 4).unwrap().contents(), "❯");
+            assert_eq!(
+                screen.cell(row as u16, 4).unwrap().fgcolor(),
+                vt100::Color::Rgb(255, 190, 55)
+            );
+            vt100::Color::Rgb(255, 190, 55)
+        } else {
+            vt100::Color::Idx(15)
+        };
+        assert_eq!(
+            screen.cell(row as u16, col as u16).unwrap().fgcolor(),
+            color
+        );
+    }
     pty.input("\r");
-    pty.text("Parent of src/");
-    pty.text("src/nested/");
+    pty.wait_for("Enter 进入目录", |screen| {
+        has_item(screen, "../") && has_item(screen, "nested/") && has_item(screen, "main.rs")
+    });
     pty.draft("分析 @src/");
     no_more(&server);
     pty.input("\t");
-    pty.wait_for(
-        "进入第二级目录，只显示当前目录文件",
-        |screen| {
-            let text = screen.contents();
-            text.contains("Parent of src/nested/")
-                && text.contains("src/nested/child.rs")
-                && !text.contains("src/main.rs")
-                && !text.contains("src/menu.rs")
-        },
-    );
+    pty.wait_for("Tab 进入第二级目录", |screen| {
+        has_item(screen, "../") && has_item(screen, "child.rs") && !has_item(screen, "main.rs")
+    });
     pty.draft("分析 @src/nested/");
     no_more(&server);
-    pty.input("\x1b[H\r");
-    pty.text("src/main.rs");
+    pty.input("\x1b[D");
+    pty.wait_for("左方向键返回一级目录", |screen| {
+        has_item(screen, "main.rs")
+    });
     pty.draft("分析 @src/");
-    pty.input("\x1b[H\t");
-    pty.wait_for("返回项目根目录", |screen| {
-        let text = screen.contents();
-        text.contains("README.md") && !text.contains("Parent of src/")
+    pty.input("\x1b[D");
+    pty.wait_for("左方向键返回项目根目录", |screen| {
+        has_item(screen, "README.md") && !has_item(screen, "../")
     });
     pty.draft("分析 @");
-    pty.input("\r");
-    pty.text("Parent of src/");
+    pty.input("\x1b[C");
+    pty.wait_for("右方向键进入目录", |screen| {
+        has_item(screen, "main.rs")
+    });
+    pty.draft("分析 @src/");
 
-    // 继续输入只筛选当前子树；不平铺下层目录。
+    // 继续输入只筛选当前子树；确认只插入引用，不提交草稿。
     pty.input("main");
-    pty.wait_for("筛选后只剩 src/main.rs", |screen| {
-        let text = screen.contents();
-        text.contains("src/main.rs") && !text.contains("src/menu.rs")
+    pty.wait_for("筛选后只剩 main.rs", |screen| {
+        has_item(screen, "main.rs") && !has_item(screen, "menu.rs")
     });
-
-    // Enter 只插入引用，不提交草稿，也不读取文件内容。
-    pty.input("\r");
+    pty.input("\x1b[C");
     pty.draft("分析 @src/main.rs");
-    pty.wait_for("插入后菜单关闭", |screen| {
-        !screen.contents().contains("Enter/Tab open/insert")
-    });
+    pty.wait_for("插入后菜单关闭", |screen| !has_item(screen, "../"));
     no_more(&server);
 
     // 补全时只编辑草稿，提交时携带实际文件正文。
@@ -105,18 +132,16 @@ fn tui_file_picker_inserts_path_without_sending() {
     pty.text("file picker answer");
     pty.ready_model("fixture/primary");
 
-    // 回复后可继续编辑；Tab 与 Enter 执行同一种插入，不发送请求。
+    // 回复后仍可用 Tab 插入文件，不发送请求。
     pty.input("\x01\x0btab @");
     pty.wait_for("新的 @ 激活重新列出候选", |screen| {
-        let text = screen.contents();
-        text.contains("Enter/Tab open/insert") && !text.contains("Parent of src/")
+        has_item(screen, "README.md") && !has_item(screen, "../")
     });
     pty.input("\t");
-    pty.text("Parent of src/");
+    pty.wait_for("Tab 打开目录", |screen| has_item(screen, "main.rs"));
     pty.input("main");
     pty.wait_for("Tab 选择筛选后的文件", |screen| {
-        let text = screen.contents();
-        text.contains("❯ tab @src/main") && !text.contains("src/nested/")
+        has_item(screen, "main.rs") && !has_item(screen, "nested/")
     });
     pty.input("\t");
     pty.draft("tab @src/main.rs");
@@ -125,44 +150,58 @@ fn tui_file_picker_inserts_path_without_sending() {
     // Esc 取消选择但保留已补全的目录路径。
     pty.input("\x01\x0besc @");
     pty.wait_for("Esc 前菜单打开", |screen| {
-        let text = screen.contents();
-        text.contains("Enter/Tab open/insert") && !text.contains("Parent of src/")
+        has_item(screen, "README.md")
     });
     pty.input("\t");
-    pty.text("Parent of src/");
+    pty.wait_for("进入 src", |screen| has_item(screen, "nested/"));
     pty.input("\t");
-    pty.text("Parent of src/nested/");
+    pty.wait_for("进入 nested", |screen| has_item(screen, "child.rs"));
     pty.input("\x1b");
-    pty.wait_for("Esc 关闭菜单并保留 @ 草稿", |screen| {
-        let text = screen.contents();
-        !text.contains("Enter/Tab open/insert") && text.contains("❯ esc @")
+    pty.wait_for("Esc 关闭菜单并保留草稿", |screen| {
+        !has_item(screen, "../") && !has_item(screen, "child.rs")
     });
     pty.draft("esc @src/nested/");
     no_more(&server);
 
-    // 菜单打开时缩放终端，恢复后仍可用键盘选择文件。
+    // 输入空格即可结束目录引用并关闭菜单，不发送草稿。
+    pty.input("\x01\x0bdirectory @");
+    pty.wait_for("目录引用前根菜单打开", |screen| {
+        has_item(screen, "README.md")
+    });
+    pty.input("\x1b[C");
+    pty.wait_for("目录引用只显示子项和返回上级", |screen| {
+        has_item(screen, "main.rs") && !screen.contents().contains("引用当前目录")
+    });
+    pty.input(" ");
+    pty.draft("directory @src/");
+    pty.wait_for("空格结束目录引用并关闭菜单", |screen| {
+        !has_item(screen, "../") && !has_item(screen, "main.rs")
+    });
+    no_more(&server);
+
+    // 菜单打开时缩放终端，恢复后仍可用 Enter 选择文件。
     pty.input("\x01\x0bresize @");
     pty.wait_for("缩放前根菜单打开", |screen| {
-        let text = screen.contents();
-        text.contains("Enter/Tab open/insert") && !text.contains("Parent of src/")
+        has_item(screen, "README.md")
     });
     pty.input("\r");
-    pty.text("Parent of src/");
+    pty.wait_for("缩放前进入 src", |screen| has_item(screen, "main.rs"));
     pty.resize(4, 20);
     pty.resize(30, 100);
     pty.wait_for("恢复尺寸后菜单仍可选", |screen| {
-        let text = screen.contents();
-        text.contains("Enter/Tab open/insert")
-            && text.contains("src/main.rs")
-            && text.contains("src/menu.rs")
+        has_item(screen, "main.rs")
+            && has_item(screen, "menu.rs")
+            && !screen.contents().contains("Enter/Tab")
     });
-    pty.input("\x1b[F\x1b[A\r");
+    pty.input("\x1b[F\r");
     pty.draft("resize @src/menu.rs");
     no_more(&server);
 
     // 菜单打开时 Ctrl-C 仍立即退出并恢复终端。
     pty.input("\x01\x0bquit @");
-    pty.text("Enter/Tab open/insert");
+    pty.wait_for("退出前菜单打开", |screen| {
+        has_item(screen, "README.md")
+    });
     pty.input("\x03");
     pty.finish();
     no_more(&server);

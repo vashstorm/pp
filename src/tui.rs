@@ -696,7 +696,6 @@ enum MenuAction {
     File(usize),
     FileDirectory(usize),
     FileParent,
-    FileCurrent,
     PendingInput(u64),
 }
 

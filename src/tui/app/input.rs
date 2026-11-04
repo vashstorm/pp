@@ -284,21 +284,12 @@ impl App {
             icon: None,
             current: false,
         }));
-        if prefix.is_empty() && !self.file_directory.is_empty() {
-            items.push(MenuItem {
-                value: MenuAction::FileCurrent,
-                label: "引用当前目录".into(),
-                description: self.file_directory.clone(),
-                icon: None,
-                current: false,
-            });
-        }
         if items.is_empty() {
             self.menu = None;
         } else if changed || self.menu.as_ref().is_none_or(|menu| menu.items() != items) {
             self.menu = Some(
                 SelectionMenu::new(items, usize::from(!self.file_directory.is_empty()))
-                    .with_hint("Enter/Tab open/insert · ../ parent · Esc cancel"),
+                    .with_file_style(),
             );
         }
     }
