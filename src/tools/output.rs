@@ -744,8 +744,9 @@ fn recovery_notice(value: &Value) -> Option<String> {
         ));
     }
     let read = json!({"path":format!("{uri}:-80")});
+    let grep = json!({"path":uri,"pattern":"REGEX"});
     Some(format!(
-        "{status} Use read({read}) for the last 80 saved lines, or grep with path=\"{uri}\" for targeted searches. Use read line selectors or next_path to inspect other saved ranges."
+        "{status} Call the built-in read tool as read({read}) for the last 80 saved lines, or the built-in grep tool as grep({grep}) for targeted searches (replace REGEX with your pattern). artifact:// URIs are tool resources, not filesystem paths. Only the built-in grep tool supports searching them; NEVER pass them to bash or shell commands such as grep, rg, cat, sed, or awk. Use read line selectors or next_path to inspect other saved ranges."
     ))
 }
 

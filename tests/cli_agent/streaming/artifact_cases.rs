@@ -53,6 +53,20 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
         )
         .unwrap();
         assert_eq!(suggested_read["path"], format!("{uri}:-80"));
+        let mut suggested_grep: Value = serde_json::from_str(
+            notice
+                .split_once("grep(")
+                .unwrap()
+                .1
+                .split_once(')')
+                .unwrap()
+                .0,
+        )
+        .unwrap();
+        assert_eq!(suggested_grep["path"], uri);
+        assert!(notice.contains("Only the built-in grep tool supports searching them"));
+        assert!(notice.contains("NEVER pass them to bash or shell commands"));
+        suggested_grep["pattern"] = json!("record-05000");
         protocol.calls_reply(
             request,
             json!([
@@ -61,11 +75,7 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
                     "read",
                     json!({"path":format!("{uri}:raw:5000-5000")})
                 ),
-                protocol.call(
-                    "search",
-                    "grep",
-                    json!({"path":uri,"pattern":"record-05000"})
-                ),
+                protocol.call("search", "grep", suggested_grep),
                 protocol.call("tail", "read", suggested_read)
             ]),
         );
