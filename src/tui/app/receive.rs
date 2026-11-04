@@ -319,6 +319,7 @@ impl App {
                     }
                     changed = true;
                 }
+                #[cfg(debug_assertions)]
                 Ok(WorkerEvent::ToolTestCompleted { result, elapsed }) => {
                     self.active_cancellation = None;
                     self.secondary_status = None;
@@ -359,6 +360,7 @@ impl App {
                     }
                     changed = true;
                 }
+                #[cfg(debug_assertions)]
                 Ok(WorkerEvent::UiTestCompleted { result, elapsed }) => {
                     if self.token_speed.is_active() {
                         self.token_speed.clear();

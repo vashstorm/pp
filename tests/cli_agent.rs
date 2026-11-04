@@ -25,9 +25,13 @@ mod mcp;
 #[path = "cli_agent/subagents.rs"]
 mod subagents;
 
+// `/test-task` 与 `/test-*` 工具套件的命令只在 debug assertions 构建中注册，
+// 因此这些用例随同一 profile 边界编译，release 测试构建不再要求命令存在。
+#[cfg(debug_assertions)]
 #[path = "cli_agent/test_task.rs"]
 mod test_task;
 
+#[cfg(debug_assertions)]
 #[path = "cli_agent/tool_test.rs"]
 mod tool_test;
 
@@ -155,8 +159,9 @@ fn receive(server: &Server) -> (Request, Value) {
     receive_at(server, "/v1/chat/completions")
 }
 fn receive_raw(server: &Server) -> (Request, Value) {
+    // 默认并行档会同时运行多个真实二进制与 PTY；冷启动可超过 5s，但请求仍应确定到达。
     let mut request = server
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(Duration::from_secs(10))
         .unwrap()
         .expect("missing CLI request");
     let body = serde_json::from_reader(request.as_reader()).unwrap();

@@ -1,5 +1,8 @@
 //! Debug-only slow mock UI stream.
 //!
+//! Only compiled when `debug_assertions` is enabled; release builds exclude the
+//! module together with its `Agent` entry point and the CLI display code.
+//!
 //! The stream uses fixed `AgentEvent` payloads and never touches the provider,
 //! session journal, statistics, or real tools. Each chunk is separated by about
 //! 80 ms so slow Markdown rendering and cancellation can be inspected.

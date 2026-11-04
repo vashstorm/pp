@@ -202,7 +202,7 @@ impl ProcessCell {
     fn poll(&self, cx: &mut Context<'_>) -> Poll<io::Result<ExitStatus>> {
         let mut inner = lock(&self.inner);
         match &inner.outcome {
-            Some(CellOutcome::Status(status)) => Poll::Ready(Ok(status.clone())),
+            Some(CellOutcome::Status(status)) => Poll::Ready(Ok(*status)),
             Some(CellOutcome::Failed(kind, message)) => {
                 Poll::Ready(Err(io::Error::new(*kind, message.clone())))
             }
@@ -369,12 +369,12 @@ impl Supervisor {
             // Holding the handle lock while joining also serializes concurrent
             // waiters: the later one only observes a finished monitor.
             let mut monitor = lock(&self.monitor);
-            if let Some(handle) = monitor.take() {
-                if handle.join().is_err() {
-                    lock(&self.shared.state)
-                        .errors
-                        .insert("process supervisor thread panicked".into());
-                }
+            if let Some(handle) = monitor.take()
+                && handle.join().is_err()
+            {
+                lock(&self.shared.state)
+                    .errors
+                    .insert("process supervisor thread panicked".into());
             }
         }
         let state = lock(&self.shared.state);

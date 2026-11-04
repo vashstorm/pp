@@ -12,7 +12,7 @@ pp 可以把独立工作交给多个子 Agent，并在主会话继续工作。�
 - `/subagents`：打开 Agent Hub 的 Agents 页；主输入框上方显示子任务摘要。
 - `⌥ + A`（macOS）／`Alt + A`（Linux）：在主视图与 Agent Hub 之间切换，补全菜单展开时也可使用；保留主输入草稿，其他模态面板仍独占输入。未获得子 Agent 绑定时显示空态而不是报错。
 - Hub 使用蓝色外框、左右分栏线及顶部汇总／底部快捷键分隔线；窄终端保留单栏切换。
-- `/test-task`：cargo debug 构建专用的固定自检，要求 FAST／SLOW／REVIEW 已启用，派发 FAST、SLOW、REVIEW 三个只读子 Agent 并等待结果；详见[常用命令](guide.md#常用命令与快捷键)。
+- `/test-task`：dev/test 构建专用的固定自检（其他构建由 `#[cfg(debug_assertions)]` 编译排除，命令名不注册，按未注册命令静默忽略），要求 FAST／SLOW／REVIEW 已启用，派发 FAST、SLOW、REVIEW 三个只读子 Agent 并等待结果；详见[常用命令](guide.md#常用命令与快捷键)。
 
 Hub 分两页，`1`／`2` 切换：
 

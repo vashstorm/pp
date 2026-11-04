@@ -83,7 +83,7 @@ fn unknown_explicit_run_shows_unavailable_without_switching() {
     let (store, _) = pipe_store();
     app.pipe_store = Some(store);
     let missing = "b".repeat(32);
-    app.input.insert_str(&format!("/pipes {missing}"));
+    app.input.insert_str(format!("/pipes {missing}"));
     press(&mut app, KeyCode::Enter);
     wait_for(&mut app, |app| {
         app.pipes_panel

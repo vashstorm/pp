@@ -900,11 +900,6 @@ impl PipeStore {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn contains(&self, run_id: &str) -> bool {
-        lock(&self.inner.registry).runs.contains_key(run_id)
-    }
-
     /// 最近创建的 run 在前；包含根与子 Agent 共用 store 的所有 run。
     pub(crate) fn list(&self) -> Vec<RunInfo> {
         let runs = {

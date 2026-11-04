@@ -1,5 +1,3 @@
-cargo-features = ["codegen-backend"]
-
 [package]
 name = "pp"
 version = "0.1.0"
@@ -67,27 +65,5 @@ portable-pty = "0.9.0"
 vt100 = "0.16.2"
 
 [profile.dev]
-codegen-backend = "cranelift"
 opt-level = 0
-codegen-units = 16
 debug = "line-tables-only"
-incremental = false
-
-[profile.dev.package.zune-jpeg]
-# Cranelift 尚不支持 JPEG 解码使用的部分 ARM NEON 指令。
-codegen-backend = "llvm"
-
-[profile.dev.package.base64-simd]
-# Cranelift 尚不支持图片协议编码使用的部分 ARM NEON 指令。
-codegen-backend = "llvm"
-
-[profile.dev.package.ratatui-image]
-# 内联的 SIMD 编码同样需要 LLVM，其他项目代码继续使用 Cranelift。
-codegen-backend = "llvm"
-
-[profile.release]
-opt-level = "z"
-lto = "fat"
-codegen-units = 1
-strip = "symbols"
-incremental = false

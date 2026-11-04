@@ -205,29 +205,28 @@ fn execute_policy_rejects_dedicated_plan_tools() {
     let workflow = WorkflowState::default();
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-    for name in ["plan_submit"] {
-        let execution = tools.execute(
-            name,
-            "{}",
-            "exec-call",
-            ToolPolicy::Execute {
-                workflow: &workflow,
-            },
-            &CancellationToken::new(),
-            &mut |_| {},
-        );
-        assert!(
-            execution.stop_error.is_none(),
-            "{name}: {:?}",
-            execution.stop_error
-        );
-        let result: Value = serde_json::from_str(&execution.output).unwrap();
-        assert_eq!(
-            result,
-            json!({"ok":false,"error":format!("{name} is only available in Plan mode.")}),
-            "{name}: {result}"
-        );
-    }
+    let name = "plan_submit";
+    let execution = tools.execute(
+        name,
+        "{}",
+        "exec-call",
+        ToolPolicy::Execute {
+            workflow: &workflow,
+        },
+        &CancellationToken::new(),
+        &mut |_| {},
+    );
+    assert!(
+        execution.stop_error.is_none(),
+        "{name}: {:?}",
+        execution.stop_error
+    );
+    let result: Value = serde_json::from_str(&execution.output).unwrap();
+    assert_eq!(
+        result,
+        json!({"ok":false,"error":format!("{name} is only available in Plan mode.")}),
+        "{name}: {result}"
+    );
 }
 
 #[test]

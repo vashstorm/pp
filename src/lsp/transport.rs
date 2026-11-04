@@ -187,6 +187,20 @@ pub(crate) struct Transport {
     next_id: AtomicI64,
 }
 
+/// 原子递减并返回递减前的值；计数已为 0 时不写入并返回 `None`。
+/// `try_update` 超出 MSRV 1.88，`fetch_update` 已在其后更名弃用，
+/// 所以用 CAS 循环手工完成这次“有值才减”的更新。
+fn decrement_active(active: &AtomicUsize) -> Option<usize> {
+    let mut expected = active.load(Ordering::SeqCst);
+    loop {
+        let next = expected.checked_sub(1)?;
+        match active.compare_exchange_weak(expected, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return Some(expected),
+            Err(observed) => expected = observed,
+        }
+    }
+}
+
 impl Transport {
     /// 启动语言服务器进程；stderr 只保留末尾 64 KiB。
     pub(crate) fn spawn(
@@ -357,13 +371,7 @@ impl Transport {
             .callbacks
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let previous = self
-            .shared
-            .active
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-                value.checked_sub(1)
-            });
-        if previous == Ok(1) {
+        if decrement_active(&self.shared.active) == Some(1) {
             for request in callbacks.drain(..) {
                 request.respond(json!({"applied": false, "failureReason": UNAUTHORIZED_EDIT}));
             }

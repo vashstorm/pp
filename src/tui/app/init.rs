@@ -314,6 +314,7 @@ impl App {
                             }
                             continue;
                         }
+                        #[cfg(debug_assertions)]
                         WorkerCommand::ToolTest {
                             selection,
                             cancellation,
@@ -336,6 +337,7 @@ impl App {
                             }
                             continue;
                         }
+                        #[cfg(debug_assertions)]
                         WorkerCommand::TestUi { cancellation } => {
                             task_status_view.clear();
                             let result = agent.run_ui_test(&cancellation, &mut emit);

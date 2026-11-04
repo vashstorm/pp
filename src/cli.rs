@@ -902,6 +902,7 @@ pub(crate) fn run_cli_task(
     result
 }
 
+#[cfg(debug_assertions)]
 pub(crate) fn run_cli_tool_test(
     agent: &agent::Agent,
     selection: commands::ToolTest,
@@ -1078,6 +1079,7 @@ pub(crate) fn run_cli_tool_test(
     }
 }
 
+#[cfg(debug_assertions)]
 fn cli_test_diff(path: &str, diff: &events::FileDiff) -> String {
     use events::{DiffLineKind, FileDiff};
     match diff {
@@ -1111,6 +1113,7 @@ fn cli_test_diff(path: &str, diff: &events::FileDiff) -> String {
     }
 }
 
+#[cfg(debug_assertions)]
 pub(crate) fn run_cli_ui_test(
     agent: &agent::Agent,
     stdout: &mut impl Write,
@@ -1513,6 +1516,7 @@ pub(crate) fn run_line_mode(
                     writeln!(stderr, "error: {error:#}")?;
                 }
             }
+            #[cfg(debug_assertions)]
             Some(commands::Command::TestTask) => {
                 if let Err(message) = commands::test_task::ready(agent.model_roles()) {
                     writeln!(stderr, "error: {message}")?;
@@ -1525,6 +1529,7 @@ pub(crate) fn run_line_mode(
                     writeln!(stderr, "error: {error:#}")?;
                 }
             }
+            #[cfg(debug_assertions)]
             Some(commands::Command::ToolTest(selection)) => {
                 if let Err(error) = run_cli_tool_test(agent, selection, &mut stderr) {
                     if error
@@ -1536,6 +1541,7 @@ pub(crate) fn run_line_mode(
                     writeln!(stderr, "error: {error:#}")?;
                 }
             }
+            #[cfg(debug_assertions)]
             Some(commands::Command::TestUi) => {
                 if let Err(error) = run_cli_ui_test(agent, &mut stdout, &mut stderr) {
                     writeln!(stderr, "error: {error:#}")?;

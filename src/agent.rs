@@ -15,8 +15,10 @@ mod subagents;
 mod task_status;
 mod todo;
 mod tool_images;
+#[cfg(debug_assertions)]
 mod tool_test;
 mod turn;
+#[cfg(debug_assertions)]
 mod ui_test;
 
 #[cfg(test)]

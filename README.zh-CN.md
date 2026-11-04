@@ -40,9 +40,9 @@ Bash 的模型结果还会在资源可用时附带含具体 `read` 示例的补�
 
 ### 1. 构建
 
-需要支持 **2024 版语言规范**的 nightly Rust 工具链，以及可在命令搜索路径中找到的 `bash`。dev profile 使用 Cranelift，开发构建或测试前请执行 `rustup component add rustc-codegen-cranelift-preview --toolchain nightly` 安装组件；release profile 使用 LLVM。
+需要支持 **2024 版语言规范**的稳定版 Rust 工具链，以及可在命令搜索路径中找到的 `bash`。所有 profile 均使用默认 LLVM 后端，无需 Cranelift 组件或 nightly 特性。
 
-仓库内的 `.cargo/config.toml` 在 macOS ARM64（`aarch64-apple-darwin`）上选择 Rust 工具链自带的 LLD；使用 glibc 的 Linux x86_64（`x86_64-unknown-linux-gnu`）在 Rust 1.90 及以上版本中默认使用自带 LLD。构建与测试均生效，无需额外安装链接器；macOS 仍需 Xcode Command Line Tools，Linux 仍需 C 工具链。这不提供交叉编译工具链或 SDK。设置 `RUSTFLAGS` 会覆盖配置中的目标参数。
+仓库内的 `.cargo/config.toml` 在 macOS ARM64（`aarch64-apple-darwin`）上选择命令搜索路径中的 `ld64.lld`，需安装与当前 macOS SDK 兼容的 LLD；Rust 自带版本可能尚不支持新版 SDK 格式。使用 glibc 的 Linux x86_64（`x86_64-unknown-linux-gnu`）在 Rust 1.90 及以上版本中默认使用自带 LLD。开发、发布构建与测试均生效；macOS 还需 Xcode Command Line Tools，Linux 需 C 工具链。这不提供交叉编译工具链或 SDK。设置 `RUSTFLAGS` 会覆盖配置中的目标参数。
 
 ```sh
 cargo build --release --locked
@@ -130,7 +130,7 @@ printf '说明当前项目的构建方式\n' | pp
 
 通过 `/Roles` 保存模型与思考档位后，Default 会让主 Agent 在下一个安全边界切换，不影响已有子 Agent；其他角色的变更由绑定该角色的子 Agent 各自在安全边界应用，包括嵌套子 Agent。没有角色绑定、仅在创建时继承模型的子 Agent 保持原配置。禁用或清除角色不会取消或重新绑定已有子 Agent；不监听其他 pp 进程的配置热更新。
 
-所有 `/test-*` 命令只在 cargo debug 构建中提供，判据是编译期 `cfg!(debug_assertions)`，与 `debug` 设置无关；release 构建在本地拒绝全部 `/test-*`，且不在 `/help`、`/tips` 与 `/` 菜单中显示。`/test-tools` 按 read → write → edit → grep → glob → bash → bash-task → wait → todo → ask 顺序运行同一套固定场景：每次在启动目录下新建临时工作区并运行真实工具，预期 `ok:false` 卡片不会中断后续场景；取消、夹具初始化失败或受管进程清理失败会停止命令。默认套件不包含 LSP、MCP、Plan 工具或子 Agent `yield`，也不会请求模型。`/test-task` 是独立命令，要求 FAST、SLOW、REVIEW 三个模型 Role 已启用，并通过当前模型发送固定子 Agent 批次。`/test-ui` 不请求模型，而是以约 80 ms/token 输出固定的 `AgentEvent` 思考与 Markdown／代码增量，用于观察慢速渲染和 Esc 取消。`/test-ask` 需要交互式 TUI；工具测试仅在 Execute 模式、空闲且无 pending 输入时启动。
+所有 `/test-*` 命令只在 dev/test 构建中提供：命令本身及其专用实现统一由 `#[cfg(debug_assertions)]` 编译排除，与 `debug` 设置无关。其他构建不注册这些名字，因此在行模式与终端界面都按未注册命令处理：不报本地错误、不请求模型，行模式静默忽略、终端界面保留草稿，`/help`、`/tips` 与 `/` 补全中也没有对应条目。`/test-tools` 按 read → write → edit → grep → glob → bash → bash-task → wait → todo → ask 顺序运行同一套固定场景：每次在启动目录下新建临时工作区并运行真实工具，预期 `ok:false` 卡片不会中断后续场景；取消、夹具初始化失败或受管进程清理失败会停止命令。默认套件不包含 LSP、MCP、Plan 工具或子 Agent `yield`，也不会请求模型。`/test-task` 是独立命令，要求 FAST、SLOW、REVIEW 三个模型 Role 已启用，并通过当前模型发送固定子 Agent 批次。`/test-ui` 不请求模型，而是以约 80 ms/token 输出固定的 `AgentEvent` 思考与 Markdown／代码增量，用于观察慢速渲染和 Esc 取消。`/test-ask` 需要交互式 TUI；工具测试仅在 Execute 模式、空闲且无 pending 输入时启动。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -138,9 +138,9 @@ printf '说明当前项目的构建方式\n' | pp
 | `/init` | 创建或更新当前项目的 `AGENTS.md` |
 | `/plan [prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，批准后执行（仅终端界面） |
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除（仅终端界面） |
-| `/test-task` | 仅 debug 构建：按固定场景派发 FAST／SLOW／REVIEW 三个只读子 Agent 并等待三份结果（需要模型 Role 与真实模型） |
-| `/test-tools`、`/test-read`、`/test-write`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 仅 debug 构建：在隔离临时工作区运行全部或单个固定工具场景；`/test-ask` 需要终端界面 |
-| `/test-ui` | 仅 debug 构建：以约 80 ms/token 输出慢速 mock 思考与 Markdown／代码流，不请求模型、不创建会话记录 |
+| `/test-task` | 仅 dev/test 构建：按固定场景派发 FAST／SLOW／REVIEW 三个只读子 Agent 并等待三份结果（需要模型 Role 与真实模型） |
+| `/test-tools`、`/test-read`、`/test-write`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 仅 dev/test 构建：在隔离临时工作区运行全部或单个固定工具场景；`/test-ask` 需要终端界面 |
+| `/test-ui` | 仅 dev/test 构建：以约 80 ms/token 输出慢速 mock 思考与 Markdown／代码流，不请求模型、不创建会话记录 |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |
 | `/resume`、`/tree` | 恢复会话，或回退当前历史（仅终端界面） |

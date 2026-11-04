@@ -151,12 +151,18 @@ impl App {
         }
     }
 
-    // /init 与 /test-task 回显用户命令本身；其余展开命令回显展开正文。
+    // /init 与（仅 dev/test 构建的）/test-task 回显用户命令本身；其余展开命令回显展开正文。
     pub(in crate::tui) fn echoes_source(prompt: &str) -> bool {
-        matches!(prompt.trim(), "/init" | "/test-task")
+        match prompt.trim() {
+            "/init" => true,
+            #[cfg(debug_assertions)]
+            "/test-task" => true,
+            _ => false,
+        }
     }
 
     /// `/test-task` 的本地前置校验：通过时返回固定提示词，否则返回本地错误文案。
+    #[cfg(debug_assertions)]
     fn test_task_prompt(&self) -> std::result::Result<String, String> {
         if self.workflow.mode != crate::plan::WorkMode::Execute {
             return Err("Exit Plan mode before using /test-task.".into());
@@ -193,7 +199,7 @@ impl App {
         if prompt.trim().is_empty() {
             return false;
         }
-        let mut command = if self.shell_mode {
+        let command = if self.shell_mode {
             Some(Command::Shell(prompt.as_str()))
         } else if prompt.trim_start().starts_with('/') {
             match commands::parse(&prompt, &self.file_commands) {
@@ -234,15 +240,19 @@ impl App {
                 _ => {}
             }
         }
-        if matches!(command, Some(Command::TestTask)) {
-            match self.test_task_prompt() {
-                Ok(expanded) => command = Some(Command::Prompt(expanded)),
+        // /test-task 通过本地校验后换成固定提示词；仅 dev/test 构建注册。
+        #[cfg(debug_assertions)]
+        let command = match command {
+            Some(Command::TestTask) => match self.test_task_prompt() {
+                Ok(expanded) => Some(Command::Prompt(expanded)),
                 Err(message) => {
                     self.notify(Level::Error, message);
                     return false;
                 }
-            }
-        }
+            },
+            other => other,
+        };
+        #[cfg(debug_assertions)]
         if let Some(local) = match &command {
             Some(Command::ToolTest(selection)) => Some((selection.name(), Some(*selection))),
             Some(Command::TestUi) => Some(("/test-ui", None)),
@@ -525,7 +535,9 @@ impl App {
                 Some(Command::Agents | Command::Subagents) => unreachable!("handled above"),
                 Some(Command::Pipes(_)) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
+                #[cfg(debug_assertions)]
                 Some(Command::TestTask) => unreachable!("converted before the state match"),
+                #[cfg(debug_assertions)]
                 Some(Command::ToolTest(_) | Command::TestUi) => {
                     unreachable!("local tests handled before the state match")
                 }

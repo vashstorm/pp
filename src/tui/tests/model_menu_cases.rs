@@ -38,7 +38,7 @@ fn command_menu_lists_debug_only_commands_in_debug_builds() {
     let mut dirty = false;
     app.handle(Event::Paste("/test-ui".into()), &mut dirty);
     if cfg!(debug_assertions) {
-        // 过滤发生在 enumerate 之后：MenuItem 仍指向 COMMANDS 的真实下标。
+        // 补全直接枚举已裁剪的 COMMANDS：MenuItem 指向真实下标。
         let values = menu_values(&app);
         assert_eq!(values.len(), 1, "{values:?}");
         let MenuAction::Command(index) = values[0] else {

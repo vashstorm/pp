@@ -16,7 +16,11 @@ include!("changes_tui.rs");
 include!("transcript_blocks_tui.rs");
 include!("ask_tui.rs");
 include!("subagents_tui.rs");
+// `/test-task` 与 `/test-*` 工具套件只在 debug assertions 构建中注册，PTY 用例随同一
+// profile 边界编译；`test_task_tui_child` 同时被普通角色用例使用，保留在共享夹具中。
+#[cfg(debug_assertions)]
 include!("test_task_tui.rs");
+#[cfg(debug_assertions)]
 include!("tool_test_tui.rs");
 include!("auth_tui.rs");
 include!("plan_tui.rs");
@@ -37,6 +41,16 @@ use std::{
     path::Path,
     sync::mpsc::{self, Receiver},
 };
+
+// 子 Agent 请求的判定：system／instructions 含内置子 Agent 抬头，与 profile 无关。
+fn test_task_tui_child(protocol: &str, body: &Value) -> bool {
+    let system = if protocol == "completion" {
+        body["messages"][0].to_string()
+    } else {
+        body["instructions"].to_string()
+    };
+    system.contains("You are subagent")
+}
 
 // 仅 TUI 夹具自动处理旁路标题；CLI 仍严格拒绝任何额外请求。
 fn receive(server: &Server) -> (Request, Value) {

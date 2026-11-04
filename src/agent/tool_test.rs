@@ -1,5 +1,8 @@
 //! Debug-only local tool display fixtures.
 //!
+//! Only compiled when `debug_assertions` is enabled; release builds exclude the
+//! module, its `Agent` entry point, and the CLI display code with it.
+//!
 //! Every command runs the real `Tools` execution path in a fresh temporary
 //! workspace below the startup cwd. Fixture failures are ordinary tool cards;
 //! cancellation and process cleanup errors stop the suite.

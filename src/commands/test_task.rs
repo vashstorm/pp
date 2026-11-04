@@ -1,4 +1,7 @@
-//! `/test-task` 的固定自检场景：仅在 cargo debug 构建中暴露。
+//! `/test-task` 的固定自检场景：仅在含 debug assertions 的构建中编译。
+//!
+//! 模块由 `src/commands.rs` 的 `#[cfg(debug_assertions)]` 声明，release 构建
+//! 不包含这些自检代码、固定批次正文和 Role 检查。
 //!
 //! 主 Agent 用当前会话模型派发一次 `task` 批次，三个只读子 Agent 分别使用
 //! FAST、SLOW 与 REVIEW 三个 Model Role；因此缺少任一已启用 Role 时只报本地

@@ -21,15 +21,6 @@ fn test_task_tui_user_text(protocol: &str, body: &Value) -> String {
         .join("\n")
 }
 
-fn test_task_tui_child(protocol: &str, body: &Value) -> bool {
-    let system = if protocol == "completion" {
-        body["messages"][0].to_string()
-    } else {
-        body["instructions"].to_string()
-    };
-    system.contains("You are subagent")
-}
-
 #[test]
 fn test_task_tui_echoes_command_and_shows_three_subagents() {
     for protocol in ["completion", "response"] {

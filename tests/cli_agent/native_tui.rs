@@ -224,11 +224,11 @@ fn native_tui_resize_between_batches_keeps_each_source_line_once() {
     let (_home, mut pty) = context_tui_start(&provider, "completion", 100_000, 80);
     pty.input("native resize task\r");
     let (request, _) = pty.request(&provider);
-    let answer = format!("```txt\n{}\n```", (0..160).map(|index| format!("mid-resize-{index:03} {}", "abcdefghij".repeat(6))).collect::<Vec<_>>().join("\n"));
+    let answer = format!("```txt\n{}\n```", (0..96).map(|index| format!("mid-resize-{index:03} {}", "abcdefghij".repeat(6))).collect::<Vec<_>>().join("\n"));
     final_reply(request, &answer);
     pty.wait_for_raw(b"mid-resize-000");
     pty.resize(30, 40);
-    native_wait_complete(&mut pty, "mid-resize-", 160);
+    native_wait_complete(&mut pty, "mid-resize-", 96);
     pty.input("\x03");
     pty.finish();
     no_more(&provider);

@@ -41,6 +41,8 @@ mod welcome;
 
 pub(crate) use transcript_style::display_text;
 
+#[cfg(debug_assertions)]
+use crate::commands::ToolTest;
 use crate::{
     agent::{
         Agent, ExecutionPreparation,
@@ -49,7 +51,7 @@ use crate::{
         plan_management::{PlanListing, PlanOpenIntent, PlanSelection},
     },
     cancellation::{CancellationToken, RunOutcome},
-    commands::{self, COMMANDS, Command, PlanCommand, ToolTest},
+    commands::{self, COMMANDS, Command, PlanCommand},
     config::{ModelChoice, ThinkLevel},
     events::AgentEvent,
     plan::{
@@ -335,10 +337,12 @@ enum WorkerCommand {
         call_id: String,
         cancellation: CancellationToken,
     },
+    #[cfg(debug_assertions)]
     ToolTest {
         selection: ToolTest,
         cancellation: CancellationToken,
     },
+    #[cfg(debug_assertions)]
     TestUi {
         cancellation: CancellationToken,
     },
@@ -440,10 +444,12 @@ enum WorkerEvent {
     },
     Progress(AgentEvent),
     ShellCompleted(Result<()>),
+    #[cfg(debug_assertions)]
     ToolTestCompleted {
         result: Result<usize>,
         elapsed: Duration,
     },
+    #[cfg(debug_assertions)]
     UiTestCompleted {
         result: Result<()>,
         elapsed: Duration,
@@ -673,6 +679,8 @@ enum State {
     Ready,
     Running,
     RunningShell,
+    /// 本地测试专用运行态；非 dev/test 构建仍保留状态机形状，仅专用命令已编译排除。
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     RunningTools,
     Cancelling,
     Compacting,

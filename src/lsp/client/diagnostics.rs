@@ -171,6 +171,21 @@ pub(crate) struct Signals {
     pub(crate) closed: AtomicBool,
 }
 
+/// 原子饱和递减：`try_update` 超出 MSRV 1.88，`fetch_update` 已在其后更名弃用，
+/// 因此用 CAS 循环表达“永不下溢”的语义。
+fn saturating_decrement(counter: &AtomicU64) {
+    let mut expected = counter.load(Ordering::SeqCst);
+    loop {
+        let Some(next) = expected.checked_sub(1) else {
+            return;
+        };
+        match counter.compare_exchange_weak(expected, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return,
+            Err(observed) => expected = observed,
+        }
+    }
+}
+
 impl Signals {
     pub(super) fn apply_progress(&self, params: &Value) {
         let Some(token) = params.get("token") else {
@@ -218,19 +233,11 @@ impl Signals {
 
     /// 追加失败时撤销这次登记。
     pub(super) fn cancel_pending_load(&self) {
-        let _ = self
-            .pending_loads
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-                Some(value.saturating_sub(1))
-            });
+        saturating_decrement(&self.pending_loads);
     }
 
     fn consume_pending_load(&self) {
-        let _ = self
-            .pending_loads
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-                Some(value.saturating_sub(1))
-            });
+        saturating_decrement(&self.pending_loads);
     }
 
     /// 等待所有进度结束且没有未开始的追加；超时、取消或连接关闭返回 false（未验证）。

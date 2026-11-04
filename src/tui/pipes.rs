@@ -344,10 +344,10 @@ impl Panel {
                     if self.rebind_current_run() {
                         return self.select_run_action();
                     }
-                } else if let Some(index) = self.selected_run.checked_sub(1) {
-                    if self.select_run(index) {
-                        return self.select_run_action();
-                    }
+                } else if let Some(index) = self.selected_run.checked_sub(1)
+                    && self.select_run(index)
+                {
+                    return self.select_run_action();
                 }
             }
             KeyCode::Right => {
@@ -360,10 +360,10 @@ impl Panel {
                 }
             }
             KeyCode::Up if !self.unavailable => {
-                if let Some(index) = self.selected_stream.checked_sub(1) {
-                    if self.select_stream(index) {
-                        return self.select_stream_action();
-                    }
+                if let Some(index) = self.selected_stream.checked_sub(1)
+                    && self.select_stream(index)
+                {
+                    return self.select_stream_action();
                 }
             }
             KeyCode::Down if !self.unavailable => {
@@ -392,10 +392,8 @@ impl Panel {
                 self.freeze();
                 self.scroll = self.scroll.saturating_sub(page);
             }
-            KeyCode::PageDown => {
-                if !self.following {
-                    self.scroll = self.scroll.saturating_add(page);
-                }
+            KeyCode::PageDown if !self.following => {
+                self.scroll = self.scroll.saturating_add(page);
             }
             _ => {}
         }
@@ -587,7 +585,7 @@ impl Panel {
                 };
                 let target = take_line(area);
                 frame.render_widget(
-                    Line::styled(format!("{}", if selected { "›" } else { " " }), style),
+                    Line::styled((if selected { "›" } else { " " }).to_string(), style),
                     target,
                 );
                 frame.render_widget(

@@ -1,5 +1,7 @@
 mod templates;
 pub(crate) use templates::{FileCommand, FileCommands};
+// `/test-*` 自检实现只属于 dev/test 构建，release 不编译任何专用代码。
+#[cfg(debug_assertions)]
 pub(crate) mod test_task;
 
 use crate::config::ThinkLevel;
@@ -107,66 +109,79 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         usage: "/plan-list",
         description: "Manage saved plans: preview, continue, execute, rename, delete (TUI)",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-task",
         usage: "/test-task",
         description: "Debug build: dispatch a fixed FAST/SLOW/REVIEW subagent batch",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-tools",
         usage: "/test-tools",
         description: "Debug build: run every local tool display scenario",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-read",
         usage: "/test-read",
         description: "Debug build: local read tool scenarios",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-write",
         usage: "/test-write",
         description: "Debug build: local write tool scenarios",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-edit",
         usage: "/test-edit",
         description: "Debug build: local edit tool scenarios",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-grep",
         usage: "/test-grep",
         description: "Debug build: local grep tool scenarios",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-glob",
         usage: "/test-glob",
         description: "Debug build: local glob tool scenarios",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-bash",
         usage: "/test-bash",
         description: "Debug build: local bash tool scenarios",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-bash-task",
         usage: "/test-bash-task",
         description: "Debug build: local background bash scenarios",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-wait",
         usage: "/test-wait",
         description: "Debug build: local wait tool scenarios",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-todo",
         usage: "/test-todo",
         description: "Debug build: local todo tool scenarios",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-ask",
         usage: "/test-ask",
         description: "Debug build: local ask panel scenario",
     },
+    #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-ui",
         usage: "/test-ui",
@@ -184,6 +199,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
+#[cfg(debug_assertions)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolTest {
     All,
@@ -199,6 +215,7 @@ pub(crate) enum ToolTest {
     Ask,
 }
 
+#[cfg(debug_assertions)]
 impl ToolTest {
     pub(crate) const ALL: [Self; 11] = [
         Self::All,
@@ -260,8 +277,11 @@ pub(crate) enum Command<'a> {
     Roles,
     Subagents,
     PlanList,
+    #[cfg(debug_assertions)]
     TestTask,
+    #[cfg(debug_assertions)]
     ToolTest(ToolTest),
+    #[cfg(debug_assertions)]
     TestUi,
     Login,
     Logout,
@@ -332,34 +352,20 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
             ensure!(argument.is_empty(), "usage: /plan-list");
             Command::PlanList
         }
-        "/test-task" => {
-            ensure!(
-                cfg!(debug_assertions),
-                "/test-task requires a debug build of pp"
-            );
-            Command::TestTask
-        }
-        "/test-ui" => {
-            ensure!(
-                cfg!(debug_assertions),
-                "/test-ui requires a debug build of pp"
-            );
-            Command::TestUi
-        }
+        // dev/test 专用命令：其他构建不注册这些名字，输入落到 `Unknown` 兜底。
+        #[cfg(debug_assertions)]
+        "/test-task" => Command::TestTask,
+        #[cfg(debug_assertions)]
+        "/test-ui" => Command::TestUi,
+        #[cfg(debug_assertions)]
         "/test-tools" | "/test-read" | "/test-write" | "/test-edit" | "/test-grep"
         | "/test-glob" | "/test-bash" | "/test-bash-task" | "/test-wait" | "/test-todo"
-        | "/test-ask" => {
-            ensure!(
-                cfg!(debug_assertions),
-                "{name} requires a debug build of pp"
-            );
-            Command::ToolTest(
-                *ToolTest::ALL
-                    .iter()
-                    .find(|tool| tool.name() == name)
-                    .expect("registered local tool test"),
-            )
-        }
+        | "/test-ask" => Command::ToolTest(
+            *ToolTest::ALL
+                .iter()
+                .find(|tool| tool.name() == name)
+                .expect("registered local tool test"),
+        ),
         "/plan" => {
             return Ok(Some(Command::Plan(match argument {
                 "" => PlanCommand::Toggle,
@@ -460,15 +466,10 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
     Ok(Some(command))
 }
 
-/// release 构建隐藏 debug 专用命令；`/help` 与命令菜单共用同一判据。
-pub(crate) fn visible(name: &str) -> bool {
-    cfg!(debug_assertions) || !name.starts_with("/test-")
-}
-
+/// 命令清单：`COMMANDS` 已按构建裁剪，非 dev/test 不含 `/test-*` 条目。
 pub(crate) fn help(files: &FileCommands) -> String {
     COMMANDS
         .iter()
-        .filter(|spec| visible(spec.name))
         .map(|spec| format!("{} — {}", spec.usage, spec.description))
         .chain(
             files
@@ -599,20 +600,35 @@ mod tests {
             ("/tree", Command::Tree),
             ("/plan-list", Command::PlanList),
             (" /plan-list ", Command::PlanList),
+            #[cfg(debug_assertions)]
             ("/test-task", Command::TestTask),
+            #[cfg(debug_assertions)]
             (" /test-task ", Command::TestTask),
+            #[cfg(debug_assertions)]
             ("/test-ui", Command::TestUi),
+            #[cfg(debug_assertions)]
             (" /test-ui ", Command::TestUi),
+            #[cfg(debug_assertions)]
             ("/test-tools", Command::ToolTest(ToolTest::All)),
+            #[cfg(debug_assertions)]
             ("/test-read", Command::ToolTest(ToolTest::Read)),
+            #[cfg(debug_assertions)]
             ("/test-write", Command::ToolTest(ToolTest::Write)),
+            #[cfg(debug_assertions)]
             ("/test-edit", Command::ToolTest(ToolTest::Edit)),
+            #[cfg(debug_assertions)]
             ("/test-grep", Command::ToolTest(ToolTest::Grep)),
+            #[cfg(debug_assertions)]
             ("/test-glob", Command::ToolTest(ToolTest::Glob)),
+            #[cfg(debug_assertions)]
             ("/test-bash", Command::ToolTest(ToolTest::Bash)),
+            #[cfg(debug_assertions)]
             ("/test-bash-task", Command::ToolTest(ToolTest::BashTask)),
+            #[cfg(debug_assertions)]
             ("/test-wait", Command::ToolTest(ToolTest::Wait)),
+            #[cfg(debug_assertions)]
             ("/test-todo", Command::ToolTest(ToolTest::Todo)),
+            #[cfg(debug_assertions)]
             ("/test-ask", Command::ToolTest(ToolTest::Ask)),
             (" /resume ", Command::Resume),
             ("/quit", Command::Quit),
@@ -653,18 +669,31 @@ mod tests {
             "/tree",
             "/quit",
             "/plan-list",
+            #[cfg(debug_assertions)]
             "/test-task",
+            #[cfg(debug_assertions)]
             "/test-ui",
+            #[cfg(debug_assertions)]
             "/test-tools",
+            #[cfg(debug_assertions)]
             "/test-read",
+            #[cfg(debug_assertions)]
             "/test-write",
+            #[cfg(debug_assertions)]
             "/test-edit",
+            #[cfg(debug_assertions)]
             "/test-grep",
+            #[cfg(debug_assertions)]
             "/test-glob",
+            #[cfg(debug_assertions)]
             "/test-bash",
+            #[cfg(debug_assertions)]
             "/test-bash-task",
+            #[cfg(debug_assertions)]
             "/test-wait",
+            #[cfg(debug_assertions)]
             "/test-todo",
+            #[cfg(debug_assertions)]
             "/test-ask",
         ] {
             assert_eq!(
@@ -676,22 +705,64 @@ mod tests {
         }
     }
 
+    /// 13 个 `/test-*` 命令名：仅含 debug assertions 的构建注册并解析。
+    const TEST_COMMAND_NAMES: [&str; 13] = [
+        "/test-task",
+        "/test-ui",
+        "/test-tools",
+        "/test-read",
+        "/test-write",
+        "/test-edit",
+        "/test-grep",
+        "/test-glob",
+        "/test-bash",
+        "/test-bash-task",
+        "/test-wait",
+        "/test-todo",
+        "/test-ask",
+    ];
+
     #[test]
     fn slash_help_lists_debug_only_commands_in_debug_builds() {
         let text = help(&FileCommands::default());
-        for name in std::iter::once("/test-task")
-            .chain(std::iter::once("/test-ui"))
-            .chain(ToolTest::ALL.into_iter().map(ToolTest::name))
-        {
+        for name in TEST_COMMAND_NAMES {
             assert_eq!(
                 text.lines()
                     .any(|line| line.starts_with(&format!("{name} "))),
                 cfg!(debug_assertions),
                 "{name}\n{text}"
             );
-            assert_eq!(visible(name), cfg!(debug_assertions), "{name}");
         }
-        assert!(visible("/help") && visible("/plan-list"));
+        // 普通命令在所有构建都注册、解析并出现在帮助里。
+        for name in ["/help", "/tips", "/plan-list", "/quit"] {
+            assert!(
+                text.lines()
+                    .any(|line| line.starts_with(&format!("{name} "))),
+                "{name}\n{text}"
+            );
+            assert!(matches!(
+                parse(name, &FileCommands::default()).unwrap(),
+                Some(Command::Help | Command::Tips | Command::PlanList | Command::Quit)
+            ));
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn slash_test_commands_are_unknown_without_debug_assertions() {
+        let files = FileCommands::default();
+        for name in TEST_COMMAND_NAMES {
+            assert_eq!(
+                parse(name, &files).unwrap(),
+                Some(Command::Unknown),
+                "{name}"
+            );
+            assert_eq!(
+                parse(&format!(" {name} extra "), &files).unwrap(),
+                Some(Command::Unknown),
+                "{name} extra"
+            );
+        }
     }
 
     #[test]

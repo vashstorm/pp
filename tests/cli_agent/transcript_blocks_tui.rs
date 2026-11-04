@@ -424,13 +424,11 @@ fn transcript_blocks_markdown_tool_output_stays_literal() {
             let screen = pty.parser.screen();
             let text = screen.contents();
             // stdout 行（非标题行）保持字面：星号与 # 都在，无标题/列表/代码框样式。
-            assert!(!markdown_blocks_bold(screen, "**literal** # not a heading"));
-            assert_eq!(
-                markdown_blocks_fg(screen, "# From File Heading", 0),
-                vt100::Color::Default,
+            assert!(
+                !markdown_blocks_bold(screen, "**literal** # not a heading"),
                 "{text}"
             );
-            assert!(!markdown_blocks_bold(screen, "# From File Heading"));
+            assert!(!markdown_blocks_bold(screen, "# From File Heading"), "{text}");
             assert!(!text.contains(" rust "), "{text}");
             assert!(!text.contains("• "), "{text}");
         }

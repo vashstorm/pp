@@ -598,10 +598,10 @@ fn assert_live_three_stage_streams(command_for: impl FnOnce(&std::path::Path) ->
     let (first, second) = loop {
         let first = store.read(&run_id, 1, None);
         let second = store.read(&run_id, 2, None);
-        if let (Ok(first), Ok(second)) = (first, second) {
-            if second.total_bytes >= 4 {
-                break (first, second);
-            }
+        if let (Ok(first), Ok(second)) = (first, second)
+            && second.total_bytes >= 4
+        {
+            break (first, second);
         }
         assert!(
             Instant::now() < deadline,

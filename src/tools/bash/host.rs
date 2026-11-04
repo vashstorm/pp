@@ -116,13 +116,11 @@ impl Readers {
             }
         }
         for (index, handle) in self.handles.into_iter().enumerate() {
-            if done[index] {
-                if handle.join().is_err() {
-                    drained = false;
-                    errors.push(anyhow::anyhow!(
-                        "embedded shell output reader thread panicked"
-                    ));
-                }
+            if done[index] && handle.join().is_err() {
+                drained = false;
+                errors.push(anyhow::anyhow!(
+                    "embedded shell output reader thread panicked"
+                ));
             }
             // 未完成的 reader 仍阻塞在宿主持有的管道上；丢弃句柄让其自行退出，
             // 不能为了 join 而永久阻塞运行收尾。

@@ -805,11 +805,7 @@ pub(super) fn run(
     artifacts: Option<&super::output::Store>,
 ) -> Result<Value> {
     let mut args: Args = serde_json::from_str(arguments).context("invalid grep arguments")?;
-    if args
-        .path
-        .as_deref()
-        .is_some_and(|path| super::read::is_pipe_uri(path))
-    {
+    if args.path.as_deref().is_some_and(super::read::is_pipe_uri) {
         anyhow::bail!("Temporary pipe streams support read only; use read with a pipe:// URI.");
     }
     let uri = args

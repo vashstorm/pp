@@ -1,5 +1,6 @@
-//! `/tips` 的本地参考清单：全部可见斜杠命令与全局 TUI 快捷键。
+//! `/tips` 的本地参考清单：当前构建可用的斜杠命令与全局 TUI 快捷键。
 //!
+//! `/test-*` 条目只在含 debug assertions 的构建中编译，其他构建不列这些命令。
 //! 两组内按用户看到的键名忽略大小写稳定排序；对齐宽度与单行宽度由
 //! [`key_width`]／[`row_width`] 派生，行模式对齐与 TUI 双列布局共用同一预算。
 
@@ -49,18 +50,31 @@ pub(crate) const SECTIONS: &[Section] = &[
             tip("/Roles", "role model/effort"),
             tip("/skills", "toggle skills"),
             tip("/subagents", "control subagents"),
+            #[cfg(debug_assertions)]
             tip("/test-ask", "debug ask panel"),
+            #[cfg(debug_assertions)]
             tip("/test-bash", "debug bash tool"),
+            #[cfg(debug_assertions)]
             tip("/test-bash-task", "debug bg bash"),
+            #[cfg(debug_assertions)]
             tip("/test-edit", "debug edit tool"),
+            #[cfg(debug_assertions)]
             tip("/test-glob", "debug glob tool"),
+            #[cfg(debug_assertions)]
             tip("/test-grep", "debug grep tool"),
+            #[cfg(debug_assertions)]
             tip("/test-read", "debug read tool"),
+            #[cfg(debug_assertions)]
             tip("/test-task", "debug subagent batch"),
+            #[cfg(debug_assertions)]
             tip("/test-todo", "debug todo tool"),
+            #[cfg(debug_assertions)]
             tip("/test-tools", "debug all tools"),
+            #[cfg(debug_assertions)]
             tip("/test-ui", "debug mock stream"),
+            #[cfg(debug_assertions)]
             tip("/test-wait", "debug wait tool"),
+            #[cfg(debug_assertions)]
             tip("/test-write", "debug write tool"),
             tip("/tips", "show all tips"),
             tip("/tree", "browse & rewind chat"),
@@ -98,16 +112,12 @@ pub(crate) const SECTIONS: &[Section] = &[
     },
 ];
 
-/// 过滤出当前构建可见的条目，并按用户看到的键名（忽略大小写）稳定排序。
+/// 当前构建的全部条目，按用户看到的键名（忽略大小写）稳定排序。
 ///
-/// 复用命令注册表的可见判据：它只对 debug 专用的 `/test-*` 返回 false，
-/// 快捷键标签不以 `/` 开头，因此恒定通过。
+/// `/test-*` 条目已按 `#[cfg(debug_assertions)]` 从 `SECTIONS` 中裁剪，
+/// 这里不需要额外的可见性过滤。
 pub(crate) fn sorted(section: &'static Section) -> Vec<&'static Tip> {
-    let mut tips: Vec<&'static Tip> = section
-        .tips
-        .iter()
-        .filter(|tip| crate::commands::visible(tip.label))
-        .collect();
+    let mut tips: Vec<&'static Tip> = section.tips.iter().collect();
     tips.sort_by_key(|tip| tip.label.to_lowercase());
     tips
 }
