@@ -66,15 +66,34 @@ pub(super) fn detect() -> (Picker, Vec<Event>) {
         Picker::halfblocks()
     };
     if font.is_some() {
+        let iterm2 = std::env::var("TERM_PROGRAM").is_ok_and(|term| term.contains("iTerm"))
+            || std::env::var("LC_TERMINAL").is_ok_and(|term| term.contains("iTerm"))
+            || std::env::var("ITERM_SESSION_ID").is_ok_and(|id| !id.is_empty());
         let incompatible_kitty = std::env::var_os("WEZTERM_EXECUTABLE").is_some()
             || std::env::var_os("KONSOLE_VERSION").is_some();
-        if let Some(protocol) = parser.protocol
-            && !(protocol == ProtocolType::Kitty && incompatible_kitty)
-        {
-            picker.set_protocol_type(protocol);
-        }
+        picker.set_protocol_type(select_protocol(
+            picker.protocol_type(),
+            parser.protocol,
+            iterm2,
+            incompatible_kitty,
+        ));
     }
     (picker, parser.input_events())
+}
+
+fn select_protocol(
+    fallback: ProtocolType,
+    detected: Option<ProtocolType>,
+    iterm2: bool,
+    incompatible_kitty: bool,
+) -> ProtocolType {
+    // Kitty 查询成功不代表支持本组件依赖的 Unicode 占位符，iTerm2 使用原生协议。
+    if iterm2 {
+        return ProtocolType::Iterm2;
+    }
+    detected
+        .filter(|protocol| !(*protocol == ProtocolType::Kitty && incompatible_kitty))
+        .unwrap_or(fallback)
 }
 
 #[derive(Default)]
@@ -166,6 +185,29 @@ impl Probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_terminal_iterm2_uses_native_protocol_even_after_kitty_reply() {
+        for detected in [None, Some(ProtocolType::Kitty), Some(ProtocolType::Sixel)] {
+            assert_eq!(
+                select_protocol(ProtocolType::Halfblocks, detected, true, false),
+                ProtocolType::Iterm2
+            );
+        }
+        assert_eq!(
+            select_protocol(
+                ProtocolType::Halfblocks,
+                Some(ProtocolType::Kitty),
+                false,
+                false
+            ),
+            ProtocolType::Kitty
+        );
+        assert_eq!(
+            select_protocol(ProtocolType::Iterm2, Some(ProtocolType::Kitty), false, true),
+            ProtocolType::Iterm2
+        );
+    }
 
     #[test]
     fn image_terminal_probe_detects_protocol_font_and_retains_early_input() {

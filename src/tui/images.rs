@@ -15,6 +15,7 @@ use ratatui::{
 use ratatui_image::{
     Resize,
     picker::{Picker, ProtocolType},
+    protocol::{Protocol, iterm2::Iterm2, kitty::Kitty},
 };
 use std::{
     collections::{HashSet, VecDeque},
@@ -126,13 +127,30 @@ fn encode(source: &str, picker: &Picker, key: Key) -> Result<Rendered> {
         .context("无效的图片编码")?;
     let image = image::load_from_memory(&bytes).context("无法读取图片快照")?;
     let area = Rect::new(0, 0, key.width, key.height);
-    let protocol = picker.new_protocol(
+    let mut encoder = picker.clone();
+    if picker.protocol_type() == ProtocolType::Kitty {
+        // 复用原生 PNG 编码及相同的缩放、透明边距，避免向 tmux 发送整幅 RGBA。
+        encoder.set_protocol_type(ProtocolType::Iterm2);
+    }
+    let mut protocol = encoder.new_protocol(
         image,
         area,
         Resize::Scale(Some(image::imageops::FilterType::Triangle)),
     )?;
+    if picker.protocol_type() == ProtocolType::Iterm2
+        && let Protocol::ITerm2(png) = &mut protocol
+    {
+        iterm2_cells(png)?;
+    }
     let mut buffer = Buffer::empty(protocol.area());
-    ratatui_image::Image::new(&protocol).render(buffer.area, &mut buffer);
+    if picker.protocol_type() == ProtocolType::Kitty {
+        let Protocol::ITerm2(png) = protocol else {
+            anyhow::bail!("无法编码图片预览");
+        };
+        kitty_png(&png, &mut buffer)?;
+    } else {
+        ratatui_image::Image::new(&protocol).render(buffer.area, &mut buffer);
+    }
     prepare_graphics(&mut buffer);
     let bytes = buffer
         .content
@@ -146,6 +164,59 @@ fn encode(source: &str, picker: &Picker, key: Key) -> Result<Rendered> {
     })
 }
 
+fn iterm2_cells(png: &mut Iterm2) -> Result<()> {
+    let (prefix, dimensions) = png.data.split_once(";width=").context("无效的 PNG 预览")?;
+    let (_, suffix) = dimensions
+        .split_once(";doNotMoveCursor=")
+        .context("无效的 PNG 预览")?;
+    // PNG 已等比缩放并补齐字符格；按格显示，避免 Retina 像素与布局尺寸不一致。
+    png.data = format!(
+        "{prefix};width={};height={};preserveAspectRatio=0;doNotMoveCursor={suffix}",
+        png.area.width, png.area.height,
+    );
+    Ok(())
+}
+
+fn kitty_png(png: &Iterm2, buffer: &mut Buffer) -> Result<()> {
+    let (_, payload) = png.data.split_once(':').context("无效的 PNG 预览")?;
+    let payload = payload
+        .strip_suffix(if png.is_tmux { "\x07\x1b\\" } else { "\x07" })
+        .context("无效的 PNG 预览")?;
+    let mut id = [0; 4];
+    getrandom::fill(&mut id).context("无法生成图片编号")?;
+    let id = u32::from_ne_bytes(id).max(1);
+    // 依赖库只负责生成占位符；替换其锚点中的示例像素，实际发送缩放后的 PNG。
+    let protocol = Protocol::Kitty(Kitty::new(
+        image::DynamicImage::new_rgba8(1, 1),
+        buffer.area,
+        id,
+        png.is_tmux,
+    )?);
+    ratatui_image::Image::new(&protocol).render(buffer.area, buffer);
+    let (start, escape, end) = ratatui_image::picker::cap_parser::Parser::escape_tmux(png.is_tmux);
+    let mut transmission = String::new();
+    let count = payload.len().div_ceil(4096);
+    for (index, chunk) in payload.as_bytes().chunks(4096).enumerate() {
+        transmission.push_str(start);
+        transmission.push_str(&format!("{escape}_Gq=2,"));
+        if index == 0 {
+            transmission.push_str(&format!("i={id},a=T,U=1,f=100,t=d,"));
+        }
+        let more = u8::from(index + 1 < count);
+        let chunk = std::str::from_utf8(chunk).context("无效的 PNG 预览")?;
+        transmission.push_str(&format!("m={more};{chunk}{escape}\\{end}"));
+    }
+    let anchor = &mut buffer[(0, 0)];
+    let (_, placeholders) = anchor
+        .symbol()
+        .split_once("\x1b[s")
+        .context("无效的图片占位符")?;
+    transmission.push_str("\x1b[s");
+    transmission.push_str(placeholders);
+    anchor.set_symbol(&transmission);
+    Ok(())
+}
+
 fn prepare_graphics(buffer: &mut Buffer) {
     for cell in &mut buffer.content {
         if cell.symbol().contains('\x1b') {
@@ -157,6 +228,8 @@ fn prepare_graphics(buffer: &mut Buffer) {
                     "\x1b\x1b\\\x1b\\\x1bPtmux;\x1b\x1b_G",
                 );
                 cell.set_symbol(&symbol);
+            } else if let Some(symbol) = iterm2_tmux(cell.symbol()) {
+                cell.set_symbol(&symbol);
             }
             // 协议控制串占据一个锚点单元，不能把转义序列按普通文字计算宽度。
             cell.set_diff_option(ratatui::buffer::CellDiffOption::ForcedWidth(
@@ -164,6 +237,29 @@ fn prepare_graphics(buffer: &mut Buffer) {
             ));
         }
     }
+}
+
+fn iterm2_tmux(symbol: &str) -> Option<String> {
+    let body = symbol.strip_prefix("\x1bPtmux;")?.strip_suffix("\x1b\\")?;
+    let (erase, file) = body.split_once("\x1b\x1b]1337;File=")?;
+    let (arguments, payload) = file.strip_suffix('\x07')?.split_once(':')?;
+    let mut output = String::new();
+    if !erase.is_empty() {
+        output.push_str(&format!("\x1bPtmux;{erase}\x1b\\"));
+    }
+    // 原生多段协议避免把整张 PNG 放在一条 tmux 控制串内。
+    output.push_str(&format!(
+        "\x1bPtmux;\x1b\x1b]1337;MultipartFile={arguments}\x07\x1b\\"
+    ));
+    for chunk in payload.as_bytes().chunks(4096) {
+        // payload 是依赖库生成的 ASCII base64，按字节切分不会拆开 UTF-8。
+        let chunk = std::str::from_utf8(chunk).ok()?;
+        output.push_str(&format!(
+            "\x1bPtmux;\x1b\x1b]1337;FilePart={chunk}\x07\x1b\\"
+        ));
+    }
+    output.push_str("\x1bPtmux;\x1b\x1b]1337;FileEnd\x07\x1b\\");
+    Some(output)
 }
 
 fn identity(image: &Image) -> usize {
@@ -599,6 +695,170 @@ mod tests {
             assert_eq!(rendered.graphics, protocol != ProtocolType::Halfblocks);
             assert_eq!(rendered.buffer, rendered.buffer.clone());
         }
+    }
+
+    #[test]
+    fn image_preview_iterm2_fills_cells_and_centers_at_each_pixel_density() {
+        for (width, height, columns, rows) in [(884, 368, 22, 5), (368, 884, 7, 8)] {
+            let image = image::DynamicImage::ImageRgb8(image::ImageBuffer::from_pixel(
+                width,
+                height,
+                image::Rgb([230, 40, 70]),
+            ));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            let image = crate::user_input::image_bytes("fixture", bytes.get_ref()).unwrap();
+            for font in [(10, 20), (20, 40)] {
+                #[allow(deprecated)]
+                let mut picker = Picker::from_fontsize(font);
+                picker.set_protocol_type(ProtocolType::Iterm2);
+                let area = Rect::new(3, 2, 22, 8);
+                let key = Key {
+                    source: identity(&image),
+                    width: area.width,
+                    height: area.height,
+                };
+                let rendered = encode(&image.data_url, &picker, key).unwrap();
+                assert_eq!(rendered.buffer.area, Rect::new(0, 0, columns, rows));
+                let symbol = rendered.buffer[(0, 0)].symbol();
+                assert!(symbol.contains(&format!(
+                    ";width={columns};height={rows};preserveAspectRatio=0;"
+                )));
+                let (_, payload) = symbol.split_once(':').unwrap();
+                let payload = payload.split_once('\x07').unwrap().0;
+                let png = base64::engine::general_purpose::STANDARD
+                    .decode(payload)
+                    .unwrap();
+                let png = image::load_from_memory(&png).unwrap();
+                assert_eq!(png.width(), u32::from(columns * font.0));
+                assert_eq!(png.height(), u32::from(rows * font.1));
+
+                let mut view = View::new().unwrap();
+                view.cache.push_back(Entry {
+                    key,
+                    _source: image.data_url.clone(),
+                    rendered: Some(rendered),
+                });
+                let target = Rect::new(
+                    area.x + (area.width - columns) / 2,
+                    area.y + (area.height - rows) / 2,
+                    columns,
+                    rows,
+                );
+                let mut terminal = Terminal::new(TestBackend::new(30, 14)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        view.draw_image(frame, &image, area);
+                        assert!(
+                            frame.buffer_mut()[(target.x, target.y)]
+                                .symbol()
+                                .contains("1337;File=")
+                        );
+                    })
+                    .unwrap();
+                assert_eq!(view.graphics, vec![target]);
+            }
+        }
+    }
+
+    #[test]
+    fn image_preview_kitty_png_roundtrips_pixels_with_bounded_output() {
+        let image = image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
+            884,
+            368,
+            image::Rgba([230, 40, 70, 128]),
+        ));
+        for tmux in [false, true] {
+            let area = Rect::new(0, 0, 90, 20);
+            let png = Iterm2::new(image.clone(), area, tmux).unwrap();
+            let mut buffer = Buffer::empty(area);
+            kitty_png(&png, &mut buffer).unwrap();
+            prepare_graphics(&mut buffer);
+            let symbol = buffer[(0, 0)].symbol();
+            assert!(symbol.len() < image.as_bytes().len() / 10);
+            let output = if tmux {
+                let mut output = String::new();
+                let mut remaining = symbol;
+                while let Some(body) = remaining.strip_prefix("\x1bPtmux;") {
+                    let (chunk, rest) = body.split_once("\x1b\x1b\\\x1b\\").unwrap();
+                    assert!(chunk.len() < 8192);
+                    output.push_str(&chunk.replace("\x1b\x1b", "\x1b"));
+                    output.push_str("\x1b\\");
+                    remaining = rest;
+                }
+                output.push_str(remaining);
+                output
+            } else {
+                symbol.to_owned()
+            };
+            assert!(output.contains("a=T,U=1,f=100,t=d,"));
+            assert!(output.contains("m=0;"));
+            assert!(output.contains('\u{10EEEE}'));
+            let payload: String = output
+                .split("\x1b_G")
+                .skip(1)
+                .map(|command| {
+                    let (header, body) = command.split_once(';').unwrap();
+                    assert!(header.starts_with("q=2,"));
+                    body.split_once("\x1b\\").unwrap().0
+                })
+                .collect();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(payload)
+                .unwrap();
+            assert_eq!(
+                image::load_from_memory(&bytes).unwrap().to_rgba8(),
+                image.to_rgba8()
+            );
+        }
+    }
+
+    #[test]
+    fn image_preview_iterm2_tmux_multipart_preserves_png_and_geometry() {
+        use ratatui_image::protocol::{Protocol, iterm2::Iterm2};
+
+        let image =
+            image::DynamicImage::ImageRgb8(image::ImageBuffer::from_fn(200, 100, |x, y| {
+                let value = (x + y * 200).wrapping_mul(2_654_435_761);
+                image::Rgb([value as u8, (value >> 8) as u8, (value >> 16) as u8])
+            }));
+        let area = Rect::new(0, 0, 20, 5);
+        let mut png = Iterm2::new(image.clone(), area, true).unwrap();
+        iterm2_cells(&mut png).unwrap();
+        let protocol = Protocol::ITerm2(png);
+        let mut buffer = Buffer::empty(area);
+        ratatui_image::Image::new(&protocol).render(area, &mut buffer);
+        let original = buffer[(0, 0)].symbol().to_owned();
+        prepare_graphics(&mut buffer);
+        let symbol = buffer[(0, 0)].symbol();
+        let mut output = String::new();
+        let mut remaining = symbol;
+        while let Some(body) = remaining.strip_prefix("\x1bPtmux;") {
+            let (chunk, rest) = body.split_once("\x1b\\").unwrap();
+            assert!(chunk.len() < 8192);
+            output.push_str(&chunk.replace("\x1b\x1b", "\x1b"));
+            remaining = rest;
+        }
+        assert!(remaining.is_empty());
+        assert!(output.starts_with("\x1b[20X\x1b[1B"));
+        assert!(output.contains("MultipartFile=inline=1;size="));
+        assert!(output.contains("width=20;height=5;preserveAspectRatio=0;doNotMoveCursor=1\x07"));
+        assert!(output.ends_with("\x1b]1337;FileEnd\x07"));
+        let parts: Vec<_> = output.split("\x1b]1337;FilePart=").skip(1).collect();
+        assert!(parts.len() > 1);
+        let payload: String = parts
+            .iter()
+            .map(|part| part.split_once('\x07').unwrap().0)
+            .collect();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .unwrap();
+        assert_eq!(
+            image::load_from_memory(&bytes).unwrap().to_rgb8(),
+            image.to_rgb8()
+        );
+        assert!(symbol.len() > original.len());
+        assert_eq!(iterm2_tmux("\x1b]1337;File=inline=1:AAAA\x07"), None);
     }
 
     #[test]

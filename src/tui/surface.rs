@@ -26,13 +26,13 @@ use std::{
 
 static ALTERNATE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static GRAPHICS: Mutex<GraphicsCleanup> = Mutex::new(GraphicsCleanup {
-    rows: Vec::new(),
+    areas: Vec::new(),
     kitty: Vec::new(),
 });
 
 #[derive(Default, Clone)]
 struct GraphicsCleanup {
-    rows: Vec<u16>,
+    areas: Vec<(Rect, bool)>,
     kitty: Vec<(u32, bool)>,
 }
 
@@ -40,7 +40,10 @@ impl GraphicsCleanup {
     fn from_frame(buffer: &Buffer, graphics: &[Rect]) -> Self {
         let mut cleanup = Self::default();
         for area in graphics {
-            cleanup.rows.extend(area.top()..area.bottom());
+            let tmux = buffer
+                .cell((area.x, area.y))
+                .is_some_and(|cell| cell.symbol().contains("\x1bPtmux;"));
+            cleanup.areas.push((*area, tmux));
             if let Some(cell) = buffer.cell((area.x, area.y)) {
                 let symbol = cell.symbol();
                 if let Some((_, command)) = symbol.split_once("\x1b_G") {
@@ -54,8 +57,6 @@ impl GraphicsCleanup {
                 }
             }
         }
-        cleanup.rows.sort_unstable();
-        cleanup.rows.dedup();
         cleanup.kitty.sort_unstable();
         cleanup.kitty.dedup();
         cleanup
@@ -73,14 +74,21 @@ impl GraphicsCleanup {
                 write!(writer, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
             }
         }
-        for row in &self.rows {
-            queue!(
-                writer,
-                ResetColor,
-                SetAttribute(Attribute::Reset),
-                MoveTo(0, *row),
-                Clear(ClearType::CurrentLine)
-            )?;
+        for (area, tmux) in &self.areas {
+            for row in area.top()..area.bottom() {
+                queue!(
+                    writer,
+                    ResetColor,
+                    SetAttribute(Attribute::Reset),
+                    MoveTo(area.x, row)
+                )?;
+                // ECH 只擦除拥有的矩形，避免波及同一行的其他缩略图。
+                write!(writer, "\x1b[{}X", area.width)?;
+                if *tmux {
+                    // 原生图片不在 tmux 的字符缓冲内，空白格上的擦除可能被优化掉。
+                    write!(writer, "\x1bPtmux;\x1b\x1b[{}X\x1b\\", area.width)?;
+                }
+            }
         }
         Ok(())
     }
@@ -189,18 +197,43 @@ impl<W: Write> Surface<W> {
     ) -> io::Result<()> {
         let reset = self.reset_pending;
         let switch = self.alternate != alternate;
-        let clear_graphics = !self.graphics.is_empty()
-            && (reset
-                || switch
-                || !history.is_empty()
-                || self.graphics != graphics
-                || self.previous.as_ref().is_none_or(|old| {
-                    old.area != buffer.area
-                        || self
-                            .graphics
-                            .iter()
-                            .any(|area| old.cell((area.x, area.y)) != buffer.cell((area.x, area.y)))
-                }));
+        let clear_all = reset
+            || switch
+            || !history.is_empty()
+            || self
+                .previous
+                .as_ref()
+                .is_none_or(|old| old.area != buffer.area);
+        let mut removed: Vec<_> = self
+            .graphics
+            .iter()
+            .copied()
+            .filter(|area| {
+                clear_all
+                    || !graphics.contains(area)
+                    || self.previous.as_ref().is_none_or(|old| {
+                        old.cell((area.x, area.y)) != buffer.cell((area.x, area.y))
+                    })
+            })
+            .collect();
+        // 被擦除区域覆盖的旧图也须重绘；新增浮层不应删除、重传未变化的缩略图。
+        loop {
+            let before = removed.len();
+            for area in &self.graphics {
+                if !removed.contains(area) && removed.iter().any(|old| old.intersects(*area)) {
+                    removed.push(*area);
+                }
+            }
+            if removed.len() == before {
+                break;
+            }
+        }
+        let cleanup = self
+            .previous
+            .as_ref()
+            .map(|old| GraphicsCleanup::from_frame(old, &removed))
+            .unwrap_or_default();
+        let clear_graphics = !removed.is_empty();
         let previous = if reset {
             None
         } else if switch && !alternate {
@@ -215,10 +248,11 @@ impl<W: Write> Surface<W> {
         // 图形先从物理屏幕擦除，再以相同状态计算滚动和差分。
         let cleaned = previous.filter(|_| clear_graphics && !switch).map(|old| {
             let mut cleaned = old.clone();
-            for row in &self.graphics_cleanup.rows {
-                if *row < cleaned.area.bottom() {
-                    for x in cleaned.area.left()..cleaned.area.right() {
-                        cleaned[(x, *row)].reset();
+            for area in &removed {
+                let area = area.intersection(cleaned.area);
+                for row in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        cleaned[(x, row)].reset();
                     }
                 }
             }
@@ -260,7 +294,7 @@ impl<W: Write> Surface<W> {
             let mut output = Vec::new();
             output.sync_update(|writer| -> io::Result<()> {
                 if clear_graphics {
-                    self.graphics_cleanup.clear(writer)?;
+                    cleanup.clear(writer)?;
                 }
                 if cursor.is_none() && visibility_changed {
                     // 先隐藏，再滚屏、清屏或定位，避免重建期间暴露中间位置。
@@ -779,9 +813,75 @@ mod tests {
             .unwrap();
         let bytes = String::from_utf8_lossy(&surface.writer[initial..]);
         assert!(bytes.contains("a=d,d=I,i=123"), "{bytes:?}");
-        assert_eq!(bytes.matches("\x1b[2K").count(), 2);
+        assert_eq!(bytes.matches("\x1b[8X").count(), 2);
         assert!(!bytes.contains("\x1b[3J"));
         assert!(surface.graphics.is_empty());
+    }
+
+    #[test]
+    fn image_surface_tmux_native_image_cleanup_reaches_outer_terminal() {
+        let (mut image, area) = graphics_frame();
+        image[(area.x, area.y)].set_symbol("\x1bPtmux;\x1b\x1b]1337;File=inline=1:AAAA\x07\x1b\\");
+        let mut surface = Surface::new(Vec::new());
+        surface
+            .paint_images(&image, None, false, &[], &[area])
+            .unwrap();
+        let start = surface.writer.len();
+        surface
+            .paint(&frame("conversation"), None, false, &[])
+            .unwrap();
+        let output = String::from_utf8_lossy(&surface.writer[start..]);
+        assert_eq!(output.matches("\x1bPtmux;\x1b\x1b[8X\x1b\\").count(), 2);
+        assert!(!output.contains("1337;File="));
+    }
+
+    #[test]
+    fn image_surface_popup_and_neighbor_changes_preserve_unchanged_thumbnail() {
+        let thumbnail = Rect::new(2, 4, 8, 2);
+        let neighbor = Rect::new(14, 4, 8, 2);
+        let popup = Rect::new(2, 0, 20, 3);
+        let add = |buffer: &mut Buffer, area: Rect, id| {
+            for row in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    buffer[(x, row)].set_diff_option(CellDiffOption::Skip);
+                }
+            }
+            buffer[(area.x, area.y)]
+                .set_symbol(&format!("\x1b_Ga=T,i={id},q=2;AAAA\x1b\\X"))
+                .set_diff_option(CellDiffOption::ForcedWidth(std::num::NonZeroU16::MIN));
+        };
+        let mut single = frame("");
+        add(&mut single, thumbnail, 123);
+        let mut multiple = single.clone();
+        add(&mut multiple, neighbor, 456);
+        let mut preview = multiple.clone();
+        add(&mut preview, popup, 789);
+        let mut surface = Surface::new(Vec::new());
+        surface
+            .paint_images(&multiple, None, false, &[], &[thumbnail, neighbor])
+            .unwrap();
+        for (buffer, areas, deleted, transmitted) in [
+            (&preview, vec![thumbnail, neighbor, popup], None, Some(789)),
+            (&multiple, vec![thumbnail, neighbor], Some(789), None),
+            (&single, vec![thumbnail], Some(456), None),
+        ] {
+            let start = surface.writer.len();
+            surface
+                .paint_images(buffer, None, false, &[], &areas)
+                .unwrap();
+            let output = String::from_utf8_lossy(&surface.writer[start..]);
+            assert!(!output.contains("a=d,d=I,i=123"), "{output:?}");
+            assert!(!output.contains("a=T,i=123"), "{output:?}");
+            assert!(!output.contains("\x1b[2K"), "{output:?}");
+            if let Some(id) = deleted {
+                assert!(output.contains(&format!("a=d,d=I,i={id}")), "{output:?}");
+            }
+            if let Some(id) = transmitted {
+                assert!(output.contains(&format!("a=T,i={id}")), "{output:?}");
+            } else {
+                assert!(!output.contains("a=T"), "{output:?}");
+            }
+        }
     }
 
     #[test]
