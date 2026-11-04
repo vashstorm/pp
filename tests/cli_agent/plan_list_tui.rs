@@ -513,7 +513,7 @@ fn plan_list_execution_requires_new_local_approval() {
             cancel_normalize(screen).contains("Listedexec")
         });
 
-        // e 打开完整六项菜单；已勾选进度原样展示，打开菜单零模型请求。
+        // e 打开完整五项菜单；已勾选进度原样展示，打开菜单零模型请求。
         pty.input("e");
         pty.wait_for("完整操作菜单打开", |screen| {
             let text = cancel_normalize(screen);
@@ -580,7 +580,7 @@ fn plan_list_execution_requires_new_local_approval() {
 }
 
 #[test]
-fn plan_list_enter_opens_six_actions_for_drafts_and_plans_and_only_displays_done() {
+fn plan_list_enter_opens_five_actions_for_drafts_and_plans_and_only_displays_done() {
     for protocol in ["completion", "response"] {
         for location in ["drafts", "plans", "done", "prose"] {
             let fixture = server();
@@ -626,28 +626,28 @@ fn plan_list_enter_opens_six_actions_for_drafts_and_plans_and_only_displays_done
                     !sessions.exists() || std::fs::read_dir(sessions).unwrap().next().is_none()
                 );
             } else {
-                pty.wait_for("列表 Enter 展示完整六项菜单", |screen| {
+                pty.wait_for("列表 Enter 展示完整五项菜单", |screen| {
                     let text = screen.contents();
                     text.contains("Execute in a new session")
-                        && text.contains("Execute (keep context)")
+                        && text.contains("Execute with context")
                         && text.contains("Compact context and execute")
                         && text.contains("Review Plan")
-                        && text.contains("Continue discussing Plan")
+                        && !text.contains("Continue discussing Plan")
                         && text.contains("Save draft and leave Plan mode")
                 });
                 assert!(pty.parser.screen().contents().contains("Selected plan"));
                 if location == "prose" {
-                    pty.wait_for("草稿默认选中可用的讨论项", |screen| {
-                        screen.contents().contains("❯ Continue discussing Plan")
+                    pty.wait_for("草稿默认选中可用的保存项", |screen| {
+                        screen.contents().contains("❯ Save draft and leave Plan mode")
                     });
                     pty.input("\x1b[B");
-                    pty.wait_for("下箭头选择保存草稿", |screen| {
+                    pty.wait_for("下箭头停在最后一项", |screen| {
                         screen.contents().contains("❯ Save draft and leave Plan mode")
                     });
                     pty.input("1\x1b[A\x1b[A\x1b[D");
                     pty.wait_for("上箭头和数字键跳过灰色禁用项", |screen| {
                         let text = screen.contents();
-                        text.contains("❯ Continue discussing Plan")
+                        text.contains("❯ Save draft and leave Plan mode")
                             && !text.contains("❯ Execute")
                             && !text.contains("❯ Review Plan")
                     });
@@ -668,7 +668,7 @@ fn plan_list_enter_opens_six_actions_for_drafts_and_plans_and_only_displays_done
 }
 
 #[test]
-fn plan_list_six_actions_use_the_selected_plan_and_leave_the_list() {
+fn plan_list_five_actions_use_the_selected_plan_and_leave_the_list() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();

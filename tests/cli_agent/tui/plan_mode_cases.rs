@@ -148,7 +148,7 @@ fn plan_toggle_waits_for_prompt_and_preserves_drafts() {
         // 已保存草稿退出：直接切换，无确认框，草稿文件与字节保留。
         pty.input("\x1b");
         pty.wait_for("closing review before toggle out", |screen| {
-            !screen.contents().contains("Execute (keep context)")
+            !screen.contents().contains("Execute with context")
         });
         pty.input("/plan\r");
         plan_wait_execute(&mut pty);
@@ -188,7 +188,7 @@ fn plan_toggle_waits_for_prompt_and_preserves_drafts() {
         // 已提交任务但尚未首存：请求出错后也能在本地确认放弃并退出。
         pty.input("\x1b");
         pty.wait_for("closing review before unsaved exit", |screen| {
-            !screen.contents().contains("Execute (keep context)")
+            !screen.contents().contains("Execute with context")
         });
         pty.input("/plan\r");
         plan_wait_execute(&mut pty);

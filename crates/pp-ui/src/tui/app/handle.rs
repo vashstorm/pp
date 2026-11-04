@@ -350,18 +350,6 @@ impl App {
                             }
                         }
                         plan::Action::Approve(context) => self.approve_plan(context),
-                        plan::Action::Discuss(text) => {
-                            // 讨论经普通 Plan run 送回原上下文；主草稿与光标保留。
-                            self.plan_panel = None;
-                            self.menu_dismissed = true;
-                            self.queue_paused = false;
-                            if self.send_task(Some(text.clone())) {
-                                self.plan_list_panel = None;
-                                self.plan_list_pending = None;
-                                self.append("You", &text);
-                                self.remember_text(text);
-                            }
-                        }
                         plan::Action::Review => self.review_plan(),
                         plan::Action::SaveAndLeave => self.save_plan_and_leave(),
                         plan::Action::EditInput(key) => {
@@ -788,7 +776,7 @@ impl App {
                             }
                             State::ReviewingPlan => {
                                 // 取消 reviewer；保持 ReviewingPlan，等待 worker
-                                // 的 PlanReviewed 受控收尾后回六项菜单。
+                                // 的 PlanReviewed 受控收尾后回五项菜单。
                                 if let Some(review) = &mut self.review_transcript {
                                     review.cancelling();
                                 }

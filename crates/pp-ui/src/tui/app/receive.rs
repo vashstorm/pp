@@ -1009,7 +1009,7 @@ impl App {
                     changed = true;
                 }
                 Ok(WorkerEvent::PlanReviewed(result)) => {
-                    // 审查终态：无论成败都保持 Plan/Ready 并回六项菜单；
+                    // 审查终态：无论成败都保持 Plan/Ready 并回五项菜单；
                     // 报告只在成功时替换，失败/取消保留上次完整报告。
                     self.state = State::Ready;
                     self.active_cancellation = None;

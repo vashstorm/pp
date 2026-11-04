@@ -251,6 +251,7 @@ impl App {
                 frame,
                 Rect::new(area.x, area.y, area.width, panel_height),
                 self.plan_progress,
+                self.usage.as_ref(),
             );
             if with_hint && panel_height < available {
                 frame.render_widget(
@@ -366,7 +367,7 @@ impl App {
         } else if let Some(panel) = &mut self.mcp_panel {
             panel.draw(frame, conversation);
         } else if let Some(panel) = &mut self.plan_panel {
-            panel.draw(frame, conversation, self.plan_progress);
+            panel.draw(frame, conversation, self.plan_progress, self.usage.as_ref());
         } else {
             self.active_transcript().draw(frame, conversation);
         }

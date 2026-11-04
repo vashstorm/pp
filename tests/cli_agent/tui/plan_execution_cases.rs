@@ -405,7 +405,7 @@ fn plan_tui_pending_input_never_crosses_review_into_execute() {
         assert!(!project.path().join("canary.txt").exists());
         pty.input("\x1b");
         pty.wait_for("Plan panel closed before queue resume", |screen| {
-            !screen.contents().contains("Execute (keep context)")
+            !screen.contents().contains("Execute with context")
                 && cancel_cursor_on_input_row(screen)
         });
         pty.function_key('r');
@@ -440,7 +440,7 @@ fn plan_tui_pending_input_never_crosses_review_into_execute() {
 }
 
 #[test]
-fn plan_tui_discussion_preserves_main_draft_and_does_not_force_a_rewrite() {
+fn plan_tui_discussion_keeps_input_on_close_and_does_not_force_a_rewrite() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
@@ -470,18 +470,21 @@ fn plan_tui_discussion_preserves_main_draft_and_does_not_force_a_rewrite() {
             ]),
         );
         plan_wait_review(&mut pty, 1);
-        plan_choose(&mut pty, 4);
-        pty.input("discard this question\x1b");
-        plan_wait_review(&mut pty, 1);
+        pty.input("\t\nWhy is file creation before failure verification?");
+        pty.draft("Why is file creation before failure verification?");
+        pty.input("\x1b");
+        pty.wait_for("关闭计划面板并保留讨论草稿", |screen| {
+            let text = screen.contents();
+            !text.contains("╭ Actions")
+                && text.contains("preserved main draft")
+                && text.contains("Why is file creation before failure verification?")
+        });
         no_more(&fixture);
         pty.input("\r");
-        pty.input("Why is file creation before failure verification?\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert!(
-            cancel_user_messages(&body, protocol)
-                .last()
-                .unwrap()
-                .contains("Why is file creation before failure verification?")
+        assert_eq!(
+            cancel_user_messages(&body, protocol).last().unwrap(),
+            "preserved main draft\nWhy is file creation before failure verification?"
         );
         assert!(body.to_string().contains("Plan canary with discussion"));
         plan_final(
@@ -490,7 +493,6 @@ fn plan_tui_discussion_preserves_main_draft_and_does_not_force_a_rewrite() {
             "The first step establishes the file; the second checks failures. No rewrite needed.",
         );
         pty.ready();
-        pty.draft("preserved main draft");
         plan_wait_mode(&mut pty, "Plan");
         assert_eq!(
             std::fs::read_to_string(plan_path(project.path())).unwrap(),
@@ -527,7 +529,7 @@ fn plan_tui_ready_keeps_input_and_output_and_sends_discussion() {
             "Plan the canary",
             PLAN_TUI_BODY,
         );
-        pty.input("\t继续讨论具体边界");
+        pty.input("继续讨论具体边界");
         pty.draft("继续讨论具体边界");
         let text = pty.parser.screen().contents();
         assert!(text.contains("Create canary"), "{text}");
@@ -535,6 +537,8 @@ fn plan_tui_ready_keeps_input_and_output_and_sends_discussion() {
         assert!(!text.contains("1. Execute"), "{text}");
         assert!(!text.contains("1–6 select"), "{text}");
         assert!(text.contains("Save draft and leave Plan mode"), "{text}");
+        assert!(!text.contains("Continue discussing Plan"), "{text}");
+        assert!(text.contains("Execute with context ("), "{text}");
         assert!(text.contains("┌ Plan"), "{text}");
         assert!(text.contains("╭ Actions"), "{text}");
         assert!(

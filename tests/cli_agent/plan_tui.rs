@@ -88,7 +88,7 @@ fn plan_enter(pty: &mut Pty, server: &Server) {
 fn plan_wait_review(pty: &mut Pty, revision: u64) {
     pty.wait_for("saved plan review panel", |screen| {
         let text = cancel_normalize(screen);
-        text.contains(&format!("Plan·r{revision}")) && text.contains("Execute(keepcontext)")
+        text.contains(&format!("Plan·r{revision}")) && text.contains("Executewithcontext(")
     });
 }
 
@@ -177,7 +177,7 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
 }
 
 fn plan_choose(pty: &mut Pty, action: usize) {
-    assert!(action < 6);
+    assert!(action < 5);
     pty.input(&format!("{}\r", action + 1));
 }
 

@@ -100,7 +100,7 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
         let path = plan_path(project.path());
         pty.input("\x1b");
         pty.wait_for("closing review for tree", |screen| {
-            !screen.contents().contains("Execute (keep context)")
+            !screen.contents().contains("Execute with context")
         });
         tree_tui_open(&mut pty, "plan_submit");
         tree_tui_rewind(
@@ -243,7 +243,7 @@ fn plan_tui_mcp_is_stopped_in_plan_and_cleanup_tracks_execute_reconnection() {
             if off {
                 pty.input("\x1b");
                 pty.wait_for("closing review before off", |screen| {
-                    !screen.contents().contains("Execute (keep context)")
+                    !screen.contents().contains("Execute with context")
                 });
                 // 裸 /plan 直接切换退出：无本地确认框，已保存草稿保留在磁盘。
                 pty.input("/plan\r");
@@ -328,17 +328,13 @@ fn plan_tui_submission_requires_deliberate_action_and_survives_resize_and_resume
         assert!(!project.path().join("canary.txt").exists());
         let text = pty.parser.screen().contents();
         let fresh = text.find("Execute in a new session").unwrap();
-        let keep = text.find("Execute (keep context)").unwrap();
-        let discuss = text.find("Continue discussing Plan").unwrap();
+        let keep = text.find("Execute with context").unwrap();
+        assert!(!text.contains("Continue discussing Plan"), "{text}");
         let review = text.find("Review Plan").unwrap();
         let compact = text.find("Compact context and execute").unwrap();
         let leave = text.find("Save draft and leave Plan mode").unwrap();
         assert!(
-            fresh < keep
-                && keep < compact
-                && compact < review
-                && review < discuss
-                && discuss < leave,
+            fresh < keep && keep < compact && compact < review && review < leave,
             "{text}"
         );
         assert!(text.contains('☐'), "{text}");
@@ -355,6 +351,10 @@ fn plan_tui_submission_requires_deliberate_action_and_survives_resize_and_resume
         pty.resize(30, 100);
         plan_wait_review(&mut pty, 1);
         pty.input("\x1b");
+        pty.wait_for("关闭计划操作菜单后恢复输入", |screen| {
+            !screen.contents().contains("Execute with context")
+                && cancel_cursor_on_input_row(screen)
+        });
         plan_wait_mode(&mut pty, "Plan");
         pty.input("开始吧\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
@@ -837,7 +837,7 @@ fn plan_tui_save_draft_and_leave_preserves_file_without_model_request() {
         );
         let path = plan_path(project.path());
         let id = saved_session_id(home.path());
-        plan_choose(&mut pty, 5);
+        plan_choose(&mut pty, 4);
         plan_wait_execute(&mut pty);
         pty.ready();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), PLAN_TUI_BODY);

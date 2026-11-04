@@ -1,9 +1,10 @@
 //! 计划审阅面板：只渲染 worker 发布的快照，文件/网络访问全部留在 worker。
 //! 键盘与绘制路径不做任何 IO；审批必须携带面板看到的 ReviewToken。
-use super::editor;
 use super::markdown;
+use super::statusline::abbreviate_tokens;
 use super::transcript_style::{ACCENT, DIM, MUTED};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use pp_core::context::ContextUsage;
 use pp_core::plan::ExecutionContext;
 use pp_core::plan::PlanDocument;
 use pp_core::plan::PlanReview;
@@ -15,23 +16,20 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear},
+    widgets::{Block, BorderType, Borders},
 };
-use ratatui_textarea::TextArea;
 
-const ACTIONS: [&str; 6] = [
+const ACTIONS: [&str; 5] = [
     "Execute in a new session",
-    "Execute (keep context)",
+    "Execute with context",
     "Compact context and execute",
     "Review Plan",
-    "Continue discussing Plan",
     "Save draft and leave Plan mode",
 ];
 /// 打开完整审阅面板时直接聚焦操作区，默认选中第一项可用操作。
 const DEFAULT_ACTION: usize = 0;
 const HINT: &str = "Tab focus · ↑↓ choose/scroll · Enter run/jump/send · ←→ tabs · Esc close";
 const READONLY_HINT: &str = "Read-only view · Tab focus · ↑↓ scroll · Enter jump · Esc close";
-const DISCUSS_HINT: &str = "Enter send · Ctrl + J newline · Esc discard";
 
 /// 按字符数截断纯显示文本，超宽时以省略号结尾。
 /// Highlighted choice/tab chip shared by the plan panel tabs.
@@ -62,7 +60,6 @@ pub(super) enum Action {
     None,
     Close,
     Approve(ExecutionContext),
-    Discuss(String),
     Review,
     SaveAndLeave,
     EditInput(KeyEvent),
@@ -119,7 +116,6 @@ pub(super) struct Panel {
     toc_selected: [usize; 2],
     toc_visible: bool,
     toc_viewport: usize,
-    discussion: Option<TextArea<'static>>,
     viewport: usize,
 }
 
@@ -149,7 +145,6 @@ impl Panel {
             toc_selected: [0; 2],
             toc_visible: false,
             toc_viewport: 0,
-            discussion: None,
             viewport: 0,
         }
     }
@@ -203,15 +198,11 @@ impl Panel {
     }
 
     pub(super) fn input_focused(&self) -> bool {
-        self.focus == Focus::Input && self.discussion.is_none()
+        self.focus == Focus::Input
     }
 
     fn border_color(&self, focus: Focus) -> Color {
-        if self.focus == focus && self.discussion.is_none() {
-            ACCENT
-        } else {
-            MUTED
-        }
+        if self.focus == focus { ACCENT } else { MUTED }
     }
 
     pub(super) fn document(&self) -> &PlanDocument {
@@ -283,17 +274,14 @@ impl Panel {
         let ready = self.document.status == PlanStatus::Ready;
         match index {
             0..=3 => ready,
-            4 | 5 => matches!(self.document.status, PlanStatus::Draft | PlanStatus::Ready),
+            4 => true,
             _ => false,
         }
     }
 
     /// 返回 false 时由主输入框接收粘贴；只读面板吞掉粘贴。
-    pub(super) fn paste(&mut self, text: &str) -> bool {
-        if let Some(editor) = &mut self.discussion {
-            editor.insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
-            true
-        } else if self.token.is_some() && !self.readonly() {
+    pub(super) fn paste(&mut self, _text: &str) -> bool {
+        if self.token.is_some() && !self.readonly() {
             self.focus = Focus::Input;
             false
         } else {
@@ -304,9 +292,6 @@ impl Panel {
     pub(super) fn key(&mut self, key: KeyEvent) -> Action {
         if key.kind == KeyEventKind::Release {
             return Action::None;
-        }
-        if self.discussion.is_some() {
-            return self.discussion_key(key);
         }
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return Action::None;
@@ -326,7 +311,7 @@ impl Panel {
         if self.focus != Focus::Input
             && key.modifiers.is_empty()
             && key.kind == KeyEventKind::Press
-            && let KeyCode::Char(number @ '1'..='6') = key.code
+            && let KeyCode::Char(number @ '1'..='5') = key.code
         {
             let index = (number as u8 - b'1') as usize;
             if self.action_enabled(index) {
@@ -454,12 +439,8 @@ impl Panel {
                     0 => Action::Approve(ExecutionContext::Fresh),
                     1 => Action::Approve(ExecutionContext::Keep),
                     2 => Action::Approve(ExecutionContext::Compact),
-                    4 => {
-                        self.discussion = Some(editor());
-                        Action::None
-                    }
                     3 => Action::Review,
-                    5 => Action::SaveAndLeave,
+                    4 => Action::SaveAndLeave,
                     _ => Action::None,
                 };
             }
@@ -469,32 +450,6 @@ impl Panel {
             }
             _ => {}
         }
-        Action::None
-    }
-
-    fn discussion_key(&mut self, key: KeyEvent) -> Action {
-        let Some(editor) = &mut self.discussion else {
-            return Action::None;
-        };
-        if key.code == KeyCode::Esc && key.modifiers.is_empty() {
-            // 丢弃未发送的讨论文字，回到审阅面板；不撤销当前 Ready。
-            self.discussion = None;
-            return Action::None;
-        }
-        if key.code == KeyCode::Enter && key.modifiers.is_empty() && key.kind == KeyEventKind::Press
-        {
-            let text = editor.lines().join("\n");
-            if text.trim().is_empty() {
-                return Action::None;
-            }
-            self.discussion = None;
-            return Action::Discuss(self.compose_discussion(text));
-        }
-        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('j') {
-            editor.insert_newline();
-            return Action::None;
-        }
-        editor.input(key);
         Action::None
     }
 
@@ -561,7 +516,13 @@ impl Panel {
         }
     }
 
-    pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect, progress: (usize, usize)) {
+    pub(super) fn draw(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        progress: (usize, usize),
+        usage: Option<&ContextUsage>,
+    ) {
         if area.width < 6 || area.height < 3 {
             return;
         }
@@ -678,7 +639,7 @@ impl Panel {
             body.height -= 1;
         }
 
-        // 只读提示留在预览内部；六项操作在独立外框中绘制。
+        // 只读提示留在预览内部；五项操作在独立外框中绘制。
         let footer_height = u16::from(!has_actions).min(body.height);
         let footer = Rect::new(
             body.x,
@@ -722,11 +683,7 @@ impl Panel {
             frame.render_widget(self.hint(READONLY_HINT), footer);
         }
         if actions_height > 0 {
-            self.draw_actions(frame, actions_area);
-        }
-
-        if self.discussion.is_some() {
-            self.draw_discussion(frame, area);
+            self.draw_actions(frame, actions_area, usage);
         }
     }
 
@@ -797,7 +754,7 @@ impl Panel {
         }
     }
 
-    fn draw_actions(&self, frame: &mut Frame, area: Rect) {
+    fn draw_actions(&self, frame: &mut Frame, area: Rect, usage: Option<&ContextUsage>) {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -830,8 +787,20 @@ impl Panel {
                 Style::default()
             };
             let marker = if selected { "❯ " } else { "  " };
+            let context = if index == 1 {
+                let used = usage.map_or_else(
+                    || "?".to_owned(),
+                    |usage| abbreviate_tokens(usage.estimated_tokens),
+                );
+                let window = usage
+                    .and_then(|usage| usage.context_window)
+                    .map_or_else(|| "?".to_owned(), abbreviate_tokens);
+                format!(" ({used}/{window})")
+            } else {
+                String::new()
+            };
             frame.render_widget(
-                Line::styled(format!("{marker}{label}"), style),
+                Line::styled(format!("{marker}{label}{context}"), style),
                 Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
             );
         }
@@ -839,45 +808,6 @@ impl Panel {
             frame.render_widget(
                 self.hint(HINT),
                 Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
-            );
-        }
-    }
-
-    fn draw_discussion(&self, frame: &mut Frame, area: Rect) {
-        if area.width < 16 || area.height < 7 {
-            return;
-        }
-        let width = area.width.saturating_sub(4).min(72);
-        let height = area.height.saturating_sub(4).min(9);
-        let area = Rect {
-            x: area.x + (area.width - width) / 2,
-            y: area.y + (area.height - height) / 2,
-            width,
-            height,
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(ACCENT))
-            .title(Span::styled(
-                " Continue discussing Plan ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ));
-        let inner = block.inner(area);
-        frame.render_widget(Clear, area);
-        frame.render_widget(block, area);
-        let Some(editor) = &self.discussion else {
-            return;
-        };
-        if inner.height > 1 {
-            frame.render_widget(
-                editor,
-                Rect::new(inner.x, inner.y, inner.width, inner.height - 1),
-            );
-        }
-        if inner.height > 0 {
-            frame.render_widget(
-                Line::styled(format!(" {DISCUSS_HINT}"), Style::default().fg(DIM)),
-                Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
             );
         }
     }
@@ -933,7 +863,7 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|frame| panel.draw(frame, frame.area(), (0, 1)))
+            .draw(|frame| panel.draw(frame, frame.area(), (0, 1), None))
             .unwrap();
         let buffer = terminal.backend().buffer();
         (0..height)
@@ -947,12 +877,12 @@ mod tests {
         let rows = render_panel(&mut panel, 26);
         assert!(rows[0].starts_with("┌ TOC"));
         assert!(rows[0].contains("┌ Plan"));
-        assert!(rows[15].starts_with('└'));
-        assert!(rows[16].trim().is_empty());
-        assert!(rows[17].starts_with("╭ Actions"));
+        assert!(rows[16].starts_with('└'));
+        assert!(rows[17].trim().is_empty());
+        assert!(rows[18].starts_with("╭ Actions"));
         assert!(rows[25].starts_with('╰'));
         for (index, label) in ACTIONS.iter().enumerate() {
-            assert!(rows[18 + index].contains(label));
+            assert!(rows[19 + index].contains(label));
         }
         let mut completed = Panel::progress(document(PlanStatus::Completed, "- [x] step"));
         let rows = render_panel(&mut completed, 26);
@@ -1062,7 +992,7 @@ mod tests {
     #[test]
     fn plan_short_actions_frame_keeps_the_selected_option_visible() {
         let mut panel = review_panel(PlanStatus::Ready);
-        panel.key(key_event(KeyCode::Char('6')));
+        panel.key(key_event(KeyCode::Char('5')));
         let rows = render_panel(&mut panel, 10);
         assert!(
             rows.iter()
@@ -1093,22 +1023,18 @@ mod tests {
     }
 
     #[test]
-    fn plan_number_keys_select_all_six_actions_without_executing() {
+    fn plan_number_keys_select_all_five_actions_without_executing() {
         for (number, expected) in [
             ('1', Action::Approve(ExecutionContext::Fresh)),
             ('2', Action::Approve(ExecutionContext::Keep)),
             ('3', Action::Approve(ExecutionContext::Compact)),
             ('4', Action::Review),
-            ('6', Action::SaveAndLeave),
+            ('5', Action::SaveAndLeave),
         ] {
             let mut panel = review_panel(PlanStatus::Ready);
             assert_eq!(panel.key(key_event(KeyCode::Char(number))), Action::None);
             assert_eq!(panel.key(key_event(KeyCode::Enter)), expected);
         }
-        let mut panel = review_panel(PlanStatus::Ready);
-        panel.key(key_event(KeyCode::Char('5')));
-        panel.key(key_event(KeyCode::Enter));
-        assert!(panel.discussion.is_some());
     }
 
     #[test]
@@ -1118,12 +1044,16 @@ mod tests {
             assert!(!draft.action_enabled(index));
         }
         assert!(draft.action_enabled(4));
-        assert!(draft.action_enabled(5));
+        assert!(!draft.action_enabled(5));
         draft.key(key_event(KeyCode::Char('1')));
         assert_eq!(draft.action, 4);
-        assert!(draft.discussion.is_none());
-        assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::None);
-        assert!(draft.discussion.is_some());
+        assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::SaveAndLeave);
+        assert_eq!(
+            draft.key(key_event(KeyCode::Char('q'))),
+            Action::EditInput(key_event(KeyCode::Char('q')))
+        );
+        assert!(draft.input_focused());
+        assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::DiscussInput);
     }
 
     #[test]
@@ -1164,7 +1094,7 @@ mod tests {
             document: document(PlanStatus::Draft, "- [ ] step"),
             report: None,
         });
-        assert_eq!(panel.action, 5);
+        assert_eq!(panel.action, 4);
         let mut updated = document(PlanStatus::Draft, "updated");
         updated.revision = 2;
         panel.set_review(PlanReview {
@@ -1176,7 +1106,7 @@ mod tests {
         let rows = render_panel(&mut panel, 26);
         assert!(
             rows.iter()
-                .any(|row| row.contains("❯ Continue discussing Plan"))
+                .any(|row| row.contains("❯ Save draft and leave Plan mode"))
         );
         assert!(!rows.iter().any(|row| row.contains("❯ Execute")));
     }
@@ -1192,14 +1122,11 @@ mod tests {
     }
 
     #[test]
-    fn esc_closes_and_discard_keeps_ready_state() {
+    fn esc_closes_from_input_and_keeps_ready_state() {
         let mut panel = review_panel(PlanStatus::Ready);
+        panel.key(key_event(KeyCode::Tab));
+        assert!(panel.input_focused());
         assert_eq!(panel.key(key_event(KeyCode::Esc)), Action::Close);
-        panel.key(key_event(KeyCode::Char('5'))); // 讨论项
-        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None);
-        assert!(panel.discussion.is_some());
-        assert_eq!(panel.key(key_event(KeyCode::Esc)), Action::None);
-        assert!(panel.discussion.is_none());
         assert_eq!(panel.document.status, PlanStatus::Ready);
     }
 
@@ -1212,15 +1139,7 @@ mod tests {
             model_reference: "model".into(),
             content: "report body".into(),
         });
-        panel.discussion = Some(editor());
-        assert!(matches!(
-            panel.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
-            Action::None
-        ));
-        let text = match panel.key(key_event(KeyCode::Enter)) {
-            Action::Discuss(text) => text,
-            other => panic!("expected discussion text, got {other:?}"),
-        };
+        let text = panel.compose_discussion("a".into());
         assert!(text.starts_with('a'));
         assert!(text.contains("report body"));
         assert!(text.contains("revision 1"));
@@ -1234,15 +1153,10 @@ mod tests {
             model_reference: "model".into(),
             content: "stale".into(),
         });
-        stale.discussion = Some(editor());
-        stale
-            .discussion
-            .as_mut()
-            .expect("discussion open")
-            .insert_str("question");
-        assert!(
-            matches!(stale.key(key_event(KeyCode::Enter)), Action::Discuss(text) if !text.contains("stale"))
-        );
+        assert_eq!(stale.compose_discussion("question".into()), "question");
+        stale.document.revision = 1;
+        stale.report.as_mut().unwrap().plan_id = "other-plan".into();
+        assert_eq!(stale.compose_discussion("question".into()), "question");
     }
 
     #[test]
@@ -1268,7 +1182,6 @@ mod tests {
         let mut draft = review_panel(PlanStatus::Draft);
         draft.key(key_event(KeyCode::Char('4')));
         assert_eq!(draft.action, 4);
-        assert!(draft.discussion.is_none());
     }
 
     #[test]

@@ -60,7 +60,7 @@ const FIELD_ICON_WIDTH: usize = ICON_WIDTH + 1;
 const MIN_DIRECTORY: usize = 8;
 
 /// 满千使用 K、满百万使用 M，去掉无意义的 .0；CLI 仍用完整整数。
-fn abbreviate_tokens(tokens: u64) -> String {
+pub(super) fn abbreviate_tokens(tokens: u64) -> String {
     if tokens < 1000 {
         tokens.to_string()
     } else {

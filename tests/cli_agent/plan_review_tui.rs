@@ -6,7 +6,7 @@ fn plan_wait_report(pty: &mut Pty, marker: &str, outdated: bool) {
         text.contains(marker)
             && text.contains("fixture/primary")
             && text.contains("outdated") == outdated
-            && text.contains("Execute (keep context)")
+            && text.contains("Execute with context")
     });
 }
 
@@ -148,9 +148,11 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
             plan_wait_mode(&mut pty, "Plan");
             no_more(&fixture);
             assert_eq!(std::fs::read(&path).unwrap(), original);
-            plan_choose(&mut pty, action);
             if action == 4 {
-                pty.input("Which failure input should item two use?\r");
+                // 从报告正文反向切换到输入框，继续讨论。
+                pty.input("\x1b[ZWhich failure input should item two use?\r");
+            } else {
+                plan_choose(&mut pty, action);
             }
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
             system_prompt::assert_live(&body, protocol, if action == 4 { "plan" } else { "execute" });

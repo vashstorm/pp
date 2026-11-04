@@ -151,7 +151,7 @@ fn plan_focus_highlights_only_the_active_frame_and_preserves_selection() {
         for (y, color) in [0, actions_y, 26].into_iter().zip(colors) {
             assert_eq!(buffer[(99, y)].fg, color, "边框所在行：{y}");
         }
-        let rows: Vec<String> = (actions_y + 1..actions_y + 7)
+        let rows: Vec<String> = (actions_y + 1..actions_y + 6)
             .map(|y| (1..99).map(|x| buffer[(x, y)].symbol()).collect())
             .collect();
         assert!(rows[0].starts_with("❯ Execute in a new session"));
@@ -160,7 +160,7 @@ fn plan_focus_highlights_only_the_active_frame_and_preserves_selection() {
             assert!(!row.contains(&format!("{}. ", index + 1)), "{row}");
         }
         let hint: String = (1..99)
-            .map(|x| buffer[(x, actions_y + 7)].symbol())
+            .map(|x| buffer[(x, actions_y + 6)].symbol())
             .collect();
         assert!(!hint.contains("1–6 select"), "{hint}");
         app.handle(key(KeyCode::Tab), &mut false);
@@ -193,6 +193,55 @@ fn plan_ready_paste_keeps_output_and_discusses_from_the_input() {
         panic!("expected discussion run");
     };
     assert_eq!(prompt, "existing question");
+    assert!(app.plan_panel.is_none());
+    assert!(app.input.is_empty());
+}
+
+#[test]
+fn plan_actions_show_live_context_usage_and_accept_typed_discussion() {
+    let (mut app, requests, _events) = plan_app();
+    app.receive_event_for_test(WorkerEvent::PlanRead(Ok(plan_review_fixture(
+        PlanStatus::Ready,
+    ))));
+    app.usage = Some(pp_core::context::ContextUsage {
+        estimated_tokens: 120_000,
+        context_window: Some(500_000),
+        auto_compact: true,
+        threshold_percent: 80,
+        last_request: None,
+        session_output_tokens: 0,
+    });
+    let screen = draw(&mut app, 100, 30);
+    assert!(
+        screen.contains("Execute with context (120K/500K)"),
+        "{screen}"
+    );
+    assert!(!screen.contains("Continue discussing Plan"), "{screen}");
+    app.usage.as_mut().unwrap().estimated_tokens = 125_500;
+    let screen = draw(&mut app, 100, 30);
+    assert!(
+        screen.contains("Execute with context (125.5K/500K)"),
+        "{screen}"
+    );
+    app.usage.as_mut().unwrap().context_window = None;
+    assert!(draw(&mut app, 100, 30).contains("Execute with context (125.5K/?)"));
+    app.usage = None;
+    assert!(draw(&mut app, 100, 30).contains("Execute with context (?/?)"));
+
+    app.handle(key(KeyCode::Char('q')), &mut false);
+    assert!(app.plan_panel.as_ref().unwrap().input_focused());
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)),
+        &mut false,
+    );
+    app.handle(Event::Paste("继续讨论".into()), &mut false);
+    assert_eq!(app.input.lines(), &["q", "继续讨论"]);
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(WorkerCommand::Run { prompt, .. }) if prompt == "q\n继续讨论"
+    ));
+    assert!(requests.try_recv().is_err());
     assert!(app.plan_panel.is_none());
     assert!(app.input.is_empty());
 }
@@ -562,7 +611,7 @@ fn esc_cancels_reviewer_and_returns_to_menu_on_controlled_finish() {
     app.receive_event_for_test(WorkerEvent::PlanReviewed(Err(anyhow::anyhow!(
         "review cancelled"
     ))));
-    // 回六项菜单的读取中；旧完整报告与 Plan 模式保留。
+    // 回五项菜单的读取中；旧完整报告与 Plan 模式保留。
     assert!(app.review_transcript.is_none());
     assert!(matches!(app.state, State::ReadingPlan));
     assert!(matches!(requests.try_recv(), Ok(WorkerCommand::ReadPlan)));
