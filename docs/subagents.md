@@ -40,7 +40,9 @@ task:
   agent_models: {}
 ```
 
-`max_concurrency` 是整棵子任务树共享的活跃执行上限，取值 1–32，Main 不占名额。等待结果和人工交互时让出名额；排队任务可以取消。根深度为 0；默认最多两层 child，达到上限后隐藏并拒绝 `task`。深度配置上限为 8。
+`max_concurrency` 是整棵子任务树共享的活跃执行上限，默认 4，取值 1–32，Main 不占名额。它限制活跃模型请求及受控工具执行，不限制已创建或空闲的 Agent 总数；等待结果和人工交互时不占名额，排队任务可以取消。配置修改后重启 `pp` 生效。
+
+只有 Main 可以派发子 Agent；所有 child（包括恢复的旧任务）均隐藏并拒绝 `task`，不生成该工具的 schema、description 或自动委托使用提示。`max_recursion_depth` 保留默认值 2 和 0–8 的解析范围：0 禁用 Main 派发，1–8 最多允许 Main 派发一层，不能开启递归。旧任务树仍可观察、取消和恢复已有任务。
 
 空闲 7 分钟后进入 `parked`，保留身份、结果、历史与隔离工作区；`idle_ttl_ms: 0` 关闭正常的空闲驻留计时。`request_budget: 0` 关闭请求预算；默认在 200 次请求时提示收尾，达到 300 次停止运行并保留已保存成果。
 
@@ -72,9 +74,9 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 
 文件加载后可调用 `{"agent":"api-auditor","task":"审阅接口兼容性"}`；显式附加 `"role":"fast"` 会使用 FAST 的模型和 effort，同时保留该自定义 Agent 的提示词、工具和输出约束。
 
-`tools` 省略时采用通用工具集，显式 `[]` 禁用普通工具；仅含 read／grep／glob／lsp 的工具集自动应用只读限制。`spawns` 指定允许委托的自定义名称或系统 Role 小写名称，`["*"]` 允许全部；自定义定义省略或空列表禁止继续派发。子 Agent 能力仍受父能力和工作模式限制。`blocking: true` 在批次全部启动后等待该自定义任务，默认异步；普通异步任务可用 `wait` 等待结果。`output` 可定义结构化结果约束，任务项的 `output_schema` 优先。
+`tools` 省略时采用通用工具集，显式 `[]` 禁用普通工具；仅含 read／grep／glob／lsp 的工具集自动应用只读限制。无论默认工具、自定义 `tools` 还是旧记录，child 的有效工具集都会剔除 `task`。`spawns` 字段保留解析与存储兼容，但即使设为 `["*"]` 也不能让 child 继续派发。子 Agent 能力仍受工作模式限制。`blocking: true` 在批次全部启动后等待该自定义任务，默认异步；普通异步任务可用 `wait` 等待结果。`output` 可定义结构化结果约束，任务项的 `output_schema` 优先。
 
-普通 child 不复制父对话，只接收系统 Role 对应的任务约束、任务、共享背景、适用的 `AGENTS.md`、可用 Skill 与相关批准计划。父 TODO 和计划状态仍由 Main 管理。
+普通 child 不复制父对话，只接收系统 Role 对应的任务约束、任务、共享背景、适用的 `AGENTS.md`、可用 Skill 与相关批准计划；不注入 Main 的 Plan／批准执行委托规则。父 TODO 和计划状态仍由 Main 管理。自定义提示词、任务背景、项目规则和批准计划中的原文不会被字符串清洗，普通任务说明、结果约定及 `yield` 提示保持不变。
 
 ## 模型工具接口
 

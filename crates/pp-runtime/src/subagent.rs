@@ -172,12 +172,18 @@ fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 pub(crate) fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    use std::io::{BufWriter, Write};
     use std::os::unix::fs::PermissionsExt;
     let parent = path.parent().context("missing persist directory")?;
     fs::create_dir_all(parent)?;
     fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer(&mut tmp, value)?;
+    {
+        // Registry 在共享调度锁内保存，缓冲细碎 JSON 写入，避免阻塞 permit 与结果结算。
+        let mut writer = BufWriter::new(&mut tmp);
+        serde_json::to_writer(&mut writer, value)?;
+        writer.flush()?;
+    }
     tmp.as_file().sync_all()?;
     tmp.persist(path).map_err(|e| e.error)?;
     fs::File::open(parent)?.sync_all()?;
@@ -403,6 +409,9 @@ impl Binding {
         )
     }
     pub(crate) fn definitions(&self, _mode: WorkMode) -> Vec<FunctionObject> {
+        if self.depth != 0 {
+            return Vec::new();
+        }
         let roles = self.enabled_subagent_model_roles();
         let custom = self
             .roles()
@@ -491,7 +500,8 @@ impl Binding {
     }
     fn spawn(&self, batch: Batch, plan: bool, token: &CancellationToken) -> Result<Value> {
         ensure!(
-            self.depth < self.inner.settings.max_recursion_depth
+            self.depth == 0
+                && self.depth < self.inner.settings.max_recursion_depth
                 && !self.spawns.is_empty()
                 && !self.readonly,
             "this agent is not allowed to spawn further subagents"
@@ -623,7 +633,6 @@ impl Binding {
                     "bash",
                     "bash_task",
                     "ask",
-                    "task",
                     "wait",
                 ]
                 .into_iter()
@@ -636,13 +645,7 @@ impl Binding {
             if readonly {
                 tools.retain(|name| matches!(name.as_str(), "read" | "grep" | "glob" | "lsp"));
             }
-            if self.depth > 0 {
-                let state = lock(&self.inner.state);
-                if let Some(parent) = state.disk.agents.get(&self.owner) {
-                    tools.retain(|t| parent.spec.tools.contains(t));
-                }
-            }
-            tools.retain(|t| t != "todo" && !t.starts_with("plan_"));
+            tools.retain(|t| t != "task" && t != "todo" && !t.starts_with("plan_"));
             let mut spec = Spec {
                 model_role,
                 role_route: model_role.zip(assignment).map(|(role, assignment)| pp_config::config::RoleRoute {
@@ -660,7 +663,7 @@ impl Binding {
                 model,
                 thinking,
                 tools,
-                spawns: if readonly { vec![] } else { custom.map(|def| def.spawns.clone().unwrap_or_default()).unwrap_or_else(|| vec!["*".into()]) },
+                spawns: vec![],
                 output_schema: output,
                 cwd: self.cwd.clone(),
                 depth: self.depth + 1,

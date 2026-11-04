@@ -146,6 +146,7 @@ impl Agent {
             // 只读任务不能通过子 Agent 默认 Execute 绕过。
             tools.set_lsp_readonly(record.spec.readonly);
             let mut allowed = record.spec.tools.clone();
+            allowed.retain(|name| name != "task");
             if plan_mode {
                 allowed.retain(|name| matches!(name.as_str(), "read" | "grep" | "glob" | "lsp"));
             }

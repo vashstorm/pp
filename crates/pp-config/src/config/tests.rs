@@ -1167,3 +1167,35 @@ fn tui_max_fps_defaults_and_strict_limits() {
         assert!(yaml::parse::<Settings>(text, "settings").is_err());
     }
 }
+
+#[test]
+fn task_max_concurrency_defaults_and_strict_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.yml");
+    // 文件缺失、空 settings 或省略并发字段时使用默认值。
+    assert_eq!(read_settings(&path).unwrap().task.max_concurrency, 4);
+    for text in ["{}", "task: {}", "task: {idle_ttl_ms: 1}"] {
+        fs::write(&path, text).unwrap();
+        assert_eq!(
+            read_settings(&path).unwrap().task.max_concurrency,
+            4,
+            "{text}"
+        );
+    }
+    for value in [1, 2, 32] {
+        fs::write(&path, format!("task: {{max_concurrency: {value}}}")).unwrap();
+        assert_eq!(read_settings(&path).unwrap().task.max_concurrency, value);
+    }
+    for text in [
+        "task: {max_concurrency: 0}",
+        "task: {max_concurrency: 33}",
+        "task: {max_concurrency: -1}",
+        "task: {max_concurrency: 1.5}",
+        "task: {max_concurrency: '4'}",
+        "task: {max_concurrency: null}",
+        "task: {max_concurreny: 4}",
+    ] {
+        fs::write(&path, text).unwrap();
+        assert!(read_settings(&path).is_err(), "{text}");
+    }
+}

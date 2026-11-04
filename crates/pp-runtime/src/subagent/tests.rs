@@ -311,6 +311,70 @@ fn binding(dir: &Path, settings: TaskSettings) -> Binding {
 }
 
 #[test]
+fn child_bindings_cannot_spawn_subagents() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = binding(
+        dir.path(),
+        TaskSettings {
+            max_recursion_depth: 8,
+            ..Default::default()
+        },
+    );
+    let args = json!({"context":"no recursive dispatch","tasks":[{"task":"valid child work"}]})
+        .to_string();
+    for mode in [WorkMode::Execute, WorkMode::Plan] {
+        assert!(
+            root.definitions(mode)
+                .iter()
+                .any(|tool| tool.name == "task")
+        );
+        for depth in [1, 2] {
+            let mut child = root.clone();
+            child.depth = depth;
+            child.owner = format!("a{depth}");
+            child.readonly = false;
+            child.spawns = vec!["*".into()];
+            assert!(child.definitions(mode).is_empty());
+            let before = {
+                let state = lock(&root.inner.state);
+                (state.disk.agents.clone(), state.disk.runs.clone())
+            };
+            let error = child
+                .execute("task", &args, mode == WorkMode::Plan, &Default::default())
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "this agent is not allowed to spawn further subagents"
+            );
+            let state = lock(&root.inner.state);
+            assert_eq!(
+                serde_json::to_value((&state.disk.agents, &state.disk.runs)).unwrap(),
+                serde_json::to_value(before).unwrap()
+            );
+        }
+    }
+    let disabled_dir = tempfile::tempdir().unwrap();
+    let disabled = binding(
+        disabled_dir.path(),
+        TaskSettings {
+            max_recursion_depth: 0,
+            ..Default::default()
+        },
+    );
+    for mode in [WorkMode::Execute, WorkMode::Plan] {
+        assert!(disabled.definitions(mode).is_empty());
+        assert!(
+            disabled
+                .execute("task", &args, mode == WorkMode::Plan, &Default::default())
+                .is_err()
+        );
+    }
+    let state = lock(&disabled.inner.state);
+    assert!(state.disk.agents.is_empty());
+    assert!(state.disk.runs.is_empty());
+}
+
+#[test]
 fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), TaskSettings::default());

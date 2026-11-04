@@ -113,50 +113,58 @@ fn statusline_out_accumulates_session_usage_across_requests_both_protocols() {
 }
 
 #[test]
-fn task_status_cost_includes_nested_subagents_without_double_counting_both_protocols() {
+fn task_status_cost_includes_child_subagents_without_double_counting_both_protocols() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let (_home, mut pty) = statusline_start(&fixture, protocol, false);
-        pty.input("root task with descendants\r");
+        pty.input("root task with sibling children\r");
         let ((root, _), (title, _)) = statusline_requests(&fixture);
-        statusline_reply_usage(title, protocol, "嵌套任务计费");
-        pty.text("嵌套任务计费");
-        let spawn = |task| {
+        statusline_reply_usage(title, protocol, "同级任务计费");
+        pty.text("同级任务计费");
+        // 一批派发两个同级 child 后在同批内等待，父方不产生额外的中间请求。
+        statusline_reply_calls_usage(
+            root,
+            protocol,
             json!([
-                hub_call(protocol, "spawn-cost", "task", json!({"context":"cost inheritance", "tasks":[{"task":task}]})),
+                hub_call(protocol, "spawn-cost", "task", json!({"context":"sibling cost inheritance",
+                    "tasks":[{"task":"first-cost-marker"},{"task":"second-cost-marker"}]})),
                 hub_call(protocol, "wait-cost", "wait", json!({}))
-            ])
-        };
-        statusline_reply_calls_usage(root, protocol, spawn("child-cost-marker"));
-        let (child, body) = pty.request_at(&fixture, api_path(protocol));
-        assert!(hub_is_child(&body), "{body}");
-        assert!(body.to_string().contains("child-cost-marker"));
-        statusline_reply_calls_usage(child, protocol, spawn("nested-cost-marker"));
-        let (nested, body) = pty.request_at(&fixture, api_path(protocol));
-        assert!(!is_task_title(&body));
-        assert!(hub_is_child(&body), "{body}");
-        assert!(body.to_string().contains("nested-cost-marker"));
-        assert!(body.to_string().contains("You are subagent a2."));
-        statusline_reply_usage(nested, protocol, "nested-cost-answer");
-        let (child, body) = pty.request_at(&fixture, api_path(protocol));
-        assert!(!is_task_title(&body));
-        assert!(hub_is_child(&body), "{body}");
-        assert!(body.to_string().contains("nested-cost-answer"));
-        statusline_reply_usage(child, protocol, "child-cost-answer");
+            ]),
+        );
+        let mut children: Vec<Option<Request>> = vec![None, None];
+        while children.iter().any(Option::is_none) {
+            let (request, body) = pty.request_at(&fixture, api_path(protocol));
+            assert!(
+                hub_is_child(&body),
+                "unexpected parent request before children finish: {body}"
+            );
+            let text = body.to_string();
+            let index = ["first-cost-marker", "second-cost-marker"]
+                .iter()
+                .position(|marker| text.contains(*marker))
+                .expect("known child task");
+            assert!(children[index].is_none(), "duplicate child request: {body}");
+            children[index] = Some(request);
+        }
+        statusline_reply_usage(children[0].take().unwrap(), protocol, "first-cost-answer");
+        statusline_reply_usage(children[1].take().unwrap(), protocol, "second-cost-answer");
         let (root, body) = pty.request_at(&fixture, api_path(protocol));
-        assert!(!hub_is_child(&body));
-        assert!(body.to_string().contains("child-cost-answer"));
+        assert!(!is_task_title(&body));
+        assert!(!hub_is_child(&body), "{body}");
+        let text = body.to_string();
+        assert!(text.contains("first-cost-answer"));
+        assert!(text.contains("second-cost-answer"));
         statusline_reply_usage(root, protocol, "root-cost-answer");
         pty.completed_after("root-cost-answer");
-        // 标题 + 根两次 + 子两次 + 孙一次，共六次模型请求。
-        pty.wait_for("根任务累计全部层级费用", |screen| {
-            screen.contents().contains("0.0738 USD")
+        // 标题 + 根两次 + 两个同级 child 各一次，共五次模型请求。
+        pty.wait_for("根任务累计子任务费用", |screen| {
+            screen.contents().contains("0.0615 USD")
         });
         assert!(
             !pty.parser
                 .screen()
                 .contents()
-                .contains("0.0738 USD \u{f0026}")
+                .contains("0.0615 USD \u{f0026}")
         );
         pty.input("\x03");
         pty.finish();

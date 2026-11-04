@@ -130,7 +130,7 @@ printf '说明当前项目的构建方式\n' | pp
 
 主输入框可编辑时，补全始终可用，包括模型输出、上下文压缩、取消收尾和模型切换期间。斜杠命令、已支持的参数和文件引用均可补全，补全不会发送草稿。Esc 收起候选后可用 Tab 重新唤起；要求空闲的命令仍须等任务结束后才能执行。Markdown 解析、语法高亮与正文排版在后台线程完成，样式就绪前可能短暂显示纯文本预览。切换模型保留已提交上下文，不取消当前请求、不重复已完成任务，也不重启后台工作；历史内容无法兼容目标协议时拒绝切换并保留当前模型。
 
-通过 `/Roles` 保存模型与思考档位后，Default 会让主 Agent 在下一个安全边界切换，不影响已有子 Agent；其他角色的变更由绑定该角色的子 Agent 各自在安全边界应用，包括嵌套子 Agent。没有角色绑定、仅在创建时继承模型的子 Agent 保持原配置。禁用或清除角色不会取消或重新绑定已有子 Agent；不监听其他 pp 进程的配置热更新。
+通过 `/Roles` 保存模型与思考档位后，Default 会让主 Agent 在下一个安全边界切换，不影响已有子 Agent；其他角色的变更由绑定该角色的子 Agent 各自在安全边界应用，旧会话中已有的嵌套子 Agent 也遵循此规则，但不能派发新子任务。没有角色绑定、仅在创建时继承模型的子 Agent 保持原配置。禁用或清除角色不会取消或重新绑定已有子 Agent；不监听其他 pp 进程的配置热更新。
 
 所有 `/test-*` 命令只在 dev/test 构建中提供：命令本身及其专用实现统一由 `#[cfg(debug_assertions)]` 编译排除，与 `debug` 设置无关。其他构建不注册这些名字，因此在行模式与终端界面都按未注册命令处理：不报本地错误、不请求模型，行模式静默忽略、终端界面保留草稿，`/help`、`/tips` 与 `/` 补全中也没有对应条目。`/test-tools` 按 read → write → edit → grep → glob → bash → bash-task → wait → todo → ask 顺序运行同一套固定场景：每次在启动目录下新建临时工作区并运行真实工具，预期 `ok:false` 卡片不会中断后续场景；取消、夹具初始化失败或受管进程清理失败会停止命令。默认套件不包含 LSP、MCP、Plan 工具或子 Agent `yield`，也不会请求模型。`/test-task` 是独立命令，要求 FAST、SLOW、REVIEW 三个模型 Role 已启用，并通过当前模型发送固定子 Agent 批次。`/test-ui` 不请求模型，而是以约 80 ms/token 输出固定的 `AgentEvent` 思考与 Markdown／代码增量，用于观察慢速渲染和 Esc 取消。`/test-ask` 需要交互式 TUI；工具测试仅在 Execute 模式、空闲且无 pending 输入时启动。
 
@@ -255,4 +255,4 @@ cargo fmt --all --check
 
 ## 子 Agent
 
-使用 `/agents` 查看角色，`/subagents`（或 `⌥ + A / Alt + A`）打开 Agent Hub，查看 Agents、完整 Activity、消耗与独立详情，并追问、取消或恢复任务。支持批量异步派发、独立上下文、两层递归、结构化结果及可选 worktree 隔离，子任务沿用父审批规则。详见[子 Agent 使用说明](docs/subagents.md)。
+使用 `/agents` 查看角色，`/subagents`（或 `⌥ + A / Alt + A`）打开 Agent Hub，查看 Agents、完整 Activity、消耗与独立详情，并追问、取消或恢复任务。支持 Main 批量异步派发、独立上下文、结构化结果及可选 worktree 隔离，子任务沿用父审批规则。并发默认 4，通过 `~/.pp/agent/settings.yml` 的 `task.max_concurrency` 配置为 1–32，重启生效；Main 不占名额。所有 child 均无 `task` 工具和自动委托使用提示，不能递归派发。详见[子 Agent 使用说明](docs/subagents.md)。
