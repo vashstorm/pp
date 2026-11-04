@@ -366,7 +366,7 @@ bash／bash_task 的折叠 Output 区域按实际输出行数增长，没有数�
 - `/tips` 输出全部斜杠命令与全局快捷键，按 `Commands`、`Shortcuts` 两组展示并各自按忽略大小写的字母序排列；键名不超过 16 列、说明不超过 20 列，正文宽度足够（当前 78 列）时双列，否则单列。dev/test 构建额外包含全部 `/test-*`，其他构建完全不注册这些名字。首页仅展示其中的常用入口并补充 Enter 发送说明：命令和快捷键旁用简短说明交代用途，例如 `/plan` 先规划再批准修改、`/compact` 摘要较早上下文、`/tree` 浏览并回退会话历史。TUI 使用绿色加粗键名、灰色说明与随窗口宽度切换的双列／单列布局，支持滚动与退出 scrollback；行模式输出 `Tips:` 与两个分组标题的对齐单列。两种模式均支持；无需参数，不请求模型、不进入模型上下文，也不创建或追加会话 JSONL 日志。模型配置不可用时仍可使用。
 - 退出时仅在内存中生成最终画面，切回主屏幕与完整会话回放使用同一次终端同步更新（DEC 2026）；支持该协议的终端会隐藏中间画面，减少闪烁。退出后仍保留完整历史、草稿和状态栏；不支持同步更新的终端按原有方式显示回放。
 - 流式正文最多约每 33 ms 更新一帧，输入优先按有界批次处理。正文 Markdown、代码高亮和折行由独立排版线程计算；期间显示有限纯文本尾部，完整正文始终保留。过期会话、替换正文或旧宽度的结果不能覆盖当前显示，原生历史仅在终稿布局就绪且输出成功后确认；每轮最多提交 64 行历史，避免连续刷屏阻塞输入。代码高亮复用完整行的语法状态，仅重算新增行和变化的末行，保留 500 行／64 KiB 护栏；LRU 最多 64 块、缓存源文本最多 8 MiB，窗口缩放只重新折行。
-- 输入框上方的选择菜单（`/` 命令补全、`/model `、`/effort `、`@` 文件选择、⌥ + Q / Ctrl + Q 待处理消息）统一使用 `src/tui/menu.rs` 中的 `SelectionMenu` 组件，业务层只提供选项数据和确认动作。统一贴着输入框上沿向上覆盖显示无外框列表；`@` 文件菜单左侧留出四列空白，使用单列亮白色文字，选中项及箭头使用黄色并加粗，不重复显示路径，不显示底部快捷键提示。其他菜单使用两列列表，左列按最长候选名称的实际显示宽度对齐（最多占终端一半宽度），与说明之间留八列空白，右列使用剩余宽度；选中行以浅蓝色文字和箭头突出，其余候选与说明为灰色，普通菜单的当前值显示 `(current)`，模型面板改用名称后的图标，菜单与输入框之间使用灰色分隔线。菜单打开、筛选、滚动或收起时不改变输入框与状态栏的位置，也不缩小对话视口或改变对话换行；菜单临时遮盖的正文在收起后原位恢复。多行草稿仍按原有规则决定输入框高度，短屏优先保留输入框。最多显示八行，窄屏截断说明，短屏随选择滚动。↑/↓、Home/End、PgUp/PgDn 导航且不循环，Tab 补全或打开目录但不提交（待处理消息列表中无操作），Enter 确认当前项；Esc 收起列表并保留草稿，普通补全菜单下次编辑时重新显示，队列列表须 ⌥ + Q / Ctrl + Q 显式打开。输入 `/` 展开命令菜单，内置命令和自定义命令均按名称进行忽略大小写的模糊匹配：输入字符只需按顺序出现，无需连续，例如 `/MDL` 匹配 `/model`、`/PLS` 匹配 `/plan-list`。候选依次优先显示完整匹配、前缀匹配、子串匹配和非连续匹配，同类保持原有顺序；左列直接显示 `/command`，不附加命令图标。Tab 补全或 Enter 确认时使用候选的原始名称。
+- 输入框上方的选择菜单（`/` 命令补全、`/model `、`/effort `、`@` 文件选择、⌥ + Q / Ctrl + Q 待处理消息）统一使用 `crates/pp-ui/src/tui/menu.rs` 中的 `SelectionMenu` 组件，业务层只提供选项数据和确认动作。统一贴着输入框上沿向上覆盖显示无外框列表；`@` 文件菜单左侧留出四列空白，使用单列亮白色文字，选中项及箭头使用黄色并加粗，不重复显示路径，不显示底部快捷键提示。其他菜单使用两列列表，左列按最长候选名称的实际显示宽度对齐（最多占终端一半宽度），与说明之间留八列空白，右列使用剩余宽度；选中行以浅蓝色文字和箭头突出，其余候选与说明为灰色，普通菜单的当前值显示 `(current)`，模型面板改用名称后的图标，菜单与输入框之间使用灰色分隔线。菜单打开、筛选、滚动或收起时不改变输入框与状态栏的位置，也不缩小对话视口或改变对话换行；菜单临时遮盖的正文在收起后原位恢复。多行草稿仍按原有规则决定输入框高度，短屏优先保留输入框。最多显示八行，窄屏截断说明，短屏随选择滚动。↑/↓、Home/End、PgUp/PgDn 导航且不循环，Tab 补全或打开目录但不提交（待处理消息列表中无操作），Enter 确认当前项；Esc 收起列表并保留草稿，普通补全菜单下次编辑时重新显示，队列列表须 ⌥ + Q / Ctrl + Q 显式打开。输入 `/` 展开命令菜单，内置命令和自定义命令均按名称进行忽略大小写的模糊匹配：输入字符只需按顺序出现，无需连续，例如 `/MDL` 匹配 `/model`、`/PLS` 匹配 `/plan-list`。候选依次优先显示完整匹配、前缀匹配、子串匹配和非连续匹配，同类保持原有顺序；左列直接显示 `/command`，不附加命令图标。Tab 补全或 Enter 确认时使用候选的原始名称。
 - 输入 `/model `（命令后加空格）会清空主输入框，并打开紧贴其顶部向上展开的模型浮层，自动聚焦独立搜索框。浮层覆盖 TODO 等底层内容而不挤压原有布局，关闭后恢复显示。列表显示 `provider/model`，默认与当前状态均使用名称后的图标标记，底部操作提示行说明图标含义：金色星标 `` 表示收藏，紫色书签 `` 表示默认，绿色勾选 `` 表示当前；图例与列表图标配色一致，窄屏优先保留图例并缩短操作提示；默认与当前可分别标在不同模型上。Ctrl + S 保存时保持菜单、筛选内容和高亮选择，成功后更新 default 标记，失败保持原标记。浅蓝色文字和箭头突出选中项。`/model` 后按 Enter 也能展开，默认选中当前模型。收藏模型名称后显示纯金黄色 Nerd Font 实心星标 `` 并优先排列；非收藏模型按 `agent.db` 记录的模型请求次数从多到少排列，次数相同则保持模型目录顺序，整个面板最高 15 行，包含搜索框 3 行、模型列表最多 11 行和底部操作提示 1 行，打开时按模型总数确定高度，后续筛选、清空查询或无匹配结果均保持高度不变；小终端按可用高度裁剪，恢复尺寸后还原原定高度；长列表显示滚动条并随选择滚动。↑/↓、Home/End、PgUp/PgDn 导航，面板内滚轮移动选择，Enter 确认，Esc 收起；从命令进入时主输入框保持空白，从快捷键进入时恢复原草稿。在独立搜索框中输入按引用或实际模型名进行忽略大小写的包含筛选，查询两端空白忽略，清空查询显示全部模型；无匹配时显示 `No matching models`，Enter、Tab 和 Ctrl + F 不执行操作。Tab 补全引用但不切换；Ctrl + F 收藏／取消收藏高亮模型，保存到 `agent.db` 的收藏表后才更新星标和排序，重排后仍高亮原模型，失败保留原状态；已移除模型的收藏引用保留但不展示，不影响启动。模型菜单使用亮灰白名称、较亮灰色说明及加粗亮蓝色选中项；Ctrl + S 将高亮模型保存到 `agent.db` 的默认模型偏好，下次普通新启动生效，不切换当前会话模型、不改写 `models.yml`。保存使用数据库事务，提交成功后才更新标记；失败显示错误并保留原状态。菜单底部显示快捷键提示；通过 ⌥ + P / Ctrl + P 打开时，保存后仍保留菜单，按 Esc 恢复原草稿和光标。面板内的多行粘贴将换行归一为空格，仅更新搜索框，不作为任务发送；搜索词不进入输入历史或模型上下文。后台完成切换后才更新状态栏，历史和确认后新编辑的草稿均保留；运行中确认模型只登记待生效目标，不取消请求、不清空新草稿、不自动重发已完成任务。当前模型与待切换目标分开展示，成功 checkpoint 后才更新当前模型；同一目标的连续修改以最新成功校验／保存的修订为准。`/new` 仍在后台确认后清空历史和草稿。
 - 模型请求次数只用于 `/model` 菜单排序，不代表用户任务数或模型选择次数。计数从迁移完成后开始，每次实际尝试发送的逻辑模型 API 请求加一，包括工具续轮、摘要、审查、子 Agent，以及发送后的失败和取消；同一逻辑请求的建连重试只算一次，发送前取消、授权校验失败和仅打开模型面板或切换模型不计数。计数保存在 `agent.db`，与独立维护的 `stats.db` 互不依赖；`pp gc` 清理统计请求或统计写入失败都不影响该计数。计数写入失败只给出脱敏警告，不改变已发生的模型请求结果，也不重试请求。收藏组始终在前，两组内均按次数降序，同次数保持模型目录顺序。
 - 运行中按无修饰键的 Esc 取消当前任务，不退出 pp；已有面板或菜单优先消费 Esc。收尾期间显示 `Cancelling...`，仍可编辑草稿、滚动、F1/help、Ctrl + O 或退出，但不能提交／排队新任务、切换模型／思考级别或 `/new`。收尾完成后保留草稿、光标、输入历史、已完成的工具结果和文件修改，并追加 `Task cancelled. File changes were not rolled back.`；不重试、不回滚。每个任务使用独立取消 token，已提交的最终回答不会被迟到 Esc 改成取消。行模式和 `-p` 不提供取消入口。
@@ -408,7 +408,7 @@ Plan 阶段只讨论、编写和审阅计划 Markdown，不生成 TODO 投影或
 5. **Continue discussing Plan**：独立编辑器，Enter 发送、Ctrl + J 换行、Esc 丢弃未发送问题；发送后降 Draft，保留计划正文，重新提交才能批准。不强制立即重写文件；仅针对当前修订的 reviewer 报告随问题作为辅助材料带回。也可直接在下方输入框继续讨论。
 6. **Save draft and leave Plan mode**：安全核对磁盘正文与当前审阅版本，保存 Draft 状态并退出 Plan，保留计划文件；不发起模型请求，也不实施计划。失败保留面板并显示错误。
 
-审查提示词位于 `src/prompts/plan-review.md`。设计参考 Codex 的 [Plan Mode 模板](https://github.com/openai/codex/blob/23934d31b15b1127c83535f84854e5009f7cd51d/codex-rs/collaboration-mode-templates/templates/plan.md)与 [review rubric](https://github.com/openai/codex/blob/23934d31b15b1127c83535f84854e5009f7cd51d/codex-rs/prompts/templates/review/rubric.md)：采用关键决策完整、可独立交接、有证据的独立问题、去重和宁缺毋滥原则；按 pp 的计划审查场景使用 Markdown，不沿用代码 diff 审查的 JSON／行内评论格式，也不引入 Codex 允许的构建／测试能力。
+审查提示词位于 `crates/pp-runtime/src/prompts/plan-review.md`。设计参考 Codex 的 [Plan Mode 模板](https://github.com/openai/codex/blob/23934d31b15b1127c83535f84854e5009f7cd51d/codex-rs/collaboration-mode-templates/templates/plan.md)与 [review rubric](https://github.com/openai/codex/blob/23934d31b15b1127c83535f84854e5009f7cd51d/codex-rs/prompts/templates/review/rubric.md)：采用关键决策完整、可独立交接、有证据的独立问题、去重和宁缺毋滥原则；按 pp 的计划审查场景使用 Markdown，不沿用代码 diff 审查的 JSON／行内评论格式，也不引入 Codex 允许的构建／测试能力。
 
 Esc 只关闭审阅，不退出 Plan。外部编辑后再次安全读取可直接登记新修订并进入 Ready（须有真实 TODO），不强制模型复核；无 TODO 的正文只能 Draft 查看。批准携带 session／plan／revision／精确正文 token，worker 在准备前后再次核对文件及队列。字节变化会刷新新修订并要求重审；文件缺失、非 UTF-8、过大或不安全时绝不用日志旧正文回填。报告绑定审查修订和模型，计划改变后标记 `outdated`；审查结束不会自动实施。
 
@@ -682,7 +682,7 @@ TUI 的 `/mcp list` 是只读结果面板，按来源分组并单列禁用服务
 MCP 按当前用户权限运行，没有文件系统沙箱。服务 stderr 丢弃；错误不输出响应体、命令参数、环境值或认证内容。成功工具结果会进入模型上下文和会话记录，服务应避免返回凭证。
 
 ```sh
-cargo nextest run --locked -E 'test(mcp_) | test(slash_mcp)'
+cargo nextest run --locked --workspace -E 'test(mcp_) | test(slash_mcp)'
 ```
 
 ## LSP 语义导航与修改建议
@@ -721,7 +721,7 @@ lsp:
 语言服务器进程本身不是文件系统沙箱；上述规则约束 pp 的调用和提交行为。
 
 ```sh
-cargo nextest run --locked -E 'test(lsp_)'
+cargo nextest run --locked --workspace -E 'test(lsp_)'
 ```
 
 ## 上下文用量与压缩
@@ -942,7 +942,7 @@ cost:
 
 Requests 列表以旗帜图标（悬停提示 Session first request）、行左侧色条及浅色渐变底纹标识已保存首次上下文的请求，不根据当前筛选或排序猜测首次请求，旧记录不补造标记。Requests 详情顶部的 **Context** 与 **Trace** 按钮并排，Traces 展开区的 **Context** 与 **Full request details** 按钮并排；没有快照时 Context 按钮禁用并显示未记录。两处入口打开同一个桌面端上下文阅读器：Context 分类保留 system prompt、消息／输入项的原始顺序和其余请求参数；Tools 从快照中的 `tools` 展示名称、说明及完整 schema；Skills 展示本次提示词组装时冻结的技能名称、说明和 `skill://` URI，表示已提供给模型的技能摘要，不表示技能正文已读取或执行。查看时不扫描当前配置或技能目录。阅读器默认选中 system prompt，支持按名称／说明筛选、字符数、保留换行和缩进的原文高亮、自动折行、复制当前条目或完整请求 JSON；采用左右分栏布局，Esc 关闭后恢复原页面与展开状态。多模态及未知字段保留在对应条目和完整请求 JSON 中；旧记录及后续请求显示未记录。
 
-前端及 Inter 字体内嵌在二进制中，运行无需 Node 或 CDN；字体许可证见 `src/stats/fonts/LICENSE.txt`。只读接口为 `/api/stats/overview?range=24h`、`/api/stats/requests?range=24h&limit=500`、`/api/stats/models?range=24h`、`/api/stats/providers?range=24h`、`/api/stats/costs?range=24h`、`/api/stats/tools?range=24h`、`/api/stats/projects?range=24h`、`/api/stats/errors?range=24h&limit=500`、`/api/stats/traces?range=24h&limit=500`、`/api/stats/traces/{request_id}` 和 `/api/stats/requests/{id}`；详情正文按需加载，不在列表接口中返回。Requests 列表的 `has_context` 布尔字段仅表示该请求是否有已保存的首次上下文，不加载正文。请求详情新增可空的 `request_context`，存在时为包含原生 `request` 与技能摘要 `skills` 的快照对象；Trace 时间线接口仍只返回请求元数据，阅读器通过请求详情加载正文。
+前端及 Inter 字体内嵌在二进制中，运行无需 Node 或 CDN；字体许可证见 `crates/pp-stats/src/fonts/LICENSE.txt`。只读接口为 `/api/stats/overview?range=24h`、`/api/stats/requests?range=24h&limit=500`、`/api/stats/models?range=24h`、`/api/stats/providers?range=24h`、`/api/stats/costs?range=24h`、`/api/stats/tools?range=24h`、`/api/stats/projects?range=24h`、`/api/stats/errors?range=24h&limit=500`、`/api/stats/traces?range=24h&limit=500`、`/api/stats/traces/{request_id}` 和 `/api/stats/requests/{id}`；详情正文按需加载，不在列表接口中返回。Requests 列表的 `has_context` 布尔字段仅表示该请求是否有已保存的首次上下文，不加载正文。请求详情新增可空的 `request_context`，存在时为包含原生 `request` 与技能摘要 `skills` 的快照对象；Trace 时间线接口仍只返回请求元数据，阅读器通过请求详情加载正文。
 
 ## 运行诊断日志
 
@@ -999,73 +999,89 @@ pp gc [天数]
 
 ### 源码与测试模块边界
 
-项目保持单一 binary crate。较大的入口文件保留状态定义与协调逻辑，子模块按职责承接原有实现，不通过生产 `include!`、代理函数或兼容重导出来拼接：
+项目按功能边界拆为 Cargo workspace：根包 `pp` 只保留 `src/main.rs` 的启动参数、日志初始化、工作目录切换、模式分发与退出码，以及根 `tests/`；业务实现位于六个内部库，每个库都可作为独立编译单元。根包是默认成员，因此 `cargo run`、`cargo build` 和不带包选择的测试只作用于根包；跨库验证须显式使用 `--workspace`。
+
+| 包 / 目录 | 职责边界 |
+|---|---|
+| `pp-core` / `crates/pp-core/src/` | 取消、上下文、事件、交互队列、Plan、日志、SQLite 安全打开，以及 `model::ThinkLevel`、`todo`、`lsp_report` 与 `text::display_text` 等共享契约；`prompts/plan.md`、`prompts/plan-progress.md` 保留计划提示词。不依赖其他内部库。 |
+| `pp-config` / `crates/pp-config/src/` | `config`、`models`、`auth`（含 `auth/http`）、`agent_store`、`skills`、严格 YAML 与顶层 `task_status`；`prompts/skills.md` 随实现。 |
+| `pp-stats` / `crates/pp-stats/src/` | 统计快照、聚合与只读 HTTP 服务；原 `stats.rs`、`stats/` 分别成为 `lib.rs` 与同目录模块，内嵌 HTML／JS／CSS／图标／字体与实现同目录。 |
+| `pp-llm` / `crates/pp-llm/src/` | Chat Completions／Responses 请求、重试、流式、解析与共享 HTTP 返回类型；原 `llm.rs`、`llm/` 分别成为 `lib.rs` 与同目录模块。 |
+| `pp-runtime` / `crates/pp-runtime/src/` | Agent、Tools、子 Agent、MCP、LSP、会话与历史、模型控制、host defaults、项目指令与系统提示词；`prompts/` 保留 system、runtime、plan-review。 |
+| `pp-ui` / `crates/pp-ui/src/` | TUI、CLI、命令、快捷键与 tips；TUI 子模块边界保持在包内。 |
+| 根包 `pp` / `src/`、`tests/` | `main.rs` 组装入口与根 `tests/cli_agent` 集成测试。 |
+
+内部依赖方向固定：`pp-core` 不依赖其他内部库；`pp-config` 依赖 core；`pp-stats` 依赖 core/config；`pp-llm` 依赖 core/config/stats；`pp-runtime` 依赖 core/config/stats/llm；`pp-ui` 依赖 core/config/runtime；根包依赖 core/config/stats/runtime/ui。不使用反向依赖、复制类型或兼容重导出来消除跨包引用。以下边界仍在包内保持：
 
 | 模块 | 职责边界 |
 |---|---|
-| `src/agent.rs`、`src/agent/turn.rs` | Agent／Session 生命周期与任务协调留在入口；请求生命周期、双协议轮次、工具结果提交和原生历史追加在 `turn`。 |
-| `src/agent/plan_workflow.rs`、`src/agent/plan_sync.rs` | 审批／Keep/Fresh 交接及 MCP 生命周期留在 workflow；登记协调、磁盘修订导入、Todo 投影与恢复同步在 `plan_sync`。 |
-| `src/tools.rs`、`src/tools/todo/plan_adapter.rs` | schema、授权策略与分发留在工具入口；普通 Todo 状态机留在 `todo.rs`，计划适配复用其解析、转换与格式化逻辑。 |
-| `src/tui.rs`、`src/tui/app/` | App 的唯一状态定义与 worker 协议留在入口；初始化、状态、事件接收、输入、导航、面板、事件处理和绘制使用跨文件 `impl App`。 |
-| `src/tui/transcript.rs`、`src/tui/transcript/` | 类型、事件／回放状态机和共享 diff／包装函数留在入口；entry、native、tree_layout、render 分担布局实现，仍操作同一个 Transcript。 |
-| `src/sqlite.rs`、`src/agent_store.rs`、`src/history.rs` | 两库的安全打开、WAL、schema 版本检查集中在 `sqlite`；`agent_store` 拥有偏好、收藏、Role、usage 与授权行，一次性迁移在其 `migration` 子模块；`history` 拥有输入历史、会话投影和 FTS，JSONL 增量索引在 `agent::persistence::index`。 |
+| `crates/pp-runtime/src/agent.rs`、`agent/turn.rs` | Agent／Session 生命周期与任务协调留在入口；请求生命周期、双协议轮次、工具结果提交和原生历史追加在 `turn`。 |
+| `crates/pp-runtime/src/agent/plan_workflow.rs`、`agent/plan_sync.rs` | 审批／Keep/Fresh 交接及 MCP 生命周期留在 workflow；登记协调、磁盘修订导入、Todo 投影与恢复同步在 `plan_sync`。 |
+| `crates/pp-runtime/src/tools.rs`、`tools/todo/plan_adapter.rs` | schema、授权策略与分发留在工具入口；普通 Todo 状态机留在 `todo.rs`，计划适配复用其解析、转换与格式化逻辑。 |
+| `crates/pp-ui/src/tui.rs`、`tui/app/` | App 的唯一状态定义与 worker 协议留在入口；初始化、状态、事件接收、输入、导航、面板、事件处理和绘制使用跨文件 `impl App`。 |
+| `crates/pp-ui/src/tui/transcript.rs`、`tui/transcript/` | 类型、事件／回放状态机和共享 diff／包装函数留在入口；entry、native、tree_layout、render 分担布局实现，仍操作同一个 Transcript。 |
+| `crates/pp-core/src/sqlite.rs`、`crates/pp-config/src/agent_store.rs`、`crates/pp-runtime/src/history.rs` | 两库的安全打开、WAL、schema 版本检查集中在 core 的 `sqlite`；`agent_store` 拥有偏好、收藏、Role、usage 与授权行，一次性迁移在其 `migration` 子模块；`history` 拥有输入历史、会话投影和 FTS，JSONL 增量索引在 `crates/pp-runtime/src/agent/persistence/index.rs`。 |
 
-单元测试使用父模块的 `#[cfg(test)] mod tests;`，共享 fixture 留在对应 `tests.rs`，行为分组使用 `tests/*_cases.rs`，不复制 harness。配置、LLM、streaming、安全保存、持久化和 Markdown 的内聚实现只外移测试，不增加生产抽象。
+各库单元测试使用父模块的 `#[cfg(test)] mod tests;`，共享 fixture 留在对应 `tests.rs`，行为分组使用 `tests/*_cases.rs`，不复制 harness。配置、LLM、streaming、安全保存、持久化和 Markdown 的内聚实现只外移测试，不增加生产抽象。
 
-集成测试仍只有 `cli_agent` target：`tests/cli_agent.rs` 保留注册和共享 CLI／SSE fixture，`tests/cli_agent/tui.rs` 保留唯一 PTY harness；session、context、streaming、sqlite 及 TUI 的测试按行为放入同名目录。通过 `#[path]` 注册的父模块，其子模块也使用显式相对路径，避免误解析到其他分组。已有 TUI `include!` 只共享原上下文，不重复注册测试。
+根集成测试仍只有 `cli_agent` target：`tests/cli_agent.rs` 保留注册和共享 CLI／SSE fixture，`tests/cli_agent/tui.rs` 保留唯一 PTY harness；session、context、streaming、sqlite 及 TUI 的测试按行为放入同名目录。通过 `#[path]` 注册的父模块，其子模块也使用显式相对路径，避免误解析到其他分组。已有 TUI `include!` 只共享原上下文，不重复注册测试。
 
-移动测试后，模块限定名前缀会变化，特别要同步自重启测试中的 `--exact` 字符串。迁移前后可用 `cargo nextest list --locked --message-format json` 比较 binary-id／kind、测试总数，以及每个 binary 内 `(测试末级名称, ignored)` 的计数多重集，避免仅凭总数漏掉遗漏或重复注册。
+移动测试后，模块限定名前缀会变化，特别要同步自重启测试中的 `--exact` 字符串。迁移前后可用 `cargo nextest list --locked --workspace --message-format json` 比较 binary-id／kind、测试总数，以及每个 binary 内 `(测试末级名称, ignored)` 的计数多重集，避免仅凭总数漏掉遗漏或重复注册。
 
 
 ### read 模块分层
 
-`src/tools/read.rs` 保留统一入口、同步 `Read` trait、`ReadContext` 和结果类型。trait 使用关联类型 `Input`，`src/tools/read/` 下的 `FileReader`、`ImageReader`、`UrlReader` 分别接收本地文件目标、来源与图片字节、URL 目标。文件和 URL 读取识别图片后都移交同一个 `ImageReader`，通过移动字节缓冲区复用图片校验与编码，不复制完整图片。
+`crates/pp-runtime/src/tools/read.rs` 保留统一入口、同步 `Read` trait、`ReadContext` 和结果类型。trait 使用关联类型 `Input`，`crates/pp-runtime/src/tools/read/` 下的 `FileReader`、`ImageReader`、`UrlReader` 分别接收本地文件目标、来源与图片字节、URL 目标。文件和 URL 读取识别图片后都移交同一个 `ImageReader`，通过移动字节缓冲区复用图片校验与编码，不复制完整图片。
 
-`selector` 模块统一解析真实文件名、范围、尾部读取和 raw，`text` 模块共享完整行分页与续读路径，hashline 快照使用同一份完整原始字节分页并生成文件头，本地文件打开由 `file` 模块负责；`url` 模块持有网页转换与会话缓存。`ReadContext` 借用当前工作目录、限制、编辑模式、取消令牌、缓存和 fetch 回调，HTTP 请求继续复用 `OpenAiClient` 内已有的同步可取消边界，不在 reader 内创建运行时。新增读取类型时增加 trait 实现并接入相应分派，继续返回现有 JSON 与图片附件；工具权限检查仍由 `Tools` 在分派前执行。
+`selector` 模块统一解析真实文件名、范围、尾部读取和 raw，`text` 模块共享完整行分页与续读路径，hashline 快照使用同一份完整原始字节分页并生成文件头，本地文件打开由 `file` 模块负责；`url` 模块持有网页转换与会话缓存。`ReadContext` 借用当前工作目录、限制、编辑模式、取消令牌、缓存和 fetch 回调，HTTP 请求复用 `pp-llm` 的同步可取消边界（`OpenAiClient::fetch_read_url` 与 `http::HttpResponse`），不在 reader 内创建运行时。新增读取类型时增加 trait 实现并接入相应分派，继续返回现有 JSON 与图片附件；工具权限检查仍由 `Tools` 在分派前执行。
 
 ### 验证命令
 
-本地开发默认使用 [cargo-nextest](https://nexte.st/docs/running/)。未安装时先执行 `cargo install cargo-nextest --locked`，不回退到 `cargo test`。
+本地开发默认使用 [cargo-nextest](https://nexte.st/docs/running/)。未安装时先执行 `cargo install cargo-nextest --locked`；普通测试不回退到 `cargo test`，doctest 见下文单独命令。
 
 ```sh
 cargo build --locked
-cargo nextest run --locked
-cargo nextest run --locked --profile quick
-cargo clippy --locked --all-targets -- -D warnings
-cargo fmt --check
+cargo check --locked --workspace --all-targets
+cargo nextest run --locked --workspace
+cargo nextest run --locked --workspace --profile quick
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+cargo test --locked --workspace --doc
 ```
 
-`quick` 是日常快档：`.config/nextest.toml` 的 `[profile.quick]` 用 `default-filter` 跳过 `cli_agent` 中的真实 PTY 用例，只保留每类冒烟；`src/` 单元测试与其他集成用例照旧执行。它不覆盖 TUI／PTY 行为，改动这些区域时用默认档。`default-filter` 与 `-E` 取交集，所以在 `--profile quick` 下定向跑 PTY 用例必须加 `--ignore-default-filter`，否则会得到零匹配：
+根包是默认成员；裸 `cargo nextest run --locked` 只覆盖根 `cli_agent`，跨库验证必须显式加 `--workspace`。
+
+`quick` 是日常快档：`.config/nextest.toml` 的 `[profile.quick]` 用 `default-filter` 跳过 `cli_agent` 中的真实 PTY 用例，只保留每类冒烟；`crates/*` 单元测试与其余集成用例照旧执行。它不覆盖 TUI／PTY 行为，改动这些区域时用默认档。`default-filter` 与 `-E` 取交集，所以在 `--profile quick` 下定向跑 PTY 用例必须加 `--ignore-default-filter`，否则会得到零匹配：
 
 ```sh
-cargo nextest run --locked --profile quick --ignore-default-filter -E 'test(tui_exit_keeps_conversation_on_normal_screen)'
+cargo nextest run --locked -p pp --test cli_agent --profile quick --ignore-default-filter -E 'test(tui_exit_keeps_conversation_on_normal_screen)'
 ```
 
 日常修改优先按范围选择定向回归，默认并行；纯文档或注释修改无需运行 Rust 测试。以下命令按任务择一或合并筛选，不要求每次全部执行：
 
 ```sh
-cargo nextest run --locked context_
-cargo nextest run --locked --test cli_agent streaming_ --success-output immediate
-cargo nextest run --locked plan_
-cargo nextest run --locked mcp_
-cargo nextest run --locked background_
-cargo nextest run --locked --test cli_agent tui::
-cargo nextest run --locked -E 'test(llm::) | test(streaming_)'
-cargo nextest run --locked -E 'test(tui::markdown::) | test(tui::transcript::)'
-cargo nextest run --locked -E 'test(tools::read::) | test(read_pagination_) | test(read_http_) | test(read_files_images_web_) | test(read_image_)'
+cargo nextest run --locked --workspace context_
+cargo nextest run --locked -p pp --test cli_agent streaming_ --success-output immediate
+cargo nextest run --locked --workspace plan_
+cargo nextest run --locked --workspace mcp_
+cargo nextest run --locked --workspace background_
+cargo nextest run --locked -p pp --test cli_agent tui::
+cargo nextest run --locked --workspace -E 'test(llm::) | test(streaming_)'
+cargo nextest run --locked --workspace -E 'test(tui::markdown::) | test(tui::transcript::)'
+cargo nextest run --locked --workspace -E 'test(tools::read::) | test(read_pagination_) | test(read_http_) | test(read_files_images_web_) | test(read_image_)'
 ```
 
 其他常用筛选包括 `slash_`、`file_command_`、`model_switch`、`model_thinking`、`replace_`、`hashline_`、`stats_`、`sqlite_` 和 `project_instructions`。最近任务撤销可用 `changes_`、`undo_` 筛选相关用例。
 
-筛选应覆盖受影响的单元测试和集成测试；`--test cli_agent` 只运行集成测试，适合验证 CLI 行为，不能替代相关单元测试。不确定匹配范围时先运行 `cargo nextest list --locked -E '…'`；筛选结果为空不算验证通过。多个相关范围可用 `-E 'test(pattern_a) | test(pattern_b)'` 一次运行。
+筛选应覆盖受影响的单元测试和集成测试；`-p pp --test cli_agent` 只运行根集成测试，适合验证 CLI 行为，不能替代相关单元测试。不确定匹配范围时先运行 `cargo nextest list --locked --workspace -E '…'`；筛选结果为空不算验证通过。多个相关范围可用 `-E 'test(pattern_a) | test(pattern_b)'` 一次运行。
 
-配置／持久化／协议边界等跨模块改动、依赖更新、公共测试设施改动或明确要求完整验证时，运行一次 `cargo nextest run --locked`。局部验证通过且没有新改动或新疑点后，无需重复全量测试、build 或 clippy；报告实际验证范围即可。
+配置／持久化／协议边界等跨模块改动、依赖更新、公共测试设施改动或明确要求完整验证时，运行一次 `cargo nextest run --locked --workspace`。局部验证通过且没有新改动或新疑点后，无需重复全量测试、build 或 clippy；报告实际验证范围即可。
 
 `.config/nextest.toml` 的默认 profile 显式使用 `test-threads = "num-cpus"`、`retries = 0` 和 `fail-fast = false`；`quick` profile 不写 `inherits`，沿用同样的并行、重试与失败收集设置，只额外带 `default-filter`。不要把全量串行测试作为任务默认收尾。PTY／进程组／超时用例实际失败时，才对失败用例或对应小集合加 `--test-threads=1` 判断是否受并行压力影响；参数直接传给 nextest，不放在 `--` 后。`--success-output immediate` 显示成功输出而不强制串行。不通过增加 sleep、重试或放宽断言掩盖问题。
 
 单元测试覆盖配置、协议解析、原子保存和界面布局；`tests/cli_agent.rs` 及其子模块通过真实二进制、回环 HTTP SSE 服务、临时 HOME 与项目目录验证双协议工具循环、流式输出、会话恢复、Plan、MCP、后台进程、项目指令和安全撤销。Unix 下的 PTY 测试还检查输入、滚动、缩放、取消与终端恢复。测试不访问个人密钥或真实供应商；本地 fixture 通过不代表真实服务端兼容性。
 
-nextest 不运行 doctest；当前只有 binary target，新增 library target 后须另行运行 `cargo test --locked --doc`。
+nextest 不运行 doctest；六个内部库都是 library target，须另行运行 `cargo test --locked --workspace --doc`。
 
 ## 参考
 

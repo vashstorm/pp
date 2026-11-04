@@ -1,0 +1,708 @@
+use crate::tui::{
+    Agent, App, Context, EscapeTap, InputQueue, Instant, Level, Path, Result, ResumeState, State,
+    ThinkLevel, Transcript, WorkerCommand, WorkerEvent, WorkflowState, commands, editor, files,
+    mpsc, publish_pipe_store, publish_prepared, publish_transition_failure, push_runtime_snapshot,
+    push_workflow_snapshot, request_ask, skills, statusline, thread, usage_snapshot,
+};
+use std::collections::BTreeMap;
+
+impl App {
+    #[cfg(test)]
+    pub(in crate::tui) fn new(agent: Result<Agent>) -> Result<Self> {
+        let skills = pp_config::skills::Skills::default().shared();
+        // 每个 App 独立 history.db：不读取真实 HOME，也不共享临时库。
+        let dir = tempfile::tempdir()?;
+        let history_path = dir.path().join("history.db");
+        let mut app = Self::new_with_skills(
+            agent,
+            skills,
+            commands::FileCommands::default(),
+            Path::new("."),
+            Some(history_path),
+        )?;
+        app.history_dir = Some(dir);
+        Ok(app)
+    }
+
+    pub(in crate::tui) fn new_with_skills(
+        agent: Result<Agent>,
+        skills: pp_config::skills::SharedSkills,
+        file_commands: commands::FileCommands,
+        cwd: &Path,
+        history_path: Option<std::path::PathBuf>,
+    ) -> Result<Self> {
+        let mut app = Self {
+            stream: Default::default(),
+            review_stream: Default::default(),
+            renderer: None,
+            model_control: None,
+            model_revision: 0,
+            pending_model: None,
+            auth_worker: super::super::auth::Worker::new()?,
+            auth_panel: None,
+            auth_cancellation: None,
+            auth_pending: false,
+            bootstrap: None,
+            model_refresh_pending: false,
+            native_render: false,
+            normal_snapshot: None,
+            todo_panel: Default::default(),
+            history_browser: false,
+            conversation: Transcript::with_read_preview(
+                agent.as_ref().is_ok_and(Agent::read_tool_result_preview),
+            ),
+            show_welcome: true,
+            input: editor(),
+            resources: Default::default(),
+            image_view: crate::tui::images::View::new()?,
+            input_limits: agent
+                .as_ref()
+                .map_or_else(|_| Default::default(), Agent::input_limits),
+            shell_mode: false,
+            input_history: Vec::new(),
+            history_index: None,
+            history_draft: None,
+            history_worker: None,
+            history_cwd: cwd.to_path_buf(),
+            history_oldest_id: None,
+            history_has_more: false,
+            history_page_pending: None,
+            history_request_id: 0,
+            history_waiting_up: false,
+            history_failure_notified: false,
+            session_generation: 0,
+            #[cfg(test)]
+            history_dir: None,
+            state: State::Unavailable,
+            next_shell_id: 0,
+            active_cancellation: None,
+            input_queue: InputQueue::default(),
+            queue_paused: false,
+            queue_menu: false,
+            queue_menu_revision: None,
+            queue_snapshot: None,
+            ask_panel: None,
+            ask_reply: None,
+            ask_id: None,
+            ask_cancellation: None,
+            commands: None,
+            events: None,
+            unavailable: None,
+            choices: Vec::new(),
+            current_model: None,
+            default_model_reference: None,
+            favorite_models: Vec::new(),
+            model_usage: BTreeMap::new(),
+            think_level: ThinkLevel::None,
+            default_think_level: ThinkLevel::default(),
+            menu: None,
+            menu_dismissed: false,
+            model_picker_draft: None,
+            model_panel: None,
+            roles_panel: None,
+            model_roles: Default::default(),
+            secondary_status: None,
+            skill_worker: skills::Worker::new(skills)?,
+            skill_panel: None,
+            skills_pending: false,
+            session_panel: None,
+            tree_panel: None,
+            changes_panel: None,
+            plan_list_panel: None,
+            plan_list_pending: None,
+            plan_reenter_standby: false,
+            plan_leave_confirmation: None,
+            escape_tap: EscapeTap::default(),
+            session_id: None,
+            usage: None,
+            token_speed: statusline::TokenSpeed::default(),
+            task_status_view: Default::default(),
+            task_status: None,
+            mcp_cleanup: None,
+            lsp_cleanup: None,
+            mcp_view: Default::default(),
+            mcp_panel: None,
+            background_cleanup: None,
+            subagent_panel: None,
+            subagent_autowake: false,
+            subagent_control: Default::default(),
+            hub_worker: None,
+            hub_root_epoch: 0,
+            hub_view_epoch: 0,
+            hub_request: 0,
+            hub_bound: None,
+            hub_sends: BTreeMap::new(),
+            child_drafts: Default::default(),
+            pipe_store: None,
+            pipe_store_epoch: 0,
+            pipes_panel: None,
+            pipes_worker: None,
+            pipes_view_epoch: 0,
+            file_commands,
+            file_worker: files::Worker::new(cwd)?,
+            file_paths: Vec::new(),
+            file_directory: String::new(),
+            file_query: None,
+            files_pending: false,
+            file_scan_root: String::new(),
+            workflow: WorkflowState::default(),
+            plan_panel: None,
+            plan_progress: (0, 0),
+            resume_note: None,
+            plan_retry_enter: false,
+            plan_after_enter: None,
+            review_transcript: None,
+            plan_review_pending: None,
+        };
+        // 恢复历史会重建 Transcript，启动诊断须在安装完成后追加。
+        let history_error = app.start_history(history_path);
+        match agent {
+            Ok(agent) => app.install_agent(agent)?,
+            Err(error) => {
+                let error = format!("{error:#}");
+                app.notify(
+                    Level::Error,
+                    format!(
+                        "{error}\nConfiguration unavailable; model tasks are disabled. Use /login to authorize a subscription, or fix the config files. /quit still exits cleanly."
+                    ),
+                );
+                app.unavailable = Some(error);
+            }
+        }
+        if let Some(message) = history_error {
+            app.notify(Level::Error, message);
+        }
+        Ok(app)
+    }
+    pub(in crate::tui) fn install_agent(&mut self, mut agent: Agent) -> Result<()> {
+        let control = pp_runtime::model_control::Service::start(agent.model_catalog())?;
+        agent.runtime_models = Some(pp_runtime::model_control::Binding::main(
+            control.registry.clone(),
+        ));
+        self.model_control = Some(control);
+        self.model_revision = 0;
+        self.input_limits = agent.input_limits();
+        self.conversation
+            .set_bash_timeout(agent.bash_timeout_seconds());
+        // 取 replay、模型字段与 MCP 清理句柄必须发生在 agent move 进 worker 之前。
+        let session_id = agent.session_id().map(str::to_owned);
+        let replay = agent.take_replay();
+        let current_model = agent.current_model().clone();
+        let think_level = agent.think_level();
+        let default_think_level = agent.default_think_level();
+        let mcp_cleanup = agent.mcp_cleanup()?;
+        // LSP 清理句柄与 Registry 必须在 Agent move 进 worker 前取得；
+        // Registry clone 只共享客户端，不取得停止所有权。
+        let lsp_cleanup = agent.lsp_cleanup();
+        let lsp_registry = agent.lsp_registry();
+        self.mcp_view = agent.mcp_view();
+        let mut startup_errors = self.mcp_view.warnings();
+        self.background_cleanup = Some(agent.background_cleanup());
+        self.choices = agent.model_choices();
+        self.favorite_models = agent.favorite_models().to_vec();
+        // 首次安装没有旧快照可保留；读取失败保留空缓存并单独提示，不阻断模型任务。
+        match agent.model_usage() {
+            Ok(usage) => self.model_usage = usage,
+            Err(error) => startup_errors.push(format!("Could not load model usage: {error:#}")),
+        }
+        self.model_roles = agent.model_roles().clone();
+        self.default_model_reference = Some(agent.default_model_reference().to_owned());
+        let (commands, receiver) = mpsc::channel();
+        let (sender, events) = mpsc::sync_channel(256);
+        // 启动绑定：先于任何任务发布根 registry，面板可在运行中打开。
+        let _ = sender.send(WorkerEvent::PipeStoreBound {
+            store: agent.pipe_store(),
+        });
+        let warm_events = sender.clone();
+        self.subagent_control = agent.subagent_control.clone();
+        let dialog_lock = std::sync::Arc::new(pp_core::interaction::DialogQueue::default());
+        let ask_lock = dialog_lock.clone();
+        let ask_events = sender.clone();
+        agent.set_ask_handler(Box::new(move |request, cancellation| {
+            let _guard = crate::tui::dialog_guard(&ask_lock, cancellation)?;
+            request_ask(&ask_events, request, cancellation)
+        }));
+        let approval_events = sender.clone();
+        agent.set_approval_handler(Box::new(move |request,token|{
+            let _guard=crate::tui::dialog_guard(&dialog_lock,token)?;
+            let mut options=vec![serde_json::json!({"label":"Approve once","description":"Run the current tool call only"})];
+            if request.session_grant{options.push(serde_json::json!({"label":"Allow for this session","description":"Granted to the root session and its subagents"}));}
+            options.push(serde_json::json!({"label":"Deny","description":"Return tool approval denied"}));
+            let args=pp_core::interaction::AskArgs::parse(&serde_json::json!({"questions":[{"id":"approval","question":format!("{}: {}",request.tool,request.reason),"options":options}]}).to_string())?;
+            let answers=request_ask(&approval_events,pp_core::interaction::AskRequest{call_id:request.agent.as_ref().map(|id|format!("subagent-{id}-approval")).unwrap_or_else(||"approval-dialog".into()),args:std::sync::Arc::new(args)},token)?;
+            Ok(match answers.first().and_then(|a|a.selected_options.first()).map(String::as_str){Some("Approve once")=>pp_runtime::tools::approval::ApprovalDecision::Approve,Some("Allow for this session")if request.session_grant=>pp_runtime::tools::approval::ApprovalDecision::ApproveSession,_=>pp_runtime::tools::approval::ApprovalDecision::Deny})
+        }));
+        agent.ensure_subagents()?;
+        let usage = agent.context_usage().ok();
+        // 经 set_workflow 走统一入口：恢复的计划正文必须同步种子进度缓存，
+        // 否则 /plan view 正文未变时不重算，标题停留 0/0。
+        self.set_workflow(agent.workflow().clone());
+        let task_status_view = self.task_status_view.clone();
+        // Deliberately detached: quitting must not wait for HTTP or foreground tools.
+        thread::Builder::new()
+            .name("pp-agent".into())
+            .spawn(move || {
+                // 空闲时以 50ms 超时轮询迟到诊断：只发布 Progress，不续跑
+                // 模型、不把 Ready 改成 Running，也不伪造工具调用。
+                let mut last_poll_error: Option<String> = None;
+                loop {
+                    let command = match receiver.recv_timeout(std::time::Duration::from_millis(50))
+                    {
+                        Ok(command) => command,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            let mut emit = |event| {
+                                let _ = sender.send(WorkerEvent::Progress(event));
+                            };
+                            match agent.poll_lsp_diagnostics(&mut emit) {
+                                Ok(()) => last_poll_error = None,
+                                Err(error) => {
+                                    let message = format!("{error:#}");
+                                    if last_poll_error.as_deref() != Some(message.as_str()) {
+                                        last_poll_error = Some(message.clone());
+                                        let _ = sender.send(WorkerEvent::LspPollFailed(message));
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    agent.enable_task_status(task_status_view.clone());
+                    let started = Instant::now();
+                    let mut emit = |event| {
+                        let _ = sender.send(WorkerEvent::Progress(event));
+                    };
+                    // 状态切换成功后紧随一份新用量快照，与动作保持 FIFO 顺序。
+                    let mut snapshots: Vec<WorkerEvent> = Vec::new();
+                    let event = match command {
+                        WorkerCommand::Mcp {
+                            action,
+                            cancellation,
+                        } => {
+                            let result = agent.manage_mcp(&action, &cancellation).map(|_| ());
+                            WorkerEvent::McpManaged {
+                                result,
+                                view: agent.mcp_view(),
+                                show: matches!(action, pp_runtime::mcp::Action::List),
+                            }
+                        }
+                        WorkerCommand::ReloadModels => WorkerEvent::ModelsReloaded(
+                            agent
+                                .reload_models()
+                                .and_then(|()| crate::tui::ModelListing::from_agent(&agent)),
+                        ),
+                        WorkerCommand::Shell {
+                            command,
+                            call_id,
+                            cancellation,
+                        } => {
+                            task_status_view.clear();
+                            let result =
+                                agent.run_shell(&command, &call_id, &cancellation, &mut emit);
+                            let cleanup_failed = result.as_ref().is_err_and(|error| {
+                                error
+                                    .chain()
+                                    .any(|cause| cause.is::<pp_core::cancellation::CleanupError>())
+                            });
+                            if sender.send(WorkerEvent::ShellCompleted(result)).is_err()
+                                || cleanup_failed
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+                        #[cfg(debug_assertions)]
+                        WorkerCommand::ToolTest {
+                            selection,
+                            cancellation,
+                        } => {
+                            task_status_view.clear();
+                            let result = agent
+                                .run_tool_test(selection, &cancellation, &mut emit)
+                                .map(|report| report.calls);
+                            let cleanup_failed = result.as_ref().is_err_and(|error| {
+                                error
+                                    .chain()
+                                    .any(|cause| cause.is::<pp_core::cancellation::CleanupError>())
+                            });
+                            let event = WorkerEvent::ToolTestCompleted {
+                                result,
+                                elapsed: started.elapsed(),
+                            };
+                            if sender.send(event).is_err() || cleanup_failed {
+                                break;
+                            }
+                            continue;
+                        }
+                        #[cfg(debug_assertions)]
+                        WorkerCommand::TestUi { cancellation } => {
+                            task_status_view.clear();
+                            let result = agent.run_ui_test(&cancellation, &mut emit);
+                            WorkerEvent::UiTestCompleted {
+                                result,
+                                elapsed: started.elapsed(),
+                            }
+                        }
+                        WorkerCommand::RunInput {
+                            prepared,
+                            cancellation,
+                            input,
+                        } => {
+                            let outcome =
+                                agent.run_input(&prepared, &cancellation, Some(&input), &mut emit);
+                            push_workflow_snapshot(&agent, &mut snapshots);
+                            WorkerEvent::completed(started, outcome)
+                        }
+                        WorkerCommand::Run {
+                            prompt,
+                            cancellation,
+                            input,
+                        } => {
+                            let outcome =
+                                agent.run(&prompt, &cancellation, Some(&input), &mut emit);
+                            // 计划工具可能修改 workflow；终态后同步一份快照。
+                            push_workflow_snapshot(&agent, &mut snapshots);
+                            WorkerEvent::completed(started, outcome)
+                        }
+                        WorkerCommand::Continue {
+                            cancellation,
+                            input,
+                        } => {
+                            let outcome =
+                                agent.continue_session(&cancellation, Some(&input), &mut emit);
+                            push_workflow_snapshot(&agent, &mut snapshots);
+                            WorkerEvent::completed(started, outcome)
+                        }
+                        WorkerCommand::Compact { cancellation } => {
+                            let result = agent.compact(&cancellation, &mut emit);
+                            // 终态事件之前先发布最终用量快照；
+                            // 成功、失败、取消、未变化都会刷新状态栏。
+                            push_runtime_snapshot(&agent, &mut snapshots);
+                            WorkerEvent::Compacted(result)
+                        }
+                        WorkerCommand::Reset => {
+                            agent.reset();
+                            if !publish_pipe_store(&sender, &agent) {
+                                break;
+                            }
+                            push_runtime_snapshot(&agent, &mut snapshots);
+                            WorkerEvent::Reset
+                        }
+                        WorkerCommand::SetThinkLevel(level) => {
+                            let result = agent.set_think_level(level).map(|()| agent.think_level());
+                            if result.is_ok() {
+                                push_runtime_snapshot(&agent, &mut snapshots);
+                            }
+                            WorkerEvent::ThinkLevelSet(result)
+                        }
+                        WorkerCommand::SaveDefaultThinkLevel(level) => {
+                            let result = agent.save_default_think_level(level).map(|()| level);
+                            if result.is_ok() {
+                                // 偏好已提交；快照读取失败经 ModelsReloaded 单独报错，
+                                // 不把保存伪装成失败。
+                                snapshots.push(WorkerEvent::ModelsReloaded(
+                                    crate::tui::ModelListing::from_agent(&agent),
+                                ));
+                            }
+                            WorkerEvent::DefaultThinkLevelSaved(result)
+                        }
+                        WorkerCommand::SaveDefaultModel(reference) => {
+                            let result = agent.save_default_model(&reference).map(|()| reference);
+                            if result.is_ok() {
+                                snapshots.push(WorkerEvent::ModelsReloaded(
+                                    crate::tui::ModelListing::from_agent(&agent),
+                                ));
+                            }
+                            WorkerEvent::DefaultModelSaved(result)
+                        }
+                        WorkerCommand::SaveModelRole(role, assignment) => {
+                            WorkerEvent::ModelRolesSaved(
+                                agent.save_model_role(role, assignment).map(|()| {
+                                    (
+                                        agent.model_roles().clone(),
+                                        agent.default_model_reference().to_owned(),
+                                        agent.default_think_level(),
+                                    )
+                                }),
+                            )
+                        }
+                        WorkerCommand::ToggleFavoriteModel(reference) => {
+                            WorkerEvent::FavoriteModelsSaved(
+                                agent.toggle_favorite_model(&reference),
+                            )
+                        }
+                        WorkerCommand::ApplyModelTargets => {
+                            let _ = agent.apply_runtime_models();
+                            WorkerEvent::model_state(&agent)
+                        }
+                        WorkerCommand::SwitchModel(reference) => {
+                            let result = agent
+                                .reload_models()
+                                .and_then(|()| agent.switch_model(&reference))
+                                .map(|()| (agent.current_model().clone(), agent.think_level()));
+                            if result.is_ok() {
+                                push_runtime_snapshot(&agent, &mut snapshots);
+                            }
+                            WorkerEvent::ModelSwitched(result)
+                        }
+                        WorkerCommand::ReadChanges => WorkerEvent::ChangesRead(agent.changes()),
+                        WorkerCommand::UndoFile(token) => {
+                            let result = agent.undo_file(&token);
+                            if result.is_err() {
+                                snapshots.push(WorkerEvent::ChangesRead(agent.changes()));
+                            }
+                            WorkerEvent::FileUndone(result)
+                        }
+                        WorkerCommand::ReadTree => WorkerEvent::TreeRead(agent.session_tree()),
+                        WorkerCommand::NavigateTree(id) => {
+                            let result = agent.navigate_tree(&id);
+                            if result.is_ok() {
+                                if !publish_pipe_store(&sender, &agent) {
+                                    break;
+                                }
+                                push_runtime_snapshot(&agent, &mut snapshots);
+                            }
+                            WorkerEvent::TreeNavigated(result)
+                        }
+                        WorkerCommand::DeleteSession(id) => {
+                            let result = pp_config::config::global_dir()
+                                .map(|dir| dir.join("sessions"))
+                                .and_then(|dir| {
+                                    let locks = pp_runtime::agent::persistence::locks::directory()?;
+                                    pp_runtime::agent::persistence::delete(&dir, &locks, &id)
+                                });
+                            WorkerEvent::SessionDeleted(result)
+                        }
+                        WorkerCommand::Resume { id, cancellation } => {
+                            let result = agent.resume(&id, &cancellation);
+                            match result {
+                                Ok(preparation) => {
+                                    // 恢复已是新会话根：先重绑临时管道，再交接清理句柄。
+                                    if !publish_pipe_store(&sender, &agent) {
+                                        break;
+                                    }
+                                    let prepared =
+                                        publish_prepared(&sender, preparation, &cancellation);
+                                    WorkerEvent::SessionResumed(match prepared {
+                                        Ok(()) => Ok(ResumeState { id }),
+                                        Err(error) => Err(error),
+                                    })
+                                }
+                                Err(error) => WorkerEvent::SessionResumed(Err(error)),
+                            }
+                        }
+                        WorkerCommand::EnterPlan { cancellation } => {
+                            let result = agent.enter_plan(&cancellation);
+                            snapshots.push(WorkerEvent::model_state(&agent));
+                            if result.is_ok() {
+                                if let Some(event) = usage_snapshot(&agent) {
+                                    snapshots.push(event);
+                                }
+                            } else {
+                                // 转换失败也可能已持久化 Plan；发布真实模式避免假 EXEC，
+                                // 并刷新退出清理句柄以覆盖可能被保留的 registry。
+                                publish_transition_failure(&agent, &mut snapshots);
+                            }
+                            WorkerEvent::WorkflowChanged(result)
+                        }
+                        WorkerCommand::ReadPlan => WorkerEvent::PlanRead(agent.read_plan()),
+                        WorkerCommand::ListPlans => WorkerEvent::PlansListed(agent.list_plans()),
+                        WorkerCommand::ReadListedPlan { id } => {
+                            WorkerEvent::ListedPlanRead(agent.read_listed_plan(&id))
+                        }
+                        WorkerCommand::OpenListedPlan {
+                            selection,
+                            intent,
+                            cancellation,
+                        } => {
+                            let result = agent.open_listed_plan(&selection, intent, &cancellation);
+                            if result.is_ok() {
+                                if !publish_pipe_store(&sender, &agent) {
+                                    break;
+                                }
+                                push_runtime_snapshot(&agent, &mut snapshots);
+                            }
+                            WorkerEvent::ListedPlanOpened(result)
+                        }
+                        WorkerCommand::RenameListedPlan {
+                            selection,
+                            file_name,
+                        } => WorkerEvent::ListedPlanRenamed(
+                            agent.rename_listed_plan(selection, file_name),
+                        ),
+                        WorkerCommand::DeleteListedPlan { selection } => {
+                            let result = agent.delete_listed_plan(selection);
+                            push_workflow_snapshot(&agent, &mut snapshots);
+                            WorkerEvent::ListedPlanDeleted(result)
+                        }
+                        command @ (WorkerCommand::LeavePlan { .. }
+                        | WorkerCommand::SavePlanAndLeave { .. }) => {
+                            let (result, cancellation) = match command {
+                                WorkerCommand::LeavePlan {
+                                    cancellation,
+                                    discard_plan_id,
+                                } => (
+                                    agent.leave_plan(&cancellation, discard_plan_id.as_deref()),
+                                    cancellation,
+                                ),
+                                WorkerCommand::SavePlanAndLeave {
+                                    token,
+                                    cancellation,
+                                    input,
+                                } => (
+                                    agent.save_plan_and_leave(token, &input, &cancellation),
+                                    cancellation,
+                                ),
+                                _ => unreachable!(),
+                            };
+                            match result {
+                                Ok(preparation) => {
+                                    // Keep 不改 store（同实例幂等）；Fresh 换根后立即发布。
+                                    if !publish_pipe_store(&sender, &agent) {
+                                        break;
+                                    }
+                                    match publish_prepared(&sender, preparation, &cancellation) {
+                                        Ok(()) => WorkerEvent::WorkflowChanged(Ok(agent
+                                            .workflow()
+                                            .clone())),
+                                        Err(error) => {
+                                            publish_transition_failure(&agent, &mut snapshots);
+                                            WorkerEvent::WorkflowChanged(Err(error))
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    publish_transition_failure(&agent, &mut snapshots);
+                                    WorkerEvent::WorkflowChanged(Err(error))
+                                }
+                            }
+                        }
+                        WorkerCommand::ApprovePlan {
+                            token,
+                            context,
+                            cancellation,
+                            input,
+                        } => {
+                            match agent.approve_plan(
+                                token,
+                                context,
+                                &input,
+                                &cancellation,
+                                &mut emit,
+                            ) {
+                                Ok(preparation) => {
+                                    // Fresh 批准的交接已换 store；下一次任务（继续执行）
+                                    // 开始前必须先让 UI 重绑，Keep 由同实例判定跳过。
+                                    if !publish_pipe_store(&sender, &agent) {
+                                        break;
+                                    }
+                                    match publish_prepared(&sender, preparation, &cancellation) {
+                                        // UI 确认后才启动模型执行。
+                                        Ok(()) => WorkerEvent::completed(
+                                            started,
+                                            agent.continue_session(
+                                                &cancellation,
+                                                Some(&input),
+                                                &mut emit,
+                                            ),
+                                        ),
+                                        Err(error) => {
+                                            publish_transition_failure(&agent, &mut snapshots);
+                                            WorkerEvent::WorkflowChanged(Err(error))
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    // 审批失败可能已在 worker 内导入新修订（计划变更）。
+                                    publish_transition_failure(&agent, &mut snapshots);
+                                    WorkerEvent::WorkflowChanged(Err(error))
+                                }
+                            }
+                        }
+                        WorkerCommand::ReviewPlan {
+                            token,
+                            cancellation,
+                            input,
+                        } => {
+                            // 审查进度走独立事件流；不发布普通 Progress/用量快照。
+                            let mut review_emit = |event| {
+                                let _ = sender.send(WorkerEvent::ReviewProgress(event));
+                            };
+                            let result =
+                                agent.review_plan(token, &input, &cancellation, &mut review_emit);
+                            // 成功时报告已由 write_workflow 登记；
+                            // 失败/取消保留旧报告。快照纠正显示不引入新权限。
+                            push_workflow_snapshot(&agent, &mut snapshots);
+                            WorkerEvent::PlanReviewed(result)
+                        }
+                    };
+                    snapshots.push(WorkerEvent::McpSnapshot(agent.mcp_view()));
+                    // Report new IDs even on task failure, before Completed.
+                    if let Some(id) = agent.take_session_notice()
+                        && sender.send(WorkerEvent::SessionStarted(id)).is_err()
+                    {
+                        break;
+                    }
+                    if sender.send(event).is_err() {
+                        break;
+                    }
+                    for event in snapshots {
+                        if sender.send(event).is_err() {
+                            break;
+                        }
+                    }
+                }
+            })
+            .context("starting agent worker")?;
+        self.commands = Some(commands);
+        self.events = Some(events);
+        self.state = State::Ready;
+        self.mcp_cleanup = Some(mcp_cleanup);
+        if let Some(cleanup) = lsp_cleanup {
+            self.install_lsp_cleanup(cleanup);
+        }
+        // lazy=false 时在清理句柄与退出链路安装完成后后台预热；UI 不等待。
+        prewarm_lsp(lsp_registry, warm_events);
+        self.usage = usage;
+        if let Some(id) = session_id {
+            let choices = std::mem::take(&mut self.choices);
+            let error = self.adopt_session(
+                replay,
+                choices,
+                current_model,
+                think_level,
+                default_think_level,
+            );
+            self.session_id = Some(id);
+            if let Some(error) = error {
+                self.notify(Level::Error, error);
+            }
+        } else {
+            self.current_model = Some(current_model);
+            self.think_level = think_level;
+            self.default_think_level = default_think_level;
+        }
+        self.unavailable = None;
+        for message in startup_errors {
+            self.notify(Level::Error, message);
+        }
+        Ok(())
+    }
+}
+
+/// `lazy=false` 时的后台预热：只启动已发现的真实 language server，
+/// 不运行 CLI adapter/工作区 checker，也不阻塞 UI 或模型任务。
+fn prewarm_lsp(registry: Option<pp_runtime::lsp::Registry>, events: mpsc::SyncSender<WorkerEvent>) {
+    let Some(registry) = registry else { return };
+    if !registry.enabled() || registry.is_lazy() {
+        return;
+    }
+    let _ = thread::Builder::new()
+        .name("pp-lsp-warm".into())
+        .spawn(move || {
+            let cancellation = pp_core::cancellation::CancellationToken::new();
+            for (server, error) in registry.warmup(&cancellation) {
+                let _ = events.try_send(WorkerEvent::LspWarmupFailed { server, error });
+            }
+        });
+}

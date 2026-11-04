@@ -3219,17 +3219,101 @@ name = "pp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arboard",
+ "chrono",
+ "clap",
+ "image",
+ "percent-encoding",
+ "portable-pty",
+ "pp-config",
+ "pp-core",
+ "pp-runtime",
+ "pp-stats",
+ "pp-ui",
+ "rusqlite",
+ "rustix 1.1.5",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tiny_http",
+ "tracing",
+ "vt100",
+]
+
+[[package]]
+name = "pp-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "percent-encoding",
+ "pp-core",
+ "reqwest",
+ "rusqlite",
+ "rustix 1.1.5",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tiny_http",
+ "tokio",
+ "tracing",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "pp-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-openai",
+ "chrono",
+ "getrandom 0.4.3",
+ "pulldown-cmark",
+ "regex",
+ "rusqlite",
+ "rustix 1.1.5",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "pp-llm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-openai",
+ "flate2",
+ "futures-util",
+ "pp-config",
+ "pp-core",
+ "pp-stats",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "tempfile",
+ "tiny_http",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "pp-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "async-openai",
  "base64 0.22.1",
  "brush-builtins",
  "brush-core",
  "chrono",
- "clap",
- "crossterm",
  "dom_smoothie",
- "flate2",
- "futures-util",
  "getrandom 0.4.3",
  "globset",
  "grep-matcher",
@@ -3243,13 +3327,12 @@ dependencies = [
  "jsonschema",
  "libc",
  "percent-encoding",
- "portable-pty",
- "pulldown-cmark",
+ "pp-config",
+ "pp-core",
+ "pp-llm",
+ "pp-stats",
  "ratatui",
- "ratatui-image",
- "ratatui-textarea",
  "regex",
- "reqwest",
  "rusqlite",
  "rustix 1.1.5",
  "serde",
@@ -3257,19 +3340,62 @@ dependencies = [
  "serde_path_to_error",
  "serde_yaml",
  "similar",
- "syntect",
  "tempfile",
  "tiny_http",
  "tokio",
- "tokio-util",
  "toml",
- "tower",
  "tracing",
- "tracing-subscriber",
  "unicode-normalization",
  "unicode-segmentation",
- "vt100",
  "xxhash-rust",
+]
+
+[[package]]
+name = "pp-stats"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "getrandom 0.4.3",
+ "pp-config",
+ "pp-core",
+ "reqwest",
+ "rusqlite",
+ "rustix 1.1.5",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tiny_http",
+ "tracing",
+]
+
+[[package]]
+name = "pp-ui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "base64 0.22.1",
+ "chrono",
+ "crossterm",
+ "getrandom 0.4.3",
+ "ignore",
+ "image",
+ "libc",
+ "pp-config",
+ "pp-core",
+ "pp-runtime",
+ "pulldown-cmark",
+ "ratatui",
+ "ratatui-image",
+ "ratatui-textarea",
+ "serde_json",
+ "serde_yaml",
+ "syntect",
+ "tempfile",
+ "tracing",
+ "unicode-segmentation",
+ "vt100",
 ]
 
 [[package]]

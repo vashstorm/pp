@@ -221,14 +221,30 @@ pp stats
 
 ## 开发
 
+仓库是按功能拆分的 Cargo workspace，共七个包。根包 `pp` 只保留 `src/main.rs`（启动参数、日志初始化、工作目录恢复、模式分发与退出码）和根 `tests/`，并且是唯一的默认成员；业务实现由以下内部库承载：
+
+| 包 | 职责 |
+| --- | --- |
+| `pp-core` | 共享契约：取消、上下文、事件、Plan、交互队列、日志、SQLite 打开，以及 Todo／LSP 报告类型 |
+| `pp-config` | 设置与模型 YAML、模型目录、认证及认证 HTTP、agent 数据库与技能 |
+| `pp-stats` | 请求快照、聚合，以及内嵌资源的只读统计服务 |
+| `pp-llm` | 聊天补全与响应接口请求、重试、流式、解析和共享 HTTP 返回类型 |
+| `pp-runtime` | Agent、工具、子 Agent、MCP／LSP、会话与历史、模型控制和提示词 |
+| `pp-ui` | TUI、CLI、命令、快捷键与 tips |
+| `pp`（根包） | 启动组装与根 `cli_agent` 集成测试 |
+
+`cargo run`、`cargo build` 和不带包选择的测试只作用于根默认成员；跨全部 crate 验证须使用 `--workspace`，只验证单个库时使用 `-p <包名>`。
+
 测试使用 [cargo-nextest](https://nexte.st/docs/running/)；未安装时先执行 `cargo install cargo-nextest --locked`。
 日常修改先运行相关定向测试，全量测试默认并行；`--test-threads=1` 仅用于排查具体失败用例。
 
 ```sh
-cargo nextest run --locked context_
-cargo nextest run --locked
-cargo clippy --locked --all-targets -- -D warnings
-cargo fmt --check
+cargo nextest run --locked --workspace context_
+cargo nextest run --locked --workspace
+cargo check --locked --workspace --all-targets
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --doc
+cargo fmt --all --check
 ```
 
 定向回归与测试边界见[开发与验证](docs/guide.md#开发与验证)。

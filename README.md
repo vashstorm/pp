@@ -218,14 +218,30 @@ The linked guides below are in Chinese.
 
 ## Development
 
+The repository is a Cargo workspace with seven packages. The root `pp` package keeps `src/main.rs` (startup arguments, logging, working-directory restore, mode dispatch, and exit code) plus the root `tests/`; it is the only default member and assembles the internal libraries below.
+
+| Package | Responsibility |
+| --- | --- |
+| `pp-core` | Shared contracts: cancellation, context, events, plan, interaction queue, logging, SQLite opening, todo and LSP report types |
+| `pp-config` | Settings and model YAML, model catalog, authentication with its HTTP client, agent store, and skills |
+| `pp-stats` | Request snapshots, aggregation, and the read-only statistics server with embedded assets |
+| `pp-llm` | Chat Completions and Responses requests, retry, streaming, parsing, and the shared HTTP response type |
+| `pp-runtime` | Agent, tools, subagents, MCP/LSP, sessions and history, model control, and prompts |
+| `pp-ui` | TUI, CLI, commands, shortcuts, and tips |
+| `pp` (root) | Startup assembly and the root `cli_agent` integration tests |
+
+`cargo run`, `cargo build`, and tests without a package selector apply only to the root default member. Use `--workspace` for full verification across every crate, and `-p <package>` for one library.
+
 Tests use [cargo-nextest](https://nexte.st/docs/running/). Install it with `cargo install cargo-nextest --locked` if needed.
 For local changes, select the relevant tests first; the full suite runs in parallel by default. Use `--test-threads=1` only to investigate specific failures.
 
 ```sh
-cargo nextest run --locked context_
-cargo nextest run --locked
-cargo clippy --locked --all-targets -- -D warnings
-cargo fmt --check
+cargo nextest run --locked --workspace context_
+cargo nextest run --locked --workspace
+cargo check --locked --workspace --all-targets
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --doc
+cargo fmt --all --check
 ```
 
 See [development and validation (Chinese)](docs/guide.md#开发与验证) for targeted regression commands and test coverage limits.

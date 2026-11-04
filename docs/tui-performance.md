@@ -35,12 +35,14 @@ TUI 按帧合并同一目标、类型和轮次的文本分片；达到 64 KiB �
 ## 验证命令与边界
 
 ```sh
-cargo nextest run --locked -E 'test(frame_clock) | test(stream_buffer) | test(markdown_block_cache) | test(layout_worker_) | test(tui_max_fps) | test(streaming_frame_batches)'
-cargo nextest run --locked -E 'test(tui::render_worker::) | test(tui::transcript::) | test(tui::surface::) | test(streaming_frame_batches) | test(stream_buffer) | test(tui_runtime_responsiveness) | test(tui_scrolled_stream_) | test(native_tui_)'
-PP_TUI_PERF_ASSERT=1 cargo nextest run --release --locked --test cli_agent -E 'test(tui_runtime_responsiveness)' --success-output immediate
-cargo nextest run --locked
-cargo clippy --locked --all-targets -- -D warnings
-cargo fmt --check
+cargo nextest run --locked --workspace -E 'test(frame_clock) | test(stream_buffer) | test(markdown_block_cache) | test(layout_worker_) | test(tui_max_fps) | test(streaming_frame_batches)'
+cargo nextest run --locked --workspace -E 'test(tui::render_worker::) | test(tui::transcript::) | test(tui::surface::) | test(streaming_frame_batches) | test(stream_buffer) | test(tui_runtime_responsiveness) | test(tui_scrolled_stream_) | test(native_tui_)'
+PP_TUI_PERF_ASSERT=1 cargo nextest run --release --locked -p pp --test cli_agent -E 'test(tui_runtime_responsiveness)' --success-output immediate
+cargo nextest run --locked --workspace
+cargo check --locked --workspace --all-targets
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --doc
+cargo fmt --all --check
 ```
 
 上述命令全部使用默认（全量）档；`--profile quick` 跳过真实 PTY 用例，不覆盖 TUI 性能回归。

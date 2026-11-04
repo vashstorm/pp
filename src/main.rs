@@ -1,35 +1,20 @@
-mod agent;
-mod agent_store;
-mod auth;
-mod cancellation;
-mod cli;
-mod commands;
-mod config;
-mod context;
-mod events;
-mod history;
-mod host_defaults;
-mod interaction;
-mod llm;
-mod logging;
-mod lsp;
-mod mcp;
-mod model_control;
-mod models;
-mod plan;
-mod project_instructions;
-mod shortcuts;
-mod skills;
-mod sqlite;
-mod stats;
-mod subagent;
-mod system_prompt;
-mod task_status;
-mod tips;
-mod tools;
-mod tui;
-mod user_input;
-mod yaml;
+use pp_config::agent_store;
+use pp_config::config;
+use pp_core::cancellation;
+use pp_runtime::agent;
+use pp_runtime::host_defaults;
+use pp_ui::cli;
+use pp_ui::commands;
+
+use pp_core::logging;
+use pp_core::plan;
+
+use pp_config::skills;
+use pp_runtime::system_prompt;
+use pp_stats as stats;
+
+use pp_runtime::tools;
+use pp_ui::tui;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
@@ -103,7 +88,7 @@ enum ApprovalModeCli {
     AlwaysAsk,
 }
 
-impl From<ApprovalModeCli> for crate::tools::approval::ApprovalMode {
+impl From<ApprovalModeCli> for pp_config::config::ApprovalMode {
     fn from(value: ApprovalModeCli) -> Self {
         match value {
             ApprovalModeCli::Yolo => Self::Yolo,

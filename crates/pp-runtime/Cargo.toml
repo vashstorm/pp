@@ -1,0 +1,55 @@
+[package]
+name = "pp-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+pp-core = { path = "../pp-core" }
+pp-config = { path = "../pp-config" }
+pp-stats = { path = "../pp-stats" }
+pp-llm = { path = "../pp-llm" }
+anyhow = { workspace = true }
+async-openai = { workspace = true }
+brush-builtins = { workspace = true }
+brush-core = { workspace = true }
+libc = { workspace = true }
+rustix = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+getrandom = { workspace = true }
+handlebars = { workspace = true }
+ignore = { workspace = true }
+globset = { workspace = true }
+grep-matcher = { workspace = true }
+grep-regex = { workspace = true }
+grep-searcher = { workspace = true }
+grep-pcre2 = { workspace = true }
+regex = { workspace = true }
+xxhash-rust = { workspace = true }
+similar = { workspace = true }
+unicode-normalization = { workspace = true }
+unicode-segmentation = { workspace = true }
+percent-encoding = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_path_to_error = { workspace = true }
+toml = { workspace = true }
+jsonschema = { workspace = true }
+base64 = { workspace = true }
+image = { workspace = true }
+dom_smoothie = { workspace = true }
+html2text = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+
+ratatui = { workspace = true }
+
+[dev-dependencies]
+tiny_http = { workspace = true }
+serde_yaml = { workspace = true }
+
+[features]
+test-support = []

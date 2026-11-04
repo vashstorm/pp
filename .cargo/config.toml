@@ -1,7 +1,2 @@
 [build]
 jobs = 8
-
-[target.aarch64-apple-darwin]
-# 使用 PATH 中与当前 macOS SDK 兼容的 LLD，避免工具链内置版本不识别新版 TAPI 目标。
-linker = "ld64.lld"
-rustflags = ["-C", "linker-flavor=ld64.lld"]
