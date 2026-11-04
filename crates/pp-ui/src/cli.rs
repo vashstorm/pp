@@ -531,7 +531,7 @@ pub fn run_cli_task(
         if matches!(
             &event,
             AgentEvent::ModelRequestStarted
-                | AgentEvent::EditArgumentsDelta { .. }
+                | AgentEvent::ToolArgumentsDelta { .. }
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. }
                 | AgentEvent::UserInputAccepted { .. }
@@ -858,7 +858,7 @@ pub fn run_cli_task(
                 );
             }
             AgentEvent::ModelRequestStarted
-            | AgentEvent::EditArgumentsDelta { .. }
+            | AgentEvent::ToolArgumentsDelta { .. }
             | AgentEvent::ModelOutputProgress { .. }
             | AgentEvent::ModelRequestFinished { .. }
             | AgentEvent::UserInputAccepted { .. }

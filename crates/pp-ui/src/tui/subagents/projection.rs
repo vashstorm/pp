@@ -513,7 +513,7 @@ impl Projection {
                 }
             }
             AgentEvent::ToolOutput { .. }
-            | AgentEvent::EditArgumentsDelta { .. }
+            | AgentEvent::ToolArgumentsDelta { .. }
             | AgentEvent::ToolOutputSnapshot { .. }
             | AgentEvent::ToolPipelineSnapshot { .. } => {}
             AgentEvent::UserInputAccepted { text, .. } => self.insert_lifecycle(

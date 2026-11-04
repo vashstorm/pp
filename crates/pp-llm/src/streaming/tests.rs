@@ -73,23 +73,26 @@ fn part_done(output: u32, content: u32, value: &str) -> ResponseStreamEvent {
     )
 }
 
-fn arguments_delta(value: &str) -> ResponseStreamEvent {
+fn arguments_delta(item_id: &str, output_index: u32, value: &str) -> ResponseStreamEvent {
     event(
         json!({"type":"response.function_call_arguments.delta","sequence_number":1,
-            "item_id":"fc","output_index":0,"delta":value}),
+            "item_id":item_id,"output_index":output_index,"delta":value}),
     )
 }
 
 #[test]
-fn streaming_edit_arguments_are_incremental_and_do_not_authorize_execution() {
+fn streaming_file_arguments_are_incremental_and_do_not_authorize_execution() {
     let mut stream = ChatStream::default();
     let mut events = Vec::new();
-    // 工具名分片、参数先于工具名补齐，均只发布尚未显示的参数。
+    // 工具名分片、参数先于工具名补齐，均只发布尚未显示的参数；
+    // 非文件工具（bash）不在预览白名单内。
     for delta in [
         json!({"tool_calls":[{"index":2,"id":"edit-call","type":"function","function":{"name":"ed","arguments":"{\"path\":"}}]}),
         json!({"tool_calls":[{"index":2,"function":{"name":"it","arguments":"\"demo\""}}]}),
         json!({"tool_calls":[{"index":2,"function":{"arguments":",\"edits\":["}}]}),
-        json!({"tool_calls":[{"index":0,"id":"other","type":"function","function":{"name":"write","arguments":"{}"}}]}),
+        json!({"tool_calls":[{"index":0,"id":"bash-call","type":"function","function":{"name":"bash","arguments":"{\"command\":\"true\"}"}}]}),
+        json!({"tool_calls":[{"index":1,"id":"write-call","type":"function","function":{"name":"write","arguments":"{\"path\":\"demo.txt\","}}]}),
+        json!({"tool_calls":[{"index":1,"function":{"arguments":"\"content\":\"hi\"}"}}]}),
     ] {
         stream
             .push(chat(delta, None), &mut |event| events.push(event))
@@ -98,13 +101,20 @@ fn streaming_edit_arguments_are_incremental_and_do_not_authorize_execution() {
     let previews: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
-            AgentEvent::EditArgumentsDelta { index, text } => Some((*index, text.as_str())),
+            AgentEvent::ToolArgumentsDelta { tool, index, text } => {
+                Some((tool.as_str(), *index, text.as_str()))
+            }
             _ => None,
         })
         .collect();
     assert_eq!(
         previews,
-        vec![(2, r#"{"path":"demo""#), (2, r#","edits":["#)]
+        vec![
+            ("edit", 2, r#"{"path":"demo""#),
+            ("edit", 2, r#","edits":["#),
+            ("write", 1, r#"{"path":"demo.txt","#),
+            ("write", 1, r#""content":"hi"}"#),
+        ]
     );
     assert!(stream.finish().is_err());
     assert!(!events.iter().any(|event| matches!(
@@ -119,24 +129,55 @@ fn streaming_edit_arguments_are_incremental_and_do_not_authorize_execution() {
     for text in [r#"{"input":"[demo#ABCD]\n"#, "PUT 1.=1:\\n+中"] {
         assert!(
             stream
-                .push(arguments_delta(text), &mut |event| events.push(event))
+                .push(arguments_delta("fc", 0, text), &mut |event| events
+                    .push(event))
                 .unwrap()
                 .is_none()
         );
     }
-    // done 是重复副本，不再次发布参数；非 Edit 项也不发布预览。
+    // write 与 edit 共用同一预览事件，index 取 output_index。
+    let item = json!({"type":"function_call","id":"fc-write","call_id":"write-call","name":"write","arguments":""});
+    stream.push(event(json!({"type":"response.output_item.added","sequence_number":0,"output_index":1,"item":item})), &mut |event| events.push(event)).unwrap();
+    for text in [r#"{"path":"demo.txt","#, r#""content":"hi"}"#] {
+        stream
+            .push(arguments_delta("fc-write", 1, text), &mut |event| {
+                events.push(event)
+            })
+            .unwrap();
+    }
+    // 非文件工具（bash）不在预览白名单内：added 与 delta 都不发布预览。
+    let item = json!({"type":"function_call","id":"fc-bash","call_id":"bash-call","name":"bash","arguments":"{\"command\":\"true\"}"});
+    stream.push(event(json!({"type":"response.output_item.added","sequence_number":0,"output_index":2,"item":item})), &mut |event| events.push(event)).unwrap();
+    stream
+        .push(
+            arguments_delta("fc-bash", 2, "{\"command\":\"true\"}"),
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+    // done 是重复副本，不再次发布参数。
     stream.push(event(json!({"type":"response.function_call_arguments.done","sequence_number":2,"item_id":"fc","output_index":0,"arguments":"{}","name":"edit"})), &mut |event| events.push(event)).unwrap();
     let previews: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
-            AgentEvent::EditArgumentsDelta { index, text } => Some((*index, text.as_str())),
+            AgentEvent::ToolArgumentsDelta { tool, index, text } => {
+                Some((tool.as_str(), *index, text.as_str()))
+            }
             _ => None,
         })
         .collect();
     assert_eq!(
         previews,
-        vec![(0, r#"{"input":"[demo#ABCD]\n"#), (0, "PUT 1.=1:\\n+中")]
+        vec![
+            ("edit", 0, r#"{"input":"[demo#ABCD]\n"#),
+            ("edit", 0, "PUT 1.=1:\\n+中"),
+            ("write", 1, r#"{"path":"demo.txt","#),
+            ("write", 1, r#""content":"hi"}"#),
+        ]
     );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolStarted { .. } | AgentEvent::FileChanged { .. }
+    )));
 }
 
 #[test]
@@ -389,7 +430,7 @@ fn streaming_responses_argument_progress_without_visible_answer() {
         };
         assert!(
             stream
-                .push(arguments_delta(arguments[0]), &mut emit)
+                .push(arguments_delta("fc", 0, arguments[0]), &mut emit)
                 .unwrap()
                 .is_none()
         );
@@ -404,7 +445,7 @@ fn streaming_responses_argument_progress_without_visible_answer() {
         };
         assert!(
             stream
-                .push(arguments_delta(arguments[1]), &mut emit)
+                .push(arguments_delta("fc", 0, arguments[1]), &mut emit)
                 .unwrap()
                 .is_none()
         );

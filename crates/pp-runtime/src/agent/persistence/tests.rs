@@ -1446,7 +1446,8 @@ fn transient_pipeline_snapshots_never_reach_the_journal() {
         pipes: serde_json::json!({"run_id": "run"}),
         preview: Some("瞬时阶段正文".into()),
     });
-    journal.event(&AgentEvent::EditArgumentsDelta {
+    journal.event(&AgentEvent::ToolArgumentsDelta {
+        tool: "edit".into(),
         index: 0,
         text: "临时编辑参数".into(),
     });

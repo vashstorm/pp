@@ -3,29 +3,39 @@
 // /非 UTF-8 的 unavailable 回退、无读权限文件的 write 不被快照失败阻断、失败 edit
 // 不伪造 diff、超过 40 行的默认折叠与Ctrl+O 展开/收起、退出原生历史保持当时的折叠状态
 // 保留颜色，以及 /resume 与启动恢复重放相同 diff 且不重新执行旧工具、缺 FileChanged
-// 的旧日志正常加载。全部通过真实 PTY、loopback HTTP 与磁盘文件观察，不用 sleep 猜
-// 测阶段；辅助函数一律使用 `diff_blocks_` 前缀，测试函数使用 `transcript_blocks_`
-// 前缀，不新增 use 声明以免与兄弟 include 文件冲突。
+// 的旧日志正常加载。生成期间的临时参数预览卡片另有两协议 × edit/write 的流式用例：
+// 预览先于提交出现、磁盘未变、取消后消失、提交后替换为唯一真实卡片且不进入 journal。
+// 全部通过真实 PTY、loopback HTTP 与磁盘文件观察，不用 sleep 猜测阶段；辅助函数一律
+// 使用 `diff_blocks_` 前缀，测试函数使用 `transcript_blocks_` / `*_preview_tui_` 前缀，
+// 不新增 use 声明以免与兄弟 include 文件冲突。
 
 const DIFF_BLOCKS_ADDED: vt100::Color = vt100::Color::Rgb(137, 210, 129);
 const DIFF_BLOCKS_REMOVED: vt100::Color = vt100::Color::Rgb(252, 58, 75);
 
-fn diff_blocks_edit_delta(stream: &mut SseReply, protocol: &str, text: &str, first: bool) {
+fn diff_blocks_stream_delta(
+    stream: &mut SseReply,
+    protocol: &str,
+    name: &str,
+    call_id: &str,
+    item_id: &str,
+    text: &str,
+    first: bool,
+) {
     if protocol == "completion" {
-        let function = if first { json!({"name":"edit","arguments":text}) } else { json!({"arguments":text}) };
+        let function = if first { json!({"name":name,"arguments":text}) } else { json!({"arguments":text}) };
         let mut call = json!({"index":0,"function":function});
         if first {
-            call["id"] = json!("stream-edit");
+            call["id"] = json!(call_id);
             call["type"] = json!("function");
         }
         stream.event(chat_chunk(json!({"tool_calls":[call]}), None));
     } else {
         if first {
             stream.event(json!({"type":"response.output_item.added","sequence_number":0,"output_index":0,
-                "item":{"type":"function_call","id":"fc-edit","call_id":"stream-edit","name":"edit","arguments":""}}));
+                "item":{"type":"function_call","id":item_id,"call_id":call_id,"name":name,"arguments":""}}));
         }
         stream.event(json!({"type":"response.function_call_arguments.delta","sequence_number":1,
-            "output_index":0,"item_id":"fc-edit","delta":text}));
+            "output_index":0,"item_id":item_id,"delta":text}));
     }
 }
 
@@ -59,7 +69,15 @@ fn edit_preview_tui_streams_before_commit_both_protocols_and_edit_modes() {
             let split = arguments.find("-READY").unwrap();
             let end = split + "-READY".len();
             let mut stream = SseReply::new(request);
-            diff_blocks_edit_delta(&mut stream, protocol, &arguments[..split], true);
+            diff_blocks_stream_delta(
+                &mut stream,
+                protocol,
+                "edit",
+                "stream-edit",
+                "fc-edit",
+                &arguments[..split],
+                true,
+            );
             pty.wait_for("完整参数到达前显示编辑预览", |screen| {
                 let text = screen.contents();
                 text.contains("preview · not saved") && text.contains("typing-中") && !text.contains("READY")
@@ -67,11 +85,27 @@ fn edit_preview_tui_streams_before_commit_both_protocols_and_edit_modes() {
             assert_eq!(std::fs::read_to_string(&target).unwrap(), "old\nkeep\n");
             pty.input("draft-preserved");
             pty.draft("draft-preserved");
-            diff_blocks_edit_delta(&mut stream, protocol, &arguments[split..end], false);
+            diff_blocks_stream_delta(
+                &mut stream,
+                protocol,
+                "edit",
+                "stream-edit",
+                "fc-edit",
+                &arguments[split..end],
+                false,
+            );
             pty.text("typing-中-READY");
             pty.draft("draft-preserved");
             assert_eq!(std::fs::read_to_string(&target).unwrap(), "old\nkeep\n");
-            diff_blocks_edit_delta(&mut stream, protocol, &arguments[end..], false);
+            diff_blocks_stream_delta(
+                &mut stream,
+                protocol,
+                "edit",
+                "stream-edit",
+                "fc-edit",
+                &arguments[end..],
+                false,
+            );
             if protocol == "completion" {
                 stream.event(chat_chunk(json!({}), Some("tool_calls")));
                 stream.frame("[DONE]");
@@ -98,7 +132,7 @@ fn edit_preview_tui_streams_before_commit_both_protocols_and_edit_modes() {
                 let entry = entry.unwrap();
                 if entry.path().extension().is_some_and(|extension| extension == "jsonl") {
                     let journal = std::fs::read_to_string(entry.path()).unwrap();
-                    assert!(!journal.contains("edit_arguments_delta"));
+                    assert!(!journal.contains("tool_arguments_delta"));
                 }
             }
             no_more(&provider);
@@ -121,7 +155,15 @@ fn edit_preview_tui_cancel_discards_partial_arguments_without_saving() {
         pty.input("cancel-edit-preview\r");
         let (request, _) = pty.request_at(&provider, api_path(protocol));
         let mut stream = SseReply::new(request);
-        diff_blocks_edit_delta(&mut stream, protocol, r#"{"path":"demo.txt","edits":[{"oldText":"old","newText":"cancel-marker"#, true);
+        diff_blocks_stream_delta(
+            &mut stream,
+            protocol,
+            "edit",
+            "stream-edit",
+            "fc-edit",
+            r#"{"path":"demo.txt","edits":[{"oldText":"old","newText":"cancel-marker"#,
+            true,
+        );
         pty.text("cancel-marker");
         pty.input("\x1b");
         pty.wait_for("取消后移除编辑预览并恢复输入", |screen| {
@@ -131,6 +173,107 @@ fn edit_preview_tui_cancel_discards_partial_arguments_without_saving() {
         drop(stream);
         pty.input("\x03");
         pty.finish();
+        no_more(&provider);
+    }
+}
+
+// 生成 write 参数期间显示临时预览卡片（Write: 标题 + File: 路径 + 新增行正文），
+// 磁盘未写；补发剩余分片后真实保存并替换为唯一提交卡片，退出历史与 journal 都不含预览。
+#[test]
+fn write_preview_tui_streams_before_commit_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let provider = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(home.path(), "settings.yml"),
+            diff_blocks_settings("replace"),
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&provider, Some(protocol)),
+        )
+        .unwrap();
+        let target = project.path().join("new.txt");
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready();
+        pty.input("stream-write-task\r");
+        let path = api_path(protocol);
+        let (request, _) = pty.request_at(&provider, path);
+        // 键序固定为 path 在前，预览首片就要同时呈现路径行与已生成正文；
+        // `serde_json::Value` 会按字母序重排键，因此不能用 `json!` 构造流式分片。
+        let arguments = r#"{"path":"new.txt","content":"first line\nsecond-DONE"}"#.to_owned();
+        let args: Value = serde_json::from_str(&arguments).unwrap();
+        let split = arguments.find("-DONE").unwrap();
+        let mut stream = SseReply::new(request);
+        diff_blocks_stream_delta(
+            &mut stream,
+            protocol,
+            "write",
+            "stream-write",
+            "fc-write",
+            &arguments[..split],
+            true,
+        );
+        pty.wait_for("完整参数到达前显示 write 预览卡片", |screen| {
+            let text = screen.contents();
+            text.contains("preview · not saved")
+                && text.contains("Write:")
+                && text.contains("File: new.txt")
+                && text.contains("first line")
+                && !text.contains("DONE")
+        });
+        assert!(!target.exists());
+        diff_blocks_stream_delta(
+            &mut stream,
+            protocol,
+            "write",
+            "stream-write",
+            "fc-write",
+            &arguments[split..],
+            false,
+        );
+        if protocol == "completion" {
+            stream.event(chat_chunk(json!({}), Some("tool_calls")));
+            stream.frame("[DONE]");
+        } else {
+            stream.event(json!({"type":"response.completed","sequence_number":2,
+                "response":response_body(json!([response_call("stream-write", "write", args)]))}));
+        }
+        stream.finish();
+        let (request, body) = pty.request_at(&provider, path);
+        assert_eq!(
+            diff_blocks_tool_result(&body, protocol, "stream-write")["ok"],
+            true
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "first line\nsecond-DONE"
+        );
+        pty.wait_for("临时 write 预览替换为唯一真实提交卡片", |screen| {
+            let text = screen.contents();
+            text.contains("write · new.txt")
+                && !text.contains("not saved")
+                && !text.contains("Write:")
+        });
+        diff_blocks_final(request, protocol, "stream-write-done");
+        pty.text("stream-write-done");
+        pty.ready();
+        let (history, _) = diff_blocks_exit_scrollback(&mut pty, "stream-write-done");
+        assert!(!history.contains("not saved"), "{history}");
+        pty.finish();
+        for entry in std::fs::read_dir(resume_history_journal_dir(home.path())).unwrap() {
+            let entry = entry.unwrap();
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+            {
+                let journal = std::fs::read_to_string(entry.path()).unwrap();
+                assert!(!journal.contains("tool_arguments_delta"));
+            }
+        }
         no_more(&provider);
     }
 }

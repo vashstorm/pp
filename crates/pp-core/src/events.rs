@@ -181,8 +181,9 @@ pub enum AgentEvent {
     AssistantFinished {
         text: String,
     },
-    /// 模型生成中的 Edit 参数，仅用于临时预览，不代表工具已执行或文件已保存。
-    EditArgumentsDelta {
+    /// 模型生成中的文件工具参数，仅用于临时预览，不代表工具已执行或文件已保存。
+    ToolArgumentsDelta {
+        tool: String,
         index: u32,
         text: String,
     },

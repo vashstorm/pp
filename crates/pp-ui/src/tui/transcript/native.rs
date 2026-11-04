@@ -122,7 +122,7 @@ impl Transcript {
     fn native_frontier(&self, exiting: bool) -> usize {
         // 临时参数预览在退出时也不能冻结进原生历史。
         let mut frontier = self
-            .edit_previews
+            .argument_previews
             .values()
             .copied()
             .min()

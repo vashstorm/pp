@@ -1,17 +1,38 @@
 use super::*;
 
+fn arguments(transcript: &mut Transcript, tool: &str, index: u32, text: &str) {
+    transcript.progress(AgentEvent::ToolArgumentsDelta {
+        tool: tool.into(),
+        index,
+        text: text.into(),
+    });
+}
+
+fn preview_rows(raw: &str) -> Vec<String> {
+    super::super::preview::layout(raw, 200, false, false)
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// 40 行内容的 JSON 参数，每行一个可定位的标记。
+fn numbered_lines(count: usize, key: &str) -> String {
+    let lines = (1..=count)
+        .map(|index| format!("line-{index:02}"))
+        .collect::<Vec<_>>()
+        .join("\\n");
+    format!(r#"{{"{key}":"{lines}"}}"#)
+}
+
 #[test]
-fn edit_preview_is_temporary_bounded_and_never_committed_to_native_history() {
+fn edit_arguments_preview_is_temporary_bounded_and_never_committed_to_native_history() {
     let mut transcript = Transcript::new();
     transcript.begin_run();
     for text in [
         r#"{"path":"demo.rs","edits":[{"oldText":"old","newText":"hel"#,
         "lo中",
     ] {
-        transcript.progress(AgentEvent::EditArgumentsDelta {
-            index: 0,
-            text: text.into(),
-        });
+        arguments(&mut transcript, "edit", 0, text);
     }
     let text = screen(&render(&mut transcript, 100, 15));
     assert!(
@@ -30,30 +51,135 @@ fn edit_preview_is_temporary_bounded_and_never_committed_to_native_history() {
         !text.contains("hello中") && !text.contains("not saved"),
         "{text}"
     );
-    transcript.progress(AgentEvent::EditArgumentsDelta {
+    transcript.progress(AgentEvent::ToolArgumentsDelta {
+        tool: "edit".into(),
         index: 0,
         text: format!("{{\"input\":\"{}", "中".repeat(40_000)),
     });
-    let index = transcript.edit_previews[&0];
+    let index = transcript.argument_previews[&0];
     assert!(transcript.entries[index].text.len() <= 64 * 1024);
     let before = transcript.entries[index].text.clone();
-    transcript.progress(AgentEvent::EditArgumentsDelta {
-        index: 0,
-        text: "SHOULD-NOT-APPEND".into(),
-    });
+    arguments(&mut transcript, "edit", 0, "SHOULD-NOT-APPEND");
     assert_eq!(transcript.entries[index].text, before);
     assert!(screen(&render(&mut transcript, 100, 15)).contains("preview limit reached"));
     transcript.finish_run("Cancelled", Duration::ZERO, chrono::Local::now());
     let text = screen(&render(&mut transcript, 100, 15));
     assert!(!text.contains("not saved"), "{text}");
-    transcript.progress(AgentEvent::EditArgumentsDelta {
-        index: 1,
-        text: r#"{"input":"discard"#.into(),
-    });
+    arguments(&mut transcript, "edit", 1, r#"{"input":"discard"#);
     transcript.progress(AgentEvent::AssistantFinished {
         text: String::new(),
     });
-    assert!(transcript.edit_previews.is_empty());
+    assert!(transcript.argument_previews.is_empty());
+}
+
+#[test]
+fn arguments_preview_folds_to_tail_only_beyond_forty_rows() {
+    // 正好 40 行原样显示，不加提示。
+    let rows = preview_rows(&numbered_lines(40, "newText"));
+    assert_eq!(rows.len(), 40);
+    assert!(!rows.iter().any(|row| row.contains("preview tail")));
+    assert_eq!(rows[0], "+ line-01");
+    assert_eq!(rows[39], "+ line-40");
+    // 41 行只保留末尾 39 行，并在首行提示展开。
+    let rows = preview_rows(&numbered_lines(41, "newText"));
+    assert_eq!(rows.len(), 40);
+    assert_eq!(rows[0], "… preview tail · Ctrl+O to expand");
+    assert_eq!(rows[1], "+ line-03");
+    assert_eq!(rows[39], "+ line-41");
+    // 路径行也计入折叠预算。
+    let raw = format!(
+        r#"{{"path":"demo.rs",{},"#,
+        numbered_lines(40, "newText")
+            .trim_start_matches('{')
+            .trim_end_matches('}')
+    );
+    let rows = preview_rows(&raw);
+    assert_eq!(rows.len(), 40);
+    assert_eq!(rows[0], "… preview tail · Ctrl+O to expand");
+    assert_eq!(rows[1], "+ line-02");
+    assert_eq!(rows[39], "+ line-40");
+    // 展开时显示全部内容。
+    let expanded = super::super::preview::layout(&numbered_lines(41, "newText"), 200, true, false);
+    assert_eq!(expanded.len(), 41);
+}
+
+#[test]
+fn arguments_preview_layout_height_stays_folded_for_short_and_long_content() {
+    for count in [5, 5000] {
+        let mut transcript = Transcript::new();
+        transcript.begin_run();
+        arguments(
+            &mut transcript,
+            "write",
+            0,
+            &numbered_lines(count, "content"),
+        );
+        let index = transcript.argument_previews[&0];
+        let entry = &mut transcript.entries[index];
+        entry.ensure_layout(100);
+        let rows = super::super::preview::layout(&entry.text, 100, false, false).len();
+        // 正文折叠后不超过 40 行，另外固定占一行文件卡片标题。
+        assert!(rows <= 40, "{count}: {rows}");
+        assert_eq!(entry.layout.as_ref().unwrap().height, rows + 1, "{count}");
+    }
+}
+
+#[test]
+fn write_arguments_preview_streams_path_and_content_without_byte_limit() {
+    let mut transcript = Transcript::new();
+    transcript.begin_run();
+    arguments(
+        &mut transcript,
+        "write",
+        0,
+        r#"{"path":"demo.txt","content":"first\nsecond"#,
+    );
+    arguments(&mut transcript, "write", 0, "-中\"}");
+    let text = screen(&render(&mut transcript, 100, 15));
+    for needle in [
+        "Write:",
+        "preview · not saved",
+        "File: demo.txt",
+        "+ first",
+        "+ second-中",
+    ] {
+        assert!(text.contains(needle), "{needle}: {text}");
+    }
+    assert!(transcript.next_native_batch(100, 1, false).is_none());
+    assert!(transcript.next_native_batch(100, 1, true).is_none());
+    // `write` 预览不设字节上限：超过 `edit` 的 64 KiB 也不截断、不显示上限提示。
+    arguments(
+        &mut transcript,
+        "write",
+        1,
+        r#"{"path":"big.txt","content":""#,
+    );
+    arguments(&mut transcript, "write", 1, &"中".repeat(40_000));
+    let index = transcript.argument_previews[&1];
+    assert!(transcript.entries[index].text.len() > 64 * 1024);
+    let entry = &mut transcript.entries[index];
+    entry.ensure_layout(100);
+    let rows = super::super::preview::layout(&entry.text, 100, false, false)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 40);
+    assert_eq!(rows[0], "… preview tail · Ctrl+O to expand");
+    let text = screen(&render(&mut transcript, 100, 60));
+    assert!(!text.contains("preview limit reached"), "{text}");
+    assert!(text.contains("preview tail"), "{text}");
+    // 路径行按折叠预算被末尾 39 行正文挤出可见区域，但正文仍完整持有。
+    assert!(
+        transcript.entries[index]
+            .text
+            .contains(r#""path":"big.txt""#)
+    );
+    transcript.progress(AgentEvent::AssistantFinished {
+        text: String::new(),
+    });
+    assert!(transcript.argument_previews.is_empty());
+    let text = screen(&render(&mut transcript, 100, 15));
+    assert!(!text.contains("not saved"), "{text}");
 }
 
 #[test]

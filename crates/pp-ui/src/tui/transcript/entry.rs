@@ -338,6 +338,17 @@ impl TranscriptEntry {
         self.tool.as_deref() == Some("edit")
     }
 
+    /// 生成中的文件工具参数预览：正文是未提交的 JSON 分片。
+    pub(super) fn is_argument_preview(&self) -> bool {
+        matches!(self.body, EntryBody::ArgumentsPreview { .. })
+    }
+
+    /// 已提交 `edit` 卡片与生成中的 `write` 预览共用文件卡片标题；
+    /// 已提交 `write` 卡片仍走通用工具标题。
+    pub(super) fn has_file_header(&self) -> bool {
+        self.is_edit() || (self.tool.as_deref() == Some("write") && self.is_argument_preview())
+    }
+
     /// 同一路径只保留最新报告；内联事件、工具结果与后续同步不会叠成重复卡片。
     pub(super) fn set_diagnostic(&mut self, report: pp_core::lsp_report::DiagnosticReport) {
         if let Some(existing) = self
@@ -363,14 +374,17 @@ impl TranscriptEntry {
             .unwrap_or_default()
     }
 
-    pub(super) fn edit_header(&self) -> Line<'static> {
+    /// 参数预览与已提交 `edit` 卡片共用的文件卡片标题。
+    pub(super) fn file_header(&self) -> Line<'static> {
+        let tool = self.tool.as_deref().unwrap_or_default();
         let style = Style::default()
-            .fg(palette::EDIT_TITLE)
+            .fg(palette::tool_accent(tool))
             .bg(palette::EDIT_BG);
         let meta = style.fg(palette::EDIT_META);
+        let label = if tool == "write" { "Write" } else { "Edit" };
         let path = self.edit_path();
         let mut spans = vec![
-            Span::styled(format!("{} Edit: ", palette::tool_icon("edit")), style),
+            Span::styled(format!("{} {label}: ", palette::tool_icon(tool)), style),
             Span::styled(
                 if path.ends_with(".rs") {
                     "\u{f1617} "
@@ -391,7 +405,7 @@ impl TranscriptEntry {
             ]);
         } else if self.status != EntryStatus::Complete {
             spans.push(Span::styled(
-                if matches!(self.body, EntryBody::EditPreview { .. }) {
+                if self.is_argument_preview() {
                     " · preview · not saved "
                 } else if self.status == EntryStatus::Failed {
                     " · failed "
@@ -427,8 +441,8 @@ impl TranscriptEntry {
     }
 
     pub(super) fn line<'a>(&'a self, line: &'a LayoutLine) -> Line<'a> {
-        if self.is_edit() && matches!(line.source(), Some(Source::Title)) {
-            return self.edit_header();
+        if self.has_file_header() && matches!(line.source(), Some(Source::Title)) {
+            return self.file_header();
         }
         let (source, range, title_end) = match &line.content {
             LayoutContent::Styled(styled) => {
@@ -683,7 +697,7 @@ impl TranscriptEntry {
             // 顶部边框行内嵌标题与状态圆点。
             self.add_lines(Source::Title, &mut lines);
         }
-        if edit {
+        if self.has_file_header() {
             lines.push(border(Source::Title));
         } else if self.kind == EntryKind::Lsp {
             let (status, color) = match self.status {
@@ -822,7 +836,7 @@ impl TranscriptEntry {
             lines.push(border(Source::Divider));
         }
         let tool_body = self.is_collapsible_tool()
-            && !matches!(self.body, EntryBody::EditPreview { .. })
+            && !self.is_argument_preview()
             && !(self.tool.as_deref() == Some("edit") && matches!(self.body, EntryBody::Diff(_)))
             && !matches!(self.body, EntryBody::Lsp(_));
         if tool_body {
@@ -878,9 +892,9 @@ impl TranscriptEntry {
                     height: 1,
                 }),
             );
-        } else if let EntryBody::EditPreview { truncated } = self.body {
+        } else if let EntryBody::ArgumentsPreview { truncated } = self.body {
             lines.extend(
-                super::edit_preview::layout(
+                super::preview::layout(
                     &self.text,
                     width,
                     self.expanded || self.display.full,

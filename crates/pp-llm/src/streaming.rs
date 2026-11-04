@@ -315,13 +315,22 @@ fn chat_decode_error(error: serde_path_to_error::Error<serde_json::Error>) -> an
     anyhow::anyhow!("decoding Chat Completions response: {reason} at {path}")
 }
 
+/// 预览白名单：只接受字面量工具名，不把模型原始字符串带进事件与 UI。
+fn preview_tool(name: &str) -> Option<&'static str> {
+    match name {
+        "edit" => Some("edit"),
+        "write" => Some("write"),
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ChatStream {
     role: Option<Role>,
     content: String,
     refusal: String,
     calls: BTreeMap<u32, ChatCompletionMessageToolCall>,
-    edit_emitted: BTreeMap<u32, usize>,
+    preview_emitted: BTreeMap<u32, usize>,
     finish_reason: Option<FinishReason>,
     termination: Option<ChatTermination>,
     usage: Option<CompletionUsage>,
@@ -432,11 +441,13 @@ impl ChatStream {
                         call.function.arguments.push_str(&arguments);
                     }
                 }
-                if call.function.name == "edit" {
-                    let sent = self.edit_emitted.entry(delta.index).or_default();
+                // 工具名未补齐前不预览；已发字节偏移保证分片只追加一次。
+                if let Some(tool) = preview_tool(&call.function.name) {
+                    let sent = self.preview_emitted.entry(delta.index).or_default();
                     let tail = &call.function.arguments[*sent..];
                     if !tail.is_empty() {
-                        emit(AgentEvent::EditArgumentsDelta {
+                        emit(AgentEvent::ToolArgumentsDelta {
+                            tool: tool.to_owned(),
                             index: delta.index,
                             text: tail.to_owned(),
                         });
@@ -559,7 +570,7 @@ struct Item {
 #[derive(Default)]
 pub(super) struct ResponsesStream {
     items: BTreeMap<usize, Item>,
-    edit_items: BTreeMap<u32, String>,
+    preview_items: BTreeMap<u32, (String, &'static str)>,
     output_index: usize,
     content_index: usize,
     content: String,
@@ -765,25 +776,28 @@ impl ResponsesStream {
             }
             ResponseStreamEvent::ResponseOutputItemAdded(event) => {
                 if let OutputItem::FunctionCall(call) = event.item
-                    && call.name == "edit"
-                    && !self.edit_items.contains_key(&event.output_index)
+                    && let Some(tool) = preview_tool(&call.name)
+                    && !self.preview_items.contains_key(&event.output_index)
                 {
                     if !call.arguments.is_empty() {
-                        emit(AgentEvent::EditArgumentsDelta {
+                        emit(AgentEvent::ToolArgumentsDelta {
+                            tool: tool.to_owned(),
                             index: event.output_index,
                             text: call.arguments,
                         });
                     }
-                    self.edit_items
-                        .insert(event.output_index, call.id.unwrap_or_default());
+                    self.preview_items
+                        .insert(event.output_index, (call.id.unwrap_or_default(), tool));
                 }
             }
             ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(event) => {
                 bytes = bytes.saturating_add(event.delta.len() as u64);
-                if self.edit_items.get(&event.output_index) == Some(&event.item_id)
+                if let Some((id, tool)) = self.preview_items.get(&event.output_index)
+                    && *id == event.item_id
                     && !event.delta.is_empty()
                 {
-                    emit(AgentEvent::EditArgumentsDelta {
+                    emit(AgentEvent::ToolArgumentsDelta {
+                        tool: (*tool).to_owned(),
                         index: event.output_index,
                         text: event.delta,
                     });
