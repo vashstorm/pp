@@ -23,6 +23,8 @@ pub(super) struct Panel {
     scroll: usize,
     width: Option<u16>,
     rows: Vec<Line<'static>>,
+    task_rows: Vec<usize>,
+    focus_pending: bool,
     pub(super) area: Rect,
 }
 
@@ -38,7 +40,9 @@ impl Panel {
         self.state = state;
         self.width = None;
         self.rows.clear();
-        if self.empty() || self.closed() == self.tasks().count() {
+        self.task_rows.clear();
+        self.focus_pending = true;
+        if self.empty() {
             self.reset_view();
         }
     }
@@ -80,8 +84,11 @@ impl Panel {
 
     fn prepare(&mut self, width: u16) {
         if self.width != Some(width) {
-            self.rows = tool_display::todo_checklist(&self.state.phases, width);
+            let checklist = tool_display::todo_checklist(&self.state.phases, width);
+            self.rows = checklist.rows;
+            self.task_rows = checklist.task_rows;
             self.width = Some(width);
+            self.focus_pending = true;
         }
     }
 
@@ -90,29 +97,26 @@ impl Panel {
             return 0;
         }
         let cap = budget.min((terminal_height / 3).max(1));
-        if width < 4 || cap < 3 {
+        if width < 4 || cap < 2 {
             return 1;
         }
         if self.expanded {
             self.prepare(width);
-            return cap.min(self.rows.len().saturating_add(2).min(u16::MAX as usize) as u16);
+            return cap.min(self.rows.len().saturating_add(1).min(u16::MAX as usize) as u16);
         }
-        if self.closed() == self.tasks().count() {
-            2
-        } else {
-            cap.min(4)
-        }
+        cap.min(self.tasks().count().min(3) as u16 + 1)
     }
 
     pub(super) fn toggle(&mut self) {
         if !self.empty() {
             self.expanded = !self.expanded;
             self.scroll = 0;
+            self.focus_pending = true;
         }
     }
 
     pub(super) fn scroll(&mut self, up: bool, amount: usize) {
-        if !self.expanded || self.area.height < 3 {
+        if !self.expanded || self.area.height < 2 {
             return;
         }
         self.scroll = if up {
@@ -136,7 +140,7 @@ impl Panel {
             self.area.x,
             self.area.y + 1,
             self.area.width,
-            self.area.height.saturating_sub(2),
+            self.area.height.saturating_sub(1),
         )
     }
 
@@ -236,35 +240,45 @@ impl Panel {
         }
     }
 
-    fn compact(&self) -> Vec<Line<'static>> {
-        let current = self
-            .tasks()
-            .find(|task| !self.preview() && task.status == TodoStatus::InProgress)
-            .or_else(|| self.tasks().find(|task| task.status == TodoStatus::Pending))
-            .or_else(|| self.tasks().find(|task| task.status == TodoStatus::Blocked));
-        let mut rows = Vec::new();
-        if let Some(current) = current {
-            let (symbol, marker, text) = tool_display::todo_task_styles(current.status);
-            rows.push(Line::from(vec![
-                Span::styled("├─ ", Style::default().fg(palette::DIM)),
-                Span::styled(format!("{symbol} "), marker),
-                Span::styled(one_line(&Self::brief(current)), text),
-            ]));
-            if let Some(next) = self
-                .tasks()
-                .find(|task| task.status == TodoStatus::Pending && !std::ptr::eq(*task, current))
-            {
-                rows.push(Line::from(vec![
-                    Span::styled("├─ ", Style::default().fg(palette::DIM)),
-                    Span::styled("Next: ", Style::default().fg(palette::MUTED)),
-                    Span::styled(
-                        one_line(&next.content),
-                        Style::default().fg(palette::ACTIVITY),
-                    ),
-                ]));
-            }
-        }
-        rows
+    fn focus_task(&self) -> usize {
+        self.tasks()
+            .position(|task| !self.preview() && task.status == TodoStatus::InProgress)
+            .or_else(|| {
+                self.tasks()
+                    .position(|task| task.status == TodoStatus::Pending)
+            })
+            .or_else(|| {
+                self.tasks()
+                    .position(|task| task.status == TodoStatus::Blocked)
+            })
+            .unwrap_or_else(|| self.tasks().count().saturating_sub(1))
+    }
+
+    fn compact(&self, limit: usize) -> Vec<Line<'static>> {
+        let count = self.tasks().count();
+        let visible = count.min(limit).min(3);
+        let start = self
+            .focus_task()
+            .saturating_sub(visible / 2)
+            .min(count - visible);
+        self.tasks()
+            .skip(start)
+            .take(visible)
+            .enumerate()
+            .map(|(index, task)| {
+                let (symbol, marker, text) = tool_display::todo_task_styles(task.status);
+                let branch = if index + 1 == visible {
+                    "└─ "
+                } else {
+                    "├─ "
+                };
+                Line::from(vec![
+                    Span::styled(branch, Style::default().fg(palette::DIM)),
+                    Span::styled(format!("{symbol} "), marker),
+                    Span::styled(one_line(&Self::brief(task)), text),
+                ])
+            })
+            .collect()
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
@@ -282,22 +296,18 @@ impl Panel {
         let body = self.body();
         if self.expanded && body.height > 0 {
             self.prepare(body.width);
+            if self.focus_pending {
+                // 按排版时记录的任务首行定位，阶段标题和正文折行不影响寻址。
+                if let Some(row) = self.task_rows.get(self.focus_task()) {
+                    self.scroll = row.saturating_sub(usize::from(body.height) / 2);
+                }
+                self.focus_pending = false;
+            }
             self.clamp_scroll();
         }
         frame.render_widget(
             self.header(area.width),
             Rect::new(area.x, area.y, area.width, 1),
-        );
-        frame.render_widget(
-            Line::styled(
-                "└────",
-                Style::default().fg(if self.completed() {
-                    palette::ADDED
-                } else {
-                    palette::DIM
-                }),
-            ),
-            Rect::new(area.x, area.bottom() - 1, area.width, 1),
         );
         if body.height == 0 {
             return;
@@ -310,12 +320,9 @@ impl Panel {
                 .min(self.rows.len());
             self.rows[self.scroll..end].to_vec()
         } else {
-            self.compact()
+            self.compact(usize::from(body.height))
         };
-        rows.resize(
-            usize::from(body.height),
-            Line::styled("│", Style::default().fg(palette::DIM)),
-        );
+        rows.resize(usize::from(body.height), Line::default());
         frame.render_widget(Paragraph::new(rows), body);
     }
 }
@@ -377,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn tui_todo_compact_selects_active_then_next_and_blocked_fallback() {
+    fn tui_todo_compact_centers_active_between_neighbors_and_blocked_fallback() {
         let mut panel = Panel::default();
         panel.update(state(&[
             ("已完成", TodoStatus::Completed),
@@ -388,12 +395,95 @@ mod tests {
         assert_eq!(panel.height(80, 24, 20), 4);
         let text = render(&mut panel, 80, 4);
         assert!(text.contains("1/4"));
-        assert!(text.contains("→ 当前任务"));
-        assert!(text.contains("Next: 下一任务"));
+        assert!(text.contains("[ ] 当前任务"));
+        assert!(text.contains("[ ] 下一任务"));
         assert!(!text.contains("隐藏任务"));
-        assert!(!text.contains("已完成"));
+        assert!(text.contains("[✓] 已完成"));
+        assert!(text.lines().nth(2).unwrap().contains("当前任务"));
         panel.update(state(&[("受阻任务", TodoStatus::Blocked)]));
         assert!(render(&mut panel, 80, 3).contains("受阻任务 (blocked: 外部等待)"));
+    }
+
+    #[test]
+    fn tui_todo_three_item_window_tracks_progress_and_keeps_completed_items() {
+        for active in 0..6 {
+            let mut panel = Panel::default();
+            let mut snapshot = state(&[]);
+            snapshot.phases[0].tasks = (0..6)
+                .map(|index| TodoItem {
+                    content: format!("TASK_{index}"),
+                    status: if index < active {
+                        TodoStatus::Completed
+                    } else if index == active {
+                        TodoStatus::InProgress
+                    } else {
+                        TodoStatus::Pending
+                    },
+                    blocker: None,
+                })
+                .collect();
+            panel.update(snapshot.clone());
+            let height = panel.height(80, 30, 20);
+            assert_eq!(height, 4);
+            let text = render(&mut panel, 80, height);
+            assert_eq!(text.matches("TASK_").count(), 3);
+            assert!(text.lines().last().unwrap().starts_with("└─ "));
+            let active_row = if active == 0 {
+                1
+            } else if active == 5 {
+                3
+            } else {
+                2
+            };
+            assert!(
+                text.lines()
+                    .nth(active_row)
+                    .unwrap()
+                    .contains(&format!("TASK_{active}"))
+            );
+            // 完成状态更新后保留任务窗口，也保留用户选择的展开状态。
+            for task in &mut snapshot.phases[0].tasks {
+                task.status = TodoStatus::Completed;
+            }
+            panel.update(snapshot.clone());
+            let text = render(&mut panel, 80, 4);
+            assert_eq!(text.matches("[✓]").count(), 3);
+            assert!(text.lines().last().unwrap().starts_with("└─ "));
+            for index in 3..6 {
+                assert!(text.contains(&format!("TASK_{index}")));
+            }
+            panel.toggle();
+            snapshot.phases[0].name = "完成阶段".into();
+            panel.update(snapshot);
+            assert!(panel.expanded);
+        }
+    }
+
+    #[test]
+    fn tui_todo_expanded_centers_active_and_preserves_manual_scroll() {
+        let mut panel = Panel::default();
+        let mut snapshot = state(&[]);
+        snapshot.phases[0].tasks = (0..12)
+            .map(|index| TodoItem {
+                content: format!("TASK_{index:02}"),
+                status: if index == 6 {
+                    TodoStatus::InProgress
+                } else {
+                    TodoStatus::Pending
+                },
+                blocker: None,
+            })
+            .collect();
+        panel.update(snapshot);
+        panel.toggle();
+        let height = panel.height(80, 30, 20);
+        let text = render(&mut panel, 80, height);
+        assert!(text.lines().nth(5).unwrap().contains("TASK_06"));
+        assert!(text.matches("TASK_").count() >= 3);
+        panel.scroll(true, usize::MAX);
+        let text = render(&mut panel, 80, height);
+        assert!(text.contains("I. 验证阶段"));
+        assert_eq!(panel.scroll, 0);
     }
 
     #[test]
@@ -408,8 +498,12 @@ mod tests {
                 panel.expanded = expanded;
                 let height = panel.height(width, 24, 20);
                 let text = render(&mut panel, width, height);
-                assert!(text.lines().nth(1).unwrap().starts_with('├'));
-                assert!(text.lines().last().unwrap().starts_with("└──"));
+                if !expanded || width == 80 {
+                    assert!(text.lines().nth(1).unwrap().starts_with('├'));
+                } else {
+                    assert!(text.lines().nth(1).unwrap().starts_with(['│', '├']));
+                }
+                assert!(!text.lines().any(|line| line.trim_end() == "└────"));
                 assert!(!text.contains('╭'));
                 assert!(!text.contains('╯'));
                 assert!(
@@ -441,10 +535,10 @@ mod tests {
             &lines[1..6],
             &[
                 "├─ I. 验证阶段 (1/2)",
-                "│  ├─ ☑ FIRST",
-                "│  └─ ☐ SECOND",
+                "│  ├─ [✓] FIRST",
+                "│  └─ [ ] SECOND",
                 "├─ II. Next phase (0/1)",
-                "│  └─ ☐ THIRD",
+                "│  └─ [ ] THIRD",
             ]
         );
     }
@@ -456,11 +550,11 @@ mod tests {
         panel.update(state(&[("完成", TodoStatus::InProgress)]));
         panel.toggle();
         panel.update(state(&[("完成", TodoStatus::Completed)]));
-        assert!(!panel.expanded);
+        assert!(panel.expanded);
+        assert_eq!(panel.height(80, 24, 20), 3);
+        panel.toggle();
         assert_eq!(panel.height(80, 24, 20), 2);
-        panel.toggle();
-        assert_eq!(panel.height(80, 24, 20), 4);
-        panel.toggle();
+        assert!(render(&mut panel, 80, 2).contains("[✓] 完成"));
         assert!(render(&mut panel, 80, 1).contains("✔ TODO · 1/1 · Complete"));
         panel.update(state(&[("放弃", TodoStatus::Abandoned)]));
         let text = render(&mut panel, 80, 2);
@@ -468,11 +562,11 @@ mod tests {
         assert!(!text.contains("Complete"));
         assert!(!text.contains('✔'));
         panel.update(state(&[("待办", TodoStatus::Pending)]));
-        assert_eq!(panel.height(80, 24, 2), 1);
+        assert_eq!(panel.height(80, 24, 2), 2);
         assert_eq!(panel.height(80, 24, 0), 0);
         assert_eq!(panel.height(0, 24, 20), 0);
         panel.toggle();
-        assert_eq!(panel.height(80, 6, 5), 1);
+        assert_eq!(panel.height(80, 6, 5), 2);
         panel.update(TodoState::default());
         assert!(!panel.expanded);
         assert_eq!(panel.height(80, 24, 20), 0);
@@ -492,29 +586,31 @@ mod tests {
             .draw(|frame| panel.draw(frame, Rect::new(0, 0, 80, 4)))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(3, 1)].symbol(), "→");
-        assert_eq!(buffer[(5, 1)].fg, palette::CODE_BLOCK);
-        assert_eq!(buffer[(3, 2)].symbol(), "N");
+        assert_eq!(buffer[(3, 1)].symbol(), "[");
+        assert_eq!(buffer[(7, 1)].fg, palette::TODO_ACTIVE);
+        assert_eq!(buffer[(3, 2)].symbol(), "[");
         assert_eq!(buffer[(3, 2)].fg, palette::MUTED);
-        assert_eq!(buffer[(9, 2)].fg, palette::ACTIVITY);
-        assert!(buffer[(5, 1)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(7, 2)].fg, palette::MUTED);
+        assert!(buffer[(7, 1)].modifier.contains(Modifier::BOLD));
         panel.toggle();
         terminal
             .draw(|frame| panel.draw(frame, frame.area()))
             .unwrap();
         let buffer = terminal.backend().buffer();
         for (y, symbol, marker, text) in [
-            (2, "→", palette::CODE_BLOCK, palette::CODE_BLOCK),
-            (3, "☐", palette::MUTED, palette::ACTIVITY),
+            (2, " ", palette::TODO_ACTIVE, palette::TODO_ACTIVE),
+            (3, " ", palette::MUTED, palette::MUTED),
             (4, "!", palette::ACCENT, palette::ACCENT),
-            (5, "☑", palette::ADDED, palette::ADDED),
+            (5, "✓", palette::ADDED, palette::ADDED),
         ] {
-            assert_eq!(buffer[(6, y)].symbol(), symbol);
+            assert_eq!(buffer[(6, y)].symbol(), "[");
+            assert_eq!(buffer[(7, y)].symbol(), symbol);
+            assert_eq!(buffer[(8, y)].symbol(), "]");
             assert_eq!(buffer[(6, y)].fg, marker);
-            assert_eq!(buffer[(8, y)].fg, text);
+            assert_eq!(buffer[(10, y)].fg, text);
         }
-        assert!(buffer[(8, 2)].modifier.contains(Modifier::BOLD));
-        assert!(buffer[(8, 5)].modifier.contains(Modifier::CROSSED_OUT));
+        assert!(buffer[(10, 2)].modifier.contains(Modifier::BOLD));
+        assert!(!buffer[(10, 5)].modifier.contains(Modifier::CROSSED_OUT));
         assert!(!buffer[(6, 5)].modifier.contains(Modifier::CROSSED_OUT));
         panel.update(state(&[("DONE", TodoStatus::Completed)]));
         terminal
@@ -522,15 +618,14 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(0, 0)].symbol(), "✔");
-        assert_eq!(buffer[(0, 1)].fg, palette::ADDED);
+        assert_eq!(buffer[(7, 1)].fg, palette::ADDED);
         assert_eq!(buffer[(0, 0)].fg, palette::ADDED);
-        panel.toggle();
         terminal
             .draw(|frame| panel.draw(frame, Rect::new(0, 0, 80, 4)))
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(3, 1)].fg, palette::ADDED);
-        assert_eq!(buffer[(8, 2)].fg, palette::ADDED);
+        assert_eq!(buffer[(10, 2)].fg, palette::ADDED);
     }
 
     #[test]
@@ -571,20 +666,20 @@ mod tests {
         let start = panel
             .rows
             .iter()
-            .position(|row| row.to_string().starts_with("│  ├─ ☐ abc"))
+            .position(|row| row.to_string().starts_with("│  ├─ [ ] abc"))
             .unwrap();
-        assert!(panel.rows[start + 1].to_string().starts_with("│  │    i"));
+        assert!(panel.rows[start + 1].to_string().starts_with("│  │      g"));
         assert!(
             panel
                 .rows
                 .iter()
-                .any(|row| row.to_string() == "│  │    EXPLICIT")
+                .any(|row| row.to_string() == "│  │      EXPLIC")
         );
         assert!(
             panel
                 .rows
                 .iter()
-                .any(|row| row.to_string() == "│  └─ ☐ 尾项")
+                .any(|row| row.to_string() == "│  └─ [ ] 尾项")
         );
     }
 
@@ -600,7 +695,7 @@ mod tests {
         panel.update(snapshot);
         let text = render(&mut panel, 80, 3);
         assert!(text.contains("Preview"));
-        assert!(text.contains("☐ 计划任务"));
+        assert!(text.contains("[ ] 计划任务"));
         assert!(!text.contains('→'));
     }
 
@@ -613,7 +708,7 @@ mod tests {
         ]));
         panel.toggle();
         panel.height(12, 90, 30);
-        let height = panel.rows.len() as u16 + 2;
+        let height = panel.rows.len() as u16 + 1;
         let text = render(&mut panel, 12, height);
         let joined = text.replace(['\n', ' ', '│'], "");
         assert!(joined.contains("验证阶段"));
@@ -622,7 +717,7 @@ mod tests {
         assert!(!text.contains('\u{1b}'));
         assert!(!text.contains('\u{7f}'));
         assert!(
-            panel
+            !panel
                 .rows
                 .iter()
                 .flat_map(|line| &line.spans)
@@ -645,7 +740,7 @@ mod tests {
         assert!(text.contains("phase \"验证阶段\" occurrence 1"));
         assert!(text.contains("phase \"验证阶段\" occurrence 2"));
         assert!(text.contains("已放弃 (dropped)"));
-        assert!(text.contains("☑ 已完成"));
+        assert!(text.contains("[✓] 已完成"));
     }
 
     #[test]
@@ -663,7 +758,7 @@ mod tests {
         let previous = panel.scroll;
         assert!(previous > 0);
         render(&mut panel, 20, 8);
-        assert!(panel.scroll <= panel.rows.len() - 6);
+        assert!(panel.scroll <= panel.rows.len() - 7);
         panel.update(state(&[("最后任务", TodoStatus::Pending)]));
         let text = render(&mut panel, 80, 8);
         assert!(text.contains("最后任务"));

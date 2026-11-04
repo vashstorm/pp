@@ -754,35 +754,23 @@ fn phase_roman(mut number: usize) -> String {
     roman
 }
 
-/// 状态标记与正文分开着色，完成项只对正文划线。
+/// 使用三列选择框，状态标记与正文统一着色，完成项仅勾选、不划线。
 pub(super) fn todo_task_styles(
     status: crate::tools::todo::TodoStatus,
 ) -> (&'static str, Style, Style) {
     use crate::tools::todo::TodoStatus;
     let (symbol, marker, text) = match status {
-        TodoStatus::Pending => ("☐", palette::MUTED, Style::default().fg(palette::ACTIVITY)),
+        TodoStatus::Pending => ("[ ]", palette::MUTED, Style::default().fg(palette::MUTED)),
         TodoStatus::InProgress => (
-            "→",
-            palette::CODE_BLOCK,
+            "[ ]",
+            palette::TODO_ACTIVE,
             Style::default()
-                .fg(palette::CODE_BLOCK)
+                .fg(palette::TODO_ACTIVE)
                 .add_modifier(Modifier::BOLD),
         ),
-        TodoStatus::Completed => (
-            "☑",
-            palette::ADDED,
-            Style::default()
-                .fg(palette::ADDED)
-                .add_modifier(Modifier::CROSSED_OUT),
-        ),
-        TodoStatus::Abandoned => (
-            "☐",
-            palette::MUTED,
-            Style::default()
-                .fg(palette::MUTED)
-                .add_modifier(Modifier::CROSSED_OUT),
-        ),
-        TodoStatus::Blocked => ("!", palette::ACCENT, Style::default().fg(palette::ACCENT)),
+        TodoStatus::Completed => ("[✓]", palette::ADDED, Style::default().fg(palette::ADDED)),
+        TodoStatus::Abandoned => ("[ ]", palette::MUTED, Style::default().fg(palette::MUTED)),
+        TodoStatus::Blocked => ("[!]", palette::ACCENT, Style::default().fg(palette::ACCENT)),
     };
     (symbol, Style::default().fg(marker), text)
 }
@@ -812,10 +800,15 @@ fn todo_tree_rows(
 
 /// 结构化完整清单：阶段头 `I. Name (closed/total)`，任务行按状态着色。
 /// 动态文本全部经 display_text 折行安全展示，重复文案附 phase+occurrence 寻址提示。
+pub(super) struct TodoChecklist {
+    pub(super) rows: Vec<Line<'static>>,
+    pub(super) task_rows: Vec<usize>,
+}
+
 pub(super) fn todo_checklist(
     phases: &[crate::tools::todo::TodoPhase],
     width: u16,
-) -> Vec<Line<'static>> {
+) -> TodoChecklist {
     use crate::tools::todo::TodoStatus;
     use std::collections::HashMap;
 
@@ -828,6 +821,7 @@ pub(super) fn todo_checklist(
     let mut occurrence: HashMap<&str, usize> = HashMap::new();
 
     let mut rows = Vec::new();
+    let mut task_rows = Vec::new();
     for (index, phase) in phases.iter().enumerate() {
         let closed = phase
             .tasks
@@ -845,11 +839,9 @@ pub(super) fn todo_checklist(
         {
             palette::ADDED
         } else if active {
-            palette::CODE_BLOCK
-        } else if closed == phase.tasks.len() {
-            palette::MUTED
+            palette::TODO_ACTIVE
         } else {
-            palette::ACTIVITY
+            palette::MUTED
         };
         let header = Line::from(vec![
             Span::styled(
@@ -917,36 +909,37 @@ pub(super) fn todo_checklist(
             let last = task_index + 1 == phase.tasks.len();
             // 缩短窄窗口的树枝，至少为中文正文保留两列。
             let (branch, continuation) = match width {
+                12.. => {
+                    if last {
+                        ("│  └─ ", "│         ")
+                    } else {
+                        ("│  ├─ ", "│  │      ")
+                    }
+                }
                 10.. => {
                     if last {
-                        ("│  └─ ", "│       ")
+                        ("│ └ ", "│       ")
                     } else {
-                        ("│  ├─ ", "│  │    ")
+                        ("│ ├ ", "│ │     ")
                     }
                 }
                 8.. => {
                     if last {
-                        ("│ └ ", "│     ")
+                        ("└ ", "      ")
                     } else {
-                        ("│ ├ ", "│ │   ")
+                        ("├ ", "│     ")
                     }
                 }
-                6.. => {
-                    if last {
-                        ("└ ", "    ")
-                    } else {
-                        ("├ ", "│   ")
-                    }
-                }
-                4.. => ("", "  "),
+                6.. => ("", "    "),
                 _ => ("", ""),
             };
             let mut prefix = Line::styled(branch, Style::default().fg(palette::DIM));
-            if width >= 4 {
+            if width >= 6 {
                 prefix
                     .spans
                     .push(Span::styled(format!("{symbol} "), marker));
             }
+            task_rows.push(rows.len());
             rows.extend(todo_tree_rows(
                 Line::from(spans),
                 width,
@@ -955,7 +948,7 @@ pub(super) fn todo_checklist(
             ));
         }
     }
-    rows
+    TodoChecklist { rows, task_rows }
 }
 
 /// 失败只展示诊断，不把随结果携带的旧清单再次展开。

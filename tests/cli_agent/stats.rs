@@ -654,16 +654,20 @@ fn stats_unavailable_database_does_not_fail_model_task() {
 }
 
 fn http(address: &str, path: &str, host: &str) -> (u16, String) {
+    http_with_origin(address, path, host, None)
+}
+
+fn http_with_origin(address: &str, path: &str, host: &str, origin: Option<&str>) -> (u16, String) {
     use std::io::Read;
     let mut stream = std::net::TcpStream::connect(address).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    write!(
-        stream,
-        "GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-    )
-    .unwrap();
+    write!(stream, "GET {path} HTTP/1.0\r\nHost: {host}\r\n").unwrap();
+    if let Some(origin) = origin {
+        write!(stream, "Origin: {origin}\r\n").unwrap();
+    }
+    write!(stream, "Connection: close\r\n\r\n").unwrap();
     let mut text = String::new();
     stream.read_to_string(&mut text).unwrap();
     let (headers, body) = text.split_once("\r\n\r\n").unwrap();
@@ -890,6 +894,54 @@ fn stats_server_no_open_skips_browser() {
     ));
     assert_eq!(http(&address, "/", &address).0, 200);
     assert!(!dir.path().join("opened-url").exists());
+}
+
+fn routed_private_ipv4() -> Option<String> {
+    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    // UDP connect only selects a route and local interface; it sends no packets.
+    socket
+        .connect((std::net::Ipv4Addr::new(192, 0, 2, 1), 80))
+        .ok()?;
+    let std::net::IpAddr::V4(ip) = socket.local_addr().ok()?.ip() else {
+        return None;
+    };
+    ip.is_private().then(|| ip.to_string())
+}
+
+#[test]
+fn stats_server_binds_explicit_ip_and_checks_its_origin() {
+    let Some(host) = routed_private_ipv4() else {
+        eprintln!("no routed private IPv4 interface; skipping explicit LAN bind test");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (_cli, address) = stats_server_address(Cli::spawn(
+        dir.path(),
+        &["stats", "--host", &host, "--port", "0", "--no-open"],
+        &[],
+    ));
+    assert!(address.starts_with(&format!("{host}:")));
+    assert_eq!(http(&address, "/", &address).0, 200);
+
+    let port = address.rsplit_once(':').unwrap().1;
+    assert_eq!(http(&address, "/", &format!("127.0.0.1:{port}")).0, 403);
+    assert_eq!(
+        http_with_origin(&address, "/", &address, Some("http://untrusted.example")).0,
+        403
+    );
+    assert_eq!(
+        http_with_origin(&address, "/", &address, Some(&format!("http://{address}"))).0,
+        200
+    );
+}
+
+#[test]
+fn stats_server_rejects_non_ip_and_unspecified_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    for host in ["localhost", "0.0.0.0", "::"] {
+        let output = Cli::spawn(dir.path(), &["stats", "--host", host], &[]).finish();
+        assert!(!output.status.success());
+    }
 }
 
 #[test]

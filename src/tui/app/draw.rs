@@ -80,10 +80,13 @@ impl App {
             .as_ref()
             .is_some_and(|b| !b.summary().is_empty());
         let subagent_height = u16::from(has_agents && remaining > todo_height + 1);
-        let conversation_height = remaining.saturating_sub(todo_height + subagent_height);
+        let todo_spacing =
+            u16::from(todo_height > 0 && remaining > todo_height + subagent_height + 1);
+        let conversation_height =
+            remaining.saturating_sub(todo_height + subagent_height + todo_spacing);
         let conversation = Rect::new(area.x, area.y, area.width, conversation_height);
         let ask = Rect::new(area.x, conversation.bottom(), area.width, ask_height);
-        let todo = Rect::new(area.x, ask.bottom(), area.width, todo_height);
+        let todo = Rect::new(area.x, ask.bottom() + todo_spacing, area.width, todo_height);
         let subagents = Rect::new(area.x, todo.bottom(), area.width, subagent_height);
         let attachments = Rect::new(area.x, subagents.bottom(), area.width, attachments_height);
         let input = Rect::new(area.x, attachments.bottom(), area.width, input_height);

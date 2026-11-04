@@ -5,22 +5,33 @@ use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
-pub(crate) fn run(port: u16, open: bool) -> Result<()> {
+pub(crate) fn run(host: std::net::IpAddr, port: u16, open: bool) -> Result<()> {
+    ensure!(
+        !host.is_unspecified(),
+        "stats host must be a specific IP address, not an unspecified address"
+    );
     let store = Store::open(&database_path()?).context("opening statistics database")?;
-    let server = Server::http((std::net::Ipv4Addr::LOCALHOST, port))
+    let server = Server::http(std::net::SocketAddr::new(host, port))
         .map_err(|e| anyhow::anyhow!("starting statistics server: {e}"))?;
-    let port = server
+    let address = server
         .server_addr()
         .to_ip()
-        .context("statistics listener unavailable")?
-        .port();
-    let url = format!("http://127.0.0.1:{port}/#/overview?range=24h");
+        .context("statistics listener unavailable")?;
+    let url = format!("http://{address}/#/overview?range=24h");
     println!("pp stats: {url}");
     std::io::stdout().flush()?;
     // Auto-open only on interactive terminals; piped, agent, or CI contexts just print the URL.
     if open && std::io::stdout().is_terminal() {
         open_browser(url);
     }
+    let mut allowed = vec![address.to_string()];
+    if address.ip().is_loopback() {
+        allowed.push(format!("localhost:{}", address.port()));
+    }
+    let allowed_origins = allowed
+        .iter()
+        .map(|host| format!("http://{host}"))
+        .collect::<Vec<_>>();
     for request in server.incoming_requests() {
         let host = request
             .headers()
@@ -33,15 +44,13 @@ pub(crate) fn run(port: u16, open: bool) -> Result<()> {
             .iter()
             .find(|h| h.field.equiv("Origin"))
             .map(|h| h.value.as_str());
-        let allowed = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
         let valid_host = allowed.iter().any(|s| s == host);
-        let valid_origin =
-            origin.is_none_or(|o| allowed.iter().any(|s| o == format!("http://{s}")));
+        let valid_origin = origin.is_none_or(|o| allowed_origins.iter().any(|s| s == o));
         let (status, kind, body) = if !valid_host || !valid_origin {
             (
                 403,
                 "application/json",
-                json!({"error":"local origin required"}).to_string(),
+                json!({"error":"allowed origin required"}).to_string(),
             )
         } else if request.method() != &Method::Get {
             (

@@ -124,8 +124,11 @@ enum Command {
         )]
         days: u32,
     },
-    /// Start the local stats page server
+    /// Start the stats page server
     Stats {
+        /// Listen on a specific IPv4 or IPv6 address
+        #[arg(long, default_value = "127.0.0.1", value_name = "IP")]
+        host: std::net::IpAddr,
         #[arg(long, default_value_t = 3848)]
         port: u16,
         /// 仅启动服务，不自动打开浏览器
@@ -230,7 +233,11 @@ fn run(args: Args) -> Result<()> {
     if let Some(command) = args.command {
         return match command {
             Command::Gc { days } => run_gc(days),
-            Command::Stats { port, no_open } => stats::server::run(port, !no_open),
+            Command::Stats {
+                host,
+                port,
+                no_open,
+            } => stats::server::run(host, port, !no_open),
         };
     }
     if let Some(prompt) = &args.prompt {

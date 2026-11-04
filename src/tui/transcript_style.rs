@@ -11,6 +11,7 @@ pub(super) const CODE: Color = Color::Rgb(229, 193, 255);
 pub(super) const CODE_BLOCK: Color = Color::Rgb(156, 220, 254);
 pub(super) const LINK: Color = Color::Rgb(0, 136, 250);
 pub(super) const ADDED: Color = Color::Rgb(137, 210, 129);
+pub(super) const TODO_ACTIVE: Color = Color::Rgb(255, 230, 109);
 pub(super) const ERROR_BORDER: Color = Color::Rgb(224, 108, 117);
 pub(super) const REMOVED: Color = Color::Rgb(252, 58, 75);
 // 工具共享中性底色与边框；主题色只用于名称、图标等少量标识。

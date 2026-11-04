@@ -450,8 +450,20 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         let toggle_hint = if cfg!(target_os = "macos") { "⌥ + T" } else { "Ctrl + T" };
         assert!(pty.parser.screen().rows(0, 100).nth(22).unwrap().contains(toggle_hint));
         let current = pty.parser.screen().cell(23, 3).unwrap();
-        assert_eq!(current.contents(), "→");
-        assert_eq!(current.fgcolor(), vt100::Color::Rgb(156, 220, 254));
+        assert_eq!(current.contents(), "[");
+        assert_eq!(current.fgcolor(), vt100::Color::Rgb(255, 230, 109));
+        assert!(pty.parser.screen().rows(0, 100).nth(25).unwrap().contains("PINNED_TASK_02"));
+        assert_eq!(pty.parser.screen().cell(24, 7).unwrap().fgcolor(), vt100::Color::Rgb(119, 125, 136));
+        plan_calls(request, protocol, json!([plan_call(
+            protocol, "start-middle", "todo", json!({"op":"start","task":"PINNED_TASK_06"})
+        )]));
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        pty.wait_for("进行项在三项窗口中间", |screen| {
+            screen.rows(0, 100).nth(23).unwrap().contains("PINNED_TASK_05")
+                && screen.rows(0, 100).nth(24).unwrap().contains("PINNED_TASK_06")
+                && screen.rows(0, 100).nth(25).unwrap().contains("PINNED_TASK_07")
+        });
+        assert_eq!(pty.parser.screen().cell(24, 7).unwrap().fgcolor(), vt100::Color::Rgb(255, 230, 109));
         let mut stream = SseReply::new(request);
         let answer = (0..70)
             .map(|i| format!("    pinned-stream-{i:03}\n"))
@@ -461,6 +473,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         pty.text("pinned-stream-069");
         pty.input("中文草稿");
         pty.draft("中文草稿");
+        assert!(pty.parser.screen().rows(0, 100).nth(21).unwrap().trim().is_empty());
         pty.function_key('t');
         pty.wait_for("TODO 原位展开", |screen| {
             screen
@@ -516,7 +529,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         );
         let history = pty.native_history().0;
         assert_eq!(history.matches("pinned-stream-000").count(), 1);
-        assert_eq!(history.matches("PINNED_TASK_00").count(), 1);
+        assert_eq!(history.matches("PINNED_TASK_05").count(), 1);
         let before_exit = pty.raw.len();
         pty.input("\x03");
         pty.wait_for("退出恢复终端", |screen| !screen.bracketed_paste());
@@ -530,7 +543,8 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 .rows(0, 100)
                 .nth(22)
                 .is_some_and(|row| row.contains("TODO · 0/12"))
-                && !screen.contents().contains("PINNED_TASK_07")
+                && screen.contents().contains("PINNED_TASK_06")
+                && !screen.contents().contains("PINNED_TASK_08")
         });
         pty.input("finish all tasks\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
@@ -545,17 +559,20 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
             )]),
         );
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        pty.wait_for("完成后保留绿色树形摘要", |screen| {
+        pty.wait_for("完成后保留三项绿色任务", |screen| {
             screen
                 .rows(0, 100)
-                .nth(24)
+                .nth(22)
                 .is_some_and(|row| row.contains("TODO · 12/12") && row.contains("Complete"))
+                && screen.rows(0, 100).nth(23).unwrap().contains("[✓] PINNED_TASK_09")
+                && screen.rows(0, 100).nth(24).unwrap().contains("[✓] PINNED_TASK_10")
+                && screen.rows(0, 100).nth(25).unwrap().contains("[✓] PINNED_TASK_11")
         });
         let screen = pty.parser.screen();
-        assert_eq!(screen.cell(24, 0).unwrap().contents(), "✔");
+        assert_eq!(screen.cell(22, 0).unwrap().contents(), "✔");
         assert_eq!(screen.cell(25, 0).unwrap().contents(), "└");
-        assert_eq!(screen.cell(25, 0).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
-        assert_eq!(screen.cell(24, 0).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
+        assert_eq!(screen.cell(25, 4).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
+        assert_eq!(screen.cell(22, 0).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
         plan_final(request, protocol, "Fixed tasks finished.");
         pty.completed();
         pty.input("clear the list\r");
@@ -620,7 +637,7 @@ fn tui_todo_plan_keeps_hud_empty_until_approved_execution() {
         plan_choose(&mut pty, 0);
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         pty.wait_for("执行交接后显示 active 清单", |screen| {
-            screen.contents().contains("→ Write canary bytes.")
+            screen.contents().contains("[ ] Write canary bytes.")
                 && !screen.contents().contains("Preview")
         });
         plan_calls(
