@@ -132,7 +132,9 @@ printf '说明当前项目的构建方式\n' | pp
 
 通过 `/Roles` 保存模型与思考档位后，Default 会让主 Agent 在下一个安全边界切换，不影响已有子 Agent；其他角色的变更由绑定该角色的子 Agent 各自在安全边界应用，旧会话中已有的嵌套子 Agent 也遵循此规则，但不能派发新子任务。没有角色绑定、仅在创建时继承模型的子 Agent 保持原配置。禁用或清除角色不会取消或重新绑定已有子 Agent；不监听其他 pp 进程的配置热更新。
 
-所有 `/test-*` 命令只在 dev/test 构建中提供：命令本身及其专用实现统一由 `#[cfg(debug_assertions)]` 编译排除，与 `debug` 设置无关。其他构建不注册这些名字，因此在行模式与终端界面都按未注册命令处理：不报本地错误、不请求模型，行模式静默忽略、终端界面保留草稿，`/help`、`/tips` 与 `/` 补全中也没有对应条目。`/test-tools` 按 read → write → edit → grep → glob → bash → bash-task → wait → todo → ask 顺序运行同一套固定场景：每次在启动目录下新建临时工作区并运行真实工具，预期 `ok:false` 卡片不会中断后续场景；取消、夹具初始化失败或受管进程清理失败会停止命令。默认套件不包含 LSP、MCP、Plan 工具或子 Agent `yield`，也不会请求模型。`/test-task` 是独立命令，要求 FAST、SLOW、REVIEW 三个模型 Role 已启用，并通过当前模型发送固定子 Agent 批次。`/test-ui` 不请求模型，而是以约 80 ms/token 输出固定的 `AgentEvent` 思考与 Markdown／代码增量，用于观察慢速渲染和 Esc 取消。`/test-ask` 需要交互式 TUI；工具测试仅在 Execute 模式、空闲且无 pending 输入时启动。
+全部 13 个 `/test-*` 命令在 dev/test 构建中使用内嵌、仅监听 loopback 的 Mock AI Server，由 `#[cfg(debug_assertions)]` 编译隔离，与 `debug` 设置无关。命令通过编译内嵌 JSON 脚本驱动真实 Responses client、Agent、工具和子 Agent，不依赖真实 provider 或用户模型 Role；空 HOME、无 models 或无效配置 YAML 也能运行。每个场景使用全新的系统临时 workspace/config/sessions/locks 目录，不改变正常会话、模型、Role、cwd 或真实统计。预期工具失败继续，取消、初始化或清理失败则中止。
+
+`/test-tools` 顺序运行 read → write → edit-replace → edit-hashline → grep → glob → bash → bash-task → wait → todo → ask，每场 fresh Agent；不串联 `/test-task` 或 `/test-ui`。TUI 在 Execute 模式、无 active/pending 输入时允许 Ready 和 Unavailable 启动；Esc 取消并保留运行中编辑的草稿，结束后恢复正常展示。`/test-ask` 使用真实 TUI 答题，CLI 非交互错误作为预期结果继续。release 不注册这些命令，也不启动 mock listener：行模式静默忽略未知命令，TUI 保留草稿，帮助和补全不列出这些名字。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -140,9 +142,9 @@ printf '说明当前项目的构建方式\n' | pp
 | `/init` | 创建或更新当前项目的 `AGENTS.md` |
 | `/plan [prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，批准后执行（仅终端界面） |
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除（仅终端界面） |
-| `/test-task` | 仅 dev/test 构建：按固定场景派发 FAST／SLOW／REVIEW 三个只读子 Agent 并等待三份结果（需要模型 Role 与真实模型） |
-| `/test-tools`、`/test-read`、`/test-write`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 仅 dev/test 构建：在隔离临时工作区运行全部或单个固定工具场景；`/test-ask` 需要终端界面 |
-| `/test-ui` | 仅 dev/test 构建：以约 80 ms/token 输出慢速 mock 思考与 Markdown／代码流，不请求模型、不创建会话记录 |
+| `/test-task` | 仅 dev/test：三个真实 FAST／SLOW／REVIEW 子 Agent 使用独立本地 mock lane，不需要用户 Role 或真实 provider |
+| `/test-tools`、`/test-read`、`/test-write`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 仅 dev/test：运行全部或单个隔离真实工具场景；edit 覆盖 replace/hashline，ask 在 TUI 中答题 |
+| `/test-ui` | 仅 dev/test：以 12.5 mock token/s 输出原生 Responses SSE 思考与 Markdown／代码分片 |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |
 | `/resume`、`/tree` | 恢复会话，或回退当前历史（仅终端界面） |
@@ -177,7 +179,7 @@ printf '说明当前项目的构建方式\n' | pp
 
 `grep` 在进程内搜索本地文件，支持正则、路径 glob、文件行范围和按文件分页。Execute、Plan 和 Review 共用 `pattern`、`path`、`case`、`gitignore`、`skip` 参数；可在 `settings.yml` 设置 `grep: {contextBefore: 1, contextAfter: 3}` 调整上下文。
 
-`glob` 在 Execute、Plan 和 Review 中查找本地路径，接受 `path`、`hidden`、`gitignore` 和 `limit`；默认包含隐藏文件并遵守忽略规则。裸 `*.rs` 递归查找，`src/*.rs` 只查找直接子项。结果按修改时间排序，最多返回 200 个路径和 50 KiB；五秒协作式扫描超时或结果截断时应缩小目录。取消与超时在文件系统操作之间检查。`glob` 只读，但没有文件系统沙箱。
+`glob` 在 Execute、Plan 和 Review 中查找本地路径，接受必填匹配表达式 `pattern`、可选搜索目录 `path`（默认当前工作目录），以及 `hidden`、`gitignore` 和 `limit`；例如 `glob({"pattern":"**/*.rs","path":"src"})`。`path` 仅接受单个字面目录，不再承载 glob 或多个搜索范围；默认包含隐藏文件并遵守忽略规则。裸 `*.rs` 递归查找，`src/*.rs` 只查找直接子项。结果按修改时间排序，最多返回 200 个路径和 50 KiB；五秒协作式扫描超时或结果截断时应缩小目录。取消与超时在文件系统操作之间检查。`glob` 只读，但没有文件系统沙箱。
 
 TODO 区固定在输入框正上方，使用灰色树形连线，不再绘制底部封口线；标题显示进度与展开／收起快捷键，窄窗口优先精简状态文字以保留快捷键。收起时空间允许便显示连续三项，进行项尽量居中，清单首尾用相邻项补齐；不足三项时全部显示。待办为灰色，进行中为亮黄色加粗，完成项保持绿色、仅勾选而不划线；选择框加宽为三列 `[ ]`／`[✓]`，阻塞项使用金色 `[!]`。展开后阶段与任务通过树枝相连，进行中阶段为亮黄色，已完成阶段为绿色，换行正文与任务文字对齐。macOS 使用 ⌥ + T、其他平台使用 Ctrl + T 原位向上展开，最多占终端高度的三分之一；展开和状态更新时尽量将当前任务滚动至中部，在清单内使用滚轮或同一功能修饰键配合 PgUp/PgDn 翻页。全部完成后保留用户选择的展开状态，收起时仍显示最后三项及绿色 ✔ Complete 标题；含放弃项时显示 Closed。小窗口按可用空间显示任务，空清单不占空间。完整清单仅在固定区展示，对话历史保留操作状态和错误；Ctrl + O 不控制 TODO。恢复和树跳转按最终任务状态重建固定区，并默认收起。
 

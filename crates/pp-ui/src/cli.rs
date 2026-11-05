@@ -16,6 +16,8 @@ use pp_core::cancellation;
 use pp_core::context;
 use pp_core::events;
 use pp_runtime::agent;
+#[cfg(debug_assertions)]
+use pp_runtime::mock_ai;
 use pp_runtime::tools;
 
 /// 行模式 stdin 的逐行读取结果；专用线程只负责 I/O，命令仍在主线程分发。
@@ -509,15 +511,53 @@ pub(crate) fn run_cli_compaction(agent: &mut agent::Agent, stderr: &mut impl Wri
     result.map(|_| ())
 }
 
+/// 行模式下单个执行单元：正常 Agent 任务，或 dev 构建的内嵌 mock 场景。
+enum CliExecution<'a> {
+    Agent {
+        agent: &'a mut agent::Agent,
+        prompt: Option<&'a str>,
+    },
+    #[cfg(debug_assertions)]
+    Mock {
+        test: mock_ai::MockTest,
+        endpoint: mock_ai::MockEndpoint,
+    },
+}
+
 pub fn run_cli_task(
     agent: &mut agent::Agent,
     prompt: Option<&str>,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> Result<()> {
+    run_cli_execution(CliExecution::Agent { agent, prompt }, stdout, stderr)
+}
+
+/// dev/test 专用入口：用内嵌 mock server 运行真实 Agent 场景，不触碰正常会话。
+#[cfg(debug_assertions)]
+pub fn run_cli_mock_test(
+    test: mock_ai::MockTest,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<()> {
+    let endpoint = mock_ai::current_endpoint()?;
+    run_cli_execution(CliExecution::Mock { test, endpoint }, stdout, stderr)
+}
+
+fn run_cli_execution(
+    mut execution: CliExecution<'_>,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<()> {
     use events::{AgentEvent, OutputStream};
-    for warning in agent.mcp_view().warnings() {
-        writeln!(stderr, "{warning}")?;
+    match &execution {
+        CliExecution::Agent { agent, .. } => {
+            for warning in agent.mcp_view().warnings() {
+                writeln!(stderr, "{warning}")?;
+            }
+        }
+        #[cfg(debug_assertions)]
+        CliExecution::Mock { .. } => {}
     }
     let mut first_error = None;
     let (mut out_broken, mut err_broken) = (false, false);
@@ -697,14 +737,18 @@ pub fn run_cli_task(
                     );
                 }
                 if current_tool.as_ref().is_some_and(|(current_id, name)| {
-                    current_id == &id && matches!(name.as_str(), "grep" | "glob" | "todo")
+                    current_id == &id
+                        && (matches!(name.as_str(), "grep" | "glob" | "todo")
+                            || name == "read"
+                                && result["kind"] != "image"
+                                && result.get("pipe").is_none())
                 }) && let Some(content) = result["content"]
                     .as_str()
                     .or_else(|| result["error"].as_str())
                 {
                     let content = if current_tool
                         .as_ref()
-                        .is_some_and(|(_, name)| name == "todo")
+                        .is_some_and(|(_, name)| matches!(name.as_str(), "read" | "todo"))
                     {
                         pp_core::text::display_text(content)
                     } else {
@@ -869,296 +913,63 @@ pub fn run_cli_task(
         }
     };
     let cancellation = cancellation::CancellationToken::new();
-    let result = match prompt {
-        Some(prompt) => agent.run(prompt, &cancellation, None, &mut emit),
-        None => agent.continue_session(&cancellation, None, &mut emit),
-    }
-    .map(|_| ());
+    let result = match &mut execution {
+        CliExecution::Agent { agent, prompt } => match prompt {
+            Some(prompt) => agent.run(*prompt, &cancellation, None, &mut emit),
+            None => agent.continue_session(&cancellation, None, &mut emit),
+        }
+        .map(|_| ()),
+        #[cfg(debug_assertions)]
+        CliExecution::Mock { test, endpoint } => {
+            mock_ai::run_test(*test, endpoint.clone(), None, &cancellation, &mut |event| {
+                if let mock_ai::MockTestEvent::Progress(event) = event {
+                    emit(event);
+                }
+            })
+            .map(|_| ())
+        }
+    };
     if !thinking_newline {
         cli_write(stderr, "\n", &mut err_broken, &mut first_error);
     }
     if visible && !newline {
         cli_write(stdout, "\n", &mut out_broken, &mut first_error);
     }
-    // Report a newly created session even when the task itself failed; stdout
-    // stays reserved for model answers.
-    if let Some(id) = agent.take_session_notice() {
-        cli_write(
-            stderr,
-            &format!("Session: {id}\n"),
-            &mut err_broken,
-            &mut first_error,
-        );
-    }
-    if let Some(usage) = context_usage {
-        cli_write(
-            stderr,
-            &usage.cli_status(&agent.current_model().reference),
-            &mut err_broken,
-            &mut first_error,
-        );
+    match &mut execution {
+        CliExecution::Agent { agent, .. } => {
+            // Report a newly created session even when the task itself failed;
+            // stdout stays reserved for model answers.
+            if let Some(id) = agent.take_session_notice() {
+                cli_write(
+                    stderr,
+                    &format!("Session: {id}\n"),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+            }
+            if let Some(usage) = context_usage {
+                cli_write(
+                    stderr,
+                    &usage.cli_status(&agent.current_model().reference),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+            }
+        }
+        #[cfg(debug_assertions)]
+        CliExecution::Mock { .. } => {
+            if let Some(usage) = context_usage {
+                cli_write(
+                    stderr,
+                    &usage.cli_status("mock-root/primary"),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+            }
+        }
     }
     if let Some(error) = first_error {
         return Err(error).context("writing task output");
-    }
-    result
-}
-
-#[cfg(debug_assertions)]
-pub(crate) fn run_cli_tool_test(
-    agent: &agent::Agent,
-    selection: pp_runtime::agent::tool_test::ToolTest,
-    stderr: &mut impl Write,
-) -> Result<()> {
-    use events::{AgentEvent, OutputStream};
-    let mut broken = false;
-    let mut first_error = None;
-    let mut current_tool: Option<String> = None;
-    let mut streamed_output = String::new();
-    cli_write(
-        stderr,
-        &format!(
-            "Local tool suite {}: fixed fixtures run in an isolated temporary workspace. Expected tool failures are display cases and do not stop the suite.\n",
-            selection.name()
-        ),
-        &mut broken,
-        &mut first_error,
-    );
-    let cancellation = cancellation::CancellationToken::new();
-    let result = agent.run_tool_test(selection, &cancellation, &mut |event| match event {
-        AgentEvent::ToolStarted {
-            name, arguments, ..
-        } => {
-            streamed_output.clear();
-            cli_write(
-                stderr,
-                &format!("\n[{name}] arguments: {arguments}\n"),
-                &mut broken,
-                &mut first_error,
-            );
-            current_tool = Some(name);
-        }
-        AgentEvent::ToolOutputSnapshot { output, .. } => {
-            let label = current_tool.as_deref().unwrap_or("tool");
-            let delta = cli_output_text(&output, &mut streamed_output, false, label);
-            cli_write(stderr, &delta, &mut broken, &mut first_error);
-        }
-        AgentEvent::ToolOutput { stream, text, .. } => {
-            let name = current_tool.as_deref().unwrap_or("tool");
-            let label = match stream {
-                OutputStream::Stdout => "stdout",
-                OutputStream::Stderr => "stderr",
-            };
-            cli_write(
-                stderr,
-                &format!("[{name} {label}] {text}"),
-                &mut broken,
-                &mut first_error,
-            );
-        }
-        AgentEvent::FileChanged { path, diff, .. } => {
-            cli_write(
-                stderr,
-                &cli_test_diff(&path, &diff),
-                &mut broken,
-                &mut first_error,
-            );
-        }
-        AgentEvent::ToolPipelineSnapshot { pipes, .. } => {
-            if let Some(status) = pp_runtime::tools::output::pipes_status(&pipes) {
-                cli_write(
-                    stderr,
-                    &format!("[pipeline] {}\n", status.notice()),
-                    &mut broken,
-                    &mut first_error,
-                );
-            }
-        }
-        AgentEvent::ToolFinished { result, .. } => {
-            let name = current_tool.take().unwrap_or_else(|| "tool".into());
-            if result["output"].is_string() {
-                let text = cli_output_result(&result, &mut streamed_output, &name);
-                cli_write(stderr, &text, &mut broken, &mut first_error);
-            }
-            if let Some(content) = result["content"].as_str() {
-                cli_write(
-                    stderr,
-                    &format!("\n{content}\n"),
-                    &mut broken,
-                    &mut first_error,
-                );
-            }
-            if let Some(code) = result["exit_code"].as_i64() {
-                cli_write(
-                    stderr,
-                    &format!("[{name}] exit {code}\n"),
-                    &mut broken,
-                    &mut first_error,
-                );
-            }
-            if let (Some(task_id), Some(status)) =
-                (result["task_id"].as_str(), result["status"].as_str())
-            {
-                cli_write(
-                    stderr,
-                    &format!("[{name}] task {task_id}: {status}\n"),
-                    &mut broken,
-                    &mut first_error,
-                );
-            }
-            if name == "wait"
-                && let Some(jobs) = result["jobs"].as_array()
-            {
-                for job in jobs {
-                    cli_write(
-                        stderr,
-                        &format!(
-                            "[wait] {} {} {}\n",
-                            job["type"].as_str().unwrap_or("job"),
-                            job["id"].as_str().unwrap_or("?"),
-                            job["status"].as_str().unwrap_or("unknown")
-                        ),
-                        &mut broken,
-                        &mut first_error,
-                    );
-                }
-            }
-            if result["stdout_truncated"] == true
-                || result["stderr_truncated"] == true
-                || result["truncated"] == true
-            {
-                cli_write(
-                    stderr,
-                    &format!(
-                        "[{name}] output truncated; follow the artifact or next path above.\n"
-                    ),
-                    &mut broken,
-                    &mut first_error,
-                );
-            }
-            if let Some(error) = result["error"].as_str() {
-                cli_write(
-                    stderr,
-                    &format!("[expected fixture failure] {name}: {error}\n"),
-                    &mut broken,
-                    &mut first_error,
-                );
-            }
-            cli_write(
-                stderr,
-                &format!(
-                    "[{name}] {}\n",
-                    if result["ok"] == true {
-                        "ok"
-                    } else {
-                        "failed (expected fixture case)"
-                    }
-                ),
-                &mut broken,
-                &mut first_error,
-            );
-        }
-        _ => {}
-    });
-    if let Some(error) = &first_error {
-        return Err(anyhow::anyhow!(error.to_string())).context("writing local tool test output");
-    }
-    match result {
-        Ok(report) => {
-            cli_write(
-                stderr,
-                &format!("Local tool suite complete: {} tool calls.\n", report.calls),
-                &mut broken,
-                &mut first_error,
-            );
-            if let Some(error) = first_error {
-                return Err(anyhow::anyhow!(error.to_string()))
-                    .context("writing local tool test output");
-            }
-            Ok(())
-        }
-        Err(error) => Err(error),
-    }
-}
-
-#[cfg(debug_assertions)]
-fn cli_test_diff(path: &str, diff: &events::FileDiff) -> String {
-    use events::{DiffLineKind, FileDiff};
-    match diff {
-        FileDiff::Unavailable { reason } => format!("file {path}: diff unavailable ({reason})\n"),
-        FileDiff::Text {
-            created,
-            added,
-            removed,
-            hunks,
-            ..
-        } => {
-            let mut text = format!(
-                "file {path}: {} (+{added} -{removed})\n",
-                if *created { "created" } else { "modified" }
-            );
-            for hunk in hunks {
-                text.push_str("@@\n");
-                for line in &hunk.lines {
-                    let marker = match line.kind {
-                        DiffLineKind::Context => ' ',
-                        DiffLineKind::Added => '+',
-                        DiffLineKind::Removed => '-',
-                    };
-                    text.push(marker);
-                    text.push_str(&line.text);
-                    text.push('\n');
-                }
-            }
-            text
-        }
-    }
-}
-
-#[cfg(debug_assertions)]
-pub(crate) fn run_cli_ui_test(
-    agent: &agent::Agent,
-    stdout: &mut impl Write,
-    stderr: &mut impl Write,
-) -> Result<()> {
-    use events::AgentEvent;
-    let (mut out_broken, mut err_broken) = (false, false);
-    let mut first_error = None;
-    let mut newline = true;
-    cli_write(
-        stderr,
-        "Mock UI stream: fixed AgentEvent data at ~80 ms/token; no provider request, session record, or tool result is created. Thinking is written to stderr.\n",
-        &mut err_broken,
-        &mut first_error,
-    );
-    let cancellation = cancellation::CancellationToken::new();
-    let result = agent.run_ui_test(&cancellation, &mut |event| match event {
-        AgentEvent::ThinkingDelta { text } => {
-            cli_write(stderr, &text, &mut err_broken, &mut first_error);
-        }
-        AgentEvent::AssistantDelta {
-            text,
-            refusal: false,
-        } => {
-            newline = text.ends_with('\n');
-            cli_write(stdout, &text, &mut out_broken, &mut first_error);
-        }
-        _ => {}
-    });
-    if !newline {
-        cli_write(stdout, "\n", &mut out_broken, &mut first_error);
-    }
-    if !result.is_ok() {
-        cli_write(stderr, "\n", &mut err_broken, &mut first_error);
-    }
-    cli_write(
-        stderr,
-        "Mock UI stream complete: no real model response was produced.\n",
-        &mut err_broken,
-        &mut first_error,
-    );
-    if let Some(error) = first_error {
-        return Err(anyhow::anyhow!(error.to_string())).context("writing mock UI output");
     }
     result
 }
@@ -1409,6 +1220,20 @@ pub fn run_line_mode(
             }
             _ => {}
         }
+        // `/test-*` 不依赖真实配置：启动失败时仍使用内嵌 mock server。
+        #[cfg(debug_assertions)]
+        if let Some(commands::Command::MockTest(test)) = &command {
+            if let Err(error) = run_cli_mock_test(*test, &mut stdout, &mut stderr) {
+                if error
+                    .chain()
+                    .any(|cause| cause.is::<cancellation::CleanupError>())
+                {
+                    return stop_cli_lsp(agent.as_ref().ok(), Err(error));
+                }
+                writeln!(stderr, "error: {error:#}")?;
+            }
+            continue;
+        }
         let agent = match &mut agent {
             Ok(agent) => agent,
             Err(error) => {
@@ -1513,39 +1338,10 @@ pub fn run_line_mode(
                 | commands::Command::Plan(_),
             ) => unreachable!(),
             Some(commands::Command::Unknown) => unreachable!(),
+            #[cfg(debug_assertions)]
+            Some(commands::Command::MockTest(_)) => unreachable!(),
             Some(commands::Command::Prompt(prompt)) => {
                 if let Err(error) = run_cli_task(agent, Some(&prompt), &mut stdout, &mut stderr) {
-                    writeln!(stderr, "error: {error:#}")?;
-                }
-            }
-            #[cfg(debug_assertions)]
-            Some(commands::Command::TestTask) => {
-                if let Err(message) = commands::test_task::ready(agent.model_roles()) {
-                    writeln!(stderr, "error: {message}")?;
-                } else if let Err(error) = run_cli_task(
-                    agent,
-                    Some(commands::test_task::PROMPT),
-                    &mut stdout,
-                    &mut stderr,
-                ) {
-                    writeln!(stderr, "error: {error:#}")?;
-                }
-            }
-            #[cfg(debug_assertions)]
-            Some(commands::Command::ToolTest(selection)) => {
-                if let Err(error) = run_cli_tool_test(agent, selection, &mut stderr) {
-                    if error
-                        .chain()
-                        .any(|cause| cause.is::<cancellation::CleanupError>())
-                    {
-                        return stop_cli_lsp(Some(&*agent), Err(error));
-                    }
-                    writeln!(stderr, "error: {error:#}")?;
-                }
-            }
-            #[cfg(debug_assertions)]
-            Some(commands::Command::TestUi) => {
-                if let Err(error) = run_cli_ui_test(agent, &mut stdout, &mut stderr) {
                     writeln!(stderr, "error: {error:#}")?;
                 }
             }

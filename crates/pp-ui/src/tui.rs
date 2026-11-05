@@ -15,6 +15,8 @@ mod lsp;
 mod markdown;
 mod mcp;
 mod menu;
+#[cfg(debug_assertions)]
+mod mock_test;
 mod model;
 mod notification;
 mod pipes;
@@ -71,8 +73,6 @@ use pp_runtime::agent::input::QueueSnapshot;
 use pp_runtime::agent::plan_management::PlanListing;
 use pp_runtime::agent::plan_management::PlanOpenIntent;
 use pp_runtime::agent::plan_management::PlanSelection;
-#[cfg(debug_assertions)]
-use pp_runtime::agent::tool_test::ToolTest;
 use pp_runtime::tools::ChangesView;
 use pp_runtime::tools::UndoResult;
 use pp_runtime::tools::UndoToken;
@@ -348,15 +348,6 @@ enum WorkerCommand {
         call_id: String,
         cancellation: CancellationToken,
     },
-    #[cfg(debug_assertions)]
-    ToolTest {
-        selection: ToolTest,
-        cancellation: CancellationToken,
-    },
-    #[cfg(debug_assertions)]
-    TestUi {
-        cancellation: CancellationToken,
-    },
     RunInput {
         prepared: pp_runtime::user_input::UserInput,
         cancellation: CancellationToken,
@@ -456,14 +447,12 @@ enum WorkerEvent {
     Progress(AgentEvent),
     ShellCompleted(Result<()>),
     #[cfg(debug_assertions)]
-    ToolTestCompleted {
-        result: Result<usize>,
-        elapsed: Duration,
-    },
+    MockPrepared(pp_runtime::mock_ai::MockTestSnapshot),
     #[cfg(debug_assertions)]
-    UiTestCompleted {
-        result: Result<()>,
+    MockCompleted {
+        result: Result<pp_runtime::mock_ai::MockTestReport>,
         elapsed: Duration,
+        finished_at: chrono::DateTime<chrono::Local>,
     },
     Completed {
         result: Result<RunOutcome>,
@@ -822,6 +811,11 @@ struct App {
     ask_cancellation: Option<CancellationToken>,
     commands: Option<Sender<WorkerCommand>>,
     events: Option<Receiver<WorkerEvent>>,
+    // 隔离的 /test-* worker 与开始前保存的正常展示状态；不参与正常会话清理。
+    #[cfg(debug_assertions)]
+    mock_worker: Option<mock_test::Worker>,
+    #[cfg(debug_assertions)]
+    mock_saved: Option<mock_test::MockUiSnapshot>,
     unavailable: Option<String>,
     choices: Vec<ModelChoice>,
     current_model: Option<ModelChoice>,

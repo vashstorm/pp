@@ -1,4 +1,4 @@
-//! 本地路径搜索，行为参考 oh-my-pi 0b5c27ab。
+//! 本地路径搜索，使用 pattern 匹配表达式和可选 path 搜索目录。
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
 use globset::{GlobBuilder, GlobMatcher};
@@ -20,8 +20,19 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) fn definition() -> FunctionObject {
     FunctionObject {
         name: "glob".into(),
-        description: Some("Find local filesystem paths by glob. path defaults to '.', and may be a file, directory, glob, or semicolon-separated scopes. Bare *.rs searches recursively; src/*.rs matches direct children; src/**/*.rs searches recursively. Includes hidden paths and respects ignore rules by default. Results include directories, are ranked by modification time, and are limited to 200 paths; narrow the directory when incomplete. No shell or filesystem sandbox.".into()),
-        parameters: Some(json!({"type":"object","properties":{"path":{"type":"string"},"hidden":{"type":"boolean"},"gitignore":{"type":"boolean"},"limit":{"type":"number"}},"additionalProperties":false})),
+        description: Some("Find local filesystem paths matching a glob pattern. pattern is required (e.g. '**/*.rs'); path is an optional directory, defaulting to the current working directory. Example: {\"pattern\":\"**/*.rs\",\"path\":\"src\"}. Never put the glob pattern in path. Bare *.rs searches recursively; src/*.rs matches direct children; src/**/*.rs searches recursively. Includes hidden paths and respects ignore rules by default. Results include directories, are ranked by modification time, and are limited to 200 paths; narrow path or pattern when incomplete. No shell or filesystem sandbox.".into()),
+        parameters: Some(json!({
+            "type":"object",
+            "properties":{
+                "pattern":{"type":"string","description":"Required glob pattern, e.g. **/*.rs or src/*.rs. One pattern per call; use braces for alternatives."},
+                "path":{"type":"string","description":"Directory to search in, absolute or relative to cwd. Defaults to cwd. This is a literal directory, not a glob pattern."},
+                "hidden":{"type":"boolean"},
+                "gitignore":{"type":"boolean"},
+                "limit":{"type":"number"}
+            },
+            "required":["pattern"],
+            "additionalProperties":false
+        })),
         ..Default::default()
     }
 }
@@ -29,6 +40,7 @@ pub(super) fn definition() -> FunctionObject {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Args {
+    pattern: String,
     path: Option<String>,
     hidden: Option<bool>,
     gitignore: Option<bool>,
@@ -51,8 +63,6 @@ fn normalize(path: &Path) -> PathBuf {
 struct Target {
     root: PathBuf,
     pattern: String,
-    has_glob: bool,
-    input: String,
 }
 
 fn parse_target(cwd: &Path, input: &str) -> Target {
@@ -60,86 +70,25 @@ fn parse_target(cwd: &Path, input: &str) -> Target {
     let segments: Vec<_> = normalized.split('/').collect();
     let first = segments
         .iter()
-        .position(|part| part.contains(['*', '?', '[', '{']));
-    let (base, pattern, has_glob) = match first {
-        None => (normalized.clone(), "**/*".to_owned(), false),
-        Some(0) => (
-            ".".to_owned(),
-            if normalized.starts_with("**/") {
-                normalized.clone()
+        .position(|part| part.contains(['*', '?', '[', '{']))
+        .unwrap_or(segments.len().saturating_sub(1));
+    let (base, pattern) = if !normalized.contains('/') {
+        (".".to_owned(), format!("**/{normalized}"))
+    } else {
+        let mut base = segments[..first].join("/");
+        if base.is_empty() {
+            base.push_str(if normalized.starts_with('/') {
+                "/"
             } else {
-                format!("**/{normalized}")
-            },
-            true,
-        ),
-        Some(index) => {
-            let mut base = segments[..index].join("/");
-            if base.is_empty() {
-                base.push('/');
-            }
-            (base, segments[index..].join("/"), true)
+                "."
+            });
         }
+        (base, segments[first..].join("/"))
     };
     Target {
         root: normalize(&cwd.join(base)),
         pattern,
-        has_glob,
-        input: input.to_owned(),
     }
-}
-
-fn split_top(input: &str, delimiter: char) -> Vec<String> {
-    let mut depth = 0usize;
-    let mut start = 0;
-    let mut escaped = false;
-    let mut result = Vec::new();
-    for (i, c) in input.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' => escaped = true,
-            '{' => depth += 1,
-            '}' => depth = depth.saturating_sub(1),
-            _ if c == delimiter && depth == 0 => {
-                let part = input[start..i].trim();
-                if !part.is_empty() {
-                    result.push(part.to_owned());
-                }
-                start = i + c.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    let part = input[start..].trim();
-    if !part.is_empty() {
-        result.push(part.to_owned());
-    }
-    result
-}
-
-fn split_paths(cwd: &Path, input: &str) -> Vec<String> {
-    if cwd.join(input).exists() {
-        return vec![input.to_owned()];
-    }
-    for delimiter in [';', ',', ' '] {
-        let entries = split_top(input, delimiter);
-        if entries.len() < 2 {
-            continue;
-        }
-        let existing = entries
-            .iter()
-            .filter(|p| parse_target(cwd, p).root.exists())
-            .count();
-        if delimiter == ';'
-            || (delimiter == ',' && existing > 0)
-            || (delimiter == ' ' && existing == entries.len())
-        {
-            return entries;
-        }
-    }
-    vec![input.to_owned()]
 }
 
 fn compile(pattern: &str) -> Result<GlobMatcher> {
@@ -257,19 +206,24 @@ fn run_with_timeout(
         "limit must be a positive number"
     );
     let limit = requested.floor().clamp(1.0, MAX_RESULTS as f64) as usize;
-    let input = args.path.as_deref().unwrap_or(".");
     ensure!(
-        !input.trim().is_empty() && !input.contains('\0'),
-        "path must be non-empty and contain no NUL bytes"
+        !args.pattern.trim().is_empty() && !args.pattern.contains('\0'),
+        "pattern must be non-empty and contain no NUL bytes"
     );
-    let input = if input.chars().all(|c| c == '/') {
-        "."
-    } else {
-        input
-    };
-    let scopes = split_paths(cwd, input);
+    compile(&args.pattern)?;
+    let path = args.path.as_deref().unwrap_or(".");
+    ensure!(
+        !path.trim().is_empty() && !path.contains('\0'),
+        "path must be a non-empty directory and contain no NUL bytes; put the glob in pattern"
+    );
+    let directory = normalize(&cwd.join(path));
+    ensure!(
+        directory.is_dir(),
+        "path must be an existing directory; put the glob in pattern"
+    );
+    let target = parse_target(&directory, &args.pattern);
     let deadline = Instant::now() + timeout;
-    search(cwd, args, scopes, token, requested, limit, || {
+    search(cwd, args, target, token, requested, limit, || {
         Instant::now() >= deadline
     })
 }
@@ -277,52 +231,27 @@ fn run_with_timeout(
 fn search(
     cwd: &Path,
     args: Args,
-    scopes: Vec<String>,
+    target: Target,
     token: &CancellationToken,
     requested: f64,
     limit: usize,
     mut expired: impl FnMut() -> bool,
 ) -> Result<Value> {
     let mut entries = BTreeMap::new();
-    let mut missing = Vec::new();
     let mut warnings = Vec::new();
     let mut timed_out = false;
     let mut more = false;
-    let mut valid = 0usize;
-    for scope in &scopes {
-        cancellation::check(token)?;
-        if expired() {
-            timed_out = true;
-            break;
-        }
-        let target = parse_target(cwd, scope);
-        let root = target.root;
-        if root == Path::new("/") {
-            bail!("Searching from root directory '/' is not allowed");
-        }
-        let metadata = match fs::metadata(&root) {
-            Ok(meta) => meta,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                missing.push(target.input);
-                continue;
-            }
-            Err(e) => return Err(e).context("cannot access glob search path"),
-        };
-        if !target.has_glob && metadata.is_file() {
-            valid += 1;
-            add(
-                &mut entries,
-                Entry {
-                    path: display(cwd, &root, false),
-                    mtime: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                },
-                limit,
-                &mut more,
-            );
-            continue;
-        }
+    let root = target.root;
+    if root == Path::new("/") {
+        bail!("Searching from root directory '/' is not allowed");
+    }
+    let metadata = match fs::metadata(&root) {
+        Ok(meta) => Some(meta),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).context("cannot access glob search path"),
+    };
+    if let Some(metadata) = metadata {
         ensure!(metadata.is_dir(), "glob search path is not a directory");
-        valid += 1;
         let matcher = compile(&target.pattern)?;
         let walk_root = fs::canonicalize(&root).context("cannot resolve glob search path")?;
         let in_repo = walk_root
@@ -400,12 +329,6 @@ fn search(
                 &mut more,
             );
         }
-        if timed_out {
-            break;
-        }
-    }
-    if valid == 0 && !timed_out {
-        bail!("Path not found: {}", missing.join(", "));
     }
     let mut matches: Vec<_> = entries.into_values().collect();
     matches.sort_by(rank);
@@ -438,9 +361,6 @@ fn search(
             "Requested limit {requested} clamped to the max of {MAX_RESULTS}"
         ));
     }
-    if !missing.is_empty() {
-        warnings.push(format!("Skipped missing paths: {}", missing.join(", ")));
-    }
     Ok(
         json!({"ok":true,"content":content,"truncated":truncated,"timed_out":timed_out,"warnings":warnings}),
     )
@@ -471,44 +391,44 @@ mod tests {
     fn glob_patterns_scope_and_exact_paths() {
         let dir = fixture();
         let root = dir.path();
-        let bare = call(root, json!({"path":"*.rs"}));
+        let bare = call(root, json!({"pattern":"*.rs"}));
         for name in ["root.rs", "a.rs", "b.rs"] {
             assert!(text(&bare).contains(name), "{bare}");
         }
-        let direct = call(root, json!({"path":"src/*.rs"}));
+        let direct = call(root, json!({"pattern":"src/*.rs"}));
         assert!(text(&direct).contains("a.rs"));
         assert!(!text(&direct).contains("b.rs"));
-        assert!(text(&call(root, json!({"path":"src/**/*.rs"}))).contains("b.rs"));
-        assert!(text(&call(root, json!({"path":"src/nested/{b.rs,c.txt"}))).contains("c.txt"));
-        assert_eq!(text(&call(root, json!({"path":"root.rs"}))), "root.rs");
-        assert!(text(&call(root, json!({"path":"src"}))).contains("# nested/"));
-        assert!(run(root, r#"{"path":"missing"}"#, &CancellationToken::new()).is_err());
-        assert!(run(root, r#"{"path":"/*.rs"}"#, &CancellationToken::new()).is_err());
+        assert!(text(&call(root, json!({"pattern":"src/**/*.rs"}))).contains("b.rs"));
+        assert!(text(&call(root, json!({"pattern":"src/nested/{b.rs,c.txt"}))).contains("c.txt"));
+        assert_eq!(text(&call(root, json!({"pattern":"root.rs"}))), "root.rs");
+        assert!(text(&call(root, json!({"pattern":"**/*","path":"src"}))).contains("# nested/"));
+        assert!(run(root, r#"{"pattern":"/*.rs"}"#, &CancellationToken::new()).is_err());
     }
 
     #[test]
-    fn glob_multi_paths_and_missing_scopes() {
+    fn glob_pattern_and_literal_directory_are_separate() {
         let dir = fixture();
         let root = dir.path();
-        fs::create_dir_all(root.join("folder with spaces")).unwrap();
-        fs::write(root.join("folder with spaces/a,b.txt"), "").unwrap();
-        let literal = call(root, json!({"path":"folder with spaces/a,b.txt"}));
-        assert!(text(&literal).contains("a,b.txt"));
-        let result = call(
+        let scoped = call(root, json!({"pattern":"**/*.rs","path":"src"}));
+        assert!(text(&scoped).contains("a.rs"));
+        assert!(text(&scoped).contains("b.rs"));
+        assert!(!text(&scoped).contains("root.rs"));
+        assert!(!text(&scoped).contains("c.txt"));
+        let direct = call(root, json!({"pattern":"*.rs","path":root.join("src")}));
+        assert_eq!(direct["content"], scoped["content"]);
+        fs::create_dir_all(root.join("folder with spaces;commas,[]")).unwrap();
+        fs::write(root.join("folder with spaces;commas,[]/a,b.txt"), "").unwrap();
+        let literal = call(
             root,
-            json!({"path":"src/*.rs; missing/*.rs; root.rs; root.rs"}),
+            json!({"pattern":"*.txt","path":"folder with spaces;commas,[]"}),
         );
-        assert!(text(&result).contains("a.rs"));
-        assert_eq!(text(&result).matches("root.rs").count(), 1);
-        assert!(result["warnings"].to_string().contains("missing"));
-        assert!(
-            run(
-                root,
-                r#"{"path":"missing1;missing2"}"#,
-                &CancellationToken::new()
-            )
-            .is_err()
-        );
+        assert!(text(&literal).contains("a,b.txt"));
+        for pattern in ["missing.rs", "missing/*.rs"] {
+            assert_eq!(
+                text(&call(root, json!({"pattern":pattern}))),
+                "No files found matching pattern"
+            );
+        }
     }
 
     #[test]
@@ -522,22 +442,22 @@ mod tests {
         fs::write(root.join("node_modules/lib/dep.rs"), "").unwrap();
         fs::create_dir(root.join(".git")).unwrap();
         fs::write(root.join(".git/config"), "").unwrap();
-        let result = call(root, json!({"path":"*.rs"}));
+        let result = call(root, json!({"pattern":"*.rs"}));
         assert!(text(&result).contains(".hidden.rs"));
         assert!(!text(&result).contains("ignored.rs"));
         assert!(!text(&result).contains("dep.rs"));
         let result = call(
             root,
-            json!({"path":"*.rs","hidden":false,"gitignore":false}),
+            json!({"pattern":"*.rs","hidden":false,"gitignore":false}),
         );
         assert!(!text(&result).contains(".hidden.rs"));
         assert!(text(&result).contains("ignored.rs"));
         let result = call(
             root,
-            json!({"path":"node_modules/**/*.rs","gitignore":false}),
+            json!({"pattern":"node_modules/**/*.rs","gitignore":false}),
         );
         assert!(text(&result).contains("dep.rs"), "{result}");
-        assert!(!text(&call(root, json!({"gitignore":false}))).contains("config"));
+        assert!(!text(&call(root, json!({"pattern":"**/*","gitignore":false}))).contains("config"));
     }
 
     #[test]
@@ -547,31 +467,42 @@ mod tests {
         symlink("src", root.join("link")).unwrap();
         symlink("root.rs", root.join("file-link")).unwrap();
         symlink("missing", root.join("broken")).unwrap();
-        let result = call(root, json!({"path":"."}));
+        let result = call(root, json!({"pattern":"**/*"}));
         assert!(text(&result).contains("link"), "{result}");
         assert!(text(&result).contains("broken"), "{result}");
         assert!(!text(&result).contains("# link/"), "{result}");
-        let explicit = call(root, json!({"path":"link/*.rs"}));
+        let explicit = call(root, json!({"pattern":"link/*.rs"}));
         assert!(text(&explicit).contains("a.rs"), "{explicit}");
-        assert_eq!(text(&call(root, json!({"path":"file-link"}))), "file-link");
+        assert_eq!(
+            text(&call(root, json!({"pattern":"file-link"}))),
+            "file-link"
+        );
     }
 
     #[test]
     fn glob_limit_cancel_timeout_and_validation() {
         let dir = fixture();
         let root = dir.path();
-        let result = call(root, json!({"path":"*.rs","limit":1}));
+        let result = call(root, json!({"pattern":"*.rs","limit":1}));
         assert_eq!(result["truncated"], true);
         assert!(result["warnings"].to_string().contains("limit reached"));
         assert!(
-            call(root, json!({"path":"root.rs","limit":201}))["warnings"]
+            call(root, json!({"pattern":"root.rs","limit":201}))["warnings"]
                 .to_string()
                 .contains("clamped")
         );
         for args in [
-            json!({"path":""}),
-            json!({"path":"["}),
-            json!({"limit":0}),
+            json!({"pattern":""}),
+            json!({"pattern":"["}),
+            json!({"pattern":"**/*","limit":0}),
+            json!({}),
+            json!({"path":"src"}),
+            json!({"pattern":"**/*","path":"src/*.rs"}),
+            json!({"pattern":"**/*","path":"root.rs"}),
+            json!({"pattern":"**/*","path":"missing"}),
+            json!({"pattern":"**/*","path":""}),
+            json!({"pattern":"**/*","path":"\0"}),
+            json!({"pattern":"\0"}),
             json!({"extra":1}),
         ] {
             assert!(
@@ -586,8 +517,13 @@ mod tests {
                 .unwrap_err()
                 .is::<pp_core::cancellation::Cancelled>()
         );
-        let timeout =
-            run_with_timeout(root, "{}", &CancellationToken::new(), Duration::ZERO).unwrap();
+        let timeout = run_with_timeout(
+            root,
+            r#"{"pattern":"**/*"}"#,
+            &CancellationToken::new(),
+            Duration::ZERO,
+        )
+        .unwrap();
         assert_eq!(timeout["timed_out"], true);
         assert!(!text(&timeout).contains("No files found"));
     }
@@ -607,27 +543,27 @@ mod tests {
             )
             .unwrap();
         }
-        let result = call(root, json!({"path":"*.rs","limit":2}));
+        let result = call(root, json!({"pattern":"*.rs","limit":2}));
         assert!(text(&result).contains("root.rs"));
         assert!(text(&result).contains("a.rs"));
         assert!(!text(&result).contains("b.rs"));
-        let args: Args = serde_json::from_value(json!({})).unwrap();
+        let args: Args = serde_json::from_value(json!({"pattern":"**/*"})).unwrap();
         let mut checkpoints = 0;
         let result = search(
             root,
             args,
-            vec!["root.rs".into(), "src/a.rs".into()],
+            parse_target(root, "**/*"),
             &CancellationToken::new(),
             200.0,
             200,
             || {
                 checkpoints += 1;
-                checkpoints > 1
+                checkpoints > 2
             },
         )
         .unwrap();
         assert_eq!(result["timed_out"], true);
-        assert!(text(&result).contains("root.rs"));
+        assert!(!text(&result).is_empty());
         assert!(!text(&result).contains("No files found"));
     }
 
@@ -639,7 +575,7 @@ mod tests {
             let name = format!("{i:03}{}", "界".repeat(84));
             fs::write(dir.path().join("deep").join(name), "").unwrap();
         }
-        let result = call(dir.path(), json!({"path":"deep/*"}));
+        let result = call(dir.path(), json!({"pattern":"deep/*"}));
         assert!(text(&result).len() <= MAX_BYTES);
         assert!(text(&result).contains('界'));
         assert_eq!(result["truncated"], true);

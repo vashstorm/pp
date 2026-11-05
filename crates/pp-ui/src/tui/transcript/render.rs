@@ -75,6 +75,7 @@ impl Transcript {
             let grouped = !self.display.full
                 && !self.entries[index].display.full
                 && !self.display.read_preview
+                && !self.entries[index].expanded
                 && self.entries[index].status != EntryStatus::Failed;
             if grouped {
                 while end < self.entries.len()
@@ -86,6 +87,7 @@ impl Transcript {
                     )
                     && self.entries[end].status != EntryStatus::Failed
                     && !self.entries[end].display.full
+                    && !self.entries[end].expanded
                 {
                     end += 1;
                 }

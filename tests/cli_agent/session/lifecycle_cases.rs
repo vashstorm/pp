@@ -193,20 +193,15 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
             let home = tempfile::tempdir().unwrap();
             let first = tempfile::tempdir().unwrap();
             let second = tempfile::tempdir().unwrap();
-            let cli_a = start_configured(
-                api,
-                &server,
-                home.path(),
-                first.path(),
-                &["-p", "from first"],
-            );
-            let cli_b = start_configured(
-                api,
-                &server,
-                home.path(),
-                second.path(),
-                &["-p", "from second"],
-            );
+            // 先完成共享配置库初始化，本场只验证并行会话的 ID 与持久化隔离。
+            configure(home.path(), fixture_settings(), &api.models(&server));
+            pp_config::agent_store::initialize(
+                &home.path().join(".pp/agent"),
+                &pp_core::cancellation::CancellationToken::new(),
+            )
+            .unwrap();
+            let cli_a = start(home.path(), first.path(), &["-p", "from first"]);
+            let cli_b = start(home.path(), second.path(), &["-p", "from second"]);
             for _ in 0..2 {
                 let (request, body) = api.receive(&server);
                 let (users, _) = api.turns(&body);

@@ -1,0 +1,59 @@
+{
+	"prompt": "Run the embedded local glob fixture.",
+	"edit_mode": "replace",
+	"files": {
+		"glob/dir-0/file-0.txt": "x\n",
+		"glob/dir-1/file-1.txt": "x\n",
+		"glob/dir-2/file-2.txt": "x\n",
+		"glob/dir-3/file-3.txt": "x\n",
+		"glob/dir-4/file-4.txt": "x\n",
+		"glob/dir-5/file-5.txt": "x\n",
+		"glob/.hidden.txt": "hidden\n"
+	},
+	"lanes": {
+		"root": [
+			{
+				"tool": {
+					"name": "glob",
+					"arguments": {
+						"pattern": "glob/**/*.txt"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "glob",
+					"arguments": {
+						"pattern": "glob/**/*",
+						"hidden": true
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "glob",
+					"arguments": {
+						"pattern": "glob/**/*.txt",
+						"limit": 1
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "glob",
+					"arguments": {
+						"pattern": "glob/**/*.absent"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": "Glob fixture complete.",
+				"auto_continue": false
+			}
+		]
+	}
+}

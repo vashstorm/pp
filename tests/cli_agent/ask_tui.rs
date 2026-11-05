@@ -160,9 +160,8 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
             }
             assert!(!screen.contents().contains(" · ok"));
         }
-        pty.input("\x0fbarrier");
+        pty.input("barrier");
         pty.draft("barrier");
-        assert!(!pty.parser.screen().contents().contains("body-one-"));
         ask_final_reply(request, protocol, "summary done");
         pty.text("summary done");
         pty.ready();

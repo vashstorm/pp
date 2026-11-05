@@ -248,10 +248,10 @@ chmod 600 ~/.pp/agent/models.yml
 | `/changes` | 查看最近任务的 edit/write 净变更，逐文件安全撤销 | 仅 TUI |
 | `/plan [view\|prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，显式批准后执行 | 仅 TUI |
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除 | 仅 TUI |
-| `/test-task` | 派发固定的 FAST、SLOW、REVIEW 只读批次并等待三份结果；要求 FAST／SLOW／REVIEW 已启用，仅在 dev/test 构建注册 | TUI / 行模式 |
-| `/test-tools` | 按 read → write → edit → grep → glob → bash → bash-task → wait → todo → ask 顺序运行全部固定本地工具场景 | TUI / 行模式 |
-| `/test-read`、`/test-write`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 只运行对应的固定工具场景；`/test-ask` 需要 TUI 答题，仅在 dev/test 构建注册 | TUI / 行模式 |
-| `/test-ui` | 以约 80 ms/token 输出固定 mock 思考与 Markdown／代码增量，不请求模型，仅在 dev/test 构建注册 | TUI / 行模式 |
+| `/test-task` | 三个真实 FAST／SLOW／REVIEW 子 Agent 使用独立本地 mock lane，无需用户 Role 或真实 provider | TUI / 行模式，仅 dev/test |
+| `/test-tools` | 顺序运行 read → write → edit-replace → edit-hashline → grep → glob → bash → bash-task → wait → todo → ask | TUI / 行模式，仅 dev/test |
+| `/test-read`、`/test-write`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 对应的隔离真实工具场景；ask 在 TUI 答题，CLI 非交互失败仍继续 | TUI / 行模式，仅 dev/test |
+| `/test-ui` | 12.5 mock token/s 的原生 Responses SSE 思考与 Markdown／代码分片 | TUI / 行模式，仅 dev/test |
 | `/quit` | 退出 | TUI / 行模式 |
 
 输入 `!命令` 在项目目录运行本地非交互 bash，不请求模型，命令和输出不进入模型上下文或会话文件。需要有效的 Agent 配置和 Execute 模式；Plan、忙碌或有待处理消息时不可运行。每条命令使用独立 shell，`cd` 和环境变量不跨命令保留；以当前用户权限执行，无文件系统沙箱。TUI 首个 `!` 仅进入 shell 模式，不显示在输入框中；后续 `!` 作为命令正文保留，历史回填会恢复模式并隐藏切换前缀。编辑时按 Esc 或在空输入框按 Backspace 退出模式，清空命令也会退出；命令运行时按 Esc 取消并等待进程回收。行模式仍输入完整的 `!命令`，输出写入 stderr，stdout 仍保留给模型回复。
@@ -305,7 +305,7 @@ chmod 600 ~/.pp/agent/models.yml
 
 消息列表中的内置工具各有独立的 Nerd Font Font Awesome 图标（包括普通工具、bash、diff、ask 和 Plan 工具）；MCP 使用插头图标，未知工具使用拼图图标。Read 用标题前的状态图标替代工具图标（运行中为转动的时钟，成功为绿色勾，失败为红色叉），图标前额外留一列空白，仅多文件的 `Read (N)` 显示框内读取条目数，图标与 `Read` 之间仅保留一个 ASCII 空格；其他工具图标统一采用单列字形，并在其后保留一列空白，占位宽度固定为两列；字形的实际外观由终端所用 Nerd Font 决定。图标随标题保留于运行、完成、失败、恢复及退出滚动历史中。
 
-用户与助手保留既有角色背景；助手正文按 Markdown 渲染，fenced code block 按语言标签经 syntect 做语法高亮，普通工具正文保持字面文本，指令 Read 卡片按 Markdown 渲染，edit、write 与 ask 使用各自的内容块。think 使用独立样式；其他工具保留正文与运行／完成／失败状态。工具采用低饱和度的标识色：Read 为雾蓝，Grep 为青绿，Glob 为灰蓝，Edit 为暖金，Write 为鼠尾草绿，Bash／Bash task 为沙金，ask 为浅青，todo／计划提交为灰紫，Skill 为柔紫，MCP 为淡玫瑰色。主题色集中在工具名称、图标和 Shell 提示符；Read 路径使用黄色，其余路径与正文使用中性灰，工具卡片共用深灰底色和灰色边框。`grep` 与 `glob` 左右各留两列内容边距。`Grep:` 标题显示模式、结构化匹配数／文件数和路径，路径放不下时另起一行；匹配正文以 `└─` 与后续缩进排列，浅蓝行号和浅灰匹配行与灰色上下文区分，行号右侧使用竖线分隔，多文件路径分组采用浅灰色。`Glob:` 标题显示搜索路径，目录层级由原始结果中的标题标记转换为缩进，目录使用浅蓝色，文件名使用浅灰色，路径前缀使用灰色。搜索失败时边框、状态和错误使用红色，旧 stdout 结果仍可展示；搜索卡片不使用 bash 计时 footer。Bash 卡片顶边框显示工具名和运行／完成／失败状态，沙金色 `$` 提示符与浅色命令分开着色，普通输出为浅灰色，运行中的 stderr 为金色，失败后的 stderr 与失败状态为红色；底部继续显示耗时和退出状态。自动加载的 `AGENTS.md` 与实际技能读取使用独立的 Read 边框卡片，使用深色背景和灰色圆角边框，顶边框依次显示状态图标与 `Read <来源>` 标题，`Read` 标识按普通读取／技能读取分别使用雾蓝／柔紫，来源使用黄色；正文为浅灰色，Markdown 标题采用金色下划线，强调文字采用金色，frontmatter 保留原始字段与换行。展开提示和来源路径为暗灰色，来源可用时在 `Output` 分隔区展示 `⟨Resolved path: ...⟩`。技能标题保留原始 `skill://...` URI；失败保留真实错误和失败状态，没有来源结果时不编造路径。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
+用户与助手保留既有角色背景；助手正文按 Markdown 渲染，fenced code block 按语言标签经 syntect 做语法高亮，普通工具正文保持字面文本，指令 Read 卡片按 Markdown 渲染，edit、write 与 ask 使用各自的内容块。think 使用独立样式；其他工具保留正文与运行／完成／失败状态。工具采用低饱和度的标识色：Read 为雾蓝，Grep 为青绿，Glob 为灰蓝，Edit 为暖金，Write 为鼠尾草绿，Bash／Bash task 为沙金，ask 为浅青，todo／计划提交为灰紫，Skill 为柔紫，MCP 为淡玫瑰色。主题色集中在工具名称、图标和 Shell 提示符；Read 路径使用黄色，其余路径与正文使用中性灰，工具卡片共用深灰底色和灰色边框。`grep` 与 `glob` 左右各留两列内容边距。`Grep:` 标题显示模式、结构化匹配数／文件数和路径，路径放不下时另起一行；匹配正文以 `└─` 与后续缩进排列，浅蓝行号和浅灰匹配行与灰色上下文区分，行号右侧使用竖线分隔，多文件路径分组采用浅灰色。`Glob:` 标题显示匹配表达式和搜索目录（旧会话仍显示原搜索路径），目录层级由原始结果中的标题标记转换为缩进，目录使用浅蓝色，文件名使用浅灰色，路径前缀使用灰色。搜索失败时边框、状态和错误使用红色，旧 stdout 结果仍可展示；搜索卡片不使用 bash 计时 footer。Bash 卡片顶边框显示工具名和运行／完成／失败状态，沙金色 `$` 提示符与浅色命令分开着色，普通输出为浅灰色，运行中的 stderr 为金色，失败后的 stderr 与失败状态为红色；底部继续显示耗时和退出状态。自动加载的 `AGENTS.md` 与实际技能读取使用独立的 Read 边框卡片，使用深色背景和灰色圆角边框，顶边框依次显示状态图标与 `Read <来源>` 标题，`Read` 标识按普通读取／技能读取分别使用雾蓝／柔紫，来源使用黄色；正文为浅灰色，Markdown 标题采用金色下划线，强调文字采用金色，frontmatter 保留原始字段与换行。展开提示和来源路径为暗灰色，来源可用时在 `Output` 分隔区展示 `⟨Resolved path: ...⟩`。技能标题保留原始 `skill://...` URI；失败保留真实错误和失败状态，没有来源结果时不编造路径。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
 
 流式输出期间保持输入光标的可见状态，正文更新后恢复其输入位置；普通帧的画面与光标均未变化时不写终端。原生历史提交后，根据实际滚动后的屏幕增量刷新仍需更新的单元格。
 
@@ -391,7 +391,7 @@ Execute 终答时仍有 pending/in_progress、且不是等待用户回答时，�
 
 Plan 的执行层白名单只有 `read`、`grep`、`glob`、TUI `ask`、`write`、`plan_submit`；`write` 仅接受 `path` 和完整 Markdown `content`：首次路径须为 `.pp/drafts/<英文 kebab-case 名称>.md`，后续只能写当前绑定的计划路径；标题从首个一级标题提取（缺失时使用文件名），修订号由运行时递增并返回，仍保留登记、同名冲突和外部修改校验。技能同样通过 `read` 读取。Plan 在执行层拒绝所有 todo 调用（包括 view），独立 reviewer 同样不暴露 todo；提交后同批剩余调用全部拒绝。即使模型返回隐藏的 shell、edit、旧 find 或任意 MCP 调用也会拒绝。进入 Plan 显式停止受管理 MCP，恢复 Plan 不连接 MCP；清理失败保持 Plan 门禁并阻止模型请求，再次 `/plan` 优先重试进入。批准或退出切换的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
 
-Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 支持 `path`、`hidden`、`gitignore`、`limit`，默认包含隐藏文件并遵守忽略规则；无分页，结果按修改时间排序，最多 200 项和 50 KiB。裸 `*.rs` 递归匹配，`src/*.rs` 仅匹配直接子项；五秒协作式超时返回部分结果及提示。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
+Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 使用必填匹配表达式 `pattern` 和可选目录 `path`（默认当前工作目录），另支持 `hidden`、`gitignore`、`limit`；`path` 只接受单个字面目录，不能传 glob 或多个范围。默认包含隐藏文件并遵守忽略规则；无分页，结果按修改时间排序，最多 200 项和 50 KiB。裸 `*.rs` 递归匹配，`src/*.rs` 仅匹配直接子项；五秒协作式超时返回部分结果及提示。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
 
 计划正文由 AI 选定的英文 kebab-case 文件名保存在项目 `.pp/drafts/<file_name>.md`，首次保存才创建目录／文件；不自动修改 `.gitignore`。正文须为非空 UTF-8、无 NUL、最多 262,144 字节，实施步骤使用标准 `- [ ]`／`- [x]` Markdown task list；代码 fence 中的 checkbox 不算任务。保存使用目录句柄、NOFOLLOW 和原子提交，拒绝符号链接／特殊文件；同名首次创建不覆盖。修订写入要求 expected revision 和已登记磁盘字节都匹配，避免覆盖外部编辑。
 
@@ -441,15 +441,39 @@ Completed／Abandoned 且仍关联的计划保持只读投影，实际 Markdown 
 
 ### /test-* 本地自检（仅 dev/test 构建）
 
-全部 `/test-*` 命令及其专用实现（命令注册项、解析分支、Agent 夹具、CLI 展示、TUI worker 协议）统一由 `#[cfg(debug_assertions)]` 编译排除，判据与 `settings.yml` 的 `debug` 字段无关：dev/test 构建照常注册，release 等关闭 debug assertions 的构建不注册这些名字，也不保留专用类型或错误文案。非 dev/test 构建下输入 `/test-*` 按未注册命令处理：行模式静默忽略、TUI 静默保留草稿、均不请求模型，`/help`、`/tips` 与 `/` 命令菜单中也没有对应条目；同名用户提示词模板是否可用仍由现有注册表冲突规则决定。`/test-task` 仍要求 FAST、SLOW、REVIEW 三个 Model Role 已启用，并通过当前模型发送固定只读子 Agent 批次；缺少 Role 或模型不可用时只报本地／模型错误，不伪造结果。
+全部 13 个命令、服务与专用类型由 `#[cfg(debug_assertions)]` 编译隔离，与 `settings.yml.debug` 无关；默认 dev/test 提供，默认 release 不注册命令也不监听端口。release 中未知命令仍按原规则处理：行模式静默忽略、TUI 保留草稿，帮助与补全不列出这些名字。`-p` 仍是普通 prompt，不展开 `/test-*`。
 
-`/test-tools` 按 read → write → edit → grep → glob → bash → bash-task → wait → todo → ask 顺序运行全部固定场景；各独立命令只运行对应场景。每次命令在启动目录下创建独立临时工作区，以当前 edit mode、读写限制和审批配置构造隔离 `Tools`，所有工具参数固定，不串联 `/test-task` 或 `/test-ui`。edit 场景分别覆盖 replace 与 hashline（包括真实 read TAG、成功后旧 TAG 的 stale 错误），bash/wait 场景从真实返回中提取 task id。fetch 闭包直接报错，从结构上禁止 read 网络请求。
+开发进程在真实配置初始化前启动 Mock AI Server，随机选择 `32001..=65535` 内的起点并直接绑定 `127.0.0.1`；启动日志 `mock_ai_started.port` 是实际监听端口。gc/stats 子命令不启动服务。只提供 Responses API，不提供 Chat Completions；关闭进程时取消流并关闭监听器。
 
-预期 `ok:false` 是展示夹具，不会中断后续场景；取消、夹具初始化失败与受管进程清理失败会停止命令。正常退出前始终先停止后台进程，再释放隔离 `Tools` 并关闭临时目录；失败或取消同样清理，清理错误不被吞掉。该命令不写当前会话历史、journal、统计或 `/changes`，也不发送模型请求。默认套件不包含 LSP、MCP、`plan_write`／`plan_submit`／`yield`：LSP/MCP 依赖外部环境，计划工具会改变真实工作流，`yield` 仅属于子 Agent。
+场景以 `include_str!` 编译内嵌，不在运行时读取源码文件。每场构建 fresh Agent/Tools/子 Agent registry，并使用系统 `pp-mock-*` 临时目录，内部 workspace/config/sessions/locks 分离。配置、四个 mock provider、角色、skills、MCP/LSP 和审批均与正常 Agent 隔离；不修改进程 HOME/cwd，不请求真实 provider，不写真实统计。正常结束、失败、取消都先收尾子 Agent、后台 bash 与服务，再释放队列和目录；清理失败按真实错误显示。
 
-工具测试与 `/test-ui` 只在 Execute 模式、空闲且无 pending 输入时启动，忙碌、Plan 或 Unavailable 时本地拒绝并保留草稿；Esc 复用普通取消。TUI 中真实工具卡片按普通 `Progress` 事件绘制，Ctrl + O 可展开／折叠；ask 场景一次提出三题，覆盖推荐单选、多选、带 preview 的选项和自由输入，答题后显示规范化答案。行模式中 `/test-ask` 保留既有 `ask requires interactive TUI mode` 作为预期失败并继续后续场景。
+`/test-tools` 顺序运行 read、write、两种 edit、grep、glob、bash、bash-task、wait、todo、ask；独立命令只运行自己的场景。read 包含 range/raw/缺失文件，write 包含越界拒绝，hashline 先真实 read 注册 TAG 再验证成功和 stale，后台任务与 wait 使用 fresh Tools 的确定性 ID。预期 `ok:false` 不打断后续脚本。todo 保留未完成项，原生完成提醒会消费下一条固定正文。套件不串联 ui/task，也不包含外部 LSP/MCP、Plan 工具或 `yield`。
 
-`/test-ui` 不访问 provider、journal、统计或真实工具；它依次发送 `ModelRequestStarted`、一次 `AssistantStarted`、固定 thinking／assistant 增量、累计 UTF-8 字节数的 `ModelOutputProgress`，成功后发送完整 `AssistantFinished` 与 `ModelRequestFinished`。相邻 token 间隔约 80 ms，等待切成 5–10 ms 小段检查取消；Esc 后停止后续增量、不补 `AssistantFinished`，已输出部分保留。思考写 stderr、助手正文写 stdout（行模式），完成说明明确标注 mock 与限速。
+`/test-task` 的 root 只发一次三任务批次、真实 wait 和三行摘要；FAST/SLOW/REVIEW 在独立 lane 中分别运行 glob/grep/read，再返回固定 marker。`/test-ui` 的原生 SSE 以 12.5 mock token/s 发送显式 thinking/Markdown/code 分片，不合成 `AgentEvent`。
+
+TUI 使用独立 worker/channel，不替换正常 Agent worker。Execute、无 active/pending 工作时，Ready 和配置 Unavailable 都可启动；Plan、busy 或 cancelling 时本地拒绝并保留草稿。Prepared 临时安装 mock model/usage/子 Agent/pipe 展示，完成后恢复正常模型、状态、TODO 与 registry，不接纳临时 session。Ctrl + O 可展开真实 read 卡片（即使关闭三行预览）；Esc 取消并保留新草稿。ask 复用真实三题对话框；CLI 保留非交互 ask 失败并继续。CLI 复用普通事件渲染：思考和真实工具内容写 stderr，助手正文写 stdout。
+
+#### 手动 Responses 脚本
+
+向 `http://127.0.0.1:$PORT/v1/responses` POST 裸指令数组，或普通 Responses 请求加顶层 `mock_script`。该路径使用固定 manual/root 队列；自动场景用 `/mock/{run_id}/{lane}/v1/responses`，URL 是队列的唯一标识，model/input/工具结果不参与路由。
+
+| 字段 | 含义 |
+| --- | --- |
+| `think`、`content` | 字符串或字符串数组；分别发送原生 reasoning summary 和正文。显式数组的每个非空元素是一个 mock token |
+| `tool` | `{"name":"read","arguments":{"path":"note.txt"}}` 发真实 function_call；server 本身不执行工具 |
+| `response` | 数据回显：string 原样输出，其他非 null JSON 紧凑序列化为正文；不是工具结果或原始 SSE |
+| `tokens_per_second` | 有限非负数，默认 0 不限速；正数按 mock token 限速，字符串按 Unicode scalar，不是 BPE |
+| `auto_continue` | 默认 false；true 在同一个 SSE 响应中继续下一条，仍只有一次 response.completed。需要等工具执行后再发下一条时用 false |
+| `usage` | 可选 mock input/output/cached/cache_write token 统计；按响应组累加并校验数值边界，不根据文本推算 |
+
+每条按 think → content → response → tool 输出。首次或耗尽后必须提供新的非空合法数组；每个由 auto_continue 划分的响应组至少有正文或工具。队列未耗尽时完全忽略后续 body，即使不是 JSON；预留组后不回滚、不重放。同队列发送中返回 409 `mock_queue_busy`；缺少新脚本返回 400 `mock_script_required`，非法脚本返回 400 `invalid_mock_script`；未知路由 404、非 POST 405，均不推进队列。
+
+```sh
+curl -N -H 'Content-Type: application/json' \
+  -d '[{"response":"first"},{"response":"second"}]' \
+  "http://127.0.0.1:$PORT/v1/responses"
+# 下次 POST 任意 body 得到 second；再下一次必须重新上传数组。
+```
 
 ### ask（仅 TUI）
 
@@ -833,7 +857,7 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 - 两种 edit 模式均先对同一份原始快照校验全部修改，再调用共用原子保存流程。空文件、缺失文件、目录、符号链接和非 UTF-8 文件不能编辑；edit 不创建文件或目录。成功返回 `edits_applied` 和最终 UTF-8 `bytes_written`。保留严格且分模式的参数校验；模型结果不附加 diff，实际 diff 仅在提交后发送给展示层。两种模式整批无变化均拒绝提交，允许无变化项与有效修改混合。
 - `write(path, content)`：创建缺失父目录，并创建或完整覆盖 UTF-8 文件，允许空内容。write/edit 均在目标所在目录排他创建临时文件，完整写入、保留原文件权限（含可执行位）、同步临时文件后，以一次原子重命名提交。创建、部分写入、同步或重命名失败均保留原文件；新建失败不会留下残缺目标，已创建的空父目录允许保留。edit 在临时文件同步完成后、重命名前精确比较读取时的原始字节；目标变化、消失、不可读或变为特殊文件时拒绝覆盖并清理临时文件。这不是跨进程 CAS，比较到重命名之间仍有竞态窗口。重命名是提交点，之后父目录同步失败返回 `ok:true` 并附 `warning`，不能当作尚未修改。失败路径清理临时文件；TUI `/changes` 提供当前进程最近任务的逐文件安全撤销（见上节），不提供持久备份、跨文件事务、跨进程并发隔离或断电恢复保证。
 - `grep({"pattern":"needle","path":"src/**/*.rs"})` 在进程内搜索本地文件；支持 `case`、`gitignore`、`skip`，默认区分大小写、包含隐藏文件并遵守 ignore。`path` 支持分号分隔、glob、`!` 排除及单文件行范围；不支持网页、压缩包和技能 URI。配置 `grep: {contextBefore: 1, contextAfter: 3}` 调整上下文。每页最多 20 个文件，多文件每文件最多 20 条匹配，单文件最多 200 条；正文和长行有独立上限及提示。
-- `glob({"path":"src/**/*.rs"})` 查找路径，支持 `hidden`、`gitignore`、`limit`；默认包含隐藏路径、遵守忽略规则，最多返回 200 项和 50 KiB。扫描在文件操作之间检查取消及五秒期限，超时返回不完整结果；没有文件系统沙箱。
+- `glob({"pattern":"**/*.rs","path":"src"})` 查找路径；`pattern` 必填，`path` 为可选搜索目录（默认当前工作目录），不能传 glob 或多个范围；另支持 `hidden`、`gitignore`、`limit`；默认包含隐藏路径、遵守忽略规则，最多返回 200 项和 50 KiB。扫描在文件操作之间检查取消及五秒期限，超时返回不完整结果；没有文件系统沙箱。
 - 默认前台 `bash({"command":"..."})`：以启动目录执行 `bash -c`，关闭 stdin，建立独立进程组。stdout/stderr 按收集器接收顺序合并，不保证跨流真实写入顺序；无需等待换行即可显示有界头尾快照。返回合并的 `output`、退出码、输出计数、截断标记、`timed_out` 与 `cancelled`，信号退出的退出码为 null。超限日志通过下述 artifact 机制继续读取，旧会话的 stdout/stderr 分流结果仍可回放。
 - 工具参数严格校验：缺失／额外字段、非法 JSON、空白路径／命令、未知工具及文件／进程错误均返回 `ok:false`，供模型修正。bash 非零退出同样失败并保留输出。
 - 前台 bash 接受可选的 `timeout_seconds` 整数参数，范围为 0–3600 秒，0 表示不设超时；例如 `{"command":"cargo build --locked","timeout_seconds":600}`。省略时使用 `bash_timeout_seconds` 配置，默认 300 秒，已有显式配置仍生效。后台模式忽略此参数，继续按后台任务生命周期管理。`{"command":"..."}` 和显式 `"mode":"foreground"` 保持相同契约，超时与模型请求超时独立。独立监督线程在超时时向进程组发送 TERM，等待 1 秒后发送 KILL 并回收直接子进程；可停止的非阻塞管道读取避免后代持有管道导致无限等待。超时返回 `ok:false, timed_out:true`，保留已捕获输出，不回滚 shell 修改。正常结束也清理同一进程组的残留后代；主动脱离进程组的进程不受保证。TUI Esc 取消通过 TERM→1 秒宽限→KILL／wait 停止受控进程组，即使 `timeout_seconds:0` 也仍可取消；前台结果为 `ok:false, cancelled:true, timed_out:false`，正常／超时前台结果的 `cancelled` 为 false。

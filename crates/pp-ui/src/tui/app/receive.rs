@@ -1,7 +1,7 @@
 use crate::tui::{
     AgentEvent, App, CompactionOutcome, Instant, Level, PlanEnterAction, PlanLocation,
-    PlanOpenIntent, RunOutcome, State, TryRecvError, WorkMode, WorkerCommand, WorkerEvent, ask,
-    editor, plan, plan_list, plan_location_from_path, skills,
+    PlanOpenIntent, Receiver, RunOutcome, State, TryRecvError, WorkMode, WorkerCommand,
+    WorkerEvent, ask, editor, plan, plan_list, plan_location_from_path, skills,
 };
 
 impl App {
@@ -14,6 +14,52 @@ impl App {
         if let Some(event) = self.stream.take() {
             self.conversation.progress(event);
         }
+    }
+
+    /// 正常 worker 优先；mock 通道独立存在，正常通道缺失时仍可推进。
+    fn next_worker_event(&mut self) -> Option<std::result::Result<WorkerEvent, TryRecvError>> {
+        match self.events.as_ref().map(Receiver::try_recv) {
+            Some(Ok(event)) => return Some(Ok(event)),
+            Some(Err(TryRecvError::Disconnected)) => {
+                return Some(Err(TryRecvError::Disconnected));
+            }
+            Some(Err(TryRecvError::Empty)) | None => {}
+        }
+        #[cfg(debug_assertions)]
+        if let Some(worker) = &self.mock_worker {
+            let elapsed = worker.elapsed();
+            return match worker.try_recv() {
+                Ok(event) => Some(Ok(event)),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Ok(WorkerEvent::MockCompleted {
+                    result: Err(anyhow::anyhow!(
+                        "mock test worker exited without a completion result"
+                    )),
+                    elapsed,
+                    finished_at: chrono::Local::now(),
+                })),
+            };
+        }
+        None
+    }
+
+    /// 安装根会话临时管道 registry；换实例时递增 epoch 并关闭旧面板。
+    pub(in crate::tui) fn install_pipe_store(
+        &mut self,
+        store: Option<pp_runtime::tools::PipeStore>,
+    ) -> bool {
+        let changed = match (&self.pipe_store, &store) {
+            (Some(current), Some(next)) => !current.same_instance(next),
+            (None, None) => false,
+            _ => true,
+        };
+        self.pipe_store = store;
+        if changed {
+            self.pipe_store_epoch = self.pipe_store_epoch.wrapping_add(1);
+            // 旧面板只持有旧 store 的索引；关闭观察线程并释放正文。
+            self.close_pipes();
+        }
+        changed
     }
 
     pub(in crate::tui) fn receive(&mut self) -> bool {
@@ -109,10 +155,11 @@ impl App {
             if receive_started.elapsed() >= std::time::Duration::from_millis(2) {
                 break;
             }
-            let Some(events) = &self.events else {
+            // 正常 worker 与隔离 mock worker 共用同一事件预算；任何一侧不存在
+            // 都不能阻止另一侧被处理。
+            let Some(incoming) = self.next_worker_event() else {
                 break;
             };
-            let incoming = events.try_recv();
             if !matches!(
                 &incoming,
                 Ok(WorkerEvent::Progress(
@@ -287,15 +334,7 @@ impl App {
                 }
                 Ok(WorkerEvent::PipeStoreBound { store }) => {
                     // 同一实例重复发布是幂等的；换根才递增 epoch，面板据此丢弃旧回复。
-                    if self
-                        .pipe_store
-                        .as_ref()
-                        .is_none_or(|current| !current.same_instance(&store))
-                    {
-                        self.pipe_store = Some(store);
-                        self.pipe_store_epoch = self.pipe_store_epoch.wrapping_add(1);
-                        // 换根后旧面板只持有旧 store 的索引；关闭观察线程并释放正文。
-                        self.close_pipes();
+                    if self.install_pipe_store(Some(store)) {
                         changed = true;
                     }
                 }
@@ -320,83 +359,17 @@ impl App {
                     changed = true;
                 }
                 #[cfg(debug_assertions)]
-                Ok(WorkerEvent::ToolTestCompleted { result, elapsed }) => {
-                    self.active_cancellation = None;
-                    self.secondary_status = None;
-                    self.state = State::Ready;
-                    match result {
-                        Ok(calls) => self.append(
-                            "Note",
-                            &format!(
-                                "Local tool suite complete: {calls} tool calls in {:.1}s; expected fixture failures are display cases. The temporary workspace and managed processes were removed.",
-                                elapsed.as_secs_f64()
-                            ),
-                        ),
-                        Err(error)
-                            if error
-                                .chain()
-                                .any(|cause| cause.is::<pp_core::cancellation::Cancelled>()) =>
-                        {
-                            self.conversation.cancel();
-                        }
-                        Err(error)
-                            if error
-                                .chain()
-                                .any(|cause| cause.is::<pp_core::cancellation::CleanupError>()) =>
-                        {
-                            self.commands = None;
-                            self.events = None;
-                            self.state = State::Unavailable;
-                            self.unavailable = Some(
-                                "Execution unavailable: local tool fixture cleanup failed; restart pp."
-                                    .into(),
-                            );
-                            self.notify(Level::Error, format!("{error:#}"));
-                        }
-                        Err(error) => {
-                            self.conversation.fail();
-                            self.notify(Level::Error, format!("{error:#}"));
-                        }
-                    }
+                Ok(WorkerEvent::MockPrepared(snapshot)) => {
+                    self.install_mock_snapshot(snapshot);
                     changed = true;
                 }
                 #[cfg(debug_assertions)]
-                Ok(WorkerEvent::UiTestCompleted { result, elapsed }) => {
-                    if self.token_speed.is_active() {
-                        self.token_speed.clear();
-                    }
-                    self.active_cancellation = None;
-                    self.secondary_status = None;
-                    self.state = State::Ready;
-                    match result {
-                        Ok(()) => {
-                            self.conversation.finish_run(
-                                "Mock UI complete",
-                                elapsed,
-                                chrono::Local::now(),
-                            );
-                            self.append(
-                                "Note",
-                                "Mock UI stream complete: fixed AgentEvent data at ~80 ms/token; no provider request, session record, or tool result was created.",
-                            );
-                        }
-                        Err(error)
-                            if error
-                                .chain()
-                                .any(|cause| cause.is::<pp_core::cancellation::Cancelled>()) =>
-                        {
-                            self.conversation.cancel();
-                            self.conversation.finish_run(
-                                "Cancelled",
-                                elapsed,
-                                chrono::Local::now(),
-                            );
-                        }
-                        Err(error) => {
-                            self.conversation.fail();
-                            self.notify(Level::Error, format!("{error:#}"));
-                        }
-                    }
+                Ok(WorkerEvent::MockCompleted {
+                    result,
+                    elapsed,
+                    finished_at,
+                }) => {
+                    self.finish_mock_test(result, elapsed, finished_at);
                     changed = true;
                 }
                 Ok(WorkerEvent::Completed {

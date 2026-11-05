@@ -1,0 +1,49 @@
+{
+	"prompt": "Run the embedded local replace edit fixture.",
+	"edit_mode": "replace",
+	"files": {
+		"edit/replace.txt": "alpha\nbeta\ngamma\n"
+	},
+	"lanes": {
+		"root": [
+			{
+				"tool": {
+					"name": "edit",
+					"arguments": {
+						"path": "edit/replace.txt",
+						"edits": [
+							{
+								"oldText": "alpha",
+								"newText": "ALPHA"
+							},
+							{
+								"oldText": "gamma",
+								"newText": "GAMMA"
+							}
+						]
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "edit",
+					"arguments": {
+						"path": "edit/replace.txt",
+						"edits": [
+							{
+								"oldText": "missing old text",
+								"newText": "nope"
+							}
+						]
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": "Replace edit fixture complete.",
+				"auto_continue": false
+			}
+		]
+	}
+}

@@ -3,6 +3,8 @@ pub mod history;
 pub mod host_defaults;
 pub mod lsp;
 pub mod mcp;
+#[cfg(debug_assertions)]
+pub mod mock_ai;
 pub mod model_control;
 pub mod project_instructions;
 pub mod subagent;

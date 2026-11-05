@@ -347,8 +347,6 @@ fn read_summary_groups_preserve_entries_results_and_full_replay() {
     );
     assert!(!text.contains("one-body") && !text.contains("two-body"));
     assert_eq!(transcript.entries.len(), 2);
-    transcript.toggle_tool_output();
-    assert!(!screen(&render(&mut transcript, 100, 15)).contains("one-body"));
     transcript.append("Assistant", "read group boundary");
     tool(&mut transcript, "failed", "read", json!({"path":"missing"}));
     transcript.progress(AgentEvent::ToolFinished {

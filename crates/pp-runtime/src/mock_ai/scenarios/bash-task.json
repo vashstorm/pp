@@ -1,0 +1,53 @@
+{
+	"prompt": "Run the embedded local background Bash fixture.",
+	"edit_mode": "replace",
+	"files": {},
+	"lanes": {
+		"root": [
+			{
+				"tool": {
+					"name": "bash",
+					"arguments": {
+						"command": "printf 'background-start\\n'; sleep 20; printf 'background-end\\n'",
+						"mode": "background"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "bash_task",
+					"arguments": {
+						"task_id": "bg-1",
+						"action": "status"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "bash_task",
+					"arguments": {
+						"task_id": "bg-1",
+						"action": "stop"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "bash_task",
+					"arguments": {
+						"task_id": "bg-1",
+						"action": "stop"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": "Background Bash fixture complete.",
+				"auto_continue": false
+			}
+		]
+	}
+}

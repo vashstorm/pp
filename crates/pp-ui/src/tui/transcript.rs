@@ -1232,6 +1232,7 @@ impl Transcript {
     pub(super) fn toggle_tool_output(&mut self) {
         self.ensure_browse_anchor();
         self.tools_expanded = !self.tools_expanded;
+        self.read_groups_key = None;
         for entry in &mut self.entries {
             if entry.is_collapsible_tool() {
                 entry.expanded = self.tools_expanded;

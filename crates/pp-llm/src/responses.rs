@@ -15,6 +15,15 @@ use super::streaming::{ResponseEvent, ResponsesStream};
 use super::{EMPTY_SUMMARY, OpenAiClient, ResponseTurn, elapsed_duration, elapsed_millis};
 use pp_config::auth::http as auth;
 
+/// 借用原始 wire 请求拼入初始 mock 脚本，不复制第二棵 JSON 树。
+#[cfg(debug_assertions)]
+#[derive(serde::Serialize)]
+struct MockWire<'a, W> {
+    #[serde(flatten)]
+    wire: &'a W,
+    mock_script: &'a serde_json::Value,
+}
+
 impl OpenAiClient {
     pub fn respond(
         &mut self,
@@ -143,6 +152,9 @@ impl OpenAiClient {
         let wire = auth::wire_request(request, self.auth.as_ref().map(|auth| auth.provider))?;
         let (initiator, has_images) = auth::request_metadata(&wire);
         self.prepare_auth(cancellation, initiator, has_images)?;
+        // pending 只消费一次；首次请求携带脚本，之后原生工具续轮与重试都不再附加。
+        #[cfg(debug_assertions)]
+        let mock_script = self.take_mock_script()?;
         let new_request = attempts.attempt == 1 || !attempts.pending_open;
         if new_request {
             attempts.started = Instant::now();
@@ -183,6 +195,16 @@ impl OpenAiClient {
             let opened = cancellation
                 .run_until_cancelled(async {
                     attempted = true;
+                    #[cfg(debug_assertions)]
+                    if let Some(script) = &mock_script {
+                        let body = MockWire {
+                            wire: &wire,
+                            mock_script: script.as_ref(),
+                        };
+                        return responses
+                            .create_stream_byot::<_, ResponseEvent>(body)
+                            .await;
+                    }
                     responses.create_stream_byot::<_, ResponseEvent>(&wire).await
                 })
                 .await;

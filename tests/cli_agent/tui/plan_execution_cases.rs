@@ -276,7 +276,7 @@ fn plan_tui_rejects_real_side_effects_but_reads_searches_and_asks() {
                 "grep",
                 json!({"pattern":"needle","path":"src"}),
             ),
-            ("research-find", "glob", json!({"path":"src/agent.rs"})),
+            ("research-find", "glob", json!({"pattern":"src/agent.rs"})),
         ];
         plan_calls(
             request,

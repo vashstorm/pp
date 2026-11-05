@@ -1,0 +1,51 @@
+{
+	"prompt": "Run the embedded local wait fixture.",
+	"edit_mode": "replace",
+	"files": {},
+	"lanes": {
+		"root": [
+			{
+				"tool": {
+					"name": "bash",
+					"arguments": {
+						"command": "printf 'wait-short-settled\\n'",
+						"mode": "background"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "wait",
+					"arguments": {
+						"task_ids": ["bg-1"]
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "bash",
+					"arguments": {
+						"command": "printf 'wait-long-running\\n'; sleep 1; printf 'wait-long-end\\n'",
+						"mode": "background"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "wait",
+					"arguments": {
+						"task_ids": ["bg-2"]
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": "Wait fixture complete.",
+				"auto_continue": false
+			}
+		]
+	}
+}

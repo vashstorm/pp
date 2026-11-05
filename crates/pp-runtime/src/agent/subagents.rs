@@ -60,6 +60,9 @@ impl Agent {
             return Ok(());
         };
         let catalog = self.catalog.clone();
+        #[cfg(debug_assertions)]
+        let mock_scripts = self.client.mock_scripts().cloned();
+        let user_dir = self.subagent_user_dir(&config.agent_db_path)?;
         let runtime_models = self.runtime_models.clone();
         let skills = self.tools.skills.clone();
         let mcp = self.tools.mcp.clone();
@@ -227,6 +230,10 @@ impl Agent {
                 plan_lease: None,
                 lsp_injected: Default::default(),
             };
+            #[cfg(debug_assertions)]
+            if let Some(scripts) = &mock_scripts {
+                child.client.set_mock_scripts(Arc::clone(scripts))?;
+            }
             if let Some(saved) = saved {
                 ensure!(
                     match &saved.session {
@@ -286,7 +293,7 @@ impl Agent {
         let mut binding = Binding::root(
             crate::subagent::RootOptions {
                 dir: root_dir,
-                user: pp_config::config::global_dir()?,
+                user: user_dir,
                 cwd: self.tools.cwd().to_owned(),
                 model: self.current_model.reference.clone(),
                 thinking: self.think_level,
@@ -323,10 +330,21 @@ impl Agent {
         let config = self.catalog.resolve(&self.current_model.reference)?;
         crate::subagent::catalog_definitions(
             self.tools.cwd(),
-            &pp_config::config::global_dir()?,
+            &self.subagent_user_dir(&config.agent_db_path)?,
             &config.settings.task,
             &self.catalog.subagent_roles(),
         )
+    }
+
+    fn subagent_user_dir(&self, _agent_db_path: &Path) -> Result<std::path::PathBuf> {
+        #[cfg(debug_assertions)]
+        if self.client.mock_scripts().is_some() {
+            return _agent_db_path
+                .parent()
+                .map(Path::to_path_buf)
+                .context("mock agent database has no configuration directory");
+        }
+        pp_config::config::global_dir()
     }
 
     pub fn subagents(&self) -> Option<Binding> {

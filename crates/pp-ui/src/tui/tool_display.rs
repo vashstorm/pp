@@ -240,7 +240,13 @@ pub(super) fn glob_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
                 style.fg(palette::tool_accent("glob")),
             ),
             Span::styled(
-                view.arguments["path"].as_str().unwrap_or(".").to_owned(),
+                match view.arguments["pattern"].as_str() {
+                    Some(pattern) => format!(
+                        "{pattern} · {}",
+                        view.arguments["path"].as_str().unwrap_or(".")
+                    ),
+                    None => view.arguments["path"].as_str().unwrap_or(".").to_owned(),
+                },
                 style,
             ),
             Span::styled(status, style.fg(color)),
@@ -489,7 +495,10 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     }
     match view.name {
         "read" => {
-            if !view.context.read_preview && !is_skill_read(view.arguments, view.result) {
+            if !expanded
+                && !view.context.read_preview
+                && !is_skill_read(view.arguments, view.result)
+            {
                 return Vec::new();
             }
             head(

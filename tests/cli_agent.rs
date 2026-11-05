@@ -25,15 +25,11 @@ mod mcp;
 #[path = "cli_agent/subagents.rs"]
 mod subagents;
 
-// `/test-task` 与 `/test-*` 工具套件的命令只在 debug assertions 构建中注册，
-// 因此这些用例随同一 profile 边界编译，release 测试构建不再要求命令存在。
+// 全部 `/test-*` 命令只在 debug assertions 构建中注册，因此这些用例随同一
+// profile 边界编译，release 测试构建不再要求命令存在。
 #[cfg(debug_assertions)]
-#[path = "cli_agent/test_task.rs"]
-mod test_task;
-
-#[cfg(debug_assertions)]
-#[path = "cli_agent/tool_test.rs"]
-mod tool_test;
+#[path = "cli_agent/mock_test.rs"]
+mod mock_test;
 
 fn config_path(home: &std::path::Path, name: &str) -> std::path::PathBuf {
     let dir = home.join(".pp/agent");
@@ -80,16 +76,28 @@ impl Cli {
         Self::start_with_existing_files(cwd, prompt)
     }
     fn start_with_existing_files(cwd: &std::path::Path, prompt: Option<&str>) -> Self {
+        let mut args = Vec::new();
+        if let Some(prompt) = prompt {
+            args.extend(["-p", prompt]);
+        }
+        Self::start_env(cwd, cwd, &args, &[])
+    }
+    // 独立 HOME 与工作目录，或向行模式子进程注入代理等环境变量的入口。
+    fn start_env(
+        cwd: &std::path::Path,
+        home: &std::path::Path,
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_pp"));
         command
             .current_dir(cwd)
-            .env("HOME", cwd)
+            .env("HOME", home)
+            .args(args)
+            .envs(envs.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(prompt) = prompt {
-            command.args(["-p", prompt]);
-        }
         Self(Some(command.spawn().unwrap()))
     }
     fn start(server: &Server, cwd: &std::path::Path, prompt: Option<&str>) -> Self {
@@ -117,16 +125,23 @@ impl Cli {
             .write_all(text.as_bytes())
             .unwrap();
     }
-    fn finish(mut self) -> Output {
+    fn pid(&self) -> u32 {
+        self.0.as_ref().unwrap().id()
+    }
+    fn finish(self) -> Output {
+        self.finish_within(Duration::from_secs(5))
+    }
+    // Mock 场景包含多次真实 Agent 运行与工具调用，宽限只用于这些显式入口。
+    fn finish_within(mut self, timeout: Duration) -> Output {
         self.0.as_mut().unwrap().stdin.take();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + timeout;
         loop {
             if self.0.as_mut().unwrap().try_wait().unwrap().is_some() {
                 return self.0.take().unwrap().wait_with_output().unwrap();
             }
             assert!(
                 Instant::now() < deadline,
-                "CLI did not exit within five seconds"
+                "CLI did not exit within {timeout:?}"
             );
             thread::sleep(Duration::from_millis(10));
         }

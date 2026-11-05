@@ -1,0 +1,51 @@
+{
+	"prompt": "Run the embedded local read fixture.",
+	"edit_mode": "replace",
+	"files": {
+		"read/note.txt": "第一行：Unicode 内容\nsecond line\nthird line after blank\nfourth preview line\nfifth preview line\nsixth-tail-marker\n"
+	},
+	"lanes": {
+		"root": [
+			{
+				"tool": {
+					"name": "read",
+					"arguments": {
+						"path": "read/note.txt"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "read",
+					"arguments": {
+						"path": "read/note.txt:2-3"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "read",
+					"arguments": {
+						"path": "read/note.txt:raw"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "read",
+					"arguments": {
+						"path": "read/missing.txt"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": "Read fixture complete.",
+				"auto_continue": false
+			}
+		]
+	}
+}

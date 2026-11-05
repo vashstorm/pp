@@ -151,36 +151,12 @@ impl App {
         }
     }
 
-    // /init 与（仅 dev/test 构建的）/test-task 回显用户命令本身；其余展开命令回显展开正文。
+    // /init 回显用户命令本身；其余展开命令回显展开正文。
     pub(in crate::tui) fn echoes_source(prompt: &str) -> bool {
         match prompt.trim() {
             "/init" => true,
-            #[cfg(debug_assertions)]
-            "/test-task" => true,
             _ => false,
         }
-    }
-
-    /// `/test-task` 的本地前置校验：通过时返回固定提示词，否则返回本地错误文案。
-    #[cfg(debug_assertions)]
-    fn test_task_prompt(&self) -> std::result::Result<String, String> {
-        if self.workflow.mode != pp_core::plan::WorkMode::Execute {
-            return Err("Exit Plan mode before using /test-task.".into());
-        }
-        match self.state {
-            State::Unavailable => {
-                return Err(self
-                    .unavailable
-                    .clone()
-                    .unwrap_or_else(|| "Configuration unavailable.".into()));
-            }
-            State::Ready | State::Running => {}
-            _ => {
-                return Err("Finish or cancel the current task before using /test-task.".into());
-            }
-        }
-        commands::test_task::ready(&self.model_roles).map_err(|error| error.to_string())?;
-        Ok(commands::test_task::PROMPT.to_owned())
     }
 
     pub(in crate::tui) fn submit(&mut self, kind: PendingKind) -> bool {
@@ -240,51 +216,33 @@ impl App {
                 _ => {}
             }
         }
-        // /test-task 通过本地校验后换成固定提示词；仅 dev/test 构建注册。
+        // `/test-*` 是开发构建的隔离场景：配置不可用时也允许运行，绝不进入模型请求。
         #[cfg(debug_assertions)]
-        let command = match command {
-            Some(Command::TestTask) => match self.test_task_prompt() {
-                Ok(expanded) => Some(Command::Prompt(expanded)),
-                Err(message) => {
-                    self.notify(Level::Error, message);
-                    return false;
-                }
-            },
-            other => other,
-        };
-        #[cfg(debug_assertions)]
-        if let Some(local) = match &command {
-            Some(Command::ToolTest(selection)) => Some((selection.name(), Some(*selection))),
-            Some(Command::TestUi) => Some(("/test-ui", None)),
-            _ => None,
-        } {
-            let (name, selection) = local;
+        if let Some(Command::MockTest(test)) = &command {
+            let test = *test;
+            let name = test.name();
             let pending = self.has_pending() || self.resources.ready.is_some();
             if self.workflow.mode != pp_core::plan::WorkMode::Execute {
                 self.notify(Level::Error, format!("Exit Plan mode before using {name}."));
-                return false;
-            }
-            match self.state {
-                State::Unavailable => {
-                    if let Some(error) = self.unavailable.clone() {
-                        self.notify(Level::Error, error);
-                    }
+            } else if matches!(self.state, State::Ready | State::Unavailable) {
+                if pending {
+                    self.notify(
+                        Level::Error,
+                        format!("Resolve pending input before using {name}."),
+                    );
+                } else if self.active_cancellation.is_some() {
+                    self.notify(
+                        Level::Error,
+                        format!("Finish or cancel the current task before using {name}."),
+                    );
+                } else {
+                    self.start_mock_test(test);
                 }
-                State::Ready if !pending => {
-                    if let Some(selection) = selection {
-                        self.send_tool_test(selection, &prompt);
-                    } else {
-                        self.send_ui_test(&prompt);
-                    }
-                }
-                State::Ready => self.notify(
-                    Level::Error,
-                    format!("Resolve pending input before using {name}."),
-                ),
-                _ => self.notify(
+            } else {
+                self.notify(
                     Level::Error,
                     format!("Finish or cancel the current task before using {name}."),
-                ),
+                );
             }
             return false;
         }
@@ -536,10 +494,8 @@ impl App {
                 Some(Command::Pipes(_)) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
                 #[cfg(debug_assertions)]
-                Some(Command::TestTask) => unreachable!("converted before the state match"),
-                #[cfg(debug_assertions)]
-                Some(Command::ToolTest(_) | Command::TestUi) => {
-                    unreachable!("local tests handled before the state match")
+                Some(Command::MockTest(_)) => {
+                    unreachable!("mock tests handled before the state match")
                 }
                 Some(Command::Think(Some(level))) => {
                     self.set_think_level(level);
@@ -837,6 +793,11 @@ impl App {
     }
 
     pub(in crate::tui) fn shutdown_background_tasks(&mut self) -> Result<()> {
+        // 隔离测试 worker 由其 owner 取消；正常 Agent 清理链路保持不变。
+        #[cfg(debug_assertions)]
+        if let Some(worker) = self.mock_worker.as_ref() {
+            worker.cancel();
+        }
         self.close_pipes();
         self.changes_panel = None;
         self.plan_list_panel = None;

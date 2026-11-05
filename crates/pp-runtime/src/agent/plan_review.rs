@@ -884,7 +884,7 @@ mod tests {
                     &[
                         ("read-canary", "read", json!({"path":"canary"})),
                         ("search", "grep", json!({"pattern":"needle"})),
-                        ("paths", "glob", json!({"path":"canary"})),
+                        ("paths", "glob", json!({"pattern":"canary"})),
                         ("shell", "bash", json!({"command":"touch pwned"})),
                         ("native", "find", json!({"args":[]})),
                         ("ask", "ask", json!({"questions":[]})),

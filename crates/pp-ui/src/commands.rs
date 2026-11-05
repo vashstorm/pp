@@ -1,10 +1,7 @@
 #[cfg(debug_assertions)]
-use pp_runtime::agent::tool_test::ToolTest;
+use pp_runtime::mock_ai::MockTest;
 mod templates;
 pub use templates::{FileCommand, FileCommands};
-// `/test-*` 自检实现只属于 dev/test 构建，release 不编译任何专用代码。
-#[cfg(debug_assertions)]
-pub(crate) mod test_task;
 
 use anyhow::{Context, Result, bail, ensure};
 use pp_core::model::ThinkLevel;
@@ -231,11 +228,7 @@ pub(crate) enum Command<'a> {
     Subagents,
     PlanList,
     #[cfg(debug_assertions)]
-    TestTask,
-    #[cfg(debug_assertions)]
-    ToolTest(ToolTest),
-    #[cfg(debug_assertions)]
-    TestUi,
+    MockTest(MockTest),
     Login,
     Logout,
     Plan(PlanCommand<'a>),
@@ -264,6 +257,11 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         .map_or((input, ""), |(name, argument)| (name, argument.trim()));
     if name != "/plan" && input.contains(['\n', '\r']) {
         return Ok(None);
+    }
+    #[cfg(debug_assertions)]
+    if let Some(test) = MockTest::ALL.into_iter().find(|test| test.name() == name) {
+        ensure!(argument.is_empty(), "usage: {name}");
+        return Ok(Some(Command::MockTest(test)));
     }
     let command = match name {
         "/help" => Command::Help,
@@ -305,20 +303,6 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
             ensure!(argument.is_empty(), "usage: /plan-list");
             Command::PlanList
         }
-        // dev/test 专用命令：其他构建不注册这些名字，输入落到 `Unknown` 兜底。
-        #[cfg(debug_assertions)]
-        "/test-task" => Command::TestTask,
-        #[cfg(debug_assertions)]
-        "/test-ui" => Command::TestUi,
-        #[cfg(debug_assertions)]
-        "/test-tools" | "/test-read" | "/test-write" | "/test-edit" | "/test-grep"
-        | "/test-glob" | "/test-bash" | "/test-bash-task" | "/test-wait" | "/test-todo"
-        | "/test-ask" => Command::ToolTest(
-            *ToolTest::ALL
-                .iter()
-                .find(|tool| tool.name() == name)
-                .expect("registered local tool test"),
-        ),
         "/plan" => {
             return Ok(Some(Command::Plan(match argument {
                 "" => PlanCommand::Toggle,
@@ -554,35 +538,35 @@ mod tests {
             ("/plan-list", Command::PlanList),
             (" /plan-list ", Command::PlanList),
             #[cfg(debug_assertions)]
-            ("/test-task", Command::TestTask),
+            ("/test-task", Command::MockTest(MockTest::Task)),
             #[cfg(debug_assertions)]
-            (" /test-task ", Command::TestTask),
+            (" /test-task ", Command::MockTest(MockTest::Task)),
             #[cfg(debug_assertions)]
-            ("/test-ui", Command::TestUi),
+            ("/test-ui", Command::MockTest(MockTest::Ui)),
             #[cfg(debug_assertions)]
-            (" /test-ui ", Command::TestUi),
+            (" /test-ui ", Command::MockTest(MockTest::Ui)),
             #[cfg(debug_assertions)]
-            ("/test-tools", Command::ToolTest(ToolTest::All)),
+            ("/test-tools", Command::MockTest(MockTest::All)),
             #[cfg(debug_assertions)]
-            ("/test-read", Command::ToolTest(ToolTest::Read)),
+            ("/test-read", Command::MockTest(MockTest::Read)),
             #[cfg(debug_assertions)]
-            ("/test-write", Command::ToolTest(ToolTest::Write)),
+            ("/test-write", Command::MockTest(MockTest::Write)),
             #[cfg(debug_assertions)]
-            ("/test-edit", Command::ToolTest(ToolTest::Edit)),
+            ("/test-edit", Command::MockTest(MockTest::Edit)),
             #[cfg(debug_assertions)]
-            ("/test-grep", Command::ToolTest(ToolTest::Grep)),
+            ("/test-grep", Command::MockTest(MockTest::Grep)),
             #[cfg(debug_assertions)]
-            ("/test-glob", Command::ToolTest(ToolTest::Glob)),
+            ("/test-glob", Command::MockTest(MockTest::Glob)),
             #[cfg(debug_assertions)]
-            ("/test-bash", Command::ToolTest(ToolTest::Bash)),
+            ("/test-bash", Command::MockTest(MockTest::Bash)),
             #[cfg(debug_assertions)]
-            ("/test-bash-task", Command::ToolTest(ToolTest::BashTask)),
+            ("/test-bash-task", Command::MockTest(MockTest::BashTask)),
             #[cfg(debug_assertions)]
-            ("/test-wait", Command::ToolTest(ToolTest::Wait)),
+            ("/test-wait", Command::MockTest(MockTest::Wait)),
             #[cfg(debug_assertions)]
-            ("/test-todo", Command::ToolTest(ToolTest::Todo)),
+            ("/test-todo", Command::MockTest(MockTest::Todo)),
             #[cfg(debug_assertions)]
-            ("/test-ask", Command::ToolTest(ToolTest::Ask)),
+            ("/test-ask", Command::MockTest(MockTest::Ask)),
             (" /resume ", Command::Resume),
             ("/quit", Command::Quit),
             ("/model", Command::Model(None)),
@@ -674,6 +658,35 @@ mod tests {
         "/test-todo",
         "/test-ask",
     ];
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn slash_mock_tests_match_all_and_reject_arguments() {
+        assert_eq!(MockTest::ALL.len(), TEST_COMMAND_NAMES.len());
+        let files = FileCommands::default();
+        for test in MockTest::ALL {
+            assert!(
+                COMMANDS.iter().any(|spec| spec.name == test.name()),
+                "{} is registered",
+                test.name()
+            );
+            assert!(TEST_COMMAND_NAMES.contains(&test.name()));
+            assert_eq!(
+                parse(test.name(), &files).unwrap(),
+                Some(Command::MockTest(test)),
+                "{}",
+                test.name()
+            );
+            assert_eq!(
+                parse(&format!("{} extra", test.name()), &files)
+                    .unwrap_err()
+                    .to_string(),
+                format!("usage: {}", test.name()),
+                "{} extra",
+                test.name()
+            );
+        }
+    }
 
     #[test]
     fn slash_help_lists_debug_only_commands_in_debug_builds() {

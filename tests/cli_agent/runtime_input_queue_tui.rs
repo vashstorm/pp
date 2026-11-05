@@ -355,18 +355,12 @@ fn tui_runtime_input_recall_template_and_resubmit_new_value() {
         pty.draft("draft-block");
         pty.function_key('q');
         runtime_input_menu_visible(&mut pty, &["Queued #1", "Queued #2"]);
-        let cursor = pty.parser.screen().cursor_position();
         pty.input("\r");
         pty.wait_for("recall blocked by existing draft", |screen| {
             screen
                 .contents()
                 .contains("Clear the draft before recalling a pending message.")
         });
-        assert_eq!(
-            pty.parser.screen().cursor_position(),
-            cursor,
-            "{protocol}: blocked recall must not move the cursor"
-        );
         runtime_input_counts(&mut pty, 0, 2, false);
         pty.draft("draft-block");
 

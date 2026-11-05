@@ -225,6 +225,12 @@ fn run(args: Args) -> Result<()> {
             } => stats::server::run(host, port, !no_open),
         };
     }
+    #[cfg(debug_assertions)]
+    let _mock_server = {
+        let server = pp_runtime::mock_ai::MockServer::start()?;
+        pp_runtime::mock_ai::install_endpoint(server.endpoint())?;
+        server
+    };
     if let Some(prompt) = &args.prompt {
         ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
     }

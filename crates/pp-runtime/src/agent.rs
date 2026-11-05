@@ -15,11 +15,7 @@ mod subagents;
 mod task_status;
 mod todo;
 mod tool_images;
-#[cfg(debug_assertions)]
-pub mod tool_test;
 mod turn;
-#[cfg(debug_assertions)]
-mod ui_test;
 
 #[cfg(test)]
 mod changes_tests;
@@ -374,21 +370,35 @@ impl Agent {
 
     pub(crate) fn new_with_prompt(
         catalog: ModelCatalog,
+        tools: Tools,
+        sessions_dir: PathBuf,
+        lock_dir: PathBuf,
+        prompt_source: crate::system_prompt::Snapshot,
+    ) -> Result<Self> {
+        Self::new_with_mcp(catalog, tools, sessions_dir, lock_dir, prompt_source, None)
+    }
+
+    fn new_with_mcp(
+        catalog: ModelCatalog,
         mut tools: Tools,
         sessions_dir: PathBuf,
         lock_dir: PathBuf,
         prompt_source: crate::system_prompt::Snapshot,
+        mcp: Option<crate::mcp::Registry>,
     ) -> Result<Self> {
         let config = catalog.resolve(catalog.default_reference())?;
         tools.limits = config.settings.tool_limits();
         tools.approval.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
-        tools.mcp = crate::mcp::Registry::load(
-            &catalog.mcp_path(),
-            tools.cwd(),
-            &CancellationToken::new(),
-            true,
-        )?;
+        tools.mcp = match mcp {
+            Some(registry) => registry,
+            None => crate::mcp::Registry::load(
+                &catalog.mcp_path(),
+                tools.cwd(),
+                &CancellationToken::new(),
+                true,
+            )?,
+        };
         Self::install_lsp(&mut tools, &catalog);
         let current_model = ModelChoice {
             reference: catalog.default_reference().to_owned(),
@@ -472,6 +482,49 @@ impl Agent {
             plan_lease: None,
             lsp_injected: Default::default(),
         })
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn new_mock(
+        catalog: ModelCatalog,
+        tools: Tools,
+        sessions_dir: PathBuf,
+        lock_dir: PathBuf,
+        scripts: pp_llm::MockScripts,
+    ) -> Result<Self> {
+        let mut agent = Self::new_with_mcp(
+            catalog,
+            tools,
+            sessions_dir,
+            lock_dir,
+            crate::system_prompt::Snapshot::bundled(),
+            Some(crate::mcp::Registry::default()),
+        )?;
+        agent.client.set_mock_scripts(scripts)?;
+        Ok(agent)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn stop_mock(&mut self) -> Result<()> {
+        let mut failure: Option<anyhow::Error> = None;
+        for result in [
+            self.stop_subagents(),
+            self.tools.stop_background_tasks(),
+            self.tools.mcp.abort_connections(),
+            self.stop_lsp(),
+        ] {
+            if let Err(error) = result {
+                failure = Some(match failure {
+                    Some(previous) => error.context(format!("{previous:#}")),
+                    None => error,
+                });
+            }
+        }
+        match failure {
+            Some(error) if error.is::<cancellation::CleanupError>() => Err(error),
+            Some(error) => Err(cancellation::CleanupError(error).into()),
+            None => Ok(()),
+        }
     }
 
     pub fn set_ask_handler(&mut self, handler: pp_core::interaction::AskHandler) {

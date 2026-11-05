@@ -608,6 +608,27 @@ mod tests {
         }
     }
 
+    /// 环境提示为 tmux 时 prepare_graphics 会把原生 iTerm2 帧拆成 MultipartFile/FilePart，
+    /// 两种封装携带同一份 base64 负载。
+    fn iterm2_payload(symbol: &str) -> String {
+        if symbol.contains("MultipartFile=") {
+            symbol
+                .split("FilePart=")
+                .skip(1)
+                .map(|part| part.split_once('\x07').expect("FilePart 缺少终止符").0)
+                .collect()
+        } else {
+            symbol
+                .split_once(':')
+                .expect("iTerm2 负载缺少分隔符")
+                .1
+                .split_once('\x07')
+                .expect("iTerm2 负载缺少终止符")
+                .0
+                .to_owned()
+        }
+    }
+
     #[test]
     fn image_preview_hover_delay_popup_scroll_resize_and_modal_hide() {
         let mut view = View::new().unwrap();
@@ -689,7 +710,7 @@ mod tests {
             match protocol {
                 ProtocolType::Halfblocks => assert!(text.contains('▀') || text.contains('▄')),
                 ProtocolType::Kitty => assert!(text.contains("\x1b_G") && text.contains("i=")),
-                ProtocolType::Iterm2 => assert!(text.contains("1337;File=")),
+                ProtocolType::Iterm2 => assert!(text.contains("1337;")),
                 ProtocolType::Sixel => assert!(text.contains("\x1bP")),
             }
             assert_eq!(rendered.graphics, protocol != ProtocolType::Halfblocks);
@@ -724,8 +745,7 @@ mod tests {
                 assert!(symbol.contains(&format!(
                     ";width={columns};height={rows};preserveAspectRatio=0;"
                 )));
-                let (_, payload) = symbol.split_once(':').unwrap();
-                let payload = payload.split_once('\x07').unwrap().0;
+                let payload = iterm2_payload(symbol);
                 let png = base64::engine::general_purpose::STANDARD
                     .decode(payload)
                     .unwrap();
@@ -752,7 +772,7 @@ mod tests {
                         assert!(
                             frame.buffer_mut()[(target.x, target.y)]
                                 .symbol()
-                                .contains("1337;File=")
+                                .contains("1337;")
                         );
                     })
                     .unwrap();

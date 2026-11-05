@@ -1,0 +1,43 @@
+{
+	"prompt": "Run the embedded local write fixture.",
+	"edit_mode": "replace",
+	"files": {},
+	"lanes": {
+		"root": [
+			{
+				"tool": {
+					"name": "write",
+					"arguments": {
+						"path": "write/nested/demo.txt",
+						"content": "created line one\n第二行\nthird line\n"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "write",
+					"arguments": {
+						"path": "write/nested/demo.txt",
+						"content": "created line one changed\n第二行\nthird line\nfourth line\n"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "write",
+					"arguments": {
+						"path": "../escape.txt",
+						"content": "must not be written"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": "Write fixture complete.",
+				"auto_continue": false
+			}
+		]
+	}
+}

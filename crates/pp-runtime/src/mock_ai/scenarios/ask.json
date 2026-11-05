@@ -1,0 +1,64 @@
+{
+	"prompt": "Answer the embedded local ask fixture questions.",
+	"edit_mode": "replace",
+	"files": {},
+	"lanes": {
+		"root": [
+			{
+				"tool": {
+					"name": "ask",
+					"arguments": {
+						"questions": [
+							{
+								"id": "pick",
+								"header": "Fixture choice",
+								"question": "Pick the recommended local fixture option.",
+								"options": [
+									{
+										"label": "First option",
+										"description": "plain option"
+									},
+									{
+										"label": "Recommended option",
+										"description": "recommended fixture option"
+									},
+									{
+										"label": "Preview option",
+										"preview": "preview\nbody"
+									}
+								],
+								"recommended": 1
+							},
+							{
+								"id": "multi",
+								"question": "Select several fixture labels.",
+								"multi": true,
+								"options": [
+									{
+										"label": "Alpha label"
+									},
+									{
+										"label": "Beta label"
+									},
+									{
+										"label": "Gamma label"
+									}
+								]
+							},
+							{
+								"id": "free",
+								"question": "Type a free-form fixture answer.",
+								"options": []
+							}
+						]
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": "Ask fixture complete.",
+				"auto_continue": false
+			}
+		]
+	}
+}

@@ -44,11 +44,11 @@ dom_smoothie = { workspace = true }
 html2text = { workspace = true }
 tempfile = { workspace = true }
 tracing = { workspace = true }
+tiny_http = { workspace = true }
 
 ratatui = { workspace = true }
 
 [dev-dependencies]
-tiny_http = { workspace = true }
 serde_yaml = { workspace = true }
 
 [features]

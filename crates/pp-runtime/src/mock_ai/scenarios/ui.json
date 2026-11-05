@@ -1,0 +1,37 @@
+{
+	"prompt": "Render the embedded mock UI stream.",
+	"edit_mode": "replace",
+	"files": {},
+	"lanes": {
+		"root": [
+			{
+				"think": [
+					"UI-TEST-THINKING-START ",
+					"mock thinking token one. ",
+					"mock thinking token two. ",
+					"mock thinking token three. ",
+					"UI-TEST-THINKING-END"
+				],
+				"tokens_per_second": 12.5,
+				"auto_continue": true
+			},
+			{
+				"content": [
+					"UI-TEST-ASSISTANT-START\n\n",
+					"## Mock Markdown\n\n",
+					"This response comes from embedded Responses SSE data.\n\n",
+					"- first list item\n",
+					"- second list item with `inline code`\n\n",
+					"```rust\n",
+					"fn mock_ui() -> &'static str {\n",
+					"    \"UI-TEST-CODE-MARKER\"\n",
+					"}\n",
+					"```\n\n",
+					"UI-TEST-ASSISTANT-END\n"
+				],
+				"tokens_per_second": 12.5,
+				"auto_continue": false
+			}
+		]
+	}
+}

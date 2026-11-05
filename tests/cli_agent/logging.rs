@@ -208,15 +208,10 @@ fn logging_restarts_append_and_shutdown_records_are_visible() {
     assert!(third_run.starts_with(&second_run));
     let records = log_records(home.path());
     let mine = pid_records(&records, failure_pid);
-    assert_eq!(mine.len(), 3);
-    assert_eq!(event_name(mine[0]), "app_started");
-    assert_eq!(str_field(mine[0], "mode"), "prompt");
-    assert_eq!(str_field(mine[0], "cwd"), canonical_cwd(failure_cwd.path()));
-    assert_eq!(event_name(mine[1]), "configuration_unavailable");
-    assert_eq!(mine[1]["level"], "WARN");
-    assert_eq!(event_name(mine[2]), "app_stopped");
-    assert_eq!(str_field(mine[2], "status"), "error");
-    assert_eq!(mine[2]["level"], "ERROR");
+    assert_lifecycle_pair(&mine, failure_cwd.path(), "prompt", "error");
+    let unavailable = pick(&mine, "configuration_unavailable");
+    assert_eq!(unavailable.len(), 1);
+    assert_eq!(unavailable[0]["level"], "WARN");
 }
 
 #[test]

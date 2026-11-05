@@ -523,7 +523,23 @@ fn glob_roundtrip_both_protocols() {
         std::fs::write(config_path(dir.path(), "settings.yml"), fixture_settings()).unwrap();
         std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
         let mut cli = LiveCli::new(Cli::spawn(dir.path(), &["-p", "search files"], &[]));
-        let (request, _) = protocol.receive(&server);
+        let (request, body) = protocol.receive(&server);
+        let glob = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| match protocol {
+                Protocol::Chat => &tool["function"],
+                Protocol::Responses => tool,
+            })
+            .find(|tool| tool["name"] == "glob")
+            .unwrap();
+        assert_eq!(glob["parameters"]["required"], json!(["pattern"]));
+        assert_eq!(
+            glob["parameters"]["properties"]["pattern"]["type"],
+            "string"
+        );
+        assert_eq!(glob["parameters"]["properties"]["path"]["type"], "string");
         protocol.calls_reply(
             request,
             json!([
@@ -532,7 +548,11 @@ fn glob_roundtrip_both_protocols() {
                     "grep",
                     json!({"pattern":"needle","path":"space dir/demo.txt"})
                 ),
-                protocol.call("paths", "glob", json!({"path":"space dir/*.txt"})),
+                protocol.call(
+                    "paths",
+                    "glob",
+                    json!({"pattern":"**/*.txt","path":"space dir"})
+                ),
                 protocol.call(
                     "absent",
                     "grep",
@@ -543,7 +563,8 @@ fn glob_roundtrip_both_protocols() {
                     "grep",
                     json!({"pattern":"[","path":"space dir/demo.txt"})
                 ),
-                protocol.call("bad-args", "grep", json!({"args":[]}))
+                protocol.call("bad-args", "grep", json!({"args":[]})),
+                protocol.call("legacy-glob", "glob", json!({"path":"space dir/*.txt"}))
             ]),
         );
         cli.wait_for(Pipe::Stderr, "*1|needle");
@@ -555,6 +576,9 @@ fn glob_roundtrip_both_protocols() {
         let found = protocol.tool_result(&body, "paths");
         assert_eq!(found["ok"], true);
         assert!(found["content"].as_str().unwrap().contains("demo.txt"));
+        let legacy = protocol.tool_result(&body, "legacy-glob");
+        assert_eq!(legacy["ok"], false);
+        assert!(legacy["error"].as_str().unwrap().contains("pattern"));
         assert_eq!(
             protocol.tool_result(&body, "absent")["content"],
             "No matches found"

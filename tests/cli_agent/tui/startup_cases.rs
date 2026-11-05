@@ -487,27 +487,6 @@ fn tui_tips_keeps_all_entries_and_leaves_active_jsonl_unchanged() {
         let key_field = key_width + 1;
         // 说明宽度预算为 20 列（见 `src/tips.rs`），颜色断言只需覆盖该区域。
         let span = key_field + 20;
-        // 完整清单比首页精选长，先加高终端让两组整体留在可视区。
-        pty.resize(60, 100);
-        pty.input("/tips\r");
-        pty.wait_for("本地提示展示完成", |screen| {
-            let text = screen.contents();
-            ["Tips:", "Commands", "Shortcuts", "/agents", "/tree"]
-                .into_iter()
-                .all(|expected| text.contains(expected))
-        });
-        let screen = pty.parser.screen();
-        assert_tips_title(screen, key_width, "Tips:", false);
-        assert_tips_title(screen, key_width, "Commands", true);
-        assert_tips_title(screen, key_width, "Shortcuts", true);
-        assert_colored_tip_key(
-            screen,
-            tips_key_row(screen, 2, key_width, "/agents"),
-            2..2 + span,
-            "/agents",
-            TIPS_ACCENT,
-            key_field,
-        );
         // 100 列：正文 98 列，两个分组各自并成两列，左列在前半、右列在后半。
         let rows = commands.len().div_ceil(2);
         let shortcut_rows = shortcuts.len().div_ceil(2);
@@ -522,6 +501,25 @@ fn tui_tips_keeps_all_entries_and_leaves_active_jsonl_unchanged() {
             .map(|label| (*label).to_owned())
             .collect();
         let wide = tips_right_column(100);
+        // 完整清单比首页精选长，先加高终端让两组整体留在可视区。
+        pty.resize(60, 100);
+        pty.input("/tips\r");
+        pty.wait_for("本地提示的完整两列已绘制", |screen| {
+            tips_visible_keys(screen, 2, key_width) == expected_left
+                && tips_visible_keys(screen, wide, key_width) == expected_right
+        });
+        let screen = pty.parser.screen();
+        assert_tips_title(screen, key_width, "Tips:", false);
+        assert_tips_title(screen, key_width, "Commands", true);
+        assert_tips_title(screen, key_width, "Shortcuts", true);
+        assert_colored_tip_key(
+            screen,
+            tips_key_row(screen, 2, key_width, "/agents"),
+            2..2 + span,
+            "/agents",
+            TIPS_ACCENT,
+            key_field,
+        );
         assert_eq!(tips_visible_keys(screen, 2, key_width), expected_left);
         assert_eq!(tips_visible_keys(screen, wide, key_width), expected_right);
         assert_eq!(

@@ -1,135 +1,105 @@
-// Debug 构建的 /test-task：回显命令本身、显示子 Agent 摘要并真实派发固定批次。
-fn test_task_tui_roles() -> String {
-    format!(
-        "{}model_roles:\n  fast: {{model: fixture/primary, effort: none}}\n  slow: {{model: fixture/primary, effort: none}}\n  review: {{model: fixture/primary, effort: none}}\n",
-        fixture_settings()
+// Debug 构建的 `/test-task` 与 mock 场景结束后的正常 Agent 恢复。
+
+fn mock_tui_fixture_start(server: &Server, home: &Path, project: &Path) -> Pty {
+    crate::write_settings(
+        home,
+        json!({
+            "default_model": "fixture/primary",
+            "notification_timeout_seconds": 1,
+            "read": {"toolResultPreview": true}
+        })
+        .to_string(),
     )
-}
-
-fn test_task_tui_user_text(protocol: &str, body: &Value) -> String {
-    let items = if protocol == "completion" {
-        body["messages"].as_array()
-    } else {
-        body["input"].as_array()
-    };
-    items
-        .unwrap()
-        .iter()
-        .filter(|item| item["role"] == "user")
-        .map(slash_message_text)
-        .collect::<Vec<_>>()
-        .join("\n")
+    .unwrap();
+    std::fs::write(config_path(home, "models.yml"), fixture_models(server)).unwrap();
+    Pty::start_with_args(project, home, &[])
 }
 
 #[test]
-fn test_task_tui_echoes_command_and_shows_three_subagents() {
-    for protocol in ["completion", "response"] {
-        let fixture = server();
-        let home = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        std::fs::write(
-            config_path(home.path(), "settings.yml"),
-            test_task_tui_roles(),
-        )
-        .unwrap();
-        std::fs::write(
-            config_path(home.path(), "models.yml"),
-            response_models(&fixture, Some(protocol)),
-        )
-        .unwrap();
-        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
-        pty.ready();
-        pty.input("/test-task\r");
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        // 回显命令本身，长提示词只作为展开正文发送。
-        pty.wait_for("用户块回显 /test-task 而非展开提示词", |screen| {
-            let text = screen.contents();
-            text.contains("/test-task") && !text.contains("Debug build self-test")
-        });
-        let text = test_task_tui_user_text(protocol, &body);
-        for marker in [
-            "fast-rust-count",
-            "slow-symbol-lookup",
-            "review-events-risk",
-            "\"role\":\"fast\"",
-            "\"role\":\"slow\"",
-        ] {
-            assert!(text.contains(marker), "missing {marker} in {text}");
-        }
-        let batch = json!({
-            "context": "/test-task debug scenario: read-only inspection of the current repository.",
-            "tasks": [
-                {"name": "fast-rust-count", "readonly": true, "role": "fast", "task": "Count regular Rust source files."},
-                {"name": "slow-symbol-lookup", "readonly": true, "role": "slow", "task": "Find where AgentEvent is defined."},
-                {"name": "review-events-risk", "role": "review", "task": "Review src/events.rs."}
-            ]
-        });
-        let spawn = if protocol == "completion" {
-            call("spawn", "task", batch)
-        } else {
-            response_call("spawn", "task", batch)
-        };
-        ask_reply_calls(request, protocol, json!([spawn]));
-        // 三个子 Agent 都在等待各自的响应，摘要行必须显示排队/运行数量。
-        pty.text("Subagents:");
-        let mut children = Vec::new();
-        let mut acked = false;
-        while children.len() < 3 || !acked {
-            let (request, body) = pty.request_at(&fixture, api_path(protocol));
-            if test_task_tui_child(protocol, &body) {
-                children.push(request);
-            } else {
-                assert!(!acked, "父会话不应在子 Agent 完成前重复请求");
-                acked = true;
-                ask_final_reply(request, protocol, "Waiting for subagent results.");
-            }
-        }
-        let results = ["fast-result-11", "slow-result-22", "review-result-33"];
-        for (request, result) in children.into_iter().zip(results) {
-            ask_final_reply(request, protocol, result);
-        }
-        loop {
-            let (request, body) = pty.request_at(&fixture, api_path(protocol));
-            let text = body.to_string();
-            let done = results.iter().all(|result| text.contains(result));
-            ask_final_reply(
-                request,
-                protocol,
-                if done {
-                    "all-subagents-complete"
-                } else {
-                    "Waiting for remaining results."
-                },
-            );
-            if done {
-                break;
-            }
-        }
-        pty.text("all-subagents-complete");
-        pty.ready();
-        pty.input("/quit\r");
-        pty.finish();
+fn tui_mock_task_shows_subagent_activity_and_returns_three_lane_markers() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let mut pty = mock_tui_empty_start(home.path(), project.path());
+    pty.resize(90, 120);
+    pty.input("/test-task\r");
+    pty.wait_for("three subagent sessions appear while the batch runs", |screen| {
+        let text = screen.contents();
+        text.contains("Subagents:") && text.contains("3 sessions")
+    });
+    pty.text("completed (review-result-33)");
+    pty.text("Mock test complete");
+    let rendered = pty.contents().split_whitespace().collect::<Vec<_>>().join(" ");
+    for summary in [
+        "fast-rust-count: completed (fast-result-11)",
+        "slow-symbol-lookup: completed (slow-result-22)",
+        "review-events-risk: completed (review-result-33)",
+    ] {
+        assert!(rendered.contains(summary), "{rendered}");
     }
+    pty.ready();
+    pty.input("\x03");
+    pty.finish();
+    assert!(mock_tui_session_jsonl(home.path()).is_empty());
 }
 
 #[test]
-fn test_task_tui_rejects_missing_roles_locally() {
+fn tui_mock_runs_keep_the_real_model_session_and_draft_bound_to_the_normal_agent() {
     let fixture = server();
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
-    std::fs::write(
-        config_path(home.path(), "models.yml"),
-        fixture_models(&fixture),
-    )
-    .unwrap();
-    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    let mut pty = mock_tui_fixture_start(&fixture, home.path(), project.path());
+    pty.ready_model("fixture/primary");
+    pty.input("before mock\r");
+    let (request, body) = pty.request_at(&fixture, api_path("completion"));
+    assert_eq!(body["model"], "fixture-model");
+    final_reply(request, "before-mock-reply");
+    pty.text("before-mock-reply");
     pty.ready();
-    pty.input("/test-task\r");
-    // 通知框按宽度换行，因此只断言首行片段与命令名。
-    pty.text("Enable model roles FAST, SLOW, REVIEW");
-    no_more(&fixture);
-    // 本地错误不消耗草稿：输入仍为 /test-task，用 Ctrl + C 退出。
+    let session = saved_session_id(home.path());
+
+    pty.input("/test-ui\r");
+    pty.wait_for("mock stream starts on the temporary snapshot", |screen| {
+        screen.contents().contains("UI-TEST-ASSISTANT-START")
+    });
+    // 运行中键入的文本只能成为草稿，不能 steering 到 mock 或真实会话。
+    pty.input("should-not-steer");
+    pty.draft("should-not-steer");
+    pty.text("UI-TEST-ASSISTANT-END");
+    pty.ready_model("fixture/primary");
+    pty.draft("should-not-steer");
+
+    pty.input("\x01\x0b");
+    pty.draft("");
+    pty.input("after mock\r");
+    let (request, body) = pty.request_at(&fixture, api_path("completion"));
+    assert_eq!(
+        body["model"], "fixture-model",
+        "ordinary task must keep using the saved model"
+    );
+    final_reply(request, "after-mock-reply");
+    pty.text("after-mock-reply");
+    pty.ready();
     pty.input("\x03");
     pty.finish();
+
+    assert_eq!(saved_session_id(home.path()), session);
+    let transcript = std::fs::read_to_string(
+        std::fs::read_dir(home.path().join(".pp/agent/sessions"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+            .unwrap(),
+    )
+    .unwrap();
+    for marker in ["before mock", "after mock", "before-mock-reply", "after-mock-reply"] {
+        assert!(transcript.contains(marker), "missing {marker}: {transcript}");
+    }
+    for marker in ["UI-TEST-ASSISTANT-START", "should-not-steer"] {
+        assert!(
+            !transcript.contains(marker),
+            "mock-only text leaked into the real session: {marker}"
+        );
+    }
+    no_more(&fixture);
 }

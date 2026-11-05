@@ -1,0 +1,49 @@
+{
+	"prompt": "Run the embedded local Bash fixture.",
+	"edit_mode": "replace",
+	"files": {},
+	"lanes": {
+		"root": [
+			{
+				"tool": {
+					"name": "bash",
+					"arguments": {
+						"command": "printf 'stdout-固定\\n'; printf 'stderr-行\\n' >&2; printf 'last-line\\n'"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "bash",
+					"arguments": {
+						"command": "printf 'before-nonzero-exit\\n'; exit 7"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "bash",
+					"arguments": {
+						"command": "printf 'pipeline-alpha\\n' | cat"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "bash",
+					"arguments": {
+						"command": "i=0; while [ $i -lt 400 ]; do printf 'line-%04d-abcdefghijklmnopqrstuvwxyz\\n' \"$i\"; i=$((i+1)); done"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": "Bash fixture complete.",
+				"auto_continue": false
+			}
+		]
+	}
+}

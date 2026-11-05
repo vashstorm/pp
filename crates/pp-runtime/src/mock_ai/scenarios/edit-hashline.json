@@ -1,0 +1,42 @@
+{
+	"prompt": "Run the embedded local hashline edit fixture.",
+	"edit_mode": "hashline",
+	"files": {
+		"edit/hashline.txt": "one\ntwo\nthree\n"
+	},
+	"lanes": {
+		"root": [
+			{
+				"tool": {
+					"name": "read",
+					"arguments": {
+						"path": "edit/hashline.txt"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "edit",
+					"arguments": {
+						"input": "[edit/hashline.txt#2543]\nPUT 2.=2:\n+TWO\nPUT >3:\n+four"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "edit",
+					"arguments": {
+						"input": "[edit/hashline.txt#2543]\nCUT 1.=1"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": "Hashline edit fixture complete.",
+				"auto_continue": false
+			}
+		]
+	}
+}

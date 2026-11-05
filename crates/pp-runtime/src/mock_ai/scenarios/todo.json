@@ -1,0 +1,117 @@
+{
+	"prompt": "Run the embedded local todo fixture.",
+	"edit_mode": "replace",
+	"files": {},
+	"lanes": {
+		"root": [
+			{
+				"tool": {
+					"name": "todo",
+					"arguments": {
+						"op": "init",
+						"list": [
+							{
+								"phase": "Phase A",
+								"items": ["first task", "second task"]
+							},
+							{
+								"phase": "Phase B",
+								"items": ["third task"]
+							}
+						]
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "todo",
+					"arguments": {
+						"op": "start",
+						"task": "first task"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "todo",
+					"arguments": {
+						"op": "done",
+						"task": "first task"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "todo",
+					"arguments": {
+						"op": "block",
+						"task": "second task",
+						"reason": "fixture blocker"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "todo",
+					"arguments": {
+						"op": "unblock",
+						"task": "second task"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "todo",
+					"arguments": {
+						"op": "append",
+						"phase": "Phase B",
+						"items": ["fourth task"]
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "todo",
+					"arguments": {
+						"op": "rm",
+						"task": "fourth task"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "todo",
+					"arguments": {
+						"op": "drop",
+						"task": "third task"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "todo",
+					"arguments": {
+						"op": "view"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": "Todo fixture complete.",
+				"auto_continue": false
+			},
+			{
+				"content": "Todo scenario complete; remaining item retained for inspection.",
+				"auto_continue": false
+			}
+		]
+	}
+}

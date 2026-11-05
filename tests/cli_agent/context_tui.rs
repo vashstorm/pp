@@ -954,8 +954,11 @@ fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
             .join(".pp/agent/sessions")
             .join(format!("{id}.jsonl"));
 
-        // 为工具清单及新输入审计预留 32KB；候选还包含完整 40KB 最新批次，仍会超限。
-        let limit = (seeded_len + 32768).div_ceil(1024) * 1024;
+        // 恢复后的首轮审计会先写入工具清单（TUI 比种子 CLI 多 ask）和刷新后的
+        // 完整系统提示，再写入新输入，合计约 35KB；为此预留 64KB。压缩候选仍
+        // 包含完整 40KB 最新批次以及系统与工具定义（超过 64KB），写入仍会超限。
+        const AUDIT_HEADROOM: u64 = 64 * 1024;
+        let limit = (seeded_len + AUDIT_HEADROOM).div_ceil(1024) * 1024;
         std::fs::write(
             config_path(home.path(), "settings.yml"),
             context_tui_live_settings(true, 80),

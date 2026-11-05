@@ -457,12 +457,24 @@ fn grep_groups_keep_paths_notices_and_failures() {
 fn glob_card_groups_paths_and_replays_without_changing_results() {
     let result =
         json!({"ok":true,"content":"root.rs\n# src/\nlib.rs\n## tui/\n界面.rs\n# tests/\ncli.rs"});
-    for replay in [false, true] {
+    for (replay, arguments, header) in [
+        (
+            false,
+            json!({"pattern":"**/*.rs","path":"src"}),
+            "Glob: **/*.rs · src",
+        ),
+        (
+            true,
+            json!({"pattern":"**/*.rs","path":"src"}),
+            "Glob: **/*.rs · src",
+        ),
+        (true, json!({"path":"**/*.rs"}), "Glob: **/*.rs"),
+    ] {
         let events = vec![
             AgentEvent::ToolStarted {
                 id: "paths".into(),
                 name: "glob".into(),
-                arguments: json!({"path":"**/*.rs"}).to_string(),
+                arguments: arguments.to_string(),
             },
             AgentEvent::ToolFinished {
                 id: "paths".into(),
@@ -483,10 +495,7 @@ fn glob_card_groups_paths_and_replays_without_changing_results() {
         }
         let buffer = render(&mut transcript, 60, 16);
         let text = screen(&buffer);
-        assert!(
-            text.contains("Glob: **/*.rs") && !text.contains("# src/"),
-            "{text}"
-        );
+        assert!(text.contains(header) && !text.contains("# src/"), "{text}");
         for (needle, column, color) in [
             ("root.rs", 2, palette::READ_SUMMARY_PATH),
             ("src/", 2, palette::GREP_TITLE),

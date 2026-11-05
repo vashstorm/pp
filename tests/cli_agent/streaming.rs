@@ -319,6 +319,10 @@ impl LiveCli {
     }
 
     pub(super) fn finish(self) -> Output {
+        self.finish_within(Duration::from_secs(5))
+    }
+
+    pub(super) fn finish_within(self, timeout: Duration) -> Output {
         let Self {
             cli,
             rx,
@@ -327,7 +331,7 @@ impl LiveCli {
             readers,
         } = self;
         // Cli owns panic cleanup and a bounded wait; its pipes were taken above.
-        let mut output = cli.finish();
+        let mut output = cli.finish_within(timeout);
         for (pipe, bytes) in rx {
             match pipe {
                 Pipe::Stdout => stdout.extend(bytes),
