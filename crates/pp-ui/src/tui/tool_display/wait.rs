@@ -1,4 +1,4 @@
-//! 等待消息框只绘制 worker 发布的快照，不查询任务或读取日志。
+//! 等待消息框只绘制 worker 发布的任务概况，不展示结果正文、不查询任务或读取日志。
 use super::*;
 
 pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
@@ -118,65 +118,6 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
             format!("… {} more jobs (Ctrl + O to expand)", jobs.len() - shown),
             style.fg(palette::MUTED),
         ));
-    }
-    if let Some(result) = result {
-        for (kind, key) in [("task", "results"), ("bash", "background_results")] {
-            for entry in result[key].as_array().into_iter().flatten() {
-                let (id, text) = if kind == "task" {
-                    let run = &entry["run"];
-                    let value = &run["result"];
-                    let mut text = value["output"]
-                        .as_str()
-                        .or_else(|| value["partial_output"].as_str())
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| value.to_string());
-                    if let Some(error) = value["error"].as_str() {
-                        text.push_str(&format!("\n{error}"));
-                    }
-                    if let Some(path) = value["output_path"].as_str() {
-                        text.push_str(&format!("\nFull result: {path}"));
-                    }
-                    (run["id"].as_str().unwrap_or("?"), text)
-                } else {
-                    let mut text = entry["output"].as_str().unwrap_or_default().to_owned();
-                    if let Some(error) = entry["error"].as_str() {
-                        text.push_str(&format!("\n{error}"));
-                    }
-                    let notice = pp_runtime::tools::output::notice(entry);
-                    if !notice.is_empty() {
-                        text.push_str(&format!("\n{notice}"));
-                    }
-                    (entry["task_id"].as_str().unwrap_or("?"), text)
-                };
-                if !jobs
-                    .iter()
-                    .take(shown)
-                    .any(|job| job["id"].as_str() == Some(id))
-                {
-                    continue;
-                }
-                body.push(Line::styled(format!("Result {id}"), border));
-                let text = pp_core::text::display_text(&text);
-                let rows = text
-                    .lines()
-                    .flat_map(|line| {
-                        wrap_block(Line::styled(line.to_owned(), style), inner.max(1), "")
-                    })
-                    .collect::<Vec<_>>();
-                let limit = if view.expanded || view.context.full {
-                    rows.len()
-                } else {
-                    rows.len().min(4)
-                };
-                body.extend(rows.iter().take(limit).cloned());
-                if limit < rows.len() {
-                    body.push(Line::styled(
-                        format!("… {} more lines (Ctrl + O to expand)", rows.len() - limit),
-                        style.fg(palette::MUTED),
-                    ));
-                }
-            }
-        }
     }
     let mut rows = Vec::new();
     if framed {

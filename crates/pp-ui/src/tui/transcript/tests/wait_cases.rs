@@ -5,7 +5,7 @@ fn wait_snapshot(count: usize, milliseconds: u64) -> Value {
 }
 
 #[test]
-fn wait_card_updates_caps_expands_and_freezes_only_final_settled_result() {
+fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
     let mut transcript = Transcript::new();
     transcript.begin_run();
     tool(&mut transcript, "wait", "wait", json!({}));
@@ -43,6 +43,9 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_settled_result() {
         job["status"] = json!("exited");
     }
     result["pending"] = json!(false);
+    result["jobs"][1]["type"] = json!("task");
+    result["jobs"][1]["status"] = json!("completed");
+    result["results"] = json!([{"run":{"id":"bg-1","result":{"output":"agent-report","error":"agent-error","output_path":"/tmp/agent-result.json"}}}]);
     result["background_results"] =
         json!([{"task_id":"bg-0","status":"exited","ok":true,"output":"finished-line"}]);
     transcript.progress(AgentEvent::ToolFinished {
@@ -51,11 +54,12 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_settled_result() {
     });
     let frozen = entry_text(&mut transcript.entries[0], 100);
     assert!(
-        frozen.contains("10/10 settled")
-            && frozen.contains("0 running")
-            && frozen.contains("finished-line"),
+        frozen.contains("10/10 settled") && frozen.contains("0 running"),
         "{frozen}"
     );
+    assert!(!frozen.contains("Result ") && !frozen.contains("finished-line"));
+    assert!(!frozen.contains("agent-report") && !frozen.contains("agent-error"));
+    assert!(!frozen.contains("/tmp/agent-result.json"));
     assert!(!frozen.contains("◑") && !frozen.contains("◒"));
     transcript.tick(Instant::now() + Duration::from_secs(20));
     assert_eq!(entry_text(&mut transcript.entries[0], 100), frozen);
@@ -73,10 +77,12 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_settled_result() {
     let mut restored = Transcript::new();
     restored.replay(replay);
     let text = entry_text(&mut restored.entries[0], 100);
-    assert!(
-        text.contains("10/10 settled") && text.contains("finished-line"),
-        "{text}"
-    );
+    assert!(text.contains("10/10 settled"), "{text}");
+    assert!(!text.contains("Result ") && !text.contains("finished-line"));
+    assert!(!text.contains("agent-report") && !text.contains("agent-error"));
+    assert!(!text.contains("/tmp/agent-result.json"));
+    restored.toggle_tool_output();
+    assert_eq!(entry_text(&mut restored.entries[0], 100), frozen);
 }
 
 #[test]
@@ -108,6 +114,8 @@ fn wait_card_updates_background_original_and_marks_timeout_and_interruption() {
         text.contains("1 failed") && text.contains("1/1 settled"),
         "{text}"
     );
+    assert!(!text.contains("Result ") && !text.contains("final-output"));
+    assert!(!text.contains("failed command"));
     for (field, notice) in [
         ("timed_out", "timed out"),
         ("interrupted", "interrupted by steering"),

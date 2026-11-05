@@ -110,7 +110,7 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 
 返回值保留 `ok`、`results` 和 `pending`，并增加 `background_results`、`jobs`、`timed_out`、`interrupted`。`results` 保留子 Agent 的 `delivery_marker`／`run` 信封；`background_results` 保存后台 Bash 终态、退出码、有限输出及 artifact 元数据；`jobs` 为本次目标的 ID、类型、标题、状态、耗时与交付状态。`ok` 表示等待调用成功，任务自身仍可能失败或取消。已交付目标再次等待只返回状态，查看正文使用不消费结果的读取接口。后台 Bash 仍只在显式等待时交付，不增加自动注入。
 
-Steering 与 FollowUp 在等待期间保留队列，批次全部结束并成功提交后才按原规则领取。某个目标提前成功、失败或取消都不会放行其余目标。120 分钟期限到达后，先取消本批未完成目标及其派生工作，并等待真实回收，再返回 `ok:false, timed_out:true, pending:false`，保留已完成结果和可用的部分输出；清理失败升级 `CleanupError` 并停止父 Agent。Esc 取消整个当前任务，回收后恢复输入，取消不提前确认结果消费。TUI 每 500ms 更新同一个框中的运行标识、耗时和任务状态，进度条表示已结束数量／目标总数，不表示任务内部的完成百分比。默认显示 8 项，Ctrl + O 展开；整批结束后冻结最终快照，后续 wait 新建框。历史恢复展示持久化的最终快照，不重新查询当前任务。参见 [OMP wait 调研与适配](wait-research.md)。
+Steering 与 FollowUp 在等待期间保留队列，批次全部结束并成功提交后才按原规则领取。某个目标提前成功、失败或取消都不会放行其余目标。120 分钟期限到达后，先取消本批未完成目标及其派生工作，并等待真实回收，再返回 `ok:false, timed_out:true, pending:false`，保留已完成结果和可用的部分输出；清理失败升级 `CleanupError` 并停止父 Agent。Esc 取消整个当前任务，回收后恢复输入，取消不提前确认结果消费。TUI 每 500ms 更新同一个框中的运行标识、耗时和任务状态，进度条表示已结束数量／目标总数，不表示任务内部的完成百分比。默认显示 8 项，Ctrl + O 展开全部目标；等待框始终只显示任务概况，不显示 Result 正文，子 Agent 完整结果在 Agent Hub（`/agents` 或 `/subagents`）查看，后台 Bash 输出保留在原 Bash 卡片。整批结束后冻结最终快照，后续 wait 新建框。历史恢复展示持久化的最终快照，不重新查询当前任务。参见 [OMP wait 调研与适配](wait-research.md)。
 
 默认使用最后一条 assistant 消息作为结果。任务项可以提供 `output_schema`，也可采用自定义定义中的 `output`；任务项优先。结构化 child 获得 `yield`，必须以 `{"data": ...}` 提交符合 JSON Schema 的结果；无效结果不会被标成成功。Schema 外部 HTTP/文件引用解析未开启。
 
