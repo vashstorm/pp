@@ -563,7 +563,8 @@ pub(super) fn primary(
         ThinkLevel::Xhigh => "xhi",
         ThinkLevel::Max => "max",
     };
-    // 思考级别统一使用 Nerd Font Material Design 图标，避免混用普通圆形字形导致宽度不一。
+    // 思考级别统一使用 Nerd Font 图标（none 到 xhigh 为 Material Design 圆环，max 为
+    // Font Awesome 火苗），避免混用普通圆形字形导致宽度不一。
     let think_icon = palette::think_icon(think_level);
     let icon = |glyph, color| Span::styled(format!("{glyph} "), Style::default().fg(color));
     let model_src = model.map_or("—", |choice| choice.reference.as_str());

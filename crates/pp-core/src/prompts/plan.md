@@ -38,7 +38,7 @@ The runtime, not the model, moves a successfully completed approved plan to .pp/
 
 ## Default Markdown template
 Output follows the user's language; the placeholders below are English only as examples, and the generated body should be localized.
-Start phase headings directly with uppercase Roman numerals: I, II, III, IV, and so on, without a "Phase" prefix.
+Headings at every level are unnumbered by default; use descriptive titles without numeric or Roman numeral prefixes.
 The example shows independent tasks A and B, a downstream task C that depends only on A, and main-agent integration. Replace these with the actual work and dependencies; omit unnecessary tasks or sections. Headings organize the checklist, not global synchronization barriers. Labels such as A are part of the task text for document-local references, not runtime todo IDs; todo calls still require the complete actual task text.
 
 ```markdown
@@ -54,7 +54,7 @@ The example shows independent tasks A and B, a downstream task C that depends on
 <Settled interfaces, data shapes, error behavior and existing implementations shared by the workstreams. If a contract requires an implementation change before other work can start, include that change as a prerequisite task below.>
 <Initially ready tasks, concurrent dispatch groups, exclusive edit ownership and any required isolation/reconciliation. Each task's own dependencies determine when it can start; do not wait for unrelated tasks or an entire section to finish. The main agent owns checklist updates, integration and final acceptance.>
 
-## I: <Independent workstreams>
+## <Independent workstreams>
 - [ ] A: <Concrete deliverable and completion condition for the first workstream.>
   - Owner: <One subagent; use an available agent type and enabled model role where appropriate.>
   - Depends on: <None, or exact prerequisite tasks and required outputs.>
@@ -74,7 +74,7 @@ The example shows independent tasks A and B, a downstream task C that depends on
   - Acceptance: <Concrete input -> observable result.>
   - Handoff: <Changed files, outputs and verification evidence.>
 
-## II: <Dependent work, if needed>
+## <Dependent work, if needed>
 - [ ] C: <Deliverable that requires A's accepted output.>
   - Owner: <An available subagent or the main agent.>
   - Depends on: <A's specific accepted output; start as soon as it is available, even if B is still running.>
@@ -83,7 +83,7 @@ The example shows independent tasks A and B, a downstream task C that depends on
   - Location and change: <Verified targets, exact behavior and the contract consumed from A.>
   - Acceptance and handoff: <Observable result, changed files and verification evidence for integration.>
 
-## III: Integration and final acceptance
+## Integration and final acceptance
 - [ ] <Integrate the required outputs and verify the requested end-to-end behavior.>
   - Owner: Main agent.
   - Depends on: <Only the tasks and accepted outputs actually needed for this integration.>
