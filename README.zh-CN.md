@@ -177,7 +177,9 @@ printf '说明当前项目的构建方式\n' | pp
 
 `read` 仅接受 `path`，支持本地文本、图片、静态网页和已启用的 `skill://` 资源。系统在技能名称、说明和 URI 旁附加选择规则，自定义基础提示词也会保留：按任务及具体子任务主动匹配，在其他任务工具前读取适用技能，成功读取后简短说明用途。执行已批准计划也适用；选择仍由模型完成，正文不自动注入。裸技能 URI 读取完整 `SKILL.md`，追加 `/<path>` 访问资源，`/.` 列出目录。技能文本不受普通文本限额限制，结果带 `path` 和 `base_dir`，显式选择器仍生效。范围直接写入路径：`src/main.rs:20-60`、`notes.md:-30`、`file.rs:5-10,20-30`，严格读取指定行，截断后使用 `next_path` 续读。`:raw` 去掉前缀，网页则返回原始响应正文。PNG／JPEG／WebP／GIF 图片作为真实视觉输入发给模型，工具输出只显示元信息；恢复会话和切换协议保留图片。网页提取静态 HTML 正文，不执行 JavaScript，支持取消和有界会话缓存。[读取行为和限制 →](docs/guide.md#工具执行与权限)
 
-`grep` 在进程内搜索本地文件，支持正则、路径 glob、文件行范围和按文件分页。Execute、Plan 和 Review 共用 `pattern`、`path`、`case`、`gitignore`、`skip` 参数；可在 `settings.yml` 设置 `grep: {contextBefore: 1, contextAfter: 3}` 调整上下文。
+`grep` 在进程内搜索本地文件，支持正则、路径 glob、文件行范围和按文件分页。Execute、Plan 和 Review 共用 `pattern`、`path`、`case`、`-i`、`gitignore`、`skip`、`context`、`-C`、`-A`、`-B`、`output_mode` 参数。`-i: true` 等价于 `case: false`，含义冲突时拒绝调用。`context` 与 `-C` 设置双侧上下文，两者不同值时报错；`-A`／`-B` 分别覆盖后文／前文，支持零行。未指定的侧使用 `settings.yml` 中的配置，默认 `grep: {contextBefore: 1, contextAfter: 3}`。
+
+`output_mode` 默认 `content`，返回正文；`files_with_matches` 只返回路径；`count` 返回各文件计数与所有已搜索文件的总计。单行模式按命中行计数，多行模式按不重叠的匹配计数。上下文参数仅影响 `content`。所有模式保留 `skip` 按文件分页；计数总计包含当前页之外的文件，不受正文匹配条数上限限制，但仍遵守扫描范围限制，`details.countComplete: false` 表示统计不完整。仅 `content` 创建或更新 Hashline 编辑快照，路径与计数模式保留已有快照且不新增已读行。
 
 `glob` 在 Execute、Plan 和 Review 中查找本地路径，接受必填匹配表达式 `pattern`、可选搜索目录 `path`（默认当前工作目录），以及 `hidden`、`gitignore` 和 `limit`；例如 `glob({"pattern":"**/*.rs","path":"src"})`。`path` 仅接受单个字面目录，不再承载 glob 或多个搜索范围；默认包含隐藏文件并遵守忽略规则。裸 `*.rs` 递归查找，`src/*.rs` 只查找直接子项。结果按修改时间排序，最多返回 200 个路径和 50 KiB；五秒协作式扫描超时或结果截断时应缩小目录。取消与超时在文件系统操作之间检查。`glob` 只读，但没有文件系统沙箱。
 

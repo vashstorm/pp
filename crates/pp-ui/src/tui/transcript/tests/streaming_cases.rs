@@ -421,6 +421,69 @@ fn grep_reference_layout_colors_and_replay() {
 }
 
 #[test]
+fn grep_output_modes_preserve_paths_counts_and_replay() {
+    for replay in [false, true] {
+        for (mode, content, details, summary) in [
+            (
+                "files_with_matches",
+                "# odd.txt\n*123|literal.txt\n",
+                json!({"outputMode":"files_with_matches","fileCount":2,"scopePath":".","fileMatches":[{"path":"# odd.txt"},{"path":"*123|literal.txt"}]}),
+                "files_with_matches · 2 files",
+            ),
+            (
+                "count",
+                "# odd.txt:300\n*123|literal.txt:200\n\nTotal: 900\n",
+                json!({"outputMode":"count","matchCount":500,"totalMatchCount":900,"countComplete":true,"fileCount":2,"scopePath":".","fileMatches":[{"path":"# odd.txt","count":300},{"path":"*123|literal.txt","count":200}]}),
+                "count 900 matches · 2 files",
+            ),
+            (
+                "count",
+                "Total (partial): 0\nCounts are partial\n",
+                json!({"outputMode":"count","matchCount":0,"totalMatchCount":0,"countComplete":false,"fileCount":0,"scopePath":".","fileMatches":[]}),
+                "count 0 matches (partial) · 0 files",
+            ),
+        ] {
+            let result = json!({"ok":true,"content":content,"details":details});
+            let events = vec![
+                AgentEvent::ToolStarted {
+                    id: "g".into(),
+                    name: "grep".into(),
+                    arguments: json!({"pattern":"needle","output_mode":mode}).to_string(),
+                },
+                AgentEvent::ToolFinished {
+                    id: "g".into(),
+                    result: result.clone(),
+                },
+            ];
+            let mut transcript = Transcript::new();
+            if replay {
+                assert!(
+                    transcript
+                        .replay(events.into_iter().map(ReplayRecord::Event).collect())
+                        .is_none()
+                );
+            } else {
+                for event in events {
+                    transcript.progress(event);
+                }
+            }
+            let text = screen(&render(&mut transcript, 140, 20));
+            assert!(text.contains(summary), "{text}");
+            assert!(text.contains(content.lines().next().unwrap()), "{text}");
+            assert!(!text.contains("└─"), "{text}");
+            if mode == "files_with_matches" {
+                assert!(
+                    !text.contains("0 matches") && !text.contains("2 matches"),
+                    "{text}"
+                );
+                assert!(text.contains("*123|literal.txt"), "{text}");
+            }
+            assert_eq!(transcript.entries[0].result, Some(result));
+        }
+    }
+}
+
+#[test]
 fn grep_groups_keep_paths_notices_and_failures() {
     let mut transcript = Transcript::new();
     tool(&mut transcript, "g", "grep", json!({"pattern":"needle"}));

@@ -377,6 +377,9 @@ fn grep_hashline_edit_and_pagination_roundtrip_both_protocols() {
             .find(|tool| tool["name"] == "grep")
             .unwrap();
         assert!(tool["parameters"]["properties"]["pattern"].is_object());
+        for name in ["context", "-C", "-A", "-B", "-i", "output_mode"] {
+            assert!(tool["parameters"]["properties"][name].is_object(), "{tool}");
+        }
         protocol.calls_reply(
             request,
             json!([
@@ -385,7 +388,9 @@ fn grep_hashline_edit_and_pagination_roundtrip_both_protocols() {
                     "grep",
                     json!({"pattern":"needle","path":"*.txt","skip":20})
                 ),
-                protocol.call("file", "grep", json!({"pattern":"needle","path":"00.txt"}))
+                protocol.call("paths", "grep", json!({"pattern":"NEEDLE","-i":true,"path":"*.txt","skip":20,"output_mode":"files_with_matches"})),
+                protocol.call("counts", "grep", json!({"pattern":"NEEDLE","-i":true,"path":"*.txt","skip":20,"output_mode":"count"})),
+                protocol.call("file", "grep", json!({"pattern":"NEEDLE","-i":true,"path":"00.txt","context":0,"-C":0,"-A":0,"-B":0,"output_mode":"content"}))
             ]),
         );
         let (request, body) = protocol.receive(&provider);
@@ -393,17 +398,40 @@ fn grep_hashline_edit_and_pagination_roundtrip_both_protocols() {
             protocol.tool_result(&body, "page")["details"]["fileCount"],
             1
         );
+        assert_eq!(
+            protocol.tool_result(&body, "paths")["details"]["fileMatches"][0]["path"],
+            "20.txt"
+        );
+        let counts = protocol.tool_result(&body, "counts");
+        assert_eq!(counts["details"]["matchCount"], 1, "{counts}");
+        assert_eq!(counts["details"]["totalMatchCount"], 21, "{counts}");
+        assert_eq!(counts["details"]["countComplete"], true, "{counts}");
         let result = protocol.tool_result(&body, "file");
         let header = hashline_header(result["content"].as_str().unwrap());
+        assert!(!result["content"].as_str().unwrap().contains("before"));
         protocol.calls_reply(
             request,
-            json!([protocol.call(
-                "edit",
-                "edit",
-                json!({"input":format!("{header}\nPUT 2.=2:\n+changed")})
-            )]),
+            json!([
+                protocol.call(
+                    "hidden",
+                    "edit",
+                    json!({"input":format!("{header}\nCUT 1.=1")})
+                ),
+                protocol.call(
+                    "unread",
+                    "edit",
+                    json!({"input":format!("{}\nCUT 2.=2",header.replace("00.txt", "01.txt"))})
+                ),
+                protocol.call(
+                    "edit",
+                    "edit",
+                    json!({"input":format!("{header}\nPUT 2.=2:\n+changed")})
+                )
+            ]),
         );
         let (request, body) = protocol.receive(&provider);
+        assert_eq!(protocol.tool_result(&body, "hidden")["ok"], false);
+        assert_eq!(protocol.tool_result(&body, "unread")["ok"], false);
         assert_eq!(protocol.tool_result(&body, "edit")["ok"], true);
         assert_eq!(
             std::fs::read_to_string(dir.path().join("00.txt")).unwrap(),

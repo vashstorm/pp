@@ -34,6 +34,23 @@ fn artifact_bash_failure_read_grep_and_next_page_keep_uri() {
     assert_eq!(found["details"]["scopePath"], uri);
     assert_eq!(found["details"]["fileMatches"][0]["path"], uri);
     assert!(!found["content"].as_str().unwrap().contains('#'));
+    for mode in ["files_with_matches", "count"] {
+        let found = execute(
+            &tools,
+            "grep",
+            json!({"path":uri,"pattern":"LINE-05000","-i":true,"output_mode":mode}),
+        );
+        assert_eq!(found["details"]["fileMatches"][0]["path"], uri);
+        assert_eq!(found["details"]["scopePath"], uri);
+        assert_eq!(found["artifact"]["uri"], uri);
+        assert!(!found["content"].as_str().unwrap().contains(".bash.log"));
+        if mode == "files_with_matches" {
+            assert_eq!(found["content"], format!("{uri}\n"));
+        } else {
+            assert_eq!(found["details"]["totalMatchCount"], 1);
+            assert_eq!(found["details"]["countComplete"], true);
+        }
+    }
     assert!(
         execute(&tools, "read", json!({"path":format!("{uri}:-1")}))["content"]
             .as_str()
@@ -79,6 +96,20 @@ fn artifact_grep_reads_after_four_mib_and_warns_for_multiline() {
         json!({"path":uri,"pattern":"UNIQUE_AFTER_FOUR_MIB\\n"}),
     );
     assert!(multi["content"].as_str().unwrap().contains("first 4 MiB"));
+    for pattern in ["UNIQUE_AFTER_FOUR_MIB", "UNIQUE_AFTER_FOUR_MIB\\n"] {
+        let count = execute(
+            &tools,
+            "grep",
+            json!({"path":uri,"pattern":pattern,"output_mode":"count"}),
+        );
+        let complete = !pattern.ends_with("\\n");
+        assert_eq!(count["details"]["countComplete"], complete, "{count}");
+        assert_eq!(
+            count["details"]["totalMatchCount"],
+            usize::from(complete),
+            "{count}"
+        );
+    }
 }
 
 #[test]

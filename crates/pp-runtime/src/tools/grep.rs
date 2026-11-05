@@ -30,7 +30,25 @@ const MAX_OUTPUT: usize = 50 * 1024;
 const MAX_LINE: usize = 512;
 
 pub(super) fn definition() -> FunctionObject {
-    FunctionObject { name: "grep".into(), description: Some("Search local files or one artifact://<numeric-id> URI with regex: Rust regex then PCRE2, with literal fallback. To search an artifact, call THIS tool with its URI in path; shell grep/rg via bash cannot resolve artifact:// URIs because they are tool resources, not filesystem paths. Artifact searches return URI sources and no edit anchors; running logs use a per-call snapshot. Single-line artifact search covers the saved log; multi-line search has the existing 4 MiB cap with a warning. path accepts semicolon-separated files, directories, globs and exclusions (!glob); default '.'. File paths may include line ranges such as src/main.rs:20-40. Defaults to case-sensitive, includes hidden files and respects ignore files. skip paginates matching files. Results are bounded and indicate truncation; narrow the path or pattern for more. Hashline file headings contain path and TAG: use [path#TAG] for edit; only complete returned lines are editable. No shell or subprocess.".into()), parameters: Some(json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"gitignore":{"type":"boolean"},"skip":{"type":["number","null"]}},"required":["pattern"],"additionalProperties":false})), ..Default::default() }
+    FunctionObject { name: "grep".into(), description: Some("Search files or one artifact://<numeric-id> URI in process: Rust regex, PCRE2, literal fallback. path: files/dirs/globs/!exclusions separated by ';', file:20-40 ranges; default '.'. Case-sensitive, includes hidden files, respects ignore files. -i inverts case. context/-C set both sides; -A/-B override after/before; otherwise config. Conflicting aliases fail. output_mode: content(default), files_with_matches(paths), count(per-file + all-file total; matching lines for single-line patterns, non-overlapping matches for multiline). countComplete=false means partial. Only content uses context and Hashline snapshots: [path#TAG]; only complete returned lines editable. Other modes preserve snapshots. skip paginates files; bounded output. Artifacts MUST use THIS tool, never bash grep/rg: URIs are not paths; per-call snapshot, no edit anchors; single-line covers saved logs, multiline capped at 4 MiB with warning.".into()), parameters: Some(json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"-i":{"type":"boolean"},"context":{"type":"integer","minimum":0},"-C":{"type":"integer","minimum":0},"-A":{"type":"integer","minimum":0},"-B":{"type":"integer","minimum":0},"output_mode":{"type":"string","enum":["content","files_with_matches","count"]},"gitignore":{"type":"boolean"},"skip":{"type":["number","null"]}},"required":["pattern"],"additionalProperties":false})), ..Default::default() }
+}
+
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum OutputMode {
+    #[default]
+    Content,
+    FilesWithMatches,
+    Count,
+}
+impl OutputMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Content => "content",
+            Self::FilesWithMatches => "files_with_matches",
+            Self::Count => "count",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -41,10 +59,49 @@ struct Args {
     path: Option<String>,
     #[serde(default, rename = "case")]
     case_sensitive: Option<bool>,
+    #[serde(default, rename = "-i")]
+    ignore_case: Option<bool>,
+    #[serde(default)]
+    context: Option<usize>,
+    #[serde(default, rename = "-C")]
+    context_alias: Option<usize>,
+    #[serde(default, rename = "-A")]
+    after: Option<usize>,
+    #[serde(default, rename = "-B")]
+    before: Option<usize>,
+    #[serde(default)]
+    output_mode: OutputMode,
     #[serde(default)]
     gitignore: Option<bool>,
     #[serde(default)]
     skip: Option<f64>,
+}
+impl Args {
+    fn settings(&self, defaults: GrepSettings) -> Result<GrepSettings> {
+        if let (Some(context), Some(alias)) = (self.context, self.context_alias) {
+            ensure!(context == alias, "context and -C must agree");
+        }
+        let context = self.context.or(self.context_alias);
+        Ok(if self.output_mode == OutputMode::Content {
+            GrepSettings {
+                context_before: self.before.or(context).unwrap_or(defaults.context_before),
+                context_after: self.after.or(context).unwrap_or(defaults.context_after),
+            }
+        } else {
+            GrepSettings {
+                context_before: 0,
+                context_after: 0,
+            }
+        })
+    }
+    fn insensitive(&self) -> Result<bool> {
+        if let (Some(case), Some(ignore)) = (self.case_sensitive, self.ignore_case) {
+            ensure!(case != ignore, "case and -i have conflicting values");
+        }
+        Ok(self
+            .ignore_case
+            .unwrap_or(!self.case_sensitive.unwrap_or(true)))
+    }
 }
 struct Target {
     path: PathBuf,
@@ -551,6 +608,8 @@ struct Collector<'a, M> {
     rows: BTreeMap<usize, Row>,
     matches: usize,
     limit: usize,
+    output_mode: OutputMode,
+    multiline: bool,
     ranges: &'a [(usize, usize)],
     token: &'a CancellationToken,
     deadline: Instant,
@@ -621,7 +680,47 @@ impl<M: Matcher> Sink for Collector<'_, M> {
             return Ok(false);
         }
         let n = m.line_number().unwrap_or(1) as usize;
+        if self.multiline && self.output_mode != OutputMode::Content {
+            // 多行回调可能合并多个匹配；按每次匹配的起始行判断范围。
+            let range = m.bytes_range_in_buffer();
+            let mut offset = range.start;
+            let mut number = n;
+            self.matcher
+                .find_iter_at(m.buffer(), range.start, |matched| {
+                    if matched.start() > range.end
+                        || matched.end() > range.end
+                        || self.token.is_cancelled()
+                        || Instant::now() >= self.deadline
+                    {
+                        return false;
+                    }
+                    number += m.buffer()[offset..matched.start()]
+                        .iter()
+                        .filter(|b| **b == b'\n')
+                        .count();
+                    offset = matched.start();
+                    if self.ranges.is_empty()
+                        || self
+                            .ranges
+                            .iter()
+                            .any(|(a, b)| number >= *a && number <= *b)
+                    {
+                        self.matches += 1;
+                    }
+                    self.output_mode != OutputMode::FilesWithMatches || self.matches == 0
+                })
+                .map_err(|_| io::Error::other("grep matcher failed"))?;
+            return Ok(self.output_mode != OutputMode::FilesWithMatches || self.matches == 0);
+        }
         if !self.ranges.is_empty() && !self.ranges.iter().any(|(a, b)| n >= *a && n <= *b) {
+            return Ok(true);
+        }
+        if self.output_mode == OutputMode::FilesWithMatches {
+            self.matches = 1;
+            return Ok(false);
+        }
+        if self.output_mode == OutputMode::Count {
+            self.matches += m.lines().count();
             return Ok(true);
         }
         self.matches += 1;
@@ -640,6 +739,12 @@ impl<M: Matcher> Sink for Collector<'_, M> {
         let n = c.line_number().unwrap_or(1) as usize;
         if self.ranges.is_empty() || self.ranges.iter().any(|(a, b)| n >= *a && n <= *b) {
             self.row(c.bytes(), n, false);
+        }
+        Ok(true)
+    }
+    fn binary_data(&mut self, _: &Searcher, _: u64) -> io::Result<bool> {
+        if self.output_mode == OutputMode::Count {
+            return Err(io::Error::other("binary file not fully searched"));
         }
         Ok(true)
     }
@@ -667,6 +772,7 @@ fn run_file<M: Matcher>(
     settings: GrepSettings,
     multiline: bool,
     cap: usize,
+    output_mode: OutputMode,
     capture_snapshot: bool,
     token: &CancellationToken,
     deadline: Instant,
@@ -687,6 +793,8 @@ where
         rows: BTreeMap::new(),
         matches: 0,
         limit: cap,
+        output_mode,
+        multiline,
         ranges: &target.ranges,
         token,
         deadline,
@@ -752,8 +860,12 @@ where
     Ok(Some(Found {
         target,
         rows,
-        matches: matches.min(cap),
-        capped: matches > cap,
+        matches: if output_mode == OutputMode::Content {
+            matches.min(cap)
+        } else {
+            matches
+        },
+        capped: output_mode == OutputMode::Content && matches > cap,
         bytes,
     }))
 }
@@ -805,6 +917,9 @@ pub(super) fn run(
     artifacts: Option<&super::output::Store>,
 ) -> Result<Value> {
     let mut args: Args = serde_json::from_str(arguments).context("invalid grep arguments")?;
+    let settings = args.settings(settings)?;
+    let insensitive = args.insensitive()?;
+    let output_mode = args.output_mode;
     if args.path.as_deref().is_some_and(super::read::is_pipe_uri) {
         anyhow::bail!("Temporary pipe streams support read only; use read with a pipe:// URI.");
     }
@@ -840,11 +955,7 @@ pub(super) fn run(
         deadline,
     )?;
     let multiline = args.pattern.contains('\n') || args.pattern.contains("\\n");
-    let compiled = compile(
-        &args.pattern,
-        !args.case_sensitive.unwrap_or(true),
-        multiline,
-    )?;
+    let compiled = compile(&args.pattern, insensitive, multiline)?;
     let per_file = if single { SINGLE_LIMIT } else { MULTI_LIMIT };
     let mut found = Vec::new();
     let mut total = 0;
@@ -861,7 +972,10 @@ pub(super) fn run(
         }
         let in_page =
             single || (found.len() >= skip && found.len() < skip.saturating_add(FILE_LIMIT));
-        let capture_snapshot = mode == EditMode::Hashline && in_page && artifact.is_none();
+        let capture_snapshot = output_mode == OutputMode::Content
+            && mode == EditMode::Hashline
+            && in_page
+            && artifact.is_none();
         let result = match &compiled {
             Compiled::Rust(m) => run_file(
                 m,
@@ -869,6 +983,7 @@ pub(super) fn run(
                 settings,
                 multiline,
                 per_file,
+                output_mode,
                 capture_snapshot,
                 token,
                 deadline,
@@ -879,6 +994,7 @@ pub(super) fn run(
                 settings,
                 multiline,
                 per_file,
+                output_mode,
                 capture_snapshot,
                 token,
                 deadline,
@@ -891,7 +1007,7 @@ pub(super) fn run(
                     f.rows.clear();
                 }
                 found.push(f);
-                if total >= TOTAL_LIMIT {
+                if output_mode == OutputMode::Content && total >= TOTAL_LIMIT {
                     internal_limit = true;
                     break;
                 }
@@ -946,6 +1062,25 @@ pub(super) fn run(
     }
     let mut previous_dirs = Vec::new();
     for file in page {
+        if output_mode != OutputMode::Content {
+            let text = if output_mode == OutputMode::Count {
+                format!("{}:{}\n", file.target.display, file.matches)
+            } else {
+                format!("{}\n", file.target.display)
+            };
+            if content.len() + text.len() > MAX_OUTPUT - 2048 {
+                byte_cut = true;
+                break;
+            }
+            content.push_str(&text);
+            if output_mode == OutputMode::Count {
+                visible_matches += file.matches;
+                file_details.push(json!({"path":file.target.display,"count":file.matches}));
+            } else {
+                file_details.push(json!({"path":file.target.display}));
+            }
+            continue;
+        }
         let key = workspace
             .components(&file.target.path)
             .ok()
@@ -1036,6 +1171,7 @@ pub(super) fn run(
             break;
         }
     }
+    let count_complete = warnings.is_empty() && missing.is_empty();
     let mut notes = Vec::new();
     if file_limit {
         notes.push(format!(
@@ -1065,6 +1201,9 @@ pub(super) fn run(
     if line_cut {
         notes.push("Some lines were truncated to 512 bytes.".into());
     }
+    if output_mode == OutputMode::Count && !count_complete {
+        notes.push("Counts are partial: some files or bytes were not searched.".into());
+    }
     notes.extend(warnings.into_iter().take(10));
     if content.is_empty() {
         content = if skip > 0 && count > 0 {
@@ -1072,6 +1211,12 @@ pub(super) fn run(
         } else {
             "No matches found".into()
         };
+    }
+    if output_mode == OutputMode::Count {
+        content.push_str(&format!(
+            "\nTotal{}: {total}",
+            if count_complete { "" } else { " (partial)" }
+        ));
     }
     if !notes.is_empty() {
         content.push_str("\n\n");
@@ -1088,11 +1233,27 @@ pub(super) fn run(
         content.push_str(&notice);
     }
     let mut result = json!({"ok":true,"content":content,"details":{"matchCount":visible_matches,"fileCount":file_details.len(),"fileMatches":file_details,"fileLimitReached":file_limit,"perFileLimitReached":page.iter().any(|f|f.capped),"linesTruncated":line_cut,"truncated":file_limit || internal_limit || byte_cut || line_cut || page.iter().any(|f|f.capped),"scopePath":uri.or(args.path).unwrap_or_else(||".".into())}});
+    if output_mode != OutputMode::Content {
+        result["details"]["outputMode"] = json!(output_mode.as_str());
+    }
+    if output_mode == OutputMode::FilesWithMatches {
+        result["details"]
+            .as_object_mut()
+            .expect("details is an object")
+            .remove("matchCount");
+    } else if output_mode == OutputMode::Count {
+        result["details"]["totalMatchCount"] = json!(total);
+        result["details"]["countComplete"] = json!(count_complete);
+        result["details"]["truncated"] = json!(file_limit || byte_cut || !count_complete);
+    }
     if let Some(snapshot) = artifact {
         result["artifact"] = snapshot.metadata;
     }
     Ok(result)
 }
+
+#[cfg(test)]
+mod compat_tests;
 
 #[cfg(test)]
 mod tests {

@@ -176,14 +176,44 @@ pub(super) fn grep_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
         Span::styled(pattern, text),
     ];
     let details = view.result.map(|result| &result["details"]);
+    let output_mode = details
+        .and_then(|d| d["outputMode"].as_str())
+        .or_else(|| view.arguments["output_mode"].as_str())
+        .unwrap_or("content");
+    if output_mode != "content" {
+        spans.push(Span::styled(format!(" · {output_mode}"), meta));
+    }
     if view.failed {
         spans.push(Span::styled(" · failed", text.fg(palette::REMOVED)));
-    } else if let Some((matches, files)) =
-        details.and_then(|d| Some((d["matchCount"].as_u64()?, d["fileCount"].as_u64()?)))
+    } else if output_mode == "files_with_matches"
+        && let Some(files) = details.and_then(|d| d["fileCount"].as_u64())
     {
         spans.push(Span::styled(
             format!(
-                " {matches} {} · {files} {} · in ",
+                " · {files} {} · in ",
+                if files == 1 { "file" } else { "files" }
+            ),
+            meta,
+        ));
+    } else if let Some((matches, files)) = details.and_then(|d| {
+        Some((
+            if output_mode == "count" {
+                d["totalMatchCount"].as_u64()?
+            } else {
+                d["matchCount"].as_u64()?
+            },
+            d["fileCount"].as_u64()?,
+        ))
+    }) {
+        let partial =
+            if output_mode == "count" && details.is_some_and(|d| d["countComplete"] == false) {
+                " (partial)"
+            } else {
+                ""
+            };
+        spans.push(Span::styled(
+            format!(
+                " {matches} {}{partial} · {files} {} · in ",
                 if matches == 1 { "match" } else { "matches" },
                 if files == 1 { "file" } else { "files" }
             ),
@@ -266,7 +296,14 @@ fn search_row(line: &str, view: &View<'_>) -> Line<'static> {
         return Line::styled(line.to_owned(), meta);
     }
     if view.name == "grep" {
-        if let Some((gutter, text)) = line.split_once('|')
+        let content_mode = view
+            .result
+            .and_then(|r| r["details"]["outputMode"].as_str())
+            .or_else(|| view.arguments["output_mode"].as_str())
+            .unwrap_or("content")
+            == "content";
+        if content_mode
+            && let Some((gutter, text)) = line.split_once('|')
             && gutter
                 .trim_start_matches(['└', '─', ' ', '*'])
                 .bytes()
@@ -373,7 +410,10 @@ fn grep_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
             palette::GREP_TEXT
         })
         .bg(palette::GREP_BG);
-    let structured = view.result.is_some_and(|r| r["content"].is_string());
+    let structured = view.result.is_some_and(|r| {
+        r["content"].is_string()
+            && r["details"]["outputMode"].as_str().unwrap_or("content") == "content"
+    });
     let details = view.result.map(|r| &r["details"]);
     let single = details.is_some_and(|d| d["fileCount"] == 1);
     let files = details.and_then(|d| d["fileMatches"].as_array());

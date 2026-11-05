@@ -5,7 +5,8 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
     for protocol in PROTOCOLS {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
-        let text = (1..=10000)
+        // 样本应显著大于有界预览及会话元数据，避免工具 schema 增长触及比较边界。
+        let text = (1..=12000)
             .map(|i| format!("record-{i:05}: test diagnostic\n"))
             .collect::<String>();
         std::fs::write(dir.path().join("fixture.log"), &text).unwrap();
@@ -92,7 +93,7 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
             protocol.tool_result(&body, "tail")["content"]
                 .as_str()
                 .unwrap()
-                .contains("record-10000")
+                .contains("record-12000")
         );
         assert_eq!(protocol.tool_result(&body, "tail")["lines_read"], 80);
         protocol.final_reply(request, "failure inspected");
