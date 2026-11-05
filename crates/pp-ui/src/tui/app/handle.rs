@@ -692,9 +692,9 @@ impl App {
                             return false;
                         }
                         KeyCode::Char('k') => {
-                            if column < self.input.lines()[row].chars().count() {
-                                self.input.cancel_selection();
-                                self.input.delete_line_by_end();
+                            // 行尾也要删除换行符，否则连续按下无法逐行删除。
+                            self.input.cancel_selection();
+                            if self.input.delete_line_by_end() {
                                 if self.input.lines().iter().all(String::is_empty) {
                                     self.shell_mode = false;
                                 }

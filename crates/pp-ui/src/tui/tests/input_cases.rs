@@ -498,17 +498,20 @@ fn input_control_keys_respect_unicode_and_line_boundaries() {
     app.handle(control('e'), &mut dirty);
     app.handle(control('e'), &mut dirty);
     assert_eq!(app.input.cursor(), (1, 5));
+    // 行尾 Ctrl+K 一并删除换行符，把下一行接到本行末尾。
     app.handle(control('k'), &mut dirty);
-    assert_eq!(app.input.lines(), &["first", "中🙂abc", "last"]);
+    assert_eq!(app.input.lines(), &["first", "中🙂abclast"]);
+    assert_eq!(app.input.cursor(), (1, 5));
     app.input.move_cursor(CursorMove::Jump(1, 2));
     app.handle(control('k'), &mut dirty);
-    assert_eq!(app.input.lines(), &["first", "中🙂", "last"]);
+    assert_eq!(app.input.lines(), &["first", "中🙂"]);
     assert_eq!(app.input.cursor(), (1, 2));
     app.handle(control('a'), &mut dirty);
     app.handle(control('k'), &mut dirty);
-    assert_eq!(app.input.lines(), &["first", "", "last"]);
+    assert_eq!(app.input.lines(), &["first", ""]);
+    // 最后一行行尾没有可删除的换行符：草稿保持不变。
     app.handle(control('k'), &mut dirty);
-    assert_eq!(app.input.lines(), &["first", "", "last"]);
+    assert_eq!(app.input.lines(), &["first", ""]);
 }
 
 #[test]

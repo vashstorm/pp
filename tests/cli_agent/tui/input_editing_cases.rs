@@ -82,6 +82,19 @@ fn tui_input_history_and_control_keys_edit_the_submitted_buffer() {
     final_reply(request, "history-edited-ok");
     pty.text("history-edited-ok");
     pty.ready();
+
+    // 行尾 Ctrl+K 必须一并删除换行符：否则只清空本行，后续按键无法逐行删除。
+    pty.input("one\x0atwo\x0athree\x1b[A\x1b[A\x0b\x0b\x0b\x0b");
+    pty.draft("one");
+    pty.input("\r");
+    let (request, body) = pty.request(&server);
+    assert_eq!(
+        body["messages"].as_array().unwrap().last().unwrap()["content"],
+        "one"
+    );
+    final_reply(request, "ctrl-k-ok");
+    pty.text("ctrl-k-ok");
+    pty.ready();
     pty.input("\x03");
     pty.finish();
     no_more(&server);
