@@ -21,9 +21,9 @@ const SEARCH_EXPANDED_LINES: usize = 24;
 const FIND_ITEMS: usize = 8;
 const BASH_LINES: usize = 10;
 pub(super) const DIFF_HUNKS: usize = 8;
-pub(super) const DIFF_LINES: usize = 40;
-const WRITE_LINES: usize = 6;
-const WRITE_PENDING_LINES: usize = 12;
+pub(super) const DIFF_LINES: usize = 16;
+// 文件工具在参数预览、执行中和完成后共用正文上限。
+const WRITE_LINES: usize = DIFF_LINES;
 const MCP_LINES: usize = 4;
 const MCP_EXPANDED_LINES: usize = 12;
 
@@ -624,26 +624,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
         }
         "write" => {
             let content = view.arguments["content"].as_str().unwrap_or(text);
-            if view.running && !expanded {
-                let lines = logical(content);
-                let hidden = lines.len().saturating_sub(WRITE_PENDING_LINES);
-                let mut shown = Vec::new();
-                if hidden > 0 {
-                    shown.push(format!("… {hidden} earlier lines (Ctrl + O to expand)"));
-                }
-                shown.extend(lines[hidden..].iter().map(|line| (*line).to_owned()));
-                wrap(shown, width, style)
-            } else {
-                head(
-                    content,
-                    if expanded { usize::MAX } else { WRITE_LINES },
-                    false,
-                    false,
-                    width,
-                    style,
-                    MoreHint::Expand("lines"),
-                )
-            }
+            write_body(content, width, expanded, view.running, style)
         }
         name if name.starts_with("mcp__") => {
             let output = view
@@ -681,6 +662,67 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
             style,
         ),
     }
+}
+
+/// 三个写入阶段共用屏幕行额度，长行换行和省略提示不能撑大运行中的卡片。
+pub(super) fn write_body(
+    content: &str,
+    width: u16,
+    expanded: bool,
+    tail: bool,
+    style: Style,
+) -> Vec<Line<'static>> {
+    if expanded {
+        return wrap(
+            logical(content).into_iter().map(str::to_owned),
+            width,
+            style,
+        );
+    }
+    if content.is_empty() {
+        return Vec::new();
+    }
+    let content = content.strip_suffix('\n').unwrap_or(content);
+    let mut source = content.split('\n');
+    let mut rows = Vec::new();
+    // 只排版窗口内的首部或尾部，避免每个参数分片都重新排版完整写入正文。
+    while rows.len() <= WRITE_LINES {
+        let Some(line) = (if tail {
+            source.next_back()
+        } else {
+            source.next()
+        }) else {
+            break;
+        };
+        let mut wrapped = wrap([line.to_owned()], width, style);
+        if tail {
+            wrapped.append(&mut rows);
+            rows = wrapped;
+        } else {
+            rows.append(&mut wrapped);
+        }
+    }
+    if rows.len() > WRITE_LINES {
+        if tail {
+            rows.drain(..rows.len() - WRITE_LINES);
+        } else {
+            rows.truncate(WRITE_LINES);
+        }
+        let marker = Line::styled(
+            clip(
+                "… more lines (Ctrl + O to expand)",
+                usize::from(width),
+                true,
+            ),
+            style.fg(palette::MUTED),
+        );
+        if tail {
+            rows.insert(0, marker);
+        } else {
+            rows.push(marker);
+        }
+    }
+    rows
 }
 
 fn head(

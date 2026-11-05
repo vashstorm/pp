@@ -1630,16 +1630,16 @@ pub(super) fn diff_layout_styled(
         rows.truncate(visual_limit);
     }
     if shown < total || visual_hidden > 0 {
-        rows.extend(wrap_block(
-            block_line(
-                format!(
+        rows.push(Line::styled(
+            tool_display::clip(
+                &format!(
                     "… {} more lines (Ctrl + O to expand)",
                     total - shown + visual_hidden
                 ),
-                Style::default().fg(palette::DIM),
+                usize::from(width),
+                true,
             ),
-            width,
-            "",
+            Style::default().fg(palette::DIM),
         ));
     }
     rows

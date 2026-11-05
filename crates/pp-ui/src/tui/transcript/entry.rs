@@ -382,7 +382,13 @@ impl TranscriptEntry {
             .bg(palette::EDIT_BG);
         let meta = style.fg(palette::EDIT_META);
         let label = if tool == "write" { "Write" } else { "Edit" };
-        let path = self.edit_path();
+        let preview_path;
+        let path = if self.is_argument_preview() {
+            preview_path = super::preview::path(&self.text);
+            preview_path.as_str()
+        } else {
+            self.edit_path()
+        };
         let mut spans = vec![
             Span::styled(format!("{} {label}: ", palette::tool_icon(tool)), style),
             Span::styled(
@@ -896,6 +902,7 @@ impl TranscriptEntry {
             lines.extend(
                 super::preview::layout(
                     &self.text,
+                    self.tool.as_deref().unwrap_or_default(),
                     width,
                     self.expanded || self.display.full,
                     truncated,

@@ -7,10 +7,8 @@ use super::{
 
 /// `edit` 预览的正文上限；`write` 不设上限，只靠尾部折叠控制卡片高度。
 const LIMIT: usize = 64 * 1024;
-/// 未展开时最多显示的行数；超出时保留末尾行并加提示，正好铺满时不加提示。
-const COLLAPSED_LINES: usize = 40;
-/// 折叠时保留的末尾内容行数，其余位置留给尾部提示。
-const TAIL_LINES: usize = COLLAPSED_LINES - 1;
+/// 与提交后的 diff 共用正文额度，省略提示另占一行。
+const COLLAPSED_LINES: usize = super::tool_display::DIFF_LINES;
 const TAIL_HINT: &str = "… preview tail · Ctrl+O to expand";
 const LIMIT_HINT: &str = "… preview limit reached";
 
@@ -116,6 +114,22 @@ fn fields(raw: &str) -> Vec<(String, String)> {
     fields
 }
 
+/// 仅提取显示路径，不把尚未闭合的参数解释为可执行调用。
+pub(super) fn path(raw: &str) -> String {
+    fields(raw)
+        .into_iter()
+        .find_map(|(key, value)| match key.as_str() {
+            "path" => Some(value),
+            "input" => value.lines().find_map(|line| {
+                line.strip_prefix('[')
+                    .and_then(|line| line.rsplit_once('#'))
+                    .map(|(path, _)| path.to_owned())
+            }),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 fn partial_string(raw: &str) -> Option<String> {
     // 最长的不完整尾部是一个 UTF-16 代理对（两个六字节转义）。
     for trim in 0..=12.min(raw.len().saturating_sub(1)) {
@@ -135,9 +149,8 @@ fn partial_string(raw: &str) -> Option<String> {
 /// 预览字段的行前缀与配色；未知键不参与预览。
 fn field_style(key: &str) -> Option<(&'static str, Color)> {
     match key {
-        "path" => Some(("File: ", palette::ACTIVITY)),
-        "oldText" => Some(("- ", palette::EDIT_REMOVED)),
-        "newText" | "content" => Some(("+ ", palette::EDIT_ADDED)),
+        "oldText" => Some(("-   │", palette::EDIT_REMOVED)),
+        "newText" => Some(("+   │", palette::EDIT_ADDED)),
         "input" => Some(("", palette::ACTIVITY)),
         _ => None,
     }
@@ -159,9 +172,25 @@ fn row(prefix: &str, color: Color, text: &str, base: Style) -> Line<'static> {
     )
 }
 
-pub(super) fn layout(raw: &str, width: u16, expanded: bool, truncated: bool) -> Vec<Line<'static>> {
+pub(super) fn layout(
+    raw: &str,
+    tool: &str,
+    width: u16,
+    expanded: bool,
+    truncated: bool,
+) -> Vec<Line<'static>> {
     let base = Style::default().bg(palette::EDIT_BG);
     let fields = fields(raw);
+    if tool == "write" {
+        let content = fields.iter().find(|(key, _)| key == "content");
+        return super::tool_display::write_body(
+            content.map_or("", |(_, content)| content.as_str()),
+            width,
+            expanded,
+            true,
+            base.fg(palette::EDIT_ADDED),
+        );
+    }
     let hint = || Line::styled(LIMIT_HINT, base.fg(palette::MUTED));
     if expanded {
         // 展开：正向物化全部行，`Ctrl + O` 需要完整正文。
@@ -170,7 +199,7 @@ pub(super) fn layout(raw: &str, width: u16, expanded: bool, truncated: bool) -> 
             let Some((prefix, color)) = field_style(key) else {
                 continue;
             };
-            for line in value.split('\n') {
+            for line in value.strip_suffix('\n').unwrap_or(value).split('\n') {
                 rows.extend(wrap_block(
                     row(prefix, line_style(key, line, color), line, base),
                     width,
@@ -197,22 +226,30 @@ pub(super) fn layout(raw: &str, width: u16, expanded: bool, truncated: bool) -> 
         })
         .flat_map(|(key, value, (prefix, color))| {
             value
+                .strip_suffix('\n')
+                .unwrap_or(value)
                 .rsplit('\n')
+                // hashline 的文件头、PUT/CUT 指令属于协议元数据，折叠时只显示新增正文。
+                .filter(move |line| key != "input" || line.starts_with('+'))
                 .map(move |line| (prefix, line_style(key, line, color), line))
         });
-    while rows.len() < COLLAPSED_LINES {
+    while rows.len() <= COLLAPSED_LINES {
         let Some((prefix, color, text)) = lines.next() else {
             break;
         };
-        let mut wrapped = wrap_block(row(prefix, color, text, base), width, "  ");
+        let (prefix, text) = if prefix.is_empty() {
+            ("+   │", text.strip_prefix('+').unwrap_or(text))
+        } else {
+            (prefix, text)
+        };
+        let mut wrapped = wrap_block(row(prefix, color, text, base), width, "     ");
         wrapped.append(&mut rows);
         rows = wrapped;
     }
-    // 只有确实还有更早内容时才折叠；正好 40 行原样显示，不加提示。
-    let folded =
-        rows.len() > COLLAPSED_LINES || (rows.len() == COLLAPSED_LINES && lines.next().is_some());
+    // 与最终 diff 一样保留最多 16 行正文，省略提示不挤占正文额度。
+    let folded = rows.len() > COLLAPSED_LINES;
     if folded {
-        rows.drain(..rows.len() - TAIL_LINES);
+        rows.drain(..rows.len() - COLLAPSED_LINES);
         rows.insert(0, Line::styled(TAIL_HINT, base.fg(palette::MUTED)));
     }
     rows

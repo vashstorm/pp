@@ -9,13 +9,13 @@ fn arguments(transcript: &mut Transcript, tool: &str, index: u32, text: &str) {
 }
 
 fn preview_rows(raw: &str) -> Vec<String> {
-    super::super::preview::layout(raw, 200, false, false)
+    super::super::preview::layout(raw, "edit", 200, false, false)
         .iter()
         .map(ToString::to_string)
         .collect()
 }
 
-/// 40 行内容的 JSON 参数，每行一个可定位的标记。
+/// 生成指定行数的 JSON 参数，每行一个可定位的标记。
 fn numbered_lines(count: usize, key: &str) -> String {
     let lines = (1..=count)
         .map(|index| format!("line-{index:02}"))
@@ -36,7 +36,7 @@ fn edit_arguments_preview_is_temporary_bounded_and_never_committed_to_native_his
     }
     let text = screen(&render(&mut transcript, 100, 15));
     assert!(
-        text.contains("preview · not saved") && text.contains("+ hello中"),
+        text.contains("preview · not saved") && text.contains("+   │hello中"),
         "{text}"
     );
     assert!(transcript.next_native_batch(100, 1, false).is_none());
@@ -73,39 +73,39 @@ fn edit_arguments_preview_is_temporary_bounded_and_never_committed_to_native_his
 }
 
 #[test]
-fn arguments_preview_folds_to_tail_only_beyond_forty_rows() {
-    // 正好 40 行原样显示，不加提示。
-    let rows = preview_rows(&numbered_lines(40, "newText"));
-    assert_eq!(rows.len(), 40);
+fn arguments_preview_folds_to_tail_only_beyond_sixteen_rows() {
+    // 正好 16 行原样显示，不加提示。
+    let rows = preview_rows(&numbered_lines(16, "newText"));
+    assert_eq!(rows.len(), 16);
     assert!(!rows.iter().any(|row| row.contains("preview tail")));
-    assert_eq!(rows[0], "+ line-01");
-    assert_eq!(rows[39], "+ line-40");
-    // 41 行只保留末尾 39 行，并在首行提示展开。
-    let rows = preview_rows(&numbered_lines(41, "newText"));
-    assert_eq!(rows.len(), 40);
+    assert_eq!(rows[0], "+   │line-01");
+    assert_eq!(rows[15], "+   │line-16");
+    // 17 行保留末尾 16 行，提示另占一行，与最终 diff 一致。
+    let rows = preview_rows(&numbered_lines(17, "newText"));
+    assert_eq!(rows.len(), 17);
     assert_eq!(rows[0], "… preview tail · Ctrl+O to expand");
-    assert_eq!(rows[1], "+ line-03");
-    assert_eq!(rows[39], "+ line-41");
-    // 路径行也计入折叠预算。
+    assert_eq!(rows[1], "+   │line-02");
+    assert_eq!(rows[16], "+   │line-17");
+    // 路径进入标题，不占正文预算。
     let raw = format!(
         r#"{{"path":"demo.rs",{},"#,
-        numbered_lines(40, "newText")
+        numbered_lines(16, "newText")
             .trim_start_matches('{')
             .trim_end_matches('}')
     );
     let rows = preview_rows(&raw);
-    assert_eq!(rows.len(), 40);
-    assert_eq!(rows[0], "… preview tail · Ctrl+O to expand");
-    assert_eq!(rows[1], "+ line-02");
-    assert_eq!(rows[39], "+ line-40");
+    assert_eq!(rows.len(), 16);
+    assert_eq!(rows[0], "+   │line-01");
+    assert_eq!(rows[15], "+   │line-16");
     // 展开时显示全部内容。
-    let expanded = super::super::preview::layout(&numbered_lines(41, "newText"), 200, true, false);
-    assert_eq!(expanded.len(), 41);
+    let expanded =
+        super::super::preview::layout(&numbered_lines(17, "newText"), "edit", 200, true, false);
+    assert_eq!(expanded.len(), 17);
 }
 
 #[test]
 fn arguments_preview_layout_height_stays_folded_for_short_and_long_content() {
-    for count in [5, 5000] {
+    for count in [2, 3, 16, 17, 5000] {
         let mut transcript = Transcript::new();
         transcript.begin_run();
         arguments(
@@ -117,10 +117,162 @@ fn arguments_preview_layout_height_stays_folded_for_short_and_long_content() {
         let index = transcript.argument_previews[&0];
         let entry = &mut transcript.entries[index];
         entry.ensure_layout(100);
-        let rows = super::super::preview::layout(&entry.text, 100, false, false).len();
-        // 正文折叠后不超过 40 行，另外固定占一行文件卡片标题。
-        assert!(rows <= 40, "{count}: {rows}");
+        let rows = super::super::preview::layout(&entry.text, "write", 100, false, false).len();
+        // 按实际行数增长，超过 16 行时才追加一行省略提示。
+        assert_eq!(rows, if count <= 16 { count } else { 17 }, "{count}");
         assert_eq!(entry.layout.as_ref().unwrap().height, rows + 1, "{count}");
+    }
+}
+
+#[test]
+fn write_preview_and_result_share_visual_height_including_wrapped_lines() {
+    use crate::tui::tool_display;
+    for width in [8, 32, 100] {
+        for content in [
+            String::new(),
+            "first\nsecond\n".into(),
+            "中\te\u{301}🙂".repeat(100),
+            (0..50).map(|i| format!("line-{i}\n")).collect(),
+        ] {
+            for expanded in [false, true] {
+                let args = json!({"path":"demo.txt","content":content});
+                let preview = super::super::preview::layout(
+                    &args.to_string(),
+                    "write",
+                    width,
+                    expanded,
+                    false,
+                );
+                for running in [false, true] {
+                    let rows = tool_display::body(
+                        tool_display::View {
+                            name: "write",
+                            text: "",
+                            arguments: &args,
+                            result: None,
+                            running,
+                            failed: false,
+                            expanded,
+                            instruction_read: false,
+                            context: DisplayContext::default(),
+                        },
+                        width,
+                        Style::default(),
+                    );
+                    assert_eq!(
+                        preview.len(),
+                        rows.len(),
+                        "width={width}, expanded={expanded}, running={running}"
+                    );
+                    assert!(expanded || rows.len() <= 17);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn write_card_grows_to_sixteen_rows_without_padding_short_content() {
+    use crate::tui::tool_display;
+    for count in [0, 2, 3, 16, 17, 50] {
+        let content = (0..count)
+            .map(|i| format!("line-{i}\n"))
+            .collect::<String>();
+        let args = json!({"content":content});
+        let expected = if count <= 16 { count } else { 17 };
+        let preview = super::super::preview::layout(&args.to_string(), "write", 100, false, false);
+        assert_eq!(preview.len(), expected, "preview: {count}");
+        for running in [false, true] {
+            let rows = tool_display::body(
+                tool_display::View {
+                    name: "write",
+                    text: "",
+                    arguments: &args,
+                    result: None,
+                    running,
+                    failed: false,
+                    expanded: false,
+                    instruction_read: false,
+                    context: DisplayContext::default(),
+                },
+                100,
+                Style::default(),
+            );
+            assert_eq!(rows.len(), expected, "running={running}, count={count}");
+        }
+    }
+}
+
+#[test]
+fn edit_preview_omits_protocol_rows_and_matches_committed_diff_height() {
+    use pp_core::events::{DiffHunk, DiffLine};
+    for width in [20, 100] {
+        for count in [1, 2, 3, 16, 17, 80] {
+            let mut transcript = Transcript::new();
+            let lines: Vec<_> = (0..count).map(|i| format!("new-line-{i}\n")).collect();
+            let patch = format!(
+                "*** Begin Patch\n[demo.rs#ABCD]\n{}\n*** End Patch",
+                lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| format!("PUT >{}:\n+{}", i + 1, line.trim_end_matches('\n')))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            arguments(
+                &mut transcript,
+                "edit",
+                0,
+                &json!({"input":patch}).to_string(),
+            );
+            let index = transcript.argument_previews[&0];
+            let entry = &mut transcript.entries[index];
+            let text = entry_text(entry, width);
+            let preview_height = entry.layout.as_ref().unwrap().height;
+            if width == 100 {
+                // 标题和底边框各占一行，短正文不补齐到上限。
+                assert_eq!(preview_height, if count <= 16 { count } else { 17 } + 2);
+            }
+            assert!(!text.contains("PUT ") && !text.contains("ABCD"), "{text}");
+            assert!(entry.file_header().to_string().contains("demo.rs"));
+            transcript.progress(AgentEvent::AssistantFinished {
+                text: String::new(),
+            });
+            tool(&mut transcript, "edit", "edit", json!({"input":patch}));
+            transcript.progress(AgentEvent::FileChanged {
+                id: "edit".into(),
+                path: "demo.rs".into(),
+                diff: FileDiff::Text {
+                    created: false,
+                    deleted: false,
+                    added: count,
+                    removed: 0,
+                    hunks: vec![DiffHunk {
+                        lines: lines
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, text)| DiffLine {
+                                kind: DiffLineKind::Added,
+                                old_line: None,
+                                new_line: Some(i + 1),
+                                text,
+                            })
+                            .collect(),
+                    }],
+                },
+            });
+            transcript.progress(AgentEvent::ToolFinished {
+                id: "edit".into(),
+                result: json!({"ok":true}),
+            });
+            let entry = transcript.entries.last_mut().unwrap();
+            entry.ensure_layout(width);
+            assert_eq!(
+                preview_height,
+                entry.layout.as_ref().unwrap().height,
+                "width={width}, count={count}"
+            );
+        }
     }
 }
 
@@ -139,9 +291,9 @@ fn write_arguments_preview_streams_path_and_content_without_byte_limit() {
     for needle in [
         "Write:",
         "preview · not saved",
-        "File: demo.txt",
-        "+ first",
-        "+ second-中",
+        "demo.txt",
+        "first",
+        "second-中",
     ] {
         assert!(text.contains(needle), "{needle}: {text}");
     }
@@ -159,16 +311,17 @@ fn write_arguments_preview_streams_path_and_content_without_byte_limit() {
     assert!(transcript.entries[index].text.len() > 64 * 1024);
     let entry = &mut transcript.entries[index];
     entry.ensure_layout(100);
-    let rows = super::super::preview::layout(&entry.text, 100, false, false)
+    let rows = super::super::preview::layout(&entry.text, "write", 100, false, false)
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    assert_eq!(rows.len(), 40);
-    assert_eq!(rows[0], "… preview tail · Ctrl+O to expand");
+    assert_eq!(rows.len(), 17);
+    assert!(rows[0].contains("Ctrl + O to expand"));
     let text = screen(&render(&mut transcript, 100, 60));
     assert!(!text.contains("preview limit reached"), "{text}");
-    assert!(text.contains("preview tail"), "{text}");
-    // 路径行按折叠预算被末尾 39 行正文挤出可见区域，但正文仍完整持有。
+    assert!(text.contains("Ctrl + O to expand"), "{text}");
+    // 路径保留在标题中，正文仍完整持有。
+    assert!(text.contains("big.txt"), "{text}");
     assert!(
         transcript.entries[index]
             .text
@@ -366,7 +519,7 @@ fn diff_preview_caps_hunks_and_wrapped_rows_but_full_mode_keeps_tail() {
         .iter()
         .position(|row| row.to_string().contains("more lines"))
         .unwrap();
-    assert_eq!(marker, 41);
+    assert_eq!(marker, 17);
     assert!(!rows.iter().any(|row| row.to_string().contains("tail")));
     assert!(
         diff_layout(&diff, 30, true)
@@ -399,7 +552,7 @@ fn write_preview_preserves_committed_diff_and_warning_without_rereading_files() 
         result: json!({"ok":true,"bytes_written":content.len(),"warning":"directory sync warning"}),
     });
     let collapsed = screen(&render(&mut transcript, 100, 20));
-    assert!(collapsed.contains("saved-05") && !collapsed.contains("saved-06"));
+    assert!(collapsed.contains("saved-15") && !collapsed.contains("saved-16"));
     assert!(collapsed.contains("directory sync warning"));
     assert!(matches!(
         transcript.entries[0].body,
