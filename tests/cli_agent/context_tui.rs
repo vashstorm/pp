@@ -1142,8 +1142,17 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
             previous = column;
             assert_eq!(screen.cell(row, column).unwrap().fgcolor(), color);
         }
+        // 速度图标按 tok/s 分三档（映射由 pp-ui 单元测试覆盖），此处只验证它出现在状态栏且为粉色。
+        let (speed_row, speed_icon_column) = ["\u{f0f86}", "\u{f0f85}", "\u{f04c5}"]
+            .into_iter()
+            .find_map(|icon| context_tui_locate(screen, icon))
+            .expect("状态栏必须显示速度档位图标");
+        assert_eq!(speed_row, row);
+        assert_eq!(
+            screen.cell(row, speed_icon_column).unwrap().fgcolor(),
+            vt100::Color::Rgb(255, 95, 162)
+        );
         for (icon, color) in [
-            ("\u{f04c5}", vt100::Color::Rgb(255, 95, 162)),
             ("\u{f04e2}", vt100::Color::Rgb(125, 207, 255)),
             ("\u{f01bc}", vt100::Color::Rgb(187, 154, 247)),
             ("\u{f2d0}", vt100::Color::Rgb(115, 218, 202)),

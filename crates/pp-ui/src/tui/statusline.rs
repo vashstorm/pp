@@ -41,7 +41,10 @@ const MODEL_ICON: &str = "\u{ec19}";
 const PLAN_ICON: &str = "\u{f0132}";
 const DIRECTORY_ICON: &str = "\u{f07c}";
 const GIT_ICON: &str = "\u{f126}";
-const SPEED_ICON: &str = "\u{f04c5}";
+// 速度图标按 tok/s 分三档；没有速率数据时使用低速档。
+const SPEED_SLOW_ICON: &str = "\u{f0f86}";
+const SPEED_MEDIUM_ICON: &str = "\u{f0f85}";
+const SPEED_FAST_ICON: &str = "\u{f04c5}";
 const IO_ICON: &str = "\u{f04e2}";
 const CACHE_ICON: &str = "\u{f01bc}";
 const TITLE_ICON: &str = "\u{f09a9}";
@@ -58,6 +61,9 @@ const SEPARATOR_WIDTH: usize = 3;
 const FIELD_ICON_WIDTH: usize = ICON_WIDTH + 1;
 // 目录字段低于该宽度时先隐藏 git、再缩短模型，而不是把目录挤成空。
 const MIN_DIRECTORY: usize = 8;
+// 速度图标分档阈值（tok/s）：达到中速档、达到高速档。
+const SPEED_MEDIUM_RATE: f64 = 60.0;
+const SPEED_FAST_RATE: f64 = 120.0;
 
 /// 满千使用 K、满百万使用 M，去掉无意义的 .0；CLI 仍用完整整数。
 pub(super) fn abbreviate_tokens(tokens: u64) -> String {
@@ -78,6 +84,15 @@ fn abbreviate_metric(value: f64) -> String {
     };
     let text = format!("{value:.1}");
     format!("{}{unit}", text.strip_suffix(".0").unwrap_or(&text))
+}
+
+/// 速度图标：低于 60 tok/s 为低速档，60 到 120 为中速档，120 及以上为高速档。
+fn speed_icon(rate: Option<f64>) -> &'static str {
+    match rate {
+        Some(rate) if rate >= SPEED_FAST_RATE => SPEED_FAST_ICON,
+        Some(rate) if rate >= SPEED_MEDIUM_RATE => SPEED_MEDIUM_ICON,
+        _ => SPEED_SLOW_ICON,
+    }
 }
 
 fn field(icon: &str, text: String, color: Color) -> Line<'static> {
@@ -180,6 +195,7 @@ pub(super) fn metric_fields(
     elapsed: Option<&str>,
     width: u16,
 ) -> Line<'static> {
+    let speed_glyph = speed_icon(speed.map(|(rate, _)| rate));
     let speed_text = speed.map_or_else(
         || "— tok/s".into(),
         |(rate, _)| {
@@ -204,7 +220,7 @@ pub(super) fn metric_fields(
         None => None,
     };
     let mut fields = [
-        Some(field(SPEED_ICON, speed_text, SPEED)),
+        Some(field(speed_glyph, speed_text, SPEED)),
         task.and_then(|t| t.title.as_ref())
             .map(|title| title_field(title, 32)),
         Some(context_field(usage)),
@@ -930,7 +946,7 @@ mod tests {
         assert_eq!(
             line_text(&line),
             format!(
-                " {SPEED_ICON} 30.2 tok/s · {TITLE_ICON} 修复会话历史 · {CONTEXT_ICON} 81.6%/500K {WARNING_ICON} · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.0123 USD · {TIMER_ICON} 1m25s "
+                " {SPEED_SLOW_ICON} 30.2 tok/s · {TITLE_ICON} 修复会话历史 · {CONTEXT_ICON} 81.6%/500K {WARNING_ICON} · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.0123 USD · {TIMER_ICON} 1m25s "
             )
         );
         for (text, color) in [
@@ -1005,6 +1021,37 @@ mod tests {
         };
         let text = line_text(&metric_fields(&first, None, Some(260), None, None, 240));
         assert!(text.contains(&format!("{IO_ICON} —/260")), "{text}");
+    }
+
+    #[test]
+    fn speed_icon_follows_rate_tiers() {
+        for (rate, icon) in [
+            (None, SPEED_SLOW_ICON),
+            (Some(0.0), SPEED_SLOW_ICON),
+            (Some(59.9), SPEED_SLOW_ICON),
+            (Some(60.0), SPEED_MEDIUM_ICON),
+            (Some(119.9), SPEED_MEDIUM_ICON),
+            (Some(120.0), SPEED_FAST_ICON),
+            (Some(240.0), SPEED_FAST_ICON),
+        ] {
+            assert_eq!(speed_icon(rate), icon, "{rate:?}");
+        }
+        // 三档图标都是单列字形，状态栏按固定图标列排版。
+        for icon in [SPEED_SLOW_ICON, SPEED_MEDIUM_ICON, SPEED_FAST_ICON] {
+            assert_eq!(Line::from(icon).width(), 1, "{icon}");
+        }
+        let text = line_text(&metric_fields(
+            &status_usage(),
+            Some((61.5, true)),
+            None,
+            None,
+            None,
+            240,
+        ));
+        assert!(
+            text.contains(&format!("{SPEED_MEDIUM_ICON} 61.5 tok/s")),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1087,10 +1134,12 @@ mod tests {
             cost: 0.02,
             ..Default::default()
         };
+        // 低于 60 tok/s 时速度字段使用低速档图标。
+        let rate = 30.2;
         let render = |width| {
             metric_fields(
                 &usage,
-                Some((30.2, false)),
+                Some((rate, false)),
                 None,
                 Some(&task),
                 Some("1m 25s"),
@@ -1106,7 +1155,7 @@ mod tests {
             TITLE_ICON,
             CACHE_ICON,
             IO_ICON,
-            SPEED_ICON,
+            speed_icon(Some(rate)),
             COST_ICON,
             TIMER_ICON,
             CONTEXT_ICON,
