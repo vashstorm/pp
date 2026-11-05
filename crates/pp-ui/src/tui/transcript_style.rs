@@ -96,7 +96,9 @@ pub(super) fn tool_icon(name: &str) -> &'static str {
     }
 }
 
-// 思考级别统一使用 Nerd Font Material Design 图标，状态栏与角色面板共用同一组字形。
+// 思考级别统一使用 Nerd Font 图标，状态栏与角色面板共用同一组字形。
+// none 到 xhigh 为 Material Design 圆环阶梯；max 改用 Font Awesome 实心火苗（U+EF76，
+// 单列宽度内墨迹最大的火苗字形，比 md-fire 的描边火苗更大更醒目）。
 pub(super) fn think_icon(level: ThinkLevel) -> &'static str {
     match level {
         ThinkLevel::None => "\u{f0766}",
@@ -104,6 +106,6 @@ pub(super) fn think_icon(level: ThinkLevel) -> &'static str {
         ThinkLevel::Medium => "\u{f0aa1}",
         ThinkLevel::High => "\u{f0aa3}",
         ThinkLevel::Xhigh => "\u{f0aa5}",
-        ThinkLevel::Max => "\u{f0238}",
+        ThinkLevel::Max => "\u{ef76}",
     }
 }

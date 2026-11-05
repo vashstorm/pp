@@ -371,7 +371,7 @@ impl Pty {
             "medium" => ("\u{f0aa1}", "med"),
             "high" => ("\u{f0aa3}", "hig"),
             "xhigh" => ("\u{f0aa5}", "xhi"),
-            "max" => ("\u{f0238}", "max"),
+            "max" => ("\u{ef76}", "max"),
             _ => panic!("未知的思考级别：{expected}"),
         };
         self.wait_for("空闲输入框和思考级别", |screen| {
