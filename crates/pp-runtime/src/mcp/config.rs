@@ -1,4 +1,4 @@
-use super::{ServerConfig, validate_config};
+use super::{RemoteConfig, ServerConfig, StdioConfig, TransportConfig, validate_config};
 use anyhow::{Result, bail, ensure};
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
@@ -76,6 +76,90 @@ fn enabled() -> bool {
 }
 fn timeout() -> u64 {
     30_000
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoteDefinition {
+    #[serde(rename = "type")]
+    transport: String,
+    url: String,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+    #[serde(default)]
+    env_headers: BTreeMap<String, String>,
+    #[serde(default = "enabled", rename = "enabled")]
+    _enabled: bool,
+    #[serde(default = "timeout")]
+    timeout: u64,
+}
+
+fn remote_config(
+    url: &str,
+    literal: &BTreeMap<String, String>,
+    environment: &BTreeMap<String, String>,
+    mut lookup: impl FnMut(&str) -> Result<Option<String>>,
+) -> Result<RemoteConfig> {
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+    let url = reqwest::Url::parse(url).map_err(|_| anyhow::anyhow!(INVALID))?;
+    ensure!(
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none(),
+        INVALID
+    );
+    let mut headers = HeaderMap::new();
+    let name = |key: &str| -> Result<HeaderName> {
+        let name = HeaderName::from_bytes(key.as_bytes()).map_err(|_| anyhow::anyhow!(INVALID))?;
+        ensure!(
+            !matches!(
+                name.as_str(),
+                "accept"
+                    | "content-type"
+                    | "mcp-session-id"
+                    | "mcp-protocol-version"
+                    | "host"
+                    | "content-length"
+                    | "transfer-encoding"
+                    | "connection"
+                    | "last-event-id"
+                    | "accept-encoding"
+                    | "te"
+                    | "trailer"
+                    | "upgrade"
+            ),
+            INVALID
+        );
+        Ok(name)
+    };
+    for (key, value) in literal {
+        let key = name(key)?;
+        ensure!(!headers.contains_key(&key) && !value.is_empty(), INVALID);
+        let mut value = HeaderValue::from_str(value).map_err(|_| anyhow::anyhow!(INVALID))?;
+        value.set_sensitive(true);
+        headers.insert(key, value);
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for (key, variable) in environment {
+        let key = name(key)?;
+        ensure!(
+            seen.insert(key.as_str().to_owned())
+                && !variable.is_empty()
+                && !variable.contains(['=', '\0']),
+            INVALID
+        );
+        if let Some(value) = lookup(variable)? {
+            ensure!(!value.is_empty(), INVALID);
+            let mut value = HeaderValue::from_str(&value).map_err(|_| anyhow::anyhow!(INVALID))?;
+            value.set_sensitive(true);
+            headers.insert(key, value);
+        } else {
+            ensure!(headers.contains_key(&key), INVALID);
+        }
+    }
+    Ok(RemoteConfig { url, headers })
 }
 
 fn json_value(text: &str) -> Result<Value> {
@@ -182,34 +266,62 @@ impl Directory {
                 if codex {
                     value = normalize_codex(&value)?;
                 }
-                if value.get("url").is_some()
-                    || value
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .is_some_and(|t| t != "stdio")
+                if source != "pp"
+                    && (value.get("url").is_some()
+                        || value
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .is_some_and(|t| t != "stdio"))
                 {
                     bail!("unsupported");
                 }
-                let def: Definition =
-                    serde_json::from_value(value).map_err(|_| anyhow::anyhow!(INVALID))?;
-                ensure!(
-                    def.transport.as_deref().is_none_or(|t| t == "stdio"),
-                    "unsupported"
-                );
-                let cwd = def.cwd.map(|cwd| {
-                    if cwd.is_absolute() {
-                        cwd
-                    } else {
-                        path.parent().unwrap_or(Path::new(".")).join(cwd)
+                let remote = value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| matches!(t, "http" | "sse"));
+                let config = if remote {
+                    let def: RemoteDefinition =
+                        serde_json::from_value(value).map_err(|_| anyhow::anyhow!(INVALID))?;
+                    let config = remote_config(&def.url, &def.headers, &def.env_headers, |name| {
+                        match std::env::var(name) {
+                            Ok(value) => Ok(Some(value)),
+                            Err(std::env::VarError::NotPresent) => Ok(None),
+                            Err(_) => bail!("invalid MCP header environment"),
+                        }
+                    })?;
+                    ServerConfig {
+                        transport: if def.transport == "http" {
+                            TransportConfig::Http(config)
+                        } else {
+                            TransportConfig::Sse(config)
+                        },
+                        timeout_seconds: 30,
+                        timeout_millis: Some(def.timeout),
                     }
-                });
-                let config = ServerConfig {
-                    command: def.command,
-                    args: def.args,
-                    env: def.env,
-                    timeout_seconds: 30,
-                    timeout_millis: Some(def.timeout),
-                    cwd,
+                } else {
+                    let def: Definition =
+                        serde_json::from_value(value).map_err(|_| anyhow::anyhow!(INVALID))?;
+                    ensure!(
+                        def.transport.as_deref().is_none_or(|t| t == "stdio"),
+                        "unsupported"
+                    );
+                    let cwd = def.cwd.map(|cwd| {
+                        if cwd.is_absolute() {
+                            cwd
+                        } else {
+                            path.parent().unwrap_or(Path::new(".")).join(cwd)
+                        }
+                    });
+                    ServerConfig {
+                        transport: TransportConfig::Stdio(StdioConfig {
+                            command: def.command,
+                            args: def.args,
+                            env: def.env,
+                            cwd,
+                        }),
+                        timeout_seconds: 30,
+                        timeout_millis: Some(def.timeout),
+                    }
                 };
                 validate_config(&BTreeMap::from([(name.clone(), config.clone())]))?;
                 Ok(config)
@@ -340,6 +452,12 @@ fn normalize_codex(value: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn stdio(entry: &Entry) -> &StdioConfig {
+        let TransportConfig::Stdio(config) = &entry.config.as_ref().unwrap().transport else {
+            panic!("预期 stdio")
+        };
+        config
+    }
     fn put(path: &Path, value: Value) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, value.to_string()).unwrap();
@@ -364,20 +482,146 @@ mod tests {
         fs::write(home.path().join(".codex/config.toml"), "[mcp_servers.same]\ncommand='codex'\n[mcp_servers.codex]\ncommand='codex'\ncwd='server'\ntool_timeout_sec=2\n").unwrap();
         let dir = Directory::load_at(&pp, Some(home.path())).unwrap();
         assert_eq!(dir.entries.len(), 5);
-        assert_eq!(dir.entries["same"].config.as_ref().unwrap().command, "pp");
-        assert_eq!(
-            dir.entries["claude"].config.as_ref().unwrap().command,
-            "claude"
-        );
+        assert_eq!(stdio(&dir.entries["same"]).command, "pp");
+        assert_eq!(stdio(&dir.entries["claude"]).command, "claude");
         assert!(!dir.entries["same"].enabled);
         assert!(!dir.entries["off"].enabled);
         let codex = dir.entries["codex"].config.as_ref().unwrap();
         assert_eq!(codex.timeout(), Duration::from_secs(2));
         assert_eq!(
-            codex.cwd.as_deref(),
+            stdio(&dir.entries["codex"]).cwd.as_deref(),
             Some(home.path().join(".codex/server").as_path())
         );
     }
+    #[test]
+    fn mcp_remote_headers_environment_precedence_fallback_and_validation() {
+        let url = "https://mcp.context7.com/mcp";
+        let literal = BTreeMap::from([("Context7-API-Key".into(), "literal-secret".into())]);
+        let environment = BTreeMap::from([("context7-api-key".into(), "PP_TEST_KEY".into())]);
+        let config = remote_config(url, &literal, &environment, |_| {
+            Ok(Some("env-secret".into()))
+        })
+        .unwrap();
+        assert_eq!(config.headers["context7-api-key"], "env-secret");
+        let config = remote_config(url, &literal, &environment, |_| Ok(None)).unwrap();
+        assert_eq!(config.headers["Context7-API-Key"], "literal-secret");
+        assert!(remote_config(url, &literal, &environment, |_| Ok(Some(String::new()))).is_err());
+        assert!(remote_config(url, &BTreeMap::new(), &environment, |_| Ok(None)).is_err());
+        assert!(
+            remote_config(url, &BTreeMap::new(), &environment, |_| Ok(Some(
+                "only-env".into()
+            )))
+            .is_ok()
+        );
+        assert!(remote_config(url, &literal, &BTreeMap::new(), |_| unreachable!()).is_ok());
+        for key in [
+            "bad header",
+            "Accept",
+            "mcp-session-id",
+            "MCP-Protocol-Version",
+            "Host",
+            "Connection",
+            "Content-Length",
+        ] {
+            let headers = BTreeMap::from([(key.into(), "secret".into())]);
+            assert!(remote_config(url, &headers, &BTreeMap::new(), |_| unreachable!()).is_err());
+        }
+        let duplicate = BTreeMap::from([
+            ("X-Key".into(), "one".into()),
+            ("x-key".into(), "two".into()),
+        ]);
+        assert!(remote_config(url, &duplicate, &BTreeMap::new(), |_| unreachable!()).is_err());
+        assert!(
+            remote_config(url, &BTreeMap::new(), &duplicate, |_| Ok(Some(
+                "key".into()
+            )))
+            .is_err()
+        );
+        for value in ["", "key\r\nInjected: secret"] {
+            assert!(
+                remote_config(
+                    url,
+                    &BTreeMap::from([("X-Key".into(), value.into())]),
+                    &BTreeMap::new(),
+                    |_| unreachable!()
+                )
+                .is_err()
+            );
+        }
+        for url in [
+            "file:///secret",
+            "https://user:secret@example.com/mcp",
+            "https://example.com/mcp#secret",
+            "secret",
+        ] {
+            assert!(remote_config(url, &literal, &BTreeMap::new(), |_| unreachable!()).is_err());
+        }
+    }
+
+    #[test]
+    fn mcp_remote_config_only_native_strict_fields_and_preserved_save() {
+        let home = tempfile::tempdir().unwrap();
+        let pp = home.path().join("mcp.json");
+        let remote = json!({"type":"http","url":"http://127.0.0.1:1/mcp","headers":{"X-Key":"literal"},"env_headers":{"x-key":"PP_TEST_MCP_ENV_MISSING_536F"}});
+        put(
+            &pp,
+            json!({"mcpServers":{"remote":remote,"sse":{"type":"sse","url":"https://example.com/sse"}}}),
+        );
+        put(
+            &home.path().join(".claude.json"),
+            json!({"mcpServers":{"foreign":remote}}),
+        );
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        fs::write(
+            home.path().join(".codex/config.toml"),
+            "[mcp_servers.codex]\nurl='https://example.com/mcp'\n",
+        )
+        .unwrap();
+        let dir = Directory::load_at(&pp, Some(home.path())).unwrap();
+        assert!(matches!(
+            dir.entries["remote"].config.as_ref().unwrap().transport,
+            TransportConfig::Http(_)
+        ));
+        assert!(matches!(
+            dir.entries["sse"].config.as_ref().unwrap().transport,
+            TransportConfig::Sse(_)
+        ));
+        assert!(dir.entries["foreign"].config.is_none());
+        assert!(dir.entries["codex"].config.is_none());
+        dir.save_enabled("remote", false, &CancellationToken::new())
+            .unwrap();
+        assert_eq!(read_native(&pp).unwrap().mcp_servers["remote"], remote);
+        for field in [
+            json!({"command":"x"}),
+            json!({"args":[]}),
+            json!({"env":{}}),
+            json!({"cwd":"."}),
+            json!({"timeout":0}),
+            json!({"timeout":null}),
+            json!({"unknown":true}),
+        ] {
+            let mut bad = remote.clone();
+            bad.as_object_mut()
+                .unwrap()
+                .extend(field.as_object().unwrap().clone());
+            put(&pp, json!({"mcpServers":{"bad":bad}}));
+            assert!(
+                Directory::load_at(&pp, None).unwrap().entries["bad"]
+                    .config
+                    .is_none()
+            );
+        }
+        put(
+            &pp,
+            json!({"mcpServers":{"no_type":{"url":"https://example.com/mcp"}}}),
+        );
+        assert!(
+            Directory::load_at(&pp, None).unwrap().entries["no_type"]
+                .config
+                .is_none()
+        );
+    }
+
     #[test]
     fn mcp_config_strict_json_and_redacted_invalid_entries() {
         let home = tempfile::tempdir().unwrap();
@@ -498,7 +742,7 @@ mod lifecycle_tests {
         drop(cleanup);
         assert!(
             registry.servers["local"]
-                .process
+                .connection
                 .lock()
                 .unwrap()
                 .child

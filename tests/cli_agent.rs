@@ -22,6 +22,8 @@ mod ask;
 mod lsp;
 #[path = "cli_agent/mcp.rs"]
 mod mcp;
+#[path = "cli_agent/mcp_remote.rs"]
+mod mcp_remote;
 #[path = "cli_agent/subagents.rs"]
 mod subagents;
 

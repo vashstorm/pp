@@ -3333,6 +3333,7 @@ dependencies = [
  "pp-stats",
  "ratatui",
  "regex",
+ "reqwest",
  "rusqlite",
  "rustix 1.1.5",
  "serde",

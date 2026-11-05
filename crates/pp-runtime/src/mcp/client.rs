@@ -1,4 +1,4 @@
-//! stdio JSON-RPC 客户端、消息读写与进程组回收。
+//! 多传输 JSON-RPC 客户端、消息读写与连接回收。
 
 use anyhow::{Context, Result, bail, ensure};
 use rustix::{
@@ -22,74 +22,62 @@ use pp_core::cancellation::CleanupError;
 
 use super::{MESSAGE_LIMIT, POLL, ServerConfig};
 
-pub(super) struct ProcessSlot {
+pub(super) struct ConnectionSlot {
     pub(super) child: Option<Child>,
+    pub(super) remote: Option<super::remote::Worker>,
     pub(super) closing: bool,
 }
 
-pub(super) type SharedProcess = Arc<Mutex<ProcessSlot>>;
+pub(super) type SharedConnection = Arc<Mutex<ConnectionSlot>>;
+
+impl ConnectionSlot {
+    pub(super) fn is_live(&self) -> bool {
+        self.child.is_some() || self.remote.is_some()
+    }
+}
+
+enum Transport {
+    Stdio(StdioClient),
+    Remote(super::remote::RemoteClient),
+}
 
 pub(super) struct Client {
-    pub(super) process: SharedProcess,
-    input: Option<ChildStdin>,
-    output: ChildStdout,
-    pending: Vec<u8>,
+    pub(super) connection: SharedConnection,
+    transport: Transport,
     timeout: Duration,
     next_id: u64,
     pub(super) stopped: bool,
 }
 
 impl Client {
-    // 稳定 slot 保证退出清理能覆盖重建后的新进程；closing 拒绝清理完成后的复活。
-    pub(super) fn spawn(config: &ServerConfig, cwd: &Path, process: SharedProcess) -> Result<Self> {
-        let (input, output) = {
-            let mut slot = process.lock().unwrap_or_else(|error| error.into_inner());
-            let spawned = (|| -> Result<(ChildStdin, ChildStdout)> {
+    pub(super) fn spawn(
+        config: &ServerConfig,
+        cwd: &Path,
+        connection: SharedConnection,
+    ) -> Result<Self> {
+        let transport = match &config.transport {
+            super::TransportConfig::Stdio(_) => {
+                Transport::Stdio(StdioClient::spawn(config, cwd, connection.clone())?)
+            }
+            super::TransportConfig::Http(remote) | super::TransportConfig::Sse(remote) => {
+                let mut slot = connection.lock().unwrap_or_else(|e| e.into_inner());
                 ensure!(!slot.closing, "MCP is shutting down");
-                ensure!(slot.child.is_none(), "MCP process is still running");
-                let child = Command::new(&config.command)
-                    .args(&config.args)
-                    .envs(&config.env)
-                    .current_dir(config.cwd.as_deref().unwrap_or(cwd))
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
-                    .process_group(0)
-                    .spawn()
-                    .map_err(|_| anyhow::anyhow!("starting MCP process failed"))?;
-                slot.child = Some(child);
-                let child = slot.child.as_mut().expect("MCP child installed");
-                let input = child.stdin.take().context("MCP stdin unavailable")?;
-                let output = child.stdout.take().context("MCP stdout unavailable")?;
-                Ok((input, output))
-            })();
-            match spawned {
-                Ok(pipes) => pipes,
-                Err(error) => {
-                    if slot.child.is_some() {
-                        stop_locked(&mut slot).map_err(CleanupError)?;
-                    }
-                    return Err(error);
-                }
+                ensure!(!slot.is_live(), "MCP connection is still running");
+                let (client, worker) = super::remote::RemoteClient::spawn(
+                    remote.clone(),
+                    matches!(config.transport, super::TransportConfig::Sse(_)),
+                )?;
+                slot.remote = Some(worker);
+                Transport::Remote(client)
             }
         };
-        let mut client = Self {
-            process,
-            input: Some(input),
-            output,
-            pending: Vec::new(),
+        Ok(Self {
+            connection,
+            transport,
             timeout: config.timeout(),
             next_id: 0,
             stopped: false,
-        };
-        if let Err(error) = nonblocking(client.input.as_ref().expect("MCP stdin captured"))
-            .and_then(|_| nonblocking(&client.output))
-        {
-            // 尚未注册的进程也通过同一 slot 回收，不泄漏。
-            client.stop().map_err(CleanupError)?;
-            return Err(error);
-        }
-        Ok(client)
+        })
     }
 
     pub(super) fn request(
@@ -145,6 +133,13 @@ impl Client {
                     return Ok(Err(anyhow::anyhow!("MCP request failed")));
                 }
                 ensure!(message["result"].is_object(), "invalid MCP result");
+                if method == "initialize" {
+                    let version = message["result"]["protocolVersion"]
+                        .as_str()
+                        .filter(|version| super::VERSIONS.contains(version))
+                        .context("unsupported MCP protocol version")?;
+                    self.initialized(version, deadline, cancellation)?;
+                }
                 return Ok(Ok(message["result"].take()));
             }
         })();
@@ -171,6 +166,119 @@ impl Client {
             Instant::now() + self.timeout,
             cancellation,
         )
+    }
+
+    fn send(&mut self, message: Value, deadline: Instant, token: &CancellationToken) -> Result<()> {
+        match &mut self.transport {
+            Transport::Stdio(client) => client.send(message, deadline, token),
+            Transport::Remote(client) => client.send(message, deadline, token),
+        }
+    }
+
+    fn receive(&mut self, deadline: Instant, token: &CancellationToken) -> Result<Value> {
+        match &mut self.transport {
+            Transport::Stdio(client) => client.receive(deadline, token),
+            Transport::Remote(client) => client.receive(deadline, token),
+        }
+    }
+
+    fn initialized(
+        &mut self,
+        version: &str,
+        deadline: Instant,
+        token: &CancellationToken,
+    ) -> Result<()> {
+        if let Transport::Remote(client) = &mut self.transport {
+            client.set_version(version, deadline, token)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn stop(&mut self) -> Result<()> {
+        if !self.stopped {
+            match &mut self.transport {
+                Transport::Stdio(client) => client.stop()?,
+                Transport::Remote(_) => stop_connection(&self.connection)?,
+            }
+            self.stopped = true;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        // stdio 后端保留先关闭 stdin 的既有优雅退出逻辑。
+        if matches!(self.transport, Transport::Remote(_)) {
+            let _ = self.stop();
+        }
+    }
+}
+
+pub(super) struct StdioClient {
+    pub(super) connection: SharedConnection,
+    input: Option<ChildStdin>,
+    output: ChildStdout,
+    pending: Vec<u8>,
+    pub(super) stopped: bool,
+}
+
+impl StdioClient {
+    // 稳定 slot 保证退出清理能覆盖重建后的新进程；closing 拒绝清理完成后的复活。
+    pub(super) fn spawn(
+        config: &ServerConfig,
+        cwd: &Path,
+        process: SharedConnection,
+    ) -> Result<Self> {
+        let super::TransportConfig::Stdio(config) = &config.transport else {
+            bail!("invalid MCP transport")
+        };
+        let (input, output) = {
+            let mut slot = process.lock().unwrap_or_else(|error| error.into_inner());
+            let spawned = (|| -> Result<(ChildStdin, ChildStdout)> {
+                ensure!(!slot.closing, "MCP is shutting down");
+                ensure!(slot.child.is_none(), "MCP process is still running");
+                let child = Command::new(&config.command)
+                    .args(&config.args)
+                    .envs(&config.env)
+                    .current_dir(config.cwd.as_deref().unwrap_or(cwd))
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .process_group(0)
+                    .spawn()
+                    .map_err(|_| anyhow::anyhow!("starting MCP process failed"))?;
+                slot.child = Some(child);
+                let child = slot.child.as_mut().expect("MCP child installed");
+                let input = child.stdin.take().context("MCP stdin unavailable")?;
+                let output = child.stdout.take().context("MCP stdout unavailable")?;
+                Ok((input, output))
+            })();
+            match spawned {
+                Ok(pipes) => pipes,
+                Err(error) => {
+                    if slot.child.is_some() {
+                        stop_locked(&mut slot).map_err(CleanupError)?;
+                    }
+                    return Err(error);
+                }
+            }
+        };
+        let mut client = Self {
+            connection: process,
+            input: Some(input),
+            output,
+            pending: Vec::new(),
+            stopped: false,
+        };
+        if let Err(error) = nonblocking(client.input.as_ref().expect("MCP stdin captured"))
+            .and_then(|_| nonblocking(&client.output))
+        {
+            // 尚未注册的进程也通过同一 slot 回收，不泄漏。
+            client.stop().map_err(CleanupError)?;
+            return Err(error);
+        }
+        Ok(client)
     }
 
     fn send(
@@ -232,7 +340,7 @@ impl Client {
             self.input.take();
             // 仅在确认回收成功后置 stopped；失败保留 slot 供重试，
             // 避免 shutdown 重试或退出清理误报成功。
-            let result = stop_process(&self.process);
+            let result = stop_connection(&self.connection);
             if result.is_ok() {
                 self.stopped = true;
             }
@@ -243,14 +351,14 @@ impl Client {
     }
 }
 
-impl Drop for Client {
+impl Drop for StdioClient {
     fn drop(&mut self) {
         if !self.stopped {
             self.input.take();
             // 正常退出先关闭 stdin，再给服务短暂的清理机会；故障路径直接终止。
             {
                 let slot = self
-                    .process
+                    .connection
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 if let Some(group) = slot
@@ -285,13 +393,16 @@ impl Drop for Client {
     }
 }
 
-pub(super) fn stop_process(process: &SharedProcess) -> Result<()> {
+pub(super) fn stop_connection(process: &SharedConnection) -> Result<()> {
     let mut slot = process.lock().unwrap_or_else(|error| error.into_inner());
     stop_locked(&mut slot)
 }
 
-// 仅在已持有 slot 锁时调用；锁内禁止再调用会重取锁的 stop_process。
-pub(super) fn stop_locked(slot: &mut ProcessSlot) -> Result<()> {
+// 仅在已持有 slot 锁时调用；锁内禁止再调用会重取锁的 stop_connection。
+pub(super) fn stop_locked(slot: &mut ConnectionSlot) -> Result<()> {
+    if let Some(mut remote) = slot.remote.take() {
+        remote.stop()?;
+    }
     let Some(mut child) = slot.child.take() else {
         return Ok(());
     };

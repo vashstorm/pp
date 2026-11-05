@@ -17,7 +17,8 @@ brush-core = { workspace = true }
 libc = { workspace = true }
 rustix = { workspace = true }
 rusqlite = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros"] }
+reqwest = { workspace = true }
 chrono = { workspace = true }
 getrandom = { workspace = true }
 handlebars = { workspace = true }

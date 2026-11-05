@@ -27,7 +27,7 @@ TUI rendering defaults to a maximum of 60 FPS. Set `tui.max_fps` in `~/.pp/agent
 | **Todo tracking** | Fixed progress above the input box, expandable task lists during execution, approved-plan checkbox synchronization, and bounded completion reminders |
 | **Task control** | Add instructions while a task runs, queue follow-up tasks, and press Esc to cancel |
 | **Sessions and changes** | Automatic saving and restoration, session tree navigation, persistent per-directory input recall, full-prompt `/resume` search, and recent-task diffs with safe undo |
-| **Extensions on demand** | Project `AGENTS.md`, skills, Markdown prompt commands, and local stdio MCP tools |
+| **Extensions on demand** | Project `AGENTS.md`, skills, Markdown prompt commands, and stdio and remote HTTP/SSE MCP tools |
 | **Usage visibility** | Context estimates and compaction, plus local request, token, cost, and latency statistics |
 
 Bash merges stdout/stderr and returns a bounded head/tail preview (50 KiB by default). Oversized or column-truncated output is saved as `artifact://<id>`; use `read` with line selectors or `grep` with that URI to inspect it. Background logs can be read while running, using a snapshot per call. The `wait` tool blocks until every selected background Bash task and subagent run has settled, updating one TUI card with live status, elapsed time, and settled-task progress. It accepts optional `task_ids` / `run_ids`; targets are frozen when the call starts. The fixed limit is 120 minutes: unfinished selected jobs and their descendants are stopped and reaped before timeout results return. Steering stays queued until the batch finishes; Esc cancels the parent task and its owned work. Legacy integer `timeout_ms` arguments are accepted but ignored, including `0`. Artifacts are shared by the root session and its subagents, survive resume, and are removed when that session is deleted; `pp gc` does not expire them. Saved logs default to a 16 MiB cap and explicitly report omitted bytes or capture failures. See [Bash artifacts](docs/guide.md#bash-输出与-artifact-资源) for configuration and completeness limits.
@@ -219,7 +219,7 @@ The linked guides below are in Chinese.
 | [Skills](docs/guide.md#技能支持) | `~/.pp/agent/skills/` | Load `SKILL.md` on demand and manage skills with `/skills` |
 | [System prompts](docs/guide.md#系统提示词) | `cwd/.pp/` or `~/.pp/agent/` | Replace base instructions with `SYSTEM.md` or `SYSTEM_TEMPLATE.md`, or append with `APPEND_SYSTEM.md` |
 | [Prompt commands](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | Expand Markdown templates with `/command arguments` |
-| [MCP tools](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`, `/mcp` | Discover user-level Claude/Codex stdio servers, inspect status, enable, disable, reconnect, and reload |
+| [MCP tools](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`, `/mcp` | Connect stdio and remote HTTP/SSE servers; configure Context7 with environment-first API keys, import Claude/Codex stdio servers, and manage connections |
 | [Language servers](docs/guide.md#lsp-语义导航与修改建议) | `~/.pp/agent/lsp.json`, `settings.yml` `lsp:` | Semantic navigation, diagnostics, and modification suggestions; the AI applies changes with edit/write/bash |
 
 ## Development

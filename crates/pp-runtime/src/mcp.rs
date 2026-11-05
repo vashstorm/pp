@@ -1,8 +1,11 @@
 mod client;
 mod config;
+mod remote;
+#[cfg(test)]
+mod remote_tests;
 pub use config::{EntryView, View};
 
-use client::{Client, ProcessSlot, SharedProcess, stop_locked};
+use client::{Client, ConnectionSlot, SharedConnection, stop_locked};
 
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
@@ -10,7 +13,6 @@ use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
 use pp_core::cancellation::Cancelled;
 use pp_core::cancellation::CleanupError;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -88,20 +90,32 @@ const POLL: Duration = Duration::from_millis(5);
 const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 // 不实现 Debug，避免输出命令参数和环境变量中的凭证。
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone)]
 pub(crate) struct ServerConfig {
-    command: String,
-    #[serde(default)]
-    args: Vec<String>,
-    #[serde(default)]
-    env: BTreeMap<String, String>,
-    #[serde(default = "default_timeout")]
+    transport: TransportConfig,
     timeout_seconds: u64,
-    #[serde(default)]
     timeout_millis: Option<u64>,
-    #[serde(default)]
+}
+
+#[derive(Clone)]
+enum TransportConfig {
+    Stdio(StdioConfig),
+    Http(RemoteConfig),
+    Sse(RemoteConfig),
+}
+
+#[derive(Clone)]
+struct StdioConfig {
+    command: String,
+    args: Vec<String>,
+    env: BTreeMap<String, String>,
     cwd: Option<PathBuf>,
+}
+
+#[derive(Clone)]
+struct RemoteConfig {
+    url: reqwest::Url,
+    headers: reqwest::header::HeaderMap,
 }
 
 impl ServerConfig {
@@ -110,10 +124,6 @@ impl ServerConfig {
             .map(Duration::from_millis)
             .unwrap_or_else(|| Duration::from_secs(self.timeout_seconds))
     }
-}
-
-fn default_timeout() -> u64 {
-    30
 }
 
 fn safe_name(name: &str) -> bool {
@@ -130,20 +140,22 @@ pub(crate) fn validate_config(servers: &BTreeMap<String, ServerConfig>) -> Resul
             safe_name(name) && name.len() <= 24 && !name.contains("__"),
             "invalid MCP server name"
         );
-        ensure!(
-            !config.command.trim().is_empty() && !config.command.contains('\0'),
-            "invalid MCP command"
-        );
-        ensure!(
-            config.args.iter().all(|arg| !arg.contains('\0')),
-            "invalid MCP arguments"
-        );
-        ensure!(
-            config.env.iter().all(|(key, value)| !key.is_empty()
-                && !key.contains(['=', '\0'])
-                && !value.contains('\0')),
-            "invalid MCP environment"
-        );
+        if let TransportConfig::Stdio(config) = &config.transport {
+            ensure!(
+                !config.command.trim().is_empty() && !config.command.contains('\0'),
+                "invalid MCP command"
+            );
+            ensure!(
+                config.args.iter().all(|arg| !arg.contains('\0')),
+                "invalid MCP arguments"
+            );
+            ensure!(
+                config.env.iter().all(|(key, value)| !key.is_empty()
+                    && !key.contains(['=', '\0'])
+                    && !value.contains('\0')),
+                "invalid MCP environment"
+            );
+        }
         ensure!(
             config.timeout().as_millis() > 0
                 && Instant::now().checked_add(config.timeout()).is_some(),
@@ -171,12 +183,12 @@ struct RemoteTool {
 #[derive(Clone)]
 struct SharedServer {
     state: Arc<Mutex<ServerState>>,
-    process: SharedProcess,
+    connection: SharedConnection,
 }
 impl SharedServer {
     fn new(state: ServerState) -> Self {
         Self {
-            process: state.client.process.clone(),
+            connection: state.client.connection.clone(),
             state: Arc::new(Mutex::new(state)),
         }
     }
@@ -198,7 +210,7 @@ struct ServerState {
 #[derive(Default)]
 struct Tracking {
     closing: bool,
-    processes: Vec<SharedProcess>,
+    connections: Vec<SharedConnection>,
 }
 pub struct Cleanup {
     tracking: Arc<Mutex<Tracking>>,
@@ -219,7 +231,7 @@ impl Drop for Cleanup {
         }
         let mut tracking = self.tracking.lock().unwrap_or_else(|e| e.into_inner());
         tracking.closing = true;
-        for process in &tracking.processes {
+        for process in &tracking.connections {
             // 退出清理在 slot 锁内标记 closing，拒绝清理完成后由 worker 复活进程。
             let mut slot = process.lock().unwrap_or_else(|error| error.into_inner());
             slot.closing = true;
@@ -231,7 +243,7 @@ impl Drop for Cleanup {
 impl Registry {
     pub(crate) fn abort_connections(&self) -> Result<()> {
         for server in self.servers.values() {
-            let mut process = server.process.lock().unwrap_or_else(|e| e.into_inner());
+            let mut process = server.connection.lock().unwrap_or_else(|e| e.into_inner());
             process.closing = true;
             stop_locked(&mut process)?;
         }
@@ -247,11 +259,11 @@ impl Registry {
         let mut tracking = self.tracking.lock().unwrap_or_else(|e| e.into_inner());
         for state in self.servers.values() {
             if !tracking
-                .processes
+                .connections
                 .iter()
-                .any(|p| Arc::ptr_eq(p, &state.process))
+                .any(|p| Arc::ptr_eq(p, &state.connection))
             {
-                tracking.processes.push(state.process.clone());
+                tracking.connections.push(state.connection.clone());
             }
         }
         Ok(Cleanup {
@@ -412,8 +424,8 @@ impl Registry {
         self.tracking
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .processes
-            .retain(|p| p.lock().unwrap_or_else(|e| e.into_inner()).child.is_some());
+            .connections
+            .retain(|p| p.lock().unwrap_or_else(|e| e.into_inner()).is_live());
     }
 
     // 连接可被调用方的 token 取消：每次 spawn 前和 discovery 全程检查；
@@ -477,14 +489,15 @@ impl Registry {
         cancellation: &CancellationToken,
     ) -> Result<()> {
         cancellation::check(cancellation)?;
-        let process: SharedProcess = Arc::new(Mutex::new(ProcessSlot {
+        let process: SharedConnection = Arc::new(Mutex::new(ConnectionSlot {
             child: None,
+            remote: None,
             closing: false,
         }));
         {
             let mut tracking = self.tracking.lock().unwrap_or_else(|e| e.into_inner());
             ensure!(!tracking.closing, "MCP manager is shutting down");
-            tracking.processes.push(process.clone());
+            tracking.connections.push(process.clone());
         }
         let mut client = Client::spawn(config, cwd, process)?;
         let tools = match discover(&mut client, server, cancellation) {
@@ -640,7 +653,7 @@ impl Registry {
         cancellation: &CancellationToken,
     ) -> Result<()> {
         cancellation::check(cancellation)?;
-        let process = state.client.process.clone();
+        let process = state.client.connection.clone();
         let mut client = match Client::spawn(&state.config, &state.cwd, process) {
             Ok(client) => client,
             Err(_) => {
@@ -804,21 +817,24 @@ mod tests {
     use std::os::unix::process::CommandExt;
     use std::process::Command;
 
-    use crate::mcp::client::stop_process;
+    use crate::mcp::client::stop_connection;
 
     #[test]
     fn mcp_spawn_refuses_after_cleanup_marks_slot_closing() {
-        let process: SharedProcess = Arc::new(Mutex::new(ProcessSlot {
+        let process: SharedConnection = Arc::new(Mutex::new(ConnectionSlot {
             child: None,
+            remote: None,
             closing: true,
         }));
         let config = ServerConfig {
-            command: "bash".into(),
-            args: vec!["-c".into(), "sleep 30".into()],
-            env: BTreeMap::new(),
+            transport: TransportConfig::Stdio(StdioConfig {
+                command: "bash".into(),
+                args: vec!["-c".into(), "sleep 30".into()],
+                env: BTreeMap::new(),
+                cwd: None,
+            }),
             timeout_seconds: 1,
             timeout_millis: None,
-            cwd: None,
         };
         let error = Client::spawn(&config, Path::new("."), process)
             .err()
@@ -833,40 +849,46 @@ mod tests {
             .process_group(0)
             .spawn()
             .unwrap();
-        let process: SharedProcess = Arc::new(Mutex::new(ProcessSlot {
+        let process: SharedConnection = Arc::new(Mutex::new(ConnectionSlot {
             child: Some(child),
+            remote: None,
             closing: false,
         }));
         let config = ServerConfig {
-            command: "bash".into(),
-            args: vec![],
-            env: BTreeMap::new(),
+            transport: TransportConfig::Stdio(StdioConfig {
+                command: "bash".into(),
+                args: vec![],
+                env: BTreeMap::new(),
+                cwd: None,
+            }),
             timeout_seconds: 1,
             timeout_millis: None,
-            cwd: None,
         };
         let error = Client::spawn(&config, Path::new("."), process.clone())
             .err()
             .unwrap();
         assert_eq!(format!("{error:#}"), "MCP process is still running");
-        stop_process(&process).unwrap();
+        stop_connection(&process).unwrap();
         assert!(process.lock().unwrap().child.is_none());
     }
 
     fn plan_server_config(args: &[&str]) -> ServerConfig {
         ServerConfig {
-            command: "bash".into(),
-            args: args.iter().map(|arg| (*arg).into()).collect(),
-            env: BTreeMap::new(),
+            transport: TransportConfig::Stdio(StdioConfig {
+                command: "bash".into(),
+                args: args.iter().map(|arg| (*arg).into()).collect(),
+                env: BTreeMap::new(),
+                cwd: None,
+            }),
             timeout_seconds: 1,
             timeout_millis: None,
-            cwd: None,
         }
     }
 
-    fn plan_spawn_registry_client(config: &ServerConfig) -> (Client, SharedProcess) {
-        let process: SharedProcess = Arc::new(Mutex::new(ProcessSlot {
+    fn plan_spawn_registry_client(config: &ServerConfig) -> (Client, SharedConnection) {
+        let process: SharedConnection = Arc::new(Mutex::new(ConnectionSlot {
             child: None,
+            remote: None,
             closing: false,
         }));
         let client = Client::spawn(config, Path::new("."), process.clone()).unwrap();
@@ -877,15 +899,17 @@ mod tests {
     fn proxy_cancelled_while_queued_never_dispatches_or_closes_shared_connection() {
         let dir = tempfile::tempdir().unwrap();
         let config = ServerConfig {
-            command: "bash".into(),
-            args: vec![format!(
-                "{}/../../tests/fixtures/mcp_server.sh",
-                env!("CARGO_MANIFEST_DIR")
-            )],
-            env: BTreeMap::from([("MCP_LOG".into(), "proxy-log".into())]),
+            transport: TransportConfig::Stdio(StdioConfig {
+                command: "bash".into(),
+                args: vec![format!(
+                    "{}/../../tests/fixtures/mcp_server.sh",
+                    env!("CARGO_MANIFEST_DIR")
+                )],
+                env: BTreeMap::from([("MCP_LOG".into(), "proxy-log".into())]),
+                cwd: None,
+            }),
             timeout_seconds: 1,
             timeout_millis: None,
-            cwd: None,
         };
         let registry = Registry::connect(
             &BTreeMap::from([("local".into(), config)]),
@@ -992,7 +1016,7 @@ mod tests {
             WaitIdOptions::EXITED,
         )
         .unwrap();
-        assert!(faulty_process.lock().unwrap().child.is_some());
+        assert!(faulty_process.lock().unwrap().is_live());
 
         let error = registry.shutdown().err().unwrap();
         // 聚合错误保持 typed CleanupError，且逐服务保留明细。
@@ -1008,7 +1032,7 @@ mod tests {
                 .tracking
                 .lock()
                 .unwrap()
-                .processes
+                .connections
                 .len(),
             2
         );
@@ -1036,7 +1060,7 @@ mod tests {
         assert!(client.stop().is_err());
         assert!(!client.stopped);
         // 停止失败保留未回收句柄，重试不假成功。
-        assert!(process.lock().unwrap().child.is_some());
+        assert!(process.lock().unwrap().is_live());
         assert!(client.stop().is_err());
 
         // 回收成功后 stopped 才置位，重复 stop 幂等成功。

@@ -204,7 +204,7 @@ chmod 600 ~/.pp/agent/models.yml
 ./target/debug/pp
 ```
 
-**API 密钥以明文保存在 `~/.pp/agent/models.yml`。** 仓库根目录的 `models.yml`、`settings.yml` 及旧版 `models.jsonc` 已加入 `.gitignore`，避免误提交个人配置。read、bash、搜索与 MCP 无文件系统沙箱，仍可能读取敏感配置；不要让模型读取或输出含密钥文件。如果 MCP 的命令参数或环境变量含凭证，`settings.yml` 也属于敏感配置，应限制权限并避免提交。
+**API 密钥以明文保存在 `~/.pp/agent/models.yml`。** 仓库根目录的 `models.yml`、`settings.yml` 及旧版 `models.jsonc` 已加入 `.gitignore`，避免误提交个人配置。read、bash、搜索与 MCP 无文件系统沙箱，仍可能读取敏感配置；不要让模型读取或输出含密钥文件。如果 MCP 的命令参数、环境变量或字面请求头含凭证，`mcp.json` 也属于敏感配置，应限制权限并避免提交。
 
 ### 校验与模型选择
 
@@ -659,10 +659,10 @@ MCP 的唯一可写配置为 `~/.pp/agent/mcp.json`。旧 `settings.yml.mcp_serv
       "command": "/absolute/path/to/codebase-memory-mcp"
     },
     "context7": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp"],
-      "env": { "CONTEXT7_API_KEY": "YOUR_API_KEY" },
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": { "Context7-API-Key": "YOUR_API_KEY" },
+      "env_headers": { "Context7-API-Key": "CONTEXT7_API_KEY" },
       "timeout": 30000
     }
   },
@@ -671,7 +671,15 @@ MCP 的唯一可写配置为 `~/.pp/agent/mcp.json`。旧 `settings.yml.mcp_serv
 }
 ```
 
-`command` 必填，按 PATH 查找程序；`args`、`env` 默认为空，`enabled` 默认 `true`，`type` 省略时为 `stdio`。`timeout` 为正整数毫秒，默认 30000。继承进程环境，`env` 覆盖指定变量；省略 `cwd` 使用会话工作目录，相对 `cwd` 以配置文件目录为基准。参数和环境值按字面传递，不执行 shell、`${VAR}` 或 `!command` 展开。Context7 的 key 也可通过 pp 进程继承的 `CONTEXT7_API_KEY` 提供。
+stdio 服务的 `command` 必填，按 PATH 查找程序；`args`、`env` 默认为空，`enabled` 默认 `true`，`type` 省略时为 `stdio`。`timeout` 为正整数毫秒，默认 30000。继承进程环境，`env` 覆盖指定变量；省略 `cwd` 使用会话工作目录，相对 `cwd` 以配置文件目录为基准。参数和环境值按字面传递，不执行 shell、`${VAR}` 或 `!command` 展开。原有 stdio 配置保持兼容，例如 `{"command":"npx","args":["-y","@upstash/context7-mcp"],"env":{"CONTEXT7_API_KEY":"YOUR_API_KEY"}}`。
+
+远程服务必须显式指定 `type: "http"`（Streamable HTTP，支持 JSON／SSE 响应）或 `type: "sse"`（旧版 HTTP+SSE），并填写 HTTP／HTTPS `url`；不自动探测、降级或切换传输。远程服务只支持 `type`、`url`、`headers`、`env_headers`、`enabled` 和 `timeout`，拒绝 stdio 专用字段；不接受 URL 中的用户名、密码或 fragment。
+
+`headers` 按字面填写请求头；`env_headers` 将请求头名称映射到 pp 进程的环境变量名称。允许只配置其中一种，也可同时配置：同名请求头不区分大小写，**环境变量存在时覆盖 JSON 字面值，未设置时回退到字面值**；环境变量为空、不是有效 Unicode，或未设置且没有字面值时，该服务配置无效。每个映射内部不允许大小写不同的重复头名。环境变量在启动或 `/mcp reload` 时读取；启停保存不会把解析后的环境变量值写回 JSON。不展开 `${VAR}` 或执行命令。
+
+上例可直接在 `headers` 中填写 API Key，也可先执行 `export CONTEXT7_API_KEY='YOUR_API_KEY'` 再启动 pp；配置更改后执行 `/mcp reload`。Context7 官方地址及认证方式参见[官方文档](https://github.com/upstash/context7/blob/master/docs/clients/cursor.mdx)。旧版 SSE 服务使用同样的认证字段，并将 `type` 改为 `sse`、`url` 改为该服务提供的事件流地址；不假定 Context7 提供旧版 `/sse` 端点。
+
+请求头必须符合 HTTP 格式，值不能为空。`Accept`、`Content-Type`、`MCP-Session-Id`、`MCP-Protocol-Version`、`Last-Event-ID` 以及 Host／连接／消息分帧相关头由客户端管理，配置中不能覆盖。HTTP 不自动跟随重定向，旧版 SSE 返回的 POST 地址必须与配置 URL 同源，以避免将凭证转发至其他地址。一次请求的超时包含建连、发送和读取，默认 30000 毫秒；SSE 心跳不延长请求截止时间。
 
 自动发现以下用户级来源，仅提取顶层 MCP 配置，不读取项目配置或 Claude 的 `projects` 记录：
 
@@ -681,7 +689,7 @@ MCP 的唯一可写配置为 `~/.pp/agent/mcp.json`。旧 `settings.yml.mcp_serv
 
 同名服务由最先出现的完整定义决定，不合并参数。默认沿用来源的 `enabled`；pp 的 `enabledServers` 可以覆盖来源禁用，`disabledServers` 优先级最高。外部文件始终只读，启停仅修改 pp 的覆盖列表。JSON 拒绝重复键和未知顶层字段；未知服务字段、非法定义和不支持的传输在列表中标为 `unsupported / invalid config`，不启动。外部文件格式错误会生成脱敏诊断，其他来源仍可用。最多 32 个服务、256 个工具，单条协议消息最多 1 MiB；服务名只接受 ASCII 字母、数字、下划线和连字符，最长 24 字节且不能含 `__`。
 
-Codex 支持导入 `command`、`args`、`env`、`env_vars`、`cwd`、`enabled` 和超时设置。`env_vars` 从当前进程读取；`tool_timeout_sec`／`startup_timeout_sec` 转为毫秒，两者同时提供时必须相同，因为 pp 当前统一使用请求超时。包含尚不支持的工具限制、认证或其他能力字段时标为不支持，避免静默忽略限制。
+外部来源仍只导入 stdio，Claude/Codex 的远程 HTTP／SSE 定义保持不支持；远程服务请写入 pp 的 `mcp.json`。Codex 支持导入 `command`、`args`、`env`、`env_vars`、`cwd`、`enabled` 和超时设置。`env_vars` 从当前进程读取；`tool_timeout_sec`／`startup_timeout_sec` 转为毫秒，两者同时提供时必须相同，因为 pp 当前统一使用请求超时。包含尚不支持的工具限制、认证或其他能力字段时标为不支持，避免静默忽略限制。
 
 | 命令 | 行为 |
 |---|---|
@@ -696,15 +704,15 @@ Codex 支持导入 `command`、`args`、`env`、`env_vars`、`cwd`、`enabled` �
 
 TUI 的 `/mcp list` 是只读结果面板，按来源分组并单列禁用服务，仅展示名称和状态；↑／↓、PgUp／PgDn 或滚轮滚动，Esc 关闭，保留输入草稿和对话位置。`/mcp ` 提供子命令及服务器名称补全。行模式提供相同命令并输出文本；命令不进入模型历史，`-p` 不解析斜杠命令。管理操作只允许在空闲时执行，先回收子 Agent，再同步主会话和后续子 Agent 的工具表。Plan／Review 只能查看和保存启停设置，不连接或调用 MCP，回到 Execute 后连接。
 
-连接遵循 [MCP 初始化流程](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)，协商版本并发送 `notifications/initialized`，再分页调用 `tools/list`。支持 `2025-11-25`、`2025-06-18`、`2025-03-26`、`2024-11-05`。当前仅支持 stdio 工具，不支持 HTTP、OAuth、resources、prompts、sampling、elicitation、Smithery 或服务端动态工具列表通知。
+连接遵循 [MCP 初始化流程](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)，协商版本并发送 `notifications/initialized`，再分页调用 `tools/list`。支持 `2025-11-25`、`2025-06-18`、`2025-03-26`、`2024-11-05`。支持 stdio、Streamable HTTP 和旧版 HTTP+SSE 工具。Streamable HTTP 使用 POST，接收 JSON 或 SSE 响应，并维护初始化返回的会话 ID 与协商后的协议版本头；关闭时有界尝试 DELETE 会话，服务返回 405 不阻止本地清理。旧版 SSE 通过 GET 的 `endpoint` 事件确定 POST 地址，通过 `message` 事件接收响应。不支持 OAuth、resources、prompts、sampling、elicitation、Smithery、SSE 断线续传或服务端动态工具列表通知。
 
 工具名通常为 `mcp__服务名__工具名`；特殊字符或组合名超过 64 字节时，工具部分使用确定性的 `tool_<hash>`，调用仍发送原名。schema 原样传给模型（`strict: false`），支持 Completion 和 Responses。结果保留 `content`、`structuredContent` 等字段，包装为 `{"ok":true,"result":{...}}`；`isError:true` 转为 `ok:false`。同批调用仍按顺序执行。
 
 当前模型工具表包含 MCP 工具时，运行时系统指令要求研究与发现优先选择适用的专用工具：代码符号和调用关系使用代码图工具，库／API 参考使用文档工具，浏览器检查或交互使用浏览器工具。内置 `grep`／`glob`／`read` 用于通用文本、路径、文件操作及专用工具未覆盖的内容；专用工具不可用时可回退。项目／库 ID 应从服务发现结果或返回元数据中确认，参数错误或空结果先按提示修正、缩小查询，不能直接认定服务不可用。这是模型选择指引，不改变工具集合、write/edit 要求或 Plan／Review 权限，也不保证固定调用率；没有可用 MCP 工具时不注入该 MCP 指引。
 
-服务在 `/model`、`/new` 后复用。普通传输故障不自动重连或重试；TUI 取消会回收当前服务，下一次新调用才惰性重建，要求完整工具定义不变，不重放旧调用。显式 reconnect／reload 允许工具定义变化。退出清理句柄持续跟踪管理操作新建的进程，关闭窗口或 Ctrl + C 后同样回收。
+服务在 `/model`、`/new` 后复用。普通传输故障、HTTP 认证失败或会话失效不自动重连、重试或重放工具调用，可用 `/mcp reconnect <name>` 重建；TUI 取消会回收当前连接，下一次新调用才惰性重建，要求完整工具定义不变，不重放旧调用。显式 reconnect／reload 允许工具定义变化。退出清理句柄持续跟踪管理操作新建的进程、远程连接及 I/O 工作线程，关闭窗口或 Ctrl + C 后同样回收。远程请求取消时尽力发送 `notifications/cancelled` 并关闭本地传输；本地关闭不保证服务端工作已经停止。
 
-MCP 按当前用户权限运行，没有文件系统沙箱。服务 stderr 丢弃；错误不输出响应体、命令参数、环境值或认证内容。成功工具结果会进入模型上下文和会话记录，服务应避免返回凭证。
+MCP 按当前用户权限运行，没有文件系统沙箱。服务 stderr 丢弃；错误不输出响应体、命令参数、环境值、URL、会话 ID 或认证内容。成功工具结果会进入模型上下文和会话记录，服务应避免返回凭证。
 
 ```sh
 cargo nextest run --locked --workspace -E 'test(mcp_) | test(slash_mcp)'

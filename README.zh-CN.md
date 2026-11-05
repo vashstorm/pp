@@ -27,7 +27,7 @@ TUI 默认最大帧率为 60 FPS。可在 `~/.pp/agent/settings.yml` 中将 `tui
 | **任务清单** | 输入框上方固定进度、执行阶段可展开清单、批准计划的 checkbox 双向同步，以及有次数上限的完成提醒 |
 | **任务控制** | 运行中补充需求、排队后续任务，Esc 取消当前任务 |
 | **会话与变更** | 自动保存与恢复、会话树回退、按工作目录持久回忆输入、`/resume` 检索全部 prompt、最近任务差异与安全撤销 |
-| **按需扩展** | 项目 `AGENTS.md`、技能、Markdown 提示词命令、基于本地标准输入输出的 MCP 工具 |
+| **按需扩展** | 项目 `AGENTS.md`、技能、Markdown 提示词命令、本地 stdio 与远程 HTTP／SSE MCP 工具 |
 | **用量可见** | 上下文估算与压缩，本地请求、词元、费用和耗时统计 |
 
 前台 Bash 接受可选的 `timeout_seconds` 参数，范围为 0–3600 秒，0 表示不设超时。省略时使用 `bash_timeout_seconds`，默认 300 秒，已有显式配置仍生效。后台模式忽略此参数，沿用现有任务生命周期；不限时时仍可取消。
@@ -220,7 +220,7 @@ pp stats
 | [技能](docs/guide.md#技能支持) | `~/.pp/agent/skills/` | 按需加载 `SKILL.md`，通过 `/skills` 管理 |
 | [系统提示词](docs/guide.md#系统提示词) | `cwd/.pp/` 或 `~/.pp/agent/` | `SYSTEM.md`／`SYSTEM_TEMPLATE.md` 替换基础指令，`APPEND_SYSTEM.md` 追加正文 |
 | [提示词命令](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | 将 Markdown 模板展开为 `/命令 参数` |
-| [MCP 工具](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`、`/mcp` | 发现 Claude／Codex 用户级 stdio 服务，查看状态、启停、重连和重载 |
+| [MCP 工具](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`、`/mcp` | 连接 stdio 与远程 HTTP／SSE 服务，支持 Context7 及环境变量优先的 API Key，导入 Claude／Codex stdio 服务并管理连接 |
 | [语言服务器](docs/guide.md#lsp-语义导航与修改建议) | `~/.pp/agent/lsp.json`、`settings.yml` 的 `lsp:` | 语义导航、诊断和修改建议；AI 重新读取文件后通过 edit/write/bash 执行 |
 
 ## 开发
