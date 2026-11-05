@@ -31,7 +31,7 @@ fn thinking_and_bash_cards_stream_with_default_style_and_expand_without_editing_
                 None,
             ));
         } else {
-            assert_eq!(body["reasoning"]["summary"], "auto");
+            assert_eq!(body["reasoning"]["summary"], "concise");
             stream.event(json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"r","output_index":0,"summary_index":0,"delta":"Check the diff 中"}));
         }
         pty.text("Check the diff 中");

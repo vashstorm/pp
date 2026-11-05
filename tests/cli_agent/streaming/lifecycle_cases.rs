@@ -132,7 +132,7 @@ fn thinking_is_streamed_when_enabled_without_polluting_stdout() {
                 None,
             )),
             Protocol::Responses => {
-                assert_eq!(body["reasoning"], json!({"effort":"high","summary":"auto"}));
+                assert_eq!(body["reasoning"], json!({"effort":"high","summary":"concise"}));
                 stream.event(json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"r","output_index":0,"summary_index":0,"delta":"inspect 中"}));
             }
         }

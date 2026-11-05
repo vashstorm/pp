@@ -102,7 +102,7 @@ impl Api {
                 if level == "none" {
                     assert!(body["reasoning"].get("summary").is_none());
                 } else {
-                    assert_eq!(body["reasoning"]["summary"], "auto");
+                    assert_eq!(body["reasoning"]["summary"], "concise");
                 }
             }
         }
@@ -368,7 +368,7 @@ fn rebuild_request(records: &[Value]) -> Value {
                     if level == "none" {
                         reasoning.remove("summary");
                     } else {
-                        reasoning.insert("summary".to_owned(), json!("auto"));
+                        reasoning.insert("summary".to_owned(), json!("concise"));
                     }
                 }
             }

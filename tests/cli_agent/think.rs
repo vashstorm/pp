@@ -18,7 +18,7 @@ pub(super) fn assert_level(body: &Value, protocol: &str, level: &str) {
         if level == "none" {
             assert!(body[field].get("summary").is_none());
         } else {
-            assert_eq!(body[field]["summary"], "auto");
+            assert_eq!(body[field]["summary"], "concise");
         }
     } else {
         assert_eq!(body[field], level);

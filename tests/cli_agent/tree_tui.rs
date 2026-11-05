@@ -686,7 +686,7 @@ fn tree_tui_cross_protocol_navigation_keeps_current_model_and_effort() {
             if target == "completion" {
                 json!("high")
             } else {
-                json!({"effort":"high","summary":"auto"})
+                json!({"effort":"high","summary":"concise"})
             }
         );
         assert_eq!(

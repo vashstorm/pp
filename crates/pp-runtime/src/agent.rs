@@ -204,7 +204,7 @@ impl Session {
                 request.reasoning = Some(async_openai::types::responses::Reasoning {
                     effort: Some(level.effort()),
                     summary: (level != ThinkLevel::None)
-                        .then_some(async_openai::types::responses::ReasoningSummary::Auto),
+                        .then_some(async_openai::types::responses::ReasoningSummary::Concise),
                     ..Default::default()
                 });
             }
