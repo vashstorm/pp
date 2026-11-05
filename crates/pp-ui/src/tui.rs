@@ -127,10 +127,10 @@ pub fn run(
     let _guard = TerminalGuard;
     surface::initialize().context("initializing terminal")?;
     // 能力探测独占 stdin，必须在 crossterm 首次读取事件之前完成。
-    let (picker, mut initial_events) = image_terminal::detect();
+    let (picker, mut initial_events, pending_reply) = image_terminal::detect();
     // tmux 默认以 xterm modifyOtherKeys 编码回报扩展按键，这里接管 fd 0 把它
     // 翻译成 crossterm 支持的 CSI-u；探测结束后安装，避免争抢原始终端。
-    input_shim::install().context("installing input translator")?;
+    input_shim::install(pending_reply).context("installing input translator")?;
     let mut surface = surface::Surface::new(io::stdout());
     let mut canvas = ratatui::Terminal::new(ratatui::backend::TestBackend::new(1, 1))?;
     // 持久输入历史与 agent 配置目录同级；无可定位目录时明确只保留进程内回忆。

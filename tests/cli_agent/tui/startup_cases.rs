@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn tui_startup_terminal_replies_never_become_input() {
+    let fixture = server();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_path(home.path(), "models.yml"),
+        fixture_models(&fixture),
+    )
+    .unwrap();
+    std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+    let mut pty = Pty::start_with_existing_files_raw(home.path());
+    // 真实终端会先回 DSR，能力回复随后分批到达：探测必须把它们全部消化掉。
+    pty.answer_terminal_probe(&[
+        "\x1b[0n",
+        "\x1b_Gi=31;OK\x1b\\",
+        "\x1b[?62;22;52c",
+        "\x1b[6;40;20t",
+        "\x1b[?95;3u",
+        // 最后一条回复跨过探测窗口，后半段要交给输入线程继续过滤。
+        "\x1b_Gi=",
+    ]);
+    pty.ready();
+    assert_eq!(pty.prompt(), "", "终端回复不得进入输入框");
+    // 探测窗口关闭之后才到达的回复同样不能变成按键。
+    pty.input("31;OK\x1b\\");
+    pty.input("x");
+    pty.draft("x");
+    pty.input("\x1b_Gi=");
+    // 模拟传输分片间隔，而非等待 UI 完成；超过输入线程的轮询周期。
+    thread::sleep(Duration::from_millis(80));
+    pty.input("31;OK\x1b\\y");
+    pty.draft("xy");
+    // Ghostty 的回复经过真实 tmux 后，ESC 前缀会变成 Alt 字符的 CSI-u 编码。
+    pty.input("\x1b[95;3uGi=31;OK\x1b[92;3u\x1b[91;3u?62;22;52c\x1b[91;3u6;40;20t\x1b[91;3u0n");
+    pty.input("z");
+    pty.draft("xyz");
+    pty.input("\x03");
+    pty.wait_for("退出后终端恢复", |screen| {
+        !screen.bracketed_paste() && !screen.hide_cursor()
+    });
+    pty.finish();
+    no_more(&fixture);
+}
+
+#[test]
 fn tui_notification_error_scrolls_into_native_history_and_preserves_draft() {
     let fixture = server();
     let home = tempfile::tempdir().unwrap();

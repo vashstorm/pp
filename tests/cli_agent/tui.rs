@@ -128,6 +128,14 @@ impl Pty {
         Self::start_with_args(cwd, cwd, &[])
     }
 
+    /// 未就绪启动：用例需要在终端能力探测窗口内回送回复。
+    pub(super) fn start_with_existing_files_raw(cwd: &Path) -> Self {
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
+        command.cwd(cwd);
+        command.env("HOME", cwd);
+        Self::spawn_raw(command)
+    }
+
     pub(super) fn start_with_args(cwd: &Path, home: &Path, args: &[&str]) -> Self {
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
         command.cwd(cwd);
@@ -479,6 +487,31 @@ impl Pty {
     pub(super) fn contents(&mut self) -> String {
         self.drain();
         self.parser.screen().contents()
+    }
+
+    /// 按终端顺序回送图片能力探测的回复；查询由子进程自己写出。
+    /// 每条之间留一点间隔：真实终端与 tmux 会分批送达，不能把它们聚成一次读。
+    pub(super) fn answer_terminal_probe(&mut self, replies: &[&str]) {
+        self.wait_for_raw(b"\x1b_Gi=31");
+        for reply in replies {
+            self.input(reply);
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// 主输入框当前文本：最后一条提示符行的内容。
+    pub(super) fn prompt(&mut self) -> String {
+        self.drain();
+        let (_, columns) = self.parser.screen().size();
+        self.parser
+            .screen()
+            .rows(0, columns)
+            .filter(|line| line.starts_with('❯'))
+            .last()
+            .unwrap_or_default()
+            .trim_start_matches('❯')
+            .trim()
+            .to_string()
     }
 
     fn wait_for_raw(&mut self, expected: &[u8]) {
