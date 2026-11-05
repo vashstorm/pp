@@ -20,12 +20,12 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) fn definition() -> FunctionObject {
     FunctionObject {
         name: "glob".into(),
-        description: Some("Find local filesystem paths matching a glob pattern. pattern is required (e.g. '**/*.rs'); path is an optional directory, defaulting to the current working directory. Example: {\"pattern\":\"**/*.rs\",\"path\":\"src\"}. Never put the glob pattern in path. Bare *.rs searches recursively; src/*.rs matches direct children; src/**/*.rs searches recursively. Includes hidden paths and respects ignore rules by default. Results include directories, are ranked by modification time, and are limited to 200 paths; narrow path or pattern when incomplete. No shell or filesystem sandbox.".into()),
+        description: Some("Find local paths by glob: required pattern (e.g. '**/*.rs'), optional directory path (default cwd). Bare *.rs recurses; src/*.rs matches direct children. Includes hidden paths and directories; respects ignore rules. Ranked by mtime; at most 200 paths and 50 KiB. Narrow the search if incomplete. No filesystem sandbox.".into()),
         parameters: Some(json!({
             "type":"object",
             "properties":{
-                "pattern":{"type":"string","description":"Required glob pattern, e.g. **/*.rs or src/*.rs. One pattern per call; use braces for alternatives."},
-                "path":{"type":"string","description":"Directory to search in, absolute or relative to cwd. Defaults to cwd. This is a literal directory, not a glob pattern."},
+                "pattern":{"type":"string","description":"Glob pattern, e.g. **/*.rs."},
+                "path":{"type":"string","description":"Literal search directory, not a glob; defaults to cwd."},
                 "hidden":{"type":"boolean"},
                 "gitignore":{"type":"boolean"},
                 "limit":{"type":"number"}

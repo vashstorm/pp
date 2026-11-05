@@ -204,7 +204,7 @@ fn tool_folding_omp_native_search_clips_long_rows_for_both_protocols() {
             let (request, body) = pty.request_at(&provider, api_path(protocol));
             assert!(body["tools"].as_array().unwrap().iter().map(|t| if protocol == "completion" { &t["function"] } else { t }).any(|t| t["name"] == name));
             let args = if name == "grep" { json!({"pattern":"needle","path":"lines"}) }
-                else { json!({"path":"files/*"}) };
+                else { json!({"pattern":"*","path":"files"}) };
             ask_reply_calls(request, protocol, json!([diff_blocks_call(protocol,"search",name,args)]));
             let (request, body) = pty.request_at(&provider, api_path(protocol));
             let outputs = cancel_tool_outputs(&body, protocol);
@@ -228,7 +228,7 @@ fn tool_folding_omp_native_search_clips_long_rows_for_both_protocols() {
                 assert_eq!(cell.bgcolor(), vt100::Color::Rgb(22, 26, 31));
             } else {
                 let text = pty.parser.screen().contents();
-                assert!(text.contains("Glob: files/*") && text.contains("files/"), "{text}");
+                assert!(text.contains("Glob: * · files") && text.contains("files/"), "{text}");
                 assert!(!text.contains("# files/"), "{text}");
             }
             pty.input("\x0fa");
