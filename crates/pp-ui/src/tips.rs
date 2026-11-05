@@ -85,6 +85,7 @@ pub(crate) const SECTIONS: &[Section] = &[
         tips: &[
             tip("Enter", "send or steer"),
             platform_tip("⌥ + Enter", "Alt + Enter", "queue a follow-up"),
+            tip("Shift + Enter", "insert a newline"),
             tip("Ctrl + J", "insert a newline"),
             tip("Esc", "cancel or dismiss"),
             tip("Esc Esc", "open session tree"),

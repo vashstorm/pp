@@ -164,7 +164,7 @@ Enter `!command` to run a local, non-interactive bash command in the project dir
 | --- | --- | --- |
 | Send / add instructions to the running task | Enter | Enter |
 | Queue an independent follow-up task | ⌥ + Enter | Alt + Enter |
-| Insert a newline | Ctrl + J | Ctrl + J |
+| Insert a newline | Shift + Enter / Ctrl + J | Shift + Enter / Ctrl + J |
 | Open the model menu | ⌥ + P | Ctrl + P |
 | Toggle Agent Hub | ⌥ + A | Alt + A |
 | Toggle favorite for the highlighted model | Ctrl + F | Ctrl + F |
@@ -177,7 +177,7 @@ Enter `!command` to run a local, non-interactive bash command in the project dir
 | Cancel the current task | Esc | Esc |
 | Exit | Ctrl + C | Ctrl + C |
 
-Type `@` for project file path completion. When idle with an empty input, press Esc twice to open the session tree. Navigating back through history does not roll back files. [Full interaction guide (Chinese) →](docs/guide.md#终端交互)
+Type `@` for project file path completion. When idle with an empty input, press Esc twice to open the session tree. Navigating back through history does not roll back files. In the input box, `Shift + Enter` inserts a newline and outranks the completion and pending-input menus as well as send; `Ctrl + J` inserts a newline everywhere. pp requests both the Kitty keyboard protocol and xterm `modifyOtherKeys` mode 2 at startup and translates tmux's default `CSI 27;mod;code~` encoding, and terminals that ignore those requests simply fall back to `Ctrl + J`. Inside tmux set `set -s extended-keys on`, and when the outer terminal's terminfo has no `Eneks` (Ghostty) also `set -as terminal-overrides 'xterm*:Eneks=\E[>1u'`; keep iTerm2's *Apps can change how keys are reported* enabled. [Full interaction guide (Chinese) →](docs/guide.md#终端交互)
 
 `read` accepts only `path` for local text, images, static web pages, and enabled `skill://` resources. The system lists skill names, descriptions, and URIs alongside selection instructions, including with custom base prompts: match the task and concrete subtasks, read applicable skills before other task tools, and briefly report their use after successful reads. This also applies to approved plans; selection remains model-driven, without automatic body injection. A bare skill URI reads the full `SKILL.md`; append `/<path>` for resources or `/.` for a directory listing. Skill text bypasses ordinary text limits and returns `path` and `base_dir`; explicit selectors still apply. Put exact ranges in the path: `src/main.rs:20-60`, `notes.md:-30`, or `file.rs:5-10,20-30`; use `next_path` to continue. `:raw` disables prefixes (and returns the original body for web pages). PNG/JPEG/WebP/GIF images reach the model as visual input; the read tool output shows metadata only. Images persist across resume and protocol switches. Web reads extract static HTML text without JavaScript, support cancellation, and use a bounded session cache. [Read behavior and limits (Chinese) →](docs/guide.md#工具执行与权限)
 

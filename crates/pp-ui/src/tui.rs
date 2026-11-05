@@ -11,6 +11,7 @@ mod frame_clock;
 mod history;
 mod image_terminal;
 mod images;
+mod input_shim;
 mod lsp;
 mod markdown;
 mod mcp;
@@ -102,8 +103,8 @@ const STEERING_HINT: &str = platform_text(
     "Enter steer · Alt + Enter queue · Ctrl + Q pending messages · Ctrl + R resume queue",
 );
 const SHORTCUTS_TAIL: &str = platform_text(
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · F8 pipe streams · ⌥ + T expand/collapse TODO · ⌥ + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · F8 pipe streams · Ctrl + T expand/collapse TODO · Ctrl + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Shift + Enter / Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · F8 pipe streams · ⌥ + T expand/collapse TODO · ⌥ + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
+    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Shift + Enter / Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · F8 pipe streams · Ctrl + T expand/collapse TODO · Ctrl + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
 );
 const EFFORT_HINT: &str = platform_text(
     "Enter select · ⌥ + S set selected effort as default · Esc cancel",
@@ -127,6 +128,9 @@ pub fn run(
     surface::initialize().context("initializing terminal")?;
     // 能力探测独占 stdin，必须在 crossterm 首次读取事件之前完成。
     let (picker, mut initial_events) = image_terminal::detect();
+    // tmux 默认以 xterm modifyOtherKeys 编码回报扩展按键，这里接管 fd 0 把它
+    // 翻译成 crossterm 支持的 CSI-u；探测结束后安装，避免争抢原始终端。
+    input_shim::install().context("installing input translator")?;
     let mut surface = surface::Surface::new(io::stdout());
     let mut canvas = ratatui::Terminal::new(ratatui::backend::TestBackend::new(1, 1))?;
     // 持久输入历史与 agent 配置目录同级；无可定位目录时明确只保留进程内回忆。

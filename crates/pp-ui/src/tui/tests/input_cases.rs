@@ -58,6 +58,52 @@ fn input_history_copies_submissions_and_restores_multiline_draft() {
 }
 
 #[test]
+fn input_shift_enter_always_inserts_a_newline_in_the_draft() {
+    let (mut app, requests) = file_commands_app(commands::FileCommands::default());
+    let shift_enter = || Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    let mut dirty = false;
+
+    // 补全菜单展开时只换行：不确认菜单项、不提交、不写历史。
+    app.state = State::Ready;
+    app.handle(Event::Paste("/eff".into()), &mut dirty);
+    assert!(app.menu.is_some());
+    app.handle(shift_enter(), &mut dirty);
+    assert_eq!(app.input.lines(), &["/eff", ""]);
+    assert!(app.menu.is_none());
+    assert!(requests.try_recv().is_err());
+    assert!(app.input_history.is_empty());
+
+    // 待处理队列菜单保持打开，草稿里换行而不是召回条目。
+    app.input = editor();
+    app.state = State::Running;
+    app.input_queue
+        .enqueue(PendingKind::FollowUp, "queued".into(), None, false)
+        .unwrap();
+    app.handle(function_key('q'), &mut dirty);
+    assert!(app.queue_menu);
+    app.input.insert_str("draft");
+    app.handle(shift_enter(), &mut dirty);
+    assert!(app.queue_menu);
+    assert_eq!(app.input.lines(), &["draft", ""]);
+    assert!(app.has_pending());
+
+    // 空闲时也只换行：Shift 优先于 Enter 提交，Alt 组合同样让位。
+    app.state = State::Ready;
+    app.queue_menu = false;
+    app.input = editor();
+    app.input.insert_str("line");
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT | KeyModifiers::SHIFT] {
+        app.handle(
+            Event::Key(KeyEvent::new(KeyCode::Enter, modifiers)),
+            &mut dirty,
+        );
+    }
+    assert_eq!(app.input.lines(), &["line", "", ""]);
+    assert!(app.input_history.is_empty());
+    assert!(requests.try_recv().is_err());
+}
+
+#[test]
 fn input_history_ignores_rejected_submissions_and_survives_reset() {
     let mut app = app();
     let (sender, _requests) = mpsc::channel();
@@ -300,16 +346,10 @@ fn runtime_input_modified_and_repeated_enter_preserve_draft_and_history_guard() 
     app.state = State::Running;
     let mut dirty = false;
     app.input.insert_str("one");
-    for modifiers in [
-        KeyModifiers::CONTROL,
-        KeyModifiers::SHIFT,
-        KeyModifiers::ALT | KeyModifiers::SHIFT,
-    ] {
-        app.handle(
-            Event::Key(KeyEvent::new(KeyCode::Enter, modifiers)),
-            &mut dirty,
-        );
-    }
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
+        &mut dirty,
+    );
     app.handle(
         Event::Key(KeyEvent::new_with_kind(
             KeyCode::Enter,

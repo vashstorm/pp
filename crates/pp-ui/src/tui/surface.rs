@@ -3,9 +3,12 @@
 use crossterm::{
     SynchronizedUpdate,
     cursor::{Hide, MoveTo, Show},
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute, queue,
-    style::{Attribute, ResetColor, SetAttribute},
+    style::{Attribute, Print, ResetColor, SetAttribute},
     terminal::{
         self, Clear, ClearType, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
     },
@@ -101,10 +104,21 @@ pub(super) fn initialize() -> io::Result<()> {
         previous(info);
     }));
     terminal::enable_raw_mode()?;
-    execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)
+    // 同时请求两套扩展按键协议：tmux 只认 xterm 的 modifyOtherKeys（CSI > 4;2m），
+    // 只支持 Kitty 协议的终端忽略它；Kitty 推送放在后面作为可解 CSI-u 的首选。
+    // 两者都不支持的终端忽略这些序列，仍可用 Ctrl + J 换行。
+    execute!(
+        io::stdout(),
+        EnableBracketedPaste,
+        EnableMouseCapture,
+        Print("\x1b[>4;2m"),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )
 }
 
 pub(super) fn restore() {
+    // 先把真实终端还给 fd 0，raw mode 关闭与终端恢复才能作用在原始终端。
+    super::input_shim::restore();
     let mut stdout = io::stdout();
     if let Ok(mut graphics) = GRAPHICS.lock() {
         let _ = graphics.clear(&mut stdout);
@@ -116,6 +130,8 @@ pub(super) fn restore() {
     let _ = execute!(
         stdout,
         EndSynchronizedUpdate,
+        Print("\x1b[>4;0m"),
+        PopKeyboardEnhancementFlags,
         DisableMouseCapture,
         DisableBracketedPaste,
         ResetColor,

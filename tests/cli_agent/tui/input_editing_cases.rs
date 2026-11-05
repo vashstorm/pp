@@ -39,6 +39,69 @@ fn tui_pasted_long_line_expands_input_and_reflows_on_resize() {
 }
 
 #[test]
+fn tui_shift_enter_inserts_newline_without_submitting() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let mut pty = Pty::start(&server, dir.path());
+    pty.ready();
+    // Kitty 键盘协议的 Shift + Enter：输入框内只换行，不提交请求。
+    pty.input("first\x1b[13;2u");
+    pty.wait_for("Shift + Enter 展开第二行且未提交", |screen| {
+        let lines: Vec<_> = screen.rows(0, screen.size().1).collect();
+        let Some(start) = lines.iter().rposition(|line| line.starts_with('❯')) else {
+            return false;
+        };
+        lines[start].trim_end() == "❯ first"
+            && lines
+                .get(start + 1)
+                .is_some_and(|line| line.trim_end().is_empty())
+            && screen.cursor_position() == (start as u16 + 1, 2)
+    });
+    no_more(&server);
+    pty.input("second\r");
+    let (request, body) = pty.request(&server);
+    assert_eq!(body["messages"][1]["content"], "first\nsecond");
+    final_reply(request, "shift-enter-ok");
+    pty.text("shift-enter-ok");
+    pty.ready();
+    pty.input("\x03");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
+fn tui_xterm_modify_other_keys_input_matches_csi_u() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let mut pty = Pty::start(&server, dir.path());
+    pty.ready();
+    // tmux 默认 `extended-keys-format xterm`：Shift + Enter 到达时是 CSI 27;2;13~。
+    pty.input("first\x1b[27;2;13~");
+    pty.wait_for("xterm 编码的 Shift + Enter 展开第二行", |screen| {
+        let lines: Vec<_> = screen.rows(0, screen.size().1).collect();
+        let Some(start) = lines.iter().rposition(|line| line.starts_with('❯')) else {
+            return false;
+        };
+        lines[start].trim_end() == "❯ first"
+            && lines
+                .get(start + 1)
+                .is_some_and(|line| line.trim_end().is_empty())
+            && screen.cursor_position() == (start as u16 + 1, 2)
+    });
+    no_more(&server);
+    pty.input("second\r");
+    let (request, body) = pty.request(&server);
+    assert_eq!(body["messages"][1]["content"], "first\nsecond");
+    // 同一编码的 Ctrl + C 也必须还原为 Char('c') + CONTROL 才能退出。
+    final_reply(request, "xterm-keys-ok");
+    pty.text("xterm-keys-ok");
+    pty.ready();
+    pty.input("\x1b[27;5;99~");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
 fn tui_input_history_and_control_keys_edit_the_submitted_buffer() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();

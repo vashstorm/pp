@@ -160,7 +160,7 @@ printf '说明当前项目的构建方式\n' | pp
 | --- | --- | --- |
 | 发送／运行中补充需求 | Enter | Enter |
 | 排队为独立后续任务 | ⌥ + Enter | Alt + Enter |
-| 换行 | Ctrl + J | Ctrl + J |
+| 换行 | Shift + Enter / Ctrl + J | Shift + Enter / Ctrl + J |
 | 模型菜单 | ⌥ + P | Ctrl + P |
 | 打开／关闭 Agent Hub | ⌥ + A | Alt + A |
 | 收藏／取消收藏高亮模型 | Ctrl + F | Ctrl + F |
@@ -173,7 +173,7 @@ printf '说明当前项目的构建方式\n' | pp
 | 取消当前任务 | Esc | Esc |
 | 退出 | Ctrl + C | Ctrl + C |
 
-`@` 打开项目文件路径补全。空闲且输入为空时，双击 Esc 打开会话树；回退历史不会回滚文件。[完整交互说明 →](docs/guide.md#终端交互)
+`@` 打开项目文件路径补全。空闲且输入为空时，双击 Esc 打开会话树；回退历史不会回滚文件。输入框中 `Shift + Enter` 换行，并优先于补全菜单、待处理列表和发送；`Ctrl + J` 在任何位置换行。pp 启动时同时请求 Kitty 键盘协议与 xterm `modifyOtherKeys` mode 2，并把 tmux 默认的 `CSI 27;mod;code~` 编码翻译成 CSI-u；忽略这些请求的终端退化为 `Ctrl + J`。tmux 内需 `set -s extended-keys on`，外层终端 terminfo 未定义 `Eneks`（Ghostty）时再加 `set -as terminal-overrides 'xterm*:Eneks=\E[>1u'`；iTerm2 需保持 *Apps can change how keys are reported* 开启。[完整交互说明 →](docs/guide.md#终端交互)
 
 `read` 仅接受 `path`，支持本地文本、图片、静态网页和已启用的 `skill://` 资源。系统在技能名称、说明和 URI 旁附加选择规则，自定义基础提示词也会保留：按任务及具体子任务主动匹配，在其他任务工具前读取适用技能，成功读取后简短说明用途。执行已批准计划也适用；选择仍由模型完成，正文不自动注入。裸技能 URI 读取完整 `SKILL.md`，追加 `/<path>` 访问资源，`/.` 列出目录。技能文本不受普通文本限额限制，结果带 `path` 和 `base_dir`，显式选择器仍生效。范围直接写入路径：`src/main.rs:20-60`、`notes.md:-30`、`file.rs:5-10,20-30`，严格读取指定行，截断后使用 `next_path` 续读。`:raw` 去掉前缀，网页则返回原始响应正文。PNG／JPEG／WebP／GIF 图片作为真实视觉输入发给模型，工具输出只显示元信息；恢复会话和切换协议保留图片。网页提取静态 HTML 正文，不执行 JavaScript，支持取消和有界会话缓存。[读取行为和限制 →](docs/guide.md#工具执行与权限)
 

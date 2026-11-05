@@ -520,6 +520,13 @@ impl App {
                     }
                     return false;
                 }
+                // 主输入框的 Shift + Enter 始终换行：补全／队列菜单、文件选择与
+                // 提交都不得抢占；需要键盘协议的终端才会与普通 Enter 区分开。
+                if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.input.insert_newline();
+                    self.refresh_candidates(true);
+                    return false;
+                }
                 if key.modifiers == FUNCTION_MODIFIER && self.menu.is_none() {
                     match key.code {
                         KeyCode::Char('t') => {

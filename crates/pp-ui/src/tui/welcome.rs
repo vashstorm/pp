@@ -18,7 +18,7 @@ const SESSION_TIPS: [(&str, &str); 4] = [
 ];
 const KEYBOARD_TIPS: [(&str, &str); 4] = [
     ("Enter", "send a message"),
-    ("Ctrl + J", "insert a newline"),
+    ("Shift + Enter", "insert a newline"),
     ("Esc", "cancel the running task"),
     ("Shift + Tab", "cycle thinking levels"),
 ];
@@ -124,7 +124,7 @@ fn hint_lines(width: u16, height: u16) -> Vec<Line<'static>> {
     // 小窗口优先保留输入操作和帮助入口，不让装饰挤占输入区。
     let mut compact = vec![
         Line::from(tip_spans(("Enter", "send"), width)),
-        Line::from(tip_spans(("Ctrl + J", "newline"), width)),
+        Line::from(tip_spans(("Shift + Enter", "newline"), width)),
     ];
     compact.extend(help_lines(width));
     compact
