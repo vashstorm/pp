@@ -6,7 +6,8 @@
 // 文件冲突。文件后半为 `background_` 前缀的后台任务 PTY 场景：Esc 取消清理、
 // Ctrl-C 退出闭环与 status/stop 生命周期展示。
 
-const CANCEL_NOTE: &str = "Task cancelled. File changes were not rolled back.";
+// 取消收尾唯一可见的状态行；取消不再向对话追加提示块。
+const CANCEL_DONE: &str = "✻ Cancelled · done";
 const CANCEL_SETTINGS: &str = "{\"default_model\":\"fixture/primary\",\"request_timeout_seconds\":120,\"notification_timeout_seconds\":2}";
 // 显式外部 sh 提供独立 shell PID（内嵌 shell 不伪造 $$）；父 sh 忽略 TERM，
 // 证明取消路径用 grace 后的 KILL 回收整个进程组。
@@ -22,7 +23,7 @@ fn cancel_count_normalized(screen: &vt100::Screen, needle: &str) -> usize {
         .count()
 }
 
-// 取消收尾的最终帧栅栏：过渡帧可以先写出 Note，只有原生光标回到输入行
+// 取消收尾的最终帧栅栏：过渡帧可以先写出取消状态行，只有原生光标回到输入行
 // 才代表这一帧真正画完。
 fn cancel_cursor_on_input_row(screen: &vt100::Screen) -> bool {
     let Some(row) = screen
@@ -36,14 +37,14 @@ fn cancel_cursor_on_input_row(screen: &vt100::Screen) -> bool {
     !screen.hide_cursor() && usize::from(cursor_row) == row
 }
 
-// 取消完成后：5 秒内回到 Ready、仍在主屏幕、恰好一条持久取消 Note，
+// 取消完成后：5 秒内回到 Ready、仍在主屏幕、恰好一条取消完成状态行，
 // 且光标已回到输入行（最终帧）。
 fn cancel_wait_cancelled_ready(pty: &mut Pty) {
-    pty.wait_for("取消后回到 Ready 且仅一条持久 Note", |screen| {
+    pty.wait_for("取消后回到 Ready 且仅一条取消状态行", |screen| {
         input_is_ready(screen)
             && !screen.alternate_screen()
             && cancel_cursor_on_input_row(screen)
-            && cancel_count_normalized(screen, CANCEL_NOTE) == 1
+            && cancel_count_normalized(screen, CANCEL_DONE) == 1
     });
 }
 
@@ -708,8 +709,8 @@ fn tui_cancel_tool_batch_stops_process_group_and_pairs_results_on_next_request()
     }
 }
 
-// 验证项 4：headers 前、SSE 空闲、工具批次三种取消的持久化与重启。取消 Note
-// 恰好一条、不误报 interrupted；/resume 列表为 aborted，完成新任务后可为 done；
+// 验证项 4：headers 前、SSE 空闲、工具批次三种取消的持久化与重启。取消只
+// 显示状态行、不追加提示块、不误报 interrupted；/resume 列表为 aborted，完成新任务后可为 done；
 // -r ID -p 与 -c ID 的原生请求只含已接受用户消息、完整旧历史和成对工具结果，
 // 不执行旧工具，pp.cancelled 不进入请求。
 #[test]
@@ -787,15 +788,12 @@ fn tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_l
             .unwrap();
             assert!(journal.contains("pp.cancelled"), "取消终态必须落盘");
 
-            // 交互式 -r 恢复：Note 恰好一次，不出现假 interrupted 横幅。
+            // 交互式 -r 恢复：回放已接受的用户消息，不追加提示块，也不出现
+            // 假 interrupted 横幅。
             let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
-            resumed.wait_for(
-                "恢复取消会话：持久记录与唯一取消 Note",
-                |screen| {
-                    screen.contents().contains("persist cancel prompt")
-                        && cancel_count_normalized(screen, CANCEL_NOTE) == 1
-                },
-            );
+            resumed.wait_for("恢复取消会话：已接受的用户消息与空闲输入框", |screen| {
+                input_is_ready(screen) && screen.contents().contains("persist cancel prompt")
+            });
             assert!(
                 !cancel_normalize(resumed.parser.screen())
                     .contains("Previousrequestwasinterrupted."),
@@ -1004,9 +1002,9 @@ fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
         );
         // 不声称成功取消。
         assert_eq!(
-            cancel_count_normalized(pty.parser.screen(), CANCEL_NOTE),
+            cancel_count_normalized(pty.parser.screen(), CANCEL_DONE),
             0,
-            "持久化失败不得显示取消 Note"
+            "持久化失败不得显示取消完成状态行"
         );
         pty.ready();
         // 取消收尾失败后不再发模型请求。
@@ -1115,7 +1113,7 @@ struct BackgroundStart<'a> {
 }
 
 // 两协议先启动后台任务并把下一模型请求停在等待响应阶段。Esc 后必须先清理
-// 父子 PID 与 scratch，再回到 Ready 且恰好一条取消 Note；下一用户任务正常执行，
+// 父子 PID 与 scratch，再回到 Ready 且只留下取消状态行；下一用户任务正常执行，
 // 不重放旧启动调用。
 #[test]
 fn background_esc_cancels_managed_tasks_and_cleans_before_ready_without_replay() {
@@ -1143,7 +1141,7 @@ fn background_esc_cancels_managed_tasks_and_cleans_before_ready_without_replay()
         let parent_before = std::fs::read(project.path().join("bg-esc-parent.pid")).unwrap();
         let child_before = std::fs::read(project.path().join("bg-esc-child.pid")).unwrap();
         pty.input("\x1b");
-        // 先验证后台父子 PID 与 scratch 已清理，再观察 Ready 与唯一取消 Note。
+        // 先验证后台父子 PID 与 scratch 已清理，再观察 Ready 与取消状态行。
         cancel_wait_pid_dead(&project.path().join("bg-esc-parent.pid"));
         cancel_wait_pid_dead(&project.path().join("bg-esc-child.pid"));
         cancel_assert_no_scratch(project.path());

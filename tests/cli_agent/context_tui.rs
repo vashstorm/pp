@@ -1256,7 +1256,7 @@ fn context_tui_token_metrics_cancel_stops_and_recounts() {
         pty.wait_for("second task cancellation committed", |screen| {
             input_is_ready(screen)
                 && screen.contents().contains("✻ Cancelled")
-                && cancel_count_normalized(screen, CANCEL_NOTE) == 2
+                && cancel_count_normalized(screen, CANCEL_DONE) == 1
         });
         drop(stream);
         pty.wait_for(

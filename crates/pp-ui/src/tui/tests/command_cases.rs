@@ -282,12 +282,6 @@ fn task_cancel_waits_for_completed_and_preserves_editable_draft() {
     assert!(matches!(app.state, State::Ready));
     assert!(app.active_cancellation.is_none());
     assert_eq!(app.input.lines(), &["保留草新稿"]);
-    assert_eq!(
-        draw(&mut app, 100, 30)
-            .matches(pp_core::cancellation::CANCELLED_NOTE)
-            .count(),
-        1
-    );
 }
 
 #[test]
@@ -320,7 +314,6 @@ fn task_cancel_committed_completion_wins_and_next_token_is_independent() {
     app.receive();
     app.handle(key(KeyCode::Esc), &mut dirty);
     assert!(matches!(app.state, State::Ready));
-    assert!(!draw(&mut app, 100, 30).contains(pp_core::cancellation::CANCELLED_NOTE));
     app.input.insert_str("next task");
     app.handle(key(KeyCode::Enter), &mut dirty);
     let WorkerCommand::Run {

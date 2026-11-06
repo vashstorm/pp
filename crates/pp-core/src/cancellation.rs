@@ -37,5 +37,3 @@ pub fn check(token: &CancellationToken) -> anyhow::Result<()> {
     }
     Ok(())
 }
-
-pub const CANCELLED_NOTE: &str = "Task cancelled. File changes were not rolled back.";

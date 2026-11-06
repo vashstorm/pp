@@ -62,7 +62,9 @@ fn cancel_mcp_begin(pty: &mut Pty, provider: &Server, dir: &Path, protocol: &str
     cancel_mcp_wait_file(pty, &dir.join("mcp-log.cancel-ready"));
     cancel_mcp_wait_file(pty, &dir.join("mcp-log.cancel-child.pid"));
     pty.input("\x1b");
-    pty.text("Task cancelled. File changes were not rolled back.");
+    pty.wait_for("取消完成状态行", |screen| {
+        cancel_count_normalized(screen, CANCEL_DONE) == 1
+    });
     pty.ready();
     cancel_mcp_assert_pid_stopped(&dir.join("mcp-log.cancel-server.pid"));
     cancel_mcp_assert_pid_stopped(&dir.join("mcp-log.cancel-child.pid"));

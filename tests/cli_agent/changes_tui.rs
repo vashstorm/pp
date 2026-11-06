@@ -418,7 +418,7 @@ fn changes_tui_pending_followup_can_be_inspected_without_resuming_or_losing_it()
         pty.input("changes-queued-followup\x1b\r");
         runtime_input_counts(&mut pty, 0, 1, false);
         pty.input("\x1b");
-        runtime_input_cancel_terminal(&mut pty, 1, 0, 1);
+        runtime_input_cancel_terminal(&mut pty, 0, 1);
         drop(stream);
         changes_open(&mut pty);
         pty.text("No edit/write changes in the latest task.");

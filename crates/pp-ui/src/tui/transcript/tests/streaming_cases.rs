@@ -321,7 +321,6 @@ fn replay_cancel_preserves_partial_and_clears_interruption() {
     assert!(error.is_none());
     let text = screen(&render(&mut transcript, 100, 30));
     assert!(text.contains("visible partial"));
-    assert!(text.contains(pp_core::cancellation::CANCELLED_NOTE));
     assert_eq!(transcript.entries[1].status, EntryStatus::Failed);
     assert!(transcript.assistant.is_none());
     assert!(transcript.thinking.is_none());

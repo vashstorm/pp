@@ -1222,7 +1222,6 @@ impl Transcript {
             activity.refresh();
         }
         self.thinking = None;
-        self.append("Note", pp_core::cancellation::CANCELLED_NOTE);
     }
 
     pub(super) fn page_up(&mut self) {

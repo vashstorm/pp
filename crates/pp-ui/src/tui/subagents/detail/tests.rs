@@ -640,7 +640,7 @@ fn detail_unknown_timing_and_cancel_keep_partial_output_without_duplicates() {
         let screen = text(&mut detail.transcript);
         assert!(screen.contains("partial tool output") && screen.contains("Cancelled · done —"));
         assert!(!screen.contains("Wall:") && !screen.contains("Elapsed:"));
-        assert_eq!(detail.transcript.entry_count(), 3);
+        assert_eq!(detail.transcript.entry_count(), 2);
     }
 }
 

@@ -31,11 +31,11 @@ fn runtime_input_menu_closed(pty: &mut Pty) {
     });
 }
 
-fn runtime_input_cancel_terminal(pty: &mut Pty, notes: usize, steering: usize, queued: usize) {
+fn runtime_input_cancel_terminal(pty: &mut Pty, steering: usize, queued: usize) {
     pty.wait_for("cancel terminal state with paused queue", |screen| {
         input_is_ready(screen)
             && cancel_cursor_on_input_row(screen)
-            && cancel_count_normalized(screen, CANCEL_NOTE) == notes
+            && cancel_count_normalized(screen, CANCEL_DONE) == 1
     });
     runtime_input_counts(pty, steering, queued, true);
 }
@@ -179,7 +179,7 @@ fn tui_runtime_input_cancel_pauses_queue_and_rejects_busy_cleanup() {
         pty.draft("草稿d");
 
         pty.input("\x1b");
-        runtime_input_cancel_terminal(&mut pty, 1, 1, 1);
+        runtime_input_cancel_terminal(&mut pty, 1, 1);
         drop(stream);
         pty.draft("草稿d");
         no_more(&server);
@@ -208,7 +208,7 @@ fn tui_runtime_input_cancel_pauses_queue_and_rejects_busy_cleanup() {
         cancel_wait_pid_dead(&project.join("bash.pid"));
         cancel_wait_pid_dead(&project.join("bash-child.pid"));
         cancel_assert_no_scratch(project);
-        runtime_input_cancel_terminal(&mut pty, 2, 0, 1);
+        runtime_input_cancel_terminal(&mut pty, 0, 1);
         pty.draft("草稿dXY");
         no_more(&server);
 
