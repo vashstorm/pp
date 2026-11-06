@@ -130,7 +130,7 @@ printf '说明当前项目的构建方式\n' | pp
 
 主输入框可编辑时，补全始终可用，包括模型输出、上下文压缩、取消收尾和模型切换期间。斜杠命令、已支持的参数和文件引用均可补全，补全不会发送草稿。Esc 收起候选后可用 Tab 重新唤起；要求空闲的命令仍须等任务结束后才能执行。Markdown 解析、语法高亮与正文排版在后台线程完成，样式就绪前可能短暂显示纯文本预览。切换模型保留已提交上下文，不取消当前请求、不重复已完成任务，也不重启后台工作；历史内容无法兼容目标协议时拒绝切换并保留当前模型。
 
-通过 `/Roles` 保存模型与思考档位后，Default 会让主 Agent 在下一个安全边界切换，不影响已有子 Agent；其他角色的变更由绑定该角色的子 Agent 各自在安全边界应用，旧会话中已有的嵌套子 Agent 也遵循此规则，但不能派发新子任务。没有角色绑定、仅在创建时继承模型的子 Agent 保持原配置。禁用或清除角色不会取消或重新绑定已有子 Agent；不监听其他 pp 进程的配置热更新。
+通过 `/Roles` 保存模型与思考档位后，Default 会让主 Agent 在下一个安全边界切换，并与其他已启用角色一样，让绑定该角色的子 Agent 在各自的下一次请求边界应用最新 model/effort：普通 `task` 未写 `role` 时绑定 Default，显式 `role` 绑定该角色，旧会话中已有的嵌套子 Agent 也遵循此规则，但不能派发新子任务。自定义定义自带 model 的子 Agent 保持派发时的 model 与 thinking；主 Agent 的手动 `/model` 不下发子 Agent。禁用或清除角色不取消、也不重新绑定正在运行的子 Agent，它保留最后一次已应用的模型；不监听其他 pp 进程的配置热更新。运行中只改 effort 不会重写请求前缀，改 model 会让主 Agent 与绑定该角色的运行中子 Agent 各自冷启动前缀缓存。
 
 全部 13 个 `/test-*` 命令在 dev/test 构建中使用内嵌、仅监听 loopback 的 Mock AI Server，由 `#[cfg(debug_assertions)]` 编译隔离，与 `debug` 设置无关。命令通过编译内嵌 JSON 脚本驱动真实 Responses client、Agent、工具和子 Agent，不依赖真实 provider 或用户模型 Role；空 HOME、无 models 或无效配置 YAML 也能运行。每个场景使用全新的系统临时 workspace/config/sessions/locks 目录，不改变正常会话、模型、Role、cwd 或真实统计。预期工具失败继续，取消、初始化或清理失败则中止。
 

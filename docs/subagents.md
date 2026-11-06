@@ -52,7 +52,7 @@ task:
 
 DEFAULT 尚未配置时使用全局默认模型及其有效默认 effort；显式停用 DEFAULT 后，需选择其他已启用 Role，或使用配置了独立模型的自定义 Agent。其他未配置或停用的系统 Role 不进入工具可选项，显式调用在整批派发前报错。既无可用系统 Role、也无自定义定义时隐藏 `task` 工具。
 
-PLAN 始终不进入子 Agent 的模型 Role 可选项，显式指定 `role: "plan"` 会在整批派发前报错。派发时冻结完整主备路由；后续 `/Roles` 更新仍遵循安全边界应用规则。详见[模型 Roles](guide.md#模型-roles)。
+PLAN 始终不进入子 Agent 的模型 Role 可选项，显式指定 `role: "plan"` 会在整批派发前报错。派发时冻结主备路由快照；后续 `/Roles` 的 model/effort 更新会在子 Agent 的下一次请求边界应用（显式 `role` 与继承 DEFAULT 的普通任务），自定义定义自带 model 的子 Agent 保持派发配置，主 Agent 的手动 `/model` 与 `/effort` 不下发给子 Agent。详见[模型 Roles](guide.md#模型-roles)。
 
 ## 自定义 Agent
 

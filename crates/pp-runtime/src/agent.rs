@@ -1101,13 +1101,54 @@ impl Agent {
                 return Err(error);
             }
         }
-        let Some(target) = self
+        let Some((model, think)) = self
             .runtime_models
             .as_mut()
-            .and_then(|binding| binding.take())
+            .map(|binding| binding.take_targets())
         else {
             return Ok(());
         };
+        // 两次意图是独立提交，按 revision 顺序应用（旧者先、新者后），高 revision 的 effort 胜出。
+        match (model, think) {
+            (Some(model), Some(think)) if think.revision < model.revision => {
+                self.apply_think_target(&think);
+                self.apply_model_target(model)
+            }
+            (Some(model), think) => {
+                self.apply_model_target(model)?;
+                if let Some(think) = &think {
+                    self.apply_think_target(think);
+                }
+                Ok(())
+            }
+            (None, Some(think)) => {
+                self.apply_think_target(&think);
+                Ok(())
+            }
+            (None, None) => Ok(()),
+        }
+    }
+
+    fn apply_think_target(&mut self, target: &crate::model_control::ThinkTarget) {
+        // 失败只回报 ThinkFailed 并保留旧档位：不向外返回错误、不重试。
+        let result = self.set_think_level(target.effort);
+        let Some(binding) = self.runtime_models.as_ref() else {
+            return;
+        };
+        match result {
+            Ok(()) => binding.report(crate::model_control::Report::ThinkApplied {
+                revision: target.revision,
+                effort: self.think_level,
+            }),
+            Err(error) => binding.report(crate::model_control::Report::ThinkFailed {
+                revision: target.revision,
+                effort: target.effort,
+                message: format!("{error:#}"),
+            }),
+        }
+    }
+
+    fn apply_model_target(&mut self, target: crate::model_control::Target) -> Result<()> {
         let old_catalog = std::mem::replace(&mut self.catalog, (*target.catalog).clone());
         let old_route = self.role_route.take();
         self.role_route = target.role.and_then(|role| self.catalog.role_route(role));

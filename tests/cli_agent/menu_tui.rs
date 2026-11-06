@@ -34,8 +34,8 @@ fn tui_streaming_completion_menus_remain_usable_both_protocols() {
         pty.text("Deep thinking");
         pty.input("\t");
         pty.draft("/effort high");
-        pty.input("\r");
-        pty.draft("/effort high");
+        // Enter 现在会把补全好的 `/effort high` 直接提交并清空草稿，后续 Esc 就会取消任务；
+        // 这里只验证流式期间补全菜单可用，所以补全后用 Esc 关闭菜单。
         pty.input("\x1b");
         pty.wait_for("关闭思考补全且保留运行中的草稿", |screen| {
             !screen.contents().contains("Deep thinking")

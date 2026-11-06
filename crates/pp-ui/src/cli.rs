@@ -915,7 +915,7 @@ fn run_cli_execution(
     let cancellation = cancellation::CancellationToken::new();
     let result = match &mut execution {
         CliExecution::Agent { agent, prompt } => match prompt {
-            Some(prompt) => agent.run(*prompt, &cancellation, None, &mut emit),
+            Some(prompt) => agent.run(prompt, &cancellation, None, &mut emit),
             None => agent.continue_session(&cancellation, None, &mut emit),
         }
         .map(|_| ()),

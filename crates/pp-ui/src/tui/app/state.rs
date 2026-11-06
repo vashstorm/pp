@@ -117,6 +117,8 @@ impl App {
         let _ = self.input_queue.close();
         self.active_cancellation = None;
         self.secondary_status = None;
+        // 期望态不再有消费者：worker 已死，档位冻结在最后一次已应用值。
+        self.pending_think = None;
         self.commands = None;
         self.events = None;
         self.unavailable = Some(message.into());

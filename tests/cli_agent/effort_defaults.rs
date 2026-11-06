@@ -623,6 +623,12 @@ fn model_thinking_tui_effort_menu_follows_model_policy_across_switches() {
     pty.ready_effort("medium");
     no_more(&server);
 
+    // 本地拒绝不产生切档目标，草稿按新规则原样保留；清空后再输入普通任务。
+    pty.draft("/effort low");
+    pty.input("\u{1}");
+    pty.input("\u{b}");
+    pty.draft("");
+
     // B 上的请求档位与状态栏一致，并保留 A 的历史。
     pty.input("任务B\r");
     let (request, body) = pty.request(&server);

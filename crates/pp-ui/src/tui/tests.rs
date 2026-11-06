@@ -209,6 +209,65 @@ fn opposite_function_key(character: char) -> Event {
     Event::Key(KeyEvent::new(KeyCode::Char(character), modifiers))
 }
 
+/// 真实 `model_control` 控制线程 + 主 Agent 绑定：临时目录里单 provider 单模型，
+/// 未写 `thinking` 因此允许全部档位。夹具只用于 `Change::Think`，不重载模型文件。
+fn model_control() -> (
+    pp_runtime::model_control::Service,
+    pp_runtime::model_control::Binding,
+) {
+    let (control, binding, _) = model_control_with(
+        r#"{"providers":{"fixture":{"api_key":"fixture","models":{"one":{"model":"one"}}}}}"#,
+    );
+    (control, binding)
+}
+
+/// 与 [`model_control`] 相同，但由调用方给出 `models.yml` 正文，并返回目录快照。
+fn model_control_with(
+    models: &str,
+) -> (
+    pp_runtime::model_control::Service,
+    pp_runtime::model_control::Binding,
+    Vec<ModelChoice>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.yml");
+    let models_path = dir.path().join("models.yml");
+    std::fs::write(&settings, "{}").unwrap();
+    std::fs::write(&models_path, models).unwrap();
+    let catalog = pp_config::config::ModelCatalog::from_files(&settings, &models_path).unwrap();
+    let choices = catalog.choices();
+    let control = pp_runtime::model_control::Service::start(catalog).unwrap();
+    let binding = pp_runtime::model_control::Binding::main(control.registry.clone());
+    (control, binding, choices)
+}
+
+/// 轮询 UI 直到真实控制线程发布待生效目标；返回该目标的 revision。
+/// 先等到 `ThinkQueued` 再注入结果，避免异步控制线程与测试注入交错。
+fn wait_for_queued_think(app: &mut App, level: ThinkLevel) -> u64 {
+    for _ in 0..400 {
+        app.receive();
+        if let Some((revision, pending)) = app.pending_think
+            && revision > 0
+            && pending == level
+        {
+            return revision;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("model control published no queued effort");
+}
+
+/// 夹具目录里的唯一模型：未写 `thinking` 因此允许全部档位。
+fn all_levels_choice() -> ModelChoice {
+    ModelChoice {
+        reference: "fixture/one".into(),
+        model: "one".into(),
+        protocol: pp_config::models::Protocol::Completion,
+        thinking: Default::default(),
+        context_window: None,
+    }
+}
+
 fn favorite_model_choices() -> Vec<ModelChoice> {
     ["Alpha", "Beta", "Gamma", "Delta"]
         .into_iter()

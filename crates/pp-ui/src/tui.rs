@@ -372,7 +372,6 @@ enum WorkerCommand {
     Reset,
     SwitchModel(String),
     ApplyModelTargets,
-    SetThinkLevel(ThinkLevel),
     SaveDefaultThinkLevel(ThinkLevel),
     SaveDefaultModel(String),
     SaveModelRole(
@@ -473,7 +472,6 @@ enum WorkerEvent {
     Compacted(Result<CompactionOutcome>),
     Reset,
     ModelSwitched(Result<(ModelChoice, ThinkLevel)>),
-    ThinkLevelSet(Result<ThinkLevel>),
     DefaultThinkLevelSaved(Result<ThinkLevel>),
     DefaultModelSaved(Result<String>),
     ModelRolesSaved(Result<(pp_config::config::ModelRoles, String, ThinkLevel)>),
@@ -691,7 +689,8 @@ enum State {
     Resetting,
     SwitchingModel,
     SavingModelSettings,
-    SettingThinkLevel,
+    // 仅剩 `⌥ + S` / `Ctrl + S` 的全局默认值保存；会话档位切换不再经过 worker。
+    SavingThinkDefault,
     Resuming,
     ReadingTree,
     NavigatingTree,
@@ -763,6 +762,9 @@ struct App {
     // 控制报告与 worker 快照走不同通道；旧快照不能覆盖已应用的新选择。
     model_revision: u64,
     pending_model: Option<(u64, String)>,
+    // 期望档位：`0` 表示已提交但控制线程尚未确认，其余为 `ThinkQueued` 的 revision。
+    // 切档不是 worker 命令，因此这里的变化绝不同步改写 `state`。
+    pending_think: Option<(u64, ThinkLevel)>,
     auth_worker: auth::Worker,
     auth_panel: Option<auth::Panel>,
     auth_cancellation: Option<CancellationToken>,

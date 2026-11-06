@@ -54,6 +54,18 @@ fn tui_shortcuts_preserve_drafts_and_send_selected_effort_to_both_apis() {
             "草稿🙂",
         );
         pty.input("busy-中\x1b[Z");
+        // 运行中切档只登记期望值：状态栏仍是已应用的 xhi，次要状态区显示待生效。
+        pty.wait_for(
+            "运行中登记待生效档位且保留已应用档位",
+            |screen| {
+                let text = screen.contents();
+                text.contains("pending next request")
+                    && text
+                        .lines()
+                        .last()
+                        .is_some_and(|line| line.contains(" xhi ·"))
+            },
+        );
         pty.function_key('p');
         pty.model_search("");
         pty.input("\x1b");
@@ -75,10 +87,9 @@ fn tui_shortcuts_preserve_drafts_and_send_selected_effort_to_both_apis() {
         pty.draft("busy-中");
         super::super::think::finish_request(request, protocol);
         pty.completed();
-        pty.ready_effort("xhigh");
-        pty.input("\x01\x0b\x1b[Z");
+        // 边界已到：忙碌期间登记的档位在本次任务结束后应用。
         pty.ready_effort("max");
-        pty.input("\x1b[Z");
+        pty.input("\x01\x0b/effort none\r");
         pty.ready_effort("no think");
         pty.input("none request\r");
         let (request, body) = receive_at(&server, path);
@@ -119,9 +130,11 @@ fn tui_shortcuts_preserve_drafts_and_send_selected_effort_to_both_apis() {
 }
 
 #[test]
-fn tui_think_level_updates_status_and_rejects_changes_while_busy() {
+fn tui_effort_and_shift_tab_apply_to_each_continuation_while_busy() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("draft.txt"), "draft body").unwrap();
+    std::fs::write(dir.path().join("draft2.txt"), "second body").unwrap();
     let mut pty = Pty::start(&server, dir.path());
     pty.ready();
     pty.input("/effort ");
@@ -129,61 +142,56 @@ fn tui_think_level_updates_status_and_rejects_changes_while_busy() {
     pty.draft("/effort");
     assert!(server.try_recv().unwrap().is_none());
     pty.input("\u{1b}[B\u{1b}[B\u{1b}[B\u{1b}[B\r");
-    pty.wait_for("思考级别更新到状态栏", |screen| {
-        input_is_ready(screen)
-            && screen
-                .contents()
-                .lines()
-                .last()
-                .is_some_and(|line| line.contains(" xhi ·"))
-    });
+    pty.ready_effort("xhigh");
     pty.input("first\r");
     let (request, body) = pty.request(&server);
     assert_eq!(body["reasoning_effort"], "xhigh");
-    pty.input("/effort low\r!");
-    pty.draft("/effort low!");
-    pty.input("\x7f");
-    pty.draft("/effort low");
-    pty.wait_for("忙碌时保留原级别", |screen| {
-        input_is_ready(screen)
-            && screen
-                .contents()
+    // 不回复本轮请求：运行中提交的 `/effort` 只登记期望值，下一个请求必须已在
+    // 边界领取新档位，且状态栏在边界前仍显示已应用的 xhi。
+    pty.input("/effort none\r");
+    pty.wait_for("运行中登记 /effort 待生效档位", |screen| {
+        let text = screen.contents();
+        text.contains("pending next request")
+            && text
                 .lines()
                 .last()
                 .is_some_and(|line| line.contains(" xhi ·"))
     });
-    final_reply(request, "first answer");
-    pty.text("first answer");
-    // 补全在忙碌时也可见；只有本轮完成标记能证明 worker 已到提交边界。
-    pty.completed_after("first answer");
-    pty.draft("/effort low");
-    pty.input("\r");
-    pty.wait_for("完成后切换到 low", |screen| {
+    calls_reply(
+        request,
+        json!([call("effort-one", "read", json!({"path":"draft.txt"}))]),
+    );
+    let (request, body) = pty.request(&server);
+    assert_eq!(body["reasoning_effort"], "none");
+    pty.wait_for("边界后状态栏切到 no think", |screen| {
         input_is_ready(screen)
             && screen
                 .contents()
                 .lines()
                 .last()
-                .is_some_and(|line| line.contains("low"))
+                .is_some_and(|line| line.contains(" off ·"))
     });
-    pty.input("second\r");
+    // Shift + Tab 在同一任务的下一轮输出期间同样只登记期望值。
+    pty.input("\u{1b}[Z");
+    pty.wait_for("运行中 Shift + Tab 登记待生效档位", |screen| {
+        screen.contents().contains("pending next request")
+    });
+    calls_reply(
+        request,
+        json!([call("effort-two", "read", json!({"path":"draft2.txt"}))]),
+    );
     let (request, body) = pty.request(&server);
     assert_eq!(body["reasoning_effort"], "low");
-    final_reply(request, "second answer");
-    pty.text("second answer");
-    // 和第一轮一样，只有本轮完成标记能证明 worker 已到提交边界；否则下面的
-    // `/effort …\r` 会在 Running 状态被当作 steering 丢弃，草稿与菜单留在屏幕上。
-    pty.completed_after("second answer");
+    final_reply(request, "busy effort done");
+    pty.completed_after("busy effort done");
+    pty.ready_effort("low");
+    // 菜单的“当前”标记跟已应用档位走。
     pty.input("/effort ");
     pty.text("Light thinking (current)");
     pty.input("\x01\x0b");
     pty.draft("");
-    // low was already exercised above; each transition now changes the
-    // displayed level, so readiness cannot match a stale status value.
-    for level in ["medium", "high", "xhigh", "max"] {
-        pty.input(&format!("/effort {level}\r"));
-        pty.ready_effort(level);
-    }
+    pty.input("/effort max\r");
+    pty.ready_effort("max");
     pty.input("\u{3}");
     pty.finish();
 }

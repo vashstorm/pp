@@ -609,7 +609,7 @@ impl App {
                             MenuAction::Effort(level) if key.modifiers == FUNCTION_MODIFIER => {
                                 Some((
                                     WorkerCommand::SaveDefaultThinkLevel(level),
-                                    State::SettingThinkLevel,
+                                    State::SavingThinkDefault,
                                 ))
                             }
                             MenuAction::Model(index) if key.modifiers == KeyModifiers::CONTROL => {
@@ -638,16 +638,20 @@ impl App {
                     if key.kind == KeyEventKind::Press
                         && self.menu.is_none()
                         && self.model_picker_draft.is_none()
-                        && self.shortcut_ready()
+                        && self.think_switch_ready()
                     {
                         let thinking = self
                             .current_model
                             .as_ref()
                             .map(|model| model.thinking)
                             .unwrap_or_default();
-                        let next = thinking.next(self.think_level);
-                        if next != self.think_level {
-                            self.send(WorkerCommand::SetThinkLevel(next), State::SettingThinkLevel);
+                        // 已登记但未应用的期望值参与选环：连按时每次前进一档。
+                        let current = self
+                            .pending_think
+                            .map_or(self.think_level, |(_, level)| level);
+                        let next = thinking.next(current);
+                        if next != current {
+                            self.submit_think_level(next);
                         }
                     }
                     return false;

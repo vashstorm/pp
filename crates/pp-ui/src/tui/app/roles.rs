@@ -1,4 +1,4 @@
-use crate::tui::{App, Level, State, WorkerCommand, roles};
+use crate::tui::{App, Level, State, ThinkLevel, WorkerCommand, roles};
 
 impl App {
     pub(in crate::tui) fn open_roles(&mut self) {
@@ -94,6 +94,57 @@ impl App {
             self.send(WorkerCommand::SwitchModel(reference), State::SwitchingModel)
         }
     }
+    /// 切档不是 worker 命令：运行中与空闲都可提交，只要求没有本地面板/技能等待。
+    pub(in crate::tui) fn think_switch_ready(&mut self) -> bool {
+        matches!(self.state, State::Running | State::Cancelling) || self.shortcut_ready()
+    }
+
+    /// 校验档位时使用的模型：优先已提交但尚未应用的目标，回落当前模型。
+    fn effective_thinking(&self) -> Option<pp_config::models::ModelThinking> {
+        self.pending_model
+            .as_ref()
+            .and_then(|(_, reference)| {
+                self.choices
+                    .iter()
+                    .find(|choice| choice.reference == *reference)
+            })
+            .or(self.current_model.as_ref())
+            .map(|choice| choice.thinking)
+    }
+
+    /// 提交主会话手动档位：只登记期望值，不发送 worker 命令、不改写 `State`。
+    pub(in crate::tui) fn submit_think_level(&mut self, level: ThinkLevel) -> bool {
+        if matches!(self.state, State::Unavailable) {
+            if let Some(error) = self.unavailable.clone() {
+                self.notify(Level::Error, error);
+            }
+            return false;
+        }
+        let Some(thinking) = self.effective_thinking() else {
+            return false;
+        };
+        if !thinking.supports(level) {
+            let options = thinking
+                .levels()
+                .map(ThinkLevel::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.notify(
+                Level::Error,
+                format!("thinking level is not supported by the current model; options: {options}"),
+            );
+            return false;
+        }
+        if let Some(control) = &self.model_control
+            && control.submit(pp_runtime::model_control::Change::Think(level))
+        {
+            self.pending_think = Some((0, level));
+            return true;
+        }
+        self.notify(Level::Error, "Model control unavailable".into());
+        false
+    }
+
     pub(in crate::tui) fn poll_model_control(&mut self) -> bool {
         use pp_runtime::model_control::Report;
         let reports = self
@@ -215,6 +266,60 @@ impl App {
                             "{}model change failed: {message}",
                             agent.map(|id| format!("{id}: ")).unwrap_or_default()
                         ),
+                    );
+                }
+                Report::ThinkQueued { revision, effort } => {
+                    // 连按时只保留最新期望值；级别不等说明是已被取代的旧目标。
+                    if self
+                        .pending_think
+                        .as_ref()
+                        .is_some_and(|(_, level)| *level == effort)
+                    {
+                        self.pending_think = Some((revision, effort));
+                    }
+                    self.secondary_status = Some(format!(
+                        "thinking → {} · pending next request",
+                        effort.label()
+                    ));
+                    // 空闲时 worker 的 50ms 轮询随即应用；忙碌时排在任务之后执行。
+                    if let Some(commands) = &self.commands {
+                        let _ = commands.send(WorkerCommand::ApplyModelTargets);
+                    }
+                }
+                Report::ThinkApplied { revision, effort } => {
+                    if revision >= self.model_revision {
+                        self.model_revision = revision;
+                        self.think_level = effort;
+                        // 命中率不可跨边界比较，旧用量快照同样失效。
+                        self.usage = None;
+                        self.token_speed.clear();
+                    }
+                    if self
+                        .pending_think
+                        .as_ref()
+                        .is_some_and(|(pending, level)| revision >= *pending && *level == effort)
+                    {
+                        self.pending_think = None;
+                        self.secondary_status = None;
+                    }
+                }
+                Report::ThinkFailed {
+                    revision,
+                    effort,
+                    message,
+                } => {
+                    // 迟到的失败不能清掉更新的期望档位。
+                    if self
+                        .pending_think
+                        .as_ref()
+                        .is_some_and(|(pending, level)| revision >= *pending && *level == effort)
+                    {
+                        self.pending_think = None;
+                        self.secondary_status = None;
+                    }
+                    self.notify(
+                        Level::Error,
+                        format!("Thinking effort change failed: {message}"),
                     );
                 }
             }

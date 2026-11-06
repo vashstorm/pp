@@ -38,6 +38,7 @@ impl App {
             model_control: None,
             model_revision: 0,
             pending_model: None,
+            pending_think: None,
             auth_worker: super::super::auth::Worker::new()?,
             auth_panel: None,
             auth_cancellation: None,
@@ -186,6 +187,7 @@ impl App {
         ));
         self.model_control = Some(control);
         self.model_revision = 0;
+        self.pending_think = None;
         self.input_limits = agent.input_limits();
         self.conversation
             .set_bash_timeout(agent.bash_timeout_seconds());
@@ -360,13 +362,6 @@ impl App {
                             }
                             push_runtime_snapshot(&agent, &mut snapshots);
                             WorkerEvent::Reset
-                        }
-                        WorkerCommand::SetThinkLevel(level) => {
-                            let result = agent.set_think_level(level).map(|()| agent.think_level());
-                            if result.is_ok() {
-                                push_runtime_snapshot(&agent, &mut snapshots);
-                            }
-                            WorkerEvent::ThinkLevelSet(result)
                         }
                         WorkerCommand::SaveDefaultThinkLevel(level) => {
                             let result = agent.save_default_think_level(level).map(|()| level);

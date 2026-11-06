@@ -461,18 +461,6 @@ impl App {
                     self.state = State::Ready;
                     changed = true;
                 }
-                Ok(WorkerEvent::ThinkLevelSet(result)) => {
-                    match result {
-                        Ok(level) => {
-                            self.think_level = level;
-                            self.usage = None;
-                            self.token_speed.clear();
-                        }
-                        Err(error) => self.notify(Level::Error, format!("{error:#}")),
-                    }
-                    self.state = State::Ready;
-                    changed = true;
-                }
                 Ok(WorkerEvent::ModelState {
                     revision,
                     model,

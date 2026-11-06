@@ -12,7 +12,7 @@ fn completion_states() -> impl Iterator<Item = State> {
         State::Resetting,
         State::SwitchingModel,
         State::SavingModelSettings,
-        State::SettingThinkLevel,
+        State::SavingThinkDefault,
         State::Resuming,
         State::ReadingTree,
         State::NavigatingTree,
@@ -490,7 +490,7 @@ fn model_menu_filters_completes_and_cancels_without_requests() {
 }
 
 #[test]
-fn completion_commands_and_effort_preserve_busy_submission_rules() {
+fn completion_commands_stay_usable_in_busy_states() {
     for state in completion_states().filter(|state| !matches!(state, State::Ready)) {
         let (mut app, requests, _events) = plan_app();
         app.state = state;
@@ -507,20 +507,135 @@ fn completion_commands_and_effort_preserve_busy_submission_rules() {
             app.handle(key(KeyCode::Esc), &mut dirty);
             assert!(!cancellation.is_cancelled());
         }
-        for command in ["/effort h", "/think h"] {
-            app.clear_input();
-            app.handle(Event::Paste(command.into()), &mut dirty);
-            assert_eq!(menu_values(&app), [MenuAction::Effort(ThinkLevel::High)]);
-            app.handle(key(KeyCode::Tab), &mut dirty);
-            assert_eq!(app.input.lines(), &["/effort high"]);
-            app.handle(key(KeyCode::Enter), &mut dirty);
-            assert_eq!(app.input.lines(), &["/effort high"]);
-        }
         assert!(requests.try_recv().is_err());
         assert!(app.input_history.is_empty());
         assert!(!cancellation.is_cancelled());
         assert!(std::mem::discriminant(&app.state) == std::mem::discriminant(&state));
     }
+}
+
+#[test]
+fn effort_completion_stays_usable_while_running_and_submits_without_state_change() {
+    let (control, _binding) = model_control();
+    let (mut app, requests, _events) = plan_app();
+    app.state = State::Running;
+    app.model_control = Some(control);
+    // 夹具模型未写 thinking，允许全部档位；目录只用于本档位校验。
+    app.choices = vec![all_levels_choice()];
+    app.current_model = Some(app.choices[0].clone());
+    let mut dirty = false;
+    app.handle(Event::Paste("/effort h".into()), &mut dirty);
+    assert_eq!(menu_values(&app), [MenuAction::Effort(ThinkLevel::High)]);
+    app.handle(key(KeyCode::Tab), &mut dirty);
+    assert_eq!(app.input.lines(), &["/effort high"]);
+    app.handle(key(KeyCode::Enter), &mut dirty);
+    // 提交后只登记期望值：清空草稿但不改 State，也不发 worker 命令。
+    assert_eq!(app.input.lines(), &[""]);
+    assert!(matches!(app.state, State::Running));
+    assert_eq!(app.pending_think, Some((0, ThinkLevel::High)));
+    assert_eq!(app.input_history, ["/effort high"]);
+    assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+
+    // 控制通道缺失时保留草稿并提示，不登记新目标。
+    app.model_control = None;
+    app.pending_think = None;
+    app.input_history.clear();
+    app.handle(Event::Paste("/effort high".into()), &mut dirty);
+    app.handle(key(KeyCode::Enter), &mut dirty);
+    assert_eq!(app.input.lines(), &["/effort high"]);
+    assert_eq!(app.pending_think, None);
+    assert!(app.input_history.is_empty());
+    assert!(matches!(app.state, State::Running));
+    assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+    assert!(draw(&mut app, 120, 30).contains("Model control unavailable"));
+}
+
+#[test]
+fn unsupported_effort_level_is_rejected_locally_while_running() {
+    // 模型只允许 low/high：拒绝在本地完成，不产生目标、不写日志。
+    let (control, _binding, choices) = model_control_with(
+        r#"{"providers":{"fixture":{"api_key":"fixture","models":{"one":{"model":"one","thinking":{"efforts":["low","high"]}}}}}}"#,
+    );
+    let (mut app, requests, _events) = plan_app();
+    app.state = State::Running;
+    app.choices = choices.clone();
+    app.current_model = Some(choices[0].clone());
+    app.model_control = Some(control);
+    let mut dirty = false;
+    app.handle(Event::Paste("/effort max".into()), &mut dirty);
+    app.handle(key(KeyCode::Enter), &mut dirty);
+    assert_eq!(app.input.lines(), &["/effort max"]);
+    assert_eq!(app.pending_think, None);
+    assert!(app.input_history.is_empty());
+    assert!(matches!(app.state, State::Running));
+    assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+    let screen = draw(&mut app, 160, 30);
+    assert!(screen.contains("thinking level is not supported by the current model"));
+    assert!(screen.contains("low, high"));
+    // 不产生任何目标：服务端报告队列为空，失败只停在本地。
+    assert!(
+        app.model_control
+            .as_ref()
+            .unwrap()
+            .registry
+            .reports()
+            .is_empty()
+    );
+}
+
+#[test]
+fn think_failed_report_keeps_applied_level_and_notifies() {
+    let (control, binding) = model_control();
+    let (mut app, _requests, _events) = plan_app();
+    app.state = State::Running;
+    app.model_control = Some(control);
+    app.think_level = ThinkLevel::Low;
+    app.pending_think = Some((3, ThinkLevel::High));
+    binding.report(pp_runtime::model_control::Report::ThinkFailed {
+        revision: 3,
+        effort: ThinkLevel::High,
+        message: "persisting session failed".into(),
+    });
+    app.receive();
+    assert_eq!(app.think_level, ThinkLevel::Low);
+    assert_eq!(app.pending_think, None);
+    assert!(app.secondary_status.is_none());
+    let screen = draw(&mut app, 160, 30);
+    assert!(screen.contains("Thinking effort change failed: persisting session failed"));
+    assert!(screen.lines().last().unwrap().contains(" low ·"));
+
+    // 迟到的失败（revision 更小）不得清掉更新的期望档位。
+    app.pending_think = Some((5, ThinkLevel::High));
+    binding.report(pp_runtime::model_control::Report::ThinkFailed {
+        revision: 2,
+        effort: ThinkLevel::High,
+        message: "stale failure".into(),
+    });
+    app.receive();
+    assert_eq!(app.pending_think, Some((5, ThinkLevel::High)));
+    assert_eq!(app.think_level, ThinkLevel::Low);
+}
+
+#[test]
+fn effort_stays_rejected_while_reviewing_a_plan() {
+    let (control, _binding) = model_control();
+    let (mut app, requests, _events) = plan_app();
+    app.state = State::ReviewingPlan;
+    app.model_control = Some(control);
+    app.choices = vec![all_levels_choice()];
+    app.current_model = Some(app.choices[0].clone());
+    let mut dirty = false;
+    app.handle(Event::Paste("/effort high".into()), &mut dirty);
+    app.handle(key(KeyCode::Enter), &mut dirty);
+    // 审阅期间整体拒绝：保留草稿、不登记目标、不进入 worker。
+    assert_eq!(app.input.lines(), &["/effort high"]);
+    assert_eq!(app.pending_think, None);
+    assert!(matches!(app.state, State::ReviewingPlan));
+    assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+    app.handle(key(KeyCode::BackTab), &mut dirty);
+    assert_eq!(app.pending_think, None);
+    assert!(matches!(app.state, State::ReviewingPlan));
+    assert!(draw(&mut app, 160, 30).contains("Plan review is running"));
 }
 
 #[test]
@@ -736,12 +851,15 @@ fn command_menu_renders_above_input_with_columns_and_blue_selection() {
 
 #[test]
 fn shortcuts_cycle_all_levels_after_ack_without_recording_or_moving_draft() {
+    let (control, binding) = model_control();
     let mut app = app();
-    app.state = State::Ready;
+    // 运行中切档：不得落回阻塞态，也不得经 worker 排队。
+    app.state = State::Running;
+    app.model_control = Some(control);
+    app.choices = vec![all_levels_choice()];
+    app.current_model = Some(app.choices[0].clone());
     let (sender, requests) = mpsc::channel();
     app.commands = Some(sender);
-    let (events, receiver) = mpsc::channel();
-    app.events = Some(receiver);
     app.input.insert_str("草稿\n未发送🙂");
     app.input_history.push("已提交".into());
     app.navigate_history(true);
@@ -763,21 +881,40 @@ fn shortcuts_cycle_all_levels_after_ack_without_recording_or_moving_draft() {
     .into_iter()
     .enumerate()
     {
-        let key = encodings[index % encodings.len()];
+        let pressed = encodings[index % encodings.len()];
         let previous = app.think_level;
-        app.handle(Event::Key(key), &mut dirty);
-        assert!(
-            matches!(requests.try_recv(), Ok(WorkerCommand::SetThinkLevel(value)) if value == level)
-        );
+        app.handle(Event::Key(pressed), &mut dirty);
+        // 只登记期望值：State 未变、已应用档位未变、未向 worker 发任何命令。
+        assert!(matches!(app.state, State::Running));
+        assert_eq!(app.pending_think, Some((0, level)));
         assert_eq!(app.think_level, previous);
-        let mut repeat = key;
+        assert_eq!(app.input.lines(), &["已提交"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(app.history_index, Some(0));
+        assert_eq!(app.input_history, ["已提交"]);
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+        // 长按产生的 Repeat 不重复登记目标。
+        let mut repeat = pressed;
         repeat.kind = KeyEventKind::Repeat;
         app.handle(Event::Key(repeat), &mut dirty);
-        app.handle(Event::Key(key), &mut dirty);
+        assert_eq!(app.pending_think, Some((0, level)));
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
-        events.send(WorkerEvent::ThinkLevelSet(Ok(level))).unwrap();
+        // 控制线程先确认待生效目标，再发布边界应用结果。
+        let revision = wait_for_queued_think(&mut app, level);
+        assert_eq!(app.think_level, previous);
+        assert!(
+            app.secondary_status
+                .as_deref()
+                .is_some_and(|status| status.contains("pending next request"))
+        );
+        binding.report(pp_runtime::model_control::Report::ThinkApplied {
+            revision,
+            effort: level,
+        });
         app.receive();
+        assert_eq!(app.pending_think, None);
         assert_eq!(app.think_level, level);
+        assert!(app.secondary_status.is_none());
         let screen = draw(&mut app, 100, 30);
         assert!(
             screen
@@ -792,6 +929,10 @@ fn shortcuts_cycle_all_levels_after_ack_without_recording_or_moving_draft() {
         assert_eq!(app.input.cursor(), cursor);
         assert_eq!(app.history_index, Some(0));
         assert_eq!(app.input_history, ["已提交"]);
+        // 待生效确认后 UI 只补发 ApplyModelTargets；其余命令依旧不经 worker。
+        while let Ok(command) = requests.try_recv() {
+            assert!(matches!(command, WorkerCommand::ApplyModelTargets));
+        }
     }
     app.navigate_history(false);
     assert_eq!(app.input.lines(), &["草稿", "未发送🙂"]);
@@ -890,7 +1031,7 @@ fn shortcuts_reject_busy_actions_and_ignore_repeats_and_shift_tab_in_menus() {
     for state in [
         State::Resetting,
         State::SwitchingModel,
-        State::SettingThinkLevel,
+        State::SavingThinkDefault,
         State::Unavailable,
     ] {
         app.state = state;
@@ -1143,13 +1284,15 @@ fn shortcuts_platform_function_modifier_preserves_editor_bindings() {
 
 #[test]
 fn effort_space_opens_inline_menu_and_confirms_only_after_enter() {
+    let (control, binding) = model_control();
     let mut app = app();
     app.state = State::Ready;
+    app.model_control = Some(control);
     app.think_level = ThinkLevel::High;
+    app.choices = vec![all_levels_choice()];
+    app.current_model = Some(app.choices[0].clone());
     let (sender, requests) = mpsc::channel();
     app.commands = Some(sender);
-    let (events, receiver) = mpsc::channel();
-    app.events = Some(receiver);
     let mut dirty = false;
     app.input.insert_str("/effort");
     app.refresh_candidates(true);
@@ -1180,18 +1323,21 @@ fn effort_space_opens_inline_menu_and_confirms_only_after_enter() {
     }
     assert!(draw(&mut app, 100, 30).contains("❯ max"));
     app.handle(key(KeyCode::Enter), &mut dirty);
-    assert!(matches!(
-        requests.try_recv(),
-        Ok(WorkerCommand::SetThinkLevel(ThinkLevel::Max))
-    ));
+    // 确认后只登记期望值：不改 State、不经 worker，也不移动草稿。
+    assert_eq!(app.pending_think, Some((0, ThinkLevel::Max)));
     assert_eq!(app.think_level, ThinkLevel::High);
+    assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
     assert!(app.menu.is_none());
     app.input.insert_str("新草稿");
-    events
-        .send(WorkerEvent::ThinkLevelSet(Ok(ThinkLevel::Max)))
-        .unwrap();
+    let revision = wait_for_queued_think(&mut app, ThinkLevel::Max);
+    assert_eq!(app.think_level, ThinkLevel::High);
+    binding.report(pp_runtime::model_control::Report::ThinkApplied {
+        revision,
+        effort: ThinkLevel::Max,
+    });
     app.receive();
     assert_eq!(app.think_level, ThinkLevel::Max);
+    assert_eq!(app.pending_think, None);
     assert_eq!(app.input.lines(), &["新草稿"]);
 }
 

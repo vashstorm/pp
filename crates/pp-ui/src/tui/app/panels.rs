@@ -1,7 +1,7 @@
 use crate::tui::{
     App, COMMANDS, Command, Level, MenuAction, ModelPickerDraft, PendingKind, PlanCommand, Result,
-    SHORTCUTS_TAIL, STEERING_HINT, State, ThinkLevel, WARNING, WorkerCommand, ask, commands,
-    editor, files, model, sessions, skills,
+    SHORTCUTS_TAIL, STEERING_HINT, State, WARNING, WorkerCommand, ask, commands, editor, files,
+    model, sessions, skills,
 };
 
 impl App {
@@ -142,21 +142,9 @@ impl App {
         }
     }
 
-    pub(in crate::tui) fn set_think_level(&mut self, level: ThinkLevel) {
-        if self.send_submission(
-            WorkerCommand::SetThinkLevel(level),
-            State::SettingThinkLevel,
-        ) {
-            self.clear_input();
-        }
-    }
-
     // /init 回显用户命令本身；其余展开命令回显展开正文。
     pub(in crate::tui) fn echoes_source(prompt: &str) -> bool {
-        match prompt.trim() {
-            "/init" => true,
-            _ => false,
-        }
+        matches!(prompt.trim(), "/init")
     }
 
     pub(in crate::tui) fn submit(&mut self, kind: PendingKind) -> bool {
@@ -315,6 +303,16 @@ impl App {
                 }
             }
         }
+        // 切档不是 worker 命令：运行、取消与各种转换态都可提交，
+        // 不进入阻塞状态、不排进命令队列，草稿与光标保持原位。
+        if let Some(Command::Think(Some(level))) = &command {
+            let level = *level;
+            if self.submit_think_level(level) {
+                self.remember_input();
+                self.clear_input();
+            }
+            return false;
+        }
         if let Some(Command::Mcp(action)) = &command {
             if !matches!(self.state, State::Ready) || self.has_pending() {
                 self.notify(
@@ -465,7 +463,7 @@ impl App {
             | State::Resetting
             | State::SwitchingModel
             | State::SavingModelSettings
-            | State::SettingThinkLevel
+            | State::SavingThinkDefault
             | State::Resuming
             | State::ReadingTree
             | State::NavigatingTree
@@ -499,8 +497,8 @@ impl App {
                 Some(Command::MockTest(_)) => {
                     unreachable!("mock tests handled before the state match")
                 }
-                Some(Command::Think(Some(level))) => {
-                    self.set_think_level(level);
+                Some(Command::Think(Some(_))) => {
+                    unreachable!("effort handled before the state match")
                 }
                 Some(Command::Think(None)) => {
                     self.input = editor();
