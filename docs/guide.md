@@ -393,7 +393,7 @@ Plan 可使用 `read`、`grep`、`glob`、TUI `ask`、`write`、`plan_submit`，
 
 Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 使用必填匹配表达式 `pattern` 和可选目录 `path`（默认当前工作目录），另支持 `hidden`、`gitignore`、`limit`；`path` 只接受单个字面目录，不能传 glob 或多个范围。默认包含隐藏文件并遵守忽略规则；无分页，结果按修改时间排序，最多 200 项和 50 KiB。裸 `*.rs` 递归匹配，`src/*.rs` 仅匹配直接子项；五秒协作式超时返回部分结果及提示。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
 
-计划正文由 AI 选定的英文 kebab-case 文件名保存在项目 `.pp/drafts/<file_name>.md`，首次保存才创建目录／文件；不自动修改 `.gitignore`。正文须为非空 UTF-8、无 NUL、最多 262,144 字节，实施步骤使用标准 `- [ ]`／`- [x]` Markdown task list；代码 fence 中的 checkbox 不算任务。保存使用目录句柄、NOFOLLOW 和原子提交，拒绝符号链接／特殊文件；同名首次创建不覆盖。修订写入要求 expected revision 和已登记磁盘字节都匹配，避免覆盖外部编辑。
+计划正文由 AI 选定的英文 kebab-case 文件名保存在项目 `.pp/drafts/<file_name>.md`，首次保存才创建目录／文件；不自动修改 `.gitignore`。正文须为非空 UTF-8、无 NUL、最多 262,144 字节，新计划只使用 H2 分组和 H3 任务标题，两级标题都不编号，例如 `### [] 实现接口`。任务依赖用完整标题引用。可并行的任务划分独立写入范围，并明确实际依赖。旧式 `- [ ]`／`- [x]` 列表任务仍可执行，代码围栏中的示例不计入清单。保存使用目录句柄、NOFOLLOW 和原子提交，拒绝符号链接／特殊文件；同名首次创建不覆盖。修订写入要求 expected revision 和已登记磁盘字节都匹配，避免覆盖外部编辑。
 
 Plan 阶段只讨论、编写和审阅计划 Markdown，不生成 TODO 投影或快照，也不展示输入框上方的 TODO 固定区；载入、恢复、继续讨论和删除草稿均遵守这一规则，旧会话残留的规划清单在恢复时清理。仅在本地批准并进入执行后，运行时才从批准正文初始化 TODO。H2 标题作为阶段，重复标题保留各自的文档区域；H1 重置为默认 `Tasks`，较低级标题继承当前阶段。仅有任务的区域生成阶段，围栏示例不产生任务。
 
@@ -413,7 +413,7 @@ Plan 阶段只讨论、编写和审阅计划 Markdown，不生成 TODO 投影或
 
 Esc 只关闭审阅，不退出 Plan。外部编辑后再次安全读取可直接登记新修订并进入 Ready（须有真实 TODO），不强制模型复核；无 TODO 的正文只能 Draft 查看。批准携带 session／plan／revision／精确正文 token，worker 在准备前后再次核对文件及队列。字节变化会刷新新修订并要求重审；文件缺失、非 UTF-8、过大或不安全时绝不用日志旧正文回填。报告绑定审查修订和模型，计划改变后标记 `outdated`；审查结束不会自动实施。
 
-三种执行方式交接成功后都保持 **EXEC**，包括成功、失败和取消；再次规划必须用户 `/plan`。`Executed` 表示已经交接，不表示全部完成。Fresh／Keep／Compact 均在首个实施请求前从批准正文绑定 todo、激活首个 unchecked，不需要模型 `init`。Markdown 是任务及完成勾选的主记录：验收后 `todo done` 只修改对应 checkbox 中间的状态字节；`start` 显式重开 completed 时同时取消勾选。active、blocked 和原因只保存在会话中，失败／取消／阻塞项保持未勾选。执行计划仅允许 `view/start/done/block/unblock`，拒绝 `init/append/rm/drop`；不能增删、重排或改写批准任务。重复文案须以完整 `task`、可选完整 `phase` 及筛选后的 `occurrence`（从 1 开始）消除歧义，同名 phase-only 操作覆盖所有同名区域；普通清单同样支持 occurrence。丢失原文先 `view`，不能默认选择第一个同文案任务。
+三种执行方式交接成功后都保持 **EXEC**，包括成功、失败和取消；再次规划必须用户 `/plan`。`Executed` 表示已经交接，不表示全部完成。Fresh／Keep／Compact 均在首个实施请求前从批准正文绑定 todo、激活首个 unchecked，不需要模型 `init`。Markdown 是任务及完成勾选的主记录：验收后 `todo done` 只替换对应的勾选标记（H3 的 `[]` 变为 `[x]`，旧式列表的 `[ ]` 变为 `[x]`）；`start` 显式重开 completed 时同时取消勾选。active、blocked 和原因只保存在会话中，失败／取消／阻塞项保持未勾选。执行计划仅允许 `view/start/done/block/unblock`，拒绝 `init/append/rm/drop`；不能增删、重排或改写批准任务。重复文案须以完整 `task`、可选完整 `phase` 及筛选后的 `occurrence`（从 1 开始）消除歧义，同名 phase-only 操作覆盖所有同名区域；普通清单同样支持 occurrence。丢失原文先 `view`，不能默认选择第一个同文案任务。
 
 准确地直接 edit/write checkbox 和相邻验收证据仍可用。运行时在每个 todo 调用前、绑定文件的 edit/write 完成后、模型请求前及终答收尾前安全读取实际 Markdown；同批 `edit → todo`、`done → view` 不读旧状态。外部 checkbox 变动按文档序号合并，保留合法 active/blocked；外部取消勾选使 completed 回到 pending。标题与说明可刷新，但批准任务文本、数量或顺序改变会立即报错并停止继续执行、提醒及归档。没有后台文件监听。`/plan view` 显示最近成功同步的只读进度，Esc 只关闭视图；批准原始快照永久保留在实施消息／checkpoint。
 

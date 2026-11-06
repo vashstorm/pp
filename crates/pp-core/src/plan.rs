@@ -425,16 +425,16 @@ pub struct PlanTask {
     /// 物理阶段区域序号：每个 H1/H2 标题都开启新区域，重复标题不合并；
     /// 仅用于按物理区域分组，不序列化为任务 ID。
     pub phase_index: usize,
-    /// 源文件中 TaskListMarker 的字节区间；起点在 checkbox 的 `[` 之前
+    /// 源文件中 checkbox 的字节区间；起点在 checkbox 的 `[` 之前
     /// （可能含少量前导空白），终点在 `]` 之后。回写时必须在区间内定位
-    /// 唯一标准 checkbox，不能假定整个区间就是 checkbox。
+    /// 唯一勾选标记，不能假定整个区间就是标记本身。
     pub marker: Range<usize>,
 }
 
-/// 按正文出现顺序提取全部真实任务项，与 `task_progress` 共用 pulldown-cmark
-/// 的 task list 解析（含源位置），因此围栏示例不计数；说明、普通子项目符号
-/// 不成为任务。松散列表取项内首个段落，紧凑列表取 marker 后到该项首个换行
-/// 为止。同一次遍历捕获 H2 阶段标题（ATX 与 setext 均可）：H1 重置阶段，
+/// 按正文顺序提取 H3 任务标题及旧式 Markdown 列表任务，保留勾选标记的源位置。
+/// 只检查 Markdown 解析器识别的标题和任务项，因此围栏示例及普通说明不计数。
+/// 松散列表取项内首个段落，紧凑列表取 marker 后到该项首个换行为止。
+/// 同一次遍历捕获 H2 阶段标题（ATX 与 setext 均可）：H1 重置阶段，
 /// H3-H6 继承当前 H2，未归属 H2 的任务归入 `Tasks`；每个新的阶段区域有新的
 /// `phase_index`，重复标题不合并、不重排文档任务。
 pub fn plan_tasks(content: &str) -> Vec<PlanTask> {
@@ -447,8 +447,9 @@ pub fn plan_tasks(content: &str) -> Vec<PlanTask> {
     let mut open: Option<(PlanTask, bool)> = None;
     let mut phase = String::from("Tasks");
     let mut phase_index = 0usize;
-    // 打开的标题内已聚合的显示文本。
+    // 打开的标题内已聚合的显示文本，以及 H3 任务的勾选标记。
     let mut heading: Option<String> = None;
+    let mut heading_check = None;
     for (event, range) in parser {
         if let Some((task, in_paragraph)) = &mut open {
             match &event {
@@ -490,12 +491,20 @@ pub fn plan_tasks(content: &str) -> Vec<PlanTask> {
                     false,
                 ));
             }
-            Event::Start(Tag::Heading { .. }) => {
+            Event::Start(Tag::Heading { level, .. }) => {
                 heading = Some(String::new());
+                if level == HeadingLevel::H3 {
+                    heading_check = heading_task_check(content, range);
+                }
             }
             Event::Text(text) | Event::Code(text) => {
                 if let Some(heading_text) = &mut heading {
-                    heading_text.push_str(&text);
+                    let marker_bytes = heading_check
+                        .as_ref()
+                        .map_or(0, |(marker, _)| marker.end.saturating_sub(range.start));
+                    if let Some(text) = text.get(marker_bytes..) {
+                        heading_text.push_str(text);
+                    }
                 }
             }
             Event::End(TagEnd::Heading(level)) => {
@@ -508,6 +517,17 @@ pub fn plan_tasks(content: &str) -> Vec<PlanTask> {
                         HeadingLevel::H2 => {
                             phase_index += 1;
                             phase = heading_text.trim().to_owned();
+                        }
+                        HeadingLevel::H3 => {
+                            if let Some((marker, completed)) = heading_check.take() {
+                                tasks.push(PlanTask {
+                                    text: heading_text.trim().to_owned(),
+                                    completed,
+                                    phase: phase.clone(),
+                                    phase_index,
+                                    marker,
+                                });
+                            }
                         }
                         _ => {}
                     }
@@ -523,12 +543,34 @@ pub fn plan_tasks(content: &str) -> Vec<PlanTask> {
     tasks
 }
 
+fn heading_task_check(content: &str, range: Range<usize>) -> Option<(Range<usize>, bool)> {
+    let heading = content[range.clone()].trim_start_matches([' ', '\t']);
+    let body = heading.strip_prefix("###")?.strip_prefix([' ', '\t'])?;
+    let body = body.trim_start_matches([' ', '\t']);
+    let (check_len, completed) = checkbox_prefix(body)?;
+    let title = body[check_len..].strip_prefix([' ', '\t'])?.trim_start();
+    if title
+        .trim_matches(|c: char| c == '#' || c.is_whitespace())
+        .is_empty()
+    {
+        return None;
+    }
+    let start = range.end - body.len();
+    Some((start..start + check_len, completed))
+}
+
+fn checkbox_prefix(text: &str) -> Option<(usize, bool)> {
+    match text.as_bytes() {
+        [b'[', b']', ..] => Some((2, false)),
+        [b'[', b' ', b']', ..] => Some((3, false)),
+        [b'[', b'x' | b'X', b']', ..] => Some((3, true)),
+        _ => None,
+    }
+}
+
 /// 将任务勾选状态回写到源正文：仅对状态变化的任务，在其 marker 源区间内
-/// 定位唯一标准 checkbox（`[ ]`/`[x]`/`[X]`），验证旧状态与解析状态一致后
-/// 修改中间一个 ASCII 字节。任务与勾选向量长度不一致、区间越界、区间内没有
-/// 或出现多个标准 checkbox、或旧状态与解析状态不符（stale）时返回错误，不做
-/// 任何位置猜测。全部无变化返回 `None`，不复制正文；有变化只复制一次，保留
-/// CRLF、缩进、列表符号、内联 Markdown、代码围栏及所有其他字节。
+/// 定位唯一勾选标记，验证旧状态与解析状态一致后替换标记。全部无变化返回
+/// `None`；有变化时保留 CRLF、缩进、内联 Markdown 及标记以外的所有字节。
 pub fn patch_task_checks(
     content: &str,
     tasks: &[PlanTask],
@@ -540,7 +582,7 @@ pub fn patch_task_checks(
         checked.len(),
         tasks.len()
     );
-    let mut edits: Vec<(usize, u8)> = Vec::new();
+    let mut edits = Vec::new();
     for (index, (task, &checked)) in tasks.iter().zip(checked).enumerate() {
         if task.completed == checked {
             continue;
@@ -551,60 +593,60 @@ pub fn patch_task_checks(
                 task.marker
             )
         })?;
-        let bytes = marker.as_bytes();
-        let mut found: Option<usize> = None;
-        for offset in 0..bytes.len().saturating_sub(2) {
-            if bytes[offset] == b'['
-                && bytes[offset + 2] == b']'
-                && matches!(bytes[offset + 1], b' ' | b'x' | b'X')
-            {
-                ensure!(
-                    found.is_none(),
-                    "Task {index} marker range {:?} contains multiple checkboxes.",
-                    task.marker
-                );
-                found = Some(offset);
-            }
-        }
-        let offset = found.ok_or_else(|| {
+        let mut found = marker.match_indices('[').filter_map(|(offset, _)| {
+            let (len, completed) = checkbox_prefix(&marker[offset..])?;
+            Some((offset, len, completed))
+        });
+        let (offset, len, was_checked) = found.next().ok_or_else(|| {
             anyhow!(
-                "Task {index} marker range {:?} contains no standard checkbox.",
+                "Task {index} marker range {:?} contains no checkbox.",
                 task.marker
             )
         })?;
         ensure!(
-            (bytes[offset + 1] != b' ') == task.completed,
+            found.next().is_none(),
+            "Task {index} marker range {:?} contains multiple checkboxes.",
+            task.marker
+        );
+        ensure!(
+            was_checked == task.completed,
             "Task {index} marker is stale; re-parse the plan before patching."
         );
-        edits.push((
-            task.marker.start + offset + 1,
-            if checked { b'x' } else { b' ' },
-        ));
+        let start = task.marker.start + offset;
+        let replacement = if checked {
+            "[x]"
+        } else if content[..start]
+            .trim_end_matches([' ', '\t'])
+            .ends_with("###")
+        {
+            "[]"
+        } else {
+            "[ ]"
+        };
+        edits.push((start..start + len, replacement));
     }
     if edits.is_empty() {
         return Ok(None);
     }
-    let mut bytes = content.as_bytes().to_vec();
-    for (position, byte) in edits {
-        bytes[position] = byte;
+    edits.sort_unstable_by_key(|(range, _)| range.start);
+    let mut updated = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for (range, replacement) in edits {
+        ensure!(range.start >= cursor, "Task checkbox ranges overlap.");
+        updated.push_str(&content[cursor..range.start]);
+        updated.push_str(replacement);
+        cursor = range.end;
     }
-    Ok(Some(
-        String::from_utf8(bytes).expect("only ASCII checkbox state bytes were replaced"),
-    ))
+    updated.push_str(&content[cursor..]);
+    Ok(Some(updated))
 }
 
 pub fn task_progress(content: &str) -> (usize, usize) {
-    let parser =
-        pulldown_cmark::Parser::new_ext(content, pulldown_cmark::Options::ENABLE_TASKLISTS);
-    let mut completed = 0;
-    let mut total = 0;
-    for event in parser {
-        if let pulldown_cmark::Event::TaskListMarker(done) = event {
-            total += 1;
-            completed += usize::from(done);
-        }
-    }
-    (completed, total)
+    let tasks = plan_tasks(content);
+    (
+        tasks.iter().filter(|task| task.completed).count(),
+        tasks.len(),
+    )
 }
 
 #[cfg(test)]
@@ -1023,5 +1065,49 @@ mod task_tests {
         let texts =
             |items: Vec<PlanTask>| items.into_iter().map(|task| task.text).collect::<Vec<_>>();
         assert_eq!(texts(plan_tasks(&ticked)), texts(tasks));
+    }
+
+    #[test]
+    fn plan_heading_tasks_round_trip_with_legacy_tasks() {
+        let body = concat!(
+            "## 并行实现\r\n",
+            "### [] **实现** `API` ###\r\n",
+            "- [ ] 旧格式任务\r\n",
+            "### [X] b. 补充测试\r\n",
+            "### 普通标题\r\n",
+            "### [] ###\r\n",
+            "```markdown\r\n### [] 围栏内示例\r\n```\r\n",
+            "## 集成\r\n",
+            "### [] 验收\r\n",
+        );
+        let tasks = plan_tasks(body);
+        let summary = |tasks: &[PlanTask]| {
+            tasks
+                .iter()
+                .map(|task| (task.text.clone(), task.phase_index))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            summary(&tasks),
+            vec![
+                ("实现 API".into(), 1),
+                ("旧格式任务".into(), 1),
+                ("b. 补充测试".into(), 1),
+                ("验收".into(), 2),
+            ]
+        );
+        assert_eq!(task_progress(body), (1, 4));
+        let patched = patch_task_checks(body, &tasks, &[true, true, false, true])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            patched,
+            body.replace("[] **实现**", "[x] **实现**")
+                .replace("- [ ] 旧格式任务", "- [x] 旧格式任务")
+                .replace("[X] b.", "[] b.")
+                .replace("[] 验收", "[x] 验收")
+        );
+        assert_eq!(summary(&plan_tasks(&patched)), summary(&tasks));
+        assert_eq!(task_progress(&patched), (3, 4));
     }
 }

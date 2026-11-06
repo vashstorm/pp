@@ -1,4 +1,4 @@
-const TODO_TUI_BODY: &str = "# Todo integration\n\n## Write\n- [ ] Write canary bytes.\n  - Acceptance: canary.txt contains smoke bytes.\n\n## Verify\n- [ ] Read back canary bytes.\n  - Acceptance: read returns smoke bytes.\n";
+const TODO_TUI_BODY: &str = "## Write\n### [] Write canary bytes.\n- Acceptance: canary.txt contains smoke bytes.\n\n## Verify\n### [] Read back canary bytes.\n- Acceptance: read returns smoke bytes.\n";
 
 fn plan_todo_result(body: &Value, protocol: &str, id: &str) -> Value {
     cancel_tool_outputs(body, protocol)
@@ -190,7 +190,7 @@ fn plan_todo_approval_initializes_all_contexts_and_reminders_archive_same_bytes(
             );
             assert_eq!(
                 std::fs::read_to_string(project.path().join(".pp/plans/create-canary.md")).unwrap(),
-                TODO_TUI_BODY.replacen("[ ]", "[x]", 1)
+                TODO_TUI_BODY.replacen("[]", "[x]", 1)
             );
             plan_final(request, protocol, "Work stopped early.");
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
@@ -226,7 +226,7 @@ fn plan_todo_approval_initializes_all_contexts_and_reminders_archive_same_bytes(
             assert!(!project.path().join(".pp/plans/create-canary.md").exists());
             assert_eq!(
                 std::fs::read_to_string(project.path().join(".pp/done/create-canary.md")).unwrap(),
-                TODO_TUI_BODY.replace("[ ]", "[x]")
+                TODO_TUI_BODY.replace("[]", "[x]")
             );
             pty.input("/plan view\r");
             pty.wait_for("todo completed plan panel", |screen| {

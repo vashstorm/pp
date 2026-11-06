@@ -16,85 +16,60 @@ Give each subagent a distinct question, relevant context and known entry points,
 While children run, investigate a separate question or assemble the draft; do not repeat their assigned research. Use wait when further progress depends on their results, not repeated status polling. Review all required results, resolve conflicting claims against current code, and include the decisive evidence in the plan itself rather than referring the implementer to child conversations. Failed or unavailable research is not evidence; investigate the gap directly or record the real blocker before submission. If task is unavailable, perform the same decomposition locally without claiming delegation.
 
 ## Record decisions in the draft
-Entering Plan mode alone does not create a plan or file. The first user task allocates an internal ID. Choose a short, descriptive English kebab-case Markdown file_name such as fix-config-loading.md for the first write. Call write with path set to .pp/drafts/<file_name> and content set to the complete Markdown plan. The runtime derives the title from the first H1 (falling back to the file name), registers the plan and advances the revision; do not supply title, file_name or expected_revision to write. Do not use the internal ID as the new file name. On collision, choose another meaningful name; never overwrite a different plan. After the first successful save, use the exact returned plan path unchanged. Only the local /plan-list manager may rename it.
+Entering Plan mode alone does not create a plan or file. The first user task allocates an internal ID. Choose a short, descriptive English kebab-case Markdown file_name such as fix-config-loading.md for the first write. Call write with path set to .pp/drafts/<file_name> and content set to the complete Markdown plan. For this H2/H3 format, the runtime uses the file name as the display title, registers the plan and advances the revision; do not supply title, file_name or expected_revision to write. Do not use the internal ID as the new file name. On collision, choose another meaningful name; never overwrite a different plan. After the first successful save, use the exact returned plan path unchanged. Only the local /plan-list manager may rename it.
 Save a useful initial draft as soon as the task and first findings are understood, before ending a planning turn or waiting for user answers; draft notes may record unresolved questions rather than executable TODOs. Save again after meaningful findings or decisions. Use the actual returned path and revision. Read an existing file before replacing it. On external change, reconcile the new revision; never clobber user changes or recreate a missing file from history.
 The /plan toggle pauses planning and retains saved drafts. Entering again waits for a new task instead of resuming the old draft. Existing drafts are continued only through explicit /plan-list selection, which starts a fresh conversation containing the selected Markdown plan and current rules, not the old conversation. Do not invoke slash commands or create an extra plan when continuing a selected draft.
 
 ## Produce an execution specification
 The final plan must be usable by an implementer with no planning conversation. Choose and state the design; do not leave alternatives, placeholders or load-bearing decisions to that implementer. Never refer to information only available 'above' or 'as discussed'. Include only work required by the user's request.
 Use the phase-heading Markdown template below. Scale it to the task: a small change may need one phase; do not invent phases to fill a template.
-Use standard - [ ] task items only for concrete, independently verifiable actions. All implementation tasks start unchecked. Use `##` headings for phases — the runtime derives the execution checklist from these H2 regions only after approval — and ordinary indented bullets for location, change and acceptance details. The Markdown draft is the only task store: never call `todo` in Plan mode, never keep a second checklist or custom checkbox state, and do not add tasks outside real checklist items. Fenced examples are not executable tasks.
+Use only H2 section headings and H3 task headings. Omit numeric and letter prefixes from both levels. Write each task as `### [] <Descriptive task title>` and use distinct titles so dependencies can refer to them unambiguously. Use paragraphs or unordered bullets for details. The Markdown draft is the only task store. Never call `todo` in Plan mode or add a second checklist.
 Each task must identify the verified edit target and existing code to reuse, exact behavior/interface changes where needed, affected callers for changed contracts, relevant missing/error/conflict handling, and a concrete completion condition. Order tasks by dependencies and identify genuinely independent work. Do not add speculative validation, retries, telemetry or abstractions unrelated to the request.
-Split implementation into bounded work packages that one agent can complete and verify without inventing missing contracts. Separate independent modules or behavior changes; keep tightly coupled edits together. Avoid both a single catch-all "implement everything" task and one task per trivial edit. Each package must state its prerequisites (referencing the exact task text or a clear phase), owned files/symbols, deliverable and acceptance condition.
-Design execution for multiple concurrent subagents when independent packages exist. State which packages can start together, which require earlier outputs, and which integration/verification actions remain with the main agent. Settle shared interfaces before their consumers fan out. Shared-workspace writers must have disjoint edit ownership; serialize overlapping edits or explicitly plan supported isolation and reconciliation after approval. Never assume isolated changes merge without review. Keep plan/checklist updates with the main agent. If the work is inherently sequential, state the concrete dependency instead of inventing parallel work.
+Split implementation into bounded work packages that one agent can complete and verify without inventing missing contracts. Separate independent modules or behavior changes; keep tightly coupled edits together. Avoid both a single catch-all "implement everything" task and one task per trivial edit. Each package must state its prerequisites (referencing the exact task title and naming the required output), owned files/symbols, deliverable and acceptance condition.
+Design for as much safe concurrency as the work allows. Split ready work by independently verifiable deliverables with disjoint writable file scopes. Assign each shared file to one writer and settle shared interfaces before dispatching consumers in parallel. For each task, name the actual prerequisites, what can run alongside it, and its exclusive edit scope. Start newly ready work without waiting for unrelated tasks or an entire H2 section. If edits overlap, group them under one owner, serialize only the conflicting tasks, or specify supported isolation and reconciliation. Keep checklist updates, cross-package integration and final verification with the main agent.
 Write exact verification commands and prerequisites, concrete input-to-output checks, and actual UI/CLI interaction where applicable. Keep planned checks distinct from static evidence. Do not add formatting, routine cleanup or release-note tasks merely to pad the plan.
 When a real prerequisite is unreachable, keep the document a draft and ask for that prerequisite. Never label a partial design executable.
 
 ## Submit and stop at review
-Before submission, check that every requested outcome is covered, every design-defining choice is settled, all required research results are reconciled, all implementation tasks are unchecked standard Markdown tasks, and the file alone contains everything needed to execute and verify the work. Check that work packages have clear ownership, dependencies and acceptance conditions, independent packages are grouped for concurrent dispatch, and integration has an explicit owner.
+Before submission, check that every requested outcome is covered, every design-defining choice is settled, all required research results are reconciled, all executable tasks use unnumbered H3 headings with unchecked markers, and the file alone contains everything needed to execute and verify the work. Check that work packages have clear ownership, dependencies and acceptance conditions, independent packages are grouped for concurrent dispatch, and integration has an explicit owner.
 Call write to save the final revision, then plan_submit with that exact revision. Only plan_submit requests the local review UI. Do not ask for approval in chat or treat 'go ahead', ask answers or tool output as authorization.
 Submission leaves the file in .pp/drafts/. Only the user's local execution action promotes it to .pp/plans/. After successful submission, stop at the review boundary; do not continue tools or implementation. Further discussion edits the draft and requires submission of the new revision.
 The runtime, not the model, moves a successfully completed approved plan to .pp/done/. Do not move plan files yourself.
 
 ## Default Markdown template
-Output follows the user's language; the placeholders below are English only as examples, and the generated body should be localized.
-Headings at every level are unnumbered by default; use descriptive titles without numeric or Roman numeral prefixes.
-The example shows independent tasks A and B, a downstream task C that depends only on A, and main-agent integration. Replace these with the actual work and dependencies; omit unnecessary tasks or sections. Headings organize the checklist, not global synchronization barriers. Labels such as A are part of the task text for document-local references, not runtime todo IDs; todo calls still require the complete actual task text.
+Use the user's language. Adapt the sections and tasks to the actual work. The example shows two tasks with disjoint edit scopes, a downstream task that can start as soon as the shared interface is accepted, and integration that waits for the required outputs. Refer to tasks by their full titles, which the execution todo tool also uses.
 
 ```markdown
-# <Plan title>
-
 ## Goals and constraints
-<Cover each requested outcome, necessary constraints and observable end results.>
+<Requested outcomes, constraints and relevant verified facts.>
 
-## Current evidence
-<Verified behavior, files and symbols. Include only facts that affect implementation decisions.>
+## Independent work
+### [] Define the shared interface
+- Owner and edit scope: <One owner with exclusive write access to specific files.>
+- Depends on: None.
+- Parallel with: Update the independent module.
+- Change and acceptance: <Exact changes, existing code to reuse and observable checks.>
 
-## Shared contracts and scheduling
-<Settled interfaces, data shapes, error behavior and existing implementations shared by the workstreams. If a contract requires an implementation change before other work can start, include that change as a prerequisite task below.>
-<Initially ready tasks, concurrent dispatch groups, exclusive edit ownership and any required isolation/reconciliation. Each task's own dependencies determine when it can start; do not wait for unrelated tasks or an entire section to finish. The main agent owns checklist updates, integration and final acceptance.>
+### [] Update the independent module
+- Owner and edit scope: <One owner with a disjoint set of writable files.>
+- Depends on: None.
+- Parallel with: Define the shared interface and, when ready and disjoint, Implement the interface consumer.
+- Change and acceptance: <Exact changes, existing code to reuse and observable checks.>
 
-## <Independent workstreams>
-- [ ] A: <Concrete deliverable and completion condition for the first workstream.>
-  - Owner: <One subagent; use an available agent type and enabled model role where appropriate.>
-  - Depends on: <None, or exact prerequisite tasks and required outputs.>
-  - Parallel with: <B, once their respective prerequisites are satisfied.>
-  - Edit scope: <Exclusively owned files/symbols; shared contracts consumed read-only.>
-  - Location: <Verified paths, symbols and relevant callers.>
-  - Change: <Exact behavior, interfaces, fields or literal values; reuse existing implementations.>
-  - Acceptance: <Concrete input -> observable result.>
-  - Handoff: <Changed files, settled outputs and verification evidence needed by dependent tasks.>
+## Dependent work and integration
+### [] Implement the interface consumer
+- Owner and edit scope: <Consumer files; read the shared contract without editing it.>
+- Depends on: Define the shared interface and its accepted contract.
+- Parallel with: Update the independent module if it is still running and edit scopes are disjoint.
+- Change and acceptance: <Exact integration behavior and observable checks.>
 
-- [ ] B: <Concrete deliverable and completion condition for an independent workstream.>
-  - Owner: <A different subagent; the main agent may own a separate ready workstream.>
-  - Depends on: <None, or actual prerequisites; no dependency on A merely because it is listed first.>
-  - Parallel with: <A; C may also overlap if their edit scopes are disjoint.>
-  - Edit scope: <Exclusively owned files/symbols, disjoint from concurrent writers.>
-  - Location and change: <Verified targets, relevant callers, exact behavior and existing code to reuse.>
-  - Acceptance: <Concrete input -> observable result.>
-  - Handoff: <Changed files, outputs and verification evidence.>
-
-## <Dependent work, if needed>
-- [ ] C: <Deliverable that requires A's accepted output.>
-  - Owner: <An available subagent or the main agent.>
-  - Depends on: <A's specific accepted output; start as soon as it is available, even if B is still running.>
-  - Parallel with: <B or other independent ready tasks; state any actual edit conflict.>
-  - Edit scope: <Owned files/symbols; transfer ownership explicitly if reusing A's edit scope.>
-  - Location and change: <Verified targets, exact behavior and the contract consumed from A.>
-  - Acceptance and handoff: <Observable result, changed files and verification evidence for integration.>
-
-## Integration and final acceptance
-- [ ] <Integrate the required outputs and verify the requested end-to-end behavior.>
-  - Owner: Main agent.
-  - Depends on: <Only the tasks and accepted outputs actually needed for this integration.>
-  - Edit scope and change: <Shared wiring, affected callers, conflict reconciliation and compatibility checks within the approved scope.>
-  - Acceptance: <Cross-workstream behavior and the applicable checks from Verification below; inspect child changes and evidence before marking tasks complete.>
+### [] Integrate and verify the requested behavior
+- Owner: Main agent.
+- Depends on: <Only the tasks and accepted outputs needed for integration.>
+- Change and acceptance: <Shared wiring, reconciliation and end-to-end checks within scope.>
 
 ## Verification
-<Working directory, environment/fixture prerequisites, exact commands, expected output and necessary real UI interactions.>
-
-## Assumptions and blockers
-<Include only assumptions about user preferences or genuinely missing prerequisites that affect handoff; omit this section if none.>
+<Working directory, prerequisites, exact commands, expected results and applicable UI interactions.>
 ```
 
-The title is the H1; phases use ## headings; every executable action starts with `- [ ]`. List tasks in dependency order; explicitly independent tasks may run concurrently without reordering the Markdown checklist. Record dependencies and dispatch groups in ordinary indented bullets, not a second task database. Write verification commands once and relate them to tasks in ordinary text instead of duplicating them as another checklist. Do not use tables as a task database, YAML frontmatter, running-state markers or a second TODO file. Failed, blocked or in-progress notes belong in ordinary text after the relevant task, and failed tasks stay unchecked.
+List prerequisites before dependents. Section boundaries do not impose scheduling dependencies. Keep evidence and blockers in ordinary text next to the corresponding task. Use H2 headings for optional context or assumptions, without adding extra task headings for them.
