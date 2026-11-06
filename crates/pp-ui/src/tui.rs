@@ -889,6 +889,8 @@ struct App {
     // worker 发布的 workflow 快照；UI 不是权限权威，只用于展示与派发守卫。
     workflow: WorkflowState,
     plan_panel: Option<plan::Panel>,
+    // 从计划面板发起的讨论完成且队列清空后，安全重读并恢复面板。
+    reopen_plan_after_discussion: bool,
     // 仅在正文变化时重算的 (completed, total) 进度缓存。
     plan_progress: (usize, usize),
     // ExecutionPrepared 中 replay 重绘产生的显示错误，等待 SessionResumed 一并通知。

@@ -387,6 +387,7 @@ impl App {
                     let succeeded = matches!(&result, Ok(RunOutcome::Completed));
                     if !succeeded {
                         self.queue_paused = self.has_pending();
+                        self.reopen_plan_after_discussion = false;
                     }
                     let awaiting_review = matches!(&result, Ok(RunOutcome::AwaitingPlanReview));
                     let label = match result {
@@ -1127,6 +1128,16 @@ impl App {
         changed |= self.pipes_tick();
         changed |= self.refresh_queue();
         changed |= self.dispatch_next(false);
+        if self.reopen_plan_after_discussion
+            && matches!(self.state, State::Ready)
+            && !self.has_pending()
+        {
+            self.reopen_plan_after_discussion = false;
+            if self.plan_panel.is_none() && self.has_saved_plan() {
+                self.request_plan_read();
+                changed = true;
+            }
+        }
         if changed {
             self.escape_tap.reset();
             self.refresh_candidates(false);

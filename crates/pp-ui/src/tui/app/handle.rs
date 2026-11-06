@@ -383,11 +383,7 @@ impl App {
                                     self.resources.plan_discussion = true;
                                     return false;
                                 }
-                                self.queue_paused = false;
-                                if self.send_task(Some(text.clone())) {
-                                    self.plan_panel = None;
-                                    self.plan_list_panel = None;
-                                    self.plan_list_pending = None;
+                                if self.send_plan_discussion(text.clone()) {
                                     self.input = editor();
                                     self.append("You", &text);
                                     self.remember_text(text);

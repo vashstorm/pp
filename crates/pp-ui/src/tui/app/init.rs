@@ -151,6 +151,7 @@ impl App {
             file_scan_root: String::new(),
             workflow: WorkflowState::default(),
             plan_panel: None,
+            reopen_plan_after_discussion: false,
             plan_progress: (0, 0),
             resume_note: None,
             plan_retry_enter: false,

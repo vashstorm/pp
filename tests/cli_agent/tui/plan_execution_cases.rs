@@ -556,7 +556,10 @@ fn plan_tui_ready_keeps_input_and_output_and_sends_discussion() {
         );
         assert!(!body.to_string().contains("[Approved Markdown snapshot]"));
         plan_final(request, protocol, "Discussion continued");
-        pty.ready();
+        pty.wait_for("讨论完成后重新打开草稿操作面板", |screen| {
+            let text = screen.contents();
+            text.contains("╭ Actions") && text.contains("❯ Save draft and leave Plan mode")
+        });
         assert_eq!(
             std::fs::read_to_string(plan_path(project.path())).unwrap(),
             PLAN_TUI_BODY

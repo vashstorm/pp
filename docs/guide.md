@@ -407,7 +407,7 @@ Plan 阶段只讨论、编写和审阅计划 Markdown，不生成 TODO 投影或
 4. **Review Plan**：使用 REVIEW Role 的 model 和 effort，未配置时沿用当前模型；在独立只读上下文中运行，仅原始需求＋当前计划；可读取代码和安全搜索，不可 ask／写入／提交／实施。审查需求覆盖、关键决策是否完整、真实代码及调用方、契约与失败边界、验证方案；只报告有证据、可行动且会影响实施的问题，不挑风格、不扩大范围、不把无关既有缺陷算到计划上，允许零发现。报告使用任务／计划语言，先列问题及对应计划项、证据、触发条件、影响和最小修订建议：Major 为影响安全实施或需求达成的问题，Minor 为局部规格／验证缺陷；未确认问题和缺失证据单列 Info 开放项，最后给出就绪评估及静态审查局限。不会修改计划或勾选 TODO，也不自动批准；无需先 review 或消除报告问题才可执行。
 5. **Save draft and leave Plan mode**：安全核对磁盘正文与当前审阅版本，保存 Draft 状态并退出 Plan，保留计划文件；不发起模型请求，也不实施计划。失败保留面板并显示错误。
 
-继续讨论直接使用下方输入框：在操作区输入普通文字或粘贴会转入输入框，也可用 Tab 切换；Enter 发送，Ctrl + J 换行，Esc 关闭面板并保留未发送草稿。发送后降 Draft，保留计划正文，重新提交才能批准；不强制立即重写文件。仅针对当前修订的 reviewer 报告随问题作为辅助材料带回。
+继续讨论直接使用下方输入框：在操作区输入普通文字或粘贴会转入输入框，也可用 Tab 切换；Enter 发送，Ctrl + J 换行，Esc 关闭面板并保留未发送草稿。发送后降为 Draft，保留计划正文，讨论期间暂时收起面板。讨论成功完成且待处理输入清空后，自动重新读取计划并打开 Actions，即使模型只回复文字。重新提交后才可批准执行，当前草稿可直接保存退出。仅针对当前修订的 reviewer 报告随问题作为辅助材料带回。
 
 审查提示词位于 `crates/pp-runtime/src/prompts/plan-review.md`。设计参考 Codex 的 [Plan Mode 模板](https://github.com/openai/codex/blob/23934d31b15b1127c83535f84854e5009f7cd51d/codex-rs/collaboration-mode-templates/templates/plan.md)与 [review rubric](https://github.com/openai/codex/blob/23934d31b15b1127c83535f84854e5009f7cd51d/codex-rs/prompts/templates/review/rubric.md)：采用关键决策完整、可独立交接、有证据的独立问题、去重和宁缺毋滥原则；按 pp 的计划审查场景使用 Markdown，不沿用代码 diff 审查的 JSON／行内评论格式，也不引入 Codex 允许的构建／测试能力。
 

@@ -209,6 +209,29 @@ fn resource_plan_discussion_uses_prepared_images_and_text() {
     );
     assert!(app.plan_panel.is_none());
     assert!(app.input.is_empty());
+
+    app.input_queue
+        .enqueue(PendingKind::FollowUp, "补充问题".into(), None, false)
+        .unwrap();
+    let mut workflow = app.workflow.clone();
+    workflow.plan.as_mut().unwrap().status = PlanStatus::Draft;
+    app.receive_event_for_test(WorkerEvent::Workflow(workflow));
+    app.input_queue.close().unwrap();
+    app.receive_event_for_test(WorkerEvent::completed(
+        Instant::now(),
+        Ok(RunOutcome::Completed),
+    ));
+    assert!(matches!(
+        commands.try_recv().unwrap(),
+        WorkerCommand::Run { prompt, .. } if prompt == "补充问题"
+    ));
+
+    app.input_queue.close().unwrap();
+    app.receive_event_for_test(WorkerEvent::completed(
+        Instant::now(),
+        Ok(RunOutcome::Completed),
+    ));
+    assert!(matches!(commands.try_recv(), Ok(WorkerCommand::ReadPlan)));
 }
 
 #[test]

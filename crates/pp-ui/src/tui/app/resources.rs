@@ -98,11 +98,7 @@ impl App {
                 let display = input.display.clone();
                 self.resources.ready = Some(input);
                 if discussion {
-                    self.queue_paused = false;
-                    if self.send_task(Some(display.clone())) {
-                        self.plan_panel = None;
-                        self.plan_list_panel = None;
-                        self.plan_list_pending = None;
+                    if self.send_plan_discussion(display.clone()) {
                         self.remember_input();
                         self.clear_input();
                         self.append("You", &display);

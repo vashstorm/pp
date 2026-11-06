@@ -624,6 +624,18 @@ impl App {
         !matches!(self.state, State::Ready)
     }
 
+    pub(in crate::tui) fn send_plan_discussion(&mut self, prompt: String) -> bool {
+        self.queue_paused = false;
+        if !self.send_task(Some(prompt)) {
+            return false;
+        }
+        self.reopen_plan_after_discussion = true;
+        self.plan_panel = None;
+        self.plan_list_panel = None;
+        self.plan_list_pending = None;
+        true
+    }
+
     pub(in crate::tui) fn send_task(&mut self, prompt: Option<String>) -> bool {
         if let Err(error) = self.input_queue.begin_run() {
             self.queue_paused = true;

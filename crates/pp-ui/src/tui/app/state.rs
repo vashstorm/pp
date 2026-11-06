@@ -129,6 +129,7 @@ impl App {
         self.plan_reenter_standby = false;
         self.plan_leave_confirmation = None;
         self.plan_panel = None;
+        self.reopen_plan_after_discussion = false;
         self.plan_after_enter = None;
         self.review_transcript = None;
         self.plan_review_pending = None;
@@ -142,6 +143,9 @@ impl App {
 
     /// 应用 worker 发布的 workflow 快照；仅在正文变化时重算进度。
     pub(in crate::tui) fn set_workflow(&mut self, workflow: WorkflowState) {
+        if workflow.mode != WorkMode::Plan || workflow.plan.is_none() {
+            self.reopen_plan_after_discussion = false;
+        }
         if let Some(document) = &workflow.plan {
             self.update_plan_progress_cache(document);
         } else {
