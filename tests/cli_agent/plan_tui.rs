@@ -111,6 +111,17 @@ fn plan_path(project: &Path) -> std::path::PathBuf {
 }
 
 fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, content: &str) {
+    plan_drive_ready_with_mcp(pty, server, protocol, task, content, &[]);
+}
+
+fn plan_drive_ready_with_mcp(
+    pty: &mut Pty,
+    server: &Server,
+    protocol: &str,
+    task: &str,
+    content: &str,
+    allowed_mcp: &[&str],
+) {
     pty.input(&format!("{task}\r"));
     let (request, body) = pty.request_at(server, api_path(protocol));
     let names: Vec<_> = body["tools"]
@@ -132,9 +143,10 @@ fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, 
         names.iter().all(|name| matches!(
             *name,
             "read" | "ask" | "grep" | "glob" | "lsp" | "write" | "plan_submit" | "task" | "wait"
-        )),
+        ) || allowed_mcp.contains(name)),
         "{body}"
     );
+    assert!(allowed_mcp.iter().all(|tool| names.contains(tool)), "{names:?}");
     assert!(names.contains(&"write"), "{body}");
     let write = body["tools"].as_array().unwrap().iter().find_map(|tool| {
         let definition = if protocol == "completion" { &tool["function"] } else { tool };

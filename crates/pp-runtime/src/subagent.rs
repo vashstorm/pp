@@ -112,6 +112,16 @@ struct ChangeSink {
     tracker: Arc<Mutex<crate::tools::changes::TaskChanges>>,
     serial: Arc<Mutex<()>>,
 }
+pub(crate) fn is_read_only_child_tool(name: &str, mcp: impl FnOnce(&str) -> bool) -> bool {
+    matches!(name, "read" | "grep" | "glob" | "lsp") || mcp(name)
+}
+
+#[derive(Default)]
+struct McpTools {
+    all: Vec<String>,
+    read_only: Vec<String>,
+}
+
 struct Inner {
     // 进程内观察修订号：仅驱动 UI 增量刷新，不持久化。
     revision: AtomicU64,
@@ -135,7 +145,7 @@ struct Inner {
     factory: Mutex<Option<Arc<Factory>>>,
     validate: Arc<Validator>,
     changes: Mutex<Option<ChangeSink>>,
-    mcp_names: Mutex<Vec<String>>,
+    mcp_tools: Mutex<McpTools>,
     plan_mode: bool,
 }
 #[derive(Clone)]
@@ -311,7 +321,7 @@ impl Binding {
             factory: Mutex::new(Some(factory)),
             validate,
             changes: Mutex::new(None),
-            mcp_names: Mutex::new(Vec::new()),
+            mcp_tools: Mutex::default(),
             plan_mode,
         });
         Ok(Self {
@@ -371,8 +381,8 @@ impl Binding {
             .map(|(role, assignment)| (*role, assignment.clone()))
             .collect()
     }
-    pub(crate) fn allow_mcp(&self, names: Vec<String>) {
-        *lock(&self.inner.mcp_names) = names;
+    pub(crate) fn allow_mcp(&self, all: Vec<String>, read_only: Vec<String>) {
+        *lock(&self.inner.mcp_tools) = McpTools { all, read_only };
     }
     pub(crate) fn track_changes(
         &self,
@@ -608,15 +618,18 @@ impl Binding {
             if let Some(schema) = &output {
                 validate_schema(schema)?;
             }
+            let mcp_tools = lock(&self.inner.mcp_tools);
             let readonly = plan
                 || item.readonly
                 || model_role == Some(pp_config::config::ModelRole::Review)
                 || custom
                     .and_then(|def| def.tools.as_ref())
                     .is_some_and(|tools| {
-                        tools
-                            .iter()
-                            .all(|name| matches!(name.as_str(), "read" | "grep" | "glob" | "lsp"))
+                        tools.iter().all(|name| {
+                            is_read_only_child_tool(name, |name| {
+                                mcp_tools.read_only.iter().any(|tool| tool == name)
+                            })
+                        })
                     });
             let configured_tools = custom.and_then(|def| def.tools.as_ref());
             let mut tools = configured_tools.cloned().unwrap_or_else(|| {
@@ -636,12 +649,22 @@ impl Binding {
                 .map(str::to_owned)
                 .collect::<Vec<_>>()
             });
-            if configured_tools.is_none() && !readonly {
-                tools.extend(lock(&self.inner.mcp_names).iter().cloned());
+            if configured_tools.is_none() {
+                let mcp_names = if readonly {
+                    &mcp_tools.read_only
+                } else {
+                    &mcp_tools.all
+                };
+                tools.extend(mcp_names.iter().cloned());
             }
             if readonly {
-                tools.retain(|name| matches!(name.as_str(), "read" | "grep" | "glob" | "lsp"));
+                tools.retain(|name| {
+                    is_read_only_child_tool(name, |name| {
+                        mcp_tools.read_only.iter().any(|tool| tool == name)
+                    })
+                });
             }
+            drop(mcp_tools);
             tools.retain(|t| t != "task" && t != "todo" && !t.starts_with("plan_"));
             let mut spec = Spec {
                 model_role,
@@ -652,7 +675,7 @@ impl Binding {
                 }),
                 definition: role,
                 prompt: custom.map(|def| def.prompt.clone()).unwrap_or_else(|| if readonly {
-                    "Investigate without changing files. Report evidence and file references."
+                    "Investigate using the available read-only tools, including authorized MCP tools when relevant. Report evidence and source references."
                 } else {
                     "Complete the assigned work thoroughly. Use tools as needed. Return a concise final result."
                 }.into()),

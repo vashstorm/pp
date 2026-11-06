@@ -192,6 +192,8 @@ impl App {
             // 未知命令静默忽略：不报错、不清空输入、不请求模型。
             return false;
         }
+        // 提交时恢复对话区，让命令结果和后续输出可见。
+        self.mcp_panel = None;
         if matches!(
             self.state,
             State::Running | State::Cancelling | State::ReviewingPlan

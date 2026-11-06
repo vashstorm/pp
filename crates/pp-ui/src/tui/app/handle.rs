@@ -131,7 +131,11 @@ impl App {
         {
             self.escape_tap.reset();
         }
-        if let Some(panel) = &mut self.mcp_panel {
+        let input_focused = self.completion_input_focused();
+        if let Some(panel) = &mut self.mcp_panel
+            && (input_focused || !panel.allows_input())
+            && panel.captures(&event)
+        {
             if matches!(&event, Event::Key(key) if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) && key.kind == KeyEventKind::Press)
             {
                 return true;
@@ -139,6 +143,7 @@ impl App {
             if panel.handle(&event) {
                 self.mcp_panel = None;
                 self.menu_dismissed = true;
+                self.refresh_candidates(false);
             }
             *dirty = true;
             return false;

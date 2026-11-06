@@ -21,7 +21,7 @@ pub(crate) enum Tier {
     Exec,
 }
 
-/// 内置工具按风险分级；MCP 工具固定按写档处理（对齐 OMP 的固定 MCP tier），
+/// 内置工具按风险分级；未获只读授权的 MCP 工具按写档处理，
 /// 未知名按 exec 处理（安全默认）。
 pub(crate) fn tier_of(name: &str) -> Tier {
     match name {
@@ -146,6 +146,7 @@ impl Gate {
         &self,
         name: &str,
         arguments: &str,
+        tier: Tier,
         cancellation: &CancellationToken,
     ) -> Result<()> {
         let mode = self.effective_mode();
@@ -183,7 +184,7 @@ impl Gate {
                 cancellation,
             );
         }
-        let needs_prompt = match (mode, tier_of_arguments(name, arguments)) {
+        let needs_prompt = match (mode, tier) {
             (ApprovalMode::Yolo, _) => false,
             (ApprovalMode::Write, Tier::Read | Tier::Write) => false,
             (ApprovalMode::AlwaysAsk, Tier::Read) => false,
@@ -379,17 +380,32 @@ mod tests {
         parent.set_handler(session_handler());
         let child = parent.clone();
         parent
-            .enforce("bash", r#"{"command":"pwd"}"#, &CancellationToken::new())
+            .enforce(
+                "bash",
+                r#"{"command":"pwd"}"#,
+                Tier::Exec,
+                &CancellationToken::new(),
+            )
             .unwrap();
         let mut child = child;
         child.set_handler(deny_handler());
         child
-            .enforce("bash", r#"{"command":"pwd"}"#, &CancellationToken::new())
+            .enforce(
+                "bash",
+                r#"{"command":"pwd"}"#,
+                Tier::Exec,
+                &CancellationToken::new(),
+            )
             .unwrap();
         let mut once = gate(ApprovalMode::Write, &[]);
         once.set_handler(approve_handler());
-        once.enforce("bash", r#"{"command":"pwd"}"#, &CancellationToken::new())
-            .unwrap();
+        once.enforce(
+            "bash",
+            r#"{"command":"pwd"}"#,
+            Tier::Exec,
+            &CancellationToken::new(),
+        )
+        .unwrap();
     }
     fn approve_handler() -> ApprovalHandler {
         Box::new(|_request, _cancellation| Ok(ApprovalDecision::Approve))
@@ -404,7 +420,12 @@ mod tests {
     }
 
     fn enforce(gate: &Gate, name: &str, arguments: &str) -> Result<()> {
-        gate.enforce(name, arguments, &CancellationToken::new())
+        gate.enforce(
+            name,
+            arguments,
+            tier_of_arguments(name, arguments),
+            &CancellationToken::new(),
+        )
     }
 
     fn bash(command: &str) -> String {
@@ -555,6 +576,20 @@ mod tests {
         assert_eq!(tier_of_arguments("bash", "{}"), Tier::Exec);
         assert_eq!(tier_of_arguments("read", "{}"), Tier::Read);
         assert_eq!(tier_of_arguments("mcp__local__tool", "{}"), Tier::Write);
+    }
+
+    #[test]
+    fn mcp_read_tier_respects_explicit_approval_policy() {
+        let name = "mcp__remote__echo";
+        let token = CancellationToken::new();
+        for (policy, expected) in [
+            (ApprovalPolicy::Deny, "blocked by"),
+            (ApprovalPolicy::Prompt, "approval"),
+        ] {
+            let gate = gate(ApprovalMode::AlwaysAsk, &[(name, policy)]);
+            let error = gate.enforce(name, "{}", Tier::Read, &token).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

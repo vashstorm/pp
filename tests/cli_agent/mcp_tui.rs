@@ -69,14 +69,19 @@ fn mcp_tui_list_is_read_only_and_core_completion_updates_runtime() {
     pty.text("Configured MCP Servers");
     pty.text("connected");
     no_more(&provider);
-    pty.input("\x1b");
-    pty.ready();
-    pty.input("/mcp disable local");
+    pty.input("/mcp ");
+    pty.draft("/mcp");
+    pty.text("reconnect");
+    assert!(pty.contents().contains("Configured MCP Servers"));
+    pty.input("\x1b[200~disable local\x1b[201~");
     pty.draft("/mcp disable local");
+    assert!(pty.contents().contains("Configured MCP Servers"));
     pty.input("\r");
     pty.wait_for("MCP 管理完成并恢复输入", |screen| {
-        screen.contents().lines().any(|line| line.trim() == "❯")
-            && !screen.contents().contains("Managing MCP servers…")
+        let text = screen.contents();
+        text.lines().any(|line| line.trim() == "❯")
+            && !text.contains("Managing MCP servers…")
+            && !text.contains("Configured MCP Servers")
     });
     pty.input("task without MCP\r");
     let (request, body) = receive(&provider);

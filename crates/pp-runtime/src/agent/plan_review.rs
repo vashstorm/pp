@@ -6,7 +6,7 @@
 //! stats or journal stream: the scratch client's only journal connection is
 //! the read-only `stats_context` that records request costs under the
 //! `plan_review` purpose. Every tool call runs under [`ToolPolicy::Review`],
-//! so writes, shell, ask, plan authoring and MCP are refused at the execution
+//! so writes, shell, ask, plan authoring and unauthorized MCP calls are refused at the execution
 //! layer regardless of what the reviewer requests.
 
 use super::turn::{append_user_to, response_input};
@@ -65,6 +65,7 @@ impl Agent {
     ) -> Result<PlanReviewReport> {
         cancellation::check(cancellation)?;
         self.validate_plan_token(&token, input)?;
+        self.connect_pending_plan_mcp(cancellation)?;
         let document = self
             .workflow
             .plan

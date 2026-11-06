@@ -12,6 +12,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub const LONG_TOOL: &str =
+    "read-public-web-content-with-a-tool-name-long-enough-to-require-hashing";
+
 pub struct RemoteServer {
     pub url: String,
     state: Arc<State>,
@@ -260,11 +263,11 @@ fn serve(mut socket: TcpStream, state: &State) -> std::io::Result<()> {
             json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"loopback","version":"1"}})
         }
         "tools/list" if body["params"].get("cursor").is_none() => json!({"tools":[{
-            "name":"echo","description":if state.changed.load(Ordering::SeqCst) {"changed"} else {"远程测试工具"},
+            "name":if state.mode == "readonly_tools" {LONG_TOOL} else {"echo"},"description":if state.changed.load(Ordering::SeqCst) {"changed"} else {"远程测试工具"},
             "inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}
         }],"nextCursor":"second"}),
         "tools/list" => {
-            json!({"tools":[{"name":"fail","inputSchema":{"type":"object","properties":{}}}]})
+            json!({"tools":[{"name":"fail","annotations":{"readOnlyHint":true},"inputSchema":{"type":"object","properties":{}}}]})
         }
         "tools/call" => {
             json!({"content":[{"type":"text","text":body["params"]["arguments"]["text"]}],"structuredContent":{"count":1},"isError":body["params"]["name"] == "fail"})

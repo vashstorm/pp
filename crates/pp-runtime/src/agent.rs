@@ -321,6 +321,27 @@ impl Agent {
     pub fn read_tool_result_preview(&self) -> bool {
         self.catalog.read_tool_result_preview()
     }
+    fn connect_pending_plan_mcp(&mut self, cancellation: &CancellationToken) -> Result<()> {
+        if self.workflow.mode == pp_core::plan::WorkMode::Plan {
+            let cwd = self.tools.cwd().to_owned();
+            let result =
+                self.tools
+                    .mcp
+                    .connect_enabled(&cwd, cancellation, crate::mcp::Access::ReadOnly);
+            if let Err(error) = result {
+                if error.is::<pp_core::cancellation::CleanupError>() {
+                    self.plan_cleanup_error = Some(format!(
+                        "MCP cleanup failed for Plan mode: {error:#}; run /plan again to retry."
+                    ));
+                }
+                return Err(error);
+            }
+            self.session
+                .set_tools(self.tools.all_definitions(self.workflow.mode));
+        }
+        Ok(())
+    }
+
     pub fn mcp_cleanup(&self) -> Result<crate::mcp::Cleanup> {
         self.tools.mcp.cleanup()
     }
@@ -396,7 +417,7 @@ impl Agent {
                 &catalog.mcp_path(),
                 tools.cwd(),
                 &CancellationToken::new(),
-                true,
+                crate::mcp::Access::Full,
             )?,
         };
         Self::install_lsp(&mut tools, &catalog);
@@ -589,7 +610,7 @@ impl Agent {
             &catalog.mcp_path(),
             tools.cwd(),
             &CancellationToken::new(),
-            checkpoint.workflow.mode == pp_core::plan::WorkMode::Execute,
+            crate::mcp::Access::for_mode(checkpoint.workflow.mode),
         )?;
         Self::install_lsp(&mut tools, &catalog);
         checkpoint
@@ -1498,6 +1519,7 @@ impl Agent {
                 bail!("{error}");
             }
             ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
+            self.connect_pending_plan_mcp(cancellation)?;
             self.apply_runtime_models()?;
             self.restore_role_primary(emit)?;
             self.ensure_task_plan_lease()?;
@@ -1534,6 +1556,7 @@ impl Agent {
             if let Some(error) = &self.plan_cleanup_error {
                 bail!("{error}");
             }
+            self.connect_pending_plan_mcp(cancellation)?;
             self.ensure_task_plan_lease()?;
             self.prepare_plan_task("")?;
             self.ensure_task_plan_lease()?;

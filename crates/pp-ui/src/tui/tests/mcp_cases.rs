@@ -6,7 +6,6 @@ fn mcp_list_preserves_draft_and_viewport_and_subcommands_complete() {
     app.state = State::Ready;
     app.input.insert_str("pending draft");
     app.conversation.append("You", "previous conversation");
-    let before = app.input.lines().to_vec();
     let view = pp_runtime::mcp::View {
         entries: vec![pp_runtime::mcp::EntryView {
             name: "context7".into(),
@@ -22,9 +21,11 @@ fn mcp_list_preserves_draft_and_viewport_and_subcommands_complete() {
     let text = draw(&mut app, 110, 25);
     assert!(text.contains("Configured MCP Servers"));
     assert!(text.contains("context7"));
+    app.handle(key(KeyCode::Char('!')), &mut false);
+    assert!(app.mcp_panel.is_some());
     app.handle(key(KeyCode::Esc), &mut false);
     assert!(app.mcp_panel.is_none());
-    assert_eq!(app.input.lines(), before);
+    assert_eq!(app.input.lines(), ["pending draft!"]);
     app.input = editor();
     app.input.insert_str("/mcp rec");
     app.refresh_candidates(true);

@@ -365,7 +365,13 @@ impl App {
         if self.native_render {
             self.conversation.draw_native(frame, conversation);
         } else if let Some(panel) = &mut self.mcp_panel {
-            panel.draw(frame, conversation);
+            panel.draw(
+                frame,
+                Rect {
+                    height: conversation.height.saturating_sub(menu_height),
+                    ..conversation
+                },
+            );
         } else if let Some(panel) = &mut self.plan_panel {
             panel.draw(frame, conversation, self.plan_progress, self.usage.as_ref());
         } else {

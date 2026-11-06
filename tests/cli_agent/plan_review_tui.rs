@@ -17,6 +17,10 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
             let fixture = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
+            let remote = super::mcp_remote::fixture::RemoteServer::new("json");
+            let mut config = remote.config("http", 3000);
+            config["mcpServers"]["remote"]["read_only_tools"] = json!(["echo"]);
+            std::fs::write(config_path(home.path(), "mcp.json"), config.to_string()).unwrap();
             std::fs::write(
                 project.path().join("evidence.rs"),
                 "fn planned() -> u8 { 1 }\n",
@@ -29,19 +33,40 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
             pty.input("Plan creation ORIGIN_REVIEW_MARKER\r");
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
             system_prompt::assert_live(&body, protocol, "plan");
+            assert!(body["tools"].to_string().contains("mcp__remote__echo"));
+            assert!(!body["tools"].to_string().contains("mcp__remote__fail"));
+            plan_calls(request, protocol, json!([
+                plan_call(protocol, "plan-remote-read", "mcp__remote__echo", json!({"text":"plan public evidence"})),
+                plan_call(protocol, "plan-remote-forbidden", "mcp__remote__fail", json!({}))
+            ]));
+            let (request, body) = pty.request_at(&fixture, api_path(protocol));
+            let outputs = cancel_tool_outputs(&body, protocol);
+            assert_eq!(outputs[0].1["result"]["content"][0]["text"], "plan public evidence");
+            assert_eq!(outputs[1].1["error"], "Tool is not available in Plan mode.");
             plan_final(
                 request,
                 protocol,
                 "PLANNING_CHAT_ONLY_MARKER static exploration",
             );
             pty.ready();
-            plan_drive_ready(
+            plan_drive_ready_with_mcp(
                 &mut pty,
                 &fixture,
                 protocol,
                 "Finalize independent plan",
                 PLAN_TUI_BODY,
+                &["mcp__remote__echo"],
             );
+            if action == 4 {
+                let id = saved_session_id(home.path());
+                pty.input("\x03");
+                pty.finish();
+                pty = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
+                pty.ready();
+                plan_wait_mode(&mut pty, "Plan");
+                pty.input("/plan view\r");
+                plan_wait_review(&mut pty, 1);
+            }
             let path = plan_path(project.path());
             let original = std::fs::read(&path).unwrap();
             plan_choose(&mut pty, 3);
@@ -66,11 +91,11 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                         .unwrap()
                 })
                 .collect();
-            assert_eq!(names.len(), 4);
+            assert_eq!(names.len(), 5);
             assert!(
                 names.iter().all(|name| matches!(
                     *name,
-                    "read" | "grep" | "glob" | "lsp"
+                    "read" | "grep" | "glob" | "lsp" | "mcp__remote__echo"
                 ))
             );
             let calls = [
@@ -110,12 +135,17 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                     "find",
                     json!({"args":[".","-exec","touch","review-forbidden",";"]}),
                 ),
-                ("review-mcp", "mcp__unseen__write", json!({})),
+                ("review-mcp", "mcp__remote__fail", json!({})),
                 ("review-read", "read", json!({"path":"evidence.rs"})),
                 (
                     "review-search",
                     "grep",
                     json!({"pattern":"planned","path":"evidence.rs"}),
+                ),
+                (
+                    "review-remote-read",
+                    "mcp__remote__echo",
+                    json!({"text":"review public evidence"}),
                 ),
             ];
             plan_calls(
@@ -131,7 +161,7 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
             system_prompt::assert_live(&body, protocol, "review");
             let outputs = cancel_tool_outputs(&body, protocol);
-            assert_eq!(outputs.len(), 11);
+            assert_eq!(outputs.len(), 12);
             for (_, result) in &outputs[..9] {
                 assert_eq!(
                     *result,
@@ -140,6 +170,11 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
             }
             assert_eq!(outputs[9].1["content"], "fn planned() -> u8 { 1 }\n");
             assert!(outputs[10].1["content"].as_str().unwrap().contains("*1|fn planned()"));
+            assert_eq!(outputs[11].1["result"]["content"][0]["text"], "review public evidence");
+            let calls: Vec<_> = remote.log().into_iter()
+                .filter(|entry| entry["body"]["method"] == "tools/call").collect();
+            assert_eq!(calls.len(), 2);
+            assert!(calls.iter().all(|call| call["body"]["params"]["name"] == "echo"));
             assert_eq!(std::fs::read(&path).unwrap(), original);
             assert!(!project.path().join("canary.txt").exists());
             assert!(!project.path().join("review-forbidden").exists());
@@ -158,6 +193,8 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
             system_prompt::assert_live(&body, protocol, if action == 4 { "plan" } else { "execute" });
             assert!(!body.to_string().contains("review-read"));
             assert!(!body.to_string().contains("review-search"));
+            assert!(!body.to_string().contains("review public evidence"));
+            assert_eq!(body["tools"].to_string().contains("mcp__remote__fail"), action != 4);
             assert!(body.to_string().contains("PLANNING_CHAT_ONLY_MARKER") == (action != 0));
             assert!(body.to_string().contains("REVIEW_REPORT_ONLY_MARKER") == (action == 4));
             if action == 4 {

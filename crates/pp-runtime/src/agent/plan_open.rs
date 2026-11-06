@@ -170,10 +170,7 @@ impl Agent {
             Ok((session, journal))
         })();
         let (session, journal) = prepared?;
-        // Plan 候选的原有 MCP shutdown 门禁；失败不交接新会话（候选被
-        // 丢弃，原会话原样保留）。成功路径随即整体替换，此处的工具清单
-        // 调整随候选会话一起被覆盖。
-        self.ensure_plan_mcp_shutdown(cancellation)?;
+        self.ensure_plan_mcp_access(cancellation)?;
         // 完整提交后才替换当前会话；只有真正切换才清除撤销内存资格。
         self.role_route = role_route;
         self.session = session;
@@ -195,11 +192,12 @@ impl Agent {
             let _ = self.tools.artifacts.bind(self.journal.directory(), id);
         }
         self.workflow = candidate_workflow;
+        self.session
+            .set_tools(self.tools.all_definitions(self.workflow.mode));
         self.tools.clear_changes();
         self.clear_session_usage();
         self.pending_instructions = None;
         drop(verified);
-        // Plan 候选未连接任何 MCP 服务：清理句柄是空快照，Drop 无副作用。
         let cleanup = self.tools.mcp.cleanup()?;
         Ok(ExecutionPreparation {
             workflow: self.workflow.clone(),

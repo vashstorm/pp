@@ -1,6 +1,6 @@
 use super::*;
 #[path = "../fixtures/mcp_remote.rs"]
-mod fixture;
+pub(super) mod fixture;
 
 #[test]
 fn mcp_remote_both_model_protocols_and_transports_preserve_results_and_auth_precedence() {

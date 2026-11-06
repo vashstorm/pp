@@ -11,7 +11,10 @@ impl App {
             && self.ask_panel.is_none()
             && self.subagent_panel.is_none()
             && self.model_panel.is_none()
-            && self.mcp_panel.is_none()
+            && self
+                .mcp_panel
+                .as_ref()
+                .is_none_or(|panel| panel.allows_input())
             && self.skill_panel.is_none()
             && self.session_panel.is_none()
             && self.tree_panel.is_none()

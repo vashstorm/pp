@@ -95,6 +95,7 @@ pub(crate) struct ServerConfig {
     transport: TransportConfig,
     timeout_seconds: u64,
     timeout_millis: Option<u64>,
+    read_only_tools: BTreeSet<String>,
 }
 
 #[derive(Clone)]
@@ -165,6 +166,25 @@ pub(crate) fn validate_config(servers: &BTreeMap<String, ServerConfig>) -> Resul
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Access {
+    Full,
+    ReadOnly,
+}
+
+impl Access {
+    pub(crate) fn for_mode(mode: pp_core::plan::WorkMode) -> Self {
+        match mode {
+            pp_core::plan::WorkMode::Execute => Self::Full,
+            pp_core::plan::WorkMode::Plan => Self::ReadOnly,
+        }
+    }
+
+    fn allows_server(self, config: &ServerConfig) -> bool {
+        self == Self::Full || !config.read_only_tools.is_empty()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Registry {
     servers: BTreeMap<String, SharedServer>,
@@ -184,11 +204,13 @@ struct RemoteTool {
 struct SharedServer {
     state: Arc<Mutex<ServerState>>,
     connection: SharedConnection,
+    read_only_tools: BTreeSet<String>,
 }
 impl SharedServer {
     fn new(state: ServerState) -> Self {
         Self {
             connection: state.client.connection.clone(),
+            read_only_tools: state.config.read_only_tools.clone(),
             state: Arc::new(Mutex::new(state)),
         }
     }
@@ -276,19 +298,26 @@ impl Registry {
         path: &Path,
         cwd: &Path,
         token: &CancellationToken,
-        active: bool,
+        access: Access,
     ) -> Result<Self> {
-        let directory = config::Directory::load(path)?;
-        let mut registry = Self {
-            directory,
-            ..Self::default()
-        };
-        if active {
-            registry.connect_enabled(cwd, token)?;
+        let mut registry = Self::read_config(path)?;
+        if let Err(error) = registry.connect_enabled(cwd, token, access) {
+            registry
+                .shutdown()
+                .with_context(|| format!("MCP initialization also failed: {error:#}"))?;
+            return Err(error);
         }
         Ok(registry)
     }
-    pub(crate) fn view(&self, active: bool) -> View {
+
+    pub(crate) fn read_config(path: &Path) -> Result<Self> {
+        Ok(Self {
+            directory: config::Directory::load(path)?,
+            ..Self::default()
+        })
+    }
+
+    pub(crate) fn view(&self, access: Access) -> View {
         View {
             entries: self
                 .directory
@@ -299,7 +328,11 @@ impl Registry {
                         "disabled"
                     } else if entry.config.is_none() {
                         entry.status
-                    } else if !active {
+                    } else if !entry
+                        .config
+                        .as_ref()
+                        .is_some_and(|config| access.allows_server(config))
+                    {
                         "suspended (Plan/Review)"
                     } else if let Some(server) = self.servers.get(name) {
                         let state = server.lock().unwrap_or_else(|e| e.into_inner());
@@ -321,19 +354,72 @@ impl Registry {
                     }
                 })
                 .collect(),
-            diagnostics: self.directory.diagnostics.clone(),
+            diagnostics: self
+                .directory
+                .diagnostics
+                .iter()
+                .cloned()
+                .chain(self.servers.iter().filter_map(|(name, server)| {
+                    let missing = server
+                        .read_only_tools
+                        .iter()
+                        .filter(|original| {
+                            self.tools
+                                .get(&exposed_name(name, original))
+                                .is_none_or(|tool| {
+                                    tool.server != *name || tool.original_name != **original
+                                })
+                        })
+                        .count();
+                    (missing > 0).then(|| {
+                        format!(
+                            "MCP {name}: {missing} configured read-only tools were not discovered"
+                        )
+                    })
+                }))
+                .collect(),
         }
     }
-    fn connect_enabled(&mut self, cwd: &Path, token: &CancellationToken) -> Result<()> {
+    pub(crate) fn connect_enabled(
+        &mut self,
+        cwd: &Path,
+        token: &CancellationToken,
+        access: Access,
+    ) -> Result<()> {
         let names: Vec<_> = self.directory.entries.keys().cloned().collect();
         for name in names {
             cancellation::check(token)?;
-            if self.directory.entries[&name].enabled {
+            if self.eligible(&name, access)
+                && self.directory.entries[&name].status == "not connected"
+            {
                 self.connect_one(&name, cwd, token)?;
             }
         }
         Ok(())
     }
+    fn eligible(&self, name: &str, access: Access) -> bool {
+        self.directory.entries.get(name).is_some_and(|entry| {
+            entry.enabled
+                && entry
+                    .config
+                    .as_ref()
+                    .is_some_and(|config| access.allows_server(config))
+        })
+    }
+
+    pub(crate) fn restrict_to_read_only(&mut self) -> Result<()> {
+        let suspended: Vec<_> = self
+            .servers
+            .keys()
+            .filter(|name| !self.eligible(name, Access::ReadOnly))
+            .cloned()
+            .collect();
+        for name in suspended {
+            self.disconnect(&name)?;
+        }
+        Ok(())
+    }
+
     fn connect_one(&mut self, name: &str, cwd: &Path, token: &CancellationToken) -> Result<()> {
         let Some(config) = self.directory.entries[name].config.clone() else {
             return Ok(());
@@ -345,6 +431,8 @@ impl Registry {
             .expect("known server")
             .status = if result.is_ok() {
             "connected"
+        } else if result.as_ref().is_err_and(|error| error.is::<Cancelled>()) {
+            "not connected"
         } else if result.as_ref().err().is_some_and(|e| {
             e.chain()
                 .any(|cause| cause.to_string().contains("timed out"))
@@ -369,7 +457,7 @@ impl Registry {
         action: &Action,
         cwd: &Path,
         token: &CancellationToken,
-        active: bool,
+        access: Access,
     ) -> Result<()> {
         match action {
             Action::Help | Action::List => {}
@@ -377,9 +465,7 @@ impl Registry {
                 let directory = config::Directory::load(&self.directory.path)?;
                 self.shutdown()?;
                 self.directory = directory;
-                if active {
-                    self.connect_enabled(cwd, token)?;
-                }
+                self.connect_enabled(cwd, token, access)?;
             }
             Action::Enable(name) | Action::Disable(name) => {
                 let enabled = matches!(action, Action::Enable(_));
@@ -390,7 +476,7 @@ impl Registry {
                     .expect("validated name")
                     .enabled = enabled;
                 self.disconnect(name)?;
-                if enabled && active {
+                if self.eligible(name, access) {
                     self.connect_one(name, cwd, token)?;
                 }
             }
@@ -401,7 +487,10 @@ impl Registry {
                     .get(name)
                     .ok_or_else(|| anyhow::anyhow!("unknown MCP server"))?;
                 ensure!(entry.enabled, "MCP server is disabled; enable it first");
-                ensure!(active, "MCP servers do not connect in Plan/Review");
+                ensure!(
+                    access == Access::Full || self.eligible(name, access),
+                    "MCP server has no authorized read-only tools for Plan/Review"
+                );
                 self.disconnect(name)?;
                 self.connect_one(name, cwd, token)?;
             }
@@ -415,7 +504,11 @@ impl Registry {
             // 永久关闭旧引用，旧子 Agent 快照不能重新启动它。
             state.restart_after_cancel = false;
         }
-        self.servers.remove(name);
+        if self.servers.remove(name).is_some()
+            && let Some(entry) = self.directory.entries.get_mut(name)
+        {
+            entry.status = "not connected";
+        }
         self.tools.retain(|_, tool| tool.server != name);
         self.prune_tracking();
         Ok(())
@@ -473,6 +566,21 @@ impl Registry {
             }
         }
         if failures == 0 {
+            // 发现失败的连接可能还未注册工具，但清理句柄仍跟踪它们。
+            let tracking = self.tracking.lock().unwrap_or_else(|e| e.into_inner());
+            for slot in &tracking.connections {
+                let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+                if slot.is_live() {
+                    stop_locked(&mut slot).map_err(CleanupError)?;
+                }
+            }
+        }
+        if failures == 0 {
+            for name in self.servers.keys() {
+                if let Some(entry) = self.directory.entries.get_mut(name) {
+                    entry.status = "not connected";
+                }
+            }
             self.servers.clear();
             self.tools.clear();
             self.prune_tracking();
@@ -541,7 +649,19 @@ impl Registry {
         Ok(())
     }
 
-    pub(crate) fn definitions(&self) -> Vec<FunctionObject> {
+    pub(crate) fn is_read_only(&self, name: &str) -> bool {
+        self.tools
+            .get(name)
+            .is_some_and(|tool| self.tool_is_read_only(tool))
+    }
+
+    fn tool_is_read_only(&self, tool: &RemoteTool) -> bool {
+        self.servers[&tool.server]
+            .read_only_tools
+            .contains(&tool.original_name)
+    }
+
+    pub(crate) fn definitions(&self, access: Access) -> Vec<FunctionObject> {
         let available: BTreeSet<_> = self
             .servers
             .iter()
@@ -552,7 +672,10 @@ impl Registry {
             .collect();
         self.tools
             .values()
-            .filter(|tool| available.contains(tool.server.as_str()))
+            .filter(|tool| {
+                available.contains(tool.server.as_str())
+                    && (access == Access::Full || self.tool_is_read_only(tool))
+            })
             .map(|tool| tool.definition.clone())
             .collect()
     }
@@ -561,6 +684,7 @@ impl Registry {
         &self,
         name: &str,
         arguments: &str,
+        access: Access,
         cancellation: &CancellationToken,
     ) -> Result<Value> {
         cancellation::check(cancellation)?;
@@ -572,7 +696,7 @@ impl Registry {
         thread::Builder::new()
             .name("pp-mcp-proxy".into())
             .spawn(move || {
-                let outcome = registry.call_inner(&name, &arguments, &request_token, true);
+                let outcome = registry.call_inner(&name, &arguments, access, &request_token, true);
                 let _ = sender.send(outcome);
             })?;
         loop {
@@ -588,18 +712,24 @@ impl Registry {
         &self,
         name: &str,
         arguments: &str,
+        access: Access,
         cancellation: &CancellationToken,
     ) -> Result<Value> {
-        self.call_inner(name, arguments, cancellation, false)
+        self.call_inner(name, arguments, access, cancellation, false)
     }
     fn call_inner(
         &self,
         name: &str,
         arguments: &str,
+        access: Access,
         cancellation: &CancellationToken,
         proxy: bool,
     ) -> Result<Value> {
         let tool = self.tools.get(name).context("unknown tool")?;
+        ensure!(
+            access == Access::Full || self.tool_is_read_only(tool),
+            "MCP tool is not authorized for read-only access"
+        );
         let arguments: Value = serde_json::from_str(arguments)
             .map_err(|_| anyhow::anyhow!("invalid MCP tool arguments"))?;
         ensure!(
@@ -835,6 +965,7 @@ mod tests {
             }),
             timeout_seconds: 1,
             timeout_millis: None,
+            read_only_tools: BTreeSet::new(),
         };
         let error = Client::spawn(&config, Path::new("."), process)
             .err()
@@ -863,6 +994,7 @@ mod tests {
             }),
             timeout_seconds: 1,
             timeout_millis: None,
+            read_only_tools: BTreeSet::new(),
         };
         let error = Client::spawn(&config, Path::new("."), process.clone())
             .err()
@@ -882,6 +1014,7 @@ mod tests {
             }),
             timeout_seconds: 1,
             timeout_millis: None,
+            read_only_tools: BTreeSet::new(),
         }
     }
 
@@ -910,6 +1043,7 @@ mod tests {
             }),
             timeout_seconds: 1,
             timeout_millis: None,
+            read_only_tools: BTreeSet::new(),
         };
         let registry = Registry::connect(
             &BTreeMap::from([("local".into(), config)]),
@@ -925,6 +1059,7 @@ mod tests {
             proxy.proxy_call(
                 "mcp__local__echo",
                 r#"{"text":"must-not-dispatch"}"#,
+                Access::Full,
                 &worker_token,
             )
         });
@@ -945,6 +1080,7 @@ mod tests {
                 .call(
                     "mcp__local__echo",
                     r#"{"text":"survived"}"#,
+                    Access::Full,
                     &CancellationToken::new()
                 )
                 .unwrap()["ok"]

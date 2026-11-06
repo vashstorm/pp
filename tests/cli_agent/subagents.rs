@@ -741,6 +741,14 @@ fn subagent_readonly_capabilities_reject_unadvertised_writes() {
     for protocol in ["completion", "response"] {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
+        let remote = super::mcp_remote::fixture::RemoteServer::new("json");
+        let mut config = remote.config("http", 3000);
+        config["mcpServers"]["remote"]["read_only_tools"] = json!(["echo"]);
+        std::fs::write(config_path(dir.path(), "mcp.json"), config.to_string()).unwrap();
+        let settings = format!(
+            "{}tools:\n  approvalMode: always-ask\n  approval: {{task: allow}}\n",
+            fixture_settings()
+        );
         let models = if protocol == "completion" {
             fixture_models(&server)
         } else {
@@ -749,10 +757,24 @@ fn subagent_readonly_capabilities_reject_unadvertised_writes() {
         let cli = Cli::start_with(
             dir.path(),
             Some("readonly investigation"),
-            fixture_settings(),
+            &settings,
             &models,
         );
         let (request, _) = receive_sub(&server, protocol);
+        sub_call(
+            request,
+            protocol,
+            "write-tier-mcp",
+            "mcp__remote__fail",
+            json!({}),
+        );
+        let (request, body) = receive_sub(&server, protocol);
+        let denied = sub_tool_result(&body, protocol, "write-tier-mcp");
+        assert_eq!(denied["ok"], false);
+        assert!(
+            denied["error"].as_str().unwrap().contains("approval"),
+            "{denied}"
+        );
         sub_call(
             request,
             protocol,
@@ -760,12 +782,13 @@ fn subagent_readonly_capabilities_reject_unadvertised_writes() {
             "task",
             json!({"context":"readonly","tasks":[{"readonly":true,"task":"inspect only"}]}),
         );
-        let mut attempted = false;
+        let mut stage = 0;
         loop {
             let (request, body) = receive_sub(&server, protocol);
             if is_child(&body) {
-                if !attempted {
-                    attempted = true;
+                if stage == 0 {
+                    assert!(body["tools"].to_string().contains("mcp__remote__echo"));
+                    assert!(!body["tools"].to_string().contains("mcp__remote__fail"));
                     assert!(
                         !body["tools"]
                             .as_array()
@@ -780,10 +803,33 @@ fn subagent_readonly_capabilities_reject_unadvertised_writes() {
                         "write",
                         json!({"path":"must-not-exist","content":"bad"}),
                     );
-                } else {
+                } else if stage == 1 {
                     assert!(body.to_string().contains("capability set"));
+                    sub_call(
+                        request,
+                        protocol,
+                        "bad-remote",
+                        "mcp__remote__fail",
+                        json!({}),
+                    );
+                } else if stage == 2 {
+                    assert!(body.to_string().matches("capability set").count() >= 2);
+                    sub_call(
+                        request,
+                        protocol,
+                        "good-remote",
+                        "mcp__remote__echo",
+                        json!({"text":"child public evidence"}),
+                    );
+                } else {
+                    let output = sub_tool_result(&body, protocol, "good-remote");
+                    assert_eq!(
+                        output["result"]["content"][0]["text"],
+                        "child public evidence"
+                    );
                     sub_final(request, protocol, "write-was-blocked");
                 }
+                stage += 1;
             } else {
                 let done = body.to_string().contains("write-was-blocked");
                 sub_final(request, protocol, "readonly-finished");
@@ -795,6 +841,19 @@ fn subagent_readonly_capabilities_reject_unadvertised_writes() {
         let output = cli.finish();
         assert!(output.status.success(), "{output:?}");
         assert!(!dir.path().join("must-not-exist").exists());
+        let log = remote.log();
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry["body"]["method"] == "initialize")
+                .count(),
+            1
+        );
+        let calls: Vec<_> = log
+            .iter()
+            .filter(|entry| entry["body"]["method"] == "tools/call")
+            .collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["body"]["params"]["name"], "echo");
     }
 }
 

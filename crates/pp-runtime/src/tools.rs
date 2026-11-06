@@ -62,6 +62,7 @@ pub struct Tools {
     pub(crate) approval: approval::Gate,
     pub(crate) mcp: crate::mcp::Registry,
     pub(crate) mcp_proxy: Option<crate::mcp::Registry>,
+    pub(crate) mcp_readonly: bool,
     pub(crate) lsp: Option<crate::lsp::Registry>,
     /// 仅根/独立 Registry 的 owner 持有；借用父 Registry 的子 Agent 保持 `None`，
     /// Drop 时不会停止父进程。
@@ -112,7 +113,7 @@ pub(crate) enum ToolPolicy<'a> {
     /// classifies todo calls as standalone lists or bound plan projections.
     Execute { workflow: &'a WorkflowState },
     /// Independent plan review: read-only investigation tools only; no ask,
-    /// no plan writes, no shell, no MCP.
+    /// no plan writes or shell. MCP requires explicit read-only authorization.
     Review,
     /// Plan mode: whitelisted research tools plus the dedicated plan tools.
     Plan {
@@ -214,6 +215,7 @@ impl Tools {
             artifacts: Default::default(),
             ask_handler: None,
             mcp_proxy: None,
+            mcp_readonly: false,
             lsp: None,
             lsp_cleanup: None,
             lsp_readonly: false,
@@ -526,7 +528,6 @@ impl Tools {
                 }
                 definitions.push(glob::definition());
                 definitions.push(grep::definition());
-                definitions.extend(self.mcp_proxy.as_ref().unwrap_or(&self.mcp).definitions());
                 if let Some(definition) = self.lsp_definition(self.lsp_readonly) {
                     definitions.push(definition);
                 }
@@ -556,6 +557,7 @@ impl Tools {
                 definitions
             }
         };
+        definitions.extend(self.mcp_registry().definitions(self.mcp_access(mode)));
         if let Some(binding) = &self.subagent {
             definitions.extend(binding.definitions(mode));
             if mode == WorkMode::Plan {
@@ -581,8 +583,21 @@ impl Tools {
                 PLAN_BASE_TOOLS.contains(&name)
                     || PLAN_SEARCH_TOOLS.contains(&name)
                     || name == "lsp"
+                    || self.mcp_registry().is_read_only(name)
             })
             .collect()
+    }
+
+    fn mcp_registry(&self) -> &crate::mcp::Registry {
+        self.mcp_proxy.as_ref().unwrap_or(&self.mcp)
+    }
+
+    fn mcp_access(&self, mode: WorkMode) -> crate::mcp::Access {
+        if self.mcp_readonly {
+            crate::mcp::Access::ReadOnly
+        } else {
+            crate::mcp::Access::for_mode(mode)
+        }
     }
 
     fn plan_definitions() -> Vec<FunctionObject> {
@@ -845,17 +860,29 @@ impl Tools {
         // access, process creation and MCP dispatch, so denied tools have no
         // side effects even with malformed arguments, and unknown names
         // (including unseen MCP tools) cannot bypass it via the fallback.
+        let mcp_readonly_tool = self.mcp_registry().is_read_only(name);
+        let mcp_access = match policy {
+            ToolPolicy::Execute { .. } => self.mcp_access(WorkMode::Execute),
+            _ => crate::mcp::Access::ReadOnly,
+        };
         let allowed = match &policy {
-            ToolPolicy::Execute { .. } => !is_plan_tool(name),
+            ToolPolicy::Execute { .. } => {
+                !is_plan_tool(name)
+                    && (mcp_access == crate::mcp::Access::Full
+                        || !name.starts_with("mcp__")
+                        || mcp_readonly_tool)
+            }
             ToolPolicy::Review => {
                 PLAN_BASE_TOOLS.contains(&name)
                     || PLAN_SEARCH_TOOLS.contains(&name)
                     || name == "lsp" && self.lsp.is_some()
+                    || mcp_readonly_tool
             }
             ToolPolicy::Plan { .. } => {
                 PLAN_BASE_TOOLS.contains(&name)
                     || PLAN_SEARCH_TOOLS.contains(&name)
                     || name == "lsp" && self.lsp.is_some()
+                    || mcp_readonly_tool
                     || self.subagent.is_some() && matches!(name, "task" | "wait")
                     || name == "write"
                     || is_plan_tool(name)
@@ -892,8 +919,15 @@ impl Tools {
         // 审批门只作用于 Execute；Plan/Review 的白名单门禁已是完整授权边界。
         // 与 Plan/Review 门禁一样在参数解析与分发之前执行，失败由
         // execute_with_fetch 统一回填为 ok:false 的工具结果。
-        if matches!(policy, ToolPolicy::Execute { .. }) {
-            self.approval.enforce(name, arguments, cancellation)?;
+        if matches!(policy, ToolPolicy::Execute { .. })
+            && !(mcp_readonly_tool && self.subagent.as_ref().is_some_and(|b| b.plan_mode()))
+        {
+            let tier = if mcp_readonly_tool {
+                approval::Tier::Read
+            } else {
+                approval::tier_of_arguments(name, arguments)
+            };
+            self.approval.enforce(name, arguments, tier, cancellation)?;
         }
         if name == "wait" {
             return self
@@ -1242,9 +1276,9 @@ impl Tools {
             }
             _ => {
                 if let Some(proxy) = &self.mcp_proxy {
-                    proxy.proxy_call(name, arguments, cancellation)
+                    proxy.proxy_call(name, arguments, mcp_access, cancellation)
                 } else {
-                    self.mcp.call(name, arguments, cancellation)
+                    self.mcp.call(name, arguments, mcp_access, cancellation)
                 }
             }
         }

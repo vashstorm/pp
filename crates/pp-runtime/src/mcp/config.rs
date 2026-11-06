@@ -5,7 +5,7 @@ use pp_core::cancellation::CancellationToken;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
     os::unix::fs::OpenOptionsExt,
@@ -70,6 +70,8 @@ struct Definition {
     _enabled: bool,
     #[serde(default = "timeout")]
     timeout: u64,
+    #[serde(default)]
+    read_only_tools: Vec<String>,
 }
 fn enabled() -> bool {
     true
@@ -92,6 +94,22 @@ struct RemoteDefinition {
     _enabled: bool,
     #[serde(default = "timeout")]
     timeout: u64,
+    #[serde(default)]
+    read_only_tools: Vec<String>,
+}
+
+fn read_only_tools(names: Vec<String>) -> Result<BTreeSet<String>> {
+    let mut tools = BTreeSet::new();
+    for name in names {
+        ensure!(
+            !name.trim().is_empty()
+                && name.len() <= 256
+                && !name.contains(['*', '?', '[', ']', '\0'])
+                && tools.insert(name),
+            INVALID
+        );
+    }
+    Ok(tools)
 }
 
 fn remote_config(
@@ -267,7 +285,8 @@ impl Directory {
                     value = normalize_codex(&value)?;
                 }
                 if source != "pp"
-                    && (value.get("url").is_some()
+                    && (value.get("read_only_tools").is_some()
+                        || value.get("url").is_some()
                         || value
                             .get("type")
                             .and_then(Value::as_str)
@@ -297,6 +316,7 @@ impl Directory {
                         },
                         timeout_seconds: 30,
                         timeout_millis: Some(def.timeout),
+                        read_only_tools: read_only_tools(def.read_only_tools)?,
                     }
                 } else {
                     let def: Definition =
@@ -321,6 +341,7 @@ impl Directory {
                         }),
                         timeout_seconds: 30,
                         timeout_millis: Some(def.timeout),
+                        read_only_tools: read_only_tools(def.read_only_tools)?,
                     }
                 };
                 validate_config(&BTreeMap::from([(name.clone(), config.clone())]))?;
@@ -623,6 +644,40 @@ mod tests {
     }
 
     #[test]
+    fn mcp_read_only_config_accepts_only_native_exact_names() {
+        let home = tempfile::tempdir().unwrap();
+        let pp = home.path().join("mcp.json");
+        let entries = json!({
+            "legacy":{"command":"x"},
+            "local":{"command":"x","read_only_tools":["read:raw","查找"]},
+            "remote":{"type":"http","url":"https://example.com/mcp","read_only_tools":["echo"]},
+            "blank":{"command":"x","read_only_tools":[" "]},
+            "duplicate":{"command":"x","read_only_tools":["echo","echo"]},
+            "wildcard":{"command":"x","read_only_tools":["echo*"]}
+        });
+        put(&pp, json!({"mcpServers":entries}));
+        put(
+            &home.path().join(".claude.json"),
+            json!({
+                "mcpServers":{"external":{"command":"x","read_only_tools":["echo"]}}
+            }),
+        );
+        let directory = Directory::load_at(&pp, Some(home.path())).unwrap();
+        let config = |name: &str| directory.entries[name].config.as_ref();
+        assert!(config("legacy").unwrap().read_only_tools.is_empty());
+        assert!(
+            config("local")
+                .unwrap()
+                .read_only_tools
+                .contains("read:raw")
+        );
+        assert!(config("remote").unwrap().read_only_tools.contains("echo"));
+        for invalid in ["blank", "duplicate", "wildcard", "external"] {
+            assert!(config(invalid).is_none(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn mcp_config_strict_json_and_redacted_invalid_entries() {
         let home = tempfile::tempdir().unwrap();
         let pp = home.path().join("mcp.json");
@@ -713,31 +768,47 @@ mod lifecycle_tests {
         let log = dir.path().join("server-log");
         fs::write(&path, json!({"mcpServers":{"local":{"command":"bash","args":[format!("{}/../../tests/fixtures/mcp_server.sh", env!("CARGO_MANIFEST_DIR"))],"env":{"MCP_LOG":log.to_str().unwrap(),"MCP_VALUE":"test"}}}}).to_string()).unwrap();
         let token = CancellationToken::new();
-        let mut registry = Registry::load(&path, dir.path(), &token, false).unwrap();
+        let mut registry =
+            Registry::load(&path, dir.path(), &token, crate::mcp::Access::ReadOnly).unwrap();
         let cleanup = registry.cleanup().unwrap();
         registry
-            .manage(&Action::Disable("local".into()), dir.path(), &token, false)
+            .manage(
+                &Action::Disable("local".into()),
+                dir.path(),
+                &token,
+                crate::mcp::Access::ReadOnly,
+            )
             .unwrap();
         registry
-            .manage(&Action::Enable("local".into()), dir.path(), &token, false)
+            .manage(
+                &Action::Enable("local".into()),
+                dir.path(),
+                &token,
+                crate::mcp::Access::ReadOnly,
+            )
             .unwrap();
         assert!(!log.exists());
-        assert!(registry.definitions().is_empty());
+        assert!(registry.definitions(crate::mcp::Access::Full).is_empty());
         assert!(
             registry
                 .manage(
                     &Action::Reconnect("local".into()),
                     dir.path(),
                     &token,
-                    false
+                    crate::mcp::Access::ReadOnly
                 )
                 .is_err()
         );
         registry
-            .manage(&Action::Reconnect("local".into()), dir.path(), &token, true)
+            .manage(
+                &Action::Reconnect("local".into()),
+                dir.path(),
+                &token,
+                crate::mcp::Access::Full,
+            )
             .unwrap();
         assert!(log.exists());
-        assert!(!registry.definitions().is_empty());
+        assert!(!registry.definitions(crate::mcp::Access::Full).is_empty());
         // 退出句柄在连接前取得，仍然必须关闭后来创建的进程并禁止复活。
         drop(cleanup);
         assert!(
@@ -749,9 +820,18 @@ mod lifecycle_tests {
                 .is_none()
         );
         registry
-            .manage(&Action::Reconnect("local".into()), dir.path(), &token, true)
+            .manage(
+                &Action::Reconnect("local".into()),
+                dir.path(),
+                &token,
+                crate::mcp::Access::Full,
+            )
             .unwrap();
-        assert!(registry.definitions().is_empty());
-        assert!(registry.view(true).entries[0].status.starts_with("failed"));
+        assert!(registry.definitions(crate::mcp::Access::Full).is_empty());
+        assert!(
+            registry.view(crate::mcp::Access::Full).entries[0]
+                .status
+                .starts_with("failed")
+        );
     }
 }

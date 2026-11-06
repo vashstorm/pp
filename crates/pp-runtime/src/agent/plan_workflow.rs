@@ -15,7 +15,7 @@ use super::{
     persistence::{Metadata, SessionJournal},
 };
 use crate::agent::input::InputQueue;
-use crate::mcp::Registry;
+use crate::mcp::{Access, Registry};
 use crate::project_instructions;
 use crate::tools::plan_catalog;
 use anyhow::{Result, anyhow, bail, ensure};
@@ -258,27 +258,48 @@ impl Agent {
 /// rejects the write.
 ///
 impl Agent {
-    /// Stop every managed MCP process so Plan mode cannot reach them. On
-    /// failure the registry, its slots and the UI's exit handle stay in place
-    /// and `plan_cleanup_error` blocks run/continue until `/plan` retries.
-    /// `pub(super)`：列表打开的 Plan 候选会话（plan_open）复用同一门禁。
-    pub(super) fn ensure_plan_mcp_shutdown(
+    /// 收尾子 Agent 后，仅保留 Plan 明确授权的服务。回收失败时保留
+    /// 连接跟踪和阻断标记，等待用户重试 /plan。
+    pub(super) fn ensure_plan_mcp_access(
         &mut self,
         cancellation: &CancellationToken,
     ) -> Result<()> {
         self.stop_subagents()?;
         cancellation::check(cancellation)?;
-        if let Err(error) = self.tools.mcp.shutdown() {
-            let message = format!(
-                "MCP servers could not be stopped for Plan mode: {error:#}; run /plan again to retry."
-            );
-            self.plan_cleanup_error = Some(message.clone());
-            bail!("{message}");
+        let result = if self.plan_cleanup_error.is_some() {
+            self.tools.mcp.shutdown()
+        } else {
+            Ok(())
+        };
+        let result = result.and_then(|()| self.tools.mcp.restrict_to_read_only());
+        self.session
+            .set_tools(self.tools.all_definitions(self.workflow.mode));
+        if let Err(error) = result {
+            if error.is::<pp_core::cancellation::CleanupError>() {
+                self.plan_cleanup_error = Some(format!(
+                    "MCP cleanup failed for Plan mode: {error:#}; run /plan again to retry."
+                ));
+            }
+            return Err(error);
         }
         self.plan_cleanup_error = None;
-        self.session
-            .set_tools(self.tools.all_definitions(WorkMode::Plan));
-        Ok(())
+        self.connect_pending_plan_mcp(cancellation)
+    }
+
+    fn prepare_execution_registry(&mut self, cancellation: &CancellationToken) -> Result<Registry> {
+        // 先校验配置，再回收 Plan 连接，避免重复启动同一个服务。
+        let mut registry = Registry::read_config(&self.catalog.mcp_path())?;
+        cancellation::check(cancellation)?;
+        if let Err(error) = self.tools.mcp.shutdown() {
+            self.plan_cleanup_error = Some(format!(
+                "MCP cleanup failed before execution: {error:#}; run /plan again to retry."
+            ));
+            return Err(error);
+        }
+        if let Err(error) = registry.connect_enabled(self.tools.cwd(), cancellation, Access::Full) {
+            return Err(self.abort_execution_preparation(registry, error));
+        }
+        Ok(registry)
     }
 
     fn abort_execution_preparation(
@@ -305,7 +326,7 @@ impl Agent {
         self.stop_subagents()?;
         cancellation::check(cancellation)?;
         if self.workflow.mode == WorkMode::Plan {
-            self.ensure_plan_mcp_shutdown(cancellation)?;
+            self.ensure_plan_mcp_access(cancellation)?;
             return Ok(self.workflow.clone());
         }
         self.journal.check()?;
@@ -325,7 +346,7 @@ impl Agent {
         );
         self.commit_workflow(previous)?;
         self.cancel_lsp_diagnostics();
-        self.ensure_plan_mcp_shutdown(cancellation)?;
+        self.ensure_plan_mcp_access(cancellation)?;
         let previous_route = self.role_route.take();
         self.role_route = if selection.enabled {
             self.catalog.role_route(pp_config::config::ModelRole::Plan)
@@ -430,13 +451,8 @@ impl Agent {
             );
         }
         self.journal.check()?;
-        self.ensure_plan_mcp_shutdown(cancellation)?;
-        let registry = Registry::load(
-            &self.catalog.mcp_path(),
-            self.tools.cwd(),
-            cancellation,
-            true,
-        )?;
+        self.ensure_plan_mcp_access(cancellation)?;
+        let registry = self.prepare_execution_registry(cancellation)?;
         let cleanup = match registry.cleanup() {
             Ok(cleanup) => cleanup,
             Err(error) => return Err(self.abort_execution_preparation(registry, error)),
@@ -450,7 +466,7 @@ impl Agent {
         self.workflow.todos = Vec::new();
         self.workflow.todo_plan_id = None;
         let mut definitions = self.tools.all_definitions(WorkMode::Execute);
-        definitions.extend(registry.definitions());
+        definitions.extend(registry.definitions(Access::Full));
         self.session.set_tools(definitions);
         if let Err(error) = self.journal.write_workflow(&self.workflow) {
             self.workflow = previous;
@@ -708,7 +724,7 @@ impl Agent {
         // 审批访问前按 ID 协调实际路径；墓碑、搬迁与首次登记在此暴露。
         self.reconcile_plan_location()?;
         // Finish any pending Plan cleanup before touching approval state.
-        self.ensure_plan_mcp_shutdown(cancellation)?;
+        self.ensure_plan_mcp_access(cancellation)?;
         {
             let document = self
                 .workflow
@@ -742,12 +758,7 @@ impl Agent {
             cancellation::check(cancellation)?;
             self.check_plan_token_for_approval(&token, input)?;
         }
-        let registry = Registry::load(
-            &self.catalog.mcp_path(),
-            self.tools.cwd(),
-            cancellation,
-            true,
-        )?;
+        let registry = self.prepare_execution_registry(cancellation)?;
         let cleanup = match registry.cleanup() {
             Ok(cleanup) => cleanup,
             Err(error) => return Err(self.abort_execution_preparation(registry, error)),
@@ -835,7 +846,7 @@ impl Agent {
         self.workflow.todos = todos;
         self.workflow.todo_plan_id = todo_plan_id;
         let mut definitions = self.tools.all_definitions(WorkMode::Execute);
-        definitions.extend(registry.definitions());
+        definitions.extend(registry.definitions(Access::Full));
         self.session.set_tools(definitions);
         let prepared = (|| -> Result<()> {
             // Switch the system prompt to the Execute progress rules before
@@ -927,7 +938,7 @@ impl Agent {
         // native history.
         let prepared = (|| -> Result<(Session, SessionJournal)> {
             let mut definitions = self.tools.all_definitions(WorkMode::Execute);
-            definitions.extend(registry.definitions());
+            definitions.extend(registry.definitions(Access::Full));
             let system = self.compose_prompt(
                 &candidate_workflow.instructions(),
                 "execute",
@@ -1016,8 +1027,7 @@ impl Agent {
 
     /// Resume a saved session in the worker, adapting the managed MCP
     /// registry to the target workflow mode through the same safe cleanup
-    /// path: entering a Plan session stops the current registry first, and a
-    /// Plan session never connects MCP at all.
+    /// path used by /plan.
     pub fn resume(
         &mut self,
         id: &str,
@@ -1027,33 +1037,21 @@ impl Agent {
         self.stop_subagents()?;
         let mut restored = self.prepare_resume(id)?;
         let target_mode = restored.checkpoint.workflow.mode;
-        match (self.workflow.mode, target_mode) {
-            (WorkMode::Plan, WorkMode::Plan) => {}
-            (WorkMode::Plan, WorkMode::Execute) => {
-                // The Plan registry is empty; finish any pending cleanup, then
-                // connect ordinary execution MCP.
-                self.ensure_plan_mcp_shutdown(cancellation)?;
-                self.tools.mcp = Registry::load(
-                    &self.catalog.mcp_path(),
-                    self.tools.cwd(),
-                    cancellation,
-                    true,
-                )?;
-            }
-            (WorkMode::Execute, WorkMode::Plan) => {
-                // Stop the managed registry before the planning session can
-                // rely on the Plan gate; failure aborts the resume.
-                self.ensure_plan_mcp_shutdown(cancellation)?;
-            }
-            (WorkMode::Execute, WorkMode::Execute) => {}
-        }
-        let cleanup = self.tools.mcp.cleanup()?;
         let todo_snapshot = sync_restored_todos(
             &self.tools,
             &mut restored.journal,
             &mut restored.checkpoint.workflow,
             &restored.replay,
         )?;
+        match (self.workflow.mode, target_mode) {
+            (WorkMode::Plan, WorkMode::Execute) => {
+                self.ensure_plan_mcp_access(cancellation)?;
+                self.tools.mcp = self.prepare_execution_registry(cancellation)?;
+            }
+            (_, WorkMode::Plan) => self.ensure_plan_mcp_access(cancellation)?,
+            (WorkMode::Execute, WorkMode::Execute) => {}
+        }
+        let cleanup = self.tools.mcp.cleanup()?;
         restored.journal.history_replaced();
         self.session = restored.checkpoint.session;
         self.reset_lsp_diagnostics();

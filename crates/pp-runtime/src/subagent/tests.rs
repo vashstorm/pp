@@ -618,6 +618,10 @@ fn custom_agents_require_real_definitions_and_never_inherit_the_plan_model() {
     let dir = tempfile::tempdir().unwrap();
     let mut binding = binding(dir.path(), TaskSettings::default());
     binding.model = "fixture/planner".into();
+    binding.allow_mcp(
+        vec!["mcp__remote__echo".into(), "mcp__remote__fail".into()],
+        vec!["mcp__remote__echo".into()],
+    );
     let schema = binding.definitions(WorkMode::Execute)[0]
         .parameters
         .clone()
@@ -629,7 +633,7 @@ fn custom_agents_require_real_definitions_and_never_inherit_the_plan_model() {
     );
     let project = dir.path().join(".pp/agents");
     fs::create_dir_all(&project).unwrap();
-    fs::write(project.join("scout.md"), "---\nname: scout\ndescription: configured scout\ntools: [read, grep, glob, lsp]\n---\nConfigured investigation prompt.").unwrap();
+    fs::write(project.join("scout.md"), "---\nname: scout\ndescription: configured scout\ntools: [read, grep, glob, lsp, mcp__remote__echo, mcp__remote__fail]\n---\nConfigured investigation prompt.").unwrap();
     let definitions = binding.roles().unwrap();
     let scout = definitions.iter().find(|def| def.name == "scout").unwrap();
     assert!(scout.source.ends_with(".pp/agents/scout.md"));
@@ -673,6 +677,8 @@ fn custom_agents_require_real_definitions_and_never_inherit_the_plan_model() {
     assert_eq!(spec.definition, "scout");
     assert_eq!(spec.prompt, "Configured investigation prompt.");
     assert!(spec.readonly);
+    assert!(spec.tools.iter().any(|tool| tool == "mcp__remote__echo"));
+    assert!(!spec.tools.iter().any(|tool| tool == "mcp__remote__fail"));
 }
 
 #[test]

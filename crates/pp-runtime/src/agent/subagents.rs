@@ -88,6 +88,7 @@ impl Agent {
             .map(|p| p.content.clone())
             .unwrap_or_default();
         let factory = Arc::new(move |record: &Record, binding: Binding| -> Result<Agent> {
+            let mut binding = binding;
             let catalog = runtime_models
                 .as_ref()
                 .and_then(|runtime| runtime.registry.catalog())
@@ -146,13 +147,21 @@ impl Agent {
                     lsp_settings,
                 ));
             }
-            // 只读任务不能通过子 Agent 默认 Execute 绕过。
-            tools.set_lsp_readonly(record.spec.readonly);
+            // 恢复旧记录时也以父级当前权限为准，子 Agent 默认的 Execute 不扩大权限。
+            let readonly = plan_mode
+                || record.spec.readonly
+                || record.spec.model_role == Some(pp_config::config::ModelRole::Review);
+            binding.readonly = readonly;
+            tools.set_lsp_readonly(readonly);
+            tools.mcp_readonly = readonly;
             let mut allowed = record.spec.tools.clone();
-            allowed.retain(|name| name != "task");
-            if plan_mode {
-                allowed.retain(|name| matches!(name.as_str(), "read" | "grep" | "glob" | "lsp"));
-            }
+            allowed.retain(|name| {
+                name != "task"
+                    && (!readonly
+                        || crate::subagent::is_read_only_child_tool(name, |name| {
+                            mcp.is_read_only(name)
+                        }))
+            });
             tools.allowed_tools = Some(allowed);
             tools.yield_schema = record.spec.output_schema.clone();
             tools.subagent = Some(binding.clone());
@@ -270,7 +279,7 @@ impl Agent {
                     .all_definitions(pp_core::plan::WorkMode::Execute),
             );
             if plan_mode {
-                child.base_system.push_str("\nRead-only planning investigation: do not edit, run shell or MCP, or delegate further.");
+                child.base_system.push_str("\nRead-only planning investigation: use only available read-only tools, including authorized MCP tools. Do not edit, run shell, or delegate further.");
             }
             child.session.set_think_level(child.think_level);
             Ok(child)
@@ -304,13 +313,17 @@ impl Agent {
             validator,
         )?;
         binding.accounting = self.task_status.accounting.clone();
-        binding.allow_mcp(
+        let mcp_names = |access| {
             self.tools
                 .mcp
-                .definitions()
+                .definitions(access)
                 .into_iter()
-                .map(|d| d.name)
-                .collect(),
+                .map(|definition| definition.name)
+                .collect()
+        };
+        binding.allow_mcp(
+            mcp_names(crate::mcp::Access::for_mode(self.workflow.mode)),
+            mcp_names(crate::mcp::Access::ReadOnly),
         );
         binding.set_model_roles(self.catalog.subagent_roles());
         binding.set_runtime_models(self.runtime_models.clone());

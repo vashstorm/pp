@@ -219,7 +219,7 @@ The linked guides below are in Chinese.
 | [Skills](docs/guide.md#技能支持) | `~/.pp/agent/skills/` | Load `SKILL.md` on demand and manage skills with `/skills` |
 | [System prompts](docs/guide.md#系统提示词) | `cwd/.pp/` or `~/.pp/agent/` | Replace base instructions with `SYSTEM.md` or `SYSTEM_TEMPLATE.md`, or append with `APPEND_SYSTEM.md` |
 | [Prompt commands](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | Expand Markdown templates with `/command arguments` |
-| [MCP tools](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`, `/mcp` | Connect stdio and remote HTTP/SSE servers; configure Context7 with environment-first API keys, import Claude/Codex stdio servers, and manage connections |
+| [MCP tools](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`, `/mcp` | Connect stdio and remote HTTP/SSE servers; configure Context7 or [Exa search and page fetching](docs/guide.md#接入-exa), grant specific MCP tools to Plan, Review and read-only subagents, and manage connections |
 | [Language servers](docs/guide.md#lsp-语义导航与修改建议) | `~/.pp/agent/lsp.json`, `settings.yml` `lsp:` | Semantic navigation, diagnostics, and modification suggestions; the AI applies changes with edit/write/bash |
 
 ## Development

@@ -18,6 +18,7 @@ pub(super) struct Panel {
     title: &'static str,
     scroll: usize,
     visible: usize,
+    allows_input: bool,
 }
 impl Panel {
     pub fn list(view: &View) -> Self {
@@ -84,6 +85,7 @@ impl Panel {
             title: " Configured MCP Servers ",
             scroll: 0,
             visible: 0,
+            allows_input: true,
         }
     }
     pub fn help() -> Self {
@@ -95,7 +97,27 @@ impl Panel {
             title: " MCP Server Management ",
             scroll: 0,
             visible: 0,
+            allows_input: false,
         }
+    }
+    pub fn allows_input(&self) -> bool {
+        self.allows_input
+    }
+
+    pub fn captures(&self, event: &Event) -> bool {
+        !self.allows_input
+            || match event {
+                Event::Key(key) => {
+                    matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+                        && key.modifiers.is_empty()
+                        && matches!(key.code, KeyCode::Esc | KeyCode::PageUp | KeyCode::PageDown)
+                }
+                Event::Mouse(mouse) => matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ),
+                _ => false,
+            }
     }
     pub fn handle(&mut self, event: &Event) -> bool {
         match event {
@@ -154,7 +176,11 @@ impl Panel {
         if inner.height > 0 {
             frame.render_widget(
                 Line::styled(
-                    " Esc to close · ↑↓ / PgUp/PgDn scroll",
+                    if self.allows_input {
+                        " Esc to close · PgUp/PgDn or wheel to scroll"
+                    } else {
+                        " Esc to close · ↑↓ / PgUp/PgDn scroll"
+                    },
                     Style::default().fg(MUTED),
                 ),
                 Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
@@ -188,11 +214,14 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert!(buffer.content.iter().any(|c| c.fg == BORDER));
         assert!(buffer.content.iter().any(|c| c.fg == Color::Green));
-        let end = Event::Key(crossterm::event::KeyEvent::new(
-            KeyCode::End,
+        let page_down = Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::PageDown,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert!(!panel.handle(&end));
+        assert!(panel.captures(&page_down));
+        for _ in 0..3 {
+            assert!(!panel.handle(&page_down));
+        }
         assert!(panel.scroll > 0);
         terminal
             .draw(|frame| panel.draw(frame, frame.area()))

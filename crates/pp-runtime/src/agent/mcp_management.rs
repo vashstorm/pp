@@ -1,13 +1,12 @@
 use super::Agent;
-use crate::mcp::Action;
 use crate::mcp::View;
+use crate::mcp::{Access, Action};
 use anyhow::Result;
 use pp_core::cancellation::CancellationToken;
-use pp_core::plan::WorkMode;
 
 impl Agent {
     pub fn mcp_view(&self) -> View {
-        self.tools.mcp.view(self.workflow.mode == WorkMode::Execute)
+        self.tools.mcp.view(Access::for_mode(self.workflow.mode))
     }
     pub fn manage_mcp(&mut self, action: &Action, token: &CancellationToken) -> Result<View> {
         if !matches!(action, Action::Help | Action::List) {
@@ -17,7 +16,7 @@ impl Agent {
         let result =
             self.tools
                 .mcp
-                .manage(action, &cwd, token, self.workflow.mode == WorkMode::Execute);
+                .manage(action, &cwd, token, Access::for_mode(self.workflow.mode));
         // 部分成功、失败和取消均同步真实工具表；管理命令不追加用户历史。
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));

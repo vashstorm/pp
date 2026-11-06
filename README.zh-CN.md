@@ -220,7 +220,7 @@ pp stats
 | [技能](docs/guide.md#技能支持) | `~/.pp/agent/skills/` | 按需加载 `SKILL.md`，通过 `/skills` 管理 |
 | [系统提示词](docs/guide.md#系统提示词) | `cwd/.pp/` 或 `~/.pp/agent/` | `SYSTEM.md`／`SYSTEM_TEMPLATE.md` 替换基础指令，`APPEND_SYSTEM.md` 追加正文 |
 | [提示词命令](docs/guide.md#markdown-提示词命令) | `~/.pp/agent/commands/*.md` | 将 Markdown 模板展开为 `/命令 参数` |
-| [MCP 工具](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`、`/mcp` | 连接 stdio 与远程 HTTP／SSE 服务，支持 Context7 及环境变量优先的 API Key，导入 Claude／Codex stdio 服务并管理连接 |
+| [MCP 工具](docs/guide.md#mcp-工具) | `~/.pp/agent/mcp.json`、`/mcp` | 连接 stdio 与远程 HTTP／SSE 服务，支持 Context7 和 [Exa 搜索与网页读取](docs/guide.md#接入-exa)，可为 Plan、Review 和只读子 Agent 授权特定 MCP 工具并管理连接 |
 | [语言服务器](docs/guide.md#lsp-语义导航与修改建议) | `~/.pp/agent/lsp.json`、`settings.yml` 的 `lsp:` | 语义导航、诊断和修改建议；AI 重新读取文件后通过 edit/write/bash 执行 |
 
 ## 开发
