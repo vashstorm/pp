@@ -1547,8 +1547,7 @@ fn model_line(agent: &AgentView, width: usize) -> Line<'static> {
 fn status_icon(status: AgentStatus, clock: u64) -> &'static str {
     match status {
         AgentStatus::Running => SPINNER[(clock / 120 % SPINNER.len() as u64) as usize],
-        AgentStatus::Idle => "●",
-        AgentStatus::Parked => "○",
+        AgentStatus::Idle | AgentStatus::Parked => "⬤",
         AgentStatus::Aborted => "×",
     }
 }
