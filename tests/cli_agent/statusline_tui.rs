@@ -113,6 +113,77 @@ fn statusline_out_accumulates_session_usage_across_requests_both_protocols() {
 }
 
 #[test]
+fn statusline_subagent_badge_tracks_running_children_before_speed() {
+    let fixture = server();
+    let protocol = "completion";
+    let (_home, mut pty) = statusline_start(&fixture, protocol, false);
+    pty.input("track four subagents\r");
+    let ((root, _), (title, _)) = statusline_requests(&fixture);
+    statusline_reply_usage(title, protocol, "子代理状态");
+    statusline_reply_calls_usage(
+        root,
+        protocol,
+        json!([
+            hub_call(
+                protocol,
+                "spawn-badge",
+                "task",
+                json!({"context":"status badge", "tasks": [
+                    {"task":"badge first"}, {"task":"badge second"},
+                    {"task":"badge third"}, {"task":"badge fourth"}
+                ]})
+            ),
+            hub_call(protocol, "wait-badge", "wait", json!({}))
+        ]),
+    );
+    // 保持子请求未应答，逐个完成，以屏幕内容作为状态切换的同步点。
+    let mut children: Vec<_> = (0..4)
+        .map(|_| {
+            let (request, body) = pty.request_at(&fixture, api_path(protocol));
+            assert!(hub_is_child(&body), "{body}");
+            request
+        })
+        .collect();
+    for (count, icon) in [
+        (4, '\u{f0c0}'),
+        (3, '\u{f0c0}'),
+        (2, '\u{f000e}'),
+        (1, '\u{f007}'),
+    ] {
+        let badge = format!("{icon} {count} · ");
+        pty.wait_for(
+            &format!("{count} 个运行中的子代理显示在速度前"),
+            |screen| {
+                screen.contents().lines().any(|line| {
+                    line.split_once(&badge).is_some_and(|(_, after)| {
+                        after.starts_with(['\u{f0f86}', '\u{f0f85}', '\u{f04c5}'])
+                            && after.contains("tok/s")
+                    })
+                })
+            },
+        );
+        let screen = pty.parser.screen();
+        let (row, col) = context_tui_locate(screen, &badge).unwrap();
+        assert_eq!(
+            screen.cell(row, col).unwrap().fgcolor(),
+            vt100::Color::Rgb(254, 188, 56)
+        );
+        statusline_reply_usage(children.pop().unwrap(), protocol, "badge child done");
+    }
+    let (root, body) = pty.request_at(&fixture, api_path(protocol));
+    assert!(!hub_is_child(&body), "{body}");
+    pty.wait_for("子代理结束后只保留速度", |screen| {
+        let text = screen.contents();
+        text.contains("tok/s") && !text.contains(['\u{f007}', '\u{f000e}', '\u{f0c0}'])
+    });
+    statusline_reply_usage(root, protocol, "statusline-badge-done");
+    pty.completed_after("statusline-badge-done");
+    pty.input("\x03");
+    pty.finish();
+    no_more(&fixture);
+}
+
+#[test]
 fn task_status_cost_includes_child_subagents_without_double_counting_both_protocols() {
     for protocol in ["completion", "response"] {
         let fixture = server();

@@ -130,6 +130,7 @@ impl App {
             background_cleanup: None,
             subagent_panel: None,
             subagent_autowake: false,
+            subagent_status: None,
             subagent_control: Default::default(),
             hub_worker: None,
             hub_root_epoch: 0,

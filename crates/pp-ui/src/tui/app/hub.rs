@@ -54,6 +54,7 @@ impl App {
             return;
         }
         self.hub_bound = binding;
+        self.subagent_status = None;
         self.hub_attach();
         self.apply_hub_commands(commands);
     }
@@ -98,6 +99,7 @@ impl App {
             return false;
         }
         self.hub_bound = current;
+        self.subagent_status = None;
         self.child_drafts.clear();
         self.hub_sends.clear();
         self.hub_view_epoch += 1;
@@ -315,7 +317,16 @@ impl App {
     /// 每轮 tick：时钟、每秒刷新与 worker 回复。
     pub(in crate::tui) fn hub_tick(&mut self) -> bool {
         let mut changed = self.receive_hub();
+        let previous_count = self.subagent_status.map_or(0, |(_, count)| count);
         changed |= self.hub_sync_root();
+        self.subagent_status = self.hub_bound.as_ref().map(|binding| {
+            let revision = binding.hub_revision();
+            match self.subagent_status {
+                Some(snapshot) if snapshot.0 == revision => snapshot,
+                _ => (revision, binding.running_subagent_count()),
+            }
+        });
+        changed |= self.subagent_status.map_or(0, |(_, count)| count) != previous_count;
         let now = std::time::Instant::now();
         if let Some(panel) = &mut self.subagent_panel {
             panel.tick(subagents::now(), now);

@@ -259,4 +259,6 @@ cargo fmt --all --check
 
 ## 子 Agent
 
+有子 Agent 正在运行时，终端界面会在 `tok/s` 前以金色图标显示实际数量。一个用单人图标，两个用双人图标，三个及以上用三人图标；没有正在运行的子 Agent 时隐藏。
+
 使用 `/agents` 查看角色，`/subagents`（或 `⌥ + A / Alt + A`）打开 Agent Hub，查看 Agents、完整 Activity、消耗与独立详情，并追问、取消或恢复任务。支持 Main 批量异步派发、独立上下文、结构化结果及可选 worktree 隔离，子任务沿用父审批规则。运行中子 Agent 数量上限默认 4，通过 `~/.pp/agent/settings.yml` 的 `task.max_concurrency` 配置为 1–32，重启生效；每个 Run 在初始化前获取名额，跨模型请求、工具和等待持续持有，结果收尾结束才释放，未获得名额时保持排队；Main 不占名额。所有 child 均无 `task` 工具和自动委托使用提示，不能递归派发。详见[子 Agent 使用说明](docs/subagents.md)。

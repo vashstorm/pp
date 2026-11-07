@@ -30,6 +30,7 @@ const DIRECTORY: Color = Color::Rgb(36, 174, 181);
 const GIT: Color = Color::Rgb(204, 167, 72);
 pub(super) const CONTEXT: Color = Color::Rgb(115, 218, 202);
 const SPEED: Color = Color::Rgb(255, 95, 162);
+const SUBAGENTS: Color = Color::Rgb(254, 188, 56);
 const INPUT: Color = Color::Rgb(125, 207, 255);
 const OUTPUT: Color = Color::Rgb(158, 206, 106);
 const CACHE_READ: Color = Color::Rgb(187, 154, 247);
@@ -41,6 +42,9 @@ const MODEL_ICON: &str = "\u{ec19}";
 const PLAN_ICON: &str = "\u{f0132}";
 const DIRECTORY_ICON: &str = "\u{f07c}";
 const GIT_ICON: &str = "\u{f126}";
+const SUBAGENT_ONE_ICON: &str = "\u{f007}";
+const SUBAGENT_TWO_ICON: &str = "\u{f000e}";
+const SUBAGENT_GROUP_ICON: &str = "\u{f0c0}";
 // 速度图标按 tok/s 分三档；没有速率数据时使用低速档。
 const SPEED_SLOW_ICON: &str = "\u{f0f86}";
 const SPEED_MEDIUM_ICON: &str = "\u{f0f85}";
@@ -176,7 +180,7 @@ fn join_fields(fields: &[Option<Line<'static>>]) -> Line<'static> {
         if spans.is_empty() {
             spans.push(Span::raw(" "));
         } else {
-            spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+            spans.push(metric_separator());
         }
         spans.extend(line.spans.iter().cloned());
     }
@@ -186,19 +190,14 @@ fn join_fields(fields: &[Option<Line<'static>>]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// 所有指标共享显示列预算：先缩短标题，再按整组降级，最后保留 Ctx。
-pub(super) fn metric_fields(
-    usage: &ContextUsage,
-    speed: Option<(f64, bool)>,
-    live_output: Option<u64>,
-    task: Option<&pp_config::task_status::Snapshot>,
-    elapsed: Option<&str>,
-    width: u16,
-) -> Line<'static> {
-    let speed_glyph = speed_icon(speed.map(|(rate, _)| rate));
-    let speed_text = speed.map_or_else(
+fn metric_separator() -> Span<'static> {
+    Span::styled(" · ", Style::default().fg(Color::DarkGray))
+}
+
+fn speed_field(rate: Option<f64>, running_subagents: usize) -> Line<'static> {
+    let speed_text = rate.map_or_else(
         || "— tok/s".into(),
-        |(rate, _)| {
+        |rate| {
             let rate = if rate >= 1_000_000.0 {
                 format!("{:.1}M", rate / 1_000_000.0)
             } else if rate >= 1000.0 {
@@ -209,6 +208,30 @@ pub(super) fn metric_fields(
             format!("{rate} tok/s")
         },
     );
+    let speed = field(speed_icon(rate), speed_text, SPEED);
+    let icon = match running_subagents {
+        0 => return speed,
+        1 => SUBAGENT_ONE_ICON,
+        2 => SUBAGENT_TWO_ICON,
+        _ => SUBAGENT_GROUP_ICON,
+    };
+    // 子代理数量和速度作为同一组参与窄屏降级。
+    let mut line = field(icon, running_subagents.to_string(), SUBAGENTS);
+    line.spans.push(metric_separator());
+    line.spans.extend(speed.spans);
+    line
+}
+
+/// 所有指标共享显示列预算：先缩短标题，再按整组降级，最后保留 Ctx。
+pub(super) fn metric_fields(
+    usage: &ContextUsage,
+    speed: Option<(f64, bool)>,
+    running_subagents: usize,
+    live_output: Option<u64>,
+    task: Option<&pp_config::task_status::Snapshot>,
+    elapsed: Option<&str>,
+    width: u16,
+) -> Line<'static> {
     let count = |value: Option<u64>| value.map_or_else(|| "—".into(), abbreviate_tokens);
     let last = usage.last_request;
     // out 累计整个会话的服务端 output tokens；生成中的请求还没有 usage 时，
@@ -220,7 +243,7 @@ pub(super) fn metric_fields(
         None => None,
     };
     let mut fields = [
-        Some(field(speed_glyph, speed_text, SPEED)),
+        Some(speed_field(speed.map(|(rate, _)| rate), running_subagents)),
         task.and_then(|t| t.title.as_ref())
             .map(|title| title_field(title, 32)),
         Some(context_field(usage)),
@@ -938,6 +961,7 @@ mod tests {
         let line = metric_fields(
             &usage,
             Some((30.2, true)),
+            0,
             None,
             Some(&task),
             Some("1m 25s"),
@@ -978,12 +1002,12 @@ mod tests {
         let mut usage = status_usage();
         usage.last_request = None;
         usage.session_output_tokens = 0;
-        let text = line_text(&metric_fields(&usage, None, None, None, None, 240));
+        let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
         assert!(text.contains(&format!("{IO_ICON} —/—")));
         assert!(text.contains(&format!("{CACHE_ICON} —/—")));
         // 切模型或压缩清空最近请求指标，会话累计输出继续显示。
         usage.session_output_tokens = 45_678;
-        let text = line_text(&metric_fields(&usage, None, None, None, None, 240));
+        let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
         assert!(text.contains(&format!("{IO_ICON} —/45.7K")), "{text}");
         usage.session_output_tokens = 0;
         for (read, write, expected) in [
@@ -997,7 +1021,7 @@ mod tests {
                 cached_tokens: read,
                 cache_write_tokens: write,
             });
-            let text = line_text(&metric_fields(&usage, None, None, None, None, 240));
+            let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
             assert!(text.contains(&format!("{IO_ICON} 0/0")));
             assert!(text.contains(&format!("{CACHE_ICON} {expected}")));
         }
@@ -1007,11 +1031,11 @@ mod tests {
     fn metric_fields_out_accumulates_session_usage_and_adds_live_estimate() {
         let usage = status_usage();
         // 生成中：out 在会话累计上叠加实时估算，in 与缓存仍是最近一次完成的请求。
-        let text = line_text(&metric_fields(&usage, None, Some(4200), None, None, 240));
+        let text = line_text(&metric_fields(&usage, None, 0, Some(4200), None, None, 240));
         assert!(text.contains(&format!("{IO_ICON} 12.3K/49.9K")), "{text}");
         assert!(text.contains(&format!("{CACHE_ICON} 8K/0")), "{text}");
         // 没有估算时 out 就是会话累计，不回到单次请求的输出量。
-        let text = line_text(&metric_fields(&usage, None, None, None, None, 240));
+        let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
         assert!(text.contains(&format!("{IO_ICON} 12.3K/45.7K")), "{text}");
         // 首个请求没有历史 usage 时，in/缓存保持未知，out 也只是本次实时估算。
         let first = ContextUsage {
@@ -1019,7 +1043,7 @@ mod tests {
             session_output_tokens: 0,
             ..usage
         };
-        let text = line_text(&metric_fields(&first, None, Some(260), None, None, 240));
+        let text = line_text(&metric_fields(&first, None, 0, Some(260), None, None, 240));
         assert!(text.contains(&format!("{IO_ICON} —/260")), "{text}");
     }
 
@@ -1043,6 +1067,7 @@ mod tests {
         let text = line_text(&metric_fields(
             &status_usage(),
             Some((61.5, true)),
+            0,
             None,
             None,
             None,
@@ -1066,6 +1091,7 @@ mod tests {
                 line_text(&metric_fields(
                     &usage,
                     Some((rate, false)),
+                    0,
                     None,
                     None,
                     None,
@@ -1140,6 +1166,7 @@ mod tests {
             metric_fields(
                 &usage,
                 Some((rate, false)),
+                3,
                 None,
                 Some(&task),
                 Some("1m 25s"),
@@ -1165,6 +1192,7 @@ mod tests {
             let line = render(width);
             assert!(line.width() <= usize::from(width));
             let text = line_text(&line);
+            assert_eq!(text.contains(SUBAGENT_GROUP_ICON), text.contains("tok/s"));
             let missing = removal_order
                 .iter()
                 .take_while(|icon| !text.contains(**icon))

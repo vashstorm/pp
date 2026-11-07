@@ -846,6 +846,8 @@ struct App {
     changes_panel: Option<changes::Panel>,
     subagent_panel: Option<subagents::Panel>,
     subagent_autowake: bool,
+    // 当前根的观察修订号与正在运行的子代理数。
+    subagent_status: Option<(u64, usize)>,
     subagent_control: std::sync::Arc<std::sync::Mutex<Option<pp_runtime::subagent::Binding>>>,
     // Hub 观察线程与根/view epoch；草稿只保留在当前根内。
     hub_worker: Option<subagents::Worker>,
