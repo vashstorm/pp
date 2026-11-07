@@ -53,7 +53,7 @@ fn tui_roles_favorites_sort_persist_across_restart_and_can_be_removed() {
 }
 
 #[test]
-fn tui_roles_configures_model_and_effort_without_switching_current_session() {
+fn tui_roles_configures_explorer_after_fallback_row_without_switching_current_session() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
     let models =
@@ -63,7 +63,14 @@ fn tui_roles_configures_model_and_effort_without_switching_current_session() {
         .to_string();
     std::fs::write(
         config_path(dir.path(), "settings.yml"),
-        "default_model: fixture/one\n",
+        concat!(
+            "default_model: fixture/one\n",
+            "model_roles:\n",
+            "  fast:\n",
+            "    enabled: false\n",
+            "    model: fixture/one\n",
+            "    fallback: {model: fixture/two, effort: low}\n",
+        ),
     )
     .unwrap();
     std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
@@ -93,8 +100,8 @@ fn tui_roles_configures_model_and_effort_without_switching_current_session() {
     );
     pty.resize(6, 30);
     pty.resize(30, 100);
-    pty.input("\x1b[C\x1b[B\r");
-    pty.text("Select a model for FAST");
+    pty.input(&format!("\x1b[C{}\r", "\x1b[B".repeat(7)));
+    pty.text("Select a model for EXPLORER");
     pty.input("two\r");
     pty.text("Choose an effort for this role");
     pty.input("\x1b[B\x1b[B\x1b[B\r");
@@ -109,10 +116,10 @@ fn tui_roles_configures_model_and_effort_without_switching_current_session() {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
-    let read_fast_role = || {
+    let read_explorer_role = || {
         database
             .query_row(
-                "SELECT enabled, model_reference, effort FROM model_roles WHERE role = 'fast'",
+                "SELECT enabled, model_reference, effort FROM model_roles WHERE role = 'explorer'",
                 [],
                 |row| {
                     Ok((
@@ -125,7 +132,7 @@ fn tui_roles_configures_model_and_effort_without_switching_current_session() {
             .unwrap()
     };
     assert_eq!(
-        read_fast_role(),
+        read_explorer_role(),
         (1, "fixture/two".to_string(), "high".to_string())
     );
     pty.input(" ");
@@ -133,8 +140,14 @@ fn tui_roles_configures_model_and_effort_without_switching_current_session() {
         screen.contents().contains("0/7")
     });
     assert_eq!(
-        read_fast_role(),
+        read_explorer_role(),
         (0, "fixture/two".to_string(), "high".to_string())
+    );
+    pty.input(" ");
+    pty.text("1/7");
+    assert_eq!(
+        read_explorer_role(),
+        (1, "fixture/two".to_string(), "high".to_string())
     );
     pty.input("\x1b");
     pty.ready_model("fixture/one");

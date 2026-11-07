@@ -539,7 +539,7 @@ impl Panel {
             self.providers.len() + 2
         } else {
             match self.view {
-                View::Roles => ModelRole::ALL.len(),
+                View::Roles => self.rows().len(),
                 View::Models => self.model_indices().len(),
                 View::Effort => self.efforts().len(),
             }
