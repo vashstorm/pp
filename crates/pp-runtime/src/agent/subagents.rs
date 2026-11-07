@@ -339,16 +339,6 @@ impl Agent {
         self.tools.subagent = Some(binding);
         Ok(())
     }
-    pub fn agent_definitions(&self) -> Result<Vec<crate::subagent::Definition>> {
-        let config = self.catalog.resolve(&self.current_model.reference)?;
-        crate::subagent::catalog_definitions(
-            self.tools.cwd(),
-            &self.subagent_user_dir(&config.agent_db_path)?,
-            &config.settings.task,
-            &self.catalog.subagent_roles(),
-        )
-    }
-
     fn subagent_user_dir(&self, _agent_db_path: &Path) -> Result<std::path::PathBuf> {
         #[cfg(debug_assertions)]
         if self.client.mock_scripts().is_some() {

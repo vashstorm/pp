@@ -256,10 +256,10 @@ impl App {
         {
             return false;
         }
-        if matches!(command, Some(Command::Agents | Command::Subagents)) {
+        if matches!(command, Some(Command::Subagents)) {
             self.remember_input();
             self.clear_input();
-            self.open_hub(matches!(command, Some(Command::Agents)));
+            self.open_hub();
             return false;
         }
         if matches!(command, Some(Command::Login | Command::Logout)) {
@@ -490,7 +490,7 @@ impl App {
                     self.clear_input();
                     self.open_roles();
                 }
-                Some(Command::Agents | Command::Subagents) => unreachable!("handled above"),
+                Some(Command::Subagents) => unreachable!("handled above"),
                 Some(Command::Pipes(_)) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
                 #[cfg(debug_assertions)]

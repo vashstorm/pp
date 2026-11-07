@@ -168,7 +168,7 @@ impl OpenAiClient {
             emit(AgentEvent::ModelRequestStarted);
         }
         let mut progress = |event: AgentEvent| {
-            if matches!(&event, AgentEvent::AssistantDelta { text, .. } | AgentEvent::ThinkingDelta { text } if !text.is_empty())
+            if matches!(&event, AgentEvent::AssistantDelta { text, .. } | AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } if !text.is_empty())
             {
                 partial = true;
             }

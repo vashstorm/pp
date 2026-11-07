@@ -34,16 +34,11 @@ impl App {
     }
 
     /// 打开 Hub；未获得 Binding 时显示不可用空态而不是 panic。
-    pub(in crate::tui) fn open_hub(&mut self, roles: bool) {
+    pub(in crate::tui) fn open_hub(&mut self) {
         self.menu = None;
         self.menu_dismissed = true;
-        self.subagent_panel = Some(subagents::Panel::new(roles));
+        self.subagent_panel = Some(subagents::Panel::default());
         self.ensure_hub_worker();
-        let commands = self
-            .subagent_panel
-            .as_mut()
-            .map(|panel| panel.take_commands())
-            .unwrap_or_default();
         let binding = self.hub_binding();
         if binding.is_none() {
             if let Some(panel) = &mut self.subagent_panel {
@@ -56,7 +51,6 @@ impl App {
         self.hub_bound = binding;
         self.subagent_status = None;
         self.hub_attach();
-        self.apply_hub_commands(commands);
     }
 
     /// 用当前根重新扫描；同一根保留 child 草稿。
@@ -203,10 +197,6 @@ impl App {
                     let epoch = self.hub_root_epoch;
                     self.hub_send(subagents::Request::Refresh { epoch });
                 }
-                subagents::Command::Roles => {
-                    let epoch = self.hub_root_epoch;
-                    self.hub_send(subagents::Request::Roles { epoch });
-                }
             }
         }
     }
@@ -265,7 +255,6 @@ impl App {
             | subagents::Reply::Activity { epoch, .. }
             | subagents::Reply::Detail { epoch, .. }
             | subagents::Reply::Reset { epoch, .. }
-            | subagents::Reply::Roles { epoch, .. }
             | subagents::Reply::Error { epoch, .. }
             | subagents::Reply::Control { epoch, .. } => *epoch,
         };
@@ -329,7 +318,7 @@ impl App {
         changed |= self.subagent_status.map_or(0, |(_, count)| count) != previous_count;
         let now = std::time::Instant::now();
         if let Some(panel) = &mut self.subagent_panel {
-            panel.tick(subagents::now(), now);
+            changed |= panel.tick(subagents::now(), now);
         }
         changed
     }

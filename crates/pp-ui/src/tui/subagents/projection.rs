@@ -47,17 +47,6 @@ pub(super) enum RowStatus {
     Aborted,
 }
 
-impl RowStatus {
-    pub(super) fn symbol(self) -> &'static str {
-        match self {
-            Self::Pending => "●",
-            Self::Success => "✔",
-            Self::Error => "✖",
-            Self::Aborted => "■",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Category {
     All,
@@ -125,6 +114,7 @@ pub(super) struct ActivityRow {
     pub status: RowStatus,
     pub title: String,
     pub summary: String,
+    brief: Option<String>,
     /// 旧日志合成行的排序阶段：task=0、事件=1、终态=2。
     phase: u8,
 }
@@ -140,8 +130,9 @@ pub(super) struct AgentView {
     pub id: String,
     pub name: String,
     pub definition: String,
+    pub role: Option<&'static str>,
+    pub registered_ms: Option<u64>,
     pub parent: String,
-    pub depth: usize,
     pub model: String,
     pub thinking: String,
     pub model_change: Option<String>,
@@ -157,6 +148,8 @@ pub(super) struct AgentView {
     pub runs: usize,
     pub tools: usize,
     pub time_ms: Option<u64>,
+    pub active_ms: Option<u64>,
+    pub span_ms: Option<u64>,
     /// 全历史扫描未完成时指标标 loading。
     pub loading: bool,
     pub context: Option<ContextUsage>,
@@ -177,6 +170,22 @@ pub(super) struct TreeRow {
 }
 
 #[derive(Default)]
+struct WorkSummary {
+    draft: String,
+    latest: String,
+    tool: String,
+}
+
+impl WorkSummary {
+    fn current(&self) -> Option<String> {
+        [&self.draft, &self.latest, &self.tool]
+            .into_iter()
+            .find(|text| !text.trim().is_empty())
+            .map(|text| truncate(text))
+    }
+}
+
+#[derive(Default)]
 struct Stream {
     /// `agent|run` -> 当前 assistant turn 计数。
     turns: BTreeMap<String, u64>,
@@ -186,12 +195,12 @@ struct Stream {
     legacy_terminal: BTreeSet<String>,
     /// run -> 真实 running 状态的时间戳（毫秒）。
     started: BTreeMap<String, u64>,
+    ended: BTreeMap<String, u64>,
+    work: BTreeMap<String, WorkSummary>,
     usage_in: u64,
     usage_out: u64,
     usage_seen: bool,
     context: Option<ContextUsage>,
-    current: Option<String>,
-    current_running: bool,
     last_error: Option<String>,
     last_activity: Option<u64>,
 }
@@ -292,10 +301,16 @@ impl Projection {
                 let stream = self.streams.entry(agent.to_owned()).or_default();
                 if let Some(run) = &run {
                     stream.markers.insert(run.clone());
-                    if status == "running"
-                        && let Some(timestamp) = timestamp
-                    {
-                        stream.started.insert(run.clone(), timestamp);
+                    if let Some(timestamp) = timestamp {
+                        match status.as_str() {
+                            "running" => {
+                                stream.started.entry(run.clone()).or_insert(timestamp);
+                            }
+                            "queued" => {}
+                            _ => {
+                                stream.ended.entry(run.clone()).or_insert(timestamp);
+                            }
+                        }
                     }
                 }
                 let row_status = match status.as_str() {
@@ -354,11 +369,16 @@ impl Projection {
             AgentEvent::AssistantStarted => {
                 let turn = {
                     let stream = self.streams.entry(agent.to_owned()).or_default();
+                    stream
+                        .work
+                        .entry(run.unwrap_or_default().into())
+                        .or_default()
+                        .draft
+                        .clear();
                     let turn = stream.turns.entry(run_key.clone()).or_insert(0);
                     *turn += 1;
                     *turn
                 };
-                self.set_current(agent, "Requesting model");
                 self.response_row(
                     agent,
                     run,
@@ -369,9 +389,19 @@ impl Projection {
                     RowStatus::Pending,
                 );
             }
-            AgentEvent::AssistantDelta { text, .. } | AgentEvent::ThinkingDelta { text } => {
+            AgentEvent::AssistantDelta { text, .. }
+            | AgentEvent::ThinkingDelta { text }
+            | AgentEvent::ReasoningSummaryDelta { text } => {
                 let turn = {
                     let stream = self.streams.entry(agent.to_owned()).or_default();
+                    if matches!(event, AgentEvent::ReasoningSummaryDelta { .. }) {
+                        let work = stream
+                            .work
+                            .entry(run.unwrap_or_default().into())
+                            .or_default();
+                        let room = SUMMARY_SCALARS.saturating_sub(work.draft.chars().count());
+                        work.draft.extend(text.chars().take(room));
+                    }
                     let turn = stream.turns.entry(run_key.clone()).or_insert(1);
                     *turn
                 };
@@ -384,23 +414,23 @@ impl Projection {
                     truncate(text),
                     RowStatus::Pending,
                 );
-                let phase = if matches!(event, AgentEvent::ThinkingDelta { .. }) {
-                    "Thinking"
-                } else {
-                    "Responding"
-                };
-                self.set_current(agent, phase);
             }
             AgentEvent::AssistantFinished { text } => {
                 let turn = {
                     let stream = self.streams.entry(agent.to_owned()).or_default();
+                    let work = stream
+                        .work
+                        .entry(run.unwrap_or_default().into())
+                        .or_default();
+                    if !work.draft.trim().is_empty() {
+                        work.latest = std::mem::take(&mut work.draft);
+                    }
                     let turn = stream.turns.entry(run_key).or_insert(1);
                     if *turn == 0 {
                         *turn = 1;
                     }
                     *turn
                 };
-                self.set_current(agent, "Processing response");
                 // 纯工具调用的 turn 没有正文，不保留空 response 行。
                 let key = format!("{agent}|{}|response|{turn}", run.unwrap_or("-"));
                 if text.trim().is_empty()
@@ -427,12 +457,17 @@ impl Projection {
                 name,
                 arguments,
             } => {
-                {
-                    let stream = self.streams.entry(agent.to_owned()).or_default();
-                    stream.current =
-                        Some(format!("Running {name} {}", summarize_arguments(arguments)));
-                    stream.current_running = true;
-                }
+                let summary = summarize_arguments(arguments);
+                let stream = self.streams.entry(agent.to_owned()).or_default();
+                let work = stream
+                    .work
+                    .entry(run.unwrap_or_default().into())
+                    .or_default();
+                work.tool = if summary.is_empty() {
+                    name.clone()
+                } else {
+                    summary.clone()
+                };
                 self.upsert(
                     ActivityRow {
                         key: String::new(),
@@ -444,14 +479,14 @@ impl Projection {
                         kind: Kind::Tool,
                         status: RowStatus::Pending,
                         title: name.clone(),
-                        summary: summarize_arguments(arguments),
+                        summary: truncate(arguments),
+                        brief: Some(summary),
                         phase: 1,
                     },
                     tool_key(agent, run, id),
                 );
             }
             AgentEvent::ToolFinished { id, result } => {
-                self.set_current(agent, "Processing tool result");
                 let ok = result["ok"] != serde_json::Value::Bool(false);
                 let message = result["error"].as_str().unwrap_or("tool failed").to_owned();
                 if !ok {
@@ -480,6 +515,7 @@ impl Projection {
                             } else {
                                 truncate(&message)
                             },
+                            brief: None,
                             phase: 1,
                         },
                         key,
@@ -506,6 +542,7 @@ impl Projection {
                             } else {
                                 truncate(&message)
                             },
+                            brief: None,
                             phase: 1,
                         },
                         key,
@@ -553,7 +590,13 @@ impl Projection {
                 model,
                 error,
             } => {
-                self.set_current(agent, "Model attempt failed");
+                if let Some(work) = self
+                    .streams
+                    .get_mut(agent)
+                    .and_then(|stream| stream.work.get_mut(run.unwrap_or_default()))
+                {
+                    work.draft.clear();
+                }
                 self.insert_lifecycle(
                     agent,
                     run,
@@ -566,7 +609,6 @@ impl Projection {
                 );
             }
             AgentEvent::ModelRouteChanged { model, .. } => {
-                self.set_current(agent, &format!("Fallback: {model}"));
                 self.insert_lifecycle(
                     agent,
                     run,
@@ -587,7 +629,6 @@ impl Projection {
                     "retrying {reason}, attempt {attempt}, wait {}",
                     crate::tui::format_wait(*wait_ms)
                 );
-                self.set_current(agent, &summary);
                 self.insert_lifecycle(
                     agent,
                     run,
@@ -602,7 +643,7 @@ impl Projection {
             AgentEvent::ContextUpdated { usage } => {
                 self.streams.entry(agent.to_owned()).or_default().context = Some(*usage);
             }
-            AgentEvent::ModelRequestStarted => self.set_current(agent, "Requesting model"),
+            AgentEvent::ModelRequestStarted => {}
             AgentEvent::LspDiagnostics { id, report } => {
                 // 投影按 agent/run 流隔离：只显示该子 Agent owner 的报告。
                 let total = report.total();
@@ -649,12 +690,6 @@ impl Projection {
         }
     }
 
-    fn set_current(&mut self, agent: &str, text: &str) {
-        let stream = self.streams.entry(agent.to_owned()).or_default();
-        stream.current = Some(text.to_owned());
-        stream.current_running = true;
-    }
-
     /// 一个 assistant turn 一条 response；delta 原位更新同一短摘要。
     #[allow(clippy::too_many_arguments)]
     fn response_row(
@@ -688,6 +723,7 @@ impl Projection {
                 status,
                 title: format!("Response {turn}"),
                 summary,
+                brief: None,
                 phase: 1,
             },
             key,
@@ -718,6 +754,7 @@ impl Projection {
                 status,
                 title: title.to_owned(),
                 summary,
+                brief: None,
                 phase,
             },
             format!("{agent}|{}|lifecycle|{title}|{offset}", run.unwrap_or("-")),
@@ -730,6 +767,9 @@ impl Projection {
             target.status = row.status;
             if !row.summary.is_empty() {
                 target.summary = row.summary;
+            }
+            if row.brief.is_some() {
+                target.brief = row.brief;
             }
             return;
         }
@@ -909,15 +949,27 @@ impl Projection {
                     .iter()
                     .find(|run| matches!(run.status.as_str(), "queued" | "running"))
                     .map(|run| run.status.clone());
-                let task = runs
-                    .iter()
-                    .max_by_key(|run| run_number(&run.id))
-                    .map(|run| run.task.clone());
+                let latest = runs.iter().max_by_key(|run| run_number(&run.id));
+                let task = latest.map(|run| run.task.clone());
+                let current = stream.and_then(|stream| {
+                    let key = latest.map_or("", |run| run.id.as_str());
+                    stream
+                        .work
+                        .get(key)
+                        .or_else(|| stream.work.get(""))
+                        .and_then(WorkSummary::current)
+                });
+                let (active_ms, span_ms) = timings(&runs, stream, now_ms);
                 let requests = runs.iter().map(|run| run.requests).sum();
                 let tokens_from_runs = runs.iter().map(|run| run.tokens).sum::<u64>();
                 let usage = stream.filter(|stream| stream.usage_seen);
                 let tokens = usage
-                    .map(|stream| stream.usage_in.saturating_add(stream.usage_out))
+                    .map(|stream| {
+                        stream
+                            .usage_in
+                            .saturating_add(stream.usage_out)
+                            .max(tokens_from_runs)
+                    })
                     .or_else(|| (tokens_from_runs > 0).then_some(tokens_from_runs));
                 let cost_measured = runs.iter().filter(|run| run.cost.is_some()).count();
                 let cost = (cost_measured > 0)
@@ -967,17 +1019,16 @@ impl Projection {
                     id: record.id.clone(),
                     name: record.name.clone(),
                     definition: record.spec.definition.clone(),
+                    role: record.spec.model_role.map(|role| role.name()),
+                    registered_ms: record.registered_ms,
                     parent: record.parent.clone(),
-                    depth: record.spec.depth,
                     model: record.spec.model.clone(),
                     thinking: record.spec.thinking.as_str().to_owned(),
                     model_change: agent.model_change.clone(),
                     status,
                     run_status,
                     task,
-                    current: stream
-                        .filter(|stream| stream.current_running)
-                        .and_then(|stream| stream.current.clone()),
+                    current,
                     requests,
                     tokens,
                     cost,
@@ -985,6 +1036,8 @@ impl Projection {
                     runs: runs.len(),
                     tools: 0,
                     time_ms: time,
+                    active_ms,
+                    span_ms,
                     loading: !self.scanned.contains(&record.id),
                     context: stream.and_then(|stream| stream.context),
                     readonly: record.spec.readonly,
@@ -1220,17 +1273,97 @@ impl Projection {
         }
     }
 
-    /// 最新同 agent 活动行（inspector 的 Recent activity 使用）。
-    pub(super) fn recent(&self, agent: &str, limit: usize) -> Vec<&ActivityRow> {
+    /// 概要只保留工具与已发布的最终答复，独立 Activity 页仍使用完整事件流。
+    pub(super) fn recent(&self, agent: &str, limit: usize) -> Vec<ActivityRow> {
         let mut rows = self
             .rows
             .iter()
-            .filter(|row| row.agent == agent)
+            .rev()
+            .filter(|row| row.agent == agent && row.kind == Kind::Tool)
+            .take(limit)
+            .cloned()
             .collect::<Vec<_>>();
-        let start = rows.len().saturating_sub(limit);
-        rows.drain(..start);
+        if let Some(snapshot) = &self.snapshot {
+            let stream = self.streams.get(agent);
+            let mut runs = snapshot
+                .runs
+                .iter()
+                .filter(|run| run.agent_id == agent && run.status == "completed")
+                .collect::<Vec<_>>();
+            runs.sort_by_key(|run| std::cmp::Reverse(run_number(&run.id)));
+            rows.extend(runs.into_iter().take(limit).filter_map(|run| {
+                let output = run.result.as_ref()?.get("output")?;
+                let summary = match output.as_str() {
+                    Some(text) => truncate(text),
+                    None => truncate(&output.to_string()),
+                };
+                if summary.is_empty() {
+                    return None;
+                }
+                let timestamp = stream
+                    .and_then(|stream| stream.ended.get(&run.id).copied())
+                    .or_else(|| {
+                        self.rows.iter().rev().find_map(|row| {
+                            (row.agent == agent && row.run.as_deref() == Some(&run.id))
+                                .then_some(row.timestamp)
+                                .flatten()
+                        })
+                    });
+                Some(ActivityRow {
+                    key: String::new(),
+                    agent: agent.to_owned(),
+                    run: Some(run.id.clone()),
+                    tool: None,
+                    offset: u64::MAX,
+                    timestamp,
+                    kind: Kind::Response,
+                    status: RowStatus::Success,
+                    title: "Response".into(),
+                    summary,
+                    brief: None,
+                    phase: 2,
+                })
+            }));
+        }
+        rows.sort_by_key(row_sort_key);
+        rows.drain(..rows.len().saturating_sub(limit));
+        for row in &mut rows {
+            if row.status != RowStatus::Error
+                && let Some(brief) = row.brief.take()
+            {
+                row.summary = brief;
+            }
+        }
         rows
     }
+}
+
+fn timings(runs: &[&Run], stream: Option<&Stream>, now_ms: u64) -> (Option<u64>, Option<u64>) {
+    let Some(stream) = stream else {
+        return (None, None);
+    };
+    let mut active = None::<u64>;
+    let mut first = u64::MAX;
+    let mut last = 0;
+    let mut span_known = true;
+    for run in runs {
+        let start = stream.started.get(&run.id).copied();
+        let end = stream.ended.get(&run.id).copied();
+        let stop = end.or_else(|| (run.status == "running").then_some(now_ms));
+        if let Some((start, stop)) = start.zip(stop).filter(|(start, stop)| start <= stop) {
+            active = Some(active.unwrap_or(0).saturating_add(stop - start));
+            first = first.min(start);
+            if let Some(end) = end {
+                last = last.max(end);
+            }
+        } else if !matches!(run.status.as_str(), "queued" | "cancelled") || start.is_some() {
+            span_known = false;
+        }
+    }
+    (
+        active,
+        span_known.then(|| last.checked_sub(first)).flatten(),
+    )
 }
 
 fn tool_key(agent: &str, run: Option<&str>, id: &str) -> String {
@@ -1317,7 +1450,14 @@ pub(super) fn truncate(text: &str) -> String {
 }
 
 fn summarize_arguments(arguments: &str) -> String {
-    truncate(arguments)
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return truncate(arguments);
+    };
+    ["description", "path", "pattern", "command", "url", "input"]
+        .iter()
+        .filter_map(|key| value.get(key).and_then(serde_json::Value::as_str))
+        .find(|text| !text.trim().is_empty())
+        .map_or_else(|| truncate(arguments), truncate)
 }
 
 pub(in crate::tui) fn now_ms() -> u64 {
@@ -1368,6 +1508,7 @@ mod tests {
             status: status.into(),
             spec: spec(1),
             session_file: None,
+            registered_ms: None,
             updated_ms: 100,
         }
     }

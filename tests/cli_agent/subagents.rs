@@ -125,6 +125,86 @@ fn artifact_child_output_is_readable_from_parent_in_both_protocols() {
         assert!(cli.finish().status.success());
     }
 }
+#[test]
+fn subagent_result_read_pages_full_disk_output_in_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let models = if protocol == "completion" {
+            fixture_models(&server)
+        } else {
+            response_models(&server, Some("response"))
+        };
+        let cli = Cli::start_with(
+            home.path(),
+            Some("read the full child result"),
+            "read_max_lines: 1\n",
+            &models,
+        );
+        let first_line = "x".repeat(12_000);
+        let output = format!("{first_line}\nchild-result-tail");
+        let (request, _) = receive_sub(&server, protocol);
+        sub_call(
+            request,
+            protocol,
+            "spawn",
+            "task",
+            json!({"context":"read disk result","tasks":[{"task":"produce a long result"}]}),
+        );
+        let mut child_finished = false;
+        let mut resource = None;
+        while !child_finished || resource.is_none() {
+            let (request, body) = receive_sub(&server, protocol);
+            if is_child(&body) {
+                assert!(!child_finished);
+                sub_final(request, protocol, &output);
+                child_finished = true;
+            } else {
+                assert!(resource.is_none());
+                let spawned = sub_tool_result(&body, protocol, "spawn");
+                let run = spawned["tasks"][0]["run_id"].as_str().unwrap();
+                let uri = spawned["tasks"][0]["output_uri"].as_str().unwrap();
+                sub_call(request, protocol, "wait", "wait", json!({"run_ids":[run]}));
+                resource = Some((uri.to_owned(), run.to_owned()));
+            }
+        }
+        let (uri, run) = resource.unwrap();
+        let (request, _) = receive_sub(&server, protocol);
+        sub_call(request, protocol, "read-first", "read", json!({"path":uri}));
+        let (request, body) = receive_sub(&server, protocol);
+        let first = sub_tool_result(&body, protocol, "read-first");
+        assert_eq!(first["source"], uri);
+        assert_eq!(first["content"], format!("{first_line}\n"));
+        assert_eq!(first["published"]["result"]["truncated"], true);
+        let next = first["next_path"].as_str().unwrap();
+        assert_eq!(next, format!("{uri}/{run}:2-"));
+        sub_call(request, protocol, "read-next", "read", json!({"path":next}));
+        let (request, body) = receive_sub(&server, protocol);
+        let second = sub_tool_result(&body, protocol, "read-next");
+        assert_eq!(second["content"], "child-result-tail");
+        assert_eq!(second["truncated"], false);
+        sub_final(request, protocol, "full child result verified");
+        assert!(cli.finish().status.success());
+        let storage = std::fs::read_dir(config_path(home.path(), "sessions"))
+            .unwrap()
+            .flatten()
+            .find(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == "subagents")
+            })
+            .unwrap()
+            .path();
+        let saved: Value = serde_json::from_slice(
+            &std::fs::read(storage.join(format!("{run}.result.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["output"], output);
+        no_more(&server);
+    }
+}
+
 fn receive_sub(server: &Server, protocol: &str) -> (Request, Value) {
     receive_at(
         server,

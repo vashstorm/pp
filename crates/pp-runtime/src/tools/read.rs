@@ -4,7 +4,7 @@ use pp_config::config::ToolLimits;
 use pp_core::cancellation::CancellationToken;
 use pp_llm::http::HttpResponse;
 use serde_json::Value;
-use std::path::Path;
+use std::{borrow::Cow, io::Cursor, path::Path};
 
 mod file;
 mod image;
@@ -18,8 +18,50 @@ mod url;
 pub(crate) use file::open as open_local_file;
 use file::{FileInput, FileReader};
 use selector::Target;
+use text::{count_lines, page_text, read_from};
 pub(crate) use url::WebCache;
 use url::{UrlInput, UrlReader};
+
+pub(super) fn agent_result(
+    uri: &str,
+    cwd: &Path,
+    limits: ToolLimits,
+    mode: EditMode,
+    binding: &crate::subagent::Binding,
+    cancellation: &CancellationToken,
+) -> Result<Value> {
+    let mut target = Target::parse(uri, cwd)?;
+    let (mut metadata, result) = binding.read_agent_result(&target.source, cancellation)?;
+    let Some(result) = result else {
+        return Ok(metadata);
+    };
+    let output = result
+        .get("output")
+        .or_else(|| result.get("error"))
+        .unwrap_or(&result);
+    let content = match output {
+        Value::String(text) => Cow::Borrowed(text.as_str()),
+        value => Cow::Owned(serde_json::to_string_pretty(value)?),
+    };
+    let source = target.source.clone();
+    if !source["agent://".len()..].contains('/')
+        && let Some(run_id) = metadata["published"]["id"].as_str()
+    {
+        // 分页继续读取同一次 Run，避免后续发布替换正文。
+        target.source = format!("{source}/{run_id}");
+    }
+    let bytes = content.as_bytes();
+    let ranges = target.resolved_ranges(|| count_lines(Cursor::new(bytes)))?;
+    let page = page_text(&target, limits, mode, false, ranges, |start, count, max| {
+        pp_core::cancellation::check(cancellation)?;
+        read_from(Cursor::new(bytes), start, count, max)
+    })?;
+    if let (Some(metadata), Value::Object(page)) = (metadata.as_object_mut(), page) {
+        metadata.extend(page);
+    }
+    metadata["source"] = Value::String(source);
+    Ok(metadata)
+}
 
 pub(super) fn artifact(
     path: &str,

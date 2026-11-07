@@ -232,7 +232,7 @@ impl App {
                 if crate::tui::app::hub::is_hub_toggle(&Event::Key(key))
                     && self.hub_toggle_allowed()
                 {
-                    self.open_hub(false);
+                    self.open_hub();
                     *dirty = true;
                     return false;
                 }

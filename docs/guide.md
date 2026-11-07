@@ -1152,6 +1152,6 @@ nextest 不运行 doctest；六个内部库都是 library target，须另行运�
 
 ## 子 Agent
 
-pp 支持批量异步委托、持续追问、驻留恢复、结构化结果和可选 worktree 隔离。用 `/agents` 查看角色，`/subagents`（或 `⌥ + A / Alt + A`）打开 Agent Hub 查看和控制运行实例；输入框上方显示子任务摘要。子 Agent 沿用父会话审批规则，并保留适用的项目指令。
+pp 支持批量异步委托、持续追问、驻留恢复、结构化结果和可选 worktree 隔离。用 `/Roles` 配置模型角色，`/agents` 和 `/subagents`（也可用 `⌥ + A / Alt + A`）都能打开 Agent Hub 查看和控制运行实例；输入框上方显示子任务摘要。子 Agent 沿用父会话审批规则，并保留适用的项目指令。
 
 完整配置、工具协议、权限与恢复行为见[子 Agent 使用说明](subagents.md)。

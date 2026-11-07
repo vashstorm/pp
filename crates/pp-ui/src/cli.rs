@@ -580,7 +580,11 @@ fn run_cli_execution(
         ) {
             return;
         }
-        if !matches!(&event, AgentEvent::ThinkingDelta { .. }) && !thinking_newline {
+        if !matches!(
+            &event,
+            AgentEvent::ThinkingDelta { .. } | AgentEvent::ReasoningSummaryDelta { .. }
+        ) && !thinking_newline
+        {
             cli_write(stderr, "\n", &mut err_broken, &mut first_error);
             thinking_newline = true;
         }
@@ -635,7 +639,7 @@ fn run_cli_execution(
                 content = false;
                 newline = true;
             }
-            AgentEvent::ThinkingDelta { text } => {
+            AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } => {
                 if !text.is_empty() {
                     thinking_newline = text.ends_with('\n');
                 }
@@ -1068,21 +1072,8 @@ pub fn run_line_mode(
         if matches!(command, Some(commands::Command::Unknown)) {
             continue;
         }
-        if matches!(
-            command,
-            Some(commands::Command::Agents | commands::Command::Subagents)
-        ) {
+        if matches!(command, Some(commands::Command::Subagents)) {
             if let Ok(agent) = agent.as_mut() {
-                if matches!(command, Some(commands::Command::Agents)) {
-                    for role in agent.agent_definitions()? {
-                        writeln!(
-                            stderr,
-                            "{} — {} [{}]",
-                            role.name, role.description, role.source
-                        )?;
-                    }
-                    continue;
-                }
                 agent.ensure_subagents()?;
                 if let Some(binding) = agent.subagents() {
                     writeln!(
@@ -1329,7 +1320,6 @@ pub fn run_line_mode(
                 | commands::Command::Resume
                 | commands::Command::Tree
                 | commands::Command::Changes
-                | commands::Command::Agents
                 | commands::Command::Roles
                 | commands::Command::Subagents
                 | commands::Command::PlanList

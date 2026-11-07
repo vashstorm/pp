@@ -740,7 +740,9 @@ impl SessionJournal {
                 AgentEvent::AssistantStarted | AgentEvent::ModelAttemptFailed { .. } => {
                     self.thinking.clear()
                 }
-                AgentEvent::ThinkingDelta { text } => self.thinking.push_str(text),
+                AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } => {
+                    self.thinking.push_str(text)
+                }
                 _ => {}
             }
         }

@@ -99,6 +99,7 @@ impl Target {
             && !path.starts_with("skill://")
             && !path.starts_with("artifact://")
             && !path.starts_with("pipe://")
+            && !path.starts_with("agent://")
             && cwd.join(path).symlink_metadata().is_ok()
         {
             return Ok(Self {

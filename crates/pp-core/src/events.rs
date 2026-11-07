@@ -174,6 +174,9 @@ pub enum AgentEvent {
     ThinkingDelta {
         text: String,
     },
+    ReasoningSummaryDelta {
+        text: String,
+    },
     AssistantDelta {
         text: String,
         refusal: bool,

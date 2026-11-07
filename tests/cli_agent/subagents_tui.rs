@@ -164,10 +164,16 @@ fn subagent_tui_inspects_cancels_revives_and_sends_literal_followups() {
         .unwrap();
         let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
         pty.ready();
-        // `/agents` 仍是角色定义只读页。
-        pty.input("/agents\r");
+        // 两个命令打开同一 Hub，角色配置入口独立。
+        for command in ["/agents", "/subagents"] {
+            pty.input(&format!("{command}\r"));
+            pty.text("Agent Hub");
+            pty.text("Roster");
+            pty.input("\x1b");
+            pty.ready();
+        }
+        pty.input("/Roles\r");
         pty.text("DEFAULT");
-        pty.text("/Roles");
         pty.input("\x1b");
         pty.ready();
         pty.input("delegate terminal task\r");
@@ -212,7 +218,7 @@ fn subagent_tui_inspects_cancels_revives_and_sends_literal_followups() {
         assert!(hub_body_text(&body).contains("child-followup-answer"));
         ask_final_reply(request, protocol, "parent-followup-answer");
         pty.input("\x1b");
-        pty.text("1 Agents");
+        pty.text("1:agents");
         pty.input("\x1b");
         pty.ready();
         pty.text("parent-followup-answer");
@@ -301,13 +307,13 @@ fn agent_hub_streams_and_anchors_activity() {
         ask_final_reply(request, protocol, "hub-parent-stream-done");
         pty.text("✻ Completed");
         // Activity：失败只出现在 Errors。
-        hub_escape(&mut pty, "j/k select");
+        hub_escape(&mut pty, "Roster ·");
         pty.input("2");
         pty.text("All agents");
         pty.input("f");
         pty.text("Errors");
         let screen = pty.contents();
-        assert_eq!(hub_count(&screen, "✖"), 1, "{screen}");
+        assert_eq!(hub_count(&screen, "×"), 1, "{screen}");
         // Enter 定位到失败工具卡片。
         pty.input("\r");
         pty.text("Agent Hub");
@@ -319,8 +325,8 @@ fn agent_hub_streams_and_anchors_activity() {
         pty.text("hub-probe-body");
         // Esc 回到原 scope/search/选中活动。
         hub_escape(&mut pty, "Errors");
-        assert_eq!(hub_count(&pty.contents(), "✖"), 1);
-        hub_escape(&mut pty, "j/k select");
+        assert_eq!(hub_count(&pty.contents(), "×"), 1);
+        hub_escape(&mut pty, "Roster ·");
         hub_close(&mut pty);
         pty.input("\x03");
         pty.finish();
@@ -378,7 +384,7 @@ fn agent_hub_literal_input_drafts_and_parent_isolation() {
         pty.input("\x1b[200~ pasted-text\x1b[201~");
         pty.text("pasted-text");
         // Esc 保留草稿返回来源页，再 Esc 关闭 Hub。
-        hub_escape(&mut pty, "j/k select");
+        hub_escape(&mut pty, "Roster ·");
         hub_close(&mut pty);
         pty.draft("main draft text");
         // Alt+A 重开后草稿仍在。
@@ -389,7 +395,7 @@ fn agent_hub_literal_input_drafts_and_parent_isolation() {
         pty.text("jkgGcxr/model hidden");
         pty.text("第二行");
         // 另一个 child 不共享草稿。
-        hub_escape(&mut pty, "j/k select");
+        hub_escape(&mut pty, "Roster ·");
         pty.input("j");
         pty.input("e");
         pty.text(&format!("{other} / {other_id}"));
@@ -398,7 +404,7 @@ fn agent_hub_literal_input_drafts_and_parent_isolation() {
             "child drafts must not leak between agents"
         );
         // 回到首个 child，发送原文字面量。
-        hub_escape(&mut pty, "j/k select");
+        hub_escape(&mut pty, "Roster ·");
         pty.input("k");
         pty.input("e");
         pty.text(&format!("{lead} / {lead_id}"));
@@ -418,7 +424,7 @@ fn agent_hub_literal_input_drafts_and_parent_isolation() {
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert!(hub_body_text(&body).contains("hub-followup-ok"));
         ask_final_reply(request, protocol, "parent-followup-ok");
-        hub_escape(&mut pty, "j/k select");
+        hub_escape(&mut pty, "Roster ·");
         hub_close(&mut pty);
         pty.draft("main draft text");
         pty.text("parent-followup-ok");
@@ -464,7 +470,7 @@ fn agent_hub_controls_do_not_revive_on_inspect() {
     );
     // Esc 只返回，不取消 root 或 child。
     pty.input("\x1b");
-    pty.text("1 Agents");
+    pty.text("1:agents");
     no_more(&fixture);
     // c 取消 Run：不置 aborted。
     pty.input("c");
@@ -559,8 +565,8 @@ fn agent_hub_layout_tree_scope_and_follow() {
     pty.input("\x1ba");
     pty.text("Alpha");
     let wide = pty.contents();
-    assert!(wide.contains("Usage / Context") || wide.contains("Lineage"), "{wide}");
-    for (row, column, symbol) in [(0, 0, "╭"), (2, 81, "┬"), (20, 81, "│"), (37, 81, "┴")] {
+    assert!(wide.contains("Usage") && wide.contains("Lineage"), "{wide}");
+    for (row, column, symbol) in [(0, 0, "╭"), (0, 83, "┬"), (20, 83, "│"), (37, 83, "┴")] {
         let cell = pty.parser.screen().cell(row, column).unwrap();
         assert_eq!(cell.contents(), symbol, "{wide}");
         assert_eq!(cell.fgcolor(), vt100::Color::Rgb(39, 135, 165));
@@ -574,7 +580,7 @@ fn agent_hub_layout_tree_scope_and_follow() {
     pty.input("\t");
     pty.resize(12, 40);
     // 极窄尺寸只要求可用的标题与不越界，行内容可以裁剪。
-    pty.text("1 Agents");
+    pty.text("1:agents");
     pty.resize(4, 24);
     pty.resize(30, 100);
     // 树形过滤保留 lineage。
@@ -635,7 +641,7 @@ fn agent_hub_layout_tree_scope_and_follow() {
     pty.input("\r");
     pty.text("Beta / a2");
     pty.input("\x0f");
-    hub_escape(&mut pty, "j/k select");
+    hub_escape(&mut pty, "Roster ·");
     hub_clear_filter(&mut pty, "Alpha");
     hub_close(&mut pty);
     pty.draft("/sub");
@@ -644,13 +650,13 @@ fn agent_hub_layout_tree_scope_and_follow() {
     // 真实 SGR 鼠标点击 roster 的可见物理行：打开该 Agent 的详情。
     pty.input("\x1ba");
     pty.text("Agent Hub");
-    pty.input("\x1b[<0;6;4M");
-    pty.input("\x1b[<0;6;4m");
+    pty.input("\x1b[<0;6;5M");
+    pty.input("\x1b[<0;6;5m");
     pty.text(" / a");
     pty.resize(40, 100);
     pty.resize(40, 140);
     pty.input("\x1b");
-    pty.text("j/k select");
+    pty.text("Roster ·");
     pty.input("\x1b");
     pty.ready();
     pty.input("\x03");
@@ -714,7 +720,7 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
         .expect("legacy row visible")
         .to_owned();
     assert!(
-        legacy.contains("— ✔"),
+        legacy.contains("— ✓"),
         "legacy row must not invent a timestamp: {legacy}"
     );
     // 详情只进入备用屏幕，关闭回 Main。
@@ -726,9 +732,14 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
     pty.input("\x1b[1;5H"); // Ctrl+Home 到顶部
     pty.text("legacy child work");
     // 未知用量显示 — 而不是零成本。
-    hub_escape(&mut pty, "j/k select");
+    hub_escape(&mut pty, "Roster ·");
     let inspector = pty.contents();
-    assert!(inspector.contains("cost —"), "{inspector}");
+    let usage = inspector
+        .lines()
+        .skip_while(|line| !line.contains("Usage"))
+        .nth(1)
+        .expect("Usage metrics visible");
+    assert!(usage.contains("— ·"), "{inspector}");
     hub_close(&mut pty);
     assert!(!pty.parser.screen().alternate_screen());
     no_more(&fixture);

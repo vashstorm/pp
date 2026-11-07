@@ -80,7 +80,9 @@ fn thinking_text(events: &[(Instant, AgentEvent)]) -> String {
     events
         .iter()
         .filter_map(|(_, event)| match event {
-            AgentEvent::ThinkingDelta { text } => Some(text.as_str()),
+            AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } => {
+                Some(text.as_str())
+            }
             _ => None,
         })
         .collect()

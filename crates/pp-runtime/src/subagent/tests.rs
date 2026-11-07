@@ -1231,6 +1231,7 @@ fn plan_mode_refuses_to_revive_a_writable_isolated_workspace() {
             status: "parked".into(),
             spec,
             session_file: None,
+            registered_ms: None,
             updated_ms: 0,
         },
     );

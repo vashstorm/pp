@@ -16,8 +16,7 @@ use crate::agent::Agent;
 use crate::agent::input::InputQueue;
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
-pub use catalog::Definition;
-pub(crate) use catalog::discover as catalog_definitions;
+use catalog::Definition;
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
 use pp_core::events::AgentEvent;
@@ -64,6 +63,8 @@ pub struct Record {
     pub status: String,
     pub spec: Spec,
     pub session_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registered_ms: Option<u64>,
     pub updated_ms: u64,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -407,7 +408,7 @@ impl Binding {
             }
         }
     }
-    pub fn roles(&self) -> Result<Vec<Definition>> {
+    pub(crate) fn roles(&self) -> Result<Vec<Definition>> {
         catalog::discover(
             &self.cwd,
             &self.inner.user,
@@ -720,6 +721,7 @@ impl Binding {
                 state.disk.next_id += 1;
                 let id = format!("a{}", state.disk.next_id);
                 let run_id = format!("r{}", state.disk.next_id);
+                let registered_ms = now();
                 let record = Record {
                     id: id.clone(),
                     name: item.name.unwrap_or_else(|| spec.definition.clone()),
@@ -728,7 +730,8 @@ impl Binding {
                     status: "idle".into(),
                     spec,
                     session_file: None,
-                    updated_ms: now(),
+                    registered_ms: Some(registered_ms),
+                    updated_ms: registered_ms,
                 };
                 state.disk.agents.insert(id.clone(), record.clone());
                 state.disk.runs.insert(
@@ -1178,27 +1181,90 @@ impl Binding {
                 json!({"ok":true,"history":String::from_utf8_lossy(&bytes),"truncated":truncated,"source_path":path}),
             );
         }
-        let state = lock(&self.inner.state);
-        let sequence = |r: &&Run| {
-            r.id.strip_prefix('r')
-                .and_then(|n| n.parse::<u64>().ok())
-                .unwrap_or(0)
+        bail!("unsupported subagent URI operation")
+    }
+
+    pub(crate) fn read_agent_result(
+        &self,
+        uri: &str,
+        token: &CancellationToken,
+    ) -> Result<(Value, Option<Value>)> {
+        use std::io::{BufReader, Read};
+        use std::os::unix::fs::OpenOptionsExt;
+
+        const MAX_RESULT_BYTES: u64 = 16 * 1024 * 1024;
+
+        let rest = uri.strip_prefix("agent://").context("invalid agent URI")?;
+        let (id, pinned) = rest
+            .split_once('/')
+            .map_or((rest, None), |(id, run)| (id, Some(run)));
+        let (metadata, published_id) = {
+            let state = lock(&self.inner.state);
+            let record = state.disk.agents.get(id).context("unknown agent")?;
+            let sequence = |run: &&Run| {
+                run.id
+                    .strip_prefix('r')
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .unwrap_or(0)
+            };
+            let runs = || state.disk.runs.values().filter(|run| run.agent_id == id);
+            let run = runs().max_by_key(sequence);
+            let published = match pinned {
+                Some(run_id) => Some(
+                    runs()
+                        .find(|run| run.id == run_id && run.result.is_some())
+                        .context("unknown or unpublished agent run")?,
+                ),
+                None => runs()
+                    .filter(|run| run.result.is_some())
+                    .max_by_key(sequence),
+            };
+            (
+                json!({"ok":true,"agent":record,"run":run,"published":published,"superseded":run.map(|r|&r.id)!=published.map(|r|&r.id),"history_uri":format!("history://{id}")}),
+                published.map(|run| run.id.clone()),
+            )
         };
-        let run = state
-            .disk
-            .runs
-            .values()
-            .filter(|r| r.agent_id == id)
-            .max_by_key(sequence);
-        let published = state
-            .disk
-            .runs
-            .values()
-            .filter(|r| r.agent_id == id && r.result.is_some())
-            .max_by_key(sequence);
-        Ok(
-            json!({"ok":true,"agent":record,"run":run,"published":published,"superseded":run.map(|r|&r.id)!=published.map(|r|&r.id),"history_uri":format!("history://{id}")}),
-        )
+        let Some(run_id) = published_id else {
+            return Ok((metadata, None));
+        };
+        ensure!(
+            run_id
+                .strip_prefix('r')
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|byte| byte.is_ascii_digit())),
+            "invalid stored agent run id"
+        );
+        cancellation::check(token)?;
+        let path = self.directory().join(format!("{run_id}.result.json"));
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
+            )
+            .open(path);
+        let result = match file {
+            Ok(file) => {
+                let info = file.metadata()?;
+                ensure!(info.is_file(), "agent result must be a regular file");
+                ensure!(
+                    info.len() <= MAX_RESULT_BYTES,
+                    "agent result exceeds 16 MiB"
+                );
+                let result: Value =
+                    serde_json::from_reader(BufReader::new(file.take(MAX_RESULT_BYTES)))
+                        .context("invalid agent result file")?;
+                ensure!(result["ok"].is_boolean(), "invalid agent result file");
+                result
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // 旧登记表和中断恢复可能只有内联结果。已截断的预览不能冒充完整正文。
+                let preview = &metadata["published"]["result"];
+                ensure!(preview["truncated"] != true, "agent result file is missing");
+                preview.clone()
+            }
+            Err(error) => return Err(error).context("opening agent result file"),
+        };
+        cancellation::check(token)?;
+        Ok((metadata, Some(result)))
     }
 
     fn followup(&self, record: &Record, text: &str, token: &CancellationToken) -> Result<Value> {
@@ -1773,7 +1839,9 @@ fn worker(
                         if let Some(run) = state.disk.runs.get_mut(&work.run) {
                             run.requests = requests;
                             run.tokens = tokens;
-                            run.cost = cost;
+                            if matches!(event, AgentEvent::ModelRequestFinished { .. }) {
+                                run.cost = cost;
+                            }
                         }
                     }
                     binding.inner.bump_revision();

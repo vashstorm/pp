@@ -7,7 +7,9 @@ mod detail;
 mod projection;
 mod worker;
 
-use super::transcript_style::{ACCENT, ACTIVITY, ADDED, ASK_BG, ASK_BORDER, DIM, MUTED, REMOVED};
+use super::transcript_style::{
+    ACCENT, ACTIVITY, ADDED, ASK_BORDER, DIM, MUTED, REMOVED, think_icon,
+};
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
@@ -19,8 +21,8 @@ use projection::{
 };
 use ratatui::{
     Frame,
-    layout::{Alignment, Rect},
-    style::{Modifier, Style},
+    layout::Rect,
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
@@ -30,8 +32,11 @@ pub(super) use worker::{Action as Control, Reply, Request, Worker};
 
 const TITLE: &str = "Agent Hub";
 const NARROW: u16 = 96;
-const ROSTER_MIN: u16 = 48;
-const INSPECTOR_MIN: u16 = 34;
+const HUB_BG: Color = Color::Rgb(37, 40, 51);
+const SELECTED_BG: Color = Color::Rgb(48, 53, 63);
+const COST: Color = Color::Rgb(241, 96, 174);
+const EFFORT: Color = Color::Rgb(183, 131, 207);
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
@@ -115,7 +120,6 @@ pub(super) enum Command {
         text: Option<String>,
     },
     Refresh,
-    Roles,
 }
 
 struct ActivityView {
@@ -143,8 +147,6 @@ impl Default for ActivityView {
 }
 
 pub(super) struct Panel {
-    /// `/agents` 角色定义页：只读展示。
-    pub roles: bool,
     page: Page,
     focus: Focus,
     tree: bool,
@@ -157,10 +159,9 @@ pub(super) struct Panel {
     projection: Projection,
     notice: Option<String>,
     error: Option<String>,
-    roles_rows: Vec<String>,
-    roles_state: RolesState,
     agent_notices: BTreeMap<String, String>,
     commands: Vec<Command>,
+    roster_area: Rect,
     hits: Vec<(Rect, String)>,
     activity_hits: Vec<(Rect, usize)>,
     sending: Option<String>,
@@ -168,16 +169,9 @@ pub(super) struct Panel {
     rendered: u64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RolesState {
-    Loading,
-    Ready,
-}
-
 impl Default for Panel {
     fn default() -> Self {
         Self {
-            roles: false,
             page: Page::Agents,
             focus: Focus::Roster,
             tree: false,
@@ -190,10 +184,9 @@ impl Default for Panel {
             projection: Projection::default(),
             notice: None,
             error: None,
-            roles_rows: Vec::new(),
-            roles_state: RolesState::Loading,
             agent_notices: BTreeMap::new(),
             commands: Vec::new(),
+            roster_area: Rect::default(),
             hits: Vec::new(),
             activity_hits: Vec::new(),
             sending: None,
@@ -204,17 +197,6 @@ impl Default for Panel {
 }
 
 impl Panel {
-    pub(super) fn new(roles: bool) -> Self {
-        let mut panel = Self {
-            roles,
-            ..Self::default()
-        };
-        if roles {
-            panel.commands.push(Command::Roles);
-        }
-        panel
-    }
-
     pub(super) fn take_commands(&mut self) -> Vec<Command> {
         std::mem::take(&mut self.commands)
     }
@@ -305,20 +287,6 @@ impl Panel {
                 self.projection.reset(&agent);
                 self.validate_selection();
             }
-            Reply::Roles { roles, .. } => {
-                self.roles_state = RolesState::Ready;
-                match roles {
-                    Ok(roles) => {
-                        self.roles_rows = roles
-                            .into_iter()
-                            .map(|role| {
-                                format!("{} — {} [{}]", role.name, role.description, role.source)
-                            })
-                            .collect();
-                    }
-                    Err(error) => self.error = Some(error),
-                }
-            }
             Reply::Control { agent, result, .. } => self.send_settled(&agent, result),
             Reply::Error { message, .. } => {
                 self.error = Some(message);
@@ -340,7 +308,14 @@ impl Panel {
         }
     }
 
-    pub(super) fn tick(&mut self, now_ms: u64, instant: std::time::Instant) {
+    pub(super) fn tick(&mut self, now_ms: u64, instant: std::time::Instant) -> bool {
+        let spinner_changed = self.clock / 120 != now_ms / 120
+            && self.detail.is_none()
+            && self
+                .projection
+                .agents()
+                .iter()
+                .any(|agent| agent.status == AgentStatus::Running);
         self.clock = now_ms;
         if let Some(detail) = &mut self.detail {
             detail.tick(instant);
@@ -349,7 +324,9 @@ impl Panel {
         if now_ms.saturating_sub(self.rendered) >= 1000 {
             self.rendered = now_ms;
             self.projection.refresh(now_ms);
+            return true;
         }
+        spinner_changed
     }
 
     fn validate_selection(&mut self) {
@@ -360,17 +337,12 @@ impl Panel {
         });
         if !known {
             self.selected = None;
+            self.inspector = 0;
         }
         if self.selected.is_none() {
             self.selected = list
                 .first()
                 .map(|row| self.projection.agents()[row.agent].id.clone());
-        }
-        if let Some(agent) = self.selected.clone()
-            && let Some(view) = self.projection.agent(&agent)
-        {
-            // 隐藏的选择不能继续发控制。
-            let _ = view;
         }
     }
 
@@ -402,6 +374,9 @@ impl Panel {
         }
         let current = self.selected_index(&list).unwrap_or(0) as isize;
         let next = (current + delta).clamp(0, list.len() as isize - 1) as usize;
+        if current != next as isize {
+            self.inspector = 0;
+        }
         self.selected = Some(self.projection.agents()[list[next].agent].id.clone());
     }
 
@@ -768,7 +743,7 @@ impl Panel {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = mouse.kind == MouseEventKind::ScrollUp;
                 if self.page == Page::Agents {
-                    let in_inspector = self.hits.iter().all(|(rect, _)| !contains(*rect, point));
+                    let in_inspector = !contains(self.roster_area, point);
                     if in_inspector && self.detail.is_none() {
                         self.inspector = if up {
                             self.inspector.saturating_sub(1)
@@ -791,6 +766,7 @@ impl Panel {
                         .cloned()
                     {
                         self.selected = Some(agent.clone());
+                        self.inspector = 0;
                         self.commands.push(Command::Open {
                             agent,
                             anchor: None,
@@ -816,12 +792,9 @@ impl Panel {
             return;
         }
         frame.render_widget(Clear, area);
+        self.roster_area = Rect::default();
         self.hits.clear();
         self.activity_hits.clear();
-        if self.roles {
-            self.draw_roles(frame, area);
-            return;
-        }
         if self.detail.is_some() {
             let agent = self.detail.as_ref().map(|detail| detail.agent.clone());
             if let Some(view) = agent
@@ -847,161 +820,197 @@ impl Panel {
             );
             return;
         }
-        let hints = match self.page {
-            Page::Agents => "j/k select · Enter detail · t tree · / filter · c/x/r · Esc close",
-            Page::Activity => "j/k move · Enter open · Space follow · f/s filter · Esc back",
-        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
+            .style(Style::default().bg(HUB_BG))
             .border_style(Style::default().fg(ASK_BORDER))
-            .title(self.title());
+            .title(Line::from(colored(format!(" {TITLE} "), ACCENT)));
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
             return;
         }
         let footer = inner.height.saturating_sub(1).min(2);
+        let body = Rect::new(inner.x, inner.y, inner.width, inner.height - footer);
         if footer == 2 {
-            self.draw_separator(frame, area, inner.bottom() - footer);
-        }
-        if footer > 0 {
-            let toggle = crate::shortcuts::platform_text("⌥ + A", "Alt + A");
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    format!("{hints} · {toggle} toggle"),
-                    Style::default().fg(DIM),
-                ))),
-                Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
+                Paragraph::new(format!("├{}┤", "─".repeat(inner.width as usize)))
+                    .style(Style::default().fg(ASK_BORDER)),
+                Rect::new(area.x, body.bottom(), area.width, 1),
             );
         }
-        let lead = (inner.height - footer).min(2);
-        if lead == 2 {
-            self.draw_separator(frame, area, inner.y + 1);
+        if footer > 0 {
+            let hint_area = inset_columns(Rect::new(inner.x, inner.bottom() - 1, inner.width, 1));
+            self.draw_footer(frame, hint_area);
         }
-        let body = Rect::new(
-            inner.x,
-            inner.y + lead,
-            inner.width,
-            inner.height.saturating_sub(lead + footer),
-        );
-        self.draw_lead(frame, Rect::new(inner.x, inner.y, inner.width, 1));
         match self.page {
-            Page::Agents => self.draw_agents(frame, body),
-            Page::Activity => self.draw_activity(frame, body),
+            Page::Agents => self.draw_agents(frame, body, footer == 2),
+            Page::Activity => {
+                let mut body = inset_columns(body);
+                if let Some(alert) = self.alert() {
+                    draw_line(frame, body, alert);
+                    body = below(body, 1);
+                }
+                self.draw_activity(frame, body);
+            }
         }
     }
 
-    fn draw_separator(&self, frame: &mut Frame, area: Rect, y: u16) {
-        frame.render_widget(
-            Paragraph::new(format!(
-                "├{}┤",
-                "─".repeat(area.width.saturating_sub(2) as usize)
-            ))
-            .style(Style::default().fg(ASK_BORDER)),
-            Rect::new(area.x, y, area.width, 1),
-        );
-    }
-
-    fn title(&self) -> Line<'static> {
-        let tab = |label: &str, active: bool| {
-            Span::styled(
-                format!(" {label} "),
-                if active {
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(MUTED)
-                },
-            )
+    fn draw_footer(&self, frame: &mut Frame, area: Rect) {
+        let hints: &[&str] = match self.page {
+            Page::Agents => &[
+                "1:agents",
+                "2:activity",
+                "↵/click:open",
+                "Esc:close",
+                "Tab:focus",
+                "j/k/wheel:select",
+                "PgUp/PgDn:details",
+                "t:by parent",
+                "/:filter",
+                "c:cancel",
+                "r:revive",
+                "x:kill",
+            ],
+            Page::Activity => &[
+                "1:agents",
+                "2:activity",
+                "↵:open",
+                "Esc:back",
+                "j/k:move",
+                "Space:follow",
+                "f:category",
+                "s:scope",
+                "/:search",
+            ],
         };
-        Line::from(vec![
-            Span::styled(format!(" {TITLE} "), Style::default().fg(ACCENT)),
-            tab("1 Agents", self.page == Page::Agents),
-            Span::styled("/", Style::default().fg(DIM)),
-            tab("2 Activity", self.page == Page::Activity),
-        ])
+        let mut text = String::new();
+        for hint in hints {
+            let separator = if text.is_empty() { "" } else { "  " };
+            if Line::raw(&text).width() + separator.len() + Line::raw(*hint).width()
+                <= area.width as usize
+            {
+                text.push_str(separator);
+                text.push_str(hint);
+            }
+        }
+        draw_line(frame, area, Line::from(colored(text, DIM)));
     }
 
-    fn draw_lead(&mut self, frame: &mut Frame, area: Rect) {
-        let agents = self.projection.agents();
-        let running = agents
-            .iter()
-            .filter(|agent| agent.status == AgentStatus::Running)
-            .count();
-        let parked = agents
-            .iter()
-            .filter(|agent| agent.status == AgentStatus::Parked)
-            .count();
-        let aborted = agents
-            .iter()
-            .filter(|agent| agent.status == AgentStatus::Aborted)
-            .count();
-        let mut spans = vec![Span::styled(
-            format!(
-                "{} agents · {running} running · {parked} parked · {aborted} aborted",
-                agents.len()
-            ),
-            Style::default().fg(ACTIVITY),
-        )];
-        if self.projection.loading() {
-            spans.push(Span::styled(" · loading", Style::default().fg(ACCENT)));
+    fn alert(&self) -> Option<Line<'static>> {
+        if let Some(error) = self
+            .error
+            .as_ref()
+            .or_else(|| self.projection.snapshot()?.warnings.first())
+        {
+            Some(Line::from(colored(projection::truncate(error), REMOVED)))
+        } else {
+            self.notice
+                .as_ref()
+                .map(|notice| Line::from(colored(projection::truncate(notice), ACCENT)))
         }
-        if let Some(snapshot) = self.projection.snapshot() {
-            for warning in &snapshot.warnings {
-                spans.push(Span::styled(
-                    format!(" · {}", pp_core::text::display_text(warning).into_owned()),
-                    Style::default().fg(REMOVED),
+    }
+
+    fn draw_roster_header(&self, frame: &mut Frame, mut area: Rect) -> Rect {
+        let agents = self.projection.agents();
+        let mut spans = vec![
+            colored("Roster · ", ACTIVITY),
+            colored("Flat", if self.tree { MUTED } else { ACCENT }),
+            colored(" / ", DIM),
+            colored("By parent", if self.tree { ACCENT } else { MUTED }),
+        ];
+        for status in [
+            AgentStatus::Running,
+            AgentStatus::Parked,
+            AgentStatus::Idle,
+            AgentStatus::Aborted,
+        ] {
+            let count = agents.iter().filter(|agent| agent.status == status).count();
+            if count > 0 || matches!(status, AgentStatus::Running | AgentStatus::Parked) {
+                spans.push(colored(" · ", DIM));
+                spans.push(colored(
+                    format!(
+                        "{} {count} {}",
+                        status_icon(status, self.clock),
+                        status.label()
+                    ),
+                    status_color(status),
                 ));
             }
         }
-        if let Some(error) = &self.error {
-            spans.push(Span::styled(
-                format!(" · {}", pp_core::text::display_text(error).into_owned()),
-                Style::default().fg(REMOVED),
-            ));
-        }
-        if let Some(notice) = &self.notice {
-            spans.push(Span::styled(
-                format!(" · {notice}"),
-                Style::default().fg(ACCENT),
-            ));
-        }
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)).wrap(Wrap { trim: true }),
-            area,
+        draw_line(frame, area, Line::from(spans));
+        area = below(area, 1);
+        let totals = |value: fn(&AgentView) -> Option<u64>| {
+            agents.iter().filter_map(value).reduce(u64::saturating_add)
+        };
+        let cost = agents
+            .iter()
+            .filter_map(|agent| agent.cost)
+            .reduce(|a, b| a + b);
+        let active = totals(|agent| agent.active_ms).map_or_else(|| "—".into(), format_duration);
+        let tokens = totals(|agent| agent.tokens).map_or_else(|| "—".into(), compact);
+        let requests: usize = agents.iter().map(|agent| agent.requests).sum();
+        let tools: usize = agents.iter().map(|agent| agent.tools).sum();
+        let timed = agents
+            .iter()
+            .filter(|agent| agent.active_ms.is_some())
+            .count();
+        let measured = agents.iter().filter(|agent| agent.cost.is_some()).count();
+        let count = agents.len();
+        let cost = format_cost(cost);
+        let full = format!(
+            " · {active} active agent time · {requests} req · {tools} tools · {tokens} tok · {timed}/{count} timed · {measured}/{count} measured"
         );
+        let compact = format!(
+            " {active} {requests}req {tools}tools {tokens}tok {timed}/{count} timed {measured}/{count} measured"
+        );
+        let metrics = if Line::raw(&full).width() + Line::raw(&cost).width() <= area.width as usize
+        {
+            full
+        } else {
+            compact
+        };
+        let mut stats = vec![colored(cost, COST), colored(metrics, DIM)];
+        if agents.iter().any(|agent| agent.loading) {
+            stats.push(colored(" · loading", ACCENT));
+        }
+        draw_line(frame, area, Line::from(stats));
+        area = below(area, 2);
+        if let Some(alert) = self.alert() {
+            draw_line(frame, area, alert);
+            area = below(area, 1);
+        }
+        area
     }
 
-    fn draw_agents(&mut self, frame: &mut Frame, area: Rect) {
+    fn draw_agents(&mut self, frame: &mut Frame, area: Rect, footer_separator: bool) {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let wide = area.width >= NARROW;
-        let (roster, inspector) = if wide {
-            let gap = 1;
-            let target = (u32::from(area.width) * 58 / 100) as u16;
-            let roster_width = target.clamp(ROSTER_MIN, area.width - gap - INSPECTOR_MIN);
+        let (roster, inspector) = if area.width >= NARROW {
+            let roster_width = (u32::from(area.width - 1) * 60 / 100) as u16;
+            let divider = area.x + roster_width;
             frame.render_widget(
                 Block::default()
                     .borders(Borders::LEFT)
                     .border_style(Style::default().fg(ASK_BORDER)),
-                Rect::new(area.x + roster_width, area.y, 1, area.height),
+                Rect::new(divider, area.y, 1, area.height),
             );
-            // 分栏线与上下横线共用交点，避免边界断开。
             for (y, symbol) in [(area.y.saturating_sub(1), "┬"), (area.bottom(), "┴")] {
-                if frame.area().contains((area.x + roster_width, y).into()) {
+                if symbol == "┬" || footer_separator {
                     frame.render_widget(
                         Paragraph::new(symbol).style(Style::default().fg(ASK_BORDER)),
-                        Rect::new(area.x + roster_width, y, 1, 1),
+                        Rect::new(divider, y, 1, 1),
                     );
                 }
             }
             (
                 Rect::new(area.x, area.y, roster_width, area.height),
                 Some(Rect::new(
-                    area.x + roster_width + gap,
+                    divider + 1,
                     area.y,
-                    area.width - roster_width - gap,
+                    area.width - roster_width - 1,
                     area.height,
                 )),
             )
@@ -1010,15 +1019,20 @@ impl Panel {
         } else {
             (area, None)
         };
+        self.roster_area = roster;
         if roster.width > 0 {
-            self.draw_roster(frame, roster);
+            let list = self.draw_roster_header(frame, inset_columns(roster));
+            self.draw_roster(frame, list);
         }
         if let Some(inspector) = inspector {
-            self.draw_inspector(frame, inspector);
+            self.draw_inspector(frame, inset_columns(inspector));
         }
     }
 
     fn draw_roster(&mut self, frame: &mut Frame, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
         let rows = self.visible();
         if rows.is_empty() {
             let message = if self.projection.loading() {
@@ -1040,8 +1054,11 @@ impl Panel {
         let heights = rows
             .iter()
             .map(|row| {
-                let lines = self.row_lines(row, area.width);
-                lines_height(&lines, area.width)
+                if self.projection.agents()[row.agent].status == AgentStatus::Running {
+                    3
+                } else {
+                    2
+                }
             })
             .collect::<Vec<u16>>();
         let selected = self.selected_index(&rows);
@@ -1056,8 +1073,11 @@ impl Panel {
             let rect = Rect::new(area.x, y, area.width, height);
             let is_selected = selected == Some(index);
             let lines = self.row_lines(row, area.width);
-            let lines = style_row(lines, is_selected);
-            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rect);
+            let mut content = Paragraph::new(lines);
+            if is_selected {
+                content = content.style(Style::default().bg(SELECTED_BG));
+            }
+            frame.render_widget(content, rect);
             let agent = self.projection.agents()[row.agent].id.clone();
             self.hits.push((rect, agent));
             y += height;
@@ -1065,261 +1085,208 @@ impl Panel {
     }
 
     fn row_lines(&self, row: &TreeRow, width: u16) -> Vec<Line<'static>> {
-        let _ = width;
+        let width = width as usize;
         let agent = &self.projection.agents()[row.agent];
-        let status_color = status_color(agent.status);
         let marker = if self.selected.as_deref() == Some(agent.id.as_str()) {
-            "›"
+            "› "
         } else {
-            " "
+            "  "
         };
-        let badge = match &agent.run_status {
-            Some(run_status) => format!("{} ({run_status})", agent.status.label()),
-            None => agent.status.label().to_owned(),
-        };
-        let mut first = vec![
-            Span::styled(
-                format!(
-                    "{marker}{}{}",
-                    row.prefix,
-                    pp_core::text::display_text(&agent.name).into_owned()
-                ),
-                Style::default().fg(if row.muted { MUTED } else { ACTIVITY }),
-            ),
-            Span::styled(format!("  {}", agent.id), Style::default().fg(DIM)),
-            Span::styled(
-                format!("  {badge}"),
-                Style::default().fg(if row.muted { MUTED } else { status_color }),
-            ),
-            Span::styled(format!("  {}", agent.definition), Style::default().fg(DIM)),
+        let icon = status_icon(agent.status, self.clock);
+        let name = projection::truncate(&agent.name);
+        let model = model_line(agent, width / 2);
+        let model_width = model.width();
+        let left = vec![
+            colored(marker, ACCENT),
+            colored(row.prefix.clone(), MUTED),
+            colored(format!("{icon} "), status_color(agent.status)),
+            colored(name, if row.muted { MUTED } else { ACTIVITY }),
         ];
-        if let Some(change) = &agent.model_change {
-            first.push(Span::styled(
-                format!("  {change}"),
-                Style::default().fg(ACCENT),
+        let mut first = fit_line(Line::from(left), width.saturating_sub(model_width + 1));
+        if model_width > 0 {
+            first.spans.push(Span::raw(
+                " ".repeat(width.saturating_sub(first.width() + model_width)),
+            ));
+            first.spans.extend(model.spans);
+        }
+        let indent = 4 + Line::raw(&row.prefix).width();
+        let mut lines = vec![first];
+        if agent.status == AgentStatus::Running {
+            lines.push(indented(
+                agent.task.as_deref().unwrap_or("—"),
+                indent,
+                width,
+                MUTED,
             ));
         }
-        let secondary = agent
-            .task
-            .as_deref()
-            .or(agent.current.as_deref())
-            .unwrap_or("—");
-        let tokens = agent
-            .tokens
-            .map(|tokens| tokens.to_string())
-            .unwrap_or_else(|| "—".into());
-        let cost = agent
-            .cost
-            .map(|cost| format!("${cost:.4}"))
-            .unwrap_or_else(|| "cost —".into());
-        vec![
-            Line::from(first),
-            Line::from(Span::styled(
-                format!(
-                    "   {} · {}",
-                    pp_core::text::display_text(&agent.model).into_owned(),
-                    summary_line(secondary)
-                ),
-                Style::default().fg(if row.muted { DIM } else { MUTED }),
-            )),
-            Line::from(Span::styled(
-                format!(
-                    "   {} req · {tokens} tok · {cost}{}",
-                    agent.requests,
-                    if agent.loading { " · loading" } else { "" }
-                ),
-                Style::default().fg(DIM),
-            )),
-        ]
+        lines.push(indented(
+            &format!("{}   {}", usage(agent, "   "), self.age(agent)),
+            indent,
+            width,
+            DIM,
+        ));
+        lines
+    }
+
+    fn age(&self, agent: &AgentView) -> String {
+        agent.last_activity.map_or_else(
+            || "—".into(),
+            |timestamp| detail::format_age(self.clock.saturating_sub(timestamp)),
+        )
     }
 
     fn draw_inspector(&mut self, frame: &mut Frame, area: Rect) {
-        let Some(agent) = self.selected_agent().cloned() else {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    "Select an agent to inspect.",
-                    Style::default().fg(MUTED),
-                ))),
+        let Some(agent) = self.selected_agent() else {
+            draw_line(
+                frame,
                 area,
+                Line::from(colored("Select an agent to inspect.", MUTED)),
             );
             return;
         };
-        let lines = self.inspector_lines(&agent, area.width);
-        let height = area.height as usize;
-        let max = lines.len().saturating_sub(height) as u16;
-        if self.inspector > max {
-            self.inspector = max;
-        }
-        frame.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: false })
-                .scroll((self.inspector, 0)),
-            area,
-        );
+        let lines = self.inspector_lines(agent, area);
+        let max =
+            u16::try_from(lines.len().saturating_sub(area.height as usize)).unwrap_or(u16::MAX);
+        self.inspector = self.inspector.min(max);
+        frame.render_widget(Paragraph::new(lines).scroll((self.inspector, 0)), area);
     }
 
-    fn inspector_lines(&self, agent: &AgentView, width: u16) -> Vec<Line<'static>> {
-        let _ = width;
-        let mut lines = Vec::new();
-        let section = |label: &str, lines: &mut Vec<Line<'static>>| {
-            lines.push(Line::from(Span::styled(
-                label.to_owned(),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    fn inspector_lines(&self, agent: &AgentView, area: Rect) -> Vec<Line<'static>> {
+        let width = area.width as usize;
+        let mut lines = vec![Line::from(vec![
+            colored(
+                format!("{} ", status_icon(agent.status, self.clock)),
+                status_color(agent.status),
+            ),
+            colored(projection::truncate(&agent.definition), ACTIVITY),
+        ])];
+        if agent.name != agent.definition {
+            lines.push(Line::from(colored(
+                projection::truncate(&agent.name),
+                MUTED,
             )));
-        };
-        section("Identity", &mut lines);
+        }
+        let status = agent
+            .run_status
+            .as_deref()
+            .unwrap_or_else(|| agent.status.label());
+        let age = self.age(agent);
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("{} {}", agent.name, agent.id),
-                Style::default().fg(ACTIVITY),
-            ),
-            Span::styled(
-                format!("  {}", agent.status.label()),
-                Style::default().fg(status_color(agent.status)),
-            ),
+            colored(status.to_owned(), status_color(agent.status)),
+            colored(format!(" · {} · active {age}", agent_time(agent)), DIM),
         ]));
-        let age = agent
-            .last_activity
-            .map(|timestamp| {
-                format!(
-                    "last activity {}",
-                    detail::format_age(self.clock.saturating_sub(timestamp))
-                )
-            })
-            .unwrap_or_else(|| "last activity —".into());
-        lines.push(Line::from(Span::styled(age, Style::default().fg(DIM))));
-        section("Model", &mut lines);
-        let mut model = format!("{} · effort {}", agent.model, agent.thinking);
+        lines.push(model_line(agent, width));
         if let Some(change) = &agent.model_change {
-            model.push_str(&format!(" · {change}"));
+            lines.push(Line::from(colored(projection::truncate(change), MUTED)));
         }
-        lines.push(Line::from(Span::styled(
-            pp_core::text::display_text(&model).into_owned(),
-            Style::default().fg(ACTIVITY),
+        section(&mut lines, "Task");
+        lines.push(Line::from(colored(
+            projection::truncate(agent.task.as_deref().unwrap_or("—")),
+            ACTIVITY,
         )));
-        section("Task", &mut lines);
-        lines.extend(wrapped_text(agent.task.as_deref().unwrap_or("—")));
-        section("Current", &mut lines);
-        lines.extend(wrapped_text(agent.current.as_deref().unwrap_or("—")));
-        section("Usage / Context", &mut lines);
-        let tokens = agent
-            .tokens
-            .map(|tokens| tokens.to_string())
-            .unwrap_or_else(|| "—".into());
-        let cost = match (agent.cost, agent.cost_measured, agent.runs) {
-            (Some(cost), measured, runs) if measured == runs || runs == 0 => {
-                format!("${cost:.4}")
-            }
-            (Some(cost), measured, runs) => {
-                format!("${cost:.4} ({measured}/{runs} runs measured)")
-            }
-            (None, _, _) => "cost —".into(),
-        };
-        let time = agent
-            .time_ms
-            .map(format_duration)
-            .unwrap_or_else(|| "—".into());
-        lines.push(Line::from(Span::styled(
-            format!(
-                "{} req · {tokens} tok · {cost} · agent time {time}",
-                agent.requests
+        section(&mut lines, "Current");
+        lines.push(Line::from(colored(
+            projection::truncate(
+                agent
+                    .current
+                    .as_deref()
+                    .or(agent.task.as_deref())
+                    .unwrap_or("—"),
             ),
-            Style::default().fg(ACTIVITY),
+            ACTIVITY,
         )));
-        let context = match agent.context {
-            Some(usage) => {
-                let window = usage
-                    .context_window
-                    .map(|window| format!(" / {window}"))
-                    .unwrap_or_default();
-                match usage.percent() {
-                    Some(percent) => format!(
-                        "context ~{}{window} tokens · {percent}%",
-                        usage.estimated_tokens
-                    ),
-                    None => format!("context ~{}{window} tokens", usage.estimated_tokens),
-                }
-            }
-            None => "context —".into(),
-        };
-        lines.push(Line::from(Span::styled(
-            context,
-            Style::default().fg(MUTED),
-        )));
-        if agent.loading {
-            lines.push(Line::from(Span::styled(
-                "full-history metrics still loading",
-                Style::default().fg(ACCENT),
-            )));
-        }
-        section("Lineage", &mut lines);
-        lines.push(Line::from(Span::styled(
-            format!(
-                "parent {} · {} · depth {}",
-                agent.parent, agent.definition, agent.depth
-            ),
-            Style::default().fg(MUTED),
-        )));
-        section("Changes / artifacts", &mut lines);
-        if agent.readonly {
-            lines.push(Line::from(Span::styled(
-                "Read-only agent · no workspace writes",
-                Style::default().fg(MUTED),
-            )));
-        }
-        if agent.isolated {
-            lines.push(Line::from(Span::styled(
-                "Isolated workspace · patches only",
-                Style::default().fg(MUTED),
-            )));
-        }
-        if !agent.readonly && !agent.isolated {
-            lines.push(Line::from(Span::styled(
-                "Shared workspace · per-agent LoC not attributable",
-                Style::default().fg(MUTED),
-            )));
-        }
-        if agent.artifacts.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "No published result yet",
-                Style::default().fg(DIM),
-            )));
-        } else {
-            for artifact in &agent.artifacts {
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", pp_core::text::display_text(artifact).into_owned()),
-                    Style::default().fg(MUTED),
-                )));
-            }
-        }
-        if let Some(error) = &agent.last_error {
-            lines.push(Line::from(Span::styled(
-                format!("last error: {error}"),
-                Style::default().fg(REMOVED),
-            )));
-        }
-        section("Recent activity", &mut lines);
-        let recent = self.projection.recent(&agent.id, 20);
-        if recent.is_empty() {
-            lines.push(Line::from(Span::styled("—", Style::default().fg(DIM))));
-        }
-        for row in recent {
+        section(&mut lines, "Usage");
+        lines.push(Line::from(colored(usage(agent, " · "), ACTIVITY)));
+        if agent.run_status.as_deref() == Some("running")
+            && let Some(context) = agent.context
+            && let Some(window) = context.context_window.filter(|window| *window > 0)
+            && let Some(percent) = context.percent()
+        {
+            let filled = (percent.min(100) as usize + 5) / 10;
             lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} ", detail::format_clock(row.timestamp)),
-                    Style::default().fg(DIM),
-                ),
-                Span::styled(
-                    format!("{} ", row.status.symbol()),
-                    Style::default().fg(row_color(row.status)),
-                ),
-                Span::styled(
-                    format!("{} {}", row.title, summary_line(&row.summary)),
-                    Style::default().fg(ACTIVITY),
+                colored("━".repeat(filled), ACCENT),
+                colored("─".repeat(10 - filled), DIM),
+                colored(
+                    format!(
+                        " {}/{} {percent}%",
+                        compact(context.estimated_tokens),
+                        compact(window)
+                    ),
+                    ACTIVITY,
                 ),
             ]));
         }
+        section(&mut lines, "Lineage");
+        let parent = self
+            .projection
+            .agent(&agent.parent)
+            .map_or(agent.parent.as_str(), |parent| parent.name.as_str());
+        lines.push(Line::from(colored(
+            format!("Spawned by {}", projection::truncate(parent)),
+            ACTIVITY,
+        )));
+        if let Some(registered) = agent
+            .registered_ms
+            .and_then(|ms| i64::try_from(ms).ok())
+            .and_then(chrono::DateTime::from_timestamp_millis)
+        {
+            lines.push(Line::from(colored(
+                format!(
+                    "Registered {}",
+                    registered
+                        .with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M %:z")
+                ),
+                DIM,
+            )));
+        }
+        lines.push(Line::from(colored(format!("Agent ID {}", agent.id), DIM)));
+        section(&mut lines, "Changes");
+        let workspace = match (agent.readonly, agent.isolated) {
+            (true, _) => "Read-only agent · no workspace writes",
+            (_, true) => "Isolated workspace · patches only",
+            _ => "Shared workspace · per-agent LoC not attributable",
+        };
+        lines.push(Line::from(colored(workspace, DIM)));
+        if let Some((output, patches)) = agent.artifacts.split_first() {
+            for patch in patches {
+                lines.push(Line::from(colored(projection::truncate(patch), MUTED)));
+            }
+            lines.push(Line::from(colored("Output", ACTIVITY)));
+            lines.push(Line::from(colored(output.clone(), ACTIVITY)));
+        }
+        if let Some(error) = &agent.last_error {
+            lines.push(Line::from(colored(
+                format!("last error: {}", projection::truncate(error)),
+                REMOVED,
+            )));
+        }
+        section(&mut lines, "Recent activity");
+        // 概要始终保留最新几项，独立 Activity 页可查看更早事件。
+        let limit = (area.height as usize)
+            .saturating_sub(lines.len())
+            .clamp(1, 20);
+        let recent = self.projection.recent(&agent.id, limit);
+        if recent.is_empty() {
+            lines.push(Line::from(colored("—", DIM)));
+        }
+        for row in recent {
+            let symbol = if row.kind == Kind::Response {
+                "◆"
+            } else {
+                activity_icon(row.status, self.clock)
+            };
+            lines.push(Line::from(vec![
+                colored(format!("{} ", detail::format_clock(row.timestamp)), DIM),
+                colored(format!("{symbol} "), row_color(row.status)),
+                colored(format!("{} ", projection::truncate(&row.title)), MUTED),
+                colored(projection::truncate(&row.summary), ACTIVITY),
+            ]));
+        }
         lines
+            .into_iter()
+            .map(|line| fit_line(line, width))
+            .collect()
     }
 
     fn draw_activity(&mut self, frame: &mut Frame, area: Rect) {
@@ -1435,7 +1402,7 @@ impl Panel {
                 Style::default().fg(DIM),
             ),
             Span::styled(
-                format!("{} ", row.status.symbol()),
+                format!("{} ", activity_icon(row.status, self.clock)),
                 Style::default().fg(row_color(row.status)),
             ),
             Span::styled(name, Style::default().fg(ACCENT)),
@@ -1448,54 +1415,6 @@ impl Panel {
                 Style::default().fg(MUTED),
             ),
         ])]
-    }
-
-    fn draw_roles(&mut self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(ASK_BORDER))
-            .title(" Agent Hub · roles and agents ")
-            .title_bottom(
-                Line::from(Span::styled(
-                    "/Roles + Agent files · Esc close",
-                    Style::default().fg(DIM),
-                ))
-                .alignment(Alignment::Right),
-            );
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let mut lines = vec![Line::from(Span::styled(
-            "System roles and configured agents",
-            Style::default().fg(ACCENT),
-        ))];
-        match self.roles_state {
-            RolesState::Loading => lines.push(Line::from(Span::styled(
-                "Loading roles and agents…",
-                Style::default().fg(MUTED),
-            ))),
-            RolesState::Ready => {
-                if self.roles_rows.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        "No enabled roles or configured agents.",
-                        Style::default().fg(MUTED),
-                    )));
-                }
-                for row in &self.roles_rows {
-                    lines.push(Line::from(Span::styled(
-                        pp_core::text::display_text(row).into_owned(),
-                        Style::default().fg(ACTIVITY),
-                    )));
-                }
-            }
-        }
-        if let Some(error) = &self.error {
-            lines.push(Line::from(Span::styled(
-                error.clone(),
-                Style::default().fg(REMOVED),
-            )));
-        }
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 }
 
@@ -1531,15 +1450,158 @@ fn summary_line(text: &str) -> String {
     }
 }
 
-fn wrapped_text(text: &str) -> Vec<Line<'static>> {
-    text.lines()
-        .map(|line| {
-            Line::from(Span::styled(
-                pp_core::text::display_text(line).into_owned(),
-                Style::default().fg(ACTIVITY),
-            ))
-        })
-        .collect()
+fn colored(text: impl Into<std::borrow::Cow<'static, str>>, color: Color) -> Span<'static> {
+    let text = text.into();
+    let safe = match pp_core::text::display_text(&text) {
+        std::borrow::Cow::Owned(safe) => std::borrow::Cow::Owned(safe),
+        std::borrow::Cow::Borrowed(_) => text,
+    };
+    Span::styled(safe, Style::default().fg(color))
+}
+
+fn fit_line(mut line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width {
+        return line;
+    }
+    let mut remaining = width.saturating_sub(1);
+    let mut spans = Vec::new();
+    let mut style = Style::default().fg(MUTED);
+    for span in line.spans.drain(..) {
+        style = span.style;
+        let clipped = super::tool_display::clip(&span.content, remaining, false);
+        remaining = remaining.saturating_sub(Line::raw(&clipped).width());
+        let truncated = clipped.len() < span.content.len();
+        spans.push(Span::styled(clipped, style));
+        if truncated || remaining == 0 {
+            break;
+        }
+    }
+    if width > 0 {
+        spans.push(Span::styled("…", style));
+    }
+    line.spans = spans;
+    line
+}
+
+fn draw_line(frame: &mut Frame, area: Rect, line: Line<'static>) {
+    if area.width > 0 && area.height > 0 {
+        let row = Rect::new(area.x, area.y, area.width, 1);
+        frame.render_widget(Paragraph::new(fit_line(line, area.width as usize)), row);
+    }
+}
+
+fn inset_columns(area: Rect) -> Rect {
+    let margin = u16::from(area.width > 2);
+    Rect::new(
+        area.x + margin,
+        area.y,
+        area.width - 2 * margin,
+        area.height,
+    )
+}
+
+fn below(area: Rect, rows: u16) -> Rect {
+    let rows = rows.min(area.height);
+    Rect::new(area.x, area.y + rows, area.width, area.height - rows)
+}
+
+fn section(lines: &mut Vec<Line<'static>>, title: &'static str) {
+    lines.push(Line::default());
+    lines.push(Line::from(colored(title, ACCENT)));
+}
+
+fn indented(text: &str, indent: usize, width: usize, color: Color) -> Line<'static> {
+    let indent = indent.min(width / 2);
+    fit_line(
+        Line::from(vec![
+            Span::raw(" ".repeat(indent)),
+            colored(projection::truncate(text), color),
+        ]),
+        width,
+    )
+}
+
+fn model_line(agent: &AgentView, width: usize) -> Line<'static> {
+    let role = agent.role.unwrap_or(&agent.definition);
+    let prefix = colored(
+        format!("{} · ", projection::truncate(role)),
+        if agent.role.is_some() { ACCENT } else { MUTED },
+    );
+    let suffix = agent
+        .thinking
+        .parse::<pp_core::model::ThinkLevel>()
+        .ok()
+        .map(|level| colored(format!(" {} {}", think_icon(level), level.as_str()), EFFORT));
+    let suffix_width = suffix.as_ref().map_or(0, Span::width);
+    let model_width = width.saturating_sub(prefix.width() + suffix_width);
+    if model_width < 3 {
+        return fit_line(
+            Line::from(colored(projection::truncate(&agent.model), MUTED)),
+            width,
+        );
+    }
+    let model = super::tool_display::clip(&projection::truncate(&agent.model), model_width, true);
+    let mut spans = vec![prefix, colored(model, MUTED)];
+    spans.extend(suffix);
+    Line::from(spans)
+}
+
+fn status_icon(status: AgentStatus, clock: u64) -> &'static str {
+    match status {
+        AgentStatus::Running => SPINNER[(clock / 120 % SPINNER.len() as u64) as usize],
+        AgentStatus::Idle => "●",
+        AgentStatus::Parked => "○",
+        AgentStatus::Aborted => "×",
+    }
+}
+
+fn activity_icon(status: RowStatus, clock: u64) -> &'static str {
+    match status {
+        RowStatus::Pending => status_icon(AgentStatus::Running, clock),
+        RowStatus::Success => "✓",
+        RowStatus::Error => "×",
+        RowStatus::Aborted => "■",
+    }
+}
+
+fn format_cost(cost: Option<f64>) -> String {
+    cost.map_or_else(|| "—".into(), |cost| format!("${cost:.3}"))
+}
+
+fn compact(value: u64) -> String {
+    if value >= 1_000_000 {
+        format!("{:.1}M", value as f64 / 1_000_000.0).replace(".0M", "M")
+    } else if value >= 1_000 {
+        format!("{:.0}K", value as f64 / 1_000.0)
+    } else {
+        value.to_string()
+    }
+}
+
+fn agent_time(agent: &AgentView) -> String {
+    let (time, label) = if agent.status == AgentStatus::Running && agent.active_ms.is_some() {
+        (agent.active_ms, "active")
+    } else if agent.status != AgentStatus::Running && agent.span_ms.is_some() {
+        (agent.span_ms, "span")
+    } else {
+        (agent.time_ms, "run time")
+    };
+    time.map_or_else(
+        || "—".into(),
+        |ms| format!("{} {label}", format_duration(ms)),
+    )
+}
+
+fn usage(agent: &AgentView, separator: &str) -> String {
+    let tokens = agent.tokens.map_or_else(|| "—".into(), compact);
+    [
+        format_cost(agent.cost),
+        agent_time(agent),
+        format!("{} req", agent.requests),
+        format!("{} tools", agent.tools),
+        format!("{tokens} tok"),
+    ]
+    .join(separator)
 }
 
 fn lines_height(lines: &[Line<'static>], width: u16) -> u16 {
@@ -1555,7 +1617,7 @@ fn style_row(lines: Vec<Line<'static>>, selected: bool) -> Vec<Line<'static>> {
     }
     lines
         .into_iter()
-        .map(|line| line.patch_style(Style::default().bg(ASK_BG).fg(ACCENT)))
+        .map(|line| line.patch_style(Style::default().bg(SELECTED_BG)))
         .collect()
 }
 
@@ -1647,6 +1709,7 @@ mod tests {
             status: status.into(),
             spec: spec(1),
             session_file: None,
+            registered_ms: None,
             updated_ms: 100,
         }
     }
@@ -1701,7 +1764,7 @@ mod tests {
     }
 
     fn panel(agents: Vec<Record>, runs: Vec<Run>) -> Panel {
-        let mut panel = Panel::new(false);
+        let mut panel = Panel::default();
         panel.apply(Reply::Snapshot {
             epoch: 1,
             snapshot: Box::new(snapshot(agents, runs)),
@@ -1754,8 +1817,9 @@ mod tests {
             vec![run("r1", "a2", "running", "child work")],
         );
         let screen = render(&mut panel, &mut drafts, 140, 40).join("\n");
-        assert!(screen.contains("1 Agents"), "{screen}");
-        assert!(screen.contains("2 Activity"));
+        assert!(screen.contains("Roster · Flat / By parent"), "{screen}");
+        assert!(screen.contains("1:agents"));
+        assert!(screen.contains("2:activity"));
         assert!(screen.contains("a1-name") && screen.contains("a2-name"));
         assert!(screen.contains("running"));
         // 选中项语义色：running 使用 ACCENT。
@@ -1767,36 +1831,21 @@ mod tests {
         for (position, symbol) in [
             ((0, 0), "╭"),
             ((139, 39), "╯"),
-            ((0, 2), "├"),
-            ((81, 2), "┬"),
-            ((81, 20), "│"),
-            ((81, 37), "┴"),
+            ((0, 37), "├"),
+            ((83, 0), "┬"),
+            ((83, 20), "│"),
+            ((83, 37), "┴"),
             ((139, 37), "┤"),
         ] {
             let cell = &buffer[position];
             assert_eq!(cell.symbol(), symbol, "{position:?}");
             assert_eq!(cell.fg, ASK_BORDER, "{position:?}");
         }
-        let mut found = None;
-        for row in 0..40 {
-            let line = (0..140)
-                .filter_map(|column| buffer.cell((column, row)))
-                .map(|cell| cell.symbol().to_owned())
-                .collect::<String>();
-            if line.contains("a2-name") {
-                found = Some(row);
-            }
-        }
-        let row = found.expect("selected agent visible");
-        let color = (0..140)
-            .find(|column| {
-                buffer
-                    .cell((*column, row))
-                    .is_some_and(|cell| cell.symbol() == "r")
-            })
-            .and_then(|column| buffer.cell((column, row)))
-            .map(|cell| cell.fg);
-        assert!(color.is_some());
+        let marker = &buffer[(2, 4)];
+        assert_eq!(marker.symbol(), "›");
+        assert_eq!(marker.fg, ACCENT);
+        assert_eq!(buffer[(6, 4)].fg, ACTIVITY);
+        assert_eq!(buffer[(81, 5)].bg, SELECTED_BG);
     }
 
     #[test]
@@ -1808,15 +1857,137 @@ mod tests {
         );
         let roster = render(&mut panel, &mut drafts, 80, 24).join("\n");
         assert!(roster.contains("a1-name"));
-        assert!(!roster.contains("Usage / Context"));
+        assert!(!roster.contains("Usage"));
         panel.handle(key(KeyCode::Tab), &mut drafts);
         let inspector = render(&mut panel, &mut drafts, 80, 24).join("\n");
-        assert!(inspector.contains("Usage / Context"), "{inspector}");
+        assert!(inspector.contains("Usage"), "{inspector}");
         // Esc 先退出 inspector，再关闭 Hub。
         let close = panel.handle(key(KeyCode::Esc), &mut drafts);
         assert!(!close);
         let close = panel.handle(key(KeyCode::Esc), &mut drafts);
         assert!(close);
+    }
+
+    #[test]
+    fn hub_overview_preserves_summary_and_final_response_when_parked() {
+        let mut drafts = Drafts::default();
+        let mut agent = record("a1", "Main", "running");
+        agent.registered_ms = Some(500);
+        let task = "盘点工作区中的依赖和边界".repeat(12);
+        let mut work = run("r1", "a1", "running", &task);
+        let mut panel = panel(vec![agent.clone()], vec![work.clone()]);
+        panel.clock = 5_000;
+        let run_state = |offset, status: &str| {
+            let mut state = entry(offset, "r1", AgentEvent::AssistantStarted);
+            state.record.event = None;
+            state.record.hub = Some(pp_runtime::subagent::HubEvent::RunState {
+                status: status.to_owned(),
+            });
+            state
+        };
+        let delta = |offset, text: &str| {
+            entry(
+                offset,
+                "r1",
+                AgentEvent::ReasoningSummaryDelta { text: text.into() },
+            )
+        };
+        let tool = entry(
+            500,
+            "r1",
+            AgentEvent::ToolStarted {
+                id: "read-1".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"description":"检查目录", "path":"src"}).to_string(),
+            },
+        );
+        let reply = |entries| Reply::Activity {
+            epoch: 1,
+            agent: "a1".into(),
+            page: pp_runtime::subagent::EventPage {
+                entries,
+                cursor: None,
+                reset: false,
+                has_more: false,
+                warnings: vec![],
+            },
+        };
+        panel.apply(reply(vec![
+            run_state(0, "running"),
+            entry(1, "r1", AgentEvent::AssistantStarted),
+            delta(2, "检查"),
+            delta(3, "依赖边界"),
+            entry(
+                4,
+                "r1",
+                AgentEvent::AssistantFinished {
+                    text: "intermediate response".into(),
+                },
+            ),
+            entry(
+                6,
+                "r1",
+                AgentEvent::ContextUpdated {
+                    usage: pp_core::context::ContextUsage {
+                        estimated_tokens: 10_000,
+                        context_window: Some(20_000),
+                        last_request: None,
+                        session_output_tokens: 0,
+                        auto_compact: false,
+                        threshold_percent: 80,
+                    },
+                },
+            ),
+            tool,
+        ]));
+        panel.handle(key(KeyCode::Tab), &mut drafts);
+        let running = render(&mut panel, &mut drafts, 70, 40);
+        let task_row = running
+            .iter()
+            .position(|line| line.contains("│ Task "))
+            .unwrap();
+        assert!(running[task_row + 1].contains('…'));
+        assert!(running[task_row + 2].trim_matches(['│', ' ']).is_empty());
+        let running = running.join("\n");
+        assert!(
+            running.replace(' ', "").contains("检查依赖边界") && running.contains("4s active"),
+            "{running}"
+        );
+        assert!(running.contains("10K/20K 50%"));
+        assert!(!running.contains("intermediate response"));
+
+        panel.apply(reply(vec![
+            entry(
+                750,
+                "r1",
+                AgentEvent::ToolFinished {
+                    id: "read-1".into(),
+                    result: serde_json::json!({"ok":true}),
+                },
+            ),
+            run_state(4_000, "completed"),
+        ]));
+        agent.status = "parked".into();
+        work.status = "completed".into();
+        work.result = Some(serde_json::json!({"ok":true, "output":"final answer"}));
+        panel.apply(Reply::Snapshot {
+            epoch: 1,
+            snapshot: Box::new(snapshot(vec![agent], vec![work])),
+        });
+        let parked = render(&mut panel, &mut drafts, 70, 40).join("\n");
+        for expected in [
+            "parked",
+            "4s span",
+            "Registered",
+            "agent://a1",
+            "✓ read",
+            "◆ Response final answer",
+        ] {
+            assert!(parked.contains(expected), "missing {expected}\n{parked}");
+        }
+        assert!(parked.replace(' ', "").contains("检查依赖边界"));
+        assert!(!parked.contains("10K/20K 50%"));
+        assert!(!parked.contains("intermediate response"));
     }
 
     #[test]

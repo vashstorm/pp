@@ -854,8 +854,11 @@ impl ResponsesStream {
         } else {
             ""
         };
-        emit(AgentEvent::ThinkingDelta {
-            text: format!("{separator}{tail}"),
+        let text = format!("{separator}{tail}");
+        emit(if key.1 {
+            AgentEvent::ReasoningSummaryDelta { text }
+        } else {
+            AgentEvent::ThinkingDelta { text }
         });
         sent.push_str(tail);
         self.last_thinking = Some(key);

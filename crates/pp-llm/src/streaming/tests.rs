@@ -507,7 +507,7 @@ fn streaming_chat_copilot_thinking_aliases_are_not_duplicated() {
                 Some("stop"),
             ),
             &mut |event| {
-                if let AgentEvent::ThinkingDelta { text } = event {
+                if let AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } = event {
                     thinking.push_str(&text);
                 }
             },
@@ -706,10 +706,16 @@ fn thinking_responses_deduplicate_deltas_done_and_completed() {
     for summary in [true, false] {
         let mut stream = ResponsesStream::default();
         let mut thinking = String::new();
-        let mut emit = |event| {
-            if let AgentEvent::ThinkingDelta { text } = event {
+        let mut emit = |event| match event {
+            AgentEvent::ThinkingDelta { text } => {
+                assert!(!summary);
                 thinking.push_str(&text);
             }
+            AgentEvent::ReasoningSummaryDelta { text } => {
+                assert!(summary);
+                thinking.push_str(&text);
+            }
+            _ => {}
         };
         let kind = if summary {
             "response.reasoning_summary_text"

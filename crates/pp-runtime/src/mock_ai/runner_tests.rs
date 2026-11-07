@@ -472,7 +472,9 @@ fn mock_runner_ui_cancels_early_and_next_run_starts_from_the_first_chunk() {
         &token,
         &mut |event| match event {
             MockTestEvent::Prepared(snapshot) => control = Some(snapshot.subagent_control),
-            MockTestEvent::Progress(AgentEvent::ThinkingDelta { text }) => {
+            MockTestEvent::Progress(
+                AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text },
+            ) => {
                 if first_thinking.is_none() {
                     first_thinking = Some(text);
                     first_dir = Some(mock_run_dir(control.as_ref().expect("prepared registry")));
@@ -518,7 +520,9 @@ fn mock_runner_ui_cancels_early_and_next_run_starts_from_the_first_chunk() {
                 assert_eq!(snapshot.current_model.reference, "mock-root/primary");
                 control = Some(snapshot.subagent_control);
             }
-            MockTestEvent::Progress(AgentEvent::ThinkingDelta { text }) => {
+            MockTestEvent::Progress(
+                AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text },
+            ) => {
                 if first_chunk.is_none() {
                     first_chunk = Some(text.clone());
                     second_dir = Some(mock_run_dir(control.as_ref().expect("prepared registry")));

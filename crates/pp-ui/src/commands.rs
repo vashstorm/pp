@@ -31,7 +31,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/agents",
         usage: "/agents",
-        description: "View available subagent roles and sources",
+        description: "Alias for /subagents",
     },
     CommandSpec {
         name: "/help",
@@ -223,7 +223,6 @@ pub(crate) enum Command<'a> {
     Tree,
     Changes,
     Pipes(Option<&'a str>),
-    Agents,
     Roles,
     Subagents,
     PlanList,
@@ -285,12 +284,11 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
                 (!argument.is_empty()).then_some(argument),
             )));
         }
-        "/agents" => Command::Agents,
         "/Roles" | "/roles" => {
             ensure!(argument.is_empty(), "usage: /Roles");
             return Ok(Some(Command::Roles));
         }
-        "/subagents" => Command::Subagents,
+        "/agents" | "/subagents" => Command::Subagents,
         "/login" | "/logout" => {
             ensure!(argument.is_empty(), "usage: {name}");
             if name == "/login" {

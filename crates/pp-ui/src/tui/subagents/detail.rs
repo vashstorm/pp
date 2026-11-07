@@ -614,26 +614,33 @@ pub(super) fn usage_summary(view: &AgentView, now_ms: u64) -> String {
 
 pub(super) fn format_age(ms: u64) -> String {
     let seconds = ms / 1000;
-    if seconds < 60 {
+    if seconds < 5 {
+        "just now".into()
+    } else if seconds < 60 {
         format!("{seconds}s ago")
     } else if seconds < 3600 {
         format!("{}m ago", seconds / 60)
-    } else {
+    } else if seconds < 86_400 {
         format!("{}h ago", seconds / 3600)
+    } else if seconds < 604_800 {
+        format!("{}d ago", seconds / 86_400)
+    } else {
+        format!("{}w ago", seconds / 604_800)
     }
 }
 
 pub(super) fn format_clock(timestamp: Option<u64>) -> String {
-    let Some(timestamp) = timestamp else {
-        return "—".into();
-    };
-    let seconds = (timestamp / 1000) % 86_400;
-    format!(
-        "{:02}:{:02}:{:02}",
-        seconds / 3600,
-        (seconds % 3600) / 60,
-        seconds % 60
-    )
+    timestamp
+        .and_then(|ms| i64::try_from(ms).ok())
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map_or_else(
+            || "—".into(),
+            |time| {
+                time.with_timezone(&chrono::Local)
+                    .format("%H:%M:%S")
+                    .to_string()
+            },
+        )
 }
 
 fn format_duration(ms: u64) -> String {

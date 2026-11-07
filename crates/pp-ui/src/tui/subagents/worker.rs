@@ -4,7 +4,6 @@
 //! 回复都带根 epoch；详情页另带 view epoch，旧根/旧详情的迟到回复由 UI 丢弃。
 
 use pp_runtime::subagent::Binding;
-use pp_runtime::subagent::Definition;
 use pp_runtime::subagent::EventCursor;
 use pp_runtime::subagent::EventPage;
 use pp_runtime::subagent::HubSnapshot;
@@ -69,9 +68,6 @@ pub(in crate::tui) enum Request {
         agent: String,
         text: Option<String>,
     },
-    Roles {
-        epoch: u64,
-    },
     Refresh {
         epoch: u64,
     },
@@ -100,10 +96,6 @@ pub(in crate::tui) enum Reply {
     Reset {
         epoch: u64,
         agent: String,
-    },
-    Roles {
-        epoch: u64,
-        roles: Result<Vec<Definition>, String>,
     },
     Control {
         epoch: u64,
@@ -489,17 +481,6 @@ fn run(requests: Receiver<Request>, replies: SyncSender<Reply>) {
                     state.pending.push_front(reply);
                     state.force = true;
                     state.pending_snapshot = true;
-                }
-            }
-            Some(Request::Roles { epoch }) => {
-                let roles = state
-                    .as_ref()
-                    .filter(|state| state.epoch == epoch)
-                    .map(|state| state.binding.roles().map_err(|error| format!("{error:#}")));
-                if let Some(roles) = roles
-                    && let Some(state) = &mut state
-                {
-                    state.push(Reply::Roles { epoch, roles });
                 }
             }
             Some(Request::Refresh { epoch }) => {

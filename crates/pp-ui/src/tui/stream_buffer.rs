@@ -7,7 +7,7 @@ pub(super) struct StreamBuffer {
 }
 impl StreamBuffer {
     pub fn is_full(&self) -> bool {
-        matches!(&self.pending, Some(AgentEvent::ThinkingDelta { text } | AgentEvent::AssistantDelta { text, .. }) if text.len() >= LIMIT)
+        matches!(&self.pending, Some(AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } | AgentEvent::AssistantDelta { text, .. }) if text.len() >= LIMIT)
     }
     pub fn take(&mut self) -> Option<AgentEvent> {
         self.pending.take()
@@ -18,6 +18,9 @@ impl StreamBuffer {
             (
                 Some(AgentEvent::ThinkingDelta { .. }),
                 AgentEvent::ThinkingDelta { .. }
+            ) | (
+                Some(AgentEvent::ReasoningSummaryDelta { .. }),
+                AgentEvent::ReasoningSummaryDelta { .. }
             )
         ) || matches!((&self.pending, &event),
                 (Some(AgentEvent::AssistantDelta { refusal: a, .. }), AgentEvent::AssistantDelta { refusal: b, .. }) if a == b);
@@ -25,6 +28,10 @@ impl StreamBuffer {
             let pending = self.pending.as_mut().expect("已有同类型文本");
             match (pending, event) {
                 (AgentEvent::ThinkingDelta { text: a }, AgentEvent::ThinkingDelta { text: b })
+                | (
+                    AgentEvent::ReasoningSummaryDelta { text: a },
+                    AgentEvent::ReasoningSummaryDelta { text: b },
+                )
                 | (
                     AgentEvent::AssistantDelta { text: a, .. },
                     AgentEvent::AssistantDelta { text: b, .. },
@@ -39,7 +46,7 @@ impl StreamBuffer {
             }
         }
         if self.pending.is_none()
-            && matches!(&event, AgentEvent::ThinkingDelta { text } | AgentEvent::AssistantDelta { text, .. } if text.len() >= LIMIT)
+            && matches!(&event, AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } | AgentEvent::AssistantDelta { text, .. } if text.len() >= LIMIT)
         {
             return Some(event);
         }

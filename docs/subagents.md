@@ -8,15 +8,15 @@ pp 可以把独立工作交给多个子 Agent，并在主会话继续工作。�
 
 > 并行调查运行循环与持久化，分别报告证据，再汇总实现建议。
 
-- `/agents`：查看可用系统 Role、自定义 Agent 及其配置来源。
-- `/subagents`：打开 Agent Hub 的 Agents 页；主输入框上方显示子任务摘要。
+- `/agents` 和 `/subagents`：都打开 Agent Hub 的 Agents 页，行模式下输出子 Agent 快照。主输入框上方显示子任务摘要。
+- `/Roles`：打开独立的模型角色配置页。
 - `⌥ + A`（macOS）／`Alt + A`（Linux）：在主视图与 Agent Hub 之间切换，补全菜单展开时也可使用；保留主输入草稿，其他模态面板仍独占输入。未获得子 Agent 绑定时显示空态而不是报错。
-- Hub 使用蓝色外框、左右分栏线及顶部汇总／底部快捷键分隔线；窄终端保留单栏切换。
+- Hub 使用青色圆角外框。宽屏左栏显示 Roster 与全局用量，右栏显示所选 Agent 的概要，底栏横跨两栏。窄屏用 Tab 在列表和概要间切换。
 - `/test-task`：dev/test 构建专用的固定自检（其他构建由 `#[cfg(debug_assertions)]` 编译排除，命令名不注册，按未注册命令静默忽略），要求 FAST／SLOW／REVIEW 已启用，派发 FAST、SLOW、REVIEW 三个只读子 Agent 并等待结果；详见[常用命令](guide.md#常用命令与快捷键)。
 
 Hub 分两页，`1`／`2` 切换：
 
-- Agents：列表与 inspector。`j`/`k` 或方向键选择，`t` 切换父子树，`/` 过滤 id 与名称（树中保留匹配项的祖先），`Enter` 打开详情，`e` 打开详情并聚焦输入，`c` 取消本次运行、`x` 立即停止 Agent、`r` 在 parked／aborted 上恢复，`F5` 重新扫描。宽屏右侧 inspector 显示身份、模型、任务、当前活动、用量与上下文、lineage、变更归属和最近活动；窄屏用 `Tab` 在列表与 inspector 之间切换，`Esc` 先清过滤、再退出 inspector、最后关闭 Hub。
+- Agents：列表与 inspector。`j`/`k` 或方向键选择，`t` 切换父子树，`/` 过滤 id 与名称（树中保留匹配项的祖先），`Enter` 打开详情，`e` 打开详情并聚焦输入，`c` 取消本次运行、`x` 立即停止 Agent、`r` 在 parked／aborted 上恢复，`F5` 重新扫描。宽屏右侧 inspector 显示身份、模型、任务、当前活动、用量与上下文、lineage、变更归属、结果 URI 和最近活动。最近活动显示工具记录和最终答复，Current 优先展示并保留 Responses 的原生简明摘要；窄屏用 `Tab` 在列表与 inspector 之间切换，`Esc` 先清过滤、再退出 inspector、最后关闭 Hub。
 - Activity：完整活动流，`f` 切换 All／Errors／Responses／Tools，`s` 切换 All agents／Selected agent／Subtree，`/` 搜索，默认跟随最新；手动移动会暂停跟随并固定选中活动，`Space` 恢复跟随。`Enter` 打开对应 Agent 的详情并定位到该条活动。
 - 详情是全屏独立视图：正文用 child 自己的 transcript，底部是独立输入框。普通字符与方向键都进入 child 输入框，Enter 发送原文，Ctrl+J 换行，Ctrl+A／E／K 沿用主编辑器语义，PgUp／PgDn 与滚轮滚动正文，Ctrl+Home／End 跳顶／回底，Ctrl+O 只切换 child 的工具展开。输入不执行 slash、本地 shell、`@` 文件展开或主会话历史。
 - 详情消息区复用主 Agent 的 Markdown、代码高亮、工具卡片、diff 和运行状态显示，并继承 read 预览与 bash 超时配置；正文、滚动位置和工具展开状态独立，重开详情恢复默认折叠。运行计时从日志中的开始时间恢复，完成耗时使用已保存的任务耗时；缺失的时间显示 `—`，历史工具不按导入速度生成 `Wall`。
@@ -105,7 +105,7 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 | 接口 | 行为 |
 | --- | --- |
 | `wait` | 等待选中的自有子 Agent 与后台 Bash 全部进入终态；支持 `run_ids`／`task_ids`，固定上限 120 分钟，超时后终止并回收本批未完成工作 |
-| `read agent://<id>` | 查看当前 Run 与最近已发布结果；旧结果标记 `superseded` |
+| `read agent://<id>` | 查看当前 Run 与最近已发布结果，从结果文件分页读取正文；旧结果标记 `superseded` |
 | `write agent://<id>` | 通过 `content` 补充运行中指令，或开始后续 Run |
 | `read history://` | 列出当前根会话可访问的子 Agent |
 | `read history://<id>` | 返回最近完整历史记录，最多 64 KiB，并提供完整日志路径 |
@@ -122,7 +122,7 @@ Steering 与 FollowUp 在等待期间保留队列，批次全部结束并成功�
 
 默认使用最后一条 assistant 消息作为结果。任务项可以提供 `output_schema`，也可采用自定义定义中的 `output`；任务项优先。结构化 child 获得 `yield`，必须以 `{"data": ...}` 提交符合 JSON Schema 的结果；无效结果不会被标成成功。Schema 外部 HTTP/文件引用解析未开启。
 
-完整结果独立保存为 JSON 文件。较长文本自动回传预览与 `output_path`，可使用普通 `read` 的范围分页读取完整文件。
+完整结果先原子写入当前根会话的 `<run-id>.result.json`，再发布给父 Agent。较长文本在投递时返回预览与 `output_path`。使用任务返回的 `output_uri` 调用 `read`，例如 `{"path":"agent://a1:raw:20-60"}`，可读取已保存的文本正文或格式化的结构化结果。正文遵循普通 `read` 的行数和字节预算，`next_path` 绑定原 Run，后续追问产生的新结果不会改变这次分页。`agent://<id>/<run-id>` 可读取指定已发布 Run。该 URI 可解析最大 16 MiB 的结果文件，更大的文件可通过 `output_path` 直接访问。
 
 ## 工作区与权限
 

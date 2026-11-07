@@ -553,7 +553,9 @@ impl Transcript {
                 AgentEvent::ModelAttemptFailed { .. } => activity.phase("Model attempt failed"),
                 AgentEvent::ModelRouteChanged { .. } => activity.phase("Switching to fallback"),
                 AgentEvent::AssistantStarted => activity.phase("Requesting model"),
-                AgentEvent::ThinkingDelta { .. } => activity.phase("Thinking"),
+                AgentEvent::ThinkingDelta { .. } | AgentEvent::ReasoningSummaryDelta { .. } => {
+                    activity.phase("Thinking")
+                }
                 AgentEvent::AssistantDelta { .. } => activity.phase("Responding"),
                 AgentEvent::ToolArgumentsDelta { tool, .. } => {
                     activity.phase(&format!("Generating {}", pp_core::text::display_text(tool)))
@@ -708,7 +710,7 @@ impl Transcript {
                 self.assistant = None;
                 self.thinking = None;
             }
-            AgentEvent::ThinkingDelta { text } => {
+            AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } => {
                 if text.is_empty() {
                     return;
                 }

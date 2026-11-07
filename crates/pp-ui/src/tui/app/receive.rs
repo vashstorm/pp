@@ -164,10 +164,13 @@ impl App {
                 &incoming,
                 Ok(WorkerEvent::Progress(
                     AgentEvent::ThinkingDelta { .. }
+                        | AgentEvent::ReasoningSummaryDelta { .. }
                         | AgentEvent::AssistantDelta { .. }
                         | AgentEvent::ModelOutputProgress { .. }
                 )) | Ok(WorkerEvent::ReviewProgress(
-                    AgentEvent::ThinkingDelta { .. } | AgentEvent::AssistantDelta { .. }
+                    AgentEvent::ThinkingDelta { .. }
+                        | AgentEvent::ReasoningSummaryDelta { .. }
+                        | AgentEvent::AssistantDelta { .. }
                 )) | Err(TryRecvError::Empty)
             ) {
                 self.flush_stream();
@@ -248,6 +251,7 @@ impl App {
                     // 用量快照由 App 缓存，供状态栏渲染；不进入 Transcript。
                     match event {
                         event @ (AgentEvent::ThinkingDelta { .. }
+                        | AgentEvent::ReasoningSummaryDelta { .. }
                         | AgentEvent::AssistantDelta { .. }) => {
                             if let Some(previous) = self.review_stream.take()
                                 && let Some(review) = &mut self.review_transcript
@@ -955,7 +959,9 @@ impl App {
                     }
                     if matches!(
                         &event,
-                        AgentEvent::ThinkingDelta { .. } | AgentEvent::AssistantDelta { .. }
+                        AgentEvent::ThinkingDelta { .. }
+                            | AgentEvent::ReasoningSummaryDelta { .. }
+                            | AgentEvent::AssistantDelta { .. }
                     ) {
                         if let Some(previous) = self.review_stream.push(event)
                             && let Some(review) = &mut self.review_transcript
