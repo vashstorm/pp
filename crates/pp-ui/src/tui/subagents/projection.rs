@@ -423,7 +423,8 @@ impl Projection {
                         .entry(run.unwrap_or_default().into())
                         .or_default();
                     if !work.draft.trim().is_empty() {
-                        work.latest = std::mem::take(&mut work.draft);
+                        // 工具在 AssistantFinished 后启动，保留本轮摘要供整批工具使用。
+                        work.latest.clone_from(&work.draft);
                     }
                     let turn = stream.turns.entry(run_key).or_insert(1);
                     if *turn == 0 {
@@ -463,6 +464,7 @@ impl Projection {
                     .work
                     .entry(run.unwrap_or_default().into())
                     .or_default();
+                let brief = truncate(work.draft.trim());
                 work.tool = if summary.is_empty() {
                     name.clone()
                 } else {
@@ -480,7 +482,7 @@ impl Projection {
                         status: RowStatus::Pending,
                         title: name.clone(),
                         summary: truncate(arguments),
-                        brief: Some(summary),
+                        brief: Some(brief),
                         phase: 1,
                     },
                     tool_key(agent, run, id),
@@ -1648,6 +1650,7 @@ mod tests {
         assert_eq!(tools.len(), 1, "ToolOutput 不产生新活动行");
         assert_eq!(tools[0].status, RowStatus::Error);
         assert_eq!(tools[0].summary, "missing file");
+        assert_eq!(projection.recent("a1", 1)[0].summary, "missing file");
         assert_eq!(projection.agents()[0].tools, 1);
         // 新 Run 复用相同 call id 必须生成独立行。
         let more = vec![entry(

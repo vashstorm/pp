@@ -1919,9 +1919,9 @@ mod tests {
             500,
             "r1",
             AgentEvent::ToolStarted {
-                id: "read-1".into(),
-                name: "read".into(),
-                arguments: serde_json::json!({"description":"检查目录", "path":"src"}).to_string(),
+                id: "bash-1".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command":"cargo tree"}).to_string(),
             },
         );
         let reply = |entries| Reply::Activity {
@@ -1977,11 +1977,41 @@ mod tests {
             "{running}"
         );
         assert!(running.contains("10K/20K 50%"));
+        assert!(
+            running.replace(' ', "").contains("bash检查依赖边界"),
+            "{running}"
+        );
+        assert!(!running.contains("cargo tree"), "{running}");
         assert!(!running.contains("intermediate response"));
 
         panel.apply(reply(vec![
             entry(
                 750,
+                "r1",
+                AgentEvent::ToolFinished {
+                    id: "bash-1".into(),
+                    result: serde_json::json!({"ok":true}),
+                },
+            ),
+            entry(1_000, "r1", AgentEvent::AssistantStarted),
+            entry(
+                1_100,
+                "r1",
+                AgentEvent::AssistantFinished {
+                    text: String::new(),
+                },
+            ),
+            entry(
+                1_200,
+                "r1",
+                AgentEvent::ToolStarted {
+                    id: "read-1".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({"path":"Cargo.toml"}).to_string(),
+                },
+            ),
+            entry(
+                1_300,
                 "r1",
                 AgentEvent::ToolFinished {
                     id: "read-1".into(),
@@ -1997,18 +2027,31 @@ mod tests {
             epoch: 1,
             snapshot: Box::new(snapshot(vec![agent], vec![work])),
         });
-        let parked = render(&mut panel, &mut drafts, 70, 40).join("\n");
+        let parked = render(&mut panel, &mut drafts, 70, 40);
+        let current = parked
+            .iter()
+            .position(|line| line.contains("│ Current "))
+            .unwrap();
+        assert!(
+            parked[current + 1]
+                .replace(' ', "")
+                .contains("检查依赖边界")
+        );
+        let parked = parked.join("\n");
         for expected in [
             "parked",
             "4s span",
             "Registered",
             "agent://a1",
+            "✓ bash",
             "✓ read",
             "◆ Response final answer",
         ] {
             assert!(parked.contains(expected), "missing {expected}\n{parked}");
         }
-        assert!(parked.replace(' ', "").contains("检查依赖边界"));
+        assert!(parked.replace(' ', "").contains("✓bash检查依赖边界"));
+        assert!(!parked.replace(' ', "").contains("✓read检查依赖边界"));
+        assert!(!parked.contains("Cargo.toml"));
         assert!(!parked.contains("10K/20K 50%"));
         assert!(!parked.contains("intermediate response"));
     }
