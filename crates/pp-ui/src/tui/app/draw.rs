@@ -1,6 +1,6 @@
 use crate::tui::{
-    Alignment, App, Block, Borders, Color, Frame, Line, Rect, StatusContext, Style, changes, menu,
-    pipes, plan_list, platform_text, statusline, transcript_style, tree, welcome,
+    Alignment, App, Block, Borders, Color, Frame, Line, Rect, StatusContext, Style, Transcript,
+    changes, menu, pipes, plan_list, platform_text, statusline, transcript_style, tree, welcome,
 };
 use ratatui::{buffer::Buffer, widgets::Widget};
 use ratatui_textarea::TextArea;
@@ -30,6 +30,7 @@ pub(in crate::tui) struct MainLayout {
     todo: Rect,
     subagents: Rect,
     ask: Rect,
+    activity: Rect,
     input: Rect,
     attachments: Rect,
     status: Rect,
@@ -37,9 +38,19 @@ pub(in crate::tui) struct MainLayout {
 }
 
 impl App {
+    fn input_transcript(&self) -> &Transcript {
+        self.review_transcript
+            .as_ref()
+            .filter(|_| !self.native_render)
+            .unwrap_or(&self.conversation)
+    }
+
     pub(in crate::tui) fn main_layout(&mut self, area: Rect) -> MainLayout {
         let status_height = u16::from(area.height >= 2);
-        let available = area.height.saturating_sub(status_height);
+        let available = area.height - status_height;
+        let activity_height =
+            u16::from(available > 1 && self.input_transcript().has_live_activity());
+        let available = available - activity_height;
         let bordered = available >= 3 && area.width >= 3;
         let border_height = if bordered { 2 } else { 0 };
         let prompt_width = area.width.saturating_sub(1).min(2);
@@ -89,13 +100,15 @@ impl App {
         let todo = Rect::new(area.x, ask.bottom() + todo_spacing, area.width, todo_height);
         let subagents = Rect::new(area.x, todo.bottom(), area.width, subagent_height);
         let attachments = Rect::new(area.x, subagents.bottom(), area.width, attachments_height);
-        let input = Rect::new(area.x, attachments.bottom(), area.width, input_height);
+        let activity = Rect::new(area.x, attachments.bottom(), area.width, activity_height);
+        let input = Rect::new(area.x, activity.bottom(), area.width, input_height);
         let status = Rect::new(area.x, input.bottom(), area.width, status_height);
         MainLayout {
             conversation,
             todo,
             subagents,
             ask,
+            activity,
             input,
             attachments,
             status,
@@ -300,6 +313,7 @@ impl App {
             todo,
             subagents,
             ask: ask_area,
+            activity,
             input,
             attachments,
             status,
@@ -377,6 +391,7 @@ impl App {
         } else {
             self.active_transcript().draw(frame, conversation);
         }
+        self.input_transcript().draw_live_activity(frame, activity);
         let editor_area = if bordered {
             let block = Block::default()
                 .borders(Borders::TOP | Borders::BOTTOM)
@@ -488,9 +503,9 @@ impl App {
         if !self.native_render
             && let Some(panel) = &mut self.model_panel
         {
-            // 模型面板贴着输入框向上展开，覆盖 TODO 等底层内容。
-            let height = panel.height(input.y.saturating_sub(area.y));
-            let popup = Rect::new(input.x, input.y - height, input.width, height);
+            // 模型面板向上展开，给输入框上方的活动状态留出空间。
+            let height = panel.height(activity.y.saturating_sub(area.y));
+            let popup = Rect::new(input.x, activity.y - height, input.width, height);
             panel.draw(frame, popup);
         }
         if !self.native_render

@@ -1,5 +1,9 @@
 use super::*;
 
+fn live_activity_text(transcript: &Transcript) -> String {
+    transcript.live_activity_line().unwrap().to_string()
+}
+
 #[test]
 fn bash_background_snapshot_counts_only_output_rows() {
     for name in ["bash", "bash_task"] {
@@ -36,7 +40,10 @@ fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
     let started = Instant::now() - Duration::from_secs(85);
     transcript.activity = Some(Activity::new(started));
     transcript.tick(started + Duration::from_secs(85));
-    assert!(screen(&render(&mut transcript, 100, 30)).contains("\u{f12b7} Requesting model"));
+    assert_eq!(
+        live_activity_text(&transcript),
+        "\u{f12b7} Requesting model"
+    );
     assert_eq!(transcript.task_duration().as_deref(), Some("1m 25s"));
 
     for id in ["ask-1", "ask-2"] {
@@ -52,11 +59,20 @@ fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
             .unwrap()
             .waiting_started
             .unwrap();
-        assert!(screen(&render(&mut transcript, 100, 30)).contains("Waiting for input · 0s"));
+        assert_eq!(
+            live_activity_text(&transcript),
+            "\u{f12b7} Waiting for input · 0s"
+        );
         transcript.tick(waiting + Duration::from_millis(999));
-        assert!(screen(&render(&mut transcript, 100, 30)).contains("Waiting for input · 0s"));
+        assert_eq!(
+            live_activity_text(&transcript),
+            "\u{f12b7} Waiting for input · 0s"
+        );
         transcript.tick(waiting + Duration::from_secs(85));
-        assert!(screen(&render(&mut transcript, 100, 30)).contains("Waiting for input · 1m 25s"));
+        assert_eq!(
+            live_activity_text(&transcript),
+            "\u{f12b7} Waiting for input · 1m 25s"
+        );
         transcript.progress(AgentEvent::ToolFinished {
             id: id.into(),
             result: json!({"ok":true,"answers":[{"id":"q","selected_options":[],"custom_input":"yes"}]}),
@@ -70,8 +86,9 @@ fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
                 .is_none()
         );
         transcript.tick(started + Duration::from_secs(85));
-        assert!(
-            screen(&render(&mut transcript, 100, 30)).contains("\u{f12b7} Processing tool result")
+        assert_eq!(
+            live_activity_text(&transcript),
+            "\u{f12b7} Processing tool result"
         );
         assert_eq!(transcript.task_duration().as_deref(), Some("1m 25s"));
         assert_eq!(transcript.activity.as_ref().unwrap().started, Some(started));
@@ -80,7 +97,7 @@ fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
     transcript.cancelling();
     transcript.waiting_for_input();
     transcript.tick(started + Duration::from_secs(85));
-    assert!(screen(&render(&mut transcript, 100, 30)).contains("\u{f12b7} Cancelling"));
+    assert_eq!(live_activity_text(&transcript), "\u{f12b7} Cancelling");
     assert_eq!(transcript.task_duration().as_deref(), Some("1m 25s"));
     transcript.cancel();
     assert!(!transcript.tick(Instant::now() + Duration::from_secs(3600)));
@@ -118,9 +135,10 @@ fn activity_timer_ticks_without_events_and_stops_on_failure() {
     assert!(transcript.tick(started + Duration::from_millis(80)));
     assert!(transcript.tick(started + Duration::from_secs(1)));
     assert!(!transcript.tick(started + Duration::from_secs(1)));
-    let text = screen(&render(&mut transcript, 100, 30));
-    assert!(text.contains("\u{f12b7} Requesting model"));
-    assert!(!text.contains("model ·"));
+    assert_eq!(
+        live_activity_text(&transcript),
+        "\u{f12b7} Requesting model"
+    );
     assert_eq!(transcript.task_duration().as_deref(), Some("1s"));
     assert_eq!(transcript.entries.len(), 1);
     transcript.fail();
@@ -128,11 +146,12 @@ fn activity_timer_ticks_without_events_and_stops_on_failure() {
     assert!(stopped_duration.is_some());
     assert!(!transcript.tick(started + Duration::from_secs(90)));
     assert_eq!(transcript.task_duration(), stopped_duration);
+    assert!(transcript.live_activity_line().is_none());
     assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Failed ·"));
 }
 
 #[test]
-fn activity_follows_latest_message_across_model_and_tool_phases() {
+fn live_activity_is_separate_from_transcript_across_model_and_tool_phases() {
     let mut transcript = Transcript::new();
     transcript.append("You", "run task");
     transcript.begin_run();
@@ -179,49 +198,27 @@ fn activity_follows_latest_message_across_model_and_tool_phases() {
         let started = transcript.activity.as_ref().unwrap().started.unwrap();
         transcript.tick(started + Duration::from_secs(5));
         let text = screen(&render(&mut transcript, 100, 30));
-        assert!(text.contains(&format!("\u{f12b7} {label}")), "{text}");
+        assert_eq!(
+            live_activity_text(&transcript),
+            format!("\u{f12b7} {label}")
+        );
         assert_eq!(transcript.task_duration().as_deref(), Some("5s"));
-        assert_eq!(text.matches("\u{f12b7} ").count(), 1);
-        assert!(text.find("run task").unwrap() < text.find("\u{f12b7} ").unwrap());
-        if text.contains("answer content") {
-            assert!(text.find("answer content").unwrap() < text.find("\u{f12b7} ").unwrap());
-        }
+        assert!(!text.contains("\u{f12b7} "), "{text}");
     }
     transcript.cancelling();
     transcript.progress(AgentEvent::ThinkingDelta {
         text: "late delta".into(),
     });
-    assert!(screen(&render(&mut transcript, 100, 30)).contains("\u{f12b7} Cancelling"));
+    assert_eq!(live_activity_text(&transcript), "\u{f12b7} Cancelling");
     transcript.cancel();
+    assert!(transcript.live_activity_line().is_none());
     assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Cancelled ·"));
     transcript.begin_run();
-    transcript.append("You", "next task");
-    let text = screen(&render(&mut transcript, 100, 30));
-    assert_eq!(text.matches("\u{f12b7} ").count(), 1);
-    assert!(text.contains("\u{f12b7} Requesting model"));
+    assert_eq!(
+        live_activity_text(&transcript),
+        "\u{f12b7} Requesting model"
+    );
     assert_eq!(transcript.task_duration().as_deref(), Some("0s"));
-    assert!(text.find("next task").unwrap() < text.find("\u{f12b7} ").unwrap());
-    // 窄屏也只占一行；恢复宽度后显示完整状态。
-    let text = screen(&render(&mut transcript, 18, 40));
-    assert_eq!(
-        text.lines()
-            .filter(|line| line.contains("\u{f12b7} "))
-            .count(),
-        1
-    );
-    assert_eq!(
-        transcript
-            .activity
-            .as_ref()
-            .unwrap()
-            .entry
-            .layout
-            .as_ref()
-            .unwrap()
-            .height,
-        1
-    );
-    assert!(screen(&render(&mut transcript, 100, 30)).contains("\u{f12b7} Requesting model"));
 }
 
 #[test]
@@ -229,28 +226,41 @@ fn activity_sweep_moves_from_first_to_last_without_shifting_text() {
     let started = Instant::now();
     let mut transcript = Transcript::new();
     transcript.activity = Some(Activity::new(started));
-    let initial = render(&mut transcript, 100, 10);
+    let render_activity = |transcript: &Transcript, width| {
+        let area = Rect::new(2, 0, width, 1);
+        let mut buffer = Buffer::empty(area);
+        transcript
+            .live_activity_line()
+            .unwrap()
+            .render(area, &mut buffer);
+        buffer
+    };
+    let initial = render_activity(&transcript, 100);
     assert_eq!(initial[(4, 0)].fg, palette::ACCENT);
     assert_eq!(initial[(19, 0)].fg, palette::DIM);
     assert!(initial[(2, 0)].modifier.contains(Modifier::BOLD));
     for index in 0..16_u16 {
         transcript.tick(started + Duration::from_millis(u64::from(index) * 80));
-        let buffer = render(&mut transcript, 100, 10);
+        let buffer = render_activity(&transcript, 100);
         assert_eq!(screen(&buffer), screen(&initial));
         assert_eq!(buffer[(4 + index, 0)].fg, palette::ACCENT);
     }
     transcript.tick(started + Duration::from_millis(24 * 80));
-    assert_eq!(render(&mut transcript, 100, 10)[(4, 0)].fg, palette::ACCENT);
-    assert_eq!(render(&mut transcript, 12, 10).area.width, 12);
-    assert_eq!(screen(&render(&mut transcript, 100, 10)), screen(&initial));
+    assert_eq!(
+        render_activity(&transcript, 100)[(4, 0)].fg,
+        palette::ACCENT
+    );
+    assert_eq!(
+        screen(&render_activity(&transcript, 12)),
+        "\u{f12b7} Requesting"
+    );
+    assert_eq!(screen(&render_activity(&transcript, 100)), screen(&initial));
     let activity = transcript.activity.as_mut().unwrap();
     activity.phase("读取 e\u{301} 中😀");
     assert_eq!(
-        Activity::sweep_line("\u{f12b7} 读取 e\u{301} 中😀", 4).to_string(),
+        live_activity_text(&transcript),
         "\u{f12b7} 读取 e\u{301} 中😀"
     );
-    render(&mut transcript, 12, 10);
-    render(&mut transcript, 100, 10);
     transcript.cancel();
     assert!(!transcript.tick(started + Duration::from_secs(90)));
 }

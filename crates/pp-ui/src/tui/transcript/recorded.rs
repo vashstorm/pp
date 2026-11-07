@@ -22,7 +22,6 @@ impl Transcript {
         activity.seconds = activity
             .started
             .map(|started| now.duration_since(started).as_secs());
-        activity.refresh();
         self.activity = Some(activity);
     }
 

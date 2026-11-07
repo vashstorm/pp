@@ -1,6 +1,6 @@
 use super::{
-    Arc, Buffer, EntryKind, EntryLayout, Frame, LayoutContent, LayoutLine, Line, NativeBatch,
-    NativeState, Rect, Span, Transcript, Widget, wrap_block,
+    Activity, Arc, Buffer, EntryKind, EntryLayout, Frame, LayoutContent, LayoutLine, Line,
+    NativeBatch, NativeState, Rect, Span, Transcript, Widget, wrap_block,
 };
 
 impl Transcript {
@@ -21,7 +21,7 @@ impl Transcript {
         self.prepare_read_groups();
         for entry in self.entries[self.native.entry..]
             .iter_mut()
-            .chain(self.activity.iter_mut().map(|activity| &mut activity.entry))
+            .chain(self.activity.as_mut().and_then(Activity::summary_mut))
         {
             Self::layout_entry(entry, self.display, width, false);
         }
@@ -101,7 +101,7 @@ impl Transcript {
         let mut height = 0;
         for entry in self.entries[state.entry..]
             .iter()
-            .chain(self.activity.iter().map(|activity| &activity.entry))
+            .chain(self.activity.as_ref().and_then(Activity::summary))
             .enumerate()
         {
             let (offset, entry) = entry;
@@ -156,11 +156,7 @@ impl Transcript {
             frontier = frontier.min(*index);
         }
         // 相邻 read 还可能合并成同一摘要，整组关闭前不能冻结组首。
-        if self
-            .activity
-            .as_ref()
-            .is_some_and(|activity| activity.running)
-        {
+        if self.has_live_activity() {
             let mut index = self.entries.len();
             while index > 0
                 && self.entries[index - 1].tool.as_deref() == Some("read")
@@ -315,8 +311,9 @@ impl Transcript {
                 })
                 .chain(
                     self.activity
-                        .iter()
-                        .map(|activity| (&activity.entry, None, false)),
+                        .as_ref()
+                        .and_then(Activity::summary)
+                        .map(|entry| (entry, None, false)),
                 ),
             frame.buffer_mut(),
             tail,

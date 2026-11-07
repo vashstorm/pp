@@ -474,9 +474,6 @@ impl TranscriptEntry {
             std::borrow::Cow::Borrowed(text)
         };
         if self.kind == EntryKind::Activity {
-            if let EntryBody::Activity(frame) = self.body {
-                return Activity::sweep_line(text.as_ref(), frame);
-            }
             return Line::styled(
                 text,
                 Style::default()
@@ -1276,19 +1273,25 @@ impl TranscriptEntry {
 }
 
 impl Activity {
+    pub(super) fn summary(&self) -> Option<&TranscriptEntry> {
+        (!self.running).then_some(&self.entry)
+    }
+
+    pub(super) fn summary_mut(&mut self) -> Option<&mut TranscriptEntry> {
+        (!self.running).then_some(&mut self.entry)
+    }
+
     pub(super) fn new(started: Instant) -> Self {
-        let mut activity = Self {
+        Self {
             entry: TranscriptEntry::new(EntryKind::Activity, String::new(), String::new(), None),
+            frame: 0,
             started: Some(started),
             waiting_started: None,
             label: "Requesting model".into(),
             seconds: Some(0),
             run_seconds: 0,
             running: true,
-        };
-        activity.entry.body = EntryBody::Activity(0);
-        activity.refresh();
-        activity
+        }
     }
 
     pub(super) fn tick(&mut self, now: Instant) -> bool {
@@ -1301,37 +1304,33 @@ impl Activity {
         let seconds = now
             .saturating_duration_since(self.waiting_started.unwrap_or(started))
             .as_secs();
-        if Some(seconds) == self.seconds
-            && run_seconds == self.run_seconds
-            && matches!(self.entry.body, EntryBody::Activity(previous) if previous == frame)
-        {
+        if Some(seconds) == self.seconds && run_seconds == self.run_seconds && self.frame == frame {
             return false;
         }
-        self.entry.body = EntryBody::Activity(frame);
+        self.frame = frame;
         self.run_seconds = run_seconds;
-        if self.seconds != Some(seconds) {
-            self.seconds = Some(seconds);
-            self.refresh();
-        }
+        self.seconds = Some(seconds);
         true
     }
 
-    pub(super) fn refresh(&mut self) {
-        self.entry.text = if self.running {
-            if self.waiting_started.is_some() {
-                format!("\u{f12b7} {} · {}", self.label, self.duration_text())
-            } else {
-                format!("\u{f12b7} {}", self.label)
-            }
-        } else {
-            format!("✻ {} · {}", self.label, self.duration_text())
-        };
+    pub(super) fn refresh_summary(&mut self) {
+        self.entry.text = format!("✻ {} · {}", self.label, self.duration_text());
         self.entry.layout = None;
     }
 
-    pub(super) fn sweep_line(text: &str, frame: u128) -> Line<'static> {
+    pub(super) fn live_line(&self) -> Line<'static> {
+        if self.waiting_started.is_some() {
+            Self::sweep_line(
+                &format!("{} · {}", self.label, self.duration_text()),
+                self.frame,
+            )
+        } else {
+            Self::sweep_line(&self.label, self.frame)
+        }
+    }
+
+    pub(super) fn sweep_line(label: &str, frame: u128) -> Line<'static> {
         let base = Style::default().fg(palette::DIM);
-        let label = text.strip_prefix("\u{f12b7} ").unwrap_or(text);
         let line = Line::raw(label);
         let graphemes: Vec<_> = line.styled_graphemes(base).collect();
         // 金色光带从首字移至末字，尾部留出短暂停顿后重新开始。
@@ -1379,7 +1378,6 @@ impl Activity {
             self.waiting_started =
                 (label == "Waiting for input" && self.started.is_some()).then_some(now);
             self.tick(now);
-            self.refresh();
         }
     }
 
@@ -1389,9 +1387,8 @@ impl Activity {
             self.tick(Instant::now());
             self.started = None;
             self.running = false;
-            self.entry.body = EntryBody::Plain;
             self.label = label.into();
-            self.refresh();
+            self.refresh_summary();
         }
     }
 }

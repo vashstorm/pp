@@ -466,18 +466,21 @@ impl Detail {
         );
         let editor_lines = drafts.draft(&self.agent).editor.lines().len().clamp(1, 3) as u16;
         let editor_height = (editor_lines + 2).min(body.height);
+        let activity_height =
+            u16::from(body.height > editor_height && self.transcript.has_live_activity());
         let transcript_area = Rect::new(
             body.x,
             body.y,
             body.width,
-            body.height.saturating_sub(editor_height),
+            body.height - editor_height - activity_height,
         );
-        let editor_area = Rect::new(
+        let activity_area = Rect::new(
             body.x,
             transcript_area.bottom(),
             body.width,
-            body.height.saturating_sub(transcript_area.height),
+            activity_height,
         );
+        let editor_area = Rect::new(body.x, activity_area.bottom(), body.width, editor_height);
         // 标题两行：身份与真实状态。
         let status_color = match view.status {
             super::projection::AgentStatus::Running => ACCENT,
@@ -526,6 +529,7 @@ impl Detail {
         // 首批历史可能在首帧获得宽度前读完，定位不能等待下一批事件。
         self.resolve_pending();
         self.transcript.draw(frame, transcript_area);
+        self.transcript.draw_live_activity(frame, activity_area);
         let block = Block::default()
             .borders(Borders::TOP)
             .border_style(Style::default().fg(if self.focus { ACCENT } else { DIM }));

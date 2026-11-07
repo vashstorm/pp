@@ -100,12 +100,20 @@ fn ctrl_o_keeps_normal_menu_and_alt_o_is_not_a_toggle() {
 #[test]
 fn ask_layout_keeps_latest_message_above_panel_on_resize() {
     let mut app = app();
+    app.input.insert_str("main draft");
+    app.conversation.begin_run();
+    app.native_render = true;
+    let native = draw(&mut app, 100, 30);
+    assert_eq!(native.matches("Requesting model").count(), 1);
+    assert!(native.lines().nth(25).unwrap().contains("Requesting model"));
+
+    app.native_render = false;
     let (_answers, _token) = ask_fixture(&mut app);
+    app.conversation.waiting_for_input();
     for i in 0..40 {
         app.append("Assistant", &format!("message {i}"));
     }
     app.append("Assistant", "latest message stays visible");
-    app.input.insert_str("main draft");
     for (width, height) in [(100, 30), (40, 18), (100, 30)] {
         let screen = draw(&mut app, width, height);
         let rows: Vec<_> = screen.lines().collect();
@@ -121,7 +129,17 @@ fn ask_layout_keeps_latest_message_above_panel_on_resize() {
             8,
             "题干、两项选择、Other 与四行框架应占八行"
         );
-        assert!(screen.contains("main draft"));
+        let status = rows
+            .iter()
+            .position(|row| row.starts_with("  \u{f12b7} Waiting for input"))
+            .unwrap();
+        let input = rows
+            .iter()
+            .position(|row| row.contains("main draft"))
+            .unwrap();
+        assert!(bottom < status, "{screen}");
+        assert_eq!(status + 2, input, "{screen}");
+        assert_eq!(screen.matches("Waiting for input").count(), 1, "{screen}");
     }
 }
 

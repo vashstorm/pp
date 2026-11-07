@@ -1,4 +1,4 @@
-use super::{BrowseAnchor, EntryKind, Transcript};
+use super::{Activity, BrowseAnchor, EntryKind, Transcript};
 
 impl Transcript {
     pub(super) fn remember_heights(&mut self) {
@@ -6,7 +6,7 @@ impl Transcript {
         self.displayed_heights.extend(
             self.entries
                 .iter()
-                .chain(self.activity.iter().map(|activity| &activity.entry))
+                .chain(self.activity.as_ref().and_then(Activity::summary))
                 .map(|entry| entry.layout.as_ref().map_or(0, |layout| layout.height)),
         );
     }
@@ -44,7 +44,7 @@ impl Transcript {
         for (index, entry) in self
             .entries
             .iter()
-            .chain(self.activity.iter().map(|a| &a.entry))
+            .chain(self.activity.as_ref().and_then(Activity::summary))
             .enumerate()
         {
             let height = entry.layout.as_ref().map_or(0, |layout| layout.height);

@@ -120,7 +120,6 @@ enum EntryBody {
     ArgumentsPreview {
         truncated: bool,
     },
-    Activity(u128),
     Tips,
     Markdown(super::markdown::MarkdownDocument),
     Diff(FileDiff),
@@ -184,6 +183,7 @@ struct PipesBadge {
 
 struct Activity {
     entry: TranscriptEntry,
+    frame: u128,
     started: Option<Instant>,
     waiting_started: Option<Instant>,
     label: String,
@@ -221,7 +221,7 @@ pub(super) struct Transcript {
     native_preview: Option<NativeState>,
     entries: Vec<TranscriptEntry>,
     read_groups_key: Option<(usize, bool, bool)>,
-    // 状态独立于历史条目，始终渲染在最新消息后面。
+    // 运行阶段显示在输入框上方，结束摘要显示在对话尾部。
     activity: Option<Activity>,
     assistant: Option<usize>,
     thinking: Option<usize>,
@@ -396,6 +396,31 @@ impl Transcript {
         }
     }
 
+    pub(super) fn has_live_activity(&self) -> bool {
+        self.activity
+            .as_ref()
+            .is_some_and(|activity| activity.running)
+    }
+
+    fn live_activity_line(&self) -> Option<Line<'static>> {
+        self.activity
+            .as_ref()
+            .filter(|activity| activity.running)
+            .map(Activity::live_line)
+    }
+
+    pub(super) fn draw_live_activity(&self, frame: &mut Frame, area: Rect) {
+        if !area.is_empty()
+            && let Some(line) = self.live_activity_line()
+        {
+            let inset = area.width.saturating_sub(1).min(2);
+            frame.render_widget(
+                line,
+                Rect::new(area.x + inset, area.y, area.width - inset, 1),
+            );
+        }
+    }
+
     pub(super) fn cancelling(&mut self) {
         if let Some(activity) = &mut self.activity {
             activity.phase("Cancelling");
@@ -426,7 +451,6 @@ impl Transcript {
         activity.started = None;
         activity.waiting_started = None;
         activity.running = false;
-        activity.entry.body = EntryBody::Plain;
         activity.label = label.into();
         activity.seconds = elapsed.map(|elapsed| elapsed.as_secs());
         activity.entry.text = format!(
@@ -1221,7 +1245,7 @@ impl Transcript {
         self.fail();
         if let Some(activity) = &mut self.activity {
             activity.label = "Cancelled".into();
-            activity.refresh();
+            activity.refresh_summary();
         }
         self.thinking = None;
     }

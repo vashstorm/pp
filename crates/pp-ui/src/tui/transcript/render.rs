@@ -1,7 +1,7 @@
 use super::{
-    BASH_BACKGROUND, BASH_BORDER, Buffer, DisplayContext, EntryKind, EntryStatus, LayoutContent,
-    Paragraph, Rect, Source, Span, Style, Transcript, TranscriptEntry, Widget, Wrap, palette,
-    tool_display,
+    Activity, BASH_BACKGROUND, BASH_BORDER, Buffer, DisplayContext, EntryKind, EntryStatus,
+    LayoutContent, Paragraph, Rect, Source, Span, Style, Transcript, TranscriptEntry, Widget, Wrap,
+    palette, tool_display,
 };
 
 impl Transcript {
@@ -15,7 +15,7 @@ impl Transcript {
         for entry in self
             .entries
             .iter_mut()
-            .chain(self.activity.iter_mut().map(|activity| &mut activity.entry))
+            .chain(self.activity.as_mut().and_then(Activity::summary_mut))
         {
             let height = Self::layout_entry(entry, self.display, width, compact);
             if height > 0 {
@@ -111,7 +111,7 @@ impl Transcript {
         Self::render_entries(
             self.entries
                 .iter()
-                .chain(self.activity.iter().map(|activity| &activity.entry)),
+                .chain(self.activity.as_ref().and_then(Activity::summary)),
             buffer,
             area,
             skip,
