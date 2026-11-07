@@ -546,32 +546,43 @@ impl Panel {
             return 0;
         }
         let padding = if available.width > 6 { 4 } else { 2 };
-        let inner_width = available.width.saturating_sub(padding);
-        let content_height = match self.page {
-            Page::Question(index) => self.states[index]
-                .menu
-                .choices_height(inner_width, self.editor_height(index))
-                .saturating_add(
-                    self.question_lines(index, inner_width)
-                        .len()
-                        .min(usize::from(u16::MAX)) as u16,
-                ),
-            Page::Review => {
-                self.layout_review(inner_width);
-                self.review
-                    .as_ref()
-                    .expect("review layout initialized")
-                    .1
-                    .len()
-                    .min(usize::from(u16::MAX)) as u16
-            }
-        };
-        // 只计算当前页：边框两行、底部分隔线和快捷键各一行，多个页签时再占一行。
+        let content_height = self.max_content_height(available.width.saturating_sub(padding));
+        // 边框两行、底部分隔线和快捷键各一行，多个页签时再占一行。
         let need = content_height
             .saturating_add(4 + u16::from(self.has_tabs()))
             .saturating_add(u16::from(self.error.is_some()));
         let cap = (u32::from(screen_height) * 7 / 10) as u16;
         need.min(cap).min(available.height).max(1)
+    }
+
+    /// 所有页签共用最高页的高度，只切换页签时面板不改变尺寸。
+    ///
+    /// 自定义编辑器只属于当前页，其行数计入该页；多行输入因此仍会撑高面板，
+    /// 但任何一页都不会因为别的页更矮而收缩。
+    fn max_content_height(&mut self, width: u16) -> u16 {
+        let mut height = 0;
+        for index in 0..self.questions.questions.len() {
+            let page = self
+                .question_lines(index, width)
+                .len()
+                .min(usize::from(u16::MAX)) as u16;
+            let choices = self.states[index]
+                .menu
+                .choices_height(width, self.editor_height(index));
+            height = height.max(page.saturating_add(choices));
+        }
+        if self.has_review() {
+            self.layout_review(width);
+            let review = self
+                .review
+                .as_ref()
+                .expect("review layout initialized")
+                .1
+                .len()
+                .min(usize::from(u16::MAX)) as u16;
+            height = height.max(review);
+        }
+        height
     }
 
     fn editor_height(&self, index: usize) -> Option<u16> {
@@ -1454,67 +1465,119 @@ mod tests {
 
     #[test]
     fn question_wraps_and_changes_with_current_page() {
-        let mut first = question("first", false, None, &["A"]);
-        first.question = "请选择本次操作需要执行的完整检查范围，并确认后继续".into();
-        let mut panel = panel(vec![first, question("second", false, None, &["B"])]);
-        let wide = render(&mut panel, 80, 30);
-        let wide_height = panel.overlay.unwrap().height;
+        const LONG: &str = "请选择本次操作需要执行的完整检查范围，并确认后继续";
+        let wrapped = |id: &str| {
+            let mut question = question(id, false, None, &["A"]);
+            question.question = LONG.into();
+            question
+        };
+
+        // 单题没有 Review 页签，高度只由题干折行决定。
+        let mut single = panel(vec![wrapped("first")]);
+        let wide = render(&mut single, 80, 30);
+        let wide_height = single.overlay.unwrap().height;
         // TestBackend 为双宽字符保留空白占位单元格。
+        assert!(wide.replace(' ', "").contains(LONG));
+        let narrow = render(&mut single, 32, 30);
         assert!(
-            wide.replace(' ', "")
-                .contains("请选择本次操作需要执行的完整检查范围，并确认后继续")
+            single.overlay.unwrap().height > wide_height,
+            "窄屏题干折行应撑高面板"
         );
-        let narrow = render(&mut panel, 32, 30);
-        assert!(panel.overlay.unwrap().height > wide_height);
         assert!(narrow.replace(' ', "").contains("请选择本次操作"));
         assert!(narrow.replace(' ', "").contains("确认后继续"));
         assert!(narrow.contains("󰐽 A"));
-        panel.key(key(KeyCode::Tab));
-        let second = render(&mut panel, 80, 30);
+
+        // 多题同一高度下切换页签只换正文。
+        let mut pages = panel(vec![
+            wrapped("first"),
+            question("second", false, None, &["B"]),
+        ]);
+        let first = render(&mut pages, 80, 30);
+        assert!(first.replace(' ', "").contains(LONG));
+        pages.key(key(KeyCode::Tab));
+        let second = render(&mut pages, 80, 30);
         assert!(second.contains("Choose for second?"));
         assert!(!second.contains("请选择本次操作"));
         assert!(second.contains("󰐽 B"));
     }
 
     #[test]
-    fn height_tracks_current_page_wrapping_editor_and_validation() {
+    fn height_is_shared_across_tabs_and_tracks_wrapping_editor_and_validation() {
         let mut long = question("long", false, None, &["A", "B", "C"]);
         for option in &mut long.options {
             option.description =
                 Some("A detailed option description that wraps at narrow widths".into());
         }
         let mut panel = panel(vec![long, question("short", false, None, &["D"])]);
+
+        // 宽屏：最高的「long」页决定共用高度，切到「short」和 Review 都不变。
         render(&mut panel, 100, 40);
-        let long_height = panel.overlay.unwrap().height;
-        assert_eq!(long_height, 13, "题干、三项名称与说明、Other 和五行框架");
-        render(&mut panel, 32, 40);
-        assert_eq!(panel.overlay.unwrap().height, 16, "说明折行应计入实际高度");
+        let shared = panel.overlay.unwrap().height;
+        assert_eq!(shared, 13, "题干、三项名称与说明、Other 和五行框架");
         panel.key(key(KeyCode::Tab));
-        render(&mut panel, 100, 40);
-        assert_eq!(panel.overlay.unwrap().height, 8, "短题不应沿用长题的高度");
+        let screen = render(&mut panel, 100, 40);
+        assert!(screen.contains("Choose for short?"));
+        assert_eq!(
+            panel.overlay.unwrap().height,
+            shared,
+            "切换页签不应改变面板高度"
+        );
+
+        // 校验错误在共用高度之外单独占一行。
         panel.error = Some(REQUIRED_MESSAGE.into());
         let screen = render(&mut panel, 100, 40);
-        assert_eq!(panel.overlay.unwrap().height, 9);
+        assert_eq!(panel.overlay.unwrap().height, shared + 1);
         assert!(screen.contains(REQUIRED_MESSAGE));
         panel.error = None;
+        panel.key(key(KeyCode::Tab));
+        assert_eq!(panel.page, Page::Review);
+        render(&mut panel, 100, 40);
+        assert_eq!(
+            panel.overlay.unwrap().height,
+            shared,
+            "Review 页沿用最高页高度"
+        );
+        panel.key(key(KeyCode::BackTab));
+        panel.key(key(KeyCode::BackTab));
+        assert_eq!(panel.page, Page::Question(0));
+
+        // 窄屏：说明折行抬高共用高度，矮页跟随。
+        render(&mut panel, 32, 40);
+        let wrapped = panel.overlay.unwrap().height;
+        assert_eq!(wrapped, 16, "说明折行应计入实际高度");
+        panel.key(key(KeyCode::Tab));
+        render(&mut panel, 32, 40);
+        assert_eq!(
+            panel.overlay.unwrap().height,
+            wrapped,
+            "窄屏切换页签同样保持高度"
+        );
+
+        // 短页的多行输入仍在共用高度内展开。
         panel.key(key(KeyCode::End));
         panel.key(key(KeyCode::Enter));
         panel.paste("one\ntwo\nthree");
-        let screen = render(&mut panel, 100, 40);
-        assert_eq!(panel.overlay.unwrap().height, 10);
+        let screen = render(&mut panel, 32, 40);
+        assert_eq!(
+            panel.overlay.unwrap().height,
+            wrapped,
+            "短页三行输入不应超过共用高度"
+        );
         assert!(screen.contains("three"));
         panel.key(key(KeyCode::Esc));
-        render(&mut panel, 100, 40);
-        assert_eq!(panel.overlay.unwrap().height, 8, "丢弃编辑后应收回多行空间");
-        panel.states[0].custom = "very long answer ".repeat(12);
-        panel.page = Page::Review;
+        assert!(panel.states[1].custom.is_empty());
+
+        // Review 的折行答案超过最高题库时，面板按其自身高度增长并受 70% 上限约束。
+        panel.key(key(KeyCode::BackTab));
+        panel.key(key(KeyCode::End));
+        panel.key(key(KeyCode::Enter));
+        panel.paste(&"very long answer ".repeat(12));
+        panel.key(key(KeyCode::Enter));
+        panel.key(key(KeyCode::Tab));
+        assert_eq!(panel.page, Page::Review);
         render(&mut panel, 32, 40);
         let review_height = panel.overlay.unwrap().height;
-        assert!(review_height > 10, "Review 高度应包含答案折行");
-        assert_eq!(
-            review_height,
-            panel.review.as_ref().unwrap().1.len() as u16 + 5
-        );
+        assert!(review_height > wrapped, "Review 高度应包含答案折行");
         render(&mut panel, 32, 12);
         assert!(
             panel.overlay.unwrap().height <= 8,

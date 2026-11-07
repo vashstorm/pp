@@ -599,7 +599,10 @@ fn ask_tui_tabs_fit_current_page_and_keep_message_tail_above_panel() {
             response_reply(request, json!(output));
         }
         ask_wait_panel(&mut pty, "Choose the implementation scope");
-        for (page, height) in [(1, 13), (2, 8)] {
+        // 两题内容高度不同：面板取最高页的高度，切换页签不改外框高度与顶边。
+        let mut wide = Vec::new();
+        let mut narrow = Vec::new();
+        for page in [1, 2] {
             for (rows, cols) in [(30, 100), (24, 60)] {
                 pty.resize(rows, cols);
                 pty.wait_for("消息尾部和当前页签可见", |screen| {
@@ -610,7 +613,12 @@ fn ask_tui_tabs_fit_current_page_and_keep_message_tail_above_panel() {
                 let screen = pty.parser.screen();
                 let (top, _) = ask_panel_find(screen, "╭ Ask");
                 let (bottom, _) = ask_panel_find(screen, "╰");
-                assert_eq!(bottom - top + 1, height, "高度应随当前题变化");
+                assert_eq!(bottom - top + 1, 13, "面板高度应由最高页签决定");
+                if cols == 100 {
+                    wide.push(top);
+                } else {
+                    narrow.push(top);
+                }
                 let (tail, _) = ask_panel_find(screen, "ASSISTANT-MESSAGE-TAIL");
                 let text = screen.contents();
                 assert!(tail + 1 < top, "消息与面板之间应至少留出一行：{text}");
@@ -629,7 +637,16 @@ fn ask_tui_tabs_fit_current_page_and_keep_message_tail_above_panel() {
             }
             pty.input("\t");
         }
+        assert_eq!(wide[0], wide[1], "宽屏切换页签不应移动面板顶边");
+        assert_eq!(narrow[0], narrow[1], "窄屏切换页签不应移动面板顶边");
         ask_wait_review(&mut pty);
+        {
+            let screen = pty.parser.screen();
+            let (top, _) = ask_panel_find(screen, "╭ Ask");
+            let (bottom, _) = ask_panel_find(screen, "╰");
+            assert_eq!(bottom - top + 1, 13, "Review 页也应沿用最高页高度");
+            assert_eq!(top, narrow[1], "切到 Review 不应移动面板顶边");
+        }
         pty.input("\x03");
         pty.finish();
         no_more(&server);
