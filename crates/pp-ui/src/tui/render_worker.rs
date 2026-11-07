@@ -135,7 +135,9 @@ impl Worker {
                         let gate = state.gate.lock().unwrap_or_else(|e| e.into_inner()).take();
                         if let Some(gate) = gate {
                             let _ = gate.entered.send(());
-                            let _ = gate.release.recv();
+                            // 暂停点不能永久等待：测试漏 drop(TestPause) 时让后台继续，
+                            // 由断言报错，而不是把 drop(Worker) 的 join 拖死。
+                            let _ = gate.release.recv_timeout(std::time::Duration::from_secs(5));
                         }
                     }
                     super::markdown::highlight_context(job.id, job.epoch);
@@ -236,7 +238,14 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         CURRENT.with(|current| *current.borrow_mut() = None);
-        self.shared.stopped.store(true, Ordering::Release);
+        // Condvar::wait 注册 waiter 与释放锁是原子的：只有持锁发布 stopped，
+        // 才能保证唤醒不会落在 worker 通过 predicate 检查与注册之间而丢失。
+        // 无锁 notify 会让 join 永久阻塞。
+        {
+            let jobs = self.shared.jobs.lock().unwrap_or_else(|e| e.into_inner());
+            self.shared.stopped.store(true, Ordering::Release);
+            drop(jobs);
+        }
         self.shared.wake.notify_all();
         if let Some(join) = self.join.take() {
             let _ = join.join();
@@ -656,6 +665,13 @@ mod tests {
         let pause = worker.pause();
         let mut ticket = Ticket::default();
         ticket.layout("old", 80, false);
+        // 先确认后台排版已停在暂停点，再直接写 slot；否则下面的手动结果会与
+        // 后台结果竞争，断言变成依赖调度顺序。
+        pause.wait();
+        assert!(
+            ticket.slot.lock().unwrap().is_none(),
+            "暂停点之后不应出现后台结果"
+        );
         let old_epoch = ticket.epoch;
         ticket.invalidate(true);
         ticket.layout("new", 80, false);
