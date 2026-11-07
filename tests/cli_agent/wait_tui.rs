@@ -131,13 +131,19 @@ fn wait_tui_esc_cancels_background_and_restores_input_in_both_protocols() {
     }
 }
 
+fn wait_subagent_settings() -> String {
+    let mut settings: Value = serde_json::from_str(CANCEL_SETTINGS).unwrap();
+    settings["model_roles"] = json!({"fast":{"model":"fixture/primary","effort":"none"}});
+    settings.to_string()
+}
+
 #[test]
 fn wait_tui_batch_updates_one_card_and_blocks_parent_until_all_children_settle() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), wait_subagent_settings()).unwrap();
         std::fs::write(config_path(home.path(), "models.yml"), response_models(&fixture, Some(protocol))).unwrap();
         let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
         pty.ready();
@@ -145,7 +151,7 @@ fn wait_tui_batch_updates_one_card_and_blocks_parent_until_all_children_settle()
         pty.input("wait batch stages\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         background_reply_call(request, protocol, "spawn", "task", json!({"context":"batch barrier", "tasks":[
-            {"task":"stage-one"}, {"task":"stage-two"}, {"task":"stage-three"}
+            {"role":"fast","task":"stage-one"}, {"role":"fast","task":"stage-two"}, {"role":"fast","task":"stage-three"}
         ]}));
         let mut parent = None;
         let mut children: Vec<Option<Request>> = (0..3).map(|_| None).collect();
@@ -215,13 +221,13 @@ fn wait_tui_implicit_batch_also_queues_steering_until_all_children_settle() {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), wait_subagent_settings()).unwrap();
         std::fs::write(config_path(home.path(), "models.yml"), response_models(&fixture, Some(protocol))).unwrap();
         let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
         pty.ready();
         pty.input("implicit barrier\r");
         let mut children = hub_dispatch(&mut pty, &fixture, protocol,
-            json!({"context":"implicit batch", "tasks":[{"task":"implicit-one"},{"task":"implicit-two"}]}),
+            json!({"context":"implicit batch", "tasks":[{"role":"fast","task":"implicit-one"},{"role":"fast","task":"implicit-two"}]}),
             &["implicit-one", "implicit-two"]);
         pty.input("implicit-steering\r");
         ask_final_reply(children.remove(0), protocol, "implicit-result-one");
@@ -247,13 +253,13 @@ fn wait_tui_esc_reaps_subagent_background_process_before_restoring_input() {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), wait_subagent_settings()).unwrap();
         std::fs::write(config_path(home.path(), "models.yml"), response_models(&fixture, Some(protocol))).unwrap();
         let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
         pty.ready();
         pty.input("cancel child batch\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        background_reply_call(request, protocol, "spawn", "task", json!({"context":"cancel owned work", "tasks":[{"task":"child background service"}]}));
+        background_reply_call(request, protocol, "spawn", "task", json!({"context":"cancel owned work", "tasks":[{"role":"fast","task":"child background service"}]}));
         let mut parent = None;
         let mut child = None;
         while parent.is_none() || child.is_none() {

@@ -9,14 +9,14 @@ pub use observe::HubAgent;
 pub use observe::ObservedRecord;
 pub use observe::{EventCursor, EventPage, HubEvent, HubSnapshot, ObservedEntry};
 
-use pp_config::config::{ModelRole, TaskSettings};
+use pp_config::config::{ModelRole, ModelRoles, TaskSettings};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::agent::Agent;
 use crate::agent::input::InputQueue;
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
-use catalog::Definition;
+use catalog::{BUILTIN_ROLES, Definition};
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
 use pp_core::events::AgentEvent;
@@ -368,19 +368,12 @@ impl Binding {
     pub(crate) fn set_model_roles(&self, roles: pp_config::config::ModelRoles) {
         *lock(&self.inner.model_roles) = roles;
     }
-    fn enabled_subagent_model_roles(&self) -> pp_config::config::ModelRoles {
-        let roles = lock(&self.inner.runtime_models)
+    fn model_roles(&self) -> ModelRoles {
+        lock(&self.inner.runtime_models)
             .as_ref()
             .and_then(|binding| binding.registry.catalog())
             .map(|catalog| catalog.subagent_roles())
-            .unwrap_or_else(|| lock(&self.inner.model_roles).clone());
-        roles
-            .iter()
-            .filter(|(role, assignment)| {
-                **role != pp_config::config::ModelRole::Plan && assignment.enabled
-            })
-            .map(|(role, assignment)| (*role, assignment.clone()))
-            .collect()
+            .unwrap_or_else(|| lock(&self.inner.model_roles).clone())
     }
     pub(crate) fn allow_mcp(&self, all: Vec<String>, read_only: Vec<String>) {
         *lock(&self.inner.mcp_tools) = McpTools { all, read_only };
@@ -408,87 +401,55 @@ impl Binding {
             }
         }
     }
-    pub(crate) fn roles(&self) -> Result<Vec<Definition>> {
-        catalog::discover(
-            &self.cwd,
-            &self.inner.user,
-            &self.inner.settings,
-            &self.enabled_subagent_model_roles(),
-        )
+    fn custom_roles(&self) -> Vec<Definition> {
+        catalog::discover(&self.cwd, &self.inner.user, &self.inner.settings)
     }
     pub(crate) fn definitions(&self, _mode: WorkMode) -> Vec<FunctionObject> {
-        if self.depth != 0 {
-            return Vec::new();
-        }
-        let roles = self.enabled_subagent_model_roles();
-        let custom = self
-            .roles()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|def| def.model_role.is_none())
-            .collect::<Vec<_>>();
-        if self.depth >= self.inner.settings.max_recursion_depth
+        if self.depth != 0
+            || self.depth >= self.inner.settings.max_recursion_depth
             || self.spawns.is_empty()
             || self.readonly
-            || (roles.is_empty() && custom.is_empty())
         {
             return Vec::new();
         }
-        let names = roles
-            .keys()
-            .map(|role| role.name().to_lowercase())
+        let roles = self.model_roles();
+        let custom = self.custom_roles();
+        let builtin = BUILTIN_ROLES.iter().filter_map(|&(name, role)| {
+            let assignment = roles.get(&role).filter(|assignment| assignment.enabled)?;
+            Some((
+                name,
+                format!("{}:{}", assignment.model, assignment.effort.as_str()),
+            ))
+        });
+        let available = builtin
+            .chain(
+                custom
+                    .iter()
+                    .map(|def| (def.name.as_str(), def.description.clone())),
+            )
             .collect::<Vec<_>>();
-        let help = roles
+        if available.is_empty() {
+            return Vec::new();
+        }
+        let names = available.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        let help = available
             .iter()
-            .map(|(role, assignment)| {
-                format!(
-                    "{}={}:{}",
-                    role.name().to_lowercase(),
-                    assignment.model,
-                    assignment.effort.as_str()
-                )
-            })
+            .map(|(name, description)| format!("{name}: {description}"))
             .collect::<Vec<_>>()
             .join("; ");
-        let review_help = if roles.contains_key(&pp_config::config::ModelRole::Review) {
+        let review_help = if names.contains(&"review") {
             " Select role=review for read-only code review."
         } else {
             ""
         };
-        let required =
-            if roles.contains_key(&pp_config::config::ModelRole::Default) || !custom.is_empty() {
-                vec!["task"]
-            } else {
-                vec!["task", "role"]
-            };
-        let custom_names = custom.iter().map(|def| &def.name).collect::<Vec<_>>();
-        let custom_help = custom
-            .iter()
-            .map(|def| format!("{}: {}", def.name, def.description))
-            .collect::<Vec<_>>()
-            .join("; ");
-        let mut definition = function(
+        vec![function(
             "task",
             &format!(
-                "Delegate independent tasks with explicit shared context. Final results automatically return to you; use wait when blocked. When executing an existing TODO list, identify which items each child covers and keep checklist updates with the parent. After dispatch and before wait, use todo start for every actually running item covered by the children and reconcile verified completions and real blockers. Multiple TODO items may be in progress concurrently; starting one preserves the others. Delegation is not completion, and a running child is not blocked merely because the parent awaits its result. Do not mark queued or dependency-blocked work as started. Plan mode must not call todo. Available model roles: {help}.{review_help} Available custom agents: {custom_help}. The optional agent selects only a listed custom definition; never invent agent names. Explicit role overrides the custom model and effort; otherwise use the custom configuration, then DEFAULT. Never inherit the parent's current model. Tasks are asynchronous unless the custom definition sets blocking=true. Plan-mode children are always read-only."
+                "Delegate independent tasks with explicit shared context. Final results automatically return to you; use wait when blocked. When executing an existing TODO list, identify which items each child covers and keep checklist updates with the parent. After dispatch and before wait, use todo start for every actually running item covered by the children and reconcile verified completions and real blockers. Multiple TODO items may be in progress concurrently; starting one preserves the others. Delegation is not completion, and a running child is not blocked merely because the parent awaits its result. Do not mark queued or dependency-blocked work as started. Plan mode must not call todo. Every task must explicitly set role to one of the available roles: {help}.{review_help} Tasks are asynchronous unless the custom role sets blocking=true. Plan-mode children are always read-only."
             ),
-            json!({"context":{"type":"string"},"tasks":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"name":{"type":"string"},"agent":{"type":"string","enum":custom_names},"role":{"type":"string","enum":names},"task":{"type":"string"},"isolated":{"type":"boolean"},"readonly":{"type":"boolean","description":"Limit this task to read-only investigation without delegation."},"output_schema":{}},"required":required,"additionalProperties":false}}}),
+            json!({"context":{"type":"string"},"tasks":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"name":{"type":"string"},"role":{"type":"string","enum":names},"task":{"type":"string"},"isolated":{"type":"boolean"},"readonly":{"type":"boolean","description":"Limit this task to read-only investigation without delegation."},"output_schema":{}},"required":["task","role"],"additionalProperties":false}}}),
             &["context", "tasks"],
-        );
-        if let Some(properties) = definition
-            .parameters
-            .as_mut()
-            .and_then(|value| value.pointer_mut("/properties/tasks/items/properties"))
-            .and_then(Value::as_object_mut)
-        {
-            if custom.is_empty() {
-                properties.remove("agent");
-            }
-            if roles.is_empty() {
-                properties.remove("role");
-            }
-        }
-        vec![definition]
+        )]
     }
 
     pub(crate) fn execute(
@@ -518,84 +479,56 @@ impl Binding {
             !batch.tasks.is_empty() && batch.tasks.len() <= 32,
             "tasks count must be in 1..=32"
         );
-        if let Some(catalog) = lock(&self.inner.runtime_models)
-            .as_ref()
-            .and_then(|r| r.registry.catalog())
-        {
-            self.set_model_roles(catalog.subagent_roles());
-        }
         // 整批使用同一份可用角色快照；旧 prompt 或手写调用也必须通过校验。
-        let enabled_roles = self.enabled_subagent_model_roles();
-        let definitions = self.roles()?;
+        let roles = self.model_roles();
+        let definitions = self.custom_roles();
+        let custom_default = roles.get(&ModelRole::Default).filter(|role| role.enabled);
         let mut names = BTreeSet::new();
         let mut prepared = Vec::new();
         for item in batch.tasks {
             cancellation::check(token)?;
-            let custom = item
-                .agent
-                .as_ref()
-                .map(|name| {
-                    definitions
-                        .iter()
-                        .find(|def| def.model_role.is_none() && &def.name == name)
-                        .context("unknown or disabled custom agent; select a listed definition")
+            let role = item.role.as_str();
+            ensure!(
+                !matches!(role, "default" | "plan"),
+                "DEFAULT and PLAN are reserved for the main agent"
+            );
+            let model_role = BUILTIN_ROLES
+                .iter()
+                .find_map(|&(name, model_role)| (name == role).then_some(model_role));
+            let assignment = model_role
+                .map(|role| {
+                    roles
+                        .get(&role)
+                        .filter(|role| role.enabled)
+                        .with_context(|| {
+                            format!(
+                                "model role {} is not selected; enable it in /Roles first",
+                                role.name()
+                            )
+                        })
                 })
                 .transpose()?;
-            if let Some(model_role) = item.role {
-                ensure!(
-                    model_role != pp_config::config::ModelRole::Plan,
-                    "model role PLAN is reserved for plan mode and cannot be used by subagents"
-                );
-                ensure!(
-                    enabled_roles.contains_key(&model_role),
-                    "model role {} is not selected; enable it in /Roles first",
-                    model_role.name()
-                );
-            }
-            let custom_model = custom.and_then(|def| {
-                self.inner
+            let custom = definitions.iter().find(|def| def.name == role);
+            let (model, thinking) = if let Some(assignment) = assignment {
+                (assignment.model.clone(), assignment.effort)
+            } else {
+                let def = custom.context("unknown or disabled task role; select a listed role")?;
+                let model = self
+                    .inner
                     .settings
                     .agent_models
                     .get(&def.name)
                     .or(def.model.as_ref())
-            });
-            let model_role = item.role.or_else(|| {
-                custom_model
-                    .is_none()
-                    .then_some(pp_config::config::ModelRole::Default)
-            });
-            let assignment = model_role
-                .map(|role| {
-                    enabled_roles.get(&role).with_context(|| {
-                        format!(
-                            "model role {} is not selected; enable it in /Roles first",
-                            role.name()
-                        )
-                    })
-                })
-                .transpose()?;
-            let model = assignment
-                .map(|a| a.model.clone())
-                .or_else(|| custom_model.cloned())
-                .context("subagent model is required")?;
-            let thinking = if item.role.is_some() {
-                assignment.expect("显式 Role 已校验").effort
-            } else {
-                custom
-                    .and_then(|def| def.thinking)
-                    .or_else(|| assignment.map(|a| a.effort))
-                    .or_else(|| {
-                        enabled_roles
-                            .get(&pp_config::config::ModelRole::Default)
-                            .map(|a| a.effort)
-                    })
-                    .unwrap_or(ThinkLevel::None)
+                    .or_else(|| custom_default.map(|default| &default.model))
+                    .context("subagent model is required")?;
+                let thinking = def
+                    .thinking
+                    .or_else(|| custom_default.map(|default| default.effort))
+                    .unwrap_or(ThinkLevel::None);
+                (model.clone(), thinking)
             };
-            let role = custom
-                .map(|def| def.name.clone())
-                .unwrap_or_else(|| model_role.expect("系统任务具有 Role").name().to_lowercase());
             ensure!(
-                self.spawns.iter().any(|name| name == "*" || name == &role),
+                self.spawns.iter().any(|name| name == "*" || name == role),
                 "parent role does not allow spawning {role}"
             );
             ensure!(
@@ -695,7 +628,7 @@ impl Binding {
                         fallback: assignment.fallback.clone(),
                     }
                 }),
-                definition: role,
+                definition: role.to_owned(),
                 prompt: prompt.to_owned(),
                 context: batch.context.clone(),
                 model,
@@ -2039,11 +1972,9 @@ struct Batch {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Task {
-    #[serde(default)]
-    role: Option<pp_config::config::ModelRole>,
+    role: String,
     task: String,
     name: Option<String>,
-    agent: Option<String>,
     #[serde(default)]
     isolated: bool,
     #[serde(default)]

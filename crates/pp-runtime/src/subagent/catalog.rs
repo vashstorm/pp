@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use pp_config::config::TaskSettings;
+use pp_config::config::{ModelRole, TaskSettings};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, fs, path::Path};
@@ -7,8 +7,6 @@ use std::{collections::BTreeMap, fs, path::Path};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
-    #[serde(skip)]
-    pub model_role: Option<pp_config::config::ModelRole>,
     pub name: String,
     pub description: String,
     #[serde(default)]
@@ -29,12 +27,14 @@ pub struct Definition {
     pub source: String,
 }
 
-pub(crate) fn discover(
-    cwd: &Path,
-    user: &Path,
-    settings: &TaskSettings,
-    roles: &pp_config::config::ModelRoles,
-) -> Result<Vec<Definition>> {
+pub(super) const BUILTIN_ROLES: [(&str, ModelRole); 4] = [
+    ("fast", ModelRole::Fast),
+    ("slow", ModelRole::Slow),
+    ("vision", ModelRole::Vision),
+    ("review", ModelRole::Review),
+];
+
+pub(super) fn discover(cwd: &Path, user: &Path, settings: &TaskSettings) -> Vec<Definition> {
     let mut found = BTreeMap::new();
     let project = cwd
         .ancestors()
@@ -67,6 +67,12 @@ pub(crate) fn discover(
                         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')),
                     "invalid role name"
                 );
+                ensure!(
+                    !ModelRole::ALL
+                        .iter()
+                        .any(|role| def.name.eq_ignore_ascii_case(role.name())),
+                    "custom role name is reserved"
+                );
                 def.prompt = body.trim().to_owned();
                 def.source = path.display().to_string();
                 Ok(def)
@@ -81,29 +87,8 @@ pub(crate) fn discover(
             }
         }
     }
-    let mut definitions = found
+    found
         .into_values()
         .filter(|d| !settings.disabled_agents.contains(&d.name))
-        .collect::<Vec<_>>();
-    definitions.extend(
-        roles
-            .iter()
-            .filter(|(role, assignment)| {
-                **role != pp_config::config::ModelRole::Plan && assignment.enabled
-            })
-            .map(|(role, assignment)| Definition {
-                model_role: Some(*role),
-                name: role.name().into(),
-                description: format!("{} · {}", assignment.model, assignment.effort.as_str()),
-                tools: None,
-                model: None,
-                thinking: None,
-                spawns: None,
-                blocking: false,
-                output: None,
-                prompt: String::new(),
-                source: "/Roles".into(),
-            }),
-    );
-    Ok(definitions)
+        .collect()
 }

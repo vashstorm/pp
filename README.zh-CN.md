@@ -130,7 +130,7 @@ printf '说明当前项目的构建方式\n' | pp
 
 主输入框可编辑时，补全始终可用，包括模型输出、上下文压缩、取消收尾和模型切换期间。斜杠命令、已支持的参数和文件引用均可补全，补全不会发送草稿。Esc 收起候选后可用 Tab 重新唤起；要求空闲的命令仍须等任务结束后才能执行。Markdown 解析、语法高亮与正文排版在后台线程完成，样式就绪前可能短暂显示纯文本预览。切换模型保留已提交上下文，不取消当前请求、不重复已完成任务，也不重启后台工作；历史内容无法兼容目标协议时拒绝切换并保留当前模型。
 
-通过 `/Roles` 保存模型与思考档位后，Default 会让主 Agent 在下一个安全边界切换，并与其他已启用角色一样，让绑定该角色的子 Agent 在各自的下一次请求边界应用最新 model/effort：普通 `task` 未写 `role` 时绑定 Default，显式 `role` 绑定该角色，旧会话中已有的嵌套子 Agent 也遵循此规则，但不能派发新子任务。自定义定义自带 model 的子 Agent 保持派发时的 model 与 thinking；主 Agent 的手动 `/model` 不下发子 Agent。禁用或清除角色不取消、也不重新绑定正在运行的子 Agent，它保留最后一次已应用的模型；不监听其他 pp 进程的配置热更新。运行中只改 effort 不会重写请求前缀，改 model 会让主 Agent 与绑定该角色的运行中子 Agent 各自冷启动前缀缓存。
+通过 `/Roles` 保存模型与思考档位后，绑定该角色的子 Agent 会在各自的下一次请求前应用最新配置。自定义角色使用派发时选定的模型与 thinking。禁用或清除角色后，正在运行的子 Agent 沿用最后一次应用的模型。角色变更在当前 pp 进程内生效。只改 effort 会保留请求前缀，改 model 会让绑定该角色的会话重新建立前缀缓存。
 
 全部 13 个 `/test-*` 命令在 dev/test 构建中使用内嵌、仅监听 loopback 的 Mock AI Server，由 `#[cfg(debug_assertions)]` 编译隔离，与 `debug` 设置无关。命令通过编译内嵌 JSON 脚本驱动真实 Responses client、Agent、工具和子 Agent，不依赖真实 provider 或用户模型 Role；空 HOME、无 models 或无效配置 YAML 也能运行。每个场景使用全新的系统临时 workspace/config/sessions/locks 目录，不改变正常会话、模型、Role、cwd 或真实统计。预期工具失败继续，取消、初始化或清理失败则中止。
 
@@ -207,7 +207,7 @@ pp stats
 
 ## 扩展能力
 
-输入 `/Roles` 配置 DEFAULT、FAST、SLOW、VISION、PLAN、REVIEW 各自的 model 和 effort；`/model` 只切换当前模型。角色前使用全尺寸圆形图标表示启用状态（实心启用／空心停用），保持单列占位；Space 或点击图标切换，未选中的 Role 灰显且不会进入 prompt。PLAN 仅用于进入 Plan 模式时选择模型，不提供给子 Agent 选择；计划审阅采用已启用的 REVIEW；子 Agent 通过 `role` 选择系统 Role，或通过 `agent` 选择实际存在且已加载的自定义定义，未知名称会在派发前拒绝；显式 Role 优先于自定义选模，`role: "review"` 为只读审查。省略 Role 使用自定义配置或 DEFAULT 对应配置，不继承父 Agent 当前的 PLAN 模型。[配置与使用 →](docs/guide.md#模型-roles)
+输入 `/Roles` 配置模型和 effort。主 Agent 用 DEFAULT 和 PLAN 分别选择启动模型和规划模型，计划审阅采用已启用的 REVIEW。派发子 Agent 时，每个任务都必须显式传入 `role`，可选已启用的 `fast`、`slow`、`vision`、`review` 或已加载的自定义名称。旧调用中的 `agent` 改为 `role`。缺失、未知或停用的角色会使整批任务在启动前被拒绝。`role: "review"` 用于只读审查。[配置与使用 →](docs/subagents.md)
 
 每个角色可配置一个 fallback，并独立设置 thinking。在 `/Roles` 中用 ↑/↓ 选择主模型或备用行，Enter 选模，`f` 设置备用，`x` 清除当前行，`t`（兼容 `e`）调整 thinking。清空主模型会禁用角色并保留 fallback；补齐后仍需手动启用。Delete／Backspace 删除整个角色配置。
 

@@ -156,7 +156,7 @@ fn subagent_tui_inspects_cancels_revives_and_sends_literal_followups() {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), task_fixture_settings()).unwrap();
         std::fs::write(
             config_path(home.path(), "models.yml"),
             response_models(&fixture, Some(protocol)),
@@ -178,7 +178,7 @@ fn subagent_tui_inspects_cancels_revives_and_sends_literal_followups() {
         pty.ready();
         pty.input("delegate terminal task\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let task = json!({"context":"terminal context","tasks":[{"task":"child terminal work"}]});
+        let task = json!({"context":"terminal context","tasks":[{"role":"fast","task":"child terminal work"}]});
         let call_value = if protocol == "completion" {
             call("task", "task", task)
         } else {
@@ -242,7 +242,7 @@ fn agent_hub_streams_and_anchors_activity() {
         std::fs::write(project.path().join("probe.txt"), "hub-probe-body").unwrap();
         std::fs::write(
             config_path(home.path(), "settings.yml"),
-            r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"bash_timeout_seconds":37,"read":{"toolResultPreview":true}}"#,
+            r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"bash_timeout_seconds":37,"read":{"toolResultPreview":true},"model_roles":{"fast":{"model":"fixture/primary","effort":"none"}}}"#,
         ).unwrap();
         std::fs::write(
             config_path(home.path(), "models.yml"),
@@ -257,8 +257,8 @@ fn agent_hub_streams_and_anchors_activity() {
             &fixture,
             protocol,
             json!({"context":"hub context","tasks":[
-                {"name":"LiveWriter","task":"stream the two hub chunks in order"},
-                {"name":"ToolFailure","task":"read probe.txt then run the failing command"}
+                {"role":"fast","name":"LiveWriter","task":"stream the two hub chunks in order"},
+                {"role":"fast","name":"ToolFailure","task":"read probe.txt then run the failing command"}
             ]}),
             &["the two hub chunks", "probe.txt"],
         );
@@ -339,7 +339,7 @@ fn agent_hub_literal_input_drafts_and_parent_isolation() {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), task_fixture_settings()).unwrap();
         std::fs::write(
             config_path(home.path(), "models.yml"),
             response_models(&fixture, Some(protocol)),
@@ -353,8 +353,8 @@ fn agent_hub_literal_input_drafts_and_parent_isolation() {
             &fixture,
             protocol,
             json!({"context":"draft context","tasks":[
-                {"name":"First","task":"child-one work"},
-                {"name":"Second","task":"child-two work"}
+                {"role":"fast","name":"First","task":"child-one work"},
+                {"role":"fast","name":"Second","task":"child-two work"}
             ]}),
             &["child-one", "child-two"],
         );
@@ -439,7 +439,7 @@ fn agent_hub_controls_do_not_revive_on_inspect() {
     let fixture = server();
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+    std::fs::write(config_path(home.path(), "settings.yml"), task_fixture_settings()).unwrap();
     std::fs::write(
         config_path(home.path(), "models.yml"),
         response_models(&fixture, Some(protocol)),
@@ -452,7 +452,7 @@ fn agent_hub_controls_do_not_revive_on_inspect() {
         &mut pty,
         &fixture,
         protocol,
-        json!({"context":"controls context","tasks":[{"task":"child controls work"}]}),
+        json!({"context":"controls context","tasks":[{"role":"fast","task":"child controls work"}]}),
         &["child controls work"],
     );
     let _running = children;
@@ -535,7 +535,7 @@ fn agent_hub_layout_tree_scope_and_follow() {
     let fixture = server();
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+    std::fs::write(config_path(home.path(), "settings.yml"), task_fixture_settings()).unwrap();
     std::fs::write(
         config_path(home.path(), "models.yml"),
         response_models(&fixture, Some(protocol)),
@@ -549,8 +549,8 @@ fn agent_hub_layout_tree_scope_and_follow() {
         &fixture,
         protocol,
         json!({"context":"layout context","tasks":[
-            {"name":"Alpha","task":"alpha child work"},
-            {"name":"Beta","task":"beta child work"}
+            {"role":"fast","name":"Alpha","task":"alpha child work"},
+            {"role":"fast","name":"Beta","task":"beta child work"}
         ]}),
         &["alpha child work", "beta child work"],
     );
@@ -669,7 +669,7 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
     let fixture = server();
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
+    std::fs::write(config_path(home.path(), "settings.yml"), task_fixture_settings()).unwrap();
     std::fs::write(
         config_path(home.path(), "models.yml"),
         response_models(&fixture, Some(protocol)),
@@ -682,7 +682,7 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
         &mut pty,
         &fixture,
         protocol,
-        json!({"context":"legacy context","tasks":[{"task":"legacy child work"}]}),
+        json!({"context":"legacy context","tasks":[{"role":"fast","task":"legacy child work"}]}),
         &["legacy child work"],
     );
     // 让 child 的完整历史超过 64 KiB，最早的 task 卡片只能靠完整读取看到。

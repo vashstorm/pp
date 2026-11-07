@@ -298,15 +298,19 @@ fn binding(dir: &Path, settings: TaskSettings) -> Binding {
         Arc::new(|_| Ok(())),
     )
     .unwrap();
-    binding.set_model_roles(BTreeMap::from([(
-        pp_config::config::ModelRole::Default,
-        pp_config::config::RoleAssignment {
-            enabled: true,
-            model: "fixture/main".into(),
-            effort: ThinkLevel::None,
-            fallback: None,
+    binding.set_model_roles(BTreeMap::from([ModelRole::Default, ModelRole::Fast].map(
+        |role| {
+            (
+                role,
+                pp_config::config::RoleAssignment {
+                    enabled: true,
+                    model: "fixture/main".into(),
+                    effort: ThinkLevel::None,
+                    fallback: None,
+                },
+            )
         },
-    )]));
+    )));
     binding
 }
 
@@ -320,7 +324,7 @@ fn child_bindings_cannot_spawn_subagents() {
             ..Default::default()
         },
     );
-    let args = json!({"context":"no recursive dispatch","tasks":[{"task":"valid child work"}]})
+    let args = json!({"context":"no recursive dispatch","tasks":[{"role":"fast","task":"valid child work"}]})
         .to_string();
     for mode in [WorkMode::Execute, WorkMode::Plan] {
         assert!(
@@ -465,7 +469,7 @@ fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() 
 }
 
 #[test]
-fn model_roles_plan_is_never_offered_or_dispatched_to_subagents() {
+fn model_roles_default_and_plan_are_never_offered_or_dispatched_to_subagents() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), TaskSettings::default());
     for enabled in [false, true] {
@@ -479,6 +483,7 @@ fn model_roles_plan_is_never_offered_or_dispatched_to_subagents() {
                     effort: ThinkLevel::High,
                 },
             )]);
+            roles.insert(ModelRole::Default, roles[&ModelRole::Plan].clone());
             if include_fast {
                 roles.insert(
                     pp_config::config::ModelRole::Fast,
@@ -509,18 +514,20 @@ fn model_roles_plan_is_never_offered_or_dispatched_to_subagents() {
                     );
                     assert!(!task.description.unwrap().contains("planner-only-marker"));
                 }
-                let error = binding
-                    .execute(
-                        "task",
-                        &json!({"context":"test","tasks":[
-                            {"task":"reject reserved role","role":"plan"}
-                        ]})
-                        .to_string(),
-                        mode == WorkMode::Plan,
-                        &Default::default(),
-                    )
-                    .unwrap_err();
-                assert!(error.to_string().contains("PLAN is reserved for plan mode"));
+                for role in ["default", "plan"] {
+                    let error = binding
+                        .execute(
+                            "task",
+                            &json!({"context":"test","tasks":[
+                                {"role":role,"task":"reject reserved role"}
+                            ]})
+                            .to_string(),
+                            mode == WorkMode::Plan,
+                            &Default::default(),
+                        )
+                        .unwrap_err();
+                    assert!(error.to_string().contains("reserved for the main agent"));
+                }
                 let state = lock(&binding.inner.state);
                 assert!(state.disk.agents.is_empty());
                 assert!(state.disk.runs.is_empty());
@@ -591,7 +598,7 @@ fn model_roles_unselected_roles_are_absent_from_prompt_schema_and_rejected_befor
         binding
             .execute(
                 "task",
-                &json!({"context":"test","tasks":[{"task":"no default"}]}).to_string(),
+                &json!({"context":"test","tasks":[{"task":"missing role"}]}).to_string(),
                 false,
                 &Default::default()
             )
@@ -641,26 +648,25 @@ fn custom_agents_require_real_definitions_and_never_inherit_the_plan_model() {
     let project = dir.path().join(".pp/agents");
     fs::create_dir_all(&project).unwrap();
     fs::write(project.join("scout.md"), "---\nname: scout\ndescription: configured scout\ntools: [read, grep, glob, lsp, mcp__remote__echo, mcp__remote__fail]\n---\nConfigured investigation prompt.").unwrap();
-    let definitions = binding.roles().unwrap();
+    let definitions = binding.custom_roles();
     let scout = definitions.iter().find(|def| def.name == "scout").unwrap();
     assert!(scout.source.ends_with(".pp/agents/scout.md"));
-    assert!(scout.model_role.is_none());
     let schema = binding.definitions(WorkMode::Execute)[0]
         .parameters
         .clone()
         .unwrap();
     assert_eq!(
         schema
-            .pointer("/properties/tasks/items/properties/agent/enum")
+            .pointer("/properties/tasks/items/properties/role/enum")
             .unwrap(),
-        &json!(["scout"])
+        &json!(["fast", "scout"])
     );
-    for missing in ["task", "reviewer", "invented", "fast"] {
+    for missing in ["task", "reviewer", "invented", ""] {
         assert!(
             binding
                 .execute(
                     "task",
-                    &json!({"context":"test","tasks":[{"agent":missing,"task":"invalid"}]})
+                    &json!({"context":"test","tasks":[{"role":missing,"task":"invalid"}]})
                         .to_string(),
                     false,
                     &Default::default()
@@ -672,7 +678,7 @@ fn custom_agents_require_real_definitions_and_never_inherit_the_plan_model() {
     binding
         .execute(
             "task",
-            &json!({"context":"test","tasks":[{"agent":"scout","task":"inspect"}]}).to_string(),
+            &json!({"context":"test","tasks":[{"role":"scout","task":"inspect"}]}).to_string(),
             true,
             &Default::default(),
         )
@@ -680,7 +686,8 @@ fn custom_agents_require_real_definitions_and_never_inherit_the_plan_model() {
     let state = lock(&binding.inner.state);
     let spec = &state.disk.agents["a1"].spec;
     assert_eq!(spec.model, "fixture/main");
-    assert_eq!(spec.model_role, Some(pp_config::config::ModelRole::Default));
+    assert_eq!(spec.model_role, None);
+    assert!(spec.role_route.is_none());
     assert_eq!(spec.definition, "scout");
     assert_eq!(spec.prompt, "Configured investigation prompt.");
     assert!(spec.readonly);
@@ -715,11 +722,14 @@ fn custom_agent_discovery_preserves_project_priority_and_disabled_definitions() 
         "---\nname: hidden\ndescription: hidden marker\n---\nHidden prompt",
     )
     .unwrap();
-    let definitions = binding.roles().unwrap();
-    let custom = definitions
-        .iter()
-        .filter(|def| def.model_role.is_none())
-        .collect::<Vec<_>>();
+    for name in ["fast", "Default", "plan"] {
+        fs::write(
+            project.join(format!("{name}.md")),
+            format!("---\nname: {name}\ndescription: reserved role\n---\nIgnored prompt"),
+        )
+        .unwrap();
+    }
+    let custom = binding.custom_roles();
     assert_eq!(custom.len(), 1);
     assert_eq!(custom[0].name, "analyst");
     assert_eq!(custom[0].description, "project");
@@ -730,15 +740,15 @@ fn custom_agent_discovery_preserves_project_priority_and_disabled_definitions() 
         .unwrap();
     assert_eq!(
         schema
-            .pointer("/properties/tasks/items/properties/agent/enum")
+            .pointer("/properties/tasks/items/properties/role/enum")
             .unwrap(),
-        &json!(["analyst"])
+        &json!(["fast", "analyst"])
     );
     assert!(
         binding
             .execute(
                 "task",
-                &json!({"context":"test","tasks":[{"agent":"hidden","task":"reject"}]}).to_string(),
+                &json!({"context":"test","tasks":[{"role":"hidden","task":"reject"}]}).to_string(),
                 false,
                 &Default::default()
             )
@@ -747,7 +757,7 @@ fn custom_agent_discovery_preserves_project_priority_and_disabled_definitions() 
 }
 
 #[test]
-fn custom_agent_model_settings_and_explicit_role_have_defined_precedence() {
+fn custom_role_uses_model_override_and_works_without_builtin_roles() {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join(".pp/agents");
     fs::create_dir_all(&project).unwrap();
@@ -762,36 +772,32 @@ fn custom_agent_model_settings_and_explicit_role_have_defined_precedence() {
             ..Default::default()
         },
     );
-    binding.set_model_roles(BTreeMap::from([
-        (
-            pp_config::config::ModelRole::Default,
-            pp_config::config::RoleAssignment {
-                enabled: true,
-                model: "fixture/default".into(),
-                effort: ThinkLevel::Low,
-                fallback: None,
-            },
-        ),
-        (
-            pp_config::config::ModelRole::Fast,
-            pp_config::config::RoleAssignment {
-                enabled: true,
-                model: "fixture/fast".into(),
-                effort: ThinkLevel::Low,
-                fallback: None,
-            },
-        ),
-    ]));
-    assert!(binding.execute("task", &json!({"context":"test","tasks":[{"agent":"ghost","task":"reject fabricated definition"}]}).to_string(), false, &Default::default()).is_err());
+    binding.set_model_roles(BTreeMap::new());
+    let schema = binding.definitions(WorkMode::Execute)[0]
+        .parameters
+        .clone()
+        .unwrap();
+    assert_eq!(
+        schema
+            .pointer("/properties/tasks/items/properties/role/enum")
+            .unwrap(),
+        &json!(["analyst"])
+    );
+    assert!(
+        binding
+            .execute(
+                "task",
+                &json!({"context":"test","tasks":[{"role":"ghost","task":"reject fabricated definition"}]}).to_string(),
+                false,
+                &Default::default(),
+            )
+            .is_err()
+    );
     binding
         .execute(
             "task",
-            &json!({"context":"test","tasks":[
-                {"agent":"analyst","task":"custom route"},
-                {"agent":"analyst","role":"fast","task":"explicit role"},
-                {"role":"fast","task":"system route"}
-            ]})
-            .to_string(),
+            &json!({"context":"test","tasks":[{"role":"analyst","task":"custom route"}]})
+                .to_string(),
             false,
             &Default::default(),
         )
@@ -803,56 +809,33 @@ fn custom_agent_model_settings_and_explicit_role_have_defined_precedence() {
     assert_eq!(custom.model_role, None);
     assert!(custom.role_route.is_none());
     assert_eq!(custom.output_schema, Some(json!({"type":"object"})));
-    let explicit = &state.disk.agents["a2"].spec;
-    assert_eq!(explicit.model, "fixture/fast");
-    assert_eq!(explicit.thinking, ThinkLevel::Low);
-    assert_eq!(
-        explicit.model_role,
-        Some(pp_config::config::ModelRole::Fast)
-    );
-    assert_eq!(explicit.prompt, "Custom analysis prompt.");
-    assert_eq!(explicit.tools, vec!["read", "grep"]);
-    assert_eq!(state.disk.agents["a3"].spec.definition, "fast");
-    drop(state);
-    // 独立自定义模型不依赖系统 Role 是否启用，也不能借此选择 PLAN。
-    binding.set_model_roles(BTreeMap::new());
-    let schema = binding.definitions(WorkMode::Execute)[0]
-        .parameters
-        .clone()
-        .unwrap();
-    assert!(
-        schema
-            .pointer("/properties/tasks/items/properties/role")
-            .is_none()
-    );
-    assert_eq!(
-        schema
-            .pointer("/properties/tasks/items/properties/agent/enum")
-            .unwrap(),
-        &json!(["analyst"])
-    );
-    assert!(binding.execute("task", &json!({"context":"test","tasks":[{"agent":"analyst","role":"plan","task":"reject"}]}).to_string(), false, &Default::default()).is_err());
-    binding.execute("task", &json!({"context":"test","tasks":[{"agent":"analyst","task":"independent custom model"}]}).to_string(), false, &Default::default()).unwrap();
-    assert_eq!(
-        lock(&binding.inner.state).disk.agents["a4"].spec.model,
-        "fixture/override"
-    );
+    assert_eq!(custom.prompt, "Custom analysis prompt.");
+    assert_eq!(custom.tools, vec!["read", "grep"]);
 }
 
 #[test]
 fn invalid_batch_has_no_dispatch_or_reserved_ids() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), TaskSettings::default());
-    let result = binding.execute(
-        "task",
-        &json!({"context":"test","tasks":[{"task":"valid"},{"agent":"missing","task":"invalid"}]})
-            .to_string(),
-        false,
-        &Default::default(),
-    );
-    assert!(result.is_err());
-    assert!(lock(&binding.inner.state).disk.agents.is_empty());
-    assert_eq!(lock(&binding.inner.state).workers, 0);
+    for invalid in [
+        json!({"task":"missing role"}),
+        json!({"agent":"fast","task":"legacy selector"}),
+        json!({"role":"missing","task":"unknown role"}),
+        json!({"role":null,"task":"null role"}),
+    ] {
+        let result = binding.execute(
+            "task",
+            &json!({"context":"test","tasks":[{"role":"fast","task":"valid"},invalid]}).to_string(),
+            false,
+            &Default::default(),
+        );
+        assert!(result.is_err());
+        let state = lock(&binding.inner.state);
+        assert!(state.disk.agents.is_empty());
+        assert!(state.disk.runs.is_empty());
+        assert_eq!(state.disk.next_id, 0);
+        assert_eq!(state.workers, 0);
+    }
 }
 #[test]
 fn delivery_is_inspectable_until_ack_and_scoped_to_owner() {
@@ -927,7 +910,7 @@ fn run_permit_queues_initialization_and_releases_after_failure_or_cancellation()
         .execute(
             "task",
             &json!({"context":"verify run permits", "tasks":[
-                {"task":"first"}, {"task":"second"}, {"task":"third"}
+                {"role":"fast","task":"first"}, {"role":"fast","task":"second"}, {"role":"fast","task":"third"}
             ]})
             .to_string(),
             false,

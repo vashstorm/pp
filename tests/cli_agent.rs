@@ -162,6 +162,12 @@ fn fixture_settings() -> &'static str {
     "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\n"
 }
 
+const FIXTURE_FAST_ROLE: &str = "model_roles:\n  fast: {model: fixture/primary, effort: none}\n";
+
+fn task_fixture_settings() -> String {
+    format!("{}{FIXTURE_FAST_ROLE}", fixture_settings())
+}
+
 fn fixture_models(server: &Server) -> String {
     format!(
         "# 此测试进程的回环服务\nproviders:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        model: fixture-model\n",

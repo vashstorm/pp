@@ -538,14 +538,19 @@ fn pipeline_subagent_shares_the_root_pipe_store() {
             format!("{MARKER}\nchild-visible\n"),
         )
         .unwrap();
-        let cli = protocol.start(&server, dir.path(), Some("subagent pipeline"));
+        let cli = protocol.start_with_settings(
+            &server,
+            dir.path(),
+            Some("subagent pipeline"),
+            &task_fixture_settings(),
+        );
         let (request, _) = protocol.receive(&server);
         protocol.calls_reply(
             request,
             json!([protocol.call(
                 "spawn",
                 "task",
-                json!({"context":"shared root pipe store","tasks":[{"task":"produce child pipeline output"}]})
+                json!({"context":"shared root pipe store","tasks":[{"role":"fast","task":"produce child pipeline output"}]})
             )]),
         );
         let mut child_calls = 0;

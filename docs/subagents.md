@@ -12,7 +12,7 @@ pp 可以把独立工作交给多个子 Agent，并在主会话继续工作。�
 - `/Roles`：打开独立的模型角色配置页。
 - `⌥ + A`（macOS）／`Alt + A`（Linux）：在主视图与 Agent Hub 之间切换，补全菜单展开时也可使用；保留主输入草稿，其他模态面板仍独占输入。未获得子 Agent 绑定时显示空态而不是报错。
 - Hub 使用青色圆角外框。宽屏左栏显示 Roster 与全局用量，右栏显示所选 Agent 的概要，底栏横跨两栏。窄屏用 Tab 在列表和概要间切换。
-- `/test-task`：dev/test 构建专用的固定自检（其他构建由 `#[cfg(debug_assertions)]` 编译排除，命令名不注册，按未注册命令静默忽略），要求 FAST／SLOW／REVIEW 已启用，派发 FAST、SLOW、REVIEW 三个只读子 Agent 并等待结果；详见[常用命令](guide.md#常用命令与快捷键)。
+- `/test-task`：dev/test 构建专用的固定自检（其他构建由 `#[cfg(debug_assertions)]` 编译排除，命令名不注册，按未注册命令静默忽略），使用独立的本地 mock 配置派发 FAST、SLOW、REVIEW 三个只读子 Agent 并等待结果；详见[常用命令](guide.md#常用命令与快捷键)。
 
 Hub 分两页，`1`／`2` 切换：
 
@@ -24,7 +24,7 @@ Hub 分两页，`1`／`2` 切换：
 - 人工追问按普通文本发送，`/model` 等文本不会在 child 中执行本地命令。发送成功才清掉未修改的草稿，失败保留草稿并提示；父方在成功后按既有规则取回结果。
 - 详情与 Activity 使用与主对话相同的观察日志，历史超过 64 KiB 也能从头浏览；旧日志缺少时间戳时显示 `—`，不推算当前时间或费用。
 
-子 Agent 可直接选择系统 Role，也可选择已加载的自定义 Agent。系统 Role 包括：DEFAULT、FAST、SLOW、VISION、REVIEW；PLAN 仅用于主 Agent 进入计划模式。REVIEW 始终只读，其他 Role 可用 `readonly: true` 限制为只读调查。Plan 中的所有子 Agent 强制只读。只读限制同时作用于工具清单和执行入口，禁止写入、shell 与继续委托。只读子 Agent 可使用父级开放、用户标为只读且在自身工具集合中的 MCP 工具。
+每个子任务都必须显式传入 `role`。内置角色有 `fast`、`slow`、`vision`、`review`，也可选择已加载的自定义角色名称。DEFAULT 和 PLAN 供主 Agent 选模。REVIEW 始终只读，其他 Role 可用 `readonly: true` 限制为只读调查。Plan 中的所有子 Agent 强制只读。只读限制同时作用于工具清单和执行入口，禁止写入、shell 与继续委托。只读子 Agent 可使用父级开放、用户标为只读且在自身工具集合中的 MCP 工具。
 
 ## 配置
 
@@ -46,17 +46,13 @@ task:
 
 空闲 7 分钟后进入 `parked`，保留身份、结果、历史与隔离工作区；`idle_ttl_ms: 0` 关闭正常的空闲驻留计时。`request_budget: 0` 关闭请求预算；默认在 200 次请求时提示收尾，达到 300 次停止运行并保留已保存成果。
 
-使用 `/Roles` 为系统角色配置主模型、effort 和可选备用模型。每个任务项通过 `role` 选择角色，例如 `{"role":"fast","readonly":true,"task":"定位实现"}`；可同时用 `agent` 选择实际存在的自定义定义。`agent` 的工具枚举只列已发现且启用的名称；未知、停用或不存在的名称在整批派发前拒绝，不自动补出 `scout`、`task`、`reviewer` 等定义。
+通过 `/Roles` 配置并启用内置角色，可设置主模型、effort 和备用模型。任务项示例为 `{"role":"fast","readonly":true,"task":"定位实现"}`。工具只列已启用的内置角色和已加载的自定义角色。整批任务会在启动前校验，省略 `role` 或使用未知、停用、保留的名称都会导致整批被拒绝。没有可用角色时，`task` 工具会隐藏。
 
-选模优先级为显式 `role`、自定义 Agent 的模型配置、DEFAULT。显式 Role 同时决定 model、effort 和 fallback；未显式指定 Role 时，`task.agent_models` 按自定义名称覆盖定义中的 `model`，`thinking` 采用定义值，缺省采用 DEFAULT 的有效 effort（DEFAULT 不可用时为 none）。自定义 Agent 没有模型配置时使用 DEFAULT；无 `agent` 的普通任务省略 `role` 也使用 DEFAULT。所有路径都不继承父 Agent 当前的 PLAN 模型。
-
-DEFAULT 尚未配置时使用全局默认模型及其有效默认 effort；显式停用 DEFAULT 后，需选择其他已启用 Role，或使用配置了独立模型的自定义 Agent。其他未配置或停用的系统 Role 不进入工具可选项，显式调用在整批派发前报错。既无可用系统 Role、也无自定义定义时隐藏 `task` 工具。
-
-PLAN 始终不进入子 Agent 的模型 Role 可选项，显式指定 `role: "plan"` 会在整批派发前报错。派发时冻结主备路由快照；后续 `/Roles` 的 model/effort 更新会在子 Agent 的下一次请求边界应用（显式 `role` 与继承 DEFAULT 的普通任务），自定义定义自带 model 的子 Agent 保持派发配置，主 Agent 的手动 `/model` 与 `/effort` 不下发给子 Agent。详见[模型 Roles](guide.md#模型-roles)。
+内置角色在派发时确定主备路由。之后通过 `/Roles` 修改模型或 effort，会在绑定该角色的子 Agent 下一次请求前生效。自定义角色使用派发时选定的模型和 effort。详见[模型 Roles](guide.md#模型-roles)。
 
 ## 自定义 Agent
 
-发现顺序为最近的项目 `.pp/agents/*.md`、用户 `~/.pp/agent/agents/*.md`；同名精确匹配，项目定义优先。无效文件记录诊断后跳过，`task.disabled_agents` 仅过滤自定义 Agent。定义必须真实存在且成功加载；模型不能仅通过 `agent` 参数或 `agent_models` 中的名称创建新角色。
+发现顺序为最近的项目 `.pp/agents/*.md`、用户 `~/.pp/agent/agents/*.md`；同名精确匹配，项目定义优先。无效文件记录诊断后跳过，`task.disabled_agents` 仅过滤自定义 Agent。自定义名称必须来自成功加载的定义。`fast`、`slow`、`vision`、`review`、`default`、`plan` 是保留名称，大小写变体也保留。
 
 ````markdown
 ---
@@ -72,7 +68,7 @@ blocking: false
 Review the assigned API contract. Report concrete compatibility issues and file references.
 ````
 
-文件加载后可调用 `{"agent":"api-auditor","task":"审阅接口兼容性"}`；显式附加 `"role":"fast"` 会使用 FAST 的模型和 effort，同时保留该自定义 Agent 的提示词、工具和输出约束。
+文件加载后可调用 `{"role":"api-auditor","task":"审阅接口兼容性"}`。旧调用中的 `agent` 改为 `role`。如果旧调用同时使用内置角色覆盖自定义选模，请将模型和 effort 写入自定义定义，再传入该自定义角色名称。自定义角色按 `task.agent_models`、定义中的 `model`、默认模型配置的顺序选模。思考档位优先使用定义中的 `thinking`，其次使用默认配置的有效 effort。显式停用 DEFAULT 后，自定义角色需要配置自己的模型。
 
 `tools` 省略时采用通用工具集，显式 `[]` 禁用普通工具；仅含 read／grep／glob／lsp 的工具集自动应用只读限制。无论默认工具、自定义 `tools` 还是旧记录，child 的有效工具集都会剔除 `task`。`spawns` 字段保留解析与存储兼容，但即使设为 `["*"]` 也不能让 child 继续派发。子 Agent 能力仍受工作模式限制。`blocking: true` 在批次全部启动后等待该自定义任务，默认异步；普通异步任务可用 `wait` 等待结果。`output` 可定义结构化结果约束，任务项的 `output_schema` 优先。
 
@@ -131,7 +127,7 @@ Steering 与 FollowUp 在等待期间保留队列，批次全部结束并成功�
 ```json
 {
   "context": "Implement the assigned change and report validation.",
-  "tasks": [{"role": "default", "task": "Implement the parser change.", "isolated": true}]
+  "tasks": [{"role": "fast", "task": "Implement the parser change.", "isolated": true}]
 }
 ```
 

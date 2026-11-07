@@ -7,11 +7,11 @@ fn statusline_home(server: &Server, protocol: &str, fast: bool) -> tempfile::Tem
         "completion"
     };
     let role = if fast {
-        "model_roles:\n  fast: {model: title/fast, effort: none}\n"
+        "  fast: {model: title/fast, effort: none}\n"
     } else {
         ""
     };
-    std::fs::write(config_path(home.path(), "settings.yml"), format!("default_model: main/primary\nrate_limit_retry_budget_seconds: 0\nauto_compact: false\n{role}")).unwrap();
+    std::fs::write(config_path(home.path(), "settings.yml"), format!("default_model: main/primary\nrate_limit_retry_budget_seconds: 0\nauto_compact: false\nmodel_roles:\n  slow: {{model: main/primary, effort: none}}\n{role}")).unwrap();
     let model = |name: &str, rate: f64| json!({"model":name,"context_window":40000,"cost":{"input":rate,"cacheRead":rate,"cacheWrite":rate,"output":rate}});
     std::fs::write(config_path(home.path(), "models.yml"), json!({"providers":{
         "main":slash_provider(server,"main",protocol,json!({"primary":model("main-model",1.0)})),
@@ -129,8 +129,8 @@ fn statusline_subagent_badge_tracks_running_children_before_speed() {
                 "spawn-badge",
                 "task",
                 json!({"context":"status badge", "tasks": [
-                    {"task":"badge first"}, {"task":"badge second"},
-                    {"task":"badge third"}, {"task":"badge fourth"}
+                    {"role":"slow","task":"badge first"}, {"role":"slow","task":"badge second"},
+                    {"role":"slow","task":"badge third"}, {"role":"slow","task":"badge fourth"}
                 ]})
             ),
             hub_call(protocol, "wait-badge", "wait", json!({}))
@@ -198,7 +198,7 @@ fn task_status_cost_includes_child_subagents_without_double_counting_both_protoc
             protocol,
             json!([
                 hub_call(protocol, "spawn-cost", "task", json!({"context":"sibling cost inheritance",
-                    "tasks":[{"task":"first-cost-marker"},{"task":"second-cost-marker"}]})),
+                    "tasks":[{"role":"slow","task":"first-cost-marker"},{"role":"slow","task":"second-cost-marker"}]})),
                 hub_call(protocol, "wait-cost", "wait", json!({}))
             ]),
         );

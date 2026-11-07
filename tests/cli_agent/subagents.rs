@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn subagent_plan_role_is_hidden_and_rejected_in_both_protocols() {
+fn subagent_role_is_required_and_main_roles_are_rejected_in_both_protocols() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();
@@ -11,12 +11,13 @@ fn subagent_plan_role_is_hidden_and_rejected_in_both_protocols() {
             response_models(&server, Some("response"))
         };
         let settings = json!({"model_roles":{
+            "default":{"model":"fixture/primary","effort":"none"},
             "plan":{"model":"fixture/primary","effort":"high"},
             "fast":{"model":"fixture/primary","effort":"low"}
         }});
         let cli = Cli::start_with(
             home.path(),
-            Some("check reserved plan role"),
+            Some("check required task role"),
             &settings.to_string(),
             &models,
         );
@@ -37,26 +38,43 @@ fn subagent_plan_role_is_hidden_and_rejected_in_both_protocols() {
         assert_eq!(
             task.pointer("/parameters/properties/tasks/items/properties/role/enum")
                 .unwrap(),
-            &json!(["default", "fast"])
+            &json!(["fast"])
         );
-        assert!(!task["description"].as_str().unwrap().contains("plan="));
-        sub_call(
-            request,
-            protocol,
-            "reserved-plan",
-            "task",
-            json!({"context":"no dispatch on invalid batch","tasks":[
-                {"role":"fast","task":"valid child"},
-                {"role":"plan","task":"invalid child"}
-            ]}),
+        assert_eq!(
+            task.pointer("/parameters/properties/tasks/items/required")
+                .unwrap(),
+            &json!(["task", "role"])
         );
-        let (request, body) = receive_sub(&server, protocol);
-        assert!(!is_child(&body));
-        assert!(
-            body.to_string().contains("PLAN is reserved for plan mode"),
-            "{body}"
-        );
-        sub_final(request, protocol, "reserved plan role rejected");
+        let mut request = request;
+        for (id, invalid, error) in [
+            ("missing", json!({"task":"missing role"}), "missing field"),
+            (
+                "default",
+                json!({"role":"default","task":"invalid role"}),
+                "reserved for the main agent",
+            ),
+            (
+                "plan",
+                json!({"role":"plan","task":"invalid role"}),
+                "reserved for the main agent",
+            ),
+        ] {
+            sub_call(
+                request,
+                protocol,
+                id,
+                "task",
+                json!({"context":"no dispatch on invalid batch","tasks":[
+                    {"role":"fast","task":"valid child"},
+                    invalid
+                ]}),
+            );
+            let (next, body) = receive_sub(&server, protocol);
+            assert!(!is_child(&body));
+            assert!(body.to_string().contains(error), "{body}");
+            request = next;
+        }
+        sub_final(request, protocol, "invalid roles rejected");
         let output = cli.finish();
         assert!(output.status.success(), "{output:?}");
         no_more(&server);
@@ -76,7 +94,7 @@ fn artifact_child_output_is_readable_from_parent_in_both_protocols() {
         let cli = Cli::start_with(
             dir.path(),
             Some("inspect child artifact"),
-            "tools:\n  artifactSpillThreshold: 16\n",
+            &format!("{FIXTURE_FAST_ROLE}tools:\n  artifactSpillThreshold: 16\n"),
             &models,
         );
         let (request, _) = receive_sub(&server, protocol);
@@ -85,7 +103,7 @@ fn artifact_child_output_is_readable_from_parent_in_both_protocols() {
             protocol,
             "spawn",
             "task",
-            json!({"context":"produce and inspect child logs","tasks":[{"task":"produce a log"}]}),
+            json!({"context":"produce and inspect child logs","tasks":[{"role":"fast","task":"produce a log"}]}),
         );
         let mut produced = false;
         let mut reading = false;
@@ -138,7 +156,7 @@ fn subagent_result_read_pages_full_disk_output_in_both_protocols() {
         let cli = Cli::start_with(
             home.path(),
             Some("read the full child result"),
-            "read_max_lines: 1\n",
+            &format!("{FIXTURE_FAST_ROLE}read_max_lines: 1\n"),
             &models,
         );
         let first_line = "x".repeat(12_000);
@@ -149,7 +167,7 @@ fn subagent_result_read_pages_full_disk_output_in_both_protocols() {
             protocol,
             "spawn",
             "task",
-            json!({"context":"read disk result","tasks":[{"task":"produce a long result"}]}),
+            json!({"context":"read disk result","tasks":[{"role":"fast","task":"produce a long result"}]}),
         );
         let mut child_finished = false;
         let mut resource = None;
@@ -280,7 +298,7 @@ fn subagent_batch_runs_in_parallel_without_parent_history_and_returns_both_resul
         let cli = Cli::start_with(
             dir.path(),
             Some("parent-only-private task"),
-            fixture_settings(),
+            &task_fixture_settings(),
             &models,
         );
         let (request, body) = receive_sub(&server, protocol);
@@ -290,7 +308,7 @@ fn subagent_batch_runs_in_parallel_without_parent_history_and_returns_both_resul
             protocol,
             "spawn",
             "task",
-            json!({"context":"shared-context-marker","tasks":[{"task":"child-one"},{"task":"child-two"}]}),
+            json!({"context":"shared-context-marker","tasks":[{"role":"fast","task":"child-one"},{"role":"fast","task":"child-two"}]}),
         );
         let mut children = Vec::new();
         let mut acked = false;
@@ -370,7 +388,7 @@ fn subagent_structured_yield_is_validated_and_returns_data() {
         let cli = Cli::start_with(
             dir.path(),
             Some("structured task"),
-            fixture_settings(),
+            &task_fixture_settings(),
             &models,
         );
         let (request, _) = receive_sub(&server, protocol);
@@ -379,7 +397,7 @@ fn subagent_structured_yield_is_validated_and_returns_data() {
             protocol,
             "spawn",
             "task",
-            json!({"context":"structured","tasks":[{"task":"Return a count","output_schema":{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false}}]}),
+            json!({"context":"structured","tasks":[{"role":"fast","task":"Return a count","output_schema":{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false}}]}),
         );
         let mut child = false;
         while !child {
@@ -426,7 +444,7 @@ fn subagent_followup_cold_revives_history_and_wait_consumes_only_once() {
         let cli = Cli::start_with(
             dir.path(),
             Some("parent followup task"),
-            &format!("{}task: {{idle_ttl_ms: 20}}\n", fixture_settings()),
+            &format!("{}task: {{idle_ttl_ms: 20}}\n", task_fixture_settings()),
             &models,
         );
         let (request, _) = receive_sub(&server, protocol);
@@ -435,7 +453,7 @@ fn subagent_followup_cold_revives_history_and_wait_consumes_only_once() {
             protocol,
             "spawn",
             "task",
-            json!({"context":"followup context","tasks":[{"task":"initial child question"}]}),
+            json!({"context":"followup context","tasks":[{"role":"fast","task":"initial child question"}]}),
         );
         let mut answered = false;
         let mut waited = false;
@@ -543,15 +561,15 @@ fn subagent_task_is_hidden_and_recursive_dispatch_is_rejected() {
                 Some("verify leaf-only dispatch"),
                 &format!(
                     "{}task: {{max_concurrency: 1, max_recursion_depth: 8}}\n",
-                    fixture_settings()
+                    task_fixture_settings()
                 ),
                 &models,
             );
             let (request, body) = receive_sub(&server, protocol);
             assert!(sub_has_tool(&body, protocol, "task"));
-            let mut first = json!({"task":"first-leaf"});
+            let mut first = json!({"role":"fast","task":"first-leaf"});
             if custom {
-                first["agent"] = json!("recursive");
+                first["role"] = json!("recursive");
             }
             sub_call(
                 request,
@@ -585,7 +603,7 @@ fn subagent_task_is_hidden_and_recursive_dispatch_is_rejected() {
                         protocol,
                         "forbidden-task",
                         "task",
-                        json!({"context":"illegal recursion","tasks":[{"task":"forbidden-grandchild"}]}),
+                        json!({"context":"illegal recursion","tasks":[{"role":"fast","task":"forbidden-grandchild"}]}),
                     );
                     let (request, body) = receive_sub(&server, protocol);
                     assert!(is_child(&body), "{body}");
@@ -615,7 +633,7 @@ fn subagent_task_is_hidden_and_recursive_dispatch_is_rejected() {
                         protocol,
                         "second-spawn",
                         "task",
-                        json!({"context":"return the assigned marker","tasks":[{"task":"second-leaf"}]}),
+                        json!({"context":"return the assigned marker","tasks":[{"role":"fast","task":"second-leaf"}]}),
                     );
                 } else {
                     sub_final(request, protocol, "leaf-restriction-verified");
@@ -671,7 +689,7 @@ fn subagent_concurrency_limits_are_shared_across_batches() {
             let cli = Cli::start_with(
                 dir.path(),
                 Some("verify shared execution concurrency"),
-                &format!("{}{task_settings}", fixture_settings()),
+                &format!("{}{task_settings}", task_fixture_settings()),
                 &models,
             );
             let markers = (0..limit)
@@ -679,7 +697,7 @@ fn subagent_concurrency_limits_are_shared_across_batches() {
                 .collect::<Vec<_>>();
             let tasks = markers
                 .iter()
-                .map(|marker| json!({"task":marker}))
+                .map(|marker| json!({"role":"fast","task":marker}))
                 .collect::<Vec<_>>();
             let (request, body) = receive_sub(&server, protocol);
             assert!(!is_child(&body));
@@ -718,7 +736,7 @@ fn subagent_concurrency_limits_are_shared_across_batches() {
                 "concurrency-extra",
                 "task",
                 json!({"context":"Return only your assigned task marker.",
-                    "tasks":[{"task":"concurrency-extra"}]}),
+                    "tasks":[{"role":"fast","task":"concurrency-extra"}]}),
             );
             let (request, body) = receive_sub(&server, protocol);
             assert!(!is_child(&body), "child exceeded limit {limit}: {body}");
@@ -827,7 +845,7 @@ fn subagent_readonly_capabilities_reject_unadvertised_writes() {
         std::fs::write(config_path(dir.path(), "mcp.json"), config.to_string()).unwrap();
         let settings = format!(
             "{}tools:\n  approvalMode: always-ask\n  approval: {{task: allow}}\n",
-            fixture_settings()
+            task_fixture_settings()
         );
         let models = if protocol == "completion" {
             fixture_models(&server)
@@ -860,7 +878,7 @@ fn subagent_readonly_capabilities_reject_unadvertised_writes() {
             protocol,
             "spawn",
             "task",
-            json!({"context":"readonly","tasks":[{"readonly":true,"task":"inspect only"}]}),
+            json!({"context":"readonly","tasks":[{"role":"fast","readonly":true,"task":"inspect only"}]}),
         );
         let mut stage = 0;
         loop {
@@ -943,7 +961,7 @@ fn subagent_inherits_headless_approval_and_does_not_start_denied_shell() {
     let dir = tempfile::tempdir().unwrap();
     let settings = format!(
         "{}tools:\n  approvalMode: write\n  approval: {{task: allow}}\n",
-        fixture_settings()
+        task_fixture_settings()
     );
     let cli = Cli::start_with(
         dir.path(),
@@ -957,7 +975,7 @@ fn subagent_inherits_headless_approval_and_does_not_start_denied_shell() {
         "completion",
         "spawn",
         "task",
-        json!({"context":"approval inheritance","tasks":[{"task":"run a command"}]}),
+        json!({"context":"approval inheritance","tasks":[{"role":"fast","task":"run a command"}]}),
     );
     let mut attempted = false;
     loop {
@@ -996,14 +1014,19 @@ fn subagent_mixed_batch_starts_async_siblings_before_waiting_for_blocking_role()
     let roles = dir.path().join(".pp/agents");
     std::fs::create_dir_all(&roles).unwrap();
     std::fs::write(roles.join("blocking.md"),"---\nname: blocking\ndescription: 同步角色\nblocking: true\ntools: [read, grep, glob]\n---\nComplete the assignment and return a result.").unwrap();
-    let cli = Cli::start(&server, dir.path(), Some("mixed batch"));
+    let cli = Cli::start_with(
+        dir.path(),
+        Some("mixed batch"),
+        &task_fixture_settings(),
+        &fixture_models(&server),
+    );
     let (request, _) = receive(&server);
     sub_call(
         request,
         "completion",
         "spawn",
         "task",
-        json!({"context":"mixed mode","tasks":[{"agent":"blocking","task":"blocking input"},{"task":"async input"}]}),
+        json!({"context":"mixed mode","tasks":[{"role":"blocking","task":"blocking input"},{"role":"fast","task":"async input"}]}),
     );
     let mut blocking = None;
     let mut asynchronous = None;
@@ -1108,7 +1131,7 @@ fn fallback_subagent_uses_its_role_backup_without_switching_parent() {
 }
 
 #[test]
-fn custom_agent_roundtrip_rejects_invented_names_and_respects_model_role_precedence() {
+fn custom_role_roundtrip_rejects_invented_names_and_routes_each_role() {
     for protocol in ["completion", "response"] {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
@@ -1148,9 +1171,9 @@ fn custom_agent_roundtrip_rejects_invented_names_and_respects_model_role_precede
             .find(|tool| tool["name"] == "task")
             .unwrap();
         assert_eq!(
-            task.pointer("/parameters/properties/tasks/items/properties/agent/enum")
+            task.pointer("/parameters/properties/tasks/items/properties/role/enum")
                 .unwrap(),
-            &json!(["analyst"])
+            &json!(["fast", "analyst"])
         );
         sub_call(
             request,
@@ -1158,23 +1181,20 @@ fn custom_agent_roundtrip_rejects_invented_names_and_respects_model_role_precede
             "invalid-custom",
             "task",
             json!({"context":"atomic validation","tasks":[
-                {"agent":"analyst","task":"valid task"}, {"agent":"scout","task":"invented task"}
+                {"role":"analyst","task":"valid task"}, {"role":"scout","task":"invented task"}
             ]}),
         );
         let (request, body) = receive_sub(&server, protocol);
         assert!(!is_child(&body));
-        assert!(
-            body.to_string()
-                .contains("unknown or disabled custom agent")
-        );
+        assert!(body.to_string().contains("unknown or disabled task role"));
         sub_call(
             request,
             protocol,
             "configured-custom",
             "task",
             json!({"context":"configured tasks","tasks":[
-                {"agent":"analyst","task":"custom model task"},
-                {"agent":"analyst","role":"fast","task":"explicit fast task"}
+                {"role":"analyst","task":"custom model task"},
+                {"role":"fast","task":"explicit fast task"}
             ]}),
         );
         let mut seen = std::collections::BTreeSet::new();
@@ -1204,20 +1224,18 @@ fn custom_agent_roundtrip_rejects_invented_names_and_respects_model_role_precede
                     },
                     effort
                 );
-                assert!(
-                    body.to_string()
-                        .contains("configured-analysis-prompt-marker")
-                );
                 let tools = body["tools"].as_array().unwrap();
-                assert_eq!(tools.len(), 1);
                 assert_eq!(
-                    if child_protocol == "completion" {
-                        &tools[0]["function"]["name"]
-                    } else {
-                        &tools[0]["name"]
-                    },
-                    "read"
+                    body.to_string()
+                        .contains("configured-analysis-prompt-marker"),
+                    model == "custom-model"
                 );
+                if model == "custom-model" {
+                    assert_eq!(tools.len(), 1);
+                    assert!(sub_has_tool(&body, child_protocol, "read"));
+                } else {
+                    assert!(sub_has_tool(&body, child_protocol, "edit"));
+                }
                 sub_final(
                     request,
                     child_protocol,

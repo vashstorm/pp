@@ -545,10 +545,10 @@ fn runtime_think_level_applies_to_next_request_mid_task() {
 #[test]
 fn runtime_subagent_roles_switch_at_next_request_mid_run() {
     for (role, protocol) in [
-        (None, "completion"),
-        (None, "response"),
-        (Some(ModelRole::Fast), "completion"),
-        (Some(ModelRole::Fast), "response"),
+        (ModelRole::Fast, "completion"),
+        (ModelRole::Fast, "response"),
+        (ModelRole::Slow, "completion"),
+        (ModelRole::Slow, "response"),
     ] {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("marker.txt"), "child marker").unwrap();
@@ -557,18 +557,17 @@ fn runtime_subagent_roles_switch_at_next_request_mid_run() {
         let mut agent = runtime_input_agent(dir.path(), protocol, &address, "");
         add_other_provider(dir.path(), protocol, &address);
         agent.reload_models().unwrap();
-        let initial = role.unwrap_or(ModelRole::Default);
         agent
-            .save_model_role(initial, role_with("fixture/one", ThinkLevel::Low))
+            .save_model_role(role, role_with("fixture/one", ThinkLevel::Low))
             .unwrap();
         let service = Service::start(agent.model_catalog()).unwrap();
         agent.runtime_models = Some(Binding::main(service.registry.clone()));
         agent.ensure_subagents().unwrap();
-        let mut task = json!({"task": "inspect the marker"});
-        if let Some(role) = role {
-            task["role"] = json!(role.name().to_lowercase());
-        }
-        let arguments = json!({"context": "role switch", "tasks": [task]}).to_string();
+        let arguments = json!({
+            "context": "role switch",
+            "tasks": [{"role": role.name().to_lowercase(), "task": "inspect the marker"}]
+        })
+        .to_string();
         let binding = agent.subagents().unwrap();
         binding
             .execute("task", &arguments, true, &Default::default())
@@ -582,10 +581,7 @@ fn runtime_subagent_roles_switch_at_next_request_mid_run() {
         let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
         assert_eq!(body["model"], "one");
         assert_eq!(request_effort(protocol, &body), &json!("low"));
-        assert!(service.submit(Change::Role(
-            initial,
-            role_with("other/two", ThinkLevel::High)
-        )));
+        assert!(service.submit(Change::Role(role, role_with("other/two", ThinkLevel::High))));
         service.flush();
         tool_call_for(protocol, request, "read", r#"{"path":"marker.txt"}"#);
 

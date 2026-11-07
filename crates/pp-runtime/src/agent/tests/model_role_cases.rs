@@ -119,7 +119,6 @@ fn model_roles_plan_children_send_each_roles_model_protocol_and_effort() {
             .execute(
                 "task",
                 &json!({"context":"plan investigation", "tasks":[
-                    {"task":"default investigation"},
                     {"role":"fast","task":"fast investigation"},
                     {"role":"slow","task":"slow investigation"},
                     {"role":"vision","task":"vision investigation"},
@@ -131,7 +130,7 @@ fn model_roles_plan_children_send_each_roles_model_protocol_and_effort() {
             )
             .unwrap();
         let mut seen = std::collections::BTreeSet::new();
-        for _ in 0..5 {
+        for _ in 0..4 {
             let mut request = server
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap()
@@ -148,7 +147,7 @@ fn model_roles_plan_children_send_each_roles_model_protocol_and_effort() {
             let model = body["model"].as_str().unwrap();
             assert!(seen.insert(model.to_owned()));
             let effort = match model {
-                "child-default" | "child-fast" => "low",
+                "child-fast" => "low",
                 "child-slow" | "child-review" => "high",
                 "child-vision" => "medium",
                 _ => panic!("unexpected model: {model}"),
@@ -185,7 +184,7 @@ fn model_roles_plan_children_send_each_roles_model_protocol_and_effort() {
             &mut |_| {},
         );
         let result: Value = serde_json::from_str(&result.output).unwrap();
-        assert_eq!(result["results"].as_array().unwrap().len(), 5);
+        assert_eq!(result["results"].as_array().unwrap().len(), 4);
         assert_eq!(result["pending"], false);
         assert!(
             result["results"]
@@ -201,7 +200,7 @@ fn model_roles_plan_children_send_each_roles_model_protocol_and_effort() {
 }
 
 #[test]
-fn model_roles_unconfigured_default_child_does_not_inherit_plan_model() {
+fn model_roles_main_only_configuration_does_not_enable_task_in_plan() {
     let dir = tempfile::tempdir().unwrap();
     let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
     let path = dir.path().join("models.yml");
@@ -224,16 +223,6 @@ fn model_roles_unconfigured_default_child_does_not_inherit_plan_model() {
     agent.enter_plan(&CancellationToken::new()).unwrap();
     agent.ensure_subagents().unwrap();
     let binding = agent.subagents().unwrap();
-    let roles = binding.roles().unwrap();
-    assert_eq!(roles.len(), 1);
-    assert_eq!(roles[0].name, "DEFAULT");
-    assert!(roles[0].description.starts_with("fixture/one"));
-    assert!(
-        !binding.definitions(WorkMode::Plan)[0]
-            .description
-            .as_ref()
-            .unwrap()
-            .contains("planner-only")
-    );
+    assert!(binding.definitions(WorkMode::Plan).is_empty());
     agent.stop_subagents().unwrap();
 }

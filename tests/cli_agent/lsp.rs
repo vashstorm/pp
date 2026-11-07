@@ -37,6 +37,7 @@ fn lsp_models(server: &Server, protocol: &str) -> String {
 fn lsp_settings(format_on_write: bool, diagnostics_on_edit: bool) -> String {
     json!({
         "rate_limit_retry_budget_seconds": 0,
+        "model_roles": {"fast": {"model": "fixture/primary", "effort": "none"}},
         "lsp": {
             "requestTimeout": 5,
             "formatOnWrite": format_on_write,
@@ -1004,7 +1005,7 @@ fn lsp_roundtrip_readonly_subagents_share_server_and_deny_mutations() {
         json!([call(
             "spawn-readonly",
             "task",
-            json!({"context":"readonly","tasks":[{"readonly":true,"task":"inspect only"},{"readonly":true,"task":"review only"}]})
+            json!({"context":"readonly","tasks":[{"role":"fast","readonly":true,"task":"inspect only"},{"role":"fast","readonly":true,"task":"review only"}]})
         )]),
     );
     let mut children_done = 0;
@@ -1248,7 +1249,7 @@ fn lsp_roundtrip_parent_child_owner_reports_share_fixture() {
         json!([call(
             "spawn-owner",
             "task",
-            json!({"context":"owner check","tasks":[{"readonly":true,"task":"diagnostics only"}]})
+            json!({"context":"owner check","tasks":[{"role":"fast","readonly":true,"task":"diagnostics only"}]})
         )]),
     );
     let mut child_owner = None;
@@ -1375,7 +1376,7 @@ fn lsp_roundtrip_isolated_subagent_uses_separate_client() {
         json!([call(
             "spawn-isolated",
             "task",
-            json!({"context":"isolated","tasks":[{"readonly":true,"task":"isolated lookup","isolated":true}]})
+            json!({"context":"isolated","tasks":[{"role":"fast","readonly":true,"task":"isolated lookup","isolated":true}]})
         )]),
     );
     let mut child_done = false;
