@@ -547,24 +547,51 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 .is_empty()
         );
         pty.function_key('t');
+        // 展开后 HUD 向上生长，标题仍在主屏幕且当前进行项可见。
         pty.wait_for("TODO 原位展开", |screen| {
-            screen
-                .rows(0, 100)
-                .nth(16)
-                .is_some_and(|row| row.contains("TODO · 0/12"))
-                && screen.contents().contains("PINNED_TASK_06")
+            hud_row(screen, "TODO · 0/12").is_some_and(|title| {
+                screen
+                    .rows(0, 100)
+                    .nth(title + 1)
+                    .is_some_and(|row| row.contains("│") && row.contains("├"))
+            }) && screen.contents().contains("PINNED_TASK_06")
         });
         let screen = pty.parser.screen();
-        assert!(screen.rows(0, 100).nth(16).unwrap().contains(&format!("{toggle_hint} collapse")));
-        assert_eq!(screen.cell(18, 0).unwrap().contents(), "│");
-        assert_eq!(screen.cell(18, 3).unwrap().contents(), "├");
+        let title = hud_row(screen, "TODO · 0/12").expect("TODO 标题") as u16;
+        assert!(
+            screen
+                .rows(0, 100)
+                .nth(usize::from(title))
+                .unwrap()
+                .contains(&format!("{toggle_hint} collapse"))
+        );
+        assert_eq!(screen.cell(title + 1, 0).unwrap().contents(), "│");
+        assert_eq!(screen.cell(title + 1, 3).unwrap().contents(), "├");
         assert!(!pty.parser.screen().alternate_screen());
         pty.resize(24, 60);
         pty.wait_for("缩放后的 TODO 高度上限", |screen| {
-            screen
+            let Some(title) = hud_row(screen, "TODO · 0/12") else {
+                return false;
+            };
+            let input = screen
                 .rows(0, 60)
-                .nth(12)
-                .is_some_and(|row| row.contains("TODO · 0/12"))
+                .position(|row| row.contains('❯'))
+                .unwrap_or(usize::MAX);
+            let hud_rows = screen
+                .rows(0, 60)
+                .skip(title)
+                .take(input.saturating_sub(title))
+                .filter(|row| row.contains("TODO ·") || row.contains("PINNED_TASK_"))
+                .count();
+            // 高度上限为终端高度的三分之一（24 / 3 = 8）；标题与输入框之间
+            // 还隔着活动行和状态栏各一行。
+            title < input
+                && hud_rows <= 8
+                && input - title <= 10
+                && screen
+                    .rows(0, 60)
+                    .nth(title)
+                    .is_some_and(|row| row.contains("collapse"))
         });
         pty.draft("中文草稿");
         pty.function_key('t');

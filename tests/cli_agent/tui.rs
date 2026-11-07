@@ -57,10 +57,12 @@ fn test_task_tui_child(protocol: &str, body: &Value) -> bool {
 fn receive(server: &Server) -> (Request, Value) {
     receive_at(server, "/v1/chat/completions")
 }
-// 通用夹具自动处理新增的旁路标题请求；标题专用测试使用 raw 接口控制并发。
+/// 并行档会同时启动多个真实 PTY；总预算覆盖标题应答后继续等待主请求的时间。
 fn receive_at(server: &Server, path: &str) -> (Request, Value) {
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let (request, body) = receive_raw(server);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let (request, body) = receive_raw_within(server, remaining);
         if !is_task_title(&body) {
             assert_eq!(request.url(), path);
             return (request, body);
@@ -84,7 +86,7 @@ fn no_more(server: &Server) {
     }
 }
 
-const DEADLINE: Duration = Duration::from_secs(5);
+const DEADLINE: Duration = Duration::from_secs(10);
 // portable-pty sets CLOEXEC after openpty; do not spawn another child in that window.
 pub(super) static PTY_SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -566,7 +568,7 @@ impl Pty {
             }
             assert!(
                 Instant::now() < deadline,
-                "TUI did not exit within five seconds\n{}",
+                "TUI did not exit within ten seconds\n{}",
                 self.diagnostics()
             );
             thread::sleep(Duration::from_millis(10));

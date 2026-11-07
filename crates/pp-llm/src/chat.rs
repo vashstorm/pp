@@ -146,10 +146,30 @@ impl OpenAiClient {
         if new_request {
             emit(AgentEvent::ModelRequestStarted);
         }
+        // 生成中的实时费用：请求体 ÷3 估算输入，已接收输出字节 ÷3 估算输出。
+        // 落定金额仍以服务端 usage 为准，估算只在落定前存在。
+        let accounting = self.task_accounting.clone();
+        let accounting_id = attempts.accounting_id;
+        let accounting_model = self.model_reference.clone();
+        let prompt_tokens = if accounting.is_some() {
+            pp_core::context::estimate_tokens(&wire).ok()
+        } else {
+            None
+        };
         let mut progress = |event: AgentEvent| {
             if matches!(&event, AgentEvent::AssistantDelta { text, .. } | AgentEvent::ThinkingDelta { text } if !text.is_empty())
             {
                 partial = true;
+            }
+            if let (Some(ledger), Some(prompt_tokens)) = (&accounting, prompt_tokens)
+                && let AgentEvent::ModelOutputProgress { output_bytes } = &event
+            {
+                ledger.progress(
+                    accounting_id,
+                    &accounting_model,
+                    prompt_tokens,
+                    output_bytes.div_ceil(3),
+                );
             }
             if record {
                 observation.event(&event, started_at);

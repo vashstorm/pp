@@ -5,6 +5,12 @@ retries = 0
 # 收集全部单元与集成测试失败，不提前停止。
 fail-fast = false
 
+# 满载并行下少数重型用例（多轮真实 PTY、子 Agent 并发与切换、plan 审批）会被
+# CPU 竞争拖过全部屏前栅栏。只让这批用例逐个独占执行，其余 2000+ 用例仍保持默认并行。
+[[profile.default.overrides]]
+filter = 'binary_id(pp::cli_agent) and test(/^(subagents::subagent_concurrency_limits_are_shared_across_batches|tui::ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history|tui::ask_tui_provider_argument_variants_succeed_without_model_retry|tui::agent_hub_rebinds_after_slash_resume_without_a_turn|tui::instruction_loading_cards_preview_expand_and_resume_both_protocols|tui::model_switch_cases::tui_model_switch_survives_panels_and_tree_without_saving_default|tui::native_tui_resize_between_batches_keeps_each_source_line_once|tui::plan_compaction_cases::plan_tui_compact_then_execute_succeeds_or_stays_in_plan_on_failure_and_cancel|tui::plan_execution_cases::plan_tui_approval_uses_reviewed_bytes_and_tracks_only_verified_progress|tui::plan_lifecycle_cases::plan_tui_mcp_is_stopped_in_plan_and_cleanup_tracks_execute_reconnection|tui::plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution|tui::plan_todo_approval_initializes_all_contexts_and_reminders_archive_same_bytes|tui::plan_validation_cases::plan_tui_external_file_errors_never_restore_or_execute_snapshot_bytes|tui::streaming_cases::streaming_tui_partial_failures_preserve_text_and_recover_without_leaks|tui::tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft|tui::tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_legal|tui::tui_runtime_role_changes_switch_children_at_their_own_committed_boundary|tui::tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_history|tui::wait_tui_batch_updates_one_card_and_blocks_parent_until_all_children_settle)$/)'
+threads-required = "num-cpus"
+
 # 日常快速档：仅跳过 cli_agent 中真实 PTY 的 tui:: 用例（spawn 真实 pp 二进制），
 # 每个高开销类别保留一个冒烟用例；src/ 单元测试与其他集成用例照旧运行。
 # 与 -E 过滤取交集，定向跑 PTY 用例须加 --ignore-default-filter 或改用默认档。

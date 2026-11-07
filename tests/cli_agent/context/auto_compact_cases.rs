@@ -369,11 +369,13 @@ fn context_resume_capacity_comes_from_models_not_the_saved_log_both_protocols() 
         // batch remains native and the summary request fits the window.
         context_auto_write_growth_files_sized(dir.path(), 38_000);
         // Save an over-threshold session with capacity configured but the
-        // automatic trigger disabled.
+        // automatic trigger disabled. 40960 keeps the summary request (plus its
+        // 2048 output budget) inside the window while the restored context
+        // (~35716 estimated) still exceeds the 80% threshold.
         let mut cli = protocol.start(
             &server,
             dir.path(),
-            &[("primary", Some(32768))],
+            &[("primary", Some(40960))],
             r#"{"default_model":"fixture/primary","auto_compact":false}"#,
         );
         context_auto_grow_two_batches(protocol, &server, &mut cli, false);
@@ -428,7 +430,7 @@ fn context_resume_capacity_comes_from_models_not_the_saved_log_both_protocols() 
         // immediately for the same saved history.
         std::fs::write(
             config_path(dir.path(), "models.yml"),
-            protocol.models(&server, &[("primary", Some(32768))]),
+            protocol.models(&server, &[("primary", Some(40960))]),
         )
         .unwrap();
         let restored = context_auto_resume(dir.path(), &id, "capacity restored");

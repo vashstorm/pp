@@ -182,9 +182,12 @@ fn receive(server: &Server) -> (Request, Value) {
     receive_at(server, "/v1/chat/completions")
 }
 fn receive_raw(server: &Server) -> (Request, Value) {
+    receive_raw_within(server, Duration::from_secs(10))
+}
+fn receive_raw_within(server: &Server, timeout: Duration) -> (Request, Value) {
     // 默认并行档会同时运行多个真实二进制与 PTY；冷启动可超过 5s，但请求仍应确定到达。
     let mut request = server
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(timeout)
         .unwrap()
         .expect("missing CLI request");
     let body = serde_json::from_reader(request.as_reader()).unwrap();

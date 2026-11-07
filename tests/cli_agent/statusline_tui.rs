@@ -113,6 +113,41 @@ fn statusline_out_accumulates_session_usage_across_requests_both_protocols() {
 }
 
 #[test]
+fn statusline_live_cost_precedes_usage_and_is_replaced_by_settle() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let (_home, mut pty) = statusline_start(&fixture, protocol, false);
+        pty.input("live cost task\r");
+        let ((main, _), (title, _)) = statusline_requests(&fixture);
+        // 标题请求保持未应答：此刻屏幕上的金额只可能来自生成中的估算。
+        let mut stream = SseReply::new(main);
+        streaming_delta(&mut stream, protocol, "statusline-live-cost");
+        pty.text("statusline-live-cost");
+        pty.wait_for("生成中先显示估算费用", |screen| {
+            let text = screen.contents();
+            text.contains("\u{f01c1}") && text.contains(" USD")
+        });
+        // 标题在任务结束前落定，否则会被取消而变成未知费用。
+        statusline_reply_usage(title, protocol, "实时费用标题");
+        pty.text("实时费用标题");
+        context_tui_stream_usage(&mut stream, protocol, "statusline-live-cost");
+        stream.finish();
+        pty.completed_after("statusline-live-cost");
+        // 估算随落定移除：总额只含两次落定的金额。
+        pty.wait_for("落定后换成服务端 usage 金额", |screen| {
+            screen.contents().contains("0.0246 USD")
+        });
+        assert!(
+            !pty.parser.screen().contents().contains(" USD \u{f0026}"),
+            "两次落定都有 usage，不能保留部分费用图标"
+        );
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
+    }
+}
+
+#[test]
 fn statusline_subagent_badge_tracks_running_children_before_speed() {
     let fixture = server();
     let protocol = "completion";

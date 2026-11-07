@@ -177,7 +177,7 @@ fn edit_preview_tui_cancel_discards_partial_arguments_without_saving() {
     }
 }
 
-// 生成 write 参数期间显示临时预览卡片（Write: 标题 + File: 路径 + 新增行正文），
+// 生成 write 参数期间显示临时预览卡片（Write: 标题含路径 + 新增行正文），
 // 磁盘未写；补发剩余分片后真实保存并替换为唯一提交卡片，退出历史与 journal 都不含预览。
 #[test]
 fn write_preview_tui_streams_before_commit_both_protocols() {
@@ -220,7 +220,7 @@ fn write_preview_tui_streams_before_commit_both_protocols() {
             let text = screen.contents();
             text.contains("preview · not saved")
                 && text.contains("Write:")
-                && text.contains("File: new.txt")
+                && text.contains("new.txt")
                 && text.contains("first line")
                 && !text.contains("DONE")
         });
@@ -253,9 +253,7 @@ fn write_preview_tui_streams_before_commit_both_protocols() {
         );
         pty.wait_for("临时 write 预览替换为唯一真实提交卡片", |screen| {
             let text = screen.contents();
-            text.contains("write · new.txt")
-                && !text.contains("not saved")
-                && !text.contains("Write:")
+            text.contains("write ·") && !text.contains("not saved") && !text.contains("Write:")
         });
         diff_blocks_final(request, protocol, "stream-write-done");
         pty.text("stream-write-done");
@@ -768,7 +766,7 @@ fn transcript_blocks_diff_failed_edits_have_no_fabricated_diff() {
     }
 }
 
-// 超过 40 行的 diff 默认折叠，Ctrl+O 展开/收起，退出 scrollback 展开全部并保留颜色。
+// 超过 16 行的 diff 默认折叠，Ctrl+O 展开/收起，退出 scrollback 展开全部并保留颜色。
 #[test]
 fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
     for protocol in ["completion", "response"] {
@@ -815,10 +813,9 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
             text.contains("Edit:") && text.contains("lines.txt")
                 && text.contains("+24/-24")
                 && text.contains("-  1│1")
-                && text.contains("- 24│24")
-                && text.contains("+ 16│P")
-                && !text.contains("+ 17│Q")
-                && text.contains("… 9 more lines (Ctrl + O to expand)")
+                && text.contains("- 16│16")
+                && !text.contains("- 17│17")
+                && text.contains("… 33 more lines (Ctrl + O to expand)")
         });
         pty.input("\x0f");
         pty.wait_for("long diff expanded", |screen| {
@@ -829,23 +826,29 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
                 && text.contains("  25│keep")
                 && !text.contains("(Ctrl + O to expand)")
         });
+        assert!(
+            diff_blocks_screen_colored(pty.parser.screen(), "A", DIFF_BLOCKS_ADDED),
+            "expanded diff lost added-line color"
+        );
         pty.input("\x0f");
         pty.wait_for("long diff folded again", |screen| {
             let text = screen.contents();
-            !text.contains("+ 17│Q")
+            !text.contains("- 17│17")
                 && text.contains("-  1│1")
-                && text.contains("… 9 more lines (Ctrl + O to expand)")
+                && text.contains("… 33 more lines (Ctrl + O to expand)")
         });
         let (request, _) = pty.request_at(&server, path);
         diff_blocks_final(request, protocol, "diff-blocks long done");
         pty.text("diff-blocks long done");
         pty.ready();
         let (scrollback, raw) = diff_blocks_exit_scrollback(&mut pty, "diff-blocks long done");
-        for expected in ["-  1│1", "+  1│A"] {
+        for expected in ["-  1│1", "- 16│16"] {
             assert!(scrollback.contains(expected), "{expected}\n{scrollback}");
         }
         assert!(
-            scrollback.contains("(Ctrl + O to expand)") && !scrollback.contains("+ 24│X"),
+            scrollback.contains("(Ctrl + O to expand)")
+                && !scrollback.contains("- 17│17")
+                && !scrollback.contains("+  1│A"),
             "{scrollback}"
         );
         let mut parser = vt100::Parser::new(600, 100, 0);
@@ -853,10 +856,6 @@ fn transcript_blocks_diff_long_diff_collapses_expands_and_scrolls_back() {
         assert!(
             diff_blocks_screen_colored(parser.screen(), "1", DIFF_BLOCKS_REMOVED),
             "scrollback lost removed-line color\n{scrollback}"
-        );
-        assert!(
-            diff_blocks_screen_colored(parser.screen(), "A", DIFF_BLOCKS_ADDED),
-            "scrollback lost added-line color\n{scrollback}"
         );
         pty.finish();
         no_more(&server);

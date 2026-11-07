@@ -20,6 +20,8 @@ pub struct Snapshot {
     pub generation: u64,
     pub title: Option<String>,
     pub cost: f64,
+    /// 生成中请求的实时预估费用之和；只在对应请求落定前有效。
+    pub live: f64,
     pub incomplete: bool,
 }
 
@@ -37,6 +39,8 @@ struct State {
     snapshot: Snapshot,
     prices: BTreeMap<String, ModelCost>,
     settled: HashSet<u64>,
+    /// 生成中请求的预估费用，按请求 id 保存；并发子 Agent 各自占一条，落定时移除。
+    live: BTreeMap<u64, f64>,
 }
 
 impl View {
@@ -63,6 +67,7 @@ impl View {
             },
             prices,
             settled: HashSet::new(),
+            live: BTreeMap::new(),
         })));
         state.current = Some(ledger.clone());
         ledger
@@ -108,17 +113,47 @@ impl Ledger {
             .title = Some(title);
     }
 
+    /// 生成中的请求更新实时预估：输入与输出分别由调用方按请求体／已接收输出字节估算。
+    /// 落定前统一按未命中缓存的输入价计算；未知价格不估算，也不标记 `incomplete`。
+    pub fn progress(&self, id: u64, model: &str, input_tokens: u64, output_tokens: u64) {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.settled.contains(&id) {
+            return;
+        }
+        let estimate = state.prices.get(model).and_then(|price| {
+            price.calculate(TokenUsage {
+                input_tokens,
+                output_tokens,
+                cached_tokens: Some(0),
+                cache_write_tokens: Some(0),
+            })
+        });
+        match estimate.map(|cost| cost.total()) {
+            Some(cost) => state.live.insert(id, cost),
+            None => state.live.remove(&id),
+        };
+        refresh_live(&mut state);
+    }
+
     pub fn settle(&self, id: u64, model: &str, usage: Option<TokenUsage>) {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if !state.settled.insert(id) {
             return;
         }
+        state.live.remove(&id);
+        refresh_live(&mut state);
         let cost = usage.and_then(|usage| state.prices.get(model)?.calculate(usage));
         match cost.map(|cost| cost.total()) {
             Some(cost) if (state.snapshot.cost + cost).is_finite() => state.snapshot.cost += cost,
             _ => state.snapshot.incomplete = true,
         }
     }
+}
+
+/// 预估只是显示进度，溢出时整段丢弃，不能污染已落定金额。
+fn refresh_live(state: &mut State) {
+    let total: f64 = state.live.values().sum();
+    state.snapshot.live = if total.is_finite() { total } else { 0.0 };
 }
 
 #[cfg(test)]
@@ -237,5 +272,47 @@ mod tests {
         );
         assert_eq!(ledger.snapshot().cost, 0.0);
         assert!(!ledger.snapshot().incomplete);
+    }
+
+    #[test]
+    fn task_live_estimate_sums_in_flight_requests_and_settles_once() {
+        let view = View::default();
+        let ledger = view.begin_prices(prices());
+        ledger.progress(1, "p/main", 1000, 100);
+        assert!((ledger.snapshot().live - 0.0028).abs() < 1e-12);
+        assert_eq!(ledger.snapshot().cost, 0.0, "估算不能进已落定金额");
+        assert!(!ledger.snapshot().incomplete);
+        // 并发的子 Agent 请求各自占一条估算，显示的是它们的和。
+        ledger.progress(2, "p/main", 500, 0);
+        assert!((ledger.snapshot().live - 0.0038).abs() < 1e-12);
+        ledger.settle(1, "p/main", Some(usage()));
+        let snapshot = ledger.snapshot();
+        assert!((snapshot.cost - 0.00254).abs() < 1e-12);
+        assert!((snapshot.live - 0.001).abs() < 1e-12, "落定后只留其他请求");
+        // 迟到的进度不能把已落定的请求重新计入估算。
+        ledger.progress(1, "p/main", 1000, 100);
+        assert!((ledger.snapshot().live - 0.001).abs() < 1e-12);
+        ledger.settle(2, "p/fallback", None);
+        assert_eq!(ledger.snapshot().live, 0.0, "未知 usage 也清掉估算");
+        assert!(ledger.snapshot().incomplete);
+    }
+
+    #[test]
+    fn task_live_estimate_requires_price_without_zero_filling() {
+        let view = View::default();
+        let ledger = view.begin_prices(prices());
+        ledger.progress(1, "unpriced/model", 1000, 100);
+        assert_eq!(ledger.snapshot().live, 0.0);
+        assert_eq!(ledger.snapshot().cost, 0.0);
+        assert!(
+            !ledger.snapshot().incomplete,
+            "生成中缺价格只隐藏估算，不标记部分费用"
+        );
+        // 未知缓存量的模型在估算里按零缓存计价，不要求 cacheWrite 单价。
+        ledger.progress(1, "p/fallback", 1000, 100);
+        assert!((ledger.snapshot().live - 0.0056).abs() < 1e-12);
+        // 换成无价格模型时立刻撤掉同一请求的估算，不保留旧值。
+        ledger.progress(1, "unpriced/model", 1200, 200);
+        assert_eq!(ledger.snapshot().live, 0.0);
     }
 }

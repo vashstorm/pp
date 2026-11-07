@@ -167,10 +167,29 @@ impl OpenAiClient {
         if new_request {
             emit(AgentEvent::ModelRequestStarted);
         }
+        // 与 Chat Completions 相同：估算只用于生成中的实时费用显示。
+        let accounting = self.task_accounting.clone();
+        let accounting_id = attempts.accounting_id;
+        let accounting_model = self.model_reference.clone();
+        let prompt_tokens = if accounting.is_some() {
+            pp_core::context::estimate_tokens(&wire).ok()
+        } else {
+            None
+        };
         let mut progress = |event: AgentEvent| {
             if matches!(&event, AgentEvent::AssistantDelta { text, .. } | AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } if !text.is_empty())
             {
                 partial = true;
+            }
+            if let (Some(ledger), Some(prompt_tokens)) = (&accounting, prompt_tokens)
+                && let AgentEvent::ModelOutputProgress { output_bytes } = &event
+            {
+                ledger.progress(
+                    accounting_id,
+                    &accounting_model,
+                    prompt_tokens,
+                    output_bytes.div_ceil(3),
+                );
             }
             if record {
                 observation.event(&event, started_at);

@@ -274,10 +274,10 @@ fn tool_folding_omp_mcp_multiline_result_and_write_preview() {
         let outputs = cancel_tool_outputs(&body, protocol);
         assert_eq!(outputs[0].1["result"]["content"][0]["text"],content);
         assert_eq!(std::fs::read_to_string(project.path().join("written")).unwrap(),written);
-        pty.wait_for("MCP 四行与 write 六行预览", |screen| {
+        pty.wait_for("MCP 四行与 write 十六行预览", |screen| {
             let text = screen.contents();
             text.contains("mcp-body-03") && !text.contains("mcp-body-04")
-                && text.contains("write-body-05") && !text.contains("write-body-06")
+                && text.contains("write-body-15") && !text.contains("write-body-16")
         });
         pty.input("\x0fa"); pty.draft("a");
         let expanded = pty.parser.screen().contents();

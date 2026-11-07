@@ -135,6 +135,7 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    pp_runtime::raise_file_limit();
     host_defaults::install(host_defaults::capture());
     let args = Args::parse();
     // gc reports the existing inventory without creating its own diagnostic log.

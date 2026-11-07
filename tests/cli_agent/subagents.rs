@@ -1,4 +1,5 @@
 use super::*;
+use crate::streaming::LiveCli;
 
 #[test]
 fn subagent_role_is_required_and_main_roles_are_rejected_in_both_protocols() {
@@ -761,12 +762,13 @@ fn subagent_concurrency_limits_are_shared_across_batches() {
             } else {
                 response_models(&server, Some("response"))
             };
-            let cli = Cli::start_with(
+            // 32 个并发子 Agent 的诊断输出会填满未消费的管道；LiveCli 持续排空两路输出。
+            let cli = LiveCli::new(Cli::start_with(
                 dir.path(),
                 Some("verify shared execution concurrency"),
                 &format!("{}{task_settings}", task_fixture_settings()),
                 &models,
-            );
+            ));
             let markers = (0..limit)
                 .map(|index| format!("concurrency-first-{index}"))
                 .collect::<Vec<_>>();

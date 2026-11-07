@@ -156,13 +156,20 @@ fn title_field(text: &str, width: usize) -> Line<'static> {
 }
 
 fn cost_field(task: &pp_config::task_status::Snapshot) -> Option<Line<'static>> {
-    if task.cost <= 0.0 || !task.cost.is_finite() {
+    // 已落定金额加上生成中请求的实时估算；只估算不落定，避免重复计算。
+    let live = if task.live.is_finite() {
+        task.live
+    } else {
+        0.0
+    };
+    let total = task.cost + live;
+    if total <= 0.0 || !total.is_finite() {
         return None;
     }
-    let text = if task.cost < 0.0001 {
+    let text = if total < 0.0001 {
         "<0.0001 USD".into()
     } else {
-        format!("{:.4} USD", task.cost)
+        format!("{total:.4} USD")
     };
     let mut line = field(COST_ICON, text, Color::Red);
     if task.incomplete {
@@ -740,7 +747,12 @@ mod tests {
 
     #[test]
     fn git_status_reads_disposable_repository_and_detects_changes() {
-        let dir = tempfile::tempdir().unwrap();
+        // TMPDIR 可能指向工作树内部（pp 的 bash 工具把命令临时目录设在项目里），
+        // 那样临时目录会成为仓库子目录；用系统临时目录保持“非仓库目录”前提。
+        let dir = tempfile::Builder::new()
+            .prefix("pp-git-")
+            .tempdir_in("/tmp")
+            .unwrap();
         assert!(GitInfo::read(dir.path()).is_none());
         assert!(
             Command::new("git")
@@ -1150,6 +1162,40 @@ mod tests {
             format!("{COST_ICON} <0.0001 USD {WARNING_ICON}")
         );
         assert_eq!(line.spans[1].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn cost_field_adds_live_estimate_until_the_request_settles() {
+        // 首个请求还在生成时只有估算，也要占位显示。
+        let live = pp_config::task_status::Snapshot {
+            live: 0.0023,
+            ..Default::default()
+        };
+        assert_eq!(
+            line_text(&cost_field(&live).unwrap()),
+            format!("{COST_ICON} 0.0023 USD")
+        );
+        let settled = pp_config::task_status::Snapshot {
+            cost: 0.01,
+            live: 0.0023,
+            ..Default::default()
+        };
+        assert_eq!(
+            line_text(&cost_field(&settled).unwrap()),
+            format!("{COST_ICON} 0.0123 USD")
+        );
+        // 预估损坏时退回已落定金额，不能让整个费用字段消失。
+        let broken = pp_config::task_status::Snapshot {
+            cost: 0.01,
+            live: f64::NAN,
+            ..Default::default()
+        };
+        assert_eq!(
+            line_text(&cost_field(&broken).unwrap()),
+            format!("{COST_ICON} 0.0100 USD")
+        );
+        let empty = pp_config::task_status::Snapshot::default();
+        assert!(cost_field(&empty).is_none(), "没有任何金额时不占位");
     }
 
     #[test]
