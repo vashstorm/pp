@@ -602,6 +602,9 @@ mod command_cases;
 #[path = "cli_agent/model_switch_cases.rs"]
 mod model_switch_cases;
 
+#[path = "cli_agent/model_arg_cases.rs"]
+mod model_arg_cases;
+
 #[path = "cli_agent/response_cases.rs"]
 mod response_cases;
 

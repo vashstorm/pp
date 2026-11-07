@@ -979,10 +979,14 @@ fn run_cli_execution(
 }
 
 /// 行模式交互循环：逐行读取 stdin、分发 `/command` 并输出结果。
+///
+/// `initial_command` 是 CLI 位置参数给出的启动命令：只合成一行、不打印提示符；
+/// 未知命令或解析错误使本次运行失败（脚本可见非零退出码），真实 stdin 行保持原有语义。
 pub fn run_line_mode(
     mut agent: Result<agent::Agent>,
     skills: skills::SharedSkills,
     file_commands: commands::FileCommands,
+    initial_command: Option<String>,
 ) -> Result<()> {
     let mut stderr = io::stderr();
     let mut stdout = io::stdout().lock();
@@ -998,64 +1002,77 @@ pub fn run_line_mode(
         Ok(input) => input,
         Err(error) => return stop_cli_lsp(agent.as_ref().ok(), Err(error)),
     };
+    let mut initial = initial_command;
     let mut prompt_shown = false;
     loop {
-        if !prompt_shown {
+        // 启动命令只合成一行：不打印提示符，执行后继续等待真实 stdin。
+        let initial_line = initial.take();
+        let synthetic = initial_line.is_some();
+        if synthetic {
+            prompt_shown = false;
+        } else if !prompt_shown {
             write!(stderr, "> ")?;
             stderr.flush()?;
             prompt_shown = true;
         }
-        let line = match input.recv_timeout(CLI_IDLE_TICK) {
-            Ok(CliInput::Line(line)) => {
-                prompt_shown = false;
-                line
-            }
-            Ok(CliInput::Eof) => break,
-            Ok(CliInput::Error(error)) => {
-                return stop_cli_lsp(agent.as_ref().ok(), Err(error).context("reading stdin"));
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // 空闲时只展示迟到诊断，不续跑模型、不自动继续会话。
-                let polled = match agent.as_mut() {
-                    Ok(active) => {
-                        let mut reports = Vec::new();
-                        let polled = active.poll_lsp_diagnostics(&mut |event| reports.push(event));
-                        let mut broken = false;
-                        let mut first_error = None;
-                        if !reports.is_empty() {
-                            if prompt_shown {
-                                cli_write(&mut stderr, "\n", &mut broken, &mut first_error);
-                            }
-                            for event in reports {
-                                if let events::AgentEvent::LspDiagnostics { report, .. } = event {
-                                    cli_lsp_report(
-                                        &report,
-                                        true,
-                                        &mut stderr,
-                                        &mut broken,
-                                        &mut first_error,
-                                    );
+        let line = match initial_line {
+            Some(line) => line,
+            None => match input.recv_timeout(CLI_IDLE_TICK) {
+                Ok(CliInput::Line(line)) => {
+                    prompt_shown = false;
+                    line
+                }
+                Ok(CliInput::Eof) => break,
+                Ok(CliInput::Error(error)) => {
+                    return stop_cli_lsp(agent.as_ref().ok(), Err(error).context("reading stdin"));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // 空闲时只展示迟到诊断，不续跑模型、不自动继续会话。
+                    let polled = match agent.as_mut() {
+                        Ok(active) => {
+                            let mut reports = Vec::new();
+                            let polled =
+                                active.poll_lsp_diagnostics(&mut |event| reports.push(event));
+                            let mut broken = false;
+                            let mut first_error = None;
+                            if !reports.is_empty() {
+                                if prompt_shown {
+                                    cli_write(&mut stderr, "\n", &mut broken, &mut first_error);
+                                }
+                                for event in reports {
+                                    if let events::AgentEvent::LspDiagnostics { report, .. } = event
+                                    {
+                                        cli_lsp_report(
+                                            &report,
+                                            true,
+                                            &mut stderr,
+                                            &mut broken,
+                                            &mut first_error,
+                                        );
+                                    }
+                                }
+                                if prompt_shown {
+                                    write!(stderr, "> ")?;
+                                    stderr.flush()?;
                                 }
                             }
-                            if prompt_shown {
-                                write!(stderr, "> ")?;
-                                stderr.flush()?;
+                            match (polled, first_error) {
+                                (Ok(()), None) => Ok(()),
+                                (Ok(()), Some(error)) => {
+                                    Err(error).context("writing LSP diagnostics")
+                                }
+                                (Err(error), _) => Err(error),
                             }
                         }
-                        match (polled, first_error) {
-                            (Ok(()), None) => Ok(()),
-                            (Ok(()), Some(error)) => Err(error).context("writing LSP diagnostics"),
-                            (Err(error), _) => Err(error),
-                        }
+                        Err(_) => Ok(()),
+                    };
+                    if let Err(error) = polled {
+                        return stop_cli_lsp(agent.as_ref().ok(), Err(error));
                     }
-                    Err(_) => Ok(()),
-                };
-                if let Err(error) = polled {
-                    return stop_cli_lsp(agent.as_ref().ok(), Err(error));
+                    continue;
                 }
-                continue;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            },
         };
         let prompt = line.trim();
         if prompt.is_empty() {
@@ -1064,12 +1081,21 @@ pub fn run_line_mode(
         let command = match commands::parse(line.trim_end_matches(['\r', '\n']), &file_commands) {
             Ok(command) => command,
             Err(error) => {
+                if synthetic {
+                    return stop_cli_lsp(agent.as_ref().ok(), Err(error));
+                }
                 writeln!(stderr, "error: {error:#}")?;
                 continue;
             }
         };
-        // 未知命令静默忽略，与 TUI 一致。
+        // 未知命令静默忽略，与 TUI 一致；显式启动命令例外，必须给出非零退出码。
         if matches!(command, Some(commands::Command::Unknown)) {
+            if synthetic {
+                return stop_cli_lsp(
+                    agent.as_ref().ok(),
+                    Err(anyhow::anyhow!("unknown command: {prompt}; use /help")),
+                );
+            }
             continue;
         }
         if matches!(command, Some(commands::Command::Subagents)) {

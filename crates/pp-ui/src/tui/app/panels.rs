@@ -590,6 +590,31 @@ impl App {
         false
     }
 
+    /// 启动命令：与按 Enter 提交走同一路径；未知命令或解析错误只提示并保留草稿。
+    ///
+    /// 返回 `true` 表示该命令要求退出（`/quit`），由 TUI 主循环走既有退出收尾。
+    pub(in crate::tui) fn submit_initial_command(&mut self, command: &str) -> bool {
+        self.input = editor();
+        self.shell_mode = false;
+        // 复用输入入口：`!` 启动命令与手写一致地消费模式前缀，斜杠命令原样保留。
+        self.insert_input(command.to_owned());
+        self.refresh_candidates(true);
+        match commands::parse(command, &self.file_commands) {
+            Ok(Some(Command::Unknown)) => {
+                self.notify(
+                    Level::Error,
+                    format!("unknown command: {command}; use /help"),
+                );
+                false
+            }
+            Err(error) => {
+                self.notify(Level::Error, format!("{error:#}"));
+                false
+            }
+            _ => self.submit(PendingKind::Steering),
+        }
+    }
+
     pub(in crate::tui) fn request_skills(&mut self, request: skills::Request) {
         match self.skill_worker.requests.send(request) {
             Ok(()) => {

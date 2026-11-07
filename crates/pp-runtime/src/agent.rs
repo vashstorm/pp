@@ -1216,10 +1216,11 @@ impl Agent {
         Ok(())
     }
 
-    pub fn switch_model(&mut self, reference: &str) -> Result<()> {
+    /// 应用模型与可选档位的唯一入口：先取走角色路由，切换失败时回滚。
+    fn apply_model(&mut self, reference: &str, effort: Option<ThinkLevel>) -> Result<()> {
         let previous = self.role_route.take();
         let result = self
-            .switch_model_with_effort(reference, None)
+            .switch_model_with_effort(reference, effort)
             .and_then(|changed| {
                 if !changed && previous.is_some() {
                     self.checkpoint_route()
@@ -1231,6 +1232,20 @@ impl Agent {
             self.role_route = previous;
         }
         result
+    }
+
+    pub fn switch_model(&mut self, reference: &str) -> Result<()> {
+        self.apply_model(reference, None)
+    }
+
+    /// CLI `--model`：模糊选择后按“手动 /model + 显式档位”应用，返回最终选择供 CLI 显示。
+    ///
+    /// 显式传入解析后的档位，避免 `switch_model` 的“保留当前档位”语义；选择或应用失败时
+    /// 不改变当前模型与档位。启动期尚无活动请求，journal 不会创建会话文件。
+    pub fn select_model(&mut self, query: &str) -> Result<pp_config::config::ModelSelection> {
+        let selection = self.catalog.select(query)?;
+        self.apply_model(&selection.reference, Some(selection.effort))?;
+        Ok(selection)
     }
 
     pub(super) fn switch_model_with_effort(

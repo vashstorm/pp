@@ -72,6 +72,61 @@ fn add_other_provider(dir: &std::path::Path, protocol: &str, address: &str) {
     std::fs::write(path, models.to_string()).unwrap();
 }
 
+/// 启动期模型选择夹具：`fixture/one` 只支持 low/high、默认 low；当前模型先停在
+/// `other/two`，让引用断言能区分“选中了哪个模型”。尚未发出任何请求。
+fn select_model_agent(dir: &std::path::Path) -> Agent {
+    let mut agent = runtime_input_agent(dir, "completion", "127.0.0.1:1", "");
+    let path = dir.join("models.yml");
+    let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    models["providers"]["fixture"]["models"]["one"]["thinking"] =
+        json!({"efforts":["low", "high"], "defaultLevel":"low"});
+    models["providers"]["other"] = json!({
+        "api_key":"fixture",
+        "protocol":"completion",
+        "base_url":"http://127.0.0.1:1/v1",
+        "models":{"two":{"model":"two"}}
+    });
+    std::fs::write(path, models.to_string()).unwrap();
+    agent.reload_models().unwrap();
+    agent.switch_model("other/two").unwrap();
+    agent
+}
+
+#[test]
+fn select_model_applies_requested_effort_and_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = select_model_agent(dir.path());
+    let sessions = dir.path().join("sessions");
+    assert_eq!(agent.current_model().reference, "other/two");
+
+    // 启动期尚未发出请求：选择模型不创建会话文件。
+    let selection = agent.select_model("one:high").unwrap();
+    assert_eq!(selection.reference, "fixture/one");
+    assert_eq!(selection.effort, ThinkLevel::High);
+    assert_eq!(agent.current_model().reference, "fixture/one");
+    assert_eq!(agent.think_level(), ThinkLevel::High);
+    assert!(agent.session_id().is_none());
+    assert!(
+        !sessions.exists(),
+        "startup model selection must not create session files"
+    );
+
+    // 不支持的档位在 catalog 层失败：模型与档位都保持原值。
+    let error = agent.select_model("one:medium").unwrap_err().to_string();
+    assert!(error.contains("does not support effort medium"), "{error}");
+    assert!(error.contains("low, high"), "{error}");
+    assert_eq!(agent.current_model().reference, "fixture/one");
+    assert_eq!(agent.think_level(), ThinkLevel::High);
+
+    // 省略档位时用模型显式默认档，而不是沿用“保留当前档位”的语义。
+    let selection = agent.select_model("one").unwrap();
+    assert_eq!(selection.reference, "fixture/one");
+    assert_eq!(selection.effort, ThinkLevel::Low);
+    assert_eq!(agent.current_model().reference, "fixture/one");
+    assert_eq!(agent.think_level(), ThinkLevel::Low);
+    assert!(agent.session_id().is_none());
+}
+
 #[test]
 fn runtime_model_roles_preserve_context_and_isolate_default_and_children() {
     for protocol in ["completion", "response"] {

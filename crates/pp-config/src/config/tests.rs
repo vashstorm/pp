@@ -1199,3 +1199,179 @@ fn task_max_concurrency_defaults_and_strict_limits() {
         assert!(read_settings(&path).is_err(), "{text}");
     }
 }
+
+#[test]
+fn model_select_ranks_exact_prefix_substring_and_subsequence_and_matches_wire_names() {
+    // "one" 的四个档位候选故意倒序排列：文本档位优先于 catalog 顺序。
+    let models = r#"{"providers":{"tier":{"api_key":"secret-marker-tier-key","models":{
+            "o-n-e": {"model":"tier-a"},
+            "team-one": {"model":"tier-b"},
+            "one-prefix": {"model":"tier-c"},
+            "one": {"model":"tier-d"},
+            "p-r-e-f": {"model":"tier-e"},
+            "team-pref": {"model":"tier-f"},
+            "pref-model": {"model":"tier-g"},
+            "s-u-b": {"model":"tier-h"},
+            "team-sub": {"model":"tier-i"},
+            "s-q": {"model":"tier-z"},
+            "internal": {"model":"wire-only"}}}}}"#;
+    let (_dir, catalog) = catalog(None, Some(models)).unwrap();
+    // 完全相等压过前缀、子串与子序列。
+    assert_eq!(
+        catalog.select("one").unwrap(),
+        ModelSelection {
+            reference: "tier/one".into(),
+            effort: ThinkLevel::None,
+        }
+    );
+    // 前缀压过子串与子序列。
+    assert_eq!(catalog.select("pref").unwrap().reference, "tier/pref-model");
+    // 子串压过子序列。
+    assert_eq!(catalog.select("sub").unwrap().reference, "tier/team-sub");
+    // 仅子序列命中时同样可选。
+    assert_eq!(catalog.select("sq").unwrap().reference, "tier/s-q");
+    // wire 名（model 字段）与模型 id 一样参与匹配。
+    assert_eq!(
+        catalog.select("wire-only").unwrap().reference,
+        "tier/internal"
+    );
+}
+
+#[test]
+fn model_select_matches_across_providers_and_prefers_favorites_within_a_tier() {
+    let models = r#"{"providers":{
+            "first": {"api_key":"secret-marker-first-key","models":{
+                "flash": {"model":"first-flash"},
+                "solo": {"model":"first-solo"}}},
+            "second": {"api_key":"secret-marker-second-key","models":{
+                "flash": {"model":"second-flash"},
+                "flash-lite": {"model":"second-flash-lite"},
+                "team-solo": {"model":"second-team-solo"}}},
+            "third": {"api_key":"secret-marker-third-key","models":{
+                "unique": {"model":"third-unique"}}}}}"#;
+    let (dir, catalog) = seeded_catalog(None, Some(models), |store| {
+        for reference in ["second/flash", "second/team-solo"] {
+            store.toggle_favorite(reference).unwrap();
+        }
+    })
+    .unwrap();
+    assert_eq!(
+        catalog.favorite_models(),
+        ["second/flash", "second/team-solo"]
+    );
+    let agent_db = fs::read(dir.path().join("agent.db")).unwrap();
+    // 两个 provider 存在同名模型 id：同档内收藏优先，而不是 catalog 顺序。
+    assert_eq!(catalog.select("flash").unwrap().reference, "second/flash");
+    // 收藏不压过更好的文本档位：精确匹配的 first/solo 胜过子串的 second/team-solo。
+    assert_eq!(catalog.select("solo").unwrap().reference, "first/solo");
+    // 省略 provider 时跨 provider 匹配到靠后的 provider。
+    assert_eq!(catalog.select("unique").unwrap().reference, "third/unique");
+    // 选择只读偏好：不写 agent.db，内存快照也不变。
+    assert_eq!(fs::read(dir.path().join("agent.db")).unwrap(), agent_db);
+    assert_eq!(
+        catalog.favorite_models(),
+        ["second/flash", "second/team-solo"]
+    );
+    assert_eq!(catalog.default_think_level(), ThinkLevel::None);
+    assert_eq!(catalog.default_reference(), "first/flash");
+}
+
+#[test]
+fn model_select_applies_explicit_effort_and_reports_unsupported_levels() {
+    let models = r#"{"providers":{"fixture":{"api_key":"secret-marker-fixture-key","models":{
+            "primary": {"model":"fixture-model","thinking":{"efforts":["low","high"],"defaultLevel":"low"}}}}}}"#;
+    let (_dir, catalog) = catalog(None, Some(models)).unwrap();
+    assert_eq!(
+        catalog.select("fixture/primary:high").unwrap(),
+        ModelSelection {
+            reference: "fixture/primary".into(),
+            effort: ThinkLevel::High,
+        }
+    );
+    // provider 与档位名都不区分大小写。
+    assert_eq!(
+        catalog.select(" FIXTURE/PRIMARY:HIGH ").unwrap(),
+        ModelSelection {
+            reference: "fixture/primary".into(),
+            effort: ThinkLevel::High,
+        }
+    );
+    // `default` 不作为档位，整串按模型查询处理。
+    let error = catalog.select("primary:default").unwrap_err();
+    assert!(
+        format!("{error:#}").starts_with("no configured model matches"),
+        "{error:#}"
+    );
+    // 不支持的显式档位列出该模型允许的全部档位，且不泄露密钥或 wire 名。
+    let error = catalog.select("fixture/primary:medium").unwrap_err();
+    let message = format!("{error:#}");
+    assert_eq!(
+        message,
+        "model fixture/primary does not support effort medium; options: low, high"
+    );
+    assert!(!message.contains("secret-marker"), "{message}");
+    assert!(!message.contains("fixture-model"), "{message}");
+}
+
+#[test]
+fn model_select_defaults_effort_from_model_then_global_then_lowest_allowed() {
+    let models = r#"{"providers":{"levels":{"api_key":"secret-marker-levels-key","models":{
+            "explicit": {"model":"levels-a","thinking":{"efforts":["low","high"],"defaultLevel":"high"}},
+            "inherit": {"model":"levels-b","thinking":{}},
+            "narrow": {"model":"levels-c","thinking":{"efforts":["high","max"]}}}}}}"#;
+    let (_dir, catalog) = seeded_catalog(None, Some(models), |store| {
+        store
+            .set_default_effort(ThinkLevel::Low, |_, _| Ok(()))
+            .unwrap();
+    })
+    .unwrap();
+    assert_eq!(catalog.default_think_level(), ThinkLevel::Low);
+    // 模型显式 defaultLevel 优先于全局默认档。
+    assert_eq!(catalog.select("explicit").unwrap().effort, ThinkLevel::High);
+    // 无显式默认时使用全局默认档（该模型允许 low）。
+    assert_eq!(catalog.select("inherit").unwrap().effort, ThinkLevel::Low);
+    // 全局档不被支持时退回允许的最低档（规范顺序中 high 在 max 之前）。
+    assert_eq!(catalog.select("narrow").unwrap().effort, ThinkLevel::High);
+}
+
+#[test]
+fn model_select_matches_model_ids_containing_slashes() {
+    let models = r#"{"providers":{"gateway":{"api_key":"secret-marker-gateway-key","models":{
+            "team/one": {"model":"gateway-wire"}}}}}"#;
+    let (_dir, catalog) = catalog(None, Some(models)).unwrap();
+    let short = catalog.select("one").unwrap();
+    assert_eq!(short.reference, "gateway/team/one");
+    // 完整 provider/model 写法与省略 provider 的写法命中同一引用。
+    assert_eq!(catalog.select("gateway/team/one").unwrap(), short);
+    // 左侧不是已配置 provider 时整串都是模型查询。
+    assert_eq!(catalog.select("team/one").unwrap(), short);
+}
+
+#[test]
+fn model_select_errors_are_actionable_and_redacted() {
+    let (_dir, catalog) = catalog(None, Some(VALID_MODELS)).unwrap();
+    for query in ["", "   "] {
+        let error = catalog.select(query).unwrap_err();
+        assert_eq!(format!("{error:#}"), "model must not be empty", "{query:?}");
+    }
+    // provider 前缀后缺少模型名同样是空查询。
+    let error = catalog.select("fixture/").unwrap_err();
+    assert_eq!(format!("{error:#}"), "model must not be empty");
+    // 未命中回显原始输入（保留未 trim 的空白），且不含密钥或 wire 名。
+    for (query, echoed) in [
+        ("nope", "nope"),
+        ("  nope  ", "  nope  "),
+        ("fixture/nope", "fixture/nope"),
+    ] {
+        let error = catalog.select(query).unwrap_err();
+        let message = format!("{error:#}");
+        assert_eq!(
+            message,
+            format!(
+                "no configured model matches \"{echoed}\"; use /model to list configured models"
+            )
+        );
+        assert!(!message.contains("secret-marker"), "{message}");
+        assert!(!message.contains("fixture-model"), "{message}");
+    }
+}

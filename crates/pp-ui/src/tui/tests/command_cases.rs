@@ -451,3 +451,47 @@ fn notification_filters_routine_feedback_and_keeps_independent_errors() {
     assert!(screen.contains("first failure"));
     assert!(screen.contains("second failure"));
 }
+
+#[test]
+fn initial_file_command_submits_run_and_clears_input() {
+    let (mut app, requests) = file_commands_app(review_files());
+    assert!(!app.submit_initial_command("/review src/main.rs"));
+    let WorkerCommand::Run { prompt, .. } = requests.try_recv().unwrap() else {
+        panic!("启动文件命令应下发 WorkerCommand::Run");
+    };
+    assert_eq!(prompt, "Review src/main.rs now.");
+    assert_eq!(app.input.lines(), &[""]);
+    assert_eq!(app.input_history, ["/review src/main.rs"]);
+    assert!(matches!(app.state, State::Running));
+}
+
+#[test]
+fn initial_unknown_command_notifies_and_keeps_draft() {
+    let (mut app, requests) = file_commands_app(review_files());
+    assert!(!app.submit_initial_command("/nope"));
+    assert!(requests.try_recv().is_err());
+    assert_eq!(app.input.lines(), &["/nope"]);
+    assert!(draw(&mut app, 100, 30).contains("unknown command: /nope; use /help"));
+    assert_notification(&mut app, Color::Rgb(224, 108, 117));
+}
+
+#[test]
+fn initial_parse_error_notifies_and_keeps_draft() {
+    let (mut app, requests) = file_commands_app(review_files());
+    assert!(!app.submit_initial_command("/mcp nope"));
+    assert!(requests.try_recv().is_err());
+    assert_eq!(app.input.lines(), &["/mcp nope"]);
+    assert!(draw(&mut app, 100, 30).contains("usage: /mcp"));
+    assert_notification(&mut app, Color::Rgb(224, 108, 117));
+}
+
+#[test]
+fn initial_shell_command_consumes_mode_prefix() {
+    let (mut app, requests) = file_commands_app(review_files());
+    assert!(!app.submit_initial_command("!echo hi"));
+    let WorkerCommand::Shell { command, .. } = requests.try_recv().unwrap() else {
+        panic!("启动 shell 命令应下发 WorkerCommand::Shell");
+    };
+    assert_eq!(command, "echo hi");
+    assert_eq!(app.input.lines(), &[""]);
+}

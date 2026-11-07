@@ -122,6 +122,7 @@ pub fn run(
     open_resume: bool,
     options: pp_config::config::TuiSettings,
     bootstrap: Option<pp_runtime::agent::Bootstrap>,
+    initial_command: Option<String>,
 ) -> Result<()> {
     // 初始化中途失败和 panic 同样恢复终端模式。
     let _guard = TerminalGuard;
@@ -160,6 +161,11 @@ pub fn run(
     if open_resume && matches!(app.state, State::Ready) {
         app.open_session_panel();
     }
+    // `pp /COMMAND`：与按 Enter 提交走同一路径；`/quit` 沿用既有退出收尾。
+    let mut initial_quit = false;
+    if let Some(command) = initial_command {
+        initial_quit = app.submit_initial_command(&command);
+    }
     let mut workspace = WorkspaceStatus::new(cwd)?;
     app.renderer = Some(render_worker::Worker::start().context("starting layout worker")?);
     let mut dirty = true;
@@ -169,7 +175,7 @@ pub fn run(
     loop {
         // 先采纳已经到达的后台结果，再用最新状态解释下一批按键。
         dirty |= app.receive();
-        let mut quit = false;
+        let mut quit = initial_quit;
         for event in initial_events.drain(..) {
             quit |= app.handle(event, &mut dirty);
         }

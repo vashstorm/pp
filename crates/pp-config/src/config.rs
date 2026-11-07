@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use pp_core::model::ThinkLevel;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -47,6 +47,13 @@ pub struct ModelChoice {
     pub model: String,
     pub protocol: models::Protocol,
     pub context_window: Option<u64>,
+}
+
+/// `--model` 解析结果：完整引用 + 已解析到具体档位。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelSelection {
+    pub reference: String,
+    pub effort: ThinkLevel,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -583,6 +590,97 @@ impl ModelCatalog {
             .collect()
     }
 
+    /// 模糊选择：`[provider/]model[:effort]`；provider 可省略，effort 省略时用模型默认档。
+    ///
+    /// 文本匹配按“完全相等 → 前缀 → 子串 → 子序列”分档（不区分大小写），同档内收藏优先，
+    /// 其余保持 catalog 顺序。这里只读取现有目录与偏好，不写入 agent.db。
+    pub fn select(&self, query: &str) -> Result<ModelSelection> {
+        // 错误文本回显用户原输入，因此先保留未 trim 的串。
+        let raw = query;
+        let query = query.trim();
+        ensure!(!query.is_empty(), "model must not be empty");
+        // 显式档位后缀；`default` 不作为档位，避免与模型 id 混淆。
+        let (query, effort) = match query.rsplit_once(':') {
+            Some((head, tail)) if !head.is_empty() => match explicit_effort(tail.trim()) {
+                Some(level) => (head, Some(level)),
+                None => (query, None),
+            },
+            _ => (query, None),
+        };
+        // provider 前缀只在左侧与已配置 provider 同名时生效；模型 id 本身允许含 `/`。
+        let (provider, query) = match query.split_once('/') {
+            Some((provider, model))
+                if self
+                    .providers
+                    .iter()
+                    .any(|candidate| candidate.id.eq_ignore_ascii_case(provider)) =>
+            {
+                ensure!(
+                    !provider.is_empty() && !model.is_empty(),
+                    "model must not be empty"
+                );
+                (Some(provider), model)
+            }
+            _ => (None, query),
+        };
+        let needle = query.to_lowercase();
+        let favorites = self.favorite_models();
+        let choices = self.choices();
+        let mut best: Option<((u8, bool, usize), &ModelChoice)> = None;
+        for (index, choice) in choices.iter().enumerate() {
+            if let Some(provider) = provider {
+                let in_provider = choice
+                    .reference
+                    .split_once('/')
+                    .is_some_and(|(id, _)| id.eq_ignore_ascii_case(provider));
+                if !in_provider {
+                    continue;
+                }
+            }
+            // reference 形如 `provider/model_id`，首个 `/` 之后的全部字符都属于模型 id。
+            let model_id = choice
+                .reference
+                .split_once('/')
+                .map_or(choice.reference.as_str(), |(_, model)| model);
+            let tier = std::iter::once(model_id)
+                .chain([choice.model.as_str()])
+                .chain(provider.is_none().then_some(choice.reference.as_str()))
+                .filter_map(|haystack| match_tier(&needle, haystack))
+                .min();
+            let Some(tier) = tier else { continue };
+            let favorite = favorites
+                .iter()
+                .any(|favorite| favorite == &choice.reference);
+            let key = (tier, !favorite, index);
+            if best.is_none_or(|(best_key, _)| key < best_key) {
+                best = Some((key, choice));
+            }
+        }
+        let Some((_, selected)) = best else {
+            bail!("no configured model matches \"{raw}\"; use /model to list configured models");
+        };
+        let reference = selected.reference.clone();
+        let thinking = self.resolve(&reference)?.thinking;
+        let effort = match effort {
+            Some(level) => {
+                ensure!(
+                    thinking.supports(level),
+                    "model {} does not support effort {}; options: {}",
+                    reference,
+                    level.as_str(),
+                    thinking
+                        .levels()
+                        .map(ThinkLevel::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                level
+            }
+            None => thinking.effective_default(self.default_think_level()),
+        };
+        Ok(ModelSelection { reference, effort })
+    }
+
     pub fn reload_models(&mut self) -> Result<()> {
         // 模型目录刷新不改变运行参数；偏好一律从 agent.db 读取，全部验证成功后才替换内存状态。
         let next = Self::with_settings(
@@ -658,6 +756,37 @@ impl ModelCatalog {
         crate::agent_store::AgentStore::open(&self.agent_db_path)
             .and_then(|store| store.model_usage())
     }
+}
+
+/// 显式档位后缀：只接受六个档位名（不区分大小写），`default` 留给模型 id。
+fn explicit_effort(value: &str) -> Option<ThinkLevel> {
+    ThinkLevel::ALL
+        .into_iter()
+        .find(|level| level.as_str().eq_ignore_ascii_case(value))
+}
+
+/// 文本匹配档位：`0` 完全相等、`1` 前缀、`2` 子串、`3` 子序列；不匹配返回 `None`。
+fn match_tier(needle: &str, haystack: &str) -> Option<u8> {
+    let haystack = haystack.to_lowercase();
+    if haystack == needle {
+        Some(0)
+    } else if haystack.starts_with(needle) {
+        Some(1)
+    } else if haystack.contains(needle) {
+        Some(2)
+    } else if is_subsequence(needle, &haystack) {
+        Some(3)
+    } else {
+        None
+    }
+}
+
+/// `needle` 的每个字符按顺序出现在 `haystack` 中；两者均已小写。
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut haystack = haystack.chars();
+    needle
+        .chars()
+        .all(|needle| haystack.any(|candidate| candidate == needle))
 }
 
 /// 默认引用优先级：启用的 Default Role → default_model → 第一个可用模型；

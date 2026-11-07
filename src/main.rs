@@ -30,11 +30,19 @@ use std::{
     disable_version_flag = true,
     args_conflicts_with_subcommands = true,
     about = "Minimal coding agent using OpenAI-compatible Responses or Chat Completions",
-    after_help = "Modes:\n  pp -p 'task'          run one task and exit\n  pp -r [SESSION_ID]    open the resume picker, or resume a saved session by ID\n  pp -c [SESSION_ID]    continue a saved session\n  pp                    interactive session (TUI on a terminal, line mode otherwise)\n\nUse `/login` and `/logout` in the TUI to manage subscription credentials, `pp stats --help` for statistics, or `pp gc [DAYS]` to remove data older than the given days (default 90)."
+    after_help = "Modes:\n  pp -p 'task'          run one task and exit\n  pp -r [SESSION_ID]    open the resume picker, or resume a saved session by ID\n  pp -c [SESSION_ID]    continue a saved session\n  pp /COMMAND           run a slash command immediately after startup\n  pp                    interactive session (TUI on a terminal, line mode otherwise)\n\nUse `/login` and `/logout` in the TUI to manage subscription credentials, `pp stats --help` for statistics, or `pp gc [DAYS]` to remove data older than the given days (default 90)."
 )]
 struct Args {
     #[command(subcommand)]
-    command: Option<Command>,
+    subcommand: Option<Command>,
+
+    /// 启动后立即执行的一条斜杠命令（例如 /commit）；与 -p、-r、-c 互斥
+    #[arg(
+        value_name = "COMMAND",
+        num_args = 1..,
+        conflicts_with_all = ["prompt", "resume", "continue_session"]
+    )]
+    command: Vec<String>,
 
     /// Print version information
     #[arg(short = 'v', short_alias = 'V', long, action = clap::ArgAction::Version)]
@@ -79,6 +87,10 @@ struct Args {
     /// Override tools.approvalMode from settings.yml for this run
     #[arg(long, value_enum, value_name = "MODE")]
     approval_mode: Option<ApprovalModeCli>,
+
+    /// 本次运行使用的模型，写法为 [provider/]model[:effort]；不写入偏好
+    #[arg(long, value_name = "MODEL")]
+    model: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -126,7 +138,7 @@ fn main() -> ExitCode {
     host_defaults::install(host_defaults::capture());
     let args = Args::parse();
     // gc reports the existing inventory without creating its own diagnostic log.
-    let logging = if matches!(args.command, Some(Command::Gc { .. })) {
+    let logging = if matches!(args.subcommand, Some(Command::Gc { .. })) {
         None
     } else {
         match logging::init() {
@@ -139,7 +151,7 @@ fn main() -> ExitCode {
     };
     let started = std::time::Instant::now();
     let pid = std::process::id();
-    let mode = if args.command.is_some() {
+    let mode = if args.subcommand.is_some() {
         "stats"
     } else if args.prompt.is_some() {
         "prompt"
@@ -215,8 +227,8 @@ fn run_gc(days: u32) -> Result<()> {
 }
 
 fn run(args: Args) -> Result<()> {
-    if let Some(command) = args.command {
-        return match command {
+    if let Some(subcommand) = args.subcommand {
+        return match subcommand {
             Command::Gc { days } => run_gc(days),
             Command::Stats {
                 host,
@@ -225,6 +237,20 @@ fn run(args: Args) -> Result<()> {
             } => stats::server::run(host, port, !no_open),
         };
     }
+    // 位置参数按单空格拼回一条斜杠命令；参数校验先于配置与网络，脚本能立即拿到失败。
+    let initial_command = {
+        let joined = args.command.join(" ");
+        let trimmed = joined.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            ensure!(
+                trimmed.starts_with('/') || trimmed.starts_with('!'),
+                "the positional COMMAND must start with '/' or '!' (use -p TEXT for a one-shot prompt)"
+            );
+            Some(trimmed.to_string())
+        }
+    };
     #[cfg(debug_assertions)]
     let _mock_server = {
         let server = pp_runtime::mock_ai::MockServer::start()?;
@@ -381,6 +407,19 @@ fn run(args: Args) -> Result<()> {
     if let (Some(mode), Ok(agent)) = (args.approval_mode, agent.as_mut()) {
         agent.set_approval_override(mode.into());
     }
+    // `--model` 只在本次运行生效；显式给出却无法解析时必须致命，不静默回退默认模型。
+    // 配置本身不可用时 `agent` 为 Err，此时没有 catalog 可校验，沿用既有交互修复流程。
+    if let (Some(query), Ok(agent)) = (args.model.as_deref(), agent.as_mut()) {
+        let selection = agent.select_model(query)?;
+        if !use_tui {
+            writeln!(
+                io::stderr().lock(),
+                "Model: {} (effort {})",
+                selection.reference,
+                selection.effort.as_str()
+            )?;
+        }
+    }
     if use_tui {
         return tui::run(
             agent,
@@ -391,6 +430,7 @@ fn run(args: Args) -> Result<()> {
             resume_picker,
             tui_settings,
             bootstrap,
+            initial_command,
         );
     }
     if let Ok(agent) = &mut agent {
@@ -427,5 +467,5 @@ fn run(args: Args) -> Result<()> {
             return cli::stop_cli_lsp(Some(&*active), Err(error));
         }
     }
-    cli::run_line_mode(agent, skills, file_commands)
+    cli::run_line_mode(agent, skills, file_commands, initial_command)
 }
