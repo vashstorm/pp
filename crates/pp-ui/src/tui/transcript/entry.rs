@@ -367,6 +367,15 @@ impl TranscriptEntry {
         matches!(self.tool.as_deref(), Some("grep" | "glob"))
     }
 
+    pub(super) fn is_wait_card(&self) -> bool {
+        self.tool.as_deref() == Some("wait")
+            && (self.result.is_none()
+                || self
+                    .result
+                    .as_ref()
+                    .is_some_and(|r| r["jobs"].is_array() || r["ok"] == false))
+    }
+
     pub(super) fn edit_path(&self) -> &str {
         self.arguments["path"]
             .as_str()
@@ -641,13 +650,7 @@ impl TranscriptEntry {
             }));
             return;
         }
-        if self.tool.as_deref() == Some("wait")
-            && (self.result.is_none()
-                || self
-                    .result
-                    .as_ref()
-                    .is_some_and(|r| r["jobs"].is_array() || r["ok"] == false))
-        {
+        if self.is_wait_card() {
             let lines = tool_display::wait_body(
                 tool_display::View {
                     name: "wait",

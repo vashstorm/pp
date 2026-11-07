@@ -9,7 +9,23 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
     let mut transcript = Transcript::new();
     transcript.begin_run();
     tool(&mut transcript, "wait", "wait", json!({}));
-    assert!(screen(&render(&mut transcript, 100, 30)).contains("Preparing wait"));
+    let text = screen(&render(&mut transcript, 100, 30));
+    assert!(
+        text.lines().any(|line| {
+            line.starts_with("  │ ") && line.contains("Preparing wait") && line.ends_with('│')
+        }),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("  ╭") && line.ends_with('╮')),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("  ╰") && line.ends_with('╯')),
+        "{text}"
+    );
     for ms in [1000, 1500] {
         transcript.progress(AgentEvent::ToolOutputSnapshot {
             id: "wait".into(),

@@ -355,6 +355,7 @@ impl Transcript {
                         && !error
                         && entry.kind != EntryKind::Activity
                         && background.is_none()
+                        && !entry.is_wait_card()
                     {
                         let color = if entry.tool.is_some() {
                             palette::TOOL_BORDER
