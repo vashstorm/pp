@@ -80,11 +80,11 @@ fn tui_todo_new_and_mode_switches_keep_old_lists_cleared() {
     }
 }
 
-#[test]
-fn plan_todo_approval_initializes_all_contexts_and_reminders_archive_same_bytes() {
+// 三种执行起点（新会话 / 保留上下文 / 压缩后）各自独立，均验证 todo 快照、
+// 完成提醒与归档字节一致。
+fn plan_todo_approval_case(context: usize) {
     for protocol in ["completion", "response"] {
-        for context in [0, 1, 2] {
-            let fixture = server();
+        let fixture = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
             let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
@@ -235,19 +235,33 @@ fn plan_todo_approval_initializes_all_contexts_and_reminders_archive_same_bytes(
                 std::fs::read_to_string(project.path().join(".pp/done/create-canary.md")).unwrap(),
                 TODO_TUI_BODY.replace("[]", "[x]")
             );
-            pty.input("/plan view\r");
-            pty.wait_for("todo completed plan panel", |screen| {
-                let text = screen.contents();
-                text.contains("Completed")
-                    && text.contains("2/2")
-                    && text.contains(".pp/done/create-canary.md")
-            });
-            pty.input("\x1b");
-            no_more(&fixture);
-            pty.input("\x03");
-            pty.finish();
-        }
+        pty.input("/plan view\r");
+        pty.wait_for("todo completed plan panel", |screen| {
+            let text = screen.contents();
+            text.contains("Completed")
+                && text.contains("2/2")
+                && text.contains(".pp/done/create-canary.md")
+        });
+        pty.input("\x1b");
+        no_more(&fixture);
+        pty.input("\x03");
+        pty.finish();
     }
+}
+
+#[test]
+fn plan_todo_approval_fresh_session_initializes_todos_and_archives_same_bytes() {
+    plan_todo_approval_case(0);
+}
+
+#[test]
+fn plan_todo_approval_kept_context_initializes_todos_and_archives_same_bytes() {
+    plan_todo_approval_case(1);
+}
+
+#[test]
+fn plan_todo_approval_compacted_context_initializes_todos_and_archives_same_bytes() {
+    plan_todo_approval_case(2);
 }
 
 #[test]

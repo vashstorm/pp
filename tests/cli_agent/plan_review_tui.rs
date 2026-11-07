@@ -10,11 +10,10 @@ fn plan_wait_report(pty: &mut Pty, marker: &str, outdated: bool) {
     });
 }
 
-#[test]
-fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution() {
+// 审批动作 0/1/4 各自独立：新会话执行、保留上下文执行、恢复后返回讨论。
+fn plan_review_case(action: usize) {
     for protocol in ["completion", "response"] {
-        for action in [0, 1, 4] {
-            let fixture = server();
+        let fixture = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
             let remote = super::mcp_remote::fixture::RemoteServer::new("json");
@@ -257,11 +256,25 @@ fn plan_review_tui_isolates_readonly_research_and_report_never_blocks_execution(
                     b"approved bytes"
                 );
             }
-            pty.input("\x03");
-            pty.finish();
-            no_more(&fixture);
-        }
+        pty.input("\x03");
+        pty.finish();
+        no_more(&fixture);
     }
+}
+
+#[test]
+fn plan_review_readonly_report_never_blocks_fresh_execution() {
+    plan_review_case(0);
+}
+
+#[test]
+fn plan_review_readonly_report_never_blocks_context_execution() {
+    plan_review_case(1);
+}
+
+#[test]
+fn plan_review_report_resume_discusses_without_changing_plan() {
+    plan_review_case(4);
 }
 
 #[test]

@@ -190,119 +190,127 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
     }
 }
 
+// Plan 模式的 MCP 生命周期按执行起点拆分：保留上下文执行、退出 Plan 后显式执行。
+fn plan_mcp_reconnection_case(off: bool) {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut settings = super::super::mcp::settings("");
+        settings["notification_timeout_seconds"] = json!(1);
+        crate::write_settings(home.path(), settings.to_string()).unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&fixture, Some(protocol)),
+        )
+        .unwrap();
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready();
+        plan_enter(&mut pty, &fixture);
+        cancel_mcp_assert_pid_stopped(&project.path().join("mcp-log.pid"));
+        plan_drive_ready(
+            &mut pty,
+            &fixture,
+            protocol,
+            "Plan before MCP reconnection",
+            PLAN_TUI_BODY,
+        );
+        assert_eq!(
+            cancel_mcp_log(project.path())
+                .iter()
+                .filter(|entry| entry["method"] == "initialize")
+                .count(),
+            1
+        );
+        let id = saved_session_id(home.path());
+        pty.input("\x03");
+        pty.finish();
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
+        pty.ready();
+        plan_wait_mode(&mut pty, "Plan");
+        no_more(&fixture);
+        pty.input("/plan view\r");
+        plan_wait_review(&mut pty, 1);
+        no_more(&fixture);
+        assert_eq!(
+            cancel_mcp_log(project.path())
+                .iter()
+                .filter(|entry| entry["method"] == "initialize")
+                .count(),
+            1
+        );
+        if off {
+            pty.input("\x1b");
+            pty.wait_for("closing review before off", |screen| {
+                !screen.contents().contains("Execute with context")
+            });
+            // 裸 /plan 直接切换退出：无本地确认框，已保存草稿保留在磁盘。
+            pty.input("/plan\r");
+            plan_wait_execute(&mut pty);
+            no_more(&fixture);
+            pty.input("Explicit normal execution after leaving Plan\r");
+        } else {
+            plan_choose(&mut pty, 1);
+        }
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert!(
+            body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "mcp__local__echo"
+                    || tool["name"] == "mcp__local__echo"),
+            "{body}"
+        );
+        assert_eq!(
+            cancel_mcp_log(project.path())
+                .iter()
+                .filter(|entry| entry["method"] == "initialize")
+                .count(),
+            2
+        );
+        plan_calls(
+            request,
+            protocol,
+            json!([
+                plan_call(
+                    protocol,
+                    "execute-mcp",
+                    "mcp__local__echo",
+                    json!({"text":"approved tool call"})
+                ),
+                plan_call(
+                    protocol,
+                    "mcp-canary",
+                    "write",
+                    json!({"path":"canary.txt","content":"MCP handoff executed"})
+                )
+            ]),
+        );
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        let mcp = outputs.iter().find(|(id, _)| id == "execute-mcp").unwrap();
+        assert_eq!(mcp.1["ok"], true);
+        assert_eq!(mcp.1["result"]["content"][0]["text"], "中文结果");
+        assert_eq!(
+            std::fs::read(project.path().join("canary.txt")).unwrap(),
+            b"MCP handoff executed"
+        );
+        pty.input("\x03");
+        pty.finish();
+        drop(request);
+        cancel_mcp_assert_pid_stopped(&project.path().join("mcp-log.pid"));
+    }
+}
+
 #[test]
 fn plan_tui_mcp_is_stopped_in_plan_and_cleanup_tracks_execute_reconnection() {
-    for protocol in ["completion", "response"] {
-        for off in [false, true] {
-            let fixture = server();
-            let home = tempfile::tempdir().unwrap();
-            let project = tempfile::tempdir().unwrap();
-            let mut settings = super::super::mcp::settings("");
-            settings["notification_timeout_seconds"] = json!(1);
-            crate::write_settings(home.path(), settings.to_string()).unwrap();
-            std::fs::write(
-                config_path(home.path(), "models.yml"),
-                response_models(&fixture, Some(protocol)),
-            )
-            .unwrap();
-            let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
-            pty.ready();
-            plan_enter(&mut pty, &fixture);
-            cancel_mcp_assert_pid_stopped(&project.path().join("mcp-log.pid"));
-            plan_drive_ready(
-                &mut pty,
-                &fixture,
-                protocol,
-                "Plan before MCP reconnection",
-                PLAN_TUI_BODY,
-            );
-            assert_eq!(
-                cancel_mcp_log(project.path())
-                    .iter()
-                    .filter(|entry| entry["method"] == "initialize")
-                    .count(),
-                1
-            );
-            let id = saved_session_id(home.path());
-            pty.input("\x03");
-            pty.finish();
-            let mut pty = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
-            pty.ready();
-            plan_wait_mode(&mut pty, "Plan");
-            no_more(&fixture);
-            pty.input("/plan view\r");
-            plan_wait_review(&mut pty, 1);
-            no_more(&fixture);
-            assert_eq!(
-                cancel_mcp_log(project.path())
-                    .iter()
-                    .filter(|entry| entry["method"] == "initialize")
-                    .count(),
-                1
-            );
-            if off {
-                pty.input("\x1b");
-                pty.wait_for("closing review before off", |screen| {
-                    !screen.contents().contains("Execute with context")
-                });
-                // 裸 /plan 直接切换退出：无本地确认框，已保存草稿保留在磁盘。
-                pty.input("/plan\r");
-                plan_wait_execute(&mut pty);
-                no_more(&fixture);
-                pty.input("Explicit normal execution after leaving Plan\r");
-            } else {
-                plan_choose(&mut pty, 1);
-            }
-            let (request, body) = pty.request_at(&fixture, api_path(protocol));
-            assert!(
-                body["tools"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|tool| tool["function"]["name"] == "mcp__local__echo"
-                        || tool["name"] == "mcp__local__echo"),
-                "{body}"
-            );
-            assert_eq!(
-                cancel_mcp_log(project.path())
-                    .iter()
-                    .filter(|entry| entry["method"] == "initialize")
-                    .count(),
-                2
-            );
-            plan_calls(
-                request,
-                protocol,
-                json!([
-                    plan_call(
-                        protocol,
-                        "execute-mcp",
-                        "mcp__local__echo",
-                        json!({"text":"approved tool call"})
-                    ),
-                    plan_call(
-                        protocol,
-                        "mcp-canary",
-                        "write",
-                        json!({"path":"canary.txt","content":"MCP handoff executed"})
-                    )
-                ]),
-            );
-            let (request, body) = pty.request_at(&fixture, api_path(protocol));
-            let outputs = cancel_tool_outputs(&body, protocol);
-            let mcp = outputs.iter().find(|(id, _)| id == "execute-mcp").unwrap();
-            assert_eq!(mcp.1["ok"], true);
-            assert_eq!(mcp.1["result"]["content"][0]["text"], "中文结果");
-            assert_eq!(
-                std::fs::read(project.path().join("canary.txt")).unwrap(),
-                b"MCP handoff executed"
-            );
-            pty.input("\x03");
-            pty.finish();
-            drop(request);
-            cancel_mcp_assert_pid_stopped(&project.path().join("mcp-log.pid"));
-        }
-    }
+    plan_mcp_reconnection_case(false);
+}
+
+#[test]
+fn plan_tui_mcp_reconnects_after_leaving_plan_and_explicit_execution() {
+    plan_mcp_reconnection_case(true);
 }
 
 #[test]

@@ -642,11 +642,9 @@ fn tui_slash_resume_history_keeps_current_cwd_status_files_model_and_effort() {
     assert_eq!(resume_history_session_files(home.path()).len(), 1);
 }
 
-#[test]
-fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_history() {
-    for saved_protocol in ["completion", "response"] {
-        for current_protocol in ["completion", "response"] {
-            let server = server();
+// 跨协议恢复的四种组合各自独立：保存协议 × 当前协议。
+fn resume_history_model_case(saved_protocol: &str, current_protocol: &str) {
+    let server = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
             let settings = config_path(home.path(), "settings.yml");
@@ -751,8 +749,26 @@ fn tui_slash_resume_keeps_selected_model_across_protocols_and_reloads_converted_
             reloaded.finish();
             no_more(&server);
             assert_eq!(resume_history_session_files(home.path()).len(), 1);
-        }
-    }
+}
+
+#[test]
+fn tui_slash_resume_keeps_selected_model_within_completion() {
+    resume_history_model_case("completion", "completion");
+}
+
+#[test]
+fn tui_slash_resume_keeps_selected_model_from_completion_to_response() {
+    resume_history_model_case("completion", "response");
+}
+
+#[test]
+fn tui_slash_resume_keeps_selected_model_from_response_to_completion() {
+    resume_history_model_case("response", "completion");
+}
+
+#[test]
+fn tui_slash_resume_keeps_selected_model_within_response() {
+    resume_history_model_case("response", "response");
 }
 
 #[test]

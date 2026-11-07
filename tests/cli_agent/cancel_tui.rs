@@ -713,17 +713,17 @@ fn tui_cancel_tool_batch_stops_process_group_and_pairs_results_on_next_request()
 // 显示状态行、不追加提示块、不误报 interrupted；/resume 列表为 aborted，完成新任务后可为 done；
 // -r ID -p 与 -c ID 的原生请求只含已接受用户消息、完整旧历史和成对工具结果，
 // 不执行旧工具，pp.cancelled 不进入请求。
-#[test]
-fn tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_legal() {
-    #[derive(Clone, Copy, PartialEq)]
-    enum CancelPhase {
-        Headers,
-        Sse,
-        Tools,
-    }
-    for protocol in ["completion", "response"] {
-        for phase in [CancelPhase::Headers, CancelPhase::Sse, CancelPhase::Tools] {
-            let fixture = server();
+#[derive(Clone, Copy, PartialEq)]
+enum CancelPhase {
+    Headers,
+    Sse,
+    Tools,
+}
+
+// 一个取消阶段 × 一种协议的完整往返：取消终态落盘、-r 恢复、/resume 标记、
+// 行模式 -r/-c 复用历史。阶段之间互不依赖，按用例拆分并行执行。
+fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
+    let fixture = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
             std::fs::write(config_path(home.path(), "settings.yml"), CANCEL_SETTINGS).unwrap();
@@ -938,15 +938,43 @@ fn tui_cancel_terminal_state_persists_resumes_aborted_and_keeps_native_history_l
             );
             assert_eq!(output.stdout, b"persist continue answer\n");
             cancel_assert_no_request(&fixture);
-            if phase == CancelPhase::Tools {
-                assert_eq!(
-                    std::fs::read_to_string(project.path().join("kept.txt")).unwrap(),
-                    "kept"
-                );
-                assert!(!project.path().join("skipped.txt").exists());
-            }
+        if phase == CancelPhase::Tools {
+            assert_eq!(
+                std::fs::read_to_string(project.path().join("kept.txt")).unwrap(),
+                "kept"
+            );
+            assert!(!project.path().join("skipped.txt").exists());
         }
-    }
+}
+
+#[test]
+fn tui_cancel_headers_persists_and_resumes_completion() {
+    cancel_terminal_state_case("completion", CancelPhase::Headers);
+}
+
+#[test]
+fn tui_cancel_headers_persists_and_resumes_response() {
+    cancel_terminal_state_case("response", CancelPhase::Headers);
+}
+
+#[test]
+fn tui_cancel_sse_persists_and_resumes_completion() {
+    cancel_terminal_state_case("completion", CancelPhase::Sse);
+}
+
+#[test]
+fn tui_cancel_sse_persists_and_resumes_response() {
+    cancel_terminal_state_case("response", CancelPhase::Sse);
+}
+
+#[test]
+fn tui_cancel_tools_persists_and_resumes_completion() {
+    cancel_terminal_state_case("completion", CancelPhase::Tools);
+}
+
+#[test]
+fn tui_cancel_tools_persists_and_resumes_response() {
+    cancel_terminal_state_case("response", CancelPhase::Tools);
 }
 
 // 验证项 4 的持久化故障模式：取消收尾的 commit/sync 失败必须优先显示
