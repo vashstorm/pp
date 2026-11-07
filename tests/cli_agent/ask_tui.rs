@@ -612,8 +612,18 @@ fn ask_tui_tabs_fit_current_page_and_keep_message_tail_above_panel() {
                 let (bottom, _) = ask_panel_find(screen, "╰");
                 assert_eq!(bottom - top + 1, height, "高度应随当前题变化");
                 let (tail, _) = ask_panel_find(screen, "ASSISTANT-MESSAGE-TAIL");
-                assert!(tail < top, "消息尾部必须显示在面板上方：{}", screen.contents());
                 let text = screen.contents();
+                assert!(tail + 1 < top, "消息与面板之间应至少留出一行：{text}");
+                assert!(
+                    text.lines()
+                        .nth(usize::from(top - 1))
+                        .is_some_and(|row| row.trim().is_empty())
+                );
+                assert!(
+                    text.lines()
+                        .nth(usize::from(top + 1))
+                        .is_some_and(|row| row.contains(" Scope   Mode   Review "))
+                );
                 assert!(!text.contains("ASK-MESSAGE-TAIL"), "未完成的 ask 详情不应进入消息区：{text}");
                 assert!(!text.contains("ask · running"));
             }
@@ -651,13 +661,11 @@ fn ask_tui_choice_descriptions_and_inline_editor_survive_resize() {
         assert_eq!(description_row, row + 1, "说明应紧接对应选项显示");
         let (title_row, _) = ask_panel_find(screen, "╭ Ask");
         assert_eq!(row, title_row + 3, "标题、页签和题干下方显示选项");
-        assert_eq!(ask_panel_find(screen, "1. Database").0, title_row + 1);
-        assert_eq!(ask_panel_find(screen, "Review").0, title_row + 1);
+        assert_eq!(ask_panel_find(screen, " Database   Review ").0, title_row + 1);
         let (next_row, _) = ask_panel_find(screen, "SQLite");
         assert_eq!(next_row, row + 2, "下一选项应紧接说明，不插入空行");
         let panel_text = screen.contents().lines().skip(usize::from(title_row)).collect::<Vec<_>>().join("\n");
         assert!(panel_text.contains("Choose a database"));
-        assert!(panel_text.contains("1. Database"), "页签应显示题目标签");
         assert!(panel_text.contains("Shared database"));
         assert!(panel_text.contains("Embedded storage"));
         assert!(screen.contents().contains("󰄱 PostgreSQL"), "推荐不自动勾选");

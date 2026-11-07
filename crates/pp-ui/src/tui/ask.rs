@@ -597,16 +597,13 @@ impl Panel {
             .questions
             .questions
             .iter()
-            .enumerate()
-            .map(|(index, question)| {
+            .map(|question| {
                 let label = question
                     .header
                     .as_deref()
-                    .filter(|header| !header.trim().is_empty());
-                match label {
-                    Some(label) => format!(" {}. {} ", index + 1, menu_text(label)),
-                    None => format!(" Question {} ", index + 1),
-                }
+                    .filter(|header| !header.trim().is_empty())
+                    .unwrap_or(&question.id);
+                format!(" {} ", menu_text(label).trim())
             })
             .collect();
         if self.has_review() {
@@ -628,25 +625,27 @@ impl Panel {
         {
             start += 1;
         }
-        let mut x = area.x;
+        let mut spans = Vec::new();
+        let mut remaining = usize::from(area.width);
         for (index, label) in labels.iter().enumerate().skip(start) {
-            let width = Line::raw(label)
-                .width()
-                .min(usize::from(area.right().saturating_sub(x))) as u16;
-            if width == 0 {
-                break;
+            let width = Line::raw(label).width();
+            if index > start {
+                if remaining < width + 1 {
+                    break;
+                }
+                // 页签自身左右各留一格，中间的一格使用面板背景。
+                spans.push(Span::raw(" "));
+                remaining -= 1;
             }
             let style = if index == active {
                 Style::default().fg(ACTIVITY).bg(ASK_TAB_BG)
             } else {
                 Style::default().fg(DIM)
             };
-            frame.render_widget(
-                Line::styled(label.as_str(), style),
-                Rect::new(x, area.y, width, 1),
-            );
-            x = x.saturating_add(width).saturating_add(1);
+            spans.push(Span::styled(label.as_str(), style));
+            remaining = remaining.saturating_sub(width);
         }
+        frame.render_widget(Line::from(spans), area);
     }
 
     fn draw_compact(&mut self, frame: &mut Frame, area: Rect) {
@@ -1401,11 +1400,10 @@ mod tests {
     #[test]
     fn tabs_highlight_current_question_and_review_including_narrow_layout() {
         let mut first = question("first", false, None, &["A"]);
-        first.header = Some("范围".into());
-        let mut second = question("second", true, None, &["B"]);
-        second.header = Some("模式".into());
+        first.header = Some(" 范围\t".into());
+        let second = question("mode", true, None, &["B"]);
         let mut panel = panel(vec![first, second]);
-        for (page, label) in [(0, "1. 范围"), (1, "2. 模式"), (2, "Review")] {
+        for (page, label) in [(0, "范围"), (1, "mode"), (2, "Review")] {
             for width in [80, 18] {
                 let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
                 terminal
@@ -1421,9 +1419,10 @@ mod tests {
                     .filter(|&x| buffer[(x, row)].bg == ASK_TAB_BG)
                     .map(|x| buffer[(x, row)].symbol())
                     .collect();
-                assert!(
-                    highlighted.contains(label),
-                    "当前页签应可见且高亮：{highlighted}"
+                assert_eq!(
+                    highlighted,
+                    format!(" {label} "),
+                    "高亮背景应覆盖当前页签及其左右各一个空格"
                 );
                 for x in 2..width.saturating_sub(2) {
                     let cell = &buffer[(x, row)];
@@ -1435,9 +1434,10 @@ mod tests {
                 }
                 if width == 80 {
                     let text: String = columns.map(|x| buffer[(x, row)].symbol()).collect();
-                    for expected in ["1. 范围", "2. 模式", "Review"] {
-                        assert!(text.contains(expected), "应显示全部页签：{text}");
-                    }
+                    assert!(
+                        text.contains(" 范围   mode   Review "),
+                        "页签之间应正好留三个空格：{text}"
+                    );
                 }
             }
             assert_eq!(

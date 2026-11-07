@@ -77,7 +77,9 @@ impl App {
                 .map_or(0, |panel| panel.height(base, area.height))
         }
         .min(above);
-        let remaining = above.saturating_sub(ask_height);
+        // 极矮的终端优先保留至少一行对话内容。
+        let ask_spacing = u16::from(ask_height > 0 && above - ask_height > 1);
+        let remaining = above - ask_height - ask_spacing;
         let todo_height = if self.native_render || self.plan_panel.is_none() {
             self.todo_panel
                 .height(area.width, area.height, remaining.saturating_sub(1))
@@ -96,7 +98,12 @@ impl App {
         let conversation_height =
             remaining.saturating_sub(todo_height + subagent_height + todo_spacing);
         let conversation = Rect::new(area.x, area.y, area.width, conversation_height);
-        let ask = Rect::new(area.x, conversation.bottom(), area.width, ask_height);
+        let ask = Rect::new(
+            area.x,
+            conversation.bottom() + ask_spacing,
+            area.width,
+            ask_height,
+        );
         let todo = Rect::new(area.x, ask.bottom() + todo_spacing, area.width, todo_height);
         let subagents = Rect::new(area.x, todo.bottom(), area.width, subagent_height);
         let attachments = Rect::new(area.x, subagents.bottom(), area.width, attachments_height);
