@@ -1094,21 +1094,19 @@ impl Panel {
         };
         let icon = status_icon(agent.status, self.clock);
         let name = projection::truncate(&agent.name);
-        let model = model_line(agent, width / 2);
-        let model_width = model.width();
+        let model_column = width.div_ceil(2);
+        let model = model_line(agent, width - model_column);
         let left = vec![
             colored(marker, ACCENT),
             colored(row.prefix.clone(), MUTED),
             colored(format!("{icon} "), status_color(agent.status)),
             colored(name, if row.muted { MUTED } else { ACTIVITY }),
         ];
-        let mut first = fit_line(Line::from(left), width.saturating_sub(model_width + 1));
-        if model_width > 0 {
-            first.spans.push(Span::raw(
-                " ".repeat(width.saturating_sub(first.width() + model_width)),
-            ));
-            first.spans.extend(model.spans);
-        }
+        let mut first = fit_line(Line::from(left), model_column.saturating_sub(1));
+        first
+            .spans
+            .push(Span::raw(" ".repeat(model_column - first.width())));
+        first.spans.extend(model.spans);
         let indent = 4 + Line::raw(&row.prefix).width();
         let mut lines = vec![first];
         if agent.status == AgentStatus::Running {
@@ -1668,6 +1666,7 @@ fn format_duration(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pp_config::config::ModelRole;
     use pp_core::events::AgentEvent;
     use pp_core::model::ThinkLevel;
     use pp_runtime::subagent::HubAgent;
@@ -1846,6 +1845,30 @@ mod tests {
         assert_eq!(marker.fg, ACCENT);
         assert_eq!(buffer[(6, 4)].fg, ACTIVITY);
         assert_eq!(buffer[(81, 5)].bg, SELECTED_BG);
+    }
+
+    #[test]
+    fn roster_roles_align_with_different_model_widths() {
+        let mut slow = record("a1", "Main", "running");
+        slow.spec.model_role = Some(ModelRole::Slow);
+        slow.spec.model = "provider/long-model-name".into();
+        slow.spec.thinking = ThinkLevel::High;
+        let mut fast = record("a2", "Main", "idle");
+        fast.spec.model_role = Some(ModelRole::Fast);
+        fast.spec.model = "provider/fast".into();
+        let mut panel = panel(vec![slow, fast], vec![]);
+        let mut drafts = Drafts::default();
+
+        for width in [80, 140] {
+            let screen = render(&mut panel, &mut drafts, width, 24);
+            let role_column = |role| {
+                screen
+                    .iter()
+                    .find_map(|line| line.find(role).map(|offset| line[..offset].chars().count()))
+                    .unwrap()
+            };
+            assert_eq!(role_column("SLOW · "), role_column("FAST · "), "{width}");
+        }
     }
 
     #[test]
