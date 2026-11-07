@@ -1,9 +1,12 @@
 //! App 与 Agent Hub 观察线程之间的桥：根 epoch、请求 id、child 草稿与控制 ACK。
 
-use crate::tui::{App, Event, KeyEventKind, KeyModifiers, subagents};
+use crate::tui::{App, Event, KeyEventKind, KeyModifiers, WorkerCommand, subagents};
 use crossterm::event::{Event as CrosstermEvent, KeyCode};
 use pp_runtime::subagent::Binding;
 use std::sync::mpsc::TryRecvError;
+
+/// 没有任何根绑定时面板显示的固定提示：不是运行错误，而是当前会话不提供 task 能力。
+const UNAVAILABLE: &str = "Subagents are unavailable in this session; no binding was granted.";
 
 /// 一次已发出的控制请求；成功后才清掉同一份草稿。
 pub(in crate::tui) struct HubSend {
@@ -33,24 +36,59 @@ impl App {
         }
     }
 
-    /// 打开 Hub；未获得 Binding 时显示不可用空态而不是 panic。
+    /// 打开 Hub；未获得 Binding 时先请 worker 重建，再决定空态还是 Roster。
     pub(in crate::tui) fn open_hub(&mut self) {
         self.menu = None;
         self.menu_dismissed = true;
         self.subagent_panel = Some(subagents::Panel::default());
         self.ensure_hub_worker();
-        let binding = self.hub_binding();
-        if binding.is_none() {
-            if let Some(panel) = &mut self.subagent_panel {
-                panel.set_error(
-                    "Subagents are unavailable in this session; no binding was granted.".into(),
-                );
+        self.subagent_status = None;
+        match self.hub_binding() {
+            Some(binding) => {
+                self.hub_bound = Some(binding);
+                self.hub_attach();
             }
+            // `/resume`、`/tree`、`/new` 与计划交接会停掉旧根；
+            // 此时绑定为空并不代表会话没有历史子 Agent，交由 worker 用当前会话目录重建。
+            None => self.request_subagents(),
+        }
+    }
+
+    /// 请 worker 重建根绑定：成功直接写回共享 slot，失败只影响面板提示。
+    fn request_subagents(&mut self) {
+        let sent = self
+            .commands
+            .as_ref()
+            .is_some_and(|sender| sender.send(WorkerCommand::EnsureSubagents).is_ok());
+        if sent {
             return;
         }
-        self.hub_bound = binding;
-        self.subagent_status = None;
-        self.hub_attach();
+        self.fail_worker();
+        self.set_hub_error(UNAVAILABLE);
+    }
+
+    /// worker 重建结果：成功按新根重新 attach，失败保留会话并只在面板报告。
+    pub(in crate::tui) fn subagents_ensured(&mut self, result: anyhow::Result<()>) {
+        if self.subagent_panel.is_none() {
+            return;
+        }
+        match result {
+            Ok(()) => match self.hub_binding() {
+                Some(binding) => {
+                    self.hub_bound = Some(binding);
+                    self.subagent_status = None;
+                    self.hub_attach();
+                }
+                None => self.set_hub_error(UNAVAILABLE),
+            },
+            Err(error) => self.set_hub_error(format!("Subagents are unavailable: {error:#}")),
+        }
+    }
+
+    fn set_hub_error(&mut self, message: impl Into<String>) {
+        if let Some(panel) = &mut self.subagent_panel {
+            panel.set_error(message.into());
+        }
     }
 
     /// 用当前根重新扫描；同一根保留 child 草稿。

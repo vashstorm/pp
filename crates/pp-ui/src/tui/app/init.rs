@@ -364,6 +364,10 @@ impl App {
                             push_runtime_snapshot(&agent, &mut snapshots);
                             WorkerEvent::Reset
                         }
+                        // 绑定写入 agent 与 UI 共享的 slot；成功无需额外事件载荷。
+                        WorkerCommand::EnsureSubagents => {
+                            WorkerEvent::SubagentsEnsured(agent.ensure_subagents())
+                        }
                         WorkerCommand::SaveDefaultThinkLevel(level) => {
                             let result = agent.save_default_think_level(level).map(|()| level);
                             if result.is_ok() {

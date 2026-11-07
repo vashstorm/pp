@@ -699,6 +699,10 @@ impl App {
                     }
                     changed = true;
                 }
+                Ok(WorkerEvent::SubagentsEnsured(result)) => {
+                    self.subagents_ensured(result);
+                    changed = true;
+                }
                 Ok(WorkerEvent::PlansListed(result)) => {
                     self.state = State::Ready;
                     if let Some(panel) = &mut self.plan_list_panel {

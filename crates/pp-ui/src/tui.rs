@@ -376,6 +376,8 @@ enum WorkerCommand {
         cancellation: CancellationToken,
     },
     Reset,
+    /// 会话根切换（/resume、/tree、/new）会停掉旧子 Agent 根；Hub 打开时按需重建。
+    EnsureSubagents,
     SwitchModel(String),
     ApplyModelTargets,
     SaveDefaultThinkLevel(ThinkLevel),
@@ -489,6 +491,8 @@ enum WorkerEvent {
     FavoriteModelsSaved(Result<Vec<String>>),
     SessionDeleted(Result<()>),
     SessionResumed(Result<ResumeState>),
+    /// 子 Agent 根绑定重建结果：只影响 Hub 可读性，不改变会话状态。
+    SubagentsEnsured(Result<()>),
     TreeRead(Result<pp_runtime::agent::persistence::tree::View>),
     TreeNavigated(Result<pp_runtime::agent::TreeNavigation>),
     ChangesRead(ChangesView),

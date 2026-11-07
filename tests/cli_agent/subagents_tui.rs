@@ -759,3 +759,78 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
     resumed.input("\x03");
     resumed.finish();
 }
+
+/// `/resume` 之后不追加任何任务，Agent Hub 也必须立即可读该会话的 task 子 Agent。
+/// 旧实现只在下一轮 run 里重建根绑定，面板会一直停在 “no binding was granted”。
+#[test]
+fn agent_hub_rebinds_after_slash_resume_without_a_turn() {
+    let protocol = "completion";
+    let fixture = server();
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(config_path(home.path(), "settings.yml"), task_fixture_settings()).unwrap();
+    std::fs::write(
+        config_path(home.path(), "models.yml"),
+        response_models(&fixture, Some(protocol)),
+    )
+    .unwrap();
+
+    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    pty.ready();
+    pty.input("rebind resume task\r");
+    let mut children = hub_dispatch(
+        &mut pty,
+        &fixture,
+        protocol,
+        json!({"context":"rebind context","tasks":[{"role":"fast","task":"rebind child work"}]}),
+        &["rebind child work"],
+    );
+    hub_finish_child(
+        &mut pty,
+        &fixture,
+        protocol,
+        children.remove(0),
+        "rebind-child-final",
+    );
+    pty.ready();
+    let id = saved_session_id(home.path());
+    pty.input("/quit\r");
+    pty.finish();
+    no_more(&fixture);
+
+    // 同一目录下的新进程：/resume 选中该会话后不发任务，直接打开 Hub。
+    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    pty.ready();
+    pty.input("/resume\r");
+    pty.wait_for("history lists the saved session", |screen| {
+        screen.contents().contains("rebind resume task")
+    });
+    pty.input("\r");
+    pty.text("rebind resume task");
+    pty.ready();
+    pty.input("/subagents\r");
+    pty.text("Agent Hub");
+    // Roster 与 inspector 必须回到已停靠的子 Agent，而不是绑定缺失提示。
+    pty.text("rebind child work");
+    pty.text("Agent ID a1");
+    no_more(&fixture);
+    // 详情仍需能读到子 Agent 自己的日志正文。
+    pty.input("\r");
+    pty.text("Agent Hub · fast / a1");
+    pty.text("rebind-child-final");
+    pty.input("\x1b");
+    hub_close(&mut pty);
+    // `/new` 同样会停掉旧根：新会话 Hub 也要能重新绑定，而不是只能等下一条消息。
+    pty.input("/new\r");
+    pty.ready();
+    pty.input("/subagents\r");
+    pty.wait_for("hub binds a fresh session without a notice", |screen| {
+        let text = screen.contents();
+        text.contains("Roster ·") && !text.contains("unavailable")
+    });
+    hub_close(&mut pty);
+    pty.input("\x03");
+    pty.finish();
+    // 恢复原地续写：不因打开面板而新建会话。
+    assert_eq!(saved_session_id(home.path()), id);
+}
