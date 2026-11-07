@@ -82,6 +82,7 @@ fn tui_roles_configures_model_and_effort_without_switching_current_session() {
                 "VISION",
                 "PLAN",
                 "REVIEW",
+                "EXPLORER",
             ]
             .into_iter()
             .all(|label| text.contains(label))
@@ -129,7 +130,7 @@ fn tui_roles_configures_model_and_effort_without_switching_current_session() {
     );
     pty.input(" ");
     pty.wait_for("取消选中并保存 Role", |screen| {
-        screen.contents().contains("0/6")
+        screen.contents().contains("0/7")
     });
     assert_eq!(
         read_fast_role(),

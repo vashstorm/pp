@@ -10,16 +10,18 @@ pub enum ModelRole {
     Vision,
     Plan,
     Review,
+    Explorer,
 }
 
 impl ModelRole {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Default,
         Self::Fast,
         Self::Slow,
         Self::Vision,
         Self::Plan,
         Self::Review,
+        Self::Explorer,
     ];
 
     pub fn name(self) -> &'static str {
@@ -30,6 +32,7 @@ impl ModelRole {
             Self::Vision => "VISION",
             Self::Plan => "PLAN",
             Self::Review => "REVIEW",
+            Self::Explorer => "EXPLORER",
         }
     }
 }

@@ -603,11 +603,12 @@ impl Panel {
                         if active { GOLD } else { TEXT },
                         "Roles".to_owned(),
                         format!(
-                            "{}/6",
+                            "{}/{}",
                             self.roles
                                 .values()
                                 .filter(|assignment| assignment.enabled)
-                                .count()
+                                .count(),
+                            ModelRole::ALL.len()
                         ),
                     ),
                     1 => (
@@ -747,6 +748,7 @@ impl Panel {
                             ModelRole::Vision => Color::Rgb(255, 64, 85),
                             ModelRole::Plan => Color::Rgb(153, 194, 232),
                             ModelRole::Review => Color::Rgb(187, 154, 247),
+                            ModelRole::Explorer => Color::Rgb(126, 207, 197),
                         }
                     };
                     let marker = if is_fallback {
@@ -980,7 +982,7 @@ mod tests {
     }
 
     #[test]
-    fn roles_layout_has_six_roles_sidebar_colors_and_independent_efforts() {
+    fn roles_layout_has_seven_roles_sidebar_colors_and_independent_efforts() {
         let mut panel = panel();
         panel.roles.insert(
             ModelRole::Fast,
@@ -1007,9 +1009,10 @@ mod tests {
             "VISION",
             "PLAN",
             "REVIEW",
+            "EXPLORER",
             "high",
             "none",
-            "1/6",
+            "1/7",
         ] {
             assert!(text.contains(label), "{label}: {text}");
         }

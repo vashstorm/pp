@@ -82,6 +82,81 @@ fn subagent_role_is_required_and_main_roles_are_rejected_in_both_protocols() {
 }
 
 #[test]
+fn explorer_role_is_read_only_and_uses_the_exploration_prompt_in_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let models = if protocol == "completion" {
+            fixture_models(&server)
+        } else {
+            response_models(&server, Some("response"))
+        };
+        let settings = "model_roles:\n  fast: {model: fixture/primary, effort: none}\n  explorer: {model: fixture/primary, effort: none}\n";
+        let cli = Cli::start_with(
+            home.path(),
+            Some("map the execution loop"),
+            settings,
+            &models,
+        );
+        let (request, body) = receive_sub(&server, protocol);
+        let task = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| {
+                if protocol == "completion" {
+                    &tool["function"]
+                } else {
+                    tool
+                }
+            })
+            .find(|tool| tool["name"] == "task")
+            .unwrap();
+        assert!(
+            task.pointer("/parameters/properties/tasks/items/properties/role/enum")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .contains(&json!("explorer")),
+            "{task}"
+        );
+        sub_call(
+            request,
+            protocol,
+            "explore",
+            "task",
+            json!({"context":"read-only exploration","tasks":[{"role":"explorer","task":"map the execution loop"}]}),
+        );
+        let mut explored = false;
+        loop {
+            let (request, body) = receive_sub(&server, protocol);
+            if is_child(&body) {
+                assert!(!explored);
+                explored = true;
+                for denied in ["write", "edit", "bash", "bash_task", "task"] {
+                    assert!(!sub_has_tool(&body, protocol, denied), "{denied}: {body}");
+                }
+                for allowed in ["read", "grep", "glob"] {
+                    assert!(sub_has_tool(&body, protocol, allowed), "{allowed}: {body}");
+                }
+                assert!(
+                    body.to_string()
+                        .contains("EXPLORER · Read-only code exploration")
+                );
+                sub_final(request, protocol, "execution loop mapped");
+            } else if body.to_string().contains("execution loop mapped") {
+                sub_final(request, protocol, "explorer result received");
+                break;
+            } else {
+                sub_final(request, protocol, "Waiting for the explorer.");
+            }
+        }
+        assert!(cli.finish().status.success());
+        no_more(&server);
+    }
+}
+
+#[test]
 fn artifact_child_output_is_readable_from_parent_in_both_protocols() {
     for protocol in ["completion", "response"] {
         let server = server();

@@ -555,7 +555,13 @@ impl Binding {
             let mcp_tools = lock(&self.inner.mcp_tools);
             let readonly = plan
                 || item.readonly
-                || model_role == Some(pp_config::config::ModelRole::Review)
+                || matches!(
+                    model_role,
+                    Some(
+                        pp_config::config::ModelRole::Review
+                            | pp_config::config::ModelRole::Explorer
+                    )
+                )
                 || custom
                     .and_then(|def| def.tools.as_ref())
                     .is_some_and(|tools| {
@@ -605,6 +611,7 @@ impl Binding {
             } else {
                 match (model_role, readonly) {
                     (Some(ModelRole::Review), _) => include_str!("prompts/roles/review.md"),
+                    (Some(ModelRole::Explorer), _) => include_str!("prompts/roles/explorer.md"),
                     (Some(ModelRole::Fast | ModelRole::Slow | ModelRole::Vision), true) => {
                         include_str!("prompts/roles/read-only.md")
                     }

@@ -46,11 +46,11 @@ printf '说明当前项目的构建方式\n' | ./target/debug/pp
 
 ## 配置
 
-声明式应用设置保存在 `~/.pp/agent/settings.yml`，手动模型保存在 `models.yml`，发现模型保存在 `models-sub.yml`。默认模型、TUI 收藏、六项模型 Role、全局默认 effort、模型请求次数与订阅授权统一保存在 `~/.pp/agent/agent.db`；持久输入历史、会话置顶偏好与会话搜索索引保存在 `~/.pp/agent/history.db`。这两个库由 TUI 菜单、`/effort`、`/Roles`、`/login` 和 `/resume` 维护，不通过编辑 YAML 修改。YAML 配置使用块映射、列表和 `#` 注释，启动目录中的同名文件不读取。`models.yml` 内同一供应商的模型共享凭证、接口地址和协议；发现的 Copilot 模型按各自支持的接口选择协议。跨文件同名供应商按完整模型引用合并，保留各模型所属来源的配置。`settings.yml` 可省略；未指定有效默认模型时使用目录中的首个模型。[系统提示词](#系统提示词)独立支持项目 `.pp/` 文件，不改变这些配置的加载规则。
+声明式应用设置保存在 `~/.pp/agent/settings.yml`，手动模型保存在 `models.yml`，发现模型保存在 `models-sub.yml`。默认模型、TUI 收藏、七项模型 Role、全局默认 effort、模型请求次数与订阅授权统一保存在 `~/.pp/agent/agent.db`；持久输入历史、会话置顶偏好与会话搜索索引保存在 `~/.pp/agent/history.db`。这两个库由 TUI 菜单、`/effort`、`/Roles`、`/login` 和 `/resume` 维护，不通过编辑 YAML 修改。YAML 配置使用块映射、列表和 `#` 注释，启动目录中的同名文件不读取。`models.yml` 内同一供应商的模型共享凭证、接口地址和协议；发现的 Copilot 模型按各自支持的接口选择协议。跨文件同名供应商按完整模型引用合并，保留各模型所属来源的配置。`settings.yml` 可省略；未指定有效默认模型时使用目录中的首个模型。[系统提示词](#系统提示词)独立支持项目 `.pp/` 文件，不改变这些配置的加载规则。
 
 ### 本地数据库
 
-`agent.db` 是默认模型、收藏、六项 Role、全局默认 effort、模型请求次数与订阅凭据的唯一权威；`history.db` 保存按启动目录隔离的输入原文、独立的会话置顶偏好，以及可由 JSONL 重建的会话目录与全文搜索投影。首次创建时目录权限为 `0700`（已有目录也会收紧到 `0700`），数据库、`-wal`、`-shm` 等附属文件为 `0600`，启用 WAL。打开已有库时拒绝符号链接、非普通文件、组／其他用户可访问的文件（含 `-wal`／`-shm`／`-journal` 附属文件）、损坏内容和高于本版本支持的 schema；这些情况与锁等待超时都会保留原文件并明确报错，绝不当作空库覆盖或自动整库重建。面向用户的错误固定为 `Agent database unavailable.` 或 `History database unavailable.`，不附带 SQL 语句、参数、令牌或正文；偏好保存失败时内存与界面快照保持原值，不伪装成成功。
+`agent.db` 是默认模型、收藏、七项 Role、全局默认 effort、模型请求次数与订阅凭据的唯一权威；`history.db` 保存按启动目录隔离的输入原文、独立的会话置顶偏好，以及可由 JSONL 重建的会话目录与全文搜索投影。首次创建时目录权限为 `0700`（已有目录也会收紧到 `0700`），数据库、`-wal`、`-shm` 等附属文件为 `0600`，启用 WAL。打开已有库时拒绝符号链接、非普通文件、组／其他用户可访问的文件（含 `-wal`／`-shm`／`-journal` 附属文件）、损坏内容和高于本版本支持的 schema；这些情况与锁等待超时都会保留原文件并明确报错，绝不当作空库覆盖或自动整库重建。面向用户的错误固定为 `Agent database unavailable.` 或 `History database unavailable.`，不附带 SQL 语句、参数、令牌或正文；偏好保存失败时内存与界面快照保持原值，不伪装成成功。
 
 新版首次启动会在读取任何设置和授权之前执行一次性迁移：严格解析旧 `settings.yml` 的 `default_model`、`favorite_models`、`model_roles`、`think_level` 和旧 `auth.yml` 的全部凭证，导入 `agent.db` 后再从源文件移除这四项并删除旧 `auth.yml`。其余 settings 字段、注释、`models.yml`、`models-sub.yml`、skills 与 MCP 配置保持原样；重复的收藏引用只保留第一次出现的位置。导入和清理都核对源文件的最新内容与身份，发生冲突时保留两端并报错，不覆盖数据库；在清理前崩溃会在重启后继续清理，不会重放导入。迁移完成（ready）后旧 `auth.yml` 即使被放回原处也不会再被读取，登出或删除授权后也不会从旧文件恢复；旧字段同样不会回落到 settings。旧版本 pp 必须在迁移前全部关闭，不支持新旧版本混跑。
 
@@ -136,22 +136,23 @@ read:
 bash_timeout_seconds: 300
 ```
 
-`default_model`、`favorite_models`、`model_roles` 与 `think_level` 已不再是 `settings.yml` 字段：首次迁移会移除它们，之后重新写入会作为未知字段被拒绝，配置也不会被静默忽略。默认模型与收藏通过 `/model` 的 Ctrl + S、Ctrl + F 保存；全局默认 effort 在 `/effort ` 菜单中用 ⌥ + S / Ctrl + S 保存，单独执行 `/effort LEVEL` 只切换当前会话档位。六项 Role 通过 `/Roles` 配置。这些偏好保存到 `agent.db`；模型 Role 的运行时应用遵循下述安全边界规则，菜单的默认值保存仍不切换当前会话；其余 YAML 字段仍按原规则严格校验。
+`default_model`、`favorite_models`、`model_roles` 与 `think_level` 已不再是 `settings.yml` 字段：首次迁移会移除它们，之后重新写入会作为未知字段被拒绝，配置也不会被静默忽略。默认模型与收藏通过 `/model` 的 Ctrl + S、Ctrl + F 保存；全局默认 effort 在 `/effort ` 菜单中用 ⌥ + S / Ctrl + S 保存，单独执行 `/effort LEVEL` 只切换当前会话档位。七项 Role 通过 `/Roles` 配置。这些偏好保存到 `agent.db`；模型 Role 的运行时应用遵循下述安全边界规则，菜单的默认值保存仍不切换当前会话；其余 YAML 字段仍按原规则严格校验。
 
 ### 模型 Roles
 
 在 TUI 输入 `/Roles`（也接受 `/roles`），打开独立的模型角色配置页；`/model` 仍只切换当前会话的模型。配置页采用深色双栏布局：左侧为 Roles、全部模型和供应商导航，右侧为角色、模型或 effort 选择区。
 
-首批角色为 `DEFAULT`、`FAST`、`SLOW`、`VISION`、`PLAN`、`REVIEW`，直接列出全部六项，暂不分类。每项可保存一个主模型和一个 fallback，各自使用独立的 `provider/model` 与 effort；`FAST` 对应参考界面中的 SMOL。启用状态用角色行前的 Nerd Font Material Design 圆形图标表示（实心圆启用／空心圆停用）；方向箭头仅表示键盘焦点。已启用的 Role 主备模型均高亮，禁用时整行灰显，光标移动不会改变启用状态。Space 或点击圆形图标切换启用状态，取消选中会保留 model/effort。Enter 配置模型及受支持的 effort；首次配置默认启用，修改已取消选中的配置不会重新启用。主模型和备用模型名后紧跟各自的 effort，备用行只显示缩进箭头。`↑/↓` 在主模型行与备用模型行之间选择，Enter 修改当前行；`f` 设置当前角色的 fallback，`t`（兼容 `e`）单独调整当前行 thinking，`x` 清除当前行，Delete／Backspace 删除整个角色配置，Esc 逐级返回。主备模型不能相同；清空主模型会禁用角色并保留 fallback，补齐后仍需手动启用。修改已启用角色的模型或 effort 后，配置提交到 `agent.db` 才发布待生效修订。绑定内置角色的子 Agent 在各自的下一次请求前应用最新模型和 effort。自定义角色的子 Agent 使用派发时选定的模型和 effort。仅 Main 可以派发子 Agent；所有 child 均无 `task` 工具及其自动委托提示，恢复旧任务或配置 `spawns: ["*"]` 也不能开启递归。已有的无角色子 Agent 保持创建时的配置；禁用或清除角色不取消、也不重新绑定正在运行的 child，它保留最后一次已应用的模型。运行中子 Agent 数量上限默认为 4，每个 Run 从初始化到结果收尾持续占用名额，等待名额时保持 queued；可在 `~/.pp/agent/settings.yml` 设置 `task.max_concurrency: 1` 至 `32`，重启生效，Main 不占名额；详见[子 Agent 使用说明](subagents.md)。
+角色为 `DEFAULT`、`FAST`、`SLOW`、`VISION`、`PLAN`、`REVIEW`、`EXPLORER`，直接列出全部七项，暂不分类。每项可保存一个主模型和一个 fallback，各自使用独立的 `provider/model` 与 effort；`FAST` 对应参考界面中的 SMOL。启用状态用角色行前的 Nerd Font Material Design 圆形图标表示（实心圆启用／空心圆停用）；方向箭头仅表示键盘焦点。已启用的 Role 主备模型均高亮，禁用时整行灰显，光标移动不会改变启用状态。Space 或点击圆形图标切换启用状态，取消选中会保留 model/effort。Enter 配置模型及受支持的 effort；首次配置默认启用，修改已取消选中的配置不会重新启用。主模型和备用模型名后紧跟各自的 effort，备用行只显示缩进箭头。`↑/↓` 在主模型行与备用模型行之间选择，Enter 修改当前行；`f` 设置当前角色的 fallback，`t`（兼容 `e`）单独调整当前行 thinking，`x` 清除当前行，Delete／Backspace 删除整个角色配置，Esc 逐级返回。主备模型不能相同；清空主模型会禁用角色并保留 fallback，补齐后仍需手动启用。修改已启用角色的模型或 effort 后，配置提交到 `agent.db` 才发布待生效修订。绑定内置角色的子 Agent 在各自的下一次请求前应用最新模型和 effort。自定义角色的子 Agent 使用派发时选定的模型和 effort。仅 Main 可以派发子 Agent；所有 child 均无 `task` 工具及其自动委托提示，恢复旧任务或配置 `spawns: ["*"]` 也不能开启递归。已有的无角色子 Agent 保持创建时的配置；禁用或清除角色不取消、也不重新绑定正在运行的 child，它保留最后一次已应用的模型。运行中子 Agent 数量上限默认为 4，每个 Run 从初始化到结果收尾持续占用名额，等待名额时保持 queued；可在 `~/.pp/agent/settings.yml` 设置 `task.max_concurrency: 1` 至 `32`，重启生效，Main 不占名额；详见[子 Agent 使用说明](subagents.md)。
 
 Role 配置保存在 `~/.pp/agent/agent.db`，只能通过 TUI 的 `/Roles` 面板修改，不写入 `settings.yml`，也没有可编辑的 YAML 形式；面板的每次启用、选模和 effort 修改都在数据库事务中提交，提交成功才更新目录快照。取消选中与重新选中都会保留已配置的 model/effort，`settings.yml` 中的旧 `model_roles` 只在首次迁移时读取。
 
-已启用的 `DEFAULT` 优先用于新启动会话；未设置或未选中时沿用已保存的默认模型与全局默认 effort（同样存于 `agent.db`）。DEFAULT 和 PLAN 供主 Agent 选模。子任务的内置角色仅包括 FAST、SLOW、VISION、REVIEW，启用后进入 `task` 的可选列表。没有可用内置角色或已加载的自定义角色时，`task` 工具会隐藏。自动 Plan/Review 路由未启用时保留原有模型及 effort。迁移自旧配置的 Role 条目省略 `enabled` 时按已选中读取。显式配置的模型不可用或 effort 不受支持时返回错误，不悄悄替换；已移除模型或禁用 Role 的引用仍可保留。清除 DEFAULT 后，新启动回到原有默认设置；当前会话不强制回退模型。
+已启用的 `DEFAULT` 优先用于新启动会话；未设置或未选中时沿用已保存的默认模型与全局默认 effort（同样存于 `agent.db`）。DEFAULT 和 PLAN 供主 Agent 选模。子任务的内置角色包括 FAST、SLOW、VISION、REVIEW、EXPLORER，启用后进入 `task` 的可选列表。没有可用内置角色或已加载的自定义角色时，`task` 工具会隐藏。自动 Plan/Review 路由未启用时保留原有模型及 effort。迁移自旧配置的 Role 条目省略 `enabled` 时按已选中读取。显式配置的模型不可用或 effort 不受支持时返回错误，不悄悄替换；已移除模型或禁用 Role 的引用仍可保留。清除 DEFAULT 后，新启动回到原有默认设置；当前会话不强制回退模型。
 
 - `task.tasks[]` 的每项必须通过 `role` 选择一个可用角色，例如 `role: "fast"` 或 `role: "api-auditor"`。缺失或无效的角色会在启动前拒绝整批。旧调用中的 `agent` 改为 `role`。`readonly: true` 可将普通任务限制为只读。
 - 从 Execute 进入 Plan，或从 `/plan-list` 打开新的规划会话时，采用已启用 PLAN 的 model 和 effort。同一 Plan 内继续讨论不会重复套用 PLAN，用户用 `/model` 或 `/effort` 的手动选择会保留；恢复会话沿用已保存的实际模型。
 - 计划面板的独立审阅使用已启用的 REVIEW；代码审查通过 `role: "review"` 创建只读子任务，并使用 REVIEW 的 model、effort 和 fallback。独立计划审阅不会改变主会话模型。角色配置本身不自动发起审查。
 - `VISION` 是可选模型角色，不改变模型自身的图像输入能力。
+- `EXPLORER` 始终只读：内置工具仅保留 read、grep、glob、lsp 与已授权的只读 MCP，不提供写入、shell 或继续委托，用于快速探索代码结构和定位实现。
 
 运行时 `/model` 与别名 `/models` 只修改主 Agent 的会话模型；`/Roles` 修改角色配置并保存。控制线程负责读取、校验和持久化，UI 不做这些 I/O。安全边界是当前回复及整批工具调用／结果已经提交，且尚未领取下一批 Steering、检查新模型容量和发送下一请求；空闲 Agent 立即应用，任务已完成则只更新模型，不额外请求模型。压缩和 Plan 审批交接期间延后，待事务完成再应用。切换在构造并发送下一次请求之前领取；轮询之后到 socket 写出之间到达的变更落到下一轮。只改 effort 时下一请求仅替换 `reasoning_effort`／`reasoning` 参数，不重写消息、工具或指令前缀；改 model 会让主 Agent 与绑定该角色的运行中子 Agent 各自冷启动前缀缓存，运行中优先只调 effort。切换复用同一 Agent 和任务，不重置预算、TODO 或文件变更快照；后台进程与其他角色的子 Agent 继续运行。
 
@@ -163,7 +164,7 @@ Role 配置保存在 `~/.pp/agent/agent.db`，只能通过 TUI 的 `/Roles` 面�
 
 备用模型用于当前任务剩余轮次和 Steering；下一独立任务或 FollowUp 恢复主模型。手动 `/model` 解除角色 fallback 绑定，单独调整 thinking 保留绑定。角色来源和基准模型随会话保存，旧会话没有来源字段时不反推绑定。跨协议切换继续使用严格历史转换，不兼容时安全停止。独立计划审阅和摘要请求也支持备用模型，保留临时请求隔离及压缩事务约束。已显示的失败残片保留失败标记，但不进入有效模型历史；已开始流式响应的失败尝试独立计入统计，纯建连重试仍合并计数，首次请求上下文只保存一次。
 
-`agent.db` 的 schema v3 以事务迁移现有角色，新增可空主模型与备用模型／effort；其他偏好、授权和计数保持原值。
+`agent.db` 的 schema v4 在事务中重建角色表以加入 EXPLORER，主备模型、effort 与启用状态保持原值；v3 以前已有的偏好、授权和计数不变。
 
 ### 模型目录
 
@@ -238,7 +239,7 @@ chmod 600 ~/.pp/agent/models.yml
 |---|---|---|
 | `/help`、`/tips` | 查看完整帮助或全部操作提示 | TUI / 行模式 |
 | `/model [provider/model]` | 选择模型，保留历史 | TUI / 行模式 |
-| `/Roles`（或 `/roles`） | 独立配置六个模型 Role 的 model 和 effort，不改变当前模型 | 仅 TUI |
+| `/Roles`（或 `/roles`） | 独立配置七个模型 Role 的 model 和 effort，不改变当前模型 | 仅 TUI |
 | `/effort [none\|low\|medium\|high\|xhigh\|max]` | 查看或切换当前模型允许的思考档位，`/think` 为别名 | TUI / 行模式 |
 | `/new` | 清空当前会话，保留模型和思考档位 | TUI / 行模式 |
 | `/init` | 使用当前模型创建或更新项目 `AGENTS.md` | TUI / 行模式 |

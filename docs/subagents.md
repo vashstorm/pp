@@ -24,7 +24,7 @@ Hub 分两页，`1`／`2` 切换：
 - 人工追问按普通文本发送，`/model` 等文本不会在 child 中执行本地命令。发送成功才清掉未修改的草稿，失败保留草稿并提示；父方在成功后按既有规则取回结果。
 - 详情与 Activity 使用与主对话相同的观察日志，历史超过 64 KiB 也能从头浏览；旧日志缺少时间戳时显示 `—`，不推算当前时间或费用。
 
-每个子任务都必须显式传入 `role`。内置角色有 `fast`、`slow`、`vision`、`review`，也可选择已加载的自定义角色名称。DEFAULT 和 PLAN 供主 Agent 选模。REVIEW 始终只读，其他 Role 可用 `readonly: true` 限制为只读调查。Plan 中的所有子 Agent 强制只读。只读限制同时作用于工具清单和执行入口，禁止写入、shell 与继续委托。只读子 Agent 可使用父级开放、用户标为只读且在自身工具集合中的 MCP 工具。
+每个子任务都必须显式传入 `role`。内置角色有 `fast`、`slow`、`vision`、`review`、`explorer`，也可选择已加载的自定义角色名称。DEFAULT 和 PLAN 供主 Agent 选模。REVIEW 与 EXPLORER 始终只读，其他 Role 可用 `readonly: true` 限制为只读调查。Plan 中的所有子 Agent 强制只读。只读限制同时作用于工具清单和执行入口，禁止写入、shell 与继续委托。只读子 Agent 可使用父级开放、用户标为只读且在自身工具集合中的 MCP 工具。
 
 ## 配置
 
@@ -52,7 +52,7 @@ task:
 
 ## 自定义 Agent
 
-发现顺序为最近的项目 `.pp/agents/*.md`、用户 `~/.pp/agent/agents/*.md`；同名精确匹配，项目定义优先。无效文件记录诊断后跳过，`task.disabled_agents` 仅过滤自定义 Agent。自定义名称必须来自成功加载的定义。`fast`、`slow`、`vision`、`review`、`default`、`plan` 是保留名称，大小写变体也保留。
+发现顺序为最近的项目 `.pp/agents/*.md`、用户 `~/.pp/agent/agents/*.md`；同名精确匹配，项目定义优先。无效文件记录诊断后跳过，`task.disabled_agents` 仅过滤自定义 Agent。自定义名称必须来自成功加载的定义。`fast`、`slow`、`vision`、`review`、`explorer`、`default`、`plan` 是保留名称，大小写变体也保留。
 
 ````markdown
 ---
@@ -80,6 +80,7 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 - SLOW 用于复杂调查和实现，追踪调用链、行为约束和高风险失败路径。[slow.md](../crates/pp-runtime/src/prompts/roles/slow.md)
 - VISION 检查实际图像和渲染结果，区分可见现象与推断原因。[vision.md](../crates/pp-runtime/src/prompts/roles/vision.md)
 - REVIEW 执行只读代码审查，按影响列出可复现的问题及其证据。[review.md](../crates/pp-runtime/src/prompts/roles/review.md)
+- EXPLORER 执行只读快速探索，先给出关键文件、符号与调用路径，再回传带定位证据的结论。[explorer.md](../crates/pp-runtime/src/prompts/roles/explorer.md)
 - FAST、SLOW、VISION 的只读任务共用调查提示词，回传可定位的证据和仍需验证的事项。[read-only.md](../crates/pp-runtime/src/prompts/roles/read-only.md)
 
 ## 模型工具接口

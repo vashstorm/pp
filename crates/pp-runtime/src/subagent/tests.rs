@@ -404,14 +404,39 @@ fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() 
                 effort: ThinkLevel::High,
             },
         ),
+        (
+            pp_config::config::ModelRole::Explorer,
+            pp_config::config::RoleAssignment {
+                fallback: None,
+                enabled: true,
+                model: "fixture/explore".into(),
+                effort: ThinkLevel::Low,
+            },
+        ),
     ]));
+    let role_names = binding
+        .definitions(WorkMode::Execute)
+        .into_iter()
+        .find(|def| def.name == "task")
+        .and_then(|def| def.parameters)
+        .and_then(|parameters| {
+            parameters
+                .pointer("/properties/tasks/items/properties/role/enum")
+                .and_then(|value| value.as_array().cloned())
+        })
+        .expect("task schema");
+    assert!(
+        role_names.contains(&json!("explorer")),
+        "启用 explorer 后必须出现在 task 角色枚举中：{role_names:?}"
+    );
     binding
         .execute(
             "task",
             &json!({"context":"routing", "tasks":[
                 {"role":"fast", "task":"find"},
                 {"role":"review", "task":"review"},
-                {"role":"fast", "readonly":true, "task":"quick review"}
+                {"role":"fast", "readonly":true, "task":"quick review"},
+                {"role":"explorer", "task":"map the callers"}
             ]})
             .to_string(),
             false,
@@ -425,6 +450,7 @@ fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() 
         ("a1", "fixture/fast", ThinkLevel::Low),
         ("a2", "fixture/review", ThinkLevel::High),
         ("a3", "fixture/fast", ThinkLevel::Low),
+        ("a4", "fixture/explore", ThinkLevel::Low),
     ] {
         assert_eq!(state.disk.agents[id].spec.model, model);
         let spec = &state.disk.agents[id].spec;
@@ -438,10 +464,12 @@ fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() 
     assert!(!state.disk.agents["a1"].spec.readonly);
     assert!(state.disk.agents["a2"].spec.readonly);
     assert!(state.disk.agents["a3"].spec.readonly);
+    assert!(state.disk.agents["a4"].spec.readonly);
     for (id, prompt) in [
         ("a1", include_str!("../prompts/roles/fast.md")),
         ("a2", include_str!("../prompts/roles/review.md")),
         ("a3", include_str!("../prompts/roles/read-only.md")),
+        ("a4", include_str!("../prompts/roles/explorer.md")),
     ] {
         assert_eq!(state.disk.agents[id].spec.prompt, prompt.trim_end());
     }
@@ -457,7 +485,7 @@ fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() 
             .model,
         "fixture/backup"
     );
-    for id in ["a2", "a3"] {
+    for id in ["a2", "a3", "a4"] {
         let spec = &state.disk.agents[id].spec;
         assert!(spec.spawns.is_empty());
         assert!(

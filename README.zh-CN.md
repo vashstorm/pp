@@ -87,7 +87,7 @@ providers:
 <details>
 <summary><strong>可选：应用设置、多模型与思考档位</strong></summary>
 
-创建 `~/.pp/agent/settings.yml`；省略此文件即可使用默认设置。默认模型、思考档位、收藏和六个模型 Role 由终端界面管理（`/model`、`/effort` 菜单的保存快捷键、Ctrl + F、`/Roles`），保存在 `~/.pp/agent/agent.db`，不再写入 YAML；其余设置仍为 `settings.yml` 中的声明式 YAML。
+创建 `~/.pp/agent/settings.yml`；省略此文件即可使用默认设置。默认模型、思考档位、收藏和七个模型 Role 由终端界面管理（`/model`、`/effort` 菜单的保存快捷键、Ctrl + F、`/Roles`），保存在 `~/.pp/agent/agent.db`，不再写入 YAML；其余设置仍为 `settings.yml` 中的声明式 YAML。
 
 ```yaml
 edit: replace
@@ -209,11 +209,11 @@ pp stats
 
 ## 扩展能力
 
-输入 `/Roles` 配置模型和 effort。主 Agent 用 DEFAULT 和 PLAN 分别选择启动模型和规划模型，计划审阅采用已启用的 REVIEW。派发子 Agent 时，每个任务都必须显式传入 `role`，可选已启用的 `fast`、`slow`、`vision`、`review` 或已加载的自定义名称。旧调用中的 `agent` 改为 `role`。缺失、未知或停用的角色会使整批任务在启动前被拒绝。`role: "review"` 用于只读审查。[配置与使用 →](docs/subagents.md)
+输入 `/Roles` 配置模型和 effort。主 Agent 用 DEFAULT 和 PLAN 分别选择启动模型和规划模型，计划审阅采用已启用的 REVIEW。派发子 Agent 时，每个任务都必须显式传入 `role`，可选已启用的 `fast`、`slow`、`vision`、`review`、`explorer` 或已加载的自定义名称。旧调用中的 `agent` 改为 `role`。缺失、未知或停用的角色会使整批任务在启动前被拒绝。`role: "review"` 用于只读审查，`role: "explorer"` 用于只读快速探索。[配置与使用 →](docs/subagents.md)
 
 每个角色可配置一个 fallback，并独立设置 thinking。在 `/Roles` 中用 ↑/↓ 选择主模型或备用行，Enter 选模，`f` 设置备用，`x` 清除当前行，`t`（兼容 `e`）调整 thinking。清空主模型会禁用角色并保留 fallback；补齐后仍需手动启用。Delete／Backspace 删除整个角色配置。
 
-模型错误（含流中断）从本轮请求的安全消息边界重试，不重复已完成的工具。每个模型最多发送 10 次，同时受 `rate_limit_retry_budget_seconds` 等待预算限制；fallback 独立获得相同额度。预算为 0 时不重试，仍允许发送一次备用请求。取消、本地配置、持久化和清理错误直接停止。备用模型沿用至本任务结束，下一独立任务恢复主模型；手动 `/model` 解除角色 fallback 绑定。失败输出保留可见标记，但不进入有效模型历史。已有角色配置通过事务迁移至 `agent.db` schema v3。
+模型错误（含流中断）从本轮请求的安全消息边界重试，不重复已完成的工具。每个模型最多发送 10 次，同时受 `rate_limit_retry_budget_seconds` 等待预算限制；fallback 独立获得相同额度。预算为 0 时不重试，仍允许发送一次备用请求。取消、本地配置、持久化和清理错误直接停止。备用模型沿用至本任务结束，下一独立任务恢复主模型；手动 `/model` 解除角色 fallback 绑定。失败输出保留可见标记，但不进入有效模型历史。已有角色配置通过事务迁移至 `agent.db` schema v4。
 
 
 | 扩展 | 入口 | 说明 |

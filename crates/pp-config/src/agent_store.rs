@@ -20,7 +20,7 @@ pub use migration::initialize;
 
 const UNAVAILABLE: &str = "Agent database unavailable.";
 const UNSUPPORTED_VERSION: &str = "Agent database schema version is not supported.";
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 static USAGE_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS favorite_models (
     position INTEGER NOT NULL UNIQUE CHECK(position>=0)
 );
 CREATE TABLE IF NOT EXISTS model_roles (
-    role TEXT PRIMARY KEY CHECK(role IN ('default','fast','slow','vision','plan','review')),
+    role TEXT PRIMARY KEY CHECK(role IN ('default','fast','slow','vision','plan','review','explorer')),
     enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
     model_reference TEXT NULL,
     fallback_reference TEXT NULL,
@@ -124,6 +124,19 @@ impl AgentStore {
                     "INSERT INTO model_roles(role,enabled,model_reference,effort)
                     SELECT role,enabled,model_reference,effort FROM model_roles_v2;
                     DROP TABLE model_roles_v2;",
+                )
+                .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+            }
+            if version == 3 {
+                // SQLite 不能直接扩展 CHECK；重建角色表并完整保留主备配置。
+                tx.execute_batch("ALTER TABLE model_roles RENAME TO model_roles_v3;")
+                    .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+                tx.execute_batch(SCHEMA)
+                    .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
+                tx.execute_batch(
+                    "INSERT INTO model_roles(role,enabled,model_reference,effort,fallback_reference,fallback_effort)
+                    SELECT role,enabled,model_reference,effort,fallback_reference,fallback_effort FROM model_roles_v3;
+                    DROP TABLE model_roles_v3;",
                 )
                 .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
             }
@@ -428,6 +441,7 @@ fn role_name(role: ModelRole) -> &'static str {
         ModelRole::Vision => "vision",
         ModelRole::Plan => "plan",
         ModelRole::Review => "review",
+        ModelRole::Explorer => "explorer",
     }
 }
 
@@ -849,6 +863,78 @@ mod tests {
         assert_eq!(
             store.load_auth().unwrap().credentials[&crate::auth::Provider::Glm].access_token,
             "test-token"
+        );
+    }
+
+    #[test]
+    fn sqlite_v3_role_table_is_rebuilt_for_explorer_and_keeps_existing_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.db");
+        {
+            let conn = pp_core::sqlite::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(AUTH_SCHEMA).unwrap();
+            conn.execute_batch(
+                "DROP TABLE model_roles;
+                CREATE TABLE model_roles (
+                    role TEXT PRIMARY KEY CHECK(role IN ('default','fast','slow','vision','plan','review')),
+                    enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+                    model_reference TEXT NULL,
+                    fallback_reference TEXT NULL,
+                    fallback_effort TEXT NULL,
+                    effort TEXT NOT NULL,
+                    CHECK((fallback_reference IS NULL) = (fallback_effort IS NULL)),
+                    CHECK(enabled=0 OR model_reference IS NOT NULL)
+                );
+                INSERT INTO model_roles(role,enabled,model_reference,fallback_reference,fallback_effort,effort)
+                    VALUES ('fast',1,'fixture/fast','fixture/backup','low','high');
+                INSERT INTO model_roles(role,enabled,model_reference,fallback_reference,fallback_effort,effort)
+                    VALUES ('review',1,'fixture/review',NULL,NULL,'medium');
+                INSERT INTO model_roles(role,enabled,model_reference,fallback_reference,fallback_effort,effort)
+                    VALUES ('plan',0,NULL,NULL,NULL,'none');
+                INSERT INTO model_usage VALUES ('fixture/fast',4);
+                INSERT INTO auth_credentials(provider,generation,access_token) VALUES ('zai','gen','token');",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 3).unwrap();
+        }
+        let mut store = AgentStore::open(&path).unwrap();
+        let prefs = store.preferences().unwrap();
+        let fast = &prefs.model_roles[&ModelRole::Fast];
+        assert_eq!(fast.model, "fixture/fast");
+        assert_eq!(fast.effort, ThinkLevel::High);
+        assert_eq!(
+            fast.fallback,
+            Some(crate::config::RoleModel {
+                model: "fixture/backup".into(),
+                effort: ThinkLevel::Low,
+            })
+        );
+        assert_eq!(
+            prefs.model_roles[&ModelRole::Review].effort,
+            ThinkLevel::Medium
+        );
+        assert!(!prefs.model_roles[&ModelRole::Plan].enabled);
+        assert!(!prefs.model_roles.contains_key(&ModelRole::Explorer));
+        let explorer = RoleAssignment {
+            fallback: None,
+            enabled: true,
+            model: "fixture/explore".into(),
+            effort: ThinkLevel::Low,
+        };
+        store
+            .set_model_role(ModelRole::Explorer, Some(&explorer))
+            .unwrap();
+        drop(store);
+        let store = AgentStore::open(&path).unwrap();
+        assert_eq!(
+            store.preferences().unwrap().model_roles[&ModelRole::Explorer],
+            explorer
+        );
+        assert_eq!(store.model_usage().unwrap()["fixture/fast"], 4);
+        assert_eq!(
+            store.load_auth().unwrap().credentials[&crate::auth::Provider::Zai].access_token,
+            "token"
         );
     }
 }

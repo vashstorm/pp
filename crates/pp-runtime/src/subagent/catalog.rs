@@ -27,11 +27,12 @@ pub struct Definition {
     pub source: String,
 }
 
-pub(super) const BUILTIN_ROLES: [(&str, ModelRole); 4] = [
+pub(super) const BUILTIN_ROLES: [(&str, ModelRole); 5] = [
     ("fast", ModelRole::Fast),
     ("slow", ModelRole::Slow),
     ("vision", ModelRole::Vision),
     ("review", ModelRole::Review),
+    ("explorer", ModelRole::Explorer),
 ];
 
 pub(super) fn discover(cwd: &Path, user: &Path, settings: &TaskSettings) -> Vec<Definition> {
