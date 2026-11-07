@@ -150,13 +150,10 @@ impl Agent {
             // 恢复旧记录时也以父级当前权限为准，子 Agent 默认的 Execute 不扩大权限。
             let readonly = plan_mode
                 || record.spec.readonly
-                || matches!(
-                    record.spec.model_role,
-                    Some(
-                        pp_config::config::ModelRole::Review
-                            | pp_config::config::ModelRole::Explorer
-                    )
-                );
+                || record
+                    .spec
+                    .model_role
+                    .is_some_and(|role| crate::subagent::catalog::builtin(role).readonly);
             binding.readonly = readonly;
             tools.set_lsp_readonly(readonly);
             tools.mcp_readonly = readonly;

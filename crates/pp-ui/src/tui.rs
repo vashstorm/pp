@@ -597,9 +597,13 @@ fn send_and_wait_ack<T: Send>(
 
 fn publish_prepared(
     events: &mpsc::SyncSender<WorkerEvent>,
+    agent: &Agent,
     preparation: ExecutionPreparation,
     cancellation: &CancellationToken,
 ) -> Result<()> {
+    events
+        .send(WorkerEvent::model_state(agent))
+        .map_err(|_| anyhow::anyhow!("UI disconnected during workflow transition"))?;
     send_and_wait_ack(
         events,
         |reply| WorkerEvent::ExecutionPrepared {

@@ -454,8 +454,12 @@ impl App {
                                     if !publish_pipe_store(&sender, &agent) {
                                         break;
                                     }
-                                    let prepared =
-                                        publish_prepared(&sender, preparation, &cancellation);
+                                    let prepared = publish_prepared(
+                                        &sender,
+                                        &agent,
+                                        preparation,
+                                        &cancellation,
+                                    );
                                     WorkerEvent::SessionResumed(match prepared {
                                         Ok(()) => Ok(ResumeState { id }),
                                         Err(error) => Err(error),
@@ -534,7 +538,12 @@ impl App {
                                     if !publish_pipe_store(&sender, &agent) {
                                         break;
                                     }
-                                    match publish_prepared(&sender, preparation, &cancellation) {
+                                    match publish_prepared(
+                                        &sender,
+                                        &agent,
+                                        preparation,
+                                        &cancellation,
+                                    ) {
                                         Ok(()) => WorkerEvent::WorkflowChanged(Ok(agent
                                             .workflow()
                                             .clone())),
@@ -569,7 +578,12 @@ impl App {
                                     if !publish_pipe_store(&sender, &agent) {
                                         break;
                                     }
-                                    match publish_prepared(&sender, preparation, &cancellation) {
+                                    match publish_prepared(
+                                        &sender,
+                                        &agent,
+                                        preparation,
+                                        &cancellation,
+                                    ) {
                                         // UI 确认后才启动模型执行。
                                         Ok(()) => WorkerEvent::completed(
                                             started,

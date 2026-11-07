@@ -29,6 +29,27 @@ fn plan_start(server: &Server, home: &Path, project: &Path, protocol: &str) -> P
     }
 }
 
+fn plan_start_with_role_models(server: &Server, home: &Path, project: &Path, protocol: &str) -> Pty {
+    std::fs::write(
+        config_path(home, "settings.yml"),
+        r#"{"notification_timeout_seconds":1,"rate_limit_retry_budget_seconds":0,"model_roles":{"default":{"model":"fixture/primary","effort":"low"},"plan":{"model":"fixture/planner","effort":"high"}}}"#,
+    ).unwrap();
+    let mut models: Value = serde_json::from_str(&response_models(server, Some(protocol))).unwrap();
+    models["providers"]["fixture"]["models"]["planner"] = json!({"model":"planner-model"});
+    std::fs::write(config_path(home, "models.yml"), models.to_string()).unwrap();
+    Pty::start_with_args(project, home, &[])
+}
+
+fn assert_plan_execute_route(body: &Value, protocol: &str) {
+    assert_eq!(body["model"], "fixture-model");
+    let effort = if protocol == "completion" {
+        &body["reasoning_effort"]
+    } else {
+        &body["reasoning"]["effort"]
+    };
+    assert_eq!(effort, "low");
+}
+
 fn plan_call(protocol: &str, id: &str, name: &str, arguments: Value) -> Value {
     if protocol == "completion" {
         call(id, name, arguments)

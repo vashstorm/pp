@@ -7,7 +7,6 @@ use pp_config::config::ToolLimits;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-const BUNDLED: &str = include_str!("prompts/system.md");
 const RUNTIME: &str = include_str!("prompts/runtime.md");
 
 /// 用于区分不可降级的提示词启动错误和可交互修复的模型配置错误。
@@ -106,7 +105,9 @@ impl Snapshot {
             version: 1,
             base: Source {
                 kind: SourceKind::Bundled,
-                content: BUNDLED.into(),
+                content: crate::subagent::catalog::builtin(pp_config::config::ModelRole::Default)
+                    .prompt
+                    .clone(),
                 origin: "bundled system prompt".into(),
             },
             append: None,
@@ -157,7 +158,10 @@ impl Snapshot {
         if matches!(snapshot.base.kind, SourceKind::Text) && snapshot.base.content.trim().is_empty()
         {
             snapshot.base.kind = SourceKind::Bundled;
-            snapshot.base.content = BUNDLED.into();
+            snapshot.base.content =
+                crate::subagent::catalog::builtin(pp_config::config::ModelRole::Default)
+                    .prompt
+                    .clone();
         }
         if let Some(input) = append {
             snapshot.append = Some(resolve_text(cwd, input, "--append-system-prompt")?);

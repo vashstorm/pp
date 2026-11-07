@@ -144,12 +144,12 @@ bash_timeout_seconds: 300
 
 角色为 `DEFAULT`、`FAST`、`SLOW`、`VISION`、`PLAN`、`REVIEW`、`EXPLORER`，直接列出全部七项，暂不分类。每项可保存一个主模型和一个 fallback，各自使用独立的 `provider/model` 与 effort；`FAST` 对应参考界面中的 SMOL。启用状态用角色行前的 Nerd Font Material Design 圆形图标表示（实心圆启用／空心圆停用）；方向箭头仅表示键盘焦点。已启用的 Role 主备模型均高亮，禁用时整行灰显，光标移动不会改变启用状态。Space 或点击圆形图标切换启用状态，取消选中会保留 model/effort。Enter 配置模型及受支持的 effort；首次配置默认启用，修改已取消选中的配置不会重新启用。主模型和备用模型名后紧跟各自的 effort，备用行只显示缩进箭头。`↑/↓` 在主模型行与备用模型行之间选择，Enter 修改当前行；`f` 设置当前角色的 fallback，`t`（兼容 `e`）单独调整当前行 thinking，`x` 清除当前行，Delete／Backspace 删除整个角色配置，Esc 逐级返回。主备模型不能相同；清空主模型会禁用角色并保留 fallback，补齐后仍需手动启用。修改已启用角色的模型或 effort 后，配置提交到 `agent.db` 才发布待生效修订。绑定内置角色的子 Agent 在各自的下一次请求前应用最新模型和 effort。自定义角色的子 Agent 使用派发时选定的模型和 effort。仅 Main 可以派发子 Agent；所有 child 均无 `task` 工具及其自动委托提示，恢复旧任务或配置 `spawns: ["*"]` 也不能开启递归。已有的无角色子 Agent 保持创建时的配置；禁用或清除角色不取消、也不重新绑定正在运行的 child，它保留最后一次已应用的模型。运行中子 Agent 数量上限默认为 4，每个 Run 从初始化到结果收尾持续占用名额，等待名额时保持 queued；可在 `~/.pp/agent/settings.yml` 设置 `task.max_concurrency: 1` 至 `32`，重启生效，Main 不占名额；详见[子 Agent 使用说明](subagents.md)。
 
-Role 配置保存在 `~/.pp/agent/agent.db`，只能通过 TUI 的 `/Roles` 面板修改，不写入 `settings.yml`，也没有可编辑的 YAML 形式；面板的每次启用、选模和 effort 修改都在数据库事务中提交，提交成功才更新目录快照。取消选中与重新选中都会保留已配置的 model/effort，`settings.yml` 中的旧 `model_roles` 只在首次迁移时读取。
+内置 Role 的模型绑定和启用状态保存在 `~/.pp/agent/agent.db`，通过 TUI 的 `/Roles` 面板修改；面板的每次启用、选模和 effort 修改都在数据库事务中提交，提交成功才更新目录快照。取消选中与重新选中都会保留已配置的 model/effort，`settings.yml` 中的旧 `model_roles` 只在首次迁移时读取。
 
-已启用的 `DEFAULT` 优先用于新启动会话；未设置或未选中时沿用已保存的默认模型与全局默认 effort（同样存于 `agent.db`）。DEFAULT 和 PLAN 供主 Agent 选模。子任务的内置角色包括 FAST、SLOW、VISION、REVIEW、EXPLORER，启用后进入 `task` 的可选列表。没有可用内置角色或已加载的自定义角色时，`task` 工具会隐藏。自动 Plan/Review 路由未启用时保留原有模型及 effort。迁移自旧配置的 Role 条目省略 `enabled` 时按已选中读取。显式配置的模型不可用或 effort 不受支持时返回错误，不悄悄替换；已移除模型或禁用 Role 的引用仍可保留。清除 DEFAULT 后，新启动回到原有默认设置；当前会话不强制回退模型。
+已启用的 `DEFAULT` 优先用于新启动会话；未设置或未选中时沿用已保存的默认模型与全局默认 effort（同样存于 `agent.db`）。DEFAULT 供主 Agent 默认选模，PLAN 仅用于主 Agent 的 Plan 模式。子任务的内置角色包括 FAST、SLOW、VISION、REVIEW、EXPLORER，启用后进入 `task` 的可选列表。没有可用内置角色或已加载的自定义角色时，`task` 工具会隐藏。自动 Plan/Review 路由未启用时保留原有模型及 effort。迁移自旧配置的 Role 条目省略 `enabled` 时按已选中读取。显式配置的模型不可用或 effort 不受支持时返回错误，不悄悄替换；已移除模型或禁用 Role 的引用仍可保留。清除 DEFAULT 后，新启动回到原有默认设置；当前会话不强制回退模型。
 
 - `task.tasks[]` 的每项必须通过 `role` 选择一个可用角色，例如 `role: "fast"` 或 `role: "api-auditor"`。缺失或无效的角色会在启动前拒绝整批。旧调用中的 `agent` 改为 `role`。`readonly: true` 可将普通任务限制为只读。
-- 从 Execute 进入 Plan，或从 `/plan-list` 打开新的规划会话时，采用已启用 PLAN 的 model 和 effort。同一 Plan 内继续讨论不会重复套用 PLAN，用户用 `/model` 或 `/effort` 的手动选择会保留；恢复会话沿用已保存的实际模型。
+- 从 Execute 进入 Plan，或从 `/plan-list` 打开新的规划会话时，采用已启用 PLAN 的 model 和 effort。同一 Plan 内继续讨论保留用户手动选择的模型和 effort。退出 Plan、批准执行或从 Plan 恢复到 Execute 会话时，按启动默认规则切换模型和 effort；已启用的 DEFAULT 主备路由随之恢复。启动时恢复的旧 Execute 会话若仍绑定 PLAN，也按同一规则切换。
 - 计划面板的独立审阅使用已启用的 REVIEW；代码审查通过 `role: "review"` 创建只读子任务，并使用 REVIEW 的 model、effort 和 fallback。独立计划审阅不会改变主会话模型。角色配置本身不自动发起审查。
 - `VISION` 是可选模型角色，不改变模型自身的图像输入能力。
 - `EXPLORER` 始终只读：内置工具仅保留 read、grep、glob、lsp 与已授权的只读 MCP，不提供写入、shell 或继续委托，用于快速探索代码结构和定位实现。
@@ -1068,7 +1068,7 @@ pp gc [天数]
 
 | 包 / 目录 | 职责边界 |
 |---|---|
-| `pp-core` / `crates/pp-core/src/` | 取消、上下文、事件、交互队列、Plan、日志、SQLite 安全打开，以及 `model::ThinkLevel`、`todo`、`lsp_report` 与 `text::display_text` 等共享契约；`prompts/plan.md`、`prompts/plan-progress.md` 保留计划提示词。不依赖其他内部库。 |
+| `pp-core` / `crates/pp-core/src/` | 取消、上下文、事件、交互队列、Plan、日志、SQLite 安全打开，以及 `model::ThinkLevel`、`todo`、`lsp_report` 与 `text::display_text` 等共享契约；`prompts/plan-progress.md` 保留计划进度提示词，PLAN Role 提示词在 `pp-runtime`。不依赖其他内部库。 |
 | `pp-config` / `crates/pp-config/src/` | `config`、`models`、`auth`（含 `auth/http`）、`agent_store`、`skills`、严格 YAML 与顶层 `task_status`；`prompts/skills.md` 随实现。 |
 | `pp-stats` / `crates/pp-stats/src/` | 统计快照、聚合与只读 HTTP 服务；原 `stats.rs`、`stats/` 分别成为 `lib.rs` 与同目录模块，内嵌 HTML／JS／CSS／图标／字体与实现同目录。 |
 | `pp-llm` / `crates/pp-llm/src/` | Chat Completions／Responses 请求、重试、流式、解析与共享 HTTP 返回类型；原 `llm.rs`、`llm/` 分别成为 `lib.rs` 与同目录模块。 |

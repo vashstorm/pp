@@ -134,7 +134,7 @@ impl Agent {
         let prepared = (|| -> Result<(Session, super::persistence::SessionJournal)> {
             let definitions = self.tools.all_definitions(WorkMode::Plan);
             let system = self.compose_prompt(
-                &candidate_workflow.instructions(),
+                &crate::subagent::catalog::workflow_instructions(&candidate_workflow),
                 "plan",
                 &config.model,
                 definitions.iter().map(|tool| tool.name.clone()).collect(),

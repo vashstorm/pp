@@ -11,19 +11,19 @@ use super::plan_sync::{
     import_plan_content, reconcile_plan_state, sync_plan_todos, sync_restored_todos,
 };
 use super::{
-    Agent, ExecutionPreparation, Session,
-    persistence::{Metadata, SessionJournal},
+    Agent, ExecutionPreparation, ModelChoice, OpenAiClient, Protocol, Session, ThinkLevel, history,
+    persistence::{self, Metadata},
 };
 use crate::agent::input::InputQueue;
 use crate::mcp::{Access, Registry};
 use crate::project_instructions;
 use crate::tools::plan_catalog;
 use anyhow::{Result, anyhow, bail, ensure};
+use pp_config::config::{ModelRole, RoleRoute};
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
 use pp_core::plan;
 use pp_core::plan::ExecutionContext;
-use pp_core::plan::PlanDocument;
 use pp_core::plan::PlanLocation;
 use pp_core::plan::PlanReview;
 use pp_core::plan::PlanStatus;
@@ -42,6 +42,34 @@ const TASKS_CHANGED: &str = "Plan tasks changed; re-plan before completing.";
 
 /// 生命周期搬迁的待清理端点：源/目标各自的 (文件名, 位置)。
 type PlanMoveEndpoints = ((String, PlanLocation), (String, PlanLocation));
+
+struct ExecutionModel {
+    choice: ModelChoice,
+    effort: ThinkLevel,
+    route: Option<RoleRoute>,
+    client: OpenAiClient,
+    same_response_source: bool,
+}
+
+impl ExecutionModel {
+    fn metadata<'a>(
+        &'a self,
+        tools: &'a crate::tools::Tools,
+        base_system: &'a str,
+        prompt_source: Option<&'a crate::system_prompt::Snapshot>,
+    ) -> Metadata<'a> {
+        Metadata {
+            role_route: self.route.as_ref(),
+            cwd: tools.cwd(),
+            model_reference: &self.choice.reference,
+            think_level: self.effort,
+            edit_mode: tools.edit_mode(),
+            tool_limits: tools.limits,
+            base_system,
+            prompt_source,
+        }
+    }
+}
 
 pub(super) enum SavedInstructions {
     Completion(async_openai::types::chat::ChatCompletionRequestSystemMessageContent),
@@ -76,12 +104,89 @@ impl SavedInstructions {
             (Self::Response(instructions), Session::Response(request)) => {
                 request.instructions = instructions
             }
-            _ => unreachable!("approval does not change protocol"),
+            _ => unreachable!("saved instructions belong to the current protocol"),
         }
     }
 }
 
 impl Agent {
+    fn default_execution_model(&self) -> Result<ExecutionModel> {
+        let (config, effort, route) = Self::resolve_default_model(&self.catalog)?;
+        let same_response_source = self.client.same_source(&config)
+            && same_provider(&self.current_model.reference, &config.model_reference);
+        let mut client = OpenAiClient::new(&config)?;
+        #[cfg(debug_assertions)]
+        if let Some(scripts) = self.client.mock_scripts() {
+            client.set_mock_scripts(scripts.clone())?;
+        }
+        client.set_task_accounting(self.task_status.accounting.clone());
+        Ok(ExecutionModel {
+            choice: ModelChoice {
+                reference: config.model_reference,
+                model: config.model,
+                protocol: config.protocol,
+                thinking: config.thinking,
+                context_window: config.context_window,
+            },
+            effort,
+            route,
+            client,
+            same_response_source,
+        })
+    }
+
+    fn execution_session(
+        &self,
+        model: &ExecutionModel,
+        workflow: &WorkflowState,
+        registry: &Registry,
+        keep: bool,
+    ) -> Result<Session> {
+        let definitions = self
+            .tools
+            .definitions_with_registry(WorkMode::Execute, registry);
+        let system = self.compose_prompt(
+            &crate::subagent::catalog::workflow_instructions(workflow),
+            workflow.mode_name(),
+            &model.choice.model,
+            definitions.iter().map(|tool| tool.name.clone()).collect(),
+        )?;
+        let edit_mode = self.tools.edit_mode();
+        let mut session = if !keep {
+            Session::new(
+                model.choice.model.clone(),
+                model.choice.protocol,
+                String::new(),
+                edit_mode,
+            )
+        } else if model.choice.protocol != self.current_model.protocol
+            || model.choice.protocol == Protocol::Response && !model.same_response_source
+        {
+            history::convert(
+                &self.session,
+                model.choice.model.clone(),
+                model.choice.protocol,
+                edit_mode,
+            )?
+        } else {
+            self.session.clone()
+        };
+        session.set_model(&model.choice.model);
+        session.set_instructions(system);
+        session.set_tools(definitions);
+        session.set_think_level(model.effort);
+        Ok(session)
+    }
+
+    fn install_execution_model(&mut self, model: ExecutionModel) {
+        self.client = model.client;
+        self.current_model = model.choice;
+        self.think_level = model.effort;
+        self.role_route = model.route;
+        self.last_request = None;
+        self.pending_instructions = None;
+    }
+
     /// 新来源按块渲染；旧会话继续使用不可拆分的基础指令。
     pub(super) fn compose_prompt(
         &self,
@@ -143,7 +248,7 @@ impl Agent {
     /// 候选会话使用目标模式的工具清单，逐请求刷新使用原生请求里的实际清单。
     pub(super) fn compose_system(&self, workflow: &WorkflowState) -> Result<String> {
         self.compose_prompt(
-            &workflow.instructions(),
+            &crate::subagent::catalog::workflow_instructions(workflow),
             workflow.mode_name(),
             &self.current_model.model,
             self.tools
@@ -451,29 +556,28 @@ impl Agent {
             );
         }
         self.journal.check()?;
+        let model = self.default_execution_model()?;
         self.ensure_plan_mcp_access(cancellation)?;
         let registry = self.prepare_execution_registry(cancellation)?;
-        let cleanup = match registry.cleanup() {
-            Ok(cleanup) => cleanup,
+        let prepared = (|| -> Result<_> {
+            let cleanup = registry.cleanup()?;
+            // 解除绑定，保留磁盘上的计划和登记。
+            let workflow = WorkflowState::default();
+            let session = self.execution_session(&model, &workflow, &registry, true)?;
+            let metadata =
+                model.metadata(&self.tools, &self.base_system, self.prompt_source.as_ref());
+            cancellation::check(cancellation)?;
+            self.journal
+                .commit_plan_exit(&metadata, (&session).into(), &workflow)?;
+            Ok((workflow, session, cleanup))
+        })();
+        let (workflow, session, cleanup) = match prepared {
+            Ok(prepared) => prepared,
             Err(error) => return Err(self.abort_execution_preparation(registry, error)),
         };
-        let previous = self.workflow.clone();
-        self.workflow.mode = WorkMode::Execute;
-        // 解除绑定但不删除任何文件；空待命与已保存草稿都直接清除。
-        // 计划 todo 来源与投影一并解除，不恢复任何隐藏的旧普通清单。
-        self.workflow.plan = None;
-        self.workflow.review = None;
-        self.workflow.todos = Vec::new();
-        self.workflow.todo_plan_id = None;
-        let mut definitions = self.tools.all_definitions(WorkMode::Execute);
-        definitions.extend(registry.definitions(Access::Full));
-        self.session.set_tools(definitions);
-        if let Err(error) = self.journal.write_workflow(&self.workflow) {
-            self.workflow = previous;
-            self.session
-                .set_tools(self.tools.all_definitions(WorkMode::Plan));
-            return Err(self.abort_execution_preparation(registry, error));
-        }
+        self.session = session;
+        self.workflow = workflow;
+        self.install_execution_model(model);
         self.tools.mcp = registry;
         Ok(ExecutionPreparation {
             workflow: self.workflow.clone(),
@@ -695,16 +799,6 @@ impl Agent {
             ),
             "{NOT_CURRENT}"
         );
-        let previous = self.workflow.clone();
-        self.workflow
-            .plan
-            .as_mut()
-            .expect("saved plan bound")
-            .status = PlanStatus::Draft;
-        if let Err(error) = self.journal.write_workflow(&self.workflow) {
-            self.workflow = previous;
-            return Err(error);
-        }
         self.leave_plan(cancellation, None)
     }
 
@@ -758,271 +852,150 @@ impl Agent {
             cancellation::check(cancellation)?;
             self.check_plan_token_for_approval(&token, input)?;
         }
+        let model = self.default_execution_model()?;
         let registry = self.prepare_execution_registry(cancellation)?;
-        let cleanup = match registry.cleanup() {
-            Ok(cleanup) => cleanup,
-            Err(error) => return Err(self.abort_execution_preparation(registry, error)),
-        };
-        // Re-check queue and file after preparation; the approved token bytes
-        // remain the execution snapshot.
-        if let Err(error) = self.check_plan_token_for_approval(&token, input) {
-            return Err(self.abort_execution_preparation(registry, error));
-        }
-        // 批准必须持有计划 lease（锁顺序 lease → 登记表锁），成功后转交
-        // 执行任务持有到 finish_task；失败出口立即释放。
-        if let Err(error) = self.ensure_task_plan_lease() {
-            self.plan_lease = None;
-            return Err(self.abort_execution_preparation(registry, error));
-        }
-        // 两种批准都以经过 ReviewToken 验证的当前完整正文冻结有序任务
-        // 集合（重复文本按序保留）；执行进度导入不得覆盖该字段。列表
-        // 重新执行在打开时清空，因此这里冻结的是本次审阅集合。
-        {
-            let document = self.workflow.plan.as_mut().expect("ready plan bound");
+        let fresh = context == ExecutionContext::Fresh;
+        let candidate = (|| -> Result<_> {
+            let cleanup = registry.cleanup()?;
+            let mut workflow = self.workflow.clone();
+            workflow.mode = WorkMode::Execute;
+            if fresh {
+                workflow.review = None;
+            }
+            let document = workflow.plan.as_mut().expect("ready plan bound");
+            document.status = PlanStatus::Executed;
+            document.location = PlanLocation::Plans;
+            // 从已审阅正文冻结任务文本及顺序，之后的进度导入保留该基线。
             document.approved_tasks = Some(
                 plan::plan_tasks(&token.content)
                     .into_iter()
                     .map(|task| task.text)
                     .collect(),
             );
-        }
-        // 第二次校验通过后发布 Drafts→Plans；失败保留源链接，返回真实错误。
-        let pending_move = match self.promote_approved_plan(&token) {
-            Ok(pending) => pending,
+            let prompt_context = if fresh {
+                ExecutionContext::Fresh
+            } else {
+                ExecutionContext::Keep
+            };
+            let prompt = plan::execution_prompt(document, prompt_context);
+            let mut todos = crate::tools::todo::project_plan_todos(document, &[], false)?;
+            crate::tools::todo::normalize_in_progress(&mut todos);
+            workflow.todos = todos;
+            workflow.todo_plan_id = Some(document.id.clone());
+            let mut session = self.execution_session(&model, &workflow, &registry, !fresh)?;
+            super::turn::append_user_to(&mut session, &prompt);
+            // 准备原生请求后再核对输入队列与计划正文，之后才发布计划移动。
+            cancellation::check(cancellation)?;
+            self.check_plan_token_for_approval(&token, input)?;
+            Ok((workflow, session, prompt, cleanup))
+        })();
+        let (workflow, session, prompt, cleanup) = match candidate {
+            Ok(candidate) => candidate,
+            Err(error) => return Err(self.abort_execution_preparation(registry, error)),
+        };
+        let committed = (|| -> Result<_> {
+            // 按 PlanLease → 登记锁顺序持有到执行任务收尾。
+            self.ensure_task_plan_lease()?;
+            let pending_move = self.promote_approved_plan(&token)?;
+            let metadata =
+                model.metadata(&self.tools, &self.base_system, self.prompt_source.as_ref());
+            let mut fork = fresh.then(|| self.journal.fork_empty());
+            let target = fork.as_mut().unwrap_or(&mut self.journal);
+            target.commit_plan_handoff(&metadata, (&session).into(), &workflow, &prompt)?;
+            if fresh {
+                // 源规划会话仍在 Plan，已批准的计划在源会话中只读。
+                let mut source = self.workflow.clone();
+                source.plan.clone_from(&workflow.plan);
+                self.journal.write_workflow(&source)?;
+            }
+            Ok((pending_move, fork))
+        })();
+        let (pending_move, fork) = match committed {
+            Ok(committed) => committed,
             Err(error) => {
                 self.plan_lease = None;
                 return Err(self.abort_execution_preparation(registry, error));
             }
         };
-        match context {
-            ExecutionContext::Keep | ExecutionContext::Compact => {
-                self.prepare_keep_execution(&token, pending_move, registry, cleanup)
-            }
-            ExecutionContext::Fresh => {
-                self.prepare_fresh_execution(&token, pending_move, registry, cleanup)
-            }
-        }
-    }
-
-    /// Keep-context handoff: append exactly one execution user message to the
-    /// current session and commit it together with the Execute workflow as
-    /// one atomic journal group. Failure restores the Plan/Ready state and
-    /// the native history; the plan file is never rolled back.
-    fn prepare_keep_execution(
-        &mut self,
-        token: &ReviewToken,
-        pending_move: Option<PlanMoveEndpoints>,
-        registry: Registry,
-        cleanup: crate::mcp::Cleanup,
-    ) -> Result<ExecutionPreparation> {
-        let document = self
-            .workflow
-            .plan
-            .as_ref()
-            .expect("ready plan bound")
-            .clone();
-        debug_assert_eq!(document.content, token.content);
-        let prompt = pp_core::plan::execution_prompt(&document, ExecutionContext::Keep);
-        // 三种批准交接一致：从批准正文重建执行投影并激活首个未勾选项；
-        // 投影与 Execute workflow 一起进入同一个 handoff 事务。
-        let mut todos = crate::tools::todo::project_plan_todos(
-            &PlanDocument {
-                status: PlanStatus::Executed,
-                ..document.clone()
-            },
-            &[],
-            false,
-        )?;
-        crate::tools::todo::normalize_in_progress(&mut todos);
-        let todo_plan_id = Some(document.id.clone());
-        let previous_workflow = self.workflow.clone();
-        let previous_system = SavedInstructions::take(&mut self.session);
-        let previous_pending = self.pending_instructions.take();
-        self.append_user(&prompt);
-        self.workflow.mode = WorkMode::Execute;
-        if let Some(plan) = &mut self.workflow.plan {
-            plan.status = PlanStatus::Executed;
-        }
-        self.workflow.todos = todos;
-        self.workflow.todo_plan_id = todo_plan_id;
-        let mut definitions = self.tools.all_definitions(WorkMode::Execute);
-        definitions.extend(registry.definitions(Access::Full));
-        self.session.set_tools(definitions);
-        let prepared = (|| -> Result<()> {
-            // Switch the system prompt to the Execute progress rules before
-            // the synced commit so the stored state matches the handoff.
-            self.refresh_instructions()?;
-            let metadata = Metadata {
-                role_route: self.role_route.as_ref(),
-                cwd: self.tools.cwd(),
-                model_reference: &self.current_model.reference,
-                think_level: self.think_level,
-                edit_mode: self.tools.edit_mode(),
-                tool_limits: self.tools.limits,
-                base_system: &self.base_system,
-                prompt_source: self.prompt_source.as_ref(),
-            };
-            self.journal.commit_plan_handoff(
-                &metadata,
-                (&self.session).into(),
-                &self.workflow,
-                &prompt,
-            )
-        })();
-        if let Err(error) = prepared {
-            self.workflow = previous_workflow;
-            self.remove_last_user();
-            previous_system.restore(&mut self.session);
-            self.pending_instructions = previous_pending;
-            self.session
-                .set_tools(self.tools.all_definitions(WorkMode::Plan));
-            // 交接失败：已发布的目标链接与登记保留，源链接尚未移除；
-            // 旧 path token 失效，重试从 Plans 幂等重入。
-            return Err(self.abort_execution_preparation(registry, error));
-        }
-        // 批准初始化快照先记入目标 journal；再随交接发布给 UI。
-        let todo_snapshot = super::turn::todo_snapshot(&self.workflow);
-        if let Some(event) = &todo_snapshot {
-            self.journal.event(event);
-            self.journal.check()?;
-        }
-        self.finish_approved_move(pending_move, token);
-        self.tools.mcp = registry;
-        self.pending_instructions = None;
-        Ok(ExecutionPreparation {
-            workflow: self.workflow.clone(),
-            session_id: self.journal.id().map(str::to_owned),
-            replay: None,
-            cleanup,
-            todo_snapshot,
-        })
-    }
-
-    /// Fresh-context handoff: prepare an empty current-model session, a blank
-    /// journal fork and an Execute workflow carrying only the approved plan,
-    /// then commit the target checkpoint and the source handoff record. Only
-    /// when both commits succeed is the working session replaced; the
-    /// planning session stays in Plan mode with an Executed (read-only) plan.
-    fn prepare_fresh_execution(
-        &mut self,
-        token: &ReviewToken,
-        pending_move: Option<PlanMoveEndpoints>,
-        registry: Registry,
-        cleanup: crate::mcp::Cleanup,
-    ) -> Result<ExecutionPreparation> {
-        let document = self
-            .workflow
-            .plan
-            .as_ref()
-            .expect("ready plan bound")
-            .clone();
-        debug_assert_eq!(document.content, token.content);
-        // 候选执行 workflow 从批准正文重建执行投影并激活首个未勾选项；
-        // 与目标 checkpoint 一起进入同一个 handoff 事务。
-        let candidate_plan = PlanDocument {
-            status: PlanStatus::Executed,
-            ..document.clone()
-        };
-        let todos = crate::tools::todo::project_plan_todos(&candidate_plan, &[], false)?;
-        let candidate_workflow = WorkflowState {
-            mode: WorkMode::Execute,
-            plan: Some(candidate_plan),
-            todos,
-            todo_plan_id: Some(document.id.clone()),
-            ..Default::default()
-        };
-        let prompt = pp_core::plan::execution_prompt(&document, ExecutionContext::Fresh);
-        let previous = self.workflow.clone();
-        // Reload current project and skill rules; the candidate session reuses
-        // the current model, thinking level and edit mode, never the planning
-        // native history.
-        let prepared = (|| -> Result<(Session, SessionJournal)> {
-            let mut definitions = self.tools.all_definitions(WorkMode::Execute);
-            definitions.extend(registry.definitions(Access::Full));
-            let system = self.compose_prompt(
-                &candidate_workflow.instructions(),
-                "execute",
-                &self.current_model.model,
-                definitions.iter().map(|tool| tool.name.clone()).collect(),
-            )?;
-            let mut session = Session::new(
-                self.current_model.model.clone(),
-                self.current_model.protocol,
-                system,
-                self.tools.edit_mode(),
-            );
-            session.set_think_level(self.think_level);
-            session.set_tools(definitions);
-            super::turn::append_user_to(&mut session, &prompt);
-            let metadata = Metadata {
-                role_route: self.role_route.as_ref(),
-                cwd: self.tools.cwd(),
-                model_reference: &self.current_model.reference,
-                think_level: self.think_level,
-                edit_mode: self.tools.edit_mode(),
-                tool_limits: self.tools.limits,
-                base_system: &self.base_system,
-                prompt_source: self.prompt_source.as_ref(),
-            };
-            let mut journal = self.journal.fork_empty();
-            // 目标执行会话先提交，随后才是源规划会话的 handoff 记录。
-            journal.commit_plan_handoff(
-                &metadata,
-                (&session).into(),
-                &candidate_workflow,
-                &prompt,
-            )?;
-            // 批准初始化快照记入目标 journal；失败整体放弃候选。
-            if let Some(event) = super::turn::todo_snapshot(&candidate_workflow) {
-                journal.event(&event);
-                journal.check()?;
-            }
-            Ok((session, journal))
-        })();
-        let (session, journal) = match prepared {
-            Ok(pair) => pair,
-            Err(error) => {
-                // The candidate session file may remain in the session list;
-                // the planning session is untouched and stays Plan/Ready.
-                return Err(self.abort_execution_preparation(registry, error));
-            }
-        };
-        // Source handoff record: plan executed, planning session stays in Plan
-        // mode for read-only review; bare /plan toggles out without rebinding.
-        if let Some(plan) = &mut self.workflow.plan {
-            plan.status = PlanStatus::Executed;
-        }
-        if let Err(error) = self.journal.write_workflow(&self.workflow) {
-            self.workflow = previous;
-            // 两个 journal 未全部成功：源链接保留，待按 ID 协调。
-            return Err(self.abort_execution_preparation(registry, error));
-        }
         self.session = session;
-        self.reset_lsp_diagnostics();
-        self.journal = journal;
-        self.tools.artifacts = Default::default();
-        // Fresh 交接是新会话根：规划会话的临时管道不迁移到执行会话。
-        self.tools.reset_pipe_store();
-        if let Some(id) = self.journal.id() {
-            let _ = self.tools.artifacts.bind(self.journal.directory(), id);
-        }
-        self.workflow = candidate_workflow;
-        self.tools.clear_changes();
-        self.clear_session_usage();
-        self.pending_instructions = None;
-        self.pending_project_load = None;
-        self.reported_project_load = None;
+        self.workflow = workflow;
+        self.install_execution_model(model);
         self.tools.mcp = registry;
-        self.finish_approved_move(pending_move, token);
+        if let Some(journal) = fork {
+            self.reset_lsp_diagnostics();
+            self.journal = journal;
+            self.tools.artifacts = Default::default();
+            self.tools.reset_pipe_store();
+            if let Some(id) = self.journal.id() {
+                let _ = self.tools.artifacts.bind(self.journal.directory(), id);
+            }
+            self.tools.clear_changes();
+            self.clear_session_usage();
+            self.pending_project_load = None;
+            self.reported_project_load = None;
+        }
+        self.finish_approved_move(pending_move, &token);
         Ok(ExecutionPreparation {
             workflow: self.workflow.clone(),
             session_id: self.journal.id().map(str::to_owned),
-            replay: Some(Vec::new()),
+            replay: fresh.then(Vec::new),
             cleanup,
-            // 空 replay 的新会话总是携带批准初始化快照；源规划会话保持
-            // 只读预览，绝不伪装成已执行。
             todo_snapshot: super::turn::todo_snapshot(&self.workflow),
         })
+    }
+
+    pub(super) fn resumed_session(
+        &self,
+        checkpoint: persistence::Checkpoint,
+        choice: &ModelChoice,
+        effort: ThinkLevel,
+        definitions: Vec<async_openai::types::chat::FunctionObject>,
+    ) -> Result<(Session, WorkflowState)> {
+        let same_model = checkpoint.model_reference == choice.reference
+            && matches!(&checkpoint.session, Session::Response(request)
+                if choice.protocol == Protocol::Response
+                    && request.model.as_deref() == Some(choice.model.as_str()));
+        let source = if same_model
+            || matches!(checkpoint.session, Session::Completion(_))
+                && choice.protocol == Protocol::Completion
+        {
+            checkpoint.session
+        } else {
+            history::convert(
+                &checkpoint.session,
+                choice.model.clone(),
+                choice.protocol,
+                self.tools.edit_mode(),
+            )?
+        };
+        let system = self.compose_prompt(
+            &crate::subagent::catalog::workflow_instructions(&checkpoint.workflow),
+            checkpoint.workflow.mode_name(),
+            &choice.model,
+            definitions.iter().map(|tool| tool.name.clone()).collect(),
+        )?;
+        let mut session = Session::new(
+            choice.model.clone(),
+            choice.protocol,
+            system,
+            self.tools.edit_mode(),
+        );
+        match (&mut session, source) {
+            (Session::Completion(target), Session::Completion(source)) => {
+                let skip_system = usize::from(matches!(
+                    source.messages.first(),
+                    Some(super::ChatCompletionRequestMessage::System(_))
+                ));
+                target
+                    .messages
+                    .extend(source.messages.into_iter().skip(skip_system));
+            }
+            (Session::Response(target), Session::Response(source)) => target.input = source.input,
+            _ => unreachable!("history converted to the target protocol"),
+        }
+        session.set_tools(definitions);
+        session.set_think_level(effort);
+        Ok((session, checkpoint.workflow))
     }
 
     /// Resume a saved session in the worker, adapting the managed MCP
@@ -1035,30 +1008,81 @@ impl Agent {
     ) -> Result<ExecutionPreparation> {
         cancellation::check(cancellation)?;
         self.stop_subagents()?;
-        let mut restored = self.prepare_resume(id)?;
-        let target_mode = restored.checkpoint.workflow.mode;
-        let todo_snapshot = sync_restored_todos(
-            &self.tools,
-            &mut restored.journal,
-            &mut restored.checkpoint.workflow,
-            &restored.replay,
+        let persistence::RestoredSession {
+            mut checkpoint,
+            mut journal,
+            replay,
+        } = persistence::load(
+            &pp_config::config::global_dir()?.join("sessions"),
+            self.journal.lock_dir(),
+            Some(id),
+            true,
         )?;
-        match (self.workflow.mode, target_mode) {
-            (WorkMode::Plan, WorkMode::Execute) => {
+        let target_mode = checkpoint.workflow.mode;
+        let leaving_plan = self.workflow.mode == WorkMode::Plan && target_mode == WorkMode::Execute;
+        let stale_plan_route = target_mode == WorkMode::Execute
+            && checkpoint
+                .role_route
+                .as_ref()
+                .is_some_and(|route| route.role == ModelRole::Plan);
+        let model = if leaving_plan || stale_plan_route {
+            Some(self.default_execution_model()?)
+        } else {
+            None
+        };
+        let todo_snapshot =
+            sync_restored_todos(&self.tools, &mut journal, &mut checkpoint.workflow, &replay)?;
+        let registry = if leaving_plan {
+            self.ensure_plan_mcp_access(cancellation)?;
+            Some(self.prepare_execution_registry(cancellation)?)
+        } else {
+            if target_mode == WorkMode::Plan {
                 self.ensure_plan_mcp_access(cancellation)?;
-                self.tools.mcp = self.prepare_execution_registry(cancellation)?;
             }
-            (_, WorkMode::Plan) => self.ensure_plan_mcp_access(cancellation)?,
-            (WorkMode::Execute, WorkMode::Execute) => {}
+            None
+        };
+        let prepared = (|| -> Result<_> {
+            let active_registry = registry.as_ref().unwrap_or(&self.tools.mcp);
+            let cleanup = active_registry.cleanup()?;
+            let definitions = self
+                .tools
+                .definitions_with_registry(target_mode, active_registry);
+            let (choice, effort) = model
+                .as_ref()
+                .map_or((&self.current_model, self.think_level), |model| {
+                    (&model.choice, model.effort)
+                });
+            let (session, workflow) =
+                self.resumed_session(checkpoint, choice, effort, definitions)?;
+            cancellation::check(cancellation)?;
+            if let Some(model) = &model {
+                let metadata =
+                    model.metadata(&self.tools, &self.base_system, self.prompt_source.as_ref());
+                journal.commit_plan_exit(&metadata, (&session).into(), &workflow)?;
+            }
+            Ok((session, workflow, cleanup))
+        })();
+        let (session, workflow, cleanup) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return Err(match registry {
+                    Some(registry) => self.abort_execution_preparation(registry, error),
+                    None => error,
+                });
+            }
+        };
+        if let Some(registry) = registry {
+            self.tools.mcp = registry;
         }
-        let cleanup = self.tools.mcp.cleanup()?;
-        restored.journal.history_replaced();
-        self.session = restored.checkpoint.session;
+        if let Some(model) = model {
+            self.install_execution_model(model);
+        } else {
+            journal.history_replaced();
+        }
+        self.session = session;
         self.reset_lsp_diagnostics();
-        self.workflow = restored.checkpoint.workflow;
-        self.session
-            .set_tools(self.tools.all_definitions(self.workflow.mode));
-        self.journal = restored.journal;
+        self.workflow = workflow;
+        self.journal = journal;
         self.tools.artifacts = Default::default();
         // 恢复的会话是新的有效根；不承诺旧临时管道正文跨恢复存在。
         self.tools.reset_pipe_store();
@@ -1066,8 +1090,8 @@ impl Agent {
             let _ = self.tools.artifacts.bind(self.journal.directory(), id);
         }
         self.pending_project_load = None;
-        self.reported_project_load = super::turn::reported_project_load(&restored.replay);
-        self.replay = restored.replay;
+        self.reported_project_load = super::turn::reported_project_load(&replay);
+        self.replay = replay;
         self.tools.clear_changes();
         if let Some(debug) = &mut self.debug {
             debug.set_prompt_recorded(true);
@@ -1082,6 +1106,11 @@ impl Agent {
             todo_snapshot,
         })
     }
+}
+
+fn same_provider(left: &str, right: &str) -> bool {
+    left.split_once('/').map(|(provider, _)| provider)
+        == right.split_once('/').map(|(provider, _)| provider)
 }
 
 #[cfg(test)]

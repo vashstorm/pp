@@ -1,5 +1,116 @@
 use super::*;
 
+pub(super) fn install_distinct_plan_model(agent: &mut Agent, root: &std::path::Path) {
+    let path = root.join("models.yml");
+    let mut models: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    models["providers"]["fixture"]["models"]["spare"] = json!({"model":"default-spare"});
+    models["providers"]["planner"] = json!({
+        "api_key":"fixture-key", "protocol":"response",
+        "base_url":"http://127.0.0.1:1/v1", "models":{"one":{"model":"planner-model"}}
+    });
+    std::fs::write(path, models.to_string()).unwrap();
+    agent.reload_models().unwrap();
+    for (role, model, effort, fallback) in [
+        (
+            ModelRole::Default,
+            "fixture/one",
+            ThinkLevel::Low,
+            Some("fixture/spare"),
+        ),
+        (ModelRole::Plan, "planner/one", ThinkLevel::High, None),
+    ] {
+        agent
+            .save_model_role(
+                role,
+                Some(pp_config::config::RoleAssignment {
+                    enabled: true,
+                    model: model.into(),
+                    effort,
+                    fallback: fallback.map(|model| pp_config::config::RoleModel {
+                        model: model.into(),
+                        effort: ThinkLevel::Medium,
+                    }),
+                }),
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn plan_exit_switches_protocol_and_persists_default_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+    install_distinct_plan_model(&mut agent, dir.path());
+    let cancellation = CancellationToken::new();
+    agent.enter_plan(&cancellation).unwrap();
+    assert_eq!(agent.current_model.reference, "planner/one");
+    assert_eq!(agent.think_level, ThinkLevel::High);
+    seed_session(&mut agent, EXPLORATION);
+    let id = agent.session_id().unwrap().to_owned();
+    let sessions = agent.journal.directory().to_owned();
+    let locks = agent.journal.lock_dir().to_owned();
+
+    agent.leave_plan(&cancellation, None).unwrap();
+    assert!(matches!(agent.session, Session::Completion(_)));
+    assert_eq!(agent.current_model.reference, "fixture/one");
+    assert_eq!(agent.think_level, ThinkLevel::Low);
+    assert_eq!(user_texts(&agent), [EXPLORATION]);
+    assert!(
+        !agent
+            .session
+            .tool_names()
+            .contains(&"plan_submit".to_owned())
+    );
+    drop(agent);
+
+    let restored = persistence::load(&sessions, &locks, Some(&id), true).unwrap();
+    assert_eq!(restored.checkpoint.workflow.mode, WorkMode::Execute);
+    assert_eq!(restored.checkpoint.model_reference, "fixture/one");
+    let route = restored.checkpoint.role_route.unwrap();
+    assert_eq!(route.role, ModelRole::Default);
+    assert_eq!(route.fallback.unwrap().model, "fixture/spare");
+}
+
+#[test]
+fn plan_restore_replaces_only_a_legacy_execute_plan_route() {
+    for has_plan_route in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+        install_distinct_plan_model(&mut agent, dir.path());
+        agent.enter_plan(&CancellationToken::new()).unwrap();
+        agent.workflow = WorkflowState::default();
+        if !has_plan_route {
+            agent.switch_model("planner/one").unwrap();
+        }
+        seed_session(&mut agent, EXPLORATION);
+        agent.checkpoint_route().unwrap();
+        let id = agent.session_id().unwrap().to_owned();
+        let sessions = agent.journal.directory().to_owned();
+        let locks = agent.journal.lock_dir().to_owned();
+        let catalog = agent.catalog.clone();
+        drop(agent);
+
+        let restored = persistence::load(&sessions, &locks, Some(&id), true).unwrap();
+        let tools = Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap();
+        let agent = Agent::restore(catalog, tools, restored).unwrap();
+        let expected = if has_plan_route {
+            "fixture/one"
+        } else {
+            "planner/one"
+        };
+        assert_eq!(agent.current_model.reference, expected);
+        assert_eq!(user_texts(&agent), [EXPLORATION]);
+        assert_eq!(
+            agent.role_route.as_ref().map(|route| route.role),
+            has_plan_route.then_some(ModelRole::Default)
+        );
+        drop(agent);
+        let saved = persistence::load(&sessions, &locks, Some(&id), true).unwrap();
+        assert_eq!(saved.checkpoint.model_reference, expected);
+    }
+}
+
 #[test]
 fn plan_toggle_enters_standby_and_leave_unbinds_without_abandoning() {
     for protocol in ["completion", "response"] {

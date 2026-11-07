@@ -24,7 +24,7 @@ Hub 分两页，`1`／`2` 切换：
 - 人工追问按普通文本发送，`/model` 等文本不会在 child 中执行本地命令。发送成功才清掉未修改的草稿，失败保留草稿并提示；父方在成功后按既有规则取回结果。
 - 详情与 Activity 使用与主对话相同的观察日志，历史超过 64 KiB 也能从头浏览；旧日志缺少时间戳时显示 `—`，不推算当前时间或费用。
 
-每个子任务都必须显式传入 `role`。内置角色有 `fast`、`slow`、`vision`、`review`、`explorer`，也可选择已加载的自定义角色名称。DEFAULT 和 PLAN 供主 Agent 选模。REVIEW 与 EXPLORER 始终只读，其他 Role 可用 `readonly: true` 限制为只读调查。Plan 中的所有子 Agent 强制只读。只读限制同时作用于工具清单和执行入口，禁止写入、shell 与继续委托。只读子 Agent 可使用父级开放、用户标为只读且在自身工具集合中的 MCP 工具。
+每个子任务都必须显式传入 `role`。内置角色有 `fast`、`slow`、`vision`、`review`、`explorer`，也可选择已加载的自定义角色名称。DEFAULT 供主 Agent 默认选模，PLAN 仅用于主 Agent 的 Plan 模式。REVIEW 与 EXPLORER 始终只读，其他 Role 可用 `readonly: true` 限制为只读调查。Plan 中的所有子 Agent 强制只读。只读限制同时作用于工具清单和执行入口，禁止写入、shell 与继续委托。只读子 Agent 可使用父级开放、用户标为只读且在自身工具集合中的 MCP 工具。
 
 ## 配置
 
@@ -50,19 +50,16 @@ task:
 
 内置角色在派发时确定主备路由。之后通过 `/Roles` 修改模型或 effort，会在绑定该角色的子 Agent 下一次请求前生效。自定义角色使用派发时选定的模型和 effort。详见[模型 Roles](guide.md#模型-roles)。
 
-## 自定义 Agent
+## 自定义 Role
 
-发现顺序为最近的项目 `.pp/agents/*.md`、用户 `~/.pp/agent/agents/*.md`；同名精确匹配，项目定义优先。无效文件记录诊断后跳过，`task.disabled_agents` 仅过滤自定义 Agent。自定义名称必须来自成功加载的定义。`fast`、`slow`、`vision`、`review`、`explorer`、`default`、`plan` 是保留名称，大小写变体也保留。
+发现顺序为最近的项目 `.pp/agents/*.md`、用户 `~/.pp/agent/agents/*.md`；同名精确匹配，项目定义优先。文件头用 `---` 包裹 YAML，`name` 和 `description` 必填，正文作为提示词。无效文件记录诊断后跳过，`task.disabled_agents` 仅过滤自定义 Agent。自定义名称必须来自成功加载的定义。`fast`、`slow`、`vision`、`review`、`explorer`、`default`、`plan` 是保留名称，大小写变体也保留。
 
 ````markdown
 ---
 name: api-auditor
 description: 审阅接口契约和兼容性
-model: provider/review-model
-thinking: high
 tools: [read, grep, glob, lsp]
-spawns: []
-blocking: false
+readonly: true
 ---
 
 Review the assigned API contract. Report concrete compatibility issues and file references.
@@ -70,12 +67,14 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 
 文件加载后可调用 `{"role":"api-auditor","task":"审阅接口兼容性"}`。旧调用中的 `agent` 改为 `role`。如果旧调用同时使用内置角色覆盖自定义选模，请将模型和 effort 写入自定义定义，再传入该自定义角色名称。自定义角色按 `task.agent_models`、定义中的 `model`、默认模型配置的顺序选模。思考档位优先使用定义中的 `thinking`，其次使用默认配置的有效 effort。显式停用 DEFAULT 后，自定义角色需要配置自己的模型。
 
-`tools` 省略时采用通用工具集，显式 `[]` 禁用普通工具；仅含 read／grep／glob／lsp 的工具集自动应用只读限制。无论默认工具、自定义 `tools` 还是旧记录，child 的有效工具集都会剔除 `task`。`spawns` 字段保留解析与存储兼容，但即使设为 `["*"]` 也不能让 child 继续派发。子 Agent 能力仍受工作模式限制。`blocking: true` 在批次全部启动后等待该自定义任务，默认异步；普通异步任务可用 `wait` 等待结果。`output` 可定义结构化结果约束，任务项的 `output_schema` 优先。
+`tools` 省略时采用当前模式允许的通用子 Agent 工具集，显式 `[]` 禁用普通工具，非空列表按工具名精确匹配。`readonly` 默认是 `false`，设为 `true` 时只允许只读工具。仅包含只读工具的列表也会自动应用只读限制。可用 MCP 工具取决于父级开放范围、用户的只读授权和 Role 的工具集合。无论默认工具、自定义 `tools` 还是旧记录，child 的有效工具集都会剔除 `task`。`spawns` 字段保留解析与存储兼容，但即使设为 `["*"]` 也不能让 child 继续派发。子 Agent 能力仍受工作模式限制。`blocking: true` 在批次全部启动后等待该自定义任务，默认异步；普通异步任务可用 `wait` 等待结果。`output` 可定义结构化结果约束，任务项的 `output_schema` 优先。
 
 普通 child 不复制父对话，只接收系统 Role 对应的任务约束、任务、共享背景、适用的 `AGENTS.md`、可用 Skill 与相关批准计划；不注入 Main 的 Plan／批准执行委托规则。父 TODO 和计划状态仍由 Main 管理。自定义提示词、任务背景、项目规则和批准计划中的原文不会被字符串清洗，普通任务说明、结果约定及 `yield` 提示保持不变。
 
-系统子 Agent 的内置提示词随二进制编译，修改后重新构建生效。
+内置 Role 采用相同的 Markdown 格式，随二进制打包，修改后重新构建生效。模型绑定和启用状态通过 `/Roles` 保存在 `agent.db`。
 
+- DEFAULT 提供主 Agent 的默认提示词。[system.md](../crates/pp-runtime/src/prompts/system.md)
+- PLAN 提供 Plan 模式的规划规则。[plan.md](../crates/pp-runtime/src/prompts/roles/plan.md)
 - FAST 聚焦单点排查和小改动，回传结论与必要验证。[fast.md](../crates/pp-runtime/src/prompts/roles/fast.md)
 - SLOW 用于复杂调查和实现，追踪调用链、行为约束和高风险失败路径。[slow.md](../crates/pp-runtime/src/prompts/roles/slow.md)
 - VISION 检查实际图像和渲染结果，区分可见现象与推断原因。[vision.md](../crates/pp-runtime/src/prompts/roles/vision.md)

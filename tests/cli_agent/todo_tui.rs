@@ -87,11 +87,12 @@ fn plan_todo_approval_case(context: usize) {
         let fixture = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
-            let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+            let mut pty = plan_start_with_role_models(&fixture, home.path(), project.path(), protocol);
             plan_enter(&mut pty, &fixture);
             if context == 2 {
                 pty.input("Research previous context for compaction\r");
-                let (request, _) = pty.request_at(&fixture, api_path(protocol));
+                let (request, planning) = pty.request_at(&fixture, api_path(protocol));
+                assert_eq!(planning["model"], "planner-model");
                 plan_final(request, protocol, "PRE_COMPACT_RESEARCH_CONTEXT");
                 pty.ready();
             }
@@ -119,6 +120,7 @@ fn plan_todo_approval_case(context: usize) {
             plan_choose(&mut pty, context);
             if context == 2 {
                 let (request, summary) = pty.request_at(&fixture, api_path(protocol));
+                assert_eq!(summary["model"], "planner-model");
                 assert!(
                     summary
                         .to_string()
@@ -126,7 +128,8 @@ fn plan_todo_approval_case(context: usize) {
                 );
                 plan_final(request, protocol, "Compact approved planning context.");
             }
-            let (request, _) = pty.request_at(&fixture, api_path(protocol));
+            let (request, execution) = pty.request_at(&fixture, api_path(protocol));
+            assert_plan_execute_route(&execution, protocol);
             let execution_id = if context == 0 {
                 resume_boundary_session_ids(home.path())
                     .into_iter()

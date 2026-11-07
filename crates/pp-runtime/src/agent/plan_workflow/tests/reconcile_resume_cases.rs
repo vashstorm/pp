@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn plan_resume_adapts_mcp_and_reports_replay() {
-    // prepare_resume loads from the global sessions directory, so the
-    // test re-executes itself with HOME pointed at a temporary home.
+    // /resume 从全局目录读取会话，子进程使用隔离的 HOME。
     const FIXTURE: &str = "PP_TEST_PLAN_RESUME";
     let Ok(root) = std::env::var(FIXTURE) else {
         let home = tempfile::tempdir().unwrap();
@@ -77,12 +76,18 @@ fn plan_resume_adapts_mcp_and_reports_replay() {
         }
         assert_eq!(native, planning_session);
 
-        // Resuming an Execute session from Plan reconnects ordinary MCP.
+        // 在规划会话中使用独立模型，恢复普通会话时必须回到默认路由。
+        super::handoff_cases::install_distinct_plan_model(&mut agent, &global);
+        agent.switch_model("planner/one").unwrap();
+        agent.set_think_level(ThinkLevel::High).unwrap();
         let preparation = agent
             .resume(&execute_id, &CancellationToken::new())
             .unwrap();
         assert_eq!(preparation.workflow.mode, WorkMode::Execute);
         assert!(preparation.workflow.plan.is_none());
+        assert_eq!(agent.current_model.reference, "fixture/one");
+        assert_eq!(agent.think_level, ThinkLevel::Low);
+        assert_eq!(agent.role_route.as_ref().unwrap().role, ModelRole::Default);
         assert_eq!(
             session_tool_count(&agent),
             agent.tools.all_definitions(WorkMode::Execute).len()

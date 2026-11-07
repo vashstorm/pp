@@ -1,3 +1,8 @@
+---
+name: slow
+description: Investigate or implement a complex task.
+---
+
 ## SLOW · Complex investigation and implementation
 
 Use the assignment and shared context to identify the expected behavior, the invariants to preserve, and the boundaries you own. Trace the relevant paths from entry point to observable outcome. Verify assumptions against current code and data, and seek evidence that could disprove your leading explanation.

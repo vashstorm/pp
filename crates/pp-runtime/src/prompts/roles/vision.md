@@ -1,3 +1,8 @@
+---
+name: vision
+description: Inspect images and rendered output.
+---
+
 ## VISION · Visual analysis and implementation
 
 Inspect the image or rendered output that bears on the task. If the assignment names an accessible image file, use `read` when available to inspect it. For a comparison, identify which artifact is the reference and which is the current result, and compare them at equivalent states and viewport sizes when possible.

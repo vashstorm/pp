@@ -63,7 +63,7 @@ use turn::{
 };
 
 // Keep each API's native history, including reasoning items required by Responses.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "protocol", content = "request", rename_all = "lowercase")]
 enum Session {
     Completion(Box<CreateChatCompletionRequest>),
@@ -184,6 +184,16 @@ impl Session {
         }
         Ok(())
     }
+    fn set_model(&mut self, model: &str) {
+        match self {
+            Self::Completion(request) => {
+                request.model.clear();
+                request.model.push_str(model);
+            }
+            Self::Response(request) => request.model = Some(model.to_owned()),
+        }
+    }
+
     fn set_instructions(&mut self, system: String) {
         match self {
             Self::Completion(request) => {
@@ -399,6 +409,31 @@ impl Agent {
         Self::new_with_mcp(catalog, tools, sessions_dir, lock_dir, prompt_source, None)
     }
 
+    fn resolve_default_model(
+        catalog: &ModelCatalog,
+    ) -> Result<(
+        pp_config::config::Config,
+        ThinkLevel,
+        Option<pp_config::config::RoleRoute>,
+    )> {
+        let config = catalog.resolve(catalog.default_reference())?;
+        let route = catalog
+            .role_route(pp_config::config::ModelRole::Default)
+            .filter(|route| route.primary.model == config.model_reference);
+        let effort = if let Some(route) = &route {
+            ensure!(
+                config.thinking.supports(route.primary.effort),
+                "DEFAULT role effort is not supported by the model"
+            );
+            route.primary.effort
+        } else {
+            config
+                .thinking
+                .effective_default(catalog.default_think_level())
+        };
+        Ok((config, effort, route))
+    }
+
     fn new_with_mcp(
         catalog: ModelCatalog,
         mut tools: Tools,
@@ -407,7 +442,7 @@ impl Agent {
         prompt_source: crate::system_prompt::Snapshot,
         mcp: Option<crate::mcp::Registry>,
     ) -> Result<Self> {
-        let config = catalog.resolve(catalog.default_reference())?;
+        let (config, think_level, role_route) = Self::resolve_default_model(&catalog)?;
         tools.limits = config.settings.tool_limits();
         tools.approval.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
@@ -429,21 +464,6 @@ impl Agent {
             context_window: config.context_window,
         };
         let edit_mode = tools.edit_mode();
-        let think_level = if let Some(assignment) = catalog
-            .model_roles()
-            .get(&pp_config::config::ModelRole::Default)
-            .filter(|assignment| assignment.enabled)
-        {
-            ensure!(
-                config.thinking.supports(assignment.effort),
-                "DEFAULT role effort is not supported by the model"
-            );
-            assignment.effort
-        } else {
-            config
-                .thinking
-                .effective_default(catalog.default_think_level())
-        };
         // 项目文件在任务开始时加载，读取失败不会让整个交互会话永久不可用。
         let context = crate::system_prompt::RenderContext::new(
             tools.cwd(),
@@ -473,7 +493,6 @@ impl Agent {
         let mut session = Session::new(config.model, config.protocol, initial_system, edit_mode);
         session.set_tools(tools.all_definitions(pp_core::plan::WorkMode::Execute));
         session.set_think_level(think_level);
-        let role_route = catalog.role_route(pp_config::config::ModelRole::Default);
         Ok(Self {
             role_route,
             client,
@@ -574,23 +593,57 @@ impl Agent {
             mut journal,
             mut replay,
         } = restored;
-        let config = catalog
-            .resolve(&checkpoint.model_reference)
-            .map_err(|_| anyhow::anyhow!("saved session model is unavailable or has changed"))?;
-        let matches = match &checkpoint.session {
-            Session::Completion(request) => {
-                config.protocol == Protocol::Completion && config.model == request.model
+        let stale_plan_route = checkpoint.workflow.mode == pp_core::plan::WorkMode::Execute
+            && checkpoint
+                .role_route
+                .as_ref()
+                .is_some_and(|route| route.role == pp_config::config::ModelRole::Plan);
+        let config = if stale_plan_route {
+            let (config, effort, route) = Self::resolve_default_model(&catalog)?;
+            checkpoint.think_level = effort;
+            checkpoint.role_route = route;
+            let compatible = match &checkpoint.session {
+                Session::Completion(_) => config.protocol == Protocol::Completion,
+                Session::Response(request) => {
+                    config.protocol == Protocol::Response
+                        && checkpoint.model_reference == config.model_reference
+                        && request.model.as_deref() == Some(config.model.as_str())
+                }
+            };
+            if !compatible {
+                checkpoint.session = history::convert(
+                    &checkpoint.session,
+                    config.model.clone(),
+                    config.protocol,
+                    checkpoint.edit_mode,
+                )?;
             }
-            Session::Response(request) => {
-                config.protocol == Protocol::Response
-                    && request.model.as_deref() == Some(config.model.as_str())
-            }
+            checkpoint
+                .model_reference
+                .clone_from(&config.model_reference);
+            checkpoint.session.set_model(&config.model);
+            checkpoint.session.set_think_level(checkpoint.think_level);
+            config
+        } else {
+            let config = catalog.resolve(&checkpoint.model_reference).map_err(|_| {
+                anyhow::anyhow!("saved session model is unavailable or has changed")
+            })?;
+            let matches = match &checkpoint.session {
+                Session::Completion(request) => {
+                    config.protocol == Protocol::Completion && config.model == request.model
+                }
+                Session::Response(request) => {
+                    config.protocol == Protocol::Response
+                        && request.model.as_deref() == Some(config.model.as_str())
+                }
+            };
+            ensure!(matches, "saved session model is unavailable or has changed");
+            ensure!(
+                config.thinking.supports(checkpoint.think_level),
+                "saved session thinking level is not supported by the configured model"
+            );
+            config
         };
-        ensure!(matches, "saved session model is unavailable or has changed");
-        ensure!(
-            config.thinking.supports(checkpoint.think_level),
-            "saved session thinking level is not supported by the configured model"
-        );
         if let Some(snapshot) =
             plan_sync::sync_restored_todos(&tools, &mut journal, &mut checkpoint.workflow, &replay)?
         {
@@ -622,7 +675,7 @@ impl Agent {
                 include_obfuscation: None,
             });
         }
-        let agent = Self {
+        let mut agent = Self {
             role_route: checkpoint.role_route,
             client,
             runtime_models: None,
@@ -671,74 +724,28 @@ impl Agent {
                     agent.tools.limits,
                     "",
                     "",
-                    &agent.workflow.instructions(),
+                    &crate::subagent::catalog::workflow_instructions(&agent.workflow),
                 )
                 .context(crate::system_prompt::PromptFailure)?;
         }
-        Ok(agent)
-    }
-
-    fn prepare_resume(&self, id: &str) -> Result<persistence::RestoredSession> {
-        let dir = pp_config::config::global_dir()?;
-        let mut restored = persistence::load(
-            &dir.join("sessions"),
-            self.journal.lock_dir(),
-            Some(id),
-            true,
-        )?;
-        let saved = &restored.checkpoint;
-        let same_model = saved.model_reference == self.current_model.reference
-            && match &saved.session {
-                Session::Completion(request) => {
-                    self.current_model.protocol == Protocol::Completion
-                        && request.model == self.current_model.model
-                }
-                Session::Response(request) => {
-                    self.current_model.protocol == Protocol::Response
-                        && request.model.as_deref() == Some(self.current_model.model.as_str())
-                }
+        if stale_plan_route {
+            let system = agent.compose_system(&agent.workflow)?;
+            agent.session.set_instructions(system);
+            let metadata = Metadata {
+                role_route: agent.role_route.as_ref(),
+                cwd: agent.tools.cwd(),
+                model_reference: &agent.current_model.reference,
+                think_level: agent.think_level,
+                edit_mode: agent.tools.edit_mode(),
+                tool_limits: agent.tools.limits,
+                base_system: &agent.base_system,
+                prompt_source: agent.prompt_source.as_ref(),
             };
-        // 跨模型时去掉供应商绑定的 Responses 状态，沿用已有的历史转换校验。
-        let source = if same_model
-            || matches!(saved.session, Session::Completion(_))
-                && self.current_model.protocol == Protocol::Completion
-        {
-            restored.checkpoint.session
-        } else {
-            history::convert(
-                &saved.session,
-                self.current_model.model.clone(),
-                self.current_model.protocol,
-                self.tools.edit_mode(),
-            )?
-        };
-        let system = self.compose_system(&restored.checkpoint.workflow)?;
-        let mut session = Session::new(
-            self.current_model.model.clone(),
-            self.current_model.protocol,
-            system,
-            self.tools.edit_mode(),
-        );
-        match (&mut session, source) {
-            (Session::Completion(target), Session::Completion(source)) => {
-                let skip_system = usize::from(matches!(
-                    source.messages.first(),
-                    Some(ChatCompletionRequestMessage::System(_))
-                ));
-                target
-                    .messages
-                    .extend(source.messages.into_iter().skip(skip_system));
-            }
-            (Session::Response(target), Session::Response(source)) => target.input = source.input,
-            _ => unreachable!("history converted to the current protocol"),
+            agent
+                .journal
+                .commit_plan_exit(&metadata, (&agent.session).into(), &agent.workflow)?;
         }
-        session.set_tools(
-            self.tools
-                .all_definitions(restored.checkpoint.workflow.mode),
-        );
-        session.set_think_level(self.think_level);
-        restored.checkpoint.session = session;
-        Ok(restored)
+        Ok(agent)
     }
 
     pub fn session_id(&self) -> Option<&str> {
@@ -894,7 +901,7 @@ impl Agent {
             |defs| defs.iter().map(|d| d.name.clone()).collect(),
         );
         let (system, skills, project) = self.compose_prompt_snapshot(
-            &self.workflow.instructions(),
+            &crate::subagent::catalog::workflow_instructions(&self.workflow),
             self.workflow.mode_name(),
             &self.current_model.model,
             names,
@@ -1311,7 +1318,7 @@ impl Agent {
         };
         let definitions = self.tools.all_definitions(self.workflow.mode);
         let system = self.compose_prompt(
-            &self.workflow.instructions(),
+            &crate::subagent::catalog::workflow_instructions(&self.workflow),
             self.workflow.mode_name(),
             &choice.model,
             definitions.iter().map(|tool| tool.name.clone()).collect(),

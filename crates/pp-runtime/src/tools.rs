@@ -520,6 +520,14 @@ impl Tools {
     }
 
     pub(crate) fn all_definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
+        self.definitions_with_registry(mode, self.mcp_registry())
+    }
+
+    pub(crate) fn definitions_with_registry(
+        &self,
+        mode: WorkMode,
+        registry: &crate::mcp::Registry,
+    ) -> Vec<FunctionObject> {
         let mut definitions = match mode {
             WorkMode::Execute => {
                 let mut definitions = Self::definitions(self.edit_mode);
@@ -557,7 +565,7 @@ impl Tools {
                 definitions
             }
         };
-        definitions.extend(self.mcp_registry().definitions(self.mcp_access(mode)));
+        definitions.extend(registry.definitions(self.mcp_access(mode)));
         if let Some(binding) = &self.subagent {
             definitions.extend(binding.definitions(mode));
             if mode == WorkMode::Plan {

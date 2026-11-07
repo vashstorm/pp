@@ -1,3 +1,8 @@
+---
+name: plan
+description: Research requirements and prepare a plan in Plan mode.
+---
+
 # PLAN MODE — research and specify; do not implement
 
 ## Authority and tools

@@ -164,23 +164,32 @@ fn resume_preparation_preserves_current_session_and_releases_failed_candidate() 
     let mut old = agents.pop().unwrap();
     let before = serde_json::to_value(&old.session).unwrap();
     let cwd = std::env::current_dir().unwrap();
-    assert!(old.prepare_resume(&ids[0]).is_err());
+    assert!(old.resume(&ids[0], &CancellationToken::new()).is_err());
     // 运行中的恢复使用当前配置，不重新读取磁盘上的模型文件。
     std::fs::write(&models, "invalid configuration").unwrap();
-    let candidate = old.prepare_resume(&ids[1]).unwrap();
+    let candidate =
+        persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).unwrap();
+    let definitions = old
+        .tools
+        .all_definitions(candidate.checkpoint.workflow.mode);
+    let (candidate_session, _) = old
+        .resumed_session(
+            candidate.checkpoint,
+            &old.current_model,
+            old.think_level,
+            definitions,
+        )
+        .unwrap();
     let mut expected = expected;
     expected["request"]["instructions"] = before["request"]["instructions"].clone();
     assert_eq!(candidate.journal.id(), Some(ids[1].as_str()));
-    assert_eq!(
-        serde_json::to_value(&candidate.checkpoint.session).unwrap(),
-        expected
-    );
+    assert_eq!(serde_json::to_value(&candidate_session).unwrap(), expected);
     assert_eq!(old.session_id(), Some(ids[0].as_str()));
     assert_eq!(serde_json::to_value(&old.session).unwrap(), before);
     assert_eq!(std::env::current_dir().unwrap(), cwd);
     assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[0]), true).is_err());
     assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_err());
-    drop(candidate);
+    drop(candidate.journal);
     assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_ok());
     let before_resume_store = old.pipe_store();
     old.resume(&ids[1], &CancellationToken::new()).unwrap();

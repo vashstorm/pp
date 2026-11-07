@@ -476,6 +476,20 @@ impl SessionJournal {
         }))
     }
 
+    /// 退出 Plan 时一次提交模式和模型；空会话仍等首条请求才落盘。
+    pub(super) fn commit_plan_exit(
+        &mut self,
+        metadata: &Metadata<'_>,
+        session: SessionRef<'_>,
+        workflow: &WorkflowState,
+    ) -> Result<()> {
+        self.check()?;
+        if self.active.is_none() {
+            return Ok(());
+        }
+        self.write_state(metadata, session, workflow)
+    }
+
     /// 新上下文复用会话目录与锁目录，独立持有新会话的锁。
     pub(super) fn fork_empty(&self) -> Self {
         Self::with_locks(self.dir.clone(), self.lock_dir.clone())

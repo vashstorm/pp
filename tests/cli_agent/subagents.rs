@@ -1219,7 +1219,7 @@ fn custom_role_roundtrip_rejects_invented_names_and_routes_each_role() {
         };
         let definitions = dir.path().join(".pp/agents");
         std::fs::create_dir_all(&definitions).unwrap();
-        std::fs::write(definitions.join("analyst.md"), "---\nname: analyst\ndescription: configured analyst\nmodel: custom/special\nthinking: high\ntools: [read]\nspawns: []\n---\nconfigured-analysis-prompt-marker").unwrap();
+        std::fs::write(definitions.join("analyst.md"), "---\nname: analyst\ndescription: configured analyst\nmodel: custom/special\nthinking: high\ntools: [read, write]\nreadonly: true\nspawns: []\n---\nconfigured-analysis-prompt-marker").unwrap();
         let provider = |protocol, model| {
             json!({"protocol":protocol,"api_key":"fixture-key",
             "base_url":format!("http://{}/v1", server.server_addr()),"models":{"special":{"model":model}}})
@@ -1275,10 +1275,24 @@ fn custom_role_roundtrip_rejects_invented_names_and_routes_each_role() {
             ]}),
         );
         let mut seen = std::collections::BTreeSet::new();
+        let mut checked_readonly = false;
         loop {
             let (request, body) = receive_raw(&server);
             if is_child(&body) {
                 let model = body["model"].as_str().unwrap();
+                if model == "custom-model" && seen.contains(model) {
+                    let result = sub_tool_result(&body, custom_protocol, "denied-custom-write");
+                    assert_eq!(result["ok"], false);
+                    assert!(
+                        result
+                            .to_string()
+                            .contains("outside this agent capability set")
+                    );
+                    assert!(!dir.path().join("forbidden-custom-write.txt").exists());
+                    checked_readonly = true;
+                    sub_final(request, custom_protocol, "configured-result-custom-model");
+                    continue;
+                }
                 assert!(seen.insert(model.to_owned()));
                 let (child_protocol, effort) = match model {
                     "custom-model" => (custom_protocol, "high"),
@@ -1310,6 +1324,15 @@ fn custom_role_roundtrip_rejects_invented_names_and_routes_each_role() {
                 if model == "custom-model" {
                     assert_eq!(tools.len(), 1);
                     assert!(sub_has_tool(&body, child_protocol, "read"));
+                    assert!(!body.to_string().contains("readonly: true"));
+                    sub_call(
+                        request,
+                        child_protocol,
+                        "denied-custom-write",
+                        "write",
+                        json!({"path":"forbidden-custom-write.txt","content":"blocked"}),
+                    );
+                    continue;
                 } else {
                     assert!(sub_has_tool(&body, child_protocol, "edit"));
                 }
@@ -1336,6 +1359,7 @@ fn custom_role_roundtrip_rejects_invented_names_and_routes_each_role() {
             }
         }
         assert_eq!(seen.len(), 2);
+        assert!(checked_readonly);
         let output = cli.finish();
         assert!(output.status.success(), "{output:?}");
         no_more(&server);

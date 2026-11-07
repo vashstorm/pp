@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::persistence::SessionJournal;
 use crate::agent::tests::{
     EXPLORATION, ORIGIN, PLAN_CONTENT, err_message, journal_workflow, plan_workflow,
     runtime_input_agent, seed_session, write_plan_file,

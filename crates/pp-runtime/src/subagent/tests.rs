@@ -466,10 +466,10 @@ fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() 
     assert!(state.disk.agents["a3"].spec.readonly);
     assert!(state.disk.agents["a4"].spec.readonly);
     for (id, prompt) in [
-        ("a1", include_str!("../prompts/roles/fast.md")),
-        ("a2", include_str!("../prompts/roles/review.md")),
+        ("a1", catalog::builtin(ModelRole::Fast).prompt.as_str()),
+        ("a2", catalog::builtin(ModelRole::Review).prompt.as_str()),
         ("a3", include_str!("../prompts/roles/read-only.md")),
-        ("a4", include_str!("../prompts/roles/explorer.md")),
+        ("a4", catalog::builtin(ModelRole::Explorer).prompt.as_str()),
     ] {
         assert_eq!(state.disk.agents[id].spec.prompt, prompt.trim_end());
     }

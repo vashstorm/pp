@@ -762,7 +762,7 @@ impl Agent {
         let instruction = summary_instruction(budget);
         let summary_system = if self.prompt_source.is_some() {
             Some(self.compose_prompt(
-                &self.workflow.instructions(),
+                &crate::subagent::catalog::workflow_instructions(&self.workflow),
                 self.workflow.mode_name(),
                 &self.current_model.model,
                 Vec::new(),

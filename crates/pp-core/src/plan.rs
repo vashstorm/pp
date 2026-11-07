@@ -62,9 +62,6 @@ impl PlanLocation {
     }
 }
 
-/// Plan 模式规则（含阶段式 Markdown 默认模板），见 `src/prompts/plan.md`。
-pub(crate) const PLAN_INSTRUCTIONS: &str = include_str!("prompts/plan.md");
-
 /// 执行期进度规则，由两种批准交接与 Execute 的 workflow 注入。
 pub(crate) const PROGRESS_INSTRUCTIONS: &str = include_str!("prompts/plan-progress.md");
 
@@ -296,9 +293,9 @@ impl WorkflowState {
         }
     }
 
-    pub fn instructions(&self) -> String {
+    pub fn instructions(&self, plan_prompt: &str) -> String {
         let mut instructions = match self.mode {
-            WorkMode::Plan => PLAN_INSTRUCTIONS.to_owned(),
+            WorkMode::Plan => plan_prompt.to_owned(),
             // 进度规则只在 Execute+Executed 注入；Completed/Abandoned 是
             // 只读历史，不再注入执行规则。
             WorkMode::Execute

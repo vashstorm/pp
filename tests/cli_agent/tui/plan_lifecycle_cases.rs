@@ -834,7 +834,7 @@ fn plan_tui_save_draft_and_leave_preserves_file_without_model_request() {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        let mut pty = plan_start_with_role_models(&fixture, home.path(), project.path(), protocol);
         plan_enter(&mut pty, &fixture);
         plan_drive_ready(
             &mut pty,
@@ -854,7 +854,12 @@ fn plan_tui_save_draft_and_leave_preserves_file_without_model_request() {
         let journal = plan_journal(home.path(), &id);
         let workflows: Vec<_> = journal
             .iter()
-            .filter(|record| record["customType"] == "pp.workflow")
+            .filter(|record| {
+                matches!(
+                    record["customType"].as_str(),
+                    Some("pp.workflow" | "pp.session_state")
+                )
+            })
             .collect();
         assert_eq!(
             workflows.last().unwrap()["data"]["workflow"]["mode"],
@@ -867,6 +872,11 @@ fn plan_tui_save_draft_and_leave_preserves_file_without_model_request() {
                 .any(|record| record["data"]["workflow"]["plan"]["status"] == "draft")
         );
         no_more(&fixture);
+        pty.input("Verify the Execute model after leaving Plan\r");
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert_plan_execute_route(&body, protocol);
+        plan_final(request, protocol, "Execute model verified.");
+        pty.completed();
         pty.input("\x03");
         pty.finish();
     }

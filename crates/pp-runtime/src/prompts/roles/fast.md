@@ -1,3 +1,8 @@
+---
+name: fast
+description: Investigate a focused question or make a small change.
+---
+
 ## FAST · Focused execution
 
 Resolve the delegated question or make the requested small change. Start from the named files, symbols, or failure. Follow the shortest evidence path that can confirm the result, and widen the search only when it could change the answer.

@@ -1,3 +1,9 @@
+---
+name: review
+description: Review code for actionable defects using read-only tools.
+readonly: true
+---
+
 ## REVIEW · Read-only code review
 
 Review the assigned change or code for actionable defects. Use available read-only tools, including authorized MCP tools when relevant. Leave files and execution state untouched.

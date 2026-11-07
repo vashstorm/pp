@@ -1,3 +1,8 @@
+---
+name: default
+description: Run the main coding assistant.
+---
+
 You are a coding assistant.
 You are pp's trusted coding assistant.
 

@@ -1,5 +1,5 @@
 //! 子 Agent 的身份、调度、结果投递与持久生命周期。
-mod catalog;
+pub(crate) mod catalog;
 mod observe;
 #[cfg(test)]
 mod tests;
@@ -16,7 +16,7 @@ use crate::agent::Agent;
 use crate::agent::input::InputQueue;
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
-use catalog::{BUILTIN_ROLES, Definition};
+use catalog::Definition;
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
 use pp_core::events::AgentEvent;
@@ -404,6 +404,22 @@ impl Binding {
     fn custom_roles(&self) -> Vec<Definition> {
         catalog::discover(&self.cwd, &self.inner.user, &self.inner.settings)
     }
+    fn available_roles<'a>(
+        &'a self,
+        roles: &'a ModelRoles,
+        custom: &'a [Definition],
+    ) -> impl Iterator<Item = (&'a Definition, Option<ModelRole>)> + 'a {
+        catalog::task_roles()
+            .filter(|(role, _)| roles.get(role).is_some_and(|assignment| assignment.enabled))
+            .map(|(role, definition)| (definition, Some(role)))
+            .chain(custom.iter().map(|definition| (definition, None)))
+            .filter(|(definition, _)| {
+                self.spawns
+                    .iter()
+                    .any(|name| name == "*" || name == &definition.name)
+            })
+    }
+
     pub(crate) fn definitions(&self, _mode: WorkMode) -> Vec<FunctionObject> {
         if self.depth != 0
             || self.depth >= self.inner.settings.max_recursion_depth
@@ -414,27 +430,27 @@ impl Binding {
         }
         let roles = self.model_roles();
         let custom = self.custom_roles();
-        let builtin = BUILTIN_ROLES.iter().filter_map(|&(name, role)| {
-            let assignment = roles.get(&role).filter(|assignment| assignment.enabled)?;
-            Some((
-                name,
-                format!("{}:{}", assignment.model, assignment.effort.as_str()),
-            ))
-        });
-        let available = builtin
-            .chain(
-                custom
-                    .iter()
-                    .map(|def| (def.name.as_str(), def.description.clone())),
-            )
-            .collect::<Vec<_>>();
+        let available = self.available_roles(&roles, &custom).collect::<Vec<_>>();
         if available.is_empty() {
             return Vec::new();
         }
-        let names = available.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        let names = available
+            .iter()
+            .map(|(def, _)| def.name.as_str())
+            .collect::<Vec<_>>();
         let help = available
             .iter()
-            .map(|(name, description)| format!("{name}: {description}"))
+            .map(|(def, role)| {
+                let label = format!("{}: {}", def.name, def.description);
+                match role.and_then(|role| roles.get(&role)) {
+                    Some(assignment) => format!(
+                        "{label} ({}:{})",
+                        assignment.model,
+                        assignment.effort.as_str()
+                    ),
+                    None => label,
+                }
+            })
             .collect::<Vec<_>>()
             .join("; ");
         let review_help = if names.contains(&"review") {
@@ -482,6 +498,10 @@ impl Binding {
         // 整批使用同一份可用角色快照；旧 prompt 或手写调用也必须通过校验。
         let roles = self.model_roles();
         let definitions = self.custom_roles();
+        let available = self
+            .available_roles(&roles, &definitions)
+            .map(|(def, role)| (def.name.as_str(), (def, role)))
+            .collect::<BTreeMap<_, _>>();
         let custom_default = roles.get(&ModelRole::Default).filter(|role| role.enabled);
         let mut names = BTreeSet::new();
         let mut prepared = Vec::new();
@@ -492,27 +512,23 @@ impl Binding {
                 !matches!(role, "default" | "plan"),
                 "DEFAULT and PLAN are reserved for the main agent"
             );
-            let model_role = BUILTIN_ROLES
-                .iter()
-                .find_map(|&(name, model_role)| (name == role).then_some(model_role));
-            let assignment = model_role
-                .map(|role| {
-                    roles
+            let &(def, model_role) = available.get(role).with_context(|| {
+                if let Some((role, _)) = catalog::task_roles().find(|(_, def)| def.name == role)
+                    && !roles
                         .get(&role)
-                        .filter(|role| role.enabled)
-                        .with_context(|| {
-                            format!(
-                                "model role {} is not selected; enable it in /Roles first",
-                                role.name()
-                            )
-                        })
-                })
-                .transpose()?;
-            let custom = definitions.iter().find(|def| def.name == role);
+                        .is_some_and(|assignment| assignment.enabled)
+                {
+                    return format!(
+                        "model role {} is not selected; enable it in /Roles first",
+                        role.name()
+                    );
+                }
+                "unknown or disabled task role; select a listed role".to_owned()
+            })?;
+            let assignment = model_role.and_then(|role| roles.get(&role));
             let (model, thinking) = if let Some(assignment) = assignment {
                 (assignment.model.clone(), assignment.effort)
             } else {
-                let def = custom.context("unknown or disabled task role; select a listed role")?;
                 let model = self
                     .inner
                     .settings
@@ -528,10 +544,6 @@ impl Binding {
                 (model.clone(), thinking)
             };
             ensure!(
-                self.spawns.iter().any(|name| name == "*" || name == role),
-                "parent role does not allow spawning {role}"
-            );
-            ensure!(
                 !item.task.trim().is_empty(),
                 "subagent task must not be empty"
             );
@@ -545,33 +557,22 @@ impl Binding {
                 !plan || !item.isolated,
                 "plan mode does not allow workspace isolation"
             );
-            let output = item
-                .output_schema
-                .clone()
-                .or_else(|| custom.and_then(|def| def.output.clone()));
+            let output = item.output_schema.clone().or_else(|| def.output.clone());
             if let Some(schema) = &output {
                 validate_schema(schema)?;
             }
             let mcp_tools = lock(&self.inner.mcp_tools);
             let readonly = plan
                 || item.readonly
-                || matches!(
-                    model_role,
-                    Some(
-                        pp_config::config::ModelRole::Review
-                            | pp_config::config::ModelRole::Explorer
-                    )
-                )
-                || custom
-                    .and_then(|def| def.tools.as_ref())
-                    .is_some_and(|tools| {
-                        tools.iter().all(|name| {
-                            is_read_only_child_tool(name, |name| {
-                                mcp_tools.read_only.iter().any(|tool| tool == name)
-                            })
+                || def.readonly
+                || def.tools.as_ref().is_some_and(|tools| {
+                    tools.iter().all(|name| {
+                        is_read_only_child_tool(name, |name| {
+                            mcp_tools.read_only.iter().any(|tool| tool == name)
                         })
-                    });
-            let configured_tools = custom.and_then(|def| def.tools.as_ref());
+                    })
+                });
+            let configured_tools = def.tools.as_ref();
             let mut tools = configured_tools.cloned().unwrap_or_else(|| {
                 [
                     "read",
@@ -606,22 +607,10 @@ impl Binding {
             }
             drop(mcp_tools);
             tools.retain(|t| t != "task" && t != "todo" && !t.starts_with("plan_"));
-            let prompt = if let Some(def) = custom {
-                def.prompt.as_str()
+            let prompt = if model_role.is_some() && readonly && !def.readonly {
+                include_str!("prompts/roles/read-only.md").trim_end()
             } else {
-                match (model_role, readonly) {
-                    (Some(ModelRole::Review), _) => include_str!("prompts/roles/review.md"),
-                    (Some(ModelRole::Explorer), _) => include_str!("prompts/roles/explorer.md"),
-                    (Some(ModelRole::Fast | ModelRole::Slow | ModelRole::Vision), true) => {
-                        include_str!("prompts/roles/read-only.md")
-                    }
-                    (Some(ModelRole::Fast), false) => include_str!("prompts/roles/fast.md"),
-                    (Some(ModelRole::Slow), false) => include_str!("prompts/roles/slow.md"),
-                    (Some(ModelRole::Vision), false) => include_str!("prompts/roles/vision.md"),
-                    (_, true) => "Investigate using the available read-only tools, including authorized MCP tools when relevant. Report evidence and source references.",
-                    (_, false) => "Complete the assigned work thoroughly. Use tools as needed. Return a concise final result.",
-                }
-                .trim_end()
+                &def.prompt
             };
             let mut spec = Spec {
                 model_role,
@@ -650,7 +639,7 @@ impl Binding {
                 cost: None,
             };
             (self.inner.validate)(&mut spec)?;
-            prepared.push((item, spec, custom.is_some_and(|def| def.blocking)));
+            prepared.push((item, spec, def.blocking));
         }
         // 预检模型与能力在任何 worker 启动前完成。
         let mut records = Vec::new();
