@@ -864,6 +864,77 @@ pub(super) fn todo_task_styles(status: pp_core::todo::TodoStatus) -> (&'static s
     (symbol, Style::default().fg(marker), text)
 }
 
+/// 阶段行：`I. Name (closed/total)`，颜色跟随阶段状态。
+pub(super) fn todo_phase_line(phase: &pp_core::todo::TodoPhase, index: usize) -> Line<'static> {
+    use pp_core::todo::TodoStatus;
+    let closed = phase
+        .tasks
+        .iter()
+        .filter(|task| matches!(task.status, TodoStatus::Completed | TodoStatus::Abandoned))
+        .count();
+    let active = phase
+        .tasks
+        .iter()
+        .any(|task| task.status == TodoStatus::InProgress);
+    let color = if phase
+        .tasks
+        .iter()
+        .all(|task| task.status == TodoStatus::Completed)
+    {
+        palette::ADDED
+    } else if active {
+        palette::TODO_ACTIVE
+    } else {
+        palette::MUTED
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("{}. ", phase_roman(index + 1)),
+            Style::default().fg(color),
+        ),
+        Span::styled(
+            pp_core::text::display_text(&phase.name).into_owned(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" ({closed}/{})", phase.tasks.len()),
+            Style::default().fg(palette::MUTED),
+        ),
+    ])
+}
+
+/// 阶段行首行树枝：展开清单与收起窗口共用，窄窗口缩短分支。
+pub(super) fn todo_phase_prefix(width: u16) -> &'static str {
+    if width >= 5 { "├─ " } else { "├" }
+}
+
+/// 任务行首行树枝：按可用宽度给正文留列，`last` 表示阶段内最后一个可见任务。
+pub(super) fn todo_task_prefix(width: u16, last: bool) -> &'static str {
+    match (width, last) {
+        (12.., true) => "│  └─ ",
+        (12.., false) => "│  ├─ ",
+        (10.., true) => "│ └ ",
+        (10.., false) => "│ ├ ",
+        (8.., true) => "└ ",
+        (8.., false) => "├ ",
+        _ => "",
+    }
+}
+
+/// 折行续行缩进，与首行树枝一起对齐任务正文。
+fn todo_task_continuation(width: u16, last: bool) -> &'static str {
+    match (width, last) {
+        (12.., true) => "│         ",
+        (12.., false) => "│  │      ",
+        (10.., true) => "│       ",
+        (10.., false) => "│ │     ",
+        (8.., true) => "      ",
+        (8.., false) => "│     ",
+        (6.., _) => "    ",
+        _ => "",
+    }
+}
+
 /// 先按正文宽度折行，再逐行补齐树枝，显式换行也保留连线。
 fn todo_tree_rows(
     content: Line<'static>,
@@ -909,53 +980,11 @@ pub(super) fn todo_checklist(phases: &[pp_core::todo::TodoPhase], width: u16) ->
     let mut rows = Vec::new();
     let mut task_rows = Vec::new();
     for (index, phase) in phases.iter().enumerate() {
-        let closed = phase
-            .tasks
-            .iter()
-            .filter(|task| matches!(task.status, TodoStatus::Completed | TodoStatus::Abandoned))
-            .count();
-        let active = phase
-            .tasks
-            .iter()
-            .any(|task| task.status == TodoStatus::InProgress);
-        let phase_color = if phase
-            .tasks
-            .iter()
-            .all(|task| task.status == TodoStatus::Completed)
-        {
-            palette::ADDED
-        } else if active {
-            palette::TODO_ACTIVE
-        } else {
-            palette::MUTED
-        };
-        let header = Line::from(vec![
-            Span::styled(
-                format!("{}.", phase_roman(index + 1)),
-                Style::default().fg(phase_color),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                pp_core::text::display_text(&phase.name).into_owned(),
-                Style::default()
-                    .fg(phase_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" ({closed}/{})", phase.tasks.len()),
-                Style::default().fg(palette::MUTED),
-            ),
-        ]);
-        let (branch, continuation) = if width >= 5 {
-            ("├─ ", "│  ")
-        } else {
-            ("├", "│")
-        };
         rows.extend(todo_tree_rows(
-            header,
+            todo_phase_line(phase, index),
             width,
-            Line::styled(branch, Style::default().fg(palette::DIM)),
-            continuation,
+            Line::styled(todo_phase_prefix(width), Style::default().fg(palette::DIM)),
+            if width >= 5 { "│  " } else { "│" },
         ));
         for (task_index, task) in phase.tasks.iter().enumerate() {
             let (symbol, marker, style) = todo_task_styles(task.status);
@@ -994,32 +1023,10 @@ pub(super) fn todo_checklist(phases: &[pp_core::todo::TodoPhase], width: u16) ->
             }
             let last = task_index + 1 == phase.tasks.len();
             // 缩短窄窗口的树枝，至少为中文正文保留两列。
-            let (branch, continuation) = match width {
-                12.. => {
-                    if last {
-                        ("│  └─ ", "│         ")
-                    } else {
-                        ("│  ├─ ", "│  │      ")
-                    }
-                }
-                10.. => {
-                    if last {
-                        ("│ └ ", "│       ")
-                    } else {
-                        ("│ ├ ", "│ │     ")
-                    }
-                }
-                8.. => {
-                    if last {
-                        ("└ ", "      ")
-                    } else {
-                        ("├ ", "│     ")
-                    }
-                }
-                6.. => ("", "    "),
-                _ => ("", ""),
-            };
-            let mut prefix = Line::styled(branch, Style::default().fg(palette::DIM));
+            let mut prefix = Line::styled(
+                todo_task_prefix(width, last),
+                Style::default().fg(palette::DIM),
+            );
             if width >= 6 {
                 prefix
                     .spans
@@ -1030,7 +1037,7 @@ pub(super) fn todo_checklist(phases: &[pp_core::todo::TodoPhase], width: u16) ->
                 Line::from(spans),
                 width,
                 prefix,
-                continuation,
+                todo_task_continuation(width, last),
             ));
         }
     }

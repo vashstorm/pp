@@ -4,6 +4,7 @@ use crate::shortcuts::platform_text;
 use pp_core::events::TodoState;
 use pp_core::plan::PlanStatus;
 use pp_core::todo::TodoItem;
+use pp_core::todo::TodoPhase;
 use pp_core::todo::TodoStatus;
 use ratatui::{
     Frame,
@@ -14,6 +15,9 @@ use ratatui::{
 };
 
 pub(super) const TOGGLE_HINT: &str = platform_text("⌥ + T", "Ctrl + T");
+
+/// 收起时最多展示的任务数；阶段行不占这个额度。
+const COMPACT_TASKS: usize = 3;
 
 #[derive(Default)]
 pub(super) struct Panel {
@@ -60,6 +64,15 @@ impl Panel {
         self.state.phases.iter().flat_map(|phase| &phase.tasks)
     }
 
+    /// 按阶段展开任务，同时给出阶段序号与阶段本身；收起窗口靠它插入阶段行。
+    fn listing(&self) -> impl Iterator<Item = (usize, &TodoPhase, &TodoItem)> {
+        self.state
+            .phases
+            .iter()
+            .enumerate()
+            .flat_map(|(index, phase)| phase.tasks.iter().map(move |task| (index, phase, task)))
+    }
+
     fn closed(&self) -> usize {
         self.tasks()
             .filter(|task| matches!(task.status, TodoStatus::Completed | TodoStatus::Abandoned))
@@ -103,7 +116,8 @@ impl Panel {
             self.prepare(width);
             return cap.min(self.rows.len().saturating_add(1).min(u16::MAX as usize) as u16);
         }
-        cap.min(self.tasks().count().min(3) as u16 + 1)
+        let visible = self.tasks().count().min(COMPACT_TASKS);
+        cap.min(self.compact_row_count(visible) as u16 + 1)
     }
 
     pub(super) fn toggle(&mut self) {
@@ -253,31 +267,93 @@ impl Panel {
             .unwrap_or_else(|| self.tasks().count().saturating_sub(1))
     }
 
-    fn compact(&self, limit: usize) -> Vec<Line<'static>> {
+    /// 收起窗口内的任务区间：尽量让焦点项居中，首尾用相邻项补齐。
+    fn window(&self, visible: usize) -> (usize, usize) {
         let count = self.tasks().count();
-        let visible = count.min(limit).min(3);
+        let visible = visible.min(count);
+        if visible == 0 {
+            return (0, 0);
+        }
         let start = self
             .focus_task()
             .saturating_sub(visible / 2)
             .min(count - visible);
-        self.tasks()
+        (start, start + visible)
+    }
+
+    /// 收起窗口的行数：每个进入新阶段的位置多一行阶段头。
+    fn compact_row_count(&self, visible: usize) -> usize {
+        let (start, end) = self.window(visible);
+        let mut rows = 0;
+        let mut phase = None;
+        for (index, _, _) in self.listing().skip(start).take(end - start) {
+            if phase != Some(index) {
+                phase = Some(index);
+                rows += 1;
+            }
+            rows += 1;
+        }
+        rows
+    }
+
+    /// 收起窗口：阶段头只省略同一窗口内重复的阶段，不再整体省略。
+    fn compact(&self, limit: usize, width: u16) -> Vec<Line<'static>> {
+        let max = self.tasks().count().min(COMPACT_TASKS);
+        if limit == 0 || max == 0 {
+            return Vec::new();
+        }
+        let Some(visible) = (1..=max)
+            .rev()
+            .find(|visible| self.compact_row_count(*visible) <= limit)
+        else {
+            // 连阶段头都放不下时退化为单行任务，避免整块空白。
+            let (start, end) = self.window(1);
+            return self.compact_rows(start, end, width, false);
+        };
+        let (start, end) = self.window(visible);
+        self.compact_rows(start, end, width, true)
+    }
+
+    fn compact_rows(
+        &self,
+        start: usize,
+        end: usize,
+        width: u16,
+        headers: bool,
+    ) -> Vec<Line<'static>> {
+        let window: Vec<(usize, &TodoPhase, &TodoItem)> = self
+            .listing()
             .skip(start)
-            .take(visible)
-            .enumerate()
-            .map(|(index, task)| {
-                let (symbol, marker, text) = tool_display::todo_task_styles(task.status);
-                let branch = if index + 1 == visible {
-                    "└─ "
-                } else {
-                    "├─ "
-                };
-                Line::from(vec![
-                    Span::styled(branch, Style::default().fg(palette::DIM)),
-                    Span::styled(format!("{symbol} "), marker),
-                    Span::styled(one_line(&Self::brief(task)), text),
-                ])
-            })
-            .collect()
+            .take(end.saturating_sub(start))
+            .collect();
+        let mut rows = Vec::with_capacity(window.len().saturating_mul(2));
+        for (position, (index, phase, task)) in window.iter().enumerate() {
+            let next = window.get(position + 1).map(|entry| entry.0);
+            let entering = position == 0 || window[position - 1].0 != *index;
+            if headers && entering {
+                let mut header = Line::styled(
+                    tool_display::todo_phase_prefix(width),
+                    Style::default().fg(palette::DIM),
+                );
+                header
+                    .spans
+                    .extend(tool_display::todo_phase_line(phase, *index).spans);
+                rows.push(header);
+            }
+            let (symbol, marker, text) = tool_display::todo_task_styles(task.status);
+            let last = next != Some(*index);
+            let mut row = Line::styled(
+                tool_display::todo_task_prefix(width, last),
+                Style::default().fg(palette::DIM),
+            );
+            if width >= 6 {
+                row.spans.push(Span::styled(format!("{symbol} "), marker));
+            }
+            row.spans
+                .push(Span::styled(one_line(&Self::brief(task)), text));
+            rows.push(row);
+        }
+        rows
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
@@ -319,7 +395,7 @@ impl Panel {
                 .min(self.rows.len());
             self.rows[self.scroll..end].to_vec()
         } else {
-            self.compact(usize::from(body.height))
+            self.compact(usize::from(body.height), body.width)
         };
         rows.resize(usize::from(body.height), Line::default());
         frame.render_widget(Paragraph::new(rows), body);
@@ -391,16 +467,57 @@ mod tests {
             ("下一任务", TodoStatus::Pending),
             ("隐藏任务", TodoStatus::Pending),
         ]));
-        assert_eq!(panel.height(80, 24, 20), 4);
-        let text = render(&mut panel, 80, 4);
+        assert_eq!(panel.height(80, 24, 20), 5);
+        let text = render(&mut panel, 80, 5);
         assert!(text.contains("1/4"));
         assert!(text.contains("[ ] 当前任务"));
         assert!(text.contains("[ ] 下一任务"));
         assert!(!text.contains("隐藏任务"));
         assert!(text.contains("[✓] 已完成"));
-        assert!(text.lines().nth(2).unwrap().contains("当前任务"));
+        // 收起时保留阶段行，首个任务行内缩在阶段下。
+        assert!(text.lines().nth(1).unwrap().contains("I. 验证阶段 (1/4)"));
+        assert!(text.lines().nth(1).unwrap().starts_with("├─ "));
+        assert!(text.lines().nth(3).unwrap().contains("当前任务"));
+        assert!(text.lines().nth(3).unwrap().starts_with("│  ├─ "));
         panel.update(state(&[("受阻任务", TodoStatus::Blocked)]));
-        assert!(render(&mut panel, 80, 3).contains("受阻任务 (blocked: 外部等待)"));
+        let text = render(&mut panel, 80, 3);
+        assert!(text.contains("I. 验证阶段 (0/1)"));
+        assert!(text.contains("受阻任务 (blocked: 外部等待)"));
+    }
+
+    #[test]
+    fn tui_todo_compact_keeps_phase_rows_of_every_visible_phase() {
+        let mut panel = Panel::default();
+        let mut snapshot = state(&[("FIRST", TodoStatus::Completed)]);
+        snapshot.phases.push(TodoPhase {
+            name: "Next phase".into(),
+            tasks: vec![
+                TodoItem {
+                    content: "SECOND".into(),
+                    status: TodoStatus::InProgress,
+                    blocker: None,
+                },
+                TodoItem {
+                    content: "THIRD".into(),
+                    status: TodoStatus::Pending,
+                    blocker: None,
+                },
+            ],
+        });
+        panel.update(snapshot);
+        assert_eq!(panel.height(80, 24, 20), 6);
+        let text = render(&mut panel, 80, 6);
+        let lines = text.lines().map(str::trim_end).collect::<Vec<_>>();
+        assert_eq!(
+            &lines[1..6],
+            &[
+                "├─ I. 验证阶段 (1/1)",
+                "│  └─ [✓] FIRST",
+                "├─ II. Next phase (0/2)",
+                "│  ├─ [ ] SECOND",
+                "│  └─ [ ] THIRD",
+            ]
+        );
     }
 
     #[test]
@@ -423,16 +540,17 @@ mod tests {
                 .collect();
             panel.update(snapshot.clone());
             let height = panel.height(80, 30, 20);
-            assert_eq!(height, 4);
+            assert_eq!(height, 5);
             let text = render(&mut panel, 80, height);
             assert_eq!(text.matches("TASK_").count(), 3);
-            assert!(text.lines().last().unwrap().starts_with("└─ "));
+            assert!(text.lines().nth(1).unwrap().contains("I. 验证阶段"));
+            assert!(text.lines().last().unwrap().starts_with("│  └─ "));
             let active_row = if active == 0 {
-                1
-            } else if active == 5 {
-                3
-            } else {
                 2
+            } else if active == 5 {
+                4
+            } else {
+                3
             };
             assert!(
                 text.lines()
@@ -445,9 +563,9 @@ mod tests {
                 task.status = TodoStatus::Completed;
             }
             panel.update(snapshot.clone());
-            let text = render(&mut panel, 80, 4);
+            let text = render(&mut panel, 80, 5);
             assert_eq!(text.matches("[✓]").count(), 3);
-            assert!(text.lines().last().unwrap().starts_with("└─ "));
+            assert!(text.lines().last().unwrap().starts_with("│  └─ "));
             for index in 3..6 {
                 assert!(text.contains(&format!("TASK_{index}")));
             }
@@ -552,7 +670,9 @@ mod tests {
         assert!(panel.expanded);
         assert_eq!(panel.height(80, 24, 20), 3);
         panel.toggle();
-        assert_eq!(panel.height(80, 24, 20), 2);
+        assert_eq!(panel.height(80, 24, 20), 3);
+        assert!(render(&mut panel, 80, 3).contains("[✓] 完成"));
+        // 只有一行正文时不丢任务，仅暂时省略无法放下的阶段行。
         assert!(render(&mut panel, 80, 2).contains("[✓] 完成"));
         assert!(render(&mut panel, 80, 1).contains("✔ TODO · 1/1 · Complete"));
         panel.update(state(&[("放弃", TodoStatus::Abandoned)]));
@@ -582,15 +702,17 @@ mod tests {
         ]));
         let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
         terminal
-            .draw(|frame| panel.draw(frame, Rect::new(0, 0, 80, 4)))
+            .draw(|frame| panel.draw(frame, Rect::new(0, 0, 80, 6)))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(3, 1)].symbol(), "[");
-        assert_eq!(buffer[(7, 1)].fg, palette::TODO_ACTIVE);
-        assert_eq!(buffer[(3, 2)].symbol(), "[");
-        assert_eq!(buffer[(3, 2)].fg, palette::MUTED);
-        assert_eq!(buffer[(7, 2)].fg, palette::MUTED);
-        assert!(buffer[(7, 1)].modifier.contains(Modifier::BOLD));
+        // 第一行是阶段行，任务行内缩两列。
+        assert_eq!(buffer[(3, 1)].symbol(), "I");
+        assert_eq!(buffer[(6, 2)].symbol(), "[");
+        assert_eq!(buffer[(7, 2)].fg, palette::TODO_ACTIVE);
+        assert_eq!(buffer[(6, 3)].symbol(), "[");
+        assert_eq!(buffer[(6, 3)].fg, palette::MUTED);
+        assert_eq!(buffer[(7, 3)].fg, palette::MUTED);
+        assert!(buffer[(10, 2)].modifier.contains(Modifier::BOLD));
         panel.toggle();
         terminal
             .draw(|frame| panel.draw(frame, frame.area()))
@@ -624,6 +746,7 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(3, 1)].fg, palette::ADDED);
+        assert_eq!(buffer[(6, 2)].fg, palette::ADDED);
         assert_eq!(buffer[(10, 2)].fg, palette::ADDED);
     }
 

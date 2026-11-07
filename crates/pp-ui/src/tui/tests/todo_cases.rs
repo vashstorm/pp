@@ -42,33 +42,40 @@ fn tui_todo_fixed_position_survives_streaming_and_input_edits() {
     for native in [false, true] {
         app.native_render = native;
         let text = draw(&mut app, 100, 24);
-        assert!(text.lines().nth(15).unwrap().trim().is_empty(), "{text}");
+        let lines = text.lines().collect::<Vec<_>>();
+        let title = lines
+            .iter()
+            .position(|line| line.contains("TODO · 0/8"))
+            .unwrap();
+        // 收起时标题、阶段行与三项任务连续占据固定区。
+        assert!(lines[title - 1].trim().is_empty(), "{text}");
+        assert!(lines[title + 1].contains("I. Stage (0/8)"), "{text}");
+        assert!(lines[title + 2].contains("TODO_TASK_00"), "{text}");
+        assert!(lines[title + 3].contains("TODO_TASK_01"), "{text}");
+        assert!(lines[title + 4].contains("TODO_TASK_02"), "{text}");
         assert!(
-            text.lines().nth(16).unwrap().contains("TODO · 0/8"),
+            lines
+                .iter()
+                .skip(title)
+                .any(|line| line.replace(' ', "").contains("保留输入草稿")),
             "{text}"
-        );
-        assert!(text.lines().nth(17).unwrap().contains("TODO_TASK_00"));
-        assert!(text.lines().nth(18).unwrap().contains("TODO_TASK_01"));
-        assert!(text.lines().nth(19).unwrap().contains("TODO_TASK_02"));
-        assert!(
-            text.lines()
-                .nth(21)
-                .unwrap()
-                .replace(' ', "")
-                .contains("保留输入草稿")
         );
         assert_eq!(
             app.main_layout(Rect::new(0, 0, 100, 24))
                 .conversation
                 .height,
-            15
+            14
         );
     }
     app.input.insert_newline();
     app.input.insert_str("第二行");
     let text = draw(&mut app, 100, 24);
-    assert!(text.lines().nth(14).unwrap().trim().is_empty(), "{text}");
-    assert!(text.lines().nth(15).unwrap().contains("TODO · 0/8"));
+    let lines = text.lines().collect::<Vec<_>>();
+    let title = lines
+        .iter()
+        .position(|line| line.contains("TODO · 0/8"))
+        .unwrap();
+    assert!(lines[title - 1].trim().is_empty(), "{text}");
     assert!(text.replace(' ', "").contains("第二行"));
 }
 

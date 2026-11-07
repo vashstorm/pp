@@ -8,6 +8,13 @@ fn plan_todo_result(body: &Value, protocol: &str, id: &str) -> Value {
         .1
 }
 
+/// 固定区内内容的物理行号；用相对行号断言位置，避免一行树形布局就重算全部坐标。
+fn hud_row(screen: &vt100::Screen, needle: &str) -> Option<usize> {
+    screen
+        .rows(0, screen.size().1)
+        .position(|row| row.contains(needle))
+}
+
 #[test]
 fn tui_todo_new_and_mode_switches_keep_old_lists_cleared() {
     for protocol in ["completion", "response"] {
@@ -435,25 +442,64 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         );
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         // 模型下一轮尚未结束时，已提交清单就应出现在固定位置。
+        // 收起状态也保留阶段行：标题下面是阶段头，再往下才是内缩的任务行。
         pty.wait_for("任务区固定在输入框上方", |screen| {
-            screen
-                .rows(0, 100)
-                .nth(22)
-                .is_some_and(|row| row.contains("TODO · 0/12"))
-                && screen.contents().contains("PINNED_TASK_00")
+            hud_row(screen, "TODO · 0/12").is_some_and(|title| {
+                screen
+                    .rows(0, 100)
+                    .nth(title + 1)
+                    .is_some_and(|row| row.contains("I. Tasks (0/12)"))
+                    && screen
+                        .rows(0, 100)
+                        .nth(title + 2)
+                        .is_some_and(|row| row.contains("PINNED_TASK_00"))
+            })
         });
-        for (row, col, symbol) in [(23, 0, "├"), (23, 1, "─"), (24, 0, "├"), (25, 0, "└")] {
-            let cell = pty.parser.screen().cell(row, col).unwrap();
+        let toggle_hint = if cfg!(target_os = "macos") { "⌥ + T" } else { "Ctrl + T" };
+        let title = hud_row(pty.parser.screen(), "TODO · 0/12").expect("TODO 标题") as u16;
+        assert!(
+            pty.parser
+                .screen()
+                .rows(0, 100)
+                .nth(usize::from(title))
+                .unwrap()
+                .contains(toggle_hint)
+        );
+        assert!(
+            pty.parser
+                .screen()
+                .rows(0, 100)
+                .nth(usize::from(title) - 1)
+                .unwrap()
+                .trim()
+                .is_empty()
+        );
+        for (row, column, symbol) in [
+            (title + 1, 0, "├"),
+            (title + 1, 1, "─"),
+            (title + 2, 0, "│"),
+            (title + 2, 3, "├"),
+            (title + 4, 3, "└"),
+        ] {
+            let cell = pty.parser.screen().cell(row, column).unwrap();
             assert_eq!(cell.contents(), symbol);
             assert_eq!(cell.fgcolor(), vt100::Color::Rgb(95, 102, 115));
         }
-        let toggle_hint = if cfg!(target_os = "macos") { "⌥ + T" } else { "Ctrl + T" };
-        assert!(pty.parser.screen().rows(0, 100).nth(22).unwrap().contains(toggle_hint));
-        let current = pty.parser.screen().cell(23, 3).unwrap();
+        let current = pty.parser.screen().cell(title + 2, 6).unwrap();
         assert_eq!(current.contents(), "[");
         assert_eq!(current.fgcolor(), vt100::Color::Rgb(255, 230, 109));
-        assert!(pty.parser.screen().rows(0, 100).nth(25).unwrap().contains("PINNED_TASK_02"));
-        assert_eq!(pty.parser.screen().cell(24, 7).unwrap().fgcolor(), vt100::Color::Rgb(119, 125, 136));
+        assert!(
+            pty.parser
+                .screen()
+                .rows(0, 100)
+                .nth(usize::from(title) + 4)
+                .unwrap()
+                .contains("PINNED_TASK_02")
+        );
+        assert_eq!(
+            pty.parser.screen().cell(title + 3, 10).unwrap().fgcolor(),
+            vt100::Color::Rgb(119, 125, 136)
+        );
         // 启动两个并行项；首项遇到依赖后，视口跟随最早的剩余进行项。
         plan_calls(request, protocol, json!([
             plan_call(protocol, "start-middle", "todo", json!({"op":"start","task":"PINNED_TASK_06"})),
@@ -462,12 +508,25 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         ]));
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         pty.wait_for("进行项在三项窗口中间", |screen| {
-            screen.rows(0, 100).nth(23).unwrap().contains("PINNED_TASK_05")
-                && screen.rows(0, 100).nth(24).unwrap().contains("PINNED_TASK_06")
-                && screen.rows(0, 100).nth(25).unwrap().contains("PINNED_TASK_07")
+            hud_row(screen, "TODO · 0/12").is_some_and(|title| {
+                ["PINNED_TASK_05", "PINNED_TASK_06", "PINNED_TASK_07"]
+                    .iter()
+                    .enumerate()
+                    .all(|(offset, task)| {
+                        screen
+                            .rows(0, 100)
+                            .nth(title + 2 + offset)
+                            .is_some_and(|row| row.contains(task))
+                    })
+            })
         });
-        assert_eq!(pty.parser.screen().cell(24, 7).unwrap().fgcolor(), vt100::Color::Rgb(255, 230, 109));
-        assert_eq!(pty.parser.screen().cell(25, 7).unwrap().fgcolor(), vt100::Color::Rgb(255, 230, 109));
+        let title = hud_row(pty.parser.screen(), "TODO · 0/12").expect("TODO 标题") as u16;
+        for offset in [3, 4] {
+            assert_eq!(
+                pty.parser.screen().cell(title + offset, 10).unwrap().fgcolor(),
+                vt100::Color::Rgb(255, 230, 109)
+            );
+        }
         let mut stream = SseReply::new(request);
         let answer = (0..70)
             .map(|i| format!("    pinned-stream-{i:03}\n"))
@@ -477,7 +536,16 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         pty.text("pinned-stream-069");
         pty.input("中文草稿");
         pty.draft("中文草稿");
-        assert!(pty.parser.screen().rows(0, 100).nth(21).unwrap().trim().is_empty());
+        let title = hud_row(pty.parser.screen(), "TODO · 0/12").expect("TODO 标题");
+        assert!(
+            pty.parser
+                .screen()
+                .rows(0, 100)
+                .nth(title - 1)
+                .unwrap()
+                .trim()
+                .is_empty()
+        );
         pty.function_key('t');
         pty.wait_for("TODO 原位展开", |screen| {
             screen
@@ -500,11 +568,21 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         });
         pty.draft("中文草稿");
         pty.function_key('t');
-        pty.wait_for("TODO 收回四行树形摘要", |screen| {
-            screen
-                .rows(0, 60)
-                .nth(16)
-                .is_some_and(|row| row.contains("TODO · 0/12"))
+        pty.wait_for("TODO 收回五行树形摘要", |screen| {
+            hud_row(screen, "TODO · 0/12").is_some_and(|title| {
+                screen
+                    .rows(0, 60)
+                    .nth(title + 1)
+                    .is_some_and(|row| row.contains("I. Tasks (0/12)"))
+                    && screen
+                        .rows(0, 60)
+                        .nth(title + 4)
+                        .is_some_and(|row| row.contains("PINNED_TASK_"))
+                    && screen
+                        .rows(0, 60)
+                        .nth(title + 5)
+                        .is_some_and(|row| !row.contains("PINNED_TASK_"))
+            })
         });
         streaming_complete(&mut stream, protocol, &answer);
         stream.finish();
@@ -543,11 +621,12 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
 
         let mut pty = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
         pty.wait_for("恢复最终清单并默认收起", |screen| {
-            screen
-                .rows(0, 100)
-                .nth(22)
-                .is_some_and(|row| row.contains("TODO · 0/12"))
-                && screen.contents().contains("PINNED_TASK_06")
+            hud_row(screen, "TODO · 0/12").is_some_and(|title| {
+                screen
+                    .rows(0, 100)
+                    .nth(title + 1)
+                    .is_some_and(|row| row.contains("I. Tasks (0/12)"))
+            }) && screen.contents().contains("PINNED_TASK_06")
                 && screen.contents().contains("PINNED_TASK_07")
                 && !screen.contents().contains("PINNED_TASK_08")
         });
@@ -565,19 +644,29 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         );
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         pty.wait_for("完成后保留三项绿色任务", |screen| {
-            screen
-                .rows(0, 100)
-                .nth(22)
-                .is_some_and(|row| row.contains("TODO · 12/12") && row.contains("Complete"))
-                && screen.rows(0, 100).nth(23).unwrap().contains("[✓] PINNED_TASK_09")
-                && screen.rows(0, 100).nth(24).unwrap().contains("[✓] PINNED_TASK_10")
-                && screen.rows(0, 100).nth(25).unwrap().contains("[✓] PINNED_TASK_11")
+            hud_row(screen, "TODO · 12/12").is_some_and(|title| {
+                screen
+                    .rows(0, 100)
+                    .nth(title)
+                    .is_some_and(|row| row.contains("Complete"))
+                    && (0..3).all(|offset| {
+                        screen
+                            .rows(0, 100)
+                            .nth(title + 2 + offset)
+                            .is_some_and(|row| {
+                                row.contains(&format!("[✓] PINNED_TASK_{:02}", 9 + offset))
+                            })
+                    })
+            })
         });
+        let title = hud_row(pty.parser.screen(), "TODO · 12/12").expect("TODO 标题") as u16;
         let screen = pty.parser.screen();
-        assert_eq!(screen.cell(22, 0).unwrap().contents(), "✔");
-        assert_eq!(screen.cell(25, 0).unwrap().contents(), "└");
-        assert_eq!(screen.cell(25, 4).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
-        assert_eq!(screen.cell(22, 0).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
+        assert_eq!(screen.cell(title, 0).unwrap().contents(), "✔");
+        assert_eq!(screen.cell(title, 0).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
+        // 阶段头与最后一个任务行都使用右结尾树枝。
+        assert_eq!(screen.cell(title + 1, 0).unwrap().contents(), "├");
+        assert_eq!(screen.cell(title + 4, 3).unwrap().contents(), "└");
+        assert_eq!(screen.cell(title + 4, 10).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
         plan_final(request, protocol, "Fixed tasks finished.");
         pty.completed();
         pty.input("clear the list\r");
@@ -642,8 +731,25 @@ fn tui_todo_plan_keeps_hud_empty_until_approved_execution() {
         plan_choose(&mut pty, 0);
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         pty.wait_for("执行交接后显示 active 清单", |screen| {
-            screen.contents().contains("[ ] Write canary bytes.")
-                && !screen.contents().contains("Preview")
+            // 收起状态保留两个阶段行，任务行以树枝内缩在阶段下。
+            hud_row(screen, "TODO · 0/2").is_some_and(|title| {
+                screen
+                    .rows(0, 100)
+                    .nth(title + 1)
+                    .is_some_and(|row| row.contains("I. Write (0/1)"))
+                    && screen
+                        .rows(0, 100)
+                        .nth(title + 2)
+                        .is_some_and(|row| row.contains("[ ] Write canary bytes."))
+                    && screen
+                        .rows(0, 100)
+                        .nth(title + 3)
+                        .is_some_and(|row| row.contains("II. Verify (0/1)"))
+                    && screen
+                        .rows(0, 100)
+                        .nth(title + 4)
+                        .is_some_and(|row| row.contains("[ ] Read back canary bytes."))
+            }) && !screen.contents().contains("Preview")
         });
         plan_calls(
             request,
