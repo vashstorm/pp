@@ -78,6 +78,14 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 
 普通 child 不复制父对话，只接收系统 Role 对应的任务约束、任务、共享背景、适用的 `AGENTS.md`、可用 Skill 与相关批准计划；不注入 Main 的 Plan／批准执行委托规则。父 TODO 和计划状态仍由 Main 管理。自定义提示词、任务背景、项目规则和批准计划中的原文不会被字符串清洗，普通任务说明、结果约定及 `yield` 提示保持不变。
 
+系统子 Agent 的内置提示词随二进制编译，修改后重新构建生效。
+
+- FAST 聚焦单点排查和小改动，回传结论与必要验证。[fast.md](../crates/pp-runtime/src/prompts/roles/fast.md)
+- SLOW 用于复杂调查和实现，追踪调用链、行为约束和高风险失败路径。[slow.md](../crates/pp-runtime/src/prompts/roles/slow.md)
+- VISION 检查实际图像和渲染结果，区分可见现象与推断原因。[vision.md](../crates/pp-runtime/src/prompts/roles/vision.md)
+- REVIEW 执行只读代码审查，按影响列出可复现的问题及其证据。[review.md](../crates/pp-runtime/src/prompts/roles/review.md)
+- FAST、SLOW、VISION 的只读任务共用调查提示词，回传可定位的证据和仍需验证的事项。[read-only.md](../crates/pp-runtime/src/prompts/roles/read-only.md)
+
 ## 模型工具接口
 
 `task` 默认异步，支持同批多个任务：

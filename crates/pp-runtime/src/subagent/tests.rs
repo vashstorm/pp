@@ -434,6 +434,13 @@ fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() 
     assert!(!state.disk.agents["a1"].spec.readonly);
     assert!(state.disk.agents["a2"].spec.readonly);
     assert!(state.disk.agents["a3"].spec.readonly);
+    for (id, prompt) in [
+        ("a1", include_str!("../prompts/roles/fast.md")),
+        ("a2", include_str!("../prompts/roles/review.md")),
+        ("a3", include_str!("../prompts/roles/read-only.md")),
+    ] {
+        assert_eq!(state.disk.agents[id].spec.prompt, prompt.trim_end());
+    }
     assert_eq!(
         state.disk.agents["a1"]
             .spec

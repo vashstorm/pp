@@ -9,7 +9,7 @@ pub use observe::HubAgent;
 pub use observe::ObservedRecord;
 pub use observe::{EventCursor, EventPage, HubEvent, HubSnapshot, ObservedEntry};
 
-use pp_config::config::TaskSettings;
+use pp_config::config::{ModelRole, TaskSettings};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::agent::Agent;
@@ -666,19 +666,36 @@ impl Binding {
             }
             drop(mcp_tools);
             tools.retain(|t| t != "task" && t != "todo" && !t.starts_with("plan_"));
+            let prompt = if let Some(def) = custom {
+                def.prompt.as_str()
+            } else {
+                match (model_role, readonly) {
+                    (Some(ModelRole::Review), _) => include_str!("prompts/roles/review.md"),
+                    (Some(ModelRole::Fast | ModelRole::Slow | ModelRole::Vision), true) => {
+                        include_str!("prompts/roles/read-only.md")
+                    }
+                    (Some(ModelRole::Fast), false) => include_str!("prompts/roles/fast.md"),
+                    (Some(ModelRole::Slow), false) => include_str!("prompts/roles/slow.md"),
+                    (Some(ModelRole::Vision), false) => include_str!("prompts/roles/vision.md"),
+                    (_, true) => "Investigate using the available read-only tools, including authorized MCP tools when relevant. Report evidence and source references.",
+                    (_, false) => "Complete the assigned work thoroughly. Use tools as needed. Return a concise final result.",
+                }
+                .trim_end()
+            };
             let mut spec = Spec {
                 model_role,
-                role_route: model_role.zip(assignment).map(|(role, assignment)| pp_config::config::RoleRoute {
-                    role,
-                    primary: pp_config::config::RoleModel { model: model.clone(), effort: thinking },
-                    fallback: assignment.fallback.clone(),
+                role_route: model_role.zip(assignment).map(|(role, assignment)| {
+                    pp_config::config::RoleRoute {
+                        role,
+                        primary: pp_config::config::RoleModel {
+                            model: model.clone(),
+                            effort: thinking,
+                        },
+                        fallback: assignment.fallback.clone(),
+                    }
                 }),
                 definition: role,
-                prompt: custom.map(|def| def.prompt.clone()).unwrap_or_else(|| if readonly {
-                    "Investigate using the available read-only tools, including authorized MCP tools when relevant. Report evidence and source references."
-                } else {
-                    "Complete the assigned work thoroughly. Use tools as needed. Return a concise final result."
-                }.into()),
+                prompt: prompt.to_owned(),
                 context: batch.context.clone(),
                 model,
                 thinking,
@@ -1049,6 +1066,16 @@ impl Binding {
                 .unwrap_or_else(|e| e.into_inner()),
         );
     }
+    /// 当前正在运行的子代理数；排队和已结束的会话不计入。
+    pub fn running_subagent_count(&self) -> usize {
+        lock(&self.inner.state)
+            .disk
+            .agents
+            .values()
+            .filter(|agent| agent.status == "running")
+            .count()
+    }
+
     pub fn summary(&self) -> String {
         let state = lock(&self.inner.state);
         if state.disk.agents.is_empty() {
