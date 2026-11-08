@@ -187,7 +187,6 @@ pub(super) fn layout(
             content.map_or("", |(_, content)| content.as_str()),
             width,
             expanded,
-            true,
             base.fg(palette::EDIT_ADDED),
         );
     }

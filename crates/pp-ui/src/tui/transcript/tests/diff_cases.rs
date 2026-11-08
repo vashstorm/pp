@@ -125,7 +125,7 @@ fn arguments_preview_layout_height_stays_folded_for_short_and_long_content() {
 }
 
 #[test]
-fn write_preview_and_result_share_visual_height_including_wrapped_lines() {
+fn write_preview_and_result_share_visible_rows_including_wrapped_lines() {
     use crate::tui::tool_display;
     for width in [8, 32, 100] {
         for content in [
@@ -160,8 +160,8 @@ fn write_preview_and_result_share_visual_height_including_wrapped_lines() {
                         Style::default(),
                     );
                     assert_eq!(
-                        preview.len(),
-                        rows.len(),
+                        preview.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                        rows.iter().map(ToString::to_string).collect::<Vec<_>>(),
                         "width={width}, expanded={expanded}, running={running}"
                     );
                     assert!(expanded || rows.len() <= 17);
@@ -213,12 +213,9 @@ fn folded_write_keeps_the_same_wrapped_rows_as_expanded_write() {
     ] {
         for width in [1, 7, 32, 100] {
             let style = Style::default().fg(palette::EDIT_ADDED);
-            let expanded = write_body(&content, width, true, false, style);
-            let head = write_body(&content, width, false, false, style);
-            let tail = write_body(&content, width, false, true, style);
-            assert_eq!(head.len(), 17);
+            let expanded = write_body(&content, width, true, style);
+            let tail = write_body(&content, width, false, style);
             assert_eq!(tail.len(), 17);
-            assert_eq!(head[..16], expanded[..16]);
             assert_eq!(tail[1..], expanded[expanded.len() - 16..]);
         }
     }
@@ -617,7 +614,8 @@ fn write_preview_preserves_committed_diff_and_warning_without_rereading_files() 
         result: json!({"ok":true,"bytes_written":content.len(),"warning":"directory sync warning"}),
     });
     let collapsed = screen(&render(&mut transcript, 100, 20));
-    assert!(collapsed.contains("saved-15") && !collapsed.contains("saved-16"));
+    assert!(collapsed.contains("saved-04") && collapsed.contains("saved-19"));
+    assert!(!collapsed.contains("saved-03"));
     assert!(collapsed.contains("directory sync warning"));
     assert!(matches!(
         transcript.entries[0].body,
@@ -629,5 +627,6 @@ fn write_preview_preserves_committed_diff_and_warning_without_rereading_files() 
         .unwrap();
     let mut parser = vt100::Parser::new(80, 100, 0);
     parser.process(&full);
-    assert!(parser.screen().contents().contains("saved-19"));
+    let expanded = parser.screen().contents();
+    assert!(expanded.contains("saved-00") && expanded.contains("saved-19"));
 }

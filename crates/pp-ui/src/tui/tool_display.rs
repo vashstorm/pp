@@ -625,7 +625,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
         }
         "write" => {
             let content = view.arguments["content"].as_str().unwrap_or(text);
-            write_body(content, width, expanded, view.running, style)
+            write_body(content, width, expanded, style)
         }
         name if name.starts_with("mcp__") => {
             let output = view
@@ -665,12 +665,11 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     }
 }
 
-/// 三个写入阶段共用屏幕行额度，长行换行和省略提示不能撑大运行中的卡片。
+/// 三个写入阶段折叠时都保留末尾的屏幕正文行，省略提示另占一行。
 pub(super) fn write_body(
     content: &str,
     width: u16,
     expanded: bool,
-    tail: bool,
     style: Style,
 ) -> Vec<Line<'static>> {
     if expanded {
@@ -688,28 +687,15 @@ pub(super) fn write_body(
     let mut rows = Vec::new();
     // 多取一行用于判断是否需要省略提示。
     while rows.len() <= WRITE_LINES {
-        let Some(line) = (if tail {
-            source.next_back()
-        } else {
-            source.next()
-        }) else {
+        let Some(line) = source.next_back() else {
             break;
         };
-        let mut wrapped = write_line_window(line, width, style, WRITE_LINES + 1 - rows.len(), tail);
-        if tail {
-            wrapped.append(&mut rows);
-            rows = wrapped;
-        } else {
-            rows.append(&mut wrapped);
-        }
+        let mut wrapped = write_line_tail(line, width, style, WRITE_LINES + 1 - rows.len());
+        wrapped.append(&mut rows);
+        rows = wrapped;
     }
     if rows.len() > WRITE_LINES {
-        if tail {
-            rows.drain(..rows.len() - WRITE_LINES);
-        } else {
-            rows.truncate(WRITE_LINES);
-        }
-        let marker = Line::styled(
+        rows[0] = Line::styled(
             clip(
                 "… more lines (Ctrl + O to expand)",
                 usize::from(width),
@@ -717,32 +703,16 @@ pub(super) fn write_body(
             ),
             style.fg(palette::MUTED),
         );
-        if tail {
-            rows.insert(0, marker);
-        } else {
-            rows.push(marker);
-        }
     }
     rows
 }
 
-fn write_line_window(
-    line: &str,
-    width: u16,
-    style: Style,
-    limit: usize,
-    tail: bool,
-) -> Vec<Line<'static>> {
+fn write_line_tail(line: &str, width: u16, style: Style, limit: usize) -> Vec<Line<'static>> {
     let columns = usize::from(width.max(1));
     // 可打印 ASCII 每字节占一列，可以直接跳过窗口外的整行。
     if line.len() > limit * columns && line.bytes().all(|byte| matches!(byte, b' '..=b'~')) {
-        let start = if tail {
-            (line.len().div_ceil(columns) - limit) * columns
-        } else {
-            0
-        };
-        let end = if tail { line.len() } else { limit * columns };
-        return wrap_block(block_line(line[start..end].to_owned(), style), width, "");
+        let start = (line.len().div_ceil(columns) - limit) * columns;
+        return wrap_block(block_line(line[start..].to_owned(), style), width, "");
     }
 
     // 宽字符和制表符仍按统一的换行规则计算，只保留窗口内的行。
@@ -752,7 +722,7 @@ fn write_line_window(
             rows.pop_front();
         }
         rows.push_back(row);
-        tail || rows.len() < limit
+        true
     });
     rows.into()
 }
@@ -1613,8 +1583,8 @@ mod tests {
                 100,
                 Style::default(),
             ));
-            assert_eq!(rows.contains("written-19"), running);
-            assert_eq!(rows.contains("written-00"), !running);
+            assert!(rows.contains("written-04") && rows.contains("written-19"));
+            assert!(!rows.contains("written-03"));
         }
         assert!(clip("e\u{301}😀中", 3, false).ends_with('😀'));
     }

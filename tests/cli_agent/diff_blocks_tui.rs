@@ -178,7 +178,7 @@ fn edit_preview_tui_cancel_discards_partial_arguments_without_saving() {
 }
 
 // 生成 write 参数期间显示临时预览卡片（Write: 标题含路径 + 新增行正文），
-// 磁盘未写；补发剩余分片后真实保存并替换为唯一提交卡片，退出历史与 journal 都不含预览。
+// 超限后滚动到最新行，真实保存时将同一段尾部正文保留在提交卡片及原生历史中。
 #[test]
 fn write_preview_tui_streams_before_commit_both_protocols() {
     for protocol in ["completion", "response"] {
@@ -203,9 +203,20 @@ fn write_preview_tui_streams_before_commit_both_protocols() {
         let (request, _) = pty.request_at(&provider, path);
         // 键序固定为 path 在前，预览首片就要同时呈现路径行与已生成正文；
         // `serde_json::Value` 会按字母序重排键，因此不能用 `json!` 构造流式分片。
-        let arguments = r#"{"path":"new.txt","content":"first line\nsecond-DONE"}"#.to_owned();
+        let content = (1..=20)
+            .map(|i| format!("write-row-{i:02}\n"))
+            .collect::<String>();
+        let encoded = serde_json::to_string(&content).unwrap();
+        let arguments = format!(r#"{{"path":"new.txt","content":{encoded}}}"#);
         let args: Value = serde_json::from_str(&arguments).unwrap();
-        let split = arguments.find("-DONE").unwrap();
+        let split = arguments.find("write-row-17").unwrap();
+        let end = arguments.len() - 2;
+        let shows_tail = |text: &str| {
+            text.contains("write-row-05")
+                && text.contains("write-row-20")
+                && !text.contains("write-row-04")
+                && !text.contains("write-row-01")
+        };
         let mut stream = SseReply::new(request);
         diff_blocks_stream_delta(
             &mut stream,
@@ -221,8 +232,22 @@ fn write_preview_tui_streams_before_commit_both_protocols() {
             text.contains("preview · not saved")
                 && text.contains("Write:")
                 && text.contains("new.txt")
-                && text.contains("first line")
-                && !text.contains("DONE")
+                && text.contains("write-row-01")
+                && text.contains("write-row-16")
+                && !text.contains("more lines")
+        });
+        diff_blocks_stream_delta(
+            &mut stream,
+            protocol,
+            "write",
+            "stream-write",
+            "fc-write",
+            &arguments[split..end],
+            false,
+        );
+        pty.wait_for("超限的 write 预览滚动到末尾十六行", |screen| {
+            let text = screen.contents();
+            text.contains("preview · not saved") && text.contains("more lines") && shows_tail(&text)
         });
         assert!(!target.exists());
         diff_blocks_stream_delta(
@@ -231,7 +256,7 @@ fn write_preview_tui_streams_before_commit_both_protocols() {
             "write",
             "stream-write",
             "fc-write",
-            &arguments[split..],
+            &arguments[end..],
             false,
         );
         if protocol == "completion" {
@@ -247,19 +272,16 @@ fn write_preview_tui_streams_before_commit_both_protocols() {
             diff_blocks_tool_result(&body, protocol, "stream-write")["ok"],
             true
         );
-        assert_eq!(
-            std::fs::read_to_string(&target).unwrap(),
-            "first line\nsecond-DONE"
-        );
-        pty.wait_for("临时 write 预览替换为唯一真实提交卡片", |screen| {
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), content);
+        pty.wait_for("write 保存后保留末尾十六行", |screen| {
             let text = screen.contents();
-            text.contains("write ·") && !text.contains("not saved") && !text.contains("Write:")
+            text.contains("Wrote ") && !text.contains("not saved") && shows_tail(&text)
         });
         diff_blocks_final(request, protocol, "stream-write-done");
         pty.text("stream-write-done");
         pty.ready();
         let (history, _) = diff_blocks_exit_scrollback(&mut pty, "stream-write-done");
-        assert!(!history.contains("not saved"), "{history}");
+        assert!(shows_tail(&history) && !history.contains("not saved"), "{history}");
         pty.finish();
         for entry in std::fs::read_dir(resume_history_journal_dir(home.path())).unwrap() {
             let entry = entry.unwrap();
