@@ -1,5 +1,105 @@
 use super::*;
 
+/// 保存草稿退出：发送成功后立即展示 Saving plan... 文案，
+/// ExecutionPrepared 安装 Cleanup 并切换状态后文案被清除。
+#[test]
+fn save_plan_and_leave_shows_secondary_status_until_execution_prepared() {
+    let (mut app, requests, events) = plan_app();
+    app.workflow = ready_plan_workflow();
+    app.receive_event_for_test(WorkerEvent::PlanRead(Ok(plan_review_fixture(
+        PlanStatus::Ready,
+    ))));
+    // 默认选中第五项 Save draft and leave Plan mode；确认动作已发送。
+    for _ in 0..4 {
+        app.handle(key(KeyCode::Down), &mut false);
+    }
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(WorkerCommand::SavePlanAndLeave { .. })
+    ));
+    assert!(matches!(app.state, State::ChangingPlan));
+    assert_eq!(app.secondary_status.as_deref(), Some("Saving plan..."));
+
+    let (reply, _ack) = mpsc::sync_channel(1);
+    let registry = pp_runtime::mcp::Registry::default();
+    let cleanup = registry.cleanup().unwrap();
+    let workflow = WorkflowState {
+        mode: WorkMode::Execute,
+        plan: Some(pp_core::plan::PlanDocument {
+            status: PlanStatus::Executed,
+            ..ready_plan_workflow().plan.expect("plan")
+        }),
+        ..Default::default()
+    };
+    events
+        .send(WorkerEvent::ExecutionPrepared {
+            workflow: workflow.clone(),
+            session_id: Some("next".into()),
+            replay: None,
+            cleanup,
+            todo_snapshot: None,
+            reply,
+        })
+        .unwrap();
+    app.receive();
+    // save_plan_and_leave 处于 ChangingPlan：交接完成按既有语义回到 Ready。
+    assert!(matches!(app.state, State::Ready));
+    assert_eq!(app.secondary_status, None);
+}
+
+/// /plan 进入：start_plan_transition 成功后立即展示 Entering Plan mode...，
+/// WorkflowChanged 安全回到 Ready 后文案被清除。
+#[test]
+fn plan_toggle_enter_shows_secondary_status_until_workflow_changed() {
+    let (mut app, requests, _events) = plan_app();
+    app.workflow = WorkflowState::default();
+    app.input.insert_str("/plan");
+    app.submit(PendingKind::Steering);
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(WorkerCommand::EnterPlan { .. })
+    ));
+    assert!(matches!(app.state, State::ChangingPlan));
+    assert_eq!(
+        app.secondary_status.as_deref(),
+        Some("Entering Plan mode...")
+    );
+    app.receive_event_for_test(WorkerEvent::WorkflowChanged(Ok(WorkflowState {
+        mode: WorkMode::Plan,
+        plan: None,
+        ..Default::default()
+    })));
+    assert!(matches!(app.state, State::Ready));
+    assert_eq!(app.secondary_status, None);
+}
+
+/// /plan 退出：直接发送 LeavePlan；成功后展示 Leaving Plan mode...，
+/// WorkflowChanged 安全回到 Ready 后文案被清除。
+#[test]
+fn plan_toggle_leave_shows_secondary_status_until_workflow_changed() {
+    let (mut app, requests, _events) = plan_app();
+    app.workflow = WorkflowState {
+        mode: WorkMode::Plan,
+        plan: None,
+        ..Default::default()
+    };
+    app.input.insert_str("/plan");
+    app.submit(PendingKind::Steering);
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(WorkerCommand::LeavePlan { .. })
+    ));
+    assert!(matches!(app.state, State::ChangingPlan));
+    assert_eq!(
+        app.secondary_status.as_deref(),
+        Some("Leaving Plan mode...")
+    );
+    app.receive_event_for_test(WorkerEvent::WorkflowChanged(Ok(WorkflowState::default())));
+    assert!(matches!(app.state, State::Ready));
+    assert_eq!(app.secondary_status, None);
+}
+
 #[test]
 fn plan_prompt_waits_for_success_then_sends_once_without_opening_review() {
     for workflow in [WorkflowState::default(), ready_plan_workflow()] {

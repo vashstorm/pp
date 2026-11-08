@@ -90,7 +90,8 @@ const POLL: Duration = Duration::from_millis(5);
 const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 // 不实现 Debug，避免输出命令参数和环境变量中的凭证。
-#[derive(Clone)]
+// PartialEq 只用于比较服务定义是否变化，不泄露字段内容。
+#[derive(Clone, PartialEq)]
 pub(crate) struct ServerConfig {
     transport: TransportConfig,
     timeout_seconds: u64,
@@ -98,14 +99,14 @@ pub(crate) struct ServerConfig {
     read_only_tools: BTreeSet<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum TransportConfig {
     Stdio(StdioConfig),
     Http(RemoteConfig),
     Sse(RemoteConfig),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct StdioConfig {
     command: String,
     args: Vec<String>,
@@ -113,7 +114,7 @@ struct StdioConfig {
     cwd: Option<PathBuf>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct RemoteConfig {
     url: reqwest::Url,
     headers: reqwest::header::HeaderMap,
@@ -315,6 +316,19 @@ impl Registry {
             directory: config::Directory::load(path)?,
             ..Self::default()
         })
+    }
+
+    /// 判断两个 registry 的配置目录是否一致：路径、服务集合、启停状态与
+    /// 服务定义（含只读授权）都必须相同；来源、连接状态与诊断不参与比较。
+    /// 执行交接据此决定能否沿用已连接的进程。
+    pub(crate) fn config_matches(&self, other: &Registry) -> bool {
+        self.directory.path == other.directory.path
+            && self.directory.entries.len() == other.directory.entries.len()
+            && self.directory.entries.iter().all(|(name, entry)| {
+                other.directory.entries.get(name).is_some_and(|other| {
+                    entry.enabled == other.enabled && entry.config == other.config
+                })
+            })
     }
 
     pub(crate) fn view(&self, access: Access) -> View {

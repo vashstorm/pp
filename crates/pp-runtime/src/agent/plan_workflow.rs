@@ -335,6 +335,16 @@ impl Agent {
     }
 }
 
+/// 执行交接准备出的 MCP registry。
+///
+/// `reused` 为真表示沿用 Plan 期已有的连接，只补连需要执行权限的服务；
+/// 失败时只需断开本次补连的服务。为假表示按新配置重建过，失败时整体
+/// 回收。`Registry` 克隆共享同一批连接跟踪，交给 UI 后旧句柄被 supersede。
+pub(super) struct PreparedRegistry {
+    pub(super) registry: Registry,
+    pub(super) reused: bool,
+}
+
 /// 按 ID 协调结果：绑定需采纳登记、登记需首次建立，或已一致。
 ///
 /// 按 ID 协调计划身份：登记表始终优先，把绑定文档同步到 canonical
@@ -391,27 +401,87 @@ impl Agent {
         self.connect_pending_plan_mcp(cancellation)
     }
 
-    fn prepare_execution_registry(&mut self, cancellation: &CancellationToken) -> Result<Registry> {
-        // 先校验配置，再回收 Plan 连接，避免重复启动同一个服务。
-        let mut registry = Registry::read_config(&self.catalog.mcp_path())?;
+    /// 准备执行交接使用的 MCP registry。
+    ///
+    /// 配置与 Plan 期一致时复用现有连接，只补连 Plan 期被 suspend 的服务；
+    /// 配置真正变化时才整体重建。补连失败在内部先回滚本次新连的服务，
+    /// 使 Plan 期连接与工具表保持不变。
+    fn prepare_execution_registry(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<PreparedRegistry> {
+        // 先校验配置：无效配置在回收任何连接之前就报错。
+        let fresh = Registry::read_config(&self.catalog.mcp_path())?;
         cancellation::check(cancellation)?;
+        let cwd = self.tools.cwd().to_owned();
+        if self.tools.mcp.config_matches(&fresh) {
+            // 复用分支：只补连“未连接且需要执行权限”的服务，成功后再克隆
+            // registry（共享同一 tracking，Cleanup::supersede 语义不变）。
+            if let Err(error) = self
+                .tools
+                .mcp
+                .connect_enabled(&cwd, cancellation, Access::Full)
+            {
+                return Err(match self.tools.mcp.restrict_to_read_only() {
+                    Ok(()) => error,
+                    Err(cleanup) => {
+                        self.plan_cleanup_error = Some(format!(
+                            "MCP cleanup failed before execution: {cleanup:#}; run /plan again to retry."
+                        ));
+                        cleanup.context(format!("Execution preparation also failed: {error:#}"))
+                    }
+                });
+            }
+            return Ok(PreparedRegistry {
+                registry: self.tools.mcp.clone(),
+                reused: true,
+            });
+        }
+        // 配置变化：先回收 Plan 期连接，再按新配置连接，避免重复启动服务。
+        let mut registry = fresh;
         if let Err(error) = self.tools.mcp.shutdown() {
             self.plan_cleanup_error = Some(format!(
                 "MCP cleanup failed before execution: {error:#}; run /plan again to retry."
             ));
             return Err(error);
         }
-        if let Err(error) = registry.connect_enabled(self.tools.cwd(), cancellation, Access::Full) {
-            return Err(self.abort_execution_preparation(registry, error));
+        if let Err(error) = registry.connect_enabled(&cwd, cancellation, Access::Full) {
+            return Err(self.abort_execution_preparation(
+                PreparedRegistry {
+                    registry,
+                    reused: false,
+                },
+                error,
+            ));
         }
-        Ok(registry)
+        Ok(PreparedRegistry {
+            registry,
+            reused: false,
+        })
     }
 
+    /// 交接失败后的 MCP 回滚。
+    ///
+    /// 复用分支只断开本次补连的服务，Plan 期已有连接与 Plan 工具表保持不变；
+    /// 重建分支沿用整体 shutdown，并把未能回收的连接交回 `self.tools.mcp`，
+    /// 保持 Cleanup 快照覆盖。回滚失败仍升级为 typed 清理上下文。
     fn abort_execution_preparation(
         &mut self,
-        mut registry: Registry,
+        prepared: PreparedRegistry,
         error: anyhow::Error,
     ) -> anyhow::Error {
+        if prepared.reused {
+            return match self.tools.mcp.restrict_to_read_only() {
+                Ok(()) => error,
+                Err(cleanup) => {
+                    self.plan_cleanup_error = Some(format!(
+                        "MCP cleanup failed before execution: {cleanup:#}; run /plan again to retry."
+                    ));
+                    cleanup.context(format!("Execution preparation also failed: {error:#}"))
+                }
+            };
+        }
+        let mut registry = prepared.registry;
         match registry.shutdown() {
             Ok(()) => error,
             Err(cleanup) => {
@@ -558,12 +628,12 @@ impl Agent {
         self.journal.check()?;
         let model = self.default_execution_model()?;
         self.ensure_plan_mcp_access(cancellation)?;
-        let registry = self.prepare_execution_registry(cancellation)?;
-        let prepared = (|| -> Result<_> {
-            let cleanup = registry.cleanup()?;
+        let prepared = self.prepare_execution_registry(cancellation)?;
+        let handoff = (|| -> Result<_> {
+            let cleanup = prepared.registry.cleanup()?;
             // 解除绑定，保留磁盘上的计划和登记。
             let workflow = WorkflowState::default();
-            let session = self.execution_session(&model, &workflow, &registry, true)?;
+            let session = self.execution_session(&model, &workflow, &prepared.registry, true)?;
             let metadata =
                 model.metadata(&self.tools, &self.base_system, self.prompt_source.as_ref());
             cancellation::check(cancellation)?;
@@ -571,14 +641,14 @@ impl Agent {
                 .commit_plan_exit(&metadata, (&session).into(), &workflow)?;
             Ok((workflow, session, cleanup))
         })();
-        let (workflow, session, cleanup) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => return Err(self.abort_execution_preparation(registry, error)),
+        let (workflow, session, cleanup) = match handoff {
+            Ok(handoff) => handoff,
+            Err(error) => return Err(self.abort_execution_preparation(prepared, error)),
         };
         self.session = session;
         self.workflow = workflow;
         self.install_execution_model(model);
-        self.tools.mcp = registry;
+        self.tools.mcp = prepared.registry;
         Ok(ExecutionPreparation {
             workflow: self.workflow.clone(),
             session_id: self.journal.id().map(str::to_owned),
@@ -853,10 +923,10 @@ impl Agent {
             self.check_plan_token_for_approval(&token, input)?;
         }
         let model = self.default_execution_model()?;
-        let registry = self.prepare_execution_registry(cancellation)?;
+        let prepared = self.prepare_execution_registry(cancellation)?;
         let fresh = context == ExecutionContext::Fresh;
         let candidate = (|| -> Result<_> {
-            let cleanup = registry.cleanup()?;
+            let cleanup = prepared.registry.cleanup()?;
             let mut workflow = self.workflow.clone();
             workflow.mode = WorkMode::Execute;
             if fresh {
@@ -882,7 +952,8 @@ impl Agent {
             crate::tools::todo::normalize_in_progress(&mut todos);
             workflow.todos = todos;
             workflow.todo_plan_id = Some(document.id.clone());
-            let mut session = self.execution_session(&model, &workflow, &registry, !fresh)?;
+            let mut session =
+                self.execution_session(&model, &workflow, &prepared.registry, !fresh)?;
             super::turn::append_user_to(&mut session, &prompt);
             // 准备原生请求后再核对输入队列与计划正文，之后才发布计划移动。
             cancellation::check(cancellation)?;
@@ -891,7 +962,7 @@ impl Agent {
         })();
         let (workflow, session, prompt, cleanup) = match candidate {
             Ok(candidate) => candidate,
-            Err(error) => return Err(self.abort_execution_preparation(registry, error)),
+            Err(error) => return Err(self.abort_execution_preparation(prepared, error)),
         };
         let committed = (|| -> Result<_> {
             // 按 PlanLease → 登记锁顺序持有到执行任务收尾。
@@ -914,13 +985,13 @@ impl Agent {
             Ok(committed) => committed,
             Err(error) => {
                 self.plan_lease = None;
-                return Err(self.abort_execution_preparation(registry, error));
+                return Err(self.abort_execution_preparation(prepared, error));
             }
         };
         self.session = session;
         self.workflow = workflow;
         self.install_execution_model(model);
-        self.tools.mcp = registry;
+        self.tools.mcp = prepared.registry;
         if let Some(journal) = fork {
             self.reset_lsp_diagnostics();
             self.journal = journal;
@@ -1042,7 +1113,9 @@ impl Agent {
             None
         };
         let prepared = (|| -> Result<_> {
-            let active_registry = registry.as_ref().unwrap_or(&self.tools.mcp);
+            let active_registry = registry
+                .as_ref()
+                .map_or(&self.tools.mcp, |prepared| &prepared.registry);
             let cleanup = active_registry.cleanup()?;
             let definitions = self
                 .tools
@@ -1066,13 +1139,13 @@ impl Agent {
             Ok(prepared) => prepared,
             Err(error) => {
                 return Err(match registry {
-                    Some(registry) => self.abort_execution_preparation(registry, error),
+                    Some(prepared) => self.abort_execution_preparation(prepared, error),
                     None => error,
                 });
             }
         };
-        if let Some(registry) = registry {
-            self.tools.mcp = registry;
+        if let Some(prepared) = registry {
+            self.tools.mcp = prepared.registry;
         }
         if let Some(model) = model {
             self.install_execution_model(model);

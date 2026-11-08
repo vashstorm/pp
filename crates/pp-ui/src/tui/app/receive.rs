@@ -882,6 +882,7 @@ impl App {
                                 self.start_plan_transition(
                                     |cancellation| WorkerCommand::EnterPlan { cancellation },
                                     State::ChangingPlan,
+                                    "Entering Plan mode...",
                                 );
                             }
                             if !reentered {

@@ -311,14 +311,18 @@ impl App {
         true
     }
 
+    /// 切换 Plan 模式的公共入口：发送成功后展示对应进度文案，
+    /// 具体文案由调用方按进入/退出方向传入。
     pub(in crate::tui) fn start_plan_transition(
         &mut self,
         command: impl FnOnce(CancellationToken) -> WorkerCommand,
         state: State,
+        status: &'static str,
     ) {
         let cancellation = CancellationToken::new();
         if self.send(command(cancellation.clone()), state) {
             self.active_cancellation = Some(cancellation);
+            self.secondary_status = Some(status.into());
         }
     }
 
@@ -336,6 +340,7 @@ impl App {
                     self.start_plan_transition(
                         |cancellation| WorkerCommand::EnterPlan { cancellation },
                         State::ChangingPlan,
+                        "Entering Plan mode...",
                     );
                     return;
                 }
@@ -352,6 +357,7 @@ impl App {
                 self.start_plan_transition(
                     |cancellation| WorkerCommand::EnterPlan { cancellation },
                     State::ChangingPlan,
+                    "Entering Plan mode...",
                 );
             }
             PlanCommand::View => {
@@ -402,6 +408,7 @@ impl App {
                 discard_plan_id,
             },
             State::ChangingPlan,
+            "Leaving Plan mode...",
         );
     }
 
@@ -515,6 +522,9 @@ impl App {
             State::ChangingPlan,
         ) {
             self.active_cancellation = Some(cancellation);
+            // 退出 Plan 需要安全收尾与文件落盘，期间给出可见进度；
+            // WorkflowChanged / ExecutionPrepared 分支负责清除该文案。
+            self.secondary_status = Some("Saving plan...".into());
         } else {
             let _ = self.input_queue.close();
         }

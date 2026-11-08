@@ -481,3 +481,341 @@ fn plan_fresh_approval_starts_an_empty_session_and_keeps_source_readable() {
         drop(error);
     }
 }
+
+// --- 执行交接复用 Plan 期 MCP 连接 ---
+
+/// 把服务定义写入配置目录的 mcp.json；Agent 的 `catalog.mcp_path()` 就在
+/// 同一目录，因此测试无需真实用户配置。
+fn write_mcp_config(dir: &std::path::Path, servers: serde_json::Value) {
+    std::fs::write(
+        dir.join("mcp.json"),
+        json!({ "mcpServers": servers }).to_string(),
+    )
+    .unwrap();
+}
+
+/// fixture 服务定义。每个服务用独立日志记录收到的 JSON-RPC 原文，
+/// `initialize` 条数即真实握手次数。
+fn fixture_server(log: &std::path::Path, read_only: bool, mode: Option<&str>) -> serde_json::Value {
+    let mut env = json!({
+        "MCP_LOG": log.to_str().unwrap(),
+        "MCP_VALUE": "test",
+    });
+    if let Some(mode) = mode {
+        env["MCP_MODE"] = json!(mode);
+    }
+    let mut server = json!({
+        "command": "bash",
+        "args": [format!(
+            "{}/../../tests/fixtures/mcp_server.sh",
+            env!("CARGO_MANIFEST_DIR")
+        )],
+        "env": env,
+    });
+    if read_only {
+        server["read_only_tools"] = json!(["echo"]);
+    }
+    server
+}
+
+/// 统计日志中已收到的 initialize 请求条数；文件缺失按 0 计。
+fn initialize_count(log: &std::path::Path) -> usize {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains("\"method\":\"initialize\""))
+        .count()
+}
+
+/// 轮询等待日志出现 `expected` 条 initialize 请求，用作“服务已开始握手”
+/// 的取消栅栏；超时返回 false，不静默通过。
+fn wait_for_initialize(log: &std::path::Path, expected: usize) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if initialize_count(log) >= expected {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
+}
+
+/// 当前 registry 在该 access 下暴露的工具名。
+fn mcp_tool_names(agent: &Agent, access: Access) -> Vec<String> {
+    agent
+        .tools
+        .mcp
+        .definitions(access)
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect()
+}
+
+/// `/mcp` 列表里该服务此刻的状态；未登记按 "missing" 计。
+fn mcp_status(agent: &Agent, access: Access, name: &str) -> &'static str {
+    agent
+        .tools
+        .mcp
+        .view(access)
+        .entries
+        .into_iter()
+        .find(|entry| entry.name == name)
+        .map_or("missing", |entry| entry.status)
+}
+
+/// 先进入 Plan，再写入配置并以 Plan 权限加载：Plan 期只连接有只读授权的
+/// 服务，其余服务保持“未连接”，交给退出时的补连分支。
+fn enter_plan_with_mcp(agent: &mut Agent, dir: &std::path::Path, servers: serde_json::Value) {
+    agent.enter_plan(&CancellationToken::new()).unwrap();
+    write_mcp_config(dir, servers);
+    agent
+        .manage_mcp(&crate::mcp::Action::Reload, &CancellationToken::new())
+        .unwrap();
+}
+
+/// 进入 Plan 后持有 Ready 计划并取得当前审批 token。
+fn ready_plan_token(agent: &mut Agent) -> ReviewToken {
+    agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Ready);
+    write_plan_file(agent, PLAN_CONTENT);
+    seed_session(agent, EXPLORATION);
+    agent.read_plan().unwrap().token
+}
+
+#[test]
+fn plan_exit_reuses_connected_mcp_service_without_reinitializing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+    let log = dir.path().join("local.log");
+    // Plan 期按只读授权连接该服务：一次真实握手。
+    enter_plan_with_mcp(
+        &mut agent,
+        dir.path(),
+        json!({"local": fixture_server(&log, true, None)}),
+    );
+    assert_eq!(initialize_count(&log), 1);
+    assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+
+    let token = ready_plan_token(&mut agent);
+    let preparation = agent
+        .save_plan_and_leave(token, &InputQueue::default(), &CancellationToken::new())
+        .unwrap();
+
+    assert_eq!(preparation.workflow.mode, WorkMode::Execute);
+    // 复用 Plan 期连接：退出不再产生第二次 initialize。
+    assert_eq!(initialize_count(&log), 1);
+    assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    let names = mcp_tool_names(&agent, Access::Full);
+    assert!(names.contains(&"mcp__local__echo".to_owned()), "{names:?}");
+}
+
+#[test]
+fn plan_exit_rebuilds_mcp_registry_only_when_config_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+    let log = dir.path().join("mcp.log");
+    enter_plan_with_mcp(
+        &mut agent,
+        dir.path(),
+        json!({"local": fixture_server(&log, true, None)}),
+    );
+    assert_eq!(initialize_count(&log), 1);
+
+    let token = ready_plan_token(&mut agent);
+    // Plan 期间改写定义并换服务名：旧连接不能沿用。
+    write_mcp_config(
+        dir.path(),
+        json!({"replacement": fixture_server(&log, true, None)}),
+    );
+    let preparation = agent
+        .save_plan_and_leave(token, &InputQueue::default(), &CancellationToken::new())
+        .unwrap();
+
+    assert_eq!(preparation.workflow.mode, WorkMode::Execute);
+    // 重建分支：新配置产生新的 initialize，旧服务不再出现在登记中。
+    assert_eq!(initialize_count(&log), 2);
+    assert_eq!(mcp_status(&agent, Access::Full, "local"), "missing");
+    assert_eq!(mcp_status(&agent, Access::Full, "replacement"), "connected");
+    let names = mcp_tool_names(&agent, Access::Full);
+    assert!(
+        names.contains(&"mcp__replacement__echo".to_owned()),
+        "{names:?}"
+    );
+    assert!(!names.contains(&"mcp__local__echo".to_owned()), "{names:?}");
+}
+
+#[test]
+fn plan_exit_isolates_supplementary_initialize_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+    let local_log = dir.path().join("local.log");
+    let broken_log = dir.path().join("broken.log");
+    enter_plan_with_mcp(
+        &mut agent,
+        dir.path(),
+        json!({
+            "local": fixture_server(&local_log, true, None),
+            "broken": fixture_server(&broken_log, false, Some("init_error")),
+        }),
+    );
+    // Plan 只连接有只读授权的服务。
+    assert_eq!(initialize_count(&local_log), 1);
+    assert_eq!(initialize_count(&broken_log), 0);
+
+    let token = ready_plan_token(&mut agent);
+    let preparation = agent
+        .save_plan_and_leave(token, &InputQueue::default(), &CancellationToken::new())
+        .unwrap();
+
+    // 单服务补连失败被隔离：交接继续，Plan 期连接不被连带关闭或重连。
+    assert_eq!(preparation.workflow.mode, WorkMode::Execute);
+    assert_eq!(initialize_count(&local_log), 1);
+    assert_eq!(initialize_count(&broken_log), 1);
+    assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    assert_eq!(
+        mcp_status(&agent, Access::Full, "broken"),
+        "failed (initialization)"
+    );
+    let names = mcp_tool_names(&agent, Access::Full);
+    assert!(names.contains(&"mcp__local__echo".to_owned()), "{names:?}");
+    assert!(
+        !names.iter().any(|name| name.starts_with("mcp__broken__")),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn plan_exit_rolls_back_supplementary_connection_when_cancelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+    let local_log = dir.path().join("local.log");
+    let extra_log = dir.path().join("extra.log");
+    let stuck_log = dir.path().join("stuck.log");
+    let mut stuck = fixture_server(&stuck_log, false, Some("timeout_init"));
+    // 卡住的握手不能拖住测试：最坏情况下按 5s 截止时间失败。
+    stuck["timeout"] = json!(5_000);
+    enter_plan_with_mcp(
+        &mut agent,
+        dir.path(),
+        json!({
+            "extra": fixture_server(&extra_log, false, None),
+            "local": fixture_server(&local_log, true, None),
+            "stuck": stuck,
+        }),
+    );
+    assert_eq!(initialize_count(&local_log), 1);
+
+    let token = ready_plan_token(&mut agent);
+    let cancellation = CancellationToken::new();
+    // 补连按服务名序执行：extra 先连上，stuck 卡在 initialize，此时取消。
+    let barrier = {
+        let token = cancellation.clone();
+        let log = stuck_log.clone();
+        std::thread::spawn(move || {
+            assert!(wait_for_initialize(&log, 1), "stuck 服务未开始握手");
+            token.cancel();
+        })
+    };
+    let error = agent
+        .save_plan_and_leave(token, &InputQueue::default(), &cancellation)
+        .err()
+        .expect("交接被取消");
+    barrier.join().unwrap();
+
+    assert!(error.is::<pp_core::cancellation::Cancelled>(), "{error:#}");
+    assert_eq!(agent.workflow.mode, WorkMode::Plan);
+    assert_eq!(initialize_count(&extra_log), 1);
+    assert_eq!(initialize_count(&stuck_log), 1);
+    // 回滚只断开本次补连的服务：Plan 期连接与 Plan 工具表保持不变。
+    assert_eq!(mcp_status(&agent, Access::Full, "extra"), "not connected");
+    assert_eq!(mcp_status(&agent, Access::Full, "stuck"), "not connected");
+    assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    let plan_tools = mcp_tool_names(&agent, Access::ReadOnly);
+    assert!(
+        plan_tools.contains(&"mcp__local__echo".to_owned()),
+        "{plan_tools:?}"
+    );
+}
+
+#[test]
+fn plan_exit_failure_rolls_back_only_the_supplementary_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+    let local_log = dir.path().join("local.log");
+    let extra_log = dir.path().join("extra.log");
+    enter_plan_with_mcp(
+        &mut agent,
+        dir.path(),
+        json!({
+            "extra": fixture_server(&extra_log, false, None),
+            "local": fixture_server(&local_log, true, None),
+        }),
+    );
+    let token = ready_plan_token(&mut agent);
+
+    // 会话日志改为只读：交接在 commit_plan_exit 处失败，进入回滚分支。
+    let id = agent.session_id().unwrap().to_owned();
+    let path = dir.path().join("sessions").join(format!("{id}.jsonl"));
+    agent.journal.use_read_only_file(&path);
+    let error = agent
+        .save_plan_and_leave(token, &InputQueue::default(), &CancellationToken::new())
+        .err()
+        .expect("只读日志使交接失败");
+
+    assert_eq!(agent.workflow.mode, WorkMode::Plan);
+    // 失败来自会话持久化，而不是 MCP 回滚。
+    assert!(
+        error.to_string().starts_with("persisting session "),
+        "{error:#}"
+    );
+    assert!(agent.plan_cleanup_error.is_none());
+    // 本次补连的 extra 被回滚，Plan 期连接与工具表保持不变。
+    assert_eq!(initialize_count(&local_log), 1);
+    assert_eq!(initialize_count(&extra_log), 1);
+    assert_eq!(mcp_status(&agent, Access::Full, "extra"), "not connected");
+    assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    let plan_tools = mcp_tool_names(&agent, Access::ReadOnly);
+    assert!(
+        plan_tools.contains(&"mcp__local__echo".to_owned()),
+        "{plan_tools:?}"
+    );
+}
+
+/// 复用分支的前提是同一份配置重新加载后仍判为一致：stdio 的 args/env 与
+/// HTTP 的 url/headers 都不能因解析细节产生伪差异，否则每次退出都会重建，
+/// 本次优化实际失效；真正改写定义时必须判为不一致。
+#[test]
+fn mcp_config_snapshot_matches_across_reloads_and_detects_definition_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp.json");
+    let log = dir.path().join("local.log");
+    let stdio = fixture_server(&log, true, None);
+    let remote = json!({
+        "type": "http",
+        "url": "https://mcp.example.com/mcp?tools=web_search,web_fetch",
+        "headers": {"Authorization": "Bearer fixture", "X-Trace": "1"},
+        "timeout": 5,
+        "read_only_tools": ["web_search"]
+    });
+    write_mcp_config(
+        dir.path(),
+        json!({"local": stdio.clone(), "remote": remote.clone()}),
+    );
+    let first = crate::mcp::Registry::read_config(&path).unwrap();
+    let second = crate::mcp::Registry::read_config(&path).unwrap();
+    assert!(first.config_matches(&second));
+
+    // 只读授权变化必须拒绝复用：它决定 Plan 期连接哪些服务。
+    let mut narrowed = remote.clone();
+    narrowed["read_only_tools"] = json!([]);
+    write_mcp_config(
+        dir.path(),
+        json!({"local": stdio.clone(), "remote": narrowed}),
+    );
+    let changed = crate::mcp::Registry::read_config(&path).unwrap();
+    assert!(!first.config_matches(&changed));
+
+    // 服务集合变化同样必须拒绝复用。
+    write_mcp_config(dir.path(), json!({"local": stdio}));
+    let removed = crate::mcp::Registry::read_config(&path).unwrap();
+    assert!(!first.config_matches(&removed));
+}
