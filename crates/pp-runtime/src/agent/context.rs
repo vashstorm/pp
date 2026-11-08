@@ -718,6 +718,7 @@ impl Agent {
         }
         self.refresh_instructions()?;
         self.persist_pending_input(None)?;
+        self.continue_task_status();
         self.compact_impl(false, cancellation, emit)
     }
 

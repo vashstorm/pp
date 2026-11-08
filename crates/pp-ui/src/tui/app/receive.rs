@@ -433,8 +433,7 @@ impl App {
                     changed = true;
                 }
                 Ok(WorkerEvent::Reset) => {
-                    self.task_status_view.clear();
-                    self.task_status = None;
+                    self.task_status = self.task_status_view.snapshot();
                     self.todo_panel = Default::default();
                     self.close_ask_on_exit();
                     self.history_browser = false;
@@ -675,8 +674,7 @@ impl App {
                         Ok(state) => {
                             self.session_id = Some(state.id.clone());
                             self.session_panel = None;
-                            // 历史/清理句柄已由 ExecutionPrepared 接管；这里只补通知。
-                            self.usage = None;
+                            // 历史、费用和用量已由 ExecutionPrepared 接管；这里只补通知。
                             self.token_speed.clear();
                             match self.resume_note.take() {
                                 Some(error) => self.notify(Level::Error, error),
@@ -1063,6 +1061,7 @@ impl App {
                 Ok(WorkerEvent::ExecutionPrepared {
                     workflow,
                     session_id,
+                    usage,
                     replay,
                     cleanup,
                     todo_snapshot,
@@ -1084,7 +1083,8 @@ impl App {
                         self.conversation.progress(snapshot);
                     }
                     self.session_id = session_id;
-                    self.usage = None;
+                    self.usage = usage;
+                    self.task_status = self.task_status_view.snapshot();
                     self.token_speed.clear();
                     let confirmed = reply.send(()).is_ok();
                     match self.state {

@@ -13,7 +13,7 @@ use std::{
     os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -25,6 +25,8 @@ pub struct RequestContext {
     pub cwd: PathBuf,
     pub purpose: &'static str,
     pub session_file: Option<PathBuf>,
+    /// 会话文件尚未分配时，保留已写入的统计键以便随后关联。
+    pub unlinked_requests: Option<Arc<Mutex<Vec<String>>>>,
     pub first_request: Arc<AtomicBool>,
     pub skills: Vec<pp_config::skills::SkillHeader>,
 }
@@ -156,6 +158,17 @@ pub(crate) fn database_path() -> Result<PathBuf> {
         .join("stats/stats.db"))
 }
 
+/// 按当前费率回算已关联到根会话及其子 Agent 的请求。
+pub fn session_cost(session: &Path) -> Result<pp_config::task_status::HistoricalCost> {
+    let path = database_path()?;
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => ensure!(metadata.is_file(), "statistics database must be a file"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(error) => return Err(error.into()),
+    }
+    Store::open(&path)?.session_cost(session)
+}
+
 /// Returns (total requests before cleanup, removed), counted in the same transaction.
 /// Delete request snapshots before their parents, then reclaim the freed pages.
 pub fn gc(cutoff: i64) -> Result<(u64, u64)> {
@@ -189,6 +202,32 @@ pub(crate) struct Store {
     models_path: PathBuf,
 }
 impl Store {
+    fn session_cost(&self, session: &Path) -> Result<pp_config::task_status::HistoricalCost> {
+        let pricing = analytics::Pricing::load(self);
+        let children = session.with_extension("subagents").join("sessions");
+        let children = format!("{}/", children.display());
+        let mut statement = self.conn.prepare(
+            "SELECT model_reference, model, input_tokens, output_tokens, cached_tokens, cache_write_tokens
+             FROM requests WHERE session_file = ?1 OR substr(session_file, 1, length(?2)) = ?2",
+        )?;
+        let mut rows = statement.query(params![session.to_string_lossy(), children])?;
+        let mut result = pp_config::task_status::HistoricalCost::default();
+        while let Some(row) = rows.next()? {
+            let reference: String = row.get(0)?;
+            let model: String = row.get(1)?;
+            let cost = if let Some(price) = pricing.rate(&reference, &model) {
+                analytics::calculate(price, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)
+            } else {
+                None
+            };
+            match cost.map(|cost| result.usd.unwrap_or(0.0) + cost.total()) {
+                Some(total) if total.is_finite() => result.usd = Some(total),
+                _ => result.incomplete = true,
+            }
+        }
+        Ok(result)
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_with_models(path, pp_config::config::global_dir()?.join("models.yml"))
     }
@@ -475,6 +514,14 @@ pub fn save(
             &output,
             observation.request_context.as_ref(),
         )?;
+        if let Some(unlinked) = &context.unlinked_requests
+            && context.session_file.is_none()
+        {
+            unlinked
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(key.clone());
+        }
         Ok(key)
     })();
     match result {
@@ -527,6 +574,48 @@ mod tests {
             error_message: None,
         }
     }
+    #[test]
+    fn session_cost_uses_root_and_child_records_and_current_pricing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let root = dir.path().join("root.jsonl");
+        let child = dir.path().join("root.subagents/sessions/child.jsonl");
+        let other = dir.path().join("root.subagents/sessions-other/child.jsonl");
+        for (key, file, usage_known) in [
+            ("root", &root, true),
+            ("child", &child, true),
+            ("missing-usage", &root, false),
+            ("other", &other, true),
+        ] {
+            let mut record = fixture(key, 1000);
+            record.model = "gateway/OpenAI/GPT-5.4".into();
+            record.session_file = Some(file.to_string_lossy().into_owned());
+            if !usage_known {
+                record.cache_write_tokens = None;
+            }
+            store.insert(&record, &Value::Null).unwrap();
+        }
+        let history = store.session_cost(&root).unwrap();
+        assert!(history.incomplete);
+        assert!((history.usd.unwrap() - 0.00074).abs() < 1e-12);
+
+        fs::write(&store.models_path, "providers: {fixture: {api_key: fixture, models: {primary: {model: changed, cost: {input: 0, cacheRead: 0, output: 0}}}}}").unwrap();
+        let history = store.session_cost(&root).unwrap();
+        assert_eq!(history.usd, Some(0.0));
+        assert!(history.incomplete);
+        assert_eq!(
+            store
+                .session_cost(&dir.path().join("missing.jsonl"))
+                .unwrap(),
+            Default::default()
+        );
+
+        fs::write(&store.models_path, "invalid: [").unwrap();
+        let history = store.session_cost(&root).unwrap();
+        assert!(history.usd.is_none());
+        assert!(history.incomplete);
+    }
+
     #[test]
     fn stats_context_list_marks_saved_first_requests_without_loading_bodies() {
         let dir = tempfile::tempdir().unwrap();

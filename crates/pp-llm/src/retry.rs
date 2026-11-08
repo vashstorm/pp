@@ -53,6 +53,7 @@ pub(super) struct RequestAttempts {
     pub(super) partial: bool,
     pub(super) summary: bool,
     pub(super) accounting_id: u64,
+    pub(super) accounting_rate: Option<pp_config::models::ModelCost>,
 }
 impl RequestAttempts {
     pub(super) fn new(budget: Duration) -> Self {
@@ -68,6 +69,7 @@ impl RequestAttempts {
             partial: false,
             summary: false,
             accounting_id: 0,
+            accounting_rate: None,
         }
     }
     pub(super) fn finish<T>(&mut self, result: &Result<T>) {
@@ -101,7 +103,7 @@ impl OpenAiClient {
         }
         attempts.pending_open = false;
         self.record_model_usage();
-        self.settle_task_request(attempts.accounting_id, None);
+        self.settle_task_request(attempts.accounting_id, attempts.accounting_rate, None);
         if let Some(mut observation) = attempts.pending.take() {
             observation.request_context = attempts.request_context.take();
             if let Some(context) = &self.stats_context {

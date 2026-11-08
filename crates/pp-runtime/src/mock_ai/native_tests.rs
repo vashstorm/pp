@@ -372,6 +372,7 @@ fn native_client_mock_requests_do_not_persist_stats_or_model_usage() {
         cwd: dir.path().to_path_buf(),
         purpose: "agent",
         session_file: None,
+        unlinked_requests: None,
         first_request: Arc::new(AtomicBool::new(true)),
         skills: Vec::new(),
     });

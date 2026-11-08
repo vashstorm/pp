@@ -1,45 +1,43 @@
 use super::{COLUMNS, Range, RequestRow, Store, row};
 use anyhow::Result;
 use chrono::{Local, TimeZone, Timelike};
+use pp_config::models::{ModelCost, ModelPricing};
 use rusqlite::params;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Serialize)]
-pub(super) struct Price {
+struct Price {
     input: f64,
     cached_input: f64,
     cache_write: Option<f64>,
     output: f64,
 }
+
+impl From<ModelCost> for Price {
+    fn from(cost: ModelCost) -> Self {
+        Self {
+            input: cost.input,
+            cached_input: cost.cache_read,
+            cache_write: cost.cache_write,
+            output: cost.output,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Pricing {
-    pub rates: BTreeMap<String, Price>,
+    rates: ModelPricing,
     pub error: Option<&'static str>,
 }
 impl Pricing {
     pub fn load(store: &Store) -> Self {
         match pp_config::models::load_models(&store.models_path) {
-            Ok(providers) => {
-                let mut rates = BTreeMap::new();
-                for provider in providers {
-                    for model in provider.models {
-                        if let Some(cost) = model.cost {
-                            rates.insert(
-                                format!("{}/{}", provider.id, model.id),
-                                Price {
-                                    input: cost.input,
-                                    cached_input: cost.cache_read,
-                                    cache_write: cost.cache_write,
-                                    output: cost.output,
-                                },
-                            );
-                        }
-                    }
-                }
-                Self { rates, error: None }
-            }
+            Ok(providers) => Self {
+                rates: ModelPricing::from_providers(&providers),
+                error: None,
+            },
             Err(error)
                 if error
                     .downcast_ref::<std::io::Error>()
@@ -55,20 +53,22 @@ impl Pricing {
             },
         }
     }
+
+    pub(super) fn rate(&self, reference: &str, model: &str) -> Option<ModelCost> {
+        self.error
+            .is_none()
+            .then(|| self.rates.rate(reference, model))
+            .flatten()
+    }
+
     pub fn cost(&self, r: &RequestRow) -> Option<Cost> {
-        let p = self.rates.get(&r.model_reference)?;
-        pp_config::models::ModelCost {
-            input: p.input,
-            cache_read: p.cached_input,
-            cache_write: p.cache_write,
-            output: p.output,
-        }
-        .calculate(pp_core::context::TokenUsage {
-            input_tokens: r.input_tokens?.try_into().ok()?,
-            output_tokens: r.output_tokens?.try_into().ok()?,
-            cached_tokens: Some(r.cached_tokens?.try_into().ok()?),
-            cache_write_tokens: Some(r.cache_write_tokens?.try_into().ok()?),
-        })
+        calculate(
+            self.rate(&r.model_reference, &r.model)?,
+            r.input_tokens,
+            r.output_tokens,
+            r.cached_tokens,
+            r.cache_write_tokens,
+        )
     }
 
     pub fn request(&self, r: &RequestRow) -> Result<Value> {
@@ -80,6 +80,21 @@ impl Pricing {
     }
 }
 pub(super) use pp_config::models::TokenCost as Cost;
+pub(super) fn calculate(
+    price: ModelCost,
+    input: Option<i64>,
+    output: Option<i64>,
+    cached: Option<i64>,
+    written: Option<i64>,
+) -> Option<Cost> {
+    price.calculate(pp_core::context::TokenUsage {
+        input_tokens: input?.try_into().ok()?,
+        output_tokens: output?.try_into().ok()?,
+        cached_tokens: Some(cached?.try_into().ok()?),
+        cache_write_tokens: Some(written?.try_into().ok()?),
+    })
+}
+
 #[derive(Default)]
 pub(super) struct Aggregate {
     requests: u64,
@@ -233,6 +248,7 @@ impl Store {
         let mut models = BTreeMap::<String, Group>::new();
         let mut providers = BTreeMap::<String, Group>::new();
         let mut names = BTreeMap::new();
+        let mut model_rates = BTreeMap::new();
         for r in rows {
             let r = r?;
             let local = Local
@@ -266,6 +282,16 @@ impl Store {
                 day,
                 local.hour(),
             );
+            let rate = pricing.rate(&r.model_reference, &r.model);
+            // 同一配置引用可能在历史上指向不同实际模型，仅显示一致的费率。
+            model_rates
+                .entry(r.model_reference.clone())
+                .and_modify(|previous| {
+                    if *previous != rate {
+                        *previous = None;
+                    }
+                })
+                .or_insert(rate);
             names.insert(r.model_reference.clone(), (r.model, r.provider));
         }
         let model_values: Vec<Value> = models
@@ -276,7 +302,7 @@ impl Store {
                 v["key"] = json!(key);
                 v["model"] = json!(model);
                 v["provider"] = json!(provider);
-                v["rates"] = json!(pricing.rates.get(key));
+                v["rates"] = json!(model_rates[key].map(Price::from));
                 v
             })
             .collect();
@@ -290,7 +316,7 @@ impl Store {
             })
             .collect();
         Ok(
-            json!({"summary":all.totals.value(),"buckets":series(&all.buckets),"daily":series(&all.daily),"hours":all.value()["hours"],"models":model_values,"providers":provider_values,"active_days":all.daily.len(),"pricing_error":pricing.error,"pricing_source":"~/.pp/agent/models.yml · cost · USD per million tokens · current configured rates","range":range.label(),"updated_at":now}),
+            json!({"summary":all.totals.value(),"buckets":series(&all.buckets),"daily":series(&all.daily),"hours":all.value()["hours"],"models":model_values,"providers":provider_values,"active_days":all.daily.len(),"pricing_error":pricing.error,"pricing_source":"~/.pp/agent/models.yml overrides built-in rates · USD per million tokens","range":range.label(),"updated_at":now}),
         )
     }
 }

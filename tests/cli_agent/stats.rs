@@ -653,7 +653,7 @@ fn stats_unavailable_database_does_not_fail_model_task() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("statistics unavailable"));
 }
 
-fn http(address: &str, path: &str, host: &str) -> (u16, String) {
+pub(super) fn http(address: &str, path: &str, host: &str) -> (u16, String) {
     http_with_origin(address, path, host, None)
 }
 
@@ -677,7 +677,7 @@ fn http_with_origin(address: &str, path: &str, host: &str, origin: Option<&str>)
     )
 }
 
-fn start_stats_server(dir: &std::path::Path) -> (Cli, String) {
+pub(super) fn start_stats_server(dir: &std::path::Path) -> (Cli, String) {
     stats_server_address(Cli::spawn(dir, &["stats", "--port", "0", "--no-open"], &[]))
 }
 

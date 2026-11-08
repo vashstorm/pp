@@ -141,9 +141,14 @@ impl OpenAiClient {
         self.task_accounting = ledger;
     }
 
-    fn settle_task_request(&self, id: u64, usage: Option<TokenUsage>) {
+    fn settle_task_request(
+        &self,
+        id: u64,
+        price: Option<pp_config::models::ModelCost>,
+        usage: Option<TokenUsage>,
+    ) {
         if let Some(ledger) = &self.task_accounting {
-            ledger.settle(id, &self.model_reference, usage);
+            ledger.settle(id, price, usage);
         }
     }
 

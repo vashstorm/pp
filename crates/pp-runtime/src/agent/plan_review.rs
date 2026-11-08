@@ -78,6 +78,7 @@ impl Agent {
             self.think_level,
         )?;
         let config = self.catalog.resolve(&selection.model)?;
+        self.continue_task_status();
         let metadata = Metadata {
             role_route: None,
             cwd: self.tools.cwd(),
@@ -89,6 +90,7 @@ impl Agent {
             prompt_source: self.prompt_source.as_ref(),
         };
         let mut client = OpenAiClient::new(&config)?;
+        client.set_task_accounting(self.task_status.accounting.clone());
         // Costs are recorded for the source session under the review purpose;
         // they never become main native exchanges or context usage.
         client.set_stats_context(self.journal.stats_context(

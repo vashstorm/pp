@@ -36,6 +36,7 @@ fn save_plan_and_leave_shows_secondary_status_until_execution_prepared() {
         .send(WorkerEvent::ExecutionPrepared {
             workflow: workflow.clone(),
             session_id: Some("next".into()),
+            usage: None,
             replay: None,
             cleanup,
             todo_snapshot: None,
@@ -365,6 +366,7 @@ fn execution_prepared_installs_cleanup_and_acks_before_running() {
         .send(WorkerEvent::ExecutionPrepared {
             workflow: workflow.clone(),
             session_id: Some("next".into()),
+            usage: None,
             replay: None,
             cleanup,
             todo_snapshot: None,

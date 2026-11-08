@@ -203,12 +203,16 @@ fn wait_tui_batch_updates_one_card_and_blocks_parent_until_all_children_settle()
         restored.text("batch-wait-finished");
         restored.ready();
         restored.input("\x1b[5~");
-        restored.text("3/3 settled");
+        restored.wait_for("历史浏览显示已完成的等待批次", |screen| {
+            screen.alternate_screen() && screen.contents().contains("3/3 settled")
+        });
         let history = restored.contents();
         assert!(history.contains("3/3 settled"), "{history}");
         assert!(!history.contains("[task] r1 · running"), "{history}");
         restored.input("\x1b");
-        restored.ready();
+        restored.wait_for("关闭历史浏览并回到主屏幕", |screen| {
+            !screen.alternate_screen() && input_is_ready(screen)
+        });
         restored.input("/quit\r");
         restored.finish();
         cancel_assert_no_request(&fixture);

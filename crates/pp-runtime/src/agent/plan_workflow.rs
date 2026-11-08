@@ -1002,6 +1002,7 @@ impl Agent {
             }
             self.tools.clear_changes();
             self.clear_session_usage();
+            self.clear_session_cost();
             self.pending_project_load = None;
             self.reported_project_load = None;
         }
@@ -1170,6 +1171,7 @@ impl Agent {
             debug.set_prompt_recorded(true);
         }
         self.clear_session_usage();
+        self.restore_session_cost();
         self.pending_instructions = None;
         Ok(ExecutionPreparation {
             workflow: self.workflow.clone(),

@@ -138,6 +138,10 @@ impl OpenAiClient {
         if new_request {
             attempts.started = Instant::now();
             attempts.accounting_id = pp_config::task_status::request_id();
+            attempts.accounting_rate = self
+                .task_accounting
+                .as_ref()
+                .and_then(|ledger| ledger.rate(&self.model_reference, &request.model));
         }
         let started_at = attempts.started;
         let record = !cancellation.is_cancelled() && self.stats_context.is_some();
@@ -150,8 +154,8 @@ impl OpenAiClient {
         // 落定金额仍以服务端 usage 为准，估算只在落定前存在。
         let accounting = self.task_accounting.clone();
         let accounting_id = attempts.accounting_id;
-        let accounting_model = self.model_reference.clone();
-        let prompt_tokens = if accounting.is_some() {
+        let accounting_rate = attempts.accounting_rate;
+        let prompt_tokens = if accounting_rate.is_some() {
             pp_core::context::estimate_tokens(&wire).ok()
         } else {
             None
@@ -166,7 +170,7 @@ impl OpenAiClient {
             {
                 ledger.progress(
                     accounting_id,
-                    &accounting_model,
+                    accounting_rate,
                     prompt_tokens,
                     output_bytes.div_ceil(3),
                 );
@@ -293,7 +297,7 @@ impl OpenAiClient {
                 })
             });
         if attempted && save_attempt {
-            self.settle_task_request(attempts.accounting_id, accounting_usage);
+            self.settle_task_request(attempts.accounting_id, accounting_rate, accounting_usage);
         }
         if record {
             if attempted

@@ -35,6 +35,7 @@ pub struct ModelCatalog {
     settings_path: PathBuf,
     agent_db_path: PathBuf,
     providers: Vec<models::ValidatedProvider>,
+    pricing: models::ModelPricing,
     preferences: ModelPreferences,
     default_reference: String,
     auth_generations: std::collections::BTreeMap<crate::auth::Provider, String>,
@@ -159,16 +160,56 @@ fn default_notification_timeout_seconds() -> u64 {
     10
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TuiSettings {
     pub max_fps: u16,
+    pub cost: CostDisplay,
 }
 
 impl Default for TuiSettings {
     fn default() -> Self {
-        Self { max_fps: 60 }
+        Self {
+            max_fps: 60,
+            cost: CostDisplay::default(),
+        }
     }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CostDisplay {
+    pub currency: String,
+    pub exchange_rate: f64,
+    #[serde(deserialize_with = "deserialize_currency_icon")]
+    pub icon: char,
+}
+
+impl Default for CostDisplay {
+    fn default() -> Self {
+        Self {
+            currency: "USD".into(),
+            exchange_rate: 1.0,
+            icon: '\u{f155}',
+        }
+    }
+}
+
+fn deserialize_currency_icon<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> std::result::Result<char, D::Error> {
+    let code = String::deserialize(de)?;
+    u32::from_str_radix(&code, 16)
+        .ok()
+        .filter(|cp| {
+            !code.is_empty()
+                && code.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && matches!(cp, 0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x100000..=0x10fffd)
+        })
+        .and_then(char::from_u32)
+        .ok_or_else(|| {
+            serde::de::Error::custom("tui.cost.icon must be a private-use hexadecimal code point")
+        })
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
@@ -287,6 +328,20 @@ impl Settings {
 
     pub(crate) fn validate(&self) -> Result<()> {
         self.lsp.validate()?;
+        ensure!(
+            self.tui.cost.currency.len() == 3
+                && self
+                    .tui
+                    .cost
+                    .currency
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase()),
+            "tui.cost.currency must contain three uppercase ASCII letters"
+        );
+        ensure!(
+            self.tui.cost.exchange_rate.is_finite() && self.tui.cost.exchange_rate > 0.0,
+            "tui.cost.exchange_rate must be positive and finite"
+        );
         ensure!(
             (1..=120).contains(&self.tui.max_fps),
             "tui.max_fps must be between 1 and 120"
@@ -414,13 +469,16 @@ fn default_auto_compact_threshold_percent() -> u8 {
 impl ModelCatalog {
     pub fn cost(&self, reference: &str) -> Option<crate::models::ModelCost> {
         let (provider, model) = reference.split_once('/')?;
-        self.providers
+        let model = self
+            .providers
             .iter()
-            .find(|p| p.id == provider)?
-            .models
-            .iter()
-            .find(|m| m.id == model)?
-            .cost
+            .filter(|p| p.id == provider)
+            .find_map(|p| p.models.iter().find(|m| m.id == model))?;
+        self.pricing.rate(reference, &model.model)
+    }
+
+    pub fn pricing(&self) -> &models::ModelPricing {
+        &self.pricing
     }
 
     pub fn mcp_path(&self) -> PathBuf {
@@ -476,6 +534,7 @@ impl ModelCatalog {
         } else {
             Vec::new()
         };
+        let pricing = models::ModelPricing::from_providers(&providers);
         providers.retain(|provider| {
             provider
                 .auth
@@ -510,6 +569,7 @@ impl ModelCatalog {
             settings_path: settings_path.to_path_buf(),
             agent_db_path,
             providers,
+            pricing,
             preferences,
             default_reference,
             auth_generations: store
@@ -690,6 +750,7 @@ impl ModelCatalog {
             true,
         )?;
         self.providers = next.providers;
+        self.pricing = next.pricing;
         self.auth_generations = next.auth_generations;
         self.default_reference = next.default_reference;
         self.preferences = next.preferences;

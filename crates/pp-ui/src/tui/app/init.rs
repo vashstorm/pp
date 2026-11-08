@@ -123,6 +123,7 @@ impl App {
             token_speed: statusline::TokenSpeed::default(),
             task_status_view: Default::default(),
             task_status: None,
+            cost_display: Default::default(),
             mcp_cleanup: None,
             lsp_cleanup: None,
             mcp_view: Default::default(),
@@ -250,6 +251,7 @@ impl App {
         thread::Builder::new()
             .name("pp-agent".into())
             .spawn(move || {
+                agent.enable_task_status(task_status_view.clone());
                 // 空闲时以 50ms 超时轮询迟到诊断：只发布 Progress，不续跑
                 // 模型、不把 Ready 改成 Running，也不伪造工具调用。
                 let mut last_poll_error: Option<String> = None;
@@ -275,7 +277,6 @@ impl App {
                         }
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
-                    agent.enable_task_status(task_status_view.clone());
                     let started = Instant::now();
                     let mut emit = |event| {
                         let _ = sender.send(WorkerEvent::Progress(event));
@@ -304,7 +305,7 @@ impl App {
                             call_id,
                             cancellation,
                         } => {
-                            task_status_view.clear();
+                            task_status_view.clear_title();
                             let result =
                                 agent.run_shell(&command, &call_id, &cancellation, &mut emit);
                             let cleanup_failed = result.as_ref().is_err_and(|error| {

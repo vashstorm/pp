@@ -30,7 +30,7 @@ use std::{
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
@@ -141,6 +141,7 @@ pub(super) struct SessionJournal {
     pending_checkpoint: bool,
     pending_tools: bool,
     pending_stats: Option<String>,
+    unlinked_stats: Arc<Mutex<Vec<String>>>,
     first_request: Arc<AtomicBool>,
 }
 
@@ -159,6 +160,7 @@ impl SessionJournal {
             cwd: metadata.cwd.to_owned(),
             purpose,
             session_file: self.id().map(|id| self.dir.join(format!("{id}.jsonl"))),
+            unlinked_requests: self.unlinked_stats(),
             first_request: self.first_request.clone(),
             skills: if self.first_request.load(Ordering::Relaxed) {
                 skills.to_vec()
@@ -167,17 +169,34 @@ impl SessionJournal {
             },
         }
     }
+    pub(super) fn unlinked_stats(&self) -> Option<Arc<Mutex<Vec<String>>>> {
+        self.id().is_none().then(|| self.unlinked_stats.clone())
+    }
+
+    pub(super) fn link_unassigned_stats(&self) {
+        if let Some(id) = self.id() {
+            let keys = std::mem::take(
+                &mut *self
+                    .unlinked_stats
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()),
+            );
+            if !keys.is_empty() {
+                let file = self.dir.join(format!("{id}.jsonl"));
+                for key in keys {
+                    pp_stats::link(&key, &file, &[]);
+                }
+            }
+        }
+    }
+
     pub(super) fn track_stats(&mut self, key: Option<String>, success: bool) {
+        self.link_unassigned_stats();
         if !success {
             self.pending_stats = None;
         }
-        if let Some(key) = key {
-            if let Some(id) = self.id() {
-                pp_stats::link(&key, &self.dir.join(format!("{id}.jsonl")), &[]);
-            }
-            if success {
-                self.pending_stats = Some(key);
-            }
+        if success && key.is_some() {
+            self.pending_stats = key;
         }
     }
 
@@ -202,6 +221,7 @@ impl SessionJournal {
             pending_checkpoint: false,
             pending_tools: false,
             pending_stats: None,
+            unlinked_stats: Default::default(),
             first_request: Arc::new(AtomicBool::new(true)),
         }
     }
@@ -1270,6 +1290,7 @@ pub fn load(
             pending_checkpoint: false,
             pending_tools: false,
             pending_stats: None,
+            unlinked_stats: Default::default(),
             first_request: Arc::new(AtomicBool::new(false)),
         },
         replay,

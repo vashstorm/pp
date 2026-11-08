@@ -53,7 +53,8 @@ const IO_ICON: &str = "\u{f04e2}";
 const CACHE_ICON: &str = "\u{f01bc}";
 const TITLE_ICON: &str = "\u{f09a9}";
 const CONTEXT_ICON: &str = "\u{f2d0}";
-const COST_ICON: &str = "\u{f01c1}";
+#[cfg(test)]
+const COST_ICON: &str = "\u{f155}";
 const TIMER_ICON: &str = "\u{f051b}";
 const HEALTHY_ICON: &str = "\u{f05e0}";
 const WARNING_ICON: &str = "\u{f0026}";
@@ -155,24 +156,37 @@ fn title_field(text: &str, width: usize) -> Line<'static> {
     field(TITLE_ICON, title, PLAN_MODE)
 }
 
-fn cost_field(task: &pp_config::task_status::Snapshot) -> Option<Line<'static>> {
+fn cost_field(
+    task: &pp_config::task_status::Snapshot,
+    display: &pp_config::config::CostDisplay,
+) -> Option<Line<'static>> {
     // 已落定金额加上生成中请求的实时估算；只估算不落定，避免重复计算。
     let live = if task.live.is_finite() {
         task.live
     } else {
         0.0
     };
-    let total = task.cost + live;
-    if total <= 0.0 || !total.is_finite() {
+    let history = task.history.and_then(|history| history.usd);
+    let usd = history.unwrap_or(0.0) + task.cost + live;
+    let total = usd * display.exchange_rate;
+    let currency = &display.currency;
+    let text = if !total.is_finite() || usd < 0.0 {
         return None;
-    }
-    let text = if total < 0.0001 {
-        "<0.0001 USD".into()
+    } else if usd > 0.0 && total < 0.0001 {
+        format!("<0.0001 {currency}")
+    } else if usd > 0.0 || history.is_some() {
+        format!("{total:.4} {currency}")
+    } else if task.history.is_some() {
+        "—".into()
     } else {
-        format!("{total:.4} USD")
+        return None;
     };
-    let mut line = field(COST_ICON, text, Color::Red);
-    if task.incomplete {
+    let mut line = field(display.icon.encode_utf8(&mut [0; 4]), text, Color::Red);
+    if task.incomplete
+        || task
+            .history
+            .is_some_and(|history| history.incomplete || history.usd.is_none())
+    {
         line.spans.push(Span::styled(
             format!(" {WARNING_ICON}"),
             Style::default().fg(Color::Yellow),
@@ -235,7 +249,10 @@ pub(super) fn metric_fields(
     speed: Option<(f64, bool)>,
     running_subagents: usize,
     live_output: Option<u64>,
-    task: Option<&pp_config::task_status::Snapshot>,
+    task: Option<(
+        &pp_config::task_status::Snapshot,
+        &pp_config::config::CostDisplay,
+    )>,
     elapsed: Option<&str>,
     width: u16,
 ) -> Line<'static> {
@@ -251,7 +268,7 @@ pub(super) fn metric_fields(
     };
     let mut fields = [
         Some(speed_field(speed.map(|(rate, _)| rate), running_subagents)),
-        task.and_then(|t| t.title.as_ref())
+        task.and_then(|(t, _)| t.title.as_ref())
             .map(|title| title_field(title, 32)),
         Some(context_field(usage)),
         Some(pair_field(
@@ -266,7 +283,7 @@ pub(super) fn metric_fields(
             count(last.and_then(|u| u.cache_write_tokens)),
             (CACHE_READ, CACHE_WRITE),
         )),
-        task.and_then(cost_field),
+        task.and_then(|(task, display)| cost_field(task, display)),
         elapsed.map(|text| field(TIMER_ICON, text.replace(' ', ""), Color::White)),
     ];
     let budget = usize::from(width);
@@ -975,7 +992,7 @@ mod tests {
             Some((30.2, true)),
             0,
             None,
-            Some(&task),
+            Some((&task, &Default::default())),
             Some("1m 25s"),
             240,
         );
@@ -1152,11 +1169,11 @@ mod tests {
         let mut task = pp_config::task_status::Snapshot::default();
         for amount in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             task.cost = amount;
-            assert!(cost_field(&task).is_none());
+            assert!(cost_field(&task, &Default::default()).is_none());
         }
         task.cost = 0.000001;
         task.incomplete = true;
-        let line = cost_field(&task).unwrap();
+        let line = cost_field(&task, &Default::default()).unwrap();
         assert_eq!(
             line_text(&line),
             format!("{COST_ICON} <0.0001 USD {WARNING_ICON}")
@@ -1172,7 +1189,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            line_text(&cost_field(&live).unwrap()),
+            line_text(&cost_field(&live, &Default::default()).unwrap()),
             format!("{COST_ICON} 0.0023 USD")
         );
         let settled = pp_config::task_status::Snapshot {
@@ -1181,7 +1198,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            line_text(&cost_field(&settled).unwrap()),
+            line_text(&cost_field(&settled, &Default::default()).unwrap()),
             format!("{COST_ICON} 0.0123 USD")
         );
         // 预估损坏时退回已落定金额，不能让整个费用字段消失。
@@ -1191,11 +1208,14 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            line_text(&cost_field(&broken).unwrap()),
+            line_text(&cost_field(&broken, &Default::default()).unwrap()),
             format!("{COST_ICON} 0.0100 USD")
         );
         let empty = pp_config::task_status::Snapshot::default();
-        assert!(cost_field(&empty).is_none(), "没有任何金额时不占位");
+        assert!(
+            cost_field(&empty, &Default::default()).is_none(),
+            "没有任何金额时不占位"
+        );
     }
 
     #[test]
@@ -1214,7 +1234,7 @@ mod tests {
                 Some((rate, false)),
                 3,
                 None,
-                Some(&task),
+                Some((&task, &Default::default())),
                 Some("1m 25s"),
                 width,
             )

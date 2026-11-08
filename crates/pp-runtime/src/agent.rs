@@ -878,6 +878,9 @@ impl Agent {
         // 导航到另一会话根：旧根的临时管道正文不能跨根复用。
         self.tools.reset_pipe_store();
         self.clear_session_usage();
+        if let Some(view) = &self.task_status.view {
+            view.clear_title();
+        }
         self.pending_instructions = None;
         self.pending_project_load = None;
         self.reported_project_load = reported_project_load(&replay);
@@ -948,7 +951,11 @@ impl Agent {
 
     pub fn reload_models(&mut self) -> Result<()> {
         self.stop_subagents()?;
-        self.catalog.reload_models()
+        self.catalog.reload_models()?;
+        if self.task_status.accounting.is_some() {
+            self.continue_task_status();
+        }
+        Ok(())
     }
 
     pub fn model_choices(&self) -> Vec<ModelChoice> {
@@ -1096,6 +1103,9 @@ impl Agent {
             .and_then(|binding| binding.registry.catalog())
         {
             self.catalog = catalog;
+            if self.task_status.view.is_some() && self.task_status.accounting.is_some() {
+                self.continue_task_status();
+            }
         }
         if self
             .role_route
@@ -1408,6 +1418,7 @@ impl Agent {
         }
         self.replay.clear();
         self.clear_session_usage();
+        self.clear_session_cost();
         self.pending_project_load = None;
         self.reported_project_load = None;
         match &mut self.session {
@@ -1641,7 +1652,9 @@ impl Agent {
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<RunOutcome> {
         self.finish_task_title();
-        self.set_task_accounting(None);
+        if self.task_status.view.is_none() {
+            self.set_task_accounting(None);
+        }
         let result = self.close_queue(input, result);
         let mut result = self.finish_run(result, cancellation);
         if let Err(error) = self.refresh_plan_progress(emit) {

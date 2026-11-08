@@ -1375,3 +1375,73 @@ fn model_select_errors_are_actionable_and_redacted() {
         assert!(!message.contains("fixture-model"), "{message}");
     }
 }
+
+#[test]
+fn pricing_matches_actual_model_suffix_and_overrides_the_whole_rate() {
+    let (_dir, catalog) = catalog(
+        None,
+        Some(
+            r#"
+providers:
+  first:
+    api_key: fixture
+    models:
+      alias:
+        model: gateway/OpenAI/GPT-6.1-SOL
+      free:
+        model: gpt-6.1-sol
+        cost: {input: 0, cacheRead: 0, output: 0}
+      gpt-6.1-sol:
+        model: gateway/gpt-6.1-sol-custom
+  second:
+    api_key: fixture
+    models:
+      free:
+        model: gpt-6.1-sol
+"#,
+        ),
+    )
+    .unwrap();
+    let builtin = catalog.cost("first/alias").unwrap();
+    assert_eq!(builtin.input, 2.0);
+    assert_eq!(builtin.cache_write, Some(2.5));
+    let free = catalog.cost("first/free").unwrap();
+    assert_eq!(free.input, 0.0);
+    assert_eq!(free.output, 0.0);
+    assert_eq!(free.cache_write, None);
+    assert_eq!(catalog.cost("second/free").unwrap().input, builtin.input);
+    assert!(catalog.cost("first/gpt-6.1-sol").is_none());
+}
+
+#[test]
+fn cost_display_settings_are_strict_and_default_to_usd() {
+    let settings = load(None, Some(VALID_MODELS)).unwrap().settings;
+    assert_eq!(settings.tui.cost.currency, "USD");
+    assert_eq!(settings.tui.cost.exchange_rate, 1.0);
+    assert_eq!(settings.tui.cost.icon, '\u{f155}');
+    let settings = load(
+        Some("tui: {cost: {currency: CNY, exchange_rate: 7.2, icon: 'F157'}}"),
+        Some(VALID_MODELS),
+    )
+    .unwrap()
+    .settings;
+    assert_eq!(settings.tui.cost.currency, "CNY");
+    assert_eq!(settings.tui.cost.exchange_rate, 7.2);
+    assert_eq!(settings.tui.cost.icon, '\u{f157}');
+    for invalid in [
+        "currency: cny, exchange_rate: 1, icon: 'f157'",
+        "currency: CNY, exchange_rate: 0, icon: 'f157'",
+        "currency: CNY, exchange_rate: .inf, icon: 'f157'",
+        "currency: CNY, exchange_rate: 1, icon: '1b'",
+        "currency: CNY, exchange_rate: 1, icon: '110000'",
+        "currency: CNY, exchange_rate: 1, icon: 61527",
+        "currency: CNY, exchange_rate: 1",
+        "currency: CNY, exchange_rate: 1, icon: 'f157', extra: true",
+    ] {
+        let settings = format!("tui: {{cost: {{{invalid}}}}}");
+        assert!(
+            load(Some(&settings), Some(VALID_MODELS)).is_err(),
+            "{settings}"
+        );
+    }
+}

@@ -1,7 +1,12 @@
 use anyhow::{Context, Result, ensure};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::Path,
+    sync::{Arc, LazyLock},
+};
 
 use crate::yaml;
 use pp_core::model::ThinkLevel;
@@ -251,7 +256,7 @@ struct ModelEntry {
     context_window: Option<u64>,
 }
 
-#[derive(Clone, Copy, serde::Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelCost {
     pub input: f64,
@@ -281,6 +286,18 @@ impl TokenCost {
 }
 
 impl ModelCost {
+    fn valid(self) -> bool {
+        [
+            Some(self.input),
+            Some(self.cache_read),
+            self.cache_write,
+            Some(self.output),
+        ]
+        .into_iter()
+        .flatten()
+        .all(|rate| rate.is_finite() && rate >= 0.0)
+    }
+
     /// 与统计页面共享严格计价：未知缓存量不能按零计费。
     pub fn calculate(self, usage: pp_core::context::TokenUsage) -> Option<TokenCost> {
         let cached = usage.cached_tokens?;
@@ -317,21 +334,62 @@ where
     D: serde::Deserializer<'de>,
 {
     let cost = ModelCost::deserialize(deserializer)?;
-    if [
-        Some(cost.input),
-        Some(cost.cache_read),
-        cost.cache_write,
-        Some(cost.output),
-    ]
-    .iter()
-    .flatten()
-    .any(|rate| !rate.is_finite() || *rate < 0.0)
-    {
+    if !cost.valid() {
         return Err(serde::de::Error::custom(
             "cost must contain non-negative finite rates",
         ));
     }
     Ok(Some(cost))
+}
+
+static BUILTIN_PRICES: LazyLock<BTreeMap<String, ModelCost>> = LazyLock::new(|| {
+    let prices: BTreeMap<String, ModelCost> =
+        yaml::parse(include_str!("model-prices.yml"), "model prices")
+            .expect("内置模型价格表格式有效");
+    assert!(
+        !prices.is_empty()
+            && prices.iter().all(|(name, rate)| {
+                !name.is_empty()
+                    && name.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-._".contains(&byte)
+                    })
+                    && rate.valid()
+            }),
+        "内置模型价格表包含无效名称或费率"
+    );
+    prices
+});
+
+/// 配置引用的显式费率与按实际模型名匹配的内置费率。
+#[derive(Clone, Default)]
+pub struct ModelPricing {
+    pub(crate) overrides: Arc<BTreeMap<String, ModelCost>>,
+}
+
+impl ModelPricing {
+    pub fn from_providers(providers: &[ValidatedProvider]) -> Self {
+        Self {
+            overrides: Arc::new(
+                providers
+                    .iter()
+                    .flat_map(|provider| {
+                        provider.models.iter().filter_map(|model| {
+                            model
+                                .cost
+                                .map(|cost| (format!("{}/{}", provider.id, model.id), cost))
+                        })
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    pub fn rate(&self, reference: &str, model: &str) -> Option<ModelCost> {
+        self.overrides.get(reference).copied().or_else(|| {
+            let name = model.rsplit('/').next()?;
+            BUILTIN_PRICES.get(&name.to_ascii_lowercase()).copied()
+        })
+    }
 }
 
 fn deserialize_optional_context_window<'de, D>(

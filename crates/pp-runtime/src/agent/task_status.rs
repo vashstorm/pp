@@ -1,4 +1,4 @@
-//! TUI 根任务的标题与费用；子 Agent 只继承计费句柄，不生成自己的标题。
+//! TUI 会话费用与任务标题；子 Agent 继承根会话的计费句柄。
 use super::*;
 use std::{
     sync::{Arc, atomic::AtomicBool},
@@ -31,13 +31,41 @@ impl Drop for TitleWorker {
 impl Agent {
     pub fn enable_task_status(&mut self, view: pp_config::task_status::View) {
         self.task_status.view = Some(view);
+        if self.journal.id().is_some() {
+            self.restore_session_cost();
+        } else {
+            self.clear_session_cost();
+        }
+    }
+
+    pub(super) fn restore_session_cost(&mut self) {
+        self.set_task_accounting(None);
+        if let Some(view) = &self.task_status.view
+            && let Some(id) = self.journal.id()
+        {
+            let file = self.journal.directory().join(format!("{id}.jsonl"));
+            let history = pp_stats::session_cost(&file).unwrap_or_else(|_| {
+                tracing::warn!(event = "session_cost_history_unavailable");
+                Default::default()
+            });
+            let ledger = view.restore(&self.catalog, history);
+            self.set_task_accounting(Some(ledger));
+        }
+    }
+
+    pub(super) fn clear_session_cost(&mut self) {
+        self.task_status.title.take();
+        self.set_task_accounting(None);
+        if let Some(view) = &self.task_status.view {
+            view.clear();
+        }
     }
 
     pub(crate) fn set_task_accounting(&mut self, ledger: Option<pp_config::task_status::Ledger>) {
         self.task_status.accounting = ledger.clone();
         self.client.set_task_accounting(ledger.clone());
-        if let Some(binding) = &mut self.tools.subagent {
-            binding.accounting = ledger;
+        if let Some(binding) = &self.tools.subagent {
+            binding.set_accounting(ledger);
         }
     }
 
@@ -66,6 +94,7 @@ impl Agent {
                 .journal
                 .id()
                 .map(|id| self.journal.directory().join(format!("{id}.jsonl"))),
+            unlinked_requests: self.journal.unlinked_stats(),
             // 标题不采集原生上下文，更不能消费主请求的首次采集标记。
             first_request: Arc::new(AtomicBool::new(false)),
             skills: Vec::new(),
@@ -176,7 +205,7 @@ impl Agent {
 
     pub(super) fn continue_task_status(&mut self) {
         if let Some(view) = &self.task_status.view {
-            let ledger = view.current().unwrap_or_else(|| view.begin(&self.catalog));
+            let ledger = view.accounting(&self.catalog);
             self.set_task_accounting(Some(ledger));
         } else {
             self.client
@@ -186,6 +215,7 @@ impl Agent {
 
     pub(super) fn finish_task_title(&mut self) {
         self.task_status.title.take();
+        self.journal.link_unassigned_stats();
     }
 }
 

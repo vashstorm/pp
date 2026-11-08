@@ -604,7 +604,7 @@ const componentNames = [
   ["output", "Output", colors[1]],
 ];
 function pricingNotice(stats = data) {
-  return `<div class="pricing-note" role="note">${stats?.pricing_error ? `<span class="pricing-error">${h(stats.pricing_error)}</span> ` : ""}Estimates use each model’s cost configuration in <code>~/.pp/agent/models.yml</code> (USD / million tokens). Unpriced requests are excluded; missing prices or usage are never treated as free. Cache writes require reported usage and a configured cacheWrite rate when nonzero. Subscription quotas are not reported by pp.</div>`;
+  return `<div class="pricing-note" role="note">${stats?.pricing_error ? `<span class="pricing-error">${h(stats.pricing_error)}</span> ` : ""}Estimates use built-in rates with overrides from <code>~/.pp/agent/models.yml</code> (USD / million tokens). Unpriced requests are excluded; missing prices or usage are never treated as free. Cache writes require reported usage and a configured cacheWrite rate when nonzero. Subscription quotas are not reported by pp.</div>`;
 }
 function segmentControls(key, options, selected, label) {
   return `<div class="segmented" role="radiogroup" aria-label="${h(label)}">${options.map(([id, name]) => `<button role="radio" aria-checked="${id === selected}" data-${key}="${id}">${h(name)}</button>`).join("")}</div>`;
@@ -1014,7 +1014,7 @@ function costsPage() {
               number(g.unpriced),
             ]),
           () =>
-            `<div class="group-details"><h2>Configured rates · USD per million tokens</h2>${detailsGrid(
+            `<div class="group-details"><h2>Rates · USD per million tokens</h2>${detailsGrid(
               [
                 ["Uncached input", money(g.rates?.input)],
                 ["Cache read", money(g.rates?.cached_input)],

@@ -137,6 +137,7 @@ struct Inner {
     pipeline_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
     runtime_models: Mutex<Option<crate::model_control::Binding>>,
     model_roles: Mutex<pp_config::config::ModelRoles>,
+    accounting: Mutex<Option<pp_config::task_status::Ledger>>,
     state: Mutex<State>,
     changed: Condvar,
     settings: TaskSettings,
@@ -151,7 +152,6 @@ struct Inner {
 }
 #[derive(Clone)]
 pub struct Binding {
-    pub(crate) accounting: Option<pp_config::task_status::Ledger>,
     inner: Arc<Inner>,
     pub owner: String,
     pub depth: usize,
@@ -307,6 +307,7 @@ impl Binding {
             pipeline_previews: Mutex::new(BTreeMap::new()),
             runtime_models: Mutex::new(None),
             model_roles: Mutex::new(Default::default()),
+            accounting: Mutex::default(),
             state: Mutex::new(State {
                 disk,
                 live: BTreeMap::new(),
@@ -326,7 +327,6 @@ impl Binding {
             plan_mode,
         });
         Ok(Self {
-            accounting: None,
             inner,
             owner: "Main".into(),
             depth: 0,
@@ -389,6 +389,11 @@ impl Binding {
             tracker,
             serial,
         });
+    }
+    pub(crate) fn set_accounting(&self, ledger: Option<pp_config::task_status::Ledger>) {
+        if self.depth == 0 {
+            *lock(&self.inner.accounting) = ledger;
+        }
     }
     pub(crate) fn directory(&self) -> PathBuf {
         self.inner.directory()
@@ -772,7 +777,7 @@ impl Binding {
             live.cancellation = token.clone();
             live.input.begin_run()?;
             live.sender.send(Work {
-                accounting: self.accounting.clone(),
+                accounting: lock(&self.inner.accounting).clone(),
                 run: run.into(),
                 task,
                 cancellation: token,
@@ -819,7 +824,7 @@ impl Binding {
         );
         if !run.is_empty() {
             sender.send(Work {
-                accounting: self.accounting.clone(),
+                accounting: lock(&self.inner.accounting).clone(),
                 run: run.into(),
                 task,
                 cancellation: token,
@@ -1597,7 +1602,6 @@ fn worker(
     };
     let mut record = record;
     let mut binding = Binding {
-        accounting: None,
         inner,
         owner: record.id.clone(),
         depth: record.spec.depth,

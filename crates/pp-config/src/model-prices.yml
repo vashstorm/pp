@@ -1,0 +1,54 @@
+# USD／百万 Token。标准文本请求，分档取短上下文档。核对于 2026-11-08。
+# OpenAI: https://developers.openai.com/api/docs/pricing
+# GPT-6 系列缓存写入按默认 30 分钟。
+gpt-6-astra: { input: 10, cacheRead: 1, cacheWrite: 12.5, output: 50 }
+gpt-6.1-sol: { input: 2, cacheRead: 0.1, cacheWrite: 2.5, output: 10 }
+gpt-6.1-terra: { input: 1, cacheRead: 0.05, cacheWrite: 1.25, output: 5 }
+gpt-6-luna: { input: 0.1, cacheRead: 0.01, cacheWrite: 0.125, output: 0.5 }
+gpt-5.5: { input: 5, cacheRead: 0.5, output: 30 }
+gpt-5.5-2026-04-23: { input: 5, cacheRead: 0.5, output: 30 }
+gpt-5.4: { input: 2.5, cacheRead: 0.25, output: 15 }
+gpt-5.4-2026-03-05: { input: 2.5, cacheRead: 0.25, output: 15 }
+gpt-5.4-mini: { input: 0.75, cacheRead: 0.075, output: 4.5 }
+gpt-5.3-codex: { input: 1.75, cacheRead: 0.175, output: 14 }
+
+# Anthropic: https://platform.claude.com/docs/en/about-claude/pricing
+# 缓存写入按 5 分钟。
+claude-opus-5-5: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 }
+claude-sonnet-5-5: { input: 2, cacheRead: 0.1, cacheWrite: 2.5, output: 10 }
+claude-haiku-5-5: { input: 0.1, cacheRead: 0.01, cacheWrite: 0.125, output: 0.5 }
+claude-opus-4-8: { input: 5, cacheRead: 0.5, cacheWrite: 6.25, output: 25 }
+claude-opus-4-7: { input: 5, cacheRead: 0.5, cacheWrite: 6.25, output: 25 }
+claude-opus-4-6: { input: 5, cacheRead: 0.5, cacheWrite: 6.25, output: 25 }
+claude-sonnet-4-6: { input: 3, cacheRead: 0.3, cacheWrite: 3.75, output: 15 }
+claude-haiku-4-5: { input: 1, cacheRead: 0.1, cacheWrite: 1.25, output: 5 }
+claude-haiku-4-5-20251001: { input: 1, cacheRead: 0.1, cacheWrite: 1.25, output: 5 }
+
+# Google: https://ai.google.dev/gemini-api/docs/pricing/
+# 3.8 Flash 采用公布的常规价，发布期折扣截止 2026-12-31。
+gemini-3.1-pro-preview: { input: 2, cacheRead: 0.2, output: 12 }
+gemini-3.1-pro-preview-customtools: { input: 2, cacheRead: 0.2, output: 12 }
+gemini-3.8-flash: { input: 1.5, cacheRead: 0.15, output: 7.5 }
+
+# DeepSeek: https://api-docs.deepseek.com/quick_start/pricing/
+# 高峰档。旧 Flash 名称由官方路由到同价模型。
+deepseek-flash: { input: 0.3, cacheRead: 0.006, output: 1.2 }
+deepseek-v4-flash: { input: 0.3, cacheRead: 0.006, output: 1.2 }
+deepseek-v4-pro: { input: 1.32, cacheRead: 0.044, output: 3.96 }
+
+# Kimi: https://platform.kimi.ai/
+kimi-k3.1-pro: { input: 2, cacheRead: 0.2, cacheWrite: 2, output: 10 }
+kimi-k3: { input: 3, cacheRead: 0.3, cacheWrite: 3, output: 15 }
+
+# Z.AI: https://docs.z.ai/guides/overview/pricing
+glm-5.3: { input: 1.4, cacheRead: 0.26, output: 4.4 }
+glm-5.2: { input: 1.4, cacheRead: 0.26, output: 4.4 }
+glm-5.1: { input: 1.4, cacheRead: 0.26, output: 4.4 }
+glm-5: { input: 1, cacheRead: 0.2, output: 3.2 }
+glm-4.7: { input: 0.6, cacheRead: 0.11, output: 2.2 }
+
+# Qwen: https://www.alibabacloud.com/help/en/model-studio/model-pricing
+# 新加坡国际站，采用默认隐式缓存口径。
+# https://www.alibabacloud.com/help/en/model-studio/context-cache
+qwen3.7-max: { input: 2.5, cacheRead: 0.5, cacheWrite: 2.5, output: 7.5 }
+qwen3-coder-flash: { input: 0.3, cacheRead: 0.06, cacheWrite: 0.3, output: 1.5 }

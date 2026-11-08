@@ -140,6 +140,7 @@ pub fn run(
         .map(|bootstrap| bootstrap.dir.join("history.db"));
     let mut app = App::new_with_skills(agent, skills, file_commands, cwd, history_path)?;
     app.image_view.configure(picker);
+    app.cost_display = options.cost;
     app.bootstrap = bootstrap;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c：Execute 保持原继续行为；Plan/Draft 提示继续输入；Plan/Ready 进入审阅。
@@ -528,6 +529,7 @@ enum WorkerEvent {
     ExecutionPrepared {
         workflow: WorkflowState,
         session_id: Option<String>,
+        usage: Option<pp_core::context::ContextUsage>,
         replay: Option<Vec<pp_runtime::agent::persistence::ReplayRecord>>,
         cleanup: pp_runtime::mcp::Cleanup,
         /// 交接快照：UI 必须在采纳 replay/替换 workflow 之后、ACK 之前渲染，
@@ -610,6 +612,7 @@ fn publish_prepared(
         |reply| WorkerEvent::ExecutionPrepared {
             workflow: preparation.workflow,
             session_id: preparation.session_id,
+            usage: agent.context_usage().ok(),
             replay: preparation.replay,
             cleanup: preparation.cleanup,
             todo_snapshot: preparation.todo_snapshot,
@@ -893,6 +896,7 @@ struct App {
     token_speed: statusline::TokenSpeed,
     task_status_view: pp_config::task_status::View,
     task_status: Option<pp_config::task_status::Snapshot>,
+    cost_display: pp_config::config::CostDisplay,
     mcp_cleanup: Option<pp_runtime::mcp::Cleanup>,
     lsp_cleanup: Option<pp_runtime::lsp::Cleanup>,
     mcp_view: pp_runtime::mcp::View,

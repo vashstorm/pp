@@ -125,7 +125,7 @@ fn statusline_live_cost_precedes_usage_and_is_replaced_by_settle() {
         pty.text("statusline-live-cost");
         pty.wait_for("生成中先显示估算费用", |screen| {
             let text = screen.contents();
-            text.contains("\u{f01c1}") && text.contains(" USD")
+            text.contains("\u{f155}") && text.contains(" USD")
         });
         // 标题在任务结束前落定，否则会被取消而变成未知费用。
         statusline_reply_usage(title, protocol, "实时费用标题");
@@ -391,8 +391,8 @@ fn task_status_title_without_fast_cancel_and_next_generation_both_protocols() {
         pty.text("第二任务标题");
         statusline_reply_usage(main, protocol, "second-task-answer");
         pty.completed_after("second-task-answer");
-        pty.wait_for("新任务费用不包含已取消的旧任务", |screen| {
-            screen.contents().contains("0.0246 USD")
+        pty.wait_for("已取消且无 usage 的请求保留部分计价状态", |screen| {
+            screen.contents().contains("0.0246 USD \u{f0026}")
         });
         pty.input("\x03");
         pty.finish();
@@ -485,4 +485,88 @@ fn task_status_cost_survives_statistics_write_failure_both_protocols() {
         pty.finish();
         no_more(&fixture);
     }
+}
+
+#[test]
+fn statusline_session_cost_resumes_immediately_and_reuses_web_pricing() {
+    let fixture = server();
+    let protocol = "completion";
+    let home = statusline_home(&fixture, protocol, false);
+    let settings = config_path(home.path(), "settings.yml");
+    let mut text = std::fs::read_to_string(&settings).unwrap();
+    text.push_str("tui: {cost: {currency: CNY, exchange_rate: 7.2, icon: 'f157'}}\n");
+    std::fs::write(settings, text).unwrap();
+    let models = config_path(home.path(), "models.yml");
+    let mut catalog: Value = serde_json::from_slice(&std::fs::read(&models).unwrap()).unwrap();
+    catalog["providers"]["main"]["models"]["primary"] =
+        json!({"model":"gateway/OpenAI/GPT-6.1-SOL","context_window":40000});
+    std::fs::write(models, catalog.to_string()).unwrap();
+
+    let mut pty = Pty::start_with_existing_files(home.path());
+    pty.resize(30, 180);
+    pty.ready();
+    for (task, title_text, answer, total) in [
+        ("first session cost task", "第一笔费用", "cost-answer-one", "0.3886 CNY"),
+        ("second session cost task", "第二笔费用", "cost-answer-two", "0.7771 CNY"),
+    ] {
+        pty.input(&format!("{task}\r"));
+        let ((main, body), (title, _)) = statusline_requests(&fixture);
+        assert_eq!(body["model"], "gateway/OpenAI/GPT-6.1-SOL");
+        statusline_reply_usage(title, protocol, title_text);
+        pty.text(title_text);
+        statusline_reply_usage(main, protocol, answer);
+        pty.completed_after(answer);
+        pty.text(&format!("\u{f157} {total}"));
+    }
+    let id = saved_session_id(home.path());
+    pty.input("/new\r");
+    pty.wait_for("新会话清空费用", |screen| {
+        let text = screen.contents();
+        text.contains("0.0%/40K") && !text.contains(" CNY")
+    });
+    pty.input("/resume\r");
+    pty.wait_for("列出待恢复会话", |screen| {
+        let text = screen.contents();
+        text.contains("Resume session")
+            && text.contains("first session cost task")
+            && text.lines().any(|line| line.starts_with('>'))
+    });
+    pty.input("\r");
+    pty.wait_for("恢复后无需新请求即可看到历史费用", |screen| {
+        let text = screen.contents();
+        text.contains("cost-answer-two") && text.contains("\u{f157} 0.7771 CNY")
+    });
+    pty.input("/quit\r");
+    pty.finish();
+    no_more(&fixture);
+
+    // 首个标题也必须已关联；Web 的 USD 原值与状态栏换算使用同一费率。
+    let rows = super::stats::rows(home.path());
+    assert_eq!(rows.len(), 4);
+    assert!(rows.iter().all(|row| row["session_file"]
+        .as_str()
+        .is_some_and(|path| path.ends_with(&format!("{id}.jsonl")))));
+    let (_stats, address) = super::stats::start_stats_server(home.path());
+    let (status, body) = super::stats::http(&address, "/api/stats/overview?range=all", &address);
+    assert_eq!(status, 200);
+    let stats: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(stats["summary"]["priced"], 4);
+    assert!((stats["summary"]["cost"].as_f64().unwrap() - 0.107936).abs() < 1e-12);
+
+    let mut pty = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
+    pty.resize(30, 180);
+    pty.text("\u{f157} 0.7771 CNY");
+    tree_tui_open(&mut pty, "cost-answer-two");
+    tree_tui_rewind(&mut pty, &[TREE_TUI_UP], "second session cost task");
+    pty.text("\u{f157} 0.7771 CNY");
+    pty.input("continue after restoring cost\r");
+    let ((main, _), (title, _)) = statusline_requests(&fixture);
+    statusline_reply_usage(title, protocol, "恢复后的标题");
+    pty.text("恢复后的标题");
+    statusline_reply_usage(main, protocol, "cost-answer-three");
+    pty.completed_after("cost-answer-three");
+    pty.text("\u{f157} 1.1657 CNY");
+    pty.input("/quit\r");
+    pty.finish();
+    no_more(&fixture);
 }

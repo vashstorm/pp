@@ -574,7 +574,9 @@ impl App {
                 self.token_speed.value(),
                 self.subagent_status.map_or(0, |(_, count)| count),
                 self.token_speed.live_output_tokens(),
-                self.task_status.as_ref(),
+                self.task_status
+                    .as_ref()
+                    .map(|task| (task, &self.cost_display)),
                 self.conversation.task_duration().as_deref(),
                 (right - left).saturating_sub(extra_width),
             )

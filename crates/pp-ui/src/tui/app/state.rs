@@ -76,8 +76,7 @@ impl App {
         self.close_pipes();
         self.subagent_autowake = false;
         self.token_speed.clear();
-        self.task_status_view.clear();
-        self.task_status = None;
+        self.task_status = self.task_status_view.snapshot();
         self.history_browser = false;
         self.todo_panel.reset_view();
         self.conversation = self.conversation.fresh();

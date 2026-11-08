@@ -25,7 +25,7 @@ impl Agent {
             self.stop_subagents()?;
         }
         if let Some(binding) = &mut self.tools.subagent {
-            binding.accounting = self.task_status.accounting.clone();
+            binding.set_accounting(self.task_status.accounting.clone());
             binding.set_runtime_models(self.runtime_models.clone());
             if let Some(catalog) = self
                 .runtime_models
@@ -302,7 +302,7 @@ impl Agent {
             );
             Ok(())
         });
-        let mut binding = Binding::root(
+        let binding = Binding::root(
             crate::subagent::RootOptions {
                 dir: root_dir,
                 user: user_dir,
@@ -315,7 +315,7 @@ impl Agent {
             factory,
             validator,
         )?;
-        binding.accounting = self.task_status.accounting.clone();
+        binding.set_accounting(self.task_status.accounting.clone());
         let mcp_names = |access| {
             self.tools
                 .mcp

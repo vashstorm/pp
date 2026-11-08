@@ -159,6 +159,12 @@ impl OpenAiClient {
         if new_request {
             attempts.started = Instant::now();
             attempts.accounting_id = pp_config::task_status::request_id();
+            attempts.accounting_rate = self.task_accounting.as_ref().and_then(|ledger| {
+                ledger.rate(
+                    &self.model_reference,
+                    request.model.as_deref().unwrap_or_default(),
+                )
+            });
         }
         let started_at = attempts.started;
         let record = !cancellation.is_cancelled() && self.stats_context.is_some();
@@ -170,8 +176,8 @@ impl OpenAiClient {
         // 与 Chat Completions 相同：估算只用于生成中的实时费用显示。
         let accounting = self.task_accounting.clone();
         let accounting_id = attempts.accounting_id;
-        let accounting_model = self.model_reference.clone();
-        let prompt_tokens = if accounting.is_some() {
+        let accounting_rate = attempts.accounting_rate;
+        let prompt_tokens = if accounting_rate.is_some() {
             pp_core::context::estimate_tokens(&wire).ok()
         } else {
             None
@@ -186,7 +192,7 @@ impl OpenAiClient {
             {
                 ledger.progress(
                     accounting_id,
-                    &accounting_model,
+                    accounting_rate,
                     prompt_tokens,
                     output_bytes.div_ceil(3),
                 );
@@ -319,7 +325,7 @@ impl OpenAiClient {
             .and_then(|turn| turn.usage)
             .or(reported_usage);
         if attempted && save_attempt {
-            self.settle_task_request(attempts.accounting_id, accounting_usage);
+            self.settle_task_request(attempts.accounting_id, accounting_rate, accounting_usage);
         }
         if record {
             if attempted

@@ -196,6 +196,7 @@ impl Agent {
             .set_tools(self.tools.all_definitions(self.workflow.mode));
         self.tools.clear_changes();
         self.clear_session_usage();
+        self.clear_session_cost();
         self.pending_instructions = None;
         drop(verified);
         let cleanup = self.tools.mcp.cleanup()?;
