@@ -445,6 +445,7 @@ impl Transcript {
     ) {
         self.clear_argument_previews();
         self.background_bash.clear();
+        self.finish_markdown_streams();
         let activity = self
             .activity
             .get_or_insert_with(|| Activity::new(Instant::now()));
@@ -495,6 +496,7 @@ impl Transcript {
             self.fail();
             return Some("Previous request was interrupted.".into());
         }
+        self.finish_thinking();
         None
     }
 
@@ -702,7 +704,7 @@ impl Transcript {
                     .into_iter()
                     .flatten()
                 {
-                    self.entries[index].status = EntryStatus::Failed;
+                    self.entries[index].finish_markdown(EntryStatus::Failed);
                 }
                 let mut text = format!(
                     "Model attempt {attempt} failed; partial output is excluded from history."
@@ -730,10 +732,7 @@ impl Transcript {
                     ),
                 );
             }
-            AgentEvent::AssistantStarted => {
-                self.assistant = None;
-                self.thinking = None;
-            }
+            AgentEvent::AssistantStarted => self.finish_markdown_streams(),
             AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } => {
                 if text.is_empty() {
                     return;
@@ -748,14 +747,13 @@ impl Transcript {
                     entry.render.invalidate(false);
                     entry.layout = None;
                 } else {
+                    self.finish_thinking();
                     self.read_groups_key = None;
                     self.thinking = Some(self.entries.len());
-                    self.entries.push(TranscriptEntry::new(
-                        EntryKind::Think,
-                        String::new(),
-                        text,
-                        None,
-                    ));
+                    let mut entry =
+                        TranscriptEntry::new(EntryKind::Think, String::new(), text, None);
+                    entry.status = EntryStatus::Running;
+                    self.entries.push(entry);
                 }
             }
             AgentEvent::AssistantDelta { text, refusal } => {
@@ -774,6 +772,7 @@ impl Transcript {
                 entry.layout = None;
             }
             AgentEvent::AssistantFinished { text } => {
+                self.finish_thinking();
                 if text.trim().is_empty() {
                     if let Some(index) = self.assistant.take() {
                         self.read_groups_key = None;
@@ -782,17 +781,18 @@ impl Transcript {
                 } else {
                     let index = self.assistant_entry();
                     let entry = &mut self.entries[index];
-                    if entry.visible_text() != text {
-                        entry.render.invalidate(true);
+                    let previous = entry.visible_text();
+                    if previous != text {
+                        let replaced = !text.starts_with(previous);
+                        entry.render.invalidate(replaced);
                         entry.markdown_dirty = true;
                         entry.layout = None;
                     }
                     entry.text = text;
                     entry.refusal.clear();
-                    entry.status = EntryStatus::Complete;
+                    entry.finish_markdown(EntryStatus::Complete);
                 }
                 self.assistant = None;
-                self.thinking = None;
             }
             AgentEvent::ToolStarted {
                 id,
@@ -1202,6 +1202,19 @@ impl Transcript {
         index
     }
 
+    fn finish_thinking(&mut self) {
+        if let Some(index) = self.thinking.take() {
+            self.entries[index].finish_markdown(EntryStatus::Complete);
+        }
+    }
+
+    pub(super) fn finish_markdown_streams(&mut self) {
+        self.finish_thinking();
+        if let Some(index) = self.assistant.take() {
+            self.entries[index].finish_markdown(EntryStatus::Complete);
+        }
+    }
+
     pub(super) fn has_running_ask(&self, id: &str) -> bool {
         self.tool_index(id)
             .is_some_and(|index| self.entries[index].kind == EntryKind::Ask)
@@ -1220,9 +1233,10 @@ impl Transcript {
             activity.stop("Failed");
         }
         if let Some(index) = self.assistant.take() {
-            self.entries[index].status = EntryStatus::Failed;
+            self.entries[index].finish_markdown(EntryStatus::Failed);
             self.entries[index].layout = None;
         }
+        self.finish_thinking();
         for (_, index) in self.running_tools.drain(..) {
             self.read_groups_key = None;
             self.entries[index].status = EntryStatus::Failed;
@@ -1247,7 +1261,6 @@ impl Transcript {
             activity.label = "Cancelled".into();
             activity.refresh_summary();
         }
-        self.thinking = None;
     }
 
     pub(super) fn page_up(&mut self) {
@@ -1371,8 +1384,22 @@ pub(super) fn wrap_block(
     width: u16,
     continuation: &str,
 ) -> Vec<Line<'static>> {
-    let width = usize::from(width.max(1));
     let mut rows = Vec::new();
+    visit_wrapped_rows(line, width, continuation, |row| {
+        rows.push(row);
+        true
+    });
+    rows
+}
+
+pub(super) fn visit_wrapped_rows(
+    line: Line<'static>,
+    width: u16,
+    continuation: &str,
+    mut visit: impl FnMut(Line<'static>) -> bool,
+) {
+    let width = usize::from(width.max(1));
+    let mut emitted = false;
     let mut spans = Vec::new();
     let mut used = 0;
     let mut has_content = false;
@@ -1395,7 +1422,10 @@ pub(super) fn wrap_block(
                 .chain(separator.map(|symbol| (symbol, style)))
             {
                 if symbol == "\n" {
-                    rows.push(Line::from(std::mem::take(&mut spans)));
+                    if !visit(Line::from(std::mem::take(&mut spans))) {
+                        return;
+                    }
+                    emitted = true;
                     used = 0;
                     has_content = false;
                     ended_newline = true;
@@ -1407,7 +1437,10 @@ pub(super) fn wrap_block(
                 let columns = Line::raw(value).width();
                 for _ in 0..repeats {
                     if has_content && used + columns > width {
-                        rows.push(Line::from(std::mem::take(&mut spans)));
+                        if !visit(Line::from(std::mem::take(&mut spans))) {
+                            return;
+                        }
+                        emitted = true;
                         let prefix = if Line::raw(continuation).width() + columns <= width {
                             continuation
                         } else {
@@ -1434,10 +1467,9 @@ pub(super) fn wrap_block(
             }
         }
     }
-    if !spans.is_empty() || rows.is_empty() || ended_newline {
-        rows.push(Line::from(spans));
+    if !spans.is_empty() || !emitted || ended_newline {
+        visit(Line::from(spans));
     }
-    rows
 }
 
 fn diff_line_text(text: &str) -> (&str, &'static str) {

@@ -1,13 +1,14 @@
 //! 工具显示策略，基准为 Oh My Pi 0b5c27ab 的 ANSI 渲染路径。
 //! 所有限制仅用于交互预览，完整回放始终使用保留的原始正文。
 
-use super::transcript::{block_line, wrap_block};
+use super::transcript::{block_line, visit_wrapped_rows, wrap_block};
 use super::transcript_style as palette;
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
 use serde_json::Value;
+use std::collections::VecDeque;
 
 mod mcp_preview;
 mod wait;
@@ -685,7 +686,7 @@ pub(super) fn write_body(
     let content = content.strip_suffix('\n').unwrap_or(content);
     let mut source = content.split('\n');
     let mut rows = Vec::new();
-    // 只排版窗口内的首部或尾部，避免每个参数分片都重新排版完整写入正文。
+    // 多取一行用于判断是否需要省略提示。
     while rows.len() <= WRITE_LINES {
         let Some(line) = (if tail {
             source.next_back()
@@ -694,7 +695,7 @@ pub(super) fn write_body(
         }) else {
             break;
         };
-        let mut wrapped = wrap([line.to_owned()], width, style);
+        let mut wrapped = write_line_window(line, width, style, WRITE_LINES + 1 - rows.len(), tail);
         if tail {
             wrapped.append(&mut rows);
             rows = wrapped;
@@ -723,6 +724,37 @@ pub(super) fn write_body(
         }
     }
     rows
+}
+
+fn write_line_window(
+    line: &str,
+    width: u16,
+    style: Style,
+    limit: usize,
+    tail: bool,
+) -> Vec<Line<'static>> {
+    let columns = usize::from(width.max(1));
+    // 可打印 ASCII 每字节占一列，可以直接跳过窗口外的整行。
+    if line.len() > limit * columns && line.bytes().all(|byte| matches!(byte, b' '..=b'~')) {
+        let start = if tail {
+            (line.len().div_ceil(columns) - limit) * columns
+        } else {
+            0
+        };
+        let end = if tail { line.len() } else { limit * columns };
+        return wrap_block(block_line(line[start..end].to_owned(), style), width, "");
+    }
+
+    // 宽字符和制表符仍按统一的换行规则计算，只保留窗口内的行。
+    let mut rows = VecDeque::new();
+    visit_wrapped_rows(block_line(line.to_owned(), style), width, "", |row| {
+        if rows.len() == limit {
+            rows.pop_front();
+        }
+        rows.push_back(row);
+        tail || rows.len() < limit
+    });
+    rows.into()
 }
 
 fn head(

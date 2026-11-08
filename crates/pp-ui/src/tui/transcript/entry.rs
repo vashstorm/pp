@@ -246,6 +246,11 @@ impl TranscriptEntry {
         }
     }
 
+    pub(super) fn finish_markdown(&mut self, status: EntryStatus) {
+        self.status = status;
+        self.markdown_dirty = true;
+    }
+
     pub(super) fn update_bash_footer(&mut self, elapsed: Option<std::time::Duration>) -> bool {
         let mut parts = Vec::new();
         if let Some(elapsed) = elapsed {
@@ -552,6 +557,7 @@ impl TranscriptEntry {
     }
 
     pub(super) fn ensure_layout(&mut self, width: u16) {
+        let streaming = self.status == EntryStatus::Running;
         if matches!(self.kind, EntryKind::Assistant | EntryKind::Think)
             && crate::tui::render_worker::enabled()
         {
@@ -560,10 +566,11 @@ impl TranscriptEntry {
             } else {
                 &self.text
             };
-            self.layout = Some(
-                self.render
-                    .layout(source, width, self.kind == EntryKind::Think),
-            );
+            self.layout =
+                Some(
+                    self.render
+                        .layout(source, width, self.kind == EntryKind::Think, streaming),
+                );
             return;
         }
         if self.kind == EntryKind::Bash
@@ -580,7 +587,10 @@ impl TranscriptEntry {
             self.display_title = Some(Self::read_summary(std::slice::from_ref(self)));
         }
         if self.markdown_dirty {
-            self.body = EntryBody::Markdown(crate::tui::markdown::parse(self.visible_text()));
+            self.body = EntryBody::Markdown(crate::tui::markdown::parse_streaming(
+                self.visible_text(),
+                streaming,
+            ));
             self.markdown_dirty = false;
             self.layout = None;
         }
@@ -936,6 +946,18 @@ impl TranscriptEntry {
                     height: 1,
                 }
             }));
+            if let Some(start) = document.table_tail_start
+                && let Some(line) = crate::tui::render_worker::table_tail_preview(
+                    &self.visible_text()[start..],
+                    width,
+                    self.kind == EntryKind::Think,
+                )
+            {
+                lines.push(LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                });
+            }
         } else if let EntryBody::Diff(diff) = &self.body {
             lines.extend(
                 diff_layout_styled(

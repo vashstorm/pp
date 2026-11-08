@@ -16,6 +16,89 @@ fn wait_exact(transcript: &mut Transcript, width: u16) -> Buffer {
 }
 
 #[test]
+fn streaming_table_keeps_viewport_stable_until_row_is_complete() {
+    let worker = Worker::start().unwrap();
+    for thinking in [false, true] {
+        let mut transcript = Transcript::new();
+        for index in 0..5 {
+            transcript.append("You", &format!("Earlier message {index}"));
+        }
+        let event = |text: &str| {
+            if thinking {
+                AgentEvent::ThinkingDelta { text: text.into() }
+            } else {
+                AgentEvent::AssistantDelta {
+                    text: text.into(),
+                    refusal: false,
+                }
+            }
+        };
+        let width = 25;
+        let mut source =
+            "| 左 | Right column |\n| --- | --- |\n| old | wide content |\n".to_owned();
+        transcript.progress(event(&source));
+        let initial = wait_exact(&mut transcript, width);
+        assert!(screen(&initial).contains("wide content"));
+        let preview_offset = transcript.offset + 1;
+        let initial_height = transcript.total;
+        let initial_screen = screen(&initial);
+        let stable_rows = initial_screen.lines().skip(1).collect::<Vec<_>>();
+
+        for (chunk, visible) in [
+            ("|", "|"),
+            (" 新 row with **bold", "**bold"),
+            (" and-more-words", "and-more-words"),
+            ("** | 🙂 |", "🙂"),
+        ] {
+            let pause = worker.pause();
+            transcript.progress(event(chunk));
+            source.push_str(chunk);
+            let pending = render(&mut transcript, width, 8);
+            pause.wait();
+            let pending_text = screen(&pending);
+            let mut rows = pending_text.lines();
+            assert_eq!((&mut rows).take(7).collect::<Vec<_>>(), stable_rows);
+            assert!(rows.next().unwrap().contains(visible), "{pending_text}");
+            assert_eq!(transcript.offset, preview_offset);
+            assert_eq!(transcript.total, initial_height + 1);
+            drop(pause);
+            assert_eq!(
+                wait_exact(&mut transcript, width),
+                pending,
+                "同一半行在后台排版前后的画面应相同"
+            );
+        }
+
+        let before_newline = wait_exact(&mut transcript, width);
+        let pause = worker.pause();
+        transcript.progress(event("\n"));
+        source.push('\n');
+        let pending = render(&mut transcript, width, 8);
+        pause.wait();
+        assert_eq!(pending, before_newline);
+        drop(pause);
+        let complete_row = wait_exact(&mut transcript, width);
+        assert!(screen(&complete_row).contains("🙂"));
+        assert!(!screen(&complete_row).contains("**"));
+        let last_row = "| EOF | final |";
+        transcript.progress(event(last_row));
+        source.push_str(last_row);
+        assert!(screen(&wait_exact(&mut transcript, width)).contains(last_row));
+        if thinking {
+            transcript.cancel();
+        } else {
+            transcript.progress(AgentEvent::AssistantFinished {
+                text: source.clone(),
+            });
+        }
+        let final_screen = screen(&wait_exact(&mut transcript, width));
+        assert!(final_screen.contains("EOF"));
+        assert!(!final_screen.contains(last_row));
+        assert_eq!(transcript.entries.last().unwrap().text, source);
+    }
+}
+
+#[test]
 fn streaming_scroll_live_tail_updates_before_background_layout_finishes() {
     let worker = Worker::start().unwrap();
     for thinking in [false, true] {

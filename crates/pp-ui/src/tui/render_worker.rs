@@ -86,6 +86,7 @@ struct Job {
     text: Arc<str>,
     width: u16,
     muted: bool,
+    streaming: bool,
     slot: Weak<Mutex<Option<Rendered>>>,
 }
 #[derive(Clone)]
@@ -95,6 +96,16 @@ struct Rendered {
     width: u16,
     source: Arc<str>,
     layout: Arc<EntryLayout>,
+    ends_with_table: bool,
+    table_tail_start: Option<usize>,
+}
+
+struct CachedDocument {
+    id: u64,
+    epoch: u64,
+    source: Arc<str>,
+    streaming: bool,
+    markdown: super::markdown::MarkdownDocument,
 }
 
 pub(super) struct Worker {
@@ -115,7 +126,7 @@ impl Worker {
         let join = thread::Builder::new()
             .name("pp-layout".into())
             .spawn(move || {
-                let mut documents = VecDeque::new();
+                let mut documents: VecDeque<CachedDocument> = VecDeque::new();
                 loop {
                     let job = {
                         let mut jobs = state.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -141,33 +152,29 @@ impl Worker {
                         }
                     }
                     super::markdown::highlight_context(job.id, job.epoch);
-                    let lines = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let index = documents.iter().position(
-                            |(id, _epoch, _text, _): &(
-                                u64,
-                                u64,
-                                Arc<str>,
-                                super::markdown::MarkdownDocument,
-                            )| { *id == job.id },
-                        );
-                        let mut document =
-                            index.and_then(|i| documents.remove(i)).unwrap_or_else(|| {
-                                (
-                                    job.id,
-                                    job.epoch,
-                                    job.text.clone(),
-                                    super::markdown::parse(&job.text),
-                                )
+                    let render = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let index = documents.iter().position(|document| document.id == job.id);
+                        let mut document = index
+                            .and_then(|i| documents.remove(i))
+                            .filter(|document| document.epoch == job.epoch)
+                            .unwrap_or_else(|| CachedDocument {
+                                id: job.id,
+                                epoch: job.epoch,
+                                source: job.text.clone(),
+                                streaming: job.streaming,
+                                markdown: super::markdown::parse_streaming(
+                                    &job.text,
+                                    job.streaming,
+                                ),
                             });
-                        if document.1 != job.epoch {
-                            document.3 = super::markdown::parse(&job.text);
-                            document.1 = job.epoch;
-                            document.2 = job.text.clone();
-                        } else if !Arc::ptr_eq(&document.2, &job.text) {
-                            document.3.update(&job.text);
-                            document.2 = job.text.clone();
+                        if !Arc::ptr_eq(&document.source, &job.text)
+                            || document.streaming != job.streaming
+                        {
+                            document.markdown.update(&job.text, job.streaming);
+                            document.source = job.text.clone();
+                            document.streaming = job.streaming;
                         }
-                        let mut lines = document.3.layout_cached(job.width);
+                        let mut lines = document.markdown.layout_cached(job.width);
                         if job.muted {
                             for line in &mut lines {
                                 *line = std::mem::take(line).style(
@@ -175,15 +182,19 @@ impl Worker {
                                 );
                             }
                         }
+                        let ends_with_table = document.markdown.ends_with_table();
+                        let table_tail_start = document.markdown.table_tail_start;
                         documents.push_back(document);
                         while documents.len() > 64
-                            || documents.iter().map(|d| d.2.len()).sum::<usize>() > 8 * 1024 * 1024
+                            || documents.iter().map(|d| d.source.len()).sum::<usize>()
+                                > 8 * 1024 * 1024
                         {
                             documents.pop_front();
                         }
-                        lines
-                    }))
-                    .unwrap_or_else(|_| plain(&job.text, job.width, job.muted));
+                        (lines, ends_with_table, table_tail_start)
+                    }));
+                    let (lines, ends_with_table, table_tail_start) = render
+                        .unwrap_or_else(|_| (plain(&job.text, job.width, job.muted), false, None));
                     // 已完成的追加版本仍可用于展示；最新版本资格由 Ticket 单独判断。
                     let mut result = slot.lock().unwrap_or_else(|e| e.into_inner());
                     if result
@@ -196,6 +207,8 @@ impl Worker {
                             width: job.width,
                             source: job.text,
                             layout: Arc::new(prepared(lines, job.width)),
+                            ends_with_table,
+                            table_tail_start,
                         });
                     }
                     if job.slot.strong_count() == 1 {
@@ -267,6 +280,7 @@ pub(super) struct Ticket {
     fallback: Option<Arc<EntryLayout>>,
     displayed: Option<Rendered>,
     width: u16,
+    streaming: bool,
     slot: Arc<Mutex<Option<Rendered>>>,
     pub exact: bool,
 }
@@ -282,6 +296,7 @@ impl Default for Ticket {
             fallback: None,
             displayed: None,
             width: 0,
+            streaming: false,
             slot: Arc::new(Mutex::new(None)),
             exact: false,
         }
@@ -311,8 +326,28 @@ impl Ticket {
             self.displayed = None;
         }
     }
-    pub fn layout(&mut self, text: &str, width: u16, muted: bool) -> Arc<EntryLayout> {
-        if self.revision != self.snapshot_revision || width != self.width || self.version == 0 {
+    pub fn layout(
+        &mut self,
+        text: &str,
+        width: u16,
+        muted: bool,
+        streaming: bool,
+    ) -> Arc<EntryLayout> {
+        let mode_changed = self.streaming != streaming;
+        self.streaming = streaming;
+        // 结束时把仍在预览的末行排入表格。正文已经完整排版时直接复用。
+        let needs_layout_for_mode = mode_changed
+            && (streaming
+                || !self.exact
+                || self
+                    .displayed
+                    .as_ref()
+                    .is_some_and(|result| result.table_tail_start.is_some()));
+        if self.revision != self.snapshot_revision
+            || width != self.width
+            || self.version == 0
+            || needs_layout_for_mode
+        {
             self.version += 1;
             if self.revision != self.snapshot_revision {
                 self.source = Arc::from(text);
@@ -334,6 +369,7 @@ impl Ticket {
                         text: self.source.clone(),
                         width,
                         muted,
+                        streaming,
                         slot: Arc::downgrade(&self.slot),
                     });
                     shared.wake.notify_one();
@@ -361,7 +397,7 @@ impl Ticket {
         drop(result);
         if let Some(result) = &self.displayed {
             self.exact = result.version == self.version;
-            if self.exact {
+            if self.exact && result.table_tail_start.is_none() {
                 return result.layout.clone();
             }
         }
@@ -370,12 +406,28 @@ impl Ticket {
         }
         // 已排版前缀保持样式，新增尾部立即预览，不等待后台排版。
         // 预览只处理有限尾部，不能用于历史提交。
-        let layout = Arc::new(match &self.displayed {
-            Some(result) if text.starts_with(result.source.as_ref()) => {
-                append_preview(result, &text[result.source.len()..], width, muted)
-            }
-            _ => prepared(plain(preview_tail(text), width, muted), width),
-        });
+        let layout =
+            match &self.displayed {
+                Some(result)
+                    if (result.ends_with_table || result.table_tail_start.is_some())
+                        && text.starts_with(result.source.as_ref()) =>
+                {
+                    // 表格布局只包含已收齐的行，预览始终另外占一行。
+                    let start = result.table_tail_start.unwrap_or(result.source.len());
+                    match table_tail_preview(&text[start..], width, muted) {
+                        Some(line) => {
+                            let mut lines = rendered_lines(result);
+                            lines.push(line);
+                            Arc::new(prepared(lines, width))
+                        }
+                        None => result.layout.clone(),
+                    }
+                }
+                Some(result) if text.starts_with(result.source.as_ref()) => Arc::new(
+                    append_preview(result, &text[result.source.len()..], width, muted),
+                ),
+                _ => Arc::new(prepared(plain(preview_tail(text), width, muted), width)),
+            };
         self.fallback = Some(layout.clone());
         layout
     }
@@ -389,8 +441,14 @@ fn preview_tail(text: &str) -> &str {
     &text[start..]
 }
 
-fn append_preview(result: &Rendered, suffix: &str, width: u16, muted: bool) -> EntryLayout {
-    let mut lines: Vec<_> = result
+pub(super) fn table_tail_preview(text: &str, width: u16, muted: bool) -> Option<Line<'static>> {
+    let last = text.trim_end_matches(['\n', '\r']).rsplit('\n').next()?;
+    (!last.is_empty())
+        .then(|| super::markdown::table_tail_line(preview_tail(last), width, text_style(muted)))
+}
+
+fn rendered_lines(result: &Rendered) -> Vec<Line<'static>> {
+    result
         .layout
         .lines
         .iter()
@@ -398,7 +456,11 @@ fn append_preview(result: &Rendered, suffix: &str, width: u16, muted: bool) -> E
             LayoutContent::Styled(line) => line.clone(),
             _ => unreachable!("后台正文排版仅包含样式行"),
         })
-        .collect();
+        .collect()
+}
+
+fn append_preview(result: &Rendered, suffix: &str, width: u16, muted: bool) -> EntryLayout {
+    let mut lines = rendered_lines(result);
     if suffix.is_empty() {
         return prepared(lines, width);
     }
@@ -411,12 +473,8 @@ fn append_preview(result: &Rendered, suffix: &str, width: u16, muted: bool) -> E
     if tail.len() != suffix.len() {
         line.spans.push(Span::raw("…\n"));
     }
-    let style = if muted {
-        Style::default().fg(ratatui::style::Color::Rgb(110, 117, 129))
-    } else {
-        Style::default()
-    };
-    line.spans.push(Span::styled(tail.to_owned(), style));
+    line.spans
+        .push(Span::styled(tail.to_owned(), text_style(muted)));
     lines.extend(super::transcript::wrap_block(line, width, ""));
     prepared(lines, width)
 }
@@ -433,16 +491,19 @@ fn prepared(lines: Vec<Line<'static>>, width: u16) -> EntryLayout {
             .collect(),
     }
 }
-fn plain(text: &str, width: u16, muted: bool) -> Vec<Line<'static>> {
-    let style = if muted {
+fn text_style(muted: bool) -> Style {
+    if muted {
         Style::default().fg(ratatui::style::Color::Rgb(110, 117, 129))
     } else {
         Style::default()
-    };
+    }
+}
+
+fn plain(text: &str, width: u16, muted: bool) -> Vec<Line<'static>> {
     super::transcript::wrap_block(
         Line::from(Span::styled(
             pp_core::text::display_text(text).into_owned(),
-            style,
+            text_style(muted),
         )),
         width,
         "",
@@ -471,7 +532,7 @@ mod tests {
         let pause = worker.pause();
         let mut ticket = Ticket::default();
         let text = format!("{}🙂\n\nend", "中".repeat(3000));
-        let preview = ticket.layout(&text, 8, false);
+        let preview = ticket.layout(&text, 8, false, false);
         pause.wait();
         let rows = preview
             .lines
@@ -496,14 +557,14 @@ mod tests {
         let worker = Worker::start().unwrap();
         let first = worker.pause();
         let mut ticket = Ticket::default();
-        ticket.layout("**first**", 80, false);
+        ticket.layout("**first**", 80, false, false);
         first.wait();
         let second = worker.pause();
         ticket.invalidate(false);
-        ticket.layout("**first**\n\nsecond", 80, false);
+        ticket.layout("**first**\n\nsecond", 80, false, false);
         drop(first);
         second.wait();
-        let intermediate = ticket.layout("**first**\n\nsecond", 80, false);
+        let intermediate = ticket.layout("**first**\n\nsecond", 80, false, false);
         assert!(!ticket.exact);
         let LayoutContent::Styled(line) = &intermediate.lines[0].content else {
             panic!("应为 Markdown 行");
@@ -518,7 +579,7 @@ mod tests {
         drop(second);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            ticket.layout("**first**\n\nsecond", 80, false);
+            ticket.layout("**first**\n\nsecond", 80, false, false);
             if ticket.exact {
                 break;
             }
@@ -528,12 +589,12 @@ mod tests {
         let third = worker.pause();
         ticket.invalidate(false);
         assert!(!ticket.exact, "追加后立即撤销最新版本资格");
-        let preview = ticket.layout("**first**\n\nsecond\n\nthird", 80, false);
+        let preview = ticket.layout("**first**\n\nsecond\n\nthird", 80, false, false);
         third.wait();
         assert_eq!(layout_text(&preview), "first\n\nsecond\n\nthird");
         assert!(!ticket.exact);
         ticket.invalidate(false);
-        let preview = ticket.layout("**first**\n\nsecond\n\nthird 中🙂", 80, false);
+        let preview = ticket.layout("**first**\n\nsecond\n\nthird 中🙂", 80, false, false);
         assert_eq!(layout_text(&preview), "first\n\nsecond\n\nthird 中🙂");
         assert!(!ticket.exact);
         drop(third);
@@ -562,7 +623,7 @@ mod tests {
             let worker = Worker::start().unwrap();
             let pause = worker.pause();
             let mut ticket = Ticket::default();
-            ticket.layout(source, 4, true);
+            ticket.layout(source, 4, true, false);
             pause.wait();
             *ticket.slot.lock().unwrap() = Some(Rendered {
                 epoch: ticket.epoch,
@@ -570,15 +631,17 @@ mod tests {
                 width: 4,
                 source: Arc::from(source),
                 layout: Arc::new(prepared(vec![Line::raw("ab")], 4)),
+                ends_with_table: false,
+                table_tail_start: None,
             });
-            ticket.layout(source, 4, true);
+            ticket.layout(source, 4, true, false);
             ticket.invalidate(false);
-            let preview = ticket.layout(&format!("{source}{suffix}"), 4, true);
+            let preview = ticket.layout(&format!("{source}{suffix}"), 4, true, false);
             assert_eq!(layout_text(&preview), expected);
             assert!(!ticket.exact);
             assert!(Arc::ptr_eq(
                 &preview,
-                &ticket.layout(&format!("{source}{suffix}"), 4, true)
+                &ticket.layout(&format!("{source}{suffix}"), 4, true, false)
             ));
             drop(pause);
         }
@@ -592,6 +655,8 @@ mod tests {
             width: 80,
             source: Arc::from("**prefix**"),
             layout: Arc::new(prepared(vec![Line::raw("prefix")], 80)),
+            ends_with_table: false,
+            table_tail_start: None,
         };
         let suffix = format!("{}🙂\n\nlatest", "中".repeat(4000));
         let preview = append_preview(&result, &suffix, 80, true);
@@ -646,15 +711,15 @@ mod tests {
         let worker = Worker::start().unwrap();
         let pause = worker.pause();
         let mut ticket = Ticket::default();
-        let first = ticket.layout("正文🙂", 80, false);
+        let first = ticket.layout("正文🙂", 80, false, false);
         let source = ticket.source.clone();
         let version = ticket.version;
-        let second = ticket.layout("正文🙂", 80, false);
+        let second = ticket.layout("正文🙂", 80, false, false);
         assert!(Arc::ptr_eq(&first, &second));
         assert!(Arc::ptr_eq(&source, &ticket.source));
         assert_eq!(version, ticket.version);
         ticket.invalidate(false);
-        ticket.layout("正文🙂新增", 80, false);
+        ticket.layout("正文🙂新增", 80, false, false);
         assert_eq!(ticket.version, version + 1);
         drop(pause);
     }
@@ -664,7 +729,7 @@ mod tests {
         let worker = Worker::start().unwrap();
         let pause = worker.pause();
         let mut ticket = Ticket::default();
-        ticket.layout("old", 80, false);
+        ticket.layout("old", 80, false, false);
         // 先确认后台排版已停在暂停点，再直接写 slot；否则下面的手动结果会与
         // 后台结果竞争，断言变成依赖调度顺序。
         pause.wait();
@@ -674,15 +739,17 @@ mod tests {
         );
         let old_epoch = ticket.epoch;
         ticket.invalidate(true);
-        ticket.layout("new", 80, false);
+        ticket.layout("new", 80, false, false);
         *ticket.slot.lock().unwrap() = Some(Rendered {
             epoch: old_epoch,
             version: u64::MAX,
             width: 80,
             source: Arc::from("old"),
             layout: Arc::new(prepared(vec![Line::raw("stale")], 80)),
+            ends_with_table: false,
+            table_tail_start: None,
         });
-        let rows = ticket.layout("new", 80, false);
+        let rows = ticket.layout("new", 80, false, false);
         let LayoutContent::Styled(line) = &rows.lines[0].content else {
             panic!("应为已排版行")
         };
@@ -694,10 +761,12 @@ mod tests {
             width: 80,
             source: Arc::from("new"),
             layout: Arc::new(prepared(vec![Line::raw("new")], 80)),
+            ends_with_table: false,
+            table_tail_start: None,
         });
-        ticket.layout("new", 80, false);
+        ticket.layout("new", 80, false, false);
         assert!(ticket.exact);
-        ticket.layout("new", 40, false);
+        ticket.layout("new", 40, false, false);
         assert!(!ticket.exact);
         drop(pause);
     }

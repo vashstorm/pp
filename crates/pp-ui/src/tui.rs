@@ -206,6 +206,7 @@ pub fn run(
         dirty |= app.token_speed.tick(Instant::now());
         if quit {
             app.flush_stream();
+            app.conversation.finish_markdown_streams();
             if let Some(cancellation) = &app.active_cancellation {
                 cancellation.cancel();
             }

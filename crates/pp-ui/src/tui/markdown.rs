@@ -18,6 +18,7 @@ use std::sync::Arc;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::transcript_style::ACCENT;
 use super::transcript_style::CODE;
@@ -45,6 +46,7 @@ const CELL_SEPARATOR_WIDTH: usize = 3;
 pub(super) struct MarkdownDocument {
     blocks: Vec<Block>,
     cached: Vec<Option<(u16, Vec<Line<'static>>)>>,
+    pub(super) table_tail_start: Option<usize>,
 }
 
 #[derive(PartialEq)]
@@ -95,7 +97,15 @@ pub(super) struct HeadingAnchor {
 }
 
 pub(super) fn parse(source: &str) -> MarkdownDocument {
-    parse_styled(source, false)
+    parse_styled(source, false, None)
+}
+
+pub(super) fn parse_streaming(source: &str, streaming: bool) -> MarkdownDocument {
+    if !streaming || source.ends_with('\n') {
+        return parse(source);
+    }
+    let tail_start = source.rfind('\n').map(|newline| newline + 1);
+    parse_styled(source, false, tail_start)
 }
 
 /// 指令正文保留源换行；frontmatter 按原文展示，避免被识别为 Setext 标题。
@@ -104,7 +114,7 @@ pub(super) fn parse_instruction(source: &str) -> MarkdownDocument {
         .strip_prefix("---\n")
         .or_else(|| source.strip_prefix("---\r\n"))
     else {
-        return parse_styled(source, true);
+        return parse_styled(source, true, None);
     };
     let mut header = Vec::new();
     let mut offset = 0;
@@ -128,14 +138,15 @@ pub(super) fn parse_instruction(source: &str) -> MarkdownDocument {
     if closed {
         blocks.push(Block::Rule(Vec::new()));
     }
-    blocks.extend(parse_styled(&metadata[offset..], true).blocks);
+    blocks.extend(parse_styled(&metadata[offset..], true, None).blocks);
     MarkdownDocument {
         blocks,
         cached: Vec::new(),
+        table_tail_start: None,
     }
 }
 
-fn parse_styled(source: &str, instruction: bool) -> MarkdownDocument {
+fn parse_styled(source: &str, instruction: bool, tail_start: Option<usize>) -> MarkdownDocument {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH);
     let mut b = Builder::new(source);
@@ -150,7 +161,17 @@ fn parse_styled(source: &str, instruction: bool) -> MarkdownDocument {
                 Tag::HtmlBlock => b.start_html(),
                 Tag::List(start) => b.start_list(start),
                 Tag::Item => b.start_item(),
-                Tag::Table(aligns) => b.start_table(aligns),
+                Tag::Table(aligns) => {
+                    if let Some(start) =
+                        tail_start.filter(|&start| range.start < start && range.end >= start)
+                    {
+                        // 末行仍可能改变表格结构，先按最近的换行处排版。
+                        let mut document = parse(&source[..start]);
+                        document.table_tail_start = Some(start);
+                        return document;
+                    }
+                    b.start_table(aligns);
+                }
                 Tag::TableHead => b.start_table_head(),
                 Tag::TableRow => b.start_table_row(),
                 Tag::TableCell => b.start_cell(),
@@ -198,9 +219,13 @@ fn parse_styled(source: &str, instruction: bool) -> MarkdownDocument {
 }
 
 impl MarkdownDocument {
+    pub(super) fn ends_with_table(&self) -> bool {
+        matches!(self.blocks.last(), Some(Block::Table(_)))
+    }
+
     // 保留全篇语义解析，只复用语义相等块的物理行。
-    pub(super) fn update(&mut self, source: &str) {
-        let mut next = parse(source);
+    pub(super) fn update(&mut self, source: &str, streaming: bool) {
+        let mut next = parse_streaming(source, streaming);
         next.cached = next
             .blocks
             .iter()
@@ -401,6 +426,7 @@ impl<'a> Builder<'a> {
         MarkdownDocument {
             blocks: std::mem::take(&mut self.blocks),
             cached: Vec::new(),
+            table_tail_start: None,
         }
     }
 
@@ -1048,6 +1074,25 @@ fn expand_tabs(line: &str, tabstop: usize) -> String {
     out
 }
 
+pub(super) fn table_tail_line(text: &str, width: u16, style: Style) -> Line<'static> {
+    let text = expand_tabs(&display_text(text), TAB_STOP);
+    let width = usize::from(width);
+    if Line::raw(&text).width() <= width {
+        return Line::styled(text, style);
+    }
+    let mut start = text.len();
+    let mut remaining = width.saturating_sub(1);
+    for (offset, grapheme) in text.grapheme_indices(true).rev() {
+        let columns = Span::raw(grapheme).width();
+        if columns > remaining {
+            break;
+        }
+        start = offset;
+        remaining -= columns;
+    }
+    Line::styled(format!("…{}", &text[start..]), style)
+}
+
 fn layout_table(tb: &TableBlock, width: usize, out: &mut Vec<Line<'static>>) {
     let n = tb.aligns.len();
     if n == 0 {
@@ -1447,7 +1492,7 @@ mod cache_tests {
         let mut full_builds = 0;
         for i in 0..20 {
             let source = format!("{prefix}tail{}", "x".repeat(i + 1));
-            document.update(&source);
+            document.update(&source, false);
             cached_builds += document.cached.iter().filter(|slot| slot.is_none()).count();
             full_builds += document.blocks.len();
             assert_eq!(document.layout_cached(80), parse(&source).layout(80));
@@ -1461,7 +1506,7 @@ mod cache_tests {
     fn markdown_block_cache_matches_full_semantics_after_updates_and_resize() {
         let mut document = parse("稳定段落中文🙂\n\n[link][id]\n\ntitle");
         document.layout_cached(40);
-        document.update("稳定段落中文🙂\n\n[link][id]\n\ntitle\n---\n\n[id]: https://example.com\n\n```rust\nlet x = 1;");
+        document.update("稳定段落中文🙂\n\n[link][id]\n\ntitle\n---\n\n[id]: https://example.com\n\n```rust\nlet x = 1;", false);
         assert!(document.cached[0].is_some());
         assert!(document.cached[1].is_none());
         for source in [
@@ -1469,7 +1514,7 @@ mod cache_tests {
             "- item\n\n  continuation\n\n| 表 | 值 |\n| - | - |\n| 🙂 | 中文 |",
             "替换正文\n\n> quote\n\n```rust\nlet x = 2;\n```",
         ] {
-            document.update(source);
+            document.update(source, false);
             for width in [80, 12, 40, 0] {
                 assert_eq!(document.layout_cached(width), parse(source).layout(width));
             }

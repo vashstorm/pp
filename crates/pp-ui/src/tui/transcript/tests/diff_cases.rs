@@ -204,6 +204,71 @@ fn write_card_grows_to_sixteen_rows_without_padding_short_content() {
 }
 
 #[test]
+fn folded_write_keeps_the_same_wrapped_rows_as_expanded_write() {
+    use crate::tui::tool_display::write_body;
+
+    for content in [
+        format!("first\n{}\n\nlast\n", "0123456789abcdef".repeat(1024)),
+        format!("first\n{}\n\nlast\n", "中\te\u{301}🙂".repeat(1024)),
+    ] {
+        for width in [1, 7, 32, 100] {
+            let style = Style::default().fg(palette::EDIT_ADDED);
+            let expanded = write_body(&content, width, true, false, style);
+            let head = write_body(&content, width, false, false, style);
+            let tail = write_body(&content, width, false, true, style);
+            assert_eq!(head.len(), 17);
+            assert_eq!(tail.len(), 17);
+            assert_eq!(head[..16], expanded[..16]);
+            assert_eq!(tail[1..], expanded[expanded.len() - 16..]);
+        }
+    }
+}
+
+#[test]
+fn folded_write_preview_scrolls_long_lines_without_growing_the_transcript() {
+    let mut transcript = Transcript::new();
+    transcript.append("You", "older message");
+    transcript.append("You", "earlier message");
+    let width = 32;
+    let height = 24;
+    let body_width = usize::from(width - 2);
+    let old_row = "a".repeat(body_width);
+    arguments(
+        &mut transcript,
+        "write",
+        0,
+        r#"{"path":"demo.txt","content":""#,
+    );
+    arguments(&mut transcript, "write", 0, &old_row.repeat(1024));
+    let before = screen(&render(&mut transcript, width, height));
+    assert!(before.contains("earlier message"));
+    let total = transcript.total;
+    let offset = transcript.offset;
+    assert!(offset > 0);
+
+    for index in 0..3 {
+        let row = format!("{index}:{}", "b".repeat(body_width - 2));
+        arguments(&mut transcript, "write", 0, &row);
+        let after = screen(&render(&mut transcript, width, height));
+        assert!(after.contains(&row), "{after}");
+        assert_eq!(
+            after
+                .lines()
+                .position(|line| line.contains("earlier message")),
+            before
+                .lines()
+                .position(|line| line.contains("earlier message"))
+        );
+        assert_eq!(transcript.total, total);
+        assert_eq!(transcript.offset, offset);
+        assert_eq!(
+            after.lines().filter(|line| line.contains(&old_row)).count(),
+            15 - index
+        );
+    }
+}
+
+#[test]
 fn edit_preview_omits_protocol_rows_and_matches_committed_diff_height() {
     use pp_core::events::{DiffHunk, DiffLine};
     for width in [20, 100] {

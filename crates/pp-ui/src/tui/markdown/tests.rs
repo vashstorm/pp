@@ -321,6 +321,38 @@ fn very_long_line_splits_at_grapheme_boundaries() {
 }
 
 #[test]
+fn streaming_table_defers_only_the_unterminated_tail() {
+    for (prefix, tail) in [
+        (
+            "| A | B |\r\n| --- | --- |\r\n| x | y |\r\n",
+            "| 中 | 🙂 |\r",
+        ),
+        (
+            "> | A | B |\n> | --- | --- |\n> | x | y |\n",
+            "> | 中 | 🙂 |",
+        ),
+        (
+            "- | A | B |\n  | --- | --- |\n  | x | y |\n",
+            "  | 中 | 🙂 |",
+        ),
+        ("| A | B |\n", "| --- | --- |"),
+    ] {
+        let source = format!("{prefix}{tail}");
+        let streaming = parse_streaming(&source, true);
+        assert!(streaming.table_tail_start.is_some(), "{source}");
+        assert_eq!(streaming.layout(16), layout(prefix, 16));
+        let complete = format!("{source}\n");
+        assert_eq!(
+            parse_streaming(&complete, true).layout(16),
+            layout(&source, 16)
+        );
+    }
+
+    let prose = "| A | B |\n| --- | --- |\n| x | y |\n\n**Next paragraph**";
+    assert_eq!(parse_streaming(prose, true).layout(30), layout(prose, 30));
+}
+
+#[test]
 fn tables_shrink_before_vertical_fallback_and_keep_all_cells() {
     let lines = layout("| aaaa | bbbb |\n|---|---|\n| cccc | dddd |", 10);
     assert!(lines.iter().all(|line| line.width() <= 10));
