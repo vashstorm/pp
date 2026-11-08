@@ -113,7 +113,7 @@ fn statusline_out_accumulates_session_usage_across_requests_both_protocols() {
 }
 
 #[test]
-fn statusline_live_cost_precedes_usage_and_is_replaced_by_settle() {
+fn statusline_live_cost_stays_separate_from_session_subtotal() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let (_home, mut pty) = statusline_start(&fixture, protocol, false);
@@ -123,19 +123,20 @@ fn statusline_live_cost_precedes_usage_and_is_replaced_by_settle() {
         let mut stream = SseReply::new(main);
         streaming_delta(&mut stream, protocol, "statusline-live-cost");
         pty.text("statusline-live-cost");
-        pty.wait_for("生成中先显示估算费用", |screen| {
+        pty.wait_for("首笔未结算时，小计占位并单独显示估算", |screen| {
             let text = screen.contents();
-            text.contains("\u{f155}") && text.contains(" USD")
+            text.contains("\u{f155} — (~") && text.contains(" USD)")
         });
         // 标题在任务结束前落定，否则会被取消而变成未知费用。
         statusline_reply_usage(title, protocol, "实时费用标题");
         pty.text("实时费用标题");
+        pty.text("\u{f155} 0.0123 USD (~");
         context_tui_stream_usage(&mut stream, protocol, "statusline-live-cost");
         stream.finish();
         pty.completed_after("statusline-live-cost");
-        // 估算随落定移除：总额只含两次落定的金额。
-        pty.wait_for("落定后换成服务端 usage 金额", |screen| {
-            screen.contents().contains("0.0246 USD")
+        pty.wait_for("落定后小计增加，估算消失", |screen| {
+            let text = screen.contents();
+            text.contains("\u{f155} 0.0246 USD") && !text.contains("(~")
         });
         assert!(
             !pty.parser.screen().contents().contains(" USD \u{f0026}"),

@@ -156,40 +156,54 @@ fn title_field(text: &str, width: usize) -> Line<'static> {
     field(TITLE_ICON, title, PLAN_MODE)
 }
 
+fn cost_amount(usd: f64, display: &pp_config::config::CostDisplay) -> Option<String> {
+    let total = usd * display.exchange_rate;
+    let currency = &display.currency;
+    if !total.is_finite() || usd < 0.0 {
+        return None;
+    }
+    Some(if usd > 0.0 && total < 0.0001 {
+        format!("<0.0001 {currency}")
+    } else {
+        format!("{total:.4} {currency}")
+    })
+}
+
 fn cost_field(
     task: &pp_config::task_status::Snapshot,
     display: &pp_config::config::CostDisplay,
+    show_estimate: bool,
 ) -> Option<Line<'static>> {
-    // 已落定金额加上生成中请求的实时估算；只估算不落定，避免重复计算。
-    let live = if task.live.is_finite() {
-        task.live
-    } else {
-        0.0
-    };
     let history = task.history.and_then(|history| history.usd);
-    let usd = history.unwrap_or(0.0) + task.cost + live;
-    let total = usd * display.exchange_rate;
-    let currency = &display.currency;
-    let text = if !total.is_finite() || usd < 0.0 {
-        return None;
-    } else if usd > 0.0 && total < 0.0001 {
-        format!("<0.0001 {currency}")
-    } else if usd > 0.0 || history.is_some() {
-        format!("{total:.4} {currency}")
-    } else if task.history.is_some() {
+    let usd = history.unwrap_or(0.0) + task.cost;
+    let incomplete = task.incomplete
+        || task
+            .history
+            .is_some_and(|history| history.incomplete || history.usd.is_none());
+    let estimate = if show_estimate && task.live > 0.0 {
+        cost_amount(task.live, display)
+    } else {
+        None
+    };
+    // 小计只包含已结算金额，估算单独显示，避免请求落定时小计回跳。
+    let text = if usd != 0.0 || history.is_some() {
+        cost_amount(usd, display)?
+    } else if incomplete || estimate.is_some() {
         "—".into()
     } else {
         return None;
     };
     let mut line = field(display.icon.encode_utf8(&mut [0; 4]), text, Color::Red);
-    if task.incomplete
-        || task
-            .history
-            .is_some_and(|history| history.incomplete || history.usd.is_none())
-    {
+    if incomplete {
         line.spans.push(Span::styled(
             format!(" {WARNING_ICON}"),
             Style::default().fg(Color::Yellow),
+        ));
+    }
+    if let Some(estimate) = estimate {
+        line.spans.push(Span::styled(
+            format!(" (~{estimate})"),
+            Style::default().fg(Color::DarkGray),
         ));
     }
     Some(line)
@@ -283,11 +297,18 @@ pub(super) fn metric_fields(
             count(last.and_then(|u| u.cache_write_tokens)),
             (CACHE_READ, CACHE_WRITE),
         )),
-        task.and_then(|(task, display)| cost_field(task, display)),
+        task.and_then(|(task, display)| cost_field(task, display, true)),
         elapsed.map(|text| field(TIMER_ICON, text.replace(' ', ""), Color::White)),
     ];
     let budget = usize::from(width);
     let mut line = join_fields(&fields);
+    if line.width() > budget
+        && let Some((task, display)) = task
+        && task.live > 0.0
+    {
+        fields[5] = cost_field(task, display, false);
+        line = join_fields(&fields);
+    }
     if line.width() > budget
         && let Some(title) = fields[1].as_ref()
     {
@@ -1169,11 +1190,11 @@ mod tests {
         let mut task = pp_config::task_status::Snapshot::default();
         for amount in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             task.cost = amount;
-            assert!(cost_field(&task, &Default::default()).is_none());
+            assert!(cost_field(&task, &Default::default(), true).is_none());
         }
         task.cost = 0.000001;
         task.incomplete = true;
-        let line = cost_field(&task, &Default::default()).unwrap();
+        let line = cost_field(&task, &Default::default(), true).unwrap();
         assert_eq!(
             line_text(&line),
             format!("{COST_ICON} <0.0001 USD {WARNING_ICON}")
@@ -1182,39 +1203,46 @@ mod tests {
     }
 
     #[test]
-    fn cost_field_adds_live_estimate_until_the_request_settles() {
-        // 首个请求还在生成时只有估算，也要占位显示。
-        let live = pp_config::task_status::Snapshot {
+    fn cost_field_separates_live_estimate_from_session_subtotal() {
+        let render = |task: &pp_config::task_status::Snapshot| {
+            cost_field(task, &Default::default(), true).map(|line| line_text(&line))
+        };
+        let mut task = pp_config::task_status::Snapshot {
             live: 0.0023,
             ..Default::default()
         };
         assert_eq!(
-            line_text(&cost_field(&live, &Default::default()).unwrap()),
-            format!("{COST_ICON} 0.0023 USD")
+            render(&task).unwrap(),
+            format!("{COST_ICON} — (~0.0023 USD)")
         );
-        let settled = pp_config::task_status::Snapshot {
-            cost: 0.01,
-            live: 0.0023,
-            ..Default::default()
-        };
+        // 缺少结算用量时仍显示费用未知和警告。
+        task.live = 0.0;
+        task.incomplete = true;
         assert_eq!(
-            line_text(&cost_field(&settled, &Default::default()).unwrap()),
-            format!("{COST_ICON} 0.0123 USD")
+            render(&task).unwrap(),
+            format!("{COST_ICON} — {WARNING_ICON}")
         );
-        // 预估损坏时退回已落定金额，不能让整个费用字段消失。
-        let broken = pp_config::task_status::Snapshot {
-            cost: 0.01,
-            live: f64::NAN,
-            ..Default::default()
-        };
+
+        task.history = Some(pp_config::task_status::HistoricalCost {
+            usd: Some(0.01),
+            incomplete: false,
+        });
+        task.cost = 0.01;
+        task.incomplete = false;
+        task.live = 0.003;
         assert_eq!(
-            line_text(&cost_field(&broken, &Default::default()).unwrap()),
-            format!("{COST_ICON} 0.0100 USD")
+            render(&task).unwrap(),
+            format!("{COST_ICON} 0.0200 USD (~0.0030 USD)")
         );
-        let empty = pp_config::task_status::Snapshot::default();
-        assert!(
-            cost_field(&empty, &Default::default()).is_none(),
-            "没有任何金额时不占位"
+        // 实际费用低于估算时，已结算小计仍增加。
+        task.cost += 0.001;
+        task.live = 0.0;
+        assert_eq!(render(&task).unwrap(), format!("{COST_ICON} 0.0210 USD"));
+        task.live = f64::NAN;
+        assert_eq!(
+            render(&task).unwrap(),
+            format!("{COST_ICON} 0.0210 USD"),
+            "无效估算不影响已结算小计"
         );
     }
 
@@ -1228,20 +1256,24 @@ mod tests {
         };
         // 低于 60 tok/s 时速度字段使用低速档图标。
         let rate = 30.2;
-        let render = |width| {
+        let render = |width, task| {
             metric_fields(
                 &usage,
                 Some((rate, false)),
                 3,
                 None,
-                Some((&task, &Default::default())),
+                Some((task, &Default::default())),
                 Some("1m 25s"),
                 width,
             )
         };
-        let full = render(240);
+        let full = render(240, &task);
         let full_width = full.width() as u16;
-        let shrunk = render(full_width - 2);
+        let mut live_task = task.clone();
+        live_task.live = 0.005;
+        assert!(line_text(&render(240, &live_task)).contains("(~0.0050 USD)"));
+        assert_eq!(render(full_width, &live_task), full);
+        let shrunk = render(full_width - 2, &task);
         assert!(line_text(&shrunk).contains(TITLE_ICON));
         assert!(line_text(&shrunk).contains('…'));
         let removal_order = [
@@ -1255,7 +1287,7 @@ mod tests {
         ];
         let mut previous = 0;
         for width in (0..=full_width).rev() {
-            let line = render(width);
+            let line = render(width, &task);
             assert!(line.width() <= usize::from(width));
             let text = line_text(&line);
             assert_eq!(text.contains(SUBAGENT_GROUP_ICON), text.contains("tok/s"));
