@@ -287,12 +287,12 @@ fn run(args: Args) -> Result<()> {
         agent_store::initialize(dir, &cancellation::CancellationToken::new()).err()
     });
     // 显示设置独立于模型初始化；无效设置的诊断仍由既有启动路径呈现。
-    let tui_settings = global_dir
+    let (tui_settings, cost_display) = global_dir
         .as_ref()
         .ok()
         .filter(|_| use_tui)
         .and_then(|dir| config::read_settings(&dir.join("settings.yml")).ok())
-        .map(|settings| settings.tui)
+        .map(|settings| (settings.tui, settings.cost))
         .unwrap_or_default();
     let file_commands = if args.prompt.is_none() {
         match &global_dir {
@@ -430,6 +430,7 @@ fn run(args: Args) -> Result<()> {
             continue_requested,
             resume_picker,
             tui_settings,
+            cost_display,
             bootstrap,
             initial_command,
         );

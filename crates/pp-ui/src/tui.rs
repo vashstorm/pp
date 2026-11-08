@@ -121,6 +121,7 @@ pub fn run(
     auto_continue: bool,
     open_resume: bool,
     options: pp_config::config::TuiSettings,
+    cost_display: pp_config::config::CostDisplay,
     bootstrap: Option<pp_runtime::agent::Bootstrap>,
     initial_command: Option<String>,
 ) -> Result<()> {
@@ -140,7 +141,7 @@ pub fn run(
         .map(|bootstrap| bootstrap.dir.join("history.db"));
     let mut app = App::new_with_skills(agent, skills, file_commands, cwd, history_path)?;
     app.image_view.configure(picker);
-    app.cost_display = options.cost;
+    app.cost_display = cost_display;
     app.bootstrap = bootstrap;
     if auto_continue && matches!(app.state, State::Ready) {
         // -c：Execute 保持原继续行为；Plan/Draft 提示继续输入；Plan/Ready 进入审阅。

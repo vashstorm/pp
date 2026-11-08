@@ -125,20 +125,20 @@ fn statusline_cost_displays_only_settled_session_subtotal() {
         pty.text("statusline-live-cost");
         pty.wait_for("首笔费用结算前隐藏费用字段", |screen| {
             let text = screen.contents();
-            text.contains("\u{f04e2} —/7") && !text.contains("\u{f155}")
+            text.contains("\u{f04e2} —/7") && !text.contains("\u{f01c1}")
         });
         // 标题在任务结束前落定，否则会被取消而变成未知费用。
         statusline_reply_usage(title, protocol, "实时费用标题");
         pty.text("实时费用标题");
         pty.wait_for("主请求生成期间仅显示已结算的标题费用", |screen| {
             let text = screen.contents();
-            text.contains("\u{f155} 0.012 ·") && !text.contains("(~")
+            text.contains("\u{f01c1} 0.012 ·") && !text.contains("(~")
         });
         context_tui_stream_usage(&mut stream, protocol, "statusline-live-cost");
         stream.finish();
         pty.completed_after("statusline-live-cost");
         pty.wait_for("两笔结算后显示累计金额", |screen| {
-            screen.contents().contains("\u{f155} 0.025 ·")
+            screen.contents().contains("\u{f01c1} 0.025 ·")
         });
         pty.input("\x03");
         pty.finish();
@@ -263,7 +263,7 @@ fn task_status_cost_includes_child_subagents_without_double_counting_both_protoc
         pty.completed_after("root-cost-answer");
         // 标题 + 根两次 + 两个同级 child 各一次，共五次模型请求。
         pty.wait_for("根任务累计子任务费用", |screen| {
-            screen.contents().contains("\u{f155} 0.061 ·")
+            screen.contents().contains("\u{f01c1} 0.061 ·")
         });
         pty.input("\x03");
         pty.finish();
@@ -352,7 +352,7 @@ fn task_status_title_parallel_fast_both_protocols_cost_and_history_isolation() {
             text.contains("0.0%/40K")
                 && text.contains("\u{f04e2} —/—")
                 && !text.contains("\u{f09a9}")
-                && !text.contains("\u{f155}")
+                && !text.contains("\u{f01c1}")
                 && !text.contains("\u{f051b}")
         });
         pty.input("\x03");
@@ -385,7 +385,7 @@ fn task_status_title_without_fast_cancel_and_next_generation_both_protocols() {
         statusline_reply_usage(main, protocol, "second-task-answer");
         pty.completed_after("second-task-answer");
         pty.wait_for("请求取消后显示已知费用小计", |screen| {
-            screen.contents().contains("\u{f155} 0.025 ·")
+            screen.contents().contains("\u{f01c1} 0.025 ·")
         });
         pty.input("\x03");
         pty.finish();
@@ -406,7 +406,7 @@ fn task_status_title_failure_is_hidden_and_displays_known_cost() {
         statusline_reply_usage(main, protocol, "main-still-completes");
         pty.completed_after("main-still-completes");
         pty.wait_for("标题请求失败后只显示主请求费用", |screen| {
-            screen.contents().contains("\u{f155} 0.012 ·")
+            screen.contents().contains("\u{f01c1} 0.012 ·")
         });
         assert!(!pty.parser.screen().contents().contains("\u{f09a9}"));
         pty.input("\x03");
@@ -439,7 +439,7 @@ fn task_status_title_fallback_cross_protocol_retains_no_tools_and_actual_price()
         statusline_reply_usage(main, protocol, "fallback-main-answer");
         pty.completed_after("fallback-main-answer");
         pty.wait_for("备用标题按实际模型计价", |screen| {
-            screen.contents().contains("\u{f155} 0.025 ·")
+            screen.contents().contains("\u{f01c1} 0.025 ·")
         });
         pty.input("\x03");
         pty.finish();
@@ -465,7 +465,7 @@ fn task_status_cost_survives_statistics_write_failure_both_protocols() {
         statusline_reply_usage(main, protocol, "statistics-failure-main-answer");
         pty.completed_after("statistics-failure-main-answer");
         pty.wait_for("统计写失败不影响费用累计", |screen| {
-            screen.contents().contains("\u{f155} 0.025 ·")
+            screen.contents().contains("\u{f01c1} 0.025 ·")
         });
         pty.input("\x03");
         pty.finish();
@@ -480,7 +480,7 @@ fn statusline_session_cost_resumes_immediately_and_reuses_web_pricing() {
     let home = statusline_home(&fixture, protocol, false);
     let settings = config_path(home.path(), "settings.yml");
     let mut text = std::fs::read_to_string(&settings).unwrap();
-    text.push_str("tui: {cost: {currency: CNY, exchange_rate: 7.2, icon: 'f157'}}\n");
+    text.push_str("cost: {currency: CNY, exchange_rate: 7.2}\n");
     std::fs::write(settings, text).unwrap();
     let models = config_path(home.path(), "models.yml");
     let mut catalog: Value = serde_json::from_slice(&std::fs::read(&models).unwrap()).unwrap();
@@ -502,7 +502,7 @@ fn statusline_session_cost_resumes_immediately_and_reuses_web_pricing() {
         pty.text(title_text);
         statusline_reply_usage(main, protocol, answer);
         pty.completed_after(answer);
-        pty.text(&format!("\u{f157} {total}"));
+        pty.text(&format!("\u{f07ba} {total}"));
     }
     let id = saved_session_id(home.path());
     pty.input("/new\r");
@@ -520,7 +520,7 @@ fn statusline_session_cost_resumes_immediately_and_reuses_web_pricing() {
     pty.input("\r");
     pty.wait_for("恢复后无需新请求即可看到历史费用", |screen| {
         let text = screen.contents();
-        text.contains("cost-answer-two") && text.contains("\u{f157} 0.777 CNY")
+        text.contains("cost-answer-two") && text.contains("\u{f07ba} 0.777 CNY")
     });
     pty.input("/quit\r");
     pty.finish();
@@ -541,17 +541,17 @@ fn statusline_session_cost_resumes_immediately_and_reuses_web_pricing() {
 
     let mut pty = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
     pty.resize(30, 180);
-    pty.text("\u{f157} 0.777 CNY");
+    pty.text("\u{f07ba} 0.777 CNY");
     tree_tui_open(&mut pty, "cost-answer-two");
     tree_tui_rewind(&mut pty, &[TREE_TUI_UP], "second session cost task");
-    pty.text("\u{f157} 0.777 CNY");
+    pty.text("\u{f07ba} 0.777 CNY");
     pty.input("continue after restoring cost\r");
     let ((main, _), (title, _)) = statusline_requests(&fixture);
     statusline_reply_usage(title, protocol, "恢复后的标题");
     pty.text("恢复后的标题");
     statusline_reply_usage(main, protocol, "cost-answer-three");
     pty.completed_after("cost-answer-three");
-    pty.text("\u{f157} 1.166 CNY");
+    pty.text("\u{f07ba} 1.166 CNY");
     pty.input("/quit\r");
     pty.finish();
     no_more(&fixture);

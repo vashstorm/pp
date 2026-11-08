@@ -164,25 +164,45 @@ fn default_notification_timeout_seconds() -> u64 {
 #[serde(default, deny_unknown_fields)]
 pub struct TuiSettings {
     pub max_fps: u16,
-    pub cost: CostDisplay,
 }
 
 impl Default for TuiSettings {
     fn default() -> Self {
-        Self {
-            max_fps: 60,
-            cost: CostDisplay::default(),
-        }
+        Self { max_fps: 60 }
     }
 }
 
+/// `settings.yml` 的 `cost` 定义显示币种与 1 USD 的兑换金额。
+/// 图标由 `currency` 派生，配置不再接受手写图标。
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CostDisplay {
     pub currency: String,
     pub exchange_rate: f64,
-    #[serde(deserialize_with = "deserialize_currency_icon")]
-    pub icon: char,
+}
+
+impl CostDisplay {
+    /// 受支持的显示币种及对应的 Nerd Font 图标（Material Design `currency_*` 系列）：
+    /// 美国 `f01c1`、欧洲 `f01ad`、日本 `f07bc`、韩国 `f07bd`、中国 `f07ba`、巴西 `f0b85`。
+    const CURRENCY_ICONS: [(&'static str, char); 6] = [
+        ("USD", '\u{f01c1}'),
+        ("EUR", '\u{f01ad}'),
+        ("JPY", '\u{f07bc}'),
+        ("KRW", '\u{f07bd}'),
+        ("CNY", '\u{f07ba}'),
+        ("BRL", '\u{f0b85}'),
+    ];
+
+    /// 币种图标；不受支持的币种返回 `None`（配置校验已拒绝该取值）。
+    pub fn icon(&self) -> Option<char> {
+        Self::CURRENCY_ICONS
+            .iter()
+            .find_map(|(code, icon)| (*code == self.currency).then_some(*icon))
+    }
+
+    fn currency_codes() -> impl Iterator<Item = &'static str> {
+        Self::CURRENCY_ICONS.iter().map(|(code, _)| *code)
+    }
 }
 
 impl Default for CostDisplay {
@@ -190,26 +210,8 @@ impl Default for CostDisplay {
         Self {
             currency: "USD".into(),
             exchange_rate: 1.0,
-            icon: '\u{f155}',
         }
     }
-}
-
-fn deserialize_currency_icon<'de, D: serde::Deserializer<'de>>(
-    de: D,
-) -> std::result::Result<char, D::Error> {
-    let code = String::deserialize(de)?;
-    u32::from_str_radix(&code, 16)
-        .ok()
-        .filter(|cp| {
-            !code.is_empty()
-                && code.bytes().all(|byte| byte.is_ascii_hexdigit())
-                && matches!(cp, 0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x100000..=0x10fffd)
-        })
-        .and_then(char::from_u32)
-        .ok_or_else(|| {
-            serde::de::Error::custom("tui.cost.icon must be a private-use hexadecimal code point")
-        })
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
@@ -271,6 +273,8 @@ pub struct Settings {
     #[serde(default)]
     pub tui: TuiSettings,
     #[serde(default)]
+    pub cost: CostDisplay,
+    #[serde(default)]
     pub task: crate::config::TaskSettings,
     #[serde(default)]
     pub grep: GrepSettings,
@@ -329,18 +333,13 @@ impl Settings {
     pub(crate) fn validate(&self) -> Result<()> {
         self.lsp.validate()?;
         ensure!(
-            self.tui.cost.currency.len() == 3
-                && self
-                    .tui
-                    .cost
-                    .currency
-                    .bytes()
-                    .all(|byte| byte.is_ascii_uppercase()),
-            "tui.cost.currency must contain three uppercase ASCII letters"
+            self.cost.icon().is_some(),
+            "cost.currency must be one of {}",
+            CostDisplay::currency_codes().collect::<Vec<_>>().join(", ")
         );
         ensure!(
-            self.tui.cost.exchange_rate.is_finite() && self.tui.cost.exchange_rate > 0.0,
-            "tui.cost.exchange_rate must be positive and finite"
+            self.cost.exchange_rate.is_finite() && self.cost.exchange_rate > 0.0,
+            "cost.exchange_rate must be positive and finite"
         );
         ensure!(
             (1..=120).contains(&self.tui.max_fps),
@@ -431,6 +430,7 @@ fn default_settings() -> Settings {
         grep: GrepSettings::default(),
         read: ReadDisplaySettings::default(),
         tui: TuiSettings::default(),
+        cost: CostDisplay::default(),
         tools: ToolsSettings::default(),
         lsp: Default::default(),
         debug: false,

@@ -54,7 +54,7 @@ const CACHE_ICON: &str = "\u{f01bc}";
 const TITLE_ICON: &str = "\u{f09a9}";
 const CONTEXT_ICON: &str = "\u{f2d0}";
 #[cfg(test)]
-const COST_ICON: &str = "\u{f155}";
+const COST_ICON: &str = "\u{f01c1}";
 const TIMER_ICON: &str = "\u{f051b}";
 const HEALTHY_ICON: &str = "\u{f05e0}";
 const WARNING_ICON: &str = "\u{f0026}";
@@ -181,7 +181,7 @@ fn cost_field(
     }
     let text = cost_amount(usd, display)?;
     Some(field(
-        display.icon.encode_utf8(&mut [0; 4]),
+        display.icon()?.encode_utf8(&mut [0; 4]),
         text,
         Color::Red,
     ))
@@ -1173,6 +1173,34 @@ mod tests {
         let line = cost_field(&task, &Default::default()).unwrap();
         assert_eq!(line_text(&line), format!("{COST_ICON} 0.000"));
         assert_eq!(line.spans[1].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn cost_field_derives_currency_icon_and_code_suffix() {
+        let task = pp_config::task_status::Snapshot {
+            cost: 0.012,
+            ..Default::default()
+        };
+        for (currency, icon, expected) in [
+            ("USD", "\u{f01c1}", "0.012"),
+            ("CNY", "\u{f07ba}", "0.086 CNY"),
+        ] {
+            let display = pp_config::config::CostDisplay {
+                currency: currency.into(),
+                exchange_rate: if currency == "USD" { 1.0 } else { 7.2 },
+            };
+            assert_eq!(
+                cost_field(&task, &display).map(|line| line_text(&line)),
+                Some(format!("{icon} {expected}")),
+                "{currency}"
+            );
+        }
+        // 校验拒绝的币种没有对应图标，费用字段整体隐藏。
+        let unsupported = pp_config::config::CostDisplay {
+            currency: "GBP".into(),
+            exchange_rate: 1.0,
+        };
+        assert!(cost_field(&task, &unsupported).is_none());
     }
 
     #[test]

@@ -1415,33 +1415,58 @@ providers:
 
 #[test]
 fn cost_display_settings_are_strict_and_default_to_usd() {
-    let settings = load(None, Some(VALID_MODELS)).unwrap().settings;
-    assert_eq!(settings.tui.cost.currency, "USD");
-    assert_eq!(settings.tui.cost.exchange_rate, 1.0);
-    assert_eq!(settings.tui.cost.icon, '\u{f155}');
-    let settings = load(
-        Some("tui: {cost: {currency: CNY, exchange_rate: 7.2, icon: 'F157'}}"),
-        Some(VALID_MODELS),
-    )
-    .unwrap()
-    .settings;
-    assert_eq!(settings.tui.cost.currency, "CNY");
-    assert_eq!(settings.tui.cost.exchange_rate, 7.2);
-    assert_eq!(settings.tui.cost.icon, '\u{f157}');
-    for invalid in [
-        "currency: cny, exchange_rate: 1, icon: 'f157'",
-        "currency: CNY, exchange_rate: 0, icon: 'f157'",
-        "currency: CNY, exchange_rate: .inf, icon: 'f157'",
-        "currency: CNY, exchange_rate: 1, icon: '1b'",
-        "currency: CNY, exchange_rate: 1, icon: '110000'",
-        "currency: CNY, exchange_rate: 1, icon: 61527",
-        "currency: CNY, exchange_rate: 1",
-        "currency: CNY, exchange_rate: 1, icon: 'f157', extra: true",
+    for text in [None, Some("{}")] {
+        let settings = load(text, Some(VALID_MODELS)).unwrap().settings;
+        assert_eq!(settings.cost.currency, "USD");
+        assert_eq!(settings.cost.exchange_rate, 1.0);
+    }
+    // 图标由币种派生，六个受支持币种各有独立的 Nerd Font 字形。
+    for (currency, icon) in [
+        ("USD", '\u{f01c1}'),
+        ("EUR", '\u{f01ad}'),
+        ("JPY", '\u{f07bc}'),
+        ("KRW", '\u{f07bd}'),
+        ("CNY", '\u{f07ba}'),
+        ("BRL", '\u{f0b85}'),
     ] {
-        let settings = format!("tui: {{cost: {{{invalid}}}}}");
+        let text =
+            format!("tui: {{max_fps: 30}}\ncost: {{currency: {currency}, exchange_rate: 7.2}}");
+        let settings = load(Some(&text), Some(VALID_MODELS)).unwrap().settings;
+        assert_eq!(settings.tui.max_fps, 30);
+        assert_eq!(settings.cost.currency, currency);
+        assert_eq!(settings.cost.exchange_rate, 7.2);
+        assert_eq!(settings.cost.icon(), Some(icon), "{currency}");
+    }
+    let Err(error) = load(
+        Some("cost: {currency: GBP, exchange_rate: 1}"),
+        Some(VALID_MODELS),
+    ) else {
+        panic!("unsupported currency must be rejected");
+    };
+    assert!(
+        report(&error).contains("cost.currency must be one of USD, EUR, JPY, KRW, CNY, BRL"),
+        "{}",
+        report(&error)
+    );
+    for invalid in [
+        "currency: cny, exchange_rate: 1",
+        "currency: CNY, exchange_rate: 0",
+        "currency: CNY, exchange_rate: .inf",
+        "currency: CNY",
+        "currency: CNY, exchange_rate: 1, icon: 'f157'",
+        "currency: CNY, exchange_rate: 1, extra: true",
+    ] {
+        let settings = format!("cost: {{{invalid}}}");
         assert!(
             load(Some(&settings), Some(VALID_MODELS)).is_err(),
             "{settings}"
         );
     }
+    let Err(error) = load(
+        Some("tui: {cost: {currency: CNY, exchange_rate: 7.2}}"),
+        Some(VALID_MODELS),
+    ) else {
+        panic!("旧费用配置必须被拒绝");
+    };
+    assert!(report(&error).contains("Move currency and exchange_rate to the top-level cost"));
 }
