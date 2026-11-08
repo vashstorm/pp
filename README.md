@@ -117,7 +117,7 @@ printf 'Explain how to build the current project\n' | pp
 pp --model deepseek/deepseek-flash:high /commit
 ```
 
-> **Permissions and data**: API keys are stored in plain text in the model configuration. Read, shell, search, and MCP tools run with your user permissions, without a filesystem sandbox. The default YOLO mode bypasses all tool approvals, including dangerous-command checks and explicit prompt/deny policies. The write/edit save layer restricts paths to the working directory and rejects symbolic links. Sessions and statistics may contain source code and conversations; treat them as sensitive data. [Full permissions guide (Chinese) →](docs/guide.md#工具执行与权限)
+> **Permissions and data**: API keys are stored in plain text in the model configuration. Read, shell, search, and MCP tools run with your user permissions, without a filesystem sandbox. The default YOLO mode bypasses all tool approvals, including dangerous-command checks and explicit prompt/deny policies. The write/edit save layer restricts paths to the working directory and rejects symbolic links; on macOS, `/tmp` and `/private/tmp` spellings of the same directory are both accepted when the workspace lives there. Sessions and statistics may contain source code and conversations; treat them as sensitive data. [Full permissions guide (Chinese) →](docs/guide.md#工具执行与权限)
 
 ## Everyday use
 

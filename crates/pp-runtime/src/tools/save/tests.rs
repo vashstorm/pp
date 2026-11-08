@@ -440,6 +440,47 @@ fn write_paths_reject_escape_and_symlinks_and_never_modify_hardlink_peer() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn macos_tmp_alias_spelling_is_accepted_inside_a_private_tmp_workspace() {
+    // macOS 的 /tmp 是指向 /private/tmp 的符号链接；工作区 canonical 根落在
+    // /private/tmp 后，/tmp/... 拼写必须与 canonical 结果等价，越界与符号
+    // 链接规则不变。测试要求实际文件系统存在该别名；非默认环境会失败并
+    // 显式给出原因，而不是静默跳过。
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    assert!(
+        dir.path()
+            .canonicalize()
+            .unwrap()
+            .starts_with("/private/tmp"),
+        "tempdir_in(/tmp) must canonicalize under /private/tmp; alias test requires the default macOS layout"
+    );
+    let workspace = Workspace::open(dir.path()).unwrap();
+    let alias_root = std::path::PathBuf::from("/tmp").join(
+        dir.path()
+            .strip_prefix("/tmp")
+            .expect("tempdir lies under /tmp"),
+    );
+    // 同一目录的三种拼写完全等价。
+    workspace
+        .target(&alias_root.join("aliased"), true)
+        .unwrap()
+        .save(b"aliased")
+        .unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("aliased")).unwrap(),
+        b"aliased"
+    );
+    let root_missing_file = workspace
+        .target(&alias_root, false)
+        .err()
+        .expect("directory target has no file path")
+        .to_string();
+    assert_eq!(root_missing_file, "write/edit requires a file path");
+    // 外部 /tmp 兄弟目录仍然拒绝。
+    let sibling = tempfile::tempdir_in("/tmp").unwrap();
+    assert!(workspace.target(sibling.path(), false).is_err());
+}
+#[test]
 fn read_optional_returns_none_only_for_missing_target() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = Workspace::open(dir.path()).unwrap();

@@ -72,6 +72,10 @@ pub(crate) struct ResourceTarget {
     mode: Option<Mode>,
 }
 
+/// `/tmp` 的真实前缀：macOS 的 `/tmp` 指向该目录，路径判断把两种拼写
+/// 归一后再与工作区根比对，且无论工作区根在哪里都只影响 `/tmp` 前缀。
+const TMP_REAL_ROOT: &str = "/private/tmp";
+
 impl Workspace {
     pub(crate) fn open(path: &Path) -> Result<Self> {
         let original = if path.is_absolute() {
@@ -87,6 +91,9 @@ impl Workspace {
             root.metadata()?.is_dir(),
             "startup path must be a directory"
         );
+        // macOS：`/tmp` 是符号链接，canonical 化后落在 `/private/tmp`。
+        // `components` 把 `/tmp/...` 拼写替换成真实前缀后归入同一根，
+        // 路径判断不再因根的两种拼写分叉误判。
         Ok(Self {
             root,
             path,
@@ -94,13 +101,28 @@ impl Workspace {
         })
     }
 
+    /// 把 `/tmp/...` 别名拼写替换成真实前缀；纯值变换，不访问文件系统。
+    /// 折返的是前缀本身：`/tmp/a` 变 `/private/tmp/a`，再与工作区根做
+    /// 前缀判断。无别名或前缀不匹配时原样返回。
+    fn demote_alias(&self, path: &Path) -> PathBuf {
+        match path.strip_prefix("/tmp") {
+            Ok(relative) => {
+                let mut demoted = PathBuf::from(TMP_REAL_ROOT);
+                demoted.push(relative);
+                demoted
+            }
+            Err(_) => path.to_path_buf(),
+        }
+    }
+
     pub(crate) fn components(&self, path: &Path) -> Result<Vec<OsString>> {
+        let path = self.demote_alias(path);
         let relative = if path.is_absolute() {
             path.strip_prefix(&self.original)
                 .or_else(|_| path.strip_prefix(&self.path))
                 .context("write/edit path must stay inside startup directory")?
         } else {
-            path
+            path.as_path()
         };
         let mut parts = Vec::new();
         for component in relative.components() {

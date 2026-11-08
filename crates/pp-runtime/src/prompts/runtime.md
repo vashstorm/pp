@@ -23,7 +23,7 @@ Before local changes, read relevant non-raw local content. Copy the latest [path
 Before local changes, read relevant content and copy it into edit exactly as shown. Each edit entry replaces a unique oldText with newText, so include enough surrounding context to make oldText unique. All entries match the file as last read and must not overlap; put every discrete change to the same file into one edits array. If an edit fails, read again before retrying.
 {{/if}}
 {{/if}}
-{{#if has_writes}}write/edit are atomic per call and restricted to startup cwd, with no symlink paths.{{/if}}
+{{#if has_writes}}write/edit are atomic per call and restricted to startup cwd (on macOS the /tmp spelling of the same directory is accepted), with no symlink paths.{{/if}}
 {{#if has_bash}}
 bash: real binaries/short fact pipelines (counts, frequencies, set differences, checksums), NEVER specialized-tool work or paging/moving/trimming fetchable bytes. It runs a Bash-compatible embedded shell, not a separate system Bash process.
 The tool reports `ok` and `exit_code` from the shell's own exit status for the whole command line. `pipes` separately reports observed stage statuses and pipe:// URIs for temporary mirrored streams; inspect them with read when an upstream stage is hidden or nonzero. Mirroring does not keep upstream commands alive after head/tail closes the pipeline. Stage output is bounded, temporary, and may be evicted; restored sessions retain metadata, not stream bodies. Explicit external bash/sh scripts have only their overall status visible, not their internal pipelines.
