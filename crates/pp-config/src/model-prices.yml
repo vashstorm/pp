@@ -44,6 +44,7 @@ gemini-3.1-flash-lite: { input: 0.25, cacheRead: 0.025, output: 1.5 }
 # DeepSeek: https://api-docs.deepseek.com/quick_start/pricing/
 # 高峰档。旧 Flash 名称由官方路由到同价模型。
 deepseek-v4.1-flash-1017: { input: 0.3, cacheRead: 0.006, output: 1.2 }
+deepseek-v4.1-flash: { input: 0.3, cacheRead: 0.006, output: 1.2 }
 deepseek-flash: { input: 0.3, cacheRead: 0.006, output: 1.2 }
 deepseek-v4-flash: { input: 0.3, cacheRead: 0.006, output: 1.2 }
 deepseek-v4-flash-vision-exp: { input: 0.3, cacheRead: 0.006, output: 1.2 }
