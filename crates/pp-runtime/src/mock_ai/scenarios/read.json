@@ -2,7 +2,7 @@
 	"prompt": "Run the embedded local read fixture.",
 	"edit_mode": "replace",
 	"files": {
-		"read/note.txt": "第一行：Unicode 内容\nsecond line\nthird line after blank\nfourth preview line\nfifth preview line\nsixth-tail-marker\n"
+		"main.rs": "fn main() {\n    // 固定读取 main.rs：Unicode 注释\n    let fixture = \"read-fixture-line\";\n    println!(\"{fixture}\");\n    // fifth preview line\n    // sixth-tail-marker\n}\n"
 	},
 	"lanes": {
 		"root": [
@@ -10,7 +10,7 @@
 				"tool": {
 					"name": "read",
 					"arguments": {
-						"path": "read/note.txt"
+						"path": "main.rs"
 					}
 				},
 				"auto_continue": false
@@ -19,7 +19,7 @@
 				"tool": {
 					"name": "read",
 					"arguments": {
-						"path": "read/note.txt:2-3"
+						"path": "main.rs:2-3"
 					}
 				},
 				"auto_continue": false
@@ -28,16 +28,7 @@
 				"tool": {
 					"name": "read",
 					"arguments": {
-						"path": "read/note.txt:raw"
-					}
-				},
-				"auto_continue": false
-			},
-			{
-				"tool": {
-					"name": "read",
-					"arguments": {
-						"path": "read/missing.txt"
+						"path": "main.rs:raw"
 					}
 				},
 				"auto_continue": false

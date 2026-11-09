@@ -459,7 +459,7 @@ Completed／Abandoned 且仍关联的计划保持只读投影，实际 Markdown 
 
 场景以 `include_str!` 编译内嵌，不在运行时读取源码文件。每场构建 fresh Agent/Tools/子 Agent registry，并使用系统 `pp-mock-*` 临时目录，内部 workspace/config/sessions/locks 分离。配置、四个 mock provider、角色、skills、MCP/LSP 和审批均与正常 Agent 隔离；不修改进程 HOME/cwd，不请求真实 provider，不写真实统计。正常结束、失败、取消都先收尾子 Agent、后台 bash 与服务，再释放队列和目录；清理失败按真实错误显示。
 
-`/test-tools` 顺序运行 read、write、两种 edit、grep、glob、bash、bash-task、wait、todo、ask；独立命令只运行自己的场景。read 包含 range/raw/缺失文件，write 包含越界拒绝，hashline 先真实 read 注册 TAG 再验证成功和 stale，后台任务与 wait 使用 fresh Tools 的确定性 ID。预期 `ok:false` 不打断后续脚本。todo 保留未完成项，原生完成提醒会消费下一条固定正文。套件不串联 ui/task，也不包含外部 LSP/MCP、Plan 工具或 `yield`。
+`/test-tools` 顺序运行 read、write、两种 edit、grep、glob、bash、bash-task、wait、todo、ask；独立命令只运行自己的场景。read 固定读取 `main.rs`，包含 range/raw，write 包含越界拒绝，hashline 先真实 read 注册 TAG 再验证成功和 stale，后台任务与 wait 使用 fresh Tools 的确定性 ID。预期 `ok:false` 不打断后续脚本。todo 保留未完成项，原生完成提醒会消费下一条固定正文。套件不串联 ui/task，也不包含外部 LSP/MCP、Plan 工具或 `yield`。
 
 `/test-task` 的 root 只发一次三任务批次、真实 wait 和三行摘要；FAST/SLOW/REVIEW 在独立 lane 中分别运行 glob/grep/read，再返回固定 marker。`/test-ui` 的原生 SSE 以 12.5 mock token/s 发送显式 thinking/Markdown/code 分片，不合成 `AgentEvent`。
 

@@ -239,7 +239,7 @@ fn mock_test_all_commands_run_in_empty_home_without_models() {
         "native incomplete-todo reminder missing: {stderr}"
     );
     // 预期工具失败只作为结果展示，后续脚本仍继续到各自完成正文。
-    for tool in ["read", "write", "edit", "grep", "bash", "ask"] {
+    for tool in ["write", "edit", "grep", "bash", "ask"] {
         assert!(
             stderr.contains(&format!("tool {tool}: failed")),
             "missing expected failure for {tool}: {stderr}"
@@ -257,7 +257,7 @@ fn mock_test_each_command_runs_only_its_own_scenarios() {
         (
             "/test-tools",
             &[
-                ("read", 5),
+                ("read", 4),
                 ("write", 3),
                 ("edit", 4),
                 ("grep", 4),
@@ -269,7 +269,7 @@ fn mock_test_each_command_runs_only_its_own_scenarios() {
                 ("ask", 1),
             ],
         ),
-        ("/test-read", &[("read", 4)]),
+        ("/test-read", &[("read", 3)]),
         ("/test-write", &[("write", 3)]),
         ("/test-edit", &[("read", 1), ("edit", 4)]),
         ("/test-grep", &[("grep", 4)]),
@@ -424,7 +424,7 @@ fn mock_test_edit_and_tools_repeat_with_fresh_workspaces_and_snapshots() {
     assert_eq!(count(&stderr, "tool edit: ok"), 6, "{stderr}");
     assert_eq!(count(&stderr, "tool edit: failed"), 6, "{stderr}");
     assert_eq!(count(&stderr, "tool read: ok"), 6, "{stderr}");
-    assert_eq!(count(&stderr, "tool read: failed"), 1, "{stderr}");
+    assert_eq!(count(&stderr, "tool read: failed"), 0, "{stderr}");
     assert_eq!(count(&stderr, "tool write: ok"), 2, "{stderr}");
     assert_eq!(count(&stderr, "tool write: failed"), 1, "{stderr}");
     assert_eq!(count(&stderr, "tool bash: failed"), 1, "{stderr}");

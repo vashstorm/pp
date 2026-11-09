@@ -99,8 +99,7 @@ fn tui_mock_read_card_expands_and_collapses_real_content() {
     pty.text("sixth-tail-marker");
     pty.input("\x0f");
     pty.wait_for("read card collapses to its local summary", |screen| {
-        !screen.contents().contains("sixth-tail-marker")
-            && screen.contents().contains("read/note.txt")
+        !screen.contents().contains("sixth-tail-marker") && screen.contents().contains("main.rs")
     });
     pty.input("\x03");
     pty.finish();

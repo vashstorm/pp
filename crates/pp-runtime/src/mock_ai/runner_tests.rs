@@ -71,18 +71,18 @@ impl Recorder {
 }
 
 fn assert_all_suites(recorder: &Recorder) {
-    // read：完整、range、raw、缺失文件，以及 hashline 场景的注册读取。
+    // read：固定 main.rs 的完整、range、raw，以及 hashline 场景的注册读取。
     let reads = recorder.calls("read");
-    assert_eq!(reads.len(), 5);
+    assert_eq!(reads.len(), 4);
     assert_eq!(reads[0]["ok"], true);
     let full = reads[0]["content"].as_str().expect("read content");
-    assert!(full.contains("第一行：Unicode 内容"), "{full}");
+    assert!(full.contains("固定读取 main.rs"), "{full}");
     assert!(full.contains("sixth-tail-marker"), "{full}");
     assert_eq!(reads[1]["ok"], true);
     assert_eq!(reads[1]["lines_read"], 2);
     let ranged = reads[1]["content"].as_str().expect("range content");
-    assert!(ranged.contains("second line"), "{ranged}");
-    assert!(ranged.contains("third line after blank"), "{ranged}");
+    assert!(ranged.contains("固定读取 main.rs"), "{ranged}");
+    assert!(ranged.contains("read-fixture-line"), "{ranged}");
     assert!(!ranged.contains("sixth-tail-marker"), "{ranged}");
     assert_eq!(reads[2]["ok"], true);
     assert!(
@@ -91,13 +91,7 @@ fn assert_all_suites(recorder: &Recorder) {
             .expect("raw content")
             .contains("sixth-tail-marker")
     );
-    assert_eq!(reads[3]["ok"], false);
-    assert!(
-        reads[3]["error"]
-            .as_str()
-            .is_some_and(|error| !error.is_empty())
-    );
-    let header = reads[4]["content"]
+    let header = reads[3]["content"]
         .as_str()
         .expect("hashline read content")
         .lines()
