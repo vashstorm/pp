@@ -747,7 +747,7 @@ fn subagent_task_is_hidden_and_recursive_dispatch_is_rejected() {
 }
 
 #[test]
-fn subagent_concurrency_limits_are_shared_across_batches() {
+fn slow_subagent_concurrency_limits_are_shared_across_batches() {
     for protocol in ["completion", "response"] {
         for (task_settings, limit) in [
             ("", 4),

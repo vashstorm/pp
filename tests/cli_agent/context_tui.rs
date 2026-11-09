@@ -930,7 +930,7 @@ fn context_tui_auto_compact_success_keeps_dialogue_drops_usage_without_summary_b
 // ulimit -f 允许记录新输入，却拒绝完整压缩 state；保留 partial tail，
 // 由真正的恢复路径忽略它，不能宣告成功或继续普通请求。
 #[test]
-fn context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
+fn slow_context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();

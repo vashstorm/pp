@@ -398,7 +398,7 @@ fn tree_tui_repeated_rewinds_hide_abandoned_messages_by_default_and_after_resume
 }
 
 #[test]
-fn tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft() {
+fn slow_tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft() {
     let server = Server::http("127.0.0.1:0").unwrap();
     let (_home, mut pty) = context_tui_start(&server, "completion", 100_000, 80);
     pty.input("tree-seed\r");

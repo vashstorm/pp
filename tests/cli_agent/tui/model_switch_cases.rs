@@ -111,7 +111,7 @@ fn tui_model_switch_safe_boundary_and_failure() {
 }
 
 #[test]
-fn tui_model_switch_survives_panels_and_tree_without_saving_default() {
+fn slow_tui_model_switch_survives_panels_and_tree_without_saving_default() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();

@@ -1,20 +1,37 @@
 [profile.default]
-# 保留并行执行；串行参数仅用于定向排查失败用例。
+# 保留并行执行；串行参数只用于定向排查失败用例与 slow_test 集合（--profile slow_test）。
 test-threads = "num-cpus"
 retries = 0
 # 收集全部单元与集成测试失败，不提前停止。
 fail-fast = false
+# 全量并行档排除 slow_test 串行集合：这些用例在满载并行下会被 CPU 竞争拖过用例内的
+# 5s／10s 栅栏，表现为假超时。完整验证＝默认档（并行）＋ slow_test 档（串行），见 tests/AGENTS.md。
+default-filter = "not test(/(^|::)slow_/)"
 
-# 满载并行下少数重型用例（多轮真实 PTY、子 Agent 并发与切换、plan 审批）会被
-# CPU 竞争拖过全部屏前栅栏。只让这批用例逐个独占执行，其余 2000+ 用例仍保持默认并行。
-# 已按场景拆分（压缩结果/外部文件故障/审批动作/取消阶段/执行起点/MCP 执行起点/跨协议恢复
-# 组合）的用例不再列入；未拆的重型单流程用例保留原名。
+# slow_test 串行集合：真实 PTY、真实二进制与真实子进程的重型用例。
+# 成员规则唯一且可判定：测试名末级以 slow_ 开头；
+# `cargo nextest list --locked --workspace --profile slow_test` 即全集
+# （默认档 default-filter 已排除它们，故须指定档位或加 --ignore-default-filter）。
+# 新增成员只给测试函数加 slow_ 前缀，不在本文件维护名字清单，避免名单与源码漂移。
+[test-groups.slow_test]
+max-threads = 1
+
+# 即使在默认档用 --ignore-default-filter 混跑，slow_test 成员也逐个独占执行。
 [[profile.default.overrides]]
-filter = 'binary_id(pp::cli_agent) and test(/^(subagents::subagent_concurrency_limits_are_shared_across_batches|tui::ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history|tui::ask_tui_provider_argument_variants_succeed_without_model_retry|tui::agent_hub_rebinds_after_slash_resume_without_a_turn|tui::instruction_loading_cards_preview_expand_and_resume_both_protocols|tui::model_switch_cases::tui_model_switch_survives_panels_and_tree_without_saving_default|tui::native_tui_resize_between_batches_keeps_each_source_line_once|tui::streaming_cases::streaming_tui_partial_failures_preserve_text_and_recover_without_leaks|tui::tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft|tui::tui_runtime_role_changes_switch_children_at_their_own_committed_boundary|tui::wait_tui_batch_updates_one_card_and_blocks_parent_until_all_children_settle)$/)'
-threads-required = "num-cpus"
+filter = 'test(/(^|::)slow_/)'
+test-group = "slow_test"
+
+# slow_test 档：只跑串行集合，整档 test-threads = 1，一个用例结束才开始下一个，
+# 真实 PTY 与子进程之间不再互相饿死。默认档不收集这些用例。
+[profile.slow_test]
+test-threads = 1
+retries = 0
+fail-fast = false
+default-filter = "test(/(^|::)slow_/)"
 
 # 日常快速档：仅跳过 cli_agent 中真实 PTY 的 tui:: 用例（spawn 真实 pp 二进制），
-# 每个高开销类别保留一个冒烟用例；src/ 单元测试与其他集成用例照旧运行。
+# 每个高开销类别保留一个冒烟用例；slow_test 成员一律跳过。
+# src/ 单元测试与其他集成用例照旧运行。
 # 与 -E 过滤取交集，定向跑 PTY 用例须加 --ignore-default-filter 或改用默认档。
 [profile.quick]
-default-filter = "not (binary_id(pp::cli_agent) and test(/^tui::/)) or test(/^(tui::streaming_cases::streaming_tui_both_protocols_live_colors_scroll_resize_and_bash|tui::transcript_cases::tui_exit_keeps_conversation_on_normal_screen|tui::plan_mode_cases::plan_tui_prompt_enters_before_request_and_reuses_plan_mode|tui::native_tui_streaming_keeps_input_cursor_visible_both_protocols|tui::ask_tui_single_space_selects_without_sending_until_enter|tui::context_tui_shows_current_and_window_on_input_top_right)$/)"
+default-filter = "((not (binary_id(pp::cli_agent) and test(/^tui::/))) or test(/^(tui::streaming_cases::streaming_tui_both_protocols_live_colors_scroll_resize_and_bash|tui::transcript_cases::tui_exit_keeps_conversation_on_normal_screen|tui::plan_mode_cases::plan_tui_prompt_enters_before_request_and_reuses_plan_mode|tui::native_tui_streaming_keeps_input_cursor_visible_both_protocols|tui::ask_tui_single_space_selects_without_sending_until_enter|tui::context_tui_shows_current_and_window_on_input_top_right)$/)) and not test(/(^|::)slow_/)"

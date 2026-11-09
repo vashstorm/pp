@@ -219,7 +219,7 @@ fn native_tui_long_partial_exit_preserves_uncommitted_rows_both_protocols() {
 }
 
 #[test]
-fn native_tui_resize_between_batches_keeps_each_source_line_once() {
+fn slow_native_tui_resize_between_batches_keeps_each_source_line_once() {
     let provider = server();
     let (_home, mut pty) = context_tui_start(&provider, "completion", 100_000, 80);
     pty.input("native resize task\r");

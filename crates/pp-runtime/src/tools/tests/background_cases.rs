@@ -150,7 +150,7 @@ fn background_survives_foreground_deadline_and_stops_group() {
 }
 
 #[test]
-fn background_output_is_bounded_without_blocking_progress() {
+fn slow_background_output_is_bounded_without_blocking_progress() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
     tools.artifacts.bind(dir.path(), "background").unwrap();

@@ -763,7 +763,7 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
 /// `/resume` 之后不追加任何任务，Agent Hub 也必须立即可读该会话的 task 子 Agent。
 /// 旧实现只在下一轮 run 里重建根绑定，面板会一直停在 “no binding was granted”。
 #[test]
-fn agent_hub_rebinds_after_slash_resume_without_a_turn() {
+fn slow_agent_hub_rebinds_after_slash_resume_without_a_turn() {
     let protocol = "completion";
     let fixture = server();
     let home = tempfile::tempdir().unwrap();

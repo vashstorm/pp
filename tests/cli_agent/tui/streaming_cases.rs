@@ -258,7 +258,7 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
 }
 
 #[test]
-fn streaming_tui_partial_failures_preserve_text_and_recover_without_leaks() {
+fn slow_streaming_tui_partial_failures_preserve_text_and_recover_without_leaks() {
     for protocol in ["completion", "response"] {
         for ending in ["eof", "json", "failed"] {
             let server = server();

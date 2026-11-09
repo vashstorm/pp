@@ -248,11 +248,12 @@ The repository is a Cargo workspace with seven packages. The root `pp` package k
 `cargo run`, `cargo build`, and tests without a package selector apply only to the root default member. Use `--workspace` for full verification across every crate, and `-p <package>` for one library.
 
 Tests use [cargo-nextest](https://nexte.st/docs/running/). Install it with `cargo install cargo-nextest --locked` if needed.
-For local changes, select the relevant tests first; the full suite runs in parallel by default. Use `--test-threads=1` only to investigate specific failures.
+For local changes, select the relevant tests first; the full suite runs in parallel by default. Tests named with a `slow_` prefix form the serial `slow_test` set (real PTY, real binary, real subprocesses); the default profile filters them out, so full verification is the default profile plus `--profile slow_test`. Use `--test-threads=1` only to investigate specific failures.
 
 ```sh
 cargo nextest run --locked --workspace context_
 cargo nextest run --locked --workspace
+cargo nextest run --locked --workspace --profile slow_test
 cargo check --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace --doc

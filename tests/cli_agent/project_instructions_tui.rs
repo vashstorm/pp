@@ -81,7 +81,7 @@ fn instruction_cards_exit(pty: &mut Pty) {
 }
 
 #[test]
-fn instruction_loading_cards_preview_expand_and_resume_both_protocols() {
+fn slow_instruction_loading_cards_preview_expand_and_resume_both_protocols() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();

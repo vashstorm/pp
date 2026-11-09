@@ -1126,6 +1126,7 @@ pp gc [天数]
 cargo build --locked
 cargo check --locked --workspace --all-targets
 cargo nextest run --locked --workspace
+cargo nextest run --locked --workspace --profile slow_test
 cargo nextest run --locked --workspace --profile quick
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo fmt --all --check
@@ -1134,7 +1135,9 @@ cargo test --locked --workspace --doc
 
 根包是默认成员；裸 `cargo nextest run --locked` 只覆盖根 `cli_agent`，跨库验证必须显式加 `--workspace`。
 
-`quick` 是日常快档：`.config/nextest.toml` 的 `[profile.quick]` 用 `default-filter` 跳过 `cli_agent` 中的真实 PTY 用例，只保留每类冒烟；`crates/*` 单元测试与其余集成用例照旧执行。它不覆盖 TUI／PTY 行为，改动这些区域时用默认档。`default-filter` 与 `-E` 取交集，所以在 `--profile quick` 下定向跑 PTY 用例必须加 `--ignore-default-filter`，否则会得到零匹配：
+`slow_test` 是串行集合：满载并行下会被饿过用例内 5s／10s 栅栏的重型用例（真实 PTY、真实二进制、真实子进程）已集中在此，成员判据是测试名末级以 `slow_` 开头，由 `.config/nextest.toml` 的 `[test-groups.slow_test]`（`max-threads = 1`）与 `[profile.slow_test]`（`test-threads = 1`）保证逐个串行。默认档的 `default-filter` 排除它们，所以完整验证＝默认档＋ `--profile slow_test`；它们只能在 `--profile slow_test` 或 `--ignore-default-filter` 下被收集，默认档配 `-E` 会零匹配。新增不稳定重型用例时给测试函数加 `slow_` 前缀，不在配置里维护名字清单。
+
+`quick` 是日常快档：`.config/nextest.toml` 的 `[profile.quick]` 用 `default-filter` 跳过 `cli_agent` 中的真实 PTY 用例与 `slow_test` 成员，只保留每类冒烟；`crates/*` 单元测试与其余集成用例照旧执行。它不覆盖 TUI／PTY 行为，改动这些区域时用默认档。`default-filter` 与 `-E` 取交集，所以在 `--profile quick` 下定向跑 PTY 用例必须加 `--ignore-default-filter`，否则会得到零匹配：
 
 ```sh
 cargo nextest run --locked -p pp --test cli_agent --profile quick --ignore-default-filter -E 'test(tui_exit_keeps_conversation_on_normal_screen)'
@@ -1158,9 +1161,9 @@ cargo nextest run --locked --workspace -E 'test(tools::read::) | test(read_pagin
 
 筛选应覆盖受影响的单元测试和集成测试；`-p pp --test cli_agent` 只运行根集成测试，适合验证 CLI 行为，不能替代相关单元测试。不确定匹配范围时先运行 `cargo nextest list --locked --workspace -E '…'`；筛选结果为空不算验证通过。多个相关范围可用 `-E 'test(pattern_a) | test(pattern_b)'` 一次运行。
 
-配置／持久化／协议边界等跨模块改动、依赖更新、公共测试设施改动或明确要求完整验证时，运行一次 `cargo nextest run --locked --workspace`。局部验证通过且没有新改动或新疑点后，无需重复全量测试、build 或 clippy；报告实际验证范围即可。
+配置／持久化／协议边界等跨模块改动、依赖更新、公共测试设施改动或明确要求完整验证时，运行一次 `cargo nextest run --locked --workspace` 加 `cargo nextest run --locked --workspace --profile slow_test`（默认档已排除串行集合，只跑其一只算部分验证）。局部验证通过且没有新改动或新疑点后，无需重复全量测试、build 或 clippy；报告实际验证范围即可。
 
-`.config/nextest.toml` 的默认 profile 显式使用 `test-threads = "num-cpus"`、`retries = 0` 和 `fail-fast = false`；`quick` profile 不写 `inherits`，沿用同样的并行、重试与失败收集设置，只额外带 `default-filter`。不要把全量串行测试作为任务默认收尾。PTY／进程组／超时用例实际失败时，才对失败用例或对应小集合加 `--test-threads=1` 判断是否受并行压力影响；参数直接传给 nextest，不放在 `--` 后。`--success-output immediate` 显示成功输出而不强制串行。不通过增加 sleep、重试或放宽断言掩盖问题。
+`.config/nextest.toml` 的默认 profile 显式使用 `test-threads = "num-cpus"`、`retries = 0` 和 `fail-fast = false`，并用 `default-filter` 排除 `slow_test` 串行集合；`slow_test` profile 只收串行集合并固定 `test-threads = 1`；`quick` profile 不写 `inherits`，沿用同样的并行、重试与失败收集设置，只额外带 `default-filter`。不要把全量串行测试作为任务默认收尾。PTY／进程组／超时用例实际失败时，先看它是否因满载并行撞上 5s／10s 栅栏，需要时把测试函数改名加 `slow_` 前缀移入串行集合；单独排查可对失败用例或对应小集合加 `--test-threads=1`，参数直接传给 nextest，不放在 `--` 后。`--success-output immediate` 显示成功输出而不强制串行。不通过增加 sleep、重试或放宽断言掩盖问题。
 
 单元测试覆盖配置、协议解析、原子保存和界面布局；`tests/cli_agent.rs` 及其子模块通过真实二进制、回环 HTTP SSE 服务、临时 HOME 与项目目录验证双协议工具循环、流式输出、会话恢复、Plan、MCP、后台进程、项目指令和安全撤销。Unix 下的 PTY 测试还检查输入、滚动、缩放、取消与终端恢复。测试不访问个人密钥或真实供应商；本地 fixture 通过不代表真实服务端兼容性。
 

@@ -953,7 +953,7 @@ fn tui_cancel_headers_persists_and_resumes_completion() {
 }
 
 #[test]
-fn tui_cancel_headers_persists_and_resumes_response() {
+fn slow_tui_cancel_headers_persists_and_resumes_response() {
     cancel_terminal_state_case("response", CancelPhase::Headers);
 }
 

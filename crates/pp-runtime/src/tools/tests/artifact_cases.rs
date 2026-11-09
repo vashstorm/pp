@@ -113,7 +113,7 @@ fn artifact_rg_reads_after_four_mib_and_warns_for_multiline() {
 }
 
 #[test]
-fn artifact_background_live_read_is_stable_and_stop_seals_once() {
+fn slow_artifact_background_live_read_is_stable_and_stop_seals_once() {
     let dir = tempfile::tempdir().unwrap();
     let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
     tools.artifacts.bind(dir.path(), "root").unwrap();

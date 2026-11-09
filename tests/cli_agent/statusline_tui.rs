@@ -73,7 +73,7 @@ fn statusline_reply_calls_usage(request: Request, protocol: &str, mut calls: Val
 }
 
 #[test]
-fn statusline_out_accumulates_session_usage_across_requests_both_protocols() {
+fn slow_statusline_out_accumulates_session_usage_across_requests_both_protocols() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let (_home, mut pty) = statusline_start(&fixture, protocol, false);
@@ -147,7 +147,7 @@ fn statusline_cost_displays_only_settled_session_subtotal() {
 }
 
 #[test]
-fn statusline_subagent_badge_tracks_running_children_before_speed() {
+fn slow_statusline_subagent_badge_tracks_running_children_before_speed() {
     let fixture = server();
     let protocol = "completion";
     let (_home, mut pty) = statusline_start(&fixture, protocol, false);

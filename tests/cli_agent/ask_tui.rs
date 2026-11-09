@@ -974,7 +974,7 @@ fn ask_tui_freeform_empty_options_and_empty_multi_submit() {
 // —— 验证项：畸形参数不开面板、不挂起、正常工具错误 ——
 
 #[test]
-fn ask_tui_provider_argument_variants_succeed_without_model_retry() {
+fn slow_ask_tui_provider_argument_variants_succeed_without_model_retry() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();
@@ -1122,7 +1122,7 @@ fn ask_tui_invalid_arguments_never_open_panel_and_recover() {
 // —— 验证项：草稿/光标/粘贴保留，Esc 取消跳过同批 write 且历史成对 ——
 
 #[test]
-fn ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history() {
+fn slow_ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();

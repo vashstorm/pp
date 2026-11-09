@@ -53,7 +53,7 @@ fn tui_roles_favorites_sort_persist_across_restart_and_can_be_removed() {
 }
 
 #[test]
-fn tui_roles_configures_explorer_after_fallback_row_without_switching_current_session() {
+fn slow_tui_roles_configures_explorer_after_fallback_row_without_switching_current_session() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
     let models =

@@ -138,7 +138,7 @@ fn wait_subagent_settings() -> String {
 }
 
 #[test]
-fn wait_tui_batch_updates_one_card_and_blocks_parent_until_all_children_settle() {
+fn slow_wait_tui_batch_updates_one_card_and_blocks_parent_until_all_children_settle() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
