@@ -91,22 +91,7 @@ fn file_command_menu_ranks_matches_together_with_builtin_commands() {
         .iter()
         .map(|item| item.label.as_str())
         .collect();
-    // dev/test 构建仍注册 /test-* 专用命令，补全顺序与普通命令混合排序；
-    // 非 dev/test 构建不注册这些名字，只出现实际注册的命令。
-    // `/test-rg` 不含 `/RE` 的子序列，因此不进入本次补全结果。
-    #[cfg(debug_assertions)]
-    let expected = [
-        "/re",
-        "/resume",
-        "/review",
-        "/tree",
-        "/test-read",
-        "/Roles",
-        "/test-write",
-    ];
-    #[cfg(not(debug_assertions))]
-    let expected = ["/re", "/resume", "/review", "/tree", "/Roles"];
-    assert_eq!(labels, expected);
+    assert_eq!(labels, ["/re", "/resume", "/review"]);
     app.handle(key(KeyCode::Enter), &mut dirty);
     assert!(matches!(
         requests.try_recv(),

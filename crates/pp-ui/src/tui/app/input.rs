@@ -3,6 +3,8 @@ use crate::tui::{
     SelectionMenu, State, ThinkLevel, WorkerCommand, editor, files, platform_text,
 };
 
+const COMMAND_PREFIX_RANK: u8 = 1;
+
 impl App {
     /// 补全跟随主输入框焦点，不以后台任务状态作为开关。
     pub(in crate::tui) fn completion_input_focused(&self) -> bool {
@@ -182,6 +184,11 @@ impl App {
                         })
                         .collect();
                 matches.sort_by_key(|(rank, _)| *rank);
+                let prefix_count =
+                    matches.partition_point(|(rank, _)| *rank <= COMMAND_PREFIX_RANK);
+                if prefix_count > 0 {
+                    matches.truncate(prefix_count);
+                }
                 matches.into_iter().map(|(_, item)| item).collect()
             }
             _ => {
@@ -783,7 +790,7 @@ fn command_match_rank(name: &str, query: &str) -> Option<u8> {
     if name == query {
         Some(0)
     } else if name.starts_with(query) {
-        Some(1)
+        Some(COMMAND_PREFIX_RANK)
     } else if name.contains(query) {
         Some(2)
     } else {

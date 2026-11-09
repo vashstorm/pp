@@ -52,6 +52,19 @@ fn command_menu_lists_debug_only_commands_in_debug_builds() {
     }
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn command_menu_hides_fuzzy_matches_when_a_prefix_matches() {
+    let mut app = app();
+    let mut dirty = false;
+    app.handle(Event::Paste("/test-too".into()), &mut dirty);
+    let menu = app.menu.as_ref().unwrap();
+    assert_eq!(menu.items().len(), 1);
+    assert_eq!(menu.items()[0].label, "/test-tools");
+    app.handle(key(KeyCode::Tab), &mut dirty);
+    assert_eq!(app.input.lines(), &["/test-tools"]);
+}
+
 #[test]
 fn command_menu_matches_fuzzy_case_insensitively_and_prioritizes_prefixes() {
     let mut app = app();
@@ -62,7 +75,7 @@ fn command_menu_matches_fuzzy_case_insensitively_and_prioritizes_prefixes() {
         ("/PLS", "/plan-list", "/plan-list"),
         ("/LIST", "/plan-list", "/plan-list"),
         ("/PLAN", "/plan", "/PLAN"),
-        ("/RE", "/resume", "/RE"),
+        ("/RE", "/resume", "/resume"),
     ] {
         app.input = editor();
         app.handle(Event::Paste(query.into()), &mut dirty);
