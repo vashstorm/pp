@@ -162,12 +162,7 @@ fn cost_amount(usd: f64, display: &pp_config::config::CostDisplay) -> Option<Str
         return None;
     }
     let precision = if total > 10.0 { 2 } else { 3 };
-    let mut amount = format!("{total:.precision$}");
-    if display.currency != "USD" {
-        amount.push(' ');
-        amount.push_str(&display.currency);
-    }
-    Some(amount)
+    Some(format!("{total:.precision$}"))
 }
 
 fn cost_field(
@@ -1176,18 +1171,19 @@ mod tests {
     }
 
     #[test]
-    fn cost_field_derives_currency_icon_and_code_suffix() {
+    fn cost_field_shows_currency_icon_and_converted_amount() {
         let task = pp_config::task_status::Snapshot {
             cost: 0.012,
             ..Default::default()
         };
-        for (currency, icon, expected) in [
-            ("USD", "\u{f01c1}", "0.012"),
-            ("CNY", "\u{f07ba}", "0.086 CNY"),
+        for (currency, exchange_rate, icon, expected) in [
+            ("USD", 1.0, "\u{f01c1}", "0.012"),
+            ("CNY", 7.2, "\u{f07ba}", "0.086"),
+            ("BRL", 5.0, "\u{f0b85}", "0.060"),
         ] {
             let display = pp_config::config::CostDisplay {
                 currency: currency.into(),
-                exchange_rate: if currency == "USD" { 1.0 } else { 7.2 },
+                exchange_rate,
             };
             assert_eq!(
                 cost_field(&task, &display).map(|line| line_text(&line)),

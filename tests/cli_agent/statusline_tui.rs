@@ -492,8 +492,8 @@ fn statusline_session_cost_resumes_immediately_and_reuses_web_pricing() {
     pty.resize(30, 180);
     pty.ready();
     for (task, title_text, answer, total) in [
-        ("first session cost task", "第一笔费用", "cost-answer-one", "0.389 CNY"),
-        ("second session cost task", "第二笔费用", "cost-answer-two", "0.777 CNY"),
+        ("first session cost task", "第一笔费用", "cost-answer-one", "0.389"),
+        ("second session cost task", "第二笔费用", "cost-answer-two", "0.777"),
     ] {
         pty.input(&format!("{task}\r"));
         let ((main, body), (title, _)) = statusline_requests(&fixture);
@@ -508,7 +508,7 @@ fn statusline_session_cost_resumes_immediately_and_reuses_web_pricing() {
     pty.input("/new\r");
     pty.wait_for("新会话清空费用", |screen| {
         let text = screen.contents();
-        text.contains("0.0%/40K") && !text.contains(" CNY")
+        text.contains("0.0%/40K") && !text.contains('\u{f07ba}')
     });
     pty.input("/resume\r");
     pty.wait_for("列出待恢复会话", |screen| {
@@ -520,7 +520,9 @@ fn statusline_session_cost_resumes_immediately_and_reuses_web_pricing() {
     pty.input("\r");
     pty.wait_for("恢复后无需新请求即可看到历史费用", |screen| {
         let text = screen.contents();
-        text.contains("cost-answer-two") && text.contains("\u{f07ba} 0.777 CNY")
+        text.contains("cost-answer-two")
+            && text.contains("\u{f07ba} 0.777")
+            && !text.contains("0.777 CNY")
     });
     pty.input("/quit\r");
     pty.finish();
@@ -541,17 +543,17 @@ fn statusline_session_cost_resumes_immediately_and_reuses_web_pricing() {
 
     let mut pty = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
     pty.resize(30, 180);
-    pty.text("\u{f07ba} 0.777 CNY");
+    pty.text("\u{f07ba} 0.777");
     tree_tui_open(&mut pty, "cost-answer-two");
     tree_tui_rewind(&mut pty, &[TREE_TUI_UP], "second session cost task");
-    pty.text("\u{f07ba} 0.777 CNY");
+    pty.text("\u{f07ba} 0.777");
     pty.input("continue after restoring cost\r");
     let ((main, _), (title, _)) = statusline_requests(&fixture);
     statusline_reply_usage(title, protocol, "恢复后的标题");
     pty.text("恢复后的标题");
     statusline_reply_usage(main, protocol, "cost-answer-three");
     pty.completed_after("cost-answer-three");
-    pty.text("\u{f07ba} 1.166 CNY");
+    pty.text("\u{f07ba} 1.166");
     pty.input("/quit\r");
     pty.finish();
     no_more(&fixture);
