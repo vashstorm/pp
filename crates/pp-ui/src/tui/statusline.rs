@@ -30,7 +30,6 @@ const MIN_AFTER_MODE: usize = FIELD_ICON_WIDTH + 1;
 const MODEL: Color = Color::Rgb(223, 167, 209);
 const DIRECTORY: Color = Color::Rgb(36, 174, 181);
 const GIT: Color = Color::Rgb(204, 167, 72);
-pub(super) const CONTEXT: Color = Color::Rgb(115, 218, 202);
 const SPEED: Color = Color::Rgb(255, 95, 162);
 const SUBAGENTS: Color = Color::Rgb(254, 188, 56);
 const INPUT: Color = Color::Rgb(125, 207, 255);
@@ -54,14 +53,10 @@ const SPEED_FAST_ICON: &str = "\u{f04c5}";
 const IO_ICON: &str = "\u{f04e2}";
 const CACHE_ICON: &str = "\u{f01bc}";
 const TITLE_ICON: &str = "\u{f09a9}";
-const CONTEXT_ICON: &str = "\u{f2d0}";
+const CONTEXT_ICON: &str = "\u{e62a}";
 #[cfg(test)]
 const COST_ICON: &str = "\u{f01c1}";
 const TIMER_ICON: &str = "\u{f051b}";
-const HEALTHY_ICON: &str = "\u{f05e0}";
-const WARNING_ICON: &str = "\u{f0026}";
-const EXCEEDED_ICON: &str = "\u{f0159}";
-const UNKNOWN_ICON: &str = "\u{f02d7}";
 const ICON_WIDTH: usize = 2;
 // 分隔符与图标列在宽度预算中的固定开销。
 const SEPARATOR_WIDTH: usize = 3;
@@ -109,7 +104,6 @@ fn field(icon: &str, text: String, color: Color) -> Line<'static> {
     ])
 }
 
-/// Ctx 数值固定青绿色，只有末尾的健康图标根据配置阈值变化。
 pub(super) fn context_field(usage: &ContextUsage) -> Line<'static> {
     let text = match usage.context_window {
         Some(window) => format!(
@@ -119,18 +113,7 @@ pub(super) fn context_field(usage: &ContextUsage) -> Line<'static> {
         ),
         None => format!("{}/?", abbreviate_tokens(usage.estimated_tokens)),
     };
-    let (icon, color) = match usage.percent() {
-        Some(percent) if percent >= 100 => (EXCEEDED_ICON, Color::Red),
-        Some(percent) if percent >= u128::from(usage.threshold_percent) => {
-            (WARNING_ICON, Color::Yellow)
-        }
-        Some(_) => (HEALTHY_ICON, OUTPUT),
-        None => (UNKNOWN_ICON, Color::DarkGray),
-    };
-    let mut line = field(CONTEXT_ICON, text, CONTEXT);
-    line.spans
-        .push(Span::styled(format!(" {icon}"), Style::default().fg(color)));
-    line
+    field(CONTEXT_ICON, text, Color::White)
 }
 
 fn pair_field(icon: &str, left: String, right: String, colors: (Color, Color)) -> Line<'static> {
@@ -1157,13 +1140,13 @@ mod tests {
         assert_eq!(
             line_text(&line),
             format!(
-                " {SPEED_SLOW_ICON} 30.2 tok/s · {TITLE_ICON} 修复会话历史 · {CONTEXT_ICON} 81.6%/500K {WARNING_ICON} · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.012 · {TIMER_ICON} 1m25s "
+                " {SPEED_SLOW_ICON} 30.2 tok/s · {TITLE_ICON} 修复会话历史 · {CONTEXT_ICON} 81.6%/500K · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.012 · {TIMER_ICON} 1m25s "
             )
         );
         for (text, color) in [
             ("30.2 tok/s", SPEED),
             ("修复会话历史", PLAN_MODE),
-            ("81.6%/500K", CONTEXT),
+            ("81.6%/500K", Color::White),
             ("12.3K", INPUT),
             ("45.7K", OUTPUT),
             ("8K", CACHE_READ),
@@ -1294,32 +1277,24 @@ mod tests {
     }
 
     #[test]
-    fn context_health_changes_only_the_final_icon() {
+    fn context_field_is_white_with_only_a_leading_icon() {
         let mut usage = status_usage();
-        for (tokens, icon, color) in [
-            (399_999, HEALTHY_ICON, OUTPUT),
-            (400_000, WARNING_ICON, Color::Yellow),
-            (499_999, WARNING_ICON, Color::Yellow),
-            (500_000, EXCEEDED_ICON, Color::Red),
-            (600_000, EXCEEDED_ICON, Color::Red),
+        for (window, tokens, expected) in [
+            (Some(500_000), 250_000, "50.0%/500K"),
+            (Some(500_000), 400_000, "80.0%/500K"),
+            (Some(500_000), 600_000, "120.0%/500K"),
+            (None, 600_000, "600K/?"),
         ] {
+            usage.context_window = window;
             usage.estimated_tokens = tokens;
             let line = context_field(&usage);
-            assert!(line_text(&line).ends_with(icon));
+            assert_eq!(line_text(&line), format!("\u{e62a} {expected}"));
             assert!(
-                line.spans[..2]
+                line.spans
                     .iter()
-                    .all(|span| span.style.fg == Some(CONTEXT))
+                    .all(|span| span.style.fg == Some(Color::White))
             );
-            assert_eq!(line.spans.last().unwrap().style.fg, Some(color));
         }
-        usage.context_window = None;
-        let line = context_field(&usage);
-        assert_eq!(
-            line_text(&line),
-            format!("{CONTEXT_ICON} 600K/? {UNKNOWN_ICON}")
-        );
-        assert_eq!(line.spans.last().unwrap().style.fg, Some(Color::DarkGray));
     }
 
     #[test]
@@ -1611,7 +1586,7 @@ mod tests {
         assert_eq!(
             line_text(&line),
             format!(
-                " {SUBAGENT_ONE_ICON} subagent · {CONTEXT_ICON} 81.6%/500K {WARNING_ICON} · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.012 · {TIMER_ICON} 1m25s "
+                " {SUBAGENT_ONE_ICON} subagent · {CONTEXT_ICON} 81.6%/500K · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.012 · {TIMER_ICON} 1m25s "
             )
         );
         let badge = line
@@ -1621,7 +1596,7 @@ mod tests {
             .unwrap();
         assert!(badge.style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(fg_at(line.clone(), 240, "subagent"), SUBAGENTS);
-        assert_eq!(fg_at(line.clone(), 240, "81.6%/500K"), CONTEXT);
+        assert_eq!(fg_at(line.clone(), 240, "81.6%/500K"), Color::White);
         assert_eq!(fg_at(line.clone(), 240, "12.3K"), INPUT);
         assert_eq!(fg_at(line.clone(), 240, "45.7K"), OUTPUT);
         assert_eq!(fg_at(line.clone(), 240, "8K"), CACHE_READ);

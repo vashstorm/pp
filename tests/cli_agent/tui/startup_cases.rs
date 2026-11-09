@@ -295,7 +295,7 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
                 && text
                     .lines()
                     .nth(8)
-                    .is_some_and(|line| line.contains("\u{f2d0} "))
+                    .is_some_and(|line| line.contains("\u{e62a} "))
     });
     pty.resize(6, 20);
     pty.wait_for("极小窗口保留输入草稿", |screen| {
@@ -344,7 +344,7 @@ fn input_bar_above_draft(text: &str) -> bool {
     lines
         .iter()
         .position(|line| line.starts_with('❯'))
-        .is_some_and(|row| row > 0 && lines[row - 1].contains("\u{f2d0} "))
+        .is_some_and(|row| row > 0 && lines[row - 1].contains("\u{e62a} "))
 }
 
 const TIPS_ACCENT: vt100::Color = vt100::Color::Rgb(127, 166, 106);

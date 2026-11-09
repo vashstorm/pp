@@ -3,7 +3,7 @@
 // 取消后草稿与已接受输入/工具结果保留且不继续普通请求、成功压缩后旧对话
 // 保留而用量下降且 Compact Note 先于任务 assistant、下一个普通请求只含
 // 摘要包装与原生近期后缀、窄屏 resize 的上下文字段优先与 Ctrl-C 终端标志
-// 恢复、达到配置阈值时上下文字段变黄，以及 ulimit -f 下压缩 state 写入
+// 恢复、达到配置阈值和超过容量时上下文字段仍为白色，以及 ulimit -f 下压缩 state 写入
 // 留下 partial tail 后恢复读取此前完整快照。此外覆盖输入栏上沿的实时 token
 // 指标：流中不带前缀的估算速度、权威 usage 后的平均速度与 In/Out/CRead/CWrite 配色、
 // 缺失 usage 与 /new 的清理、取消后的速率停止，以及 60/40/20 列下 Ctx 优先
@@ -130,7 +130,7 @@ fn context_tui_exchange(
 // 从状态栏的百分比和容量读取用量，允许界面的一位小数舍入。
 fn context_tui_ctx_tokens(screen: &vt100::Screen) -> f64 {
     let contents = screen.contents();
-    let rest = contents.split_once("\u{f2d0} ").expect("上下文字段").1;
+    let rest = contents.split_once("\u{e62a} ").expect("上下文字段").1;
     let (percent, capacity) = rest.split_once("%/").expect("百分比与容量");
     let number: String = capacity
         .chars()
@@ -147,7 +147,7 @@ fn context_tui_ctx_tokens(screen: &vt100::Screen) -> f64 {
 fn context_tui_ctx_percent(screen: &vt100::Screen) -> u128 {
     screen
         .contents()
-        .split_once("\u{f2d0} ")
+        .split_once("\u{e62a} ")
         .expect("上下文字段")
         .1
         .split_once('%')
@@ -181,15 +181,12 @@ fn context_tui_locate(screen: &vt100::Screen, needle: &str) -> Option<(u16, u16)
     None
 }
 
-// 健康状态由独立图标表示，数值保持紫色。
-fn context_tui_ctx_color(pty: &Pty) -> vt100::Color {
+fn context_tui_assert_ctx_white(pty: &Pty) {
     let screen = pty.parser.screen();
-    for icon in ["\u{f05e0}", "\u{f0026}", "\u{f0159}", "\u{f02d7}"] {
-        if let Some((row, column)) = context_tui_locate(screen, icon) {
-            return screen.cell(row, column).unwrap().fgcolor();
-        }
+    let (row, column) = context_tui_locate(screen, "\u{e62a} ").expect("缺少上下文字段");
+    for column in [column, column + 2] {
+        assert_eq!(screen.cell(row, column).unwrap().fgcolor(), vt100::Color::Idx(15));
     }
-    panic!("缺少上下文健康图标\n{}", screen.contents())
 }
 
 fn context_tui_metrics_unknown(screen: &vt100::Screen) -> bool {
@@ -300,11 +297,10 @@ fn context_tui_shows_current_and_window_on_input_top_right() {
         assert_eq!(context_tui_ctx_tokens(pty.parser.screen()), 0.0);
         let contents = pty.parser.screen().contents();
         let lines: Vec<_> = contents.lines().collect();
-        assert!(lines[26].contains("/1.3M \u{f05e0}"));
-        assert!(lines[26].contains('%'));
+        assert!(lines[26].contains("\u{e62a} 0.0%/1.3M · "));
         // 右对齐位置用真实 screen cell 验证；新指标占据左侧，字面长度不再固定。
         let (row, column) =
-            context_tui_locate(pty.parser.screen(), "\u{f2d0} 0.0%/1.3M \u{f05e0}")
+            context_tui_locate(pty.parser.screen(), "\u{e62a} 0.0%/1.3M")
                 .expect("状态栏必须在输入栏上沿显示 Ctx 容量");
         assert_eq!(row, 26);
         let (cache_row, cache_column) =
@@ -312,11 +308,8 @@ fn context_tui_shows_current_and_window_on_input_top_right() {
         assert_eq!(cache_row, row);
         assert!(column < cache_column);
         assert_eq!(cache_column + 5, 99);
-        assert_eq!(
-            context_tui_ctx_color(&pty),
-            vt100::Color::Rgb(158, 206, 106)
-        );
-        assert!(!lines[29].contains("\u{f2d0} "));
+        context_tui_assert_ctx_white(&pty);
+        assert!(!lines[29].contains("\u{e62a} "));
         pty.input("context-position-draft");
         pty.draft("context-position-draft");
         assert_eq!(context_tui_ctx_tokens(pty.parser.screen()), 0.0);
@@ -326,7 +319,7 @@ fn context_tui_shows_current_and_window_on_input_top_right() {
                 .contents()
                 .lines()
                 .nth(8)
-                .is_some_and(|line| line.contains(" \u{f2d0} ") && line.contains("/1.3M"))
+                .is_some_and(|line| line.contains(" \u{e62a} ") && line.contains("/1.3M"))
         });
         pty.draft("context-position-draft");
         assert_eq!(context_tui_ctx_tokens(pty.parser.screen()), 0.0);
@@ -351,7 +344,7 @@ fn context_tui_new_session_resets_context_to_zero_both_protocols() {
         assert!(context_tui_ctx_tokens(pty.parser.screen()) > 0.0);
         pty.input("/new\r");
         pty.wait_for("新会话上下文归零", |screen| {
-            screen.contents().contains("\u{f2d0} 0.0%/40K")
+            screen.contents().contains("\u{e62a} 0.0%/40K")
         });
         context_tui_exchange(
             &mut pty,
@@ -595,7 +588,7 @@ fn context_tui_compact_success_keeps_dialogue_drops_usage_and_survives_narrow_re
     for protocol in ["completion", "response"] {
         let fixture = server();
         let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
-        pty.text("\u{f2d0} ");
+        pty.text("\u{e62a} ");
         context_tui_fill_three_exchanges(&mut pty, &fixture, protocol);
         let before = context_tui_ctx_tokens(pty.parser.screen());
         pty.input("/compact\r");
@@ -677,7 +670,7 @@ fn context_tui_compact_success_keeps_dialogue_drops_usage_and_survives_narrow_re
                     .contents()
                     .lines()
                     .nth(26)
-                    .is_some_and(|line| line.contains("\u{f2d0} "))
+                    .is_some_and(|line| line.contains("\u{e62a} "))
             });
         }
         pty.input("\x03");
@@ -686,10 +679,9 @@ fn context_tui_compact_success_keeps_dialogue_drops_usage_and_survives_narrow_re
     }
 }
 
-// 验证项 4（阈值颜色）：auto_compact 关闭时阈值仍驱动状态栏配色；以实测
-// 估算为基准把第二个交互推入 [阈值, 100%) 区间，上下文字段变为黄色。
+// 关闭自动压缩，分别让用量越过压缩阈值和容量，验证上下文字段始终为白色。
 #[test]
-fn context_tui_context_field_turns_yellow_at_configured_threshold() {
+fn context_tui_context_field_stays_white_above_threshold_and_capacity() {
     let fixture = server();
     let (_home, mut pty) = context_tui_start(&fixture, "completion", 40000, 20);
     context_tui_exchange(
@@ -712,7 +704,7 @@ fn context_tui_context_field_turns_yellow_at_configured_threshold() {
     let percent = context_tui_ctx_percent(pty.parser.screen());
     assert!(percent >= 20, "百分比 {percent} 必须越过阈值");
     assert!(percent < 100, "百分比 {percent} 不得越过 100");
-    assert_eq!(context_tui_ctx_color(&pty), vt100::Color::Idx(3));
+    context_tui_assert_ctx_white(&pty);
     context_tui_exchange(
         &mut pty,
         &fixture,
@@ -721,7 +713,7 @@ fn context_tui_context_field_turns_yellow_at_configured_threshold() {
         "over capacity observed",
     );
     assert!(context_tui_ctx_percent(pty.parser.screen()) >= 100);
-    assert_eq!(context_tui_ctx_color(&pty), vt100::Color::Idx(1));
+    context_tui_assert_ctx_white(&pty);
     pty.input("\x03");
     pty.finish();
 }
@@ -1063,12 +1055,9 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
             pty.parser
                 .screen()
                 .contents()
-                .contains("\u{f2d0} 0.0%/40K")
+                .contains("\u{e62a} 0.0%/40K")
         );
-        assert_eq!(
-            context_tui_ctx_color(&pty),
-            vt100::Color::Rgb(158, 206, 106)
-        );
+        context_tui_assert_ctx_white(&pty);
 
         pty.input("context-metrics-live\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
@@ -1091,7 +1080,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         let (speed_row, speed_column) =
             context_tui_locate(pty.parser.screen(), "tok/s").expect("流式生成中必须显示速率字段");
         let (ctx_row, ctx_column) =
-            context_tui_locate(pty.parser.screen(), "\u{f2d0} ").expect("Ctx 必须可见");
+            context_tui_locate(pty.parser.screen(), "\u{e62a} ").expect("Ctx 必须可见");
         assert_eq!(speed_row, ctx_row, "指标必须与 Ctx 同在输入栏上沿");
         assert!(speed_column < ctx_column, "速度必须位于 Ctx 左侧");
 
@@ -1126,7 +1115,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         let (rate, marked) = context_tui_speed(screen).expect("完成后必须显示精确速度");
         assert!(!marked, "权威 usage 到达后不得保留 ~");
         assert!(rate > 0.0, "完成速度必须为正：{rate}");
-        let (row, ctx_column) = context_tui_locate(screen, "\u{f2d0} ").expect("Ctx 必须可见");
+        let (row, ctx_column) = context_tui_locate(screen, "\u{e62a} ").expect("Ctx 必须可见");
         let speed_column = context_tui_locate(screen, "tok/s").unwrap().1;
         assert!(speed_column < ctx_column);
         let mut previous = ctx_column;
@@ -1155,7 +1144,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         for (icon, color) in [
             ("\u{f04e2}", vt100::Color::Rgb(125, 207, 255)),
             ("\u{f01bc}", vt100::Color::Rgb(187, 154, 247)),
-            ("\u{f2d0}", vt100::Color::Rgb(115, 218, 202)),
+            ("\u{e62a}", vt100::Color::Idx(15)),
             ("\u{f051b}", vt100::Color::Idx(15)),
         ] {
             let (icon_row, column) = context_tui_locate(screen, icon).unwrap();
@@ -1207,7 +1196,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         pty.resize(30, 100);
         pty.input("/new\r");
         pty.wait_for("/new 清空全部新指标", |screen| {
-            screen.contents().contains("\u{f2d0} 0.0%/40K") && context_tui_metrics_unknown(screen)
+            screen.contents().contains("\u{e62a} 0.0%/40K") && context_tui_metrics_unknown(screen)
         });
         pty.input("\x03");
         pty.finish();
@@ -1352,7 +1341,7 @@ fn context_tui_token_metrics_cancel_stops_and_recounts() {
         let screen = pty.parser.screen();
         let (row, extra_column) = context_tui_locate(screen, "Compacting context...")
             .expect("压缩等待时必须显示临时状态");
-        let (ctx_row, ctx_column) = context_tui_locate(screen, "\u{f2d0} ").expect("Ctx 必须可见");
+        let (ctx_row, ctx_column) = context_tui_locate(screen, "\u{e62a} ").expect("Ctx 必须可见");
         let (metrics_row, metrics_column) =
             context_tui_locate(screen, "tok/s").expect("已有完成速率必须可见");
         assert_eq!(metrics_row, row, "指标必须与 Ctx 同一行");
@@ -1374,7 +1363,7 @@ fn context_tui_token_metrics_cancel_stops_and_recounts() {
                 && contents.contains("\u{f04e2} —/300")
                 && contents.contains("\u{f01bc} —/—")
         });
-        assert!(context_tui_locate(pty.parser.screen(), "\u{f2d0} ").is_some());
+        assert!(context_tui_locate(pty.parser.screen(), "\u{e62a} ").is_some());
         pty.input("\x03");
         pty.finish();
         no_more(&fixture);

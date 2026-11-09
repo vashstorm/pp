@@ -34,7 +34,7 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
             text.contains("\u{f12b7} Requesting model")
                 && text.matches("\u{f12b7} ").count() == 1
                 && text.lines().any(|line| {
-                    line.contains("\u{f2d0} ")
+                    line.contains("\u{e62a} ")
                         && line.contains(" · ")
                         && line.trim_end().ends_with('s')
                 })
@@ -66,7 +66,7 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
         assert!(finished_at.starts_with("done "), "{text}");
         assert!(
             text.lines().any(|line| {
-                line.contains("\u{f2d0} ")
+                line.contains("\u{e62a} ")
                     && line.contains("\u{f051b} ")
                     && line.trim_end().ends_with('s')
             }),
@@ -80,7 +80,7 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
     let text = pty.parser.screen().contents();
     let context = text
         .lines()
-        .find(|line| line.contains("\u{f2d0} "))
+        .find(|line| line.contains("\u{e62a} "))
         .unwrap();
     assert!(!context.contains("\u{f051b}"));
     pty.input("\x03");

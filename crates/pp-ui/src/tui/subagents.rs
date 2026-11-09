@@ -2434,7 +2434,7 @@ mod tests {
         let mut drafts = Drafts::default();
         let mut panel = usage_detail();
         let icons = [
-            "\u{f2d0}",
+            "\u{e62a}",
             "\u{f04e2}",
             "\u{f01bc}",
             "\u{f01c1}",
