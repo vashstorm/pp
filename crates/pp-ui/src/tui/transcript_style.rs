@@ -41,11 +41,11 @@ pub(super) const READ_SUMMARY_BG: Color = TOOL_BG;
 pub(super) const READ_SUMMARY_TITLE: Color = READ_TITLE;
 pub(super) const READ_SUMMARY_PATH: Color = ACCENT;
 pub(super) const READ_SUMMARY_META: Color = Color::Rgb(96, 102, 114);
-pub(super) const GREP_BG: Color = TOOL_BG;
-pub(super) const GREP_BORDER: Color = TOOL_BORDER;
-pub(super) const GREP_TITLE: Color = Color::Rgb(156, 220, 254);
-pub(super) const GREP_TEXT: Color = Color::Rgb(190, 198, 212);
-pub(super) const GREP_META: Color = Color::Rgb(119, 125, 136);
+pub(super) const RG_BG: Color = TOOL_BG;
+pub(super) const RG_BORDER: Color = TOOL_BORDER;
+pub(super) const RG_TITLE: Color = Color::Rgb(156, 220, 254);
+pub(super) const RG_TEXT: Color = Color::Rgb(190, 198, 212);
+pub(super) const RG_META: Color = Color::Rgb(119, 125, 136);
 pub(super) const TOOL_COMMAND: Color = Color::Rgb(220, 226, 235);
 pub(super) const EDIT_BG: Color = TOOL_BG;
 pub(super) const EDIT_BORDER: Color = TOOL_BORDER;
@@ -68,7 +68,7 @@ pub(super) const SYNTAX_TAG: Color = Color::Rgb(86, 156, 214);
 pub(super) fn tool_accent(name: &str) -> Color {
     match name {
         "read" => READ_TITLE,
-        "grep" | "plan_search" => SEARCH_TITLE,
+        "rg" | "plan_search" => SEARCH_TITLE,
         "find" | "glob" | "plan_find" => GLOB_TITLE,
         "edit" => EDIT_TITLE,
         "write" => WRITE_TITLE,
@@ -87,7 +87,7 @@ pub(super) fn tool_icon(name: &str) -> &'static str {
         "edit" => "\u{f03eb}",
         "write" => "\u{f0193}",
         "bash_task" => "\u{f08d6}",
-        "grep" => "\u{f0349}",
+        "rg" => "\u{f0349}",
         "find" | "glob" => "\u{f024b}",
         "ask" => "\u{f02d7}",
         "plan_search" => "\u{f0232}",

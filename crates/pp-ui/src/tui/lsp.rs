@@ -299,7 +299,7 @@ fn diagnostic_line(diagnostic: &ReportDiagnostic, width: u16) -> Vec<Line<'stati
         Span::styled(" ", Style::default()),
         Span::styled(
             pp_core::text::display_text(&diagnostic.message).into_owned(),
-            Style::default().fg(palette::GREP_TEXT),
+            Style::default().fg(palette::RG_TEXT),
         ),
     ];
     let mut detail = Vec::new();

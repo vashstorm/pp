@@ -189,7 +189,7 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
 #[test]
 fn tool_folding_omp_native_search_clips_long_rows_for_both_protocols() {
     for protocol in ["completion", "response"] {
-        for name in ["grep", "glob"] {
+        for name in ["rg", "glob"] {
             let provider = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
@@ -203,7 +203,7 @@ fn tool_folding_omp_native_search_clips_long_rows_for_both_protocols() {
             pty.input("search preview\r");
             let (request, body) = pty.request_at(&provider, api_path(protocol));
             assert!(body["tools"].as_array().unwrap().iter().map(|t| if protocol == "completion" { &t["function"] } else { t }).any(|t| t["name"] == name));
-            let args = if name == "grep" { json!({"pattern":"needle","path":"lines"}) }
+            let args = if name == "rg" { json!({"pattern":"needle","path":"lines"}) }
                 else { json!({"pattern":"*","path":"files"}) };
             ask_reply_calls(request, protocol, json!([diff_blocks_call(protocol,"search",name,args)]));
             let (request, body) = pty.request_at(&provider, api_path(protocol));
@@ -211,16 +211,16 @@ fn tool_folding_omp_native_search_clips_long_rows_for_both_protocols() {
             assert_eq!(outputs[0].1["ok"], true);
             let content = &outputs[0].1["content"];
             assert!(content.as_str().unwrap().lines().count() >= 20);
-            let marker = if name == "grep" { "entry-" } else { "path-" };
-            let shown = if name == "grep" { 5 } else { 7 };
+            let marker = if name == "rg" { "entry-" } else { "path-" };
+            let shown = if name == "rg" { 5 } else { 7 };
             pty.wait_for("搜索正文按额度及列宽收敛", |screen| {
                 let text = screen.contents();
                 text.matches(marker).count() == shown && text.contains("more") && text.contains("Ctrl + O")
             });
-            if name == "grep" {
+            if name == "rg" {
                 let screen = pty.parser.screen();
                 let text = screen.contents();
-                assert!(text.contains("Grep: needle 20 matches · 1 file · in lines"), "{text}");
+                assert!(text.contains("rg: needle 20 matches · 1 file · in lines"), "{text}");
                 let row = text.lines().position(|line| line.contains("└─ *1│entry-00")).unwrap() as u16;
                 let cell = screen.cell(row, 2).unwrap();
                 assert_eq!(cell.contents(), "└");

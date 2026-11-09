@@ -742,7 +742,7 @@ fn run_cli_execution(
                 }
                 if current_tool.as_ref().is_some_and(|(current_id, name)| {
                     current_id == &id
-                        && (matches!(name.as_str(), "grep" | "glob" | "todo")
+                        && (matches!(name.as_str(), "rg" | "glob" | "todo")
                             || name == "read"
                                 && result["kind"] != "image"
                                 && result.get("pipe").is_none())

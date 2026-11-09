@@ -263,7 +263,7 @@ fn plan_tui_rejects_real_side_effects_but_reads_searches_and_asks() {
                 json!({"task_id":"unknown","action":"status"}),
             ),
             (
-                "deny-grep",
+                "deny-rg",
                 "plan_search",
                 json!({"query":"needle","path":"src/agent.rs"}),
             ),
@@ -280,7 +280,7 @@ fn plan_tui_rejects_real_side_effects_but_reads_searches_and_asks() {
             ("research-read", "read", json!({"path":"src/agent.rs"})),
             (
                 "research-search",
-                "grep",
+                "rg",
                 json!({"pattern":"needle","path":"src"}),
             ),
             ("research-find", "glob", json!({"pattern":"src/agent.rs"})),

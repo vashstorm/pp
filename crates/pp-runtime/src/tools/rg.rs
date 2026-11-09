@@ -1,4 +1,5 @@
-//! 本地内容搜索；行为参考 Oh My Pi d4279540（MIT License）。
+//! 本地内容搜索，基于 ripgrep 内核（grep-searcher/grep-regex/grep-pcre2）与 ignore 遍历；
+//! 行为参考 Oh My Pi d4279540（MIT License）。
 use super::{hashline, save};
 use anyhow::{Context, Result, ensure};
 use async_openai::types::chat::FunctionObject;
@@ -6,7 +7,7 @@ use globset::{GlobBuilder, GlobMatcher};
 use grep_matcher::Matcher;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use pp_config::config::EditMode;
-use pp_config::config::GrepSettings;
+use pp_config::config::RgSettings;
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
 use serde::Deserialize;
@@ -30,7 +31,7 @@ const MAX_OUTPUT: usize = 50 * 1024;
 const MAX_LINE: usize = 512;
 
 pub(super) fn definition() -> FunctionObject {
-    FunctionObject { name: "grep".into(), description: Some("Search files or one artifact://<numeric-id> URI in process: Rust regex, PCRE2, literal fallback. path: files/dirs/globs/!exclusions separated by ';', file:20-40 ranges; default '.'. Case-sensitive, includes hidden files, respects ignore files. -i inverts case. context/-C set both sides; -A/-B override after/before; otherwise config. Conflicting aliases fail. output_mode: content(default), files_with_matches(paths), count(per-file + all-file total; matching lines for single-line patterns, non-overlapping matches for multiline). countComplete=false means partial. Only content uses context and Hashline snapshots: [path#TAG]; only complete returned lines editable. Other modes preserve snapshots. skip paginates files; bounded output. Artifacts MUST use THIS tool, never bash grep/rg: URIs are not paths; per-call snapshot, no edit anchors; single-line covers saved logs, multiline capped at 4 MiB with warning.".into()), parameters: Some(json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"-i":{"type":"boolean"},"context":{"type":"integer","minimum":0},"-C":{"type":"integer","minimum":0},"-A":{"type":"integer","minimum":0},"-B":{"type":"integer","minimum":0},"output_mode":{"type":"string","enum":["content","files_with_matches","count"]},"gitignore":{"type":"boolean"},"skip":{"type":["number","null"]}},"required":["pattern"],"additionalProperties":false})), ..Default::default() }
+    FunctionObject { name: "rg".into(), description: Some("Search files or one artifact://<numeric-id> URI in process: Rust regex, PCRE2, literal fallback. path: files/dirs/globs/!exclusions separated by ';', file:20-40 ranges; default '.'. Case-sensitive, includes hidden files, respects ignore files. -i inverts case. context/-C set both sides; -A/-B override after/before; otherwise config. Conflicting aliases fail. -F matches literally; -w matches whole words; -t/-g filter the directory walk only (repeatable, !name excludes; -g overrides ignore files, explicit files always search); max_count caps matches per file (0 finds none). output_mode: content(default), files_with_matches(paths), count(per-file + all-file total; matching lines for single-line patterns, non-overlapping matches for multiline). countComplete=false means partial. Only content uses context and Hashline snapshots: [path#TAG]; only complete returned lines editable. Other modes preserve snapshots. skip paginates files; bounded output. Artifacts MUST use THIS tool, never bash grep/rg: URIs are not paths; per-call snapshot, no edit anchors; single-line covers saved logs, multiline capped at 4 MiB with warning.".into()), parameters: Some(json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"-i":{"type":"boolean"},"context":{"type":"integer","minimum":0},"-C":{"type":"integer","minimum":0},"-A":{"type":"integer","minimum":0},"-B":{"type":"integer","minimum":0},"-F":{"type":"boolean"},"-w":{"type":"boolean"},"-t":{"type":["string","array"],"items":{"type":"string"}},"-g":{"type":["string","array"],"items":{"type":"string"}},"max_count":{"type":["number","null"]},"output_mode":{"type":"string","enum":["content","files_with_matches","count"]},"gitignore":{"type":"boolean"},"skip":{"type":["number","null"]}},"required":["pattern"],"additionalProperties":false})), ..Default::default() }
 }
 
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -75,20 +76,45 @@ struct Args {
     gitignore: Option<bool>,
     #[serde(default)]
     skip: Option<f64>,
+    #[serde(default, rename = "-F")]
+    fixed: Option<bool>,
+    #[serde(default, rename = "-w")]
+    word: Option<bool>,
+    #[serde(default, rename = "-t")]
+    types: Option<Many>,
+    #[serde(default, rename = "-g")]
+    globs: Option<Many>,
+    #[serde(default)]
+    max_count: Option<f64>,
+}
+/// 可重复的 rg 参数：单个字符串或字符串数组。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Many {
+    One(String),
+    Many(Vec<String>),
+}
+impl Many {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::One(one) => vec![one],
+            Self::Many(many) => many,
+        }
+    }
 }
 impl Args {
-    fn settings(&self, defaults: GrepSettings) -> Result<GrepSettings> {
+    fn settings(&self, defaults: RgSettings) -> Result<RgSettings> {
         if let (Some(context), Some(alias)) = (self.context, self.context_alias) {
             ensure!(context == alias, "context and -C must agree");
         }
         let context = self.context.or(self.context_alias);
         Ok(if self.output_mode == OutputMode::Content {
-            GrepSettings {
+            RgSettings {
                 context_before: self.before.or(context).unwrap_or(defaults.context_before),
                 context_after: self.after.or(context).unwrap_or(defaults.context_after),
             }
         } else {
-            GrepSettings {
+            RgSettings {
                 context_before: 0,
                 context_after: 0,
             }
@@ -142,11 +168,19 @@ enum Compiled {
     Rust(grep_regex::RegexMatcher),
     Pcre(grep_pcre2::RegexMatcher),
 }
-fn compile(pattern: &str, insensitive: bool, multiline: bool) -> Result<Compiled> {
-    let sanitized = sanitize_braces(pattern);
+fn compile(
+    pattern: &str,
+    insensitive: bool,
+    multiline: bool,
+    fixed: bool,
+    word: bool,
+) -> Result<Compiled> {
     let rust = |p: &str| {
         let mut b = grep_regex::RegexMatcherBuilder::new();
-        b.case_insensitive(insensitive).multi_line(multiline);
+        b.case_insensitive(insensitive)
+            .multi_line(multiline)
+            .fixed_strings(fixed)
+            .word(word);
         b.build(p)
     };
     let pcre = |p: &str| {
@@ -155,9 +189,15 @@ fn compile(pattern: &str, insensitive: bool, multiline: bool) -> Result<Compiled
             .multi_line(multiline)
             .utf(true)
             .ucp(true)
+            .fixed_strings(fixed)
+            .word(word)
             .jit_if_available(true);
         b.build(p)
     };
+    if fixed {
+        return Ok(Compiled::Rust(rust(pattern).context("invalid rg pattern")?));
+    }
+    let sanitized = sanitize_braces(pattern);
     match rust(&sanitized) {
         Ok(m) => return Ok(Compiled::Rust(m)),
         Err(e) => {
@@ -177,7 +217,7 @@ fn compile(pattern: &str, insensitive: bool, multiline: bool) -> Result<Compiled
         }
     }
     Ok(Compiled::Rust(
-        rust(&regex::escape(pattern)).context("invalid grep pattern")?,
+        rust(&regex::escape(pattern)).context("invalid rg pattern")?,
     ))
 }
 fn sanitize_braces(p: &str) -> String {
@@ -271,7 +311,7 @@ fn check(token: &CancellationToken, deadline: Instant) -> Result<()> {
     cancellation::check(token)?;
     ensure!(
         Instant::now() < deadline,
-        "Grep timed out after 30s; narrow paths or pattern"
+        "rg timed out after 30s; narrow paths or pattern"
     );
     Ok(())
 }
@@ -279,8 +319,48 @@ fn glob(pattern: &str) -> Result<GlobMatcher> {
     Ok(GlobBuilder::new(pattern)
         .literal_separator(true)
         .build()
-        .context("invalid grep glob")?
+        .context("invalid rg glob")?
         .compile_matcher())
+}
+fn count(value: Option<f64>, label: &str) -> Result<usize> {
+    let value = value.unwrap_or(0.0);
+    ensure!(
+        value.is_finite() && value >= 0.0 && value <= usize::MAX as f64,
+        "{label} must be a non-negative number"
+    );
+    Ok(value.floor() as usize)
+}
+fn file_types(input: Option<Many>) -> Result<Option<ignore::types::Types>> {
+    let Some(input) = input else { return Ok(None) };
+    let names = input.into_vec();
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let mut builder = ignore::types::TypesBuilder::new();
+    builder.add_defaults();
+    let known: Vec<String> = builder
+        .definitions()
+        .into_iter()
+        .map(|definition| definition.name().to_owned())
+        .collect();
+    for name in &names {
+        let (negate, bare) = match name.strip_prefix('!') {
+            Some(bare) => (true, bare),
+            None => (false, name.as_str()),
+        };
+        ensure!(
+            bare == "all" || known.iter().any(|known| known == bare),
+            "invalid rg type: {bare}"
+        );
+        if negate {
+            builder.negate(bare);
+        } else {
+            builder.select(bare);
+        }
+    }
+    Ok(Some(builder.build().map_err(|error| {
+        anyhow::anyhow!("invalid rg type: {error}")
+    })?))
 }
 fn glob_path(path: &str) -> bool {
     path.contains(['*', '?', '[', '{'])
@@ -325,6 +405,8 @@ fn parse_paths(
     cwd: &Path,
     input: &str,
     respect: bool,
+    globs: &[String],
+    types: Option<&ignore::types::Types>,
     token: &CancellationToken,
     deadline: Instant,
 ) -> Result<(Vec<Target>, bool, Vec<String>)> {
@@ -340,7 +422,7 @@ fn parse_paths(
             .to_owned()
     };
     let input = normalized.as_str();
-    ensure!(!input.contains("://"), "grep only supports local paths");
+    ensure!(!input.contains("://"), "rg only supports local paths");
     let semicolon = split_top_level(input, b';');
     let comma = split_top_level(input, b',');
     let pieces: Vec<String> = if cwd.join(input).exists() {
@@ -546,6 +628,22 @@ fn parse_paths(
                     })
             })
             .sort_by_file_path(|a, b| a.cmp(b));
+        if let Some(types) = types {
+            builder.types(types.clone());
+        }
+        if !globs.is_empty() {
+            let mut overrides = ignore::overrides::OverrideBuilder::new(&root);
+            for glob in globs {
+                overrides
+                    .add(glob)
+                    .map_err(|_| anyhow::anyhow!("invalid -g glob: {glob}"))?;
+            }
+            builder.overrides(
+                overrides
+                    .build()
+                    .map_err(|error| anyhow::anyhow!("invalid -g glob: {error}"))?,
+            );
+        }
         for item in builder.build() {
             check(token, deadline)?;
             let Ok(item) = item else { continue };
@@ -613,8 +711,12 @@ struct Collector<'a, M> {
     ranges: &'a [(usize, usize)],
     token: &'a CancellationToken,
     deadline: Instant,
+    max_count: Option<usize>,
 }
 impl<M: Matcher> Collector<'_, M> {
+    fn capped(&self) -> bool {
+        self.max_count.is_some_and(|max| self.matches >= max)
+    }
     fn row(&mut self, bytes: &[u8], number: usize, matched: bool) {
         let raw = String::from_utf8_lossy(bytes);
         let raw = raw.trim_end_matches(['\n', '\r']);
@@ -679,6 +781,10 @@ impl<M: Matcher> Sink for Collector<'_, M> {
         if self.token.is_cancelled() || Instant::now() >= self.deadline {
             return Ok(false);
         }
+        // 停在 max_count 之后：上一条匹配的 after-context 已在此前送达。
+        if self.capped() {
+            return Ok(false);
+        }
         let n = m.line_number().unwrap_or(1) as usize;
         if self.multiline && self.output_mode != OutputMode::Content {
             // 多行回调可能合并多个匹配；按每次匹配的起始行判断范围。
@@ -707,10 +813,12 @@ impl<M: Matcher> Sink for Collector<'_, M> {
                     {
                         self.matches += 1;
                     }
-                    self.output_mode != OutputMode::FilesWithMatches || self.matches == 0
+                    !self.capped()
+                        && (self.output_mode != OutputMode::FilesWithMatches || self.matches == 0)
                 })
-                .map_err(|_| io::Error::other("grep matcher failed"))?;
-            return Ok(self.output_mode != OutputMode::FilesWithMatches || self.matches == 0);
+                .map_err(|_| io::Error::other("rg matcher failed"))?;
+            return Ok(!self.capped()
+                && (self.output_mode != OutputMode::FilesWithMatches || self.matches == 0));
         }
         if !self.ranges.is_empty() && !self.ranges.iter().any(|(a, b)| n >= *a && n <= *b) {
             return Ok(true);
@@ -721,7 +829,10 @@ impl<M: Matcher> Sink for Collector<'_, M> {
         }
         if self.output_mode == OutputMode::Count {
             self.matches += m.lines().count();
-            return Ok(true);
+            if let Some(max) = self.max_count {
+                self.matches = self.matches.min(max);
+            }
+            return Ok(!self.capped());
         }
         self.matches += 1;
         if self.matches > self.limit {
@@ -757,10 +868,7 @@ struct CheckedReader<'a> {
 impl Read for CheckedReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.token.is_cancelled() || Instant::now() >= self.deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "grep interrupted",
-            ));
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "rg interrupted"));
         }
         self.file.read(buf)
     }
@@ -769,9 +877,10 @@ impl Read for CheckedReader<'_> {
 fn run_file<M: Matcher>(
     matcher: &M,
     target: Target,
-    settings: GrepSettings,
+    settings: RgSettings,
     multiline: bool,
     cap: usize,
+    max_count: Option<usize>,
     output_mode: OutputMode,
     capture_snapshot: bool,
     token: &CancellationToken,
@@ -787,12 +896,13 @@ where
         .open(&target.path)
         .with_context(|| format!("opening {}", target.display))?;
     let metadata = file.metadata()?;
-    ensure!(metadata.is_file(), "grep requires a regular file");
+    ensure!(metadata.is_file(), "rg requires a regular file");
     let mut collector = Collector {
         matcher,
         rows: BTreeMap::new(),
         matches: 0,
         limit: cap,
+        max_count,
         output_mode,
         multiline,
         ranges: &target.ranges,
@@ -836,7 +946,7 @@ where
         )
     };
     check(token, deadline)?;
-    found.map_err(|e| anyhow::anyhow!("grep search failed: {e}"))?;
+    found.map_err(|e| anyhow::anyhow!("rg search failed: {e}"))?;
     if collector.matches == 0 {
         return Ok(None);
     }
@@ -908,7 +1018,7 @@ fn grouped_header(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     cwd: &Path,
-    settings: GrepSettings,
+    settings: RgSettings,
     mode: EditMode,
     workspace: &save::Workspace,
     snapshots: &mut hashline::Store,
@@ -916,7 +1026,7 @@ pub(super) fn run(
     token: &CancellationToken,
     artifacts: Option<&super::output::Store>,
 ) -> Result<Value> {
-    let mut args: Args = serde_json::from_str(arguments).context("invalid grep arguments")?;
+    let mut args: Args = serde_json::from_str(arguments).context("invalid rg arguments")?;
     let settings = args.settings(settings)?;
     let insensitive = args.insensitive()?;
     let output_mode = args.output_mode;
@@ -940,22 +1050,31 @@ pub(super) fn run(
         args.path = Some(snapshot.path.to_string_lossy().into_owned());
     }
     ensure!(!args.pattern.trim().is_empty(), "Pattern must not be empty");
-    let skip = args.skip.unwrap_or(0.0);
-    ensure!(
-        skip.is_finite() && skip >= 0.0 && skip <= usize::MAX as f64,
-        "Skip must be a non-negative number"
-    );
-    let skip = skip.floor() as usize;
+    let skip = count(args.skip, "Skip")?;
+    let max_count = args
+        .max_count
+        .map(|value| count(Some(value), "max_count"))
+        .transpose()?;
+    let fixed = args.fixed.unwrap_or(false);
+    let word = args.word.unwrap_or(false);
+    let types = file_types(args.types.take())?;
+    let globs: Vec<String> = args.globs.take().map(Many::into_vec).unwrap_or_default();
     let deadline = Instant::now() + Duration::from_secs(30);
-    let (targets, single, missing) = parse_paths(
-        cwd,
-        args.path.as_deref().unwrap_or("."),
-        args.gitignore.unwrap_or(true),
-        token,
-        deadline,
-    )?;
-    let multiline = args.pattern.contains('\n') || args.pattern.contains("\\n");
-    let compiled = compile(&args.pattern, insensitive, multiline)?;
+    let (targets, single, missing) = if max_count == Some(0) {
+        (Vec::new(), false, Vec::new())
+    } else {
+        parse_paths(
+            cwd,
+            args.path.as_deref().unwrap_or("."),
+            args.gitignore.unwrap_or(true),
+            &globs,
+            types.as_ref(),
+            token,
+            deadline,
+        )?
+    };
+    let multiline = args.pattern.contains('\n') || (!fixed && args.pattern.contains("\\n"));
+    let compiled = compile(&args.pattern, insensitive, multiline, fixed, word)?;
     let per_file = if single { SINGLE_LIMIT } else { MULTI_LIMIT };
     let mut found = Vec::new();
     let mut total = 0;
@@ -983,6 +1102,7 @@ pub(super) fn run(
                 settings,
                 multiline,
                 per_file,
+                max_count,
                 output_mode,
                 capture_snapshot,
                 token,
@@ -994,6 +1114,7 @@ pub(super) fn run(
                 settings,
                 multiline,
                 per_file,
+                max_count,
                 output_mode,
                 capture_snapshot,
                 token,
@@ -1262,7 +1383,7 @@ mod tests {
         let canonical = dir.canonicalize().unwrap();
         run(
             &canonical,
-            GrepSettings::default(),
+            RgSettings::default(),
             mode,
             &save::Workspace::open(&canonical).unwrap(),
             store,
@@ -1273,7 +1394,7 @@ mod tests {
         .unwrap()
     }
     #[test]
-    fn grep_native_regex_paths_and_ranges() {
+    fn rg_native_regex_paths_and_ranges() {
         let d = tempfile::tempdir().unwrap();
         fs::create_dir(d.path().join("src")).unwrap();
         fs::write(
@@ -1360,7 +1481,7 @@ mod tests {
         assert_eq!(c["ok"], true);
     }
     #[test]
-    fn grep_file_pagination_and_hashline_seen() {
+    fn rg_file_pagination_and_hashline_seen() {
         let d = tempfile::tempdir().unwrap();
         for i in 0..22 {
             fs::write(d.path().join(format!("{i:02}.txt")), "needle\nother\n").unwrap();
@@ -1401,7 +1522,7 @@ mod boundary_tests {
         let cwd = cwd.canonicalize().unwrap();
         run(
             &cwd,
-            GrepSettings::default(),
+            RgSettings::default(),
             EditMode::Replace,
             &save::Workspace::open(&cwd).unwrap(),
             &mut hashline::Store::default(),
@@ -1412,7 +1533,7 @@ mod boundary_tests {
         .unwrap()
     }
     #[test]
-    fn grep_hidden_ignore_exclusions_and_literal_filename() {
+    fn rg_hidden_ignore_exclusions_and_literal_filename() {
         let d = tempfile::tempdir().unwrap();
         fs::write(d.path().join(".ignore"), "ignored.txt\n").unwrap();
         fs::write(d.path().join("ignored.txt"), "need\n").unwrap();
@@ -1436,7 +1557,7 @@ mod boundary_tests {
         );
     }
     #[test]
-    fn grep_multiline_and_long_line_window() {
+    fn rg_multiline_and_long_line_window() {
         let d = tempfile::tempdir().unwrap();
         fs::write(
             d.path().join("file"),
@@ -1457,7 +1578,7 @@ mod boundary_tests {
         assert_eq!(long["details"]["linesTruncated"], true);
     }
     #[test]
-    fn grep_symlink_scope_and_pre_cancelled_are_rejected() {
+    fn rg_symlink_scope_and_pre_cancelled_are_rejected() {
         use std::os::unix::fs::symlink;
         let d = tempfile::tempdir().unwrap();
         fs::write(d.path().join("target"), "needle").unwrap();
@@ -1467,7 +1588,7 @@ mod boundary_tests {
         let call = |path: &str, token: &CancellationToken| {
             run(
                 &cwd,
-                GrepSettings::default(),
+                RgSettings::default(),
                 EditMode::Replace,
                 &workspace,
                 &mut hashline::Store::default(),
@@ -1488,7 +1609,7 @@ mod boundary_tests {
     }
 
     #[test]
-    fn grep_large_file_direct_search_streams_but_directory_reports_partial_coverage() {
+    fn rg_large_file_direct_search_streams_but_directory_reports_partial_coverage() {
         let d = tempfile::tempdir().unwrap();
         let mut content = "padding\n".repeat(524_289);
         content.push_str("needle-at-end\n");
@@ -1518,13 +1639,13 @@ mod pipe_stream_tests {
     use super::*;
 
     #[test]
-    fn pipeline_grep_rejects_pipe_streams_with_read_only_message() {
+    fn pipeline_rg_rejects_pipe_streams_with_read_only_message() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().canonicalize().unwrap();
         let workspace = save::Workspace::open(&cwd).unwrap();
         let error = run(
             &cwd,
-            GrepSettings::default(),
+            RgSettings::default(),
             EditMode::Replace,
             &workspace,
             &mut hashline::Store::default(),

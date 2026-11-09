@@ -879,14 +879,14 @@ mod tests {
                 assert!(
                     tools
                         .iter()
-                        .all(|name| matches!(*name, "read" | "grep" | "glob" | "lsp"))
+                        .all(|name| matches!(*name, "read" | "rg" | "glob" | "lsp"))
                 );
                 calls_for(
                     &serving,
                     request,
                     &[
                         ("read-canary", "read", json!({"path":"canary"})),
-                        ("search", "grep", json!({"pattern":"needle"})),
+                        ("search", "rg", json!({"pattern":"needle"})),
                         ("paths", "glob", json!({"pattern":"canary"})),
                         ("shell", "bash", json!({"command":"touch pwned"})),
                         ("native", "find", json!({"args":[]})),

@@ -32,7 +32,7 @@ TUI 默认最大帧率为 60 FPS。可在 `~/.pp/agent/settings.yml` 中将 `tui
 
 前台 Bash 接受可选的 `timeout_seconds` 参数，范围为 0–3600 秒，0 表示不设超时。省略时使用 `bash_timeout_seconds`，默认 300 秒，已有显式配置仍生效。后台模式忽略此参数，沿用现有任务生命周期；不限时时仍可取消。
 
-Bash 合并 stdout/stderr，默认返回最多 50 KiB 的头尾预览。超限或超长行被裁剪时保存为 `artifact://<id>`，模型可用 `read` 行选择器或 `grep` 继续查看；后台运行中的读取按每次调用冻结快照。资源由根会话与子 Agent 共享，恢复后仍可读取，删除会话时清理，`pp gc` 不按天数删除。日志默认上限 16 MiB，并明确报告中间省略和保存失败。配置与完整性边界见 [Bash 输出与 artifact 资源](docs/guide.md#bash-输出与-artifact-资源)。
+Bash 合并 stdout/stderr，默认返回最多 50 KiB 的头尾预览。超限或超长行被裁剪时保存为 `artifact://<id>`，模型可用 `read` 行选择器或 `rg` 继续查看；后台运行中的读取按每次调用冻结快照。资源由根会话与子 Agent 共享，恢复后仍可读取，删除会话时清理，`pp gc` 不按天数删除。日志默认上限 16 MiB，并明确报告中间省略和保存失败。配置与完整性边界见 [Bash 输出与 artifact 资源](docs/guide.md#bash-输出与-artifact-资源)。
 
 `wait` 等待选中的后台 Bash 和子 Agent 全部进入终态后才返回；TUI 在同一个等待框持续更新状态、耗时和已结束数量。可通过 `task_ids`／`run_ids` 指定目标，目标集合在调用开始时冻结。固定等待上限为 120 分钟，超时后先终止并回收本批未完成任务及其派生工作，再返回结果。Steering 补充输入排队到批次结束后处理；Esc 取消当前主任务及其自有工作。旧调用中的整数 `timeout_ms` 仅兼容接收，数值被忽略，包括 `0`。
 
@@ -51,7 +51,7 @@ cargo build --release --locked
 mkdir -p ~/.pp/agent
 ```
 
-`grep` 和 `glob` 在进程内搜索，不依赖外部搜索程序。终端界面图标需要 Nerd Font 字体；macOS 使用 Option 快捷键时，终端需启用 Alt/Meta。
+`rg` 和 `glob` 在进程内搜索，不依赖外部搜索程序。终端界面图标需要 Nerd Font 字体；macOS 使用 Option 快捷键时，终端需启用 Alt/Meta。
 
 ### 2. 配置模型
 
@@ -136,7 +136,7 @@ pp --model deepseek/deepseek-flash:high /commit
 
 全部 13 个 `/test-*` 命令在 dev/test 构建中使用内嵌、仅监听 loopback 的 Mock AI Server，由 `#[cfg(debug_assertions)]` 编译隔离，与 `debug` 设置无关。命令通过编译内嵌 JSON 脚本驱动真实 Responses client、Agent、工具和子 Agent，不依赖真实 provider 或用户模型 Role；空 HOME、无 models 或无效配置 YAML 也能运行。每个场景使用全新的系统临时 workspace/config/sessions/locks 目录，不改变正常会话、模型、Role、cwd 或真实统计。预期工具失败继续，取消、初始化或清理失败则中止。
 
-`/test-tools` 顺序运行 read → write → edit-replace → edit-hashline → grep → glob → bash → bash-task → wait → todo → ask，每场 fresh Agent；不串联 `/test-task` 或 `/test-ui`。TUI 在 Execute 模式、无 active/pending 输入时允许 Ready 和 Unavailable 启动；Esc 取消并保留运行中编辑的草稿，结束后恢复正常展示。`/test-ask` 使用真实 TUI 答题，CLI 非交互错误作为预期结果继续。release 不注册这些命令，也不启动 mock listener：行模式静默忽略未知命令，TUI 保留草稿，帮助和补全不列出这些名字。
+`/test-tools` 顺序运行 read → write → edit-replace → edit-hashline → rg → glob → bash → bash-task → wait → todo → ask，每场 fresh Agent；不串联 `/test-task` 或 `/test-ui`。TUI 在 Execute 模式、无 active/pending 输入时允许 Ready 和 Unavailable 启动；Esc 取消并保留运行中编辑的草稿，结束后恢复正常展示。`/test-ask` 使用真实 TUI 答题，CLI 非交互错误作为预期结果继续。release 不注册这些命令，也不启动 mock listener：行模式静默忽略未知命令，TUI 保留草稿，帮助和补全不列出这些名字。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -145,7 +145,7 @@ pp --model deepseek/deepseek-flash:high /commit
 | `/plan [prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，批准后执行（仅终端界面） |
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除（仅终端界面） |
 | `/test-task` | 仅 dev/test：三个真实 FAST／SLOW／REVIEW 子 Agent 使用独立本地 mock lane，不需要用户 Role 或真实 provider |
-| `/test-tools`、`/test-read`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 仅 dev/test：运行全部或单个隔离真实工具场景；edit 覆盖 replace/hashline，ask 在 TUI 中答题 |
+| `/test-tools`、`/test-read`、`/test-edit`、`/test-rg`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 仅 dev/test：运行全部或单个隔离真实工具场景；edit 覆盖 replace/hashline，ask 在 TUI 中答题 |
 | `/test-write` | 仅 dev/test：12.5 mock token/s 的打字机回复；24/28 行正文以 240 mock token/s 写入 `/tmp/pp-test-write/demo.txt`，写入卡片可见尾部滚动；随后越界失败，最后用 bash 工具删除 |
 | `/test-ui` | 仅 dev/test：以 12.5 mock token/s 输出原生 Responses SSE 思考与 Markdown／代码分片 |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |
@@ -180,7 +180,11 @@ pp --model deepseek/deepseek-flash:high /commit
 
 `read` 仅接受 `path`，支持本地文本、图片、静态网页和已启用的 `skill://` 资源。系统在技能名称、说明和 URI 旁附加选择规则，自定义基础提示词也会保留：按任务及具体子任务主动匹配，在其他任务工具前读取适用技能，成功读取后简短说明用途。执行已批准计划也适用；选择仍由模型完成，正文不自动注入。裸技能 URI 读取完整 `SKILL.md`，追加 `/<path>` 访问资源，`/.` 列出目录。技能文本不受普通文本限额限制，结果带 `path` 和 `base_dir`，显式选择器仍生效。范围直接写入路径：`src/main.rs:20-60`、`notes.md:-30`、`file.rs:5-10,20-30`，严格读取指定行，截断后使用 `next_path` 续读。`:raw` 去掉前缀，网页则返回原始响应正文。PNG／JPEG／WebP／GIF 图片作为真实视觉输入发给模型，工具输出只显示元信息；恢复会话和切换协议保留图片。网页提取静态 HTML 正文，不执行 JavaScript，支持取消和有界会话缓存。[读取行为和限制 →](docs/guide.md#工具执行与权限)
 
-`grep` 在进程内搜索本地文件，支持正则、路径 glob、文件行范围和按文件分页。Execute、Plan 和 Review 共用 `pattern`、`path`、`case`、`-i`、`gitignore`、`skip`、`context`、`-C`、`-A`、`-B`、`output_mode` 参数。`-i: true` 等价于 `case: false`，含义冲突时拒绝调用。`context` 与 `-C` 设置双侧上下文，两者不同值时报错；`-A`／`-B` 分别覆盖后文／前文，支持零行。未指定的侧使用 `settings.yml` 中的配置，默认 `grep: {contextBefore: 1, contextAfter: 3}`。
+`rg` 在进程内搜索本地文件，支持正则、路径 glob、文件行范围和按文件分页。Execute、Plan 和 Review 共用 `pattern`、`path`、`case`、`-i`、`gitignore`、`skip`、`context`、`-C`、`-A`、`-B`、`output_mode`，以及 rg 风格的 `-F`、`-w`、`-t`、`-g`、`max_count` 参数。`-i: true` 等价于 `case: false`，含义冲突时拒绝调用。`context` 与 `-C` 设置双侧上下文，两者不同值时报错；`-A`／`-B` 分别覆盖后文／前文，支持零行。未指定的侧使用 `settings.yml` 中的配置，默认 `rg: {contextBefore: 1, contextAfter: 3}`。
+
+`-F: true` 按字面量匹配元字符，跳过宽松编译链与 PCRE2 回退；此时 `\n` 是反斜杠加 n，只有真实换行才启用多行匹配。`-w: true` 要求整词匹配，可与 `-F` 组合。`-t` 接受文件类型或类型数组（`!name` 表示排除，`all` 合法，未知名报错），`-g` 接受 override glob 或数组（`!` 前缀表示排除，优先于 ignore 文件，不含 `/` 的模式匹配任意层级文件名）；两者只过滤目录遍历，`path` 中显式给出的文件始终被搜索。`max_count` 按文件限制匹配数（对齐 `rg -m`），`0` 不执行搜索并返回 `No matches found` 与 `details.fileCount: 0`。
+
+工具名统一为 `rg`：`settings.yml` 使用顶层 `rg:` 键（旧 `grep:` 键会在严格解析下失败），`tools.approval` 的键同样使用 `rg`。
 
 `output_mode` 默认 `content`，返回正文；`files_with_matches` 只返回路径；`count` 返回各文件计数与所有已搜索文件的总计。单行模式按命中行计数，多行模式按不重叠的匹配计数。上下文参数仅影响 `content`。所有模式保留 `skip` 按文件分页；计数总计包含当前页之外的文件，不受正文匹配条数上限限制，但仍遵守扫描范围限制，`details.countComplete: false` 表示统计不完整。仅 `content` 创建或更新 Hashline 编辑快照，路径与计数模式保留已有快照且不新增已读行。
 
@@ -188,7 +192,7 @@ pp --model deepseek/deepseek-flash:high /commit
 
 TODO 区固定在输入框正上方，使用灰色树形连线，不再绘制底部封口线；标题显示进度与展开／收起快捷键，窄窗口优先精简状态文字以保留快捷键。收起时保留可见任务的阶段行，空间允许便显示连续三项，进行项尽量居中，清单首尾用相邻项补齐；不足三项时全部显示。待办为灰色，进行中为亮黄色加粗，完成项保持绿色、仅勾选而不划线；选择框加宽为三列 `[ ]`／`[✓]`，阻塞项使用金色 `[!]`。展开后阶段与任务通过树枝相连，进行中阶段为亮黄色，已完成阶段为绿色，换行正文与任务文字对齐。macOS 使用 ⌥ + T、其他平台使用 Ctrl + T 原位向上展开，最多占终端高度的三分之一；展开和状态更新时尽量将当前任务滚动至中部，在清单内使用滚轮或同一功能修饰键配合 PgUp/PgDn 翻页。全部完成后保留用户选择的展开状态，收起时仍显示最后三项及绿色 ✔ Complete 标题；含放弃项时显示 Closed。小窗口按可用空间显示任务，空清单不占空间。完整清单仅在固定区展示，对话历史保留操作状态和错误；Ctrl + O 不控制 TODO。恢复和树跳转按最终任务状态重建固定区，并默认收起。
 
-工具预览采用 [Oh My Pi](https://github.com/can1357/oh-my-pi/tree/0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0) 的 ANSI 显示规则。普通 read 默认仅显示本地生成的路径／范围摘要，采用深灰紫背景、白色圆点与 Read 标题、灰色计数和树形连线、金黄色路径；分组中的成功项省略 `ok` 后缀；在 `settings.yml` 设置 `read: {toolResultPreview: true}` 后启用三行正文预览。自动加载的 `AGENTS.md` 与实际 skill URI 读取使用独立的深色 Read 边框卡片，状态点位于标题前，Markdown 标题采用金色下划线、强调文字采用金色：默认预览前 10 行，保留展开提示，`Output` 分隔区展示记录的来源路径；普通 read 预览关闭时仍显示，Ctrl + O 展开完整保留正文。未变化的项目指令每会话展示一次，内容变化后追加新卡片；恢复按日志重放原始正文，不为展示重读文件。技能发现摘要不算正文加载卡片。Ctrl + O 全局切换已有及后续工具输出，并通知当前状态。搜索预览按列宽截断长行，shell 输出保留有限的屏幕尾部，各类工具使用独立额度；展开后的 grep 和文件列表仍按列宽截断，MCP 文本仍限制为 12 行。这些显示限制不改变模型接收的结果，会话树预览保持完整，TODO 清单除外。普通对话使用主屏幕，已结束内容随运行逐步提交到原生滚动历史，保留提交时的显示状态；退出只补交未提交内容，不重放整个会话，也不自动展开工具。翻历史、Ctrl + O 和各类面板临时使用备用屏幕，Esc 返回对话。`/new` 成功后清理屏幕与原生滚动历史；恢复会话和树回退按有效历史重建。[各工具预览额度 →](docs/guide.md#工具输出折叠)
+工具预览采用 [Oh My Pi](https://github.com/can1357/oh-my-pi/tree/0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0) 的 ANSI 显示规则。普通 read 默认仅显示本地生成的路径／范围摘要，采用深灰紫背景、白色圆点与 Read 标题、灰色计数和树形连线、金黄色路径；分组中的成功项省略 `ok` 后缀；在 `settings.yml` 设置 `read: {toolResultPreview: true}` 后启用三行正文预览。自动加载的 `AGENTS.md` 与实际 skill URI 读取使用独立的深色 Read 边框卡片，状态点位于标题前，Markdown 标题采用金色下划线、强调文字采用金色：默认预览前 10 行，保留展开提示，`Output` 分隔区展示记录的来源路径；普通 read 预览关闭时仍显示，Ctrl + O 展开完整保留正文。未变化的项目指令每会话展示一次，内容变化后追加新卡片；恢复按日志重放原始正文，不为展示重读文件。技能发现摘要不算正文加载卡片。Ctrl + O 全局切换已有及后续工具输出，并通知当前状态。搜索预览按列宽截断长行，shell 输出保留有限的屏幕尾部，各类工具使用独立额度；展开后的 rg 和文件列表仍按列宽截断，MCP 文本仍限制为 12 行。这些显示限制不改变模型接收的结果，会话树预览保持完整，TODO 清单除外。普通对话使用主屏幕，已结束内容随运行逐步提交到原生滚动历史，保留提交时的显示状态；退出只补交未提交内容，不重放整个会话，也不自动展开工具。翻历史、Ctrl + O 和各类面板临时使用备用屏幕，Esc 返回对话。`/new` 成功后清理屏幕与原生滚动历史；恢复会话和树回退按有效历史重建。[各工具预览额度 →](docs/guide.md#工具输出折叠)
 
 配置 `edit: hashline` 后，本地 read 返回 `[path#TAG]` 文件版本头和 `N:text` 行号正文；通过 `edit({"input":"…"})` 提交单文件的 PUT 替换／插入或 CUT 删除。只能编辑已显示行，快照缺失或版本过期时必须重新读取；每次 edit、write 或 undo 成功后该文件快照失效。默认 replace 模式保持不变。
 

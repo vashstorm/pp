@@ -73,19 +73,19 @@ pub struct ToolLimits {
     pub read_max_lines: usize,
     pub bash_timeout_seconds: u64,
     #[serde(default)]
-    pub grep: GrepSettings,
+    pub rg: RgSettings,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct GrepSettings {
+pub struct RgSettings {
     #[serde(rename = "contextBefore")]
     pub context_before: usize,
     #[serde(rename = "contextAfter")]
     pub context_after: usize,
 }
 
-impl Default for GrepSettings {
+impl Default for RgSettings {
     fn default() -> Self {
         Self {
             context_before: 1,
@@ -136,7 +136,7 @@ impl Default for ToolLimits {
             read_max_bytes: default_read_max_bytes(),
             read_max_lines: default_read_max_lines(),
             bash_timeout_seconds: default_bash_timeout_seconds(),
-            grep: GrepSettings::default(),
+            rg: RgSettings::default(),
             output: Default::default(),
         }
     }
@@ -277,7 +277,7 @@ pub struct Settings {
     #[serde(default)]
     pub task: crate::config::TaskSettings,
     #[serde(default)]
-    pub grep: GrepSettings,
+    pub rg: RgSettings,
     #[serde(default)]
     pub read: ReadDisplaySettings,
     #[serde(default)]
@@ -325,7 +325,7 @@ impl Settings {
             read_max_bytes: self.read_max_bytes,
             read_max_lines: self.read_max_lines,
             bash_timeout_seconds: self.bash_timeout_seconds,
-            grep: self.grep,
+            rg: self.rg,
             output: self.tools.output,
         }
     }
@@ -398,7 +398,7 @@ impl Settings {
 /// 审批 policy 允许的内置工具名；MCP 工具只接受 `mcp__` 前缀防拼写错误。
 const APPROVAL_TOOL_NAMES: &[&str] = &[
     "read",
-    "grep",
+    "rg",
     "glob",
     "lsp",
     "todo",
@@ -427,7 +427,7 @@ pub fn global_dir() -> Result<PathBuf> {
 fn default_settings() -> Settings {
     Settings {
         task: Default::default(),
-        grep: GrepSettings::default(),
+        rg: RgSettings::default(),
         read: ReadDisplaySettings::default(),
         tui: TuiSettings::default(),
         cost: CostDisplay::default(),

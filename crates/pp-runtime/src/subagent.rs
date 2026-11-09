@@ -114,7 +114,7 @@ struct ChangeSink {
     serial: Arc<Mutex<()>>,
 }
 pub(crate) fn is_read_only_child_tool(name: &str, mcp: impl FnOnce(&str) -> bool) -> bool {
-    matches!(name, "read" | "grep" | "glob" | "lsp") || mcp(name)
+    matches!(name, "read" | "rg" | "glob" | "lsp") || mcp(name)
 }
 
 #[derive(Default)]
@@ -581,7 +581,7 @@ impl Binding {
             let mut tools = configured_tools.cloned().unwrap_or_else(|| {
                 [
                     "read",
-                    "grep",
+                    "rg",
                     "glob",
                     "lsp",
                     "edit",

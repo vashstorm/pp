@@ -61,7 +61,7 @@ fn hashline_edit_rejects_invalid_edits_without_writing() {
 }
 
 #[test]
-fn grep_hashline_edit_only_accepts_complete_displayed_lines() {
+fn rg_hashline_edit_only_accepts_complete_displayed_lines() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Hashline).unwrap();
     let path = dir.path().join("demo.txt");
@@ -70,11 +70,7 @@ fn grep_hashline_edit_only_accepts_complete_displayed_lines() {
         format!("first\nneedle\n{}needle\nlast\n", "x".repeat(600)),
     )
     .unwrap();
-    let result = execute(
-        &tools,
-        "grep",
-        json!({"pattern":"needle","path":"demo.txt"}),
-    );
+    let result = execute(&tools, "rg", json!({"pattern":"needle","path":"demo.txt"}));
     let content = result["content"].as_str().unwrap();
     assert!(content.contains("[demo.txt#"), "{content}");
     assert_eq!(
@@ -97,14 +93,14 @@ fn grep_hashline_edit_only_accepts_complete_displayed_lines() {
 }
 
 #[test]
-fn grep_hashline_output_budget_does_not_authorize_omitted_lines() {
+fn rg_hashline_output_budget_does_not_authorize_omitted_lines() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Hashline).unwrap();
     let path = dir.path().join("budget.txt");
     fs::write(&path, format!("needle {}\n", "x".repeat(450)).repeat(200)).unwrap();
     let result = execute(
         &tools,
-        "grep",
+        "rg",
         json!({"pattern":"needle","path":"budget.txt"}),
     );
     let content = result["content"].as_str().unwrap();

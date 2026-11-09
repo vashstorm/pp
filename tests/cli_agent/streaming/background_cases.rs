@@ -351,7 +351,7 @@ fn background_task_cleanup_at_run_boundaries() {
 }
 
 #[test]
-fn grep_hashline_edit_and_pagination_roundtrip_both_protocols() {
+fn rg_hashline_edit_and_pagination_roundtrip_both_protocols() {
     for protocol in PROTOCOLS {
         let provider = server();
         let dir = tempfile::tempdir().unwrap();
@@ -374,7 +374,7 @@ fn grep_hashline_edit_and_pagination_roundtrip_both_protocols() {
             .unwrap()
             .iter()
             .map(|tool| tool.get("function").unwrap_or(tool))
-            .find(|tool| tool["name"] == "grep")
+            .find(|tool| tool["name"] == "rg")
             .unwrap();
         assert!(tool["parameters"]["properties"]["pattern"].is_object());
         for name in ["context", "-C", "-A", "-B", "-i", "output_mode"] {
@@ -385,12 +385,12 @@ fn grep_hashline_edit_and_pagination_roundtrip_both_protocols() {
             json!([
                 protocol.call(
                     "page",
-                    "grep",
+                    "rg",
                     json!({"pattern":"needle","path":"*.txt","skip":20})
                 ),
-                protocol.call("paths", "grep", json!({"pattern":"NEEDLE","-i":true,"path":"*.txt","skip":20,"output_mode":"files_with_matches"})),
-                protocol.call("counts", "grep", json!({"pattern":"NEEDLE","-i":true,"path":"*.txt","skip":20,"output_mode":"count"})),
-                protocol.call("file", "grep", json!({"pattern":"NEEDLE","-i":true,"path":"00.txt","context":0,"-C":0,"-A":0,"-B":0,"output_mode":"content"}))
+                protocol.call("paths", "rg", json!({"pattern":"NEEDLE","-i":true,"path":"*.txt","skip":20,"output_mode":"files_with_matches"})),
+                protocol.call("counts", "rg", json!({"pattern":"NEEDLE","-i":true,"path":"*.txt","skip":20,"output_mode":"count"})),
+                protocol.call("file", "rg", json!({"pattern":"NEEDLE","-i":true,"path":"00.txt","context":0,"-C":0,"-A":0,"-B":0,"output_mode":"content"}))
             ]),
         );
         let (request, body) = protocol.receive(&provider);

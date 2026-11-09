@@ -17,7 +17,7 @@ pub(super) use wait::render as wait_body;
 const READ_LINES: usize = 3;
 // 指令卡片（自动 AGENTS 加载与技能正文读取）固定预览 10 个逻辑行。
 const INSTRUCTION_LINES: usize = 10;
-const GREP_LINES: usize = 6;
+const RG_LINES: usize = 6;
 const SEARCH_EXPANDED_LINES: usize = 24;
 const FIND_ITEMS: usize = 8;
 const BASH_LINES: usize = 10;
@@ -157,9 +157,9 @@ pub(super) fn is_skill_read(arguments: &Value, result: Option<&Value>) -> bool {
         })
 }
 
-pub(super) fn grep_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
-    let text = Style::default().fg(palette::GREP_TEXT).bg(palette::GREP_BG);
-    let meta = text.fg(palette::GREP_META);
+pub(super) fn rg_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
+    let text = Style::default().fg(palette::RG_TEXT).bg(palette::RG_BG);
+    let meta = text.fg(palette::RG_META);
     let pattern = view.arguments["pattern"]
         .as_str()
         .map(str::to_owned)
@@ -171,8 +171,8 @@ pub(super) fn grep_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
         });
     let mut spans = vec![
         Span::styled(
-            format!("{} Grep: ", palette::tool_icon("grep")),
-            text.fg(palette::tool_accent("grep")),
+            format!("{} rg: ", palette::tool_icon("rg")),
+            text.fg(palette::tool_accent("rg")),
         ),
         Span::styled(pattern, text),
     ];
@@ -256,13 +256,13 @@ pub(super) fn grep_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
 }
 
 pub(super) fn glob_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default().fg(palette::GREP_TEXT).bg(palette::GREP_BG);
+    let style = Style::default().fg(palette::RG_TEXT).bg(palette::RG_BG);
     let (status, color) = if view.failed {
         (" · failed", palette::REMOVED)
     } else if view.running {
         (" · running", palette::ACCENT)
     } else {
-        ("", palette::GREP_META)
+        ("", palette::RG_META)
     };
     wrap_block(
         Line::from(vec![
@@ -288,15 +288,15 @@ pub(super) fn glob_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
 }
 
 fn search_row(line: &str, view: &View<'_>) -> Line<'static> {
-    let style = Style::default().fg(palette::GREP_TEXT).bg(palette::GREP_BG);
-    let meta = style.fg(palette::GREP_META);
+    let style = Style::default().fg(palette::RG_TEXT).bg(palette::RG_BG);
+    let meta = style.fg(palette::RG_META);
     if view.failed {
         return Line::styled(line.to_owned(), style.fg(palette::REMOVED));
     }
     if line.starts_with('…') || line.starts_with('[') || line.starts_with("No ") {
         return Line::styled(line.to_owned(), meta);
     }
-    if view.name == "grep" {
+    if view.name == "rg" {
         let content_mode = view
             .result
             .and_then(|r| r["details"]["outputMode"].as_str())
@@ -316,7 +316,7 @@ fn search_row(line: &str, view: &View<'_>) -> Line<'static> {
                 Span::styled(
                     gutter.to_owned(),
                     if matched {
-                        style.fg(palette::GREP_TITLE)
+                        style.fg(palette::RG_TITLE)
                     } else {
                         meta
                     },
@@ -343,7 +343,7 @@ fn search_row(line: &str, view: &View<'_>) -> Line<'static> {
             Span::styled(
                 line[split..].to_owned(),
                 style.fg(if line.ends_with('/') {
-                    palette::GREP_TITLE
+                    palette::RG_TITLE
                 } else {
                     palette::READ_SUMMARY_PATH
                 }),
@@ -361,7 +361,7 @@ fn search_rows(rows: Vec<Line<'static>>, view: &View<'_>) -> Vec<Line<'static>> 
 }
 
 fn glob_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default().fg(palette::GREP_TEXT).bg(palette::GREP_BG);
+    let style = Style::default().fg(palette::RG_TEXT).bg(palette::RG_BG);
     let mut depth = 0;
     let grouped = view.result.is_some_and(|r| r["content"].is_string()) && !view.failed;
     let lines = logical(view.text)
@@ -403,14 +403,14 @@ fn glob_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     search_rows(rows, view)
 }
 
-fn grep_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
+fn rg_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     let style = Style::default()
         .fg(if view.failed {
             palette::REMOVED
         } else {
-            palette::GREP_TEXT
+            palette::RG_TEXT
         })
-        .bg(palette::GREP_BG);
+        .bg(palette::RG_BG);
     let structured = view.result.is_some_and(|r| {
         r["content"].is_string()
             && r["details"]["outputMode"].as_str().unwrap_or("content") == "content"
@@ -468,11 +468,7 @@ fn grep_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     } else {
         head(
             &display,
-            if view.expanded {
-                usize::MAX
-            } else {
-                GREP_LINES
-            },
+            if view.expanded { usize::MAX } else { RG_LINES },
             true,
             true,
             width,
@@ -490,8 +486,8 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
         // 清单由固定区展示；历史只保留操作标题及失败诊断。
         return todo_body(&view, width);
     }
-    if view.name == "grep" {
-        return grep_body(&view, width);
+    if view.name == "rg" {
+        return rg_body(&view, width);
     }
     if view.name == "glob" {
         return glob_body(&view, width);
@@ -529,7 +525,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
         return wrap(logical(text).into_iter().map(str::to_owned), width, style);
     }
     if view.failed
-        && !matches!(view.name, "bash" | "bash_task" | "grep" | "find")
+        && !matches!(view.name, "bash" | "bash_task" | "rg" | "find")
         && !view.name.starts_with("mcp__")
     {
         return wrap(logical(text).into_iter().map(str::to_owned), width, style);
@@ -600,7 +596,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                     } else if stderr {
                         palette::ACCENT
                     } else {
-                        palette::GREP_TEXT
+                        palette::RG_TEXT
                     };
                     wrap([line.to_owned()], width, style.fg(color))
                 })
@@ -1074,7 +1070,7 @@ fn plan_search(view: &View<'_>, width: u16, style: Style) -> Vec<Line<'static>> 
             if view.expanded {
                 SEARCH_EXPANDED_LINES
             } else {
-                GREP_LINES
+                RG_LINES
             },
             true,
             true,
@@ -1106,7 +1102,7 @@ fn plan_search(view: &View<'_>, width: u16, style: Style) -> Vec<Line<'static>> 
         if view.expanded {
             SEARCH_EXPANDED_LINES
         } else {
-            GREP_LINES
+            RG_LINES
         },
         true,
         true,
@@ -1330,14 +1326,14 @@ mod tests {
             .map(|i| format!("item-{i:02}-{}", "中e\u{301}😀".repeat(20)))
             .collect::<Vec<_>>()
             .join("\n");
-        let grep = output("grep", &content, false, false, 70);
-        assert_eq!(grep.lines().count(), 6);
-        assert!(grep.contains("item-04") && !grep.contains("item-05"));
-        assert!(grep.contains("5 more items"));
+        let rg = output("rg", &content, false, false, 70);
+        assert_eq!(rg.lines().count(), 6);
+        assert!(rg.contains("item-04") && !rg.contains("item-05"));
+        assert!(rg.contains("5 more items"));
         let find = output("find", &content, false, false, 70);
         assert_eq!(find.lines().count(), 9);
         assert!(find.contains("item-07") && !find.contains("item-08"));
-        for name in ["grep", "find"] {
+        for name in ["rg", "find"] {
             let expanded = output(name, &content, true, false, 70);
             assert_eq!(expanded.lines().count(), 10);
             assert!(expanded.contains("item-09"));

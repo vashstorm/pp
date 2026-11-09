@@ -35,7 +35,7 @@ pub enum MockTest {
     Read,
     Write,
     Edit,
-    Grep,
+    Rg,
     Glob,
     Bash,
     BashTask,
@@ -52,7 +52,7 @@ impl MockTest {
         Self::Read,
         Self::Write,
         Self::Edit,
-        Self::Grep,
+        Self::Rg,
         Self::Glob,
         Self::Bash,
         Self::BashTask,
@@ -69,7 +69,7 @@ impl MockTest {
             Self::Read => "/test-read",
             Self::Write => "/test-write",
             Self::Edit => "/test-edit",
-            Self::Grep => "/test-grep",
+            Self::Rg => "/test-rg",
             Self::Glob => "/test-glob",
             Self::Bash => "/test-bash",
             Self::BashTask => "/test-bash-task",
@@ -154,7 +154,7 @@ const READ: &str = include_str!("scenarios/read.json");
 const WRITE: &str = include_str!("scenarios/write.json");
 const EDIT_REPLACE: &str = include_str!("scenarios/edit-replace.json");
 const EDIT_HASHLINE: &str = include_str!("scenarios/edit-hashline.json");
-const GREP: &str = include_str!("scenarios/grep.json");
+const RG: &str = include_str!("scenarios/rg.json");
 const GLOB: &str = include_str!("scenarios/glob.json");
 const BASH: &str = include_str!("scenarios/bash.json");
 const BASH_TASK: &str = include_str!("scenarios/bash-task.json");
@@ -171,7 +171,7 @@ fn scenarios(test: MockTest) -> &'static [&'static str] {
             WRITE,
             EDIT_REPLACE,
             EDIT_HASHLINE,
-            GREP,
+            RG,
             GLOB,
             BASH,
             BASH_TASK,
@@ -182,7 +182,7 @@ fn scenarios(test: MockTest) -> &'static [&'static str] {
         MockTest::Edit => &[EDIT_REPLACE, EDIT_HASHLINE],
         MockTest::Read => &[READ],
         MockTest::Write => &[WRITE],
-        MockTest::Grep => &[GREP],
+        MockTest::Rg => &[RG],
         MockTest::Glob => &[GLOB],
         MockTest::Bash => &[BASH],
         MockTest::BashTask => &[BASH_TASK],

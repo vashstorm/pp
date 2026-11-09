@@ -37,7 +37,7 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
                     name.as_str(),
                     Some(
                         "read"
-                            | "grep"
+                            | "rg"
                             | "glob"
                             | "lsp"
                             | "ask"

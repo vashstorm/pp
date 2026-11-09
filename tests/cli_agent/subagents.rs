@@ -137,7 +137,7 @@ fn explorer_role_is_read_only_and_uses_the_exploration_prompt_in_both_protocols(
                 for denied in ["write", "edit", "bash", "bash_task", "task"] {
                     assert!(!sub_has_tool(&body, protocol, denied), "{denied}: {body}");
                 }
-                for allowed in ["read", "grep", "glob"] {
+                for allowed in ["read", "rg", "glob"] {
                     assert!(sub_has_tool(&body, protocol, allowed), "{allowed}: {body}");
                 }
                 assert!(
@@ -1090,7 +1090,7 @@ fn subagent_mixed_batch_starts_async_siblings_before_waiting_for_blocking_role()
     let dir = tempfile::tempdir().unwrap();
     let roles = dir.path().join(".pp/agents");
     std::fs::create_dir_all(&roles).unwrap();
-    std::fs::write(roles.join("blocking.md"),"---\nname: blocking\ndescription: 同步角色\nblocking: true\ntools: [read, grep, glob]\n---\nComplete the assignment and return a result.").unwrap();
+    std::fs::write(roles.join("blocking.md"),"---\nname: blocking\ndescription: 同步角色\nblocking: true\ntools: [read, rg, glob]\n---\nComplete the assignment and return a result.").unwrap();
     let cli = Cli::start_with(
         dir.path(),
         Some("mixed batch"),

@@ -1178,7 +1178,7 @@ providers:
         }
         let mut failed = fixture("failed", now);
         failed.status = "aborted".into();
-        store.insert(&failed, &json!({"native":{"output":[{"type":"function_call","name":"grep","arguments":"中😀"}]}})).unwrap();
+        store.insert(&failed, &json!({"native":{"output":[{"type":"function_call","name":"rg","arguments":"中😀"}]}})).unwrap();
         store
             .insert(&fixture("future", now + 1), &responses)
             .unwrap();

@@ -131,27 +131,27 @@ fn assert_all_suites(recorder: &Recorder) {
     assert_eq!(edits[2]["edits_applied"], 2);
     assert_eq!(edits[3]["ok"], false);
 
-    let greps = recorder.calls("grep");
-    assert_eq!(greps.len(), 4);
-    assert_eq!(greps[0]["ok"], true);
+    let rgs = recorder.calls("rg");
+    assert_eq!(rgs.len(), 4);
+    assert_eq!(rgs[0]["ok"], true);
     assert!(
-        greps[0]["content"]
+        rgs[0]["content"]
             .as_str()
             .is_some_and(|text| text.contains("needle first") && text.contains("needle second"))
     );
-    assert_eq!(greps[1]["ok"], true);
+    assert_eq!(rgs[1]["ok"], true);
     assert!(
-        greps[1]["content"]
+        rgs[1]["content"]
             .as_str()
             .is_some_and(|text| text.contains("Needle case"))
     );
-    assert_eq!(greps[2]["ok"], true);
+    assert_eq!(rgs[2]["ok"], true);
     assert!(
-        greps[2]["content"]
+        rgs[2]["content"]
             .as_str()
             .is_some_and(|text| text.contains("No matches found"))
     );
-    assert_eq!(greps[3]["ok"], false);
+    assert_eq!(rgs[3]["ok"], false);
 
     let globs = recorder.calls("glob");
     assert_eq!(globs.len(), 4);

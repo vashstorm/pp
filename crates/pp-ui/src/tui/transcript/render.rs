@@ -187,7 +187,7 @@ impl Transcript {
                 } else if edit {
                     Some(palette::EDIT_BG)
                 } else if search {
-                    Some(palette::GREP_BG)
+                    Some(palette::RG_BG)
                 } else if read {
                     Some(palette::READ_BG)
                 } else if file_read {
@@ -221,14 +221,14 @@ impl Transcript {
                         let card_bg = if bash {
                             BASH_BACKGROUND
                         } else {
-                            palette::GREP_BG
+                            palette::RG_BG
                         };
                         let border_color = if entry.status == EntryStatus::Failed {
                             palette::REMOVED
                         } else if bash {
                             BASH_BORDER
                         } else {
-                            palette::GREP_BORDER
+                            palette::RG_BORDER
                         };
                         let style = Style::default().fg(border_color).bg(card_bg);
                         let horizontal = matches!(

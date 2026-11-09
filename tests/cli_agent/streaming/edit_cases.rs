@@ -545,7 +545,7 @@ fn glob_roundtrip_both_protocols() {
             json!([
                 protocol.call(
                     "match",
-                    "grep",
+                    "rg",
                     json!({"pattern":"needle","path":"space dir/demo.txt"})
                 ),
                 protocol.call(
@@ -555,15 +555,15 @@ fn glob_roundtrip_both_protocols() {
                 ),
                 protocol.call(
                     "absent",
-                    "grep",
+                    "rg",
                     json!({"pattern":"absent","path":"space dir/demo.txt"})
                 ),
                 protocol.call(
                     "bad-regex",
-                    "grep",
+                    "rg",
                     json!({"pattern":"[","path":"space dir/demo.txt"})
                 ),
-                protocol.call("bad-args", "grep", json!({"args":[]})),
+                protocol.call("bad-args", "rg", json!({"args":[]})),
                 protocol.call("legacy-glob", "glob", json!({"path":"space dir/*.txt"}))
             ]),
         );
@@ -596,8 +596,8 @@ fn glob_roundtrip_both_protocols() {
         assert!(stderr.contains("*1|needle"), "{stderr}");
         assert!(stderr.contains("demo.txt"), "{stderr}");
         assert!(!stderr.contains("[bash"), "{stderr}");
-        assert!(stderr.contains("tool grep: ok"), "{stderr}");
-        assert!(stderr.contains("invalid grep arguments"), "{stderr}");
+        assert!(stderr.contains("tool rg: ok"), "{stderr}");
+        assert!(stderr.contains("invalid rg arguments"), "{stderr}");
         assert!(stderr.contains("tool glob: ok"), "{stderr}");
         assert_clean_pipes(&output);
         no_more(&server);

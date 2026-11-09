@@ -93,6 +93,7 @@ fn file_command_menu_ranks_matches_together_with_builtin_commands() {
         .collect();
     // dev/test 构建仍注册 /test-* 专用命令，补全顺序与普通命令混合排序；
     // 非 dev/test 构建不注册这些名字，只出现实际注册的命令。
+    // `/test-rg` 不含 `/RE` 的子序列，因此不进入本次补全结果。
     #[cfg(debug_assertions)]
     let expected = [
         "/re",
@@ -100,7 +101,6 @@ fn file_command_menu_ranks_matches_together_with_builtin_commands() {
         "/review",
         "/tree",
         "/test-read",
-        "/test-grep",
         "/Roles",
         "/test-write",
     ];

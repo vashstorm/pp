@@ -36,9 +36,9 @@ pub use changes::{ChangedFile, ChangesView, UndoResult, UndoToken};
 pub(crate) mod diff;
 mod edit;
 mod glob;
-mod grep;
 mod hashline;
 mod plan;
+mod rg;
 pub(crate) use plan::PlanChange;
 pub(crate) mod plan_catalog;
 pub(crate) mod read;
@@ -132,7 +132,7 @@ const PLAN_SEARCH_TOOLS: &[&str] = &["glob"];
 /// Plan-mode-only tools that mutate the review boundary.
 const PLAN_WRITE_TOOLS: &[&str] = &["plan_submit"];
 /// Research tools Plan mode keeps from the ordinary Execute list.
-const PLAN_BASE_TOOLS: &[&str] = &["read", "grep"];
+const PLAN_BASE_TOOLS: &[&str] = &["read", "rg"];
 
 fn is_plan_tool(name: &str) -> bool {
     PLAN_WRITE_TOOLS.contains(&name)
@@ -535,7 +535,7 @@ impl Tools {
                     definitions.push(pp_core::interaction::definition());
                 }
                 definitions.push(glob::definition());
-                definitions.push(grep::definition());
+                definitions.push(rg::definition());
                 if let Some(definition) = self.lsp_definition(self.lsp_readonly) {
                     definitions.push(definition);
                 }
@@ -554,7 +554,7 @@ impl Tools {
                     definitions.push(pp_core::interaction::definition());
                 }
                 definitions.push(glob::definition());
-                definitions.push(grep::definition());
+                definitions.push(rg::definition());
                 if let Some(write) = definitions.iter_mut().find(|tool| tool.name == "write") {
                     write.description = Some("Save the complete Markdown plan using path and content. On the first save choose .pp/drafts/<descriptive-kebab-case-name>.md; later saves must use the exact bound plan path. Only this plan may be written in Plan mode. The title comes from the first H1, falling back to the file name. The runtime registers the plan, advances its revision, refuses name collisions and external changes, and returns path and revision. Renaming is only possible through /plan-list.".into());
                 }
@@ -631,10 +631,10 @@ impl Tools {
         let agent_read = "Use agent://<id> for the latest published subagent result in this session. The read result includes paged content when available and current/published Run metadata. Use next_path to continue reading the same Run. ";
         let (read_description, edit) = match edit_mode {
             EditMode::Hashline => (
-                format!("{common_read}{agent_read}Editable local non-raw UTF-8 text begins with [path#TAG], followed by original N:text lines. Copy the header into edit input; grep also provides editable tags for complete displayed local lines. Only displayed lines may be edited; read again after every edit. Web/raw/skill output has no edit snapshot."),
+                format!("{common_read}{agent_read}Editable local non-raw UTF-8 text begins with [path#TAG], followed by original N:text lines. Copy the header into edit input; rg also provides editable tags for complete displayed local lines. Only displayed lines may be edited; read again after every edit. Web/raw/skill output has no edit snapshot."),
                 FunctionObject {
                     name: "edit".into(),
-                    description: Some(r#"Atomically edit one existing UTF-8 file inside startup cwd; no symlinks. Accept only input: a single [path#TAG] section copied from read or reconstructed from grep’s file path and tag, optionally wrapped in *** Begin Patch / *** End Patch. PUT N.=M: replaces inclusive original lines; PUT <N: / PUT >N: inserts before/after a displayed anchor. Every PUT body row starts with +, including blank rows as +. CUT N.=M deletes. All operations use the original snapshot; reject overlaps and insertions touching replacement boundaries. No blocks, registers, moves, deletes of files, or multiple files. Stale, missing, ambiguous or unread snapshots fail; read the local file again. Entire no-op batches fail. Example: {"input":"[demo.txt#A1B2]\nPUT 1.=1:\n+edited"}"#.into()),
+                    description: Some(r#"Atomically edit one existing UTF-8 file inside startup cwd; no symlinks. Accept only input: a single [path#TAG] section copied from read or reconstructed from rg’s file path and tag, optionally wrapped in *** Begin Patch / *** End Patch. PUT N.=M: replaces inclusive original lines; PUT <N: / PUT >N: inserts before/after a displayed anchor. Every PUT body row starts with +, including blank rows as +. CUT N.=M deletes. All operations use the original snapshot; reject overlaps and insertions touching replacement boundaries. No blocks, registers, moves, deletes of files, or multiple files. Stale, missing, ambiguous or unread snapshots fail; read the local file again. Entire no-op batches fail. Example: {"input":"[demo.txt#A1B2]\nPUT 1.=1:\n+edited"}"#.into()),
                     parameters: Some(json!({"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false})),
                     ..Default::default()
                 },
@@ -680,7 +680,7 @@ impl Tools {
             },
             FunctionObject {
                 name: "bash_task".into(),
-                description: Some("Use ONLY to manage persistent services started with bash mode background that must stay alive across tool calls and require explicit termination when finished. Finite commands (tests, builds, installs, checks) must use foreground bash even when slow. Inspect cumulative merged head/tail output, bounded pipes stage/stream metadata, and current status of the service, or stop it and wait for process and temporary-directory cleanup. Verify readiness with actual requests, then explicitly stop the service after verification. An artifact URI stays stable across status calls; read/grep use one snapshot per call while logs grow. Read pipe:// URIs for temporary stage mirrors. Artifacts are sealed when the process ends. Only task IDs from this user task are valid. Stop is idempotent; it does not cancel the user task.".into()),
+                description: Some("Use ONLY to manage persistent services started with bash mode background that must stay alive across tool calls and require explicit termination when finished. Finite commands (tests, builds, installs, checks) must use foreground bash even when slow. Inspect cumulative merged head/tail output, bounded pipes stage/stream metadata, and current status of the service, or stop it and wait for process and temporary-directory cleanup. Verify readiness with actual requests, then explicitly stop the service after verification. An artifact URI stays stable across status calls; read/rg use one snapshot per call while logs grow. Read pipe:// URIs for temporary stage mirrors. Artifacts are sealed when the process ends. Only task IDs from this user task are valid. Stop is idempotent; it does not cancel the user task.".into()),
                 parameters: Some(json!({"type":"object","properties":{"task_id":{"type":"string","minLength":1},"action":{"type":"string","enum":["status","stop"]}},"required":["task_id","action"],"additionalProperties":false})),
                 ..Default::default()
             },
@@ -732,7 +732,7 @@ impl Tools {
             "bash" => "bash",
             "bash_task" => "bash_task",
             "wait" => "wait",
-            "grep" => "grep",
+            "rg" => "rg",
             "glob" => "glob",
             "todo" => "todo",
             "lsp" => "lsp",
@@ -1264,9 +1264,9 @@ impl Tools {
                 emit_background_snapshot(call_id, &snapshot, emit);
                 Ok(snapshot)
             }
-            "grep" => grep::run(
+            "rg" => rg::run(
                 &self.cwd,
-                self.limits.grep,
+                self.limits.rg,
                 self.edit_mode,
                 &self.workspace,
                 &mut self.snapshots.borrow_mut(),

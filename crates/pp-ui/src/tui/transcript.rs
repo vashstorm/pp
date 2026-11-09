@@ -68,7 +68,7 @@ pub(super) enum EntryKind {
     Assistant,
     Bash,
     Think,
-    Grep,
+    Rg,
     Read,
     Diff,
     Ask,
@@ -831,8 +831,8 @@ impl Transcript {
                 });
                 let kind = if matches!(name.as_str(), "bash" | "bash_task") {
                     EntryKind::Bash
-                } else if name == "grep" {
-                    EntryKind::Grep
+                } else if name == "rg" {
+                    EntryKind::Rg
                 } else if matches!(name.as_str(), "edit" | "write") {
                     EntryKind::Diff
                 } else if name == "ask" {
@@ -871,10 +871,10 @@ impl Transcript {
                         Some(op) => format!("Todo · {}", pp_core::text::display_text(op)),
                         None => "Todo".to_owned(),
                     }
-                } else if matches!(name.as_str(), "grep" | "find") {
+                } else if matches!(name.as_str(), "rg" | "find") {
                     search_args.map_or_else(
                         || {
-                            if name == "grep" {
+                            if name == "rg" {
                                 let pattern = arguments
                                     .as_ref()
                                     .and_then(|a| a["pattern"].as_str())
@@ -883,7 +883,7 @@ impl Transcript {
                                     .as_ref()
                                     .and_then(|a| a["path"].as_str())
                                     .unwrap_or(".");
-                                format!("grep · {pattern} · {path}")
+                                format!("rg · {pattern} · {path}")
                             } else {
                                 name.clone()
                             }
@@ -1724,7 +1724,7 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
         }
         return String::new();
     }
-    if matches!(name, "grep" | "glob")
+    if matches!(name, "rg" | "glob")
         && let Some(content) = result["content"].as_str()
     {
         return content.to_owned();
@@ -1741,7 +1741,7 @@ fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String {
         }
         return String::new();
     }
-    if kind == EntryKind::Bash || matches!(name, "grep" | "find") {
+    if kind == EntryKind::Bash || matches!(name, "rg" | "find") {
         let mut lines = Vec::new();
         if let Some(output) = result["output"].as_str() {
             lines.push(output.trim_end_matches('\n').to_owned());

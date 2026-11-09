@@ -286,7 +286,7 @@ fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenA
             tui: Default::default(),
             cost: Default::default(),
             task: Default::default(),
-            grep: Default::default(),
+            rg: Default::default(),
             read: Default::default(),
             tools: Default::default(),
             lsp: Default::default(),

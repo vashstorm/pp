@@ -705,7 +705,7 @@ fn recovery_notice(value: &Value) -> Option<String> {
     let capturing = artifact["capturing"] == true;
     let elided = artifact["elided_bytes"].as_u64().unwrap_or(0);
     let mut status = if capturing {
-        "Saved output is still growing; each read/grep uses one snapshot.".to_owned()
+        "Saved output is still growing; each read/rg uses one snapshot.".to_owned()
     } else if artifact["complete"] == true {
         "Full saved output is available.".to_owned()
     } else {
@@ -717,9 +717,9 @@ fn recovery_notice(value: &Value) -> Option<String> {
         ));
     }
     let read = json!({"path":format!("{uri}:-80")});
-    let grep = json!({"path":uri,"pattern":"REGEX"});
+    let rg = json!({"path":uri,"pattern":"REGEX"});
     Some(format!(
-        "{status} Call the built-in read tool as read({read}) for the last 80 saved lines, or the built-in grep tool as grep({grep}) for targeted searches (replace REGEX with your pattern). artifact:// URIs are tool resources, not filesystem paths. Only the built-in grep tool supports searching them; NEVER pass them to bash or shell commands such as grep, rg, cat, sed, or awk. Use read line selectors or next_path to inspect other saved ranges."
+        "{status} Call the built-in read tool as read({read}) for the last 80 saved lines, or the built-in rg tool as rg({rg}) for targeted searches (replace REGEX with your pattern). artifact:// URIs are tool resources, not filesystem paths. Only the built-in rg tool supports searching them; NEVER pass them to bash or shell commands such as grep, rg, cat, sed, or awk. Use read line selectors or next_path to inspect other saved ranges."
     ))
 }
 

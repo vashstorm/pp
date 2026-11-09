@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn artifact_bash_failure_read_grep_and_next_page_keep_uri() {
+fn artifact_bash_failure_read_rg_and_next_page_keep_uri() {
     let dir = tempfile::tempdir().unwrap();
     let mut tools = Tools::new(dir.path().into(), EditMode::Hashline).unwrap();
     tools.artifacts.bind(dir.path(), "root").unwrap();
@@ -29,7 +29,7 @@ fn artifact_bash_failure_read_grep_and_next_page_keep_uri() {
             .unwrap()
             .contains("05001")
     );
-    let found = execute(&tools, "grep", json!({"path":uri,"pattern":"line-05000"}));
+    let found = execute(&tools, "rg", json!({"path":uri,"pattern":"line-05000"}));
     assert_eq!(found["details"]["matchCount"], 1, "{found}");
     assert_eq!(found["details"]["scopePath"], uri);
     assert_eq!(found["details"]["fileMatches"][0]["path"], uri);
@@ -37,7 +37,7 @@ fn artifact_bash_failure_read_grep_and_next_page_keep_uri() {
     for mode in ["files_with_matches", "count"] {
         let found = execute(
             &tools,
-            "grep",
+            "rg",
             json!({"path":uri,"pattern":"LINE-05000","-i":true,"output_mode":mode}),
         );
         assert_eq!(found["details"]["fileMatches"][0]["path"], uri);
@@ -72,7 +72,7 @@ fn artifact_bash_failure_read_grep_and_next_page_keep_uri() {
 }
 
 #[test]
-fn artifact_grep_reads_after_four_mib_and_warns_for_multiline() {
+fn artifact_rg_reads_after_four_mib_and_warns_for_multiline() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
     tools.artifacts.bind(dir.path(), "root").unwrap();
@@ -86,20 +86,20 @@ fn artifact_grep_reads_after_four_mib_and_warns_for_multiline() {
     let uri = sink.value()["artifact"]["uri"].as_str().unwrap().to_owned();
     let found = execute(
         &tools,
-        "grep",
+        "rg",
         json!({"path":uri,"pattern":"UNIQUE_AFTER_FOUR_MIB"}),
     );
     assert_eq!(found["details"]["matchCount"], 1, "{found}");
     let multi = execute(
         &tools,
-        "grep",
+        "rg",
         json!({"path":uri,"pattern":"UNIQUE_AFTER_FOUR_MIB\\n"}),
     );
     assert!(multi["content"].as_str().unwrap().contains("first 4 MiB"));
     for pattern in ["UNIQUE_AFTER_FOUR_MIB", "UNIQUE_AFTER_FOUR_MIB\\n"] {
         let count = execute(
             &tools,
-            "grep",
+            "rg",
             json!({"path":uri,"pattern":pattern,"output_mode":"count"}),
         );
         let complete = !pattern.ends_with("\\n");
@@ -143,11 +143,7 @@ fn artifact_background_live_read_is_stable_and_stop_seals_once() {
     assert_eq!(read["artifact"]["capturing"], true);
     fs::write(dir.path().join("release"), "go").unwrap();
     background_wait(&tools, id, |v| v["total_lines"] == 2);
-    let found = execute(
-        &tools,
-        "grep",
-        json!({"path":uri,"pattern":"after-release"}),
-    );
+    let found = execute(&tools, "rg", json!({"path":uri,"pattern":"after-release"}));
     assert_eq!(found["details"]["matchCount"], 1, "{found}");
     let stopped = execute(&tools, "bash_task", json!({"task_id":id,"action":"stop"}));
     assert_eq!(stopped["artifact"]["uri"], uri);

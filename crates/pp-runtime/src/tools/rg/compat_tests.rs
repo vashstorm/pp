@@ -4,7 +4,7 @@ fn query(dir: &Path, args: Value, store: &mut hashline::Store) -> Result<Value> 
     let cwd = dir.canonicalize()?;
     run(
         &cwd,
-        GrepSettings::default(),
+        RgSettings::default(),
         EditMode::Hashline,
         &save::Workspace::open(&cwd)?,
         store,
@@ -15,7 +15,7 @@ fn query(dir: &Path, args: Value, store: &mut hashline::Store) -> Result<Value> 
 }
 
 #[test]
-fn grep_context_aliases_overrides_and_zero() {
+fn rg_context_aliases_overrides_and_zero() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(
         dir.path().join("file"),
@@ -54,7 +54,7 @@ fn grep_context_aliases_overrides_and_zero() {
 }
 
 #[test]
-fn grep_ignore_case_alias_works_with_both_regex_engines_and_modes() {
+fn rg_ignore_case_alias_works_with_both_regex_engines_and_modes() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("file"), "NEEDLE\nneedle\nNeedle\n").unwrap();
     for mode in ["content", "files_with_matches", "count"] {
@@ -89,7 +89,7 @@ fn grep_ignore_case_alias_works_with_both_regex_engines_and_modes() {
 }
 
 #[test]
-fn grep_compat_rejects_conflicts_invalid_types_and_unknown_modes() {
+fn rg_compat_rejects_conflicts_invalid_types_and_unknown_modes() {
     let dir = tempfile::tempdir().unwrap();
     for extra in [
         json!({"context":1,"-C":2}),
@@ -115,10 +115,24 @@ fn grep_compat_rejects_conflicts_invalid_types_and_unknown_modes() {
             "{args}"
         );
     }
+    let negative = query(
+        dir.path(),
+        json!({"pattern":"needle","max_count":-1.0}),
+        &mut hashline::Store::default(),
+    )
+    .unwrap_err();
+    assert!(negative.to_string().contains("max_count"), "{negative:#}");
+    let floored = query(
+        dir.path(),
+        json!({"pattern":"needle","max_count":1.5}),
+        &mut hashline::Store::default(),
+    )
+    .unwrap();
+    assert_eq!(floored["details"]["fileCount"], 0, "{floored}");
 }
 
 #[test]
-fn grep_count_ignores_content_caps_and_totals_all_pages() {
+fn rg_count_ignores_content_caps_and_totals_all_pages() {
     let dir = tempfile::tempdir().unwrap();
     for i in 0..22 {
         fs::write(
@@ -166,7 +180,7 @@ fn grep_count_ignores_content_caps_and_totals_all_pages() {
 }
 
 #[test]
-fn grep_files_mode_paginates_paths_and_preserves_literal_names() {
+fn rg_files_mode_paginates_paths_and_preserves_literal_names() {
     let dir = tempfile::tempdir().unwrap();
     for i in 0..22 {
         fs::write(
@@ -217,7 +231,7 @@ fn grep_files_mode_paginates_paths_and_preserves_literal_names() {
 }
 
 #[test]
-fn grep_count_multiline_matches_and_file_ranges() {
+fn rg_count_multiline_matches_and_file_ranges() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("file"), "foo\nbar foo\nbar\nfoo\nbar\n").unwrap();
     for pattern in [
@@ -267,7 +281,7 @@ fn grep_count_multiline_matches_and_file_ranges() {
 }
 
 #[test]
-fn grep_non_content_modes_never_grant_or_change_hashline_snapshots() {
+fn rg_non_content_modes_never_grant_or_change_hashline_snapshots() {
     let dir = tempfile::tempdir().unwrap();
     let raw = "secret\nneedle\nother\n";
     fs::write(dir.path().join("file"), raw).unwrap();
@@ -318,7 +332,7 @@ fn grep_non_content_modes_never_grant_or_change_hashline_snapshots() {
 }
 
 #[test]
-fn grep_count_marks_partial_coverage_and_preserves_full_direct_search() {
+fn rg_count_marks_partial_coverage_and_preserves_full_direct_search() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(
         dir.path().join("large"),
@@ -369,5 +383,209 @@ fn grep_count_marks_partial_coverage_and_preserves_full_direct_search() {
             .as_str()
             .unwrap()
             .contains("binary file not fully searched")
+    );
+}
+
+#[test]
+fn rg_fixed_and_word_match_literally_and_on_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("file"),
+        "literal (?=x) line\na{ b{\nfoobar\nfoo-bar\nfoo. baz\nxfoo. tail\n",
+    )
+    .unwrap();
+    let mut store = hashline::Store::default();
+    let lookahead = query(
+        dir.path(),
+        json!({"pattern":"(?=x)","path":"file","-F":true,"context":0}),
+        &mut store,
+    )
+    .unwrap();
+    assert!(
+        lookahead["content"]
+            .as_str()
+            .unwrap()
+            .contains("literal (?=x) line"),
+        "{lookahead}"
+    );
+    let brace = query(
+        dir.path(),
+        json!({"pattern":"a{","path":"file","-F":true,"context":0}),
+        &mut store,
+    )
+    .unwrap();
+    assert!(
+        brace["content"].as_str().unwrap().contains("a{ b{"),
+        "{brace}"
+    );
+    let word = query(
+        dir.path(),
+        json!({"pattern":"foo","path":"file","-w":true,"context":0}),
+        &mut store,
+    )
+    .unwrap();
+    let text = word["content"].as_str().unwrap();
+    assert!(
+        text.contains("foo-bar") && text.contains("foo. baz"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("foobar") && !text.contains("xfoo."),
+        "{text}"
+    );
+    let combined = query(
+        dir.path(),
+        json!({"pattern":"foo.","path":"file","-F":true,"-w":true,"context":0}),
+        &mut store,
+    )
+    .unwrap();
+    let combined = combined["content"].as_str().unwrap();
+    assert!(combined.contains("foo. baz"), "{combined}");
+    assert!(!combined.contains("xfoo."), "{combined}");
+}
+
+#[test]
+fn rg_type_filters_cover_the_walk_only() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/a.rs"), "needle\n").unwrap();
+    fs::write(dir.path().join("src/b.txt"), "needle\n").unwrap();
+    fs::write(dir.path().join("src/c.toml"), "needle\n").unwrap();
+    let mut store = hashline::Store::default();
+    let rust = query(
+        dir.path(),
+        json!({"pattern":"needle","-t":"rust","context":0}),
+        &mut store,
+    )
+    .unwrap();
+    assert_eq!(rust["details"]["fileCount"], 1, "{rust}");
+    assert!(rust["content"].as_str().unwrap().contains("a.rs"), "{rust}");
+    let mixed = query(
+        dir.path(),
+        json!({"pattern":"needle","-t":["rust","!toml"],"context":0}),
+        &mut store,
+    )
+    .unwrap();
+    assert_eq!(mixed["details"]["fileCount"], 1, "{mixed}");
+    let toml = query(
+        dir.path(),
+        json!({"pattern":"needle","-t":"toml","context":0}),
+        &mut store,
+    )
+    .unwrap();
+    assert_eq!(toml["details"]["fileCount"], 1, "{toml}");
+    assert!(
+        toml["content"].as_str().unwrap().contains("c.toml"),
+        "{toml}"
+    );
+    let unknown = query(
+        dir.path(),
+        json!({"pattern":"needle","-t":"nope","context":0}),
+        &mut store,
+    )
+    .unwrap_err();
+    assert!(unknown.to_string().contains("nope"), "{unknown:#}");
+    let explicit = query(
+        dir.path(),
+        json!({"pattern":"needle","path":"src/a.rs","-t":"toml","context":0}),
+        &mut store,
+    )
+    .unwrap();
+    assert_eq!(explicit["details"]["fileCount"], 1, "{explicit}");
+}
+
+#[test]
+fn rg_override_globs_include_exclude_and_reject_invalid_patterns() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.rs"), "needle\n").unwrap();
+    fs::write(dir.path().join("b.txt"), "needle\n").unwrap();
+    fs::write(dir.path().join("app.js"), "needle\n").unwrap();
+    fs::write(dir.path().join("app.min.js"), "needle\n").unwrap();
+    let mut store = hashline::Store::default();
+    let only_rs = query(
+        dir.path(),
+        json!({"pattern":"needle","-g":"*.rs","context":0}),
+        &mut store,
+    )
+    .unwrap();
+    assert_eq!(only_rs["details"]["fileCount"], 1, "{only_rs}");
+    assert!(
+        only_rs["content"].as_str().unwrap().contains("a.rs"),
+        "{only_rs}"
+    );
+    let no_min = query(
+        dir.path(),
+        json!({"pattern":"needle","-g":["!*.min.js"],"context":0}),
+        &mut store,
+    )
+    .unwrap();
+    assert_eq!(no_min["details"]["fileCount"], 3, "{no_min}");
+    assert!(
+        !no_min["content"].as_str().unwrap().contains("app.min.js"),
+        "{no_min}"
+    );
+    let invalid = query(
+        dir.path(),
+        json!({"pattern":"needle","-g":"[","context":0}),
+        &mut store,
+    )
+    .unwrap_err();
+    assert!(
+        invalid.to_string().contains("invalid -g glob"),
+        "{invalid:#}"
+    );
+}
+
+#[test]
+fn rg_max_count_caps_each_file_and_keeps_the_last_context() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("five"),
+        "needle one\nafter-one\nneedle two\nafter-two\nneedle three\nafter-three\n",
+    )
+    .unwrap();
+    let mut store = hashline::Store::default();
+    let content = query(
+        dir.path(),
+        json!({"pattern":"needle","path":"five","max_count":2,"context":0,"-A":1}),
+        &mut store,
+    )
+    .unwrap();
+    let text = content["content"].as_str().unwrap();
+    assert_eq!(content["details"]["matchCount"], 2, "{content}");
+    assert!(text.contains("after-two"), "{text}");
+    assert!(
+        !text.contains("after-three") && !text.contains("needle three"),
+        "{text}"
+    );
+    fs::create_dir(dir.path().join("count")).unwrap();
+    for name in ["f1", "f2"] {
+        fs::write(dir.path().join("count").join(name), "needle\n".repeat(5)).unwrap();
+    }
+    let counted = query(
+        dir.path(),
+        json!({"pattern":"needle","path":"count","output_mode":"count","max_count":2,"context":0}),
+        &mut store,
+    )
+    .unwrap();
+    assert_eq!(counted["details"]["fileCount"], 2, "{counted}");
+    assert_eq!(counted["details"]["totalMatchCount"], 4, "{counted}");
+    assert!(
+        counted["content"].as_str().unwrap().contains("f1:2\n"),
+        "{counted}"
+    );
+    let none = query(
+        dir.path(),
+        json!({"pattern":"needle","max_count":0,"context":0}),
+        &mut store,
+    )
+    .unwrap();
+    assert_eq!(none["details"]["fileCount"], 0, "{none}");
+    assert!(
+        none["content"]
+            .as_str()
+            .unwrap()
+            .contains("No matches found"),
+        "{none}"
     );
 }

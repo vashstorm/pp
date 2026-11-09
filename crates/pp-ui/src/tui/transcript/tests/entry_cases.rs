@@ -87,7 +87,7 @@ fn tool_folding_is_global_without_layout_and_future_output_inherits_it() {
         "bash",
         "bash_task",
         "read",
-        "grep",
+        "rg",
         "find",
         "mcp__server__tool",
     ] {

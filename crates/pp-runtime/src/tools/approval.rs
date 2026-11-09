@@ -25,7 +25,7 @@ pub(crate) enum Tier {
 /// 未知名按 exec 处理（安全默认）。
 pub(crate) fn tier_of(name: &str) -> Tier {
     match name {
-        "read" | "grep" | "glob" | "todo" | "ask" => Tier::Read,
+        "read" | "rg" | "glob" | "todo" | "ask" => Tier::Read,
         "edit" | "write" => Tier::Write,
         "bash" | "bash_task" | "task" => Tier::Exec,
         "wait" => Tier::Read,
@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn tier_mapping_covers_builtin_mcp_and_unknown() {
         assert_eq!(tier_of("read"), Tier::Read);
-        assert_eq!(tier_of("grep"), Tier::Read);
+        assert_eq!(tier_of("rg"), Tier::Read);
         assert_eq!(tier_of("glob"), Tier::Read);
         assert_eq!(tier_of("todo"), Tier::Read);
         assert_eq!(tier_of("ask"), Tier::Read);
@@ -660,7 +660,7 @@ mod tests {
     fn always_ask_blocks_write_and_exec_tiers() {
         let gate = gate(ApprovalMode::AlwaysAsk, &[]);
         enforce(&gate, "read", r#"{"path":"a"}"#).unwrap();
-        enforce(&gate, "grep", r#"{"pattern":"a"}"#).unwrap();
+        enforce(&gate, "rg", r#"{"pattern":"a"}"#).unwrap();
         let error = enforce(&gate, "write", r#"{"path":"a","content":"b"}"#).unwrap_err();
         assert!(error.to_string().contains("no interactive UI"), "{error}");
         let error = enforce(&gate, "edit", r#"{"input":"x"}"#).unwrap_err();

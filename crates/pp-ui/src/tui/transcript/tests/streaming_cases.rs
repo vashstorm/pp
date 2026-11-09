@@ -353,7 +353,7 @@ fn replay_marks_interruption_before_first_answer_text() {
 }
 
 #[test]
-fn grep_reference_layout_colors_and_replay() {
+fn rg_reference_layout_colors_and_replay() {
     let path = "/workspace/pi-coding-agent/src/tools/todo.ts";
     let arguments = json!({"pattern":"function applyEntry|function formatSummary", "path":path});
     let result = json!({"ok":true,
@@ -363,7 +363,7 @@ fn grep_reference_layout_colors_and_replay() {
         let events = vec![
             AgentEvent::ToolStarted {
                 id: "g".into(),
-                name: "grep".into(),
+                name: "rg".into(),
                 arguments: arguments.to_string(),
             },
             AgentEvent::ToolFinished {
@@ -399,8 +399,8 @@ fn grep_reference_layout_colors_and_replay() {
             .collect();
         assert!(
             rows[0].starts_with(&format!(
-                "{} Grep: function applyEntry|function formatSummary 3 matches · 1 file · in",
-                palette::tool_icon("grep")
+                "{} rg: function applyEntry|function formatSummary 3 matches · 1 file · in",
+                palette::tool_icon("rg")
             )),
             "{text}"
         );
@@ -408,13 +408,13 @@ fn grep_reference_layout_colors_and_replay() {
         assert_eq!(rows[2], "└─ *399│ function applyEntry() {");
         assert!(text.contains("   *634│ function formatSummary() {"));
         assert!(!text.contains("abc123") && !text.contains(" · ok"));
-        assert_eq!(buffer[(0, 0)].fg, palette::GREP_BORDER);
+        assert_eq!(buffer[(0, 0)].fg, palette::RG_BORDER);
         assert_eq!(buffer[(2, 1)].fg, palette::SEARCH_TITLE);
-        assert_eq!(buffer[(10, 1)].fg, palette::GREP_TEXT);
-        assert_eq!(buffer[(2, 2)].fg, palette::GREP_META);
-        assert_eq!(buffer[(2, 3)].fg, palette::GREP_TITLE);
+        assert_eq!(buffer[(10, 1)].fg, palette::RG_TEXT);
+        assert_eq!(buffer[(2, 2)].fg, palette::RG_META);
+        assert_eq!(buffer[(2, 3)].fg, palette::RG_TITLE);
         for y in 0..8 {
-            assert_eq!(buffer[(99, y)].bg, palette::GREP_BG);
+            assert_eq!(buffer[(99, y)].bg, palette::RG_BG);
             assert!(
                 !buffer[(0, y)]
                     .modifier
@@ -423,14 +423,15 @@ fn grep_reference_layout_colors_and_replay() {
         }
         assert_eq!(transcript.entries[0].result, Some(result.clone()));
         for width in [1, 8, 40, 100] {
+            // 窄宽度按字符折行，标题的 `rg` 仍应可见；宽度 1 只剩边框列。
             let buffer = render(&mut transcript, width, 100);
-            assert!(screen(&buffer).contains("G") || width == 1);
+            assert!(screen(&buffer).contains("rg") || width == 1, "{width}");
         }
     }
 }
 
 #[test]
-fn grep_output_modes_preserve_paths_counts_and_replay() {
+fn rg_output_modes_preserve_paths_counts_and_replay() {
     for replay in [false, true] {
         for (mode, content, details, summary) in [
             (
@@ -456,7 +457,7 @@ fn grep_output_modes_preserve_paths_counts_and_replay() {
             let events = vec![
                 AgentEvent::ToolStarted {
                     id: "g".into(),
-                    name: "grep".into(),
+                    name: "rg".into(),
                     arguments: json!({"pattern":"needle","output_mode":mode}).to_string(),
                 },
                 AgentEvent::ToolFinished {
@@ -493,9 +494,9 @@ fn grep_output_modes_preserve_paths_counts_and_replay() {
 }
 
 #[test]
-fn grep_groups_keep_paths_notices_and_failures() {
+fn rg_groups_keep_paths_notices_and_failures() {
     let mut transcript = Transcript::new();
-    tool(&mut transcript, "g", "grep", json!({"pattern":"needle"}));
+    tool(&mut transcript, "g", "rg", json!({"pattern":"needle"}));
     transcript.progress(AgentEvent::ToolFinished { id:"g".into(), result:json!({
             "ok":true,"content":"# src/\n## a.rs#abc\n*1:needle one\n\n## nested/\n### b.rs#def\n*9|needle two\n\n[truncated by output limits]",
             "details":{"matchCount":2,"fileCount":2,"scopePath":".","fileMatches":[{"path":"src/a.rs"},{"path":"src/nested/b.rs"}]}
@@ -509,20 +510,20 @@ fn grep_groups_keep_paths_notices_and_failures() {
     assert!(preview.contains("src/nested/b.rs") && preview.contains("└─ *9│needle two"));
     transcript.toggle_tool_output();
     assert!(screen(&render(&mut transcript, 100, 20)).contains("[truncated by output limits]"));
-    tool(&mut transcript, "failed", "grep", json!({"pattern":"bad"}));
+    tool(&mut transcript, "failed", "rg", json!({"pattern":"bad"}));
     transcript.progress(AgentEvent::ToolFinished {
         id: "failed".into(),
         result: json!({"ok":false,"error":"cannot search path"}),
     });
     let buffer = render(&mut transcript, 100, 25);
     let text = screen(&buffer);
-    assert!(text.contains("Grep: bad · failed") && text.contains("cannot search path"));
+    assert!(text.contains("rg: bad · failed") && text.contains("cannot search path"));
     let row = text
         .lines()
         .position(|line| line.contains("cannot search path"))
         .unwrap() as u16;
     assert_eq!(buffer[(0, row)].fg, palette::REMOVED);
-    assert_eq!(buffer[(0, row)].bg, palette::GREP_BG);
+    assert_eq!(buffer[(0, row)].bg, palette::RG_BG);
 }
 
 #[test]
@@ -570,11 +571,11 @@ fn glob_card_groups_paths_and_replays_without_changing_results() {
         assert!(text.contains(header) && !text.contains("# src/"), "{text}");
         for (needle, column, color) in [
             ("root.rs", 2, palette::READ_SUMMARY_PATH),
-            ("src/", 2, palette::GREP_TITLE),
+            ("src/", 2, palette::RG_TITLE),
             ("lib.rs", 4, palette::READ_SUMMARY_PATH),
-            ("tui/", 4, palette::GREP_TITLE),
+            ("tui/", 4, palette::RG_TITLE),
             ("界", 6, palette::READ_SUMMARY_PATH),
-            ("tests/", 2, palette::GREP_TITLE),
+            ("tests/", 2, palette::RG_TITLE),
             ("cli.rs", 4, palette::READ_SUMMARY_PATH),
         ] {
             let row = text
@@ -627,7 +628,7 @@ fn bash_card_distinguishes_live_stderr_and_failed_status_from_stdout() {
     assert!(text.contains("Bash · failed") && text.contains("Exit: 1"));
     assert_eq!(failed[(0, 0)].fg, palette::REMOVED);
     for (needle, color) in [
-        ("checking crate", palette::GREP_TEXT),
+        ("checking crate", palette::RG_TEXT),
         ("compiler diagnostic", palette::REMOVED),
         ("Exit: 1", palette::MUTED),
     ] {
@@ -639,9 +640,9 @@ fn bash_card_distinguishes_live_stderr_and_failed_status_from_stdout() {
 
 #[test]
 fn streaming_category_colors_and_statuses_preserve_default_body() {
-    for kind in [EntryKind::Grep, EntryKind::Data] {
+    for kind in [EntryKind::Rg, EntryKind::Data] {
         let mut transcript = Transcript::new();
-        let tool = kind == EntryKind::Grep;
+        let tool = kind == EntryKind::Rg;
         let mut entry = TranscriptEntry::new(
             kind,
             "title".into(),
@@ -726,7 +727,7 @@ fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
         "edit",
         "write",
         "bash_task",
-        "grep",
+        "rg",
         "find",
         "ask",
         "plan_search",
@@ -791,8 +792,8 @@ fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
                             .symbol(),
                         if name == "read" {
                             "R".into()
-                        } else if name == "grep" {
-                            "G".into()
+                        } else if name == "rg" {
+                            "r".into()
                         } else if name == "edit" {
                             "E".into()
                         } else {

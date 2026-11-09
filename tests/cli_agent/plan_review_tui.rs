@@ -94,7 +94,7 @@ fn plan_review_case(action: usize) {
             assert!(
                 names.iter().all(|name| matches!(
                     *name,
-                    "read" | "grep" | "glob" | "lsp" | "mcp__remote__echo"
+                    "read" | "rg" | "glob" | "lsp" | "mcp__remote__echo"
                 ))
             );
             let calls = [
@@ -125,7 +125,7 @@ fn plan_review_case(action: usize) {
                     json!({"command":"touch review-forbidden"}),
                 ),
                 (
-                    "review-grep",
+                    "review-rg",
                     "plan_search",
                     json!({"query":"planned","path":"evidence.rs"}),
                 ),
@@ -138,7 +138,7 @@ fn plan_review_case(action: usize) {
                 ("review-read", "read", json!({"path":"evidence.rs"})),
                 (
                     "review-search",
-                    "grep",
+                    "rg",
                     json!({"pattern":"planned","path":"evidence.rs"}),
                 ),
                 (

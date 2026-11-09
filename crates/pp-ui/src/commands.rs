@@ -140,9 +140,9 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     },
     #[cfg(debug_assertions)]
     CommandSpec {
-        name: "/test-grep",
-        usage: "/test-grep",
-        description: "Debug build: local grep tool scenarios",
+        name: "/test-rg",
+        usage: "/test-rg",
+        description: "Debug build: local rg tool scenarios",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
@@ -552,7 +552,7 @@ mod tests {
             #[cfg(debug_assertions)]
             ("/test-edit", Command::MockTest(MockTest::Edit)),
             #[cfg(debug_assertions)]
-            ("/test-grep", Command::MockTest(MockTest::Grep)),
+            ("/test-rg", Command::MockTest(MockTest::Rg)),
             #[cfg(debug_assertions)]
             ("/test-glob", Command::MockTest(MockTest::Glob)),
             #[cfg(debug_assertions)]
@@ -617,7 +617,7 @@ mod tests {
             #[cfg(debug_assertions)]
             "/test-edit",
             #[cfg(debug_assertions)]
-            "/test-grep",
+            "/test-rg",
             #[cfg(debug_assertions)]
             "/test-glob",
             #[cfg(debug_assertions)]
@@ -648,7 +648,7 @@ mod tests {
         "/test-read",
         "/test-write",
         "/test-edit",
-        "/test-grep",
+        "/test-rg",
         "/test-glob",
         "/test-bash",
         "/test-bash-task",

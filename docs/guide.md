@@ -15,7 +15,7 @@
 
 ## 构建与运行
 
-需要支持 Rust Edition 2024 的稳定版工具链，支持 macOS/Linux，并要求 `bash` 位于 PATH 中。grep 和 glob 在进程内搜索，无需外部搜索程序；TUI 图标需要 Nerd Font，macOS 的 Option 快捷键需要终端启用 Alt/Meta。
+需要支持 Rust Edition 2024 的稳定版工具链，支持 macOS/Linux，并要求 `bash` 位于 PATH 中。rg 和 glob 在进程内搜索，无需外部搜索程序；TUI 图标需要 Nerd Font，macOS 的 Option 快捷键需要终端启用 Alt/Meta。
 
 `dev`、`test` 与 `release` 均使用默认 LLVM 后端，不再依赖 Cranelift 或 nightly 专属参数。链接器配置位于 `.cargo/config.toml`，而非 `Cargo.toml` 的 `[profile.*].rustflags`（后者仍为不稳定功能）。macOS ARM64 使用 PATH 中的 `ld64.lld`，需安装与当前 SDK 兼容的版本；Rust 自带 LLD 可能无法识别新版 SDK 的 TAPI 目标。本机已验证 LLD 23.1.5。Linux x86_64 GNU 在 Rust 1.90 及以上版本中默认使用工具链自带 LLD，仍需系统 C 工具链。可用 `cargo build --locked -vv` 查看实际 rustc 参数；若全部显示 `Fresh`，说明本次复用了缓存。
 
@@ -134,6 +134,10 @@ read_max_lines: 2000
 read:
   toolResultPreview: false # TUI 默认仅显示路径／范围摘要；true 启用三行正文预览
 bash_timeout_seconds: 300
+# 内置 rg 工具的默认上下文行数；调用参数可覆盖
+rg:
+  contextBefore: 1
+  contextAfter: 3
 ```
 
 `default_model`、`favorite_models`、`model_roles` 与 `think_level` 已不再是 `settings.yml` 字段：首次迁移会移除它们，之后重新写入会作为未知字段被拒绝，配置也不会被静默忽略。默认模型与收藏通过 `/model` 的 Ctrl + S、Ctrl + F 保存；全局默认 effort 在 `/effort ` 菜单中用 ⌥ + S / Ctrl + S 保存，单独执行 `/effort LEVEL` 只切换当前会话档位。七项 Role 通过 `/Roles` 配置。这些偏好保存到 `agent.db`；模型 Role 的运行时应用遵循下述安全边界规则，菜单的默认值保存仍不切换当前会话；其余 YAML 字段仍按原规则严格校验。
@@ -162,7 +166,7 @@ cost:
 - 从 Execute 进入 Plan，或从 `/plan-list` 打开新的规划会话时，采用已启用 PLAN 的 model 和 effort。同一 Plan 内继续讨论保留用户手动选择的模型和 effort。退出 Plan、批准执行或从 Plan 恢复到 Execute 会话时，按启动默认规则切换模型和 effort；已启用的 DEFAULT 主备路由随之恢复。启动时恢复的旧 Execute 会话若仍绑定 PLAN，也按同一规则切换。
 - 计划面板的独立审阅使用已启用的 REVIEW；代码审查通过 `role: "review"` 创建只读子任务，并使用 REVIEW 的 model、effort 和 fallback。独立计划审阅不会改变主会话模型。角色配置本身不自动发起审查。
 - `VISION` 是可选模型角色，不改变模型自身的图像输入能力。
-- `EXPLORER` 始终只读：内置工具仅保留 read、grep、glob、lsp 与已授权的只读 MCP，不提供写入、shell 或继续委托，用于快速探索代码结构和定位实现。
+- `EXPLORER` 始终只读：内置工具仅保留 read、rg、glob、lsp 与已授权的只读 MCP，不提供写入、shell 或继续委托，用于快速探索代码结构和定位实现。
 
 运行时 `/model` 与别名 `/models` 只修改主 Agent 的会话模型；`/Roles` 修改角色配置并保存。控制线程负责读取、校验和持久化，UI 不做这些 I/O。安全边界是当前回复及整批工具调用／结果已经提交，且尚未领取下一批 Steering、检查新模型容量和发送下一请求；空闲 Agent 立即应用，任务已完成则只更新模型，不额外请求模型。压缩和 Plan 审批交接期间延后，待事务完成再应用。切换在构造并发送下一次请求之前领取；轮询之后到 socket 写出之间到达的变更落到下一轮。只改 effort 时下一请求仅替换 `reasoning_effort`／`reasoning` 参数，不重写消息、工具或指令前缀；改 model 会让主 Agent 与绑定该角色的运行中子 Agent 各自冷启动前缀缓存，运行中优先只调 effort。切换复用同一 Agent 和任务，不重置预算、TODO 或文件变更快照；后台进程与其他角色的子 Agent 继续运行。
 
@@ -261,9 +265,9 @@ chmod 600 ~/.pp/agent/models.yml
 | `/plan [view\|prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，显式批准后执行 | 仅 TUI |
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除 | 仅 TUI |
 | `/test-task` | 三个真实 FAST／SLOW／REVIEW 子 Agent 使用独立本地 mock lane，无需用户 Role 或真实 provider | TUI / 行模式，仅 dev/test |
-| `/test-tools` | 顺序运行 read → write → edit-replace → edit-hashline → grep → glob → bash → bash-task → wait → todo → ask | TUI / 行模式，仅 dev/test |
+| `/test-tools` | 顺序运行 read → write → edit-replace → edit-hashline → rg → glob → bash → bash-task → wait → todo → ask | TUI / 行模式，仅 dev/test |
 | `/test-write` | 12.5 mock token/s 的打字机正文；24/28 行的固定 `/tmp/pp-test-write/demo.txt` 写入以 240 mock token/s 逐 token 送达，写入卡片可见尾部滚动；随后越界失败，最后用 bash 删除 | TUI / 行模式，仅 dev/test |
-| `/test-read`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 对应的隔离真实工具场景；ask 在 TUI 答题，CLI 非交互失败仍继续 | TUI / 行模式，仅 dev/test |
+| `/test-read`、`/test-edit`、`/test-rg`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 对应的隔离真实工具场景；ask 在 TUI 答题，CLI 非交互失败仍继续 | TUI / 行模式，仅 dev/test |
 | `/test-ui` | 12.5 mock token/s 的原生 Responses SSE 思考与 Markdown／代码分片 | TUI / 行模式，仅 dev/test |
 | `/quit` | 退出 | TUI / 行模式 |
 
@@ -310,7 +314,7 @@ chmod 600 ~/.pp/agent/models.yml
 
 主输入框按自动折行后的显示行数调整高度，正文最多显示六行，空间不足时随窗口高度裁剪。粘贴长文本后立即展开，窗口缩放或删减内容后重新计算；超过六行时随光标滚动。自动折行仅影响显示，不会向提交正文插入换行符。
 
-未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页居中显示品牌组合：左侧为保留双翼和中央折线的金蓝双色像素纸飞机，右上为白色像素 `PP`，右下为左对齐的版本号；小窗口使用纸飞机图标搭配 `PP`。首页提示区居中且最大宽度为 80 列，左右各留两列边距；以柔和金色标题和低对比度细线划分 `Session & workflow` 与 `Keyboard` 两组，浅蓝色加粗显示命令和按键，浅灰色显示说明。首页精选 `/model`、`/new`、`/resume`、`/plan` 与 Enter、Shift + Enter、Esc、Shift + Tab 八项入口；正文可用宽度达到 76 列时两组并排，否则上下排列，窄屏自动折行。高度不足时仅显示发送、换行和帮助入口，极小窗口按空间裁剪；底部提示通过 `/tips` 查看全部斜杠命令与全局快捷键，通过 `/help` 查看命令说明。`/tips` 按 `Commands`、`Shortcuts` 两组输出并各自按忽略大小写的字母序排列，键名不超过 16 列、说明不超过 20 列；正文宽度足够（当前 78 列）时双列，否则单列，条目键名保持绿色加粗；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏显示估算上下文用量、与模型列表一致的配置引用 `provider/model_id`、思考级别、仅在 Plan 模式显示的叠放方框图标与 Plan 标识（窄屏缩为 P）、启动工作目录和 Git 信息。`no think` 表示显式请求关闭思考。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；手动压缩时在输入框上沿显示 `Compacting context...` 或 `Cancelling context...`。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash 标准输出、标准错误实时显示，grep/glob 在完成后显示结果，工具进度保留在对话记录中。暂不提供侧栏。助手正文支持流式 Markdown，edit/write 与 ask 使用独立内容块；这些块共用 Transcript 的滚动与恢复。普通对话使用主屏幕，稳定内容随运行逐步进入原生滚动历史，退出只补交未提交部分并将光标交回 shell，不全量重放会话，也不自动展开工具。
+未指定 `-p` 且标准输入、标准输出均为终端时，`pp` 自动进入 Ratatui TUI：启动页居中显示品牌组合：左侧为保留双翼和中央折线的金蓝双色像素纸飞机，右上为白色像素 `PP`，右下为左对齐的版本号；小窗口使用纸飞机图标搭配 `PP`。首页提示区居中且最大宽度为 80 列，左右各留两列边距；以柔和金色标题和低对比度细线划分 `Session & workflow` 与 `Keyboard` 两组，浅蓝色加粗显示命令和按键，浅灰色显示说明。首页精选 `/model`、`/new`、`/resume`、`/plan` 与 Enter、Shift + Enter、Esc、Shift + Tab 八项入口；正文可用宽度达到 76 列时两组并排，否则上下排列，窄屏自动折行。高度不足时仅显示发送、换行和帮助入口，极小窗口按空间裁剪；底部提示通过 `/tips` 查看全部斜杠命令与全局快捷键，通过 `/help` 查看命令说明。`/tips` 按 `Commands`、`Shortcuts` 两组输出并各自按忽略大小写的字母序排列，键名不超过 16 列、说明不超过 20 列；正文宽度足够（当前 78 列）时双列，否则单列，条目键名保持绿色加粗；发送消息后，上方切换为流式结构化对话记录，下方为多行输入框，使用复古绿色（`#7FA66A`）上下横线和 `❯` 提示符。图标采用 Nerd Font 字形，终端需使用支持这些字形的字体。输入框底部状态栏显示估算上下文用量、与模型列表一致的配置引用 `provider/model_id`、思考级别、仅在 Plan 模式显示的叠放方框图标与 Plan 标识（窄屏缩为 P）、启动工作目录和 Git 信息。`no think` 表示显式请求关闭思考。较长的模型名、路径和分支名会自动缩略。Git 状态每两秒在后台刷新，不阻塞输入：`` 表示分支或分离头指针的提交，`*N` 表示已跟踪的改动条目数，`?N` 表示未跟踪条目数，配置上游时通过 `↑N` / `↓N` 显示领先和落后提交数。非 Git 目录或 Git 不可用时隐藏 Git 信息。运行状态及忙碌提示位于输入框上沿左侧；手动压缩时在输入框上沿显示 `Compacting context...` 或 `Cancelling context...`。执行 `/new` 后恢复欢迎页；完整快捷键和工具安全说明可通过 `/help` 查看。模型文本及 bash 标准输出、标准错误实时显示，rg/glob 在完成后显示结果，工具进度保留在对话记录中。暂不提供侧栏。助手正文支持流式 Markdown，edit/write 与 ask 使用独立内容块；这些块共用 Transcript 的滚动与恢复。普通对话使用主屏幕，稳定内容随运行逐步进入原生滚动历史，退出只补交未提交部分并将光标交回 shell，不全量重放会话，也不自动展开工具。
 
 部分功能快捷键按 pp 二进制的编译目标选择：macOS 使用 Option（`⌥`），Linux 使用 Ctrl。下文并列键名均按 macOS / 其他系统排列：`⌥ + P / Ctrl + P` 打开模型选择，`Ctrl + S` 保存菜单高亮模型为默认值，`Ctrl + F` 在所有平台收藏／取消收藏菜单高亮模型，`⌥ + S / Ctrl + S` 保存菜单高亮思考档位为默认值，`Ctrl + O` 在所有平台全局展开／折叠工具输出，`⌥ + Q / Ctrl + Q` 查看待处理消息，`⌥ + R / Ctrl + R` 恢复队列。默认模型保存始终使用 Ctrl + S，工具输出切换始终使用 Ctrl + O（macOS 不再使用 ⌥ + O）；使用 Option 的功能不保留 Ctrl 别名，旧组合可由编辑器正常处理。终端必须将 Option 配置为 Alt/Meta（ESC 前缀）；若产生 `π` 等普通 Unicode 文本，pp 保留文本，不猜测为快捷键。`Ctrl + C` 退出、`Ctrl + J` 换行、所有文本编辑键及会话面板键不变；`Shift + Tab` 切档，Option/Alt + Enter 排队行为不变。首页、`/tips`、帮助、菜单和折叠提示中的组合键统一以加号两侧各一个空格显示。
 
@@ -318,7 +322,7 @@ chmod 600 ~/.pp/agent/models.yml
 
 消息列表中的内置工具各有独立的 Nerd Font Font Awesome 图标（包括普通工具、bash、diff、ask 和 Plan 工具）；MCP 使用插头图标，未知工具使用拼图图标。Read 用标题前的状态图标替代工具图标（运行中为转动的时钟，成功为绿色勾，失败为红色叉），图标前额外留一列空白，仅多文件的 `Read (N)` 显示框内读取条目数，图标与 `Read` 之间仅保留一个 ASCII 空格；其他工具图标统一采用单列字形，并在其后保留一列空白，占位宽度固定为两列；字形的实际外观由终端所用 Nerd Font 决定。图标随标题保留于运行、完成、失败、恢复及退出滚动历史中。
 
-用户与助手保留既有角色背景；助手正文按 Markdown 渲染，fenced code block 按语言标签经 syntect 做语法高亮，普通工具正文保持字面文本，指令 Read 卡片按 Markdown 渲染，edit、write 与 ask 使用各自的内容块。think 使用独立样式；其他工具保留正文与运行／完成／失败状态。工具采用低饱和度的标识色：Read 为雾蓝，Grep 为青绿，Glob 为灰蓝，Edit 为暖金，Write 为鼠尾草绿，Bash／Bash task 为沙金，ask 为浅青，todo／计划提交为灰紫，Skill 为柔紫，MCP 为淡玫瑰色。主题色集中在工具名称、图标和 Shell 提示符；Read 路径使用黄色，其余路径与正文使用中性灰，工具卡片共用深灰底色和灰色边框。`grep` 与 `glob` 左右各留两列内容边距。`Grep:` 标题显示模式、结构化匹配数／文件数和路径，路径放不下时另起一行；匹配正文以 `└─` 与后续缩进排列，浅蓝行号和浅灰匹配行与灰色上下文区分，行号右侧使用竖线分隔，多文件路径分组采用浅灰色。`Glob:` 标题显示匹配表达式和搜索目录（旧会话仍显示原搜索路径），目录层级由原始结果中的标题标记转换为缩进，目录使用浅蓝色，文件名使用浅灰色，路径前缀使用灰色。搜索失败时边框、状态和错误使用红色，旧 stdout 结果仍可展示；搜索卡片不使用 bash 计时 footer。Bash 卡片顶边框显示工具名和运行／完成／失败状态，沙金色 `$` 提示符与浅色命令分开着色，普通输出为浅灰色，运行中的 stderr 为金色，失败后的 stderr 与失败状态为红色；底部继续显示耗时和退出状态。自动加载的 `AGENTS.md` 与实际技能读取使用独立的 Read 边框卡片，使用深色背景和灰色圆角边框，顶边框依次显示状态图标与 `Read <来源>` 标题，`Read` 标识按普通读取／技能读取分别使用雾蓝／柔紫，来源使用黄色；正文为浅灰色，Markdown 标题采用金色下划线，强调文字采用金色，frontmatter 保留原始字段与换行。展开提示和来源路径为暗灰色，来源可用时在 `Output` 分隔区展示 `⟨Resolved path: ...⟩`。技能标题保留原始 `skill://...` URI；失败保留真实错误和失败状态，没有来源结果时不编造路径。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
+用户与助手保留既有角色背景；助手正文按 Markdown 渲染，fenced code block 按语言标签经 syntect 做语法高亮，普通工具正文保持字面文本，指令 Read 卡片按 Markdown 渲染，edit、write 与 ask 使用各自的内容块。think 使用独立样式；其他工具保留正文与运行／完成／失败状态。工具采用低饱和度的标识色：Read 为雾蓝，rg 为青绿，Glob 为灰蓝，Edit 为暖金，Write 为鼠尾草绿，Bash／Bash task 为沙金，ask 为浅青，todo／计划提交为灰紫，Skill 为柔紫，MCP 为淡玫瑰色。主题色集中在工具名称、图标和 Shell 提示符；Read 路径使用黄色，其余路径与正文使用中性灰，工具卡片共用深灰底色和灰色边框。`rg` 与 `glob` 左右各留两列内容边距。`rg:` 标题显示模式、结构化匹配数／文件数和路径，路径放不下时另起一行；匹配正文以 `└─` 与后续缩进排列，浅蓝行号和浅灰匹配行与灰色上下文区分，行号右侧使用竖线分隔，多文件路径分组采用浅灰色。`Glob:` 标题显示匹配表达式和搜索目录（旧会话仍显示原搜索路径），目录层级由原始结果中的标题标记转换为缩进，目录使用浅蓝色，文件名使用浅灰色，路径前缀使用灰色。搜索失败时边框、状态和错误使用红色，旧 stdout 结果仍可展示；搜索卡片不使用 bash 计时 footer。Bash 卡片顶边框显示工具名和运行／完成／失败状态，沙金色 `$` 提示符与浅色命令分开着色，普通输出为浅灰色，运行中的 stderr 为金色，失败后的 stderr 与失败状态为红色；底部继续显示耗时和退出状态。自动加载的 `AGENTS.md` 与实际技能读取使用独立的 Read 边框卡片，使用深色背景和灰色圆角边框，顶边框依次显示状态图标与 `Read <来源>` 标题，`Read` 标识按普通读取／技能读取分别使用雾蓝／柔紫，来源使用黄色；正文为浅灰色，Markdown 标题采用金色下划线，强调文字采用金色，frontmatter 保留原始字段与换行。展开提示和来源路径为暗灰色，来源可用时在 `Output` 分隔区展示 `⟨Resolved path: ...⟩`。技能标题保留原始 `skill://...` URI；失败保留真实错误和失败状态，没有来源结果时不编造路径。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
 
 流式输出期间保持输入光标的可见状态，正文更新后恢复其输入位置；普通帧的画面与光标均未变化时不写终端。原生历史提交后，根据实际滚动后的屏幕增量刷新仍需更新的单元格。
 
@@ -332,7 +336,7 @@ chmod 600 ~/.pp/agent/models.yml
 |---|---|---|
 | 普通文件 read | 默认只显示摘要；`read: {toolResultPreview: true}` 启用前 3 行预览 | 有正文预览时显示全文，普通文件默认仍仅显示摘要 |
 | AGENTS／skill Read 卡片 | 始终预览前 10 条逻辑行；剩余行显示 Ctrl + O 展开提示，不受普通 read 预览开关影响 | 完整保留正文 |
-| grep | 命中与上下文按文件展示，6 行预算包含省略提示 | 全部已返回文本，长行仍截断 |
+| rg | 命中与上下文按文件展示，6 行预算包含省略提示 | 全部已返回文本，长行仍截断 |
 | glob／历史 find／plan_find | 前 8 行及剩余数量提示，路径按列宽截断 | 全部已返回文件，路径仍截断 |
 | bash／bash_task | 最近 `min(10, max(6, H−20))` 条屏幕行及省略提示 | 完整的已保留输出 |
 | edit | 参数生成时逐步预览，默认显示末尾最多 16 条屏幕正文行；提交后最多 8 个 hunk、16 条逻辑 diff 行，再限制为 16 条屏幕正文行；仅超限时另加一行省略提示，不足 16 行按实际高度显示 | 完整参数预览或完整提交 diff |
@@ -342,7 +346,7 @@ chmod 600 ~/.pp/agent/models.yml
 | todo | 对话流只显示失败诊断，不显示运行中及成功操作提示；清单在输入框上方固定展示 | 通过 TODO 专用快捷键展开，Ctrl + O 不改变清单 |
 | Plan 写入／提交及其他工具 | 文本前 4 行或相同额度的 JSON 树 | 文本完整展示，JSON 树仍受限时回退为完整原始文本 |
 
-`H` 是整个终端的高度，未知时按 30 行计算；bash 多行命令另使用包含省略提示的 `max(6, H−20)` 条逻辑行尾窗口。MCP 文本从内容块中提取后展示，没有文本时优先展示 `structuredContent`，其他非文本结果保留 JSON 回退。JSON 折叠摘要跳过对象容器占位行，使用字段路径展示嵌套值；标量最多 60 列、遍历深度最多 8 层，保留 Ctrl + O 展开提示。摘要在本地生成，不请求模型、不改动原始结果。grep 的计数与截断状态来自结构化结果；旧会话仍可展示原生 stdout。
+`H` 是整个终端的高度，未知时按 30 行计算；bash 多行命令另使用包含省略提示的 `max(6, H−20)` 条逻辑行尾窗口。MCP 文本从内容块中提取后展示，没有文本时优先展示 `structuredContent`，其他非文本结果保留 JSON 回退。JSON 折叠摘要跳过对象容器占位行，使用字段路径展示嵌套值；标量最多 60 列、遍历深度最多 8 层，保留 Ctrl + O 展开提示。摘要在本地生成，不请求模型、不改动原始结果。rg 的计数与截断状态来自结构化结果；旧会话仍可展示原生 stdout。
 
 bash／bash_task 的折叠 Output 区域按实际输出行数增长，没有数据时不预留空行；超过上述上限后显示最新尾行，并额外显示一行省略提示。前台 bash 的新输出持续从底部进入，旧内容从顶部移出，窗口达到上限后不再增长；长行换行后的物理行也计入高度限制。无需展开或操作鼠标，Ctrl + O 可展开完整的已保留输出。后台 start／status／stop 卡片展示该次调用取得的累计快照，不持续订阅后台日志。
 
@@ -402,9 +406,9 @@ Execute 终答时仍有 pending/in_progress、且不是等待用户回答时，�
 
 普通任务默认 **EXEC**。空闲时输入 `/plan` 切换到 **PLAN** 待命：只进入模式，不创建计划身份或 Markdown 文件；第一条用户任务才建立计划绑定，之后的普通输入和 steering 继续同一绑定。再输入一次 `/plan` 退出 Plan 回 **EXEC** 并解除当前计划/审阅绑定；已保存的草稿文件和目录原样保留，不标记 Abandoned、不删除、不改名。已提交任务但尚未通过 `write` 首存（revision-0）时，退出会显示“放弃未保存的修改？”本地确认框，默认选中“取消，继续规划”；Enter 确认当前选项，Esc 取消，只有显式选中“放弃修改并退出”才解除绑定。确认不调用模型，不生成计划文件，也不删除已保存文件或对话历史；确认期间输入与粘贴不会发起任务，原输入草稿保留。空待命或已保存草稿可直接退出。也可输入 `/plan 调研登录流程`，先确保进入 Plan 再将 `调研登录流程` 作为用户消息发送；已在 Plan 时直接继续当前草稿，不暗中切出或新建计划。提示词可包含多行，输入历史保留原始命令。参数恰好为 `view` 时只查看当前计划，未保存时显示 `No saved plan.`；恰好为 `new` 或 `off` 时只报本地错误 `Use /plan to toggle; manage plans with /plan-list.`，不进入 Plan、不发模型请求；其余非空正文均作为提示词。切换失败或取消时不发送提示词，输入框为空时恢复该命令，已有新草稿则保留新草稿，可从输入历史取回原命令；退出失败不改变重试方向，下一次裸 `/plan` 仍执行离开。模型只能调研、询问关键产品取舍并保存计划，不能切换模式。忙碌或有 pending 输入时不能切换／批准；带提示词的 `/plan` 同样拒绝且保留草稿，不排队成后续执行动作。
 
-Plan 可使用 `read`、`grep`、`glob`、TUI `ask`、`write`、`plan_submit`，以及可用的只读 LSP、已授权的只读 MCP 和子 Agent 工具。`write` 仅接受 `path` 和完整 Markdown `content`：首次路径须为 `.pp/drafts/<英文 kebab-case 名称>.md`，后续只能写当前绑定的计划路径；标题从首个一级标题提取（缺失时使用文件名），修订号由运行时递增并返回，仍保留登记、同名冲突和外部修改校验。技能同样通过 `read` 读取。Plan 在执行层拒绝所有 todo 调用（包括 view），独立 reviewer 同样不暴露 todo；提交后同批剩余调用全部拒绝。执行层拒绝 shell、edit、旧 find 和未授权的 MCP 调用。进入 Plan 会回收未配置只读工具的 MCP 服务，恢复 Plan 只连接获授权的服务。清理失败保持 Plan 门禁并阻止模型请求，再次 `/plan` 优先重试进入。批准或退出切换的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
+Plan 可使用 `read`、`rg`、`glob`、TUI `ask`、`write`、`plan_submit`，以及可用的只读 LSP、已授权的只读 MCP 和子 Agent 工具。`write` 仅接受 `path` 和完整 Markdown `content`：首次路径须为 `.pp/drafts/<英文 kebab-case 名称>.md`，后续只能写当前绑定的计划路径；标题从首个一级标题提取（缺失时使用文件名），修订号由运行时递增并返回，仍保留登记、同名冲突和外部修改校验。技能同样通过 `read` 读取。Plan 在执行层拒绝所有 todo 调用（包括 view），独立 reviewer 同样不暴露 todo；提交后同批剩余调用全部拒绝。执行层拒绝 shell、edit、旧 find 和未授权的 MCP 调用。进入 Plan 会回收未配置只读工具的 MCP 服务，恢复 Plan 只连接获授权的服务。清理失败保持 Plan 门禁并阻止模型请求，再次 `/plan` 优先重试进入。批准或退出切换的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
 
-Execute／Plan／Review 共用只读进程内 `grep` 和 `glob`。`glob` 使用必填匹配表达式 `pattern` 和可选目录 `path`（默认当前工作目录），另支持 `hidden`、`gitignore`、`limit`；`path` 只接受单个字面目录，不能传 glob 或多个范围。默认包含隐藏文件并遵守忽略规则；无分页，结果按修改时间排序，最多 200 项和 50 KiB。裸 `*.rs` 递归匹配，`src/*.rs` 仅匹配直接子项；五秒协作式超时返回部分结果及提示。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
+Execute／Plan／Review 共用只读进程内 `rg` 和 `glob`。`glob` 使用必填匹配表达式 `pattern` 和可选目录 `path`（默认当前工作目录），另支持 `hidden`、`gitignore`、`limit`；`path` 只接受单个字面目录，不能传 glob 或多个范围。默认包含隐藏文件并遵守忽略规则；无分页，结果按修改时间排序，最多 200 项和 50 KiB。裸 `*.rs` 递归匹配，`src/*.rs` 仅匹配直接子项；五秒协作式超时返回部分结果及提示。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
 
 计划正文由 AI 选定的英文 kebab-case 文件名保存在项目 `.pp/drafts/<file_name>.md`，首次保存才创建目录／文件；不自动修改 `.gitignore`。正文须为非空 UTF-8、无 NUL、最多 262,144 字节，新计划只使用 H2 分组和 H3 任务标题，两级标题都不编号，例如 `### [] 实现接口`。任务依赖用完整标题引用。可并行的任务划分独立写入范围，并明确实际依赖。旧式 `- [ ]`／`- [x]` 列表任务仍可执行，代码围栏中的示例不计入清单。保存使用目录句柄、NOFOLLOW 和原子提交，拒绝符号链接／特殊文件；同名首次创建不覆盖。修订写入要求 expected revision 和已登记磁盘字节都匹配，避免覆盖外部编辑。
 
@@ -460,9 +464,9 @@ Completed／Abandoned 且仍关联的计划保持只读投影，实际 Markdown 
 
 场景以 `include_str!` 编译内嵌，不在运行时读取源码文件。每场构建 fresh Agent/Tools/子 Agent registry，并使用系统 `pp-mock-*` 临时目录，内部 workspace/config/sessions/locks 分离。配置、四个 mock provider、角色、skills、MCP/LSP 和审批均与正常 Agent 隔离；不修改进程 HOME/cwd，不请求真实 provider，不写真实统计。正常结束、失败、取消都先收尾子 Agent、后台 bash 与服务，再释放队列和目录；清理失败按真实错误显示。
 
-`/test-tools` 顺序运行 read、write、两种 edit、grep、glob、bash、bash-task、wait、todo、ask；独立命令只运行自己的场景。read 固定读取 `main.rs`，包含 range/raw，write 包含越界拒绝，hashline 先真实 read 注册 TAG 再验证成功和 stale，后台任务与 wait 使用 fresh Tools 的确定性 ID。预期 `ok:false` 不打断后续脚本。todo 保留未完成项，原生完成提醒会消费下一条固定正文。套件不串联 ui/task，也不包含外部 LSP/MCP、Plan 工具或 `yield`。
+`/test-tools` 顺序运行 read、write、两种 edit、rg、glob、bash、bash-task、wait、todo、ask；独立命令只运行自己的场景。read 固定读取 `main.rs`，包含 range/raw，write 包含越界拒绝，hashline 先真实 read 注册 TAG 再验证成功和 stale，后台任务与 wait 使用 fresh Tools 的确定性 ID。预期 `ok:false` 不打断后续脚本。todo 保留未完成项，原生完成提醒会消费下一条固定正文。套件不串联 ui/task，也不包含外部 LSP/MCP、Plan 工具或 `yield`。
 
-`/test-task` 的 root 只发一次三任务批次、真实 wait 和三行摘要；FAST/SLOW/REVIEW 在独立 lane 中分别运行 glob/grep/read，再返回固定 marker。`/test-ui` 的原生 SSE 以 12.5 mock token/s 发送显式 thinking/Markdown/code 分片，不合成 `AgentEvent`。`/test-write` 同样按分片限速流式输出正文，两次写入的正文为 24/28 行并以 240 mock token/s 逐 token 送达参数，超过 write 卡片 16 行折叠窗口后能看出尾部滚动；工作区固定为 `/tmp/pp-test-write`（人工可在另一个终端观察），场景末尾由真实 bash 工具删除该文件。
+`/test-task` 的 root 只发一次三任务批次、真实 wait 和三行摘要；FAST/SLOW/REVIEW 在独立 lane 中分别运行 glob/rg/read，再返回固定 marker。`/test-ui` 的原生 SSE 以 12.5 mock token/s 发送显式 thinking/Markdown/code 分片，不合成 `AgentEvent`。`/test-write` 同样按分片限速流式输出正文，两次写入的正文为 24/28 行并以 240 mock token/s 逐 token 送达参数，超过 write 卡片 16 行折叠窗口后能看出尾部滚动；工作区固定为 `/tmp/pp-test-write`（人工可在另一个终端观察），场景末尾由真实 bash 工具删除该文件。
 
 TUI 使用独立 worker/channel，不替换正常 Agent worker。Execute、无 active/pending 工作时，Ready 和配置 Unavailable 都可启动；Plan、busy 或 cancelling 时本地拒绝并保留草稿。Prepared 临时安装 mock model/usage/子 Agent/pipe 展示，完成后恢复正常模型、状态、TODO 与 registry，不接纳临时 session。Ctrl + O 可展开真实 read 卡片（即使关闭三行预览）；Esc 取消并保留新草稿。ask 复用真实三题对话框；CLI 保留非交互 ask 失败并继续。CLI 复用普通事件渲染：思考和真实工具内容写 stderr，助手正文写 stdout。
 
@@ -516,7 +520,7 @@ pp 参考 [Oh My Pi 的加载机制](https://github.com/can1357/oh-my-pi/blob/0b
 
 这些工程规范参考 OMP 提交 `0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0`，按 pp 的实际工具和工作流适配；[调研记录与原文快照](research/oh-my-pi-system-prompt/README.md)保留来源与 [MIT 版权及许可声明](research/oh-my-pi-system-prompt/upstream/LICENSE)。工具参数与限制、项目及技能规则、Plan／Review 指令仍由各自独立层生成，提示词不会赋予执行层未开放的权限。
 
-专用工具可用时必须优先使用：研究与发现先选择适用的 MCP 专用工具，通用文本搜索及覆盖缺口用 grep，文件路径定位用 glob，普通文件读取用 read 范围分页，局部修改用 edit，创建或覆盖用 write；禁止用 shell 替代这些操作。pp 的 glob 只定位路径，不承诺 OMP 的语义定位能力。具体规则随本次实际工具生成；Plan／Review 未开放的工具不会因默认工作流要求实际运行而恢复可用。
+专用工具可用时必须优先使用：研究与发现先选择适用的 MCP 专用工具，通用文本搜索及覆盖缺口用 rg，文件路径定位用 glob，普通文件读取用 read 范围分页，局部修改用 edit，创建或覆盖用 write；禁止用 shell 替代这些操作。pp 的 glob 只定位路径，不承诺 OMP 的语义定位能力。具体规则随本次实际工具生成；Plan／Review 未开放的工具不会因默认工作流要求实际运行而恢复可用。
 
 专用工具策略属于每次请求生成的运行时块，也会应用于自定义基础及恢复的会话；基础角色、工程与测试规范仍以各自保存的来源为准。
 
@@ -748,7 +752,7 @@ TUI 的 `/mcp list` 是只读结果面板，按来源分组并单列禁用服务
 
 工具名通常为 `mcp__服务名__工具名`；特殊字符或组合名超过 64 字节时，工具部分使用确定性的 `tool_<hash>`，调用仍发送原名。TUI 消息区把该名称拆成 `mcp`、服务名与工具名三段着色显示，行模式仍输出原始名称。schema 原样传给模型（`strict: false`），支持 Completion 和 Responses。结果保留 `content`、`structuredContent` 等字段，包装为 `{"ok":true,"result":{...}}`；`isError:true` 转为 `ok:false`。同批调用仍按顺序执行。
 
-当前模型工具表包含 MCP 工具时，运行时系统指令要求研究与发现优先选择适用的专用工具：代码符号和调用关系使用代码图工具，库／API 参考使用文档工具，浏览器检查或交互使用浏览器工具。内置 `grep`／`glob`／`read` 用于通用文本、路径、文件操作及专用工具未覆盖的内容；专用工具不可用时可回退。项目／库 ID 应从服务发现结果或返回元数据中确认，参数错误或空结果先按提示修正、缩小查询，不能直接认定服务不可用。这是模型选择指引，不改变工具集合、write/edit 要求或 Plan／Review 权限，也不保证固定调用率；没有可用 MCP 工具时不注入该 MCP 指引。
+当前模型工具表包含 MCP 工具时，运行时系统指令要求研究与发现优先选择适用的专用工具：代码符号和调用关系使用代码图工具，库／API 参考使用文档工具，浏览器检查或交互使用浏览器工具。内置 `rg`／`glob`／`read` 用于通用文本、路径、文件操作及专用工具未覆盖的内容；专用工具不可用时可回退。项目／库 ID 应从服务发现结果或返回元数据中确认，参数错误或空结果先按提示修正、缩小查询，不能直接认定服务不可用。这是模型选择指引，不改变工具集合、write/edit 要求或 Plan／Review 权限，也不保证固定调用率；没有可用 MCP 工具时不注入该 MCP 指引。
 
 服务在 `/model`、`/new` 后复用。普通传输故障、HTTP 认证失败或会话失效不自动重连、重试或重放工具调用，可用 `/mcp reconnect <name>` 重建；TUI 取消会回收当前连接，下一次新调用才惰性重建，要求完整工具定义不变，不重放旧调用。显式 reconnect／reload 允许工具定义变化。退出清理句柄持续跟踪管理操作新建的进程、远程连接及 I/O 工作线程，关闭窗口或 Ctrl + C 后同样回收。远程请求取消时尽力发送 `notifications/cancelled` 并关闭本地传输；本地关闭不保证服务端工作已经停止。
 
@@ -888,7 +892,7 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 
 ## 工具执行与权限
 
-**write/edit 仅修改启动目录内文件，按单次调用原子提交。macOS/Linux 的 bash 无文件权限隔离，仍可修改当前用户有权限访问的目录外文件；glob 只读但可搜索工作区外路径；grep 可以读取工作区外的本地文件；默认 YOLO 模式不进行工具审批。请在可信或临时目录中运行。**
+**write/edit 仅修改启动目录内文件，按单次调用原子提交。macOS/Linux 的 bash 无文件权限隔离，仍可修改当前用户有权限访问的目录外文件；glob 只读但可搜索工作区外路径；rg 可以读取工作区外的本地文件；默认 YOLO 模式不进行工具审批。请在可信或临时目录中运行。**
 
 `tools.approvalMode` 默认为 `yolo`：跳过全部工具审批，包括 bash 危险命令确认及 `tools.approval` 中的 `prompt`／`deny` 规则；无需交互界面或会话授权。`pp --approval-mode yolo` 可在本次运行中覆盖配置模式。`write` 模式放行只读和写入档工具、审批执行档工具；`always-ask` 模式只放行只读档工具。在这两种模式下，显式 `allow`／`deny`／`prompt` 规则及 bash 危险命令检查仍生效，需要审批但没有交互界面时返回工具错误。YOLO 只影响工具审批，不改变 Plan／Review 工作流白名单或 write/edit 的保存限制。
 
@@ -907,8 +911,10 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 - TAG 不能单独证明内容相同：hashline 必须命中当前进程的该路径快照，精确核对当前原始字节，并验证所有目标行／插入锚点已读。版本变化、缓存缺失或已知短 TAG 冲突均拒绝，不做自动重定位；包括仅行尾空白变化。缓存最多 256 个路径、每路径最多保留 4 份用于碰撞检测的内容，总正文上限 64 MiB，按最近使用淘汰；单文件最多 4 MiB，超限仍正常分页读取，但不签发可编辑标签并返回 warning。edit／write／undo 成功后使该路径快照失效，下次 hashline 编辑必须重新 read；普通任务、模型切换与压缩保留缓存，新会话、成功恢复、树导航与 Plan Fresh 清空。独立 Review 不共享快照；缓存不持久化或从历史重建。
 - 两种 edit 模式均先对同一份原始快照校验全部修改，再调用共用原子保存流程。空文件、缺失文件、目录、符号链接和非 UTF-8 文件不能编辑；edit 不创建文件或目录。成功返回 `edits_applied` 和最终 UTF-8 `bytes_written`。保留严格且分模式的参数校验；模型结果不附加 diff，实际 diff 仅在提交后发送给展示层。两种模式整批无变化均拒绝提交，允许无变化项与有效修改混合。
 - `write(path, content)`：创建缺失父目录，并创建或完整覆盖 UTF-8 文件，允许空内容。write/edit 均在目标所在目录排他创建临时文件，完整写入、保留原文件权限（含可执行位）、同步临时文件后，以一次原子重命名提交。创建、部分写入、同步或重命名失败均保留原文件；新建失败不会留下残缺目标，已创建的空父目录允许保留。edit 在临时文件同步完成后、重命名前精确比较读取时的原始字节；目标变化、消失、不可读或变为特殊文件时拒绝覆盖并清理临时文件。这不是跨进程 CAS，比较到重命名之间仍有竞态窗口。重命名是提交点，之后父目录同步失败返回 `ok:true` 并附 `warning`，不能当作尚未修改。失败路径清理临时文件；TUI `/changes` 提供当前进程最近任务的逐文件安全撤销（见上节），不提供持久备份、跨文件事务、跨进程并发隔离或断电恢复保证。
-- `grep({"pattern":"needle","path":"src/**/*.rs"})` 在进程内搜索本地文件，默认区分大小写、包含隐藏文件并遵守 ignore。`path` 支持分号分隔、glob、`!` 排除及单文件行范围；不支持网页、压缩包和技能 URI。`case` 控制区分大小写，`-i: true` 等价于 `case: false`，两者含义冲突时报错。`context`／`-C` 设置前后文行数（两者不同值时报错），`-B`／`-A` 分别覆盖前文／后文，均接受非负整数，包括 0；未指定的侧使用 `grep: {contextBefore: 1, contextAfter: 3}` 配置。
-- `grep` 的 `output_mode` 接受 `content`（默认正文）、`files_with_matches`（仅命中文件路径）、`count`（逐文件计数及总计）。上下文参数仅影响正文模式；仅正文模式生成 Hashline 快照、TAG 和完整已返回行的编辑资格，另两种模式不创建、更新或清除已有编辑快照。三种模式均由 `skip` 按命中文件分页，每页最多 20 个文件；单个明确文件保留不分页行为。正文模式多文件每文件最多 20 条匹配，单文件最多 200 条；正文与长行另有上限。计数模式不受正文匹配条数上限限制：单行模式按命中行计数，同一行多次命中仍算一行，多行模式按不重叠匹配计数。总计覆盖所有已搜索文件，不随分页改变；`details.matchCount` 为已输出文件的计数之和，`details.totalMatchCount` 为总计，`details.countComplete` 表示统计是否完整。原有大文件扫描上限、读取错误及缺失路径会使统计标为部分结果，显示 `Total (partial)`；超时和取消仍返回错误。仅路径模式不提供匹配次数，TUI 只显示文件数。
+- `rg({"pattern":"needle","path":"src/**/*.rs"})` 在进程内搜索本地文件，默认区分大小写、包含隐藏文件并遵守 ignore。`path` 支持分号分隔、glob、`!` 排除及单文件行范围；不支持网页、压缩包和技能 URI。`case` 控制区分大小写，`-i: true` 等价于 `case: false`，两者含义冲突时报错。`context`／`-C` 设置前后文行数（两者不同值时报错），`-B`／`-A` 分别覆盖前文／后文，均接受非负整数，包括 0；未指定的侧使用 `rg: {contextBefore: 1, contextAfter: 3}` 配置。
+- `rg` 的 `output_mode` 接受 `content`（默认正文）、`files_with_matches`（仅命中文件路径）、`count`（逐文件计数及总计）。上下文参数仅影响正文模式；仅正文模式生成 Hashline 快照、TAG 和完整已返回行的编辑资格，另两种模式不创建、更新或清除已有编辑快照。三种模式均由 `skip` 按命中文件分页，每页最多 20 个文件；单个明确文件保留不分页行为。正文模式多文件每文件最多 20 条匹配，单文件最多 200 条；正文与长行另有上限。计数模式不受正文匹配条数上限限制：单行模式按命中行计数，同一行多次命中仍算一行，多行模式按不重叠匹配计数。总计覆盖所有已搜索文件，不随分页改变；`details.matchCount` 为已输出文件的计数之和，`details.totalMatchCount` 为总计，`details.countComplete` 表示统计是否完整。原有大文件扫描上限、读取错误及缺失路径会使统计标为部分结果，显示 `Total (partial)`；超时和取消仍返回错误。仅路径模式不提供匹配次数，TUI 只显示文件数。
+- `rg` 新增与 rg 一致的语义参数：`-F: true` 按字面量匹配，跳过元字符宽松编译与 PCRE2 回退，此时 `\n` 是反斜杠加 n，只有真实换行才启用多行匹配；`-w: true` 要求整词匹配，可与 `-F` 组合。`-t` 接受文件类型字符串或数组（`!name` 排除，`all` 合法），未知名返回 `invalid rg type: <name>`；`-g` 接受 override glob 字符串或数组（`!` 前缀排除，优先于 `.gitignore` 等 ignore 文件，不含 `/` 的模式匹配任意层级文件名），非法 glob 返回 `invalid -g glob: <glob>`。`-t` 与 `-g` 只过滤目录遍历，`path` 中显式给出的文件始终被搜索，路径里的 `!` 排除语义不变并与 `-g` 叠加。`max_count` 按文件限制匹配数（对齐 rg `-m`），`0` 不执行搜索并返回 `No matches found` 与 `details.fileCount: 0`；它不改变 `details.truncated`／`perFileLimitReached` 的既有含义。
+- 工具名统一为 `rg`：`settings.yml` 顶层键为 `rg:`，旧 `grep:` 会在严格解析下失败；`tools.approval` 的键同样使用 `rg`。
 - `glob({"pattern":"**/*.rs","path":"src"})` 查找路径；`pattern` 必填，`path` 为可选搜索目录（默认当前工作目录），不能传 glob 或多个范围；另支持 `hidden`、`gitignore`、`limit`；默认包含隐藏路径、遵守忽略规则，最多返回 200 项和 50 KiB。扫描在文件操作之间检查取消及五秒期限，超时返回不完整结果；没有文件系统沙箱。
 - 默认前台 `bash({"command":"..."})`：以启动目录执行 `bash -c`，关闭 stdin，建立独立进程组。stdout/stderr 按收集器接收顺序合并，不保证跨流真实写入顺序；无需等待换行即可显示有界头尾快照。返回合并的 `output`、退出码、输出计数、截断标记、`timed_out` 与 `cancelled`，信号退出的退出码为 null。超限日志通过下述 artifact 机制继续读取，旧会话的 stdout/stderr 分流结果仍可回放。
 - 工具参数严格校验：缺失／额外字段、非法 JSON、空白路径／命令、未知工具及文件／进程错误均返回 `ok:false`，供模型修正。bash 非零退出同样失败并保留输出。
@@ -952,13 +958,13 @@ tools:
 {"path":"artifact://3:-30"}
 ```
 
-上例为内置 `read` 工具的范围和尾部读取；继续分页使用返回的 `next_path`，遵守普通 read 字节／行数限制。调用内置 `grep` 工具 `grep({"path":"artifact://3","pattern":"FAILED"})` 搜索保存日志；单行搜索覆盖完整资源，多行搜索仍限制前 4 MiB 并提示。`artifact://` 是工具资源 URI，不是文件系统路径；只有内置 `grep` 工具支持搜索，不能将 URI 传给 Bash 中的系统 `grep`、`rg`、`cat`、`sed` 或 `awk`。资源不提供可编辑 hashline 标签，也不能通过 write/edit 修改。运行中每次 read/grep 固定一个快照，元数据带 `snapshot_version`；后续调用可能看到增长或移动后的尾窗，不保证跨调用分页一致。
+上例为内置 `read` 工具的范围和尾部读取；继续分页使用返回的 `next_path`，遵守普通 read 字节／行数限制。调用内置 `rg` 工具 `rg({"path":"artifact://3","pattern":"FAILED"})` 搜索保存日志；单行搜索覆盖完整资源，多行搜索仍限制前 4 MiB 并提示。`artifact://` 是工具资源 URI，不是文件系统路径；只有内置 `rg` 工具支持搜索，不能将 URI 传给 Bash 中的系统 `grep`、`rg`、`cat`、`sed` 或 `awk`。资源不提供可编辑 hashline 标签，也不能通过 write/edit 修改。运行中每次 read/rg 固定一个快照，元数据带 `snapshot_version`；后续调用可能看到增长或移动后的尾窗，不保证跨调用分页一致。
 
-Bash／bash_task 的模型工具结果在存在 artifact 或保存失败时附带 `notice` 文本，直接进入两种协议的工具结果与会话历史。可用资源会给出当前 URI 的内置 `read` 尾部读取示例和内置 `grep` 搜索示例，并明确禁止将 URI 传给 Bash 或 shell 命令；用行选择器或 `next_path` 查看其他范围。提示区分完整保存、运行中快照和不完整头尾样本，明确中间丢失的字节无法从资源恢复；保存失败时不提供无效读取指引。短输出没有该字段。CLI／TUI 保留原有展示提示，日志 `output`、退出码和结构化完整性元数据不变；这项引导不拦截模型命令中的裁剪管道。
+Bash／bash_task 的模型工具结果在存在 artifact 或保存失败时附带 `notice` 文本，直接进入两种协议的工具结果与会话历史。可用资源会给出当前 URI 的内置 `read` 尾部读取示例和内置 `rg` 搜索示例，并明确禁止将 URI 传给 Bash 或 shell 命令；用行选择器或 `next_path` 查看其他范围。提示区分完整保存、运行中快照和不完整头尾样本，明确中间丢失的字节无法从资源恢复；保存失败时不提供无效读取指引。短输出没有该字段。CLI／TUI 保留原有展示提示，日志 `output`、退出码和结构化完整性元数据不变；这项引导不拦截模型命令中的裁剪管道。
 
 文件保存在 `~/.pp/agent/sessions/<session-id>/<n>.bash.log`，根会话与子 Agent 共用数字编号；新建与 Plan Fresh 使用新资源空间，恢复、压缩、树导航和保留上下文执行仍使用所属会话资源。日志包含工具原文，应与会话正文一并管理。删除会话同时清理资源，清理失败报告部分完成；`pp gc` 不按天数删除这些资源。日志采集结束后同步文件并写入 `<n>.meta.json` 完成元数据；超过保存容量时先在同一日志文件内写回头尾窗口，不通过重命名封存。崩溃遗留的 `.bash.log` 仅能恢复当时已经写入磁盘的部分，缺少完成元数据时标记未完成；超过磁盘容量后仍在内存滚动的尾部不保证在崩溃后保留。
 
-运行中预览事件只更新内存，不逐帧写入主会话或子 Agent 观察日志；结束结果保存有限正文与资源元数据。TUI 默认折叠尾部，Ctrl + O 展开已保留内容，额外日志通过 read/grep 读取；界面绘制不读取资源文件。
+运行中预览事件只更新内存，不逐帧写入主会话或子 Agent 观察日志；结束结果保存有限正文与资源元数据。TUI 默认折叠尾部，Ctrl + O 展开已保留内容，额外日志通过 read/rg 读取；界面绘制不读取资源文件。
 
 ## HTTP 协议
 

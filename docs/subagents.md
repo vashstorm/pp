@@ -58,7 +58,7 @@ task:
 ---
 name: api-auditor
 description: 审阅接口契约和兼容性
-tools: [read, grep, glob, lsp]
+tools: [read, rg, glob, lsp]
 readonly: true
 ---
 

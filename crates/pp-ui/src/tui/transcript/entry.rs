@@ -14,7 +14,7 @@ impl EntryKind {
             Self::Assistant => Color::Reset,
             Self::Bash => Color::Yellow,
             Self::Think | Self::Activity => MUTED_TEXT,
-            Self::Grep => Color::Cyan,
+            Self::Rg => Color::Cyan,
             Self::Read => Color::Reset,
             Self::Diff | Self::Ask => palette::ACCENT,
             Self::Lsp => palette::ACCENT,
@@ -396,7 +396,7 @@ impl TranscriptEntry {
     }
 
     pub(super) fn is_search(&self) -> bool {
-        matches!(self.tool.as_deref(), Some("grep" | "glob"))
+        matches!(self.tool.as_deref(), Some("rg" | "glob"))
     }
 
     pub(super) fn is_wait_card(&self) -> bool {
@@ -834,8 +834,8 @@ impl TranscriptEntry {
                 context: self.display,
             };
             lines.extend(
-                if view.name == "grep" {
-                    tool_display::grep_header(&view, width)
+                if view.name == "rg" {
+                    tool_display::rg_header(&view, width)
                 } else {
                     tool_display::glob_header(&view, width)
                 }

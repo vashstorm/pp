@@ -337,8 +337,8 @@ fn fixture() -> Vec<AgentEvent> {
             "bash",
             json!({"ok":true,"stdout":lines,"stderr":"diagnostic","exit_code":0}),
         ),
-        tool("grep", "grep", json!({"pattern":"needle","path":"."})),
-        finished("grep", json!({"ok":true,"stdout":"a.rs:1:needle"})),
+        tool("rg", "rg", json!({"pattern":"needle","path":"."})),
+        finished("rg", json!({"ok":true,"stdout":"a.rs:1:needle"})),
         tool("glob", "glob", json!({"pattern":"*.rs"})),
         finished("glob", json!({"ok":true,"paths":["a.rs","b.rs"]})),
         tool(

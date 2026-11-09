@@ -20,7 +20,7 @@ const COMMANDS: [&str; 13] = [
     "/test-read",
     "/test-write",
     "/test-edit",
-    "/test-grep",
+    "/test-rg",
     "/test-glob",
     "/test-bash",
     "/test-bash-task",
@@ -46,7 +46,7 @@ const TOOL_MARKERS: [&str; 12] = [
     "Write fixture complete.",
     "Replace edit fixture complete.",
     "Hashline edit fixture complete.",
-    "Grep fixture complete.",
+    "rg fixture complete.",
     "Glob fixture complete.",
     "Bash fixture complete.",
     "Background Bash fixture complete.",
@@ -67,7 +67,7 @@ fn own_markers(command: &str) -> Vec<&'static str> {
             "Replace edit fixture complete.",
             "Hashline edit fixture complete.",
         ],
-        "/test-grep" => vec!["Grep fixture complete."],
+        "/test-rg" => vec!["rg fixture complete."],
         "/test-glob" => vec!["Glob fixture complete."],
         "/test-bash" => vec!["Bash fixture complete."],
         "/test-bash-task" => vec!["Background Bash fixture complete."],
@@ -217,7 +217,7 @@ fn mock_test_all_commands_run_in_empty_home_without_models() {
         "read",
         "write",
         "edit",
-        "grep",
+        "rg",
         "glob",
         "bash",
         "bash_task",
@@ -239,7 +239,7 @@ fn mock_test_all_commands_run_in_empty_home_without_models() {
         "native incomplete-todo reminder missing: {stderr}"
     );
     // 预期工具失败只作为结果展示，后续脚本仍继续到各自完成正文。
-    for tool in ["write", "edit", "grep", "bash", "ask"] {
+    for tool in ["write", "edit", "rg", "bash", "ask"] {
         assert!(
             stderr.contains(&format!("tool {tool}: failed")),
             "missing expected failure for {tool}: {stderr}"
@@ -260,7 +260,7 @@ fn mock_test_each_command_runs_only_its_own_scenarios() {
                 ("read", 4),
                 ("write", 3),
                 ("edit", 4),
-                ("grep", 4),
+                ("rg", 4),
                 ("glob", 4),
                 ("bash", 8),
                 ("bash_task", 3),
@@ -272,7 +272,7 @@ fn mock_test_each_command_runs_only_its_own_scenarios() {
         ("/test-read", &[("read", 3)]),
         ("/test-write", &[("bash", 1), ("write", 3)]),
         ("/test-edit", &[("read", 1), ("edit", 4)]),
-        ("/test-grep", &[("grep", 4)]),
+        ("/test-rg", &[("rg", 4)]),
         ("/test-glob", &[("glob", 4)]),
         ("/test-bash", &[("bash", 4)]),
         ("/test-bash-task", &[("bash", 1), ("bash_task", 3)]),

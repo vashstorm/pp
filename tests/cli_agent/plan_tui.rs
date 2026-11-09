@@ -163,7 +163,7 @@ fn plan_drive_ready_with_mcp(
     assert!(
         names.iter().all(|name| matches!(
             *name,
-            "read" | "ask" | "grep" | "glob" | "lsp" | "write" | "plan_submit" | "task" | "wait"
+            "read" | "ask" | "rg" | "glob" | "lsp" | "write" | "plan_submit" | "task" | "wait"
         ) || allowed_mcp.contains(name)),
         "{body}"
     );

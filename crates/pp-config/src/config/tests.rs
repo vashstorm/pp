@@ -24,26 +24,28 @@ fn artifact_settings_defaults_validation_and_checkpoint_compatibility() {
 use serde_json::json;
 
 #[test]
-fn grep_context_settings_are_strict_and_default_when_absent() {
+fn rg_context_settings_are_strict_and_default_when_absent() {
     let settings: Settings = yaml::parse("{}", "settings").unwrap();
     assert_eq!(
-        (settings.grep.context_before, settings.grep.context_after),
+        (settings.rg.context_before, settings.rg.context_after),
         (1, 3)
     );
     let settings: Settings =
-        yaml::parse("grep: {contextBefore: 0, contextAfter: 5}", "settings").unwrap();
+        yaml::parse("rg: {contextBefore: 0, contextAfter: 5}", "settings").unwrap();
     assert_eq!(
         (
-            settings.tool_limits().grep.context_before,
-            settings.tool_limits().grep.context_after
+            settings.tool_limits().rg.context_before,
+            settings.tool_limits().rg.context_after
         ),
         (0, 5)
     );
     for input in [
-        "grep: null",
-        "grep: {contextBefore: -1}",
-        "grep: {contextAfter: null}",
-        "grep: {extra: 1}",
+        "rg: null",
+        "rg: {contextBefore: -1}",
+        "rg: {contextAfter: null}",
+        "rg: {extra: 1}",
+        // 旧 `grep:` 键不保留兼容，严格解析直接拒绝，迫使手动迁移。
+        "grep: {contextBefore: 0}",
     ] {
         assert!(
             yaml::parse::<Settings>(input, "settings").is_err(),
@@ -54,9 +56,42 @@ fn grep_context_settings_are_strict_and_default_when_absent() {
         json!({"read_max_bytes": 10, "read_max_lines": 10, "bash_timeout_seconds": 10}),
     )
     .unwrap();
+    assert_eq!((limits.rg.context_before, limits.rg.context_after), (1, 3));
+}
+
+#[test]
+fn tool_limits_serialize_rg_context_settings() {
+    // checkpoint 契约：`ToolLimits` 的序列化键跟随字段名，必须是 `rg`。
+    let value = serde_json::to_value(ToolLimits::default()).unwrap();
+    assert_eq!(value["rg"], json!({"contextBefore": 1, "contextAfter": 3}));
+    let mut keys: Vec<_> = value
+        .as_object()
+        .expect("tool limits serialize as an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
     assert_eq!(
-        (limits.grep.context_before, limits.grep.context_after),
-        (1, 3)
+        keys,
+        [
+            "bash_timeout_seconds",
+            "output",
+            "read_max_bytes",
+            "read_max_lines",
+            "rg",
+        ],
+        "{value}"
+    );
+    let restored: ToolLimits = serde_json::from_value(json!({
+        "read_max_bytes": 10,
+        "read_max_lines": 10,
+        "bash_timeout_seconds": 10,
+        "rg": {"contextBefore": 2, "contextAfter": 6}
+    }))
+    .unwrap();
+    assert_eq!(
+        (restored.rg.context_before, restored.rg.context_after),
+        (2, 6)
     );
 }
 

@@ -491,7 +491,7 @@ fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() 
         assert!(
             spec.tools
                 .iter()
-                .all(|name| matches!(name.as_str(), "read" | "grep" | "glob" | "lsp"))
+                .all(|name| matches!(name.as_str(), "read" | "rg" | "glob" | "lsp"))
         );
     }
 }
@@ -675,7 +675,7 @@ fn custom_agents_require_real_definitions_and_never_inherit_the_plan_model() {
     );
     let project = dir.path().join(".pp/agents");
     fs::create_dir_all(&project).unwrap();
-    fs::write(project.join("scout.md"), "---\nname: scout\ndescription: configured scout\ntools: [read, grep, glob, lsp, mcp__remote__echo, mcp__remote__fail]\n---\nConfigured investigation prompt.").unwrap();
+    fs::write(project.join("scout.md"), "---\nname: scout\ndescription: configured scout\ntools: [read, rg, glob, lsp, mcp__remote__echo, mcp__remote__fail]\n---\nConfigured investigation prompt.").unwrap();
     let definitions = binding.custom_roles();
     let scout = definitions.iter().find(|def| def.name == "scout").unwrap();
     assert!(scout.source.ends_with(".pp/agents/scout.md"));
@@ -789,7 +789,7 @@ fn custom_role_uses_model_override_and_works_without_builtin_roles() {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join(".pp/agents");
     fs::create_dir_all(&project).unwrap();
-    fs::write(project.join("analyst.md"), "---\nname: analyst\ndescription: custom model marker\nmodel: fixture/definition\nthinking: high\ntools: [read, grep]\nspawns: []\noutput: {type: object}\n---\nCustom analysis prompt.").unwrap();
+    fs::write(project.join("analyst.md"), "---\nname: analyst\ndescription: custom model marker\nmodel: fixture/definition\nthinking: high\ntools: [read, rg]\nspawns: []\noutput: {type: object}\n---\nCustom analysis prompt.").unwrap();
     let binding = binding(
         dir.path(),
         TaskSettings {
@@ -838,7 +838,7 @@ fn custom_role_uses_model_override_and_works_without_builtin_roles() {
     assert!(custom.role_route.is_none());
     assert_eq!(custom.output_schema, Some(json!({"type":"object"})));
     assert_eq!(custom.prompt, "Custom analysis prompt.");
-    assert_eq!(custom.tools, vec!["read", "grep"]);
+    assert_eq!(custom.tools, vec!["read", "rg"]);
 }
 
 #[test]
