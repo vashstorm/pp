@@ -139,7 +139,7 @@ fn plan_todo_committed_checkbox_survives_failed_journal_and_recovers_from_disk()
             body.replacen("[ ]", "[x]", 1)
         );
         drop(agent);
-        let restored = persistence::load(
+        let restored = persistence::load_test(
             &dir.path().join("sessions"),
             &dir.path().join("sessions/.locks"),
             Some(&id),

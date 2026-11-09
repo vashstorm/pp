@@ -105,7 +105,7 @@ fn plan_submit_seals_batch_without_another_model_request() {
         let id = agent.session_id().unwrap().to_owned();
         let expected = agent.workflow.clone();
         drop(agent);
-        let restored = persistence::load(
+        let restored = persistence::load_test(
             &dir.path().join("sessions"),
             &dir.path().join("sessions/.locks"),
             Some(&id),

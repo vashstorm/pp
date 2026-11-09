@@ -64,7 +64,7 @@ fn plan_exit_switches_protocol_and_persists_default_route() {
     );
     drop(agent);
 
-    let restored = persistence::load(&sessions, &locks, Some(&id), true).unwrap();
+    let restored = persistence::load_test(&sessions, &locks, Some(&id), true).unwrap();
     assert_eq!(restored.checkpoint.workflow.mode, WorkMode::Execute);
     assert_eq!(restored.checkpoint.model_reference, "fixture/one");
     let route = restored.checkpoint.role_route.unwrap();
@@ -91,7 +91,7 @@ fn plan_restore_replaces_only_a_legacy_execute_plan_route() {
         let catalog = agent.catalog.clone();
         drop(agent);
 
-        let restored = persistence::load(&sessions, &locks, Some(&id), true).unwrap();
+        let restored = persistence::load_test(&sessions, &locks, Some(&id), true).unwrap();
         let tools = Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap();
         let agent = Agent::restore(catalog, tools, restored).unwrap();
         let expected = if has_plan_route {
@@ -106,7 +106,7 @@ fn plan_restore_replaces_only_a_legacy_execute_plan_route() {
             has_plan_route.then_some(ModelRole::Default)
         );
         drop(agent);
-        let saved = persistence::load(&sessions, &locks, Some(&id), true).unwrap();
+        let saved = persistence::load_test(&sessions, &locks, Some(&id), true).unwrap();
         assert_eq!(saved.checkpoint.model_reference, expected);
     }
 }

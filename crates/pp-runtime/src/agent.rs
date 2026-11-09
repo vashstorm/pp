@@ -91,6 +91,7 @@ impl Bootstrap {
             self.dir.join("sessions"),
             persistence::locks::directory()?,
             self.prompt.clone(),
+            pp_stats::database_path()?,
         )?;
         if let Some(mode) = self.approval {
             agent.set_approval_override(mode);
@@ -387,15 +388,18 @@ impl Agent {
         self.tools.pipe_store()
     }
 
+    /// 测试构造入口：统计库随会话目录落在临时工作区，绝不写开发者真实 `~/.pp/stats`。
     #[cfg(test)]
     pub(crate) fn new(catalog: ModelCatalog, tools: Tools, sessions_dir: PathBuf) -> Result<Self> {
         let lock_dir = sessions_dir.join(".locks");
+        let stats_db = sessions_dir.join(".stats/stats.db");
         Self::new_with_prompt(
             catalog,
             tools,
             sessions_dir,
             lock_dir,
             crate::system_prompt::Snapshot::bundled(),
+            stats_db,
         )
     }
 
@@ -405,8 +409,17 @@ impl Agent {
         sessions_dir: PathBuf,
         lock_dir: PathBuf,
         prompt_source: crate::system_prompt::Snapshot,
+        stats_db: PathBuf,
     ) -> Result<Self> {
-        Self::new_with_mcp(catalog, tools, sessions_dir, lock_dir, prompt_source, None)
+        Self::new_with_mcp(
+            catalog,
+            tools,
+            sessions_dir,
+            lock_dir,
+            prompt_source,
+            None,
+            stats_db,
+        )
     }
 
     fn resolve_default_model(
@@ -441,6 +454,7 @@ impl Agent {
         lock_dir: PathBuf,
         prompt_source: crate::system_prompt::Snapshot,
         mcp: Option<crate::mcp::Registry>,
+        stats_db: PathBuf,
     ) -> Result<Self> {
         let (config, think_level, role_route) = Self::resolve_default_model(&catalog)?;
         tools.limits = config.settings.tool_limits();
@@ -514,7 +528,7 @@ impl Agent {
             pending_project_load: None,
             reported_project_load: None,
             request_skills: Vec::new(),
-            journal: SessionJournal::with_locks(sessions_dir, lock_dir),
+            journal: SessionJournal::with_locks(sessions_dir, lock_dir, stats_db),
             replay: Vec::new(),
             debug: debug::DebugState::new(config.settings.debug, false),
             workflow: pp_core::plan::WorkflowState::default(),
@@ -535,10 +549,11 @@ impl Agent {
         let mut agent = Self::new_with_mcp(
             catalog,
             tools,
-            sessions_dir,
+            sessions_dir.clone(),
             lock_dir,
             crate::system_prompt::Snapshot::bundled(),
             Some(crate::mcp::Registry::default()),
+            sessions_dir.join(".stats/stats.db"),
         )?;
         agent.client.set_mock_scripts(scripts)?;
         Ok(agent)

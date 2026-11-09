@@ -97,6 +97,8 @@ impl Agent {
             unlinked_requests: self.journal.unlinked_stats(),
             // 标题不采集原生上下文，更不能消费主请求的首次采集标记。
             first_request: Arc::new(AtomicBool::new(false)),
+            // 标题请求同样写入本次会话的统计库，测试时落在临时工作区。
+            database: self.journal.stats_database().to_owned(),
             skills: Vec::new(),
         };
         if let Ok(thread) = thread::Builder::new()

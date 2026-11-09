@@ -336,7 +336,7 @@ fn read_history_restores_unknown_tool_results_without_special_handling() {
         agent.journal.commit((&agent.session).into()).unwrap();
         let id = agent.session_id().unwrap().to_owned();
         drop(agent);
-        let saved = persistence::load(
+        let saved = persistence::load_test(
             &dir.path().join("sessions"),
             &dir.path().join("sessions/.locks"),
             Some(&id),
@@ -468,7 +468,7 @@ fn user_image_requests_restore_navigate_and_switch_protocol_without_source() {
         );
         let id = agent.session_id().unwrap().to_owned();
         drop(agent);
-        let saved = persistence::load(
+        let saved = persistence::load_test(
             &dir.path().join("sessions"),
             &dir.path().join("sessions/.locks"),
             Some(&id),

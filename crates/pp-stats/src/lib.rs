@@ -22,6 +22,8 @@ use std::{
 #[derive(Clone)]
 pub struct RequestContext {
     pub model_reference: String,
+    /// 统计库路径。生产由 [`database_path`] 解析，测试可指向临时库以免写真实 HOME。
+    pub database: PathBuf,
     pub cwd: PathBuf,
     pub purpose: &'static str,
     pub session_file: Option<PathBuf>,
@@ -180,7 +182,11 @@ pub struct ToolCall<'a> {
     pub duration_ms: f64,
 }
 
-pub(crate) fn database_path() -> Result<PathBuf> {
+/// 生产环境的统计库路径：`$HOME/.pp/stats/stats.db`。
+///
+/// 采集入口不直接调用它——路径随 [`RequestContext::database`] 与 `link`/`tool`
+/// 参数传入，测试因此能把写入限制在临时目录。
+pub fn database_path() -> Result<PathBuf> {
     let agent = pp_config::config::global_dir()?;
     Ok(agent
         .parent()
@@ -579,7 +585,7 @@ pub fn save(
             error_message: outcome.as_ref().err().map(|e| format!("{e:#}")),
         };
         let output = json!({"native":observation.output,"text":observation.text,"thinking":observation.thinking,"partial":outcome.is_err()});
-        Store::open(&database_path()?)?.insert_with_context(
+        Store::open(&context.database)?.insert_with_context(
             &record,
             &output,
             observation.request_context.as_ref(),
@@ -602,14 +608,14 @@ pub fn save(
         }
     }
 }
-pub fn link(key: &str, file: &Path, entries: &[Value]) {
-    if (|| -> Result<()> { Store::open(&database_path()?)?.link(key, file, entries) })().is_err() {
+pub fn link(database: &Path, key: &str, file: &Path, entries: &[Value]) {
+    if (|| -> Result<()> { Store::open(database)?.link(key, file, entries) })().is_err() {
         warn();
     }
 }
 /// 记录一次工具执行；存储失败只提示，不改变工具结果。
-pub fn tool(call: &ToolCall<'_>) {
-    if (|| -> Result<()> { Store::open(&database_path()?)?.tool(call) })().is_err() {
+pub fn tool(database: &Path, call: &ToolCall<'_>) {
+    if (|| -> Result<()> { Store::open(database)?.tool(call) })().is_err() {
         warn();
     }
 }

@@ -315,6 +315,7 @@ fn run(args: Args) -> Result<()> {
             resume_id,
             // 加载记录用于会话级去重，CLI 恢复同样需要有效回放。
             true,
+            &pp_stats::database_path()?,
         )?)
     } else {
         None

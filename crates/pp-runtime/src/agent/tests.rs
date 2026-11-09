@@ -42,6 +42,36 @@ pub(super) fn runtime_input_agent(
     .unwrap()
 }
 
+/// 测试构造的 Agent 只写临时工作区内的统计库，绝不落到开发者真实 `~/.pp/stats`。
+#[test]
+fn test_constructor_keeps_statistics_inside_the_session_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+    let stats = agent.journal.stats_database().to_owned();
+    assert_eq!(stats, dir.path().join("sessions/.stats/stats.db"));
+    let context = agent.journal.stats_context(
+        &Metadata {
+            role_route: None,
+            cwd: agent.tools.cwd(),
+            model_reference: &agent.current_model.reference,
+            think_level: agent.think_level,
+            edit_mode: agent.tools.edit_mode(),
+            tool_limits: agent.tools.limits,
+            base_system: &agent.base_system,
+            prompt_source: agent.prompt_source.as_ref(),
+        },
+        "task",
+        &[],
+    );
+    assert_eq!(context.database, stats);
+    if let Ok(production) = pp_stats::database_path() {
+        assert_ne!(
+            production, stats,
+            "测试 Agent 不得写真实统计库；隔离由 Agent::new 的临时路径保证"
+        );
+    }
+}
+
 // --- shared Plan-mode test fixtures (plan_review / plan_workflow) ---
 pub(super) const PLAN_CONTENT: &str =
     "# Create hello\n\n- [ ] Create hello.txt and read back hello.\n";

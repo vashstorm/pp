@@ -691,7 +691,7 @@ mod tests {
             let id = journal.id().unwrap().to_owned();
             drop(journal);
             let mut restored =
-                load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+                load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
             let checkpoint = text(&restored.checkpoint.session);
             assert!(!checkpoint.contains("question-b"));
             assert!(!checkpoint.contains("answer-b"));
@@ -955,7 +955,7 @@ mod tests {
             let id = journal.id().unwrap().to_owned();
             drop(journal);
             let mut restored =
-                load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+                load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
             assert!(restored.replay.is_empty());
             let view = restored.journal.tree_view().unwrap();
             assert!(view.tree.nodes.is_empty());
@@ -1076,7 +1076,7 @@ mod tests {
             assert!(journal.check().is_err());
             drop(journal);
             let mut restored =
-                load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+                load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
             assert_eq!(text(&restored.checkpoint.session), text(&compacted));
             // The failed navigation must not invalidate the effective nodes.
             let tree = restored.journal.tree().unwrap();
@@ -1196,7 +1196,8 @@ mod tests {
 
             let id = journal.id().unwrap().to_owned();
             drop(journal);
-            let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+            let restored =
+                load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
             assert_eq!(text(&restored.checkpoint.session), text(&cached.session));
             assert!(!text(&restored.checkpoint.session).contains("question-c"));
             assert_eq!(users(&restored.replay), ["question-a", "question-b"]);

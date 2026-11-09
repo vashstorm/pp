@@ -400,7 +400,8 @@ fn replay_native_history_and_repair_only_on_append() {
             .unwrap()
             .write_all(b"{unfinished")
             .unwrap();
-        let mut restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+        let mut restored =
+            load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
         assert_eq!(
             serde_json::to_value(&restored.checkpoint.session).unwrap(),
             serde_json::to_value(&session).unwrap()
@@ -409,7 +410,7 @@ fn replay_native_history_and_repair_only_on_append() {
         assert_eq!(fs::read(&path).unwrap().len(), complete.len() + 11);
         restored.journal.think(ThinkLevel::High).unwrap();
         drop(restored);
-        let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
+        let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
         assert_eq!(restored.checkpoint.think_level, ThinkLevel::High);
         assert!(restored.replay.is_empty());
     }
@@ -482,7 +483,8 @@ fn incomplete_native_commit_never_restores_projections_or_model_audit() {
             .unwrap()
             .write_all(b"{\"type\":\"custom\",\"customType\":\"pp.native_append\"")
             .unwrap();
-        let mut restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+        let mut restored =
+            load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
         assert_eq!(restored.checkpoint.model_reference, "fixture/primary");
         assert_eq!(
             serde_json::to_value(&restored.checkpoint.session).unwrap(),
@@ -509,7 +511,7 @@ fn incomplete_native_commit_never_restores_projections_or_model_audit() {
             1
         );
         assert_eq!(
-            load(dir.path(), &dir.path().join(".locks"), Some(&id), false)
+            load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
                 .unwrap()
                 .checkpoint
                 .think_level,
@@ -638,7 +640,7 @@ fn context_failed_history_replacement_restores_native_memory_and_disk() {
         assert_eq!(fs::read(&path).unwrap(), before);
         assert!(agent.journal.check().is_err());
         drop(agent);
-        let restored = load(
+        let restored = load_test(
             &dir.path().join("sessions"),
             &dir.path().join("sessions/.locks"),
             Some(&id),
@@ -835,7 +837,7 @@ fn rejects_complete_corruption_and_locked_files() {
         .unwrap();
     let id = journal.id().unwrap().to_owned();
     assert!(
-        load(dir.path(), &dir.path().join(".locks"), Some(&id), false)
+        load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
             .err()
             .unwrap()
             .to_string()
@@ -855,7 +857,7 @@ fn rejects_complete_corruption_and_locked_files() {
         .unwrap()
         .write_all(b"invalid\n")
         .unwrap();
-    let error = load(dir.path(), &dir.path().join(".locks"), Some(&id), false)
+    let error = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
         .err()
         .unwrap();
     assert!(format!("{error:#}").contains(&format!("line {next_line}")));
@@ -930,7 +932,8 @@ fn instruction_loading_cards_journal_failure_keeps_unpublished_snapshot() {
         assert!(reported.is_none());
         drop(journal);
 
-        let mut restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+        let mut restored =
+            load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
         assert!(!restored.replay.iter().any(|record| matches!(
             record,
             ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded { .. })
@@ -950,7 +953,7 @@ fn instruction_loading_cards_journal_failure_keeps_unpublished_snapshot() {
                     && path == &dir.path().join("AGENTS.md").display().to_string()
         ));
         drop(restored);
-        let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+        let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
         assert!(matches!(
             restored.replay.as_slice(),
             [ReplayRecord::User(user), ReplayRecord::Event(
@@ -991,7 +994,7 @@ fn stats_context_early_journal_does_not_consume_capture_and_restore_does_not_rea
         );
         let id = journal.id().unwrap().to_owned();
         drop(journal);
-        let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
+        let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
         assert!(
             restored
                 .journal
@@ -1075,7 +1078,7 @@ fn workflow_state_survives_restore_without_moving_native_cursor() {
     assert_eq!(journal.tree().unwrap().nodes.len(), nodes_before);
     drop(journal);
 
-    let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+    let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
     assert_eq!(restored.work_mode(), WorkMode::Plan);
     assert_eq!(restored.checkpoint.workflow, updated);
     assert!(
@@ -1106,7 +1109,7 @@ fn workflow_state_survives_restore_without_moving_native_cursor() {
             *record = serde_json::Value::Null;
         }
     });
-    let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
+    let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
     assert_eq!(restored.checkpoint.workflow, WorkflowState::default());
     assert_eq!(restored.work_mode(), WorkMode::Execute);
 }
@@ -1172,7 +1175,7 @@ fn workflow_records_fail_closed_on_version_unknown_fields_and_privilege() {
         fs::write(&path, format!("{base}{record}\n")).unwrap();
         let error = format!(
             "{:#}",
-            load(dir.path(), &dir.path().join(".locks"), Some(&id), false)
+            load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
                 .err()
                 .unwrap()
         );
@@ -1193,7 +1196,7 @@ fn workflow_records_fail_closed_on_version_unknown_fields_and_privilege() {
     });
     let error = format!(
         "{:#}",
-        load(dir.path(), &dir.path().join(".locks"), Some(&id), false)
+        load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
             .err()
             .unwrap()
     );
@@ -1238,7 +1241,7 @@ fn failed_workflow_sync_rolls_back_and_blocks_until_reset() {
     assert_eq!(fs::read(&path).unwrap(), before);
     assert!(journal.check().is_err());
     drop(journal);
-    let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
+    let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
     assert_eq!(restored.work_mode(), WorkMode::Plan);
     assert_eq!(
         restored.checkpoint.workflow.plan.as_ref().unwrap().revision,
@@ -1292,7 +1295,7 @@ fn commit_plan_handoff_commits_projection_and_state_atomically() {
         let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
         assert_eq!(first["type"], "session");
         drop(journal);
-        let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+        let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
         assert_eq!(restored.work_mode(), WorkMode::Plan);
         assert_eq!(restored.checkpoint.workflow, workflow);
         // The user projection appears exactly once; the native history
@@ -1386,7 +1389,7 @@ fn commit_plan_handoff_failure_rolls_back_the_whole_group() {
     assert_eq!(fs::read(&path).unwrap(), before);
     assert!(journal.check().is_err());
     drop(journal);
-    let restored = load(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+    let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
     // Neither the execution projection nor the workflow grant survived.
     assert!(matches!(restored.replay.as_slice(), [ReplayRecord::User(text)] if text == "first"));
     assert_eq!(restored.work_mode(), WorkMode::Execute);

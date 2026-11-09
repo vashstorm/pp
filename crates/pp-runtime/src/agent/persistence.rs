@@ -130,6 +130,8 @@ struct Active {
 pub(super) struct SessionJournal {
     dir: PathBuf,
     lock_dir: PathBuf,
+    /// 统计库路径；由 `Agent` 构造方从 `pp_stats::database_path` 或临时目录传入。
+    stats_db: PathBuf,
     active: Option<Active>,
     committed: usize,
     buffer: Vec<u8>,
@@ -160,6 +162,7 @@ impl SessionJournal {
         skills: &[pp_config::skills::SkillHeader],
     ) -> pp_stats::RequestContext {
         pp_stats::RequestContext {
+            database: self.stats_db.clone(),
             model_reference: metadata.model_reference.to_owned(),
             cwd: metadata.cwd.to_owned(),
             purpose,
@@ -172,6 +175,9 @@ impl SessionJournal {
                 Vec::new()
             },
         }
+    }
+    pub(super) fn stats_database(&self) -> &Path {
+        &self.stats_db
     }
     pub(super) fn unlinked_stats(&self) -> Option<Arc<Mutex<Vec<String>>>> {
         self.id().is_none().then(|| self.unlinked_stats.clone())
@@ -188,7 +194,7 @@ impl SessionJournal {
             if !keys.is_empty() {
                 let file = self.dir.join(format!("{id}.jsonl"));
                 for key in keys {
-                    pp_stats::link(&key, &file, &[]);
+                    pp_stats::link(&self.stats_db, &key, &file, &[]);
                 }
             }
         }
@@ -226,28 +232,33 @@ impl SessionJournal {
             pp_stats::ToolStatus::Ok
         };
         let file = self.dir.join(format!("{id}.jsonl"));
-        pp_stats::tool(&pp_stats::ToolCall {
-            request_key: Some(key),
-            session_file: &file,
-            call_id,
-            tool,
-            status,
-            error_message: result.get("error").and_then(serde_json::Value::as_str),
-            timestamp,
-            duration_ms,
-        });
+        pp_stats::tool(
+            &self.stats_db,
+            &pp_stats::ToolCall {
+                request_key: Some(key),
+                session_file: &file,
+                call_id,
+                tool,
+                status,
+                error_message: result.get("error").and_then(serde_json::Value::as_str),
+                timestamp,
+                duration_ms,
+            },
+        );
     }
 
     #[cfg(test)]
     pub(super) fn new(dir: PathBuf) -> Self {
         let lock_dir = dir.join(".locks");
-        Self::with_locks(dir, lock_dir)
+        let stats_db = dir.join(".stats/stats.db");
+        Self::with_locks(dir, lock_dir, stats_db)
     }
 
-    pub(super) fn with_locks(dir: PathBuf, lock_dir: PathBuf) -> Self {
+    pub(super) fn with_locks(dir: PathBuf, lock_dir: PathBuf, stats_db: PathBuf) -> Self {
         Self {
             dir,
             lock_dir,
+            stats_db,
             active: None,
             committed: 0,
             buffer: Vec::new(),
@@ -275,6 +286,7 @@ impl SessionJournal {
         *self = Self::with_locks(
             std::mem::take(&mut self.dir),
             std::mem::take(&mut self.lock_dir),
+            std::mem::take(&mut self.stats_db),
         );
     }
     pub(super) fn lock_dir(&self) -> &Path {
@@ -552,7 +564,11 @@ impl SessionJournal {
 
     /// 新上下文复用会话目录与锁目录，独立持有新会话的锁。
     pub(super) fn fork_empty(&self) -> Self {
-        Self::with_locks(self.dir.clone(), self.lock_dir.clone())
+        Self::with_locks(
+            self.dir.clone(),
+            self.lock_dir.clone(),
+            self.stats_db.clone(),
+        )
     }
 
     /// Test-only fault injection: swap the active descriptor for a read-only
@@ -779,7 +795,12 @@ impl SessionJournal {
                 if let Some(key) = self.pending_stats.take()
                     && let Some(id) = self.id()
                 {
-                    pp_stats::link(&key, &self.dir.join(format!("{id}.jsonl")), &entries);
+                    pp_stats::link(
+                        &self.stats_db,
+                        &key,
+                        &self.dir.join(format!("{id}.jsonl")),
+                        &entries,
+                    );
                 }
                 Ok(())
             })();
@@ -1060,11 +1081,29 @@ pub fn delete(dir: &Path, lock_dir: &Path, id: &str) -> Result<()> {
         .context("session deleted, but artifact cleanup failed")
 }
 
+/// 测试专用：统计库随会话目录落在临时工作区，避免写真实 `~/.pp/stats`。
+#[cfg(test)]
+pub(super) fn load_test(
+    dir: &Path,
+    lock_dir: &Path,
+    id: Option<&str>,
+    include_replay: bool,
+) -> Result<RestoredSession> {
+    load(
+        dir,
+        lock_dir,
+        id,
+        include_replay,
+        &dir.join(".stats/stats.db"),
+    )
+}
+
 pub fn load(
     dir: &Path,
     lock_dir: &Path,
     id: Option<&str>,
     include_replay: bool,
+    stats_db: &Path,
 ) -> Result<RestoredSession> {
     let id = match id {
         Some(id) => {
@@ -1322,6 +1361,7 @@ pub fn load(
         journal: SessionJournal {
             dir: dir.to_owned(),
             lock_dir: lock_dir.to_owned(),
+            stats_db: stats_db.to_owned(),
             active: Some(Active {
                 id,
                 created_at_ms,

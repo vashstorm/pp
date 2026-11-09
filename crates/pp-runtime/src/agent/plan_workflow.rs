@@ -1089,6 +1089,7 @@ impl Agent {
             self.journal.lock_dir(),
             Some(id),
             true,
+            self.journal.stats_database(),
         )?;
         let target_mode = checkpoint.workflow.mode;
         let leaving_plan = self.workflow.mode == WorkMode::Plan && target_mode == WorkMode::Execute;

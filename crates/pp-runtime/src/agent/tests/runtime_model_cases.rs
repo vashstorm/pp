@@ -299,7 +299,8 @@ fn fallback_route_restores_primary_after_resume_and_manual_selection_clears_prov
     let id = agent.session_id().unwrap().to_owned();
     drop(agent);
     let sessions = dir.path().join("sessions");
-    let restored = persistence::load(&sessions, &sessions.join(".locks"), Some(&id), true).unwrap();
+    let restored =
+        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&id), true).unwrap();
     let mut agent = Agent::restore(
         catalog.clone(),
         Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
@@ -317,7 +318,8 @@ fn fallback_route_restores_primary_after_resume_and_manual_selection_clears_prov
     agent.switch_model("fixture/one").unwrap();
     assert!(agent.role_route.is_none());
     drop(agent);
-    let restored = persistence::load(&sessions, &sessions.join(".locks"), Some(&id), true).unwrap();
+    let restored =
+        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&id), true).unwrap();
     assert!(restored.checkpoint.role_route.is_none());
 }
 

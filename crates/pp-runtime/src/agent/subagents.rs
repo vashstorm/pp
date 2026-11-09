@@ -79,6 +79,8 @@ impl Agent {
         let lsp_settings = self.catalog.lsp_settings();
         let lsp_path = self.catalog.lsp_path();
         let root_dir = self.journal.directory().join(format!("{id}.subagents"));
+        // 子 Agent 的请求与工具记录写入父级同一个统计库。
+        let stats_db = self.journal.stats_database().to_owned();
 
         let plan = self
             .workflow
@@ -234,7 +236,11 @@ impl Agent {
                 pending_project_load: None,
                 reported_project_load: None,
                 request_skills: Vec::new(),
-                journal: SessionJournal::with_locks(sessions.clone(), sessions.join(".locks")),
+                journal: SessionJournal::with_locks(
+                    sessions.clone(),
+                    sessions.join(".locks"),
+                    stats_db.clone(),
+                ),
                 replay: vec![],
                 debug: None,
                 workflow: Default::default(),

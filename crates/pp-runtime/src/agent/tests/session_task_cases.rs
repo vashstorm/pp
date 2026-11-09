@@ -68,7 +68,7 @@ fn instruction_loading_cards_failed_requests_record_frozen_body_once() {
         }
         let id = agent.session_id().unwrap().to_owned();
         drop(agent);
-        let restored = persistence::load(
+        let restored = persistence::load_test(
             &dir.path().join("sessions"),
             &dir.path().join("sessions/.locks"),
             Some(&id),
@@ -168,7 +168,7 @@ fn resume_preparation_preserves_current_session_and_releases_failed_candidate() 
     // 运行中的恢复使用当前配置，不重新读取磁盘上的模型文件。
     std::fs::write(&models, "invalid configuration").unwrap();
     let candidate =
-        persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).unwrap();
+        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).unwrap();
     let definitions = old
         .tools
         .all_definitions(candidate.checkpoint.workflow.mode);
@@ -187,17 +187,27 @@ fn resume_preparation_preserves_current_session_and_releases_failed_candidate() 
     assert_eq!(old.session_id(), Some(ids[0].as_str()));
     assert_eq!(serde_json::to_value(&old.session).unwrap(), before);
     assert_eq!(std::env::current_dir().unwrap(), cwd);
-    assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[0]), true).is_err());
-    assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_err());
+    assert!(
+        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[0]), true).is_err()
+    );
+    assert!(
+        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_err()
+    );
     drop(candidate.journal);
-    assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_ok());
+    assert!(
+        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_ok()
+    );
     let before_resume_store = old.pipe_store();
     old.resume(&ids[1], &CancellationToken::new()).unwrap();
     assert_eq!(old.session_id(), Some(ids[1].as_str()));
     // 恢复是新的有效会话根：临时管道 registry 换实例，旧 URI 不再解析。
     assert!(!before_resume_store.same_instance(&old.pipe_store()));
-    assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[0]), true).is_ok());
-    assert!(persistence::load(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_err());
+    assert!(
+        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[0]), true).is_ok()
+    );
+    assert!(
+        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_err()
+    );
 }
 
 #[test]
@@ -238,7 +248,7 @@ fn cancellation_before_request_saves_accepted_input_and_replays_terminal() {
         let id = agent.session_id().unwrap().to_owned();
         drop(agent);
         let restored =
-            persistence::load(&sessions, &sessions.join(".locks"), Some(&id), true).unwrap();
+            persistence::load_test(&sessions, &sessions.join(".locks"), Some(&id), true).unwrap();
         assert!(
             matches!(restored.replay.as_slice(), [persistence::ReplayRecord::User(text), persistence::ReplayRecord::Cancelled] if text == "accepted input")
         );
@@ -464,6 +474,7 @@ fn system_prompt_render_failure_preserves_native_session_and_journal() {
             dir.path().join("sessions"),
             dir.path().join("sessions/.locks"),
             source,
+            dir.path().join("sessions/.stats/stats.db"),
         )
         .unwrap();
         seed_session(&mut agent, "preserve this input");
