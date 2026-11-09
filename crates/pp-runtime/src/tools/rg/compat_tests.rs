@@ -98,6 +98,7 @@ fn rg_compat_rejects_conflicts_invalid_types_and_unknown_modes() {
         json!({"output_mode":"unknown"}),
         json!({"output_mode":null}),
         json!({"-i":"true"}),
+        json!({"-n":"true"}),
         json!({"unexpected":true}),
     ]
     .into_iter()

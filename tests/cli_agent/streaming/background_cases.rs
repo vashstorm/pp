@@ -386,18 +386,17 @@ fn rg_hashline_edit_and_pagination_roundtrip_both_protocols() {
                 protocol.call(
                     "page",
                     "rg",
-                    json!({"pattern":"needle","path":"*.txt","skip":20})
+                    json!({"pattern":"needle","path":"*.txt","skip":20,"-n":false})
                 ),
                 protocol.call("paths", "rg", json!({"pattern":"NEEDLE","-i":true,"path":"*.txt","skip":20,"output_mode":"files_with_matches"})),
                 protocol.call("counts", "rg", json!({"pattern":"NEEDLE","-i":true,"path":"*.txt","skip":20,"output_mode":"count"})),
-                protocol.call("file", "rg", json!({"pattern":"NEEDLE","-i":true,"path":"00.txt","context":0,"-C":0,"-A":0,"-B":0,"output_mode":"content"}))
+                protocol.call("file", "rg", json!({"pattern":"NEEDLE","-i":true,"-n":true,"path":"00.txt","context":0,"-C":0,"-A":0,"-B":0,"output_mode":"content"}))
             ]),
         );
         let (request, body) = protocol.receive(&provider);
-        assert_eq!(
-            protocol.tool_result(&body, "page")["details"]["fileCount"],
-            1
-        );
+        let page = protocol.tool_result(&body, "page");
+        assert_eq!(page["details"]["fileCount"], 1, "{page}");
+        assert!(page["content"].as_str().unwrap().contains("*2:needle"));
         assert_eq!(
             protocol.tool_result(&body, "paths")["details"]["fileMatches"][0]["path"],
             "20.txt"
@@ -407,8 +406,12 @@ fn rg_hashline_edit_and_pagination_roundtrip_both_protocols() {
         assert_eq!(counts["details"]["totalMatchCount"], 21, "{counts}");
         assert_eq!(counts["details"]["countComplete"], true, "{counts}");
         let result = protocol.tool_result(&body, "file");
-        let header = hashline_header(result["content"].as_str().unwrap());
-        assert!(!result["content"].as_str().unwrap().contains("before"));
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(tool["parameters"]["properties"]["-n"]["type"], "boolean");
+        let content = result["content"].as_str().unwrap();
+        let header = hashline_header(content);
+        assert!(content.contains("*2:needle"), "{content}");
+        assert!(!content.contains("before"));
         protocol.calls_reply(
             request,
             json!([
