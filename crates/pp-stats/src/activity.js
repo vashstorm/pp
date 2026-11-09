@@ -74,6 +74,52 @@ function errorsPage() {
     '<tr><td colspan="4"><div class="empty">No failures in this range</div></td></tr>'
   }</tbody></table></div></section><section class="panel error-models"><div class="requests-heading"><h2>By model</h2><p class="panel-description">Select a model to filter.</p></div>${data.models.map((m, i) => `<button class="error-model${errorModel === m.key ? " selected" : ""}" data-error-model="${i}" aria-pressed="${errorModel === m.key}"><span><span class="model-name">${h(m.model)}</span><span class="provider">${h(m.provider)} · ${h(m.key)}</span></span><span class="num">${number(m.failures)}</span></button>`).join("") || '<div class="empty">No affected models</div>'}</section></div><section class="panel"><div class="requests-heading panel-heading"><div><h2>Failures</h2><p class="panel-description">${number(rows.length)} of ${number(data.requests.length)} loaded failures, newest first${errorSignature || errorModel ? ' · <button class="inline-link" data-clear-errors>Clear filters</button>' : ""}</p></div>${activitySearch("Search failures", "Error, model or project…")}</div>${failureTable(rows)}${activityFooter(rows)}</section>${activityLimit("failures; signature and model totals cover the entire range")}${pricingNotice(data)}`;
 }
+function toolSignatureTable(signatures) {
+  return `<div class="table-wrap"><table class="signature-table"><thead><tr><th>Tool</th><th>Signature</th><th>Last seen</th><th class="right">Failures</th></tr></thead><tbody>${
+    signatures.length
+      ? signatures
+          .map(
+            (g) =>
+              `<tr tabindex="0" aria-label="Tool error signature in ${h(g.tool)}"><td><div class="model-name">${h(g.tool)}</div></td><td><div class="failure-message" title="${h(g.signature)}">${h(g.signature)}</div></td><td title="${h(localTime(g.last_seen))}">${relative(g.last_seen)}</td><td class="right num">${number(g.failures)}</td></tr>`,
+          )
+          .join("")
+      : '<tr><td colspan="4"><div class="empty">No tool failures in this range</div></td></tr>'
+  }</tbody></table></div>`;
+}
+function toolCounts(signatures) {
+  const counts = new Map();
+  for (const g of signatures) counts.set(g.tool, (counts.get(g.tool) || 0) + g.failures);
+  const rows = [...counts].sort((a, b) => b[1] - a[1]);
+  return `<div class="table-wrap"><table><thead><tr><th>Tool</th><th class="right">Failures</th></tr></thead><tbody>${
+    rows.length
+      ? rows
+          .map(([tool, failures]) => `<tr><td><div class="model-name">${h(tool)}</div></td><td class="right num">${number(failures)}</td></tr>`)
+          .join("")
+      : '<tr><td colspan="2"><div class="empty">No affected tools</div></td></tr>'
+  }</tbody></table></div>`;
+}
+function toolFailureTable(rows) {
+  return `<div class="table-wrap"><table class="failure-table"><thead><tr><th>When</th><th>Tool</th><th>Error</th><th>Request</th><th class="right">Duration</th></tr></thead><tbody>${
+    rows.length
+      ? rows
+          .map(
+            (r) =>
+              `<tr tabindex="0"${r.request_id ? ` data-id="${r.request_id}" aria-label="View request ${r.request_id}"` : ""}><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td><div class="model-name">${h(r.tool)}</div><div class="provider">${h(r.call_id)}</div></td><td><div class="failure-message" title="${h(r.error_message)}">${h(r.error_message || "Unknown tool error")}</div></td><td class="project" title="${h(r.cwd)}">${r.request_id ? `#${r.request_id}<div class="provider">${h(r.project || "")}</div>` : '<span class="provider">Not linked to a request</span>'}</td><td class="right num">${detailed(r.duration_ms, duration(r.duration_ms), " ms")}</td></tr>`,
+          )
+          .join("")
+      : '<tr><td colspan="5"><div class="empty">No tool failures recorded</div></td></tr>'
+  }</tbody></table></div>`;
+}
+function toolFailuresPanel() {
+  if (!data) return "";
+  const s = data.tool_summary || {},
+    rows = data.tool_failures || [],
+    signatures = data.tool_signatures || [];
+  const more = data.tool_has_more
+    ? `<p class="load-note">Loaded the latest ${number(data.tool_limit)} tool failures; narrow the time range to see older ones.</p>`
+    : "";
+  return `<div class="panel metrics error-metrics">${metric("Tool failures", number(s.failures), `in the ${descriptions[range]}`)}${metric("Tool signatures", number(s.signatures), `top: ${number(signatures[0]?.failures || 0)} failures`)}${metric("Affected tools", number(s.tools))}${metric("Last tool failure", s.last_seen ? relative(s.last_seen) : "—", s.last_seen ? localTime(s.last_seen) : "No tool failures recorded")}</div><div class="error-layout"><section class="panel"><div class="requests-heading"><h2>Tool error signatures</h2><p class="panel-description">Recorded tool executions that returned an error, grouped by tool and normalized message. Only executions collected after this pp version are counted.</p></div>${toolSignatureTable(signatures)}</section><section class="panel error-models"><div class="requests-heading"><h2>Tools</h2><p class="panel-description">Failed executions per tool.</p></div>${toolCounts(signatures)}</section></div><section class="panel"><div class="requests-heading panel-heading"><div><h2>Tool failures</h2><p class="panel-description">${number(rows.length)} loaded tool failures, newest first</p></div></div>${toolFailureTable(rows)}${more}</section>`;
+}
 function sessionTitle(s) {
   return s.session_file
     ? s.session_file
@@ -199,7 +245,7 @@ function tracePage() {
         return `<article class="trace-request" id="trace-request-${r.id}"><button class="trace-request-toggle" data-trace-request="${r.id}" aria-expanded="${open}" aria-controls="trace-content-${r.id}">${icon(open ? "down" : "chevron", 12)}<span class="trace-kind">model</span><span class="trace-request-name">${h(r.model)}<span class="provider">${h(r.provider)} · ${h(r.purpose)} · #${r.id}</span></span>${statusBadge(r)}<span class="num">${duration(r.duration_ms)}</span><span class="provider num">+${duration(r.timestamp - start)}</span></button><div class="trace-content" id="trace-content-${r.id}"${open ? "" : " hidden"}>${open ? traceRequestContent(r) : ""}</div></article>`;
       })
       .join("") || '<div class="empty">No matching requests</div>'
-  }</div>${activityFooter(rows)}</section><p class="load-note">This trace uses saved statistics only. New sessions include their first request context. Tool execution results, tool duration and subagent spans are not collected separately.</p>${pricingNotice(data)}`;
+  }</div>${activityFooter(rows)}</section><p class="load-note">This trace uses saved statistics only. New sessions include their first request context. Tool execution status and duration are recorded separately; tool result bodies and subagent spans are not.</p>${pricingNotice(data)}`;
 }
 async function loadTraceRequest(id) {
   if (traceCache.has(id) || tracePending.has(id)) return;

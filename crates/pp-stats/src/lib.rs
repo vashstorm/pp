@@ -150,6 +150,36 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
     })
 }
 
+/// 工具执行的采集状态；错误与耗时只在 runtime 实际执行工具后写入。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ToolStatus {
+    Ok,
+    Error,
+    Cancelled,
+}
+
+impl ToolStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Error => "error",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// 一条工具执行记录。`request_key` 关联发起该调用的模型请求，缺失时只能按工具聚合。
+pub struct ToolCall<'a> {
+    pub request_key: Option<&'a str>,
+    pub session_file: &'a Path,
+    pub call_id: &'a str,
+    pub tool: &'a str,
+    pub status: ToolStatus,
+    pub error_message: Option<&'a str>,
+    pub timestamp: i64,
+    pub duration_ms: f64,
+}
+
 pub(crate) fn database_path() -> Result<PathBuf> {
     let agent = pp_config::config::global_dir()?;
     Ok(agent
@@ -255,13 +285,15 @@ impl Store {
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_millis(250))?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 4, "unsupported statistics database version");
+        ensure!(version <= 5, "unsupported statistics database version");
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         if version < 4 {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-            ensure!(version <= 4, "unsupported statistics database version");
+            // 另一个连接可能已把库迁移到最新版本，事务内以它为准；各分支按事务内版本
+            // 判断，重复进入只会做幂等 DDL，不能因为外层读到旧版本而失败。
+            ensure!(version <= 5, "unsupported statistics database version");
             if version == 0 {
                 tx.execute_batch("CREATE TABLE IF NOT EXISTS requests (
                 id INTEGER PRIMARY KEY, request_key TEXT NOT NULL UNIQUE, timestamp INTEGER NOT NULL,
@@ -287,6 +319,22 @@ impl Store {
             if version < 4 {
                 tx.execute_batch("ALTER TABLE request_payloads ADD COLUMN request_json TEXT; ALTER TABLE request_payloads ADD COLUMN skills_json TEXT; PRAGMA user_version=4;")?;
             }
+            tx.commit()?;
+        }
+        if version < 5 {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+            ensure!(version <= 5, "unsupported statistics database version");
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS tool_calls (
+                id INTEGER PRIMARY KEY, request_key TEXT, session_file TEXT NOT NULL, call_id TEXT NOT NULL,
+                tool TEXT NOT NULL, timestamp INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('ok','error','cancelled')),
+                error_message TEXT, duration_ms REAL NOT NULL, UNIQUE(session_file, call_id)
+            );
+            CREATE INDEX IF NOT EXISTS tool_calls_time ON tool_calls(timestamp DESC,id DESC);
+            PRAGMA user_version=5;",
+            )?;
             tx.commit()?;
         }
         Ok(Self { conn, models_path })
@@ -320,6 +368,28 @@ impl Store {
             tx.execute("UPDATE request_payloads SET session_entry_json=?1 WHERE request_id=(SELECT id FROM requests WHERE request_key=?2)",params![serde_json::to_string(entries)?,key])?;
         }
         tx.commit()?;
+        Ok(())
+    }
+    /// 幂等写入一次工具执行：同一会话内同一个 call ID 只保留最后一次结果。
+    pub(crate) fn tool(&mut self, call: &ToolCall<'_>) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO tool_calls (request_key,session_file,call_id,tool,timestamp,status,error_message,duration_ms)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+             ON CONFLICT(session_file,call_id) DO UPDATE SET
+             request_key=COALESCE(excluded.request_key,tool_calls.request_key),tool=excluded.tool,
+             timestamp=excluded.timestamp,status=excluded.status,
+             error_message=excluded.error_message,duration_ms=excluded.duration_ms",
+            params![
+                call.request_key,
+                call.session_file.to_string_lossy(),
+                call.call_id,
+                call.tool,
+                call.timestamp,
+                call.status.as_str(),
+                call.error_message,
+                call.duration_ms
+            ],
+        )?;
         Ok(())
     }
     pub fn latest(&self, since: i64, until: i64, limit: usize) -> Result<Vec<RequestRow>> {
@@ -537,6 +607,12 @@ pub fn link(key: &str, file: &Path, entries: &[Value]) {
         warn();
     }
 }
+/// 记录一次工具执行；存储失败只提示，不改变工具结果。
+pub fn tool(call: &ToolCall<'_>) {
+    if (|| -> Result<()> { Store::open(&database_path()?)?.tool(call) })().is_err() {
+        warn();
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -690,7 +766,7 @@ mod tests {
             .conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         let snapshot = RequestSnapshot {
             request: json!({"instructions":"full\n\t<script>&</script>","input":[{"type":"input_image","image_url":"data:image/png;base64,AAAA","future_field":{"nested":[1,null]}}],"tools":[{"type":"function","name":"read","parameters":{"additionalProperties":false}}],"unknown":{"preserved":true}}),
             skills: vec![pp_config::skills::SkillHeader {
@@ -1223,6 +1299,193 @@ providers:
         assert_eq!(empty["summary"]["cost"], 0.0);
         assert_eq!(empty["summary"]["tokens"], 0.0);
         assert!(empty["tools"].as_array().unwrap().is_empty());
+    }
+    #[test]
+    fn stats_tool_executions_record_errors_survive_v4_upgrade_and_stay_in_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.db");
+        let mut store = open_store(&path).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        let session = dir.path().join("session.jsonl");
+        let mut first = fixture("one", now - 1000);
+        first.session_file = Some(session.to_string_lossy().into_owned());
+        store
+            .insert(
+                &first,
+                &json!({"native":{"tool_calls":[
+                    {"function":{"name":"bash","arguments":"{}"}},
+                    {"function":{"name":"read","arguments":"{}"}}
+                ]}}),
+            )
+            .unwrap();
+        fn tool_call<'a>(
+            session: &'a Path,
+            call_id: &'a str,
+            tool: &'a str,
+            status: ToolStatus,
+            error: Option<&'a str>,
+            timestamp: i64,
+            duration_ms: f64,
+        ) -> ToolCall<'a> {
+            ToolCall {
+                request_key: Some("one"),
+                session_file: session,
+                call_id,
+                tool,
+                status,
+                error_message: error,
+                timestamp,
+                duration_ms,
+            }
+        }
+        store
+            .tool(&tool_call(
+                &session,
+                "c1",
+                "bash",
+                ToolStatus::Ok,
+                None,
+                now - 900,
+                120.0,
+            ))
+            .unwrap();
+        store
+            .tool(&tool_call(
+                &session,
+                "c2",
+                "bash",
+                ToolStatus::Error,
+                Some("exit status 1"),
+                now - 800,
+                240.0,
+            ))
+            .unwrap();
+        store
+            .tool(&tool_call(
+                &session,
+                "c3",
+                "read",
+                ToolStatus::Error,
+                Some("No such file: /tmp/x"),
+                now - 700,
+                10.0,
+            ))
+            .unwrap();
+        store
+            .tool(&tool_call(
+                &session,
+                "c4",
+                "read",
+                ToolStatus::Cancelled,
+                Some("Tool cancelled"),
+                now - 600,
+                5.0,
+            ))
+            .unwrap();
+        // 同一会话的同一个 call ID 只保留最后一次结果。
+        store
+            .tool(&tool_call(
+                &session,
+                "c2",
+                "bash",
+                ToolStatus::Error,
+                Some("exit status 2"),
+                now - 800,
+                300.0,
+            ))
+            .unwrap();
+        // 范围外与无法关联请求的执行不能污染范围内的计数。
+        store
+            .tool(&ToolCall {
+                request_key: None,
+                session_file: &session,
+                call_id: "old",
+                tool: "bash",
+                status: ToolStatus::Error,
+                error_message: Some("old failure"),
+                timestamp: Range::Day.since(now) - 1,
+                duration_ms: 1.0,
+            })
+            .unwrap();
+
+        let pricing = analytics::Pricing::default();
+        let errors = store.errors(Range::Day, now, 500, &pricing).unwrap();
+        assert_eq!(errors["tool_summary"]["failures"], 2);
+        assert_eq!(errors["tool_summary"]["tools"], 2);
+        assert_eq!(errors["tool_signatures"].as_array().unwrap().len(), 2);
+        assert_eq!(errors["tool_failures"].as_array().unwrap().len(), 2);
+        assert_eq!(errors["tool_failures"][0]["tool"], "read");
+        assert_eq!(errors["tool_failures"][0]["model"], "fixture-model");
+        assert_eq!(errors["tool_failures"][0]["project"], "project");
+        assert!(errors["tool_failures"][0]["request_id"].as_i64().is_some());
+        assert_eq!(errors["tool_has_more"], false);
+        // 取消不是工具错误，结束时间戳覆盖范围内最新一次失败。
+        assert!(!errors.to_string().contains("Tool cancelled"));
+        assert_eq!(
+            errors["tool_signatures"][0]["signature"],
+            "read: No such file: /tmp/x"
+        );
+        let shifted = store
+            .errors(Range::Day, now - 3_600_000, 500, &pricing)
+            .unwrap();
+        // 上界之后的主记录被排除；未关联请求的执行仍计入工具错误。
+        assert_eq!(shifted["tool_summary"]["failures"], 1);
+        assert_eq!(shifted["tool_failures"][0]["call_id"], "old");
+        assert!(shifted["tool_failures"][0]["request_id"].is_null());
+
+        let tools = store.tools(Range::Day, now, &pricing).unwrap();
+        assert_eq!(tools["summary"]["executions"], 4);
+        assert_eq!(tools["summary"]["errors"], 2);
+        assert_eq!(tools["summary"]["cancelled"], 1);
+        assert_eq!(tools["summary"]["avg_duration_ms"], 108.75);
+        let bash = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["tool"] == "bash")
+            .unwrap();
+        assert_eq!(bash["calls"], 1);
+        assert_eq!(bash["executions"], 2);
+        assert_eq!(bash["errors"], 1);
+        assert_eq!(bash["avg_duration_ms"], 210.0);
+        assert_eq!(bash["models"][0]["errors"], 1);
+        assert_eq!(bash["models"][0]["avg_duration_ms"], 210.0);
+        let read = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["tool"] == "read")
+            .unwrap();
+        assert_eq!(read["errors"], 1);
+        assert_eq!(read["cancelled"], 1);
+        assert_eq!(read["avg_duration_ms"], 7.5);
+        assert!(!tools.to_string().contains("/tmp/x"));
+
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+        store
+            .conn
+            .execute_batch("DROP TABLE tool_calls; PRAGMA user_version=4;")
+            .unwrap();
+        drop(store);
+        let store = open_store(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+        let count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM tool_calls", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(store.latest(0, now + 1, 10).unwrap().len(), 1);
+        let empty = store.errors(Range::All, now, 500, &pricing).unwrap();
+        assert_eq!(empty["tool_summary"]["failures"], 0);
+        assert!(empty["tool_failures"].as_array().unwrap().is_empty());
     }
     #[test]
     fn stats_analytics_api_validates_ranges_and_omits_payloads() {

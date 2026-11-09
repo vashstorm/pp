@@ -7,7 +7,7 @@ use super::{
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn signature(message: &str) -> String {
     let mut result = String::new();
@@ -118,8 +118,106 @@ impl Store {
                 Ok(value)
             })
             .collect::<Result<Vec<_>>>()?;
+        let tools = self.tool_failures(range, now, limit)?;
         Ok(
-            json!({"summary":summary(&rows.iter().collect::<Vec<_>>(),pricing),"signatures":groups,"models":by_model,"requests":requests,"has_more":rows.len()>limit,"limit":limit,"range":range.label(),"updated_at":now,"pricing_error":pricing.error}),
+            json!({"summary":summary(&rows.iter().collect::<Vec<_>>(),pricing),"signatures":groups,"models":by_model,"requests":requests,"has_more":rows.len()>limit,"limit":limit,"range":range.label(),"updated_at":now,"pricing_error":pricing.error,
+                "tool_summary":tools["summary"],"tool_signatures":tools["signatures"],"tool_failures":tools["failures"],"tool_has_more":tools["has_more"],"tool_limit":limit}),
+        )
+    }
+
+    /// 已采集的工具执行错误；请求关联只用于展示模型与目录，不改变工具结果。
+    fn tool_failures(&self, range: Range, now: i64, limit: usize) -> Result<Value> {
+        struct Failure {
+            id: i64,
+            tool: String,
+            call_id: String,
+            timestamp: i64,
+            error_message: Option<String>,
+            duration_ms: f64,
+            request_id: Option<i64>,
+            model: Option<String>,
+            provider: Option<String>,
+            model_reference: Option<String>,
+            project: Option<String>,
+            cwd: Option<String>,
+        }
+        let rows = self
+            .conn
+            .prepare(
+                "SELECT t.id,t.tool,t.call_id,t.timestamp,t.error_message,t.duration_ms,
+                 r.id,r.model,r.provider,r.model_reference,r.project,r.cwd
+                 FROM tool_calls t LEFT JOIN requests r ON r.request_key=t.request_key
+                 WHERE t.status='error' AND t.timestamp>=?1 AND t.timestamp<=?2
+                 ORDER BY t.timestamp DESC,t.id DESC",
+            )?
+            .query_map(params![range.since(now), now], |r| {
+                Ok(Failure {
+                    id: r.get(0)?,
+                    tool: r.get(1)?,
+                    call_id: r.get(2)?,
+                    timestamp: r.get(3)?,
+                    error_message: r.get(4)?,
+                    duration_ms: r.get(5)?,
+                    request_id: r.get(6)?,
+                    model: r.get(7)?,
+                    provider: r.get(8)?,
+                    model_reference: r.get(9)?,
+                    project: r.get(10)?,
+                    cwd: r.get(11)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut signatures = BTreeMap::<(String, String), Vec<&Failure>>::new();
+        for failure in &rows {
+            signatures
+                .entry((
+                    failure.tool.clone(),
+                    signature(&format!(
+                        "{}: {}",
+                        failure.tool,
+                        failure
+                            .error_message
+                            .as_deref()
+                            .unwrap_or("Unknown tool error")
+                    )),
+                ))
+                .or_default()
+                .push(failure);
+        }
+        let mut groups = signatures
+            .iter()
+            .map(|((tool, signature), group)| {
+                json!({"tool":tool,"signature":signature,"failures":group.len(),
+                    "first_seen":group.iter().map(|f| f.timestamp).min(),
+                    "last_seen":group.iter().map(|f| f.timestamp).max(),
+                    "example":group[0].error_message})
+            })
+            .collect::<Vec<_>>();
+        groups.sort_by_key(|g| {
+            std::cmp::Reverse((
+                g["failures"].as_u64().unwrap_or(0),
+                g["last_seen"].as_i64().unwrap_or(0),
+            ))
+        });
+        let tools = groups
+            .iter()
+            .filter_map(|g| g["tool"].as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        let failures = rows
+            .iter()
+            .take(limit)
+            .map(|f| {
+                json!({"id":f.id,"tool":f.tool,"call_id":f.call_id,"timestamp":f.timestamp,
+                    "error_message":f.error_message,"duration_ms":f.duration_ms,
+                    "request_id":f.request_id,"model":f.model,"provider":f.provider,
+                    "model_reference":f.model_reference,"project":f.project,"cwd":f.cwd})
+            })
+            .collect::<Vec<_>>();
+        Ok(
+            json!({"summary":{"failures":rows.len(),"tools":tools,"signatures":groups.len(),
+                "last_seen":rows.iter().map(|f| f.timestamp).max()},
+                "signatures":groups,"failures":failures,"has_more":rows.len()>limit}),
         )
     }
 

@@ -139,12 +139,40 @@ impl Tool {
         json!({"calls":self.calls,"args_chars":self.args,"tokens":if self.calls == 0 {Some(0.0)} else {self.tokens},"output_tokens":if self.calls == 0 {Some(0.0)} else {self.output},
             "usage_known":self.usage_known,"cost":if self.priced > 0 || self.calls == 0 {Some(self.cost)} else {None},
             "priced":self.priced,"unpriced":self.calls-self.priced,"last_seen":self.last,
-            "errors":null,"result_chars":null,"avg_duration_ms":null,
+            "errors":null,"cancelled":null,"executions":null,"result_chars":null,"avg_duration_ms":null,
             "buckets":self.buckets.iter().map(|(t, c)| json!({"timestamp":t,"requests":c})).collect::<Vec<_>>(),
             "recent":self.recent})
     }
 }
 
+/// 已采集的工具执行统计；`recorded == 0` 表示该范围内没有执行记录，不能当作零错误。
+#[derive(Default)]
+struct Execution {
+    recorded: u64,
+    errors: u64,
+    cancelled: u64,
+    duration: f64,
+}
+impl Execution {
+    fn push(&mut self, status: &str, duration: f64) {
+        self.recorded += 1;
+        self.duration += duration;
+        match status {
+            "error" => self.errors += 1,
+            "cancelled" => self.cancelled += 1,
+            _ => {}
+        }
+    }
+    fn apply(&self, value: &mut Value) {
+        if self.recorded == 0 {
+            return;
+        }
+        value["executions"] = json!(self.recorded);
+        value["errors"] = json!(self.errors);
+        value["cancelled"] = json!(self.cancelled);
+        value["avg_duration_ms"] = json!(self.duration / self.recorded as f64);
+    }
+}
 // 优先使用已提交快照，避免同一调用在快照与原生输出中重复计数。
 fn tool_calls<'a>(output: &'a Value, entry: &'a Value) -> Vec<(&'a str, &'a Value)> {
     let saved: Vec<_> = entry
@@ -217,6 +245,7 @@ impl Store {
         let mut models = BTreeMap::<(String, String), (String, String, Tool)>::new();
         let mut requests = 0u64;
         let mut partial = 0u64;
+        let mut requests_by_key = BTreeMap::<String, String>::new();
         for result in rows {
             let (r, output, entry) = result?;
             let output: Value = serde_json::from_str(&output)?;
@@ -230,6 +259,7 @@ impl Store {
                 continue;
             }
             requests += 1;
+            requests_by_key.insert(r.request_key.clone(), r.model_reference.clone());
             partial += u64::from(r.status != "ok");
             let timestamp = bucket(r.timestamp, range)?;
             let cost = pricing.cost(&r).map(|c| c.total());
@@ -246,10 +276,37 @@ impl Store {
                     .push(&r, args, count, timestamp, cost);
             }
         }
+        let mut executions = BTreeMap::<String, Execution>::new();
+        let mut model_executions = BTreeMap::<(String, String), Execution>::new();
+        let mut execution_summary = Execution::default();
+        let mut tool_statement = self.conn.prepare(
+            "SELECT tool,request_key,status,duration_ms FROM tool_calls WHERE timestamp>=?1 AND timestamp<=?2",
+        )?;
+        let mut tool_rows = tool_statement.query(params![range.since(now), now])?;
+        while let Some(tool_row) = tool_rows.next()? {
+            let tool: String = tool_row.get(0)?;
+            let key: Option<String> = tool_row.get(1)?;
+            let status: String = tool_row.get(2)?;
+            let duration: f64 = tool_row.get(3)?;
+            execution_summary.push(&status, duration);
+            executions
+                .entry(tool.clone())
+                .or_default()
+                .push(&status, duration);
+            if let Some(reference) = key.as_ref().and_then(|key| requests_by_key.get(key)) {
+                model_executions
+                    .entry((tool, reference.clone()))
+                    .or_default()
+                    .push(&status, duration);
+            }
+        }
         let tools: Vec<_> = tools
             .iter()
             .map(|(name, t)| {
                 let mut v = t.value();
+                if let Some(execution) = executions.get(name.as_str()) {
+                    execution.apply(&mut v);
+                }
                 v["key"] = json!(name);
                 v["tool"] = json!(name);
                 v["models"] = json!(
@@ -258,6 +315,11 @@ impl Store {
                         .take_while(|((tool, _), _)| tool == name)
                         .map(|((_, key), (model, provider, t))| {
                             let mut m = t.value();
+                            if let Some(execution) =
+                                model_executions.get(&(name.clone(), key.clone()))
+                            {
+                                execution.apply(&mut m);
+                            }
                             m["key"] = json!(key);
                             m["model"] = json!(model);
                             m["provider"] = json!(provider);
@@ -268,8 +330,10 @@ impl Store {
                 v
             })
             .collect();
+        let mut summary = all.value();
+        execution_summary.apply(&mut summary);
         Ok(
-            json!({"summary":all.value(),"tools":tools,"requests_with_tools":requests,"partial_requests":partial,
+            json!({"summary":summary,"tools":tools,"requests_with_tools":requests,"partial_requests":partial,
             "updated_at":now,"range":range.label(),"pricing_error":pricing.error}),
         )
     }

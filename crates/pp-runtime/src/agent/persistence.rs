@@ -24,7 +24,7 @@ use pp_core::plan::WorkMode;
 use pp_core::plan::WorkflowState;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, DirBuilder, File, OpenOptions},
     io::{BufRead, BufReader, Seek, SeekFrom, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
@@ -33,7 +33,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub enum ReplayRecord {
@@ -141,6 +141,10 @@ pub(super) struct SessionJournal {
     pending_checkpoint: bool,
     pending_tools: bool,
     pending_stats: Option<String>,
+    /// 最近一次成功写入统计库的请求键；工具执行结果按它关联请求。
+    last_stats: Option<String>,
+    /// 工具调用 ID → (工具名, 开始时刻)，用于在 ToolFinished 时计算耗时。
+    tool_started: HashMap<String, (String, Instant)>,
     unlinked_stats: Arc<Mutex<Vec<String>>>,
     first_request: Arc<AtomicBool>,
 }
@@ -192,12 +196,46 @@ impl SessionJournal {
 
     pub(super) fn track_stats(&mut self, key: Option<String>, success: bool) {
         self.link_unassigned_stats();
+        // 工具执行记录只跟随最近一次实际保存的请求；失败或缺键时不能沿用旧请求。
+        self.last_stats = key.clone();
         if !success {
             self.pending_stats = None;
         }
         if success && key.is_some() {
             self.pending_stats = key;
         }
+    }
+
+    /// 工具执行明细写入统计；统计未启用（没有最近请求键）或会话未建立时不写库。
+    fn record_tool(&self, tool: &str, call_id: &str, result: &serde_json::Value, duration_ms: f64) {
+        let (Some(id), Some(key)) = (self.id(), self.last_stats.as_deref()) else {
+            return;
+        };
+        let Ok(timestamp) =
+            now_ms().and_then(|ms| i64::try_from(ms).context("session clock overflow"))
+        else {
+            return;
+        };
+        // 与 UI 一致：只有显式 ok=false 才算失败，缺失视为成功；取消单独归类。
+        let cancelled = result.get("cancelled").and_then(serde_json::Value::as_bool) == Some(true);
+        let status = if cancelled {
+            pp_stats::ToolStatus::Cancelled
+        } else if result.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+            pp_stats::ToolStatus::Error
+        } else {
+            pp_stats::ToolStatus::Ok
+        };
+        let file = self.dir.join(format!("{id}.jsonl"));
+        pp_stats::tool(&pp_stats::ToolCall {
+            request_key: Some(key),
+            session_file: &file,
+            call_id,
+            tool,
+            status,
+            error_message: result.get("error").and_then(serde_json::Value::as_str),
+            timestamp,
+            duration_ms,
+        });
     }
 
     #[cfg(test)]
@@ -221,6 +259,8 @@ impl SessionJournal {
             pending_checkpoint: false,
             pending_tools: false,
             pending_stats: None,
+            last_stats: None,
+            tool_started: HashMap::new(),
             unlinked_stats: Default::default(),
             first_request: Arc::new(AtomicBool::new(true)),
         }
@@ -780,6 +820,18 @@ impl SessionJournal {
                 _ => {}
             }
         }
+        match event {
+            AgentEvent::ToolStarted { id, name, .. } => {
+                self.tool_started
+                    .insert(id.clone(), (name.clone(), Instant::now()));
+            }
+            AgentEvent::ToolFinished { id, result } => {
+                if let Some((tool, started)) = self.tool_started.remove(id) {
+                    self.record_tool(&tool, id, result, started.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+            _ => {}
+        }
         let _ = self.custom(CustomRef::Event { event }, false);
     }
     pub(super) fn cancelled(&mut self) -> Result<()> {
@@ -1290,6 +1342,8 @@ pub fn load(
             pending_checkpoint: false,
             pending_tools: false,
             pending_stats: None,
+            last_stats: None,
+            tool_started: HashMap::new(),
             unlinked_stats: Default::default(),
             first_request: Arc::new(AtomicBool::new(false)),
         },

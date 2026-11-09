@@ -532,6 +532,99 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
 }
 
 #[test]
+fn stats_tool_failures_are_recorded_and_served_by_errors_and_tools() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Cli::start_with(
+        dir.path(),
+        Some("failing tool"),
+        fixture_settings(),
+        &fixture_models(&server),
+    );
+    let (request, _) = receive(&server);
+    calls_reply(
+        request,
+        json!([call("read-missing", "read", json!({"path":"missing.txt"}))]),
+    );
+    let (request, _) = receive(&server);
+    final_reply(request, "recovered after tool failure");
+    let output = cli.finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let db = database(dir.path());
+    let records: Vec<Value> = db
+        .prepare(
+            "SELECT tool,call_id,status,error_message,session_file,request_key FROM tool_calls",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok(json!({
+                "tool": row.get::<_, String>(0)?,
+                "call_id": row.get::<_, String>(1)?,
+                "status": row.get::<_, String>(2)?,
+                "error": row.get::<_, Option<String>>(3)?,
+                "session": row.get::<_, Option<String>>(4)?,
+                "request_key": row.get::<_, String>(5)?,
+            }))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record["tool"], "read");
+    assert_eq!(record["call_id"], "read-missing");
+    assert_eq!(record["status"], "error");
+    assert!(record["error"].as_str().unwrap().contains("missing.txt"));
+    assert!(record["session"].as_str().unwrap().ends_with(".jsonl"));
+    assert!(!record["request_key"].as_str().unwrap().is_empty());
+
+    let (_stats, address) = start_stats_server(dir.path());
+    let (status, body) = http(&address, "/api/stats/errors?range=all", &address);
+    assert_eq!(status, 200);
+    let errors: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(errors["summary"]["requests"], 0);
+    assert_eq!(errors["tool_summary"]["failures"], 1);
+    assert_eq!(errors["tool_summary"]["tools"], 1);
+    assert_eq!(errors["tool_failures"][0]["tool"], "read");
+    assert_eq!(errors["tool_failures"][0]["model"], "fixture-model");
+    let folder = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(errors["tool_failures"][0]["project"], json!(folder));
+    assert!(
+        errors["tool_failures"][0]["cwd"]
+            .as_str()
+            .unwrap()
+            .contains(&folder)
+    );
+    assert!(errors["tool_failures"][0]["request_id"].is_number());
+    assert!(errors["tool_failures"][0]["duration_ms"].is_number());
+    let (status, body) = http(&address, "/api/stats/tools?range=all", &address);
+    assert_eq!(status, 200);
+    let tools: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(tools["summary"]["errors"], 1);
+    assert_eq!(tools["summary"]["executions"], 1);
+    let read = tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["tool"] == "read")
+        .unwrap();
+    assert_eq!(read["calls"], 1);
+    assert_eq!(read["errors"], 1);
+    assert_eq!(read["executions"], 1);
+    assert_eq!(read["models"][0]["errors"], 1);
+    assert!(read["avg_duration_ms"].as_f64().is_some());
+}
+
+#[test]
 fn stats_responses_captures_real_usage_and_keeps_unknown_cache_unknown() {
     for (cached, written) in [
         (Some(40), Some(5)),

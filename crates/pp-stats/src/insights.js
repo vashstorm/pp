@@ -17,15 +17,17 @@ function toolModelDetails(g) {
     ["Usage coverage", `${number(g.usage_known)} / ${number(g.calls)} calls`],
     ["Pricing coverage", toolCoverage(g)],
     ["Attributed output", short(g.output_tokens)],
-    ["Tool errors / duration", "Not recorded"],
+    ["Recorded executions", number(g.executions)],
+    ["Tool errors / cancelled", `${number(g.errors)} errors · ${number(g.cancelled)} cancelled`],
+    ["Average tool duration", duration(g.avg_duration_ms)],
   ])}<h2>Latest invoking requests</h2>${insightRecent(g.recent, false)}</div>`;
 }
 function toolModels(tool, scope = "breakdown") {
-  return analyticsTable(["Model", "Calls", "Arguments", "Attr. tokens", "Attr. cost", "Last used"],
+  return analyticsTable(["Model", "Calls", "Errors", "Arguments", "Attr. tokens", "Attr. cost", "Last used"],
     [...tool.models].sort((a, b) => b.calls - a.calls).map((g) => groupRow(
       {...g, key: JSON.stringify([scope, tool.key, g.key]), description: `${g.provider} · ${g.key}`}, "tool-model",
-      numericCells([number(g.calls), `${detailed(g.args_chars)} chars`, detailed(g.tokens), detailed(g.cost, money(g.cost), " USD"), `<span title="${h(localTime(g.last_seen))}">${relative(g.last_seen)}</span>`]),
-      () => toolModelDetails(g), 6,
+      numericCells([number(g.calls), number(g.errors), `${detailed(g.args_chars)} chars`, detailed(g.tokens), detailed(g.cost, money(g.cost), " USD"), `<span title="${h(localTime(g.last_seen))}">${relative(g.last_seen)}</span>`]),
+      () => toolModelDetails(g), 7,
     )).join(""));
 }
 function toolsPage() {
@@ -36,16 +38,16 @@ function toolsPage() {
   const series = topSeries(tools.map((g) => ({...g, requests:g.calls, daily:[]})), (g) => g.tool);
   const selected = tools.find((g) => g.key === toolFilter);
   return `<h1>Tools</h1><p class="subtitle">Tool calls emitted by pp in the ${descriptions[range]}, with usage attributed to the invoking model request.</p>
-    <div class="panel metrics">${metric("Tool calls", number(s.calls), `${number(data.requests_with_tools)} invoking requests`)}${metric("Distinct tools", number(tools.length), tools[0] ? `Most used: ${tools[0].tool}` : "")}${metric("Attributed tokens", short(s.tokens), `${short(s.output_tokens)} output`)}${metric("Attributed cost", money(s.cost), toolCoverage(s))}${metric("Call arguments", `${short(s.args_chars)} chars`, s.calls ? `${short(Math.round(s.args_chars / s.calls))} chars per call` : "")}</div>
+    <div class="panel metrics">${metric("Tool calls", number(s.calls), `${number(data.requests_with_tools)} invoking requests`)}${metric("Distinct tools", number(tools.length), tools[0] ? `Most used: ${tools[0].tool}` : "")}${metric("Attributed tokens", short(s.tokens), `${short(s.output_tokens)} output`)}${metric("Attributed cost", money(s.cost), toolCoverage(s))}${metric("Call arguments", `${short(s.args_chars)} chars`, s.calls ? `${short(Math.round(s.args_chars / s.calls))} chars per call` : "")}${metric("Tool errors", number(s.errors), `${number(s.executions)} recorded executions`)}</div>
     ${chartPanel("Calls over time", "Top 6 tools and remaining calls stacked over time", stackedChart(series, "requests") + seriesLegend(series, "requests"))}
     <section class="panel analytics-panel"><div class="requests-heading panel-heading"><div><h2>By tool</h2><p class="panel-description">Select a row to expand model usage, coverage and recent requests.</p></div>${activitySearch("Search tools", "Tool or model…")}</div>${analyticsTable(
-      ["Tool", "Calls", "Share", "Arguments", "Attr. tokens", "Attr. cost", "Last used", "Trend"],
+      ["Tool", "Calls", "Share", "Errors", "Arguments", "Attr. tokens", "Attr. cost", "Last used", "Trend"],
       rows.slice(0, visible).map((g) => groupRow({...g, label:g.tool, description:`${g.models.length} model${g.models.length === 1 ? "" : "s"}`}, "tool",
-        numericCells([number(g.calls), percent(g.calls, s.calls), `${detailed(g.args_chars)} chars`, detailed(g.tokens), detailed(g.cost, money(g.cost), " USD"), `<span title="${h(localTime(g.last_seen))}">${relative(g.last_seen)}</span>`]) + insightTrend(g),
-        () => `<div class="group-details">${detailsGrid([["Average arguments", `${short(Math.round(g.args_chars / g.calls))} chars / call`], ["Usage coverage", `${number(g.usage_known)} / ${number(g.calls)} calls`], ["Pricing coverage", toolCoverage(g)], ["Tool errors / results / duration", "Not recorded"]])}<h2>By model · select a model for recent requests</h2>${toolModels(g, "expanded")}</div>`, 8)).join(""),
+        numericCells([number(g.calls), percent(g.calls, s.calls), number(g.errors), `${detailed(g.args_chars)} chars`, detailed(g.tokens), detailed(g.cost, money(g.cost), " USD"), `<span title="${h(localTime(g.last_seen))}">${relative(g.last_seen)}</span>`]) + insightTrend(g),
+        () => `<div class="group-details">${detailsGrid([["Average arguments", `${short(Math.round(g.args_chars / g.calls))} chars / call`], ["Usage coverage", `${number(g.usage_known)} / ${number(g.calls)} calls`], ["Pricing coverage", toolCoverage(g)], ["Recorded executions", number(g.executions)], ["Tool errors / cancelled", `${number(g.errors)} · ${number(g.cancelled)}`], ["Average tool duration", duration(g.avg_duration_ms)]])}<h2>By model · select a model for recent requests</h2>${toolModels(g, "expanded")}</div>`, 9)).join(""),
     )}${activityFooter(rows)}</section>
     <section class="panel analytics-panel"><div class="requests-heading panel-heading"><div><h2>By tool and model</h2><p class="panel-description">Expand a model row to inspect the requests that emitted its calls.</p></div><select class="insight-select" id="tool-filter" aria-label="Filter by tool"><option value="">All tools</option>${tools.map((g) => `<option value="${h(g.key)}"${g.key === toolFilter ? " selected" : ""}>${h(g.tool)}</option>`).join("")}</select></div>${(selected ? [selected] : rows).map((g) => `<div class="tool-model-group"><h3>${h(g.tool)}</h3>${toolModels(g)}</div>`).join("") || '<div class="empty">No matching tools</div>'}</section>
-    <p class="load-note">Tokens and estimated cost of each invoking request are split evenly across all its emitted tool calls. This is attribution, not a separate tool charge. Missing usage and prices remain unknown. Tool execution, errors, results and duration were not recorded. ${number(data.partial_requests)} invoking requests failed or were aborted; their saved calls may be partial or unexecuted.</p>${pricingNotice()}`;
+    <p class="load-note">Tokens and estimated cost of each invoking request are split evenly across all its emitted tool calls. This is attribution, not a separate tool charge. Missing usage and prices remain unknown. Tool errors and durations come from executions recorded by this pp version; calls from older sessions have no execution data and stay blank. Cancelled executions are listed separately and are not tool errors. ${number(data.partial_requests)} invoking requests failed or were aborted; their saved calls may be partial or unexecuted.</p>${pricingNotice()}`;
 }
 function projectRank(projects, field, title, color) {
   const rows = [...projects].filter((g) => g[field] != null).sort((a, b) => b[field] - a[field]).slice(0, 6);

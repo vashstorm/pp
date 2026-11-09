@@ -1172,7 +1172,7 @@ function render() {
       : page === "requests"
         ? requests()
         : page === "errors"
-          ? errorsPage()
+          ? errorsPage() + toolFailuresPanel()
           : page === "traces"
             ? tracesPage()
             : ["models", "providers", "costs", "tools", "projects"].includes(page)
