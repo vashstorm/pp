@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     fmt::Write as _,
     fs,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -105,8 +105,49 @@ pub struct MockTestReport {
 struct Scenario {
     prompt: String,
     edit_mode: EditMode,
+    /// 固定的 `/tmp` 工作区：供人工在另一个终端观察真实文件。缺省时每场用
+    /// 系统临时目录里的独立 workspace。
+    #[serde(default)]
+    workspace: Option<String>,
     files: BTreeMap<String, String>,
     lanes: BTreeMap<String, Value>,
+}
+
+/// 越界写入若真的落盘，会出现在工作区父目录下的这个固定名字里。
+const ESCAPE_FILE: &str = "pp-mock-escape.txt";
+
+/// 场景声明的固定工作区。只有本场新建时才在结束时删除，预先存在的目录原样
+/// 保留；删除失败只留下一个空临时目录，不升级为 `CleanupError`。
+struct FixedWorkspace {
+    path: PathBuf,
+    created: bool,
+}
+
+impl FixedWorkspace {
+    fn prepare(declared: &str) -> Result<Self> {
+        let path = Path::new(declared);
+        ensure!(
+            path.is_absolute()
+                && (path.starts_with("/tmp") || path.starts_with("/private/tmp"))
+                && path != Path::new("/tmp")
+                && path != Path::new("/private/tmp"),
+            "fixed mock workspace must be an absolute /tmp directory"
+        );
+        let created = !path.exists();
+        fs::create_dir_all(path).context("creating fixed mock workspace")?;
+        Ok(Self {
+            path: path.to_owned(),
+            created,
+        })
+    }
+}
+
+impl Drop for FixedWorkspace {
+    fn drop(&mut self) {
+        if self.created {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 }
 
 const READ: &str = include_str!("scenarios/read.json");
@@ -214,8 +255,16 @@ fn run_scenario(
         .prefix("pp-mock-")
         .tempdir()
         .context("creating mock run directory")?;
+    let fixed = scenario
+        .workspace
+        .as_deref()
+        .map(FixedWorkspace::prepare)
+        .transpose()?;
+    let workspace = match &fixed {
+        Some(fixed) => fixed.path.clone(),
+        None => temp.path().join("workspace"),
+    };
     let mut result = (|| {
-        let workspace = temp.path().join("workspace");
         let config_dir = temp.path().join("config");
         let sessions = temp.path().join("sessions");
         let locks = temp.path().join("locks");
@@ -306,8 +355,11 @@ fn run_scenario(
                 }
             }
             endpoint.assert_all_exhausted(&queues.id, lane_count)?;
+            let parent = workspace
+                .parent()
+                .context("mock workspace has no parent directory")?;
             ensure!(
-                !temp.path().join("escape.txt").exists(),
+                !parent.join(ESCAPE_FILE).exists(),
                 "mock write escaped its workspace"
             );
             Ok(())
@@ -394,6 +446,34 @@ mod tests {
         let context = context.unwrap();
         assert_eq!(context.last_request, Some(usage));
         assert_eq!(context.session_output_tokens, 30);
+    }
+
+    #[test]
+    fn fixed_mock_workspace_requires_an_absolute_tmp_directory() {
+        for declared in ["relative/dir", "/Users/mock", "/tmp", "/tmpfoo/mock", ""] {
+            assert!(
+                FixedWorkspace::prepare(declared).is_err(),
+                "{declared} must be rejected"
+            );
+        }
+        let created = format!("/tmp/pp-mock-fixed-{}", std::process::id());
+        let existing = format!("/tmp/pp-mock-kept-{}", std::process::id());
+        fs::create_dir_all(&existing).unwrap();
+        {
+            let first = FixedWorkspace::prepare(&created).unwrap();
+            assert!(first.created && fs::metadata(&first.path).unwrap().is_dir());
+            let kept = FixedWorkspace::prepare(&existing).unwrap();
+            assert!(!kept.created);
+        }
+        assert!(
+            !Path::new(&created).exists(),
+            "created workspace is removed"
+        );
+        assert!(
+            Path::new(&existing).exists(),
+            "a pre-existing directory is kept"
+        );
+        fs::remove_dir_all(&existing).unwrap();
     }
 
     #[test]

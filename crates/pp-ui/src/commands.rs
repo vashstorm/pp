@@ -130,7 +130,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/test-write",
         usage: "/test-write",
-        description: "Debug build: local write tool scenarios",
+        description: "Debug build: typewriter write on /tmp, then bash cleanup",
     },
     #[cfg(debug_assertions)]
     CommandSpec {

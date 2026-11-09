@@ -102,7 +102,8 @@ fn assert_all_suites(recorder: &Recorder) {
         "{header}"
     );
 
-    // write：两次嵌套写入成功，越界写入作为普通工具失败返回。
+    // write：固定 `/tmp` 工作区上的两次覆盖写入成功，越界写入作为普通工具
+    // 失败返回。
     let writes = recorder.calls("write");
     assert_eq!(writes.len(), 3);
     assert_eq!(writes[0]["ok"], true);
@@ -173,34 +174,43 @@ fn assert_all_suites(recorder: &Recorder) {
             .is_some_and(|text| text.contains("No files found"))
     );
 
-    // bash 顺序：前台输出、exit 7、管道、400 行大输出，然后是 bash-task
-    // 与 wait 两个场景各自启动的后台任务。
+    // bash 顺序：write 场景的删除、前台输出、exit 7、管道、400 行大输出，
+    // 然后是 bash-task 与 wait 两个场景各自启动的后台任务。
     let bash = recorder.calls("bash");
-    assert_eq!(bash.len(), 7);
+    assert_eq!(bash.len(), 8);
     assert_eq!(bash[0]["ok"], true);
-    let first = bash[0]["output"].as_str().expect("bash output");
+    assert_eq!(bash[0]["exit_code"], 0);
+    assert!(
+        bash[0]["output"]
+            .as_str()
+            .is_some_and(|text| text.contains("removed /tmp/pp-test-write/demo.txt")),
+        "{:?}",
+        bash[0]
+    );
+    assert_eq!(bash[1]["ok"], true);
+    let first = bash[1]["output"].as_str().expect("bash output");
     assert!(first.contains("stdout-固定"), "{first}");
     assert!(first.contains("stderr-行"), "{first}");
     assert!(first.contains("last-line"), "{first}");
-    assert_eq!(bash[1]["ok"], false);
-    assert_eq!(bash[1]["exit_code"], 7);
-    assert_eq!(bash[2]["ok"], true);
+    assert_eq!(bash[2]["ok"], false);
+    assert_eq!(bash[2]["exit_code"], 7);
+    assert_eq!(bash[3]["ok"], true);
     assert!(
-        bash[2]["output"]
+        bash[3]["output"]
             .as_str()
             .expect("pipeline output")
             .contains("pipeline-alpha")
     );
-    assert_eq!(bash[3]["ok"], true);
+    assert_eq!(bash[4]["ok"], true);
     assert!(
-        bash[3]["total_lines"]
+        bash[4]["total_lines"]
             .as_u64()
             .is_some_and(|lines| lines >= 400)
     );
-    assert_eq!(bash[4]["task_id"], "bg-1");
-    assert_eq!(bash[4]["status"], "running");
     assert_eq!(bash[5]["task_id"], "bg-1");
-    assert_eq!(bash[6]["task_id"], "bg-2");
+    assert_eq!(bash[5]["status"], "running");
+    assert_eq!(bash[6]["task_id"], "bg-1");
+    assert_eq!(bash[7]["task_id"], "bg-2");
 
     let tasks = recorder.calls("bash_task");
     assert_eq!(tasks.len(), 3);
@@ -308,6 +318,56 @@ fn mock_runner_all_suites_execute_real_tools_and_continue_after_failures() {
     recorder.finish();
     assert_eq!(report.calls, recorder.started);
     assert_all_suites(&recorder);
+}
+
+#[test]
+fn mock_runner_write_streams_typewriter_text_and_deletes_the_fixed_file() {
+    let server = MockServer::start().expect("mock AI server");
+    let mut recorder = Recorder::default();
+    let mut deltas = 0usize;
+    let mut streamed = String::new();
+    let report = run_test(
+        MockTest::Write,
+        server.endpoint(),
+        None,
+        &CancellationToken::new(),
+        &mut |event| match event {
+            MockTestEvent::Progress(AgentEvent::AssistantDelta { text, .. }) => {
+                deltas += 1;
+                streamed.push_str(&text);
+            }
+            MockTestEvent::Progress(event) => recorder.record(event),
+            MockTestEvent::Prepared(_) => {}
+        },
+    )
+    .expect("write mock scenario");
+    recorder.finish();
+    assert_eq!(report.calls, recorder.started);
+    // 打字机效果来自逐片送达的正文 delta；整段一次性到达会退化成一条。
+    assert!(deltas > 20, "write fixture streamed {deltas} deltas");
+    assert!(
+        streamed.contains("Streaming this reply one mock token at a time"),
+        "{streamed}"
+    );
+    assert!(streamed.contains("Write fixture complete."), "{streamed}");
+
+    let writes = recorder.calls("write");
+    assert_eq!(writes.len(), 3);
+    assert_eq!(writes[0]["ok"], true);
+    assert_eq!(writes[1]["ok"], true);
+    assert_eq!(writes[2]["ok"], false);
+
+    let bash = recorder.calls("bash");
+    assert_eq!(bash.len(), 1);
+    assert_eq!(bash[0]["ok"], true);
+    assert_eq!(bash[0]["exit_code"], 0);
+    assert!(
+        bash[0]["output"]
+            .as_str()
+            .is_some_and(|text| text.contains("removed /tmp/pp-test-write/demo.txt")),
+        "{:?}",
+        bash[0]
+    );
 }
 
 #[test]

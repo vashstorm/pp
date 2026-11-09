@@ -1,41 +1,125 @@
 {
-	"prompt": "Run the embedded local write fixture.",
+	"prompt": "Run the embedded local write fixture: stream every reply as mock tokens, keep the scratch file at the fixed /tmp/pp-test-write/demo.txt path, then delete it with the bash tool.",
 	"edit_mode": "replace",
+	"workspace": "/tmp/pp-test-write",
 	"files": {},
 	"lanes": {
 		"root": [
 			{
+				"content": [
+					"Streaming ",
+					"this ",
+					"reply ",
+					"one ",
+					"mock ",
+					"token ",
+					"at ",
+					"a ",
+					"time, ",
+					"then ",
+					"writing ",
+					"`/tmp/pp-test-write/demo.txt` ",
+					"with ",
+					"the ",
+					"write ",
+					"tool.\n"
+				],
+				"tokens_per_second": 12.5,
+				"auto_continue": true
+			},
+			{
 				"tool": {
 					"name": "write",
 					"arguments": {
-						"path": "write/nested/demo.txt",
+						"path": "demo.txt",
 						"content": "created line one\n第二行\nthird line\n"
 					}
 				},
 				"auto_continue": false
 			},
 			{
+				"content": [
+					"Overwriting ",
+					"the ",
+					"same ",
+					"fixed ",
+					"path, ",
+					"so ",
+					"the ",
+					"card ",
+					"shows ",
+					"a ",
+					"second ",
+					"diff.\n"
+				],
+				"tokens_per_second": 12.5,
+				"auto_continue": true
+			},
+			{
 				"tool": {
 					"name": "write",
 					"arguments": {
-						"path": "write/nested/demo.txt",
+						"path": "demo.txt",
 						"content": "created line one changed\n第二行\nthird line\nfourth line\n"
 					}
 				},
 				"auto_continue": false
 			},
 			{
+				"content": [
+					"The ",
+					"next ",
+					"write ",
+					"escapes ",
+					"the ",
+					"workspace ",
+					"on ",
+					"purpose ",
+					"and ",
+					"must ",
+					"fail.\n"
+				],
+				"tokens_per_second": 12.5,
+				"auto_continue": true
+			},
+			{
 				"tool": {
 					"name": "write",
 					"arguments": {
-						"path": "../escape.txt",
+						"path": "../pp-mock-escape.txt",
 						"content": "must not be written"
 					}
 				},
 				"auto_continue": false
 			},
 			{
-				"content": "Write fixture complete.",
+				"content": [
+					"Finally ",
+					"the ",
+					"bash ",
+					"tool ",
+					"lists ",
+					"and ",
+					"deletes ",
+					"the ",
+					"scratch ",
+					"file.\n"
+				],
+				"tokens_per_second": 12.5,
+				"auto_continue": true
+			},
+			{
+				"tool": {
+					"name": "bash",
+					"arguments": {
+						"command": "ls -l /tmp/pp-test-write/demo.txt; rm -f /tmp/pp-test-write/demo.txt; printf 'removed /tmp/pp-test-write/demo.txt\\n'"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": ["Write ", "fixture ", "complete.\n"],
+				"tokens_per_second": 12.5,
 				"auto_continue": false
 			}
 		]

@@ -262,7 +262,8 @@ chmod 600 ~/.pp/agent/models.yml
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除 | 仅 TUI |
 | `/test-task` | 三个真实 FAST／SLOW／REVIEW 子 Agent 使用独立本地 mock lane，无需用户 Role 或真实 provider | TUI / 行模式，仅 dev/test |
 | `/test-tools` | 顺序运行 read → write → edit-replace → edit-hashline → grep → glob → bash → bash-task → wait → todo → ask | TUI / 行模式，仅 dev/test |
-| `/test-read`、`/test-write`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 对应的隔离真实工具场景；ask 在 TUI 答题，CLI 非交互失败仍继续 | TUI / 行模式，仅 dev/test |
+| `/test-write` | 12.5 mock token/s 的打字机正文；在固定 `/tmp/pp-test-write/demo.txt` 上创建、覆盖、越界失败，最后用 bash 删除 | TUI / 行模式，仅 dev/test |
+| `/test-read`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 对应的隔离真实工具场景；ask 在 TUI 答题，CLI 非交互失败仍继续 | TUI / 行模式，仅 dev/test |
 | `/test-ui` | 12.5 mock token/s 的原生 Responses SSE 思考与 Markdown／代码分片 | TUI / 行模式，仅 dev/test |
 | `/quit` | 退出 | TUI / 行模式 |
 
@@ -461,7 +462,7 @@ Completed／Abandoned 且仍关联的计划保持只读投影，实际 Markdown 
 
 `/test-tools` 顺序运行 read、write、两种 edit、grep、glob、bash、bash-task、wait、todo、ask；独立命令只运行自己的场景。read 固定读取 `main.rs`，包含 range/raw，write 包含越界拒绝，hashline 先真实 read 注册 TAG 再验证成功和 stale，后台任务与 wait 使用 fresh Tools 的确定性 ID。预期 `ok:false` 不打断后续脚本。todo 保留未完成项，原生完成提醒会消费下一条固定正文。套件不串联 ui/task，也不包含外部 LSP/MCP、Plan 工具或 `yield`。
 
-`/test-task` 的 root 只发一次三任务批次、真实 wait 和三行摘要；FAST/SLOW/REVIEW 在独立 lane 中分别运行 glob/grep/read，再返回固定 marker。`/test-ui` 的原生 SSE 以 12.5 mock token/s 发送显式 thinking/Markdown/code 分片，不合成 `AgentEvent`。
+`/test-task` 的 root 只发一次三任务批次、真实 wait 和三行摘要；FAST/SLOW/REVIEW 在独立 lane 中分别运行 glob/grep/read，再返回固定 marker。`/test-ui` 的原生 SSE 以 12.5 mock token/s 发送显式 thinking/Markdown/code 分片，不合成 `AgentEvent`。`/test-write` 同样按分片限速流式输出正文，工作区固定为 `/tmp/pp-test-write`（人工可在另一个终端观察），场景末尾由真实 bash 工具删除该文件。
 
 TUI 使用独立 worker/channel，不替换正常 Agent worker。Execute、无 active/pending 工作时，Ready 和配置 Unavailable 都可启动；Plan、busy 或 cancelling 时本地拒绝并保留草稿。Prepared 临时安装 mock model/usage/子 Agent/pipe 展示，完成后恢复正常模型、状态、TODO 与 registry，不接纳临时 session。Ctrl + O 可展开真实 read 卡片（即使关闭三行预览）；Esc 取消并保留新草稿。ask 复用真实三题对话框；CLI 保留非交互 ask 失败并继续。CLI 复用普通事件渲染：思考和真实工具内容写 stderr，助手正文写 stdout。
 

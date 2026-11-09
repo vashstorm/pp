@@ -151,7 +151,8 @@ All 13 `/test-*` commands use an embedded loopback-only Mock AI Server in dev/te
 | `/plan [prompt]` | Toggle Plan mode standby; view the plan or send a planning task immediately; execute after approval (TUI only) |
 | `/plan-list` | Manage saved plans: preview, continue, execute, rename, delete (TUI only) |
 | `/test-task` | Dev/test only: run three real FAST/SLOW/REVIEW subagents against independent local mock lanes; no user roles or provider required |
-| `/test-tools`, `/test-read`, `/test-write`, `/test-edit`, `/test-grep`, `/test-glob`, `/test-bash`, `/test-bash-task`, `/test-wait`, `/test-todo`, `/test-ask` | Dev/test only: all or one isolated real-tool scenario; edit covers replace and hashline; ask is interactive in the TUI |
+| `/test-tools`, `/test-read`, `/test-edit`, `/test-grep`, `/test-glob`, `/test-bash`, `/test-bash-task`, `/test-wait`, `/test-todo`, `/test-ask` | Dev/test only: all or one isolated real-tool scenario; edit covers replace and hashline; ask is interactive in the TUI |
+| `/test-write` | Dev/test only: typewriter reply at 12.5 mock tokens/s writing, overwriting and failing to escape `/tmp/pp-test-write/demo.txt`, then deleting it with the bash tool |
 | `/test-ui` | Dev/test only: native Responses SSE reasoning and Markdown/code chunks at 12.5 mock tokens/s |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | Manage MCP servers without restarting |
 | `/compact`, `/new` | Compact context or start a new session |
