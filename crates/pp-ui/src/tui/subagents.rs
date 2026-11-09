@@ -787,7 +787,13 @@ impl Panel {
         }
     }
 
-    pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect, drafts: &mut Drafts) {
+    pub(super) fn draw(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        drafts: &mut Drafts,
+        cost: &pp_config::config::CostDisplay,
+    ) {
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -803,7 +809,7 @@ impl Panel {
                 .cloned()
             {
                 if let Some(detail) = &mut self.detail {
-                    detail.draw(frame, area, &view, drafts, self.clock);
+                    detail.draw(frame, area, &view, drafts, cost, self.clock);
                 }
                 return;
             }
@@ -1666,6 +1672,7 @@ fn format_duration(ms: u64) -> String {
 mod tests {
     use super::*;
     use pp_config::config::ModelRole;
+    use pp_core::context::{ContextUsage, TokenUsage};
     use pp_core::events::AgentEvent;
     use pp_core::model::ThinkLevel;
     use pp_runtime::subagent::HubAgent;
@@ -1771,11 +1778,28 @@ mod tests {
     }
 
     fn render(panel: &mut Panel, drafts: &mut Drafts, width: u16, height: u16) -> Vec<String> {
+        rows(
+            &render_cells(panel, drafts, &Default::default(), width, height),
+            width,
+            height,
+        )
+    }
+
+    fn render_cells(
+        panel: &mut Panel,
+        drafts: &mut Drafts,
+        cost: &pp_config::config::CostDisplay,
+        width: u16,
+        height: u16,
+    ) -> ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width.max(1), height.max(1))).unwrap();
         terminal
-            .draw(|frame| panel.draw(frame, frame.area(), drafts))
+            .draw(|frame| panel.draw(frame, frame.area(), drafts, cost))
             .unwrap();
-        let buffer = terminal.backend().buffer().clone();
+        terminal.backend().buffer().clone()
+    }
+
+    fn rows(buffer: &ratatui::buffer::Buffer, width: u16, height: u16) -> Vec<String> {
         (0..height.max(1))
             .map(|row| {
                 (0..width.max(1))
@@ -1823,7 +1847,7 @@ mod tests {
         // 选中项语义色：running 使用 ACCENT。
         let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
         terminal
-            .draw(|frame| panel.draw(frame, frame.area(), &mut drafts))
+            .draw(|frame| panel.draw(frame, frame.area(), &mut drafts, &Default::default()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         for (position, symbol) in [
@@ -2276,5 +2300,178 @@ mod tests {
         }
         assert!(panel.visible().is_empty());
         assert!(panel.selected_agent().is_none());
+    }
+
+    /// 带 usage、模型、工作目录与费用的已打开详情；后续用例只调整尺寸。
+    fn usage_detail() -> Panel {
+        let mut agent = record("a1", "Main", "idle");
+        agent.spec.model = "fixture/primary".into();
+        agent.spec.cwd = PathBuf::from("/work/app");
+        agent.spec.thinking = ThinkLevel::High;
+        let mut work = run("r1", "a1", "completed", "child work");
+        work.cost = Some(0.012);
+        work.duration_ms = 85_000;
+        let mut panel = panel(vec![agent], vec![work]);
+        panel.opened("a1", 1, None, crate::tui::Transcript::new());
+        panel.apply(Reply::Activity {
+            epoch: 1,
+            agent: "a1".into(),
+            page: pp_runtime::subagent::EventPage {
+                entries: vec![entry(
+                    0,
+                    "r1",
+                    AgentEvent::ContextUpdated {
+                        usage: ContextUsage {
+                            estimated_tokens: 12_300,
+                            context_window: Some(200_000),
+                            last_request: Some(TokenUsage {
+                                input_tokens: 12_300,
+                                output_tokens: 45_678,
+                                cached_tokens: Some(8_000),
+                                cache_write_tokens: Some(0),
+                            }),
+                            session_output_tokens: 45_678,
+                            auto_compact: false,
+                            threshold_percent: 80,
+                        },
+                    },
+                )],
+                cursor: None,
+                reset: false,
+                has_more: false,
+                warnings: vec![],
+            },
+        });
+        panel
+    }
+
+    #[test]
+    fn detail_header_is_one_line_without_model_effort_or_usage_summary() {
+        let mut drafts = Drafts::default();
+        let mut panel = panel(
+            vec![record("a1", "Main", "idle")],
+            vec![run("r1", "a1", "running", "child work")],
+        );
+        panel.opened("a1", 1, None, crate::tui::Transcript::new());
+        let screen = render(&mut panel, &mut drafts, 120, 30);
+        assert!(
+            screen[0].contains("Agent Hub · a1-name / a1 · running · parent Main"),
+            "{}",
+            screen[0]
+        );
+        for absent in ["fixture-model", "effort", "tokens"] {
+            assert!(!screen[0].contains(absent), "{absent}: {}", screen[0]);
+        }
+    }
+
+    #[test]
+    fn detail_input_metrics_and_status_bar_reuse_main_styles() {
+        let mut drafts = Drafts::default();
+        let mut panel = usage_detail();
+        let buffer = render_cells(&mut panel, &mut drafts, &Default::default(), 120, 30);
+        let screen = rows(&buffer, 120, 30);
+        let banner = screen
+            .iter()
+            .position(|line| line.contains("subagent"))
+            .unwrap_or_else(|| panic!("{screen:#?}"));
+        // 顶边框行：标识、ctx、io 对与费用；左侧边框字符保留。
+        assert!(screen[banner].starts_with('─'), "{}", screen[banner]);
+        for expected in ["subagent", "12.3K/45.7K", "0.012"] {
+            assert!(
+                screen[banner].contains(expected),
+                "{expected}: {}",
+                screen[banner]
+            );
+        }
+        let offset = screen[banner].find("subagent").unwrap();
+        let column = screen[banner][..offset].chars().count();
+        assert_eq!(
+            buffer[(column as u16, banner as u16)].fg,
+            Color::Rgb(254, 188, 56),
+            "标识琥珀色"
+        );
+        // 提示行在输入框上方。
+        assert!(
+            screen[banner - 1].contains("Shift+Enter newline"),
+            "{}",
+            screen[banner - 1]
+        );
+        // 底边框整行是 ─。
+        assert_eq!(screen[banner + 2], "─".repeat(120));
+        // 末行状态栏复用主结构，不带旧摘要。
+        for expected in ["fixture/primary", "hig", "/work/app"] {
+            assert!(screen[29].contains(expected), "{expected}: {}", screen[29]);
+        }
+        let text = screen.join("\n");
+        assert!(!text.contains(" tokens · "), "{text}");
+    }
+
+    #[test]
+    fn detail_focus_requests_cursor_inside_editor() {
+        let mut drafts = Drafts::default();
+        let mut panel = panel(vec![record("a1", "Main", "idle")], vec![]);
+        panel.opened("a1", 1, None, crate::tui::Transcript::new());
+        let mut unfocused = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        unfocused
+            .draw(|frame| panel.draw(frame, frame.area(), &mut drafts, &Default::default()))
+            .unwrap();
+        assert!(!unfocused.backend().cursor_visible(), "未聚焦不显示光标");
+        panel.focus_editor();
+        let mut focused = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        focused
+            .draw(|frame| panel.draw(frame, frame.area(), &mut drafts, &Default::default()))
+            .unwrap();
+        assert!(focused.backend().cursor_visible(), "聚焦后显示光标");
+        // 前 2 列为 ❯ 提示，下面依次是底边框与状态栏。
+        assert_eq!(
+            focused.backend().cursor_position(),
+            ratatui::layout::Position::new(2, 30 - 3)
+        );
+    }
+
+    #[test]
+    fn detail_narrow_and_tiny_sizes_keep_badge_without_panicking() {
+        let mut drafts = Drafts::default();
+        let mut panel = usage_detail();
+        let icons = [
+            "\u{f2d0}",
+            "\u{f04e2}",
+            "\u{f01bc}",
+            "\u{f01c1}",
+            "\u{f051b}",
+        ];
+        let counts = [120u16, 80, 60, 40, 30, 20]
+            .into_iter()
+            .map(|width| {
+                let screen = render(&mut panel, &mut drafts, width, 24);
+                let row = screen
+                    .iter()
+                    .find(|line| line.contains('\u{f007}'))
+                    .unwrap_or_else(|| panic!("{width}: {screen:#?}"));
+                icons.iter().filter(|icon| row.contains(**icon)).count()
+            })
+            .collect::<Vec<_>>();
+        assert!(counts[0] > counts[counts.len() - 1], "{counts:?}");
+        assert!(
+            counts.windows(2).all(|pair| pair[0] >= pair[1]),
+            "指标图标数量随宽度单调不增: {counts:?}"
+        );
+        for width in [40u16, 20] {
+            let screen = render(&mut panel, &mut drafts, width, 24).join("\n");
+            assert!(screen.contains("subagent"), "{width}: {screen}");
+        }
+        // 极矮或极窄的终端不得越界或 panic。
+        for (width, height) in [
+            (1u16, 1u16),
+            (2, 2),
+            (3, 3),
+            (10, 3),
+            (20, 1),
+            (120, 2),
+            (80, 1),
+            (1, 12),
+        ] {
+            let _ = render(&mut panel, &mut drafts, width, height);
+        }
     }
 }

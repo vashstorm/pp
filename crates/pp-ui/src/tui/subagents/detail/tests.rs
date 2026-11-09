@@ -9,7 +9,6 @@ use pp_runtime::subagent::ObservedRecord;
 use ratatui::{Terminal as TestTerminal, backend::TestBackend, buffer::Buffer};
 use serde_json::json;
 use std::time::{Duration, Instant};
-
 #[test]
 fn detail_bash_task_poll_anchors_reuse_the_original_card_across_pages() {
     let mut detail = Detail::new("a1", 1, Transcript::new());
@@ -749,4 +748,44 @@ fn detail_rebuild_keeps_configuration_and_discards_old_indexes() {
     assert!(
         screen.contains("Timeout: 37s") && screen.contains("after") && !screen.contains("before")
     );
+}
+
+#[test]
+fn detail_shift_enter_only_inserts_a_newline() {
+    let mut detail = Detail::new("a1", 1, Transcript::new());
+    let mut drafts = Drafts::default();
+    drafts.draft("a1").editor.insert_str("first");
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT | KeyModifiers::SHIFT] {
+        let before = drafts.draft("a1").editor.lines().len();
+        let result = detail.key(KeyEvent::new(KeyCode::Enter, modifiers), &mut drafts);
+        assert!(result.is_none(), "Shift + Enter 不得提交: {modifiers:?}");
+        assert_eq!(
+            drafts.draft("a1").editor.lines().len(),
+            before + 1,
+            "Shift + Enter 只换行: {modifiers:?}"
+        );
+    }
+    let draft = drafts.draft("a1");
+    assert_eq!(draft.editor.lines().join("\n"), "first\n\n");
+    assert!(draft.revision > 0, "本地编辑必须 touch 草稿");
+    // 普通 Enter 仍提交草稿全文；Ctrl + J 仍只换行。
+    let submitted = detail.key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut drafts,
+    );
+    assert_eq!(submitted.as_deref(), Some("first\n\n"));
+    let result = detail.key(
+        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+        &mut drafts,
+    );
+    assert!(result.is_none());
+    assert_eq!(drafts.draft("a1").editor.lines().join("\n"), "first\n\n\n");
+}
+
+#[test]
+fn detail_editor_uses_main_editor_configuration() {
+    let child = editor();
+    let main = crate::tui::editor();
+    assert_eq!(child.style(), main.style());
+    assert_eq!(child.wrap_mode(), main.wrap_mode());
 }

@@ -4,6 +4,7 @@
 //! 保留草稿、viewport 与用量归属。输入的提交通过观察线程调用既有
 //! `Binding::control`，不在 UI 线程做 I/O。
 
+use super::super::statusline;
 use super::super::transcript_style::ACCENT;
 use super::super::transcript_style::ACTIVITY;
 use super::super::transcript_style::ADDED;
@@ -23,12 +24,15 @@ use pp_runtime::subagent::Run;
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
 };
 use ratatui_textarea::{CursorMove, TextArea};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// 没有 notice 时的固定编辑提示；与主输入框的换行语义保持一致。
+const HINT: &str = "Enter send · Shift+Enter newline · Ctrl+J newline · PgUp/PgDn scroll · Ctrl+O tools · Esc back";
 
 /// Activity 行到详情正文的锚点。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -392,6 +396,12 @@ impl Detail {
                 _ => return None,
             }
         }
+        // Shift + Enter 与主输入框一致：只换行，不提交（含 Alt + Shift）。
+        if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT) {
+            drafts.draft(&self.agent).editor.insert_newline();
+            drafts.touch(&self.agent);
+            return None;
+        }
         match key.code {
             KeyCode::Esc => None,
             KeyCode::Enter => {
@@ -451,37 +461,31 @@ impl Detail {
         area: Rect,
         view: &AgentView,
         drafts: &mut Drafts,
+        cost: &pp_config::config::CostDisplay,
         now_ms: u64,
     ) {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let hint_height = 1;
-        let header_height = 2.min(area.height);
-        let body = Rect::new(
-            area.x,
-            area.y + header_height,
-            area.width,
-            area.height.saturating_sub(header_height + hint_height),
+        // 断行预算全部用 saturating / checked 运算：0、1、2 行与 1 列都不越界。
+        let status_height = u16::from(area.height >= 2);
+        let body_height = area.height - status_height;
+        let header_height = u16::from(body_height > 0);
+        let hint_height = u16::from(body_height > header_height + 1);
+        let input_space = body_height - header_height - hint_height;
+        let bordered = input_space >= 3 && area.width >= 3;
+        let border_height = if bordered { 2 } else { 0 };
+        let prompt_width = area.width.saturating_sub(1).min(2);
+        let editor_rows = crate::tui::input_rows(
+            &drafts.draft(&self.agent).editor,
+            area.width.saturating_sub(prompt_width),
+            input_space.saturating_sub(border_height).clamp(1, 6),
         );
-        let editor_lines = drafts.draft(&self.agent).editor.lines().len().clamp(1, 3) as u16;
-        let editor_height = (editor_lines + 2).min(body.height);
+        let input_height = (editor_rows + border_height).min(input_space);
         let activity_height =
-            u16::from(body.height > editor_height && self.transcript.has_live_activity());
-        let transcript_area = Rect::new(
-            body.x,
-            body.y,
-            body.width,
-            body.height - editor_height - activity_height,
-        );
-        let activity_area = Rect::new(
-            body.x,
-            transcript_area.bottom(),
-            body.width,
-            activity_height,
-        );
-        let editor_area = Rect::new(body.x, activity_area.bottom(), body.width, editor_height);
-        // 标题两行：身份与真实状态。
+            u16::from(input_space > input_height && self.transcript.has_live_activity());
+        let transcript_height = input_space.saturating_sub(input_height + activity_height);
+        // 单行身份与真实状态；模型、effort 与用量由输入框指标行及底部状态栏承载。
         let status_color = match view.status {
             super::projection::AgentStatus::Running => ACCENT,
             super::projection::AgentStatus::Idle => ADDED,
@@ -493,36 +497,52 @@ impl Detail {
             .as_deref()
             .map(|status| format!(" · {status}"))
             .unwrap_or_default();
-        let header = vec![
+        let age = view
+            .last_activity
+            .map(|timestamp| format_age(now_ms.saturating_sub(timestamp)))
+            .unwrap_or_else(|| "—".into());
+        let header = super::fit_line(
             Line::from(vec![
                 Span::styled("Agent Hub", Style::default().fg(ACCENT)),
                 Span::styled(
                     format!(" · {} / {}", display_text(&view.name), view.id),
                     Style::default().fg(ACTIVITY),
                 ),
-            ]),
-            Line::from(vec![
                 Span::styled(
                     format!(
-                        "{} · parent {} · {} · effort {}{}",
+                        " · {} · parent {}{}",
                         view.status.label(),
                         display_text(&view.parent),
-                        display_text(&view.model),
-                        view.thinking,
                         model_change
                     ),
                     Style::default().fg(status_color),
                 ),
                 Span::styled(
-                    format!(" · {}", usage_summary(view, now_ms)),
+                    format!(
+                        " · active {age}{}",
+                        if view.loading { " · loading" } else { "" }
+                    ),
                     Style::default().fg(DIM),
                 ),
             ]),
-        ];
-        frame.render_widget(
-            Paragraph::new(header).wrap(Wrap { trim: false }),
-            Rect::new(area.x, area.y, area.width, header_height),
+            usize::from(area.width),
         );
+        if header_height > 0 {
+            frame.render_widget(
+                Paragraph::new(header),
+                Rect::new(area.x, area.y, area.width, header_height),
+            );
+        }
+        let body = Rect::new(area.x, area.y + header_height, area.width, input_space);
+        let transcript_area = Rect::new(body.x, body.y, body.width, transcript_height);
+        let activity_area = Rect::new(
+            body.x,
+            transcript_area.bottom(),
+            body.width,
+            activity_height,
+        );
+        let hint_area = Rect::new(body.x, activity_area.bottom(), body.width, hint_height);
+        let input_area = Rect::new(body.x, hint_area.bottom(), body.width, input_height);
         self.transcript.set_terminal_rows(area.height);
         self.transcript
             .resize_preserving_anchor(transcript_area.width);
@@ -530,26 +550,67 @@ impl Detail {
         self.resolve_pending();
         self.transcript.draw(frame, transcript_area);
         self.transcript.draw_live_activity(frame, activity_area);
-        let block = Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(if self.focus { ACCENT } else { DIM }));
-        let inner = block.inner(editor_area);
-        frame.render_widget(block, editor_area);
-        let prompt_width = inner.width.saturating_sub(1).min(2);
-        if prompt_width > 0 && inner.height > 0 {
+        if hint_height > 0 {
+            let notice = self.notice.is_some();
+            let hint = self.notice.clone().unwrap_or_else(|| HINT.into());
             frame.render_widget(
-                Line::from(Span::styled("❯", Style::default().fg(ACCENT))),
-                Rect::new(inner.x, inner.y, prompt_width, 1),
+                Paragraph::new(Line::from(Span::styled(
+                    display_text(&hint).into_owned(),
+                    Style::default().fg(if notice { REMOVED } else { DIM }),
+                ))),
+                hint_area,
+            );
+        }
+        let editor_area = if bordered {
+            let block = Block::default()
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(statusline::ACCENT));
+            let inner = block.inner(input_area);
+            frame.render_widget(block, input_area);
+            // 指标行写在顶边框行右侧，必须在边框之后覆盖，左侧边框字符保留。
+            let metrics = statusline::subagent_metrics(
+                statusline::SubagentUsage {
+                    usage: view.context.as_ref(),
+                    tokens: view.tokens,
+                    cost: view.cost,
+                    measured: view.cost_measured,
+                    runs: view.runs,
+                    time_ms: view.time_ms,
+                },
+                cost,
+                area.width,
+            )
+            .style(Style::default().bg(statusline::INPUT_STATUS_BG));
+            let metrics_width = u16::try_from(metrics.width())
+                .unwrap_or(u16::MAX)
+                .min(area.width);
+            frame.render_widget(
+                metrics,
+                Rect::new(
+                    input_area.right() - metrics_width,
+                    input_area.y,
+                    metrics_width,
+                    1,
+                ),
+            );
+            inner
+        } else {
+            input_area
+        };
+        let prompt_width = editor_area.width.saturating_sub(1).min(2);
+        if prompt_width > 0 && editor_area.height > 0 {
+            frame.render_widget(
+                Line::from("❯"),
+                Rect::new(editor_area.x, editor_area.y, prompt_width, 1),
             );
         }
         let editor_rect = Rect::new(
-            inner.x + prompt_width,
-            inner.y,
-            inner.width.saturating_sub(prompt_width),
-            inner.height,
+            editor_area.x + prompt_width,
+            editor_area.y,
+            editor_area.width.saturating_sub(prompt_width),
+            editor_area.height,
         );
         let draft = drafts.draft(&self.agent);
-        draft.editor.set_block(Block::default());
         if editor_rect.width > 0 && editor_rect.height > 0 {
             frame.render_widget(&draft.editor, editor_rect);
             if self.focus {
@@ -568,52 +629,25 @@ impl Detail {
                 }
             }
         }
-        let footer = self.notice.clone().unwrap_or_else(|| {
-            "Enter send · Ctrl+J newline · PgUp/PgDn scroll · Ctrl+O tools · Esc back".into()
-        });
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                display_text(&footer).into_owned(),
-                Style::default().fg(if self.notice.is_some() { REMOVED } else { DIM }),
-            ))),
-            Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
-        );
+        if status_height > 0 {
+            frame.render_widget(
+                statusline::subagent_status(
+                    &view.model,
+                    view.thinking
+                        .parse::<pp_core::model::ThinkLevel>()
+                        .unwrap_or_default(),
+                    &statusline::workdir_label(&view.cwd),
+                    area.width,
+                ),
+                Rect::new(
+                    area.x,
+                    area.bottom() - status_height,
+                    area.width,
+                    status_height,
+                ),
+            );
+        }
     }
-}
-
-/// 详情底部的真实 child 用量摘要；未知值显示 —。
-pub(super) fn usage_summary(view: &AgentView, now_ms: u64) -> String {
-    let age = view
-        .last_activity
-        .map(|timestamp| format_age(now_ms.saturating_sub(timestamp)))
-        .unwrap_or_else(|| "—".into());
-    let tokens = view
-        .tokens
-        .map(|tokens| tokens.to_string())
-        .unwrap_or_else(|| "—".into());
-    let cost = match (view.cost, view.cost_measured, view.runs) {
-        (Some(cost), measured, runs) if measured == runs || runs == 0 => format!("${cost:.4}"),
-        (Some(cost), measured, _) => format!("${cost:.4} ({measured} measured)"),
-        (None, _, _) => "cost —".into(),
-    };
-    let time = view
-        .time_ms
-        .map(format_duration)
-        .unwrap_or_else(|| "—".into());
-    let context = view
-        .context
-        .and_then(|usage| usage.percent())
-        .map(|percent| format!("ctx {percent}%"))
-        .unwrap_or_default();
-    format!(
-        "{tokens} tokens · {cost} · agent time {time} · active {age}{}{}",
-        if context.is_empty() {
-            String::new()
-        } else {
-            format!(" · {context}")
-        },
-        if view.loading { " · loading" } else { "" }
-    )
 }
 
 pub(super) fn format_age(ms: u64) -> String {
@@ -647,23 +681,9 @@ pub(super) fn format_clock(timestamp: Option<u64>) -> String {
         )
 }
 
-fn format_duration(ms: u64) -> String {
-    let seconds = ms / 1000;
-    if seconds < 60 {
-        format!("{seconds}s")
-    } else if seconds < 3600 {
-        format!("{}m{:02}s", seconds / 60, seconds % 60)
-    } else {
-        format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60)
-    }
-}
-
-/// child 编辑器不执行 slash、shell、@ 展开或主会话历史。
+/// child 编辑器沿用主编辑器配置：TEXT 文本色、词级折行与 1000 步 undo 历史。
 pub(super) fn editor() -> TextArea<'static> {
-    let mut editor = TextArea::default();
-    editor.set_cursor_line_style(Style::default());
-    editor.set_cursor_style(Style::default().add_modifier(Modifier::empty()));
-    editor
+    super::super::editor()
 }
 
 #[cfg(test)]

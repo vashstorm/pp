@@ -378,6 +378,9 @@ fn agent_hub_literal_input_drafts_and_parent_isolation() {
         let lead_output = if lead == "First" { "hub-first-output" } else { "hub-second-output" };
         pty.input("e");
         pty.text(&format!("{lead} / {lead_id}"));
+        // 详情复用主输入框与主状态栏：指标簇首是 subagent 标识，末行是子 Agent 模型引用。
+        pty.text("subagent");
+        pty.text("fixture/primary");
         pty.input("jkgGcxr/model hidden");
         pty.input("\x0a");
         pty.input("第二行");

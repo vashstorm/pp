@@ -2,27 +2,6 @@ use crate::tui::{
     Alignment, App, Block, Borders, Color, Frame, Line, Rect, StatusContext, Style, Transcript,
     changes, menu, pipes, plan_list, platform_text, statusline, transcript_style, tree, welcome,
 };
-use ratatui::{buffer::Buffer, widgets::Widget};
-use ratatui_textarea::TextArea;
-
-fn input_display_rows(input: &TextArea<'_>, width: u16, max_rows: u16) -> u16 {
-    if width == 0 || max_rows == 0 {
-        return max_rows;
-    }
-    // 在有界内存缓冲中刷新组件自己的折行映射，保持单词、宽字符和 Tab 规则一致。
-    let area = Rect::new(0, 0, width, max_rows);
-    input.render(area, &mut Buffer::empty(area));
-    let mut previous = input.screen_to_data(0, 0);
-    for row in 1..max_rows {
-        let current = input.screen_to_data(usize::from(row), 0);
-        // 超出正文的屏幕行会映射到最后一行；重复位置即表示正文已经结束。
-        if current == previous {
-            return row;
-        }
-        previous = current;
-    }
-    max_rows
-}
 
 /// 主屏幕和原生历史提交共用的几何结果，TODO 永远不进入对话 viewport。
 pub(in crate::tui) struct MainLayout {
@@ -54,7 +33,7 @@ impl App {
         let bordered = available >= 3 && area.width >= 3;
         let border_height = if bordered { 2 } else { 0 };
         let prompt_width = area.width.saturating_sub(1).min(2);
-        let input_height = input_display_rows(
+        let input_height = crate::tui::input_rows(
             &self.input,
             area.width - prompt_width,
             available.saturating_sub(border_height).min(6),
@@ -151,7 +130,7 @@ impl App {
         }
         if !self.native_render && self.ask_panel.is_none() && self.subagent_panel.is_some() {
             if let Some(panel) = &mut self.subagent_panel {
-                panel.draw(frame, area, &mut self.child_drafts);
+                panel.draw(frame, area, &mut self.child_drafts, &self.cost_display);
             }
 
             return;
@@ -523,7 +502,7 @@ impl App {
     }
 
     pub(in crate::tui) fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
-        let usage_style = Style::default().bg(Color::Rgb(26, 27, 38));
+        let usage_style = Style::default().bg(statusline::INPUT_STATUS_BG);
         let mut right = area.right();
         let context_width = self.usage.as_ref().map_or(0, |usage| {
             u16::try_from(statusline::context_field(usage).width() + 2).unwrap_or(u16::MAX)

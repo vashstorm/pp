@@ -21,6 +21,8 @@ use super::transcript_style as palette;
 pub(super) const ACCENT: Color = Color::Rgb(127, 166, 106);
 // Shell 模式：草稿以 `!` 开头时输入框上下边框的颜色，区分于普通输入。
 pub(super) const SHELL_MODE: Color = Color::Rgb(255, 121, 198);
+// 主输入框指标行背景的权威取值：主输入框与子 Agent 详情共用同一深色底。
+pub(super) const INPUT_STATUS_BG: Color = Color::Rgb(26, 27, 38);
 // Plan 模式标签：与 transcript 高亮一致的琥珀色。
 const PLAN_MODE: Color = Color::Rgb(254, 188, 56);
 // 模式标签之外仍需可容纳的最小字段空间（图标+至少一个字符）。
@@ -165,6 +167,16 @@ fn cost_amount(usd: f64, display: &pp_config::config::CostDisplay) -> Option<Str
     Some(format!("{total:.precision$}"))
 }
 
+/// 费用金额字段：受支持币种的图标加按 `CostDisplay` 换算后的金额，红色。
+fn amount_field(usd: f64, display: &pp_config::config::CostDisplay) -> Option<Line<'static>> {
+    let text = cost_amount(usd, display)?;
+    Some(field(
+        display.icon()?.encode_utf8(&mut [0; 4]),
+        text,
+        Color::Red,
+    ))
+}
+
 fn cost_field(
     task: &pp_config::task_status::Snapshot,
     display: &pp_config::config::CostDisplay,
@@ -174,12 +186,7 @@ fn cost_field(
     if usd == 0.0 && history.is_none() {
         return None;
     }
-    let text = cost_amount(usd, display)?;
-    Some(field(
-        display.icon()?.encode_utf8(&mut [0; 4]),
-        text,
-        Color::Red,
-    ))
+    amount_field(usd, display)
 }
 
 fn join_fields(fields: &[Option<Line<'static>>]) -> Line<'static> {
@@ -293,6 +300,130 @@ pub(super) fn metric_fields(
         line = join_fields(&fields);
     }
     line
+}
+
+/// 子 Agent 详情指标簇的输入：上下文用量、token 总量回退、费用与耗时。
+pub(super) struct SubagentUsage<'a> {
+    /// 有 `ContextUpdated` 时按主状态栏口径显示 ctx、io 与缓存。
+    pub usage: Option<&'a ContextUsage>,
+    /// 缺少上下文用量时退回单个 token 总量字段。
+    pub tokens: Option<u64>,
+    /// 子 Agent 已结算的费用（USD）。
+    pub cost: Option<f64>,
+    /// 已计量费用的运行次数与总运行次数。
+    pub measured: usize,
+    pub runs: usize,
+    /// `agent time` 毫秒数。
+    pub time_ms: Option<u64>,
+}
+
+/// 子 Agent 详情输入框顶边框的指标簇：簇首琥珀色 `subagent` 标识永不隐藏，
+/// 其余字段沿用主状态栏的构造与配色，宽度不足时按 cache → io → 费用 → 耗时 → ctx
+/// 整组隐藏，任何宽度下返回行宽都不超过 `width`。
+pub(super) fn subagent_metrics(
+    usage: SubagentUsage<'_>,
+    display: &pp_config::config::CostDisplay,
+    width: u16,
+) -> Line<'static> {
+    let width = usize::from(width);
+    let count = |value: Option<u64>| value.map_or_else(|| "—".into(), abbreviate_tokens);
+    let mut fields: [Option<Line<'static>>; 6] =
+        [Some(subagent_badge()), None, None, None, None, None];
+    if let Some(context) = usage.usage {
+        let last = context.last_request;
+        // 与主状态栏一致：最近请求和会话累计都为空时右侧显示 —，而不是 0。
+        let output = (last.is_some() || context.session_output_tokens > 0)
+            .then_some(context.session_output_tokens);
+        fields[1] = Some(context_field(context));
+        fields[2] = Some(pair_field(
+            IO_ICON,
+            count(last.map(|request| request.input_tokens)),
+            count(output),
+            (INPUT, OUTPUT),
+        ));
+        fields[3] = Some(pair_field(
+            CACHE_ICON,
+            count(last.and_then(|request| request.cached_tokens)),
+            count(last.and_then(|request| request.cache_write_tokens)),
+            (CACHE_READ, CACHE_WRITE),
+        ));
+    } else if let Some(tokens) = usage.tokens {
+        // 旧日志没有 ContextUpdated 时保留原先摘要里的 token 总量；它替代
+        // ctx/io/cache 三个字段，因此在降级顺序里与 ctx 同位（最后隐藏）。
+        fields[1] = Some(token_total_field(tokens));
+    }
+    fields[4] = usage.cost.and_then(|usd| {
+        amount_field(usd, display).map(|mut line| {
+            if usage.measured < usage.runs {
+                line.spans.push(Span::styled(
+                    format!(" ({} measured)", usage.measured),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            line
+        })
+    });
+    fields[5] = usage
+        .time_ms
+        .map(|ms| field(TIMER_ICON, duration_text(ms), Color::White));
+
+    let mut line = join_fields(&fields);
+    for remove in [3, 2, 4, 5, 1] {
+        if line.width() <= width {
+            break;
+        }
+        fields[remove] = None;
+        line = join_fields(&fields);
+    }
+    if line.width() <= width {
+        line
+    } else {
+        // 整行比标识还窄：只保留裁剪后的标识文本。
+        clipped_subagent_badge(width)
+    }
+}
+
+/// 指标簇首的固定标识，琥珀色粗体；作为整组参与降级的最后一道边界。
+fn subagent_badge() -> Line<'static> {
+    Line::from(Span::styled(
+        format!("{SUBAGENT_ONE_ICON} subagent"),
+        Style::default().fg(SUBAGENTS).add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// 极窄宽度下裁剪标识文本；`width` 为 0 时返回空行。
+fn clipped_subagent_badge(width: usize) -> Line<'static> {
+    let text = format!("{SUBAGENT_ONE_ICON} subagent");
+    if Line::from(text.as_str()).width() <= width {
+        return subagent_badge();
+    }
+    if width == 0 {
+        return Line::from("");
+    }
+    Line::from(Span::styled(
+        super::tool_display::clip(&text, width, true),
+        Style::default().fg(SUBAGENTS).add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// 没有上下文用量时的单个 token 总量字段：数字沿用输入色，单位保持暗色。
+fn token_total_field(tokens: u64) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(abbreviate_tokens(tokens), Style::default().fg(INPUT)),
+        Span::styled(" tok", Style::default().fg(Color::DarkGray)),
+    ])
+}
+
+/// 与子 Agent 旧摘要的数据源一致：`{s}s`、`{m}m{ss:02}s`、`{h}h{mm:02}m`。
+fn duration_text(ms: u64) -> String {
+    let seconds = ms / 1000;
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m{:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60)
+    }
 }
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
@@ -410,6 +541,22 @@ pub(super) struct StatusContext {
     pub(super) git: Option<GitInfo>,
 }
 
+/// 工作目录显示名：HOME 内折叠为 `~` 或 `~/…`，其余路径原样显示。
+pub(super) fn workdir_label(cwd: &Path) -> String {
+    std::env::var_os("HOME")
+        .and_then(|home| cwd.strip_prefix(home).ok().map(|path| path.to_owned()))
+        .map_or_else(
+            || cwd.display().to_string(),
+            |path| {
+                if path.as_os_str().is_empty() {
+                    "~".into()
+                } else {
+                    format!("~/{}", path.display())
+                }
+            },
+        )
+}
+
 pub(super) struct WorkspaceStatus {
     pub(super) context: StatusContext,
     updates: Receiver<Option<GitInfo>>,
@@ -418,18 +565,7 @@ pub(super) struct WorkspaceStatus {
 
 impl WorkspaceStatus {
     pub(super) fn new(cwd: &Path) -> Result<Self> {
-        let workdir = std::env::var_os("HOME")
-            .and_then(|home| cwd.strip_prefix(home).ok().map(|path| path.to_owned()))
-            .map_or_else(
-                || cwd.display().to_string(),
-                |path| {
-                    if path.as_os_str().is_empty() {
-                        "~".into()
-                    } else {
-                        format!("~/{}", path.display())
-                    }
-                },
-            );
+        let workdir = workdir_label(cwd);
         let cwd = cwd.to_owned();
         let (sender, updates) = mpsc::sync_channel(1);
         let (stop, stopped) = mpsc::channel::<()>();
@@ -574,37 +710,22 @@ fn compact(text: &str, width: usize, keep_end: bool) -> String {
 }
 
 // 放不下时依次降级：缩短 cwd → 隐藏 git → 缩短模型 → 仅显示模型前缀。
-// 仅 Plan 显示模式标签：预算不足时先压缩其它字段，再缩为单字母，最后只留模式。
-pub(super) fn primary(
-    model: Option<&ModelChoice>,
+// Plan 模式标签由调用方按预算决定：不足时先压缩其它字段，再缩为单字母，最后只留模式。
+fn status_line(
+    model: &str,
     think_level: ThinkLevel,
-    mode: pp_core::plan::WorkMode,
+    mode: Option<&'static str>,
     context: &StatusContext,
-    width: u16,
+    width: usize,
 ) -> Line<'static> {
-    use pp_core::plan::WorkMode as Mode;
-    let width = usize::from(width);
+    let mode = mode.filter(|text| !text.is_empty());
     let mode_span = |text: &'static str| {
         Span::styled(
             text,
             Style::default().fg(PLAN_MODE).add_modifier(Modifier::BOLD),
         )
     };
-    let mode_slot = |text: &str| SEPARATOR_WIDTH + FIELD_ICON_WIDTH + Line::from(text).width();
     let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
-    // 头部为空白加纸飞机图标；为 effort 后的模式图标与标签预留空间。
-    let budget_total = width.saturating_sub(1 + ICON_WIDTH);
-    let (mode_text, budget) = if mode == Mode::Execute {
-        ("", budget_total)
-    } else if budget_total >= mode_slot("Plan") + MIN_AFTER_MODE {
-        ("Plan", budget_total - mode_slot("Plan"))
-    } else if budget_total >= mode_slot("P") + MIN_AFTER_MODE {
-        ("P", budget_total - mode_slot("P"))
-    } else if budget_total >= mode_slot("P") {
-        ("P", 0)
-    } else {
-        ("", budget_total)
-    };
     let think = match think_level {
         ThinkLevel::None => "off",
         ThinkLevel::Low => "low",
@@ -617,49 +738,47 @@ pub(super) fn primary(
     // Font Awesome 火苗），避免混用普通圆形字形导致宽度不一。
     let think_icon = palette::think_icon(think_level);
     let icon = |glyph, color| Span::styled(format!("{glyph} "), Style::default().fg(color));
-    let model_src = model.map_or("—", |choice| choice.reference.as_str());
     let think_width = Line::from(think).width();
     let effort_width = SEPARATOR_WIDTH + FIELD_ICON_WIDTH + think_width;
     let dir_fixed = SEPARATOR_WIDTH + FIELD_ICON_WIDTH;
-    let model_field = |text: &str| SEPARATOR_WIDTH + FIELD_ICON_WIDTH + Line::from(text).width();
-    let git_field = |text: &str| SEPARATOR_WIDTH + FIELD_ICON_WIDTH + Line::from(text).width();
+    let field_slot = |text: &str| SEPARATOR_WIDTH + FIELD_ICON_WIDTH + Line::from(text).width();
     let workdir_full = Line::from(context.workdir.as_str()).width();
     let git = context.git.as_ref().map(|git| git.label());
 
-    let mut model_text = model_src.to_owned();
+    let mut model_text = model.to_owned();
     let mut git_text = git.clone();
     let mut workdir_text = context.workdir.clone();
-    if budget
-        < model_field(model_src)
+    if width
+        < field_slot(model)
             + effort_width
             + dir_fixed
             + workdir_full
-            + git.as_deref().map_or(0, git_field)
+            + git.as_deref().map_or(0, field_slot)
     {
         // 1) 缩短 cwd（git 保留）。
-        let mut cwd_slot = budget.saturating_sub(
-            model_field(model_src) + effort_width + dir_fixed + git.as_deref().map_or(0, git_field),
+        let mut cwd_slot = width.saturating_sub(
+            field_slot(model) + effort_width + dir_fixed + git.as_deref().map_or(0, field_slot),
         );
         if cwd_slot < MIN_DIRECTORY && git_text.is_some() {
             // 2) 隐藏 git，把空间让给目录。
             git_text = None;
-            cwd_slot = budget.saturating_sub(model_field(model_src) + effort_width + dir_fixed);
+            cwd_slot = width.saturating_sub(field_slot(model) + effort_width + dir_fixed);
         }
         if cwd_slot < MIN_DIRECTORY {
             // 3) 缩短模型。
             model_text = compact(
-                model_src,
-                (budget / 4).max(12).saturating_sub(FIELD_ICON_WIDTH),
+                model,
+                (width / 4).max(12).saturating_sub(FIELD_ICON_WIDTH),
                 false,
             );
-            if budget < model_field(&model_text) + effort_width + dir_fixed {
+            if width < field_slot(&model_text) + effort_width + dir_fixed {
                 // 4) 仍不足：仅显示模型前缀与模式；模式图标和标签优先保留。
                 let mut spans = vec![Span::styled(
-                    compact(model_src, budget, false),
+                    compact(model, width, false),
                     Style::default().fg(MODEL).add_modifier(Modifier::BOLD),
                 )];
-                if !mode_text.is_empty() {
-                    if budget > 0 {
+                if let Some(mode_text) = mode {
+                    if width > 0 {
                         spans.push(separator());
                     }
                     spans.push(icon(PLAN_ICON, PLAN_MODE));
@@ -667,7 +786,7 @@ pub(super) fn primary(
                 }
                 return Line::from(spans);
             }
-            cwd_slot = budget.saturating_sub(model_field(&model_text) + effort_width + dir_fixed);
+            cwd_slot = width.saturating_sub(field_slot(&model_text) + effort_width + dir_fixed);
         }
         workdir_text = compact(&context.workdir, cwd_slot, true);
     }
@@ -687,7 +806,7 @@ pub(super) fn primary(
     // off 表示显式发送 none，请求关闭思考。
     spans.push(icon(think_icon, MODEL));
     spans.push(Span::styled(think, model_text_style));
-    if !mode_text.is_empty() {
+    if let Some(mode_text) = mode {
         spans.push(separator());
         spans.push(icon(PLAN_ICON, PLAN_MODE));
         spans.push(mode_span(mode_text));
@@ -703,10 +822,62 @@ pub(super) fn primary(
     Line::from(spans)
 }
 
+/// 主状态栏：先按模式标签预留预算，再交给共享的字段装配与降级逻辑。
+pub(super) fn primary(
+    model: Option<&ModelChoice>,
+    think_level: ThinkLevel,
+    mode: pp_core::plan::WorkMode,
+    context: &StatusContext,
+    width: u16,
+) -> Line<'static> {
+    use pp_core::plan::WorkMode as Mode;
+    let width = usize::from(width);
+    let mode_slot = |text: &str| SEPARATOR_WIDTH + FIELD_ICON_WIDTH + Line::from(text).width();
+    // 头部为空白加纸飞机图标；为 effort 后的模式图标与标签预留空间。
+    let budget_total = width.saturating_sub(1 + ICON_WIDTH);
+    let (mode_text, budget) = if mode == Mode::Execute {
+        ("", budget_total)
+    } else if budget_total >= mode_slot("Plan") + MIN_AFTER_MODE {
+        ("Plan", budget_total - mode_slot("Plan"))
+    } else if budget_total >= mode_slot("P") + MIN_AFTER_MODE {
+        ("P", budget_total - mode_slot("P"))
+    } else if budget_total >= mode_slot("P") {
+        ("P", 0)
+    } else {
+        ("", budget_total)
+    };
+    let model = model.map_or("—", |choice| choice.reference.as_str());
+    status_line(
+        model,
+        think_level,
+        (!mode_text.is_empty()).then_some(mode_text),
+        context,
+        budget,
+    )
+}
+
+/// 子 Agent 详情底栏：共用主状态栏的头部、配色与降级规则，不显示 git 与模式标签。
+pub(super) fn subagent_status(
+    model: &str,
+    think: ThinkLevel,
+    workdir: &str,
+    width: u16,
+) -> Line<'static> {
+    let context = StatusContext {
+        workdir: workdir.to_owned(),
+        git: None,
+    };
+    // 与 primary 的 budget_total 同口径：扣除前导空白与纸飞机图标列。
+    let budget = usize::from(width).saturating_sub(1 + ICON_WIDTH);
+    status_line(model, think, None, &context, budget)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pp_core::context::TokenUsage;
+    use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
+    use std::path::PathBuf;
 
     #[test]
     fn context_abbreviation_uses_thousands_and_millions_with_one_decimal() {
@@ -1286,5 +1457,315 @@ mod tests {
             }
         }
         assert!(line_text(&full).len() > full.width());
+    }
+
+    /// 把单行渲染到测试终端，返回每一列的符号与前景色。
+    fn rendered(line: Line<'static>, width: u16) -> Vec<(String, Color)> {
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(Paragraph::new(line), frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..width)
+            .filter_map(|column| buffer.cell((column, 0)))
+            .map(|cell| (cell.symbol().to_owned(), cell.fg))
+            .collect()
+    }
+
+    /// `needle` 起始字符所在单元格的实际前景色。
+    fn fg_at(line: Line<'static>, width: u16, needle: &str) -> Color {
+        fg_at_offset(line, width, needle, 0)
+    }
+
+    /// `needle` 起始字符后第 `offset` 个字符所在单元格的实际前景色。
+    fn fg_at_offset(line: Line<'static>, width: u16, needle: &str, offset: usize) -> Color {
+        let cells = rendered(line, width);
+        let mut text = String::new();
+        let mut columns = Vec::new();
+        for (column, (symbol, _)) in cells.iter().enumerate() {
+            for ch in symbol.chars() {
+                text.push(ch);
+                columns.push(column);
+            }
+        }
+        let byte = text
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} 不在 {text:?} 中"));
+        let index = text[..byte].chars().count() + offset;
+        cells[columns[index]].1
+    }
+
+    #[test]
+    fn subagent_status_reuses_main_status_bar_head_and_colors() {
+        let line = subagent_status("fixture/primary", ThinkLevel::Medium, "~/dev/pp", 120);
+        assert_eq!(
+            line_text(&line),
+            format!(
+                " {APP_ICON} · {MODEL_ICON} fixture/primary · {} med · {DIRECTORY_ICON} ~/dev/pp",
+                palette::think_icon(ThinkLevel::Medium)
+            )
+        );
+        let model = line
+            .spans
+            .iter()
+            .find(|span| span.content == "fixture/primary")
+            .unwrap();
+        assert!(
+            model.style.add_modifier.contains(Modifier::BOLD),
+            "模型引用与主状态栏同为粗体"
+        );
+        assert_eq!(fg_at(line.clone(), 120, APP_ICON), ACCENT);
+        assert_eq!(fg_at(line.clone(), 120, "fixture/primary"), MODEL);
+        assert_eq!(fg_at(line.clone(), 120, "med"), MODEL);
+        assert_eq!(fg_at(line, 120, "~/dev/pp"), DIRECTORY);
+        // 每个思考档位都显示与主状态栏相同的图标和文案。
+        for (level, text) in [
+            (ThinkLevel::None, "off"),
+            (ThinkLevel::Low, "low"),
+            (ThinkLevel::Medium, "med"),
+            (ThinkLevel::High, "hig"),
+            (ThinkLevel::Xhigh, "xhi"),
+            (ThinkLevel::Max, "max"),
+        ] {
+            assert_eq!(
+                line_text(&subagent_status("m", level, "~", 120)),
+                format!(
+                    " {APP_ICON} · {MODEL_ICON} m · {} {text} · {DIRECTORY_ICON} ~",
+                    palette::think_icon(level)
+                ),
+                "{level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subagent_status_degrades_cwd_then_model_then_prefix_within_width() {
+        let model = "fixture/primary";
+        let workdir = "~/dev/projects/pp";
+        let think = ThinkLevel::Medium;
+        let full = subagent_status(model, think, workdir, 120);
+        assert_eq!(full.width(), 52, "完整状态栏的渲染宽度");
+        assert!(line_text(&full).ends_with(&format!("{DIRECTORY_ICON} {workdir}")));
+
+        // 1) 只缩短 cwd：模型与头部保留，目录以 … 开头保留尾部。
+        let narrowed = line_text(&subagent_status(model, think, workdir, 52));
+        assert!(narrowed.contains(APP_ICON), "{narrowed}");
+        assert!(narrowed.contains(model), "{narrowed}");
+        let cwd = narrowed
+            .split_once(&format!("{DIRECTORY_ICON} "))
+            .map(|(_, cwd)| cwd)
+            .unwrap();
+        assert!(cwd.starts_with('…'), "{narrowed}");
+        assert!(
+            workdir.ends_with(cwd.strip_prefix('…').unwrap()),
+            "{narrowed}"
+        );
+
+        // 2) 再缩短模型：模型字段以 … 结尾，目录仍存在。
+        let narrowed = subagent_status(model, think, workdir, 43);
+        let text = line_text(&narrowed);
+        let shortened = narrowed
+            .spans
+            .iter()
+            .find(|span| span.content.starts_with("fixture"))
+            .unwrap();
+        assert!(
+            shortened.content.ends_with('…'),
+            "模型应被缩短: {}",
+            shortened.content
+        );
+        assert!(!text.contains(model), "{text}");
+        assert!(text.contains(APP_ICON), "{text}");
+        assert!(text.contains(DIRECTORY_ICON), "{text}");
+
+        // 3) 最后只留模型前缀：头部、档位与目录都消失。
+        let prefix = line_text(&subagent_status(model, think, workdir, 17));
+        assert_eq!(prefix, "fixture/prima…");
+        let tiny = line_text(&subagent_status(model, think, workdir, 10));
+        assert_eq!(tiny, "fixtur…");
+        for width in 0..=120 {
+            let line = subagent_status(model, think, workdir, width);
+            assert!(
+                line.width() <= usize::from(width),
+                "width {width}: {} > {width}",
+                line.width()
+            );
+        }
+    }
+
+    #[test]
+    fn subagent_metrics_orders_fields_and_matches_main_status_bar_colors() {
+        let usage = status_usage();
+        let line = subagent_metrics(
+            SubagentUsage {
+                usage: Some(&usage),
+                tokens: Some(12_300),
+                cost: Some(0.012),
+                measured: 1,
+                runs: 1,
+                time_ms: Some(85_000),
+            },
+            &Default::default(),
+            240,
+        );
+        assert_eq!(
+            line_text(&line),
+            format!(
+                " {SUBAGENT_ONE_ICON} subagent · {CONTEXT_ICON} 81.6%/500K {WARNING_ICON} · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.012 · {TIMER_ICON} 1m25s "
+            )
+        );
+        let badge = line
+            .spans
+            .iter()
+            .find(|span| span.content == format!("{SUBAGENT_ONE_ICON} subagent"))
+            .unwrap();
+        assert!(badge.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(fg_at(line.clone(), 240, "subagent"), SUBAGENTS);
+        assert_eq!(fg_at(line.clone(), 240, "81.6%/500K"), CONTEXT);
+        assert_eq!(fg_at(line.clone(), 240, "12.3K"), INPUT);
+        assert_eq!(fg_at(line.clone(), 240, "45.7K"), OUTPUT);
+        assert_eq!(fg_at(line.clone(), 240, "8K"), CACHE_READ);
+        assert_eq!(fg_at_offset(line.clone(), 240, "8K/0", 3), CACHE_WRITE);
+        assert_eq!(fg_at(line.clone(), 240, "0.012"), Color::Red);
+        assert_eq!(fg_at(line, 240, "1m25s"), Color::White);
+    }
+
+    #[test]
+    fn subagent_metrics_appends_measured_suffix_and_uses_token_fallback() {
+        let usage = status_usage();
+        let partial = subagent_metrics(
+            SubagentUsage {
+                usage: Some(&usage),
+                tokens: None,
+                cost: Some(0.012),
+                measured: 1,
+                runs: 3,
+                time_ms: None,
+            },
+            &Default::default(),
+            240,
+        );
+        assert!(line_text(&partial).contains("0.012 (1 measured)"));
+        assert_eq!(
+            partial
+                .spans
+                .iter()
+                .find(|span| span.content == " (1 measured)")
+                .unwrap()
+                .style
+                .fg,
+            Some(Color::DarkGray)
+        );
+        // 已计量次数与总次数一致时不追加后缀。
+        let settled = subagent_metrics(
+            SubagentUsage {
+                usage: Some(&usage),
+                tokens: None,
+                cost: Some(0.012),
+                measured: 3,
+                runs: 3,
+                time_ms: None,
+            },
+            &Default::default(),
+            240,
+        );
+        assert!(!line_text(&settled).contains("measured"));
+
+        // 没有 ContextUpdated：用单个 token 总量字段替代 ctx/io/cache。
+        let fallback = subagent_metrics(
+            SubagentUsage {
+                usage: None,
+                tokens: Some(12_300),
+                cost: Some(0.5),
+                measured: 1,
+                runs: 1,
+                time_ms: Some(1_000),
+            },
+            &Default::default(),
+            240,
+        );
+        assert_eq!(
+            line_text(&fallback),
+            format!(
+                " {SUBAGENT_ONE_ICON} subagent · 12.3K tok · {COST_ICON} 0.500 · {TIMER_ICON} 1s "
+            )
+        );
+        assert_eq!(fg_at(fallback.clone(), 240, "12.3K"), INPUT);
+        assert_eq!(fg_at(fallback, 240, " tok"), Color::DarkGray);
+    }
+
+    #[test]
+    fn subagent_metrics_never_hides_badge_and_hides_groups_in_priority_order() {
+        let usage = status_usage();
+        let render = |width: u16| {
+            subagent_metrics(
+                SubagentUsage {
+                    usage: Some(&usage),
+                    tokens: None,
+                    cost: Some(0.012),
+                    measured: 1,
+                    runs: 1,
+                    time_ms: Some(85_000),
+                },
+                &Default::default(),
+                width,
+            )
+        };
+        let full = render(240);
+        let full_width = u16::try_from(full.width()).unwrap();
+        assert_eq!(line_text(&render(full_width)), line_text(&full));
+        let removal_order = [CACHE_ICON, IO_ICON, COST_ICON, TIMER_ICON, CONTEXT_ICON];
+        let mut previous = 0;
+        for width in (0..=full_width).rev() {
+            let line = render(width);
+            assert!(
+                line.width() <= usize::from(width),
+                "width {width}: {} > {width}",
+                line.width()
+            );
+            let text = line_text(&line);
+            if width == 0 {
+                assert!(text.is_empty(), "零宽度只返回空行");
+                continue;
+            }
+            let missing = removal_order
+                .iter()
+                .take_while(|icon| !text.contains(**icon))
+                .count();
+            assert!(missing >= previous, "宽度下降不能恢复已隐藏的字段: {text}");
+            previous = missing;
+            for icon in &removal_order[missing..] {
+                assert!(text.contains(icon), "不能跳过降级优先级: {text}");
+            }
+            assert!(
+                text.contains(SUBAGENT_ONE_ICON) || text.contains('…'),
+                "标识永不消失: {text}"
+            );
+        }
+        // 极窄宽度只剩裁剪后的标识，且不越界。
+        for width in [3u16, 1, 0] {
+            let line = render(width);
+            let text = line_text(&line);
+            assert!(line.width() <= usize::from(width));
+            for icon in [IO_ICON, CACHE_ICON, COST_ICON, TIMER_ICON, CONTEXT_ICON] {
+                assert!(!text.contains(icon), "width {width}: {text}");
+            }
+            assert_eq!(text.is_empty(), width == 0, "width {width}: {text}");
+        }
+        assert_eq!(line_text(&render(3)), format!("{SUBAGENT_ONE_ICON} …"));
+        assert_eq!(line_text(&render(1)), "…");
+    }
+
+    #[test]
+    fn workdir_label_folds_home_and_keeps_outside_paths() {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        if let Some(home) = home.as_ref() {
+            assert_eq!(workdir_label(home), "~");
+            assert_eq!(workdir_label(&home.join("sub").join("dir")), "~/sub/dir");
+        }
+        let outside = PathBuf::from("/pp-workdir-label-outside/project");
+        if !home.as_ref().is_some_and(|home| outside.starts_with(home)) {
+            assert_eq!(workdir_label(&outside), "/pp-workdir-label-outside/project");
+        }
     }
 }

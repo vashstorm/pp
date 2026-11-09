@@ -79,10 +79,11 @@ use pp_runtime::tools::UndoResult;
 use pp_runtime::tools::UndoToken;
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Alignment, Rect},
     style::{Color, Style},
     text::Line,
-    widgets::{Block, Borders},
+    widgets::{Block, Borders, Widget},
 };
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 use statusline::{StatusContext, WorkspaceStatus};
@@ -951,6 +952,26 @@ fn editor() -> TextArea<'static> {
     editor.set_cursor_style(Style::default());
     editor.set_max_histories(1000);
     editor
+}
+
+/// 编辑器在给定宽度下占用的屏幕行数；主输入框与 child 详情共用同一套折行测量。
+pub(in crate::tui) fn input_rows(editor: &TextArea<'_>, width: u16, max_rows: u16) -> u16 {
+    if width == 0 || max_rows == 0 {
+        return max_rows;
+    }
+    // 在有界内存缓冲中刷新组件自己的折行映射，保持单词、宽字符和 Tab 规则一致。
+    let area = Rect::new(0, 0, width, max_rows);
+    editor.render(area, &mut Buffer::empty(area));
+    let mut previous = editor.screen_to_data(0, 0);
+    for row in 1..max_rows {
+        let current = editor.screen_to_data(usize::from(row), 0);
+        // 超出正文的屏幕行会映射到最后一行；重复位置即表示正文已经结束。
+        if current == previous {
+            return row;
+        }
+        previous = current;
+    }
+    max_rows
 }
 
 /// 限流等待时长的展示形式：整秒不带小数，非整秒保留一位小数。

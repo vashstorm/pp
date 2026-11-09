@@ -9,6 +9,7 @@ use pp_runtime::subagent::HubSnapshot;
 use pp_runtime::subagent::ObservedEntry;
 use pp_runtime::subagent::Run;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 /// Activity 摘要保留的 Unicode 标量上限；完整输出只在详情里。
 const SUMMARY_SCALARS: usize = 512;
@@ -134,6 +135,8 @@ pub(super) struct AgentView {
     pub registered_ms: Option<u64>,
     pub parent: String,
     pub model: String,
+    /// 子 Agent 的工作目录；isolated Agent 由 runtime 已改写为 worktree 路径。
+    pub cwd: PathBuf,
     pub thinking: String,
     pub model_change: Option<String>,
     pub status: AgentStatus,
@@ -1025,6 +1028,7 @@ impl Projection {
                     registered_ms: record.registered_ms,
                     parent: record.parent.clone(),
                     model: record.spec.model.clone(),
+                    cwd: record.spec.cwd.clone(),
                     thinking: record.spec.thinking.as_str().to_owned(),
                     model_change: agent.model_change.clone(),
                     status,
@@ -1579,6 +1583,33 @@ mod tests {
             text: text.into(),
             refusal: false,
         }
+    }
+
+    #[test]
+    fn cwd_from_spec_flows_to_agent_view() {
+        let mut plain = record("a1", "Main", "idle");
+        plain.spec.cwd = PathBuf::from("/work/app");
+        let mut isolated = record("a2", "Main", "idle");
+        isolated.spec.isolated = true;
+        isolated.spec.cwd = PathBuf::from("/work/app/.pp/worktrees/a2");
+        let mut projection = Projection::default();
+        projection.apply_snapshot(snapshot(vec![plain, isolated], vec![]), 1);
+        let view = projection.agent("a1").expect("快照应包含 a1");
+        assert_eq!(
+            view.cwd,
+            PathBuf::from("/work/app"),
+            "普通 Agent 的 spec.cwd 应原样投影"
+        );
+        let view = projection.agent("a2").expect("快照应包含 a2");
+        assert!(
+            view.isolated,
+            "fixture 标记 isolated 后投影的 isolated 应保持 true"
+        );
+        assert_eq!(
+            view.cwd,
+            PathBuf::from("/work/app/.pp/worktrees/a2"),
+            "isolated Agent 首轮改写后的 spec.cwd 应原样投影"
+        );
     }
 
     #[test]
