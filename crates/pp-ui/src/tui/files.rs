@@ -243,12 +243,27 @@ pub(super) fn query(input: &ratatui_textarea::TextArea<'_>) -> Option<Query> {
 }
 
 pub(super) fn insert(input: &mut ratatui_textarea::TextArea<'_>, query: &Query, path: &str) {
+    replace_reference(input, query, path, false);
+}
+
+pub(super) fn insert_prefix(input: &mut ratatui_textarea::TextArea<'_>, query: &Query, path: &str) {
+    replace_reference(input, query, path, true);
+}
+
+fn replace_reference(
+    input: &mut ratatui_textarea::TextArea<'_>,
+    query: &Query,
+    path: &str,
+    partial: bool,
+) {
     use ratatui_textarea::CursorMove;
 
-    let reference = if path
-        .chars()
-        .any(|c| c.is_whitespace() || c == '"' || c == '\\')
-    {
+    let line = &input.lines()[query.row];
+    let quoted = (partial && line.chars().nth(query.start + 1) == Some('"'))
+        || path
+            .chars()
+            .any(|c| c.is_whitespace() || c == '"' || c == '\\');
+    let reference = if quoted {
         format!(
             "@{}",
             serde_json::to_string(path).expect("serializing a file path cannot fail")
@@ -256,19 +271,14 @@ pub(super) fn insert(input: &mut ratatui_textarea::TextArea<'_>, query: &Query, 
     } else {
         format!("@{path}")
     };
-    let separated = input
-        .lines()
-        .get(query.row)
-        .is_some_and(|line| line.chars().nth(query.end).is_some())
-        || query.row + 1 < input.lines().len();
+    let separated = line.chars().nth(query.end).is_some() || query.row + 1 < input.lines().len();
     input.cancel_selection();
     for _ in query.start..query.cursor {
         input.move_cursor(CursorMove::Back);
     }
     input.delete_str(query.end - query.start);
-    let quoted = reference.starts_with("@\"");
     input.insert_str(reference);
-    if path.is_empty() || path.ends_with(std::path::MAIN_SEPARATOR) {
+    if partial || path.is_empty() || path.ends_with(std::path::MAIN_SEPARATOR) {
         if quoted {
             input.move_cursor(CursorMove::Back);
         }

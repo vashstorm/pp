@@ -17,7 +17,7 @@ fn tui_file_picker_inserts_path_without_sending() {
         "attached-resource-content",
     )
     .unwrap();
-    std::fs::write(project.path().join("src/menu.rs"), "menu source").unwrap();
+    std::fs::write(project.path().join("src/map.rs"), "map source").unwrap();
     std::fs::create_dir(project.path().join("src/nested")).unwrap();
     std::fs::write(project.path().join("src/nested/child.rs"), "nested source").unwrap();
     std::fs::write(project.path().join("README.md"), "project root").unwrap();
@@ -78,8 +78,8 @@ fn tui_file_picker_inserts_path_without_sending() {
     });
     pty.draft("分析 @src/");
     no_more(&server);
-    pty.input("\t");
-    pty.wait_for("Tab 进入第二级目录", |screen| {
+    pty.input("\x1b[C");
+    pty.wait_for("右方向键进入第二级目录", |screen| {
         has_item(screen, "../") && has_item(screen, "child.rs") && !has_item(screen, "main.rs")
     });
     pty.draft("分析 @src/nested/");
@@ -103,7 +103,7 @@ fn tui_file_picker_inserts_path_without_sending() {
     // 继续输入只筛选当前子树；确认只插入引用，不提交草稿。
     pty.input("main");
     pty.wait_for("筛选后只剩 main.rs", |screen| {
-        has_item(screen, "main.rs") && !has_item(screen, "menu.rs")
+        has_item(screen, "main.rs") && !has_item(screen, "map.rs")
     });
     pty.input("\x1b[C");
     pty.draft("分析 @src/main.rs");
@@ -132,14 +132,19 @@ fn tui_file_picker_inserts_path_without_sending() {
     pty.text("file picker answer");
     pty.ready_model("fixture/primary");
 
-    // 回复后仍可用 Tab 插入文件，不发送请求。
+    // 多候选时 Tab 只补到共同前缀，筛选为单候选后才补全文件。
     pty.input("\x01\x0btab @");
     pty.wait_for("新的 @ 激活重新列出候选", |screen| {
         has_item(screen, "README.md") && !has_item(screen, "../")
     });
-    pty.input("\t");
-    pty.wait_for("Tab 打开目录", |screen| has_item(screen, "main.rs"));
-    pty.input("main");
+    pty.input("\x1b[C");
+    pty.wait_for("打开目录", |screen| has_item(screen, "main.rs"));
+    pty.input("m\t");
+    pty.draft("tab @src/ma");
+    pty.wait_for("Tab 后保留两个候选", |screen| {
+        has_item(screen, "main.rs") && has_item(screen, "map.rs")
+    });
+    pty.input("in");
     pty.wait_for("Tab 选择筛选后的文件", |screen| {
         has_item(screen, "main.rs") && !has_item(screen, "nested/")
     });
@@ -152,9 +157,9 @@ fn tui_file_picker_inserts_path_without_sending() {
     pty.wait_for("Esc 前菜单打开", |screen| {
         has_item(screen, "README.md")
     });
-    pty.input("\t");
+    pty.input("\x1b[C");
     pty.wait_for("进入 src", |screen| has_item(screen, "nested/"));
-    pty.input("\t");
+    pty.input("\x1b[C");
     pty.wait_for("进入 nested", |screen| has_item(screen, "child.rs"));
     pty.input("\x1b");
     pty.wait_for("Esc 关闭菜单并保留草稿", |screen| {
@@ -190,11 +195,11 @@ fn tui_file_picker_inserts_path_without_sending() {
     pty.resize(30, 100);
     pty.wait_for("恢复尺寸后菜单仍可选", |screen| {
         has_item(screen, "main.rs")
-            && has_item(screen, "menu.rs")
+            && has_item(screen, "map.rs")
             && !screen.contents().contains("Enter/Tab")
     });
     pty.input("\x1b[F\r");
-    pty.draft("resize @src/menu.rs");
+    pty.draft("resize @src/map.rs");
     no_more(&server);
 
     // 菜单打开时 Ctrl-C 仍立即退出并恢复终端。

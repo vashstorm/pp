@@ -294,6 +294,55 @@ impl App {
         }
     }
 
+    pub(in crate::tui) fn complete_input(&mut self) {
+        let Some(menu) = &self.menu else {
+            return;
+        };
+        let mut candidates = menu
+            .items()
+            .iter()
+            .filter(|item| item.value != MenuAction::FileParent);
+        let Some(first) = candidates.next() else {
+            return;
+        };
+        let Some(second) = candidates.next() else {
+            self.apply_menu_action(first.value, false);
+            return;
+        };
+        let mut prefix = completion_text(first);
+        for item in std::iter::once(second).chain(candidates) {
+            let shared_bytes = prefix
+                .chars()
+                .zip(completion_text(item).chars())
+                .take_while(|(left, right)| left == right)
+                .map(|(character, _)| character.len_utf8())
+                .sum();
+            prefix = &prefix[..shared_bytes];
+        }
+        if let Some(query) = &self.file_query {
+            if files::query(&self.input).as_ref() == Some(query)
+                && prefix.len() > query.prefix.len()
+                && prefix.starts_with(&query.prefix)
+            {
+                files::insert_prefix(&mut self.input, query, prefix);
+                self.refresh_candidates(true);
+            }
+        } else {
+            let line = &self.input.lines()[0];
+            let typed = line.rsplit(char::is_whitespace).next().unwrap_or(line);
+            if prefix
+                .to_lowercase()
+                .strip_prefix(&typed.to_lowercase())
+                .is_some_and(|suffix| !suffix.is_empty())
+            {
+                let completed = format!("{}{prefix}", &line[..line.len() - typed.len()]);
+                self.input = editor();
+                self.input.insert_str(completed);
+                self.refresh_candidates(true);
+            }
+        }
+    }
+
     pub(in crate::tui) fn complete_file_directory(&mut self) {
         files::insert(
             &mut self.input,
@@ -718,6 +767,14 @@ impl App {
             self.clear_input();
             self.secondary_status = Some("Compacting context...".into());
         }
+    }
+}
+
+fn completion_text(item: &MenuItem<MenuAction>) -> &str {
+    match item.value {
+        MenuAction::File(_) | MenuAction::FileDirectory(_) => &item.description,
+        MenuAction::Effort(level) => level.as_str(),
+        _ => &item.label,
     }
 }
 

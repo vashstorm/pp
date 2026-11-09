@@ -102,7 +102,7 @@ fn file_picker_directory_navigation_completes_draft_without_submitting() {
     assert_eq!(app.input.cursor(), (0, 8));
     assert_eq!(app.file_directory, "src/");
     assert_eq!(labels(&app), "../,tui/,main.rs");
-    app.handle(key(KeyCode::Tab), &mut dirty);
+    app.handle(key(KeyCode::Right), &mut dirty);
     assert_eq!(app.file_directory, "src/tui/");
     assert_eq!(app.input.lines(), &["查看 @src/tui/"]);
     assert_eq!(app.input.cursor(), (0, 12));
@@ -130,7 +130,7 @@ fn file_picker_directory_navigation_completes_draft_without_submitting() {
     assert!(app.input_history.is_empty());
     assert!(commands.try_recv().is_err());
     assert!(scans.try_recv().is_err());
-    app.handle(key(KeyCode::Tab), &mut dirty);
+    app.handle(key(KeyCode::Right), &mut dirty);
     assert_eq!(app.file_directory, "docs/");
     app.handle(key(KeyCode::Enter), &mut dirty);
     assert_eq!(app.file_directory, "docs/my folder/");
@@ -140,6 +140,33 @@ fn file_picker_directory_navigation_completes_draft_without_submitting() {
     assert_eq!(app.input.lines(), &["查看 @\"docs/my folder/说明\""]);
     app.handle(key(KeyCode::Tab), &mut dirty);
     assert_eq!(app.input.lines(), &["查看 @\"docs/my folder/说明.md\" "]);
+    assert!(app.menu.is_none());
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn file_picker_tab_extends_the_shared_path_and_keeps_the_reference_editable() {
+    let (mut app, scans, replies, commands) = file_picker_fixture();
+    let mut dirty = false;
+    app.handle(Event::Paste("首行\n查看 @\"test".into()), &mut dirty);
+    scans.try_recv().unwrap();
+    replies
+        .send(Ok(vec!["test 中文甲.md".into(), "test 中文申.md".into()]))
+        .unwrap();
+    app.receive();
+    app.handle(key(KeyCode::Down), &mut dirty);
+    app.handle(key(KeyCode::Tab), &mut dirty);
+    assert_eq!(app.input.lines(), &["首行", "查看 @\"test 中文\""]);
+    assert_eq!(app.input.cursor(), (1, 12));
+    assert_eq!(
+        menu_values(&app),
+        [MenuAction::File(0), MenuAction::File(1)]
+    );
+    app.handle(key(KeyCode::Tab), &mut dirty);
+    assert_eq!(app.input.lines(), &["首行", "查看 @\"test 中文\""]);
+    app.handle(key(KeyCode::Char('申')), &mut dirty);
+    app.handle(key(KeyCode::Tab), &mut dirty);
+    assert_eq!(app.input.lines(), &["首行", "查看 @\"test 中文申.md\" "]);
     assert!(app.menu.is_none());
     assert!(commands.try_recv().is_err());
 }

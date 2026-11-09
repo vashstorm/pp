@@ -19,7 +19,9 @@ impl App {
             }
             _ => {}
         }
-        let load_references = matches!(&event, Event::Key(key) if matches!(key.code, KeyCode::Enter | KeyCode::Tab) || matches!(key.code, KeyCode::Char(c) if c.is_whitespace()))
+        let tab = matches!(&event, Event::Key(key) if key.code == KeyCode::Tab);
+        let load_references = tab
+            || matches!(&event, Event::Key(key) if key.code == KeyCode::Enter || matches!(key.code, KeyCode::Char(c) if c.is_whitespace()))
             || matches!(&event, Event::Paste(_));
         let clipboard_key = matches!(&event, Event::Key(key) if key.code == KeyCode::Char('v') && key.modifiers == KeyModifiers::CONTROL);
         let input_focused = self.completion_input_focused();
@@ -27,7 +29,9 @@ impl App {
         if self.resources.images.is_empty() && self.resources.job.is_none() && !clipboard_key {
             let before = load_references.then(|| self.input_text());
             let quit = self.handle_inner(event, dirty);
-            if before.is_some_and(|before| before != self.input_text()) {
+            if (!tab || self.file_query.is_none())
+                && before.is_some_and(|before| before != self.input_text())
+            {
                 self.load_image_references(false, PendingKind::Steering);
             }
             if input_focused != self.completion_input_focused() {
@@ -116,7 +120,7 @@ impl App {
         {
             self.resources.cancel();
         }
-        if load_references && before != self.input_text() {
+        if load_references && (!tab || self.file_query.is_none()) && before != self.input_text() {
             self.load_image_references(false, PendingKind::Steering);
         }
         if input_focused != self.completion_input_focused() {
@@ -327,8 +331,8 @@ impl App {
                             self.apply_menu_action(action, true);
                             return false;
                         }
-                        MenuEvent::Complete(action) => {
-                            self.apply_menu_action(action, false);
+                        MenuEvent::Complete(_) => {
+                            self.complete_input();
                             return false;
                         }
                         MenuEvent::Handled => return false,
@@ -727,8 +731,9 @@ impl App {
                             return false;
                         }
                         MenuEvent::Confirm(action) => return self.apply_menu_action(action, true),
-                        MenuEvent::Complete(action) => {
-                            return self.apply_menu_action(action, false);
+                        MenuEvent::Complete(_) => {
+                            self.complete_input();
+                            return false;
                         }
                     }
                 }

@@ -56,21 +56,21 @@ fn command_menu_lists_debug_only_commands_in_debug_builds() {
 fn command_menu_matches_fuzzy_case_insensitively_and_prioritizes_prefixes() {
     let mut app = app();
     let mut dirty = false;
-    for (query, expected) in [
-        ("/roles", "/Roles"),
-        ("/MDL", "/model"),
-        ("/PLS", "/plan-list"),
-        ("/LIST", "/plan-list"),
-        ("/PLAN", "/plan"),
-        ("/RE", "/resume"),
+    for (query, first, completed) in [
+        ("/roles", "/Roles", "/Roles"),
+        ("/MDL", "/model", "/model"),
+        ("/PLS", "/plan-list", "/plan-list"),
+        ("/LIST", "/plan-list", "/plan-list"),
+        ("/PLAN", "/plan", "/PLAN"),
+        ("/RE", "/resume", "/RE"),
     ] {
         app.input = editor();
         app.handle(Event::Paste(query.into()), &mut dirty);
         let menu = app.menu.as_ref().unwrap();
-        assert_eq!(menu.items()[0].label, expected, "{query}");
+        assert_eq!(menu.items()[0].label, first, "{query}");
         assert_eq!(menu.selected_index(), Some(0));
         app.handle(key(KeyCode::Tab), &mut dirty);
-        assert_eq!(app.input.lines(), &[expected]);
+        assert_eq!(app.input.lines(), &[completed]);
     }
     for query in ["/LDM", "/zzzz", "/MDL argument"] {
         app.input = editor();
@@ -700,6 +700,31 @@ fn completion_tab_reopens_dismissed_and_recalled_drafts() {
 }
 
 #[test]
+fn command_tab_extends_only_the_shared_prefix() {
+    let (mut app, requests, _events) = plan_app();
+    app.file_commands.entries = ["/local-test-abc", "/local-test-acc"]
+        .into_iter()
+        .map(|name| commands::FileCommand {
+            name: name.into(),
+            description: String::new(),
+            content: String::new(),
+        })
+        .collect();
+    app.handle(Event::Paste("  /local-test".into()), &mut false);
+    assert_eq!(menu_values(&app).len(), 2);
+    app.handle(key(KeyCode::Down), &mut false);
+    app.handle(key(KeyCode::Tab), &mut false);
+    assert_eq!(app.input.lines(), &["  /local-test-a"]);
+    assert_eq!(menu_values(&app).len(), 2);
+    app.handle(key(KeyCode::Tab), &mut false);
+    assert_eq!(app.input.lines(), &["  /local-test-a"]);
+    app.handle(key(KeyCode::Char('b')), &mut false);
+    app.handle(key(KeyCode::Tab), &mut false);
+    assert_eq!(app.input.lines(), &["/local-test-abc"]);
+    assert!(requests.try_recv().is_err());
+}
+
+#[test]
 fn model_menu_prefers_exact_reference_over_current_prefix_match() {
     let mut app = app();
     app.state = State::Ready;
@@ -842,7 +867,7 @@ fn command_menu_renders_above_input_with_columns_and_blue_selection() {
         assert_eq!(app.input.lines(), &["/"]);
     }
     app.handle(key(KeyCode::Tab), &mut dirty);
-    assert_eq!(app.input.lines(), &["/quit"]);
+    assert_eq!(app.input.lines(), &["/"]);
     app.handle(key(KeyCode::Esc), &mut dirty);
     assert!(app.menu.is_none());
     app.refresh_candidates(false);
