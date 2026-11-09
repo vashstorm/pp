@@ -326,6 +326,8 @@ fn mock_runner_write_streams_typewriter_text_and_deletes_the_fixed_file() {
     let mut recorder = Recorder::default();
     let mut deltas = 0usize;
     let mut streamed = String::new();
+    let mut write_deltas = 0usize;
+    let mut write_arguments = String::new();
     let report = run_test(
         MockTest::Write,
         server.endpoint(),
@@ -335,6 +337,12 @@ fn mock_runner_write_streams_typewriter_text_and_deletes_the_fixed_file() {
             MockTestEvent::Progress(AgentEvent::AssistantDelta { text, .. }) => {
                 deltas += 1;
                 streamed.push_str(&text);
+            }
+            MockTestEvent::Progress(AgentEvent::ToolArgumentsDelta { tool, text, .. })
+                if tool == "write" =>
+            {
+                write_deltas += 1;
+                write_arguments.push_str(&text);
             }
             MockTestEvent::Progress(event) => recorder.record(event),
             MockTestEvent::Prepared(_) => {}
@@ -356,6 +364,17 @@ fn mock_runner_write_streams_typewriter_text_and_deletes_the_fixed_file() {
     assert_eq!(writes[0]["ok"], true);
     assert_eq!(writes[1]["ok"], true);
     assert_eq!(writes[2]["ok"], false);
+    // 正文行数超过 write 卡片 16 行的折叠窗口，生成期间尾部才有东西可滚。
+    // 参数分片按 mock token 逐字符到达；整段一次到达会退化成 1 个分片。
+    let streamed_lines = write_arguments.matches("\\n").count();
+    assert!(
+        streamed_lines > 16,
+        "write fixture streamed {streamed_lines} lines"
+    );
+    assert!(
+        write_deltas > 16,
+        "write fixture streamed {write_deltas} argument deltas"
+    );
 
     let bash = recorder.calls("bash");
     assert_eq!(bash.len(), 1);

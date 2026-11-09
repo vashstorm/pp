@@ -146,7 +146,7 @@ pp --model deepseek/deepseek-flash:high /commit
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除（仅终端界面） |
 | `/test-task` | 仅 dev/test：三个真实 FAST／SLOW／REVIEW 子 Agent 使用独立本地 mock lane，不需要用户 Role 或真实 provider |
 | `/test-tools`、`/test-read`、`/test-edit`、`/test-grep`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 仅 dev/test：运行全部或单个隔离真实工具场景；edit 覆盖 replace/hashline，ask 在 TUI 中答题 |
-| `/test-write` | 仅 dev/test：12.5 mock token/s 的打字机回复，在 `/tmp/pp-test-write/demo.txt` 上创建、覆盖、越界失败，最后用 bash 工具删除 |
+| `/test-write` | 仅 dev/test：12.5 mock token/s 的打字机回复；24/28 行正文以 240 mock token/s 写入 `/tmp/pp-test-write/demo.txt`，写入卡片可见尾部滚动；随后越界失败，最后用 bash 工具删除 |
 | `/test-ui` | 仅 dev/test：以 12.5 mock token/s 输出原生 Responses SSE 思考与 Markdown／代码分片 |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |

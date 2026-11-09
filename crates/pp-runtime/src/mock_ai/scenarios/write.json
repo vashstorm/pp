@@ -32,9 +32,10 @@
 					"name": "write",
 					"arguments": {
 						"path": "demo.txt",
-						"content": "created line one\n第二行\nthird line\n"
+						"content": "demo 01 · created by the write tool\ndemo 02 · the card keeps the newest rows\ndemo 03 · 中文行跟随窗口一起滚动\ndemo 04 · older rows leave the card\ndemo 05 · one mock token per character\ndemo 06 · the tail window keeps moving\ndemo 07 · 宽字符换行仍按真实宽度\ndemo 08 · watch the line numbers grow\ndemo 09 · nothing is saved until the call\ndemo 10 · the preview is not the file\ndemo 11 · sixteen rows stay visible\ndemo 12 · the rest scrolls away\ndemo 13 · content keeps arriving\ndemo 14 · half of the file is behind\ndemo 15 · keep watching the numbers\ndemo 16 · the write call commits next\ndemo 17 · the last rows arrive slower\ndemo 18 · the card tail is the newest row\ndemo 19 · 三行中文用于宽字符检查\ndemo 20 · the preview folds the tail\ndemo 21 · the file grows line by line\ndemo 22 · the created fixture is complete\ndemo 23 · one more row before the commit\ndemo 24 · last line of the created file\n"
 					}
 				},
+				"tokens_per_second": 240,
 				"auto_continue": false
 			},
 			{
@@ -60,9 +61,10 @@
 					"name": "write",
 					"arguments": {
 						"path": "demo.txt",
-						"content": "created line one changed\n第二行\nthird line\nfourth line\n"
+						"content": "demo 01 · overwritten by the second write\ndemo 02 · the card keeps the newest rows\ndemo 03 · 中文行跟随窗口一起滚动\ndemo 04 · older rows leave the card\ndemo 05 · one mock token per character\ndemo 06 · the tail window keeps moving\ndemo 07 · 宽字符换行仍按真实宽度\ndemo 08 · watch the line numbers grow\ndemo 09 · nothing is saved until the call\ndemo 10 · the preview is not the file\ndemo 11 · sixteen rows stay visible\ndemo 12 · the rest scrolls away\ndemo 13 · content keeps arriving\ndemo 14 · half of the file is behind\ndemo 15 · keep watching the numbers\ndemo 16 · the write call commits next\ndemo 17 · the last rows arrive slower\ndemo 18 · the card tail is the newest row\ndemo 19 · 三行中文用于宽字符检查\ndemo 20 · the preview folds the tail\ndemo 21 · the file grows line by line\ndemo 22 · the created fixture is complete\ndemo 23 · one more row before the commit\ndemo 24 · last line of the created file\ndemo 25 · appended by the overwrite\ndemo 26 · the diff card shows both hunks\ndemo 27 · same fixed path, new content\ndemo 28 · last line of the overwritten file\n"
 					}
 				},
+				"tokens_per_second": 240,
 				"auto_continue": false
 			},
 			{
