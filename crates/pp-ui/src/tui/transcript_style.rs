@@ -24,6 +24,9 @@ pub(super) const SHELL_TITLE: Color = Color::Rgb(197, 187, 139);
 pub(super) const BASH_TITLE: Color = Color::Rgb(244, 191, 84);
 pub(super) const SKILL_TITLE: Color = Color::Rgb(182, 160, 210);
 pub(super) const MCP_TITLE: Color = Color::Rgb(194, 158, 175);
+// MCP 卡片标题分段配色：`mcp` 前缀、服务名与工具名各用独立色相，避免整串名称连写。
+pub(super) const MCP_SERVER: Color = Color::Rgb(160, 196, 224);
+pub(super) const MCP_TOOL: Color = Color::Rgb(156, 220, 254);
 pub(super) const TOOL_PENDING_BG: Color = Color::Rgb(29, 33, 41);
 pub(super) const TOOL_SUCCESS_BG: Color = Color::Rgb(22, 26, 31);
 pub(super) const TOOL_ERROR_BG: Color = Color::Rgb(41, 29, 29);
@@ -94,6 +97,22 @@ pub(super) fn tool_icon(name: &str) -> &'static str {
         name if name.starts_with("mcp__") => "\u{f06a5}",
         _ => "\u{f1064}",
     }
+}
+
+/// `mcp__<server>__<tool>` 拆出服务名与工具名；两段都非空才算合法的 MCP 名称。
+pub(super) fn mcp_parts(name: &str) -> Option<(&str, &str)> {
+    let (server, tool) = name.strip_prefix("mcp__")?.split_once("__")?;
+    (!server.is_empty() && !tool.is_empty()).then_some((server, tool))
+}
+
+/// MCP 卡片标题文本：`mcp__server__tool` → `mcp server tool`；非 MCP 名称返回 `None`。
+pub(super) fn mcp_label(name: &str) -> Option<String> {
+    let (server, tool) = mcp_parts(name)?;
+    Some(format!(
+        "mcp {} {}",
+        pp_core::text::display_text(server),
+        pp_core::text::display_text(tool)
+    ))
 }
 
 // 思考级别统一使用 Nerd Font 图标，状态栏与角色面板共用同一组字形。

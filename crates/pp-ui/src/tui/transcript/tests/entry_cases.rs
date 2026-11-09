@@ -44,6 +44,43 @@ fn mcp_preview_renders_content_and_structured_results_and_expands_details() {
 }
 
 #[test]
+fn mcp_title_splits_prefix_server_and_tool_with_distinct_colors() {
+    let mut transcript = Transcript::new();
+    tool(
+        &mut transcript,
+        "graph",
+        "mcp__codebase-memory-mcp__search_graph",
+        json!({}),
+    );
+    let buffer = render(&mut transcript, 90, 6);
+    let text = screen(&buffer);
+    assert!(
+        text.contains("mcp codebase-memory-mcp search_graph"),
+        "{text}"
+    );
+    assert!(!text.contains("mcp__"), "{text}");
+    let row = (0..buffer.area.height)
+        .find(|row| {
+            let line: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, *row)].symbol())
+                .collect();
+            line.contains("codebase-memory-mcp")
+        })
+        .expect("标题行可见");
+    let color_at = |needle: &str| {
+        let line: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, row)].symbol())
+            .collect();
+        let start = line.find(needle).expect(needle);
+        let column = u16::try_from(line[..start].chars().count()).expect("标题行宽度有限");
+        buffer[(column, row)].fg
+    };
+    assert_eq!(color_at("mcp codebase"), palette::MCP_TITLE);
+    assert_eq!(color_at("codebase-memory-mcp"), palette::MCP_SERVER);
+    assert_eq!(color_at("search_graph"), palette::MCP_TOOL);
+}
+
+#[test]
 fn tool_folding_is_global_without_layout_and_future_output_inherits_it() {
     let mut transcript = Transcript::with_read_preview(true);
     for name in [

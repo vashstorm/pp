@@ -9,7 +9,7 @@ fn mcp_tui_runs_tools_in_worker_and_keeps_input_draft_responsive() {
     pty.input("MCP task\r");
     let (request, _) = pty.request(&provider);
     calls_reply(request, json!([call("slow", "mcp__local__echo", json!({"text":"hello"}))]));
-    pty.text("mcp__local__echo");
+    pty.text("mcp local echo");
     pty.input("keep this draft");
     pty.draft("keep this draft");
     let (request, body) = pty.request(&provider);
@@ -42,7 +42,7 @@ fn mcp_tui_exit_reaps_servers_while_idle_waiting_for_model_or_running_tool() {
             let (request,_) = pty.request(&provider);
             if phase == "tool" {
                 calls_reply(request,json!([call("pending","mcp__local__echo",json!({"text":"hello"}))]));
-                pty.text("mcp__local__echo");
+                pty.text("mcp local echo");
             } else {
                 pending = Some(request);
             }

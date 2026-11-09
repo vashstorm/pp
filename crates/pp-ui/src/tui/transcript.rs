@@ -896,11 +896,13 @@ impl Transcript {
                         },
                     )
                 } else {
+                    // MCP 名称拆成 `mcp <server> <tool>`，避免 `mcp__…__…` 整串连写。
+                    let label = palette::mcp_label(&name).unwrap_or_else(|| name.clone());
                     match detail {
                         Some(command) if name == "bash" => format!("$ {command}"),
                         Some(path) if kind == EntryKind::Read => format!("Read {path}"),
-                        Some(path) => format!("{name} · {path}"),
-                        None => name.clone(),
+                        Some(path) => format!("{label} · {path}"),
+                        None => label,
                     }
                 };
                 let title = if matches!(kind, EntryKind::Diff | EntryKind::Ask | EntryKind::Read) {

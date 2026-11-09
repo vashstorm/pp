@@ -746,7 +746,7 @@ TUI 的 `/mcp list` 是只读结果面板，按来源分组并单列禁用服务
 
 连接遵循 [MCP 初始化流程](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)，协商版本并发送 `notifications/initialized`，再分页调用 `tools/list`。支持 `2025-11-25`、`2025-06-18`、`2025-03-26`、`2024-11-05`。支持 stdio、Streamable HTTP 和旧版 HTTP+SSE 工具。Streamable HTTP 使用 POST，接收 JSON 或 SSE 响应，并维护初始化返回的会话 ID 与协商后的协议版本头；关闭时有界尝试 DELETE 会话，服务返回 405 不阻止本地清理。旧版 SSE 通过 GET 的 `endpoint` 事件确定 POST 地址，通过 `message` 事件接收响应。不支持 OAuth、resources、prompts、sampling、elicitation、Smithery、SSE 断线续传或服务端动态工具列表通知。
 
-工具名通常为 `mcp__服务名__工具名`；特殊字符或组合名超过 64 字节时，工具部分使用确定性的 `tool_<hash>`，调用仍发送原名。schema 原样传给模型（`strict: false`），支持 Completion 和 Responses。结果保留 `content`、`structuredContent` 等字段，包装为 `{"ok":true,"result":{...}}`；`isError:true` 转为 `ok:false`。同批调用仍按顺序执行。
+工具名通常为 `mcp__服务名__工具名`；特殊字符或组合名超过 64 字节时，工具部分使用确定性的 `tool_<hash>`，调用仍发送原名。TUI 消息区把该名称拆成 `mcp`、服务名与工具名三段着色显示，行模式仍输出原始名称。schema 原样传给模型（`strict: false`），支持 Completion 和 Responses。结果保留 `content`、`structuredContent` 等字段，包装为 `{"ok":true,"result":{...}}`；`isError:true` 转为 `ok:false`。同批调用仍按顺序执行。
 
 当前模型工具表包含 MCP 工具时，运行时系统指令要求研究与发现优先选择适用的专用工具：代码符号和调用关系使用代码图工具，库／API 参考使用文档工具，浏览器检查或交互使用浏览器工具。内置 `grep`／`glob`／`read` 用于通用文本、路径、文件操作及专用工具未覆盖的内容；专用工具不可用时可回退。项目／库 ID 应从服务发现结果或返回元数据中确认，参数错误或空结果先按提示修正、缩小查询，不能直接认定服务不可用。这是模型选择指引，不改变工具集合、write/edit 要求或 Plan／Review 权限，也不保证固定调用率；没有可用 MCP 工具时不注入该 MCP 指引。
 

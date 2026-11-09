@@ -962,7 +962,7 @@ fn tui_slash_resume_mcp_servers_reap_after_cross_session_exit() {
                     request,
                     json!([call("pending", "mcp__local__echo", json!({"text":"hello"}))]),
                 );
-                pty.text("mcp__local__echo");
+                pty.text("mcp local echo");
             } else {
                 pending = Some(request);
             }

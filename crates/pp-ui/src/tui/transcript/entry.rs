@@ -188,6 +188,9 @@ impl TranscriptEntry {
     }
 
     fn tool_title(&self, text: &str) -> Line<'static> {
+        if let Some(line) = self.mcp_title(text) {
+            return line;
+        }
         let (label, detail) = text
             .find(" · ")
             .map_or((text, ""), |end| text.split_at(end));
@@ -200,6 +203,30 @@ impl TranscriptEntry {
             ),
             Span::styled(detail.to_owned(), Style::default().fg(palette::ACTIVITY)),
         ])
+    }
+
+    /// MCP 卡片标题：图标与 `mcp` 前缀、服务名、工具名各用独立配色。
+    /// 标题被外部改写（例如按结果修正）时返回 `None`，退回通用的两段着色。
+    fn mcp_title(&self, text: &str) -> Option<Line<'static>> {
+        let name = self.tool.as_deref()?;
+        let (server, tool) = palette::mcp_parts(name)?;
+        let icon = palette::tool_icon(name);
+        let (label, detail) = text
+            .find(" · ")
+            .map_or((text, ""), |end| text.split_at(end));
+        let head = label.strip_prefix(icon)?.strip_prefix(' ')?;
+        let server = pp_core::text::display_text(server);
+        let tool = pp_core::text::display_text(tool);
+        if head != format!("mcp {server} {tool}") {
+            return None;
+        }
+        let title = Style::default().add_modifier(Modifier::BOLD);
+        Some(Line::from(vec![
+            Span::styled(format!("{icon} mcp"), title.fg(palette::MCP_TITLE)),
+            Span::styled(format!(" {server}"), title.fg(palette::MCP_SERVER)),
+            Span::styled(format!(" {tool}"), title.fg(palette::MCP_TOOL)),
+            Span::styled(detail.to_owned(), Style::default().fg(palette::ACTIVITY)),
+        ]))
     }
 
     pub(super) fn is_collapsible_tool(&self) -> bool {
