@@ -298,10 +298,17 @@ impl ModelCost {
         .all(|rate| rate.is_finite() && rate >= 0.0)
     }
 
-    /// 与统计页面共享严格计价：未知缓存量不能按零计费。
+    /// 与统计页面共享严格计价：未知缓存读量不能按零计费。
+    ///
+    /// 费率没有独立 `cacheWrite` 价时，缓存写入按输入价计入未缓存部分，
+    /// 写入量是否已知不改变总价；有独立写入价时未知写入量仍未定价。
     pub fn calculate(self, usage: pp_core::context::TokenUsage) -> Option<TokenCost> {
         let cached = usage.cached_tokens?;
-        let written = usage.cache_write_tokens?;
+        let written = match (usage.cache_write_tokens, self.cache_write) {
+            (Some(written), _) => written,
+            (None, None) => 0,
+            (None, Some(_)) => return None,
+        };
         let uncached = usage
             .input_tokens
             .checked_sub(cached)?
@@ -599,5 +606,47 @@ mod tests {
         ] {
             assert!(parse_base_url(invalid).is_err(), "accepted {invalid}");
         }
+    }
+
+    #[test]
+    fn unknown_cache_write_is_priced_only_without_a_write_rate() {
+        let usage = pp_core::context::TokenUsage {
+            input_tokens: 1000,
+            output_tokens: 100,
+            cached_tokens: Some(200),
+            cache_write_tokens: None,
+        };
+        let free_write = ModelCost {
+            input: 2.0,
+            cache_read: 0.2,
+            cache_write: None,
+            output: 8.0,
+        };
+        // 无独立写入价时写入按输入价计入未缓存部分，写入量未知不改变总价。
+        let cost = free_write.calculate(usage).expect("写入价缺失仍可精确计价");
+        assert!((cost.input - 0.0016).abs() < 1e-12);
+        assert!((cost.cache_read - 0.00004).abs() < 1e-12);
+        assert_eq!(cost.cache_write, 0.0);
+        assert!((cost.total() - 0.00244).abs() < 1e-12);
+        let zero_write = free_write
+            .calculate(pp_core::context::TokenUsage {
+                cache_write_tokens: Some(0),
+                ..usage
+            })
+            .expect("写入量为零同样可计价");
+        assert!((zero_write.total() - cost.total()).abs() < 1e-12);
+        let priced_write = ModelCost {
+            cache_write: Some(2.5),
+            ..free_write
+        };
+        assert!(priced_write.calculate(usage).is_none());
+        assert!(
+            free_write
+                .calculate(pp_core::context::TokenUsage {
+                    cache_write_tokens: Some(100),
+                    ..usage
+                })
+                .is_none()
+        );
     }
 }

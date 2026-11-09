@@ -673,7 +673,7 @@ mod tests {
             record.model = "gateway/OpenAI/GPT-5.4".into();
             record.session_file = Some(file.to_string_lossy().into_owned());
             if !usage_known {
-                record.cache_write_tokens = None;
+                record.input_tokens = None;
             }
             store.insert(&record, &Value::Null).unwrap();
         }
@@ -1029,6 +1029,9 @@ providers:
         assert!(pricing.cost(&record).is_none());
         record.cache_write_tokens = Some(0);
         assert!(pricing.cost(&record).is_some());
+        // 费率没有写入价时，写入量未知不影响总价，不能整条请求记为未定价。
+        record.cache_write_tokens = None;
+        assert!((pricing.cost(&record).unwrap().total() - 0.000216).abs() < 1e-10);
         fs::write(
             &path,
             models_with_cost(json!({"input":0,"cacheRead":0,"cacheWrite":0,"output":0})),

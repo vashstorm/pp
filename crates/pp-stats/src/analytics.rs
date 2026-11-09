@@ -91,7 +91,8 @@ pub(super) fn calculate(
         input_tokens: input?.try_into().ok()?,
         output_tokens: output?.try_into().ok()?,
         cached_tokens: Some(cached?.try_into().ok()?),
-        cache_write_tokens: Some(written?.try_into().ok()?),
+        // 写入量未知时保留 None，由费率决定能否计价。
+        cache_write_tokens: written.map(u64::try_from).transpose().ok()?,
     })
 }
 
