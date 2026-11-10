@@ -98,4 +98,8 @@ vt100 = { workspace = true }
 
 [profile.dev]
 opt-level = 0
+strip = "symbols"
 debug = 1
+
+[profile.release]
+strip = "symbols"
