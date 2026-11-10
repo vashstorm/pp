@@ -1554,7 +1554,8 @@ fn model_line(agent: &AgentView, width: usize) -> Line<'static> {
 fn status_icon(status: AgentStatus, clock: u64) -> &'static str {
     match status {
         AgentStatus::Running => waiting_clock(u128::from(clock)),
-        AgentStatus::Idle | AgentStatus::Parked => "⬤",
+        // Material Design 实心圆，与运行中的时钟图标同字体族、同尺寸。
+        AgentStatus::Idle | AgentStatus::Parked => "\u{f0765}",
         AgentStatus::Aborted => "×",
     }
 }
