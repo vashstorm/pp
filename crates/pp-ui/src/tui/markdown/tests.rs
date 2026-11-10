@@ -90,7 +90,8 @@ fn inline_styles_use_modifiers_and_palette() {
     assert_eq!(fg(&ls[0], 0), Some(ADDED));
     assert!(has_modifier(&ls[0], 2, Modifier::ITALIC));
     assert!(has_modifier(&ls[0], 4, Modifier::CROSSED_OUT));
-    assert_eq!(fg(&ls[0], 6), Some(CODE));
+    // 行内代码与粗体同色（ADDED 绿），但不叠加 BOLD modifier。
+    assert_eq!(fg(&ls[0], 6), Some(ADDED));
     assert_eq!(fg(&ls[0], 1), None);
 }
 

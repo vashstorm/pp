@@ -2369,6 +2369,38 @@ mod tests {
         for absent in ["fixture-model", "effort", "tokens"] {
             assert!(!screen[0].contains(absent), "{absent}: {}", screen[0]);
         }
+        panel.apply(Reply::Detail {
+            epoch: 1,
+            view: 1,
+            agent: "a1".into(),
+            history: super::worker::DetailHistory {
+                page: pp_runtime::subagent::EventPage {
+                    entries: vec![entry(
+                        0,
+                        "r1",
+                        AgentEvent::AssistantDelta {
+                            text: (0..30)
+                                .map(|i| format!("line-{i}"))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            refusal: false,
+                        },
+                    )],
+                    cursor: None,
+                    reset: false,
+                    has_more: false,
+                    warnings: vec![],
+                },
+                runs: vec![run("r1", "a1", "running", "child work")],
+                settled: std::collections::BTreeSet::new(),
+            },
+        });
+        let screen = render(&mut panel, &mut drafts, 120, 30);
+        let activity = screen
+            .iter()
+            .position(|line| line.contains("Responding"))
+            .unwrap();
+        assert!(screen[activity - 1].trim().is_empty(), "{screen:#?}");
     }
 
     #[test]

@@ -114,14 +114,15 @@ pub(super) fn tool_accent(name: &str) -> Color {
     }
 }
 
-// 与底部状态栏一致，使用 Nerd Font Material Design 双列字形；图标后保留一列空白。
+// 与底部状态栏一致，使用 Nerd Font 私用区单列字形；图标后保留一列空白。
+// rg 取 Font Awesome 放大镜（nf-fa-search，U+F002），其余为 Material Design 字形。
 pub(super) fn tool_icon(name: &str) -> &'static str {
     match name {
         "read" => "\u{f0219}",
         "edit" => "\u{f03eb}",
         "write" => "\u{f0193}",
         "bash_task" => "\u{f08d6}",
-        "rg" => "\u{f0349}",
+        "rg" => "\u{f002}",
         "find" | "glob" => "\u{f024b}",
         "ask" => "\u{f02d7}",
         "plan_search" => "\u{f0232}",

@@ -717,7 +717,7 @@ fn thinking_and_assistant_share_background_but_not_foreground() {
 }
 
 #[test]
-fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
+fn tool_icons_use_nerd_font_private_use_glyphs_across_card_styles() {
     let names = [
         "read",
         "edit",
@@ -737,10 +737,11 @@ fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
         let icon = palette::tool_icon(name);
         assert!(icons.insert(icon), "工具图标应独立：{name}");
         assert!(
-            icon.chars()
-                .next()
-                .is_some_and(|glyph| ('\u{f0000}'..='\u{ffffd}').contains(&glyph)),
-            "图标应与状态栏一样使用 Material Design 字形：{name}"
+            icon.chars().next().is_some_and(|glyph| {
+                ('\u{e000}'..='\u{f8ff}').contains(&glyph)
+                    || ('\u{f0000}'..='\u{ffffd}').contains(&glyph)
+            }),
+            "图标应使用 Nerd Font 私用区字形：{name}"
         );
         assert_eq!(Span::raw(icon).width(), 1, "图标布局宽度应为一列：{name}");
         let mut transcript = Transcript::new();
@@ -1300,9 +1301,9 @@ fn thinking_renders_markdown_with_muted_base_and_semantic_highlights() {
     let bold = cell_of("bold");
     assert_eq!(buffer[bold].fg, palette::ADDED);
     assert!(buffer[bold].modifier.contains(Modifier::BOLD));
-    // 行内代码使用 CODE 色。
+    // 行内代码与粗体一样使用 ADDED 绿色语义高亮。
     let code = cell_of("code");
-    assert_eq!(buffer[code].fg, palette::CODE);
+    assert_eq!(buffer[code].fg, palette::ADDED);
     assert_eq!(buffer[code].bg, ASSISTANT_BACKGROUND);
     // 围栏代码块按 syntect 语义高亮，`let` 为 keyword 色。思考正文的行级灰
     // 基调被语义 span 覆盖，与粗体/行内代码的约定一致。

@@ -169,9 +169,10 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
                     });
                     let screen = pty.parser.screen();
                     assert!(markdown_blocks_bold(screen, "bold word"));
+                    // 行内代码与粗体同色：ADDED 绿。
                     assert_eq!(
                         markdown_blocks_fg(screen, "inline code", 0),
-                        vt100::Color::Rgb(229, 193, 255)
+                        vt100::Color::Rgb(137, 210, 129)
                     );
                     assert_eq!(
                         markdown_blocks_fg(screen, "let x = 1;", 0),

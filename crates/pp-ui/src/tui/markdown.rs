@@ -16,13 +16,12 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::transcript_style::ACCENT;
 use super::transcript_style::ADDED;
-use super::transcript_style::CODE;
 use super::transcript_style::CODE_BLOCK;
 use super::transcript_style::DIM;
 use super::transcript_style::LINK;
@@ -443,10 +442,8 @@ impl<'a> Builder<'a> {
         }
         if self.strong > 0 {
             st = st.add_modifier(Modifier::BOLD);
-            if self.instruction {
-                st = st.fg(super::transcript_style::READ_ACCENT);
-            } else if !self.heading {
-                st = st.fg(ADDED);
+            if let Some(fg) = self.emphasis_fg() {
+                st = st.fg(fg);
             }
         }
         if self.em > 0 {
@@ -457,6 +454,28 @@ impl<'a> Builder<'a> {
         }
         if !self.links.is_empty() {
             st = st.fg(LINK);
+        }
+        st
+    }
+
+    /// `<strong>` 与内嵌代码共用的强调前景：指令卡片用 READ_ACCENT，标题沿用标题
+    /// 色（`None`），普通正文用 ADDED 绿。
+    fn emphasis_fg(&self) -> Option<Color> {
+        if self.instruction {
+            Some(super::transcript_style::READ_ACCENT)
+        } else if self.heading {
+            None
+        } else {
+            Some(ADDED)
+        }
+    }
+
+    /// 内嵌代码沿用上下文的内联样式，但使用与粗体一致的强调前景，避免行内代码
+    /// 在思考／正文里退回普通文字色。
+    fn code_style(&self) -> Style {
+        let mut st = self.inline_style();
+        if let Some(fg) = self.emphasis_fg() {
+            st = st.fg(fg);
         }
         st
     }
@@ -792,7 +811,8 @@ impl<'a> Builder<'a> {
             self.push_text(text, style);
             return;
         }
-        self.push_text(text, Style::new().fg(CODE));
+        // 内嵌代码与粗体同色（普通正文 ADDED 绿）。
+        self.push_text(text, self.code_style());
     }
 
     fn on_soft_break(&mut self) {

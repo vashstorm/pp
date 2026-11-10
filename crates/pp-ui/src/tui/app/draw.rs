@@ -47,6 +47,8 @@ impl App {
             + u16::from(self.resources.job.is_some()))
         .min(available.saturating_sub(input_height + 1));
         let above = available.saturating_sub(input_height + attachments_height);
+        let activity_spacing = u16::from(activity_height > 0 && above > 1);
+        let above = above - activity_spacing;
         let base = Rect::new(area.x, area.y, area.width, above);
         let ask_height = if self.native_render {
             0
@@ -86,7 +88,12 @@ impl App {
         let todo = Rect::new(area.x, ask.bottom() + todo_spacing, area.width, todo_height);
         let subagents = Rect::new(area.x, todo.bottom(), area.width, subagent_height);
         let attachments = Rect::new(area.x, subagents.bottom(), area.width, attachments_height);
-        let activity = Rect::new(area.x, attachments.bottom(), area.width, activity_height);
+        let activity = Rect::new(
+            area.x,
+            attachments.bottom() + activity_spacing,
+            area.width,
+            activity_height,
+        );
         let input = Rect::new(area.x, activity.bottom(), area.width, input_height);
         let status = Rect::new(area.x, input.bottom(), area.width, status_height);
         MainLayout {

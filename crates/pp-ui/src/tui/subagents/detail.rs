@@ -484,7 +484,10 @@ impl Detail {
         let input_height = (editor_rows + border_height).min(input_space);
         let activity_height =
             u16::from(input_space > input_height && self.transcript.has_live_activity());
-        let transcript_height = input_space.saturating_sub(input_height + activity_height);
+        let activity_spacing =
+            u16::from(activity_height > 0 && input_space > input_height + activity_height + 1);
+        let transcript_height =
+            input_space.saturating_sub(input_height + activity_height + activity_spacing);
         // 单行身份与真实状态；模型、effort 与用量由输入框指标行及底部状态栏承载。
         let status_color = match view.status {
             super::projection::AgentStatus::Running => ACCENT,
@@ -537,7 +540,7 @@ impl Detail {
         let transcript_area = Rect::new(body.x, body.y, body.width, transcript_height);
         let activity_area = Rect::new(
             body.x,
-            transcript_area.bottom(),
+            transcript_area.bottom() + activity_spacing,
             body.width,
             activity_height,
         );
