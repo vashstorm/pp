@@ -9,10 +9,13 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
     for turn in 1..=2 {
         pty.input(&format!("task {turn}\r"));
         let (request, _) = pty.request(&server);
-        pty.text("\u{f12b7} Requesting model");
+        pty.wait_for("模型请求状态带有时钟", |screen| {
+            live_activity_labels(&screen.contents()).any(|label| label == "Requesting model")
+        });
         let letter_color = |screen: &vt100::Screen, offset| {
-            let (row, column) = context_tui_locate(screen, "\u{f12b7} Requesting model").unwrap();
-            screen.cell(row, column + 2 + offset).unwrap().fgcolor()
+            let (row, column) = context_tui_locate(screen, "Requesting model").unwrap();
+            assert_eq!(column, 5);
+            screen.cell(row, column + offset).unwrap().fgcolor()
         };
         pty.wait_for("扫光到达首字", |screen| {
             letter_color(screen, 0) == vt100::Color::Rgb(254, 188, 56)
@@ -31,8 +34,7 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
         );
         pty.wait_for("等待网络时秒表持续更新", |screen| {
             let text = screen.contents();
-            text.contains("\u{f12b7} Requesting model")
-                && text.matches("\u{f12b7} ").count() == 1
+            live_activity_labels(&text).eq(["Requesting model"])
                 && text.lines().any(|line| {
                     line.contains("\u{e62a} ")
                         && line.contains(" · ")

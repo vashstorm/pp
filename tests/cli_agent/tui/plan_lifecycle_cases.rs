@@ -190,24 +190,122 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
     }
 }
 
-// Plan 模式的 MCP 生命周期按执行起点拆分：保留上下文执行、退出 Plan 后显式执行。
-fn plan_mcp_reconnection_case(off: bool) {
+// Plan 与执行共用同一批 MCP 进程：进入 Plan 只按 access 过滤工具，进程保持运行。
+fn plan_mcp_initialized(dir: &Path) -> usize {
+    cancel_mcp_log(dir)
+        .iter()
+        .filter(|entry| entry["method"] == "initialize")
+        .count()
+}
+
+fn plan_mcp_tool_names<'a>(body: &'a Value, protocol: &str) -> Vec<&'a str> {
+    body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| {
+            let definition = if protocol == "completion" {
+                &tool["function"]
+            } else {
+                tool
+            };
+            definition["name"].as_str()
+        })
+        .collect()
+}
+
+fn plan_mcp_session(protocol: &str) -> (Server, tempfile::TempDir, tempfile::TempDir, Pty) {
+    let fixture = server();
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let mut settings = super::super::mcp::settings("");
+    settings["notification_timeout_seconds"] = json!(1);
+    crate::write_settings(home.path(), settings.to_string()).unwrap();
+    std::fs::write(
+        config_path(home.path(), "models.yml"),
+        response_models(&fixture, Some(protocol)),
+    )
+    .unwrap();
+    let pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    (fixture, home, project, pty)
+}
+
+// 进程常驻：进入 Plan 不断开进程，保留上下文执行复用同一连接，只在退出时回收。
+fn plan_mcp_resident_case() {
     for protocol in ["completion", "response"] {
-        let fixture = server();
-        let home = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        let mut settings = super::super::mcp::settings("");
-        settings["notification_timeout_seconds"] = json!(1);
-        crate::write_settings(home.path(), settings.to_string()).unwrap();
-        std::fs::write(
-            config_path(home.path(), "models.yml"),
-            response_models(&fixture, Some(protocol)),
-        )
-        .unwrap();
-        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        let (fixture, _home, project, mut pty) = plan_mcp_session(protocol);
+        pty.ready();
+        // Execute 首个请求：MCP 工具在表内，fixture 只握手一次。
+        pty.input("Execute before Plan\r");
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert!(
+            plan_mcp_tool_names(&body, protocol).contains(&"mcp__local__echo"),
+            "{body}"
+        );
+        plan_final(request, protocol, "Execute ready");
+        pty.ready();
+        assert_eq!(plan_mcp_initialized(project.path()), 1);
+        plan_enter(&mut pty, &fixture);
+        // 进入 Plan 不再断开进程：PID 存活且没有新的握手。
+        cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
+        assert_eq!(plan_mcp_initialized(project.path()), 1);
+        // 无只读授权的服务不进入 Plan 工具表，但进程继续运行。
+        plan_drive_ready_with_mcp(
+            &mut pty,
+            &fixture,
+            protocol,
+            "Plan before execution",
+            PLAN_TUI_BODY,
+            &[],
+        );
+        cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
+        assert_eq!(plan_mcp_initialized(project.path()), 1);
+        // 保留上下文执行：复用同一批连接，工具表恢复。
+        plan_choose(&mut pty, 1);
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert!(
+            plan_mcp_tool_names(&body, protocol).contains(&"mcp__local__echo"),
+            "{body}"
+        );
+        plan_calls(
+            request,
+            protocol,
+            json!([plan_call(
+                protocol,
+                "execute-mcp",
+                "mcp__local__echo",
+                json!({"text":"approved tool call"})
+            )]),
+        );
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        let mcp = outputs.iter().find(|(id, _)| id == "execute-mcp").unwrap();
+        assert_eq!(mcp.1["ok"], true);
+        assert_eq!(mcp.1["result"]["content"][0]["text"], "中文结果");
+        // 执行期仍是同一次握手、同一个进程；随后取消未完成的后续请求。
+        assert_eq!(plan_mcp_initialized(project.path()), 1);
+        cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
+        pty.input("\x03");
+        pty.finish();
+        drop(request);
+        assert_eq!(plan_mcp_initialized(project.path()), 1);
+        cancel_mcp_assert_pid_stopped(&project.path().join("mcp-log.pid"));
+    }
+}
+
+#[test]
+fn plan_tui_mcp_stays_alive_across_plan_and_execution() {
+    plan_mcp_resident_case();
+}
+
+// 进程边界：恢复到 Plan 不连接没有只读授权的服务，离开 Plan 时按执行权限补连一次。
+fn plan_mcp_process_boundary_case(off: bool) {
+    for protocol in ["completion", "response"] {
+        let (fixture, home, project, mut pty) = plan_mcp_session(protocol);
         pty.ready();
         plan_enter(&mut pty, &fixture);
-        cancel_mcp_assert_pid_stopped(&project.path().join("mcp-log.pid"));
+        // 启动进程在 Execute 下建立的连接在进入 Plan 后仍然存活。
+        cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
         plan_drive_ready(
             &mut pty,
             &fixture,
@@ -215,16 +313,11 @@ fn plan_mcp_reconnection_case(off: bool) {
             "Plan before MCP reconnection",
             PLAN_TUI_BODY,
         );
-        assert_eq!(
-            cancel_mcp_log(project.path())
-                .iter()
-                .filter(|entry| entry["method"] == "initialize")
-                .count(),
-            1
-        );
+        assert_eq!(plan_mcp_initialized(project.path()), 1);
         let id = saved_session_id(home.path());
         pty.input("\x03");
         pty.finish();
+        cancel_mcp_assert_pid_stopped(&project.path().join("mcp-log.pid"));
         let mut pty = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
         pty.ready();
         plan_wait_mode(&mut pty, "Plan");
@@ -232,13 +325,7 @@ fn plan_mcp_reconnection_case(off: bool) {
         pty.input("/plan view\r");
         plan_wait_review(&mut pty, 1);
         no_more(&fixture);
-        assert_eq!(
-            cancel_mcp_log(project.path())
-                .iter()
-                .filter(|entry| entry["method"] == "initialize")
-                .count(),
-            1
-        );
+        assert_eq!(plan_mcp_initialized(project.path()), 1);
         if off {
             pty.input("\x1b");
             pty.wait_for("closing review before off", |screen| {
@@ -254,21 +341,11 @@ fn plan_mcp_reconnection_case(off: bool) {
         }
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert!(
-            body["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tool| tool["function"]["name"] == "mcp__local__echo"
-                    || tool["name"] == "mcp__local__echo"),
+            plan_mcp_tool_names(&body, protocol).contains(&"mcp__local__echo"),
             "{body}"
         );
-        assert_eq!(
-            cancel_mcp_log(project.path())
-                .iter()
-                .filter(|entry| entry["method"] == "initialize")
-                .count(),
-            2
-        );
+        // 新进程在离开 Plan 时补连一次；此前 Plan 期没有新增握手。
+        assert_eq!(plan_mcp_initialized(project.path()), 2);
         plan_calls(
             request,
             protocol,
@@ -304,13 +381,13 @@ fn plan_mcp_reconnection_case(off: bool) {
 }
 
 #[test]
-fn plan_tui_mcp_is_stopped_in_plan_and_cleanup_tracks_execute_reconnection() {
-    plan_mcp_reconnection_case(false);
+fn plan_tui_mcp_resume_into_plan_reuses_connection() {
+    plan_mcp_process_boundary_case(false);
 }
 
 #[test]
 fn plan_tui_mcp_reconnects_after_leaving_plan_and_explicit_execution() {
-    plan_mcp_reconnection_case(true);
+    plan_mcp_process_boundary_case(true);
 }
 
 #[test]

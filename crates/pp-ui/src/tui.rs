@@ -504,12 +504,12 @@ enum WorkerEvent {
     // /plan-list 管理结果；失败保留旧列表与输入，只展示可见错误。
     PlansListed(Result<PlanListing>),
     ListedPlanRead(Result<PlanSelection>),
-    // 携带完整执行准备：UI 安装清理句柄并采纳 replay，但不自动请求模型。
+    // 携带完整执行准备：UI 采纳 workflow/replay/todo 快照，但不自动请求模型。
     ListedPlanOpened(Result<ExecutionPreparation>),
     ListedPlanRenamed(Result<PlanListing>),
     ListedPlanDeleted(Result<PlanListing>),
     // 计划模式转换结果；Err 时 worker 会紧随一份真实 workflow 快照，
-    // 避免 UI 在“持久化成功但 MCP 关闭失败”的失败中显示 EXEC。
+    // 避免 UI 在转换失败的提示中显示错误的模式。
     WorkflowChanged(Result<WorkflowState>),
     PlanRead(Result<PlanReview>),
     // 审查进度：只进独立 review transcript，不进主对话、用量或派发。
@@ -518,8 +518,6 @@ enum WorkerEvent {
     PlanReviewed(Result<PlanReviewReport>),
     // 无专属结果事件的动作（普通运行/压缩/切换模型/树导航）之后发布的快照。
     Workflow(WorkflowState),
-    // 转换失败后重取当前 registry 的退出清理句柄；覆盖被保留的 prepared registry。
-    Cleanup(pp_runtime::mcp::Cleanup),
     // lazy=false 后台预热失败：单服务器隔离，正常工具不受影响。
     LspWarmupFailed {
         server: String,
@@ -527,13 +525,12 @@ enum WorkerEvent {
     },
     // 空闲轮询迟到诊断时的错误；去重后交给 UI 提示，不终止会话。
     LspPollFailed(String),
-    // 执行准备一次性交接：UI 安装清理句柄并经 reply 确认后 worker 才继续。
+    // 一次性交接：UI 采纳 workflow/replay/usage/todo 快照并 ACK 后 worker 才继续。
     ExecutionPrepared {
         workflow: WorkflowState,
         session_id: Option<String>,
         usage: Option<pp_core::context::ContextUsage>,
         replay: Option<Vec<pp_runtime::agent::persistence::ReplayRecord>>,
-        cleanup: pp_runtime::mcp::Cleanup,
         /// 交接快照：UI 必须在采纳 replay/替换 workflow 之后、ACK 之前渲染，
         /// Fresh 清理后才入卡，源会话不能先 emit 再被清掉。
         todo_snapshot: Option<AgentEvent>,
@@ -541,15 +538,9 @@ enum WorkerEvent {
     },
 }
 
-/// 发布 ExecutionPrepared 并等待 UI 安装清理句柄后的 ACK。
-/// ACK 失败或取消时返回错误；事件随通道消失时其 Cleanup Drop 会关闭新 slots。
-/// 转换失败后的纠正快照：发布真实 workflow，并刷新退出清理句柄以覆盖
-/// 可能被保留的 registry；所有 Plan 转换失败路径共用。
+/// 转换失败后的纠正快照：发布真实 workflow 与模型字段；所有 Plan 转换失败路径共用。
 fn publish_transition_failure(agent: &Agent, snapshots: &mut Vec<WorkerEvent>) {
     push_workflow_snapshot(agent, snapshots);
-    if let Ok(cleanup) = agent.mcp_cleanup() {
-        snapshots.push(WorkerEvent::Cleanup(cleanup));
-    }
 }
 
 /// 换根后立即发布新的临时管道 registry；接收端按实例身份过滤重复发布。
@@ -600,6 +591,8 @@ fn send_and_wait_ack<T: Send>(
     }
 }
 
+/// 发布 ExecutionPrepared 并等待 UI 采纳快照后的 ACK。
+/// ACK 失败或取消时返回错误。
 fn publish_prepared(
     events: &mpsc::SyncSender<WorkerEvent>,
     agent: &Agent,
@@ -616,7 +609,6 @@ fn publish_prepared(
             session_id: preparation.session_id,
             usage: agent.context_usage().ok(),
             replay: preparation.replay,
-            cleanup: preparation.cleanup,
             todo_snapshot: preparation.todo_snapshot,
             reply,
         },
@@ -899,7 +891,6 @@ struct App {
     task_status_view: pp_config::task_status::View,
     task_status: Option<pp_config::task_status::Snapshot>,
     cost_display: pp_config::config::CostDisplay,
-    mcp_cleanup: Option<pp_runtime::mcp::Cleanup>,
     lsp_cleanup: Option<pp_runtime::lsp::Cleanup>,
     mcp_view: pp_runtime::mcp::View,
     mcp_panel: Option<mcp::Panel>,
@@ -920,7 +911,7 @@ struct App {
     plan_progress: (usize, usize),
     // ExecutionPrepared 中 replay 重绘产生的显示错误，等待 SessionResumed 一并通知。
     resume_note: Option<String>,
-    // EnterPlan 因 MCP 清理失败而 Err：下一次 /plan 优先重发 EnterPlan 重试。
+    // EnterPlan 失败：下一次 /plan 优先重发 EnterPlan 重试。
     plan_retry_enter: bool,
     // EnterPlan 成功后再提示待命或发送提示词，失败时不得发送。
     plan_after_enter: Option<PlanEnterAction>,

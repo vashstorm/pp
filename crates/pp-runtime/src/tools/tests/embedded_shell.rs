@@ -35,6 +35,47 @@ fn embedded_shell_foreground_streams_and_status() {
 }
 
 #[test]
+fn embedded_shell_named_pipe_redirects_fail_without_waiting() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(dir.path().join("fifo"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::os::unix::fs::symlink("fifo", dir.path().join("link")).unwrap();
+    let root = dir.path().to_owned();
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        let tools = Tools::new(root, EditMode::Replace).unwrap();
+        for command in ["cat < fifo", "printf x > link", "printf x &>> fifo"] {
+            send.send(run_bash(&tools, command)).unwrap();
+        }
+        send.send(run_bash(
+            &tools,
+            "bash -c 'printf fifo-ok > fifo & cat < fifo; wait'",
+        ))
+        .unwrap();
+    });
+
+    for _ in 0..3 {
+        let result = receive.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(result["ok"], false, "{result}");
+        assert!(
+            result
+                .to_string()
+                .contains("named pipe redirection requires an external shell"),
+            "{result}"
+        );
+    }
+    let external = receive.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(external["ok"], true, "{external}");
+    assert_eq!(external["output"], "fifo-ok", "{external}");
+    worker.join().unwrap();
+}
+
+#[test]
 fn embedded_shell_large_printf_width_pads_without_panicking() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();

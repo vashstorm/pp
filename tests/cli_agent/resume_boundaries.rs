@@ -137,6 +137,28 @@ fn resume_boundary_close(pty: &mut Pty) {
     });
 }
 
+// 进程内 `/resume` 复用启动目录的 MCP 连接：不重新握手，也不替换服务进程。
+fn resume_boundary_assert_mcp_reused(dir: &Path) {
+    let requests = std::fs::read_to_string(dir.join("mcp-log")).unwrap();
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.contains("\"method\":\"initialize\""))
+            .count(),
+        1,
+        "resume 不应重新初始化 MCP 服务\n{requests}"
+    );
+    let pid: i32 = std::fs::read_to_string(dir.join("mcp-log.pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let pid = rustix::process::Pid::from_raw(pid).unwrap();
+    assert!(
+        rustix::process::test_kill_process(pid).is_ok(),
+        "resume 应复用启动目录的 MCP 进程"
+    );
+}
+
 fn resume_boundary_row(lines: &[String], needle: &str) -> usize {
     lines
         .iter()
@@ -952,6 +974,8 @@ fn tui_slash_resume_mcp_servers_reap_after_cross_session_exit() {
                 && screen.contents().contains("mcp project answer")
         });
         pty.ready();
+        // `/resume` 只切换会话：启动目录的 MCP 连接保持原进程，不重新握手。
+        resume_boundary_assert_mcp_reused(launch.path());
 
         let mut pending = None;
         if phase != "idle" {

@@ -65,6 +65,8 @@ impl Agent {
         let user_dir = self.subagent_user_dir(&config.agent_db_path)?;
         let runtime_models = self.runtime_models.clone();
         let skills = self.tools.skills.clone();
+        // 子 Agent 一律共享父级 MCP 管理器：经代理调用复用父连接，权限仍受
+        // 只读门禁与授权集合约束。
         let mcp = self.tools.mcp.clone();
         let approval = self.tools.approval.clone();
         let ask = self.tools.ask_handler.clone();
@@ -125,7 +127,8 @@ impl Agent {
                 config.thinking.supports(actual_thinking),
                 "subagent thinking is not supported by the target model"
             );
-            let mut tools = Tools::new(record.spec.cwd.clone(), config.settings.edit)?;
+            let mut tools =
+                Tools::with_mcp(record.spec.cwd.clone(), config.settings.edit, mcp.clone())?;
             tools.artifacts = artifacts.clone();
             tools.share_pipe_store(&pipe_store);
             tools.limits = config.settings.tool_limits();
@@ -136,7 +139,6 @@ impl Agent {
             }
             tools.approval = approval.clone();
             tools.approval.label(record.name.clone(), binding.clone());
-            tools.mcp_proxy = Some(mcp.clone());
             if !record.spec.isolated
                 && let Some(parent) = lsp.as_ref()
                 && same_workspace(&record.spec.cwd, parent.cwd())
@@ -159,6 +161,7 @@ impl Agent {
             binding.readonly = readonly;
             tools.set_lsp_readonly(readonly);
             tools.mcp_readonly = readonly;
+            tools.mcp_shared = true;
             let mut allowed = record.spec.tools.clone();
             allowed.retain(|name| {
                 name != "task"

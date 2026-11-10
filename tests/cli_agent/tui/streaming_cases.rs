@@ -139,7 +139,9 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         let mut stream = SseReply::new(request);
         streaming_delta(&mut stream, protocol, "first-中");
         pty.text("first-中");
-        pty.text("\u{f12b7} Responding");
+        pty.wait_for("流式回复状态带有时钟", |screen| {
+            live_activity_labels(&screen.contents()).any(|label| label == "Responding")
+        });
         pty.drain();
         assert!(input_is_ready(pty.parser.screen()));
         assert!(!pty.parser.screen().contents().contains("-last"));
@@ -222,11 +224,9 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         pty.drain();
         assert!(input_is_ready(pty.parser.screen()));
         assert!(!pty.parser.screen().contents().contains("out-firstout-last"));
-        pty.text("\u{f12b7} Running bash");
-        assert_eq!(
-            pty.parser.screen().contents().matches("\u{f12b7} ").count(),
-            1
-        );
+        pty.wait_for("Bash 运行期间只有一个实时状态", |screen| {
+            live_activity_labels(&screen.contents()).eq(["Running bash"])
+        });
         no_more(&server);
         std::fs::write(dir.path().join("release"), "").unwrap();
         let (request, body) = receive_at(&server, path);

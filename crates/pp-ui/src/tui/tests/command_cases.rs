@@ -268,7 +268,11 @@ fn task_cancel_waits_for_completed_and_preserves_editable_draft() {
     assert_eq!(app.input_history, history);
     assert!(matches!(app.state, State::Cancelling));
     let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("\u{f12b7} Cancelling"));
+    assert!(screen.lines().any(|row| {
+        row.strip_prefix("  ")
+            .and_then(|row| row.strip_prefix(['🕛', '🕒', '🕕', '🕘']))
+            .is_some_and(|row| row.trim() == "Cancelling")
+    }));
     assert_eq!(screen.matches("Cancelling").count(), 1);
     assert!(screen.contains("secondary intact"));
     app.handle(Event::Paste("新".into()), &mut dirty);

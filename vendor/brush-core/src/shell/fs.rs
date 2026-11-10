@@ -234,10 +234,6 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
         params: &ExecutionParameters,
         creation: Option<RedirectCreation>,
     ) -> Result<openfiles::OpenFile, std::io::Error> {
-        let Some(creation) = creation else {
-            return self.open_file(options, path, params);
-        };
-
         let path = path.as_ref();
 
         if let Some(result) = crate::sys::fs::try_open_special_file(path) {
@@ -249,6 +245,9 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
         }
 
         let path_to_open = self.absolute_path(path);
+        let Some(creation) = creation else {
+            return self.open_existing_redirect(options, &path_to_open);
+        };
 
         let mut create_options = options.clone();
         create_options.create_new(true);
@@ -266,10 +265,42 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && !creation.exclusive => {
                 // The file already exists (or appeared in the meantime): open it
                 // with the caller's normal flags without changing its permissions.
-                Ok(options.open(&path_to_open)?.into())
+                self.open_existing_redirect(options, &path_to_open)
             }
             Err(err) => Err(err),
         }
+    }
+
+    fn open_existing_redirect(
+        &self,
+        options: &std::fs::OpenOptions,
+        path: &Path,
+    ) -> Result<openfiles::OpenFile, std::io::Error> {
+        #[cfg(unix)]
+        if self.is_embedded() {
+            use nix::fcntl::{FcntlArg, OFlag, fcntl};
+            use std::os::unix::fs::{FileTypeExt as _, OpenOptionsExt as _};
+
+            let fifo_error = || {
+                std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "named pipe redirection requires an external shell",
+                )
+            };
+            if path.metadata().is_ok_and(|meta| meta.file_type().is_fifo()) {
+                return Err(fifo_error());
+            }
+            // 用非阻塞打开防止目标在检查后被换成 FIFO，导致解释器卡在内核里。
+            let file = options.clone().custom_flags(libc::O_NONBLOCK).open(path)?;
+            if file.metadata()?.file_type().is_fifo() {
+                return Err(fifo_error());
+            }
+            let flags = OFlag::from_bits_retain(fcntl(&file, FcntlArg::F_GETFL)?);
+            fcntl(&file, FcntlArg::F_SETFL(flags & !OFlag::O_NONBLOCK))?;
+            return Ok(file.into());
+        }
+
+        Ok(options.open(path)?.into())
     }
 
     /// Resolves a `/dev/std*`, `/dev/fd/*` or `/proc/self/fd/*` path to the

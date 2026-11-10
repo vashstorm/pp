@@ -12,11 +12,10 @@ impl Agent {
         if !matches!(action, Action::Help | Action::List) {
             self.stop_subagents()?;
         }
-        let cwd = self.tools.cwd().to_owned();
-        let result =
-            self.tools
-                .mcp
-                .manage(action, &cwd, token, Access::for_mode(self.workflow.mode));
+        let result = self
+            .tools
+            .mcp
+            .manage(action, token, Access::for_mode(self.workflow.mode));
         // 部分成功、失败和取消均同步真实工具表；管理命令不追加用户历史。
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));

@@ -49,7 +49,11 @@ fn wait_tui_progress_and_queued_steering_work_in_both_protocols() {
         );
         pty.wait_for("等待框立即显示目标与数量进度", |screen| {
             let text = screen.contents();
-            text.contains("Wait") && text.contains("0/1 settled") && text.contains("[bash]")
+            text.contains("Wait")
+                && text.contains("0/1 settled")
+                && WAIT_CLOCKS
+                    .iter()
+                    .any(|clock| text.contains(&format!("{clock} [bash]")))
         });
         pty.wait_for("后台无新输出时耗时仍刷新", |screen| {
             screen.contents().contains("0m01s")

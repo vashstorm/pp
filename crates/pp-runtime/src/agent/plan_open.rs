@@ -199,12 +199,10 @@ impl Agent {
         self.clear_session_cost();
         self.pending_instructions = None;
         drop(verified);
-        let cleanup = self.tools.mcp.cleanup()?;
         Ok(ExecutionPreparation {
             workflow: self.workflow.clone(),
             session_id: self.journal.id().map(str::to_owned),
             replay: Some(Vec::new()),
-            cleanup,
             todo_snapshot: None,
         })
     }

@@ -232,7 +232,7 @@ fn read_status_clock_animates_groups_and_stops_after_completion() {
         } else {
             (2, 1)
         };
-        assert_eq!(initial[(icon_x, icon_y)].symbol(), "🕐");
+        assert_eq!(initial[(icon_x, icon_y)].symbol(), "🕛");
         let count = if paths.len() > 1 {
             format!("Read ({})", paths.len())
         } else {
@@ -240,9 +240,9 @@ fn read_status_clock_animates_groups_and_stops_after_completion() {
         };
         assert!(screen(&initial).contains(&count));
         assert!(!screen(&initial).contains("Read (1)"));
-        transcript.tick(started + Duration::from_millis(120));
+        transcript.tick(started + Duration::from_millis(500));
         let next = render(&mut transcript, 80, 20);
-        assert_eq!(next[(icon_x, icon_y)].symbol(), "🕑");
+        assert_eq!(next[(icon_x, icon_y)].symbol(), "🕒");
         assert_eq!(next[(icon_x + 2, icon_y)].symbol(), " ");
         assert_eq!(next[(icon_x + 3, icon_y)].symbol(), "R");
         if paths.len() == 2 {
@@ -252,7 +252,7 @@ fn read_status_clock_animates_groups_and_stops_after_completion() {
             });
             assert_eq!(
                 render(&mut transcript, 80, 20)[(icon_x, icon_y)].symbol(),
-                "🕑"
+                "🕒"
             );
         }
         transcript.progress(AgentEvent::ToolFinished {

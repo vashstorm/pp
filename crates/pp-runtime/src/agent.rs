@@ -77,13 +77,15 @@ pub struct Bootstrap {
     pub skills: pp_config::skills::SharedSkills,
     pub prompt: crate::system_prompt::Snapshot,
     pub approval: Option<pp_config::config::ApprovalMode>,
+    /// 进程级共享的 MCP 单例；根 Agent、子 Agent 与恢复的会话都用它。
+    pub mcp: std::sync::Arc<crate::mcp::McpManager>,
 }
 
 impl Bootstrap {
     pub fn build(&self) -> Result<Agent> {
         let catalog =
             ModelCatalog::from_files(&self.dir.join("settings.yml"), &self.dir.join("models.yml"))?;
-        let mut tools = Tools::new(self.cwd.clone(), catalog.edit_mode())?;
+        let mut tools = Tools::with_mcp(self.cwd.clone(), catalog.edit_mode(), self.mcp.clone())?;
         tools.skills = self.skills.clone();
         let mut agent = Agent::new_with_prompt(
             catalog,
@@ -134,16 +136,15 @@ pub struct Agent {
     lsp_injected: std::collections::HashSet<u64>,
 }
 
-/// Everything the UI must adopt after a mode transition that replaced the
-/// managed MCP registry: the worker publishes this, installs nothing itself,
-/// and waits for the UI's `ExecutionPrepared` acknowledgement before any
-/// model request. `replay` is `None` for keep-context/off transitions,
-/// `Some(empty)` for a fresh session, and `Some(replay)` for a resume.
+/// Everything the UI must adopt after a mode transition: the worker publishes
+/// this snapshot set, installs nothing itself, and waits for the UI's
+/// `ExecutionPrepared` acknowledgement before any model request. `replay` is
+/// `None` for keep-context/off transitions, `Some(empty)` for a fresh session,
+/// and `Some(replay)` for a resume.
 pub struct ExecutionPreparation {
     pub workflow: pp_core::plan::WorkflowState,
     pub session_id: Option<String>,
     pub replay: Option<Vec<persistence::ReplayRecord>>,
-    pub cleanup: crate::mcp::Cleanup,
     pub todo_snapshot: Option<AgentEvent>,
 }
 
@@ -334,11 +335,10 @@ impl Agent {
     }
     fn connect_pending_plan_mcp(&mut self, cancellation: &CancellationToken) -> Result<()> {
         if self.workflow.mode == pp_core::plan::WorkMode::Plan {
-            let cwd = self.tools.cwd().to_owned();
-            let result =
-                self.tools
-                    .mcp
-                    .connect_enabled(&cwd, cancellation, crate::mcp::Access::ReadOnly);
+            let result = self
+                .tools
+                .mcp
+                .connect_enabled(cancellation, crate::mcp::Access::ReadOnly);
             if let Err(error) = result {
                 if error.is::<pp_core::cancellation::CleanupError>() {
                     self.plan_cleanup_error = Some(format!(
@@ -351,10 +351,6 @@ impl Agent {
                 .set_tools(self.tools.all_definitions(self.workflow.mode));
         }
         Ok(())
-    }
-
-    pub fn mcp_cleanup(&self) -> Result<crate::mcp::Cleanup> {
-        self.tools.mcp.cleanup()
     }
 
     /// TUI 后台预热使用的 Registry 克隆；`enabled=false` 时为 `None`。
@@ -390,34 +386,23 @@ impl Agent {
 
     /// 测试构造入口：统计库随会话目录落在临时工作区，绝不写开发者真实 `~/.pp/stats`。
     #[cfg(test)]
-    pub(crate) fn new(catalog: ModelCatalog, tools: Tools, sessions_dir: PathBuf) -> Result<Self> {
+    pub(crate) fn new(
+        catalog: ModelCatalog,
+        mut tools: Tools,
+        sessions_dir: PathBuf,
+    ) -> Result<Self> {
         let lock_dir = sessions_dir.join(".locks");
         let stats_db = sessions_dir.join(".stats/stats.db");
+        // 单测各自持有配置化管理器：Plan 交接测试的 `/mcp reload` 读的是本
+        // catalog 指向的临时 `mcp.json`，不能落到真实用户配置。
+        let cwd = tools.cwd().to_owned();
+        tools.mcp = std::sync::Arc::new(crate::mcp::McpManager::new(catalog.mcp_path(), cwd));
         Self::new_with_prompt(
             catalog,
             tools,
             sessions_dir,
             lock_dir,
             crate::system_prompt::Snapshot::bundled(),
-            stats_db,
-        )
-    }
-
-    pub(crate) fn new_with_prompt(
-        catalog: ModelCatalog,
-        tools: Tools,
-        sessions_dir: PathBuf,
-        lock_dir: PathBuf,
-        prompt_source: crate::system_prompt::Snapshot,
-        stats_db: PathBuf,
-    ) -> Result<Self> {
-        Self::new_with_mcp(
-            catalog,
-            tools,
-            sessions_dir,
-            lock_dir,
-            prompt_source,
-            None,
             stats_db,
         )
     }
@@ -447,28 +432,23 @@ impl Agent {
         Ok((config, effort, route))
     }
 
-    fn new_with_mcp(
+    pub(crate) fn new_with_prompt(
         catalog: ModelCatalog,
         mut tools: Tools,
         sessions_dir: PathBuf,
         lock_dir: PathBuf,
         prompt_source: crate::system_prompt::Snapshot,
-        mcp: Option<crate::mcp::Registry>,
         stats_db: PathBuf,
     ) -> Result<Self> {
         let (config, think_level, role_route) = Self::resolve_default_model(&catalog)?;
         tools.limits = config.settings.tool_limits();
         tools.approval.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
-        tools.mcp = match mcp {
-            Some(registry) => registry,
-            None => crate::mcp::Registry::load(
-                &catalog.mcp_path(),
-                tools.cwd(),
-                &CancellationToken::new(),
-                crate::mcp::Access::Full,
-            )?,
-        };
+        // 进程级单例：首次连接失败即启动失败；管理器保留未加载状态，
+        // 下次构造（如登录后重建 Agent）自动重试，这里不手动回收。
+        tools
+            .mcp
+            .connect_enabled(&CancellationToken::new(), crate::mcp::Access::Full)?;
         Self::install_lsp(&mut tools, &catalog);
         let current_model = ModelChoice {
             reference: catalog.default_reference().to_owned(),
@@ -541,18 +521,19 @@ impl Agent {
     #[cfg(debug_assertions)]
     pub(crate) fn new_mock(
         catalog: ModelCatalog,
-        tools: Tools,
+        mut tools: Tools,
         sessions_dir: PathBuf,
         lock_dir: PathBuf,
         scripts: pp_llm::MockScripts,
     ) -> Result<Self> {
-        let mut agent = Self::new_with_mcp(
+        // mock 场景固定空管理器：不读取真实用户 MCP 定义。
+        tools.mcp = std::sync::Arc::new(crate::mcp::McpManager::empty());
+        let mut agent = Self::new_with_prompt(
             catalog,
             tools,
             sessions_dir.clone(),
             lock_dir,
             crate::system_prompt::Snapshot::bundled(),
-            Some(crate::mcp::Registry::default()),
             sessions_dir.join(".stats/stats.db"),
         )?;
         agent.client.set_mock_scripts(scripts)?;
@@ -565,7 +546,7 @@ impl Agent {
         for result in [
             self.stop_subagents(),
             self.tools.stop_background_tasks(),
-            self.tools.mcp.abort_connections(),
+            self.tools.mcp.shutdown(),
             self.stop_lsp(),
         ] {
             if let Err(error) = result {
@@ -674,9 +655,9 @@ impl Agent {
         // 审批配置沿用当前 settings.yml，不恢复 checkpoint 中的旧值；
         // 会话级授权本来就不序列化。
         tools.approval.set_config(config.settings.tools.clone());
-        tools.mcp = crate::mcp::Registry::load(
-            &catalog.mcp_path(),
-            tools.cwd(),
+        // 复用进程级单例：跨 `/resume` 不重连也不重读 `mcp.json`，只按目标
+        // 模式补连尚未连接的服务。
+        tools.mcp.connect_enabled(
             &CancellationToken::new(),
             crate::mcp::Access::for_mode(checkpoint.workflow.mode),
         )?;

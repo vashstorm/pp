@@ -3,19 +3,25 @@ use super::*;
 mod fixture;
 use fixture::RemoteServer;
 
-fn load(server: &RemoteServer, transport: &str, timeout: u64) -> (tempfile::TempDir, Registry) {
+fn load(
+    server: &RemoteServer,
+    transport: &str,
+    timeout: u64,
+) -> (tempfile::TempDir, Arc<McpManager>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     std::fs::write(&path, server.config(transport, timeout).to_string()).unwrap();
-    let registry =
-        Registry::load(&path, dir.path(), &CancellationToken::new(), Access::Full).unwrap();
+    let manager = Arc::new(McpManager::new(path, dir.path().to_path_buf()));
+    manager
+        .connect_enabled(&CancellationToken::new(), Access::Full)
+        .unwrap();
     assert_eq!(
-        registry.definitions(Access::Full).len(),
+        manager.definitions(Access::Full).len(),
         2,
         "{}",
-        registry.view(Access::Full).text()
+        manager.view(Access::Full).text()
     );
-    (dir, registry)
+    (dir, manager)
 }
 
 #[test]
@@ -28,9 +34,9 @@ fn mcp_remote_roundtrip_json_http_sse_and_legacy_sse() {
         ("sse", "absolute_endpoint"),
     ] {
         let server = RemoteServer::new(mode);
-        let (_dir, mut registry) = load(&server, transport, 3000);
+        let (_dir, manager) = load(&server, transport, 3000);
         let token = CancellationToken::new();
-        let result = registry
+        let result = manager
             .call(
                 "mcp__remote__echo",
                 r#"{"text":"中文\n第二行"}"#,
@@ -42,13 +48,13 @@ fn mcp_remote_roundtrip_json_http_sse_and_legacy_sse() {
         assert_eq!(result["result"]["structuredContent"]["count"], 1);
         assert_eq!(result["ok"], true);
         assert_eq!(
-            registry
+            manager
                 .call("mcp__remote__fail", "{}", Access::Full, &token)
                 .unwrap()["ok"],
             false
         );
-        registry.shutdown().unwrap();
-        assert!(registry.tracking.lock().unwrap().connections.is_empty());
+        manager.shutdown().unwrap();
+        assert_eq!(manager.test_connection_count(), 0);
         let log = server.log();
         let initialize = log
             .iter()
@@ -110,9 +116,9 @@ fn mcp_remote_failures_are_redacted_bounded_and_never_replay_calls() {
         "rpc_error",
     ] {
         let server = RemoteServer::new(mode);
-        let (_dir, mut registry) = load(&server, "http", 1000);
+        let (_dir, manager) = load(&server, "http", 1000);
         let start = Instant::now();
-        let error = registry
+        let error = manager
             .call(
                 "mcp__remote__echo",
                 "{}",
@@ -130,9 +136,9 @@ fn mcp_remote_failures_are_redacted_bounded_and_never_replay_calls() {
             assert!(text.contains("timed out"));
         }
         if mode != "rpc_error" {
-            assert!(registry.definitions(Access::Full).is_empty(), "{mode}");
+            assert!(manager.definitions(Access::Full).is_empty(), "{mode}");
             assert!(
-                registry
+                manager
                     .call(
                         "mcp__remote__echo",
                         "{}",
@@ -142,7 +148,7 @@ fn mcp_remote_failures_are_redacted_bounded_and_never_replay_calls() {
                     .is_err()
             );
         }
-        registry.shutdown().unwrap();
+        manager.shutdown().unwrap();
         assert_eq!(
             server
                 .log()
@@ -168,9 +174,8 @@ fn mcp_remote_cancel_during_headers_closes_worker() {
         cancel.cancel();
     });
     let start = Instant::now();
-    let error = Registry::load(&path, dir.path(), &token, Access::Full)
-        .err()
-        .unwrap();
+    let manager = McpManager::new(path, dir.path().to_path_buf());
+    let error = manager.connect_enabled(&token, Access::Full).err().unwrap();
     canceller.join().unwrap();
     assert!(error.is::<Cancelled>());
     assert!(start.elapsed() < Duration::from_secs(2));
@@ -181,9 +186,9 @@ fn mcp_remote_cancel_lazy_restart_checks_complete_tool_definitions() {
     for transport in ["http", "sse"] {
         for changed in [false, true] {
             let server = RemoteServer::new("stall_once");
-            let (_dir, mut registry) = load(&server, transport, 3000);
+            let (_dir, manager) = load(&server, transport, 3000);
             let token = CancellationToken::new();
-            let call = registry.clone();
+            let call = manager.clone();
             let cancel = token.clone();
             let worker =
                 thread::spawn(move || call.call("mcp__remote__echo", "{}", Access::Full, &cancel));
@@ -193,7 +198,7 @@ fn mcp_remote_cancel_lazy_restart_checks_complete_tool_definitions() {
             if changed {
                 server.changed();
             }
-            let result = registry.call(
+            let result = manager.call(
                 "mcp__remote__echo",
                 r#"{"text":"restarted"}"#,
                 Access::Full,
@@ -222,7 +227,7 @@ fn mcp_remote_cancel_lazy_restart_checks_complete_tool_definitions() {
                     .count(),
                 if changed { 1 } else { 2 }
             );
-            registry.shutdown().unwrap();
+            manager.shutdown().unwrap();
         }
     }
 }
@@ -234,64 +239,50 @@ fn mcp_remote_management_plan_reload_and_cleanup_track_later_connections() {
     let path = dir.path().join("mcp.json");
     std::fs::write(&path, server.config("http", 1000).to_string()).unwrap();
     let token = CancellationToken::new();
-    let mut registry = Registry::load(&path, dir.path(), &token, Access::ReadOnly).unwrap();
-    let cleanup = registry.cleanup().unwrap();
+    let manager = McpManager::new(path.clone(), dir.path().to_path_buf());
+    manager.connect_enabled(&token, Access::ReadOnly).unwrap();
     for action in [
         Action::List,
         Action::Disable("remote".into()),
         Action::Enable("remote".into()),
         Action::Reload,
     ] {
-        registry
-            .manage(&action, dir.path(), &token, Access::ReadOnly)
-            .unwrap();
+        manager.manage(&action, &token, Access::ReadOnly).unwrap();
     }
     assert!(server.log().is_empty());
-    registry
-        .manage(
-            &Action::Reconnect("remote".into()),
-            dir.path(),
-            &token,
-            Access::Full,
-        )
+    manager
+        .manage(&Action::Reconnect("remote".into()), &token, Access::Full)
         .unwrap();
-    assert_eq!(registry.definitions(Access::Full).len(), 2);
+    assert_eq!(manager.definitions(Access::Full).len(), 2);
     std::fs::write(&path, "invalid secret").unwrap();
     assert!(
-        registry
-            .manage(&Action::Reload, dir.path(), &token, Access::Full)
+        manager
+            .manage(&Action::Reload, &token, Access::Full)
             .is_err()
     );
     assert_eq!(
-        registry
+        manager
             .call("mcp__remote__echo", "{}", Access::Full, &token)
             .unwrap()["ok"],
         true
     );
     std::fs::write(&path, server.config("http", 1000).to_string()).unwrap();
     server.changed();
-    registry
-        .manage(&Action::Reload, dir.path(), &token, Access::Full)
+    manager
+        .manage(&Action::Reload, &token, Access::Full)
         .unwrap();
     assert!(
-        registry
+        manager
             .definitions(Access::Full)
             .iter()
             .any(|t| t.description.as_deref() == Some("changed"))
     );
-    drop(cleanup);
-    assert!(
-        registry
-            .tracking
-            .lock()
-            .unwrap()
-            .connections
-            .iter()
-            .all(|s| !s.lock().unwrap().is_live())
-    );
+    // 退出路径覆盖 reload 之后新建的连接，并禁止旧槽复活。
+    manager.shutdown().unwrap();
+    assert_eq!(manager.test_connection_count(), 0);
     let before = server.log().len();
     assert!(
-        registry
+        manager
             .call("mcp__remote__echo", "{}", Access::Full, &token)
             .is_err()
     );
@@ -302,10 +293,10 @@ fn mcp_remote_management_plan_reload_and_cleanup_track_later_connections() {
 fn mcp_remote_cleanup_interrupts_active_requests_without_waiting_for_state_lock() {
     for transport in ["http", "sse"] {
         let server = RemoteServer::new("stall_call");
-        let (_dir, registry) = load(&server, transport, 30000);
-        let cleanup = registry.cleanup().unwrap();
+        let (_dir, manager) = load(&server, transport, 30000);
+        let call = manager.clone();
         let worker = thread::spawn(move || {
-            registry.call(
+            call.call(
                 "mcp__remote__echo",
                 "{}",
                 Access::Full,
@@ -314,7 +305,7 @@ fn mcp_remote_cleanup_interrupts_active_requests_without_waiting_for_state_lock(
         });
         server.wait_calls(1);
         let start = Instant::now();
-        drop(cleanup);
+        manager.shutdown().unwrap();
         assert!(worker.join().unwrap().is_err());
         assert!(start.elapsed() < Duration::from_secs(2));
     }
@@ -326,11 +317,13 @@ fn mcp_remote_legacy_endpoint_cannot_forward_credentials_cross_origin() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     std::fs::write(&path, server.config("sse", 1000).to_string()).unwrap();
-    let registry =
-        Registry::load(&path, dir.path(), &CancellationToken::new(), Access::Full).unwrap();
-    assert!(registry.definitions(Access::Full).is_empty());
+    let manager = McpManager::new(path, dir.path().to_path_buf());
+    manager
+        .connect_enabled(&CancellationToken::new(), Access::Full)
+        .unwrap();
+    assert!(manager.definitions(Access::Full).is_empty());
     assert_eq!(server.log().len(), 1);
-    assert!(!registry.view(Access::Full).text().contains("secret"));
+    assert!(!manager.view(Access::Full).text().contains("secret"));
 }
 
 #[test]
@@ -350,37 +343,54 @@ fn mcp_read_only_scope_matches_original_names_and_management_filters_connections
         suspended.config("http", 3000)["mcpServers"]["remote"].clone();
     std::fs::write(&path, config.to_string()).unwrap();
     let token = CancellationToken::new();
-    let mut registry = Registry::load(&path, dir.path(), &token, Access::Full).unwrap();
-    assert_eq!(registry.definitions(Access::Full).len(), 4);
-    registry.restrict_to_read_only().unwrap();
-    assert_eq!(registry.definitions(Access::Full).len(), 2);
+    let manager = Arc::new(McpManager::new(path.clone(), dir.path().to_path_buf()));
+    manager.connect_enabled(&token, Access::Full).unwrap();
+    assert_eq!(manager.definitions(Access::Full).len(), 4);
+    // Plan/Review 只按 access 过滤工具，不断开任何已连接的服务进程。
+    assert_eq!(manager.definitions(Access::ReadOnly).len(), 1);
     assert!(
-        suspended
-            .log()
-            .iter()
-            .any(|entry| entry["method"] == "DELETE")
+        manager
+            .view(Access::ReadOnly)
+            .text()
+            .contains("suspended (Plan/Review)")
     );
 
     let name = exposed_name("remote", fixture::LONG_TOOL);
     assert!(name.starts_with("mcp__remote__tool_"));
-    assert_eq!(registry.definitions(Access::ReadOnly)[0].name, name);
-    assert_eq!(registry.definitions(Access::ReadOnly).len(), 1);
+    assert_eq!(manager.definitions(Access::ReadOnly)[0].name, name);
     assert!(
-        registry
+        manager
             .view(Access::ReadOnly)
             .text()
             .contains("1 configured read-only tools were not discovered")
     );
-    let error = registry
+    let error = manager
         .proxy_call("mcp__remote__fail", "invalid", Access::ReadOnly, &token)
         .unwrap_err();
     assert!(error.to_string().contains("not authorized"));
     assert_eq!(
-        registry
+        manager
             .proxy_call(&name, r#"{"text":"public"}"#, Access::ReadOnly, &token)
             .unwrap()["result"]["content"][0]["text"],
         "public"
     );
+    // 进程仍保持连接：Access::Full 立刻恢复完整工具表，且从未重新 initialize，
+    // 未授权服务也没有收到终止会话的 DELETE。
+    assert_eq!(manager.definitions(Access::Full).len(), 4);
+    for (label, server) in [("remote", &remote), ("suspended", &suspended)] {
+        let log = server.log();
+        assert!(
+            !log.iter().any(|entry| entry["method"] == "DELETE"),
+            "{label}"
+        );
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry["body"]["method"] == "initialize")
+                .count(),
+            1,
+            "{label}"
+        );
+    }
     let log = remote.log();
     assert!(
         log.iter()
@@ -393,24 +403,23 @@ fn mcp_read_only_scope_matches_original_names_and_management_filters_connections
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["body"]["params"]["name"], fixture::LONG_TOOL);
 
-    let manage = |registry: &mut Registry, action| {
-        registry.manage(&action, dir.path(), &token, Access::ReadOnly)
-    };
-    assert!(manage(&mut registry, Action::Reconnect("suspended".into())).is_err());
-    manage(&mut registry, Action::Disable("remote".into())).unwrap();
-    assert!(registry.definitions(Access::ReadOnly).is_empty());
-    manage(&mut registry, Action::Enable("remote".into())).unwrap();
-    assert_eq!(registry.definitions(Access::ReadOnly).len(), 1);
-    manage(&mut registry, Action::Reconnect("remote".into())).unwrap();
-    assert_eq!(registry.definitions(Access::ReadOnly).len(), 1);
+    let manage = |action| manager.manage(&action, &token, Access::ReadOnly);
+    assert!(manage(Action::Reconnect("suspended".into())).is_err());
+    manage(Action::Disable("remote".into())).unwrap();
+    assert!(manager.definitions(Access::ReadOnly).is_empty());
+    manage(Action::Enable("remote".into())).unwrap();
+    assert_eq!(manager.definitions(Access::ReadOnly).len(), 1);
+    manage(Action::Reconnect("remote".into())).unwrap();
+    assert_eq!(manager.definitions(Access::ReadOnly).len(), 1);
 
     config["mcpServers"]["remote"]
         .as_object_mut()
         .unwrap()
         .remove("read_only_tools");
     std::fs::write(&path, config.to_string()).unwrap();
-    manage(&mut registry, Action::Reload).unwrap();
-    assert!(registry.definitions(Access::Full).is_empty());
+    manage(Action::Reload).unwrap();
+    // 去掉只读授权后，ReadOnly 的 Reload 不再连接任何服务。
+    assert!(manager.definitions(Access::Full).is_empty());
     assert_eq!(
         suspended
             .log()

@@ -26,7 +26,13 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
             .any(|line| line.starts_with("  ╰") && line.ends_with('╯')),
         "{text}"
     );
-    for ms in [1000, 1500] {
+    for (ms, clock) in [
+        (0, "🕛"),
+        (500, "🕒"),
+        (1000, "🕕"),
+        (1500, "🕘"),
+        (2000, "🕛"),
+    ] {
         transcript.progress(AgentEvent::ToolOutputSnapshot {
             id: "wait".into(),
             output: wait_snapshot(10, ms).to_string(),
@@ -40,7 +46,7 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
             text.contains("2 more jobs") && !text.contains("work-9"),
             "{text}"
         );
-        assert!(text.contains(if ms == 1000 { "◑" } else { "◒" }), "{text}");
+        assert!(text.contains(&format!("{clock} [bash] bg-0")), "{text}");
         assert!(text.contains("╭") && text.contains("╰"));
     }
     // 较早完成目标的长耗时不能冻结其他运行目标的动画。
@@ -51,7 +57,11 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
         id: "wait".into(),
         output: mixed.to_string(),
     });
-    assert!(entry_text(&mut transcript.entries[0], 100).contains("◒"));
+    let text = entry_text(&mut transcript.entries[0], 100);
+    assert!(
+        text.contains("✓  [bash] bg-0") && text.contains("🕘 [bash] bg-1"),
+        "{text}"
+    );
     transcript.toggle_tool_output();
     assert!(entry_text(&mut transcript.entries[0], 100).contains("work-9"));
     let mut result = wait_snapshot(10, 2000);
@@ -76,7 +86,7 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
     assert!(!frozen.contains("Result ") && !frozen.contains("finished-line"));
     assert!(!frozen.contains("agent-report") && !frozen.contains("agent-error"));
     assert!(!frozen.contains("/tmp/agent-result.json"));
-    assert!(!frozen.contains("◑") && !frozen.contains("◒"));
+    assert!(!frozen.contains(['🕛', '🕒', '🕕', '🕘']));
     transcript.tick(Instant::now() + Duration::from_secs(20));
     assert_eq!(entry_text(&mut transcript.entries[0], 100), frozen);
     let replay = vec![

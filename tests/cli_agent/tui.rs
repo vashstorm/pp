@@ -87,8 +87,18 @@ fn no_more(server: &Server) {
 }
 
 const DEADLINE: Duration = Duration::from_secs(10);
+const WAIT_CLOCKS: [char; 4] = ['🕛', '🕒', '🕕', '🕘'];
 // portable-pty sets CLOEXEC after openpty; do not spawn another child in that window.
 pub(super) static PTY_SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn live_activity_labels(text: &str) -> impl Iterator<Item = &str> {
+    text.lines().filter_map(|line| {
+        line.trim_end()
+            .strip_prefix("  ")?
+            .strip_prefix(WAIT_CLOCKS)?
+            .strip_prefix(' ')
+    })
+}
 
 fn input_is_ready(screen: &vt100::Screen) -> bool {
     screen
@@ -351,7 +361,7 @@ impl Pty {
         self.wait_for("空闲输入框", |screen| {
             let text = screen.contents();
             input_is_ready(screen)
-                && !text.contains("\u{f12b7} ")
+                && live_activity_labels(&text).next().is_none()
                 && !text
                     .lines()
                     .any(|line| line.trim_start().starts_with("✻ ") && !line.contains(" · done "))

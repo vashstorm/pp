@@ -26,6 +26,16 @@ fn cancel_mcp_assert_pid_stopped(path: &Path) {
     }
 }
 
+// 反向断言：进入 Plan 不再断开 MCP 服务，进程必须仍在运行。信号 0 探测不递送信号。
+fn cancel_mcp_assert_pid_alive(path: &Path) {
+    let pid: i32 = std::fs::read_to_string(path).unwrap().trim().parse().unwrap();
+    let pid = rustix::process::Pid::from_raw(pid).unwrap();
+    assert!(
+        rustix::process::test_kill_process(pid).is_ok(),
+        "MCP process {pid} is not running"
+    );
+}
+
 fn cancel_mcp_protocol_path(protocol: &str) -> &'static str {
     if protocol == "completion" { "/v1/chat/completions" } else { "/v1/responses" }
 }

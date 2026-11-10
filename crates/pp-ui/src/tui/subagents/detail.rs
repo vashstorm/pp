@@ -129,8 +129,8 @@ impl Detail {
         *self = fresh;
     }
 
-    pub(super) fn tick(&mut self, now: std::time::Instant) {
-        self.transcript.tick(now);
+    pub(super) fn tick(&mut self, now: std::time::Instant) -> bool {
+        self.transcript.tick(now)
     }
 
     /// settled 是 worker 读页前冻结的终态；只有读完本页历史后才可用它补齐。

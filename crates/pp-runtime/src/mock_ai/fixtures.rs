@@ -332,6 +332,7 @@ fn run_scenario(
             );
             scripts.insert(format!("mock-{lane}/primary"), Arc::new(script));
         }
+        // `Tools::new` 默认空 `McpManager`：mock 场景不读取真实用户 MCP 定义。
         let mut tools = Tools::new(workspace.clone(), scenario.edit_mode)?;
         tools.ask_handler = ask;
         let mut agent = Agent::new_mock(catalog, tools, sessions, locks, Arc::new(scripts))?;

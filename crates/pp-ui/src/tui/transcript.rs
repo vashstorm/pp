@@ -163,7 +163,7 @@ struct TranscriptEntry {
     pipeline_preview: Option<String>,
     started: Option<Instant>,
     bash_timeout_seconds: Option<u64>,
-    read_frame: usize,
+    read_clock: &'static str,
     arguments: Value,
     result: Option<Value>,
     /// 内联或迟到报告；每个路径保留最新一份，按出现顺序展示在正文之后。
@@ -184,6 +184,7 @@ struct PipesBadge {
 struct Activity {
     entry: TranscriptEntry,
     frame: u128,
+    clock: &'static str,
     started: Option<Instant>,
     waiting_started: Option<Instant>,
     label: String,
@@ -368,11 +369,11 @@ impl Transcript {
         {
             let entry = &mut self.entries[*index];
             if entry.tool.as_deref() == Some("read") && entry.status == EntryStatus::Running {
-                let frame = entry.started.map_or(0, |started| {
-                    (now.saturating_duration_since(started).as_millis() / 120 % 12) as usize
-                });
-                if entry.read_frame != frame {
-                    entry.read_frame = frame;
+                let clock = palette::waiting_clock(entry.started.map_or(0, |started| {
+                    now.saturating_duration_since(started).as_millis()
+                }));
+                if entry.read_clock != clock {
+                    entry.read_clock = clock;
                     entry.layout = None;
                     entry.display_title = None;
                     self.read_groups_key = None;

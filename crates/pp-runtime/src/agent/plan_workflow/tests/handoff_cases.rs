@@ -540,7 +540,21 @@ fn wait_for_initialize(log: &std::path::Path, expected: usize) -> bool {
     false
 }
 
-/// 当前 registry 在该 access 下暴露的工具名。
+/// fixture 服务启动时把自身 PID 写入 `<日志>.pid`；信号 0 只探测进程是否
+/// 存在，不向它递送信号，因此能区分“进程仍在运行”和“仅条目仍写 connected”。
+fn assert_server_alive(log: &std::path::Path) {
+    let pid_path = format!("{}.pid", log.display());
+    let pid: i32 = std::fs::read_to_string(&pid_path)
+        .unwrap_or_else(|error| panic!("missing {pid_path}: {error}"))
+        .trim()
+        .parse()
+        .expect("fixture pid");
+    // SAFETY: kill(pid, 0) 只做存在性探测，不递送任何信号。
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    assert!(alive, "MCP fixture process {pid} is not alive");
+}
+
+/// 当前 manager 在该 access 下暴露的工具名。
 fn mcp_tool_names(agent: &Agent, access: Access) -> Vec<String> {
     agent
         .tools
@@ -585,56 +599,145 @@ fn ready_plan_token(agent: &mut Agent) -> ReviewToken {
 fn plan_exit_reuses_connected_mcp_service_without_reinitializing() {
     let dir = tempfile::tempdir().unwrap();
     let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
-    let log = dir.path().join("local.log");
-    // Plan 期按只读授权连接该服务：一次真实握手。
-    enter_plan_with_mcp(
-        &mut agent,
+    let local_log = dir.path().join("local.log");
+    let extra_log = dir.path().join("extra.log");
+    // Execute 下先连接两个服务：各一次真实握手。
+    write_mcp_config(
         dir.path(),
-        json!({"local": fixture_server(&log, true, None)}),
+        json!({
+            "extra": fixture_server(&extra_log, false, None),
+            "local": fixture_server(&local_log, true, None),
+        }),
     );
-    assert_eq!(initialize_count(&log), 1);
+    agent
+        .manage_mcp(&crate::mcp::Action::Reload, &CancellationToken::new())
+        .unwrap();
+    assert_eq!(initialize_count(&local_log), 1);
+    assert_eq!(initialize_count(&extra_log), 1);
     assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    assert_eq!(mcp_status(&agent, Access::Full, "extra"), "connected");
+    assert_server_alive(&local_log);
+    assert_server_alive(&extra_log);
 
+    // 进入 Plan 只按 access 过滤工具：两个进程都保持运行，只暴露授权工具。
+    agent.enter_plan(&CancellationToken::new()).unwrap();
+    assert_eq!(initialize_count(&local_log), 1);
+    assert_eq!(initialize_count(&extra_log), 1);
+    assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    assert_eq!(mcp_status(&agent, Access::Full, "extra"), "connected");
+    assert_server_alive(&local_log);
+    assert_server_alive(&extra_log);
+    let plan_tools = mcp_tool_names(&agent, Access::ReadOnly);
+    assert_eq!(plan_tools, ["mcp__local__echo".to_owned()]);
+    let session_tools = agent.session.tool_names();
+    assert!(
+        !session_tools
+            .iter()
+            .any(|name| name.starts_with("mcp__extra__")),
+        "Plan 工具表不得暴露未授权服务：{session_tools:?}"
+    );
+
+    // Plan 运行读取计划正文，不触碰 MCP 连接。
     let token = ready_plan_token(&mut agent);
+    assert_eq!(initialize_count(&local_log), 1);
+    assert_eq!(initialize_count(&extra_log), 1);
+    assert_server_alive(&local_log);
+    assert_server_alive(&extra_log);
+
+    // 退出 Plan：执行权限补连不需要新进程，工具表恢复完整清单。
     let preparation = agent
         .save_plan_and_leave(token, &InputQueue::default(), &CancellationToken::new())
         .unwrap();
-
     assert_eq!(preparation.workflow.mode, WorkMode::Execute);
-    // 复用 Plan 期连接：退出不再产生第二次 initialize。
-    assert_eq!(initialize_count(&log), 1);
+    assert_eq!(initialize_count(&local_log), 1);
+    assert_eq!(initialize_count(&extra_log), 1);
     assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    assert_eq!(mcp_status(&agent, Access::Full, "extra"), "connected");
+    assert_server_alive(&local_log);
+    assert_server_alive(&extra_log);
     let names = mcp_tool_names(&agent, Access::Full);
     assert!(names.contains(&"mcp__local__echo".to_owned()), "{names:?}");
+    assert!(names.contains(&"mcp__extra__echo".to_owned()), "{names:?}");
+    assert_eq!(
+        session_tool_count(&agent),
+        agent.tools.all_definitions(WorkMode::Execute).len()
+    );
+
+    // 再次进入 Plan 并批准执行：同一批连接贯穿审批，不重启服务。
+    agent.enter_plan(&CancellationToken::new()).unwrap();
+    let token = ready_plan_token(&mut agent);
+    assert_eq!(initialize_count(&local_log), 1);
+    assert_eq!(initialize_count(&extra_log), 1);
+    let approval = agent
+        .approve_plan(
+            token,
+            ExecutionContext::Keep,
+            &InputQueue::default(),
+            &CancellationToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+    assert_eq!(approval.workflow.mode, WorkMode::Execute);
+    assert_eq!(initialize_count(&local_log), 1);
+    assert_eq!(initialize_count(&extra_log), 1);
+    assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    assert_eq!(mcp_status(&agent, Access::Full, "extra"), "connected");
+    assert_server_alive(&local_log);
+    assert_server_alive(&extra_log);
+    let names = mcp_tool_names(&agent, Access::Full);
+    assert!(names.contains(&"mcp__local__echo".to_owned()), "{names:?}");
+    assert!(names.contains(&"mcp__extra__echo".to_owned()), "{names:?}");
 }
 
 #[test]
-fn plan_exit_rebuilds_mcp_registry_only_when_config_changes() {
+fn plan_handoff_ignores_external_config_until_reload() {
     let dir = tempfile::tempdir().unwrap();
     let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
-    let log = dir.path().join("mcp.log");
+    let local_log = dir.path().join("local.log");
+    let replacement_log = dir.path().join("replacement.log");
     enter_plan_with_mcp(
         &mut agent,
         dir.path(),
-        json!({"local": fixture_server(&log, true, None)}),
+        json!({"local": fixture_server(&local_log, true, None)}),
     );
-    assert_eq!(initialize_count(&log), 1);
-
+    assert_eq!(initialize_count(&local_log), 1);
     let token = ready_plan_token(&mut agent);
-    // Plan 期间改写定义并换服务名：旧连接不能沿用。
+
+    // Plan 期改写配置：交接既不重读配置，也不启动新进程。
     write_mcp_config(
         dir.path(),
-        json!({"replacement": fixture_server(&log, true, None)}),
+        json!({"replacement": fixture_server(&replacement_log, true, None)}),
     );
+    assert_eq!(initialize_count(&replacement_log), 0);
+    let plan_tools = mcp_tool_names(&agent, Access::ReadOnly);
+    assert_eq!(plan_tools, ["mcp__local__echo".to_owned()]);
+
     let preparation = agent
         .save_plan_and_leave(token, &InputQueue::default(), &CancellationToken::new())
         .unwrap();
-
     assert_eq!(preparation.workflow.mode, WorkMode::Execute);
-    // 重建分支：新配置产生新的 initialize，旧服务不再出现在登记中。
-    assert_eq!(initialize_count(&log), 2);
+    // 交接仍用旧连接与旧工具：新服务未出现，旧进程未重启。
+    assert_eq!(initialize_count(&local_log), 1);
+    assert_eq!(initialize_count(&replacement_log), 0);
+    assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    assert_eq!(mcp_status(&agent, Access::Full, "replacement"), "missing");
+    assert_server_alive(&local_log);
+    let names = mcp_tool_names(&agent, Access::Full);
+    assert!(names.contains(&"mcp__local__echo".to_owned()), "{names:?}");
+    assert!(
+        !names.contains(&"mcp__replacement__echo".to_owned()),
+        "{names:?}"
+    );
+
+    // 只有显式 /mcp reload 才加载新配置：旧服务停止，新服务首次握手。
+    agent
+        .manage_mcp(&crate::mcp::Action::Reload, &CancellationToken::new())
+        .unwrap();
+    assert_eq!(initialize_count(&local_log), 1);
+    assert_eq!(initialize_count(&replacement_log), 1);
     assert_eq!(mcp_status(&agent, Access::Full, "local"), "missing");
     assert_eq!(mcp_status(&agent, Access::Full, "replacement"), "connected");
+    assert_server_alive(&replacement_log);
     let names = mcp_tool_names(&agent, Access::Full);
     assert!(
         names.contains(&"mcp__replacement__echo".to_owned()),
@@ -671,6 +774,7 @@ fn plan_exit_isolates_supplementary_initialize_failure() {
     assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&broken_log), 1);
     assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    assert_server_alive(&local_log);
     assert_eq!(
         mcp_status(&agent, Access::Full, "broken"),
         "failed (initialization)"
@@ -684,7 +788,7 @@ fn plan_exit_isolates_supplementary_initialize_failure() {
 }
 
 #[test]
-fn plan_exit_rolls_back_supplementary_connection_when_cancelled() {
+fn plan_exit_cancel_keeps_mcp_connections_intact() {
     let dir = tempfile::tempdir().unwrap();
     let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
     let local_log = dir.path().join("local.log");
@@ -723,21 +827,24 @@ fn plan_exit_rolls_back_supplementary_connection_when_cancelled() {
 
     assert!(error.is::<pp_core::cancellation::Cancelled>(), "{error:#}");
     assert_eq!(agent.workflow.mode, WorkMode::Plan);
+    assert!(agent.plan_cleanup_error.is_none());
+    assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&extra_log), 1);
     assert_eq!(initialize_count(&stuck_log), 1);
-    // 回滚只断开本次补连的服务：Plan 期连接与 Plan 工具表保持不变。
-    assert_eq!(mcp_status(&agent, Access::Full, "extra"), "not connected");
+    // 取消不回滚已建立的连接：extra 与 local 保持 connected；只有尚未完成
+    // 握手的 stuck 以“未连接”收尾（它自己的进程在失败路径被停止）。
+    assert_eq!(mcp_status(&agent, Access::Full, "extra"), "connected");
     assert_eq!(mcp_status(&agent, Access::Full, "stuck"), "not connected");
     assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    assert_server_alive(&local_log);
+    assert_server_alive(&extra_log);
+    // Plan 工具表不变：只有明确只读授权的 local。
     let plan_tools = mcp_tool_names(&agent, Access::ReadOnly);
-    assert!(
-        plan_tools.contains(&"mcp__local__echo".to_owned()),
-        "{plan_tools:?}"
-    );
+    assert_eq!(plan_tools, ["mcp__local__echo".to_owned()]);
 }
 
 #[test]
-fn plan_exit_failure_rolls_back_only_the_supplementary_connection() {
+fn plan_handoff_failure_keeps_mcp_connections_intact() {
     let dir = tempfile::tempdir().unwrap();
     let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
     let local_log = dir.path().join("local.log");
@@ -752,7 +859,7 @@ fn plan_exit_failure_rolls_back_only_the_supplementary_connection() {
     );
     let token = ready_plan_token(&mut agent);
 
-    // 会话日志改为只读：交接在 commit_plan_exit 处失败，进入回滚分支。
+    // 会话日志改为只读：交接在 commit_plan_exit 处失败。
     let id = agent.session_id().unwrap().to_owned();
     let path = dir.path().join("sessions").join(format!("{id}.jsonl"));
     agent.journal.use_read_only_file(&path);
@@ -762,60 +869,19 @@ fn plan_exit_failure_rolls_back_only_the_supplementary_connection() {
         .expect("只读日志使交接失败");
 
     assert_eq!(agent.workflow.mode, WorkMode::Plan);
-    // 失败来自会话持久化，而不是 MCP 回滚。
+    // 失败来自会话持久化，而不是 MCP 连接。
     assert!(
         error.to_string().starts_with("persisting session "),
         "{error:#}"
     );
     assert!(agent.plan_cleanup_error.is_none());
-    // 本次补连的 extra 被回滚，Plan 期连接与工具表保持不变。
+    // 失败不回滚已补连的执行权限服务：extra 与 local 都保持 connected。
     assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&extra_log), 1);
-    assert_eq!(mcp_status(&agent, Access::Full, "extra"), "not connected");
+    assert_eq!(mcp_status(&agent, Access::Full, "extra"), "connected");
     assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
+    assert_server_alive(&local_log);
+    assert_server_alive(&extra_log);
     let plan_tools = mcp_tool_names(&agent, Access::ReadOnly);
-    assert!(
-        plan_tools.contains(&"mcp__local__echo".to_owned()),
-        "{plan_tools:?}"
-    );
-}
-
-/// 复用分支的前提是同一份配置重新加载后仍判为一致：stdio 的 args/env 与
-/// HTTP 的 url/headers 都不能因解析细节产生伪差异，否则每次退出都会重建，
-/// 本次优化实际失效；真正改写定义时必须判为不一致。
-#[test]
-fn mcp_config_snapshot_matches_across_reloads_and_detects_definition_changes() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("mcp.json");
-    let log = dir.path().join("local.log");
-    let stdio = fixture_server(&log, true, None);
-    let remote = json!({
-        "type": "http",
-        "url": "https://mcp.example.com/mcp?tools=web_search,web_fetch",
-        "headers": {"Authorization": "Bearer fixture", "X-Trace": "1"},
-        "timeout": 5,
-        "read_only_tools": ["web_search"]
-    });
-    write_mcp_config(
-        dir.path(),
-        json!({"local": stdio.clone(), "remote": remote.clone()}),
-    );
-    let first = crate::mcp::Registry::read_config(&path).unwrap();
-    let second = crate::mcp::Registry::read_config(&path).unwrap();
-    assert!(first.config_matches(&second));
-
-    // 只读授权变化必须拒绝复用：它决定 Plan 期连接哪些服务。
-    let mut narrowed = remote.clone();
-    narrowed["read_only_tools"] = json!([]);
-    write_mcp_config(
-        dir.path(),
-        json!({"local": stdio.clone(), "remote": narrowed}),
-    );
-    let changed = crate::mcp::Registry::read_config(&path).unwrap();
-    assert!(!first.config_matches(&changed));
-
-    // 服务集合变化同样必须拒绝复用。
-    write_mcp_config(dir.path(), json!({"local": stdio}));
-    let removed = crate::mcp::Registry::read_config(&path).unwrap();
-    assert!(!first.config_matches(&removed));
+    assert_eq!(plan_tools, ["mcp__local__echo".to_owned()]);
 }

@@ -760,7 +760,7 @@ mod tests {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
-    use crate::mcp::{Action, Registry};
+    use crate::mcp::{Access, Action, McpManager};
     #[test]
     fn mcp_plan_management_never_spawns_and_cleanup_tracks_later_connections() {
         let dir = tempfile::tempdir().unwrap();
@@ -768,70 +768,40 @@ mod lifecycle_tests {
         let log = dir.path().join("server-log");
         fs::write(&path, json!({"mcpServers":{"local":{"command":"bash","args":[format!("{}/../../tests/fixtures/mcp_server.sh", env!("CARGO_MANIFEST_DIR"))],"env":{"MCP_LOG":log.to_str().unwrap(),"MCP_VALUE":"test"}}}}).to_string()).unwrap();
         let token = CancellationToken::new();
-        let mut registry =
-            Registry::load(&path, dir.path(), &token, crate::mcp::Access::ReadOnly).unwrap();
-        let cleanup = registry.cleanup().unwrap();
-        registry
-            .manage(
-                &Action::Disable("local".into()),
-                dir.path(),
-                &token,
-                crate::mcp::Access::ReadOnly,
-            )
+        let manager = McpManager::new(path, dir.path().to_path_buf());
+        manager.connect_enabled(&token, Access::ReadOnly).unwrap();
+        manager
+            .manage(&Action::Disable("local".into()), &token, Access::ReadOnly)
             .unwrap();
-        registry
-            .manage(
-                &Action::Enable("local".into()),
-                dir.path(),
-                &token,
-                crate::mcp::Access::ReadOnly,
-            )
+        manager
+            .manage(&Action::Enable("local".into()), &token, Access::ReadOnly)
             .unwrap();
         assert!(!log.exists());
-        assert!(registry.definitions(crate::mcp::Access::Full).is_empty());
+        assert!(manager.definitions(Access::Full).is_empty());
         assert!(
-            registry
-                .manage(
-                    &Action::Reconnect("local".into()),
-                    dir.path(),
-                    &token,
-                    crate::mcp::Access::ReadOnly
-                )
+            manager
+                .manage(&Action::Reconnect("local".into()), &token, Access::ReadOnly)
                 .is_err()
         );
-        registry
-            .manage(
-                &Action::Reconnect("local".into()),
-                dir.path(),
-                &token,
-                crate::mcp::Access::Full,
-            )
+        manager
+            .manage(&Action::Reconnect("local".into()), &token, Access::Full)
             .unwrap();
         assert!(log.exists());
-        assert!(!registry.definitions(crate::mcp::Access::Full).is_empty());
-        // 退出句柄在连接前取得，仍然必须关闭后来创建的进程并禁止复活。
-        drop(cleanup);
-        assert!(
-            registry.servers["local"]
-                .connection
-                .lock()
-                .unwrap()
-                .child
-                .is_none()
-        );
-        registry
-            .manage(
-                &Action::Reconnect("local".into()),
-                dir.path(),
-                &token,
-                crate::mcp::Access::Full,
-            )
+        assert!(!manager.definitions(Access::Full).is_empty());
+        // 退出权在连接前并不存在：shutdown 仍必须关闭此后新建的进程。
+        let server = manager.test_server("local").expect("已连接的服务");
+        manager.shutdown().unwrap();
+        assert!(server.connection.lock().unwrap().child.is_none());
+        // shutdown 后重连不得复活进程：状态停在失败终态，工具表为空。
+        manager
+            .manage(&Action::Reconnect("local".into()), &token, Access::Full)
             .unwrap();
-        assert!(registry.definitions(crate::mcp::Access::Full).is_empty());
+        assert!(manager.definitions(Access::Full).is_empty());
         assert!(
-            registry.view(crate::mcp::Access::Full).entries[0]
+            manager.view(Access::Full).entries[0]
                 .status
                 .starts_with("failed")
         );
+        assert_eq!(manager.test_connection_count(), 0);
     }
 }

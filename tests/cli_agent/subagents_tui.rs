@@ -293,10 +293,17 @@ fn agent_hub_streams_and_anchors_activity() {
         // 先发第一段，再进入详情：无需额外按键即可看到。
         streaming_delta(&mut live, protocol, "hub-stream-first");
         pty.input("/subagents\r");
-        pty.text("LiveWriter");
+        pty.wait_for("运行中的子 Agent 名称前显示时钟", |screen| {
+            let text = screen.contents();
+            WAIT_CLOCKS
+                .iter()
+                .any(|clock| text.contains(&format!("{clock} LiveWriter")))
+        });
         pty.text("ToolFailure");
         pty.input("\r");
         pty.text("hub-stream-first");
+        pty.text("🕛 Responding");
+        pty.text("🕒 Responding");
         // 第二段只追加一次。
         // 分片拼接必须与最终文本一致，否则 Responses 协议会判定冲突。
         streaming_delta(&mut live, protocol, " hub-stream-second");

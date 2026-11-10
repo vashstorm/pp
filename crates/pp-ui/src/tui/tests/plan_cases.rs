@@ -1,7 +1,7 @@
 use super::*;
 
 /// 保存草稿退出：发送成功后立即展示 Saving plan... 文案，
-/// ExecutionPrepared 安装 Cleanup 并切换状态后文案被清除。
+/// ExecutionPrepared 采纳 workflow 快照并切换状态后文案被清除。
 #[test]
 fn save_plan_and_leave_shows_secondary_status_until_execution_prepared() {
     let (mut app, requests, events) = plan_app();
@@ -22,8 +22,6 @@ fn save_plan_and_leave_shows_secondary_status_until_execution_prepared() {
     assert_eq!(app.secondary_status.as_deref(), Some("Saving plan..."));
 
     let (reply, _ack) = mpsc::sync_channel(1);
-    let registry = pp_runtime::mcp::Registry::default();
-    let cleanup = registry.cleanup().unwrap();
     let workflow = WorkflowState {
         mode: WorkMode::Execute,
         plan: Some(pp_core::plan::PlanDocument {
@@ -38,7 +36,6 @@ fn save_plan_and_leave_shows_secondary_status_until_execution_prepared() {
             session_id: Some("next".into()),
             usage: None,
             replay: None,
-            cleanup,
             todo_snapshot: None,
             reply,
         })
@@ -347,13 +344,12 @@ fn plan_actions_show_live_context_usage_and_accept_typed_discussion() {
     assert!(app.input.is_empty());
 }
 
+/// 一次性交接：UI 先采纳 workflow/会话快照，再 ACK；ACK 后 worker 才继续执行。
 #[test]
-fn execution_prepared_installs_cleanup_and_acks_before_running() {
+fn execution_prepared_adopts_snapshots_and_acks_before_running() {
     let (mut app, _requests, events) = plan_app();
     app.state = State::PreparingExecution;
     let (reply, ack) = mpsc::sync_channel(1);
-    let registry = pp_runtime::mcp::Registry::default();
-    let cleanup = registry.cleanup().unwrap();
     let workflow = WorkflowState {
         mode: WorkMode::Execute,
         plan: Some(pp_core::plan::PlanDocument {
@@ -368,14 +364,12 @@ fn execution_prepared_installs_cleanup_and_acks_before_running() {
             session_id: Some("next".into()),
             usage: None,
             replay: None,
-            cleanup,
             todo_snapshot: None,
             reply,
         })
         .unwrap();
     app.receive();
     assert!(ack.try_recv().is_ok());
-    assert!(app.mcp_cleanup.is_some());
     assert_eq!(app.workflow, workflow);
     assert_eq!(app.session_id.as_deref(), Some("next"));
     assert!(matches!(app.state, State::Running));

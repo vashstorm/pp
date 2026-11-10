@@ -255,7 +255,7 @@ impl TranscriptEntry {
             pipeline_preview: None,
             started: Some(Instant::now()),
             bash_timeout_seconds: None,
-            read_frame: 0,
+            read_clock: palette::waiting_clock(0),
             arguments: Value::Null,
             result: None,
             diagnostics: Vec::new(),
@@ -1217,11 +1217,8 @@ impl TranscriptEntry {
     }
 
     fn read_header(&self, count: usize) -> Line<'static> {
-        const CLOCKS: [&str; 12] = [
-            "🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛",
-        ];
         let (icon, color) = match self.status {
-            EntryStatus::Running => (CLOCKS[self.read_frame], palette::ACCENT),
+            EntryStatus::Running => (self.read_clock, palette::ACCENT),
             EntryStatus::Complete => ("✓", palette::ADDED),
             EntryStatus::Failed => ("✗", palette::REMOVED),
         };
@@ -1337,6 +1334,7 @@ impl Activity {
         Self {
             entry: TranscriptEntry::new(EntryKind::Activity, String::new(), String::new(), None),
             frame: 0,
+            clock: palette::waiting_clock(0),
             started: Some(started),
             waiting_started: None,
             label: "Requesting model".into(),
@@ -1353,13 +1351,19 @@ impl Activity {
         let elapsed = now.saturating_duration_since(started);
         let run_seconds = elapsed.as_secs();
         let frame = elapsed.as_millis() / 80;
+        let clock = palette::waiting_clock(elapsed.as_millis());
         let seconds = now
             .saturating_duration_since(self.waiting_started.unwrap_or(started))
             .as_secs();
-        if Some(seconds) == self.seconds && run_seconds == self.run_seconds && self.frame == frame {
+        if Some(seconds) == self.seconds
+            && run_seconds == self.run_seconds
+            && self.frame == frame
+            && self.clock == clock
+        {
             return false;
         }
         self.frame = frame;
+        self.clock = clock;
         self.run_seconds = run_seconds;
         self.seconds = Some(seconds);
         true
@@ -1372,23 +1376,20 @@ impl Activity {
 
     pub(super) fn live_line(&self) -> Line<'static> {
         if self.waiting_started.is_some() {
-            Self::sweep_line(
-                &format!("{} · {}", self.label, self.duration_text()),
-                self.frame,
-            )
+            self.sweep_line(&format!("{} · {}", self.label, self.duration_text()))
         } else {
-            Self::sweep_line(&self.label, self.frame)
+            self.sweep_line(&self.label)
         }
     }
 
-    pub(super) fn sweep_line(label: &str, frame: u128) -> Line<'static> {
+    fn sweep_line(&self, label: &str) -> Line<'static> {
         let base = Style::default().fg(palette::DIM);
         let line = Line::raw(label);
         let graphemes: Vec<_> = line.styled_graphemes(base).collect();
         // 金色光带从首字移至末字，尾部留出短暂停顿后重新开始。
-        let head = (frame % (graphemes.len() as u128 + 8)) as usize;
+        let head = (self.frame % (graphemes.len() as u128 + 8)) as usize;
         let mut spans = vec![Span::styled(
-            "\u{f12b7} ",
+            format!("{} ", self.clock),
             base.add_modifier(Modifier::BOLD),
         )];
         spans.extend(graphemes.into_iter().enumerate().map(|(index, grapheme)| {

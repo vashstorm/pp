@@ -65,6 +65,11 @@ pub(super) const SYNTAX_FUNCTION: Color = Color::Rgb(220, 220, 170);
 pub(super) const SYNTAX_CONSTANT: Color = Color::Rgb(79, 193, 255);
 pub(super) const SYNTAX_TAG: Color = Color::Rgb(86, 156, 214);
 
+pub(super) fn waiting_clock(milliseconds: u128) -> &'static str {
+    const FRAMES: [&str; 4] = ["🕛", "🕒", "🕕", "🕘"];
+    FRAMES[(milliseconds / 500 % FRAMES.len() as u128) as usize]
+}
+
 pub(super) fn tool_accent(name: &str) -> Color {
     match name {
         "read" => READ_TITLE,

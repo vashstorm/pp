@@ -44,8 +44,8 @@ fn plan_resume_adapts_mcp_and_reports_replay() {
         let execute_id = executor.session_id().unwrap().to_owned();
         drop(executor);
 
-        // Resuming a Plan session from Execute stops the managed registry
-        // before the planning session takes over.
+        // Resuming a Plan session from Execute only tops up MCP access for
+        // the target mode; existing connections stay untouched.
         let mut agent = fixture_agent(&root.join("current"), &sessions, protocol);
         seed_session(&mut agent, "current");
         let preparation = agent

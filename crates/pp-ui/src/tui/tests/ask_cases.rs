@@ -131,7 +131,11 @@ fn ask_layout_keeps_latest_message_above_panel_on_resize() {
         );
         let status = rows
             .iter()
-            .position(|row| row.starts_with("  \u{f12b7} Waiting for input"))
+            .position(|row| {
+                row.strip_prefix("  ")
+                    .and_then(|row| row.strip_prefix(['🕛', '🕒', '🕕', '🕘']))
+                    .is_some_and(|row| row.trim_start().starts_with("Waiting for input"))
+            })
             .unwrap();
         let input = rows
             .iter()

@@ -779,15 +779,13 @@ impl App {
                     );
                     match result {
                         Ok(preparation) => {
-                            // 与 ExecutionPrepared 相同的安装顺序：先清理句柄与
-                            // 会话状态，再展示；不自动请求模型。
+                            // 采纳 workflow/replay/todo 快照后展示；不自动请求模型。
                             let path = preparation
                                 .workflow
                                 .plan
                                 .as_ref()
                                 .and_then(|plan| plan.path())
                                 .unwrap_or_else(|| "Not saved yet".to_owned());
-                            self.install_mcp_cleanup(preparation.cleanup);
                             self.plan_panel = None;
                             self.set_workflow(preparation.workflow);
                             let mut note = None;
@@ -917,8 +915,8 @@ impl App {
                                 self.refresh_candidates(true);
                             }
                             // 失败也可能已持久化 Plan（随后的 Workflow 快照纠正显示）；
-                            // 仅进入失败时下一次 /plan 优先重试关闭 MCP；退出失败
-                            // 保持离开方向，不把重试误导成再次进入。
+                            // 仅进入失败时下一次 /plan 优先重试进入；退出失败保持离开方向，
+                            // 不把重试误导成再次进入。
                             if from_enter && was_enter {
                                 self.plan_retry_enter = true;
                             }
@@ -1053,23 +1051,16 @@ impl App {
                     );
                     changed = true;
                 }
-                Ok(WorkerEvent::Cleanup(cleanup)) => {
-                    // 错误路径上 registry 可能被保留/部分更新；刷新退出清理句柄。
-                    self.install_mcp_cleanup(cleanup);
-                    changed = true;
-                }
                 Ok(WorkerEvent::ExecutionPrepared {
                     workflow,
                     session_id,
                     usage,
                     replay,
-                    cleanup,
                     todo_snapshot,
                     reply,
                 }) => {
-                    // 一次性交接：先安装退出清理句柄并更新模式/会话，再 ACK；
+                    // 一次性交接：先采纳 workflow/replay/todo 快照并更新会话，再 ACK；
                     // ACK 后 worker 才允许 continue_session。
-                    self.install_mcp_cleanup(cleanup);
                     self.plan_panel = None;
                     self.set_workflow(workflow);
                     let mut note = None;

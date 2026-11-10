@@ -8,7 +8,7 @@ mod projection;
 mod worker;
 
 use super::transcript_style::{
-    ACCENT, ACTIVITY, ADDED, ASK_BORDER, DIM, MUTED, REMOVED, think_icon,
+    ACCENT, ACTIVITY, ADDED, ASK_BORDER, DIM, MUTED, REMOVED, think_icon, waiting_clock,
 };
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
@@ -36,7 +36,6 @@ const HUB_BG: Color = Color::Rgb(37, 40, 51);
 const SELECTED_BG: Color = Color::Rgb(48, 53, 63);
 const COST: Color = Color::Rgb(241, 96, 174);
 const EFFORT: Color = Color::Rgb(183, 131, 207);
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
@@ -309,7 +308,8 @@ impl Panel {
     }
 
     pub(super) fn tick(&mut self, now_ms: u64, instant: std::time::Instant) -> bool {
-        let spinner_changed = self.clock / 120 != now_ms / 120
+        let clock_changed = waiting_clock(u128::from(self.clock))
+            != waiting_clock(u128::from(now_ms))
             && self.detail.is_none()
             && self
                 .projection
@@ -317,16 +317,17 @@ impl Panel {
                 .iter()
                 .any(|agent| agent.status == AgentStatus::Running);
         self.clock = now_ms;
-        if let Some(detail) = &mut self.detail {
-            detail.tick(instant);
-        }
+        let detail_changed = self
+            .detail
+            .as_mut()
+            .is_some_and(|detail| detail.tick(instant));
         // age/elapsed 每秒刷新一次，不为时钟重读全文件。
         if now_ms.saturating_sub(self.rendered) >= 1000 {
             self.rendered = now_ms;
             self.projection.refresh(now_ms);
             return true;
         }
-        spinner_changed
+        clock_changed || detail_changed
     }
 
     fn validate_selection(&mut self) {
@@ -1113,7 +1114,7 @@ impl Panel {
             .spans
             .push(Span::raw(" ".repeat(model_column - first.width())));
         first.spans.extend(model.spans);
-        let indent = 4 + Line::raw(&row.prefix).width();
+        let indent = 3 + Line::raw(&row.prefix).width() + Line::raw(icon).width();
         let mut lines = vec![first];
         if agent.status == AgentStatus::Running {
             lines.push(indented(
@@ -1552,7 +1553,7 @@ fn model_line(agent: &AgentView, width: usize) -> Line<'static> {
 
 fn status_icon(status: AgentStatus, clock: u64) -> &'static str {
     match status {
-        AgentStatus::Running => SPINNER[(clock / 120 % SPINNER.len() as u64) as usize],
+        AgentStatus::Running => waiting_clock(u128::from(clock)),
         AgentStatus::Idle | AgentStatus::Parked => "⬤",
         AgentStatus::Aborted => "×",
     }
@@ -1866,7 +1867,12 @@ mod tests {
         let marker = &buffer[(2, 4)];
         assert_eq!(marker.symbol(), "›");
         assert_eq!(marker.fg, ACCENT);
-        assert_eq!(buffer[(6, 4)].fg, ACTIVITY);
+        assert_eq!(
+            buffer[(4, 4)].symbol(),
+            waiting_clock(u128::from(panel.clock))
+        );
+        assert_eq!(buffer[(6, 4)].symbol(), " ");
+        assert_eq!(buffer[(7, 4)].fg, ACTIVITY);
         assert_eq!(buffer[(81, 5)].bg, SELECTED_BG);
     }
 

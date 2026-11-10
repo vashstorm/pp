@@ -60,8 +60,9 @@ pub struct Tools {
     pub(crate) artifacts: output::Store,
     pub(crate) ask_handler: Option<pp_core::interaction::SharedAskHandler>,
     pub(crate) approval: approval::Gate,
-    pub(crate) mcp: crate::mcp::Registry,
-    pub(crate) mcp_proxy: Option<crate::mcp::Registry>,
+    pub(crate) mcp: std::sync::Arc<crate::mcp::McpManager>,
+    /// 子 Agent 共享父级 manager：分发走代理调用，父连接不因子 Agent 取消而中断。
+    pub(crate) mcp_shared: bool,
     pub(crate) mcp_readonly: bool,
     pub(crate) lsp: Option<crate::lsp::Registry>,
     /// 仅根/独立 Registry 的 owner 持有；借用父 Registry 的子 Agent 保持 `None`，
@@ -209,12 +210,14 @@ pub fn edit_path(arguments: &Value) -> Option<&str> {
 }
 
 impl Tools {
-    pub fn new(cwd: PathBuf, edit_mode: EditMode) -> Result<Self> {
+    /// 测试与 mock 专用构造：空 `McpManager`，不读取真实用户 MCP 定义。
+    pub(crate) fn new(cwd: PathBuf, edit_mode: EditMode) -> Result<Self> {
         let workspace = save::Workspace::open(&cwd)?;
         Ok(Self {
             artifacts: Default::default(),
             ask_handler: None,
-            mcp_proxy: None,
+            mcp: std::sync::Arc::new(crate::mcp::McpManager::empty()),
+            mcp_shared: false,
             mcp_readonly: false,
             lsp: None,
             lsp_cleanup: None,
@@ -225,7 +228,6 @@ impl Tools {
             yield_schema: None,
             yielded: RefCell::new(None),
             approval: approval::Gate::new(),
-            mcp: Default::default(),
             skills: pp_config::skills::Skills::default().shared(),
             cwd: workspace.path.clone(),
             edit_mode,
@@ -240,6 +242,17 @@ impl Tools {
             host_defaults: crate::host_defaults::current(),
             pipe_store: PipeStore::new(),
         })
+    }
+
+    /// 生产与子 Agent 构造入口：注入进程级共享的 `McpManager`。
+    pub fn with_mcp(
+        cwd: PathBuf,
+        edit_mode: EditMode,
+        mcp: std::sync::Arc<crate::mcp::McpManager>,
+    ) -> Result<Self> {
+        let mut tools = Self::new(cwd, edit_mode)?;
+        tools.mcp = mcp;
+        Ok(tools)
     }
 
     pub(crate) fn pipe_store(&self) -> PipeStore {
@@ -520,14 +533,6 @@ impl Tools {
     }
 
     pub(crate) fn all_definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
-        self.definitions_with_registry(mode, self.mcp_registry())
-    }
-
-    pub(crate) fn definitions_with_registry(
-        &self,
-        mode: WorkMode,
-        registry: &crate::mcp::Registry,
-    ) -> Vec<FunctionObject> {
         let mut definitions = match mode {
             WorkMode::Execute => {
                 let mut definitions = Self::definitions(self.edit_mode);
@@ -565,7 +570,7 @@ impl Tools {
                 definitions
             }
         };
-        definitions.extend(registry.definitions(self.mcp_access(mode)));
+        definitions.extend(self.mcp.definitions(self.mcp_access(mode)));
         if let Some(binding) = &self.subagent {
             definitions.extend(binding.definitions(mode));
             if mode == WorkMode::Plan {
@@ -591,13 +596,9 @@ impl Tools {
                 PLAN_BASE_TOOLS.contains(&name)
                     || PLAN_SEARCH_TOOLS.contains(&name)
                     || name == "lsp"
-                    || self.mcp_registry().is_read_only(name)
+                    || self.mcp.is_read_only(name)
             })
             .collect()
-    }
-
-    fn mcp_registry(&self) -> &crate::mcp::Registry {
-        self.mcp_proxy.as_ref().unwrap_or(&self.mcp)
     }
 
     fn mcp_access(&self, mode: WorkMode) -> crate::mcp::Access {
@@ -869,7 +870,7 @@ impl Tools {
         // access, process creation and MCP dispatch, so denied tools have no
         // side effects even with malformed arguments, and unknown names
         // (including unseen MCP tools) cannot bypass it via the fallback.
-        let mcp_readonly_tool = self.mcp_registry().is_read_only(name);
+        let mcp_readonly_tool = self.mcp.is_read_only(name);
         let mcp_access = match policy {
             ToolPolicy::Execute { .. } => self.mcp_access(WorkMode::Execute),
             _ => crate::mcp::Access::ReadOnly,
@@ -1298,8 +1299,9 @@ impl Tools {
                     .map(|(value, change)| (value, None, change));
             }
             _ => {
-                if let Some(proxy) = &self.mcp_proxy {
-                    proxy.proxy_call(name, arguments, mcp_access, cancellation)
+                if self.mcp_shared {
+                    self.mcp
+                        .proxy_call(name, arguments, mcp_access, cancellation)
                 } else {
                     self.mcp.call(name, arguments, mcp_access, cancellation)
                 }
@@ -1536,15 +1538,10 @@ mod tests;
 
 impl Drop for Tools {
     fn drop(&mut self) {
-        if let Some(binding) = self.subagent.take().filter(|b| b.depth == 0) {
-            if let Err(error) = binding.shutdown() {
-                tracing::error!(error=%error,"subagent exit cleanup failed");
-            }
-            if self.mcp.is_shared()
-                && let Err(error) = self.mcp.abort_connections()
-            {
-                tracing::error!(error=%error,"MCP exit cleanup failed");
-            }
+        if let Some(binding) = self.subagent.take().filter(|b| b.depth == 0)
+            && let Err(error) = binding.shutdown()
+        {
+            tracing::error!(error=%error,"subagent exit cleanup failed");
         }
         // 只有根/独立 Registry 的 owner 持有该句柄；显式 stop 由调用方负责
         // 上报错误，这里只做兜底回收。

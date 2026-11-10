@@ -17,16 +17,20 @@ fn log(dir: &std::path::Path, name: &str) -> Vec<Value> {
         .collect()
 }
 
-pub(super) fn assert_stopped(dir: &std::path::Path) {
-    let pid: i32 = std::fs::read_to_string(dir.join("mcp-log.pid"))
+fn stopped(dir: &std::path::Path, log: &str) {
+    let pid: i32 = std::fs::read_to_string(dir.join(format!("{log}.pid")))
         .unwrap()
         .parse()
         .unwrap();
     let pid = rustix::process::Pid::from_raw(pid).unwrap();
     assert!(
         rustix::process::test_kill_process(pid).is_err(),
-        "MCP 子进程未清理"
+        "{log} MCP 子进程未清理"
     );
+}
+
+pub(super) fn assert_stopped(dir: &std::path::Path) {
+    stopped(dir, "mcp-log");
 }
 
 #[test]
@@ -343,6 +347,8 @@ fn mcp_connections_survive_model_switch_and_reset_and_refresh_on_resume() {
         .collect();
     ids.sort_by_key(|path| std::fs::metadata(path).unwrap().modified().unwrap());
     let id = ids.last().unwrap().file_stem().unwrap().to_str().unwrap();
+    // `/new`、`/model` 在进程内复用已有连接；只有新进程恢复会话时才重新读取 mcp.json，
+    // 因此下面两次 `-r` 分别看到更新后的返回值与删除配置后的空工具表。
     let mut changed = settings("");
     changed["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
     crate::write_settings(home.path(), changed.to_string()).unwrap();
@@ -498,6 +504,10 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
         let home = tempfile::tempdir().unwrap();
         let mut configured = settings("");
         configured["mcpServers"]["broken"] = json!({"command":"/nonexistent/pp-mcp-fixture"});
+        // 与 `local` 共用 fixture，但写入独立日志与返回值，便于区分两条连接。
+        let mut extra = configured["mcpServers"]["local"].clone();
+        extra["env"]["MCP_LOG"] = json!("extra-log");
+        extra["env"]["MCP_VALUE"] = json!("外部新增结果");
         let mut cli = Cli::start_with(
             home.path(),
             None,
@@ -509,10 +519,13 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
         } else {
             "/v1/chat/completions"
         };
+        // 索引 3 只改 mcp.json、不发 `/mcp reload`：同一行模式会话必须沿用内存中的旧定义。
+        // 索引 4 的 reload 才接入 `extra`；索引 5 用解析失败的配置验证旧工具保留。
         for (index, (command, expected)) in [
             ("/mcp list\n/mcp disable local", None),
             ("/mcp enable local", Some("mcp__local__echo")),
             ("/mcp reconnect local", Some("mcp__local__echo")),
+            ("", Some("mcp__local__echo")),
             ("/mcp reload", Some("mcp__local__tool_")),
             ("/mcp reload", Some("mcp__local__tool_")),
         ]
@@ -520,11 +533,17 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
         .enumerate()
         {
             if index == 3 {
-                let mut changed = settings("special_name");
-                changed["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
+                let mut changed = configured.clone();
+                changed["mcpServers"]["extra"] = extra.clone();
                 std::fs::write(config_path(home.path(), "mcp.json"), changed.to_string()).unwrap();
             }
             if index == 4 {
+                let mut changed = settings("special_name");
+                changed["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
+                changed["mcpServers"]["extra"] = extra.clone();
+                std::fs::write(config_path(home.path(), "mcp.json"), changed.to_string()).unwrap();
+            }
+            if index == 5 {
                 std::fs::write(config_path(home.path(), "mcp.json"), "broken secret-config")
                     .unwrap();
             }
@@ -535,6 +554,25 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
             match expected {
                 Some(name) => assert!(definitions.contains(name), "{index}: {definitions}"),
                 None => assert!(!definitions.contains("mcp__local__")),
+            }
+            match index {
+                // 外部新增的服务只有在 `/mcp reload` 后才进入工具表，`local` 也保持旧定义。
+                3 => {
+                    assert!(
+                        !definitions.contains("mcp__extra__"),
+                        "{index}: {definitions}"
+                    );
+                    assert!(
+                        !definitions.contains("mcp__local__tool_"),
+                        "外部配置不应在 reload 前改写 local 定义: {index}: {definitions}"
+                    );
+                }
+                // reload 成功接入 `extra`；随后解析失败的 reload 保留旧工具。
+                4 | 5 => assert!(
+                    definitions.contains("mcp__extra__echo"),
+                    "{index}: {definitions}"
+                ),
+                _ => {}
             }
             if protocol == "response" {
                 response_final(request, &format!("done {index}"));
@@ -553,6 +591,11 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
         assert!(stderr.contains("Configured MCP Servers"));
         assert!(!stderr.contains("secret-config"));
         assert_stopped(home.path());
+        stopped(home.path(), "extra-log");
+        assert!(
+            home.path().join("extra-log.closed").is_file(),
+            "extra MCP 子进程未写入退出标记"
+        );
         let journal = std::fs::read_dir(config_path(home.path(), "sessions"))
             .unwrap()
             .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())

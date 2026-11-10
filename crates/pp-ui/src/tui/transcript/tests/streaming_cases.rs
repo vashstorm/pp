@@ -1,7 +1,12 @@
 use super::*;
 
-fn live_activity_text(transcript: &Transcript) -> String {
-    transcript.live_activity_line().unwrap().to_string()
+fn live_activity_label(transcript: &Transcript) -> String {
+    let line = transcript.live_activity_line().unwrap().to_string();
+    line.strip_prefix(['🕛', '🕒', '🕕', '🕘'])
+        .unwrap()
+        .strip_prefix(' ')
+        .unwrap()
+        .to_owned()
 }
 
 #[test]
@@ -40,10 +45,7 @@ fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
     let started = Instant::now() - Duration::from_secs(85);
     transcript.activity = Some(Activity::new(started));
     transcript.tick(started + Duration::from_secs(85));
-    assert_eq!(
-        live_activity_text(&transcript),
-        "\u{f12b7} Requesting model"
-    );
+    assert_eq!(live_activity_label(&transcript), "Requesting model");
     assert_eq!(transcript.task_duration().as_deref(), Some("1m 25s"));
 
     for id in ["ask-1", "ask-2"] {
@@ -59,19 +61,13 @@ fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
             .unwrap()
             .waiting_started
             .unwrap();
-        assert_eq!(
-            live_activity_text(&transcript),
-            "\u{f12b7} Waiting for input · 0s"
-        );
+        assert_eq!(live_activity_label(&transcript), "Waiting for input · 0s");
         transcript.tick(waiting + Duration::from_millis(999));
-        assert_eq!(
-            live_activity_text(&transcript),
-            "\u{f12b7} Waiting for input · 0s"
-        );
+        assert_eq!(live_activity_label(&transcript), "Waiting for input · 0s");
         transcript.tick(waiting + Duration::from_secs(85));
         assert_eq!(
-            live_activity_text(&transcript),
-            "\u{f12b7} Waiting for input · 1m 25s"
+            live_activity_label(&transcript),
+            "Waiting for input · 1m 25s"
         );
         transcript.progress(AgentEvent::ToolFinished {
             id: id.into(),
@@ -86,10 +82,7 @@ fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
                 .is_none()
         );
         transcript.tick(started + Duration::from_secs(85));
-        assert_eq!(
-            live_activity_text(&transcript),
-            "\u{f12b7} Processing tool result"
-        );
+        assert_eq!(live_activity_label(&transcript), "Processing tool result");
         assert_eq!(transcript.task_duration().as_deref(), Some("1m 25s"));
         assert_eq!(transcript.activity.as_ref().unwrap().started, Some(started));
     }
@@ -97,7 +90,7 @@ fn activity_waiting_timer_starts_at_each_ask_and_restores_run_timing() {
     transcript.cancelling();
     transcript.waiting_for_input();
     transcript.tick(started + Duration::from_secs(85));
-    assert_eq!(live_activity_text(&transcript), "\u{f12b7} Cancelling");
+    assert_eq!(live_activity_label(&transcript), "Cancelling");
     assert_eq!(transcript.task_duration().as_deref(), Some("1m 25s"));
     transcript.cancel();
     assert!(!transcript.tick(Instant::now() + Duration::from_secs(3600)));
@@ -135,10 +128,7 @@ fn activity_timer_ticks_without_events_and_stops_on_failure() {
     assert!(transcript.tick(started + Duration::from_millis(80)));
     assert!(transcript.tick(started + Duration::from_secs(1)));
     assert!(!transcript.tick(started + Duration::from_secs(1)));
-    assert_eq!(
-        live_activity_text(&transcript),
-        "\u{f12b7} Requesting model"
-    );
+    assert_eq!(live_activity_label(&transcript), "Requesting model");
     assert_eq!(transcript.task_duration().as_deref(), Some("1s"));
     assert_eq!(transcript.entries.len(), 1);
     transcript.fail();
@@ -198,26 +188,20 @@ fn live_activity_is_separate_from_transcript_across_model_and_tool_phases() {
         let started = transcript.activity.as_ref().unwrap().started.unwrap();
         transcript.tick(started + Duration::from_secs(5));
         let text = screen(&render(&mut transcript, 100, 30));
-        assert_eq!(
-            live_activity_text(&transcript),
-            format!("\u{f12b7} {label}")
-        );
+        assert_eq!(live_activity_label(&transcript), label);
         assert_eq!(transcript.task_duration().as_deref(), Some("5s"));
-        assert!(!text.contains("\u{f12b7} "), "{text}");
+        assert!(!text.contains(label), "{text}");
     }
     transcript.cancelling();
     transcript.progress(AgentEvent::ThinkingDelta {
         text: "late delta".into(),
     });
-    assert_eq!(live_activity_text(&transcript), "\u{f12b7} Cancelling");
+    assert_eq!(live_activity_label(&transcript), "Cancelling");
     transcript.cancel();
     assert!(transcript.live_activity_line().is_none());
     assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Cancelled ·"));
     transcript.begin_run();
-    assert_eq!(
-        live_activity_text(&transcript),
-        "\u{f12b7} Requesting model"
-    );
+    assert_eq!(live_activity_label(&transcript), "Requesting model");
     assert_eq!(transcript.task_duration().as_deref(), Some("0s"));
 }
 
@@ -236,31 +220,32 @@ fn activity_sweep_moves_from_first_to_last_without_shifting_text() {
         buffer
     };
     let initial = render_activity(&transcript, 100);
-    assert_eq!(initial[(4, 0)].fg, palette::ACCENT);
-    assert_eq!(initial[(19, 0)].fg, palette::DIM);
+    assert_eq!(initial[(2, 0)].symbol(), "🕛");
+    assert_eq!(initial[(5, 0)].fg, palette::ACCENT);
+    assert_eq!(initial[(20, 0)].fg, palette::DIM);
     assert!(initial[(2, 0)].modifier.contains(Modifier::BOLD));
     for index in 0..16_u16 {
         transcript.tick(started + Duration::from_millis(u64::from(index) * 80));
         let buffer = render_activity(&transcript, 100);
-        assert_eq!(screen(&buffer), screen(&initial));
-        assert_eq!(buffer[(4 + index, 0)].fg, palette::ACCENT);
+        assert_eq!(buffer[(5, 0)].symbol(), "R");
+        assert_eq!(buffer[(5 + index, 0)].fg, palette::ACCENT);
     }
     transcript.tick(started + Duration::from_millis(24 * 80));
     assert_eq!(
-        render_activity(&transcript, 100)[(4, 0)].fg,
+        render_activity(&transcript, 100)[(5, 0)].fg,
         palette::ACCENT
     );
-    assert_eq!(
-        screen(&render_activity(&transcript, 12)),
-        "\u{f12b7} Requesting"
-    );
-    assert_eq!(screen(&render_activity(&transcript, 100)), screen(&initial));
+    assert_eq!(screen(&render_activity(&transcript, 12)), "🕘  Requestin");
+    for (ms, clock) in [(2000, "🕛"), (2500, "🕒"), (3000, "🕕"), (3500, "🕘")] {
+        transcript.tick(started + Duration::from_millis(ms));
+        let buffer = render_activity(&transcript, 100);
+        assert_eq!(buffer[(2, 0)].symbol(), clock);
+        assert_eq!(buffer[(4, 0)].symbol(), " ");
+        assert_eq!(buffer[(5, 0)].symbol(), "R");
+    }
     let activity = transcript.activity.as_mut().unwrap();
     activity.phase("读取 e\u{301} 中😀");
-    assert_eq!(
-        live_activity_text(&transcript),
-        "\u{f12b7} 读取 e\u{301} 中😀"
-    );
+    assert_eq!(live_activity_label(&transcript), "读取 e\u{301} 中😀");
     transcript.cancel();
     assert!(!transcript.tick(started + Duration::from_secs(90)));
 }
@@ -769,7 +754,7 @@ fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
                 let buffer = render(&mut transcript, width, 20);
                 let display_icon = if name == "read" {
                     if transcript.entries[0].status == EntryStatus::Running {
-                        "🕐"
+                        "🕛"
                     } else {
                         "✗"
                     }

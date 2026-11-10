@@ -124,7 +124,6 @@ impl App {
             task_status_view: Default::default(),
             task_status: None,
             cost_display: Default::default(),
-            mcp_cleanup: None,
             lsp_cleanup: None,
             mcp_view: Default::default(),
             mcp_panel: None,
@@ -193,13 +192,12 @@ impl App {
         self.input_limits = agent.input_limits();
         self.conversation
             .set_bash_timeout(agent.bash_timeout_seconds());
-        // 取 replay、模型字段与 MCP 清理句柄必须发生在 agent move 进 worker 之前。
+        // 取 replay、模型字段与 MCP 视图必须发生在 agent move 进 worker 之前。
         let session_id = agent.session_id().map(str::to_owned);
         let replay = agent.take_replay();
         let current_model = agent.current_model().clone();
         let think_level = agent.think_level();
         let default_think_level = agent.default_think_level();
-        let mcp_cleanup = agent.mcp_cleanup()?;
         // LSP 清理句柄与 Registry 必须在 Agent move 进 worker 前取得；
         // Registry clone 只共享客户端，不取得停止所有权。
         let lsp_cleanup = agent.lsp_cleanup();
@@ -451,7 +449,7 @@ impl App {
                             let result = agent.resume(&id, &cancellation);
                             match result {
                                 Ok(preparation) => {
-                                    // 恢复已是新会话根：先重绑临时管道，再交接清理句柄。
+                                    // 恢复已是新会话根：先重绑临时管道，再交接执行快照。
                                     if !publish_pipe_store(&sender, &agent) {
                                         break;
                                     }
@@ -477,8 +475,7 @@ impl App {
                                     snapshots.push(event);
                                 }
                             } else {
-                                // 转换失败也可能已持久化 Plan；发布真实模式避免假 EXEC，
-                                // 并刷新退出清理句柄以覆盖可能被保留的 registry。
+                                // 转换失败也可能已持久化 Plan；发布真实模式避免假 EXEC。
                                 publish_transition_failure(&agent, &mut snapshots);
                             }
                             WorkerEvent::WorkflowChanged(result)
@@ -645,11 +642,10 @@ impl App {
         self.commands = Some(commands);
         self.events = Some(events);
         self.state = State::Ready;
-        self.mcp_cleanup = Some(mcp_cleanup);
         if let Some(cleanup) = lsp_cleanup {
             self.install_lsp_cleanup(cleanup);
         }
-        // lazy=false 时在清理句柄与退出链路安装完成后后台预热；UI 不等待。
+        // lazy=false 时在 LSP 清理句柄与退出链路安装完成后后台预热；UI 不等待。
         prewarm_lsp(lsp_registry, warm_events);
         self.usage = usage;
         if let Some(id) = session_id {

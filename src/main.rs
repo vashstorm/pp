@@ -335,140 +335,170 @@ fn run(args: Args) -> Result<()> {
         }
         None => std::env::current_dir().context("capturing startup working directory")?,
     };
-    // 提示词错误必须在交互兜底之前返回，不能静默禁用或替换用户设定。
-    let prompt_source = if restored.is_none() {
-        global_dir
-            .as_ref()
-            .ok()
-            .map(|dir| {
-                system_prompt::Snapshot::discover(
-                    &cwd,
-                    dir,
-                    args.system_prompt.as_deref(),
-                    args.system_prompt_template.as_deref(),
-                    args.append_system_prompt.as_deref(),
-                )
-            })
-            .transpose()?
-    } else {
-        None
-    };
-    let skills = match &global_dir {
-        Ok(dir) => skills::Skills::from_dir(dir),
-        Err(error) => {
-            let mut skills = skills::Skills::default();
-            skills.diagnostics.push(format!("{error:#}"));
-            skills
-        }
-    }
-    .shared();
-    let bootstrap = global_dir.as_ref().ok().map(|dir| agent::Bootstrap {
-        dir: dir.clone(),
-        cwd: cwd.clone(),
-        skills: skills.clone(),
-        prompt: prompt_source
-            .clone()
-            .unwrap_or_else(system_prompt::Snapshot::bundled),
-        approval: args.approval_mode.map(Into::into),
+    // 进程级 MCP 单例：根 Agent、子 Agent 与恢复会话共享同一实例，所有模式返回后统一收尾。
+    let mcp = std::sync::Arc::new(match global_dir.as_ref() {
+        Ok(dir) => pp_runtime::mcp::McpManager::new(dir.join("mcp.json"), cwd.clone()),
+        Err(_) => pp_runtime::mcp::McpManager::empty(),
     });
-    let mut agent = if let Some(error) = migration_error {
-        Err(error)
-    } else {
-        match restored {
-            Some(session) => {
-                let global_dir = global_dir?;
-                let catalog = config::ModelCatalog::from_files(
-                    &global_dir.join("settings.yml"),
-                    &global_dir.join("models.yml"),
-                )
-                .context("loading configuration for saved session")?;
-                let mut tools = tools::Tools::new(cwd.clone(), session.edit_mode())?;
-                tools.skills = skills.clone();
-                Ok(agent::Agent::restore(catalog, tools, session)?)
-            }
-            None => bootstrap
+    // 提示词错误必须在交互兜底之前返回，不能静默禁用或替换用户设定。
+    let manager = mcp.clone();
+    let result = (move || -> Result<()> {
+        let prompt_source = if restored.is_none() {
+            global_dir
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Unable to locate global configuration directory"))
-                .and_then(agent::Bootstrap::build),
-        }
-    };
-    if agent
-        .as_ref()
-        .err()
-        .is_some_and(|error| error.is::<system_prompt::PromptFailure>())
-    {
-        return agent.map(|_| ());
-    }
-    if let Err(error) = &agent {
-        tracing::warn!(
-            event = "configuration_unavailable",
-            pid = std::process::id(),
-            error = logging::diagnostic_text(&format!("{error:#}")),
-        );
-    }
-    if let (Some(mode), Ok(agent)) = (args.approval_mode, agent.as_mut()) {
-        agent.set_approval_override(mode.into());
-    }
-    // `--model` 只在本次运行生效；显式给出却无法解析时必须致命，不静默回退默认模型。
-    // 配置本身不可用时 `agent` 为 Err，此时没有 catalog 可校验，沿用既有交互修复流程。
-    if let (Some(query), Ok(agent)) = (args.model.as_deref(), agent.as_mut()) {
-        let selection = agent.select_model(query)?;
-        if !use_tui {
-            writeln!(
-                io::stderr().lock(),
-                "Model: {} (effort {})",
-                selection.reference,
-                selection.effort.as_str()
-            )?;
-        }
-    }
-    if use_tui {
-        return tui::run(
-            agent,
-            &cwd,
-            skills,
-            file_commands,
-            continue_requested,
-            resume_picker,
-            tui_settings,
-            cost_display,
-            bootstrap,
-            initial_command,
-        );
-    }
-    if let Ok(agent) = &mut agent {
-        // 去重状态已从有效回放重建；CLI 不保留展示正文。
-        drop(agent.take_replay());
-    }
-    let resumed_id = if resume_id.is_some() || continue_requested {
-        agent.as_ref().ok().and_then(|agent| agent.session_id())
-    } else {
-        None
-    };
-    let mut stderr = io::stderr();
-    cli::prelude(&skills, &file_commands, resumed_id, &mut stderr)?;
-    if let Some(prompt) = args.prompt {
-        let mut stdout = io::stdout().lock();
-        let mut agent = agent?;
-        // -p 不启动空闲轮询，也不等待迟到诊断；任务结束即显式回收服务器。
-        let task = cli::run_cli_task(&mut agent, Some(&prompt), &mut stdout, &mut stderr);
-        let hint =
-            cli::write_resume_hint(&mut stderr, agent.session_id()).map_err(anyhow::Error::from);
-        let result = match (task, hint) {
-            (Err(error), _) => Err(error),
-            (Ok(()), Err(error)) => Err(error),
-            (Ok(()), Ok(())) => Ok(()),
+                .ok()
+                .map(|dir| {
+                    system_prompt::Snapshot::discover(
+                        &cwd,
+                        dir,
+                        args.system_prompt.as_deref(),
+                        args.system_prompt_template.as_deref(),
+                        args.append_system_prompt.as_deref(),
+                    )
+                })
+                .transpose()?
+        } else {
+            None
         };
-        return cli::stop_cli_lsp(Some(&agent), result);
-    }
-    if continue_requested {
-        let mut stdout = io::stdout().lock();
-        let active = agent
-            .as_mut()
-            .map_err(|error| anyhow::anyhow!("{error:#}"))?;
-        if let Err(error) = cli::run_cli_task(active, None, &mut stdout, &mut stderr) {
-            return cli::stop_cli_lsp(Some(&*active), Err(error));
+        let skills = match &global_dir {
+            Ok(dir) => skills::Skills::from_dir(dir),
+            Err(error) => {
+                let mut skills = skills::Skills::default();
+                skills.diagnostics.push(format!("{error:#}"));
+                skills
+            }
+        }
+        .shared();
+        let bootstrap = global_dir.as_ref().ok().map(|dir| agent::Bootstrap {
+            dir: dir.clone(),
+            cwd: cwd.clone(),
+            skills: skills.clone(),
+            prompt: prompt_source
+                .clone()
+                .unwrap_or_else(system_prompt::Snapshot::bundled),
+            approval: args.approval_mode.map(Into::into),
+            mcp: manager.clone(),
+        });
+        let mut agent = if let Some(error) = migration_error {
+            Err(error)
+        } else {
+            match restored {
+                Some(session) => {
+                    let global_dir = global_dir?;
+                    let catalog = config::ModelCatalog::from_files(
+                        &global_dir.join("settings.yml"),
+                        &global_dir.join("models.yml"),
+                    )
+                    .context("loading configuration for saved session")?;
+                    let mut tools =
+                        tools::Tools::with_mcp(cwd.clone(), session.edit_mode(), manager.clone())?;
+                    tools.skills = skills.clone();
+                    Ok(agent::Agent::restore(catalog, tools, session)?)
+                }
+                None => bootstrap
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Unable to locate global configuration directory")
+                    })
+                    .and_then(agent::Bootstrap::build),
+            }
+        };
+        if agent
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.is::<system_prompt::PromptFailure>())
+        {
+            return agent.map(|_| ());
+        }
+        if let Err(error) = &agent {
+            tracing::warn!(
+                event = "configuration_unavailable",
+                pid = std::process::id(),
+                error = logging::diagnostic_text(&format!("{error:#}")),
+            );
+        }
+        if let (Some(mode), Ok(agent)) = (args.approval_mode, agent.as_mut()) {
+            agent.set_approval_override(mode.into());
+        }
+        // `--model` 只在本次运行生效；显式给出却无法解析时必须致命，不静默回退默认模型。
+        // 配置本身不可用时 `agent` 为 Err，此时没有 catalog 可校验，沿用既有交互修复流程。
+        if let (Some(query), Ok(agent)) = (args.model.as_deref(), agent.as_mut()) {
+            let selection = agent.select_model(query)?;
+            if !use_tui {
+                writeln!(
+                    io::stderr().lock(),
+                    "Model: {} (effort {})",
+                    selection.reference,
+                    selection.effort.as_str()
+                )?;
+            }
+        }
+        if use_tui {
+            return tui::run(
+                agent,
+                &cwd,
+                skills,
+                file_commands,
+                continue_requested,
+                resume_picker,
+                tui_settings,
+                cost_display,
+                bootstrap,
+                initial_command,
+            );
+        }
+        if let Ok(agent) = &mut agent {
+            // 去重状态已从有效回放重建；CLI 不保留展示正文。
+            drop(agent.take_replay());
+        }
+        let resumed_id = if resume_id.is_some() || continue_requested {
+            agent.as_ref().ok().and_then(|agent| agent.session_id())
+        } else {
+            None
+        };
+        let mut stderr = io::stderr();
+        cli::prelude(&skills, &file_commands, resumed_id, &mut stderr)?;
+        if let Some(prompt) = args.prompt {
+            let mut stdout = io::stdout().lock();
+            let mut agent = agent?;
+            // -p 不启动空闲轮询，也不等待迟到诊断；任务结束即显式回收服务器。
+            let task = cli::run_cli_task(&mut agent, Some(&prompt), &mut stdout, &mut stderr);
+            let hint = cli::write_resume_hint(&mut stderr, agent.session_id())
+                .map_err(anyhow::Error::from);
+            let result = match (task, hint) {
+                (Err(error), _) => Err(error),
+                (Ok(()), Err(error)) => Err(error),
+                (Ok(()), Ok(())) => Ok(()),
+            };
+            return cli::stop_cli_lsp(Some(&agent), result);
+        }
+        if continue_requested {
+            let mut stdout = io::stdout().lock();
+            let active = agent
+                .as_mut()
+                .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+            if let Err(error) = cli::run_cli_task(active, None, &mut stdout, &mut stderr) {
+                return cli::stop_cli_lsp(Some(&*active), Err(error));
+            }
+        }
+        cli::run_line_mode(agent, skills, file_commands, initial_command)
+    })();
+    stop_mcp(&mcp, result)
+}
+
+/// 所有模式返回后停止进程级 MCP 服务；`CleanupError` 保持类型并合并进返回错误，
+/// 不能只依赖 `McpManager::Drop` 兜底。
+fn stop_mcp(mcp: &pp_runtime::mcp::McpManager, result: Result<()>) -> Result<()> {
+    let stop = mcp.shutdown();
+    match (result, stop) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(error)) | (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(stop)) => {
+            if stop.is::<cancellation::CleanupError>() {
+                Err(stop.context(format!("{error:#}")))
+            } else {
+                Err(error.context(format!("stopping MCP servers: {stop:#}")))
+            }
         }
     }
-    cli::run_line_mode(agent, skills, file_commands, initial_command)
 }

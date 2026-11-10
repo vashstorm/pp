@@ -19,7 +19,8 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
         pty.input("/plan Research the login flow\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         plan_wait_mode(&mut pty, "Plan");
-        cancel_mcp_assert_pid_stopped(&project.path().join("mcp-log.pid"));
+        // 进入 Plan 只按 access 过滤工具，MCP 进程保持运行。
+        cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
         assert_eq!(
             cancel_user_messages(&body, protocol),
             ["Research the login flow"]

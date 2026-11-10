@@ -5,13 +5,6 @@ use crate::tui::{
 };
 
 impl App {
-    pub(in crate::tui) fn install_mcp_cleanup(&mut self, cleanup: pp_runtime::mcp::Cleanup) {
-        if let Some(previous) = &mut self.mcp_cleanup {
-            previous.supersede(&cleanup);
-        }
-        self.mcp_cleanup = Some(cleanup);
-    }
-
     /// 同一 Registry 重装只移交清理权；换 Registry 时旧 guard 在赋值时 Drop 回收。
     pub(in crate::tui) fn install_lsp_cleanup(&mut self, cleanup: pp_runtime::lsp::Cleanup) {
         if let Some(previous) = &mut self.lsp_cleanup {
@@ -334,7 +327,7 @@ impl App {
                     return;
                 }
                 if self.workflow.mode == WorkMode::Execute || self.plan_retry_enter {
-                    // Execute 进入 Plan，或上一次进入失败（MCP 清理残留）时重试进入。
+                    // Execute 进入 Plan，或上一次进入失败时重试进入。
                     self.plan_after_enter = Some(PlanEnterAction::Standby);
                     self.start_plan_transition(
                         |cancellation| WorkerCommand::EnterPlan { cancellation },

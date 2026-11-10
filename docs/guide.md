@@ -320,7 +320,7 @@ chmod 600 ~/.pp/agent/models.yml
 
 应用自有的 TUI 文案统一使用英文，包括帮助、菜单、通知、skill 管理与 read 摘要，以及这些界面接收的配置保存错误和 skill 诊断。用户输入、模型回复、文件／命令输出、外部 skill 元数据与正文，以及名称和路径保持原文；不限制 Unicode，也不强制模型使用英语。已有 session 中保存的历史工具错误忠实回放，不改写旧日志。共享生产者的配置保存错误和 skill 诊断在 CLI 中也使用英文。
 
-消息列表中的内置工具各有独立的 Nerd Font Font Awesome 图标（包括普通工具、bash、diff、ask 和 Plan 工具）；MCP 使用插头图标，未知工具使用拼图图标。Read 用标题前的状态图标替代工具图标（运行中为转动的时钟，成功为绿色勾，失败为红色叉），图标前额外留一列空白，仅多文件的 `Read (N)` 显示框内读取条目数，图标与 `Read` 之间仅保留一个 ASCII 空格；其他工具图标统一采用单列字形，并在其后保留一列空白，占位宽度固定为两列；字形的实际外观由终端所用 Nerd Font 决定。图标随标题保留于运行、完成、失败、恢复及退出滚动历史中。
+主界面的运行提示、Read 标题、Wait 卡片和子 Agent 面板共用双列时钟动画 `🕛 → 🕒 → 🕕 → 🕘`，每半秒切换一帧，外观由终端的 emoji 字体决定。消息列表中的内置工具各有独立的 Nerd Font Font Awesome 图标（包括普通工具、bash、diff、ask 和 Plan 工具）；MCP 使用插头图标，未知工具使用拼图图标。Read 用标题前的状态图标替代工具图标（成功为绿色勾，失败为红色叉），图标前额外留一列空白，仅多文件的 `Read (N)` 显示框内读取条目数，图标与 `Read` 之间仅保留一个 ASCII 空格。其他工具图标采用单列字形，后面保留一列空白，外观由终端所用 Nerd Font 决定。图标随标题保留于运行、完成、失败、恢复及退出滚动历史中。
 
 用户与助手保留既有角色背景；助手正文按 Markdown 渲染，fenced code block 按语言标签经 syntect 做语法高亮，普通工具正文保持字面文本，指令 Read 卡片按 Markdown 渲染，edit、write 与 ask 使用各自的内容块。think 使用独立样式；其他工具保留正文与运行／完成／失败状态。工具采用低饱和度的标识色：Read 为雾蓝，rg 为青绿，Glob 为灰蓝，Edit 为暖金，Write 为鼠尾草绿，Bash／Bash task 为沙金，ask 为浅青，todo／计划提交为灰紫，Skill 为柔紫，MCP 为淡玫瑰色。主题色集中在工具名称、图标和 Shell 提示符；Read 路径使用黄色，其余路径与正文使用中性灰，工具卡片共用深灰底色和灰色边框。`rg` 与 `glob` 左右各留两列内容边距。`rg:` 标题显示模式、结构化匹配数／文件数和路径，路径放不下时另起一行；匹配正文以 `└─` 与后续缩进排列，浅蓝行号和浅灰匹配行与灰色上下文区分，行号右侧使用竖线分隔，多文件路径分组采用浅灰色。`Glob:` 标题显示匹配表达式和搜索目录（旧会话仍显示原搜索路径），目录层级由原始结果中的标题标记转换为缩进，目录使用浅蓝色，文件名使用浅灰色，路径前缀使用灰色。搜索失败时边框、状态和错误使用红色，旧 stdout 结果仍可展示；搜索卡片不使用 bash 计时 footer。Bash 卡片顶边框显示工具名和运行／完成／失败状态，沙金色 `$` 提示符与浅色命令分开着色，普通输出为浅灰色，运行中的 stderr 为金色，失败后的 stderr 与失败状态为红色；底部继续显示耗时和退出状态。自动加载的 `AGENTS.md` 与实际技能读取使用独立的 Read 边框卡片，使用深色背景和灰色圆角边框，顶边框依次显示状态图标与 `Read <来源>` 标题，`Read` 标识按普通读取／技能读取分别使用雾蓝／柔紫，来源使用黄色；正文为浅灰色，Markdown 标题采用金色下划线，强调文字采用金色，frontmatter 保留原始字段与换行。展开提示和来源路径为暗灰色，来源可用时在 `Output` 分隔区展示 `⟨Resolved path: ...⟩`。技能标题保留原始 `skill://...` URI；失败保留真实错误和失败状态，没有来源结果时不编造路径。提示为灰色，错误为红色；颜色输出仍遵循 `NO_COLOR`。
 
@@ -688,7 +688,7 @@ MCP 的唯一可写配置为 `~/.pp/agent/mcp.json`。旧 `settings.yml.mcp_serv
 }
 ```
 
-stdio 服务的 `command` 必填，按 PATH 查找程序；`args`、`env` 默认为空，`enabled` 默认 `true`，`type` 省略时为 `stdio`。`timeout` 为正整数毫秒，默认 30000。继承进程环境，`env` 覆盖指定变量；省略 `cwd` 使用会话工作目录，相对 `cwd` 以配置文件目录为基准。参数和环境值按字面传递，不执行 shell、`${VAR}` 或 `!command` 展开。原有 stdio 配置保持兼容，例如 `{"command":"npx","args":["-y","@upstash/context7-mcp"],"env":{"CONTEXT7_API_KEY":"YOUR_API_KEY"}}`。
+stdio 服务的 `command` 必填，按 PATH 查找程序；`args`、`env` 默认为空，`enabled` 默认 `true`，`type` 省略时为 `stdio`。`timeout` 为正整数毫秒，默认 30000。继承进程环境，`env` 覆盖指定变量；省略 `cwd` 使用 pp 启动时的工作目录（恢复会话时为恢复后的工作目录），即进程级连接的实际 cwd；相对 `cwd` 以配置文件目录为基准。参数和环境值按字面传递，不执行 shell、`${VAR}` 或 `!command` 展开。原有 stdio 配置保持兼容，例如 `{"command":"npx","args":["-y","@upstash/context7-mcp"],"env":{"CONTEXT7_API_KEY":"YOUR_API_KEY"}}`。
 
 远程服务必须显式指定 `type: "http"`（Streamable HTTP，支持 JSON／SSE 响应）或 `type: "sse"`（旧版 HTTP+SSE），并填写 HTTP／HTTPS `url`；不自动探测、降级或切换传输。远程服务只支持 `type`、`url`、`headers`、`env_headers`、`read_only_tools`、`enabled` 和 `timeout`，拒绝 stdio 专用字段；不接受 URL 中的用户名、密码或 fragment。
 
@@ -746,7 +746,7 @@ stdio 服务的 `command` 必填，按 PATH 查找程序；`args`、`env` 默认
 
 添加或删除服务直接编辑 JSON，然后执行 `/mcp reload`。启停先持文件锁重新读取配置，再以 `0600` 权限原子保存；保存失败不改变运行态。连接失败保留启用设置，可用 reconnect 再试。reload 的整体配置解析失败会保留旧连接；个别连接失败独立显示，不阻断健康服务和本地工具。进程回收失败属于严重错误，禁止继续模型任务。
 
-TUI 的 `/mcp list` 是只读结果面板，按来源分组并单列禁用服务，仅展示名称和状态；打开时仍可在底部编辑和粘贴草稿，用 PgUp／PgDn 或滚轮滚动列表。Esc 关闭列表并保留草稿和对话位置，提交后回到对话区。`/mcp ` 提供子命令及服务器名称补全。行模式提供相同命令并输出文本；命令不进入模型历史，`-p` 不解析斜杠命令。管理操作只允许在空闲时执行，先回收子 Agent，再同步主会话和后续子 Agent 的工具表。Plan／Review 只连接已启用且配置了只读工具的服务。Plan 中可重载和重连这些服务，其他服务只保存启停状态，回到 Execute 后按配置连接。
+TUI 的 `/mcp list` 是只读结果面板，按来源分组并单列禁用服务，仅展示名称和状态；无只读授权的服务在 Plan／Review 中显示 `suspended (Plan/Review)`，表示工具级挂起（进程仍在运行）而非断开。打开时仍可在底部编辑和粘贴草稿，用 PgUp／PgDn 或滚轮滚动列表。Esc 关闭列表并保留草稿和对话位置，提交后回到对话区。`/mcp ` 提供子命令及服务器名称补全。行模式提供相同命令并输出文本；命令不进入模型历史，`-p` 不解析斜杠命令。管理操作只允许在空闲时执行，先收尾子 Agent，再同步主会话和后续子 Agent 的工具表。Plan／Review 不断开任何已连接的 MCP 服务进程，只按只读授权过滤工具表；真正的运行时权威是 `Tools::execute` 的 Plan／Review 白名单。`/mcp reload` 和 `/mcp reconnect` 是刷新外部配置的唯一入口，可在 Plan 中执行。
 
 连接遵循 [MCP 初始化流程](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)，协商版本并发送 `notifications/initialized`，再分页调用 `tools/list`。支持 `2025-11-25`、`2025-06-18`、`2025-03-26`、`2024-11-05`。支持 stdio、Streamable HTTP 和旧版 HTTP+SSE 工具。Streamable HTTP 使用 POST，接收 JSON 或 SSE 响应，并维护初始化返回的会话 ID 与协商后的协议版本头；关闭时有界尝试 DELETE 会话，服务返回 405 不阻止本地清理。旧版 SSE 通过 GET 的 `endpoint` 事件确定 POST 地址，通过 `message` 事件接收响应。不支持 OAuth、resources、prompts、sampling、elicitation、Smithery、SSE 断线续传或服务端动态工具列表通知。
 
@@ -754,7 +754,7 @@ TUI 的 `/mcp list` 是只读结果面板，按来源分组并单列禁用服务
 
 当前模型工具表包含 MCP 工具时，运行时系统指令要求研究与发现优先选择适用的专用工具：代码符号和调用关系使用代码图工具，库／API 参考使用文档工具，浏览器检查或交互使用浏览器工具。内置 `rg`／`glob`／`read` 用于通用文本、路径、文件操作及专用工具未覆盖的内容；专用工具不可用时可回退。项目／库 ID 应从服务发现结果或返回元数据中确认，参数错误或空结果先按提示修正、缩小查询，不能直接认定服务不可用。这是模型选择指引，不改变工具集合、write/edit 要求或 Plan／Review 权限，也不保证固定调用率；没有可用 MCP 工具时不注入该 MCP 指引。
 
-服务在 `/model`、`/new` 后复用。普通传输故障、HTTP 认证失败或会话失效不自动重连、重试或重放工具调用，可用 `/mcp reconnect <name>` 重建；TUI 取消会回收当前连接，下一次新调用才惰性重建，要求完整工具定义不变，不重放旧调用。显式 reconnect／reload 允许工具定义变化。退出清理句柄持续跟踪管理操作新建的进程、远程连接及 I/O 工作线程，关闭窗口或 Ctrl + C 后同样回收。远程请求取消时尽力发送 `notifications/cancelled` 并关闭本地传输；本地关闭不保证服务端工作已经停止。
+MCP 进程在 pp 进程内常驻：首次需要时连接，之后在 `/new`、`/resume`、`/tree` 与 Plan 进入／退出／审批之间复用同一批连接，退出时统一回收。普通传输故障、HTTP 认证失败或会话失效不自动重连、重试或重放工具调用，可用 `/mcp reconnect <name>` 重建；TUI 取消会回收当前连接，下一次新调用才惰性重建，要求完整工具定义不变，不重放旧调用。显式 reconnect／reload 允许工具定义变化。pp 退出时统一回收 MCP 服务进程、远程连接及 I/O 工作线程，关闭窗口或 Ctrl + C 后同样回收。远程请求取消时尽力发送 `notifications/cancelled` 并关闭本地传输；本地关闭不保证服务端工作已经停止。
 
 MCP 按当前用户权限运行，没有文件系统沙箱。服务 stderr 丢弃；错误不输出响应体、命令参数、环境值、URL、会话 ID 或认证内容。成功工具结果会进入模型上下文和会话记录，服务应避免返回凭证。
 
@@ -917,6 +917,7 @@ pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版�
 - 工具名统一为 `rg`：`settings.yml` 顶层键为 `rg:`，旧 `grep:` 会在严格解析下失败；`tools.approval` 的键同样使用 `rg`。
 - `glob({"pattern":"**/*.rs","path":"src"})` 查找路径；`pattern` 必填，`path` 为可选搜索目录（默认当前工作目录），不能传 glob 或多个范围；另支持 `hidden`、`gitignore`、`limit`；默认包含隐藏路径、遵守忽略规则，最多返回 200 项和 50 KiB。扫描在文件操作之间检查取消及五秒期限，超时返回不完整结果；没有文件系统沙箱。
 - 默认前台 `bash({"command":"..."})`：以启动目录执行 `bash -c`，关闭 stdin，建立独立进程组。stdout/stderr 按收集器接收顺序合并，不保证跨流真实写入顺序；无需等待换行即可显示有界头尾快照。返回合并的 `output`、退出码、输出计数、截断标记、`timed_out` 与 `cancelled`，信号退出的退出码为 null。超限日志通过下述 artifact 机制继续读取，旧会话的 stdout/stderr 分流结果仍可回放。
+- 嵌入式 Bash 会拒绝直接重定向到命名管道（FIFO），包括指向 FIFO 的符号链接。需要使用 FIFO 时，将重定向放在外部 `bash -c` 的命令字符串中，由受管子进程执行。
 - 工具参数严格校验：缺失／额外字段、非法 JSON、空白路径／命令、未知工具及文件／进程错误均返回 `ok:false`，供模型修正。bash 非零退出同样失败并保留输出。
 - 前台 bash 接受可选的 `timeout_seconds` 整数参数，范围为 0–3600 秒，0 表示不设超时；例如 `{"command":"cargo build --locked","timeout_seconds":600}`。省略时使用 `bash_timeout_seconds` 配置，默认 300 秒，已有显式配置仍生效。后台模式忽略此参数，继续按后台任务生命周期管理。`{"command":"..."}` 和显式 `"mode":"foreground"` 保持相同契约，超时与模型请求超时独立。独立监督线程在超时时向进程组发送 TERM，等待 1 秒后发送 KILL 并回收直接子进程；可停止的非阻塞管道读取避免后代持有管道导致无限等待。超时返回 `ok:false, timed_out:true`，保留已捕获输出，不回滚 shell 修改。正常结束也清理同一进程组的残留后代；主动脱离进程组的进程不受保证。TUI Esc 取消通过 TERM→1 秒宽限→KILL／wait 停止受控进程组，即使 `timeout_seconds:0` 也仍可取消；前台结果为 `ok:false, cancelled:true, timed_out:false`，正常／超时前台结果的 `cancelled` 为 false。
 - 跨工具调用验证服务时使用 `bash({"command":"exec server ...","mode":"background"})`，保存返回的 `task_id`（如 `bg-1`）。后台没有固定执行超时，但只属于当前用户任务：最终回答、拒绝、请求预算耗尽、错误、Esc 取消或 TUI 受控退出前自动停止并清理。运行中补充沿用当前任务的后台服务；独立 FollowUp 结束时单独收尾。不会跨独立任务、会话恢复或应用重启保留；历史 ID 不会复活进程。服务应保持在受管进程组内，优先 `exec server`，不要 daemonize／setsid。shell `&` 不是受管理后台模式。
