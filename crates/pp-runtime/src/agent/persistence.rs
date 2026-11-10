@@ -1405,6 +1405,8 @@ fn validate_checkpoint(saved: &Checkpoint, id: &str) -> Result<()> {
             .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty()),
         "invalid saved model reference"
     );
+    // 角色路由只作审计：恢复后的模型由进程级 `ModelState::resolve()`（a → b）决定，
+    // 不再要求保存的模型等于路由主模型或备用模型。
     if let Some(route) = &saved.role_route {
         pp_config::config::RoleAssignment {
             enabled: true,
@@ -1413,14 +1415,6 @@ fn validate_checkpoint(saved: &Checkpoint, id: &str) -> Result<()> {
             fallback: route.fallback.clone(),
         }
         .validate()?;
-        ensure!(
-            saved.model_reference == route.primary.model
-                || route
-                    .fallback
-                    .as_ref()
-                    .is_some_and(|f| f.model == saved.model_reference),
-            "saved model does not match its role route"
-        );
     }
     saved.tool_limits.validate()?;
     saved.workflow.validate()?;

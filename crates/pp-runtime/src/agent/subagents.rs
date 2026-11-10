@@ -211,6 +211,13 @@ impl Agent {
                 auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
                 last_request: None,
                 session_output_tokens: 0,
+                // 子 Agent 只吃角色配置：自己的 ModelState 没有手动覆盖。
+                models: ModelState::shared(catalog.clone()),
+                model_source: if record.spec.model_role.is_some() {
+                    pp_core::model::ModelSource::Role
+                } else {
+                    pp_core::model::ModelSource::Default
+                },
                 catalog: catalog.clone(),
                 current_model: ModelChoice {
                     reference: actual_model.to_owned(),

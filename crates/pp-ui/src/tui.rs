@@ -53,9 +53,11 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEv
 use menu::{MenuEvent, MenuItem, SelectionMenu};
 use notification::Level;
 use pp_config::config::ModelChoice;
+use pp_config::model_state::Selection;
 use pp_core::cancellation::CancellationToken;
 use pp_core::cancellation::RunOutcome;
 use pp_core::events::AgentEvent;
+use pp_core::model::ModelSource;
 use pp_core::model::ThinkLevel;
 use pp_core::plan::ExecutionContext;
 use pp_core::plan::PlanLocation;
@@ -491,6 +493,7 @@ enum WorkerEvent {
         revision: u64,
         model: ModelChoice,
         effort: ThinkLevel,
+        source: ModelSource,
     },
     FavoriteModelsSaved(Result<Vec<String>>),
     SessionDeleted(Result<()>),
@@ -646,6 +649,7 @@ impl WorkerEvent {
                 .map_or(0, |binding| binding.seen),
             model: agent.current_model().clone(),
             effort: agent.think_level(),
+            source: agent.model_source(),
         }
     }
 
@@ -666,17 +670,23 @@ struct ModelListing {
     default_reference: String,
     favorites: Vec<String>,
     usage: BTreeMap<String, u64>,
+    /// `a`：手动覆盖快照，供 `/Roles` 只读行与来源标记恢复。
+    override_selection: Option<Selection>,
+    /// 当前生效模型来源；重新加载目录后覆盖可能被 `ModelState` 校正。
+    source: ModelSource,
 }
 
 impl ModelListing {
     fn from_agent(agent: &Agent) -> Result<Self> {
         Ok(Self {
             choices: agent.model_choices(),
-            default_reference: agent.default_model_reference().to_owned(),
-            favorites: agent.favorite_models().to_vec(),
-            roles: agent.model_roles().clone(),
+            default_reference: agent.default_model_reference(),
+            favorites: agent.favorite_models(),
+            roles: agent.model_roles(),
             default_effort: agent.default_think_level(),
             usage: agent.model_usage()?,
+            override_selection: agent.models().override_selection(),
+            source: agent.model_source(),
         })
     }
 }
@@ -774,6 +784,10 @@ struct App {
     // 控制报告与 worker 快照走不同通道；旧快照不能覆盖已应用的新选择。
     model_revision: u64,
     pending_model: Option<(u64, String)>,
+    // 当前生效模型的来源；`Default` 不增加状态栏噪声。
+    current_source: Option<ModelSource>,
+    // `a` 的手动覆盖快照；只用于 `/Roles` 只读展示与清除，不参与决议。
+    override_selection: Option<Selection>,
     // 期望档位：`0` 表示已提交但控制线程尚未确认，其余为 `ThinkQueued` 的 revision。
     // 切档不是 worker 命令，因此这里的变化绝不同步改写 `state`。
     pending_think: Option<(u64, ThinkLevel)>,

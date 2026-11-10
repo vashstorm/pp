@@ -609,28 +609,19 @@ impl App {
                         })
                         && self.shortcut_ready()
                     {
-                        let request = match action {
+                        match action {
                             MenuAction::Effort(level) if key.modifiers == FUNCTION_MODIFIER => {
-                                Some((
+                                if self.send(
                                     WorkerCommand::SaveDefaultThinkLevel(level),
                                     State::SavingThinkDefault,
-                                ))
+                                ) {
+                                    self.clear_input();
+                                }
                             }
                             MenuAction::Model(index) if key.modifiers == KeyModifiers::CONTROL => {
-                                Some((
-                                    WorkerCommand::SaveDefaultModel(
-                                        self.choices[index].reference.clone(),
-                                    ),
-                                    State::SavingModelSettings,
-                                ))
+                                self.request_save_default(self.choices[index].reference.clone());
                             }
-                            _ => None,
-                        };
-                        if let Some((command, state)) = request
-                            && self.send(command, state)
-                            && matches!(action, MenuAction::Effort(_))
-                        {
-                            self.clear_input();
+                            _ => {}
                         }
                     }
                     return false;

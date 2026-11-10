@@ -1,4 +1,5 @@
 use crate::tui::{App, Level, State, ThinkLevel, WorkerCommand, roles};
+use pp_core::model::ModelSource;
 
 impl App {
     pub(in crate::tui) fn open_roles(&mut self) {
@@ -14,6 +15,7 @@ impl App {
                 .map(|model| model.reference.clone())
                 .unwrap_or_default(),
             self.think_level,
+            self.override_selection.clone(),
         ));
         self.menu = None;
         self.menu_dismissed = true;
@@ -72,6 +74,19 @@ impl App {
                     self.notify(Level::Error, "Role management service unavailable".into());
                 }
             }
+            roles::Action::ClearOverride => {
+                // 只回退到配置默认；`a` 仅存在于进程内，不需要 worker 持久化。
+                if let Some(control) = &self.model_control {
+                    if !control.submit(pp_runtime::model_control::Change::ClearOverride) {
+                        self.notify(Level::Error, "Model control unavailable".into());
+                    }
+                } else {
+                    self.notify(
+                        Level::Error,
+                        "Model control unavailable; cannot clear the manual override".into(),
+                    );
+                }
+            }
         }
     }
 }
@@ -85,7 +100,16 @@ impl App {
     }
     pub(in crate::tui) fn request_model_switch(&mut self, reference: String) -> bool {
         if let Some(control) = &self.model_control {
-            let accepted = control.submit(pp_runtime::model_control::Change::Select(reference));
+            // 手动选择记录为覆盖；目标档位沿用在 pp-config 里的统一策略
+            // （模型显式默认 → 保留当前档 → 该模型有效默认）。
+            let selection = match control.resolve_reference(&reference, Some(self.think_level)) {
+                Ok(selection) => selection,
+                Err(error) => {
+                    self.notify(Level::Error, format!("{error:#}"));
+                    return false;
+                }
+            };
+            let accepted = control.submit(pp_runtime::model_control::Change::Override(selection));
             if !accepted {
                 self.notify(Level::Error, "Model control unavailable".into());
             }
@@ -93,6 +117,15 @@ impl App {
         } else {
             self.send(WorkerCommand::SwitchModel(reference), State::SwitchingModel)
         }
+    }
+
+    /// 保存全局默认模型（写配置默认 `b`）：始终走 worker，保留既有的保存状态、失败提示与
+    /// `ModelsReloaded` 快照链路；`ModelState` 内部用写锁串行化，两条写路径不会互相覆盖。
+    pub(in crate::tui) fn request_save_default(&mut self, reference: String) -> bool {
+        self.send(
+            WorkerCommand::SaveDefaultModel(reference),
+            State::SavingModelSettings,
+        )
     }
     /// 切档不是 worker 命令：运行中与空闲都可提交，只要求没有本地面板/技能等待。
     pub(in crate::tui) fn think_switch_ready(&mut self) -> bool {
@@ -155,36 +188,44 @@ impl App {
         let changed = !reports.is_empty();
         for report in reports {
             match report {
-                Report::Cleared { role, revision } => {
-                    if role == pp_config::config::ModelRole::Default
-                        && self
-                            .pending_model
-                            .as_ref()
-                            .is_some_and(|(pending, _)| *pending <= revision)
-                    {
+                Report::Cleared { role, revision: _ } => {
+                    if role == pp_config::config::ModelRole::Default {
+                        // 清除覆盖：待应用目标、来源与 `/Roles` 只读行一起回到默认值。
                         self.pending_model = None;
+                        self.current_source = None;
+                        self.override_selection = None;
+                        if let Some(panel) = &mut self.roles_panel {
+                            panel.update_override(None);
+                        }
                     }
                     self.secondary_status = None;
                 }
                 Report::Queued {
                     role,
                     revision,
-                    reference,
+                    selection,
+                    source,
                 } => {
                     if role == pp_config::config::ModelRole::Default {
-                        self.pending_model = Some((revision, reference.clone()));
+                        self.pending_model = Some((revision, selection.reference.clone()));
+                        // 覆盖已写入 `ModelState`；只登记快照，来源等实际应用后才切换。
+                        self.override_selection =
+                            (source == ModelSource::Override).then(|| selection.clone());
+                        if let Some(panel) = &mut self.roles_panel {
+                            panel.update_override(self.override_selection.clone());
+                        }
                     }
                     if let Some(panel) = &mut self.roles_panel {
                         panel.runtime_status(format!(
                             "{} → {} · pending safe boundary",
                             role.name(),
-                            reference
+                            selection.reference
                         ));
                     }
                     self.secondary_status = Some(format!(
                         "{} → {} · pending safe boundary",
                         role.name(),
-                        reference
+                        selection.reference
                     ));
                     if let Some(commands) = &self.commands {
                         let _ = commands.send(WorkerCommand::ApplyModelTargets);
@@ -195,23 +236,51 @@ impl App {
                     default,
                     effort,
                 } => {
+                    let roles_changed = roles != self.model_roles;
                     self.model_roles = roles;
-                    self.default_model_reference = Some(default);
+                    self.default_model_reference = Some(default.clone());
                     self.default_think_level = effort;
+                    // 保存默认模型时 `ModelState` 会在 `a == b` 时丢弃覆盖；
+                    // UI 同步这一步，避免 `/Roles` 显示已不存在的 Override。
+                    let cleared_override = self.override_selection.as_ref().is_some_and(|s| {
+                        s.reference == default
+                            && self
+                                .choices
+                                .iter()
+                                .find(|choice| choice.reference == default)
+                                .is_some_and(|choice| {
+                                    choice.thinking.effective_default(effort) == s.effort
+                                })
+                    });
+                    if cleared_override {
+                        self.override_selection = None;
+                    }
                     if let Some(panel) = &mut self.roles_panel {
                         panel.saved();
+                        panel.update_override(self.override_selection.clone());
                     }
-                    self.notify(
-                        Level::Normal,
-                        "Role configuration saved; applying at safe boundaries".into(),
-                    );
+                    if roles_changed {
+                        self.notify(
+                            Level::Normal,
+                            "Role configuration saved; applying at safe boundaries".into(),
+                        );
+                    } else {
+                        self.notify(
+                            Level::Normal,
+                            format!("Default model saved: {default} (takes effect next launch)"),
+                        );
+                    }
                 }
                 Report::Applied {
                     agent,
                     revision,
                     model,
-                    effort,
+                    source,
                 } => {
+                    crate::tui::app::receive::ui_dbg(&format!(
+                        "Applied rev={revision} model={} source={:?} agent={:?} current_rev={}",
+                        model.reference, source, agent, self.model_revision
+                    ));
                     if let Some(panel) = &mut self.roles_panel {
                         panel.runtime_status(format!(
                             "{}current: {}",
@@ -230,7 +299,13 @@ impl App {
                     } else if revision >= self.model_revision {
                         self.model_revision = revision;
                         self.current_model = Some(model);
-                        self.think_level = effort;
+                        self.current_source = Some(source);
+                        if source == ModelSource::Default {
+                            self.override_selection = None;
+                            if let Some(panel) = &mut self.roles_panel {
+                                panel.update_override(None);
+                            }
+                        }
                         self.usage = None;
                         if self
                             .pending_model
@@ -290,6 +365,12 @@ impl App {
                     if revision >= self.model_revision {
                         self.model_revision = revision;
                         self.think_level = effort;
+                        if let Some(selection) = &mut self.override_selection {
+                            selection.effort = effort;
+                        }
+                        if let Some(panel) = &mut self.roles_panel {
+                            panel.update_override(self.override_selection.clone());
+                        }
                         // 命中率不可跨边界比较，旧用量快照同样失效。
                         self.usage = None;
                         self.token_speed.clear();

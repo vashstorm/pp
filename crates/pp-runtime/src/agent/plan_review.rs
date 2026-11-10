@@ -180,7 +180,7 @@ impl Agent {
                             emit(AgentEvent::ModelRouteChanged {
                                 model: target.model,
                                 effort: target.effort,
-                                fallback: true,
+                                source: pp_core::model::ModelSource::Fallback,
                                 temporary: true,
                             });
                             continue;
@@ -213,7 +213,7 @@ impl Agent {
                             emit(AgentEvent::ModelRouteChanged {
                                 model: target.model,
                                 effort: target.effort,
-                                fallback: true,
+                                source: pp_core::model::ModelSource::Fallback,
                                 temporary: true,
                             });
                             continue;

@@ -20,8 +20,10 @@ use crate::project_instructions;
 use crate::tools::plan_catalog;
 use anyhow::{Result, anyhow, bail, ensure};
 use pp_config::config::{ModelRole, RoleRoute};
+use pp_config::model_state::Selection;
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
+use pp_core::model::ModelSource;
 use pp_core::plan;
 use pp_core::plan::ExecutionContext;
 use pp_core::plan::PlanLocation;
@@ -110,8 +112,9 @@ impl SavedInstructions {
 }
 
 impl Agent {
+    /// 执行期模型：唯一决议出口 `resolve()`（手动覆盖 → 配置默认），不自动套用角色。
     fn default_execution_model(&self) -> Result<ExecutionModel> {
-        let (config, effort, route) = Self::resolve_default_model(&self.catalog)?;
+        let (config, selection) = Self::resolve_selection(&self.models)?;
         let same_response_source = self.client.same_source(&config)
             && same_provider(&self.current_model.reference, &config.model_reference);
         let mut client = OpenAiClient::new(&config)?;
@@ -122,14 +125,14 @@ impl Agent {
         client.set_task_accounting(self.task_status.accounting.clone());
         Ok(ExecutionModel {
             choice: ModelChoice {
-                reference: config.model_reference,
+                reference: selection.reference,
                 model: config.model,
                 protocol: config.protocol,
                 thinking: config.thinking,
                 context_window: config.context_window,
             },
-            effort,
-            route,
+            effort: selection.effort,
+            route: None,
             client,
             same_response_source,
         })
@@ -180,6 +183,7 @@ impl Agent {
         self.current_model = model.choice;
         self.think_level = model.effort;
         self.role_route = model.route;
+        self.model_source = self.models.source();
         self.last_request = None;
         self.pending_instructions = None;
     }
@@ -418,11 +422,34 @@ impl Agent {
             return Ok(self.workflow.clone());
         }
         self.journal.check()?;
-        let selection = self.catalog.role_selection(
-            pp_config::config::ModelRole::Plan,
-            &self.current_model.reference,
-            self.think_level,
-        )?;
+        // 手动覆盖优先：Plan 模式不改用 PLAN 角色，保持用户显式选择。
+        let (model, route, source) = match self.models.override_selection() {
+            Some(selection) => (selection, None, ModelSource::Override),
+            None => {
+                let assignment = self.catalog.role_selection(
+                    pp_config::config::ModelRole::Plan,
+                    &self.current_model.reference,
+                    self.think_level,
+                )?;
+                let route = assignment
+                    .enabled
+                    .then(|| self.catalog.role_route(pp_config::config::ModelRole::Plan))
+                    .flatten();
+                let source = if route.is_some() {
+                    ModelSource::Role
+                } else {
+                    self.models.source()
+                };
+                (
+                    Selection {
+                        reference: assignment.model,
+                        effort: assignment.effort,
+                    },
+                    route,
+                    source,
+                )
+            }
+        };
         // 旧 Executed/Completed 绑定一并解除；文件与登记保留，由 /plan-list 管理。
         let previous = std::mem::replace(
             &mut self.workflow,
@@ -436,13 +463,12 @@ impl Agent {
         self.cancel_lsp_diagnostics();
         self.ensure_plan_mcp_access(cancellation)?;
         let previous_route = self.role_route.take();
-        self.role_route = if selection.enabled {
-            self.catalog.role_route(pp_config::config::ModelRole::Plan)
-        } else {
-            previous_route.clone()
-        };
+        self.role_route = route;
         let changed = self
-            .switch_model_with_effort(&selection.model, Some(selection.effort))
+            .switch_model_with_effort(&model.reference, Some(model.effort))
+            .inspect(|_| {
+                self.model_source = source;
+            })
             .and_then(|changed| {
                 if !changed && previous_route != self.role_route {
                     self.checkpoint_route()

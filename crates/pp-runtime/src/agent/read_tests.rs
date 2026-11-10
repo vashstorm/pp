@@ -344,11 +344,13 @@ fn read_history_restores_unknown_tool_results_without_special_handling() {
         )
         .unwrap();
         let mut restored = Agent::restore(
-            ModelCatalog::from_files(
-                &dir.path().join("settings.yml"),
-                &dir.path().join("models.yml"),
-            )
-            .unwrap(),
+            ModelState::shared(
+                ModelCatalog::from_files(
+                    &dir.path().join("settings.yml"),
+                    &dir.path().join("models.yml"),
+                )
+                .unwrap(),
+            ),
             Tools::new(dir.path().into(), EditMode::Replace).unwrap(),
             saved,
         )
@@ -476,11 +478,13 @@ fn user_image_requests_restore_navigate_and_switch_protocol_without_source() {
         )
         .unwrap();
         let mut restored = Agent::restore(
-            ModelCatalog::from_files(
-                &dir.path().join("settings.yml"),
-                &dir.path().join("models.yml"),
-            )
-            .unwrap(),
+            ModelState::shared(
+                ModelCatalog::from_files(
+                    &dir.path().join("settings.yml"),
+                    &dir.path().join("models.yml"),
+                )
+                .unwrap(),
+            ),
             Tools::new(dir.path().into(), EditMode::Replace).unwrap(),
             saved,
         )

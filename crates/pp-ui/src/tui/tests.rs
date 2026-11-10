@@ -222,6 +222,10 @@ fn model_control() -> (
 }
 
 /// 与 [`model_control`] 相同，但由调用方给出 `models.yml` 正文，并返回目录快照。
+///
+/// 夹具预置一个与配置默认不同的手动档位：新的 `ModelState` 中 `Change::Think`
+/// 只修改已有的 `a` 槽，未登记覆盖时不会发布新 revision。测试关注提交/确认链路，
+/// 因此这里先建立与真实使用一致的前提。
 fn model_control_with(
     models: &str,
 ) -> (
@@ -236,12 +240,35 @@ fn model_control_with(
     std::fs::write(&models_path, models).unwrap();
     let catalog = pp_config::config::ModelCatalog::from_files(&settings, &models_path).unwrap();
     let choices = catalog.choices();
-    let control = pp_runtime::model_control::Service::start(catalog).unwrap();
+    let state = pp_config::model_state::ModelState::shared(catalog);
+    if let Some(choice) = choices.first() {
+        let effort = choice.thinking.levels().nth(1).unwrap_or(ThinkLevel::None);
+        let _ = state.set_override(Selection {
+            reference: choice.reference.clone(),
+            effort,
+        });
+    }
+    let control = pp_runtime::model_control::Service::start(state).unwrap();
     let binding = pp_runtime::model_control::Binding::main(control.registry.clone());
     (control, binding, choices)
 }
 
-/// 轮询 UI 直到真实控制线程发布待生效目标；返回该目标的 revision。
+/// 轮询 UI 直到真实控制线程发布手动覆盖目标；返回已登记的 `a` 快照。
+fn wait_for_override(app: &mut App, reference: &str) -> pp_config::model_state::Selection {
+    for _ in 0..400 {
+        app.receive();
+        if let Some(selection) = app
+            .override_selection
+            .clone()
+            .filter(|selection| selection.reference == reference)
+        {
+            return selection;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("model control published no override for {reference}");
+}
+
 /// 先等到 `ThinkQueued` 再注入结果，避免异步控制线程与测试注入交错。
 fn wait_for_queued_think(app: &mut App, level: ThinkLevel) -> u64 {
     for _ in 0..400 {

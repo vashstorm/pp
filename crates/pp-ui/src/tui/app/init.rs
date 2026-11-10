@@ -38,6 +38,8 @@ impl App {
             model_control: None,
             model_revision: 0,
             pending_model: None,
+            current_source: None,
+            override_selection: None,
             pending_think: None,
             auth_worker: super::super::auth::Worker::new()?,
             auth_panel: None,
@@ -182,14 +184,14 @@ impl App {
         Ok(app)
     }
     pub(in crate::tui) fn install_agent(&mut self, mut agent: Agent) -> Result<()> {
-        let control = pp_runtime::model_control::Service::start(agent.model_catalog())?;
+        let control = pp_runtime::model_control::Service::start(agent.models())?;
         agent.runtime_models = Some(pp_runtime::model_control::Binding::main(
             control.registry.clone(),
         ));
         self.model_control = Some(control);
         self.model_revision = 0;
+        self.pending_model = None;
         self.pending_think = None;
-        self.input_limits = agent.input_limits();
         self.conversation
             .set_bash_timeout(agent.bash_timeout_seconds());
         // 取 replay、模型字段与 MCP 视图必须发生在 agent move 进 worker 之前。
@@ -198,6 +200,8 @@ impl App {
         let current_model = agent.current_model().clone();
         let think_level = agent.think_level();
         let default_think_level = agent.default_think_level();
+        let model_source = agent.model_source();
+        let override_selection = agent.models().override_selection();
         // LSP 清理句柄与 Registry 必须在 Agent move 进 worker 前取得；
         // Registry clone 只共享客户端，不取得停止所有权。
         let lsp_cleanup = agent.lsp_cleanup();
@@ -206,14 +210,14 @@ impl App {
         let mut startup_errors = self.mcp_view.warnings();
         self.background_cleanup = Some(agent.background_cleanup());
         self.choices = agent.model_choices();
-        self.favorite_models = agent.favorite_models().to_vec();
+        self.favorite_models = agent.favorite_models();
         // 首次安装没有旧快照可保留；读取失败保留空缓存并单独提示，不阻断模型任务。
         match agent.model_usage() {
             Ok(usage) => self.model_usage = usage,
             Err(error) => startup_errors.push(format!("Could not load model usage: {error:#}")),
         }
-        self.model_roles = agent.model_roles().clone();
-        self.default_model_reference = Some(agent.default_model_reference().to_owned());
+        self.model_roles = agent.model_roles();
+        self.default_model_reference = Some(agent.default_model_reference());
         let (commands, receiver) = mpsc::channel();
         let (sender, events) = mpsc::sync_channel(256);
         // 启动绑定：先于任何任务发布根 registry，面板可在运行中打开。
@@ -666,6 +670,8 @@ impl App {
             self.think_level = think_level;
             self.default_think_level = default_think_level;
         }
+        self.current_source = Some(model_source);
+        self.override_selection = override_selection;
         self.unavailable = None;
         for message in startup_errors {
             self.notify(Level::Error, message);

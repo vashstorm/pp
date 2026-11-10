@@ -317,11 +317,8 @@ fn changes_model_effort_compaction_retain_undo_and_reset_invalidates_it() {
             .to_string(),
         )
         .unwrap();
-        agent.catalog = ModelCatalog::from_files(
-            &dir.path().join("settings.yml"),
-            &dir.path().join("models.yml"),
-        )
-        .unwrap();
+        // 模型目录同时是进程级 `ModelState` 的快照：必须经 reload 发布。
+        agent.reload_models().unwrap();
         let path = dir.path().join("demo.txt");
         std::fs::write(&path, b"original\n").unwrap();
         let worker = serve(

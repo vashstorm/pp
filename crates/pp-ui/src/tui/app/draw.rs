@@ -131,6 +131,7 @@ impl App {
                     .unwrap_or_default(),
                 self.think_level,
             );
+            panel.update_override(self.override_selection.clone());
             panel.draw(frame, area);
 
             return;
@@ -184,6 +185,7 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
+                    self.current_source,
                     self.workflow.mode,
                     context,
                     area.width,
@@ -209,6 +211,7 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
+                    self.current_source,
                     self.workflow.mode,
                     context,
                     area.width,
@@ -235,6 +238,7 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
+                    self.current_source,
                     self.workflow.mode,
                     context,
                     area.width,
@@ -272,6 +276,7 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
+                    self.current_source,
                     self.workflow.mode,
                     context,
                     area.width,
@@ -292,6 +297,7 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
+                    self.current_source,
                     self.workflow.mode,
                     context,
                     area.width,
@@ -480,6 +486,7 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
+                    self.current_source,
                     self.workflow.mode,
                     context,
                     status.width,

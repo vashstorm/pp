@@ -38,7 +38,7 @@ pub(super) fn install_distinct_plan_model(agent: &mut Agent, root: &std::path::P
 }
 
 #[test]
-fn plan_exit_switches_protocol_and_persists_default_route() {
+fn plan_exit_switches_protocol_and_persists_resolved_model() {
     let dir = tempfile::tempdir().unwrap();
     let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
     install_distinct_plan_model(&mut agent, dir.path());
@@ -55,6 +55,8 @@ fn plan_exit_switches_protocol_and_persists_default_route() {
     assert!(matches!(agent.session, Session::Completion(_)));
     assert_eq!(agent.current_model.reference, "fixture/one");
     assert_eq!(agent.think_level, ThinkLevel::Low);
+    assert_eq!(agent.model_source(), pp_core::model::ModelSource::Default);
+    assert!(agent.role_route.is_none(), "退出 Plan 不保留角色路由");
     assert_eq!(user_texts(&agent), [EXPLORATION]);
     assert!(
         !agent
@@ -64,16 +66,16 @@ fn plan_exit_switches_protocol_and_persists_default_route() {
     );
     drop(agent);
 
+    // checkpoint 只记录实际生效的模型；角色路由不再参与默认模型推导。
     let restored = persistence::load_test(&sessions, &locks, Some(&id), true).unwrap();
     assert_eq!(restored.checkpoint.workflow.mode, WorkMode::Execute);
     assert_eq!(restored.checkpoint.model_reference, "fixture/one");
-    let route = restored.checkpoint.role_route.unwrap();
-    assert_eq!(route.role, ModelRole::Default);
-    assert_eq!(route.fallback.unwrap().model, "fixture/spare");
+    assert_eq!(restored.checkpoint.think_level, ThinkLevel::Low);
+    assert!(restored.checkpoint.role_route.is_none());
 }
 
 #[test]
-fn plan_restore_replaces_only_a_legacy_execute_plan_route() {
+fn plan_restore_uses_resolved_model_and_drops_checkpoint_route() {
     for has_plan_route in [true, false] {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
@@ -81,6 +83,7 @@ fn plan_restore_replaces_only_a_legacy_execute_plan_route() {
         agent.enter_plan(&CancellationToken::new()).unwrap();
         agent.workflow = WorkflowState::default();
         if !has_plan_route {
+            // 手动选择写入进程级覆盖 `a`：恢复后仍应生效。
             agent.switch_model("planner/one").unwrap();
         }
         seed_session(&mut agent, EXPLORATION);
@@ -88,29 +91,87 @@ fn plan_restore_replaces_only_a_legacy_execute_plan_route() {
         let id = agent.session_id().unwrap().to_owned();
         let sessions = agent.journal.directory().to_owned();
         let locks = agent.journal.lock_dir().to_owned();
-        let catalog = agent.catalog.clone();
+        let models = agent.models();
         drop(agent);
 
+        // 旧 checkpoint 仍带 PLAN 路由（仅审计），恢复后的模型 = resolve()。
         let restored = persistence::load_test(&sessions, &locks, Some(&id), true).unwrap();
-        let tools = Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap();
-        let agent = Agent::restore(catalog, tools, restored).unwrap();
-        let expected = if has_plan_route {
-            "fixture/one"
-        } else {
-            "planner/one"
-        };
-        assert_eq!(agent.current_model.reference, expected);
-        assert_eq!(user_texts(&agent), [EXPLORATION]);
         assert_eq!(
-            agent.role_route.as_ref().map(|route| route.role),
-            has_plan_route.then_some(ModelRole::Default)
+            restored
+                .checkpoint
+                .role_route
+                .as_ref()
+                .map(|route| route.role),
+            has_plan_route.then_some(ModelRole::Plan)
         );
+        let tools = Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap();
+        let agent = Agent::restore(models, tools, restored).unwrap();
+        if has_plan_route {
+            // 无覆盖：`b` = DEFAULT 角色 fixture/one。
+            assert_eq!(agent.current_model.reference, "fixture/one");
+            assert_eq!(agent.model_source(), pp_core::model::ModelSource::Default);
+        } else {
+            // 手动覆盖 planner/one 在恢复后仍是同一个模型。
+            assert_eq!(agent.current_model.reference, "planner/one");
+            assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
+        }
+        assert_eq!(user_texts(&agent), [EXPLORATION]);
+        assert!(agent.role_route.is_none(), "恢复不还原 checkpoint 路由");
         drop(agent);
         let saved = persistence::load_test(&sessions, &locks, Some(&id), true).unwrap();
-        assert_eq!(saved.checkpoint.model_reference, expected);
+        assert_eq!(
+            saved.checkpoint.model_reference,
+            if has_plan_route {
+                "fixture/one"
+            } else {
+                "planner/one"
+            }
+        );
+        assert!(saved.checkpoint.role_route.is_none(), "恢复后清理旧路由");
     }
 }
 
+#[test]
+fn plan_override_survives_enter_leave_and_approve() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+    install_distinct_plan_model(&mut agent, dir.path());
+    // 手动覆盖 fixture/spare，区别于 DEFAULT 角色（fixture/one）与 PLAN 角色（planner/one）。
+    agent.switch_model("fixture/spare").unwrap();
+    assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
+    let expected = agent.current_model.reference.clone();
+    let expected_level = agent.think_level;
+
+    // 进入 Plan：手动覆盖优先于 PLAN 角色。
+    agent.enter_plan(&CancellationToken::new()).unwrap();
+    assert_eq!(agent.current_model.reference, expected);
+    assert_eq!(agent.think_level, expected_level);
+    assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
+    assert_eq!(agent.workflow.mode, WorkMode::Plan);
+
+    // 批准执行按 resolve() 交接，不切回配置默认。
+    let token = ready_plan_token(&mut agent);
+    let approval = agent
+        .approve_plan(
+            token,
+            ExecutionContext::Keep,
+            &InputQueue::default(),
+            &CancellationToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+    assert_eq!(approval.workflow.mode, WorkMode::Execute);
+    assert_eq!(agent.current_model.reference, expected);
+    assert_eq!(agent.think_level, expected_level);
+    assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
+
+    // 再次进出 Plan：同一条手动覆盖保持生效。
+    agent.enter_plan(&CancellationToken::new()).unwrap();
+    assert_eq!(agent.current_model.reference, expected);
+    agent.leave_plan(&CancellationToken::new(), None).unwrap();
+    assert_eq!(agent.current_model.reference, expected);
+    assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
+}
 #[test]
 fn plan_toggle_enters_standby_and_leave_unbinds_without_abandoning() {
     for protocol in ["completion", "response"] {

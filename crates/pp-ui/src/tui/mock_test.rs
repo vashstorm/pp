@@ -180,6 +180,9 @@ impl App {
         self.choices = snapshot.choices;
         self.think_level = snapshot.think_level;
         self.default_think_level = snapshot.default_think_level;
+        // mock 场景没有手动覆盖，来源回到配置默认。
+        self.current_source = Some(pp_core::model::ModelSource::Default);
+        self.override_selection = None;
         self.usage = Some(snapshot.usage);
         // 每场场景独立；上一场的 TODO 不能带进下一场。
         self.todo_panel = Default::default();

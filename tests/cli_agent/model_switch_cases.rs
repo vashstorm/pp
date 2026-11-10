@@ -680,3 +680,67 @@ fn model_switch_failure_is_atomic_and_catalog_reloads_without_clearing_history()
     no_more(&b);
     no_more(&bad);
 }
+
+/// 手动覆盖 `a`（`/model`）优先于已启用的 DEFAULT 角色，且只在进程内有效：
+/// 重启后回到配置默认 `b`。这条链是“切模型后又被切回 default”的回归面。
+#[test]
+fn model_override_outranks_default_role_and_resets_on_restart() {
+    let primary = server();
+    let other = server();
+    let home = tempfile::tempdir().unwrap();
+    // 复现用户配置：DEFAULT 角色启用并指向主模型，PLAN 角色同样指向它。
+    let settings = json!({
+        "rate_limit_retry_budget_seconds": 0,
+        "model_roles": {
+            "default": {"model": "primary/main", "effort": "low"},
+            "plan": {"model": "primary/main", "effort": "high"}
+        }
+    })
+    .to_string();
+    let models = json!({"providers": {
+        "primary": slash_provider(&primary, "primary", "completion", json!({
+            "main": {"model": "primary-model"}})),
+        "other": slash_provider(&other, "other", "completion", json!({
+            "alt": {"model": "other-model"}}))
+    }})
+    .to_string();
+    let mut cli = Cli::start_with(home.path(), None, &settings, &models);
+    cli.input("first task\n");
+    let (request, body) = receive(&primary);
+    assert_eq!(authorization(&request), "Bearer primary-key");
+    assert_eq!(body["model"], "primary-model");
+    final_reply(request, "first reply");
+
+    cli.input("/model other/alt\nsecond task\n");
+    let (request, body) = receive(&other);
+    assert_eq!(authorization(&request), "Bearer other-key");
+    assert_eq!(body["model"], "other-model");
+    slash_assert_message(&body["messages"][1], "user", "first task");
+    slash_assert_message(&body["messages"][2], "assistant", "first reply");
+    slash_assert_message(&body["messages"][3], "user", "second task");
+    assert_eq!(body["messages"].as_array().unwrap().len(), 4);
+    final_reply(request, "second reply");
+    cli.input("/quit\n");
+    let output = cli.finish();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"first reply\nsecond reply\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("Current model: other/alt (other-model)\nSource: manual override"),
+        "missing override source: {stderr}"
+    );
+    no_more(&primary);
+    no_more(&other);
+
+    // `a` 只在内存：重启进程后回到配置默认 `b`，并且不会再被 DEFAULT 角色改成别的模型。
+    let mut restarted = Cli::start_with_existing_files(home.path(), None);
+    restarted.input("third task\n");
+    let (request, body) = receive(&primary);
+    assert_eq!(body["model"], "primary-model");
+    final_reply(request, "third reply");
+    restarted.input("/quit\n");
+    let output = restarted.finish();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"third reply\n");
+    no_more(&other);
+}

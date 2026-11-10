@@ -578,7 +578,7 @@ impl Transcript {
         if let Some(activity) = &mut self.activity {
             match event {
                 AgentEvent::ModelAttemptFailed { .. } => activity.phase("Model attempt failed"),
-                AgentEvent::ModelRouteChanged { .. } => activity.phase("Switching to fallback"),
+                AgentEvent::ModelRouteChanged { .. } => activity.phase("Switching model"),
                 AgentEvent::AssistantStarted => activity.phase("Requesting model"),
                 AgentEvent::ThinkingDelta { .. } | AgentEvent::ReasoningSummaryDelta { .. } => {
                     activity.phase("Thinking")
@@ -718,20 +718,8 @@ impl Transcript {
                 }
                 self.append_error(&text);
             }
-            AgentEvent::ModelRouteChanged {
-                model, fallback, ..
-            } => {
-                self.append(
-                    "Note",
-                    &format!(
-                        "{}: {model}",
-                        if fallback {
-                            "Using fallback model"
-                        } else {
-                            "Restoring primary model"
-                        }
-                    ),
-                );
+            AgentEvent::ModelRouteChanged { model, source, .. } => {
+                self.append("Note", &format!("{}: {model}", source.describe()));
             }
             AgentEvent::AssistantStarted => self.finish_markdown_streams(),
             AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } => {

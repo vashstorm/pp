@@ -43,6 +43,9 @@ use persistence::{Metadata, SessionJournal, SessionRef};
 use pp_config::config::EditMode;
 use pp_config::config::ModelCatalog;
 use pp_config::config::ModelChoice;
+use pp_config::config::ModelRole;
+use pp_config::model_state::ModelState;
+use pp_config::model_state::Selection;
 use pp_config::models::Protocol;
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
@@ -52,6 +55,7 @@ use pp_core::context::ContextUsage;
 use pp_core::context::TokenUsage;
 use pp_core::context::estimate_tokens;
 use pp_core::events::AgentEvent;
+use pp_core::model::ModelSource;
 use pp_core::model::ThinkLevel;
 use pp_llm::OpenAiClient;
 use std::cell::RefCell;
@@ -79,16 +83,24 @@ pub struct Bootstrap {
     pub approval: Option<pp_config::config::ApprovalMode>,
     /// 进程级共享的 MCP 单例；根 Agent、子 Agent 与恢复的会话都用它。
     pub mcp: std::sync::Arc<crate::mcp::McpManager>,
+    /// 进程级共享的模型状态：首次成功加载后一直复用，重建 Agent 不丢失手动覆盖。
+    pub models: pp_config::model_state::SharedModels,
 }
 
 impl Bootstrap {
+    /// 进程内唯一模型状态：首次成功加载后复用，认证/登录重建 Agent 不丢失手动覆盖。
+    pub fn model_state(&self) -> Result<std::sync::Arc<ModelState>> {
+        self.models
+            .get_or_load(&self.dir.join("settings.yml"), &self.dir.join("models.yml"))
+    }
+
     pub fn build(&self) -> Result<Agent> {
-        let catalog =
-            ModelCatalog::from_files(&self.dir.join("settings.yml"), &self.dir.join("models.yml"))?;
+        let models = self.model_state()?;
+        let catalog = models.catalog_snapshot();
         let mut tools = Tools::with_mcp(self.cwd.clone(), catalog.edit_mode(), self.mcp.clone())?;
         tools.skills = self.skills.clone();
         let mut agent = Agent::new_with_prompt(
-            catalog,
+            models,
             tools,
             self.dir.join("sessions"),
             persistence::locks::directory()?,
@@ -115,6 +127,10 @@ pub struct Agent {
     last_request: Option<TokenUsage>,
     /// 本次会话普通请求的 output tokens 累计；会话根变化才清空。
     session_output_tokens: u64,
+    /// 进程内唯一的模型决议权威（手动覆盖 `a` → 配置默认 `b`）。
+    models: std::sync::Arc<ModelState>,
+    /// 当前生效模型的来源；只有 fallback 会在任务边界按 `resolve()` 回落。
+    model_source: ModelSource,
     catalog: ModelCatalog,
     current_model: ModelChoice,
     think_level: ThinkLevel,
@@ -398,7 +414,7 @@ impl Agent {
         let cwd = tools.cwd().to_owned();
         tools.mcp = std::sync::Arc::new(crate::mcp::McpManager::new(catalog.mcp_path(), cwd));
         Self::new_with_prompt(
-            catalog,
+            ModelState::shared(catalog),
             tools,
             sessions_dir,
             lock_dir,
@@ -407,40 +423,35 @@ impl Agent {
         )
     }
 
-    fn resolve_default_model(
-        catalog: &ModelCatalog,
-    ) -> Result<(
-        pp_config::config::Config,
-        ThinkLevel,
-        Option<pp_config::config::RoleRoute>,
-    )> {
-        let config = catalog.resolve(catalog.default_reference())?;
-        let route = catalog
-            .role_route(pp_config::config::ModelRole::Default)
-            .filter(|route| route.primary.model == config.model_reference);
-        let effort = if let Some(route) = &route {
-            ensure!(
-                config.thinking.supports(route.primary.effort),
-                "DEFAULT role effort is not supported by the model"
-            );
-            route.primary.effort
-        } else {
-            config
-                .thinking
-                .effective_default(catalog.default_think_level())
-        };
-        Ok((config, effort, route))
+    /// 进程内唯一模型状态的只读句柄；UI 用它启动 `model_control::Service`。
+    pub fn models(&self) -> std::sync::Arc<ModelState> {
+        std::sync::Arc::clone(&self.models)
+    }
+
+    /// 决议当前应使用的模型：`a`（手动覆盖）优先，否则配置默认；不自动套用任何角色。
+    fn resolve_selection(models: &ModelState) -> Result<(pp_config::config::Config, Selection)> {
+        let catalog = models.catalog_snapshot();
+        let selection = models.resolve()?;
+        let config = catalog.resolve(&selection.reference)?;
+        ensure!(
+            config.thinking.supports(selection.effort),
+            "thinking level is not supported by the configured model"
+        );
+        Ok((config, selection))
     }
 
     pub(crate) fn new_with_prompt(
-        catalog: ModelCatalog,
+        models: std::sync::Arc<ModelState>,
         mut tools: Tools,
         sessions_dir: PathBuf,
         lock_dir: PathBuf,
         prompt_source: crate::system_prompt::Snapshot,
         stats_db: PathBuf,
     ) -> Result<Self> {
-        let (config, think_level, role_route) = Self::resolve_default_model(&catalog)?;
+        let catalog = models.catalog_snapshot();
+        let (config, selection) = Self::resolve_selection(&models)?;
+        let think_level = selection.effort;
+        let model_source = models.source();
         tools.limits = config.settings.tool_limits();
         tools.approval.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
@@ -451,7 +462,7 @@ impl Agent {
             .connect_enabled(&CancellationToken::new(), crate::mcp::Access::Full)?;
         Self::install_lsp(&mut tools, &catalog);
         let current_model = ModelChoice {
-            reference: catalog.default_reference().to_owned(),
+            reference: selection.reference.clone(),
             model: config.model.clone(),
             protocol: config.protocol,
             thinking: config.thinking,
@@ -488,7 +499,7 @@ impl Agent {
         session.set_tools(tools.all_definitions(pp_core::plan::WorkMode::Execute));
         session.set_think_level(think_level);
         Ok(Self {
-            role_route,
+            role_route: None,
             client,
             runtime_models: None,
             subagent_control: Default::default(),
@@ -499,9 +510,11 @@ impl Agent {
             auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
             last_request: None,
             session_output_tokens: 0,
-            catalog,
             current_model,
             think_level,
+            models,
+            model_source,
+            catalog,
             base_system: system,
             prompt_source: Some(prompt_source),
             pending_instructions: None,
@@ -529,7 +542,7 @@ impl Agent {
         // mock 场景固定空管理器：不读取真实用户 MCP 定义。
         tools.mcp = std::sync::Arc::new(crate::mcp::McpManager::empty());
         let mut agent = Self::new_with_prompt(
-            catalog,
+            ModelState::shared(catalog),
             tools,
             sessions_dir.clone(),
             lock_dir,
@@ -580,7 +593,7 @@ impl Agent {
     }
 
     pub fn restore(
-        catalog: ModelCatalog,
+        models: std::sync::Arc<ModelState>,
         mut tools: Tools,
         restored: persistence::RestoredSession,
     ) -> Result<Self> {
@@ -589,57 +602,42 @@ impl Agent {
             mut journal,
             mut replay,
         } = restored;
-        let stale_plan_route = checkpoint.workflow.mode == pp_core::plan::WorkMode::Execute
-            && checkpoint
-                .role_route
-                .as_ref()
-                .is_some_and(|route| route.role == pp_config::config::ModelRole::Plan);
-        let config = if stale_plan_route {
-            let (config, effort, route) = Self::resolve_default_model(&catalog)?;
-            checkpoint.think_level = effort;
-            checkpoint.role_route = route;
-            let compatible = match &checkpoint.session {
-                Session::Completion(_) => config.protocol == Protocol::Completion,
-                Session::Response(request) => {
-                    config.protocol == Protocol::Response
-                        && checkpoint.model_reference == config.model_reference
-                        && request.model.as_deref() == Some(config.model.as_str())
-                }
-            };
-            if !compatible {
-                checkpoint.session = history::convert(
-                    &checkpoint.session,
-                    config.model.clone(),
-                    config.protocol,
-                    checkpoint.edit_mode,
-                )?;
+        let catalog = models.catalog_snapshot();
+        let (config, resolved) = Self::resolve_selection(&models)?;
+        let model_source = models.source();
+        // 旧 checkpoint 的角色路由不再参与恢复；已失效的路由必须落一次清理。
+        let had_route = checkpoint.role_route.take().is_some();
+        let compatible = match &checkpoint.session {
+            Session::Completion(_) => config.protocol == Protocol::Completion,
+            Session::Response(request) => {
+                config.protocol == Protocol::Response
+                    && checkpoint.model_reference == resolved.reference
+                    && request.model.as_deref() == Some(config.model.as_str())
             }
-            checkpoint
-                .model_reference
-                .clone_from(&config.model_reference);
-            checkpoint.session.set_model(&config.model);
-            checkpoint.session.set_think_level(checkpoint.think_level);
-            config
-        } else {
-            let config = catalog.resolve(&checkpoint.model_reference).map_err(|_| {
-                anyhow::anyhow!("saved session model is unavailable or has changed")
-            })?;
-            let matches = match &checkpoint.session {
-                Session::Completion(request) => {
-                    config.protocol == Protocol::Completion && config.model == request.model
-                }
-                Session::Response(request) => {
-                    config.protocol == Protocol::Response
-                        && request.model.as_deref() == Some(config.model.as_str())
-                }
-            };
-            ensure!(matches, "saved session model is unavailable or has changed");
-            ensure!(
-                config.thinking.supports(checkpoint.think_level),
-                "saved session thinking level is not supported by the configured model"
-            );
-            config
         };
+        if !compatible {
+            checkpoint.session = history::convert(
+                &checkpoint.session,
+                config.model.clone(),
+                config.protocol,
+                checkpoint.edit_mode,
+            )?;
+        }
+        // 覆盖态用覆盖的档位；否则保留会话已保存且仍受支持的档位。
+        let think_level = if model_source == ModelSource::Override {
+            resolved.effort
+        } else if config.thinking.supports(checkpoint.think_level) {
+            checkpoint.think_level
+        } else {
+            resolved.effort
+        };
+        let model_changed = checkpoint.model_reference != resolved.reference
+            || checkpoint.think_level != think_level
+            || !compatible;
+        checkpoint.model_reference.clone_from(&resolved.reference);
+        checkpoint.think_level = think_level;
+        checkpoint.session.set_model(&config.model);
+        checkpoint.session.set_think_level(think_level);
         if let Some(snapshot) =
             plan_sync::sync_restored_todos(&tools, &mut journal, &mut checkpoint.workflow, &replay)?
         {
@@ -672,7 +670,7 @@ impl Agent {
             });
         }
         let mut agent = Self {
-            role_route: checkpoint.role_route,
+            role_route: None,
             client,
             runtime_models: None,
             subagent_control: Default::default(),
@@ -683,6 +681,8 @@ impl Agent {
             auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
             last_request: None,
             session_output_tokens: 0,
+            models,
+            model_source,
             current_model: ModelChoice {
                 reference: checkpoint.model_reference,
                 model: config.model,
@@ -691,7 +691,7 @@ impl Agent {
                 context_window: config.context_window,
             },
             catalog,
-            think_level: checkpoint.think_level,
+            think_level,
             base_system: checkpoint.base_system,
             prompt_source: checkpoint.prompt_source,
             pending_instructions: None,
@@ -724,7 +724,7 @@ impl Agent {
                 )
                 .context(crate::system_prompt::PromptFailure)?;
         }
-        if stale_plan_route {
+        if had_route || model_changed {
             let system = agent.compose_system(&agent.workflow)?;
             agent.session.set_instructions(system);
             let metadata = Metadata {
@@ -739,7 +739,7 @@ impl Agent {
             };
             agent
                 .journal
-                .commit_plan_exit(&metadata, (&agent.session).into(), &agent.workflow)?;
+                .checkpoint(&metadata, (&agent.session).into(), &agent.workflow)?;
         }
         Ok(agent)
     }
@@ -947,7 +947,11 @@ impl Agent {
 
     pub fn reload_models(&mut self) -> Result<()> {
         self.stop_subagents()?;
-        self.catalog.reload_models()?;
+        self.models.reload_models()?;
+        self.catalog = self.models.catalog_snapshot();
+        if let Some(binding) = &self.tools.subagent {
+            binding.set_model_roles(self.catalog.subagent_roles());
+        }
         if self.task_status.accounting.is_some() {
             self.continue_task_status();
         }
@@ -1016,48 +1020,60 @@ impl Agent {
     }
 
     pub fn default_think_level(&self) -> ThinkLevel {
-        self.catalog.default_think_level()
+        self.models.default_think_level()
     }
 
+    /// 保存全局默认档位（写 `b`），不切换运行中的会话。
     pub fn save_default_think_level(&mut self, level: ThinkLevel) -> Result<()> {
-        self.catalog.save_default_think_level(level)
+        self.models.save_default_think_level(level)?;
+        self.catalog = self.models.catalog_snapshot();
+        Ok(())
     }
 
-    pub fn default_model_reference(&self) -> &str {
-        self.catalog.default_reference()
+    pub fn default_model_reference(&self) -> String {
+        self.models
+            .catalog_snapshot()
+            .default_reference()
+            .to_owned()
     }
 
+    /// 保存全局默认模型（写 `b`），不切换运行中的会话。
     pub fn save_default_model(&mut self, reference: &str) -> Result<()> {
-        self.catalog.save_default_model(reference)
+        self.models.set_default(reference)?;
+        self.catalog = self.models.catalog_snapshot();
+        Ok(())
     }
 
-    pub fn model_roles(&self) -> &pp_config::config::ModelRoles {
-        self.catalog.model_roles()
+    pub fn model_roles(&self) -> pp_config::config::ModelRoles {
+        self.models.model_roles()
     }
 
     pub fn save_model_role(
         &mut self,
-        role: pp_config::config::ModelRole,
+        role: ModelRole,
         assignment: Option<pp_config::config::RoleAssignment>,
     ) -> Result<()> {
-        self.catalog.save_model_role(role, assignment)?;
+        self.models.set_role(role, assignment)?;
+        self.catalog = self.models.catalog_snapshot();
         if let Some(binding) = &self.tools.subagent {
             binding.set_model_roles(self.catalog.subagent_roles());
         }
         Ok(())
     }
 
-    pub fn favorite_models(&self) -> &[String] {
-        self.catalog.favorite_models()
+    pub fn favorite_models(&self) -> Vec<String> {
+        self.models.favorite_models()
     }
 
     pub fn toggle_favorite_model(&mut self, reference: &str) -> Result<Vec<String>> {
-        self.catalog.toggle_favorite_model(reference)
+        let favorites = self.models.toggle_favorite_model(reference)?;
+        self.catalog = self.models.catalog_snapshot();
+        Ok(favorites)
     }
 
     /// 实际尝试发送的逻辑模型请求累计次数；读取失败时不得伪装成零。
     pub fn model_usage(&self) -> Result<BTreeMap<String, u64>> {
-        self.catalog.model_usage()
+        self.models.model_usage()
     }
 
     pub fn set_think_level(&mut self, level: ThinkLevel) -> Result<()> {
@@ -1085,6 +1101,9 @@ impl Agent {
         if self.role_route.is_some() {
             self.checkpoint_route()?;
         }
+        if self.model_source == ModelSource::Override {
+            self.models.set_override_effort(level)?;
+        }
         Ok(())
     }
 
@@ -1092,6 +1111,10 @@ impl Agent {
         self.catalog.clone()
     }
 
+    /// 当前生效模型的来源（覆盖/默认/角色/fallback）。
+    pub fn model_source(&self) -> pp_core::model::ModelSource {
+        self.model_source
+    }
     pub fn apply_runtime_models(&mut self) -> Result<()> {
         if let Some(catalog) = self
             .runtime_models
@@ -1121,6 +1144,12 @@ impl Agent {
         else {
             return Ok(());
         };
+        dbg_file(&format!(
+            "take_targets model={:?} think={:?} current={}",
+            model.as_ref().map(|t| (&t.selection, t.source, t.revision)),
+            think.as_ref().map(|t| (t.effort, t.revision)),
+            self.current_model.reference
+        ));
         // 两次意图是独立提交，按 revision 顺序应用（旧者先、新者后），高 revision 的 effort 胜出。
         match (model, think) {
             (Some(model), Some(think)) if think.revision < model.revision => {
@@ -1162,60 +1191,30 @@ impl Agent {
     }
 
     fn apply_model_target(&mut self, target: crate::model_control::Target) -> Result<()> {
-        let old_catalog = std::mem::replace(&mut self.catalog, (*target.catalog).clone());
-        let old_route = self.role_route.take();
-        self.role_route = target.role.and_then(|role| self.catalog.role_route(role));
-        let changed = self
-            .switch_model_with_effort(&target.reference, target.effort)
-            .and_then(|changed| {
-                if !changed && old_route != self.role_route {
-                    self.checkpoint_route()
-                } else {
-                    Ok(())
+        eprintln!(
+            "DBG apply_target sel={:?} source={:?} current={}",
+            target.selection, target.source, self.current_model.reference
+        );
+        let selection = match &target.selection {
+            Some(selection) => selection.clone(),
+            None => match self.models.resolve() {
+                Ok(selection) => selection,
+                Err(error) => {
+                    self.report_model_failure(&target, format!("{error:#}"));
+                    return Ok(());
                 }
-            });
-        if let Err(error) = changed {
-            self.role_route = old_route;
+            },
+        };
+        let old_catalog = self.catalog.clone();
+        let old_source = self.model_source;
+        self.catalog = self.models.catalog_snapshot();
+        if let Err(error) = self.switch_model_with_effort_result(&selection, target.source) {
             self.catalog = old_catalog;
-            let binding = self
-                .runtime_models
-                .as_ref()
-                .expect("模型绑定在应用期间保留");
-            binding.report(crate::model_control::Report::Failed {
-                agent: binding.agent.clone(),
-                revision: target.revision,
-                message: format!("{error:#}"),
-            });
+            self.model_source = old_source;
+            self.report_model_failure(&target, format!("{error:#}"));
             return Ok(());
         }
-        if let Some(supervisor) = &mut self.tools.subagent {
-            supervisor.model = self.current_model.reference.clone();
-            supervisor.thinking = self.think_level;
-            if supervisor.depth > 0 {
-                let supervisor = supervisor.clone();
-                let snapshot = supervisor
-                    .directory()
-                    .join(format!("{}.session.json", supervisor.owner));
-                if let Err(error) = self.save_child(&snapshot).and_then(|()| {
-                    supervisor.update_model(
-                        &self.current_model.reference,
-                        self.think_level,
-                        self.catalog.cost(&self.current_model.reference),
-                    )
-                }) {
-                    let binding = self
-                        .runtime_models
-                        .as_ref()
-                        .expect("模型绑定在应用期间保留");
-                    binding.report(crate::model_control::Report::Failed {
-                        agent: binding.agent.clone(),
-                        revision: target.revision,
-                        message: format!("Could not persist active model: {error:#}"),
-                    });
-                    return Err(error.context("persisting subagent model change"));
-                }
-            }
-        }
+        self.persist_active_model(&target)?;
         let binding = self
             .runtime_models
             .as_ref()
@@ -1224,40 +1223,109 @@ impl Agent {
             agent: binding.agent.clone(),
             revision: target.revision,
             model: self.current_model.clone(),
-            effort: self.think_level,
+            source: target.source,
         });
         Ok(())
     }
 
-    /// 应用模型与可选档位的唯一入口：先取走角色路由，切换失败时回滚。
-    fn apply_model(&mut self, reference: &str, effort: Option<ThinkLevel>) -> Result<()> {
-        let previous = self.role_route.take();
+    fn switch_model_with_effort_result(
+        &mut self,
+        selection: &Selection,
+        source: ModelSource,
+    ) -> Result<bool> {
+        let changed =
+            self.switch_model_with_effort(&selection.reference, Some(selection.effort))?;
+        self.model_source = source;
+        Ok(changed)
+    }
+
+    fn report_model_failure(&self, target: &crate::model_control::Target, message: String) {
+        if let Some(binding) = self.runtime_models.as_ref() {
+            binding.report(crate::model_control::Report::Failed {
+                agent: binding.agent.clone(),
+                revision: target.revision,
+                message,
+            });
+        }
+    }
+
+    /// 把当前模型同步给子 Agent 监督绑定；失败上报并终止本次切换。
+    fn persist_active_model(&mut self, target: &crate::model_control::Target) -> Result<()> {
+        let Some(supervisor) = &mut self.tools.subagent else {
+            return Ok(());
+        };
+        supervisor.model = self.current_model.reference.clone();
+        supervisor.thinking = self.think_level;
+        if supervisor.depth == 0 {
+            return Ok(());
+        }
+        let supervisor = supervisor.clone();
+        let snapshot = supervisor
+            .directory()
+            .join(format!("{}.session.json", supervisor.owner));
+        if let Err(error) = self.save_child(&snapshot).and_then(|()| {
+            supervisor.update_model(
+                &self.current_model.reference,
+                self.think_level,
+                self.catalog.cost(&self.current_model.reference),
+            )
+        }) {
+            self.report_model_failure(target, format!("Could not persist active model: {error:#}"));
+            return Err(error.context("persisting subagent model change"));
+        }
+        Ok(())
+    }
+
+    /// 应用一次显式选择：写 `a` 后按源切换；切换失败时把 `a` 与运行时字段一起回滚。
+    fn apply_override_selection(&mut self, selection: Selection) -> Result<()> {
+        eprintln!(
+            "DBG override_selection sel={:?} current={}",
+            selection, self.current_model.reference
+        );
+        let previous_source = self.model_source;
+        let previous_route = self.role_route.take();
+        let previous_catalog = self.catalog.clone();
+        let previous_override = self.models.override_selection();
+        self.models.set_override(selection.clone())?;
+        let source = self.models.source();
+        self.catalog = self.models.catalog_snapshot();
         let result = self
-            .switch_model_with_effort(reference, effort)
-            .and_then(|changed| {
-                if !changed && previous.is_some() {
-                    self.checkpoint_route()
-                } else {
-                    Ok(())
-                }
+            .switch_model_with_effort(&selection.reference, Some(selection.effort))
+            .map(|_| ())
+            .map(|()| {
+                self.model_source = source;
             });
         if result.is_err() {
-            self.role_route = previous;
+            self.model_source = previous_source;
+            self.role_route = previous_route;
+            self.catalog = previous_catalog;
+            let rollback = match previous_override {
+                Some(selection) => self.models.set_override(selection).map(|_| ()),
+                None => self.models.clear_override().map(|_| ()),
+            };
+            rollback?;
         }
         result
     }
 
     pub fn switch_model(&mut self, reference: &str) -> Result<()> {
-        self.apply_model(reference, None)
+        let selection = self
+            .models
+            .resolve_reference(reference, Some(self.think_level))?;
+        self.apply_override_selection(selection)
     }
 
-    /// CLI `--model`：模糊选择后按“手动 /model + 显式档位”应用，返回最终选择供 CLI 显示。
+    /// CLI `--model`：模糊选择后写入手动覆盖 `a`，返回最终选择供 CLI 显示。
     ///
-    /// 显式传入解析后的档位，避免 `switch_model` 的“保留当前档位”语义；选择或应用失败时
-    /// 不改变当前模型与档位。启动期尚无活动请求，journal 不会创建会话文件。
+    /// 选择或应用失败时不改变当前模型与档位；覆盖由进程级 `ModelState` 持有，
+    /// 重建 Agent、进出 Plan 与恢复会话都不会丢失。
     pub fn select_model(&mut self, query: &str) -> Result<pp_config::config::ModelSelection> {
         let selection = self.catalog.select(query)?;
-        self.apply_model(&selection.reference, Some(selection.effort))?;
+        let chosen = Selection {
+            reference: selection.reference.clone(),
+            effort: selection.effort,
+        };
+        self.apply_override_selection(chosen)?;
         Ok(selection)
     }
 
@@ -1591,7 +1659,7 @@ impl Agent {
             ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
             self.connect_pending_plan_mcp(cancellation)?;
             self.apply_runtime_models()?;
-            self.restore_role_primary(emit)?;
+            self.restore_resolved(emit)?;
             self.ensure_task_plan_lease()?;
             self.prepare_plan_task(prompt)?;
             self.ensure_task_plan_lease()?;
@@ -2097,3 +2165,14 @@ impl Agent {
 
 #[cfg(test)]
 mod tests;
+
+fn dbg_file(message: &str) {
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/pp-dbg.log")
+    {
+        let _ = writeln!(file, "{message}");
+    }
+}

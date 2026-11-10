@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use pp_config::config::ModelChoice;
 use pp_core::context::ContextUsage;
+use pp_core::model::ModelSource;
 use pp_core::model::ThinkLevel;
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -694,9 +695,11 @@ fn compact(text: &str, width: usize, keep_end: bool) -> String {
 
 // 放不下时依次降级：缩短 cwd → 隐藏 git → 缩短模型 → 仅显示模型前缀。
 // Plan 模式标签由调用方按预算决定：不足时先压缩其它字段，再缩为单字母，最后只留模式。
+// 来源标记（override/fallback）拼进模型字段参与同一套宽度预算；`Default` 不加噪声。
 fn status_line(
     model: &str,
     think_level: ThinkLevel,
+    source: Option<ModelSource>,
     mode: Option<&'static str>,
     context: &StatusContext,
     width: usize,
@@ -728,11 +731,18 @@ fn status_line(
     let workdir_full = Line::from(context.workdir.as_str()).width();
     let git = context.git.as_ref().map(|git| git.label());
 
-    let mut model_text = model.to_owned();
+    let marker = source
+        .filter(|source| *source != ModelSource::Default)
+        .map(ModelSource::label);
+    let model_display = match marker {
+        Some(marker) => format!("{model} · {marker}"),
+        None => model.to_owned(),
+    };
+    let mut model_text = model_display.clone();
     let mut git_text = git.clone();
     let mut workdir_text = context.workdir.clone();
     if width
-        < field_slot(model)
+        < field_slot(&model_display)
             + effort_width
             + dir_fixed
             + workdir_full
@@ -740,24 +750,27 @@ fn status_line(
     {
         // 1) 缩短 cwd（git 保留）。
         let mut cwd_slot = width.saturating_sub(
-            field_slot(model) + effort_width + dir_fixed + git.as_deref().map_or(0, field_slot),
+            field_slot(&model_display)
+                + effort_width
+                + dir_fixed
+                + git.as_deref().map_or(0, field_slot),
         );
         if cwd_slot < MIN_DIRECTORY && git_text.is_some() {
             // 2) 隐藏 git，把空间让给目录。
             git_text = None;
-            cwd_slot = width.saturating_sub(field_slot(model) + effort_width + dir_fixed);
+            cwd_slot = width.saturating_sub(field_slot(&model_display) + effort_width + dir_fixed);
         }
         if cwd_slot < MIN_DIRECTORY {
             // 3) 缩短模型。
             model_text = compact(
-                model,
+                &model_display,
                 (width / 4).max(12).saturating_sub(FIELD_ICON_WIDTH),
                 false,
             );
             if width < field_slot(&model_text) + effort_width + dir_fixed {
                 // 4) 仍不足：仅显示模型前缀与模式；模式图标和标签优先保留。
                 let mut spans = vec![Span::styled(
-                    compact(model, width, false),
+                    compact(&model_display, width, false),
                     Style::default().fg(MODEL).add_modifier(Modifier::BOLD),
                 )];
                 if let Some(mode_text) = mode {
@@ -809,6 +822,7 @@ fn status_line(
 pub(super) fn primary(
     model: Option<&ModelChoice>,
     think_level: ThinkLevel,
+    source: Option<ModelSource>,
     mode: pp_core::plan::WorkMode,
     context: &StatusContext,
     width: u16,
@@ -833,6 +847,7 @@ pub(super) fn primary(
     status_line(
         model,
         think_level,
+        source,
         (!mode_text.is_empty()).then_some(mode_text),
         context,
         budget,
@@ -852,7 +867,7 @@ pub(super) fn subagent_status(
     };
     // 与 primary 的 budget_total 同口径：扣除前导空白与纸飞机图标列。
     let budget = usize::from(width).saturating_sub(1 + ICON_WIDTH);
-    status_line(model, think, None, &context, budget)
+    status_line(model, think, None, None, &context, budget)
 }
 
 #[cfg(test)]
@@ -1093,6 +1108,7 @@ mod tests {
             let text = line_text(&primary(
                 Some(&choice),
                 ThinkLevel::None,
+                None,
                 pp_core::plan::WorkMode::Execute,
                 &StatusContext::default(),
                 100,
@@ -1104,6 +1120,53 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn primary_shows_only_non_default_model_sources() {
+        let choice = ModelChoice {
+            reference: "ark/glm-5.3".into(),
+            model: "glm-5.3-flash".into(),
+            protocol: pp_config::models::Protocol::Completion,
+            thinking: pp_config::models::ModelThinking::default(),
+            context_window: None,
+        };
+        for (source, expected) in [
+            (None, None),
+            (Some(ModelSource::Default), None),
+            (Some(ModelSource::Override), Some(" · override")),
+            (Some(ModelSource::Fallback), Some(" · fallback")),
+        ] {
+            let line = primary(
+                Some(&choice),
+                ThinkLevel::None,
+                source,
+                pp_core::plan::WorkMode::Execute,
+                &StatusContext::default(),
+                100,
+            );
+            let text = line_text(&line);
+            match expected {
+                Some(marker) => assert!(text.contains(marker), "{text}"),
+                None => assert!(
+                    !text.contains("override") && !text.contains("fallback"),
+                    "{text}"
+                ),
+            }
+            // 来源标记计入同一套宽度预算，窄屏不得溢出。
+            for width in [20, 32, 48] {
+                let line = primary(
+                    Some(&choice),
+                    ThinkLevel::High,
+                    source,
+                    pp_core::plan::WorkMode::Plan,
+                    &StatusContext::default(),
+                    width,
+                );
+                assert!(line.width() <= usize::from(width), "{width}: {line:?}");
+            }
+        }
+    }
+
     fn status_usage() -> ContextUsage {
         ContextUsage {
             estimated_tokens: 408_000,

@@ -1,6 +1,6 @@
 use crate::tui::{
-    AgentEvent, App, CompactionOutcome, Instant, Level, PlanEnterAction, PlanLocation,
-    PlanOpenIntent, Receiver, RunOutcome, State, TryRecvError, WorkMode, WorkerCommand,
+    AgentEvent, App, CompactionOutcome, Instant, Level, ModelSource, PlanEnterAction, PlanLocation,
+    PlanOpenIntent, Receiver, RunOutcome, Selection, State, TryRecvError, WorkMode, WorkerCommand,
     WorkerEvent, ask, editor, plan, plan_list, plan_location_from_path, skills,
 };
 
@@ -195,9 +195,12 @@ impl App {
                             self.model_usage = listing.usage;
                             self.model_roles = listing.roles;
                             self.default_think_level = listing.default_effort;
+                            self.current_source = Some(listing.source);
+                            self.override_selection = listing.override_selection;
                             if let Some(panel) = &mut self.roles_panel {
                                 panel.update_choices(self.choices.clone());
                                 panel.update_favorites(self.favorite_models.clone());
+                                panel.update_override(self.override_selection.clone());
                             }
                             self.refresh_candidates(false);
                         }
@@ -270,21 +273,38 @@ impl App {
                         AgentEvent::ModelRouteChanged {
                             model,
                             effort,
-                            fallback,
+                            source,
                             temporary,
                         } => {
-                            if !temporary
-                                && let Some(choice) =
+                            if !temporary {
+                                if let Some(choice) =
                                     self.choices.iter().find(|c| c.reference == model).cloned()
-                            {
-                                self.current_model = Some(choice);
-                                self.think_level = effort;
-                                self.usage = None;
+                                {
+                                    self.current_model = Some(choice);
+                                    self.think_level = effort;
+                                    self.usage = None;
+                                }
+                                // 来源跟随实际路由：override/default 同步覆盖快照，
+                                // role/fallback 只覆盖当前路由，不改变手动覆盖槽。
+                                self.current_source = Some(source);
+                                self.override_selection = match source {
+                                    ModelSource::Override => Some(Selection {
+                                        reference: model.clone(),
+                                        effort,
+                                    }),
+                                    ModelSource::Default => None,
+                                    ModelSource::Role | ModelSource::Fallback => {
+                                        self.override_selection.clone()
+                                    }
+                                };
+                                if let Some(panel) = &mut self.roles_panel {
+                                    panel.update_override(self.override_selection.clone());
+                                }
                             }
                             self.conversation.progress(AgentEvent::ModelRouteChanged {
                                 model,
                                 effort,
-                                fallback,
+                                source,
                                 temporary,
                             });
                         }
@@ -468,11 +488,32 @@ impl App {
                     revision,
                     model,
                     effort,
+                    source,
                 }) => {
+                    ui_dbg(&format!(
+                        "ModelState rev={revision} model={} source={:?} current_rev={}",
+                        model.reference, source, self.model_revision
+                    ));
                     if revision >= self.model_revision {
                         self.model_revision = revision;
-                        self.current_model = Some(model);
+                        self.current_model = Some(model.clone());
                         self.think_level = effort;
+                        self.current_source = Some(source);
+                        self.override_selection = match source {
+                            pp_core::model::ModelSource::Override => Some(Selection {
+                                reference: model.reference,
+                                effort,
+                            }),
+                            pp_core::model::ModelSource::Default => None,
+                            // 角色/fallback 只覆盖当前路由，不改变手动覆盖槽。
+                            pp_core::model::ModelSource::Role
+                            | pp_core::model::ModelSource::Fallback => {
+                                self.override_selection.clone()
+                            }
+                        };
+                        if let Some(panel) = &mut self.roles_panel {
+                            panel.update_override(self.override_selection.clone());
+                        }
                         changed = true;
                     }
                 }
@@ -1133,5 +1174,16 @@ impl App {
             self.refresh_candidates(false);
         }
         changed
+    }
+}
+
+pub(in crate::tui) fn ui_dbg(message: &str) {
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/pp-dbg.log")
+    {
+        let _ = writeln!(file, "UI {message}");
     }
 }

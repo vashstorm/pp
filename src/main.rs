@@ -378,22 +378,23 @@ fn run(args: Args) -> Result<()> {
                 .unwrap_or_else(system_prompt::Snapshot::bundled),
             approval: args.approval_mode.map(Into::into),
             mcp: manager.clone(),
+            models: pp_config::model_state::SharedModels::default(),
         });
         let mut agent = if let Some(error) = migration_error {
             Err(error)
         } else {
             match restored {
                 Some(session) => {
-                    let global_dir = global_dir?;
-                    let catalog = config::ModelCatalog::from_files(
-                        &global_dir.join("settings.yml"),
-                        &global_dir.join("models.yml"),
-                    )
-                    .context("loading configuration for saved session")?;
+                    let bootstrap = bootstrap.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("Unable to locate global configuration directory")
+                    })?;
+                    let models = bootstrap
+                        .model_state()
+                        .context("loading configuration for saved session")?;
                     let mut tools =
                         tools::Tools::with_mcp(cwd.clone(), session.edit_mode(), manager.clone())?;
                     tools.skills = skills.clone();
-                    Ok(agent::Agent::restore(catalog, tools, session)?)
+                    Ok(agent::Agent::restore(models, tools, session)?)
                 }
                 None => bootstrap
                     .as_ref()

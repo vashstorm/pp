@@ -1442,6 +1442,8 @@ fn sqlite_model_menu_orders_favorites_then_usage() {
         default_reference: "p/one-a".into(),
         favorites: app.favorite_models.clone(),
         usage: usage.clone(),
+        override_selection: None,
+        source: ModelSource::Default,
     })));
     assert_eq!(app.model_usage, usage);
     assert_eq!(
@@ -1477,4 +1479,64 @@ fn sqlite_model_menu_orders_favorites_then_usage() {
     ))));
     assert_eq!(app.default_model_reference.as_deref(), Some("p/one-b"));
     assert!(draw(&mut app, 130, 30).contains("Could not refresh models"));
+}
+
+#[test]
+fn model_picker_submits_override_with_effective_default_effort() {
+    let (control, _binding, choices) = model_control_with(
+        r#"{"providers":{"fixture":{"api_key":"fixture","models":{"one":{"model":"one"},"two":{"model":"two","thinking":{"efforts":["low","high"]}}}}}}"#,
+    );
+    let (mut app, requests, _events) = plan_app();
+    app.model_control = Some(control);
+    app.choices = choices;
+    app.current_model = Some(app.choices[0].clone());
+    // 全局默认档位 High 由 two 支持：⌥P 应记录该模型的有效默认档位。
+    app.default_think_level = ThinkLevel::High;
+    let mut dirty = false;
+    app.handle(function_key('p'), &mut dirty);
+    app.handle(key(KeyCode::Down), &mut dirty);
+    app.handle(key(KeyCode::Enter), &mut dirty);
+    assert!(
+        matches!(requests.try_recv(), Err(TryRecvError::Empty)),
+        "model_control 路径不应发送 worker 命令"
+    );
+    let selection = wait_for_override(&mut app, "fixture/two");
+    assert_eq!(selection.effort, ThinkLevel::High);
+    // 目标已登记但尚未由 Agent 应用：状态栏仍显示旧模型，来源等应用后再更新。
+    assert!(app.pending_model.is_some());
+    assert_eq!(app.current_model.as_ref().unwrap().reference, "fixture/one");
+}
+
+#[test]
+fn statusline_shows_override_and_fallback_sources_but_not_default() {
+    let mut app = app();
+    app.current_model = Some(ModelChoice {
+        reference: "fixture/one".into(),
+        model: "one".into(),
+        protocol: pp_config::models::Protocol::Completion,
+        thinking: pp_config::models::ModelThinking::default(),
+        context_window: None,
+    });
+    app.think_level = ThinkLevel::None;
+    for (source, marker) in [
+        (None, None),
+        (Some(ModelSource::Default), None),
+        (Some(ModelSource::Override), Some(" · override")),
+        (Some(ModelSource::Fallback), Some(" · fallback")),
+        (Some(ModelSource::Role), Some(" · role")),
+    ] {
+        app.current_source = source;
+        let screen = draw(&mut app, 130, 30);
+        let status = screen.lines().last().unwrap();
+        match marker {
+            Some(marker) => assert!(status.contains(marker), "{status}"),
+            None => assert!(
+                !status.contains("override")
+                    && !status.contains("fallback")
+                    && !status.contains(" · role"),
+                "{status}"
+            ),
+        }
+        assert!(status.contains("fixture/one"), "{status}");
+    }
 }

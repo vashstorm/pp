@@ -4,6 +4,7 @@ use pp_config::config::ModelRole;
 use pp_config::config::ModelRoles;
 use pp_config::config::RoleAssignment;
 use pp_config::config::RoleModel;
+use pp_config::model_state::Selection;
 use pp_core::model::ThinkLevel;
 use ratatui::{
     Frame,
@@ -43,6 +44,8 @@ pub(super) enum Action {
     Close,
     Save(ModelRole, Option<RoleAssignment>),
     Favorite(String),
+    /// 清除主会话手动覆盖，回到配置默认。
+    ClearOverride,
 }
 
 pub(super) struct Panel {
@@ -52,6 +55,8 @@ pub(super) struct Panel {
     providers: Vec<String>,
     default_model: String,
     default_effort: ThinkLevel,
+    /// 当前手动覆盖 `a`；只读展示，清除走 [`Action::ClearOverride`]。
+    override_selection: Option<Selection>,
     view: View,
     sidebar: usize,
     sidebar_focus: bool,
@@ -76,6 +81,7 @@ impl Panel {
         roles: ModelRoles,
         default_model: String,
         effort: ThinkLevel,
+        override_selection: Option<Selection>,
     ) -> Self {
         let mut panel = Self {
             choices: vec![],
@@ -84,6 +90,7 @@ impl Panel {
             providers: vec![],
             default_model,
             default_effort: effort,
+            override_selection,
             view: View::Roles,
             sidebar: 0,
             sidebar_focus: true,
@@ -102,6 +109,10 @@ impl Panel {
         };
         panel.update_choices(choices);
         panel
+    }
+
+    pub(super) fn update_override(&mut self, selection: Option<Selection>) {
+        self.override_selection = selection;
     }
 
     pub(super) fn update_choices(&mut self, choices: Vec<ModelChoice>) {
@@ -222,7 +233,8 @@ impl Panel {
     }
 
     fn content_offset(&self) -> u16 {
-        if self.view == View::Roles { 1 } else { 2 }
+        // Roles 视图在角色行之前固定保留一行只读 Override 信息。
+        2
     }
 
     fn effective(&self) -> RoleAssignment {
@@ -511,7 +523,15 @@ impl Panel {
                         self.editing_fallback = self.on_fallback();
                         self.begin_effort(self.selected_model().model)
                     }
-                    KeyCode::Delete | KeyCode::Backspace
+                    KeyCode::Backspace
+                        if self.view == View::Roles
+                            && !self.sidebar_focus
+                            && key.kind == KeyEventKind::Press
+                            && self.override_selection.is_some() =>
+                    {
+                        return Action::ClearOverride;
+                    }
+                    KeyCode::Delete
                         if self.view == View::Roles
                             && !self.sidebar_focus
                             && key.kind == KeyEventKind::Press =>
@@ -713,6 +733,54 @@ impl Panel {
         );
         match self.view {
             View::Roles => {
+                // 只读 Override 行固定在角色列表上方；无覆盖时显示 none。
+                let override_y = self.body.y + 1;
+                let mut spans = vec![
+                    Span::styled("  ", Style::default().fg(MUTED)),
+                    Span::styled(
+                        format!("{MODELS_ICON} {:<8} ", "Override"),
+                        Style::default().fg(if self.override_selection.is_some() {
+                            GOLD
+                        } else {
+                            MUTED
+                        }),
+                    ),
+                ];
+                match &self.override_selection {
+                    Some(selection) => {
+                        spans.extend(model_spans(&selection.reference, GOLD));
+                        let effort_line = Line::styled(
+                            format!(
+                                "{} {}",
+                                palette::think_icon(selection.effort),
+                                selection.effort.as_str()
+                            ),
+                            Style::default().fg(GOLD),
+                        );
+                        let effort_width =
+                            effort_line.width().min(usize::from(self.body.width)) as u16;
+                        let model_width = self.body.width.saturating_sub(effort_width + 1);
+                        let model_line = Line::from(spans);
+                        let model_end = model_line.width().min(usize::from(model_width)) as u16;
+                        let effort_x =
+                            self.body.x + model_end + u16::from(self.body.width > effort_width);
+                        frame.render_widget(
+                            model_line,
+                            Rect::new(self.body.x, override_y, model_width, 1),
+                        );
+                        frame.render_widget(
+                            effort_line,
+                            Rect::new(effort_x, override_y, effort_width, 1),
+                        );
+                    }
+                    None => {
+                        spans.push(Span::styled("none", Style::default().fg(MUTED)));
+                        frame.render_widget(
+                            Line::from(spans),
+                            Rect::new(self.body.x, override_y, self.body.width, 1),
+                        );
+                    }
+                }
                 let roles = self.rows();
                 self.scroll = self
                     .role_index
@@ -870,7 +938,7 @@ impl Panel {
         } else if self.view == View::Models {
             "↑/↓ rows · Enter pick · Ctrl + F favorite · type to search · Esc back"
         } else {
-            "↑/↓ rows · Enter pick · f fallback · x clear · t thinking · Space toggle · Delete remove · Esc back"
+            "↑/↓ rows · Enter pick · f fallback · x clear · t thinking · Space toggle · Delete remove · Backspace clear override · Esc back"
         };
         frame.render_widget(
             Line::styled(hint, Style::default().fg(MUTED)),
@@ -917,6 +985,7 @@ mod tests {
             ModelRoles::new(),
             "fixture/one".into(),
             ThinkLevel::High,
+            None,
         )
     }
 
@@ -1290,5 +1359,56 @@ mod tests {
         assert!(assignment.model.is_empty());
         assert!(!assignment.enabled);
         assert_eq!(assignment.fallback.unwrap().model, "fixture/one");
+    }
+
+    #[test]
+    fn override_row_is_read_only_and_backspace_clears_it_only_when_present() {
+        let mut panel = panel();
+        key(&mut panel, KeyCode::Right);
+        // 无覆盖时 Backspace 不产生清除动作，也不误删角色。
+        assert!(matches!(key(&mut panel, KeyCode::Backspace), Action::None));
+        let buffer = draw(&mut panel, 140, 24);
+        let text = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Override"));
+        assert!(text.contains("none"));
+        assert!(text.contains("Backspace clear override"));
+
+        panel.update_override(Some(Selection {
+            reference: "fixture/two".into(),
+            effort: ThinkLevel::None,
+        }));
+        let buffer = draw(&mut panel, 140, 24);
+        let rows = buffer
+            .content
+            .chunks(usize::from(buffer.area.width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        let override_row = rows
+            .iter()
+            .find(|row| row.contains("Override"))
+            .expect("Override 只读行");
+        assert!(override_row.contains("fixture/two"), "{override_row}");
+        // effort 列显示 none 档位；模型列本身不能再出现 none 占位。
+        let (model_part, _) = override_row
+            .split_once(palette::think_icon(ThinkLevel::None))
+            .unwrap_or((override_row.as_str(), ""));
+        assert!(!model_part.contains("none"), "{override_row}");
+        assert!(matches!(
+            key(&mut panel, KeyCode::Backspace),
+            Action::ClearOverride
+        ));
+        // 只读行不参与角色选择：Delete 仍是删除选中角色。
+        assert!(matches!(
+            key(&mut panel, KeyCode::Delete),
+            Action::Save(ModelRole::Default, None)
+        ));
+        // 视图切换与窄面板不得 panic。
+        for (width, height) in [(42, 12), (20, 6), (8, 4)] {
+            draw(&mut panel, width, height);
+        }
     }
 }

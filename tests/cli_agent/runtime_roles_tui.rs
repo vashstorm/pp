@@ -59,7 +59,7 @@ fn slow_tui_runtime_role_changes_switch_children_at_their_own_committed_boundary
             }
         }
         runtime_role_save(&mut pty, 0, "three");
-        // Default 修改不会取消、重启或改动正在运行的 FAST 子任务。
+        // 保存 DEFAULT 只改配置默认 `b`：不取消、不重启、也不切换正在运行的会话与子任务。
         no_more(&fixture);
         runtime_role_save(&mut pty, 1, "two");
         no_more(&fixture);
@@ -79,12 +79,12 @@ fn slow_tui_runtime_role_changes_switch_children_at_their_own_committed_boundary
         ask_final_reply(request, protocol, "child changed safely");
         ask_final_reply(parent.take().unwrap(), protocol, "Waiting for child.");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert_eq!(body["model"], "three");
+        assert_eq!(body["model"], "one");
         assert!(body.to_string().contains("child changed safely"));
         ask_final_reply(request, protocol, "parent complete safely");
         pty.text("parent complete safely");
         pty.completed();
-        pty.ready_model("fixture/three");
+        pty.ready_model("fixture/one");
         pty.input("/subagents\r");
         pty.text("parked");
         pty.input("e");
@@ -97,7 +97,7 @@ fn slow_tui_runtime_role_changes_switch_children_at_their_own_committed_boundary
         assert!(body.to_string().contains("resume saved child"));
         ask_final_reply(request, protocol, "child resumed safely");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert_eq!(body["model"], "three");
+        assert_eq!(body["model"], "one");
         assert!(body.to_string().contains("child resumed safely"));
         ask_final_reply(request, protocol, "parent resumed safely");
         // 详情现在是一层独立视图：Esc 先回 roster，再关闭 Hub。

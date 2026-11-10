@@ -167,7 +167,9 @@ pub enum AgentEvent {
     ModelRouteChanged {
         model: String,
         effort: crate::model::ThinkLevel,
-        fallback: bool,
+        /// 切换来源：手动覆盖、配置默认、角色主模型或任务内备用模型。
+        #[serde(default)]
+        source: crate::model::ModelSource,
         temporary: bool,
     },
     AssistantStarted,

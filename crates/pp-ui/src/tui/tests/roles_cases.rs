@@ -125,6 +125,7 @@ fn roles_saved_snapshot_updates_preferences_only_and_failure_keeps_previous_role
 
 #[test]
 fn model_switch_report_is_not_overwritten_by_an_older_worker_snapshot() {
+    use pp_core::model::ModelSource;
     use pp_runtime::model_control::Binding;
     use pp_runtime::model_control::Report;
     use pp_runtime::model_control::Service;
@@ -138,13 +139,14 @@ fn model_switch_report_is_not_overwritten_by_an_older_worker_snapshot() {
     )
     .unwrap();
     let catalog = pp_config::config::ModelCatalog::from_files(&settings, &models).unwrap();
-    let control = Service::start(catalog).unwrap();
+    let control = Service::start(pp_config::model_state::ModelState::shared(catalog)).unwrap();
     let binding = Binding::main(control.registry.clone());
     let (mut app, _requests, events) = plan_app();
     app.choices = favorite_model_choices();
     let old = app.choices[0].clone();
     let selected = app.choices[1].clone();
     app.current_model = Some(old.clone());
+    app.current_source = Some(ModelSource::Default);
     app.model_control = Some(control);
     // worker 快照已排队，控制线程的新结果在 UI 下一次 receive 前到达。
     events
@@ -152,18 +154,79 @@ fn model_switch_report_is_not_overwritten_by_an_older_worker_snapshot() {
             revision: 0,
             model: old,
             effort: ThinkLevel::Low,
+            source: ModelSource::Default,
         })
         .unwrap();
     binding.report(Report::Applied {
         agent: None,
         revision: 1,
         model: selected.clone(),
-        effort: ThinkLevel::High,
+        source: ModelSource::Override,
     });
     app.receive();
     assert_eq!(
         app.current_model.as_ref().unwrap().reference,
         selected.reference
     );
+    assert_eq!(app.current_source, Some(ModelSource::Override));
+    // 应用后的 worker 快照补齐 effort，并保持来源一致。
+    events
+        .send(WorkerEvent::ModelState {
+            revision: 1,
+            model: selected.clone(),
+            effort: ThinkLevel::High,
+            source: ModelSource::Override,
+        })
+        .unwrap();
+    app.receive();
     assert_eq!(app.think_level, ThinkLevel::High);
+    let screen = draw(&mut app, 130, 30);
+    assert!(
+        screen.lines().last().unwrap().contains(" · override"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn roles_backspace_clears_override_and_no_override_never_submits_clear() {
+    use pp_core::model::ModelSource;
+    let (control, _binding, choices) = model_control_with(
+        r#"{"providers":{"fixture":{"api_key":"fixture","models":{"one":{"model":"one"},"two":{"model":"two","thinking":{"efforts":["low","high"]}}}}}}"#,
+    );
+    let (mut app, _requests, _events) = plan_app();
+    app.model_control = Some(control);
+    app.choices = choices;
+    app.current_model = Some(app.choices[0].clone());
+    app.default_think_level = ThinkLevel::High;
+    // ⌥P 的映射由 model_menu_cases 覆盖；这里直接走同一条提交路径登记覆盖。
+    assert!(app.request_model_switch("fixture/two".into()));
+    let selection = wait_for_override(&mut app, "fixture/two");
+    assert_eq!(selection.effort, ThinkLevel::High);
+    app.current_source = Some(ModelSource::Override);
+
+    app.open_roles();
+    let screen = draw(&mut app, 140, 30);
+    assert!(screen.contains("Override"), "{screen}");
+    assert!(screen.contains("fixture/two"), "{screen}");
+    assert!(screen.contains("Backspace clear override"), "{screen}");
+
+    let mut dirty = false;
+    app.handle(key(KeyCode::Right), &mut dirty);
+    app.handle(key(KeyCode::Backspace), &mut dirty);
+    for _ in 0..400 {
+        app.receive();
+        if app.override_selection.is_none() && app.current_source.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(app.override_selection.is_none());
+    assert_eq!(app.current_source, None);
+    assert!(app.pending_model.is_none());
+
+    // 无覆盖时 Backspace 不产生任何新报告（面板不提交 ClearOverride）。
+    app.handle(key(KeyCode::Backspace), &mut dirty);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert!(!app.poll_model_control());
+    assert!(app.override_selection.is_none());
 }

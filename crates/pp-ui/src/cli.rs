@@ -617,19 +617,10 @@ fn run_cli_execution(
                 visible = false;
                 newline = true;
             }
-            AgentEvent::ModelRouteChanged {
-                model, fallback, ..
-            } => {
+            AgentEvent::ModelRouteChanged { model, source, .. } => {
                 cli_write(
                     stderr,
-                    &format!(
-                        "{}: {model}\n",
-                        if fallback {
-                            "Using fallback model"
-                        } else {
-                            "Restoring primary model"
-                        }
-                    ),
+                    &format!("{}: {model}\n", source.describe()),
                     &mut err_broken,
                     &mut first_error,
                 );
@@ -1330,8 +1321,10 @@ pub fn run_line_mode(
                         let choice = agent.current_model();
                         writeln!(
                             stderr,
-                            "Current model: {} ({})",
-                            choice.reference, choice.model
+                            "Current model: {} ({})\nSource: {}",
+                            choice.reference,
+                            choice.model,
+                            agent.model_source().describe()
                         )?;
                     }
                     Err(error) => writeln!(stderr, "error: {error:#}")?,

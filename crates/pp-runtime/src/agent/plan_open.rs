@@ -14,8 +14,10 @@ use super::{
     plan_management::{PlanOpenIntent, PlanSelection, plan_display_title},
 };
 use anyhow::{Result, bail, ensure};
+use pp_config::model_state::Selection;
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
+use pp_core::model::ModelSource;
 use pp_core::plan;
 use pp_core::plan::PlanDocument;
 use pp_core::plan::PlanLocation;
@@ -121,16 +123,37 @@ impl Agent {
             ..Default::default()
         };
         candidate_workflow.validate()?;
-        let selection = self.catalog.role_selection(
-            pp_config::config::ModelRole::Plan,
-            &self.current_model.reference,
-            self.think_level,
-        )?;
-        let role_route = self.catalog.role_route(pp_config::config::ModelRole::Plan);
-        let config = self.catalog.resolve(&selection.model)?;
+        // 手动覆盖优先：Plan 会话不改用 PLAN 角色，保持用户显式选择。
+        let (selection, role_route, model_source) = match self.models.override_selection() {
+            Some(selection) => (selection, None, ModelSource::Override),
+            None => {
+                let assignment = self.catalog.role_selection(
+                    pp_config::config::ModelRole::Plan,
+                    &self.current_model.reference,
+                    self.think_level,
+                )?;
+                let route = assignment
+                    .enabled
+                    .then(|| self.catalog.role_route(pp_config::config::ModelRole::Plan))
+                    .flatten();
+                let source = if route.is_some() {
+                    ModelSource::Role
+                } else {
+                    self.models.source()
+                };
+                (
+                    Selection {
+                        reference: assignment.model,
+                        effort: assignment.effort,
+                    },
+                    route,
+                    source,
+                )
+            }
+        };
+        let config = self.catalog.resolve(&selection.reference)?;
         let client = pp_llm::OpenAiClient::new(&config)?;
         let prompt = selection_prompt(intent, &verified.id, &verified.path, &verified.content);
-        // 新 Plan 使用 PLAN 的模型与 effort；工具仍是 Plan 白名单，不连接 MCP。
         let prepared = (|| -> Result<(Session, super::persistence::SessionJournal)> {
             let definitions = self.tools.all_definitions(WorkMode::Plan);
             let system = self.compose_prompt(
@@ -151,7 +174,7 @@ impl Agent {
             let metadata = Metadata {
                 role_route: role_route.as_ref(),
                 cwd: self.tools.cwd(),
-                model_reference: &selection.model,
+                model_reference: &selection.reference,
                 think_level: selection.effort,
                 edit_mode: self.tools.edit_mode(),
                 tool_limits: self.tools.limits,
@@ -176,8 +199,9 @@ impl Agent {
         self.session = session;
         self.reset_lsp_diagnostics();
         self.client = client;
+        self.model_source = model_source;
         self.current_model = pp_config::config::ModelChoice {
-            reference: selection.model,
+            reference: selection.reference,
             model: config.model,
             protocol: config.protocol,
             thinking: config.thinking,

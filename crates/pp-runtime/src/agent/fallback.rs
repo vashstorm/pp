@@ -1,4 +1,4 @@
-//! 角色来源及任务内备用选择；只在完整消息边界切换模型。
+//! 任务内备用模型与任务边界的模型回落；只在完整消息边界切换模型。
 use super::*;
 
 impl Agent {
@@ -17,37 +17,63 @@ impl Agent {
             .checkpoint(&metadata, (&self.session).into(), &self.workflow)
     }
 
-    pub(super) fn activate_fallback(&mut self, emit: &mut dyn FnMut(AgentEvent)) -> Result<bool> {
-        let Some(route) = &self.role_route else {
-            return Ok(false);
-        };
-        if self.current_model.reference != route.primary.model {
-            return Ok(false);
+    /// 任务开始：只有上一个任务停在 fallback 时才回到 `resolve()`（`a` → `b`）。
+    pub(super) fn restore_resolved(&mut self, emit: &mut dyn FnMut(AgentEvent)) -> Result<()> {
+        if !self.model_source.is_fallback() {
+            return Ok(());
         }
-        let Some(target) = route.fallback.clone() else {
-            return Ok(false);
-        };
-        self.switch_role_model(&target, true, emit)?;
-        Ok(true)
+        let selection = self.models.resolve()?;
+        let source = self.models.source();
+        self.switch_role_model(&selection.reference, selection.effort, source, emit)
     }
 
-    pub(super) fn restore_role_primary(&mut self, emit: &mut dyn FnMut(AgentEvent)) -> Result<()> {
-        if let Some(route) = &self.role_route {
-            let target = route.primary.clone();
-            if self.current_model.reference != target.model {
-                self.switch_role_model(&target, false, emit)?;
-            }
+    /// 请求失败后的任务内备用模型：只切一次，任务结束时由 [`Self::restore_resolved`] 回落。
+    pub(super) fn activate_fallback(&mut self, emit: &mut dyn FnMut(AgentEvent)) -> Result<bool> {
+        if self.model_source.is_fallback() {
+            return Ok(false);
         }
-        Ok(())
+        // 子 Agent 用自己的角色备用模型；主 Agent 用 DEFAULT 角色的备用模型。
+        let role = self
+            .runtime_models
+            .as_ref()
+            .and_then(|binding| binding.role)
+            .unwrap_or(ModelRole::Default);
+        let Some(fallback) = self
+            .catalog
+            .model_roles()
+            .get(&role)
+            .filter(|assignment| assignment.enabled)
+            .and_then(|assignment| assignment.fallback.clone())
+        else {
+            return Ok(false);
+        };
+        if fallback.model == self.current_model.reference {
+            return Ok(false);
+        }
+        let config = self.catalog.resolve(&fallback.model)?;
+        ensure!(
+            config.thinking.supports(fallback.effort),
+            "fallback thinking is not supported by the fallback model"
+        );
+        self.switch_role_model(
+            &fallback.model,
+            fallback.effort,
+            ModelSource::Fallback,
+            emit,
+        )?;
+        Ok(true)
     }
 
     fn switch_role_model(
         &mut self,
-        target: &pp_config::config::RoleModel,
-        fallback: bool,
+        reference: &str,
+        effort: ThinkLevel,
+        source: ModelSource,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<()> {
-        self.switch_model_with_effort(&target.model, Some(target.effort))?;
+        self.switch_model_with_effort(reference, Some(effort))?;
+        self.model_source = source;
+        self.role_route = None;
         if let Some(binding) = &mut self.tools.subagent {
             binding.model = self.current_model.reference.clone();
             binding.thinking = self.think_level;
@@ -58,17 +84,13 @@ impl Agent {
                         .directory()
                         .join(format!("{}.session.json", binding.owner)),
                 )?;
-                binding.update_model(
-                    &target.model,
-                    target.effort,
-                    self.catalog.cost(&target.model),
-                )?;
+                binding.update_model(reference, effort, self.catalog.cost(reference))?;
             }
         }
         let event = AgentEvent::ModelRouteChanged {
-            model: target.model.clone(),
-            effort: target.effort,
-            fallback,
+            model: reference.to_owned(),
+            effort,
+            source,
             temporary: false,
         };
         self.journal.event(&event);

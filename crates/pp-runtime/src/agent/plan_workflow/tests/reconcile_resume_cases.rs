@@ -44,6 +44,13 @@ fn plan_resume_adapts_mcp_and_reports_replay() {
         let execute_id = executor.session_id().unwrap().to_owned();
         drop(executor);
 
+        // 第二个普通会话：覆盖与 resolve 两条路径各自离开 Plan 时，
+        // 目标会话不能是当前仍持有锁的同一个。
+        let mut second = fixture_agent(&root.join("exec2"), &sessions, protocol);
+        seed_session(&mut second, "second ordinary work");
+        let second_execute_id = second.session_id().unwrap().to_owned();
+        drop(second);
+
         // Resuming a Plan session from Execute only tops up MCP access for
         // the target mode; existing connections stay untouched.
         let mut agent = fixture_agent(&root.join("current"), &sessions, protocol);
@@ -76,7 +83,7 @@ fn plan_resume_adapts_mcp_and_reports_replay() {
         }
         assert_eq!(native, planning_session);
 
-        // 在规划会话中使用独立模型，恢复普通会话时必须回到默认路由。
+        // 在规划会话中使用独立模型（写入手动覆盖 `a`），恢复普通会话时必须保持。
         super::handoff_cases::install_distinct_plan_model(&mut agent, &global);
         agent.switch_model("planner/one").unwrap();
         agent.set_think_level(ThinkLevel::High).unwrap();
@@ -85,13 +92,26 @@ fn plan_resume_adapts_mcp_and_reports_replay() {
             .unwrap();
         assert_eq!(preparation.workflow.mode, WorkMode::Execute);
         assert!(preparation.workflow.plan.is_none());
-        assert_eq!(agent.current_model.reference, "fixture/one");
-        assert_eq!(agent.think_level, ThinkLevel::Low);
-        assert_eq!(agent.role_route.as_ref().unwrap().role, ModelRole::Default);
+        assert_eq!(agent.current_model.reference, "planner/one");
+        assert_eq!(agent.think_level, ThinkLevel::High);
+        assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
+        assert!(agent.role_route.is_none());
         assert_eq!(
             session_tool_count(&agent),
             agent.tools.all_definitions(WorkMode::Execute).len()
         );
+
+        // 清除覆盖后再从 Plan 恢复普通会话：模型回到 resolve()（`b` 的默认路由）。
+        agent.models().clear_override().unwrap();
+        agent.enter_plan(&CancellationToken::new()).unwrap();
+        let preparation = agent
+            .resume(&second_execute_id, &CancellationToken::new())
+            .unwrap();
+        assert_eq!(preparation.workflow.mode, WorkMode::Execute);
+        assert_eq!(agent.current_model.reference, "fixture/one");
+        assert_eq!(agent.think_level, ThinkLevel::Low);
+        assert_eq!(agent.model_source(), pp_core::model::ModelSource::Default);
+        assert!(agent.role_route.is_none());
     }
 }
 

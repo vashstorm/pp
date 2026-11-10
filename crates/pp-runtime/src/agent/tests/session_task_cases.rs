@@ -469,7 +469,9 @@ fn system_prompt_render_failure_preserves_native_session_and_journal() {
         )
         .unwrap();
         let mut agent = Agent::new_with_prompt(
-            ModelCatalog::from_files(&settings, &models).unwrap(),
+            pp_config::model_state::ModelState::shared(
+                ModelCatalog::from_files(&settings, &models).unwrap(),
+            ),
             Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
             dir.path().join("sessions"),
             dir.path().join("sessions/.locks"),

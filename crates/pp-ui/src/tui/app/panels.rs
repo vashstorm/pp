@@ -114,10 +114,7 @@ impl App {
                 );
             }
             model::Action::Default(index) if matches!(self.state, State::Ready) => {
-                self.send(
-                    WorkerCommand::SaveDefaultModel(self.choices[index].reference.clone()),
-                    State::SavingModelSettings,
-                );
+                self.request_save_default(self.choices[index].reference.clone());
             }
             _ => {}
         }

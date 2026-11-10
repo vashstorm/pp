@@ -183,6 +183,7 @@ fn auth_first_login_bootstraps_agent_without_restarting_ui_or_losing_draft() {
         prompt: pp_runtime::system_prompt::Snapshot::bundled(),
         approval: None,
         mcp: std::sync::Arc::new(pp_runtime::mcp::McpManager::empty()),
+        models: Default::default(),
     };
     let mut app = App::new(Err(anyhow::anyhow!("No models configured"))).unwrap();
     app.bootstrap = Some(factory);
