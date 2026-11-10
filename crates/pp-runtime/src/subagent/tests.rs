@@ -1249,3 +1249,49 @@ fn plan_mode_refuses_to_revive_a_writable_isolated_workspace() {
     assert!(binding.control("a1", "revive", None).is_err());
     assert_eq!(lock(&binding.inner.state).workers, 0);
 }
+
+fn spec_json(cost: Value) -> Value {
+    json!({
+        "definition": "task", "prompt": "", "context": "", "model": "m",
+        "thinking": "none", "tools": [], "spawns": [], "output_schema": null,
+        "cwd": ".", "depth": 1, "readonly": false, "isolated": false,
+        "cost": cost,
+    })
+}
+
+#[test]
+fn legacy_registry_with_null_cache_write_still_loads() {
+    // 旧版本把缺省的 cacheWrite 写成 null，/resume 必须仍能读取子 Agent 注册表。
+    let spec: Spec = serde_json::from_value(spec_json(
+        json!({"input":0.3,"cacheRead":0.006,"cacheWrite":null,"output":1.2}),
+    ))
+    .unwrap();
+    let cost = spec.cost.unwrap();
+    assert_eq!(cost.cache_write, None);
+    assert_eq!(cost.output, 1.2);
+    // 其余字段仍严格校验：缺必填项依旧报错。
+    assert!(
+        serde_json::from_value::<Spec>(spec_json(json!({"input":1,"cacheWrite":null,"output":1})))
+            .is_err()
+    );
+}
+
+#[test]
+fn persisted_cost_omits_unknown_cache_write_and_round_trips() {
+    let spec: Spec = serde_json::from_value(spec_json(
+        json!({"input":0.3,"cacheRead":0.006,"output":1.2}),
+    ))
+    .unwrap();
+    let written = serde_json::to_value(&spec).unwrap();
+    assert!(written["cost"].get("cacheWrite").is_none());
+    let again: Spec = serde_json::from_value(written).unwrap();
+    assert_eq!(again.cost.unwrap().cache_write, None);
+    let priced: Spec = serde_json::from_value(spec_json(
+        json!({"input":1,"cacheRead":1,"cacheWrite":2.5,"output":1}),
+    ))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&priced).unwrap()["cost"]["cacheWrite"],
+        2.5
+    );
+}

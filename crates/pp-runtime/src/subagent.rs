@@ -51,8 +51,29 @@ pub struct Spec {
     pub depth: usize,
     pub readonly: bool,
     pub isolated: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "persisted_cost")]
     pub cost: Option<pp_config::models::ModelCost>,
+}
+
+/// 读取注册表中持久化的费率。旧版本把缺省的 `cacheWrite` 序列化为 `null`，
+/// 配置文件对 `null` 严格拒绝，但已写入的 registry 必须仍可恢复：
+/// 这里只把 `cacheWrite: null` 视为省略，其余字段仍由 `ModelCost` 严格校验。
+fn persisted_cost<'de, D>(deserializer: D) -> Result<Option<pp_config::models::ModelCost>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let Some(mut value) = Option::<Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    if let Some(object) = value.as_object_mut()
+        && object.get("cacheWrite").is_some_and(Value::is_null)
+    {
+        object.remove("cacheWrite");
+    }
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(D::Error::custom)
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Record {
