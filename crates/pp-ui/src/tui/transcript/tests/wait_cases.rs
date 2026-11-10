@@ -27,11 +27,13 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
         "{text}"
     );
     for (ms, clock) in [
-        (0, "🕛"),
-        (500, "🕒"),
-        (1000, "🕕"),
-        (1500, "🕘"),
-        (2000, "🕛"),
+        (0, "\u{f1456}"),
+        (120, "\u{f144b}"),
+        (360, "\u{f144d}"),
+        (720, "\u{f1450}"),
+        (1080, "\u{f1453}"),
+        (1320, "\u{f1455}"),
+        (1440, "\u{f1456}"),
     ] {
         transcript.progress(AgentEvent::ToolOutputSnapshot {
             id: "wait".into(),
@@ -50,7 +52,7 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
         assert!(text.contains("╭") && text.contains("╰"));
     }
     // 较早完成目标的长耗时不能冻结其他运行目标的动画。
-    let mut mixed = wait_snapshot(10, 1500);
+    let mut mixed = wait_snapshot(10, 1080);
     mixed["jobs"][0]["status"] = json!("completed");
     mixed["jobs"][0]["duration_ms"] = json!(10_000_000);
     transcript.progress(AgentEvent::ToolOutputSnapshot {
@@ -59,7 +61,7 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
     });
     let text = entry_text(&mut transcript.entries[0], 100);
     assert!(
-        text.contains("✓  [bash] bg-0") && text.contains("🕘 [bash] bg-1"),
+        text.contains("✓ [bash] bg-0") && text.contains("\u{f1453} [bash] bg-1"),
         "{text}"
     );
     transcript.toggle_tool_output();
@@ -86,7 +88,7 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
     assert!(!frozen.contains("Result ") && !frozen.contains("finished-line"));
     assert!(!frozen.contains("agent-report") && !frozen.contains("agent-error"));
     assert!(!frozen.contains("/tmp/agent-result.json"));
-    assert!(!frozen.contains(['🕛', '🕒', '🕕', '🕘']));
+    assert!(!frozen.contains(palette::WAITING_CLOCK_FRAMES));
     transcript.tick(Instant::now() + Duration::from_secs(20));
     assert_eq!(entry_text(&mut transcript.entries[0], 100), frozen);
     let replay = vec![

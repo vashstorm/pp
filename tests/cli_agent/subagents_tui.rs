@@ -302,8 +302,25 @@ fn agent_hub_streams_and_anchors_activity() {
         pty.text("ToolFailure");
         pty.input("\r");
         pty.text("hub-stream-first");
-        pty.text("🕛 Responding");
-        pty.text("🕒 Responding");
+        pty.wait_for("子 Agent 详情显示实时时钟", |screen| {
+            let text = screen.contents();
+            WAIT_CLOCKS
+                .into_iter()
+                .any(|clock| text.contains(&format!("{clock} Responding")))
+        });
+        let first_clock = {
+            let text = pty.contents();
+            WAIT_CLOCKS
+                .into_iter()
+                .find(|clock| text.contains(&format!("{clock} Responding")))
+                .unwrap()
+        };
+        pty.wait_for("子 Agent 详情时钟继续转动", |screen| {
+            let text = screen.contents();
+            WAIT_CLOCKS
+                .into_iter()
+                .any(|clock| clock != first_clock && text.contains(&format!("{clock} Responding")))
+        });
         // 第二段只追加一次。
         // 分片拼接必须与最终文本一致，否则 Responses 协议会判定冲突。
         streaming_delta(&mut live, protocol, " hub-stream-second");

@@ -270,7 +270,7 @@ fn task_cancel_waits_for_completed_and_preserves_editable_draft() {
     let screen = draw(&mut app, 100, 30);
     assert!(screen.lines().any(|row| {
         row.strip_prefix("  ")
-            .and_then(|row| row.strip_prefix(['🕛', '🕒', '🕕', '🕘']))
+            .and_then(|row| row.strip_prefix(super::transcript_style::WAITING_CLOCK_FRAMES))
             .is_some_and(|row| row.trim() == "Cancelling")
     }));
     assert_eq!(screen.matches("Cancelling").count(), 1);

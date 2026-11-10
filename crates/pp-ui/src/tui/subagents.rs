@@ -1871,8 +1871,8 @@ mod tests {
             buffer[(4, 4)].symbol(),
             waiting_clock(u128::from(panel.clock))
         );
-        assert_eq!(buffer[(6, 4)].symbol(), " ");
-        assert_eq!(buffer[(7, 4)].fg, ACTIVITY);
+        assert_eq!(buffer[(5, 4)].symbol(), " ");
+        assert_eq!(buffer[(6, 4)].fg, ACTIVITY);
         assert_eq!(buffer[(81, 5)].bg, SELECTED_BG);
     }
 

@@ -87,7 +87,20 @@ fn no_more(server: &Server) {
 }
 
 const DEADLINE: Duration = Duration::from_secs(10);
-const WAIT_CLOCKS: [char; 4] = ['🕛', '🕒', '🕕', '🕘'];
+const WAIT_CLOCKS: [char; 12] = [
+    '\u{f1456}',
+    '\u{f144b}',
+    '\u{f144c}',
+    '\u{f144d}',
+    '\u{f144e}',
+    '\u{f144f}',
+    '\u{f1450}',
+    '\u{f1451}',
+    '\u{f1452}',
+    '\u{f1453}',
+    '\u{f1454}',
+    '\u{f1455}',
+];
 // portable-pty sets CLOEXEC after openpty; do not spawn another child in that window.
 pub(super) static PTY_SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

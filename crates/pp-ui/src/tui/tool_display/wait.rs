@@ -79,16 +79,15 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
         let duration_ms = job["duration_ms"].as_u64().unwrap_or(0);
         let status = job["status"].as_str().unwrap_or("unknown");
         let active = matches!(status, "queued" | "running");
-        let (icon, gap, tone) = match status {
+        let (icon, tone) = match status {
             "queued" | "running" if view.running => (
                 palette::waiting_clock(u128::from(duration_ms)),
-                " ",
                 palette::ACCENT,
             ),
-            "queued" | "running" => ("○", "  ", palette::ACCENT),
-            "failed" => ("✕", "  ", palette::REMOVED),
-            "cancelled" | "stopped" | "interrupted" => ("■", "  ", palette::MUTED),
-            _ => ("✓", "  ", palette::ADDED),
+            "queued" | "running" => ("○", palette::ACCENT),
+            "failed" => ("✕", palette::REMOVED),
+            "cancelled" | "stopped" | "interrupted" => ("■", palette::MUTED),
+            _ => ("✓", palette::ADDED),
         };
         let seconds = duration_ms / 1000;
         let delivered = if job["delivered"] == true && !active {
@@ -98,7 +97,7 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
         };
         body.push(Line::styled(
             format!(
-                "{icon}{gap}[{}] {} · {status} · {}m{:02}s{delivered}",
+                "{icon} [{}] {} · {status} · {}m{:02}s{delivered}",
                 job["type"].as_str().unwrap_or("job"),
                 job["id"].as_str().unwrap_or("?"),
                 seconds / 60,
@@ -107,7 +106,7 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
             style.fg(tone),
         ));
         body.push(Line::styled(
-            format!("   {}", job["label"].as_str().unwrap_or_default()),
+            format!("  {}", job["label"].as_str().unwrap_or_default()),
             style,
         ));
     }

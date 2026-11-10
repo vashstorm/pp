@@ -2,7 +2,7 @@ use super::*;
 
 fn live_activity_label(transcript: &Transcript) -> String {
     let line = transcript.live_activity_line().unwrap().to_string();
-    line.strip_prefix(['🕛', '🕒', '🕕', '🕘'])
+    line.strip_prefix(palette::WAITING_CLOCK_FRAMES)
         .unwrap()
         .strip_prefix(' ')
         .unwrap()
@@ -220,28 +220,39 @@ fn activity_sweep_moves_from_first_to_last_without_shifting_text() {
         buffer
     };
     let initial = render_activity(&transcript, 100);
-    assert_eq!(initial[(2, 0)].symbol(), "🕛");
-    assert_eq!(initial[(5, 0)].fg, palette::ACCENT);
-    assert_eq!(initial[(20, 0)].fg, palette::DIM);
+    assert_eq!(initial[(2, 0)].symbol(), "\u{f1456}");
+    assert_eq!(initial[(4, 0)].fg, palette::ACCENT);
+    assert_eq!(initial[(19, 0)].fg, palette::DIM);
     assert!(initial[(2, 0)].modifier.contains(Modifier::BOLD));
     for index in 0..16_u16 {
         transcript.tick(started + Duration::from_millis(u64::from(index) * 80));
         let buffer = render_activity(&transcript, 100);
-        assert_eq!(buffer[(5, 0)].symbol(), "R");
-        assert_eq!(buffer[(5 + index, 0)].fg, palette::ACCENT);
+        assert_eq!(buffer[(4, 0)].symbol(), "R");
+        assert_eq!(buffer[(4 + index, 0)].fg, palette::ACCENT);
     }
     transcript.tick(started + Duration::from_millis(24 * 80));
     assert_eq!(
-        render_activity(&transcript, 100)[(5, 0)].fg,
+        render_activity(&transcript, 100)[(4, 0)].fg,
         palette::ACCENT
     );
-    assert_eq!(screen(&render_activity(&transcript, 12)), "🕘  Requestin");
-    for (ms, clock) in [(2000, "🕛"), (2500, "🕒"), (3000, "🕕"), (3500, "🕘")] {
+    assert_eq!(
+        screen(&render_activity(&transcript, 12)),
+        "\u{f144e} Requesting"
+    );
+    for (ms, clock) in [
+        (0, "\u{f1456}"),
+        (120, "\u{f144b}"),
+        (360, "\u{f144d}"),
+        (720, "\u{f1450}"),
+        (1080, "\u{f1453}"),
+        (1320, "\u{f1455}"),
+        (1440, "\u{f1456}"),
+    ] {
         transcript.tick(started + Duration::from_millis(ms));
         let buffer = render_activity(&transcript, 100);
         assert_eq!(buffer[(2, 0)].symbol(), clock);
-        assert_eq!(buffer[(4, 0)].symbol(), " ");
-        assert_eq!(buffer[(5, 0)].symbol(), "R");
+        assert_eq!(buffer[(3, 0)].symbol(), " ");
+        assert_eq!(buffer[(4, 0)].symbol(), "R");
     }
     let activity = transcript.activity.as_mut().unwrap();
     activity.phase("读取 e\u{301} 中😀");
@@ -754,7 +765,7 @@ fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
                 let buffer = render(&mut transcript, width, 20);
                 let display_icon = if name == "read" {
                     if transcript.entries[0].status == EntryStatus::Running {
-                        "🕛"
+                        "\u{f1456}"
                     } else {
                         "✗"
                     }

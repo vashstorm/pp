@@ -133,7 +133,7 @@ fn ask_layout_keeps_latest_message_above_panel_on_resize() {
             .iter()
             .position(|row| {
                 row.strip_prefix("  ")
-                    .and_then(|row| row.strip_prefix(['🕛', '🕒', '🕕', '🕘']))
+                    .and_then(|row| row.strip_prefix(super::transcript_style::WAITING_CLOCK_FRAMES))
                     .is_some_and(|row| row.trim_start().starts_with("Waiting for input"))
             })
             .unwrap();

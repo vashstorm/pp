@@ -65,9 +65,38 @@ pub(super) const SYNTAX_FUNCTION: Color = Color::Rgb(220, 220, 170);
 pub(super) const SYNTAX_CONSTANT: Color = Color::Rgb(79, 193, 255);
 pub(super) const SYNTAX_TAG: Color = Color::Rgb(86, 156, 214);
 
+#[cfg(test)]
+pub(super) const WAITING_CLOCK_FRAMES: [char; 12] = [
+    '\u{f1456}',
+    '\u{f144b}',
+    '\u{f144c}',
+    '\u{f144d}',
+    '\u{f144e}',
+    '\u{f144f}',
+    '\u{f1450}',
+    '\u{f1451}',
+    '\u{f1452}',
+    '\u{f1453}',
+    '\u{f1454}',
+    '\u{f1455}',
+];
+
 pub(super) fn waiting_clock(milliseconds: u128) -> &'static str {
-    const FRAMES: [&str; 4] = ["🕛", "🕒", "🕕", "🕘"];
-    FRAMES[(milliseconds / 500 % FRAMES.len() as u128) as usize]
+    const FRAMES: [&str; 12] = [
+        "\u{f1456}",
+        "\u{f144b}",
+        "\u{f144c}",
+        "\u{f144d}",
+        "\u{f144e}",
+        "\u{f144f}",
+        "\u{f1450}",
+        "\u{f1451}",
+        "\u{f1452}",
+        "\u{f1453}",
+        "\u{f1454}",
+        "\u{f1455}",
+    ];
+    FRAMES[(milliseconds / 120 % FRAMES.len() as u128) as usize]
 }
 
 pub(super) fn tool_accent(name: &str) -> Color {

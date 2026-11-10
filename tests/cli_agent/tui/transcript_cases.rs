@@ -14,7 +14,7 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
         });
         let letter_color = |screen: &vt100::Screen, offset| {
             let (row, column) = context_tui_locate(screen, "Requesting model").unwrap();
-            assert_eq!(column, 5);
+            assert_eq!(column, 4);
             screen.cell(row, column + offset).unwrap().fgcolor()
         };
         pty.wait_for("扫光到达首字", |screen| {
