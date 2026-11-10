@@ -73,11 +73,11 @@ fn summary_output_limit(summary_budget: u64) -> u32 {
 
 /// Exclusive end indices of every complete native exchange in a Chat
 /// Completions history. The leading system message (index 0) is allowed and
-/// skipped; the rest must be user messages, assistant replies, and complete
-/// tool-call batches. A plain assistant reply closes its exchange; a batch of
-/// function calls closes only after the tool messages for all of its call ids.
-/// Missing, duplicate, or orphaned call/result relationships are rejected
-/// with a fixed diagnostic, without touching the history.
+/// skipped; the rest must be user/developer messages, assistant replies, and
+/// complete tool-call batches. A plain assistant reply closes its exchange; a
+/// batch of function calls closes only after the tool messages for all of its
+/// call ids. Missing, duplicate, or orphaned call/result relationships within
+/// a batch are rejected with a fixed diagnostic, without touching the history.
 pub(super) fn completion_boundaries(
     messages: &[ChatCompletionRequestMessage],
 ) -> Result<Vec<usize>> {
@@ -89,6 +89,9 @@ pub(super) fn completion_boundaries(
     for (index, message) in messages.iter().enumerate() {
         match message {
             ChatCompletionRequestMessage::System(_) if index == 0 => {}
+            ChatCompletionRequestMessage::Developer(_) => {
+                ensure!(pending.is_empty(), UNSUPPORTED_HISTORY);
+            }
             ChatCompletionRequestMessage::User(_) => {
                 ensure!(pending.is_empty(), UNSUPPORTED_HISTORY);
                 if super::tool_images::chat_id(message).is_some() {
@@ -129,6 +132,7 @@ pub(super) fn completion_boundaries(
                 );
                 answered.insert(id);
                 if pending.is_empty() {
+                    answered.clear();
                     boundaries.push(index + 1);
                 }
             }
@@ -142,9 +146,9 @@ pub(super) fn completion_boundaries(
 /// Exclusive end indices of every complete native exchange in a Responses
 /// history. A group of reasoning items, assistant output messages and
 /// function calls closes only after the `function_call_output` for all of its
-/// call ids, or — without calls — at the next user item or the end of the
-/// history. Reasoning never separates from its output, and call results are
-/// never split from their calls.
+/// call ids, or — without calls — at the next user/developer item or the end
+/// of the history. Reasoning never separates from its output, and call results
+/// are never split from their calls.
 pub(super) fn response_boundaries(items: &[InputItem]) -> Result<Vec<usize>> {
     let mut boundaries = Vec::new();
     let mut pending: HashSet<&str> = HashSet::new();
@@ -154,9 +158,10 @@ pub(super) fn response_boundaries(items: &[InputItem]) -> Result<Vec<usize>> {
     for (index, item) in items.iter().enumerate() {
         match item {
             InputItem::EasyMessage(message) => match message.role {
-                Role::User => {
+                Role::User | Role::Developer => {
+                    ensure!(pending.is_empty(), UNSUPPORTED_HISTORY);
                     if open {
-                        ensure!(pending.is_empty() && has_output, UNSUPPORTED_HISTORY);
+                        ensure!(has_output, UNSUPPORTED_HISTORY);
                         boundaries.push(index);
                         open = false;
                         has_output = false;
@@ -168,12 +173,17 @@ pub(super) fn response_boundaries(items: &[InputItem]) -> Result<Vec<usize>> {
                 }
                 _ => bail!(UNSUPPORTED_HISTORY),
             },
-            // 原生多模态用户消息在会话反序列化后采用完整 Input 形态。
+            // 原生多模态用户消息与反序列化后的开发者消息可采用完整 Input 形态。
             InputItem::Item(Item::Message(MessageItem::Input(message)))
-                if message.role == async_openai::types::responses::InputRole::User =>
+                if matches!(
+                    message.role,
+                    async_openai::types::responses::InputRole::User
+                        | async_openai::types::responses::InputRole::Developer
+                ) =>
             {
+                ensure!(pending.is_empty(), UNSUPPORTED_HISTORY);
                 if open {
-                    ensure!(pending.is_empty() && has_output, UNSUPPORTED_HISTORY);
+                    ensure!(has_output, UNSUPPORTED_HISTORY);
                     boundaries.push(index);
                     open = false;
                     has_output = false;
@@ -203,6 +213,7 @@ pub(super) fn response_boundaries(items: &[InputItem]) -> Result<Vec<usize>> {
                 ensure!(pending.remove(id), UNSUPPORTED_HISTORY);
                 answered.insert(id);
                 if pending.is_empty() {
+                    answered.clear();
                     boundaries.push(index + 1);
                     open = false;
                     has_output = false;

@@ -597,3 +597,80 @@ fn bang_shell_agent_is_local_and_plan_is_read_only() {
     );
     assert!(!dir.path().join("forbidden").exists());
 }
+
+#[test]
+fn compact_after_cancelled_todo_reminder_succeeds_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let dir = tempfile::tempdir().unwrap();
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let mut agent =
+            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let cancel = CancellationToken::new();
+        let cancel_worker = cancel.clone();
+        let serving = protocol.to_owned();
+        let worker = std::thread::spawn(move || {
+            // 第 1 轮：初始化未完成 todo 批次（产生第 1 个完整 boundary）。
+            let mut request = server
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let _: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            tool_call_for(
+                &serving,
+                request,
+                "todo",
+                &json!({"op":"init","items":["step one","step two"]}).to_string(),
+            );
+            // 第 2 轮：返回纯文本回复（产生第 2 个完整 boundary），因 todo 未完成自动注入 Developer 提醒并进入第 3 轮。
+            let mut request = server
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let _: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            final_for(&serving, request, "partial progress before reminder", true);
+            // 第 3 轮：收到携带 Developer 提醒的请求后触发手动取消。
+            let mut request = server
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            assert!(
+                body.to_string()
+                    .contains("You stopped with 2 incomplete todo item(s):")
+            );
+            cancel_worker.cancel();
+            let _ = request.respond(tiny_http::Response::empty(200));
+            // 随后处理手动 /compact 发出的摘要请求。
+            let mut summary_req = server
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let summary_body: Value = serde_json::from_reader(summary_req.as_reader()).unwrap();
+            assert!(
+                summary_body
+                    .to_string()
+                    .contains("Summarize the preceding conversation")
+            );
+            final_for(&serving, summary_req, "compact summary", true);
+        });
+
+        let outcome = agent
+            .run(
+                &format!("start task {}", "x".repeat(2000)),
+                &cancel,
+                None,
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!(outcome, RunOutcome::Cancelled);
+
+        let compact_outcome = agent
+            .compact(&CancellationToken::new(), &mut |_| {})
+            .unwrap();
+        assert!(matches!(
+            compact_outcome,
+            super::context::CompactionOutcome::Compacted { .. }
+        ));
+        worker.join().unwrap();
+    }
+}

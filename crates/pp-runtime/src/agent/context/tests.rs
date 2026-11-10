@@ -504,15 +504,47 @@ fn res_structured_user(text: &str) -> r::InputItem {
     })))
 }
 
+fn res_developer(text: &str) -> r::InputItem {
+    r::InputItem::EasyMessage(r::EasyInputMessage {
+        role: r::Role::Developer,
+        content: text.into(),
+        ..Default::default()
+    })
+}
+
+fn res_structured_developer(text: &str) -> r::InputItem {
+    r::InputItem::Item(r::Item::Message(r::MessageItem::Input(r::InputMessage {
+        content: vec![r::InputContent::InputText(r::InputTextContent {
+            text: text.into(),
+            prompt_cache_breakpoint: None,
+        })],
+        role: r::InputRole::Developer,
+        status: None,
+    })))
+}
+
 #[test]
-fn context_chat_developer_message_rejected() {
+fn context_chat_developer_messages_preserve_exchange_boundaries_and_reject_mid_batch() {
     let messages = vec![
         chat_system("system"),
         chat_user("question"),
-        chat_assistant("answer"),
-        chat_developer("late developer note"),
+        chat_assistant("answer one"),
+        chat_developer("Todo list still has unfinished items:\n- [in_progress] step"),
+        chat_assistant("answer two"),
+        chat_developer("LSP diagnostics (late):\nerror"),
     ];
-    assert_incomplete_chat(messages);
+    assert_eq!(completion_boundaries(&messages).unwrap(), vec![3, 5]);
+    assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(3));
+
+    // A developer message interjected inside an open tool batch is still invalid.
+    let invalid = vec![
+        chat_system("system"),
+        chat_user("read"),
+        chat_assistant_calls(&["a"]),
+        chat_developer("interjected developer note"),
+        chat_tool("a", "result a"),
+    ];
+    assert_incomplete_chat(invalid);
 }
 
 #[test]
@@ -562,7 +594,7 @@ fn context_chat_blank_tool_call_id_rejected() {
 }
 
 #[test]
-fn context_chat_call_id_reused_across_batches_rejected() {
+fn context_call_id_reused_across_closed_batches_allowed_but_same_batch_rejected() {
     let messages = vec![
         chat_system("system"),
         chat_user("read"),
@@ -571,7 +603,30 @@ fn context_chat_call_id_reused_across_batches_rejected() {
         chat_assistant_calls(&["a"]),
         chat_tool("a", "result two"),
     ];
-    assert_incomplete_chat(messages);
+    assert_eq!(completion_boundaries(&messages).unwrap(), vec![4, 6]);
+    assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(4));
+
+    let items = vec![
+        res_user("read"),
+        res_call("a"),
+        res_output("a", "result one"),
+        res_call("a"),
+        res_output("a", "result two"),
+    ];
+    assert_eq!(response_boundaries(&items).unwrap(), vec![3, 5]);
+    assert_eq!(response_cutoff(&items, None).unwrap(), Some(3));
+
+    // Reusing an already-answered call_id while the same batch is still open is rejected.
+    let interleaved = vec![
+        res_user("read"),
+        res_call("a"),
+        res_call("b"),
+        res_output("a", "result one"),
+        res_call("a"),
+        res_output("b", "result b"),
+        res_output("a", "result two"),
+    ];
+    assert_incomplete_responses(interleaved);
 }
 
 #[test]
@@ -600,16 +655,24 @@ fn context_responses_converted_assistant_messages_remain_compactable() {
 }
 
 #[test]
-fn context_responses_embedded_developer_instructions_rejected() {
+fn context_responses_developer_messages_close_open_group_and_reject_mid_batch() {
     let items = vec![
         res_user("question"),
-        InputItem::EasyMessage(EasyInputMessage {
-            role: Role::Developer,
-            content: "injected instructions".into(),
-            ..Default::default()
-        }),
+        res_assistant("msg-1", "answer one"),
+        res_developer("Todo list still has unfinished items:\n- [in_progress] step"),
+        res_assistant("msg-2", "answer two"),
+        res_structured_developer("LSP diagnostics (late):\nerror"),
     ];
-    assert_incomplete_responses(items);
+    assert_eq!(response_boundaries(&items).unwrap(), vec![2, 4]);
+    assert_eq!(response_cutoff(&items, None).unwrap(), Some(2));
+
+    let invalid = vec![
+        res_user("read"),
+        res_call("a"),
+        res_developer("interjected developer note"),
+        res_output("a", "result a"),
+    ];
+    assert_incomplete_responses(invalid);
 }
 
 #[test]

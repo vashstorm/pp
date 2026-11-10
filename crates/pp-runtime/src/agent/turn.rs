@@ -459,71 +459,79 @@ pub(super) fn completion_turn(
     let mut stop_error = None;
     let mut sealed = false;
     let mut attachments = Vec::new();
-    for index in 0..count {
-        let ChatCompletionRequestMessage::Assistant(response) = &request.messages[assistant_index]
-        else {
-            bail!("agent invariant: missing assistant calls");
-        };
-        let Some(ChatCompletionMessageToolCalls::Function(call)) = response
-            .tool_calls
-            .as_ref()
-            .and_then(|calls| calls.get(index))
-        else {
-            bail!("agent invariant: missing function call");
-        };
-        if !sealed && call.function.name == "todo" {
-            plan_sync::sync_plan_todos(tools, journal, workflow, emit, false)?;
-            *plan_dirty = false;
-        }
-        let content = {
-            let progress_plan_path = tracked_plan_path(workflow);
-            let mut progress = |event| {
-                if plan_file_touched(tools, &progress_plan_path, &event) {
-                    *plan_dirty = true;
-                }
-                journal.event(&event);
-                emit(event);
+    let batch_result = (|| -> Result<()> {
+        for index in 0..count {
+            let ChatCompletionRequestMessage::Assistant(response) =
+                &request.messages[assistant_index]
+            else {
+                bail!("agent invariant: missing assistant calls");
             };
-            tools.execute_with_fetch(
-                &call.function.name,
-                &call.function.arguments,
-                &call.id,
-                tool_policy(workflow, sealed, queue)?,
-                cancellation,
-                &mut progress,
-                &mut |url, token| client.fetch_read_url(url, token),
-            )
-        };
-        reminder.awaiting_progress = false;
-        if stop_error.is_none() {
-            stop_error = content.stop_error;
+            let Some(ChatCompletionMessageToolCalls::Function(call)) = response
+                .tool_calls
+                .as_ref()
+                .and_then(|calls| calls.get(index))
+            else {
+                bail!("agent invariant: missing function call");
+            };
+            if !sealed && call.function.name == "todo" {
+                plan_sync::sync_plan_todos(tools, journal, workflow, emit, false)?;
+                *plan_dirty = false;
+            }
+            let content = {
+                let progress_plan_path = tracked_plan_path(workflow);
+                let mut progress = |event| {
+                    if plan_file_touched(tools, &progress_plan_path, &event) {
+                        *plan_dirty = true;
+                    }
+                    journal.event(&event);
+                    emit(event);
+                };
+                tools.execute_with_fetch(
+                    &call.function.name,
+                    &call.function.arguments,
+                    &call.id,
+                    tool_policy(workflow, sealed, queue)?,
+                    cancellation,
+                    &mut progress,
+                    &mut |url, token| client.fetch_read_url(url, token),
+                )
+            };
+            reminder.awaiting_progress = false;
+            if stop_error.is_none() {
+                stop_error = content.stop_error;
+            }
+            let tool_call_id = call.id.clone();
+            attachments.push((tool_call_id.clone(), content.images));
+            request.messages.push(ChatCompletionRequestMessage::Tool(
+                ChatCompletionRequestToolMessage {
+                    tool_call_id,
+                    content: content.output.into(),
+                },
+            ));
+            apply_plan_change(workflow, journal, &mut sealed, content.plan_change, emit)?;
+            let changed_checks = content
+                .todo_change
+                .as_ref()
+                .and_then(|change| change.plan.as_ref())
+                .is_some_and(|change| change.content.is_some());
+            let todo_changed = content.todo_change.is_some();
+            apply_todo_change(workflow, journal, content.todo_change)?;
+            if todo_changed {
+                publish_todo_state(workflow, emit);
+            }
+            if changed_checks {
+                publish_plan_progress(workflow, emit);
+            }
+            if !sealed && *plan_dirty {
+                plan_sync::sync_plan_todos(tools, journal, workflow, emit, true)?;
+                *plan_dirty = false;
+            }
         }
-        let tool_call_id = call.id.clone();
-        attachments.push((tool_call_id.clone(), content.images));
-        request.messages.push(ChatCompletionRequestMessage::Tool(
-            ChatCompletionRequestToolMessage {
-                tool_call_id,
-                content: content.output.into(),
-            },
-        ));
-        apply_plan_change(workflow, journal, &mut sealed, content.plan_change, emit)?;
-        let changed_checks = content
-            .todo_change
-            .as_ref()
-            .and_then(|change| change.plan.as_ref())
-            .is_some_and(|change| change.content.is_some());
-        let todo_changed = content.todo_change.is_some();
-        apply_todo_change(workflow, journal, content.todo_change)?;
-        if todo_changed {
-            publish_todo_state(workflow, emit);
-        }
-        if changed_checks {
-            publish_plan_progress(workflow, emit);
-        }
-        if !sealed && *plan_dirty {
-            plan_sync::sync_plan_todos(tools, journal, workflow, emit, true)?;
-            *plan_dirty = false;
-        }
+        Ok(())
+    })();
+    if let Err(error) = batch_result {
+        request.messages.truncate(assistant_index);
+        return Err(error);
     }
     tool_images::append_chat(&mut request.messages, attachments);
     record_usage(last_request, session_output_tokens, usage);
@@ -639,67 +647,74 @@ pub(super) fn response_turn(
     let end = input.len();
     let mut stop_error = None;
     let mut sealed = false;
-    for index in start..end {
-        let InputItem::Item(Item::FunctionCall(call)) = &input[index] else {
-            continue;
-        };
-        if !sealed && call.name == "todo" {
-            plan_sync::sync_plan_todos(tools, journal, workflow, emit, false)?;
-            *plan_dirty = false;
-        }
-        let output = {
-            let progress_plan_path = tracked_plan_path(workflow);
-            let mut progress = |event| {
-                if plan_file_touched(tools, &progress_plan_path, &event) {
-                    *plan_dirty = true;
-                }
-                journal.event(&event);
-                emit(event);
+    let batch_result = (|| -> Result<()> {
+        for index in start..end {
+            let InputItem::Item(Item::FunctionCall(call)) = &input[index] else {
+                continue;
             };
-            tools.execute_with_fetch(
-                &call.name,
-                &call.arguments,
-                &call.call_id,
-                tool_policy(workflow, sealed, queue)?,
-                cancellation,
-                &mut progress,
-                &mut |url, token| client.fetch_read_url(url, token),
-            )
-        };
-        reminder.awaiting_progress = false;
-        if stop_error.is_none() {
-            stop_error = output.stop_error;
+            if !sealed && call.name == "todo" {
+                plan_sync::sync_plan_todos(tools, journal, workflow, emit, false)?;
+                *plan_dirty = false;
+            }
+            let output = {
+                let progress_plan_path = tracked_plan_path(workflow);
+                let mut progress = |event| {
+                    if plan_file_touched(tools, &progress_plan_path, &event) {
+                        *plan_dirty = true;
+                    }
+                    journal.event(&event);
+                    emit(event);
+                };
+                tools.execute_with_fetch(
+                    &call.name,
+                    &call.arguments,
+                    &call.call_id,
+                    tool_policy(workflow, sealed, queue)?,
+                    cancellation,
+                    &mut progress,
+                    &mut |url, token| client.fetch_read_url(url, token),
+                )
+            };
+            reminder.awaiting_progress = false;
+            if stop_error.is_none() {
+                stop_error = output.stop_error;
+            }
+            let call_id = Some(call.call_id.clone());
+            input.push(InputItem::Item(Item::FunctionCallOutput(
+                FunctionCallOutputItemParam {
+                    call_id,
+                    output: tool_images::response_output(output.output, output.images),
+                    id: None,
+                    status: None,
+                    name: None,
+                    namespace: None,
+                    caller: None,
+                },
+            )));
+            apply_plan_change(workflow, journal, &mut sealed, output.plan_change, emit)?;
+            let changed_checks = output
+                .todo_change
+                .as_ref()
+                .and_then(|change| change.plan.as_ref())
+                .is_some_and(|change| change.content.is_some());
+            let todo_changed = output.todo_change.is_some();
+            apply_todo_change(workflow, journal, output.todo_change)?;
+            if todo_changed {
+                publish_todo_state(workflow, emit);
+            }
+            if changed_checks {
+                publish_plan_progress(workflow, emit);
+            }
+            if !sealed && *plan_dirty {
+                plan_sync::sync_plan_todos(tools, journal, workflow, emit, true)?;
+                *plan_dirty = false;
+            }
         }
-        let call_id = Some(call.call_id.clone());
-        input.push(InputItem::Item(Item::FunctionCallOutput(
-            FunctionCallOutputItemParam {
-                call_id,
-                output: tool_images::response_output(output.output, output.images),
-                id: None,
-                status: None,
-                name: None,
-                namespace: None,
-                caller: None,
-            },
-        )));
-        apply_plan_change(workflow, journal, &mut sealed, output.plan_change, emit)?;
-        let changed_checks = output
-            .todo_change
-            .as_ref()
-            .and_then(|change| change.plan.as_ref())
-            .is_some_and(|change| change.content.is_some());
-        let todo_changed = output.todo_change.is_some();
-        apply_todo_change(workflow, journal, output.todo_change)?;
-        if todo_changed {
-            publish_todo_state(workflow, emit);
-        }
-        if changed_checks {
-            publish_plan_progress(workflow, emit);
-        }
-        if !sealed && *plan_dirty {
-            plan_sync::sync_plan_todos(tools, journal, workflow, emit, true)?;
-            *plan_dirty = false;
-        }
+        Ok(())
+    })();
+    if let Err(error) = batch_result {
+        response_input(request).truncate(start);
+        return Err(error);
     }
     record_usage(last_request, session_output_tokens, turn.usage);
     if let Some(error) = stop_error {
