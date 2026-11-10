@@ -180,9 +180,9 @@ pp --model deepseek/deepseek-flash:high /commit
 
 `read` 仅接受 `path`，支持本地文本、图片、静态网页和已启用的 `skill://` 资源。系统在技能名称、说明和 URI 旁附加选择规则，自定义基础提示词也会保留：按任务及具体子任务主动匹配，在其他任务工具前读取适用技能，成功读取后简短说明用途。执行已批准计划也适用；选择仍由模型完成，正文不自动注入。裸技能 URI 读取完整 `SKILL.md`，追加 `/<path>` 访问资源，`/.` 列出目录。技能文本不受普通文本限额限制，结果带 `path` 和 `base_dir`，显式选择器仍生效。范围直接写入路径：`src/main.rs:20-60`、`notes.md:-30`、`file.rs:5-10,20-30`，严格读取指定行，截断后使用 `next_path` 续读。`:raw` 去掉前缀，网页则返回原始响应正文。PNG／JPEG／WebP／GIF 图片作为真实视觉输入发给模型，工具输出只显示元信息；恢复会话和切换协议保留图片。网页提取静态 HTML 正文，不执行 JavaScript，支持取消和有界会话缓存。[读取行为和限制 →](docs/guide.md#工具执行与权限)
 
-`rg` 在进程内搜索本地文件，支持正则、路径 glob、文件行范围和按文件分页。Execute、Plan 和 Review 共用 `pattern`、`path`、`case`、`-i`、`gitignore`、`skip`、`context`、`-C`、`-A`、`-B`、`output_mode`，以及 rg 风格的 `-F`、`-w`、`-t`、`-g`、`max_count` 参数。`-i: true` 等价于 `case: false`，含义冲突时拒绝调用。布尔参数 `-n` 用于兼容 ripgrep 调用习惯，可以省略，正文始终带行号。`context` 与 `-C` 设置双侧上下文，两者不同值时报错；`-A`／`-B` 分别覆盖后文／前文，支持零行。未指定的侧使用 `settings.yml` 中的配置，默认 `rg: {contextBefore: 1, contextAfter: 3}`。
+`rg` 在进程内搜索本地文件，支持正则、路径 glob、文件行范围和按文件分页。Execute、Plan 和 Review 共用 `pattern`、`path`、`case`、`-i`、`gitignore`、`skip`、`context`、`-C`、`-A`、`-B`、`output_mode`，以及 rg 风格的 `-F`、`-w`、`-t`、`-g`、`glob`、`max_count` 参数。`-i: true` 等价于 `case: false`，含义冲突时拒绝调用。布尔参数 `-n` 用于兼容 ripgrep 调用习惯，可以省略，正文始终带行号。`context` 与 `-C` 设置双侧上下文，两者不同值时报错；`-A`／`-B` 分别覆盖后文／前文，支持零行。未指定的侧使用 `settings.yml` 中的配置，默认 `rg: {contextBefore: 1, contextAfter: 3}`。
 
-`-F: true` 按字面量匹配元字符，跳过宽松编译链与 PCRE2 回退；此时 `\n` 是反斜杠加 n，只有真实换行才启用多行匹配。`-w: true` 要求整词匹配，可与 `-F` 组合。`-t` 接受文件类型或类型数组（`!name` 表示排除，`all` 合法，未知名报错），`-g` 接受 override glob 或数组（`!` 前缀表示排除，优先于 ignore 文件，不含 `/` 的模式匹配任意层级文件名）；两者只过滤目录遍历，`path` 中显式给出的文件始终被搜索。`max_count` 按文件限制匹配数（对齐 `rg -m`），`0` 不执行搜索并返回 `No matches found` 与 `details.fileCount: 0`。
+`-F: true` 按字面量匹配元字符，跳过宽松编译链与 PCRE2 回退；此时 `\n` 是反斜杠加 n，只有真实换行才启用多行匹配。`-w: true` 要求整词匹配，可与 `-F` 组合。`-t` 接受文件类型或类型数组（`!name` 表示排除，`all` 合法，未知名报错），`-g`（无短横线别名 `glob`）接受 override glob 或数组（`!` 前缀表示排除，优先于 ignore 文件，不含 `/` 的模式匹配任意层级文件名）；两者只过滤目录遍历，`path` 中显式给出的文件始终被搜索。`max_count` 按文件限制匹配数（对齐 `rg -m`），`0` 不执行搜索并返回 `No matches found` 与 `details.fileCount: 0`。
 
 工具名统一为 `rg`：`settings.yml` 使用顶层 `rg:` 键（旧 `grep:` 键会在严格解析下失败），`tools.approval` 的键同样使用 `rg`。
 

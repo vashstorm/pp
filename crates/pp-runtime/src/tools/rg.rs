@@ -31,7 +31,7 @@ const MAX_OUTPUT: usize = 50 * 1024;
 const MAX_LINE: usize = 512;
 
 pub(super) fn definition() -> FunctionObject {
-    FunctionObject { name: "rg".into(), description: Some("Search files or one artifact://<numeric-id> URI in process: Rust regex, PCRE2, literal fallback. path: files/dirs/globs/!exclusions separated by ';', file:20-40 ranges; default '.'. Case-sensitive, includes hidden files, respects ignore files. -i inverts case. context/-C set both sides; -A/-B override after/before; otherwise config. Conflicting aliases fail. -F matches literally; -w matches whole words; -t/-g filter the directory walk only (repeatable, !name excludes; -g overrides ignore files, explicit files always search); max_count caps matches per file (0 finds none). output_mode: content(default), files_with_matches(paths), count(per-file + all-file total; matching lines for single-line patterns, non-overlapping matches for multiline). countComplete=false means partial. Content always includes line numbers and supports context and Hashline snapshots: [path#TAG]; only complete returned lines editable. Other modes preserve snapshots. skip paginates files; bounded output. Artifacts MUST use THIS tool, never bash grep/rg: URIs are not paths; per-call snapshot, no edit anchors; single-line covers saved logs, multiline capped at 4 MiB with warning.".into()), parameters: Some(json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"-i":{"type":"boolean"},"-n":{"type":"boolean","description":"Optional compatibility flag. Content always includes line numbers."},"context":{"type":"integer","minimum":0},"-C":{"type":"integer","minimum":0},"-A":{"type":"integer","minimum":0},"-B":{"type":"integer","minimum":0},"-F":{"type":"boolean"},"-w":{"type":"boolean"},"-t":{"type":["string","array"],"items":{"type":"string"}},"-g":{"type":["string","array"],"items":{"type":"string"}},"max_count":{"type":["number","null"]},"output_mode":{"type":"string","enum":["content","files_with_matches","count"]},"gitignore":{"type":"boolean"},"skip":{"type":["number","null"]}},"required":["pattern"],"additionalProperties":false})), ..Default::default() }
+    FunctionObject { name: "rg".into(), description: Some("Search files or one artifact://<numeric-id> URI in process: Rust regex, PCRE2, literal fallback. path: files/dirs/globs/!exclusions separated by ';', file:20-40 ranges; default '.'. Case-sensitive, includes hidden files, respects ignore files. -i inverts case. context/-C set both sides; -A/-B override after/before; otherwise config. Conflicting aliases fail. -F matches literally; -w matches whole words; -t/-g/glob filter the directory walk only (repeatable, !name excludes; -g overrides ignore files, glob is its alias, explicit files always search); max_count caps matches per file (0 finds none). output_mode: content(default), files_with_matches(paths), count(per-file + all-file total; matching lines for single-line patterns, non-overlapping matches for multiline). countComplete=false means partial. Content always includes line numbers and supports context and Hashline snapshots: [path#TAG]; only complete returned lines editable. Other modes preserve snapshots. skip paginates files; bounded output. Artifacts MUST use THIS tool, never bash grep/rg: URIs are not paths; per-call snapshot, no edit anchors; single-line covers saved logs, multiline capped at 4 MiB with warning.".into()), parameters: Some(json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"-i":{"type":"boolean"},"-n":{"type":"boolean","description":"Optional compatibility flag. Content always includes line numbers."},"context":{"type":"integer","minimum":0},"-C":{"type":"integer","minimum":0},"-A":{"type":"integer","minimum":0},"-B":{"type":"integer","minimum":0},"-F":{"type":"boolean"},"-w":{"type":"boolean"},"-t":{"type":["string","array"],"items":{"type":"string"}},"-g":{"type":["string","array"],"items":{"type":"string"}},"glob":{"type":["string","array"],"items":{"type":"string"},"description":"Alias of -g: override glob or list for the directory walk."},"max_count":{"type":["number","null"]},"output_mode":{"type":"string","enum":["content","files_with_matches","count"]},"gitignore":{"type":"boolean"},"skip":{"type":["number","null"]}},"required":["pattern"],"additionalProperties":false})), ..Default::default() }
 }
 
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -87,6 +87,9 @@ struct Args {
     types: Option<Many>,
     #[serde(default, rename = "-g")]
     globs: Option<Many>,
+    // `glob` 是 `-g` 的别名：常见调用方用不带短横线的名字传 override glob。
+    #[serde(default)]
+    glob: Option<Many>,
     #[serde(default)]
     max_count: Option<f64>,
 }
@@ -1061,7 +1064,13 @@ pub(super) fn run(
     let fixed = args.fixed.unwrap_or(false);
     let word = args.word.unwrap_or(false);
     let types = file_types(args.types.take())?;
-    let globs: Vec<String> = args.globs.take().map(Many::into_vec).unwrap_or_default();
+    let globs: Vec<String> = args
+        .globs
+        .take()
+        .into_iter()
+        .chain(args.glob.take())
+        .flat_map(Many::into_vec)
+        .collect();
     let deadline = Instant::now() + Duration::from_secs(30);
     let (targets, single, missing) = if max_count == Some(0) {
         (Vec::new(), false, Vec::new())
