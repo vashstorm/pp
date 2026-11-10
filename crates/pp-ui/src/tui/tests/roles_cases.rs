@@ -193,7 +193,7 @@ fn roles_backspace_clears_override_and_no_override_never_submits_clear() {
     let (control, _binding, choices) = model_control_with(
         r#"{"providers":{"fixture":{"api_key":"fixture","models":{"one":{"model":"one"},"two":{"model":"two","thinking":{"efforts":["low","high"]}}}}}}"#,
     );
-    let (mut app, _requests, _events) = plan_app();
+    let (mut app, requests, _events) = plan_app();
     app.model_control = Some(control);
     app.choices = choices;
     app.current_model = Some(app.choices[0].clone());
@@ -201,8 +201,14 @@ fn roles_backspace_clears_override_and_no_override_never_submits_clear() {
     // ⌥P 的映射由 model_menu_cases 覆盖；这里直接走同一条提交路径登记覆盖。
     assert!(app.request_model_switch("fixture/two".into()));
     let selection = wait_for_override(&mut app, "fixture/two");
-    assert_eq!(selection.effort, ThinkLevel::High);
+    // 目标档位沿既有策略：two 无显式 defaultLevel，当前档位 off 与全局默认都不在
+    // 它允许的 low/high 内，因此落到该模型的首个允许档位 Low。
+    assert_eq!(selection.effort, ThinkLevel::Low);
     app.current_source = Some(ModelSource::Override);
+    // 覆盖路径不直接发 worker 命令，只补发待应用目标的叫醒包。
+    while let Ok(command) = requests.try_recv() {
+        assert!(matches!(command, WorkerCommand::ApplyModelTargets));
+    }
 
     app.open_roles();
     let screen = draw(&mut app, 140, 30);
@@ -223,6 +229,13 @@ fn roles_backspace_clears_override_and_no_override_never_submits_clear() {
     assert!(app.override_selection.is_none());
     assert_eq!(app.current_source, None);
     assert!(app.pending_model.is_none());
+    // 关键回归护栏：清除覆盖后必须叫醒 worker 把会话切回 `resolve()`，
+    // 否则 registry 里 `selection: None` 的目标永远不会被应用，agent 停在旧模型。
+    assert!(
+        std::iter::from_fn(|| requests.try_recv().ok())
+            .any(|command| matches!(command, WorkerCommand::ApplyModelTargets)),
+        "清除覆盖后应补发 ApplyModelTargets"
+    );
 
     // 无覆盖时 Backspace 不产生任何新报告（面板不提交 ClearOverride）。
     app.handle(key(KeyCode::Backspace), &mut dirty);

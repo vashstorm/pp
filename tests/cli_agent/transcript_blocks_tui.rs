@@ -551,29 +551,43 @@ fn transcript_blocks_markdown_scroll_offset_follow_and_exit_scrollback() {
     pty.draft("page-fence");
     pty.input("\x01\x0b");
     pty.draft("");
-    let old_view: Vec<String> = pty
+    // 活动行固定占一行，且上方还有一行空白分隔行（252f311 起）。流式结束时
+    // 这两行一起收回、转录区变高，所以"上翻视口不跳"只能比较完成前后都属于
+    // 转录区的行，否则视口变高露出的后续行会被误判为拉回底部。
+    let before: Vec<String> = pty
         .parser
         .screen()
         .contents()
         .lines()
-        .take(25)
         .map(str::to_owned)
         .collect();
+    let activity = before
+        .iter()
+        .position(|row| row.contains("Responding"))
+        .expect("流式状态行应显示在活动区");
+    assert!(activity > 1, "上翻后转录区应已有可见行: {before:?}");
+    let old_view = before[..activity - 1].to_vec();
 
     // 追加内容并结束：用户上翻时视口保持原位，不因新 chunk 或完成而拉回底部。
     streaming_delta(&mut stream, "completion", &format!("\n\n{stage2}"));
     streaming_complete(&mut stream, "completion", &full);
     stream.finish();
     pty.ready();
+    let after: Vec<String> = pty
+        .parser
+        .screen()
+        .contents()
+        .lines()
+        .map(str::to_owned)
+        .collect();
     assert_eq!(
-        pty.parser
-            .screen()
-            .contents()
-            .lines()
-            .take(25)
-            .map(str::to_owned)
-            .collect::<Vec<_>>(),
-        old_view
+        after[..old_view.len()],
+        old_view[..],
+        "上翻时视口应保持原位"
+    );
+    assert!(
+        !pty.parser.screen().contents().contains("para-29"),
+        "完成时不应跳到底部"
     );
 
     // 回到底部后恢复跟随：后续流式内容无需翻页即自动出现。

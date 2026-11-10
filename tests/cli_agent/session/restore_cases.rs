@@ -606,7 +606,8 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
         );
     }
 
-    // The saved model must resolve to the same protocol and model string.
+    // checkpoint 的 modelReference 只作审计：恢复后的模型来自进程级
+    // ModelState::resolve()（这里都是新目录的首个可用模型），原生历史按当前协议转换。
     {
         let home = tempfile::tempdir().unwrap();
         let (id, _path) = make_saved_session(
@@ -618,36 +619,71 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
             "base noted",
         );
         let variants = [
-            // Reference gone from the catalog.
-            json!({"providers":{"other": slash_provider(
-                &server, "other", "completion",
-                json!({"primary": {"model":"fixture-model"}})
-            )}})
-            .to_string(),
-            // Same reference, different model string.
-            json!({"providers":{"fixture": slash_provider(
-                &server, "fixture", "completion",
-                json!({"primary": {"model":"changed-model"}})
-            )}})
-            .to_string(),
-            // Same reference, different protocol.
-            json!({"providers":{"fixture": slash_provider(
-                &server, "fixture", "response",
-                json!({"primary": {"model":"fixture-model"}})
-            )}})
-            .to_string(),
+            // Reference gone from the catalog: fall back to the only configured model.
+            (
+                json!({"providers":{"other": slash_provider(
+                    &server, "other", "completion",
+                    json!({"primary": {"model":"fixture-model"}})
+                )}})
+                .to_string(),
+                Api::Chat,
+                "other/primary",
+                "fixture-model",
+            ),
+            // Same reference, different model string: the current catalog wins.
+            (
+                json!({"providers":{"fixture": slash_provider(
+                    &server, "fixture", "completion",
+                    json!({"primary": {"model":"changed-model"}})
+                )}})
+                .to_string(),
+                Api::Chat,
+                "fixture/primary",
+                "changed-model",
+            ),
+            // Same reference, different protocol: native history is converted.
+            (
+                json!({"providers":{"fixture": slash_provider(
+                    &server, "fixture", "response",
+                    json!({"primary": {"model":"fixture-model"}})
+                )}})
+                .to_string(),
+                Api::Responses,
+                "fixture/primary",
+                "fixture-model",
+            ),
         ];
-        for models in variants {
+        for (models, api, reference, model) in variants {
             let other = tempfile::tempdir().unwrap();
             copy_session(home.path(), other.path(), &id);
             configure(other.path(), fixture_settings(), &models);
-            expect_restore_failure(
-                &server,
-                other.path(),
-                cwd.path(),
-                &["-r", &id, "-p", "hi"],
-                &["saved session model is unavailable or has changed"],
-                &["fixture-key"],
+            let cli = start(other.path(), cwd.path(), &["-r", &id, "-p", "hi"]);
+            let (request, body) = api.receive(&server);
+            assert_eq!(body["model"], model, "restore must use the resolved model");
+            let (users, assistants) = api.turns(&body);
+            assert_eq!(users, ["remember base", "hi"]);
+            assert_eq!(assistants, ["base noted"]);
+            api.final_reply(request, "restored answer");
+            let output = cli.finish();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, b"restored answer\n");
+            // 恢复时写入的审计 checkpoint 记录实际生效的模型引用。
+            let restored = records(&sessions_dir(other.path()).join(format!("{id}.jsonl")));
+            assert!(
+                restored
+                    .iter()
+                    .any(|record| record["customType"] == "pp.session_state"
+                        && record["data"]["modelReference"] == reference
+                        && record["data"]["session"]["protocol"]
+                            == match api {
+                                Api::Chat => "completion",
+                                Api::Responses => "response",
+                            }),
+                "restore must audit the resolved reference {reference}"
             );
         }
     }

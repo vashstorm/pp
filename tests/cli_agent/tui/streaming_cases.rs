@@ -170,28 +170,42 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         pty.wait_for("paged older output", |s| {
             s.contents().contains("line-30") && !s.contents().contains("line-59")
         });
-        let old_view: Vec<String> = pty
+        // 活动行固定占一行，且上方还有一行空白分隔行（252f311 起）。流式结束时
+        // 这两行一起收回、转录区变高，所以"上翻视口不跳"只能比较完成前后都属于
+        // 转录区的行，否则视口变高露出的后续行会被误判为拉回底部。
+        let before: Vec<String> = pty
             .parser
             .screen()
             .contents()
             .lines()
-            .take(25)
             .map(str::to_owned)
             .collect();
+        let activity = before
+            .iter()
+            .position(|row| row.contains("Responding"))
+            .expect("流式状态行应显示在活动区");
+        assert!(activity > 1, "上翻后转录区应已有可见行: {before:?}");
+        let old_view = before[..activity - 1].to_vec();
         streaming_delta(&mut stream, protocol, "-last");
         full.push_str("-last");
         streaming_complete(&mut stream, protocol, &full);
         stream.finish();
         pty.ready();
+        let after: Vec<String> = pty
+            .parser
+            .screen()
+            .contents()
+            .lines()
+            .map(str::to_owned)
+            .collect();
         assert_eq!(
-            pty.parser
-                .screen()
-                .contents()
-                .lines()
-                .take(25)
-                .map(str::to_owned)
-                .collect::<Vec<_>>(),
-            old_view
+            after[..old_view.len()],
+            old_view[..],
+            "上翻时视口应保持原位"
+        );
+        assert!(
+            !pty.parser.screen().contents().contains("line-59-last"),
+            "完成时不应跳到底部"
         );
         pty.draft("draft-中");
         pty.input("\x1b[6~");

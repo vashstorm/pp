@@ -183,13 +183,11 @@ impl ModelState {
             );
             if Self::default_selection_of(&inner.catalog).is_ok_and(|default| default == selection)
             {
-                dbg_file(&format!("set_override EQUALS_B ref={}", selection.reference));
                 drop(inner);
                 self.clear_override()?;
                 return Ok(false);
             }
         }
-        dbg_file(&format!("set_override SET ref={}", selection.reference));
         let mut inner = self.write();
         inner.override_selection = Some(selection);
         inner.revision += 1;
@@ -200,7 +198,6 @@ impl ModelState {
     pub fn clear_override(&self) -> Result<bool> {
         let mut inner = self.write();
         let changed = inner.override_selection.take().is_some();
-        dbg_file(&format!("clear_override changed={changed}"));
         if changed {
             inner.revision += 1;
         }
@@ -533,16 +530,5 @@ mod tests {
         );
         shared.install(Arc::clone(&state));
         assert!(Arc::ptr_eq(&shared.current().unwrap(), &state));
-    }
-}
-
-fn dbg_file(message: &str) {
-    use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/pp-dbg.log")
-    {
-        let _ = writeln!(file, "{message}");
     }
 }

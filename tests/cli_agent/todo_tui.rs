@@ -601,10 +601,10 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 .filter(|row| row.contains("TODO ·") || row.contains("PINNED_TASK_"))
                 .count();
             // 高度上限为终端高度的三分之一（24 / 3 = 8）；标题与输入框之间
-            // 还隔着活动行和状态栏各一行。
+            // 还隔着活动区上方的一行空白分隔行、活动行和状态行各一行。
             title < input
                 && hud_rows <= 8
-                && input - title <= 10
+                && input - title <= 11
                 && screen
                     .rows(0, 60)
                     .nth(title)

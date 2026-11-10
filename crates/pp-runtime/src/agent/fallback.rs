@@ -27,24 +27,40 @@ impl Agent {
         self.switch_role_model(&selection.reference, selection.effort, source, emit)
     }
 
+    /// 当前生效角色：运行时绑定（TUI 主会话、子 Agent）→ 与当前模型匹配的角色路由
+    /// （PLAN 模式、按角色路由的子 Agent）→ DEFAULT。
+    /// `-p`／行模式没有运行时绑定，必须回落到 `role_route`，否则角色备用模型会退化成 DEFAULT。
+    fn active_role(&self) -> ModelRole {
+        self.runtime_models
+            .as_ref()
+            .and_then(|binding| binding.role)
+            .or_else(|| {
+                self.role_route
+                    .as_ref()
+                    .filter(|route| route.primary.model == self.current_model.reference)
+                    .map(|route| route.role)
+            })
+            .unwrap_or(ModelRole::Default)
+    }
+
+    /// 当前角色已启用的备用模型，连同该角色的主模型一起返回；后者供摘要路径判断
+    /// “只在角色主模型上切备用”。返回自有值，避免调用方长期借用 `self`。
+    pub(super) fn role_fallback(&self) -> Option<(String, RoleModel)> {
+        let assignment = self
+            .catalog
+            .model_roles()
+            .get(&self.active_role())
+            .filter(|assignment| assignment.enabled)?;
+        Some((assignment.model.clone(), assignment.fallback.clone()?))
+    }
+
     /// 请求失败后的任务内备用模型：只切一次，任务结束时由 [`Self::restore_resolved`] 回落。
     pub(super) fn activate_fallback(&mut self, emit: &mut dyn FnMut(AgentEvent)) -> Result<bool> {
         if self.model_source.is_fallback() {
             return Ok(false);
         }
-        // 子 Agent 用自己的角色备用模型；主 Agent 用 DEFAULT 角色的备用模型。
-        let role = self
-            .runtime_models
-            .as_ref()
-            .and_then(|binding| binding.role)
-            .unwrap_or(ModelRole::Default);
-        let Some(fallback) = self
-            .catalog
-            .model_roles()
-            .get(&role)
-            .filter(|assignment| assignment.enabled)
-            .and_then(|assignment| assignment.fallback.clone())
-        else {
+        // 子 Agent 用自己角色的备用模型；主 Agent 用当前角色（通常为 DEFAULT）的备用模型。
+        let Some((_, fallback)) = self.role_fallback() else {
             return Ok(false);
         };
         if fallback.model == self.current_model.reference {

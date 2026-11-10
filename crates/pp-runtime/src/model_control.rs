@@ -416,6 +416,7 @@ fn publish_override(models: &Arc<ModelState>, registry: &Registry) {
     state.catalog = Some(Arc::new(models.catalog_snapshot()));
     state.revision += 1;
     let revision = state.revision;
+    // 清除覆盖时 `selection` 为 `None`：Agent 应用目标时再按 `resolve()` 取 `b`。
     state.main = Some(Target {
         revision,
         selection: selection.clone(),

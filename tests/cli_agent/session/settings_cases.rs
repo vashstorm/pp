@@ -48,7 +48,24 @@ fn session_settings_persist_across_model_switch_and_restore() {
     let mut cli = start(home.path(), launch.path(), &["-r", &id]);
     cli.wait_for(Pipe::Err, &format!("Resumed session: {id}"));
     no_more(&server);
-    assert_eq!(records(&path), same_protocol);
+    // 新设计：手动覆盖 a 只在内存，重启后回到配置默认 b（settings 的 a/primary）；
+    // checkpoint 的 modelReference 只作审计，恢复时按实际生效模型补一条审计记录，
+    // 已保存的原生历史保持不变。
+    let resumed = records(&path);
+    assert_eq!(&resumed[..same_protocol.len()], same_protocol.as_slice());
+    let audit = &resumed[same_protocol.len()..];
+    assert_eq!(
+        audit.len(),
+        2,
+        "restore must append one audit checkpoint pair"
+    );
+    assert_eq!(audit[0]["type"], "model_change");
+    assert_eq!(audit[0]["model"], "a/primary");
+    assert_eq!(audit[1]["customType"], "pp.session_state");
+    assert_eq!(audit[1]["data"]["modelReference"], "a/primary");
+    assert_eq!(audit[1]["data"]["thinkLevel"], "max");
+    assert_eq!(audit[1]["data"]["session"]["request"]["model"], "a-one");
+    assert_eq!(canonical_messages(&resumed), same_protocol_messages);
     cli.input("/model b/primary\n");
     cli.wait_for(Pipe::Err, "Current model: b/primary (b-one)");
     cli.input("third\n");
@@ -102,13 +119,14 @@ fn session_settings_persist_across_model_switch_and_restore() {
             .collect::<Vec<_>>(),
         ["a-one", "a-two", "b-one"]
     );
+    // 审计轨迹：首次默认、手动切换、恢复回 b、再次手动切换。
     assert_eq!(
         saved
             .iter()
             .filter(|record| record["type"] == "model_change")
             .map(|record| record["model"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["a/primary", "a/secondary", "b/primary"]
+        ["a/primary", "a/secondary", "a/primary", "b/primary"]
     );
     assert!(saved.iter().any(
         |record| record["type"] == "thinking_level_change" && record["thinkingLevel"] == "max"
@@ -118,34 +136,31 @@ fn session_settings_persist_across_model_switch_and_restore() {
             .iter()
             .filter(|record| record["customType"] == "pp.session_state")
             .count(),
-        3
+        4
     );
-    let rebuilt = rebuild_request(&saved);
 
-    // After restart the next request carries the saved model, think level
-    // and converted history (replayed from the JSONL, including the
-    // cross-protocol checkpoint).
+    // 再次重启仍回到 b（a/primary），保存的 Responses checkpoint 被转换回
+    // completion 原生历史；模型与档位来自 resolve()，不再沿用上次手动切换。
     let cli = start(
         home.path(),
         launch.path(),
         &["-r", &id, "-p", "after restore"],
     );
-    let (request, body) = receive_at(&server, "/v1/responses");
-    let mut expected = rebuilt;
-    let mut new_user = expected["input"][0].clone();
-    match &mut new_user["content"] {
-        Value::String(text) => *text = "after restore".to_owned(),
-        Value::Array(parts) => parts[0]["text"] = json!("after restore"),
-        content => panic!("unexpected user content: {content}"),
-    }
-    expected["input"].as_array_mut().unwrap().push(new_user);
+    let (request, body) = receive_at(&server, "/v1/chat/completions");
+    assert_eq!(body["model"], "a-one");
+    assert_eq!(body["reasoning_effort"], "max");
+    let (users, assistants) = Api::Chat.turns(&body);
+    assert_eq!(users, ["first", "second", "third", "after restore"]);
     assert_eq!(
-        body, expected,
-        "restored request must replay the saved native history"
+        assistants,
+        ["first answer", "second answer", "third answer"]
     );
-    assert_eq!(body["model"], "b-one");
-    assert_eq!(body["reasoning"]["effort"], "max");
-    response_final(request, "restored answer");
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system.contains("coding assistant"),
+        "restored system prompt: {system}"
+    );
+    final_reply(request, "restored answer");
     let output = cli.finish();
     assert!(
         output.status.success(),
@@ -156,11 +171,21 @@ fn session_settings_persist_across_model_switch_and_restore() {
     let restored = records(&path);
     assert_session_contract(&restored, &id, project.path());
     assert_eq!(&restored[..saved.len()], saved.as_slice());
+    // 恢复先补审计 checkpoint（当前生效模型），再追加本次新消息。
+    let audit = &restored[saved.len()..];
+    assert_eq!(audit[0]["type"], "model_change");
+    assert_eq!(audit[0]["model"], "a/primary");
+    assert_eq!(audit[1]["customType"], "pp.session_state");
+    assert_eq!(audit[1]["data"]["modelReference"], "a/primary");
+    assert_eq!(audit[1]["data"]["thinkLevel"], "max");
+    assert_eq!(audit[1]["data"]["session"]["protocol"], "completion");
+    assert_eq!(audit[1]["data"]["session"]["request"]["model"], "a-one");
     let restored_messages = canonical_messages(&restored);
     assert_eq!(&restored_messages[..messages.len()], messages.as_slice());
     assert_eq!(restored_messages.len(), 8);
     assert_eq!(restored_messages[6]["role"], "user");
     assert_eq!(restored_messages[6]["content"], "after restore");
+    assert_eq!(restored_messages[7]["model"], "a-one");
 
     // Switching settings without an active session writes nothing.
     let idle = tempfile::tempdir().unwrap();
@@ -262,8 +287,9 @@ fn model_thinking_session_restore_preserves_saved_level_across_config_changes() 
             Api::Responses => assert_eq!(saved_request["reasoning"], body["reasoning"]),
         }
 
-        // A later defaultLevel change never rewrites the saved level or the
-        // replayed native history.
+        // 重启后手动覆盖 a 已随旧进程丢弃，当前模型回到 b（p/plain）；保存的
+        // high 档位仍被 m-plain 支持，因此继续沿用，配置里的 defaultLevel 变化
+        // 不会改写已保存的原生历史。
         configure(
             home.path(),
             live_settings,
@@ -275,30 +301,48 @@ fn model_thinking_session_restore_preserves_saved_level_across_config_changes() 
             &["-r", &id, "-p", "after restore"],
         );
         let (request, body) = api.receive(&server);
-        let field = match api {
-            Api::Chat => "messages",
-            Api::Responses => "input",
-        };
-        let mut expected = saved_request;
-        let mut new_user = expected[field]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["role"] == "user")
-            .expect("saved history must contain a user turn")
-            .clone();
-        match &mut new_user["content"] {
-            Value::String(text) => *text = "after restore".to_owned(),
-            Value::Array(parts) => parts[0]["text"] = json!("after restore"),
-            content => panic!("unexpected user content: {content}"),
-        }
-        expected[field].as_array_mut().unwrap().push(new_user);
         assert_eq!(
-            body, expected,
-            "restored request must replay the saved native history and effort"
+            body["model"], "m-plain",
+            "restart must resolve the configured default, not the discarded override"
         );
-        assert_eq!(body["model"], "m-cfg");
         api.assert_level(&body, "high");
+        let (users, assistants) = api.turns(&body);
+        assert_eq!(users, ["first", "second", "after restore"]);
+        assert_eq!(assistants, ["first answer", "second answer"]);
+        // 恢复保留已保存的原生历史并追加新用户消息；模型字段换成 m-plain。
+        let saved_history = api.history(&saved_request);
+        let restored_history = api.history(&body);
+        assert_eq!(restored_history.len(), saved_history.len() + 1);
+        match api {
+            Api::Chat => {
+                // Chat 原生历史除 system 外逐条保留（system 按当前模型重算）。
+                let restored_messages = body["messages"].as_array().unwrap();
+                let saved_messages = saved_request["messages"].as_array().unwrap();
+                assert_eq!(
+                    &restored_messages[1..saved_messages.len()],
+                    &saved_messages[1..]
+                );
+                assert_eq!(
+                    restored_messages.last().unwrap()["content"],
+                    "after restore"
+                );
+                assert!(
+                    body["messages"][0]["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains("coding assistant")
+                );
+            }
+            Api::Responses => {
+                assert_eq!(restored_history.last().unwrap()["role"], "user");
+                assert!(
+                    body["instructions"]
+                        .as_str()
+                        .unwrap()
+                        .contains("coding assistant")
+                );
+            }
+        }
         api.final_reply(request, "restored answer");
         let output = cli.finish();
         assert!(
@@ -309,23 +353,45 @@ fn model_thinking_session_restore_preserves_saved_level_across_config_changes() 
         assert_eq!(output.stdout, b"restored answer\n");
         no_more(&server);
 
-        // Narrowing efforts below the saved level blocks restore before any
-        // request or journal write, byte for byte.
-        let before_failure = fs::read(&path).unwrap();
+        // 保存的档位只在当前决议模型仍支持时保留；m-plain 只支持 medium 时，
+        // 恢复不再报错拒绝，而是回落到 resolve() 的档位继续执行。
+        let before_restore = fs::read(&path).unwrap();
         configure(
             home.path(),
             live_settings,
-            &configured_models("medium", json!(["medium", "max"])),
+            &json!({"providers":{"p": slash_provider(&server, "p", protocol, json!({
+                "plain": {"model":"m-plain","thinking":{"efforts":["medium"]}},
+                "cfg": {"model":"m-cfg","thinking":{"efforts":["medium","max"],"defaultLevel":"medium"}}
+            }))}})
+            .to_string(),
         );
-        expect_restore_failure(
-            &server,
-            home.path(),
-            launch.path(),
-            &["-r", &id, "-p", "blocked"],
-            &["saved session thinking level is not supported by the configured model"],
-            &["p-key"],
+        let cli = start(home.path(), launch.path(), &["-r", &id, "-p", "blocked"]);
+        let (request, body) = api.receive(&server);
+        assert_eq!(body["model"], "m-plain");
+        api.assert_level(&body, "medium");
+        let (users, assistants) = api.turns(&body);
+        assert_eq!(users, ["first", "second", "after restore", "blocked"]);
+        assert_eq!(
+            assistants,
+            ["first answer", "second answer", "restored answer"]
         );
-        assert_eq!(fs::read(&path).unwrap(), before_failure);
+        api.final_reply(request, "blocked answer");
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"blocked answer\n");
+        assert!(
+            records(&path)
+                .iter()
+                .any(|record| record["customType"] == "pp.session_state"
+                    && record["data"]["modelReference"] == "p/plain"
+                    && record["data"]["thinkLevel"] == "medium"),
+            "restore must audit the resolved effort when the saved level is unsupported"
+        );
+        assert!(fs::read(&path).unwrap().starts_with(&before_restore));
     }
 }
 

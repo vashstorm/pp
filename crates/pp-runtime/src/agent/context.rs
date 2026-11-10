@@ -783,11 +783,13 @@ impl Agent {
             None
         };
         let fallback_used = std::cell::Cell::new(false);
-        let fallback = self
-            .role_route
+        // 备用摘要模型取当前角色的备用模型：主会话不再武装 DEFAULT 路由，不能只看 `role_route`。
+        let fallback_target = self
+            .role_fallback()
+            .filter(|(primary, _)| primary == &self.current_model.reference)
+            .map(|(_, target)| target);
+        let fallback = fallback_target
             .as_ref()
-            .filter(|route| route.primary.model == self.current_model.reference)
-            .and_then(|route| route.fallback.as_ref())
             .map(|target| (&self.catalog, target));
         let spec = SummarySpec {
             edit_mode: self.tools.edit_mode(),

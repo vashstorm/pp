@@ -490,10 +490,6 @@ impl App {
                     effort,
                     source,
                 }) => {
-                    ui_dbg(&format!(
-                        "ModelState rev={revision} model={} source={:?} current_rev={}",
-                        model.reference, source, self.model_revision
-                    ));
                     if revision >= self.model_revision {
                         self.model_revision = revision;
                         self.current_model = Some(model.clone());
@@ -1174,16 +1170,5 @@ impl App {
             self.refresh_candidates(false);
         }
         changed
-    }
-}
-
-pub(in crate::tui) fn ui_dbg(message: &str) {
-    use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/pp-dbg.log")
-    {
-        let _ = writeln!(file, "UI {message}");
     }
 }

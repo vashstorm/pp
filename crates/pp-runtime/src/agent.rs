@@ -44,6 +44,7 @@ use pp_config::config::EditMode;
 use pp_config::config::ModelCatalog;
 use pp_config::config::ModelChoice;
 use pp_config::config::ModelRole;
+use pp_config::config::RoleModel;
 use pp_config::model_state::ModelState;
 use pp_config::model_state::Selection;
 use pp_config::models::Protocol;
@@ -1144,12 +1145,6 @@ impl Agent {
         else {
             return Ok(());
         };
-        dbg_file(&format!(
-            "take_targets model={:?} think={:?} current={}",
-            model.as_ref().map(|t| (&t.selection, t.source, t.revision)),
-            think.as_ref().map(|t| (t.effort, t.revision)),
-            self.current_model.reference
-        ));
         // 两次意图是独立提交，按 revision 顺序应用（旧者先、新者后），高 revision 的 effort 胜出。
         match (model, think) {
             (Some(model), Some(think)) if think.revision < model.revision => {
@@ -1191,10 +1186,6 @@ impl Agent {
     }
 
     fn apply_model_target(&mut self, target: crate::model_control::Target) -> Result<()> {
-        eprintln!(
-            "DBG apply_target sel={:?} source={:?} current={}",
-            target.selection, target.source, self.current_model.reference
-        );
         let selection = match &target.selection {
             Some(selection) => selection.clone(),
             None => match self.models.resolve() {
@@ -1278,10 +1269,6 @@ impl Agent {
 
     /// 应用一次显式选择：写 `a` 后按源切换；切换失败时把 `a` 与运行时字段一起回滚。
     fn apply_override_selection(&mut self, selection: Selection) -> Result<()> {
-        eprintln!(
-            "DBG override_selection sel={:?} current={}",
-            selection, self.current_model.reference
-        );
         let previous_source = self.model_source;
         let previous_route = self.role_route.take();
         let previous_catalog = self.catalog.clone();
@@ -2165,14 +2152,3 @@ impl Agent {
 
 #[cfg(test)]
 mod tests;
-
-fn dbg_file(message: &str) {
-    use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/pp-dbg.log")
-    {
-        let _ = writeln!(file, "{message}");
-    }
-}

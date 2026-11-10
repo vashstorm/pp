@@ -730,11 +730,13 @@ fn resume_history_model_case(saved_protocol: &str, current_protocol: &str) {
             pty.finish();
 
             // 重启后再次加载，验证转换后的完整状态和后续追加没有协议或游标错位。
+            // 手动选择只存在内存（a 槽），重启即丢弃；恢复后的模型回到配置默认（b 槽）。
             std::fs::write(&models, &current_models).unwrap();
             let mut reloaded = Pty::start_with_args(project.path(), home.path(), &["--resume", &id]);
-            reloaded.ready_model("fixture/selected");
+            reloaded.ready_model("fixture/primary");
             reloaded.input("matrix third prompt\r");
             let (request, body) = reloaded.request_at(&server, api_path(current_protocol));
+            assert_eq!(body["model"], "vendor-default");
             for expected in ["matrix old prompt", "matrix old answer", "matrix-output", "matrix new prompt", "matrix new answer", "matrix third prompt"] {
                 assert!(body.to_string().contains(expected), "{body}");
             }

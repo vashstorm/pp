@@ -1501,7 +1501,9 @@ fn model_picker_submits_override_with_effective_default_effort() {
         "model_control 路径不应发送 worker 命令"
     );
     let selection = wait_for_override(&mut app, "fixture/two");
-    assert_eq!(selection.effort, ThinkLevel::High);
+    // 目标档位沿既有策略：two 无显式 defaultLevel，当前档位 off 与全局默认都不在
+    // 它允许的 low/high 内，因此落到该模型的首个允许档位 Low。
+    assert_eq!(selection.effort, ThinkLevel::Low);
     // 目标已登记但尚未由 Agent 应用：状态栏仍显示旧模型，来源等应用后再更新。
     assert!(app.pending_model.is_some());
     assert_eq!(app.current_model.as_ref().unwrap().reference, "fixture/one");

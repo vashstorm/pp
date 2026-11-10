@@ -577,3 +577,76 @@ fn plan_tui_ready_keeps_input_and_output_and_sends_discussion() {
         no_more(&fixture);
     }
 }
+
+// 手动覆盖 `a` 优先于 DEFAULT/PLAN 角色：进入 Plan、退出 Plan 与批准执行三个模型边界
+// 都请求同一个模型，角色路径不得把会话切回角色主模型。
+#[test]
+fn plan_tui_manual_override_outranks_roles_at_every_boundary() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(home.path(), "settings.yml"),
+            r#"{"notification_timeout_seconds":1,"rate_limit_retry_budget_seconds":0,"model_roles":{"default":{"model":"fixture/primary","effort":"low"},"plan":{"model":"fixture/planner","effort":"high"}}}"#,
+        )
+        .unwrap();
+        let mut models: Value =
+            serde_json::from_str(&response_models(&fixture, Some(protocol))).unwrap();
+        models["providers"]["fixture"]["models"]["planner"] = json!({"model": "planner-model"});
+        models["providers"]["fixture"]["models"]["alt"] = json!({"model": "alt-model"});
+        std::fs::write(config_path(home.path(), "models.yml"), models.to_string()).unwrap();
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        pty.ready_model("fixture/primary");
+
+        // `/model` 写 `a`；PLAN 角色指向 fixture/planner，覆盖面更广也不得截走它。
+        pty.input("/model fixture/alt\r");
+        pty.ready_model("fixture/alt");
+        pty.ready_effort("low");
+
+        // 边界一：进入 Plan 后的请求用覆盖模型，而不是 PLAN 角色的 planner-model。
+        plan_enter(&mut pty, &fixture);
+        pty.input("Plan the override boundary\r");
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert_eq!(body["model"], "alt-model", "{body}");
+        super::think::assert_level(&body, protocol, "low");
+        plan_final(request, protocol, "Override exploration done");
+        pty.ready();
+
+        // 边界二：退出 Plan 回到执行，仍是覆盖模型。
+        // 规划会话已有未保存草稿，退出需显式放弃（默认 Enter／Esc 会保留规划）。
+        pty.input("/plan\r");
+        pty.text("Discard unsaved changes?");
+        pty.input("\x1b[B\r");
+        plan_wait_execute(&mut pty);
+        pty.input("Execute without a plan\r");
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert_eq!(body["model"], "alt-model", "{body}");
+        plan_final(request, protocol, "Executed without a plan");
+        pty.ready();
+
+        // 边界三：重新进入 Plan 并批准执行，执行请求仍是覆盖模型。
+        pty.input("/plan\r");
+        plan_wait_mode(&mut pty, "Plan");
+        plan_drive_ready(
+            &mut pty,
+            &fixture,
+            protocol,
+            "Draft the canary plan",
+            PLAN_TUI_BODY,
+        );
+        plan_choose(&mut pty, 1);
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        assert_eq!(body["model"], "alt-model", "{body}");
+        super::think::assert_level(&body, protocol, "low");
+        assert!(
+            body.to_string().contains("[Approved Markdown snapshot]"),
+            "{body}"
+        );
+        plan_final(request, protocol, "canary plan accepted");
+        pty.text("canary plan accepted");
+        // 批准后的执行轮次还会被 todo reminder 追一轮；本用例只验证模型边界，直接退出。
+        pty.input("\x03");
+        pty.finish();
+    }
+}

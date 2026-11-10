@@ -199,6 +199,11 @@ impl App {
                         }
                     }
                     self.secondary_status = None;
+                    // 清除覆盖后 `a` 为空，会话要回到 `resolve()`；registry 已登记
+                    // `selection: None` 的主目标，这里只负责叫醒 worker 应用。
+                    if let Some(commands) = &self.commands {
+                        let _ = commands.send(WorkerCommand::ApplyModelTargets);
+                    }
                 }
                 Report::Queued {
                     role,
@@ -277,10 +282,6 @@ impl App {
                     model,
                     source,
                 } => {
-                    crate::tui::app::receive::ui_dbg(&format!(
-                        "Applied rev={revision} model={} source={:?} agent={:?} current_rev={}",
-                        model.reference, source, agent, self.model_revision
-                    ));
                     if let Some(panel) = &mut self.roles_panel {
                         panel.runtime_status(format!(
                             "{}current: {}",
