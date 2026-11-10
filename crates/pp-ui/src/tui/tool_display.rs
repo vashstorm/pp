@@ -855,7 +855,11 @@ pub(super) fn todo_task_styles(status: pp_core::todo::TodoStatus) -> (&'static s
                 .fg(palette::TODO_ACTIVE)
                 .add_modifier(Modifier::BOLD),
         ),
-        TodoStatus::Completed => ("[✓]", palette::ADDED, Style::default().fg(palette::ADDED)),
+        TodoStatus::Completed => (
+            "[\u{f00c}]",
+            palette::ADDED,
+            Style::default().fg(palette::ADDED),
+        ),
         TodoStatus::Abandoned => ("[ ]", palette::MUTED, Style::default().fg(palette::MUTED)),
         TodoStatus::Blocked => ("[!]", palette::ACCENT, Style::default().fg(palette::ACCENT)),
     };

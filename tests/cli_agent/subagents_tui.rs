@@ -337,7 +337,7 @@ fn agent_hub_streams_and_anchors_activity() {
         pty.input("f");
         pty.text("Errors");
         let screen = pty.contents();
-        assert_eq!(hub_count(&screen, "×"), 1, "{screen}");
+        assert_eq!(hub_count(&screen, "\u{f00d}"), 1, "{screen}");
         // Enter 定位到失败工具卡片。
         pty.input("\r");
         pty.text("Agent Hub");
@@ -349,7 +349,7 @@ fn agent_hub_streams_and_anchors_activity() {
         pty.text("hub-probe-body");
         // Esc 回到原 scope/search/选中活动。
         hub_escape(&mut pty, "Errors");
-        assert_eq!(hub_count(&pty.contents(), "×"), 1);
+        assert_eq!(hub_count(&pty.contents(), "\u{f00d}"), 1);
         hub_escape(&mut pty, "Roster ·");
         hub_close(&mut pty);
         pty.input("\x03");
@@ -747,7 +747,7 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
         .expect("legacy row visible")
         .to_owned();
     assert!(
-        legacy.contains("— ✓"),
+        legacy.contains("— \u{f00c}"),
         "legacy row must not invent a timestamp: {legacy}"
     );
     // 详情只进入备用屏幕，关闭回 Main。

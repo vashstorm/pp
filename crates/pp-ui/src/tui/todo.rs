@@ -183,7 +183,11 @@ impl Panel {
         };
         Line::from(vec![
             Span::styled(
-                if self.completed() { "✔ TODO" } else { "TODO" },
+                if self.completed() {
+                    "\u{f00c} TODO"
+                } else {
+                    "TODO"
+                },
                 Style::default()
                     .fg(if self.completed() {
                         color
@@ -473,7 +477,7 @@ mod tests {
         assert!(text.contains("[ ] 当前任务"));
         assert!(text.contains("[ ] 下一任务"));
         assert!(!text.contains("隐藏任务"));
-        assert!(text.contains("[✓] 已完成"));
+        assert!(text.contains("[\u{f00c}] 已完成"));
         // 收起时保留阶段行，首个任务行内缩在阶段下。
         assert!(text.lines().nth(1).unwrap().contains("I. 验证阶段 (1/4)"));
         assert!(text.lines().nth(1).unwrap().starts_with("├─ "));
@@ -512,7 +516,7 @@ mod tests {
             &lines[1..6],
             &[
                 "├─ I. 验证阶段 (1/1)",
-                "│  └─ [✓] FIRST",
+                "│  └─ [\u{f00c}] FIRST",
                 "├─ II. Next phase (0/2)",
                 "│  ├─ [ ] SECOND",
                 "│  └─ [ ] THIRD",
@@ -564,7 +568,7 @@ mod tests {
             }
             panel.update(snapshot.clone());
             let text = render(&mut panel, 80, 5);
-            assert_eq!(text.matches("[✓]").count(), 3);
+            assert_eq!(text.matches("[\u{f00c}]").count(), 3);
             assert!(text.lines().last().unwrap().starts_with("│  └─ "));
             for index in 3..6 {
                 assert!(text.contains(&format!("TASK_{index}")));
@@ -652,7 +656,7 @@ mod tests {
             &lines[1..6],
             &[
                 "├─ I. 验证阶段 (1/2)",
-                "│  ├─ [✓] FIRST",
+                "│  ├─ [\u{f00c}] FIRST",
                 "│  └─ [ ] SECOND",
                 "├─ II. Next phase (0/1)",
                 "│  └─ [ ] THIRD",
@@ -671,15 +675,15 @@ mod tests {
         assert_eq!(panel.height(80, 24, 20), 3);
         panel.toggle();
         assert_eq!(panel.height(80, 24, 20), 3);
-        assert!(render(&mut panel, 80, 3).contains("[✓] 完成"));
+        assert!(render(&mut panel, 80, 3).contains("[\u{f00c}] 完成"));
         // 只有一行正文时不丢任务，仅暂时省略无法放下的阶段行。
-        assert!(render(&mut panel, 80, 2).contains("[✓] 完成"));
-        assert!(render(&mut panel, 80, 1).contains("✔ TODO · 1/1 · Complete"));
+        assert!(render(&mut panel, 80, 2).contains("[\u{f00c}] 完成"));
+        assert!(render(&mut panel, 80, 1).contains("\u{f00c} TODO · 1/1 · Complete"));
         panel.update(state(&[("放弃", TodoStatus::Abandoned)]));
         let text = render(&mut panel, 80, 2);
         assert!(text.contains("Closed"));
         assert!(!text.contains("Complete"));
-        assert!(!text.contains('✔'));
+        assert!(!text.contains('\u{f00c}'));
         panel.update(state(&[("待办", TodoStatus::Pending)]));
         assert_eq!(panel.height(80, 24, 2), 2);
         assert_eq!(panel.height(80, 24, 0), 0);
@@ -722,7 +726,7 @@ mod tests {
             (2, " ", palette::TODO_ACTIVE, palette::TODO_ACTIVE),
             (3, " ", palette::MUTED, palette::MUTED),
             (4, "!", palette::ACCENT, palette::ACCENT),
-            (5, "✓", palette::ADDED, palette::ADDED),
+            (5, "\u{f00c}", palette::ADDED, palette::ADDED),
         ] {
             assert_eq!(buffer[(6, y)].symbol(), "[");
             assert_eq!(buffer[(7, y)].symbol(), symbol);
@@ -738,7 +742,7 @@ mod tests {
             .draw(|frame| panel.draw(frame, Rect::new(0, 0, 80, 2)))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 0)].symbol(), "✔");
+        assert_eq!(buffer[(0, 0)].symbol(), "\u{f00c}");
         assert_eq!(buffer[(7, 1)].fg, palette::ADDED);
         assert_eq!(buffer[(0, 0)].fg, palette::ADDED);
         terminal
@@ -773,7 +777,7 @@ mod tests {
         panel.update(state(&[("完成", TodoStatus::Completed)]));
         let text = render(&mut panel, 24, 2);
         assert!(text.lines().next().unwrap().contains(TOGGLE_HINT));
-        assert!(text.contains("✔ TODO"));
+        assert!(text.contains("\u{f00c} TODO"));
     }
 
     #[test]
@@ -884,7 +888,7 @@ mod tests {
         assert!(text.contains("phase \"验证阶段\" occurrence 1"));
         assert!(text.contains("phase \"验证阶段\" occurrence 2"));
         assert!(text.contains("已放弃 (dropped)"));
-        assert!(text.contains("[✓] 已完成"));
+        assert!(text.contains("[\u{f00c}] 已完成"));
     }
 
     #[test]

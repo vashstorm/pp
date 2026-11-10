@@ -1556,15 +1556,15 @@ fn status_icon(status: AgentStatus, clock: u64) -> &'static str {
         AgentStatus::Running => waiting_clock(u128::from(clock)),
         // Material Design 实心圆，与运行中的时钟图标同字体族、同尺寸。
         AgentStatus::Idle | AgentStatus::Parked => "\u{f0765}",
-        AgentStatus::Aborted => "×",
+        AgentStatus::Aborted => "\u{f00d}",
     }
 }
 
 fn activity_icon(status: RowStatus, clock: u64) -> &'static str {
     match status {
         RowStatus::Pending => status_icon(AgentStatus::Running, clock),
-        RowStatus::Success => "✓",
-        RowStatus::Error => "×",
+        RowStatus::Success => "\u{f00c}",
+        RowStatus::Error => "\u{f00d}",
         RowStatus::Aborted => "■",
     }
 }
@@ -2073,14 +2073,14 @@ mod tests {
             "4s span",
             "Registered",
             "agent://a1",
-            "✓ bash",
-            "✓ read",
+            "\u{f00c} bash",
+            "\u{f00c} read",
             "◆ Response final answer",
         ] {
             assert!(parked.contains(expected), "missing {expected}\n{parked}");
         }
-        assert!(parked.replace(' ', "").contains("✓bash检查依赖边界"));
-        assert!(!parked.replace(' ', "").contains("✓read检查依赖边界"));
+        assert!(parked.replace(' ', "").contains("\u{f00c}bash检查依赖边界"));
+        assert!(!parked.replace(' ', "").contains("\u{f00c}read检查依赖边界"));
         assert!(!parked.contains("Cargo.toml"));
         assert!(!parked.contains("10K/20K 50%"));
         assert!(!parked.contains("intermediate response"));

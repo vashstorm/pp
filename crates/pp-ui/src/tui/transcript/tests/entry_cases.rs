@@ -260,7 +260,7 @@ fn read_status_clock_animates_groups_and_stops_after_completion() {
             result: json!({"ok":true,"content":"body"}),
         });
         let complete = render(&mut transcript, 80, 20);
-        assert_eq!(complete[(icon_x, icon_y)].symbol(), "✓");
+        assert_eq!(complete[(icon_x, icon_y)].symbol(), "\u{f00c}");
         assert_eq!(complete[(icon_x, icon_y)].fg, palette::ADDED);
         assert_eq!(complete[(icon_x + 1, icon_y)].symbol(), " ");
         assert_eq!(complete[(icon_x + 2, icon_y)].symbol(), "R");
@@ -287,7 +287,7 @@ fn read_filename_color_preserves_colons_spaces_and_parameter_color() {
     let buffer = render(&mut transcript, 80, 10);
     let text = screen(&buffer);
     assert!(
-        text.contains("  ✓ Read · dir/a:2 file.rs:3-4 · truncated"),
+        text.contains("  \u{f00c} Read · dir/a:2 file.rs:3-4 · truncated"),
         "{text}"
     );
     assert!(!text.contains(" · ok"));
@@ -328,7 +328,7 @@ fn read_summary_matches_reference_layout_colors_and_wrapping() {
         text.lines().take(7).map(str::trim_end).collect::<Vec<_>>(),
         [
             "",
-            "  ✓ Read (4)",
+            "  \u{f00c} Read (4)",
             "    ├─ src/tools.rs:184-707",
             "    ├─ src/agent/plan_workflow.rs:1-315",
             "    ├─ src/events.rs:1-170",

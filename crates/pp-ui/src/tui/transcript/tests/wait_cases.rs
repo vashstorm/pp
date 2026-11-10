@@ -61,7 +61,7 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
     });
     let text = entry_text(&mut transcript.entries[0], 100);
     assert!(
-        text.contains("✓ [bash] bg-0") && text.contains("\u{f1453} [bash] bg-1"),
+        text.contains("\u{f00c} [bash] bg-0") && text.contains("\u{f1453} [bash] bg-1"),
         "{text}"
     );
     transcript.toggle_tool_output();
@@ -139,7 +139,9 @@ fn wait_card_updates_background_original_and_marks_timeout_and_interruption() {
     assert!(entry_text(&mut transcript.entries[0], 100).contains("final-output"));
     let text = entry_text(&mut transcript.entries[1], 100);
     assert!(
-        text.contains("1 failed") && text.contains("1/1 settled"),
+        text.contains("1 failed")
+            && text.contains("1/1 settled")
+            && text.contains("\u{f00d} [bash] bg-0"),
         "{text}"
     );
     assert!(!text.contains("Result ") && !text.contains("final-output"));

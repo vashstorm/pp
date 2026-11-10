@@ -67,9 +67,9 @@ fn instruction_cards_match_reference_layout_and_colors() {
         let text = screen(&buffer);
         assert!(
             text.contains(if skill {
-                "✓ Read skill://rust"
+                "\u{f00c} Read skill://rust"
             } else {
-                "✓ Read AGENTS.md"
+                "\u{f00c} Read AGENTS.md"
             }),
             "{text}"
         );

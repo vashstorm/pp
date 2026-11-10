@@ -85,9 +85,9 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
                 palette::ACCENT,
             ),
             "queued" | "running" => ("○", palette::ACCENT),
-            "failed" => ("✕", palette::REMOVED),
+            "failed" => ("\u{f00d}", palette::REMOVED),
             "cancelled" | "stopped" | "interrupted" => ("■", palette::MUTED),
-            _ => ("✓", palette::ADDED),
+            _ => ("\u{f00c}", palette::ADDED),
         };
         let seconds = duration_ms / 1000;
         let delivered = if job["delivered"] == true && !active {

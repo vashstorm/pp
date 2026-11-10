@@ -767,7 +767,7 @@ fn tool_icons_match_statusline_material_design_glyphs_across_card_styles() {
                     if transcript.entries[0].status == EntryStatus::Running {
                         "\u{f1456}"
                     } else {
-                        "✗"
+                        "\u{f00d}"
                     }
                 } else {
                     icon

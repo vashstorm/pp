@@ -493,7 +493,7 @@ impl Panel {
             }
             metadata.push(Span::styled(
                 if session.done {
-                    "✓ done"
+                    "\u{f00c} done"
                 } else {
                     "■ aborted"
                 },
@@ -635,7 +635,7 @@ mod tests {
         assert!(lines[4].contains("当前会话"));
         assert!(lines[5].contains("修复 Rust 测试"));
         assert!(!lines[4..6].iter().any(|line| line.contains("answer for")));
-        assert!(lines[28].contains("current · ✓ done · 1.5KB"));
+        assert!(lines[28].contains("current · \u{f00c} done · 1.5KB"));
         assert_eq!(terminal.backend().buffer()[(0, 4)].fg, SELECTED_FG);
         assert_eq!(terminal.backend().buffer()[(99, 4)].bg, SELECTED_BG);
         assert_eq!(terminal.backend().buffer()[(2, 5)].fg, TIME_FG);

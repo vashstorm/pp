@@ -833,7 +833,7 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
             resumed.wait_for("恢复列表把取消会话标记为 aborted", |screen| {
                 screen.contents().contains("■ aborted")
             });
-            assert!(!resumed.parser.screen().contents().contains("✓ done"));
+            assert!(!resumed.parser.screen().contents().contains("\u{f00c} done"));
             resume_boundary_close(&mut resumed);
 
             // 取消终态之后完成新任务，列表再次可为 done。
@@ -849,7 +849,7 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
             resumed.completed();
             resume_boundary_open(&mut resumed);
             resumed.wait_for("完成新任务后列表标记为 done", |screen| {
-                screen.contents().contains("✓ done")
+                screen.contents().contains("\u{f00c} done")
             });
             resume_boundary_close(&mut resumed);
             resumed.input("/quit\r");

@@ -1023,7 +1023,7 @@ fn tui_slash_resume_filters_current_folder_searches_and_deletes_saved_session() 
     pty.wait_for("当前目录仅显示当前会话和状态", |screen| {
         let text = screen.contents();
         text.contains("Resume session (current folder)") && text.contains("current scope marker")
-            && text.contains("current · ✓ done") && !text.contains("可删除的旧会话")
+            && text.contains("current · \u{f00c} done") && !text.contains("可删除的旧会话")
     });
     pty.input("\x1b[3~");
     pty.input("\r");
@@ -1033,7 +1033,7 @@ fn tui_slash_resume_filters_current_folder_searches_and_deletes_saved_session() 
     assert!(resume_boundary_journal(home.path(), &current_id).exists());
 
     pty.input("/resume\r");
-    pty.text("current · ✓ done");
+    pty.text("current · \u{f00c} done");
     pty.input("\x1b[C");
     pty.text("可删除的旧会话");
     pty.input("\x1b[200~PREVIEW marker\x1b[201~");

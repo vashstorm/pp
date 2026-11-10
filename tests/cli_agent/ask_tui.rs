@@ -143,7 +143,7 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
         {
             let screen = pty.parser.screen();
             for (label, color) in [
-                ("✓", vt100::Color::Rgb(137, 210, 129)),
+                ("\u{f00c}", vt100::Color::Rgb(137, 210, 129)),
                 ("Read", vt100::Color::Rgb(145, 183, 218)),
                 ("(2)", vt100::Color::Rgb(96, 102, 114)),
                 ("├─", vt100::Color::Rgb(96, 102, 114)),

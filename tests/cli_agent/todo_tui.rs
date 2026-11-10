@@ -698,14 +698,14 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                             .rows(0, 100)
                             .nth(title + 2 + offset)
                             .is_some_and(|row| {
-                                row.contains(&format!("[✓] PINNED_TASK_{:02}", 9 + offset))
+                                row.contains(&format!("[\u{f00c}] PINNED_TASK_{:02}", 9 + offset))
                             })
                     })
             })
         });
         let title = hud_row(pty.parser.screen(), "TODO · 12/12").expect("TODO 标题") as u16;
         let screen = pty.parser.screen();
-        assert_eq!(screen.cell(title, 0).unwrap().contents(), "✔");
+        assert_eq!(screen.cell(title, 0).unwrap().contents(), "\u{f00c}");
         assert_eq!(screen.cell(title, 0).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
         // 阶段头与最后一个任务行都使用右结尾树枝。
         assert_eq!(screen.cell(title + 1, 0).unwrap().contents(), "├");

@@ -1219,8 +1219,8 @@ impl TranscriptEntry {
     fn read_header(&self, count: usize) -> Line<'static> {
         let (icon, color) = match self.status {
             EntryStatus::Running => (self.read_clock, palette::ACCENT),
-            EntryStatus::Complete => ("✓", palette::ADDED),
-            EntryStatus::Failed => ("✗", palette::REMOVED),
+            EntryStatus::Complete => ("\u{f00c}", palette::ADDED),
+            EntryStatus::Failed => ("\u{f00d}", palette::REMOVED),
         };
         let mut header = Line::from(vec![
             Span::raw(if self.is_file_read() { "  " } else { " " }),
