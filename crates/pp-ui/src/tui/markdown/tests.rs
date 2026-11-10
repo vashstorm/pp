@@ -87,6 +87,7 @@ fn inline_styles_use_modifiers_and_palette() {
         vec!["bold", " and ", "em", " and ", "gone", " and ", "code"]
     );
     assert!(has_modifier(&ls[0], 0, Modifier::BOLD));
+    assert_eq!(fg(&ls[0], 0), Some(ADDED));
     assert!(has_modifier(&ls[0], 2, Modifier::ITALIC));
     assert!(has_modifier(&ls[0], 4, Modifier::CROSSED_OUT));
     assert_eq!(fg(&ls[0], 6), Some(CODE));

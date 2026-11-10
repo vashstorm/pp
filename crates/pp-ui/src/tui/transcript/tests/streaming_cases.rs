@@ -1296,9 +1296,9 @@ fn thinking_renders_markdown_with_muted_base_and_semantic_highlights() {
     let plain = cell_of("plain");
     assert_eq!(buffer[plain].fg, MUTED_TEXT);
     assert_eq!(buffer[plain].bg, ASSISTANT_BACKGROUND);
-    // 粗体叠加 BOLD modifier，fg 仍继承灰色基色。
+    // 粗体叠加 BOLD modifier 与 ADDED 绿色语义高亮。
     let bold = cell_of("bold");
-    assert_eq!(buffer[bold].fg, MUTED_TEXT);
+    assert_eq!(buffer[bold].fg, palette::ADDED);
     assert!(buffer[bold].modifier.contains(Modifier::BOLD));
     // 行内代码使用 CODE 色。
     let code = cell_of("code");
@@ -1342,7 +1342,7 @@ fn thinking_markdown_reparses_across_streaming_deltas() {
         .expect("bold rendered");
     let column = line.find("bold").expect("bold rendered") as u16;
     let row = row as u16;
-    assert_eq!(buffer[(column, row)].fg, MUTED_TEXT);
+    assert_eq!(buffer[(column, row)].fg, palette::ADDED);
     assert!(buffer[(column, row)].modifier.contains(Modifier::BOLD));
     assert!(text.contains("tail"));
 }

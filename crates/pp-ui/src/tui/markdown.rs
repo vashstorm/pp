@@ -21,6 +21,7 @@ use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::transcript_style::ACCENT;
+use super::transcript_style::ADDED;
 use super::transcript_style::CODE;
 use super::transcript_style::CODE_BLOCK;
 use super::transcript_style::DIM;
@@ -444,6 +445,8 @@ impl<'a> Builder<'a> {
             st = st.add_modifier(Modifier::BOLD);
             if self.instruction {
                 st = st.fg(super::transcript_style::READ_ACCENT);
+            } else if !self.heading {
+                st = st.fg(ADDED);
             }
         }
         if self.em > 0 {
