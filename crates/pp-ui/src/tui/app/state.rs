@@ -69,6 +69,7 @@ impl App {
         self.close_pipes();
         self.subagent_autowake = false;
         self.token_speed.clear();
+        self.retry_finished();
         self.task_status = self.task_status_view.snapshot();
         self.history_browser = false;
         self.todo_panel.reset_view();
@@ -100,6 +101,7 @@ impl App {
 
     pub(in crate::tui) fn fail_worker(&mut self) {
         self.close_ask_on_exit();
+        self.retry_finished();
         if self.token_speed.is_active() {
             self.token_speed.clear();
         }

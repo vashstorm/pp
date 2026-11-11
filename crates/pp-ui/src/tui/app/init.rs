@@ -123,6 +123,7 @@ impl App {
             session_id: None,
             usage: None,
             token_speed: statusline::TokenSpeed::default(),
+            retry_notice: None,
             task_status_view: Default::default(),
             task_status: None,
             cost_display: Default::default(),

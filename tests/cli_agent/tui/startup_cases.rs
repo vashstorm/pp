@@ -374,6 +374,7 @@ const TIPS_COMMANDS: &[&str] = &[
     "/test-bash",
     "/test-bash-task",
     "/test-edit",
+    "/test-fail",
     "/test-glob",
     "/test-read",
     "/test-rg",

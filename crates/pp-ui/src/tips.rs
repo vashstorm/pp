@@ -59,6 +59,8 @@ pub(crate) const SECTIONS: &[Section] = &[
             #[cfg(debug_assertions)]
             tip("/test-edit", "debug edit tool"),
             #[cfg(debug_assertions)]
+            tip("/test-fail", "debug retry notice"),
+            #[cfg(debug_assertions)]
             tip("/test-glob", "debug glob tool"),
             #[cfg(debug_assertions)]
             tip("/test-rg", "debug rg tool"),

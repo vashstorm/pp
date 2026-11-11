@@ -182,6 +182,12 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     },
     #[cfg(debug_assertions)]
     CommandSpec {
+        name: "/test-fail",
+        usage: "/test-fail",
+        description: "Debug build: two failing attempts then a retry recovery",
+    },
+    #[cfg(debug_assertions)]
+    CommandSpec {
         name: "/test-ui",
         usage: "/test-ui",
         description: "Debug build: slow mock thinking and Markdown stream",
@@ -565,6 +571,8 @@ mod tests {
             ("/test-todo", Command::MockTest(MockTest::Todo)),
             #[cfg(debug_assertions)]
             ("/test-ask", Command::MockTest(MockTest::Ask)),
+            #[cfg(debug_assertions)]
+            ("/test-fail", Command::MockTest(MockTest::Fail)),
             (" /resume ", Command::Resume),
             ("/quit", Command::Quit),
             ("/model", Command::Model(None)),
@@ -640,8 +648,8 @@ mod tests {
         }
     }
 
-    /// 13 个 `/test-*` 命令名：仅含 debug assertions 的构建注册并解析。
-    const TEST_COMMAND_NAMES: [&str; 13] = [
+    /// 14 个 `/test-*` 命令名：仅含 debug assertions 的构建注册并解析。
+    const TEST_COMMAND_NAMES: [&str; 14] = [
         "/test-task",
         "/test-ui",
         "/test-tools",
@@ -655,6 +663,7 @@ mod tests {
         "/test-wait",
         "/test-todo",
         "/test-ask",
+        "/test-fail",
     ];
 
     #[cfg(debug_assertions)]

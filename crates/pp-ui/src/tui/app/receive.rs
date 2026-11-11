@@ -317,6 +317,7 @@ impl App {
                             usage,
                             success,
                         } => {
+                            self.retry_finished();
                             self.token_speed.finish(
                                 elapsed_ms,
                                 usage.map(|usage| usage.output_tokens),
@@ -330,8 +331,12 @@ impl App {
                             self.token_speed.clear();
                             self.conversation.progress(event);
                         }
-                        // 自动重试保持原执行逻辑，不追加常规提醒。
-                        AgentEvent::RequestRetrying { .. } => {}
+                        // 重试期间只更新固定信息框，不追加对话条目。
+                        AgentEvent::RequestRetrying {
+                            reason,
+                            attempt,
+                            wait_ms,
+                        } => self.retry_started(reason, attempt, wait_ms),
                         // 输入确认由 App 直接回显；不进 Transcript progress，不重复记录历史。
                         AgentEvent::UserInputAccepted { text, .. } => {
                             self.append("You", &text);
@@ -407,6 +412,7 @@ impl App {
                     self.ask_reply = None;
                     self.ask_panel = None;
                     self.active_cancellation = None;
+                    self.retry_finished();
                     self.subagent_autowake = false;
                     let succeeded = matches!(&result, Ok(RunOutcome::Completed));
                     if !succeeded {
@@ -456,6 +462,7 @@ impl App {
                     self.task_status = self.task_status_view.snapshot();
                     self.todo_panel = Default::default();
                     self.close_ask_on_exit();
+                    self.retry_finished();
                     self.history_browser = false;
                     self.conversation = self.conversation.fresh();
                     self.clear_input();

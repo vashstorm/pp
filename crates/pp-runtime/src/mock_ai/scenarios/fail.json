@@ -1,0 +1,34 @@
+{
+	"prompt": "Reproduce two failing model attempts, then answer.",
+	"edit_mode": "replace",
+	"retry_budget_seconds": 30,
+	"files": {},
+	"lanes": {
+		"root": [
+			{
+				"status": 503
+			},
+			{
+				"status": 429
+			},
+			{
+				"think": [
+					"Retry fixture: ",
+					"the first two attempts fail as scripted, ",
+					"so the automatic retry path is exercised."
+				],
+				"tokens_per_second": 20,
+				"auto_continue": true
+			},
+			{
+				"content": [
+					"Fail fixture complete: ",
+					"HTTP 503 then rate limited; ",
+					"the third attempt answered normally."
+				],
+				"tokens_per_second": 20,
+				"auto_continue": false
+			}
+		]
+	}
+}

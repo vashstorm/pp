@@ -157,6 +157,8 @@ impl App {
         };
         self.mock_saved = Some(snapshot);
         self.mock_worker = Some(worker);
+        // 上一场（或真实任务）的重试提示不能带进隔离场景。
+        self.retry_finished();
         if self.token_speed.is_active() {
             self.token_speed.clear();
         }
@@ -200,6 +202,7 @@ impl App {
     ) {
         self.flush_stream();
         self.close_ask_on_exit();
+        self.retry_finished();
         if self.token_speed.is_active() {
             self.token_speed.clear();
         }

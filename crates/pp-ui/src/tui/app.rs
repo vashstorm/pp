@@ -10,5 +10,6 @@ mod panels;
 mod pipes;
 mod receive;
 mod resources;
+pub(super) mod retry;
 mod roles;
 mod state;

@@ -448,12 +448,58 @@ fn notification_filters_routine_feedback_and_keeps_independent_errors() {
         }))
         .unwrap();
     app.receive();
+    // 重试不再静默：固定信息框可见，但对话与历史不追加条目。
+    let retrying = draw(&mut app, 100, 30);
+    assert_ne!(retrying, before);
+    assert!(retrying.contains("Retrying"), "{retrying}");
+    assert!(
+        retrying.contains("attempt 1 failed: HTTP status 503; retrying in"),
+        "{retrying}"
+    );
+    events
+        .send(WorkerEvent::Progress(AgentEvent::ModelRequestFinished {
+            elapsed_ms: 1,
+            usage: None,
+            success: false,
+        }))
+        .unwrap();
+    app.receive();
     assert_eq!(draw(&mut app, 100, 30), before);
     app.notify(Level::Error, "first failure".into());
     app.notify(Level::Error, "second failure".into());
     let screen = draw(&mut app, 100, 30);
     assert!(screen.contains("first failure"));
     assert!(screen.contains("second failure"));
+}
+
+#[test]
+fn retry_notice_counts_down_in_a_fixed_box_and_expires() {
+    let mut app = app();
+    let (events, receiver) = mpsc::channel();
+    app.events = Some(receiver);
+    events
+        .send(WorkerEvent::Progress(AgentEvent::RequestRetrying {
+            reason: pp_core::events::RequestRetryReason::HttpStatus(400),
+            attempt: 3,
+            wait_ms: 60_000,
+        }))
+        .unwrap();
+    app.receive();
+    let screen = draw(&mut app, 100, 30);
+    assert!(screen.contains("Retrying"), "{screen}");
+    assert!(
+        screen.contains("attempt 3 failed: HTTP status 400; retrying in 60s"),
+        "{screen}"
+    );
+    assert!(screen.contains("Esc cancels"), "{screen}");
+    // 倒计时跨桶才要求重绘，且不影响其他区域高度。
+    assert!(app.retry_tick(Instant::now() + Duration::from_secs(1)));
+    assert!(app.retry_visible());
+    // 到期自动收起，不需要额外事件。
+    assert!(app.retry_tick(Instant::now() + Duration::from_secs(61)));
+    assert!(!app.retry_visible());
+    let screen = draw(&mut app, 100, 30);
+    assert!(!screen.contains("Retrying"), "{screen}");
 }
 
 #[test]

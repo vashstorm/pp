@@ -10,6 +10,8 @@ pub(in crate::tui) struct MainLayout {
     subagents: Rect,
     ask: Rect,
     activity: Rect,
+    // 自动重试固定信息框；始终位于输入框上方，不进入对话区。
+    retry: Rect,
     input: Rect,
     attachments: Rect,
     status: Rect,
@@ -43,10 +45,14 @@ impl App {
         } else {
             self.resources.active_images(&self.input_text()).len()
         };
+        // 边框 + 一行正文；空间不足时让位给对话与输入。
+        let retry_height = u16::from(self.retry_visible()) * 3;
         let attachments_height = (if image_count > 0 { 8 } else { 0 }
             + u16::from(self.resources.job.is_some()))
-        .min(available.saturating_sub(input_height + 1));
-        let above = available.saturating_sub(input_height + attachments_height);
+        .min(available.saturating_sub(input_height + retry_height + 1));
+        let retry_height =
+            retry_height.min(available.saturating_sub(input_height + attachments_height + 1));
+        let above = available.saturating_sub(input_height + attachments_height + retry_height);
         let activity_spacing = u16::from(activity_height > 0 && above > 1);
         let above = above - activity_spacing;
         let base = Rect::new(area.x, area.y, area.width, above);
@@ -88,9 +94,10 @@ impl App {
         let todo = Rect::new(area.x, ask.bottom() + todo_spacing, area.width, todo_height);
         let subagents = Rect::new(area.x, todo.bottom(), area.width, subagent_height);
         let attachments = Rect::new(area.x, subagents.bottom(), area.width, attachments_height);
+        let retry = Rect::new(area.x, attachments.bottom(), area.width, retry_height);
         let activity = Rect::new(
             area.x,
-            attachments.bottom() + activity_spacing,
+            retry.bottom() + activity_spacing,
             area.width,
             activity_height,
         );
@@ -102,6 +109,7 @@ impl App {
             subagents,
             ask,
             activity,
+            retry,
             input,
             attachments,
             status,
@@ -308,6 +316,7 @@ impl App {
             subagents,
             ask: ask_area,
             activity,
+            retry,
             input,
             attachments,
             status,
@@ -386,6 +395,7 @@ impl App {
             self.active_transcript().draw(frame, conversation);
         }
         self.input_transcript().draw_live_activity(frame, activity);
+        self.draw_retry_notice(frame, retry);
         let editor_area = if bordered {
             let block = Block::default()
                 .borders(Borders::TOP | Borders::BOTTOM)

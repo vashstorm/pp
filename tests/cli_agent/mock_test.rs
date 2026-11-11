@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const COMMANDS: [&str; 13] = [
+const COMMANDS: [&str; 14] = [
     "/test-task",
     "/test-ui",
     "/test-tools",
@@ -27,6 +27,7 @@ const COMMANDS: [&str; 13] = [
     "/test-wait",
     "/test-todo",
     "/test-ask",
+    "/test-fail",
 ];
 
 const TASK_MARKERS: [&str; 3] = [
@@ -77,6 +78,7 @@ fn own_markers(command: &str) -> Vec<&'static str> {
             "Todo scenario complete; remaining item retained for inspection.",
         ],
         "/test-ask" => vec!["Ask fixture complete."],
+        "/test-fail" => vec!["Fail fixture complete"],
         other => panic!("unknown mock test command {other}"),
     }
 }
@@ -279,6 +281,7 @@ fn mock_test_each_command_runs_only_its_own_scenarios() {
         ("/test-wait", &[("bash", 2), ("wait", 2)]),
         ("/test-todo", &[("todo", 9)]),
         ("/test-ask", &[("ask", 1)]),
+        ("/test-fail", &[]),
     ];
     for (command, expected) in expected {
         let home = tempfile::tempdir().unwrap();
@@ -303,6 +306,22 @@ fn mock_test_each_command_runs_only_its_own_scenarios() {
             "{command}: {stderr}"
         );
     }
+}
+
+#[test]
+fn mock_test_fail_reports_each_retry_before_recovering() {
+    let home = tempfile::tempdir().unwrap();
+    let mut cli = LiveCli::new(Cli::start_env(home.path(), home.path(), &[], &[]));
+    cli.input("/test-fail\n/quit\n");
+    let output = cli.finish_within(Duration::from_secs(60));
+    assert!(output.status.success(), "{output:?}");
+    let (stdout, stderr) = text(&output);
+    // 行模式逐个尝试输出重试原因与等待时长，不静默等待退避。
+    assert!(stderr.contains("HTTP status 503; retrying in"), "{stderr}");
+    assert!(stderr.contains("rate limited; retrying in"), "{stderr}");
+    assert_eq!(count(&stderr, "retrying in"), 2, "{stderr}");
+    assert!(stdout.contains("Fail fixture complete"), "{stdout}");
+    assert!(session_files(home.path()).is_empty());
 }
 
 #[test]

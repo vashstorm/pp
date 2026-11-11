@@ -209,6 +209,7 @@ pub fn run(
         dirty |= app.hub_tick();
         dirty |= app.review_transcript_tick(Instant::now());
         dirty |= app.token_speed.tick(Instant::now());
+        dirty |= app.retry_tick(Instant::now());
         if quit {
             app.flush_stream();
             app.conversation.finish_markdown_streams();
@@ -902,6 +903,8 @@ struct App {
     // 最近一次 ContextUpdated 快照；渲染直接使用，不逐帧重新估算。
     usage: Option<pp_core::context::ContextUsage>,
     token_speed: statusline::TokenSpeed,
+    // 自动重试等待期的固定信息框；不进入对话、不写历史。
+    retry_notice: Option<app::retry::Notice>,
     task_status_view: pp_config::task_status::View,
     task_status: Option<pp_config::task_status::Snapshot>,
     cost_display: pp_config::config::CostDisplay,

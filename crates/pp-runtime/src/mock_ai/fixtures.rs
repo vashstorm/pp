@@ -42,10 +42,11 @@ pub enum MockTest {
     Wait,
     Todo,
     Ask,
+    Fail,
 }
 
 impl MockTest {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Task,
         Self::Ui,
         Self::All,
@@ -59,6 +60,7 @@ impl MockTest {
         Self::Wait,
         Self::Todo,
         Self::Ask,
+        Self::Fail,
     ];
 
     pub fn name(self) -> &'static str {
@@ -76,6 +78,7 @@ impl MockTest {
             Self::Wait => "/test-wait",
             Self::Todo => "/test-todo",
             Self::Ask => "/test-ask",
+            Self::Fail => "/test-fail",
         }
     }
 }
@@ -110,6 +113,10 @@ struct Scenario {
     #[serde(default)]
     workspace: Option<String>,
     files: BTreeMap<String, String>,
+    /// 覆盖场景的自动重试预算；缺省为 0（不重试）。只有需要演练失败路径的
+    /// 场景才开启，避免其他场景在失败时真实等待退避。
+    #[serde(default)]
+    retry_budget_seconds: u64,
     lanes: BTreeMap<String, Value>,
 }
 
@@ -161,6 +168,7 @@ const BASH_TASK: &str = include_str!("scenarios/bash-task.json");
 const WAIT: &str = include_str!("scenarios/wait.json");
 const TODO: &str = include_str!("scenarios/todo.json");
 const ASK: &str = include_str!("scenarios/ask.json");
+const FAIL: &str = include_str!("scenarios/fail.json");
 const UI: &str = include_str!("scenarios/ui.json");
 const TASK: &str = include_str!("scenarios/task.json");
 
@@ -189,6 +197,7 @@ fn scenarios(test: MockTest) -> &'static [&'static str] {
         MockTest::Wait => &[WAIT],
         MockTest::Todo => &[TODO],
         MockTest::Ask => &[ASK],
+        MockTest::Fail => &[FAIL],
         MockTest::Ui => &[UI],
         MockTest::Task => &[TASK],
     }
@@ -280,7 +289,7 @@ fn run_scenario(
         };
         fs::write(config_dir.join("settings.yml"), json!({
         "edit":edit, "auto_compact":false, "lsp":{"enabled":false},
-        "tools":{"approvalMode":"yolo"}, "rate_limit_retry_budget_seconds":0, "request_timeout_seconds":300
+        "tools":{"approvalMode":"yolo"}, "rate_limit_retry_budget_seconds":scenario.retry_budget_seconds, "request_timeout_seconds":300
     }).to_string())?;
         fs::write(
             config_dir.join("mcp.json"),
@@ -407,6 +416,40 @@ fn setup_file(root: &Path, relative: &str, text: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fail_scenario_retries_twice_then_recovers() {
+        use pp_core::events::RequestRetryReason;
+        let server = super::super::MockServer::start().unwrap();
+        let mut retries = Vec::new();
+        let mut reply = String::new();
+        let mut succeeded = false;
+        let report = run_test(
+            MockTest::Fail,
+            server.endpoint(),
+            None,
+            &CancellationToken::new(),
+            &mut |event| match event {
+                MockTestEvent::Progress(AgentEvent::RequestRetrying {
+                    reason,
+                    attempt,
+                    wait_ms,
+                }) => retries.push((reason, attempt, wait_ms)),
+                MockTestEvent::Progress(AgentEvent::AssistantFinished { text }) => reply = text,
+                MockTestEvent::Progress(AgentEvent::ModelRequestFinished { success, .. }) => {
+                    succeeded |= success;
+                }
+                MockTestEvent::Prepared(_) | MockTestEvent::Progress(_) => {}
+            },
+        )
+        .unwrap();
+        assert_eq!(retries.len(), 2);
+        assert_eq!(retries[0], (RequestRetryReason::HttpStatus(503), 1, 1000));
+        assert_eq!(retries[1], (RequestRetryReason::RateLimited, 2, 2000));
+        assert!(succeeded, "third attempt must finish the request");
+        assert!(reply.contains("Fail fixture complete"), "{reply}");
+        assert_eq!(report.calls, 0);
+    }
 
     #[test]
     fn mock_ai_agent_preserves_reported_usage_in_context() {

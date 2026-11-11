@@ -177,6 +177,16 @@ pub(super) fn handle(mut request: Request, endpoint: MockEndpoint) {
         "{run}-{lane}-{}-{}",
         reservation.generation, reservation.steps.start
     );
+    // 失败指令只占一个步骤：直接用供应商错误收尾，客户端据此进入自动重试。
+    if let Some(status) = reservation.script[reservation.steps.start].status {
+        error(
+            request,
+            status,
+            "mock_http_error",
+            "Mock provider failure injected by the fixture.",
+        );
+        return;
+    }
     let _ = sse::send(
         request,
         &reservation.script[reservation.steps.clone()],

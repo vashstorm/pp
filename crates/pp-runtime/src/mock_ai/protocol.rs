@@ -106,6 +106,10 @@ pub(super) struct Instruction {
     pub auto_continue: bool,
     #[serde(default, deserialize_with = "deserialize_usage")]
     pub usage: Option<TokenUsage>,
+    /// 声明后本次请求直接以该 HTTP 状态码失败，不发送 SSE；
+    /// 用于重现供应商错误与自动重试，不能与其他输出字段同时出现。
+    #[serde(default)]
+    pub status: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -244,6 +248,11 @@ fn validate_instructions(instructions: &[Instruction]) -> std::result::Result<()
     }
     let mut start = 0;
     while start < instructions.len() {
+        // 失败指令自成一组，不要求正文或工具调用。
+        if instructions[start].status.is_some() {
+            start += 1;
+            continue;
+        }
         let end = instructions[start..]
             .iter()
             .position(|instruction| !instruction.auto_continue)
@@ -267,6 +276,23 @@ fn validate_instruction(instruction: &Instruction) -> std::result::Result<(), Sc
         && tool.name.is_empty()
     {
         return Err(ScriptError::invalid("mock tool name must not be empty"));
+    }
+    if let Some(status) = instruction.status {
+        if !(400..=599).contains(&status) {
+            return Err(ScriptError::invalid(
+                "mock status must be an HTTP error status",
+            ));
+        }
+        if instruction.auto_continue
+            || instruction.tool.is_some()
+            || !instruction.content.is_empty()
+            || !instruction.think.is_empty()
+            || instruction.usage.is_some()
+        {
+            return Err(ScriptError::invalid(
+                "mock failure instruction cannot carry output",
+            ));
+        }
     }
     validate_rate(instruction)
 }
@@ -392,6 +418,7 @@ mod tests {
             response: None,
             auto_continue,
             usage: None,
+            status: None,
         }
     }
 
@@ -488,6 +515,27 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn failure_instructions_are_standalone_http_errors() {
+        let parsed = parse(r#"[{"status":503},{"content":"recovered"}]"#).unwrap();
+        assert_eq!(parsed[0].status, Some(503));
+        assert_eq!(parsed[1].status, None);
+        // 失败步骤自成一组、不需要正文；携带输出字段或非错误码时拒绝。
+        for script in [
+            r#"[{"status":200}]"#,
+            r#"[{"status":399}]"#,
+            r#"[{"status":600}]"#,
+            r#"[{"status":503,"content":"x"}]"#,
+            r#"[{"status":503,"think":"x"}]"#,
+            r#"[{"status":503,"auto_continue":true}]"#,
+            r#"[{"status":503,"tool":{"name":"read","arguments":{}}}]"#,
+            r#"[{"status":503,"usage":{"input_tokens":1,"output_tokens":1}}]"#,
+            r#"[{"status":503},{}]"#,
+        ] {
+            assert_eq!(code(script), "invalid_mock_script", "{script}");
+        }
     }
 
     #[test]

@@ -22,6 +22,8 @@ include!("subagents_tui.rs");
 include!("test_task_tui.rs");
 #[cfg(debug_assertions)]
 include!("tool_test_tui.rs");
+#[cfg(debug_assertions)]
+include!("retry_test_tui.rs");
 include!("auth_tui.rs");
 include!("plan_tui.rs");
 include!("todo_tui.rs");
