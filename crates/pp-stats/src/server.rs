@@ -106,6 +106,7 @@ pub(super) fn dispatch(store: &Store, path: &str) -> (u16, &'static str, String)
     match path {
         "/" | "/index.html" => return (200, "text/html", include_str!("index.html").into()),
         "/stats.css" => return (200, "text/css", include_str!("stats.css").into()),
+        "/ui.css" => return (200, "text/css", include_str!("ui.css").into()),
         "/stats.js" => return (200, "text/javascript", include_str!("stats.js").into()),
         "/activity.js" => return (200, "text/javascript", include_str!("activity.js").into()),
         "/insights.js" => return (200, "text/javascript", include_str!("insights.js").into()),

@@ -152,13 +152,17 @@ struct Execution {
     errors: u64,
     cancelled: u64,
     duration: f64,
+    error_buckets: BTreeMap<i64, u64>,
 }
 impl Execution {
-    fn push(&mut self, status: &str, duration: f64) {
+    fn push(&mut self, status: &str, duration: f64, bucket: i64) {
         self.recorded += 1;
         self.duration += duration;
         match status {
-            "error" => self.errors += 1,
+            "error" => {
+                self.errors += 1;
+                *self.error_buckets.entry(bucket).or_default() += 1;
+            }
             "cancelled" => self.cancelled += 1,
             _ => {}
         }
@@ -171,6 +175,12 @@ impl Execution {
         value["errors"] = json!(self.errors);
         value["cancelled"] = json!(self.cancelled);
         value["avg_duration_ms"] = json!(self.duration / self.recorded as f64);
+        value["error_buckets"] = json!(
+            self.error_buckets
+                .iter()
+                .map(|(t, c)| json!({"timestamp":t,"errors":c}))
+                .collect::<Vec<_>>()
+        );
     }
 }
 // 优先使用已提交快照，避免同一调用在快照与原生输出中重复计数。
@@ -280,7 +290,7 @@ impl Store {
         let mut model_executions = BTreeMap::<(String, String), Execution>::new();
         let mut execution_summary = Execution::default();
         let mut tool_statement = self.conn.prepare(
-            "SELECT tool,request_key,status,duration_ms FROM tool_calls WHERE timestamp>=?1 AND timestamp<=?2",
+            "SELECT tool,request_key,status,duration_ms,timestamp FROM tool_calls WHERE timestamp>=?1 AND timestamp<=?2",
         )?;
         let mut tool_rows = tool_statement.query(params![range.since(now), now])?;
         while let Some(tool_row) = tool_rows.next()? {
@@ -288,16 +298,17 @@ impl Store {
             let key: Option<String> = tool_row.get(1)?;
             let status: String = tool_row.get(2)?;
             let duration: f64 = tool_row.get(3)?;
-            execution_summary.push(&status, duration);
+            let slot = bucket(tool_row.get(4)?, range)?;
+            execution_summary.push(&status, duration, slot);
             executions
                 .entry(tool.clone())
                 .or_default()
-                .push(&status, duration);
+                .push(&status, duration, slot);
             if let Some(reference) = key.as_ref().and_then(|key| requests_by_key.get(key)) {
                 model_executions
                     .entry((tool, reference.clone()))
                     .or_default()
-                    .push(&status, duration);
+                    .push(&status, duration, slot);
             }
         }
         let tools: Vec<_> = tools

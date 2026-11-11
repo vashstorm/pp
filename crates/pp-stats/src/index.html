@@ -6,45 +6,94 @@
     <title>pp stats</title>
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="stylesheet" href="/stats.css" />
+    <link rel="stylesheet" href="/ui.css" />
     <script src="/activity.js" defer></script>
     <script src="/insights.js" defer></script>
     <script src="/context.js" defer></script>
     <script src="/stats.js" defer></script>
   </head>
   <body>
-    <header>
-      <div class="brand">
+    <div class="shell-ambient"></div>
+    <header class="topbar" id="topbar" data-scrolled="false">
+      <button
+        type="button"
+        class="x-btn topbar-menu"
+        data-variant="ghost"
+        data-icon="true"
+        id="menu"
+        aria-label="Open navigation"
+        title="Open navigation"
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+      <div class="topbar-brand">
         <img
-          class="brand-icon"
+          class="topbar-mark"
           src="/icon.svg"
           alt=""
-          width="28"
-          height="28"
-        /><b>pp</b><span class="slash">/</span
-        ><b>stats</b>
+          width="22"
+          height="22"
+        />
+        <span>pp</span>
+        <span class="topbar-slash">/</span>
+        <span class="topbar-title">stats</span>
       </div>
-      <div class="header-controls">
-        <button id="live" title="Refresh statistics now">
-          <i></i> Live <span>just now</span>
-        </button>
-        <div id="ranges" role="radiogroup" aria-label="Time range"></div>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-actions">
+        <span class="topbar-hide-narrow">
+          <button
+            type="button"
+            id="live"
+            class="live-chip"
+            title="Refresh statistics now"
+          >
+            <span class="x-dot" data-tone="live" data-pulse="true"></span>
+            <span>Live</span>
+            <span class="live-chip-count"></span>
+          </button>
+        </span>
+        <div
+          id="ranges"
+          class="x-segmented"
+          role="radiogroup"
+          aria-label="Time range"
+        ></div>
         <button
+          type="button"
           id="theme"
+          class="x-btn"
+          data-variant="ghost"
+          data-icon="true"
           aria-label="System theme (click to switch)"
           title="Switch theme"
         ></button>
       </div>
     </header>
-    <aside>
-      <nav aria-label="Pages" id="navigation"></nav>
-      <div class="keyboard">
-        <div><kbd>1</kbd>–<kbd>6</kbd> range</div>
-        <div><kbd>G</kbd> then letter to jump</div>
+    <div class="drawer-scrim" id="menu-scrim" hidden></div>
+    <nav class="sidebar" id="sidebar" aria-label="Pages">
+      <div id="navigation"></div>
+      <div class="sidebar-foot x-micro">
+        <span><span class="x-kbd">1</span>–<span class="x-kbd">6</span> range</span>
+        <span><span class="x-kbd">G</span> then letter to jump</span>
       </div>
-    </aside>
-    <main id="main">
-      <div id="error" role="status" hidden></div>
-      <div id="page"></div>
+    </nav>
+    <main class="shell-panel">
+      <div class="shell-content">
+        <div id="error" role="status" hidden></div>
+        <div id="page"></div>
+      </div>
     </main>
     <div id="overlay" hidden>
       <section
@@ -56,7 +105,13 @@
       ></section>
     </div>
     <div id="context-overlay" hidden>
-      <section id="context-reader" role="dialog" aria-modal="true" aria-label="Request context" tabindex="-1"></section>
+      <section
+        id="context-reader"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Request context"
+        tabindex="-1"
+      ></section>
     </div>
     <div id="toast" role="status" hidden></div>
   </body>

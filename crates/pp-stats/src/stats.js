@@ -37,7 +37,7 @@ const paths = {
   flag: "M5 21V4 M5 4h12l-3 4 3 4H5",
 };
 const icon = (name, size = 15) =>
-  `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name] || paths.traces}"/></svg>`;
+  `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name] || paths.traces}"/></svg>`;
 const groups = [
   [
     "Usage",
@@ -75,6 +75,14 @@ const descriptions = {
   "30d": "last 30 days",
   "90d": "last 90 days",
   all: "entire history",
+};
+const rangeWindows = {
+  "1h": "the last hour",
+  "24h": "the last 24 hours",
+  "7d": "the last 7 days",
+  "30d": "the last 30 days",
+  "90d": "the last 90 days",
+  all: "all time",
 };
 const number = (n) => (n == null ? "—" : Number(n).toLocaleString("en-US"));
 const short = (n) => {
@@ -246,17 +254,23 @@ try {
 } catch {}
 if (!["system", "light", "dark"].includes(theme)) theme = "system";
 function applyTheme() {
-  if (theme === "system") delete document.documentElement.dataset.theme;
-  else document.documentElement.dataset.theme = theme;
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const resolved = theme === "system" ? (dark ? "dark" : "light") : theme;
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.style.colorScheme = resolved;
   $("theme").innerHTML = icon(
     theme === "light" ? "sun" : theme === "dark" ? "moon" : "system",
-    18,
+    15,
   );
   $("theme").setAttribute(
     "aria-label",
     `${theme[0].toUpperCase() + theme.slice(1)} theme (click to switch)`,
   );
+  $("theme").title = `${theme[0].toUpperCase() + theme.slice(1)} theme — click to switch`;
 }
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  if (theme === "system") applyTheme();
+});
 $("theme").onclick = () => {
   theme = ["system", "light", "dark"][
     (["system", "light", "dark"].indexOf(theme) + 1) % 3
@@ -270,20 +284,50 @@ applyTheme();
 function navigate(next) {
   location.hash = `/${next}?range=${range}`;
 }
+function syncSegmented() {
+  for (const root of document.querySelectorAll(".x-segmented")) {
+    const active = root.querySelector('[aria-checked="true"]');
+    const thumb = root.querySelector(".x-segmented-thumb");
+    if (!active || !thumb) continue;
+    thumb.style.left = `${active.offsetLeft}px`;
+    thumb.style.width = `${active.offsetWidth}px`;
+  }
+}
 function shell() {
-  $("ranges").innerHTML = ranges
+  $("ranges").innerHTML = `<span class="x-segmented-thumb"></span>${ranges
     .map(
-      (r) =>
-        `<button role="radio" aria-checked="${r === range}" data-range="${r}">${r === "all" ? "All" : r}</button>`,
+      (r, index) =>
+        `<button type="button" class="x-segmented-option" role="radio" aria-checked="${r === range}" data-active="${r === range}" data-range="${r}" title="${rangeWindows[r]} (${index + 1})">${r === "all" ? "All" : r}</button>`,
     )
-    .join("");
+    .join("")}`;
   $("navigation").innerHTML = groups
     .map(
       ([name, items]) =>
-        `<div class="nav-group">${name}</div>${items.map(([id, label, key]) => `<button data-page="${id}" ${id === page ? 'aria-current="page"' : ""} title="${label}" aria-label="${label} G ${key}">${icon(id)}<span class="nav-label">${label}</span><span class="shortcut">G ${key}</span></button>`).join("")}`,
+        `<div class="nav-group"><div class="nav-heading">${h(name)}</div>${items
+          .map(
+            ([id, label, key]) =>
+              `<button type="button" class="nav-row" data-page="${id}" data-active="${id === page}" ${id === page ? 'aria-current="page"' : ""} title="${h(label)}" aria-label="${h(label)} G ${key}">${icon(id)}<span class="nav-row-label">${h(label)}</span><kbd>G ${key}</kbd></button>`,
+          )
+          .join("")}</div>`,
     )
     .join("");
+  syncSegmented();
 }
+function closeMenu() {
+  $("sidebar").dataset.open = "false";
+  $("menu-scrim").hidden = true;
+}
+$("menu").onclick = () => {
+  $("sidebar").dataset.open = "true";
+  $("menu-scrim").hidden = false;
+};
+$("menu-scrim").onclick = closeMenu;
+window.addEventListener(
+  "scroll",
+  () => ($("topbar").dataset.scrolled = String(scrollY > 4)),
+  { passive: true },
+);
+window.addEventListener("resize", syncSegmented);
 $("ranges").onclick = (e) => {
   const button = e.target.closest("[data-range]");
   if (button) {
@@ -293,7 +337,10 @@ $("ranges").onclick = (e) => {
 };
 $("navigation").onclick = (e) => {
   const button = e.target.closest("[data-page]");
-  if (button) navigate(button.dataset.page);
+  if (button) {
+    closeMenu();
+    navigate(button.dataset.page);
+  }
 };
 async function getJSON(url, signal) {
   const response = await fetch(url, { signal, cache: "no-store" });
@@ -370,7 +417,7 @@ async function refresh() {
 }
 function updateLive() {
   const age = lastUpdated ? relative(lastUpdated) : "not updated";
-  $("live").querySelector("span").textContent = age;
+  $("live").querySelector(".live-chip-count").textContent = age;
 }
 $("live").onclick = refresh;
 function onRoute() {
@@ -1150,6 +1197,7 @@ function render() {
   const insightFocused = ["tool-filter", "insight-sort"].includes(focused?.id) ? focused.id : null;
   const focusedStatus = focused?.dataset?.status;
   const focusedExpand = focused?.closest("[data-expand]")?.dataset.expand;
+  const toolsFocus = focused?.dataset?.toolsFocus;
   const focusControl = [
     "performance",
     "share",
@@ -1184,7 +1232,10 @@ function render() {
                   projects: projectsPage,
                 }[page]()
               : `<h1>${h(label)}</h1><p class="subtitle">${h(label)} across your sessions in the ${descriptions[range]}.</p><section class="panel placeholder"><div class="empty">${h(label)} is coming soon.</div></section>`;
-  prepareDetails();
+  if (page !== "tools") prepareDetails();
+  syncSegmented();
+  if (page === "tools" && typeof wireToolsCharts === "function")
+    wireToolsCharts();
   if (cellPosition) {
     const [table, row, column] = cellPosition;
     $("page").querySelectorAll("table")[table]?.rows[row]?.cells[column]
@@ -1197,6 +1248,10 @@ function render() {
   } else if (activityFocus) {
     [...$("page").querySelectorAll("button,tr")]
       .find((el) => el.dataset[activityFocus] === activityValue)
+      ?.focus({ preventScroll: true });
+  } else if (toolsFocus) {
+    $("page")
+      .querySelector(`[data-tools-focus="${CSS.escape(toolsFocus)}"]`)
       ?.focus({ preventScroll: true });
   } else if (insightFocused) {
     $(insightFocused)?.focus({ preventScroll: true });
@@ -1302,7 +1357,7 @@ $("page").addEventListener("click", (e) => {
   }
 });
 $("page").addEventListener("keydown", (e) => {
-  const action = e.target.closest("th[data-sort],tr[data-id],tr[data-expand],tr[data-error-signature],tr[data-trace]");
+  const action = e.target.closest("th[data-sort],tr[data-id],tr[data-expand],tr[data-error-signature],tr[data-trace],th[data-toolsort],tr[data-toolselect]");
   if (
     (e.key === "Enter" || e.key === " ") &&
     action && !e.target.closest("button,a,input,select,textarea")
