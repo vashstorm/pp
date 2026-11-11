@@ -205,7 +205,12 @@ fn api(
         return Ok(None);
     }
     let mut range = Range::Day;
-    let mut limit = 500;
+    let errors = url.path() == "/api/stats/errors";
+    let mut limit = if errors {
+        ERROR_LIMITS[0]
+    } else {
+        ROW_LIMITS[0]
+    };
     let mut seen = std::collections::HashSet::new();
     for (key, value) in url.query_pairs() {
         if !seen.insert(key.to_string()) {
@@ -220,7 +225,7 @@ fn api(
                 ) =>
             {
                 limit = value.parse::<usize>().map_err(|_| ApiError::Invalid)?;
-                ensure_limit(limit).map_err(|_| ApiError::Invalid)?;
+                ensure_limit(errors, limit).map_err(|_| ApiError::Invalid)?;
             }
             _ => return Err(ApiError::Invalid),
         }
@@ -276,7 +281,17 @@ fn api(
         json!({"requests":rows,"has_more":has_more,"limit":limit,"updated_at":now,"range":range.label()}),
     ))
 }
-fn ensure_limit(limit: usize) -> Result<()> {
-    ensure!(matches!(limit, 500 | 2000), "invalid limit");
+/// 失败列表按页加载的档位：Errors 页先取最新 50 条，再按 200／1000 递增。
+const ERROR_LIMITS: [usize; 3] = [50, 200, 1000];
+/// 请求日志与 Traces 列表的档位。
+const ROW_LIMITS: [usize; 2] = [500, 2000];
+
+fn ensure_limit(errors: bool, limit: usize) -> Result<()> {
+    let allowed = if errors {
+        ERROR_LIMITS.contains(&limit)
+    } else {
+        ROW_LIMITS.contains(&limit)
+    };
+    ensure!(allowed, "invalid limit");
     Ok(())
 }

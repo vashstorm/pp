@@ -459,8 +459,8 @@ function toolLegend(series, format = toolCompact, options = {}) {
     .join("")}</div>`;
 }
 
-function toolCard(index, title, description, actions, body, flush = false) {
-  return `<section class="x-card x-rise" style="--i:${index}"><header class="x-card-header"><div class="x-card-titles"><h2 class="x-card-title">${h(title)}</h2><p class="x-card-description">${h(description)}</p></div>${actions ? `<div class="x-card-actions">${actions}</div>` : ""}</header><div class="x-card-body"${flush ? ' data-flush="true"' : ""}>${body}</div></section>`;
+function toolCard(index, title, description, actions, body, flush = false, footer = "") {
+  return `<section class="x-card x-rise" style="--i:${index}"><header class="x-card-header"><div class="x-card-titles"><h2 class="x-card-title">${h(title)}</h2><p class="x-card-description">${h(description)}</p></div>${actions ? `<div class="x-card-actions">${actions}</div>` : ""}</header><div class="x-card-body"${flush ? ' data-flush="true"' : ""}>${body}</div>${footer ? `<footer class="x-card-footer">${footer}</footer>` : ""}</section>`;
 }
 
 function toolSortHeader(column, sort, table) {
@@ -1070,6 +1070,14 @@ function projectDetails(g) {
       .join(""),
   )}<h2>Latest requests · up to 10 in this range</h2>${insightRecent(g.recent)}</div>`;
 }
+function projectSearch(label, placeholder) {
+  return `<div class="search">${icon("search")}<input id="search" type="search" aria-label="${label}" placeholder="${placeholder}" value="${h(query)}"></div>`;
+}
+
+function projectFooter(rows) {
+  return `<div class="table-footer">${number(Math.min(visible, rows.length))} of ${number(rows.length)}${visible < rows.length ? '<button class="outline-button" data-more>Show more</button>' : ""}</div>`;
+}
+
 function projectsPage() {
   if (!data) return '<div class="loading">Loading projects…</div>';
   const s = data.summary,
@@ -1083,7 +1091,7 @@ function projectsPage() {
     .sort((a, b) => (b[insightSort] ?? -1) - (a[insightSort] ?? -1) || a.key.localeCompare(b.key));
   return `<h1>Projects</h1><p class="subtitle">Usage by working directory in the ${descriptions[range]}.</p><div class="panel metrics">${metric("Folders", number(data.projects.length))}${metric("Requests", number(s.requests), `${number(s.failed)} failed`)}${metric("API-equivalent cost", money(s.cost), costNote(s))}${metric("Conversation tokens", short(s.tokens))}${metric("Cache rate", cacheRate(s))}</div>
     <div class="graphs project-ranks">${projectRank(data.projects, "cost", "Top by cost", "var(--pink)")}${projectRank(data.projects, "requests", "Top by requests", "var(--accent)")}</div>
-    <section class="panel analytics-panel"><div class="requests-heading panel-heading"><div><h2>Folders</h2><p class="panel-description">${number(rows.length)} folders · select a row for tokens, models and recent requests</p></div><div class="trace-controls">${activitySearch("Search folders", "Folder, path or model…")}<select class="insight-select" id="insight-sort" aria-label="Sort folders">${[
+    <section class="panel analytics-panel"><div class="requests-heading panel-heading"><div><h2>Folders</h2><p class="panel-description">${number(rows.length)} folders · select a row for tokens, models and recent requests</p></div><div class="trace-controls">${projectSearch("Search folders", "Folder, path or model…")}<select class="insight-select" id="insight-sort" aria-label="Sort folders">${[
       ["cost", "Cost"],
       ["requests", "Requests"],
       ["tokens", "Tokens"],
@@ -1124,7 +1132,7 @@ function projectsPage() {
           ),
         )
         .join(""),
-    )}${activityFooter(rows)}</section><p class="load-note">Folders are grouped by the full recorded working directory. Different paths with the same folder name stay separate. All summaries cover every request in the selected range.</p>${pricingNotice()}`;
+    )}${projectFooter(rows)}</section><p class="load-note">Folders are grouped by the full recorded working directory. Different paths with the same folder name stay separate. All summaries cover every request in the selected range.</p>${pricingNotice()}`;
 }
 function insightsClick(e) {
   const target = e.target.closest("[data-insight-open]");

@@ -361,26 +361,26 @@ h2 {
 .table-wrap {
   overflow-x: auto;
 }
-table {
+table:not(.x-table) {
   width: 100%;
   border-collapse: collapse;
   white-space: nowrap;
   font-size: 12px;
   text-align: left;
 }
-th {
+table:not(.x-table) th {
   font-weight: 500;
   font-size: 11.5px;
   color: var(--muted);
   padding: 8px 16px;
   border-bottom: 1px solid var(--line);
 }
-td {
+table:not(.x-table) td {
   padding: 9px 16px;
   border-bottom: 1px solid var(--line);
   font-variant-numeric: tabular-nums;
 }
-tr:last-child td {
+table:not(.x-table) tr:last-child td {
   border-bottom: 0;
 }
 tbody tr[data-id] {
@@ -497,7 +497,7 @@ tbody tr[data-id]:focus {
   left: 9px;
   color: var(--muted);
 }
-input[type="search"] {
+input[type="search"]:not(.x-input) {
   border: 1px solid var(--line);
   background: var(--hover);
   border-radius: 7px;
@@ -959,7 +959,7 @@ pre {
     flex-wrap: wrap;
     justify-content: flex-end;
   }
-  input[type="search"] {
+  input[type="search"]:not(.x-input) {
     width: 200px;
   }
   .small-metrics {
@@ -1029,7 +1029,7 @@ pre {
   .filter-bar .segmented {
     flex-wrap: wrap;
   }
-  input[type="search"] {
+  input[type="search"]:not(.x-input) {
     width: 100%;
   }
   .search {
@@ -1154,71 +1154,58 @@ pre {
   text-overflow: ellipsis;
 }
 
-/* 错误分组与请求时间线沿用统计页的卡片、表格和详情样式。 */
-.error-metrics {
-  --columns: 4;
+/* Errors 页的页内样式；外壳、卡片、表格与指标沿用 ui.css 的 x- 组件。 */
+.errors-signature {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  color: var(--ink-1);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  font-size: 12px;
+  line-height: 1.5;
 }
-.error-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr);
-  gap: 16px;
-  margin-bottom: 20px;
-  align-items: start;
-}
-.error-layout > .panel {
-  min-width: 0;
-}
-.signature-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.signature-label svg {
-  flex-shrink: 0;
-}
-.signature-label span {
-  max-width: 520px;
+.errors-message {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.signature-table .group-row {
-  cursor: pointer;
-}
-.signature-table .selected,
-.error-model.selected {
-  background: var(--hover);
-}
-.error-example {
-  margin: 6px 0 14px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  color: var(--bad);
+  max-width: 520px;
   font-size: 12px;
 }
-.error-model {
+.errors-filter {
+  max-width: 260px;
+}
+.errors-filter .x-truncate {
+  min-width: 0;
+}
+.errors-detail {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  text-align: left;
-  gap: 12px;
-  padding: 12px 16px;
-  width: 100%;
-  border-top: 1px solid var(--line);
-}
-.error-model .provider {
-  display: block;
-  overflow-wrap: anywhere;
-}
-.error-model:hover {
   background: var(--hover);
+  border-bottom: 1px solid var(--line-1);
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 16px 14px;
 }
-.failure-message {
-  max-width: 520px;
-  min-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.x-code-block.errors-detail-message {
+  color: var(--ink-1);
+  max-height: 200px;
 }
-.failure-count {
-  color: var(--red);
+.errors-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.errors-detail-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .inline-link {
   color: var(--accent);
@@ -1235,19 +1222,6 @@ pre {
   gap: 8px;
 }
 @media (max-width: 1100px) {
-  .error-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .error-models {
-    display: flex;
-    flex-wrap: wrap;
-  }
-  .error-models .requests-heading {
-    width: 100%;
-  }
-  .error-model {
-    width: 50%;
-  }
   .trace-controls {
     justify-content: flex-end;
   }
@@ -1257,9 +1231,6 @@ pre {
     width: 100%;
   }
   .trace-controls input {
-    width: 100%;
-  }
-  .error-model {
     width: 100%;
   }
   .trace-controls {

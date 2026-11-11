@@ -1,39 +1,6 @@
 /* Traces 页：会话列表 + 单会话时间线阅读器。颜色一律取自 ui.css 令牌。 */
 
 /* 列表 */
-.traces-page .search,
-.traces-view .search {
-  display: inline-flex;
-  align-items: center;
-  position: relative;
-}
-.traces-page .search svg,
-.traces-view .search svg {
-  position: absolute;
-  left: 9px;
-  color: var(--ink-3);
-  pointer-events: none;
-}
-.traces-page .search .x-input[type="search"],
-.traces-view .search .x-input[type="search"] {
-  height: 30px;
-  padding: 0 10px 0 30px;
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-control);
-  background: var(--card);
-  font-size: 13px;
-  width: 240px;
-}
-.traces-page .search .x-input[type="search"]:hover,
-.traces-view .search .x-input[type="search"]:hover {
-  border-color: var(--line-3);
-}
-.traces-page .search .x-input[type="search"]:focus,
-.traces-view .search .x-input[type="search"]:focus {
-  outline: none;
-  border-color: var(--focus);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
-}
 .traces-models {
   display: inline-flex;
   align-items: center;

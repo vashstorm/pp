@@ -18,46 +18,6 @@ fn title<'a>(titles: &HashMap<&str, &'a str>, stem: Option<&str>) -> Option<&'a 
         .filter(|title| !title.trim().is_empty())
 }
 
-fn signature(message: &str) -> String {
-    let mut result = String::new();
-    let mut token = String::new();
-    let flush = |token: &mut String, result: &mut String| {
-        if token.len() >= 16 && token.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-            result.push_str("<id>");
-        } else {
-            let mut number = false;
-            for c in token.chars() {
-                if c.is_ascii_digit() {
-                    if !number {
-                        result.push('N');
-                    }
-                    number = true;
-                } else {
-                    result.push(c);
-                    number = false;
-                }
-            }
-        }
-        token.clear();
-    };
-    for c in message.chars() {
-        if c.is_alphanumeric() || c == '-' {
-            token.push(c);
-        } else {
-            flush(&mut token, &mut result);
-            if c.is_whitespace() {
-                if !result.ends_with(' ') {
-                    result.push(' ');
-                }
-            } else {
-                result.push(c);
-            }
-        }
-    }
-    flush(&mut token, &mut result);
-    result.trim().to_owned()
-}
-
 /// 会话文件去掉 `.jsonl` 后的 stem；子 Agent 文件 `<root>.subagents/sessions/<id>.jsonl`
 /// 归到根会话，与 `session_cost` 的目录约定一致。
 fn session_stem(file: &str) -> &str {
@@ -88,20 +48,11 @@ fn summary(rows: &[&RequestRow]) -> Value {
 }
 
 /// 失败请求列表；`status='failed'` 与时间范围、倒序都由部分索引 `requests_failed_time` 满足。
+/// `?3` 是 `limit+1`：多取一行只为判断是否还有更早的失败请求。
 pub(super) fn failed_requests_sql() -> String {
     format!(
-        "SELECT {COLUMNS} FROM requests WHERE status='failed' AND timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC"
+        "SELECT {COLUMNS} FROM requests WHERE status='failed' AND timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC LIMIT ?3"
     )
-}
-
-/// 已采集的工具执行错误；`t.status='error'` 由部分索引 `tool_calls_error_time` 满足。
-pub(super) fn tool_failures_sql() -> String {
-    "SELECT t.id,t.tool,t.call_id,t.timestamp,t.error_message,t.duration_ms,
-                 r.id,r.model,r.provider,r.model_reference,r.project,r.cwd
-                 FROM tool_calls t LEFT JOIN requests r ON r.request_key=t.request_key
-                 WHERE t.status='error' AND t.timestamp>=?1 AND t.timestamp<=?2
-                 ORDER BY t.timestamp DESC,t.id DESC"
-        .into()
 }
 
 /// Traces 详情的工具执行：派生表按会话作用域两段 `UNION ALL`，再用 `LEFT JOIN` 取请求信息。
@@ -121,145 +72,23 @@ pub(super) fn trace_tools_sql() -> String {
 }
 
 impl Store {
+    /// 失败请求列表：行本身就是页面数据，签名分组、模型分布与统计量都由前端按已加载行计算，
+    /// 与服务端聚合无关；`limit+1` 只用来判断是否存在更早的失败请求。
     pub(super) fn errors(&self, range: Range, now: i64, limit: usize) -> Result<Value> {
+        let since = range.since(now);
         let rows = self
             .conn
             .prepare(&failed_requests_sql())?
-            .query_map(params![range.since(now), now], row)?
+            .query_map(params![since, now, limit as i64 + 1], row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut signatures = BTreeMap::<String, Vec<&RequestRow>>::new();
-        let mut models = BTreeMap::<&str, Vec<&RequestRow>>::new();
-        for r in &rows {
-            signatures
-                .entry(signature(
-                    r.error_message.as_deref().unwrap_or("Unknown error"),
-                ))
-                .or_default()
-                .push(r);
-            models.entry(&r.model_reference).or_default().push(r);
-        }
-        let mut groups = signatures
-            .iter()
-            .map(|(key, group)| {
-                let mut value = summary(group);
-                value["signature"] = json!(key);
-                value["example"] = json!(group[0].error_message);
-                value
-            })
-            .collect::<Vec<_>>();
-        groups.sort_by_key(|g| {
-            std::cmp::Reverse((
-                g["requests"].as_u64().unwrap_or(0),
-                g["last_seen"].as_i64().unwrap_or(0),
-            ))
-        });
-        let mut by_model = models.iter().map(|(key, group)| json!({"key":key,"model":group[0].model,"provider":group[0].provider,"failures":group.len()})).collect::<Vec<_>>();
-        by_model.sort_by_key(|g| std::cmp::Reverse(g["failures"].as_u64().unwrap_or(0)));
+        let has_more = rows.len() > limit;
         let requests = rows
             .iter()
             .take(limit)
-            .map(|r| {
-                let mut value = r.value()?;
-                value["signature"] = json!(signature(
-                    r.error_message.as_deref().unwrap_or("Unknown error")
-                ));
-                Ok(value)
-            })
+            .map(RequestRow::value)
             .collect::<Result<Vec<_>>>()?;
-        let tools = self.tool_failures(range, now, limit)?;
         Ok(
-            json!({"summary":summary(&rows.iter().collect::<Vec<_>>()),"signatures":groups,"models":by_model,"requests":requests,"has_more":rows.len()>limit,"limit":limit,"range":range.label(),"updated_at":now,
-                "tool_summary":tools["summary"],"tool_signatures":tools["signatures"],"tool_failures":tools["failures"],"tool_has_more":tools["has_more"],"tool_limit":limit}),
-        )
-    }
-
-    /// 已采集的工具执行错误；请求关联只用于展示模型与目录，不改变工具结果。
-    fn tool_failures(&self, range: Range, now: i64, limit: usize) -> Result<Value> {
-        struct Failure {
-            id: i64,
-            tool: String,
-            call_id: String,
-            timestamp: i64,
-            error_message: Option<String>,
-            duration_ms: f64,
-            request_id: Option<i64>,
-            model: Option<String>,
-            provider: Option<String>,
-            model_reference: Option<String>,
-            project: Option<String>,
-            cwd: Option<String>,
-        }
-        let rows = self
-            .conn
-            .prepare(&tool_failures_sql())?
-            .query_map(params![range.since(now), now], |r| {
-                Ok(Failure {
-                    id: r.get(0)?,
-                    tool: r.get(1)?,
-                    call_id: r.get(2)?,
-                    timestamp: r.get(3)?,
-                    error_message: r.get(4)?,
-                    duration_ms: r.get(5)?,
-                    request_id: r.get(6)?,
-                    model: r.get(7)?,
-                    provider: r.get(8)?,
-                    model_reference: r.get(9)?,
-                    project: r.get(10)?,
-                    cwd: r.get(11)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut signatures = BTreeMap::<(String, String), Vec<&Failure>>::new();
-        for failure in &rows {
-            signatures
-                .entry((
-                    failure.tool.clone(),
-                    signature(&format!(
-                        "{}: {}",
-                        failure.tool,
-                        failure
-                            .error_message
-                            .as_deref()
-                            .unwrap_or("Unknown tool error")
-                    )),
-                ))
-                .or_default()
-                .push(failure);
-        }
-        let mut groups = signatures
-            .iter()
-            .map(|((tool, signature), group)| {
-                json!({"tool":tool,"signature":signature,"failures":group.len(),
-                    "first_seen":group.iter().map(|f| f.timestamp).min(),
-                    "last_seen":group.iter().map(|f| f.timestamp).max(),
-                    "example":group[0].error_message})
-            })
-            .collect::<Vec<_>>();
-        groups.sort_by_key(|g| {
-            std::cmp::Reverse((
-                g["failures"].as_u64().unwrap_or(0),
-                g["last_seen"].as_i64().unwrap_or(0),
-            ))
-        });
-        let tools = groups
-            .iter()
-            .filter_map(|g| g["tool"].as_str())
-            .collect::<BTreeSet<_>>()
-            .len();
-        let failures = rows
-            .iter()
-            .take(limit)
-            .map(|f| {
-                json!({"id":f.id,"tool":f.tool,"call_id":f.call_id,"timestamp":f.timestamp,
-                    "error_message":f.error_message,"duration_ms":f.duration_ms,
-                    "request_id":f.request_id,"model":f.model,"provider":f.provider,
-                    "model_reference":f.model_reference,"project":f.project,"cwd":f.cwd})
-            })
-            .collect::<Vec<_>>();
-        Ok(
-            json!({"summary":{"failures":rows.len(),"tools":tools,"signatures":groups.len(),
-                "last_seen":rows.iter().map(|f| f.timestamp).max()},
-                "signatures":groups,"failures":failures,"has_more":rows.len()>limit}),
+            json!({"requests":requests,"has_more":has_more,"limit":limit,"range":range.label(),"updated_at":now}),
         )
     }
 
@@ -449,17 +278,5 @@ impl Store {
             value["title"] = json!(title);
         }
         Ok(Some(value))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn signatures_normalize_ids_and_counters() {
-        assert_ne!(
-            super::signature("HTTP 429 quota"),
-            super::signature("HTTP 403 forbidden")
-        );
-        assert_eq!(super::signature("错误 123\n  请求"), "错误 N 请求");
     }
 }

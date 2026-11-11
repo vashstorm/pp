@@ -490,10 +490,10 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     assert!(!body.contains("verified reasoning"));
     let (status, body) = http(&address, "/api/stats/errors?range=all", &address);
     assert_eq!(status, 200);
-    assert_eq!(
-        serde_json::from_str::<Value>(&body).unwrap()["summary"]["requests"],
-        0
-    );
+    let errors: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(errors["limit"], 50);
+    assert!(errors["requests"].as_array().unwrap().is_empty());
+    assert!(!body.contains("private input marker"));
     for endpoint in ["overview", "requests", "models", "providers", "costs"] {
         let (status, body) = http(
             &address,
@@ -541,7 +541,7 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
 }
 
 #[test]
-fn stats_tool_failures_are_recorded_and_served_by_errors_and_tools() {
+fn stats_tool_failures_are_recorded_and_served_by_tools() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli::start_with(
@@ -592,29 +592,22 @@ fn stats_tool_failures_are_recorded_and_served_by_errors_and_tools() {
     assert!(!record["request_key"].as_str().unwrap().is_empty());
 
     let (_stats, address) = start_stats_server(dir.path());
+    // Errors 端点只承载失败请求；工具失败的展示入口是 Tools 页。
     let (status, body) = http(&address, "/api/stats/errors?range=all", &address);
     assert_eq!(status, 200);
     let errors: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(errors["summary"]["requests"], 0);
-    assert_eq!(errors["tool_summary"]["failures"], 1);
-    assert_eq!(errors["tool_summary"]["tools"], 1);
-    assert_eq!(errors["tool_failures"][0]["tool"], "read");
-    assert_eq!(errors["tool_failures"][0]["model"], "fixture-model");
-    let folder = dir
-        .path()
-        .file_name()
+    let mut keys = errors
+        .as_object()
         .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    assert_eq!(errors["tool_failures"][0]["project"], json!(folder));
-    assert!(
-        errors["tool_failures"][0]["cwd"]
-            .as_str()
-            .unwrap()
-            .contains(&folder)
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(
+        keys,
+        ["has_more", "limit", "range", "requests", "updated_at"]
     );
-    assert!(errors["tool_failures"][0]["request_id"].is_number());
-    assert!(errors["tool_failures"][0]["duration_ms"].is_number());
+    assert!(errors["requests"].as_array().unwrap().is_empty());
     let (status, body) = http(&address, "/api/stats/tools?range=all", &address);
     assert_eq!(status, 200);
     let tools: Value = serde_json::from_str(&body).unwrap();

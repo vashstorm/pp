@@ -1,134 +1,456 @@
 "use strict";
-let errorSignature = "",
-  errorModel = "";
+// Errors 页：失败请求按归一化签名分组，签名与模型都可点击筛选，两张表各自维护排序与分页。
+// 分组、模型分布与统计量都按“当前已加载的行”计算，加载更多后随之变化。
+const ERROR_LIMITS = [50, 200, 1000];
+const ERROR_SIGNATURE_LENGTH = 180;
+const ERROR_SIGNATURE_ROWS = 12;
+const ERROR_FAILURE_ROWS = 50;
+// 归一化顺序与参考实现一致：UUID、带前缀的 ID、长十六进制串先换成占位符，数字再换成 N。
+const ERROR_UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+const ERROR_PREFIXED_ID = /\b(?:req|msg|call|toolu|chatcmpl|resp|run|gen)[-_][A-Za-z0-9_-]{6,}/g;
+const ERROR_LONG_HEX = /\b[0-9a-f]{12,}\b/gi;
+const ERROR_NUMBER = /(?<![\w.-])\d+(?:\.\d+)?/g;
+const ERROR_STATUS = /^[1-5]\d\d$/;
+const ERROR_ARROW_UP_RIGHT =
+  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>';
+let errorLimit = ERROR_LIMITS[0],
+  errorSignature = null,
+  errorModel = null,
+  errorQuery = "",
+  errorSignatureSort = { key: "", dir: "" },
+  errorFailureSort = { key: "time", dir: "desc" },
+  errorSignatureShown = ERROR_SIGNATURE_ROWS,
+  errorFailureShown = ERROR_FAILURE_ROWS;
+
 function resetActivity() {
-  errorSignature = "";
-  errorModel = "";
+  errorLimit = ERROR_LIMITS[0];
+  errorSignature = null;
+  errorModel = null;
+  errorQuery = "";
+  errorSignatureSort = { key: "", dir: "" };
+  errorFailureSort = { key: "time", dir: "desc" };
+  errorSignatureShown = ERROR_SIGNATURE_ROWS;
+  errorFailureShown = ERROR_FAILURE_ROWS;
 }
-function activitySearch(label, placeholder) {
-  return `<div class="search">${icon("search")}<input id="search" type="search" aria-label="${label}" placeholder="${placeholder}" value="${h(query)}"></div>`;
+
+/// 归一化后的签名：逐行处理时同一条归一化文本即为分组键。
+function errorSignatureText(message) {
+  if (!message?.trim()) return "Unknown error";
+  const normalized = message
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(ERROR_UUID, "<id>")
+    .replace(ERROR_PREFIXED_ID, "<id>")
+    .replace(ERROR_LONG_HEX, "<hex>")
+    .replace(ERROR_NUMBER, (value) => (ERROR_STATUS.test(value) ? value : "N"));
+  return normalized.length > ERROR_SIGNATURE_LENGTH
+    ? `${normalized.slice(0, ERROR_SIGNATURE_LENGTH - 1)}…`
+    : normalized;
 }
-function activityFooter(rows) {
-  return `<div class="table-footer">${number(Math.min(visible, rows.length))} of ${number(rows.length)}${visible < rows.length ? '<button class="outline-button" data-more>Show more</button>' : ""}</div>`;
+
+/// 一个失败请求的模型身份：与 `/api/stats/errors` 的 `model_reference` 同源。
+const errorModelKey = (row) => row.model_reference;
+
+function errorGroups(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const signature = errorSignatureText(row.error_message);
+    let group = groups.get(signature);
+    if (!group) {
+      group = {
+        signature,
+        count: 0,
+        firstSeen: row.timestamp,
+        lastSeen: row.timestamp,
+        latest: row,
+        models: new Map(),
+      };
+      groups.set(signature, group);
+    }
+    group.count++;
+    if (row.timestamp < group.firstSeen) group.firstSeen = row.timestamp;
+    if (row.timestamp > group.lastSeen) {
+      group.lastSeen = row.timestamp;
+      group.latest = row;
+    }
+    const key = errorModelKey(row);
+    const model = group.models.get(key);
+    if (model) model.count++;
+    else
+      group.models.set(key, {
+        key,
+        model: row.model,
+        provider: row.provider,
+        count: 1,
+      });
+  }
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      models: [...group.models.values()].sort(
+        (a, b) => b.count - a.count || a.model.localeCompare(b.model),
+      ),
+    }))
+    .sort((a, b) => b.count - a.count || b.lastSeen - a.lastSeen);
 }
-function activityLimit(label) {
-  return data.has_more
-    ? `<div class="load-note"><span>Loaded the latest ${number(data.limit)} ${label}. Search and filters apply to this loaded list.</span>${limit === 500 ? '<button class="outline-button" data-load>Load latest 2,000</button>' : ""}</div>`
-    : "";
+
+function errorModelGroups(rows) {
+  const models = new Map();
+  for (const row of rows) {
+    const key = errorModelKey(row);
+    const model = models.get(key);
+    if (model) model.count++;
+    else models.set(key, { key, model: row.model, provider: row.provider, count: 1 });
+  }
+  return [...models.values()].sort(
+    (a, b) => b.count - a.count || a.model.localeCompare(b.model),
+  );
 }
-function failureTable(rows) {
-  return `<div class="table-wrap"><table class="failure-table"><thead><tr><th>When</th><th>Model</th><th>Error</th><th>Project</th><th class="right">Tokens</th><th class="right">Cost</th></tr></thead><tbody>${
-    rows.length
-      ? rows
-          .slice(0, visible)
-          .map(
-            (r) =>
-              `<tr tabindex="0" data-id="${r.id}" aria-label="View failed ${h(r.model)} request ${r.id}"><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td><div class="model-name">${h(r.model)}</div><div class="provider">${h(r.provider)}</div></td><td><div class="failure-message" title="${h(r.error_message)}">${h(r.error_message || "Unknown error")}</div></td><td class="project" title="${h(r.cwd)}">${h(r.project)}</td><td class="right num">${detailed(total(r))}</td><td class="right num">${money(r.cost)}</td></tr>`,
-          )
-          .join("")
-      : '<tr><td colspan="6"><div class="empty">No matching failures</div></td></tr>'
-  }</tbody></table></div>`;
+
+const errorTokens = (row) =>
+  row.input_tokens == null || row.output_tokens == null
+    ? null
+    : row.input_tokens + row.output_tokens;
+
+// 费用按请求记录时的快照展示；未定价（无费率快照）与参考页一样显示 N/A。
+const errorCost = (row) => (row.cost == null ? "N/A" : toolCost(row.cost, 4));
+
+function errorEmpty(title, hint = "") {
+  return `<div class="x-empty">${TOOL_INBOX}<div class="x-empty-title">${h(title)}</div>${hint ? `<div class="x-empty-hint">${h(hint)}</div>` : ""}</div>`;
 }
+
+function errorSortHeader(column, sort, table) {
+  const sorted = sort.key === column.key ? sort.dir : "";
+  const arrow =
+    sorted === "asc" ? TOOL_ARROW_UP : sorted === "desc" ? TOOL_ARROW_DOWN : "";
+  return `<th data-align="${column.align || "left"}" data-sortable="${Boolean(column.sort)}"${sorted ? ` data-sorted="${sorted}" aria-sort="${sorted === "asc" ? "ascending" : "descending"}"` : ""}${column.width ? ` style="width:${column.width}px"` : ""}${column.title ? ` title="${h(column.title)}"` : ""}${column.sort ? ` data-errorsort="${column.key}" data-errortable="${table}" data-erroralign="${column.align || "left"}"` : ""}>${h(column.header)}${arrow ? `<span class="x-sort-arrow">${arrow}</span>` : ""}</th>`;
+}
+
+function errorTableMore(total, shown, step, table) {
+  if (total <= step) return "";
+  return `<div class="x-table-more"><span class="x-micro">${number(shown)} of ${number(total)}</span>${total > shown ? `<button type="button" class="x-btn" data-size="sm" data-variant="ghost" data-errortable="${table}" data-errorpage="more" data-errors-focus="${table}-more">Show more</button>` : ""}${shown > step ? `<button type="button" class="x-btn" data-size="sm" data-variant="ghost" data-errortable="${table}" data-errorpage="less" data-errors-focus="${table}-less">Show fewer</button>` : ""}</div>`;
+}
+
+/// 表格骨架：列定义、排序、行分页、展开行与行内焦点属性都由调用方给出。
+function errorTable(config) {
+  const { columns, rows, sort, shown, step, table, dense, rowAttr, selected, expand, empty } =
+    config;
+  if (!rows.length) return empty;
+  const sorted = toolSorted(rows, columns, sort);
+  const visible = sorted.slice(0, shown);
+  const head = columns.map((column) => errorSortHeader(column, sort, table)).join("");
+  const body = visible
+    .map((row) => {
+      const detail = expand ? expand(row) : "";
+      return `<tr data-clickable="true" data-selected="${selected(row)}" tabindex="0" ${rowAttr(row)}>${columns
+        .map(
+          (column) =>
+            `<td data-align="${column.align || "left"}"${column.wrap ? ' data-wrap="true"' : ""}>${column.render(row)}</td>`,
+        )
+        .join("")}</tr>${
+        detail ? `<tr><td colspan="${columns.length}" data-wrap="true" style="padding:0">${detail}</td></tr>` : ""
+      }`;
+    })
+    .join("");
+  return `<div class="x-table-wrap"><table class="x-table"${dense ? ' data-dense="true"' : ""}><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${errorTableMore(sorted.length, visible.length, step, table)}`;
+}
+
+function errorCell(primary, secondary) {
+  return `<div class="x-row" style="gap:10px"><div class="x-stack" style="gap:0"><span class="x-cell-primary x-truncate">${primary}</span>${secondary == null ? "" : `<span class="x-cell-secondary x-truncate">${h(secondary)}</span>`}</div></div>`;
+}
+
+function errorGroupDetail(group) {
+  const latest = group.latest;
+  const source = latest.error_message;
+  return `<div class="errors-detail"><pre class="x-code-block errors-detail-message">${h(source || "Unknown error")}</pre><div class="errors-detail-meta"><span class="x-muted">${number(group.count)} failures · first ${h(localTime(group.firstSeen))} · last ${h(localTime(group.lastSeen))}</span>${latest.id == null ? "" : `<button type="button" class="x-btn" data-size="sm" data-error-latest="${latest.id}" data-errors-focus="latest-${encodeURIComponent(group.signature)}">Open latest ${ERROR_ARROW_UP_RIGHT}</button>`}</div><div class="errors-detail-models">${group.models
+    .map(
+      (model) =>
+        `<span class="x-badge" data-mono="true">${h(model.model)} <span class="x-dim">${h(model.provider)}</span> <span class="x-num">${number(model.count)}</span></span>`,
+    )
+    .join("")}</div></div>`;
+}
+
+function errorSignatureColumns(top) {
+  return [
+    {
+      key: "signature",
+      header: "Signature",
+      wrap: true,
+      sort: (group) => group.signature,
+      render: (group) =>
+        `<span class="errors-signature"${group.latest.error_message == null ? "" : ` title="${h(group.latest.error_message)}"`}>${h(group.signature)}</span>`,
+    },
+    {
+      key: "models",
+      header: "Models",
+      sort: (group) => group.models.length,
+      render: (group) =>
+        errorCell(
+          `<span class="x-mono">${h(group.models[0]?.model)}</span>`,
+          group.models.length > 1 ? `+${group.models.length - 1} more` : group.models[0]?.provider,
+        ),
+    },
+    {
+      key: "last",
+      header: "Last seen",
+      sort: (group) => group.lastSeen,
+      render: (group) =>
+        `<span class="x-muted" title="${h(localTime(group.lastSeen))}">${relative(group.lastSeen)}</span>`,
+    },
+    {
+      key: "count",
+      header: "Failures",
+      align: "right",
+      width: 120,
+      sort: (group) => group.count,
+      render: (group) => toolMeter(group.count, top, number(group.count), "var(--bad)"),
+    },
+  ];
+}
+
+const errorFailureColumns = [
+  {
+    key: "time",
+    header: "When",
+    width: 120,
+    sort: (row) => row.timestamp,
+    render: (row) =>
+      `<span class="x-muted" title="${h(localTime(row.timestamp))}">${relative(row.timestamp)}</span>`,
+  },
+  {
+    key: "model",
+    header: "Model",
+    sort: (row) => row.model,
+    render: (row) => errorCell(`<span class="x-mono">${h(row.model)}</span>`, row.provider),
+  },
+  {
+    key: "error",
+    header: "Error",
+    sort: (row) => row.error_message ?? "",
+    render: (row) =>
+      `<span class="errors-message"${row.error_message == null ? "" : ` title="${h(row.error_message)}"`}>${h(row.error_message || "Unknown error")}</span>`,
+  },
+  {
+    key: "project",
+    header: "Project",
+    sort: (row) => row.project,
+    render: (row) =>
+      `<span class="x-mono x-muted" title="${h(row.cwd)}">${h(row.project)}</span>`,
+  },
+  {
+    key: "tokens",
+    header: "Tokens",
+    align: "right",
+    sort: (row) => errorTokens(row) ?? -1,
+    render: (row) => `<span class="x-num">${number(errorTokens(row))}</span>`,
+  },
+  {
+    key: "cost",
+    header: "Cost",
+    title: "API-equivalent estimate",
+    align: "right",
+    sort: (row) => row.cost ?? -1,
+    render: (row) => `<span class="x-num">${errorCost(row)}</span>`,
+  },
+];
+
+function errorModelList(models) {
+  if (!models.length) return errorEmpty("No affected models");
+  const max = models[0].count;
+  return `<div class="x-bar-list">${models
+    .slice(0, 12)
+    .map((model) => {
+      const width = max > 0 ? Math.max(0.5, (model.count / max) * 100) : 0;
+      const color =
+        model.key === errorModel
+          ? "var(--bad)"
+          : "color-mix(in srgb, var(--bad) 45%, transparent)";
+      return `<button type="button" class="x-bar-list-row" data-error-model="${h(model.key)}" data-errors-focus="model-${encodeURIComponent(model.key)}" aria-pressed="${model.key === errorModel}"><span class="x-bar-list-fill" style="width:${width}%;background:${color}"></span><span class="x-bar-list-label"><span class="x-row" style="gap:6px;min-width:0"><span class="x-mono x-truncate">${h(model.model)}</span><span class="x-dim x-truncate">${h(model.provider)}</span></span></span><span class="x-bar-list-value">${number(model.count)}</span></button>`;
+    })
+    .join("")}</div>`;
+}
+
+function errorFilterChip(kind, label) {
+  return `<button type="button" class="x-btn errors-filter" data-size="sm" data-error-clear="${kind}" data-errors-focus="clear-${kind}" title="${h(label)}"><span class="x-mono x-truncate">${h(label)}</span>${icon("close", 12)}</button>`;
+}
+
 function errorsPage() {
-  if (!data) return '<div class="loading">Loading errors…</div>';
-  const s = data.summary,
-    q = query.trim().toLowerCase();
-  const rows = data.requests.filter(
-    (r) =>
-      (!errorSignature || r.signature === errorSignature) &&
-      (!errorModel || r.model_reference === errorModel) &&
-      (!q ||
-        [r.model, r.provider, r.project, r.cwd, r.error_message].some((v) =>
-          String(v || "")
+  if (!data) return '<div class="loading">Loading statistics…</div>';
+  const rows = data.requests || [];
+  const groups = errorGroups(rows);
+  const models = errorModelGroups(rows);
+  const newest = rows.reduce((found, row) => (!found || row.timestamp > found.timestamp ? row : found), null);
+  // 刷新后已消失的筛选值不再生效，但状态保留：行重新出现时同名筛选自动恢复。
+  const signature = groups.some((group) => group.signature === errorSignature) ? errorSignature : null;
+  const model = models.some((item) => item.key === errorModel) ? errorModel : null;
+  const needle = errorQuery.trim().toLowerCase();
+  const filtered = rows.filter(
+    (row) =>
+      (signature === null || errorSignatureText(row.error_message) === signature) &&
+      (model === null || errorModelKey(row) === model) &&
+      (needle === "" ||
+        [row.model, row.provider, row.project, row.error_message].some((value) =>
+          String(value ?? "")
             .toLowerCase()
-            .includes(q),
+            .includes(needle),
         )),
   );
-  return `<h1>Errors</h1><p class="subtitle">Failed model requests in the ${descriptions[range]}, grouped by error signature. Open a failure for its full payload.</p><div class="panel metrics error-metrics">${metric("Failures", number(s.requests), `in the ${descriptions[range]}`)}${metric("Signatures", number(data.signatures.length), `top: ${number(data.signatures[0]?.requests || 0)} failures`)}${metric("Affected models", number(data.models.length))}${metric("Last failure", s.last_seen ? relative(s.last_seen) : "—", s.last_seen ? localTime(s.last_seen) : "No failures recorded")}</div><div class="error-layout"><section class="panel"><div class="requests-heading"><h2>Error signatures</h2><p class="panel-description">IDs and counters are normalized. Expand a signature to inspect it and filter the failures below.</p></div><div class="table-wrap"><table class="signature-table"><thead><tr><th>Signature</th><th>Models</th><th>Last seen</th><th class="right">Failures</th></tr></thead><tbody>${
-    data.signatures
-      .map((g, i) => {
-        const key = `error:${g.signature}`,
-          open = expandedGroups.has(key);
-        return `<tr class="group-row${errorSignature === g.signature ? " selected" : ""}" tabindex="0" data-error-signature="${i}" aria-expanded="${open}" aria-controls="signature-${i}" aria-label="${open ? "Collapse" : "Expand"} error signature ${i + 1}"><td><div class="signature-label">${icon(open ? "down" : "chevron", 12)}<span>${h(g.signature)}</span></div></td><td title="${h(g.models.map((m) => m.key).join(", "))}">${h(g.models[0]?.model)}${g.models.length > 1 ? ` +${g.models.length - 1}` : `<div class="provider">${h(g.models[0]?.provider)}</div>`}</td><td>${relative(g.last_seen)}</td><td class="right num">${number(g.requests)}</td></tr><tr class="expanded-detail" id="signature-${i}"${open ? "" : " hidden"}><td colspan="4">${open ? `<div class="group-details"><div class="detail-title">Normalized signature</div><pre class="error-example">${h(g.signature)}</pre><div class="detail-title">Latest example</div><pre class="error-example">${h(g.example || "Unknown error")}</pre><p class="panel-description">${h(g.models.map((m) => m.key).join(" · "))} · First seen ${h(localTime(g.first_seen))}</p></div>` : ""}</td></tr>`;
-      })
-      .join("") ||
-    '<tr><td colspan="4"><div class="empty">No failures in this range</div></td></tr>'
-  }</tbody></table></div></section><section class="panel error-models"><div class="requests-heading"><h2>By model</h2><p class="panel-description">Select a model to filter.</p></div>${data.models.map((m, i) => `<button class="error-model${errorModel === m.key ? " selected" : ""}" data-error-model="${i}" aria-pressed="${errorModel === m.key}"><span><span class="model-name">${h(m.model)}</span><span class="provider">${h(m.provider)} · ${h(m.key)}</span></span><span class="num">${number(m.failures)}</span></button>`).join("") || '<div class="empty">No affected models</div>'}</section></div><section class="panel"><div class="requests-heading panel-heading"><div><h2>Failures</h2><p class="panel-description">${number(rows.length)} of ${number(data.requests.length)} loaded failures, newest first${errorSignature || errorModel ? ' · <button class="inline-link" data-clear-errors>Clear filters</button>' : ""}</p></div>${activitySearch("Search failures", "Error, model or project…")}</div>${failureTable(rows)}${activityFooter(rows)}</section>${activityLimit("failures; signature and model totals cover the entire range")}${pricingNotice(data)}`;
+  const loaded = rows.length;
+  const limitIndex = ERROR_LIMITS.indexOf(errorLimit);
+  const next =
+    limitIndex >= 0 && limitIndex + 1 < ERROR_LIMITS.length ? ERROR_LIMITS[limitIndex + 1] : null;
+  const complete = loaded < errorLimit;
+  const selectedModel = models.find((item) => item.key === model);
+  const filteredSignature = groups.find((group) => group.signature === signature);
+  const window_label = descriptions[range];
+  const stats = [
+    toolStat(
+      "Failures",
+      number(loaded),
+      complete ? `in the ${window_label}` : `latest ${number(loaded)} loaded`,
+    ),
+    toolStat("Signatures", number(groups.length), groups[0] ? `top: ${number(groups[0].count)} failures` : undefined, {
+      title: "Distinct error messages after normalizing ids and numbers",
+    }),
+    toolStat("Affected models", number(models.length), models[0]?.model),
+    toolStat(
+      "Last failure",
+      newest ? relative(newest.timestamp) : "–",
+      newest ? localTime(newest.timestamp) : `none in the ${window_label}`,
+    ),
+  ].join("");
+  const actions = `${signature === null ? "" : errorFilterChip("signature", signature)}${
+    selectedModel ? errorFilterChip("model", selectedModel.model) : ""
+  }<div class="x-search">${icon("search", 14)}<input class="x-input" id="search" type="search" aria-label="Filter" placeholder="Message, model or project" value="${h(errorQuery)}"></div>`;
+  const footer = complete
+    ? ""
+    : `<span>Showing the latest ${number(loaded)} failures in the ${window_label}; older ones are not loaded.</span>${
+        next === null
+          ? ""
+          : `<button type="button" class="x-btn" data-size="sm" data-errors-load>Load latest ${number(next)}</button>`
+      }`;
+  return `<div class="x-page"><header class="x-page-header x-rise"><div><h1 class="x-page-title">Errors</h1><p class="x-page-description">Failed model requests in the ${h(window_label)}, grouped by error signature. Open a failure for its full payload.</p></div></header><div class="x-stat-grid x-rise" style="--stat-min:170px">${stats}</div><div class="x-grid x-grid-main-side">${toolCard(
+    1,
+    "Error signatures",
+    "Same message with ids and counters normalized. Select one to filter the failures below.",
+    "",
+    errorTable({
+      columns: errorSignatureColumns(groups[0]?.count ?? 0),
+      rows: groups,
+      sort: errorSignatureSort,
+      shown: errorSignatureShown,
+      step: ERROR_SIGNATURE_ROWS,
+      table: "signature",
+      rowAttr: (group) =>
+        `data-error-signature="${h(group.signature)}" data-errors-focus="signature-${encodeURIComponent(group.signature)}"`,
+      selected: (group) => group.signature === signature,
+      expand: (group) => (group.signature === signature ? errorGroupDetail(group) : ""),
+      empty: errorEmpty(`No failures in the ${window_label}`, "Every request succeeded or was aborted."),
+    }),
+    true,
+  )}${toolCard(
+    2,
+    "By model",
+    "Failures per model. Select one to filter.",
+    "",
+    errorModelList(models),
+  )}</div>${toolCard(
+    3,
+    "Failures",
+    `${number(filtered.length)} of ${number(loaded)} failures, newest first`,
+    actions,
+    errorTable({
+      columns: errorFailureColumns,
+      rows: filtered,
+      sort: errorFailureSort,
+      shown: errorFailureShown,
+      step: ERROR_FAILURE_ROWS,
+      table: "failure",
+      dense: true,
+      rowAttr: (row) => `data-id="${row.id}" data-errors-focus="failure-${row.id}"`,
+      selected: () => false,
+      empty: errorEmpty(
+        filteredSignature || selectedModel ? "No failures match" : `No failures in the ${window_label}`,
+        filteredSignature || selectedModel || needle ? "Clear the search or the selected filters." : "",
+      ),
+    }),
+    true,
+    footer,
+  )}</div>`;
 }
-function toolSignatureTable(signatures) {
-  return `<div class="table-wrap"><table class="signature-table"><thead><tr><th>Tool</th><th>Signature</th><th>Last seen</th><th class="right">Failures</th></tr></thead><tbody>${
-    signatures.length
-      ? signatures
-          .map(
-            (g) =>
-              `<tr tabindex="0" aria-label="Tool error signature in ${h(g.tool)}"><td><div class="model-name">${h(g.tool)}</div></td><td><div class="failure-message" title="${h(g.signature)}">${h(g.signature)}</div></td><td title="${h(localTime(g.last_seen))}">${relative(g.last_seen)}</td><td class="right num">${number(g.failures)}</td></tr>`,
-          )
-          .join("")
-      : '<tr><td colspan="4"><div class="empty">No tool failures in this range</div></td></tr>'
-  }</tbody></table></div>`;
-}
-function toolCounts(signatures) {
-  const counts = new Map();
-  for (const g of signatures) counts.set(g.tool, (counts.get(g.tool) || 0) + g.failures);
-  const rows = [...counts].sort((a, b) => b[1] - a[1]);
-  return `<div class="table-wrap"><table><thead><tr><th>Tool</th><th class="right">Failures</th></tr></thead><tbody>${
-    rows.length
-      ? rows
-          .map(([tool, failures]) => `<tr><td><div class="model-name">${h(tool)}</div></td><td class="right num">${number(failures)}</td></tr>`)
-          .join("")
-      : '<tr><td colspan="2"><div class="empty">No affected tools</div></td></tr>'
-  }</tbody></table></div>`;
-}
-function toolFailureTable(rows) {
-  return `<div class="table-wrap"><table class="failure-table"><thead><tr><th>When</th><th>Tool</th><th>Error</th><th>Request</th><th class="right">Duration</th></tr></thead><tbody>${
-    rows.length
-      ? rows
-          .map(
-            (r) =>
-              `<tr tabindex="0"${r.request_id ? ` data-id="${r.request_id}" aria-label="View request ${r.request_id}"` : ""}><td title="${h(localTime(r.timestamp))}">${relative(r.timestamp)}</td><td><div class="model-name">${h(r.tool)}</div><div class="provider">${h(r.call_id)}</div></td><td><div class="failure-message" title="${h(r.error_message)}">${h(r.error_message || "Unknown tool error")}</div></td><td class="project" title="${h(r.cwd)}">${r.request_id ? `#${r.request_id}<div class="provider">${h(r.project || "")}</div>` : '<span class="provider">Not linked to a request</span>'}</td><td class="right num">${detailed(r.duration_ms, duration(r.duration_ms), " ms")}</td></tr>`,
-          )
-          .join("")
-      : '<tr><td colspan="5"><div class="empty">No tool failures recorded</div></td></tr>'
-  }</tbody></table></div>`;
-}
-function toolFailuresPanel() {
-  if (!data) return "";
-  const s = data.tool_summary || {},
-    rows = data.tool_failures || [],
-    signatures = data.tool_signatures || [];
-  const more = data.tool_has_more
-    ? `<p class="load-note">Loaded the latest ${number(data.tool_limit)} tool failures; narrow the time range to see older ones.</p>`
-    : "";
-  return `<div class="panel metrics error-metrics">${metric("Tool failures", number(s.failures), `in the ${descriptions[range]}`)}${metric("Tool signatures", number(s.signatures), `top: ${number(signatures[0]?.failures || 0)} failures`)}${metric("Affected tools", number(s.tools))}${metric("Last tool failure", s.last_seen ? relative(s.last_seen) : "—", s.last_seen ? localTime(s.last_seen) : "No tool failures recorded")}</div><div class="error-layout"><section class="panel"><div class="requests-heading"><h2>Tool error signatures</h2><p class="panel-description">Recorded tool executions that returned an error, grouped by tool and normalized message. Only executions collected after this pp version are counted.</p></div>${toolSignatureTable(signatures)}</section><section class="panel error-models"><div class="requests-heading"><h2>Tools</h2><p class="panel-description">Failed executions per tool.</p></div>${toolCounts(signatures)}</section></div><section class="panel"><div class="requests-heading panel-heading"><div><h2>Tool failures</h2><p class="panel-description">${number(rows.length)} loaded tool failures, newest first</p></div></div>${toolFailureTable(rows)}${more}</section>`;
-}
-function activityClick(e) {
-  const target = e.target.closest(
-    "[data-error-signature],[data-error-model],[data-clear-errors]",
-  );
-  if (!target) return false;
-  const d = target.dataset;
-  if (d.errorSignature !== undefined) {
-    const i = Number(d.errorSignature),
-      sig = data.signatures[i].signature,
-      key = `error:${sig}`;
-    if (expandedGroups.has(key)) {
-      expandedGroups.delete(key);
-      if (errorSignature === sig) errorSignature = "";
-    } else {
-      expandedGroups.add(key);
-      errorSignature = sig;
-    }
-    visible = 100;
-    render();
-  } else if (d.errorModel !== undefined) {
-    const key = data.models[Number(d.errorModel)].key;
-    errorModel = errorModel === key ? "" : key;
-    visible = 100;
-    render();
-  } else {
-    errorSignature = "";
-    errorModel = "";
-    render();
-  }
+
+function activityInput(e) {
+  if (page !== "errors" || e.target.id !== "search") return false;
+  errorQuery = e.target.value;
+  errorFailureShown = ERROR_FAILURE_ROWS;
+  render();
   return true;
+}
+
+function activityClick(e) {
+  const clear = e.target.closest("[data-error-clear]");
+  if (clear) {
+    if (clear.dataset.errorClear === "signature") errorSignature = null;
+    else errorModel = null;
+    render();
+    return true;
+  }
+  const header = e.target.closest("[data-errorsort]");
+  if (header) {
+    const table = header.dataset.errortable;
+    const key = header.dataset.errorsort;
+    const state = table === "signature" ? errorSignatureSort : errorFailureSort;
+    const dir =
+      state.key === key
+        ? state.dir === "asc"
+          ? "desc"
+          : "asc"
+        : header.dataset.erroralign === "right"
+          ? "desc"
+          : "asc";
+    if (table === "signature") errorSignatureSort = { key, dir };
+    else errorFailureSort = { key, dir };
+    render();
+    return true;
+  }
+  const moreButton = e.target.closest("[data-errorpage]");
+  if (moreButton) {
+    const table = moreButton.dataset.errortable;
+    const step = table === "signature" ? ERROR_SIGNATURE_ROWS : ERROR_FAILURE_ROWS;
+    const grow = moreButton.dataset.errorpage === "more";
+    if (table === "signature")
+      errorSignatureShown = grow ? errorSignatureShown + step * 4 : step;
+    else errorFailureShown = grow ? errorFailureShown + step * 4 : step;
+    render();
+    return true;
+  }
+  if (e.target.closest("[data-errors-load]")) {
+    const index = ERROR_LIMITS.indexOf(errorLimit);
+    if (index >= 0 && index + 1 < ERROR_LIMITS.length) {
+      errorLimit = ERROR_LIMITS[index + 1];
+      errorFailureShown = ERROR_FAILURE_ROWS;
+      refresh();
+    }
+    return true;
+  }
+  const latest = e.target.closest("[data-error-latest]");
+  if (latest) {
+    openDrawer(Number(latest.dataset.errorLatest), latest);
+    return true;
+  }
+  const signatureRow = e.target.closest("[data-error-signature]");
+  if (signatureRow) {
+    const signature = signatureRow.dataset.errorSignature;
+    errorSignature = errorSignature === signature ? null : signature;
+    render();
+    return true;
+  }
+  const modelRow = e.target.closest("[data-error-model]");
+  if (modelRow) {
+    const key = modelRow.dataset.errorModel;
+    errorModel = errorModel === key ? null : key;
+    render();
+    return true;
+  }
+  return false;
 }

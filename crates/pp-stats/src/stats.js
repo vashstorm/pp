@@ -132,14 +132,33 @@ const quantile = (values, q) => {
     i = Math.floor(x);
   return sorted[i] + (sorted[Math.ceil(x)] - sorted[i]) * (x - i);
 };
+// 相对时间与参考实现一致：30 秒以内不按分钟计，超过 30 天按月折算。
 const relative = (ms) => {
-  const seconds = Math.max(0, (Date.now() - ms) / 1000);
-  if (seconds < 60) return "just now";
-  if (seconds < 3600)
-    return `${Math.floor(seconds / 60)} minute${seconds >= 120 ? "s" : ""} ago`;
-  if (seconds < 86400)
-    return `about ${Math.floor(seconds / 3600)} hour${seconds >= 7200 ? "s" : ""} ago`;
-  return `${Math.floor(seconds / 86400)} days ago`;
+  const minutes = Math.max(0, (Date.now() - ms) / 60000);
+  const seconds = minutes * 60;
+  if (seconds < 30) return "less than a minute ago";
+  if (minutes < 1.5) return "1 minute ago";
+  if (minutes < 45) return `${Math.round(minutes)} minutes ago`;
+  if (minutes < 90) return "about 1 hour ago";
+  if (minutes < 1440) return `about ${Math.round(minutes / 60)} hours ago`;
+  if (minutes < 2520) return "1 day ago";
+  if (minutes < 43200) return `${Math.round(minutes / 1440)} days ago`;
+  if (minutes < 86400) return "about 1 month ago";
+  const months = Math.round(minutes / 43200);
+  if (months < 12) return `${months} months ago`;
+  const years = Math.round(months / 12);
+  if (years === 1) return "about 1 year ago";
+  if (years < 2) return "over 1 year ago";
+  return `about ${years} years ago`;
+};
+// Live 计数用短写法，与参考实现的 topbar 一致。
+const liveAge = (ms) => {
+  const minutes = Math.floor(Math.max(0, Date.now() - ms) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 };
 const localTime = (ms) =>
   new Date(ms).toLocaleString("en-US", {
@@ -385,7 +404,11 @@ async function refresh() {
     const result = await getJSON(
       page === "traces" && traceRequest
         ? `/api/stats/traces/${traceRequest}`
-        : `/api/stats/${page}?range=${range}${["requests", "errors", "traces"].includes(page) ? `&limit=${limit}` : ""}`,
+        : `/api/stats/${page}?range=${range}${
+            ["requests", "errors", "traces"].includes(page)
+              ? `&limit=${page === "errors" ? errorLimit : limit}`
+              : ""
+          }`,
       controller.signal,
     );
     if (token !== generation) return;
@@ -413,7 +436,7 @@ async function refresh() {
   updateLive();
 }
 function updateLive() {
-  const age = lastUpdated ? relative(lastUpdated) : "not updated";
+  const age = lastUpdated ? liveAge(lastUpdated) : "not updated";
   $("live").querySelector(".live-chip-count").textContent = age;
 }
 $("live").onclick = refresh;
@@ -1922,6 +1945,7 @@ function render() {
   const toolsFocus = focused?.dataset?.toolsFocus;
   const providerFocus = focused?.dataset?.providerFocus;
   const modelsFocus = focused?.dataset?.modelsFocus;
+  const errorsFocus = focused?.dataset?.errorsFocus;
   const focusControl = ["share", "costSplit", "series"].find((k) => focused?.dataset?.[k]);
   const focusValue = focusControl && focused.dataset[focusControl];
   const label = pages.find((p) => p[0] === page)?.[1] || page;
@@ -1938,7 +1962,7 @@ function render() {
       : page === "requests"
         ? requests()
         : page === "errors"
-          ? errorsPage() + toolFailuresPanel()
+          ? errorsPage()
           : page === "traces"
             ? tracesPage()
             : ["models", "providers", "costs", "tools", "projects"].includes(page)
@@ -1971,6 +1995,10 @@ function render() {
     $("page")
       .querySelector(`[data-models-focus="${CSS.escape(modelsFocus)}"]`)
       ?.focus({ preventScroll: true });
+  } else if (errorsFocus) {
+    $("page")
+      .querySelector(`[data-errors-focus="${CSS.escape(errorsFocus)}"]`)
+      ?.focus({ preventScroll: true });
   } else if (insightFocused) {
     $(insightFocused)?.focus({ preventScroll: true });
   } else if (providerSelectFocused) {
@@ -2001,6 +2029,7 @@ function render() {
   else traceRemoveDrawer();
 }
 $("page").addEventListener("input", (e) => {
+  if (activityInput(e)) return;
   if (e.target.id === "search") {
     query = e.target.value;
     visible = 100;
@@ -2069,7 +2098,7 @@ $("page").addEventListener("click", (e) => {
   }
 });
 $("page").addEventListener("keydown", (e) => {
-  const action = e.target.closest("th[data-sort],tr[data-id],tr[data-expand],tr[data-error-signature],tr[data-trace],th[data-toolsort],tr[data-toolselect],th[data-provider-sort],tr[data-provider-row],tr[data-model-row]");
+  const action = e.target.closest("th[data-sort],tr[data-id],tr[data-expand],tr[data-error-signature],th[data-errorsort],tr[data-trace],th[data-toolsort],tr[data-toolselect],th[data-provider-sort],tr[data-provider-row],tr[data-model-row]");
   if (
     (e.key === "Enter" || e.key === " ") &&
     action && !e.target.closest("button,a,input,select,textarea")

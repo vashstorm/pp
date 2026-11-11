@@ -457,13 +457,15 @@ fn ensure_schema(conn: &mut Connection) -> Result<()> {
             "tool_calls_time",
             "CREATE INDEX IF NOT EXISTS tool_calls_time ON tool_calls(timestamp DESC,id DESC)",
         ),
-        (
-            "tool_calls_error_time",
-            "CREATE INDEX IF NOT EXISTS tool_calls_error_time ON tool_calls(timestamp DESC,id DESC) WHERE status='error'",
-        ),
     ] {
         changed |= !index_exists(&tx, name)?;
         tx.execute_batch(ddl)?;
+    }
+    // `tool_calls_error_time` 曾服务于 Errors 页的工具失败列表；该列表与聚合删除后无消费者，
+    // 旧库在这里幂等删除，不留下只会拖慢写入的废弃索引。
+    if index_exists(&tx, "tool_calls_error_time")? {
+        tx.execute_batch("DROP INDEX IF EXISTS tool_calls_error_time;")?;
+        changed = true;
     }
     let mut requests = table_columns(&tx, "requests")?;
     let mut payloads = table_columns(&tx, "request_payloads")?;
@@ -1219,8 +1221,8 @@ providers:
         assert_eq!(old["request"]["status"], "failed");
         assert_eq!(old["request"]["entry_id"], "old-entry");
         assert_eq!(old["session_entry"], json!([snapshot]));
-        let errors = store.errors(Range::All, 2000, 500).unwrap();
-        assert_eq!(errors["summary"]["requests"], 1);
+        let errors = store.errors(Range::All, 2000, 50).unwrap();
+        assert_eq!(errors["requests"].as_array().unwrap().len(), 1);
         assert_eq!(errors["requests"][0]["error_message"], "retained failure");
         let mut new = fixture("new", 1001);
         new.cache_write_tokens = Some(10);
@@ -1252,8 +1254,8 @@ providers:
                 .unwrap();
         }
         store.link("failed-one", Path::new("/missing/session.jsonl"), &[json!({"id":"entry","type":"message","message":{"role":"assistant","content":"retained snapshot"}})]).unwrap();
-        let errors = store.errors(Range::All, 2000, 500).unwrap();
-        assert_eq!(errors["summary"]["requests"], 2);
+        let errors = store.errors(Range::All, 2000, 50).unwrap();
+        assert_eq!(errors["requests"].as_array().unwrap().len(), 2);
         let latest = serde_json::to_value(store.latest(0, 2000, 500).unwrap()).unwrap();
         let details = (1..=4)
             .map(|id| store.detail(id).unwrap().unwrap())
@@ -1262,7 +1264,7 @@ providers:
         drop(store);
         for _ in 0..2 {
             let store = open_store(&path).unwrap();
-            assert_eq!(store.errors(Range::All, 2000, 500).unwrap(), errors);
+            assert_eq!(store.errors(Range::All, 2000, 50).unwrap(), errors);
             assert_eq!(
                 serde_json::to_value(store.latest(0, 2000, 500).unwrap()).unwrap(),
                 latest
@@ -1599,13 +1601,15 @@ providers:
         store
             .insert(&fixture("future", now + 1), &Value::Null)
             .unwrap();
-        let errors = store.errors(Range::Day, now, 500).unwrap();
-        assert_eq!(errors["summary"]["requests"], 502);
-        assert_eq!(errors["signatures"].as_array().unwrap().len(), 1);
-        assert_eq!(errors["signatures"][0]["requests"], 502);
-        assert_eq!(errors["requests"].as_array().unwrap().len(), 500);
+        // 失败行按 `limit+1` 取，多出的一行只用于判断是否还有更早的失败请求。
+        let errors = store.errors(Range::Day, now, 200).unwrap();
+        assert_eq!(errors["requests"].as_array().unwrap().len(), 200);
+        assert_eq!(errors["limit"], 200);
         assert_eq!(errors["has_more"], true);
         assert!(!errors.to_string().contains("private-output"));
+        let all = store.errors(Range::Day, now, 1000).unwrap();
+        assert_eq!(all["requests"].as_array().unwrap().len(), 502);
+        assert_eq!(all["has_more"], false);
         let traces = store
             .traces(Range::Hour, now, 500, &HashMap::new())
             .unwrap();
@@ -1642,7 +1646,7 @@ providers:
             record.error_message = failed.error_message.clone();
             store.insert(&record, &Value::Null).unwrap();
         }
-        let complete = store.errors(Range::Day, now, 2000).unwrap();
+        let complete = store.errors(Range::Day, now, 1000).unwrap();
         let keys = complete["requests"]
             .as_array()
             .unwrap()
@@ -1655,14 +1659,11 @@ providers:
             .chain(["old-failure".to_owned(), "at-lower".to_owned()])
             .collect::<Vec<_>>();
         assert_eq!(keys, expected);
-        assert_eq!(complete["summary"]["requests"], 505);
-        let limited = store.errors(Range::Day, now, 500).unwrap();
-        for field in ["summary", "signatures", "models"] {
-            assert_eq!(limited[field], complete[field]);
-        }
+        assert_eq!(complete["has_more"], false);
+        let limited = store.errors(Range::Day, now, 50).unwrap();
         assert_eq!(
             limited["requests"],
-            json!(&complete["requests"].as_array().unwrap()[..500])
+            json!(&complete["requests"].as_array().unwrap()[..50])
         );
         assert_eq!(limited["has_more"], true);
         for endpoint in ["errors", "traces"] {
@@ -1677,10 +1678,12 @@ providers:
                     400
                 );
             }
+            // Errors 页按 50／200／1000 分档加载，请求日志与 Traces 用 500／2000。
+            let limit = if endpoint == "errors" { 1000 } else { 2000 };
             assert_eq!(
                 server::dispatch(
                     &store,
-                    &format!("/api/stats/{endpoint}?range=all&limit=2000"),
+                    &format!("/api/stats/{endpoint}?range=all&limit={limit}"),
                     &[]
                 )
                 .0,
@@ -1894,27 +1897,21 @@ providers:
             })
             .unwrap();
 
-        let errors = store.errors(Range::Day, now, 500).unwrap();
-        assert_eq!(errors["tool_summary"]["failures"], 2);
-        assert_eq!(errors["tool_summary"]["tools"], 2);
-        assert_eq!(errors["tool_signatures"].as_array().unwrap().len(), 2);
-        assert_eq!(errors["tool_failures"].as_array().unwrap().len(), 2);
-        assert_eq!(errors["tool_failures"][0]["tool"], "read");
-        assert_eq!(errors["tool_failures"][0]["model"], "fixture-model");
-        assert_eq!(errors["tool_failures"][0]["project"], "project");
-        assert!(errors["tool_failures"][0]["request_id"].as_i64().is_some());
-        assert_eq!(errors["tool_has_more"], false);
-        // 取消不是工具错误，结束时间戳覆盖范围内最新一次失败。
-        assert!(!errors.to_string().contains("Tool cancelled"));
+        // Errors 端点只返回失败请求行；工具失败不再进入该负载，历史行为由 Tools 页统计覆盖。
+        let errors = store.errors(Range::Day, now, 50).unwrap();
+        let mut keys = errors
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
         assert_eq!(
-            errors["tool_signatures"][0]["signature"],
-            "read: No such file: /tmp/x"
+            keys,
+            ["has_more", "limit", "range", "requests", "updated_at"]
         );
-        let shifted = store.errors(Range::Day, now - 3_600_000, 500).unwrap();
-        // 上界之后的主记录被排除；未关联请求的执行仍计入工具错误。
-        assert_eq!(shifted["tool_summary"]["failures"], 1);
-        assert_eq!(shifted["tool_failures"][0]["call_id"], "old");
-        assert!(shifted["tool_failures"][0]["request_id"].is_null());
+        assert_eq!(errors["limit"], 50);
+        assert!(errors["requests"].as_array().unwrap().is_empty());
 
         let tools = store.tools(Range::Day, now).unwrap();
         assert_eq!(tools["summary"]["executions"], 4);
@@ -1943,6 +1940,8 @@ providers:
         assert_eq!(read["cancelled"], 1);
         assert_eq!(read["avg_duration_ms"], 7.5);
         assert!(!tools.to_string().contains("/tmp/x"));
+        // 取消不是错误：取消信息不出现在任何工具错误汇总里。
+        assert!(!tools.to_string().contains("Tool cancelled"));
 
         store.conn.execute_batch("DROP TABLE tool_calls;").unwrap();
         drop(store);
@@ -1962,12 +1961,12 @@ providers:
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
-            2
+            1
         );
         assert_eq!(store.latest(0, now + 1, 10).unwrap().len(), 1);
-        let empty = store.errors(Range::All, now, 500).unwrap();
-        assert_eq!(empty["tool_summary"]["failures"], 0);
-        assert!(empty["tool_failures"].as_array().unwrap().is_empty());
+        let empty = store.errors(Range::All, now, 50).unwrap();
+        assert!(empty["requests"].as_array().unwrap().is_empty());
+        assert_eq!(empty["has_more"], false);
     }
     #[test]
     fn stats_analytics_api_validates_ranges_and_omits_payloads() {
@@ -2230,11 +2229,12 @@ providers:
                 duration_ms: 5.0,
             })
             .unwrap();
-        // 模拟旧库：新索引与费用快照列都不存在。
+        // 模拟旧库：新索引、废弃索引与费用快照列都不在预期状态。
         store
             .conn
             .execute_batch(
-                "DROP INDEX requests_session; DROP INDEX tool_calls_error_time;
+                "DROP INDEX requests_session;
+                 CREATE INDEX tool_calls_error_time ON tool_calls(timestamp DESC,id DESC) WHERE status='error';
                  ALTER TABLE requests DROP COLUMN cost_json; ALTER TABLE requests DROP COLUMN rate_json;",
             )
             .unwrap();
@@ -2254,9 +2254,10 @@ providers:
         };
         assert!(indexes("requests").contains(&"requests_session".to_owned()));
         assert!(indexes("requests").contains(&"requests_time".to_owned()));
+        // 废弃的部分索引在重开时被删除，不重建。
         assert!(
-            indexes("tool_calls").contains(&"tool_calls_error_time".to_owned()),
-            "重开必须重建部分索引"
+            !indexes("tool_calls").contains(&"tool_calls_error_time".to_owned()),
+            "旧库里的废弃索引必须被删除"
         );
         assert!(indexes("tool_calls").contains(&"tool_calls_time".to_owned()));
         let columns = table_columns(&store.conn, "requests").unwrap();
@@ -2422,18 +2423,10 @@ providers:
         let failed = query_plan(
             &store.conn,
             &activity::failed_requests_sql(),
-            params![since, now],
+            params![since, now, 50_i64],
         );
         assert!(failed.contains("requests_failed_time"), "{failed}");
         assert!(!failed.contains("SCAN requests"), "{failed}");
-
-        let tools = query_plan(
-            &store.conn,
-            &activity::tool_failures_sql(),
-            params![since, now],
-        );
-        assert!(tools.contains("tool_calls_error_time"), "{tools}");
-        assert!(!tools.contains("SCAN tool_calls"), "{tools}");
 
         let trace_tools = query_plan(
             &store.conn,
@@ -2457,7 +2450,7 @@ providers:
                 query_plan(
                     &store.conn,
                     &activity::failed_requests_sql(),
-                    params![0_i64, now],
+                    params![0_i64, now, 50_i64],
                 ),
             ),
         ] {

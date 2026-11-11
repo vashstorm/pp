@@ -273,7 +273,7 @@ function traceListPage() {
       ? `${traceInteger(rows.length)} of ${traceInteger(total)} most recent`
       : `${traceInteger(total)} most recent`
     : undefined;
-  const search = `<label class="search traces-filter">${icon("search", 14)}<input class="x-input" id="search" type="search" aria-label="Filter sessions" placeholder="Filter by summary, project, model…" value="${h(
+  const search = `<label class="x-search traces-filter">${icon("search", 14)}<input class="x-input" id="search" type="search" aria-label="Filter sessions" placeholder="Filter by summary, project, model…" value="${h(
     query,
   )}" style="width:260px"></label>`;
   const body = rows.length
@@ -647,7 +647,7 @@ function traceToolbarHTML(view) {
           traceState?.compress ? " checked" : ""
         }> Compress idle</label>`
       : ""
-  }<div class="traces-search"><label class="search">${icon(
+  }<div class="traces-search"><label class="x-search">${icon(
     "search",
     14,
   )}<input class="x-input" id="search" type="search" aria-label="Search spans" placeholder="Search spans…" value="${h(
