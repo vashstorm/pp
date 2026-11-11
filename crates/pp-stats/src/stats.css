@@ -1064,14 +1064,6 @@ pre {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.analytics-table .trend {
-  min-width: 110px;
-  width: 130px;
-}
-.trend .sparkline {
-  margin: 0;
-  height: 24px;
-}
 .expanded-detail > td {
   padding: 0;
   white-space: normal;
@@ -1085,21 +1077,6 @@ pre {
 }
 .group-details .detail-grid {
   margin: 12px 0;
-}
-.detail-columns {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 24px;
-}
-.detail-columns .detail-grid {
-  grid-template-columns: 1fr;
-}
-.performance-heading {
-  align-items: center;
-  margin-top: 18px;
-}
-.performance-chart {
-  height: 180px;
 }
 .series-legend {
   margin-top: 12px;
@@ -1167,15 +1144,8 @@ pre {
   max-width: 230px;
 }
 @media (max-width: 900px) {
-  .detail-columns {
-    grid-template-columns: 1fr;
-    gap: 12px;
-  }
   .group-details {
     padding: 15px;
-  }
-  .performance-heading {
-    flex-wrap: wrap;
   }
 }
 .metric-value {

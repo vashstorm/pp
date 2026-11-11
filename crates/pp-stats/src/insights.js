@@ -446,11 +446,15 @@ function toolChart(view, series, emptyLabel, options = {}) {
   return `<div class="x-chart" data-chart-id="${id}" style="height:${model.height}px"></div>`;
 }
 
-function toolLegend(series, format = toolCompact) {
+function toolLegend(series, format = toolCompact, options = {}) {
+  const hidden = options.hidden || hiddenSeries;
+  const attribute = options.attribute || "data-series";
+  const focus = options.focusAttribute || "data-tools-focus";
+  const values = options.values !== false;
   return `<div class="x-legend">${series
     .map(
       (item) =>
-        `<button type="button" class="x-legend-item" data-series="${h(item.key)}" data-off="${hiddenSeries.has(item.key)}" aria-pressed="${!hiddenSeries.has(item.key)}" data-tools-focus="legend-${encodeURIComponent(item.key)}" title="${h(item.label)}"><span class="x-swatch" style="background:${item.color}"></span><span class="x-truncate">${h(item.label)}</span><span class="x-legend-value">${format(item.values.reduce((sum, value) => sum + (value ?? 0), 0))}</span></button>`,
+        `<button type="button" class="x-legend-item" ${attribute}="${h(item.key)}" data-off="${hidden.has(item.key)}" aria-pressed="${!hidden.has(item.key)}" ${focus}="legend-${encodeURIComponent(item.key)}" title="${h(item.label)}"><span class="x-swatch" style="background:${item.color}"></span><span class="x-truncate">${h(item.label)}</span>${values ? `<span class="x-legend-value">${format(item.values.reduce((sum, value) => sum + (value ?? 0), 0))}</span>` : ""}</button>`,
     )
     .join("")}</div>`;
 }
@@ -732,61 +736,99 @@ function toolModelTable(view) {
   return `<div class="x-table-wrap"><table class="x-table" data-dense="true"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${toolTableMore(sorted.length, visible.length, 25, "model")}`;
 }
 
+// 图表支持左／右双轴、堆叠柱、折线（可选虚线）与单点标记；Models 详情同时用到四种形态。
 function toolChartSvg(model, width) {
-  const visible = model.series.filter((series) => !hiddenSeries.has(series.key));
+  const hidden = model.hidden || hiddenSeries;
+  const visible = model.series.filter((series) => !hidden.has(series.key));
   const slots = model.buckets.length;
   const height = model.height;
   const padTop = 10;
   const padBottom = 24;
   const plotH = height - padTop - padBottom;
-  const bars = visible.filter((series) => series.kind !== "line");
+  const stacked = model.stacked !== false;
+  const kind = (series) => series.kind || "bars";
+  const left = visible.filter((series) => series.axis !== "right");
+  const right = visible.filter((series) => series.axis === "right");
+  const stackable = (series) => stacked && kind(series) === "bars";
+  const bars = visible.filter((series) => kind(series) === "bars");
+  const grouped = bars.filter((series) => !stackable(series));
   const bases = new Map();
   const tops = Array.from({ length: slots }, () => 0);
   const bottoms = Array.from({ length: slots }, () => 0);
   let leftMax = 0;
   let leftMin = 0;
-  for (const series of bars) {
-    const base = Array.from({ length: slots }, () => 0);
-    for (let i = 0; i < slots; i++) {
-      const value = series.values[i] ?? 0;
-      if (value < 0) {
-        base[i] = bottoms[i];
-        bottoms[i] += value;
-      } else {
-        base[i] = tops[i];
-        tops[i] += value;
+  for (const series of left) {
+    if (stackable(series)) {
+      const base = Array.from({ length: slots }, () => 0);
+      for (let i = 0; i < slots; i++) {
+        const value = series.values[i] ?? 0;
+        if (value < 0) {
+          base[i] = bottoms[i];
+          bottoms[i] += value;
+        } else {
+          base[i] = tops[i];
+          tops[i] += value;
+        }
       }
+      bases.set(series.key, base);
+      continue;
     }
-    bases.set(series.key, base);
+    for (let i = 0; i < slots; i++) {
+      leftMax = Math.max(leftMax, series.values[i] ?? 0);
+      leftMin = Math.min(leftMin, series.values[i] ?? 0);
+    }
   }
   for (let i = 0; i < slots; i++) {
     leftMax = Math.max(leftMax, tops[i]);
     leftMin = Math.min(leftMin, bottoms[i]);
   }
-  const scale = toolNiceScale(leftMax, leftMin);
-  const y = (value) => padTop + plotH - ((value - scale.min) / (scale.max - scale.min)) * plotH;
+  let rightMax = 0;
+  let rightMin = 0;
+  for (const series of right) {
+    for (let i = 0; i < slots; i++) {
+      rightMax = Math.max(rightMax, series.values[i] ?? 0);
+      rightMin = Math.min(rightMin, series.values[i] ?? 0);
+    }
+  }
+  const scale = toolNiceScale(model.yMax ?? leftMax, leftMin);
+  const rightScale = right.length ? toolNiceScale(model.yMaxRight ?? rightMax, rightMin) : null;
+  const project = (axis, value) =>
+    padTop + plotH - ((value - axis.min) / (axis.max - axis.min)) * plotH;
+  const yLeft = (value) => project(scale, value);
+  const yRight = (value) => (rightScale ? project(rightScale, value) : yLeft(value));
   const format = model.format || toolCompact;
+  const formatRight = model.formatRight || format;
   const tickLabel =
     model.tickLabel || ((index) => toolTickLabel(model.buckets[index], model.bucketMs));
   const labels = scale.ticks.map((tick) => format(tick));
-  const labelWidth = labels.reduce((max, label) => Math.max(max, label.length * 6.3), 0);
-  const padLeft = Math.max(28, labelWidth + 12);
-  const padRight = 8;
+  const rightLabels = rightScale ? rightScale.ticks.map((tick) => formatRight(tick)) : [];
+  const labelWidth = (items) => items.reduce((max, label) => Math.max(max, label.length * 6.3), 0);
+  const padLeft = Math.max(28, labelWidth(labels) + 12);
+  const padRight = rightScale ? Math.max(28, labelWidth(rightLabels) + 12) : 8;
   const plotW = Math.max(0, width - padLeft - padRight);
   const slotW = slots > 0 ? plotW / slots : 0;
   const cx = (index) => padLeft + (index + 0.5) * slotW;
   const barW = Math.max(1, Math.min(56, slotW * (slotW > 6 ? 0.72 : 0.9)));
   const tickEvery = Math.max(1, Math.ceil(slots / Math.max(1, Math.floor(plotW / 68))));
   const empty = visible.every((series) => series.values.every((value) => !value));
+  const pointAt = (series, index) => {
+    const value = series.values[index];
+    if (value === null || value === undefined) return null;
+    return (series.axis === "right" ? yRight : yLeft)(value);
+  };
   let svg = `<svg width="${width}" height="${height}" role="img">`;
   svg += '<g class="x-chart-grid">';
   for (const tick of scale.ticks)
-    svg += `<line x1="${padLeft}" x2="${padLeft + plotW}" y1="${y(tick)}" y2="${y(tick)}"/>`;
+    svg += `<line x1="${padLeft}" x2="${padLeft + plotW}" y1="${yLeft(tick)}" y2="${yLeft(tick)}"/>`;
   svg += "</g>";
   svg += '<g class="x-chart-axis">';
   scale.ticks.forEach((tick, index) => {
-    svg += `<text x="${padLeft - 8}" y="${y(tick)}" dy="0.32em" text-anchor="end">${h(labels[index])}</text>`;
+    svg += `<text x="${padLeft - 8}" y="${yLeft(tick)}" dy="0.32em" text-anchor="end">${h(labels[index])}</text>`;
   });
+  if (rightScale)
+    rightScale.ticks.forEach((tick, index) => {
+      svg += `<text x="${padLeft + plotW + 8}" y="${yRight(tick)}" dy="0.32em" text-anchor="start">${h(rightLabels[index])}</text>`;
+    });
   for (let i = 0; i < slots; i++) {
     if (i % tickEvery !== 0) continue;
     svg += `<text x="${cx(i)}" y="${height - 6}" text-anchor="middle">${h(tickLabel(i))}</text>`;
@@ -795,17 +837,47 @@ function toolChartSvg(model, width) {
   svg += `<rect class="x-chart-cursor" x="${padLeft}" y="${padTop}" width="${slotW}" height="${plotH}" style="display:none"/>`;
   for (const series of bars) {
     const base = bases.get(series.key);
+    const group = grouped.indexOf(series);
+    const subW = group >= 0 ? barW / grouped.length : barW;
+    const y = series.axis === "right" ? yRight : yLeft;
     for (let i = 0; i < slots; i++) {
       const value = series.values[i];
       if (!value) continue;
       const bottom = base?.[i] ?? 0;
       const y0 = y(bottom);
       const y1 = y(bottom + value);
-      const x = cx(i) - barW / 2;
-      svg += `<rect class="x-chart-bar" data-hover="false" data-index="${i}" x="${x}" y="${Math.min(y0, y1)}" width="${Math.max(1, barW)}" height="${Math.max(value > 0 ? 1 : 0, Math.abs(y0 - y1))}" fill="${series.color}"/>`;
+      const x = cx(i) - barW / 2 + (group >= 0 ? group * subW : 0);
+      svg += `<rect class="x-chart-bar" data-hover="false" data-index="${i}" x="${x}" y="${Math.min(y0, y1)}" width="${Math.max(1, subW - (group >= 0 && grouped.length > 1 ? 1 : 0))}" height="${Math.max(value > 0 ? 1 : 0, Math.abs(y0 - y1))}" fill="${series.color}"/>`;
     }
   }
-  svg += `<line class="x-chart-baseline" x1="${padLeft}" x2="${padLeft + plotW}" y1="${y(0)}" y2="${y(0)}"/>`;
+  for (const series of visible.filter((item) => kind(item) === "line")) {
+    let path = "";
+    let pen = false;
+    for (let i = 0; i < slots; i++) {
+      const value = pointAt(series, i);
+      if (value === null) {
+        pen = false;
+        continue;
+      }
+      path += `${pen ? "L" : "M"}${cx(i).toFixed(1)},${value.toFixed(1)}`;
+      pen = true;
+    }
+    const dashes = series.dashed ? ' stroke-dasharray="4 3"' : "";
+    svg += `<g><path class="x-chart-line" d="${path}" stroke="${series.color}"${dashes}/>`;
+    // 前后都没有相邻点的孤立值只画点，避免整段折线静默消失。
+    for (let i = 0; i < slots; i++) {
+      const value = pointAt(series, i);
+      if (value === null) continue;
+      if (
+        (i > 0 && pointAt(series, i - 1) !== null) ||
+        (i < slots - 1 && pointAt(series, i + 1) !== null)
+      )
+        continue;
+      svg += `<circle cx="${cx(i)}" cy="${value}" r="2.5" fill="${series.color}"/>`;
+    }
+    svg += "</g>";
+  }
+  svg += `<line class="x-chart-baseline" x1="${padLeft}" x2="${padLeft + plotW}" y1="${yLeft(0)}" y2="${yLeft(0)}"/>`;
   svg += "</svg>";
   return {
     svg,
@@ -856,20 +928,26 @@ function toolChartHover(root, geometry, hover) {
     return;
   }
   const rows = toolChartTooltipRows(geometry.visible, hover);
-  const total = rows.reduce((sum, row) => sum + row.value, 0);
+  const total = rows.reduce(
+    (sum, row) => sum + (row.series.axis === "right" ? 0 : row.value),
+    0,
+  );
   const model = geometry.model;
-  const formatValue = model.formatTooltip || toolInteger;
+  const formatValue = (row) =>
+    row.series.axis === "right"
+      ? (model.formatRight || model.formatTooltip || toolInteger)(row.value)
+      : (model.formatTooltip || toolInteger)(row.value);
   const title = model.tooltipTitle
     ? model.tooltipTitle(hover)
     : toolBucketLabel(model.buckets[hover], model.bucketMs);
   tooltip.innerHTML = `<div class="x-chart-tooltip-title">${h(title)}</div>${rows
     .map(
       (row) =>
-        `<div class="x-chart-tooltip-row"><span class="x-swatch" style="background:${row.series.color}"></span><span class="x-chart-tooltip-label">${h(row.series.label)}</span><span class="x-chart-tooltip-value">${formatValue(row.value)}</span></div>`,
+        `<div class="x-chart-tooltip-row"><span class="x-swatch" style="background:${row.series.color}"></span><span class="x-chart-tooltip-label">${h(row.series.label)}</span><span class="x-chart-tooltip-value">${formatValue(row)}</span></div>`,
     )
     .join(
       "",
-    )}${rows.length > 1 && model.showTotal !== false ? `<div class="x-chart-tooltip-row x-chart-tooltip-total"><span class="x-chart-tooltip-label">Total</span><span class="x-chart-tooltip-value">${formatValue(total)}</span></div>` : ""}${model.extraRows ? model.extraRows(hover) : ""}`;
+    )}${rows.length > 1 && model.showTotal !== false && rows.some((row) => row.series.axis !== "right") ? `<div class="x-chart-tooltip-row x-chart-tooltip-total"><span class="x-chart-tooltip-label">Total</span><span class="x-chart-tooltip-value">${(model.formatTooltip || toolInteger)(total)}</span></div>` : ""}${model.extraRows ? model.extraRows(hover) : ""}`;
   tooltip.hidden = false;
   const cx = geometry.cx(hover);
   if (cx > geometry.width / 2) {

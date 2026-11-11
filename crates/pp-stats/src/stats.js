@@ -446,7 +446,7 @@ function onRoute() {
   providerSort = { key: "tokens", dir: "desc" };
   providerSelected = null;
   providerShown = PROVIDER_LIMIT;
-  performanceModes = {};
+  resetModels();
   closeDrawer();
   shell();
   $("page").innerHTML = '<div class="loading">Loading statistics…</div>';
@@ -637,6 +637,8 @@ const PROVIDER_TOP = 6,
     ["cache_write_tokens", "Cache write", "#f5b54a"],
     ["output_tokens", "Output", "var(--chart-secondary)"],
   ];
+const MODEL_SHARE_LIMIT = 6,
+  MODEL_LIMIT = 25;
 let expandedGroups = new Set(),
   hiddenSeries = new Set(),
   shareMode = "share",
@@ -646,7 +648,10 @@ let expandedGroups = new Set(),
   providerSort = { key: "tokens", dir: "desc" },
   providerSelected = null,
   providerShown = PROVIDER_LIMIT,
-  performanceModes = {};
+  modelSort = { key: "requests", dir: "desc" },
+  modelShown = MODEL_LIMIT,
+  modelSelected = null,
+  modelDetailHidden = new Set();
 const averageSpeed = (n) => (n == null ? "—" : n.toFixed(1));
 const cacheRate = (g) =>
   percent(
@@ -823,35 +828,457 @@ function topSeries(groups, label) {
   }
   return result;
 }
-function modelDetails(g, key) {
-  const mode = performanceModes[key] || "tokens_per_second";
-  return `<div class="group-details"><div class="detail-columns"><div><h2>Efficiency</h2>${detailsGrid(
-    [
-      ["Error rate", percent(g.failed, g.requests)],
-      ["Cache rate", cacheRate(g)],
-      ["Priced requests", `${number(g.priced)} / ${number(g.requests)}`],
-      ["Aborted", number(g.aborted)],
-    ],
-  )}</div><div><h2>Latency</h2>${detailsGrid([
-    ["Avg duration", duration(g.avg_duration_ms)],
-    ["Avg TTFT", duration(g.avg_ttft_ms)],
-    ["Tokens/s", averageSpeed(g.tokens_per_second)],
-  ])}</div><div><h2>Tokens</h2>${detailsGrid([
-    ["Uncached input", number(g.uncached_tokens)],
-    ["Cache read", number(g.cached_tokens)],
-    ["Cache write", number(g.cache_write_tokens)],
-    ["Output", number(g.output_tokens)],
-  ])}</div></div><p class="panel-description">First seen ${h(localTime(g.first_seen))} · Last seen ${h(localTime(g.last_seen))}</p><div class="panel-heading performance-heading"><h2>Performance per active ${range === "1h" ? "5 minutes" : range === "24h" ? "hour" : "day"}</h2><div class="segmented" role="radiogroup" aria-label="Performance metric">${[
-    ["tokens_per_second", "Tokens/s"],
-    ["avg_ttft_ms", "TTFT"],
-  ]
+// Models 页复刻 omp stats 的 ModelsRoute：指标、请求占比图、可展开的模型表与吞吐／延迟详情。
+const modelKeyOf = (group) => `${group.model}::${group.provider}`;
+const modelCacheRate = (group) =>
+  (group.input_tokens ?? 0) > 0 ? (group.cached_tokens ?? 0) / group.input_tokens : 0;
+const modelErrorRate = (group) =>
+  (group.requests ?? 0) > 0 ? (group.failed ?? 0) / group.requests : 0;
+const modelSpeed = (value) => (value == null ? "-" : value.toFixed(1));
+const modelDuration = (ms) =>
+  ms == null ? "-" : ms < 1000 ? `${(ms / 1000).toFixed(2)}s` : `${(ms / 1000).toFixed(1)}s`;
+/** 缓存节省需要能对账的写入用量与一致费率；任一缺失时只能显示未知。 */
+function modelCacheSavings(group) {
+  const rates = group.rates,
+    components = group.cost_components;
+  if (!rates || !(rates.input > 0) || !components) return null;
+  if (!(group.requests > 0) || group.priced !== group.requests) return null;
+  if (group.cache_write_known !== group.requests) return null;
+  if (!(group.input_tokens > 0)) return null;
+  const counterfactual = (group.input_tokens * rates.input) / 1e6;
+  if (!(counterfactual > 0)) return null;
+  const actual =
+    (components.input ?? 0) + (components.cache_read ?? 0) + (components.cache_write ?? 0);
+  return 1 - actual / counterfactual;
+}
+function resetModels() {
+  modelSort = { key: "requests", dir: "desc" };
+  modelShown = MODEL_LIMIT;
+  modelSelected = null;
+  modelDetailHidden = new Set();
+}
+/** 颜色按总请求数降序固定分配，排序与筛选不改变色带。 */
+function modelColors(groups) {
+  return new Map(
+    [...groups]
+      .sort((a, b) => (b.requests ?? 0) - (a.requests ?? 0) || modelKeyOf(a).localeCompare(modelKeyOf(b)))
+      .map((group, index) => [
+        modelKeyOf(group),
+        TOOL_SERIES_COLORS[index % TOOL_SERIES_COLORS.length],
+      ]),
+  );
+}
+/** 同一模型被多个 provider 提供时才附加 provider，避免图例重复。 */
+function modelLabels(groups) {
+  const providersPerModel = new Map();
+  for (const group of groups)
+    providersPerModel.set(group.model, (providersPerModel.get(group.model) ?? 0) + 1);
+  return new Map(
+    groups.map((group) => [
+      modelKeyOf(group),
+      (providersPerModel.get(group.model) ?? 0) > 1
+        ? `${group.model} · ${group.provider}`
+        : group.model,
+    ]),
+  );
+}
+/** 前 N 个模型单列，其余折叠为 Other；阈值与图例顺序一致。 */
+function modelPivot(points, buckets, colors, labels, limit) {
+  const index = new Map(buckets.map((timestamp, i) => [timestamp, i]));
+  const byKey = new Map();
+  for (const point of points) {
+    const i = index.get(point.timestamp);
+    if (i === undefined) continue;
+    let values = byKey.get(point.key);
+    if (!values) {
+      values = Array.from({ length: buckets.length }, () => 0);
+      byKey.set(point.key, values);
+    }
+    values[i] += point.value;
+  }
+  const ranked = [...byKey.entries()]
+    .map(([key, values]) => ({
+      key,
+      values,
+      total: values.reduce((sum, value) => sum + value, 0),
+    }))
+    .filter((entry) => entry.total !== 0)
+    .sort((a, b) => b.total - a.total || a.key.localeCompare(b.key));
+  const head = ranked.slice(0, limit),
+    tail = ranked.slice(limit);
+  const series = head.map((entry) => ({
+    key: entry.key,
+    label: labels.get(entry.key) ?? entry.key,
+    color: colors.get(entry.key) ?? TOOL_OTHER_COLOR,
+    values: entry.values,
+  }));
+  if (tail.length) {
+    const other = Array.from({ length: buckets.length }, () => 0);
+    for (const entry of tail) for (let i = 0; i < other.length; i++) other[i] += entry.values[i];
+    series.push({
+      key: "__other__",
+      label: `Other (${tail.length})`,
+      color: TOOL_OTHER_COLOR,
+      values: other,
+    });
+  }
+  return series;
+}
+function modelView() {
+  const groups = [...data.models].sort(
+    (a, b) => (b.requests ?? 0) - (a.requests ?? 0) || modelKeyOf(a).localeCompare(modelKeyOf(b)),
+  );
+  const colors = modelColors(groups),
+    labels = modelLabels(groups);
+  const buckets = toolBucketAxis(
+    groups.flatMap((group) => (group.buckets || []).map((bucket) => bucket.timestamp)),
+  );
+  const points = groups.flatMap((group) =>
+    (group.buckets || []).map((bucket) => ({
+      timestamp: bucket.timestamp,
+      key: modelKeyOf(group),
+      value: bucket.requests ?? 0,
+    })),
+  );
+  const requestTotals = toolDensify(points, buckets);
+  // 零值转 null，tooltip 只列出该时间桶内实际活跃的模型。
+  const countSeries = modelPivot(points, buckets, colors, labels, MODEL_SHARE_LIMIT).map(
+    (series) => ({ ...series, values: series.values.map((value) => value || null) }),
+  );
+  const shareSeries = countSeries.map((series) => ({
+    ...series,
+    values: series.values.map((value, index) =>
+      value === null || !(requestTotals[index] > 0) ? null : value / requestTotals[index],
+    ),
+  }));
+  const trends = new Map(
+    groups.map((group) => [
+      modelKeyOf(group),
+      toolDensify(
+        (group.buckets || []).map((bucket) => ({
+          timestamp: bucket.timestamp,
+          value: bucket.requests ?? 0,
+        })),
+        buckets,
+      ),
+    ]),
+  );
+  let top,
+    totalRequests = 0,
+    failedRequests = 0,
+    totalCost = 0,
+    unpricedRequests = 0;
+  for (const group of groups) {
+    if (!top || (group.requests ?? 0) > (top.requests ?? 0)) top = group;
+    totalRequests += group.requests ?? 0;
+    failedRequests += group.failed ?? 0;
+    totalCost += group.cost ?? 0;
+    unpricedRequests += group.unpriced ?? 0;
+  }
+  return {
+    groups,
+    colors,
+    labels,
+    buckets,
+    requestTotals,
+    countSeries,
+    shareSeries,
+    trends,
+    top,
+    totalRequests,
+    failedRequests,
+    totalCost,
+    unpricedRequests,
+    maxRequests: top?.requests ?? 0,
+    providerCount: new Set(groups.map((group) => group.provider)).size,
+  };
+}
+function modelKeyValues(items) {
+  return `<dl class="x-kv" style="margin:0">${items
     .map(
-      ([id, label]) =>
-        `<button role="radio" aria-checked="${mode === id}" data-performance="${key}" data-mode="${id}">${label}</button>`,
+      ([key, label, value]) =>
+        `<div class="x-kv-item" data-key="${h(key)}"><dt class="x-kv-key">${h(label)}</dt><dd class="x-kv-value" style="margin:0">${value}</dd></div>`,
     )
-    .join(
-      "",
-    )}</div></div><div class="chart performance-chart">${chart(fillBuckets(g.buckets), mode)}</div></div>`;
+    .join("")}</dl>`;
+}
+function modelErrorsCell(group) {
+  if (!(group.failed > 0)) return '<span class="x-num x-dim">0%</span>';
+  const rate = modelErrorRate(group);
+  return `<span title="${h(`${toolInteger(group.failed)} failed`)}"><span class="x-badge" data-tone="${toolErrorTone(rate)}" data-mono="true">${toolErrorRate(rate)}</span></span>`;
+}
+function modelColumns(view) {
+  const bucketWord = toolBucketWord(toolRangeMeta().bucketMs);
+  return [
+    {
+      key: "expand",
+      header: "",
+      width: 28,
+      render: (group) =>
+        `<span class="x-models-chevron" data-open="${modelKeyOf(group) === modelSelected}">${icon("chevron", 14)}</span>`,
+    },
+    {
+      key: "model",
+      header: "Model",
+      sort: (group) => group.model,
+      render: (group) => {
+        const key = modelKeyOf(group);
+        return `<div class="x-row" style="gap:10px"><span class="x-swatch" style="background:${view.colors.get(key) || TOOL_OTHER_COLOR}"></span><div class="x-stack" style="gap:0"><span class="x-cell-primary x-truncate"><span class="x-mono">${h(group.model)}</span></span><span class="x-cell-secondary x-truncate">${h(group.provider)}</span></div></div>`;
+      },
+    },
+    {
+      key: "requests",
+      header: "Requests",
+      align: "right",
+      sort: (group) => group.requests ?? 0,
+      render: (group) =>
+        toolMeter(
+          group.requests ?? 0,
+          view.maxRequests,
+          toolInteger(group.requests),
+          view.colors.get(modelKeyOf(group)) || TOOL_OTHER_COLOR,
+        ),
+    },
+    {
+      key: "cost",
+      header: "Cost",
+      title: "API-equivalent estimate at public rates",
+      align: "right",
+      sort: (group) => group.cost ?? -1,
+      render: (group) =>
+        `<span class="x-num">${toolEstimatedCost(group.cost ?? 0, group.unpriced ?? 0)}</span>`,
+    },
+    {
+      key: "tokens",
+      header: "Tokens",
+      title: "Uncached input + cache reads + cache writes + output",
+      align: "right",
+      sort: (group) => group.tokens ?? 0,
+      render: (group) =>
+        `<span class="x-num" title="${h(toolInteger(group.tokens))}">${toolCompact(group.tokens)}</span>`,
+    },
+    {
+      key: "cache",
+      header: "Cache rate",
+      title: "Cache reads ÷ (uncached input + cache reads)",
+      align: "right",
+      sort: (group) => modelCacheRate(group),
+      render: (group) => `<span class="x-num">${toolPercent(modelCacheRate(group))}</span>`,
+    },
+    {
+      key: "errors",
+      header: "Errors",
+      align: "right",
+      sort: (group) => modelErrorRate(group),
+      render: (group) => modelErrorsCell(group),
+    },
+    {
+      key: "tps",
+      header: "Tokens/s",
+      title: "Average output tokens per second",
+      align: "right",
+      sort: (group) => group.tokens_per_second ?? -1,
+      render: (group) => `<span class="x-num">${modelSpeed(group.tokens_per_second)}</span>`,
+    },
+    {
+      key: "ttft",
+      header: "TTFT",
+      title: "Average time to first token",
+      align: "right",
+      sort: (group) => group.avg_ttft_ms ?? -1,
+      render: (group) => `<span class="x-num">${modelDuration(group.avg_ttft_ms)}</span>`,
+    },
+    {
+      key: "trend",
+      header: "Trend",
+      title: `Requests per ${bucketWord}`,
+      width: 112,
+      render: (group) => {
+        const key = modelKeyOf(group),
+          values = view.trends.get(key);
+        return values
+          ? `<span style="display:inline-block;width:96px;height:22px">${toolSparkline(values, 96, 22, view.colors.get(key) || TOOL_OTHER_COLOR)}</span>`
+          : '<span class="x-dim">–</span>';
+      },
+    },
+  ];
+}
+function modelSortHeader(column) {
+  const sorted = modelSort.key === column.key ? modelSort.dir : undefined;
+  const arrow = sorted === "asc" ? TOOL_ARROW_UP : sorted === "desc" ? TOOL_ARROW_DOWN : "";
+  return `<th data-align="${column.align || "left"}" data-sortable="${Boolean(column.sort)}"${sorted ? ` data-sorted="${sorted}" aria-sort="${sorted === "asc" ? "ascending" : "descending"}"` : ""}${column.title ? ` title="${h(column.title)}"` : ""}${column.width !== undefined ? ` style="width:${column.width}px"` : ""}${column.sort ? ` data-model-sort="${column.key}" data-model-align="${column.align || "left"}" data-models-focus="sort-${column.key}"` : ""}>${h(column.header)}${arrow ? `<span class="x-sort-arrow">${arrow}</span>` : ""}</th>`;
+}
+function modelSorted(rows, columns) {
+  const column = columns.find((item) => item.key === modelSort.key && item.sort);
+  if (!column) return rows;
+  const direction = modelSort.dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const left = column.sort(a),
+      right = column.sort(b);
+    const delta =
+      typeof left === "number" && typeof right === "number"
+        ? left - right
+        : String(left).localeCompare(String(right));
+    return delta * direction;
+  });
+}
+function modelTableMore(total, shown) {
+  if (total <= MODEL_LIMIT) return "";
+  return `<div class="x-table-more"><span class="x-micro">${toolInteger(shown)} of ${toolInteger(total)}</span>${total > shown ? `<button type="button" class="x-btn" data-size="sm" data-variant="ghost" data-model-page="more" data-models-focus="more">Show more</button>` : ""}${shown > MODEL_LIMIT ? `<button type="button" class="x-btn" data-size="sm" data-variant="ghost" data-model-page="less" data-models-focus="less">Show fewer</button>` : ""}</div>`;
+}
+function modelDetail(view, group) {
+  const key = modelKeyOf(group),
+    color = view.colors.get(key) || "var(--chart-primary)";
+  const points = (group.buckets || []).map((bucket) => ({
+    timestamp: bucket.timestamp,
+    tps: bucket.tokens_per_second ?? null,
+    ttft: bucket.avg_ttft_ms == null ? null : bucket.avg_ttft_ms / 1000,
+    requests: bucket.requests ?? 0,
+  }));
+  const line = points.length > 1 ? "line" : "bars";
+  const series = [
+    {
+      key: "tps",
+      label: "Tokens/s",
+      color,
+      kind: line,
+      values: points.map((point) => point.tps),
+    },
+    {
+      key: "ttft",
+      label: "TTFT",
+      color: TOOL_OTHER_COLOR,
+      kind: line,
+      axis: "right",
+      dashed: true,
+      values: points.map((point) => point.ttft),
+    },
+  ];
+  const errorRate = modelErrorRate(group),
+    savings = modelCacheSavings(group);
+  const chart = points.length
+    ? toolChart(
+        { buckets: points.map((point) => point.timestamp), bucketMs: toolRangeMeta().bucketMs },
+        series,
+        "No data in this range",
+        {
+          height: 240,
+          stacked: false,
+          hidden: modelDetailHidden,
+          showTotal: false,
+          format: toolCompact,
+          formatTooltip: (value) => `${modelSpeed(value)} tok/s`,
+          formatRight: (value) => `${Number(value.toFixed(2))}s`,
+          extraRows: (index) =>
+            `<div class="x-chart-tooltip-row x-chart-tooltip-total"><span class="x-chart-tooltip-label">Requests</span><span class="x-chart-tooltip-value">${toolInteger(points[index].requests)}</span></div>`,
+        },
+      )
+    : toolEmpty("No performance samples", "Timing is recorded for streamed responses.");
+  return `<div class="x-models-detail x-rise"><div class="x-models-detail-facts"><div><div class="x-section-label">Efficiency</div>${modelKeyValues([
+    [
+      "error",
+      "Error rate",
+      `<span class="x-tone-${toolErrorTone(errorRate)}">${toolErrorRate(errorRate)} <span class="x-dim">(${toolInteger(group.failed ?? 0)} failed)</span></span>`,
+    ],
+    ["cache", "Cache rate", toolPercent(modelCacheRate(group))],
+    [
+      "savings",
+      "Cache savings",
+      savings == null
+        ? '<span class="x-dim" title="Not recorded: cache savings need reported cache-write usage, consistent recorded rates and priced requests">—</span>'
+        : `<span${savings < 0 ? ' style="color:var(--bad)"' : ""}>${toolPercent(savings)}</span>`,
+    ],
+    [
+      "premium",
+      "Premium requests",
+      '<span class="x-dim" title="Premium request units are not recorded by pp">—</span>',
+    ],
+  ])}</div><div><div class="x-section-label">Latency</div>${modelKeyValues([
+    ["duration", "Avg duration", modelDuration(group.avg_duration_ms)],
+    ["ttft", "Avg TTFT", modelDuration(group.avg_ttft_ms)],
+    ["speed", "Tokens/s", modelSpeed(group.tokens_per_second)],
+  ])}</div><div><div class="x-section-label">Tokens</div>${modelKeyValues([
+    ["uncached", "Uncached input", toolCompact(group.uncached_tokens)],
+    ["cache-read", "Cache read", toolCompact(group.cached_tokens)],
+    ["cache-write", "Cache write", toolCompact(group.cache_write_tokens)],
+    ["output", "Output", toolCompact(group.output_tokens)],
+  ])}</div><div class="x-micro x-dim">First seen ${h(toolRelative(group.first_seen))} · last seen ${h(toolRelative(group.last_seen))}</div></div><div class="x-models-detail-chart"><div class="x-row" style="justify-content:space-between"><div class="x-section-label" style="margin-bottom:0">Performance per active ${h(toolBucketWord(toolRangeMeta().bucketMs))}</div>${toolLegend(series, null, { hidden: modelDetailHidden, attribute: "data-model-detail-series", values: false, focusAttribute: "data-models-focus" })}</div>${chart}</div></div>`;
+}
+function modelTable(view) {
+  const columns = modelColumns(view),
+    rows = modelSorted(view.groups, columns),
+    visible = rows.slice(0, modelShown);
+  const head = columns.map(modelSortHeader).join("");
+  const body = visible
+    .map((group) => {
+      const key = modelKeyOf(group),
+        encoded = encodeURIComponent(key),
+        open = key === modelSelected;
+      const cells = columns
+        .map(
+          (column) =>
+            `<td data-align="${column.align || "left"}" data-wrap="false">${column.render(group)}</td>`,
+        )
+        .join("");
+      return `<tr data-clickable="true" data-selected="${open}" data-model-row="${h(encoded)}" data-models-focus="row-${h(encoded)}" tabindex="0">${cells}</tr>${
+        open
+          ? `<tr><td colspan="${columns.length}" data-wrap="true" style="padding:0">${modelDetail(view, group)}</td></tr>`
+          : ""
+      }`;
+    })
+    .join("");
+  return `<div class="x-table-wrap"><table class="x-table" data-dense="false"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${modelTableMore(rows.length, visible.length)}`;
+}
+function modelsEmpty() {
+  return toolEmpty("No model usage in this range", "Pick a wider range in the top bar.");
+}
+function modelsClick(e) {
+  const share = e.target.closest("[data-share]");
+  if (share) {
+    shareMode = share.dataset.share;
+    render();
+    return true;
+  }
+  const header = e.target.closest("[data-model-sort]");
+  if (header) {
+    const key = header.dataset.modelSort;
+    modelSort = {
+      key,
+      dir:
+        modelSort.key === key
+          ? modelSort.dir === "asc"
+            ? "desc"
+            : "asc"
+          : header.dataset.modelAlign === "right"
+            ? "desc"
+            : "asc",
+    };
+    render();
+    return true;
+  }
+  const series = e.target.closest("[data-model-detail-series]");
+  if (series) {
+    const key = series.dataset.modelDetailSeries;
+    if (modelDetailHidden.has(key)) modelDetailHidden.delete(key);
+    else modelDetailHidden.add(key);
+    render();
+    return true;
+  }
+  const row = e.target.closest("[data-model-row]");
+  if (row) {
+    const key = decodeURIComponent(row.dataset.modelRow);
+    modelSelected = modelSelected === key ? null : key;
+    modelDetailHidden = new Set();
+    render();
+    return true;
+  }
+  const pageButton = e.target.closest("[data-model-page]");
+  if (pageButton) {
+    modelShown =
+      pageButton.dataset.modelPage === "more" ? modelShown + MODEL_LIMIT * 4 : MODEL_LIMIT;
+    render();
+    return true;
+  }
+  return false;
 }
 function groupRow(g, kind, cells, detail, columns) {
   const key = groupKey(kind, g.key),
@@ -867,71 +1294,62 @@ const numericCells = (values) =>
   values.map((v) => `<td class="right num">${v}</td>`).join("");
 function modelsPage() {
   if (!data) return '<div class="loading">Loading statistics…</div>';
-  const groups = [...data.models].sort((a, b) => b.requests - a.requests),
-    s = data.summary,
-    most = groups[0];
-  const duplicates = new Set(
-    groups
-      .filter((g) =>
-        groups.some((other) => g.key !== other.key && g.model === other.model),
-      )
-      .map((g) => g.model),
-  );
-  const series = topSeries(groups, (g) =>
-    duplicates.has(g.model) ? `${g.model} · ${g.key}` : g.model,
-  );
-  return `<h1>Models</h1><p class="subtitle">Which models did the work in the ${descriptions[range]}, and how fast they answered.</p><div class="panel metrics" style="--columns:4">${metric("Models used", number(groups.length), `across ${number(data.providers.length)} providers`)}${metric("Most used", most?.model || "—", most ? `${percent(most.requests, s.requests)} of requests · ${most.provider}` : "")}${metric("Requests", number(s.requests), `${number(s.failed)} failed`)}${metric("API-equivalent cost", money(s.cost), costNote(s))}</div>${chartPanel(
+  toolChartModels = new Map();
+  toolChartSeq = 0;
+  const view = modelView(),
+    bucketWord = toolBucketWord(toolRangeMeta().bucketMs),
+    empty = modelsEmpty();
+  const share = shareMode === "share",
+    totals = Math.max(1, view.totalRequests);
+  const statGrid = `<div class="x-stat-grid x-rise" style="--stat-min:200px">${toolStat(
+    "Models used",
+    toolInteger(view.groups.length),
+    `across ${toolInteger(view.providerCount)} provider${view.providerCount === 1 ? "" : "s"}`,
+  )}${toolStat(
+    "Most used",
+    view.top ? view.top.model : "–",
+    view.top
+      ? `${toolPercent(view.top.requests / totals)} of requests · ${view.top.provider}`
+      : undefined,
+    { title: view.top ? `${view.top.model} (${view.top.provider})` : undefined },
+  )}${toolStat("Requests", toolInteger(view.totalRequests), `${toolInteger(view.failedRequests)} failed`, {
+    spark: view.requestTotals,
+  })}${toolStat(
+    "API-equivalent cost",
+    toolEstimatedCost(view.totalCost, view.unpricedRequests),
+    view.unpricedRequests > 0 ? `${toolInteger(view.unpricedRequests)} unpriced` : undefined,
+    { title: "What this usage would cost at public API rates" },
+  )}</div>`;
+  const actions = `<div class="x-segmented" data-size="sm" role="radiogroup" aria-label="Share chart mode"><span class="x-segmented-thumb"></span>${[
+    ["share", "Share"],
+    ["requests", "Requests"],
+  ]
+    .map(
+      ([value, label]) =>
+        `<button type="button" class="x-segmented-option" role="radio" aria-checked="${shareMode === value}" data-active="${shareMode === value}" data-share="${value}" data-models-focus="share-${value}">${label}</button>`,
+    )
+    .join("")}</div>`;
+  const chart = toolChart(view, share ? view.shareSeries : view.countSeries, "No model activity in this range", {
+    height: 260,
+    yMax: share ? 1 : undefined,
+    format: share ? (value) => toolPercent(value, 0) : toolCompact,
+    formatTooltip: share ? (value) => toolPercent(value) : toolInteger,
+    showTotal: !share,
+  });
+  const shareBody = `<div class="x-stack" style="gap:12px">${chart}${toolLegend(
+    view.countSeries,
+    (value) => toolPercent(value / totals),
+    { focusAttribute: "data-models-focus" },
+  )}</div>`;
+  return `<div class="x-page"><header class="x-page-header x-rise"><div><h1 class="x-page-title">Models</h1><p class="x-page-description">Which models did the work in ${h(rangeWindows[range])}, and how fast they answered.</p></div></header>${view.groups.length ? statGrid : empty}${toolCard(
+    1,
     "Request share",
-    `Each model's share of requests ${range === "24h" ? "per hour" : "over time"}`,
-    stackedChart(series, "requests", shareMode === "share") +
-      seriesLegend(series, "requests", true),
-    segmentControls(
-      "share",
-      [
-        ["share", "Share"],
-        ["requests", "Requests"],
-      ],
-      shareMode,
-      "Share chart mode",
-    ),
-  )}<section class="panel analytics-panel"><div class="requests-heading"><h2>All models</h2><p class="panel-description">Click a row for efficiency, tokens, latency and throughput over time.</p></div>${analyticsTable(
-    [
-      "Model",
-      "Requests",
-      "Cost",
-      "Tokens",
-      "Cache rate",
-      "Errors",
-      "Tokens/s",
-      "TTFT",
-      "Trend",
-    ],
-    groups
-      .map((g) =>
-        groupRow(
-          g,
-          "model",
-          numericCells([
-            number(g.requests),
-            detailed(g.cost, money(g.cost), " USD"),
-            detailed(g.tokens),
-            cacheRate(g),
-            percent(g.failed, g.requests),
-            averageSpeed(g.tokens_per_second),
-            detailed(g.avg_ttft_ms, duration(g.avg_ttft_ms), " ms"),
-          ]) +
-            `<td class="trend">${sparkline(
-              fillBuckets(g.buckets).map((b) => b.requests ?? 0),
-              colors[0],
-              "Requests",
-              fillBuckets(g.buckets).map((b) => b.timestamp),
-            )}</td>`,
-          (key) => modelDetails(g, key),
-          9,
-        ),
-      )
-      .join(""),
-  )}</section>${pricingNotice()}`;
+    share
+      ? `Each model's share of requests per ${bucketWord}`
+      : `Requests per ${bucketWord}, stacked by model`,
+    actions,
+    view.groups.length ? shareBody : empty,
+  )}${toolCard(2, "All models", "Click a row for latency and throughput over time", "", view.groups.length ? modelTable(view) : empty, true)}</div>`;
 }
 // Providers 页复刻 omp stats 的 ProvidersRoute：指标、按 provider 的总表、堆叠燃烧图与本地小时峰值。
 // 图表/表格原语（toolCard、toolChart 等）与 Tools 页共用，定义在 insights.js。
@@ -1503,14 +1921,9 @@ function render() {
   const focusedExpand = focused?.closest("[data-expand]")?.dataset.expand;
   const toolsFocus = focused?.dataset?.toolsFocus;
   const providerFocus = focused?.dataset?.providerFocus;
-  const focusControl = [
-    "performance",
-    "share",
-    "costSplit",
-    "series",
-  ].find((k) => focused?.dataset?.[k]);
+  const modelsFocus = focused?.dataset?.modelsFocus;
+  const focusControl = ["share", "costSplit", "series"].find((k) => focused?.dataset?.[k]);
   const focusValue = focusControl && focused.dataset[focusControl];
-  const focusMode = focused?.dataset?.mode;
   const label = pages.find((p) => p[0] === page)?.[1] || page;
   const cell = focused?.closest("th,td");
   const cellPosition = cell && [
@@ -1539,7 +1952,7 @@ function render() {
               : `<h1>${h(label)}</h1><p class="subtitle">${h(label)} across your sessions in the ${descriptions[range]}.</p><section class="panel placeholder"><div class="empty">${h(label)} is coming soon.</div></section>`;
   if (page !== "tools") prepareDetails();
   syncSegmented();
-  if (page === "tools" || page === "providers") {
+  if (["tools", "providers", "models"].includes(page)) {
     if (typeof wireToolsCharts === "function") wireToolsCharts();
   }
   if (cellPosition) {
@@ -1554,17 +1967,17 @@ function render() {
     $("page")
       .querySelector(`[data-provider-focus="${CSS.escape(providerFocus)}"]`)
       ?.focus({ preventScroll: true });
+  } else if (modelsFocus) {
+    $("page")
+      .querySelector(`[data-models-focus="${CSS.escape(modelsFocus)}"]`)
+      ?.focus({ preventScroll: true });
   } else if (insightFocused) {
     $(insightFocused)?.focus({ preventScroll: true });
   } else if (providerSelectFocused) {
     $("provider-peak")?.focus({ preventScroll: true });
   } else if (focusControl) {
     [...$("page").querySelectorAll("button")]
-      .find(
-        (el) =>
-          el.dataset[focusControl] === focusValue &&
-          el.dataset.mode === focusMode,
-      )
+      .find((el) => el.dataset[focusControl] === focusValue)
       ?.focus({ preventScroll: true });
   } else if (focusedExpand) {
     [...$("page").querySelectorAll("[data-expand]")]
@@ -1598,6 +2011,7 @@ $("page").addEventListener("click", (e) => {
   if (tracesClick(e)) return;
   if (insightsClick(e)) return;
   if (providersClick(e)) return;
+  if (modelsClick(e)) return;
   if (activityClick(e)) return;
   const expand = e.target.closest("[data-expand]");
   if (expand) {
@@ -1610,14 +2024,13 @@ $("page").addEventListener("click", (e) => {
   const control = e.target.closest("button");
   if (
     control &&
-    ["share", "costSplit", "performance", "series"].some(
+    ["share", "costSplit", "series"].some(
       (k) => control.dataset[k],
     )
   ) {
     const d = control.dataset;
     if (d.share) shareMode = d.share;
     if (d.costSplit) costMode = d.costSplit;
-    if (d.performance) performanceModes[d.performance] = d.mode;
     if (d.series) {
       if (hiddenSeries.has(d.series)) hiddenSeries.delete(d.series);
       else hiddenSeries.add(d.series);
@@ -1656,7 +2069,7 @@ $("page").addEventListener("click", (e) => {
   }
 });
 $("page").addEventListener("keydown", (e) => {
-  const action = e.target.closest("th[data-sort],tr[data-id],tr[data-expand],tr[data-error-signature],tr[data-trace],th[data-toolsort],tr[data-toolselect],th[data-provider-sort],tr[data-provider-row]");
+  const action = e.target.closest("th[data-sort],tr[data-id],tr[data-expand],tr[data-error-signature],tr[data-trace],th[data-toolsort],tr[data-toolselect],th[data-provider-sort],tr[data-provider-row],tr[data-model-row]");
   if (
     (e.key === "Enter" || e.key === " ") &&
     action && !e.target.closest("button,a,input,select,textarea")
