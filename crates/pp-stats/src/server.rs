@@ -179,12 +179,7 @@ fn api(
             .filter(|n| *n > 0)
             .ok_or(ApiError::Invalid)?;
         return store
-            .trace(
-                id,
-                chrono::Utc::now().timestamp_millis(),
-                &super::analytics::Pricing::load(store),
-                &titles(),
-            )
+            .trace(id, chrono::Utc::now().timestamp_millis(), &titles())
             .map_err(|_| ApiError::Database);
     }
     if let Some(id) = url.path().strip_prefix("/api/stats/requests/") {
@@ -237,30 +232,29 @@ fn api(
             .map(Some)
             .map_err(|_| ApiError::Database);
     }
-    let pricing = super::analytics::Pricing::load(store);
     if matches!(url.path(), "/api/stats/tools" | "/api/stats/projects") {
         let result = if url.path() == "/api/stats/tools" {
-            store.tools(range, now, &pricing)
+            store.tools(range, now)
         } else {
-            store.projects(range, now, &pricing)
+            store.projects(range, now)
         };
         return result.map(Some).map_err(|_| ApiError::Database);
     }
     if url.path() == "/api/stats/errors" {
         return store
-            .errors(range, now, limit, &pricing)
+            .errors(range, now, limit)
             .map(Some)
             .map_err(|_| ApiError::Database);
     }
     if url.path() == "/api/stats/traces" {
         return store
-            .traces(range, now, limit, &pricing, &titles())
+            .traces(range, now, limit, &titles())
             .map(Some)
             .map_err(|_| ApiError::Database);
     }
     if url.path() != "/api/stats/requests" {
         return store
-            .analytics(range, now, &pricing)
+            .analytics(range, now)
             .map(Some)
             .map_err(|_| ApiError::Database);
     }
@@ -272,14 +266,14 @@ fn api(
         .iter()
         .take(limit)
         .map(|(r, has_context)| {
-            let mut value = pricing.request(r)?;
+            let mut value = r.value()?;
             value["has_context"] = json!(has_context);
             Ok(value)
         })
         .collect::<Result<Vec<_>>>()
         .map_err(|_| ApiError::Database)?;
     Ok(Some(
-        json!({"requests":rows,"has_more":has_more,"limit":limit,"updated_at":now,"range":range.label(),"pricing_error":pricing.error}),
+        json!({"requests":rows,"has_more":has_more,"limit":limit,"updated_at":now,"range":range.label()}),
     ))
 }
 fn ensure_limit(limit: usize) -> Result<()> {

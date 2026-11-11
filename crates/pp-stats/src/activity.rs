@@ -1,8 +1,7 @@
 //! 错误分组和会话请求时间线，只使用统计库中的记录，不重新读取会话文件。
 use super::{
-    COLUMNS, Range, RequestRow, Store,
-    analytics::{Aggregate, Pricing},
-    row,
+    COLUMNS, Range, RequestRow, SessionScope, Store, analytics::Aggregate, row,
+    session_requests_sql,
 };
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
@@ -68,12 +67,12 @@ fn session_stem(file: &str) -> &str {
     }
 }
 
-fn summary(rows: &[&RequestRow], pricing: &Pricing) -> Value {
+fn summary(rows: &[&RequestRow]) -> Value {
     let mut aggregate = Aggregate::default();
     let mut models = BTreeMap::new();
     let mut end = 0.0_f64;
     for r in rows {
-        aggregate.push(r, pricing.cost(r).as_ref());
+        aggregate.push(r, r.cost().as_ref());
         models.insert(
             &r.model_reference,
             json!({"key":r.model_reference,"model":r.model,"provider":r.provider}),
@@ -88,16 +87,46 @@ fn summary(rows: &[&RequestRow], pricing: &Pricing) -> Value {
     value
 }
 
+/// 失败请求列表；`status='failed'` 与时间范围、倒序都由部分索引 `requests_failed_time` 满足。
+pub(super) fn failed_requests_sql() -> String {
+    format!(
+        "SELECT {COLUMNS} FROM requests WHERE status='failed' AND timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC"
+    )
+}
+
+/// 已采集的工具执行错误；`t.status='error'` 由部分索引 `tool_calls_error_time` 满足。
+pub(super) fn tool_failures_sql() -> String {
+    "SELECT t.id,t.tool,t.call_id,t.timestamp,t.error_message,t.duration_ms,
+                 r.id,r.model,r.provider,r.model_reference,r.project,r.cwd
+                 FROM tool_calls t LEFT JOIN requests r ON r.request_key=t.request_key
+                 WHERE t.status='error' AND t.timestamp>=?1 AND t.timestamp<=?2
+                 ORDER BY t.timestamp DESC,t.id DESC"
+        .into()
+}
+
+/// Traces 详情的工具执行：派生表按会话作用域两段 `UNION ALL`，再用 `LEFT JOIN` 取请求信息。
+/// 外层的列顺序必须与行映射一致：`t.id`、`t.request_key`、`t.session_file`、`t.call_id`、
+/// `t.tool`、`t.timestamp`、`t.duration_ms`、`t.status`、`t.error_message`、`r.id`；
+/// 派生表内显式列出同一顺序的非 `r.*` 列，不用依赖表列顺序的 `SELECT *`。
+pub(super) fn trace_tools_sql() -> String {
+    "SELECT t.id,t.request_key,t.session_file,t.call_id,t.tool,t.timestamp,t.duration_ms,t.status,t.error_message,r.id
+                 FROM (SELECT id,request_key,session_file,call_id,tool,timestamp,duration_ms,status,error_message
+                       FROM tool_calls WHERE session_file=?1
+                       UNION ALL
+                       SELECT id,request_key,session_file,call_id,tool,timestamp,duration_ms,status,error_message
+                       FROM tool_calls WHERE session_file>=?2 AND session_file<?3) t
+                 LEFT JOIN requests r ON r.request_key=t.request_key
+                 ORDER BY t.timestamp,t.id"
+        .into()
+}
+
 impl Store {
-    pub(super) fn errors(
-        &self,
-        range: Range,
-        now: i64,
-        limit: usize,
-        pricing: &Pricing,
-    ) -> Result<Value> {
-        let rows = self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE status='failed' AND timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC"))?
-            .query_map(params![range.since(now), now], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    pub(super) fn errors(&self, range: Range, now: i64, limit: usize) -> Result<Value> {
+        let rows = self
+            .conn
+            .prepare(&failed_requests_sql())?
+            .query_map(params![range.since(now), now], row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut signatures = BTreeMap::<String, Vec<&RequestRow>>::new();
         let mut models = BTreeMap::<&str, Vec<&RequestRow>>::new();
         for r in &rows {
@@ -112,7 +141,7 @@ impl Store {
         let mut groups = signatures
             .iter()
             .map(|(key, group)| {
-                let mut value = summary(group, pricing);
+                let mut value = summary(group);
                 value["signature"] = json!(key);
                 value["example"] = json!(group[0].error_message);
                 value
@@ -130,7 +159,7 @@ impl Store {
             .iter()
             .take(limit)
             .map(|r| {
-                let mut value = pricing.request(r)?;
+                let mut value = r.value()?;
                 value["signature"] = json!(signature(
                     r.error_message.as_deref().unwrap_or("Unknown error")
                 ));
@@ -139,7 +168,7 @@ impl Store {
             .collect::<Result<Vec<_>>>()?;
         let tools = self.tool_failures(range, now, limit)?;
         Ok(
-            json!({"summary":summary(&rows.iter().collect::<Vec<_>>(),pricing),"signatures":groups,"models":by_model,"requests":requests,"has_more":rows.len()>limit,"limit":limit,"range":range.label(),"updated_at":now,"pricing_error":pricing.error,
+            json!({"summary":summary(&rows.iter().collect::<Vec<_>>()),"signatures":groups,"models":by_model,"requests":requests,"has_more":rows.len()>limit,"limit":limit,"range":range.label(),"updated_at":now,
                 "tool_summary":tools["summary"],"tool_signatures":tools["signatures"],"tool_failures":tools["failures"],"tool_has_more":tools["has_more"],"tool_limit":limit}),
         )
     }
@@ -162,13 +191,7 @@ impl Store {
         }
         let rows = self
             .conn
-            .prepare(
-                "SELECT t.id,t.tool,t.call_id,t.timestamp,t.error_message,t.duration_ms,
-                 r.id,r.model,r.provider,r.model_reference,r.project,r.cwd
-                 FROM tool_calls t LEFT JOIN requests r ON r.request_key=t.request_key
-                 WHERE t.status='error' AND t.timestamp>=?1 AND t.timestamp<=?2
-                 ORDER BY t.timestamp DESC,t.id DESC",
-            )?
+            .prepare(&tool_failures_sql())?
             .query_map(params![range.since(now), now], |r| {
                 Ok(Failure {
                     id: r.get(0)?,
@@ -245,7 +268,6 @@ impl Store {
         range: Range,
         now: i64,
         limit: usize,
-        pricing: &Pricing,
         titles: &HashMap<&str, &str>,
     ) -> Result<Value> {
         let rows = self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC"))?
@@ -275,7 +297,7 @@ impl Store {
             .iter()
             .map(|((stem, _), group)| {
                 let stem = *stem;
-                let mut value = summary(group, pricing);
+                let mut value = summary(group);
                 let r = group[0];
                 let root = stem.map(|stem| format!("{stem}.jsonl"));
                 let agents = group
@@ -306,7 +328,7 @@ impl Store {
         let count = groups.len();
         groups.truncate(limit);
         Ok(
-            json!({"sessions":groups,"total":count,"has_more":count>limit,"limit":limit,"range":range.label(),"updated_at":now,"pricing_error":pricing.error}),
+            json!({"sessions":groups,"total":count,"has_more":count>limit,"limit":limit,"range":range.label(),"updated_at":now}),
         )
     }
 
@@ -314,7 +336,6 @@ impl Store {
         &self,
         id: i64,
         now: i64,
-        pricing: &Pricing,
         titles: &HashMap<&str, &str>,
     ) -> Result<Option<Value>> {
         let session: Option<Option<String>> = self
@@ -328,23 +349,46 @@ impl Store {
         };
         let stem = session.as_deref().map(session_stem);
         let root = stem.map(|stem| format!("{stem}.jsonl"));
-        let children = stem.map(|stem| format!("{stem}.subagents/sessions/"));
-        let (rows, tools) = match (&root, &children) {
-            (Some(root), Some(children)) => {
-                let rows = self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE session_file=?1 OR substr(session_file,1,length(?2))=?2 ORDER BY timestamp,id"))?
-                    .query_map(params![root, children], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-                let tools = self.conn.prepare("SELECT t.id,t.request_key,t.session_file,t.call_id,t.tool,t.timestamp,t.duration_ms,t.status,t.error_message,r.id
-                     FROM tool_calls t LEFT JOIN requests r ON r.request_key=t.request_key
-                     WHERE t.session_file=?1 OR substr(t.session_file,1,length(?2))=?2 ORDER BY t.timestamp,t.id")?
-                    .query_map(params![root, children], |r| {
-                        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?,
-                            r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?,
-                            r.get::<_, f64>(6)?, r.get::<_, String>(7)?, r.get::<_, Option<String>>(8)?,
-                            r.get::<_, Option<i64>>(9)?))
-                    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let scope = stem
+            .map(|stem| {
+                SessionScope::new(
+                    format!("{stem}.jsonl"),
+                    format!("{stem}.subagents/sessions/"),
+                )
+            })
+            .transpose()?;
+        // 有会话时按索引范围取根会话与专属子 Agent 目录；没有会话时只有当前这一行。
+        let (rows, tools) = match &scope {
+            Some(scope) => {
+                let rows = self
+                    .conn
+                    .prepare(&format!(
+                        "{} ORDER BY timestamp,id",
+                        session_requests_sql(COLUMNS)
+                    ))?
+                    .query_map(params![scope.root, scope.prefix, scope.upper], row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let tools = self
+                    .conn
+                    .prepare(&trace_tools_sql())?
+                    .query_map(params![scope.root, scope.prefix, scope.upper], |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, i64>(5)?,
+                            r.get::<_, f64>(6)?,
+                            r.get::<_, String>(7)?,
+                            r.get::<_, Option<String>>(8)?,
+                            r.get::<_, Option<i64>>(9)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
                 (rows, tools)
             }
-            _ => (
+            None => (
                 self.conn
                     .prepare(&format!(
                         "SELECT {COLUMNS} FROM requests WHERE id=?1 ORDER BY timestamp,id"
@@ -354,10 +398,7 @@ impl Store {
                 Vec::new(),
             ),
         };
-        let requests = rows
-            .iter()
-            .map(|r| pricing.request(r))
-            .collect::<Result<Vec<_>>>()?;
+        let requests = rows.iter().map(|r| r.value()).collect::<Result<Vec<_>>>()?;
         let mut tool_stats = BTreeMap::<&str, (usize, usize, f64, f64)>::new();
         for (_, _, _, _, tool, _, duration_ms, status, _, _) in &tools {
             let entry = tool_stats.entry(tool).or_default();
@@ -389,7 +430,7 @@ impl Store {
                     "error_message":error_message,"request_id":request_id})
             })
             .collect::<Vec<_>>();
-        let mut summary = summary(&rows.iter().collect::<Vec<_>>(), pricing);
+        let mut summary = summary(&rows.iter().collect::<Vec<_>>());
         let wall_ms = summary["wall_ms"].as_f64().unwrap_or(0.0);
         let model_ms = summary["model_ms"].as_f64().unwrap_or(0.0);
         let tool_ms = tools.iter().map(|tool| tool.6).sum::<f64>();
@@ -403,7 +444,7 @@ impl Store {
         summary["tool_calls"] = json!(tools.len());
         summary["idle_ms"] = json!((wall_ms - model_ms - tool_ms).max(0.0));
         summary["agents"] = json!(agents);
-        let mut value = json!({"id":id,"session_file":root,"project":rows[0].project,"cwd":rows[0].cwd,"summary":summary,"requests":requests,"tool_calls":tool_calls,"tool_stats":tool_stats,"updated_at":now,"pricing_error":pricing.error});
+        let mut value = json!({"id":id,"session_file":root,"project":rows[0].project,"cwd":rows[0].cwd,"summary":summary,"requests":requests,"tool_calls":tool_calls,"tool_stats":tool_stats,"updated_at":now});
         if let Some(title) = title(titles, stem) {
             value["title"] = json!(title);
         }

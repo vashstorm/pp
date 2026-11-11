@@ -1,8 +1,4 @@
-use super::{
-    COLUMNS, Range, RequestRow, Store,
-    analytics::{Aggregate, Cost, Pricing},
-    row,
-};
+use super::{COLUMNS, CostSnapshot, Range, RequestRow, Store, analytics::Aggregate, row};
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
 use rusqlite::params;
@@ -34,13 +30,7 @@ struct Project {
     name: String,
 }
 impl Project {
-    fn push(
-        &mut self,
-        r: &RequestRow,
-        cost: Option<&Cost>,
-        timestamp: i64,
-        pricing: &Pricing,
-    ) -> Result<()> {
+    fn push(&mut self, r: &RequestRow, cost: Option<&CostSnapshot>, timestamp: i64) -> Result<()> {
         self.name.clone_from(&r.project);
         self.totals.push(r, cost);
         self.buckets.entry(timestamp).or_default().push(r, cost);
@@ -55,7 +45,7 @@ impl Project {
             self.no_session += 1;
         }
         if self.recent.len() < 10 {
-            self.recent.push(pricing.request(r)?);
+            self.recent.push(r.value()?);
         }
         Ok(())
     }
@@ -214,29 +204,28 @@ fn tool_calls<'a>(output: &'a Value, entry: &'a Value) -> Vec<(&'a str, &'a Valu
 }
 
 impl Store {
-    pub(super) fn projects(&self, range: Range, now: i64, pricing: &Pricing) -> Result<Value> {
+    pub(super) fn projects(&self, range: Range, now: i64) -> Result<Value> {
         let mut statement = self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC"))?;
         let rows = statement.query_map(params![range.since(now), now], row)?;
         let mut summary = Aggregate::default();
         let mut projects = BTreeMap::<String, Project>::new();
         for r in rows {
             let r = r?;
-            let cost = pricing.cost(&r);
+            let cost = r.cost();
             summary.push(&r, cost.as_ref());
             projects.entry(r.cwd.clone()).or_default().push(
                 &r,
                 cost.as_ref(),
                 bucket(r.timestamp, range)?,
-                pricing,
             )?;
         }
         Ok(
             json!({"summary":summary.value(),"projects":projects.iter().map(|(k, p)| p.value(k)).collect::<Vec<_>>(),
-            "updated_at":now,"range":range.label(),"pricing_error":pricing.error}),
+            "updated_at":now,"range":range.label()}),
         )
     }
 
-    pub(super) fn tools(&self, range: Range, now: i64, pricing: &Pricing) -> Result<Value> {
+    pub(super) fn tools(&self, range: Range, now: i64) -> Result<Value> {
         let columns = COLUMNS
             .split(',')
             .map(|c| format!("r.{c}"))
@@ -272,7 +261,7 @@ impl Store {
             requests_by_key.insert(r.request_key.clone(), r.model_reference.clone());
             partial += u64::from(r.status != "ok");
             let timestamp = bucket(r.timestamp, range)?;
-            let cost = pricing.cost(&r).map(|c| c.total());
+            let cost = r.cost().map(|c| c.total());
             for (name, args) in calls {
                 all.push(&r, args, count, timestamp, cost);
                 tools
@@ -345,7 +334,7 @@ impl Store {
         execution_summary.apply(&mut summary);
         Ok(
             json!({"summary":summary,"tools":tools,"requests_with_tools":requests,"partial_requests":partial,
-            "updated_at":now,"range":range.label(),"pricing_error":pricing.error}),
+            "updated_at":now,"range":range.label()}),
         )
     }
 }

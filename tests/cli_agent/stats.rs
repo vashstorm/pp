@@ -503,7 +503,7 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
         assert_eq!(status, 200);
         assert!(!body.contains("fixture-key"));
         let value: Value = serde_json::from_str(&body).unwrap();
-        assert!(value["pricing_error"].is_null());
+        assert!(value.get("pricing_error").is_none());
         if endpoint != "requests" {
             assert_eq!(value["summary"]["priced"], 1);
             assert_eq!(value["summary"]["cache_write_tokens"], 10);
@@ -518,6 +518,7 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
             assert!((value["summary"]["cost"].as_f64().unwrap() - 0.000185).abs() < 1e-10);
         }
     }
+    // 费用在请求记录时写入快照：改写 models.yml 不重算历史。
     models["providers"]["fixture"]["models"]["primary"]["cost"] =
         json!({"input":4,"cacheRead":0.4,"cacheWrite":5,"output":16});
     std::fs::write(config_path(dir.path(), "models.yml"), models.to_string()).unwrap();
@@ -528,7 +529,15 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     );
     assert_eq!(status, 200);
     let detail: Value = serde_json::from_str(&body).unwrap();
-    assert!((detail["request"]["cost"].as_f64().unwrap() - 0.00037).abs() < 1e-10);
+    assert!((detail["request"]["cost"].as_f64().unwrap() - 0.000185).abs() < 1e-10);
+    assert!(
+        (detail["request"]["cost_components"]["cache_write"]
+            .as_f64()
+            .unwrap()
+            - 0.000025)
+            .abs()
+            < 1e-10
+    );
 }
 
 #[test]

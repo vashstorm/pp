@@ -663,8 +663,8 @@ const componentNames = [
   ["cache_write", "Cache write", colors[3]],
   ["output", "Output", colors[1]],
 ];
-function pricingNotice(stats = data) {
-  return `<div class="pricing-note" role="note">${stats?.pricing_error ? `<span class="pricing-error">${h(stats.pricing_error)}</span> ` : ""}Estimates use built-in rates with overrides from <code>~/.pp/agent/models.yml</code> (USD / million tokens). Unpriced requests are excluded; missing prices or usage are never treated as free. Cache writes require reported usage and a configured cacheWrite rate when nonzero. Subscription quotas are not reported by pp.</div>`;
+function pricingNotice() {
+  return `<div class="pricing-note" role="note">Costs and rates are computed and stored with each request at record time, using the model configuration in effect then. Unpriced requests are excluded; missing prices or usage are never treated as zero or repriced at current rates. Cache writes require reported usage and a configured cacheWrite rate when nonzero. Subscription quotas are not reported by pp.</div>`;
 }
 function segmentControls(key, options, selected, label) {
   return `<div class="segmented" role="radiogroup" aria-label="${h(label)}">${options.map(([id, name]) => `<button role="radio" aria-checked="${id === selected}" data-${key}="${id}">${h(name)}</button>`).join("")}</div>`;
@@ -1330,7 +1330,7 @@ function costsPage() {
           })),
           buckets: [],
         }));
-  return `<h1>Costs</h1><p class="subtitle">What the ${descriptions[range]} of usage would cost at your configured API rates. Estimates are not subscription bills.</p><div class="panel metrics">${metric("API-equivalent estimate", money(s.cost), `${number(s.requests)} requests`)}${metric("Average per day", data.active_days && s.cost != null ? money(s.cost / data.active_days) : "—", `over ${number(data.active_days)} active UTC days`)}${metric("Top model", top?.model || "—", top ? `${money(top.cost)} · ${percent(top.cost, s.cost)} of estimate` : "")}${metric("Per priced request", costPerRequest(s), `${number(s.priced)} priced`)}${metric("Unpriced requests", number(s.unpriced), s.unpriced ? "excluded from estimate" : "all usage priced")}</div><div class="graphs">${chartPanel(
+  return `<h1>Costs</h1><p class="subtitle">What the ${descriptions[range]} of usage cost at the API rates recorded with each request. Estimates are not subscription bills.</p><div class="panel metrics">${metric("API-equivalent estimate", money(s.cost), `${number(s.requests)} requests`)}${metric("Average per day", data.active_days && s.cost != null ? money(s.cost / data.active_days) : "—", `over ${number(data.active_days)} active UTC days`)}${metric("Top model", top?.model || "—", top ? `${money(top.cost)} · ${percent(top.cost, s.cost)} of estimate` : "")}${metric("Per priced request", costPerRequest(s), `${number(s.priced)} priced`)}${metric("Unpriced requests", number(s.unpriced), s.unpriced ? "excluded from estimate" : "all usage priced")}</div><div class="graphs">${chartPanel(
     "Daily estimate",
     "Per UTC day, stacked by model or billing component",
     stackedChart(series, "cost", false, true) + seriesLegend(series, "cost"),
@@ -1484,7 +1484,7 @@ function requests() {
     )
     .join(
       "",
-    )}</div></div></div>${requestTable(rows)}<div class="table-footer">${Math.min(visible, rows.length)} of ${number(rows.length)}${visible < rows.length ? '<button class="outline-button" data-more>Show more</button>' : ""}</div></section>${requestData.has_more ? `<div class="load-note"><span>Showing the latest ${number(all.length)} requests, back to ${h(localTime(oldest))}. Older requests in the ${descriptions[range]} are not loaded.</span>${limit === 500 ? '<button class="outline-button" data-load>Load latest 2,000</button>' : ""}</div>` : ""}${pricingNotice(requestData)}`;
+    )}</div></div></div>${requestTable(rows)}<div class="table-footer">${Math.min(visible, rows.length)} of ${number(rows.length)}${visible < rows.length ? '<button class="outline-button" data-more>Show more</button>' : ""}</div></section>${requestData.has_more ? `<div class="load-note"><span>Showing the latest ${number(all.length)} requests, back to ${h(localTime(oldest))}. Older requests in the ${descriptions[range]} are not loaded.</span>${limit === 500 ? '<button class="outline-button" data-load>Load latest 2,000</button>' : ""}</div>` : ""}${pricingNotice()}`;
 }
 function render() {
   // 进入动画只在切页或切时间范围时播放；页内交互与定时刷新直接更新内容。

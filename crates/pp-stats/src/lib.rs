@@ -5,6 +5,7 @@ mod insights;
 pub mod server;
 
 use anyhow::{Context, Result, ensure};
+use pp_config::models::{ModelCost, ModelPricing};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -100,6 +101,106 @@ impl Default for Observation {
     }
 }
 
+/// 一次请求在采集时记录的费用分量（USD），字段与 `pp_config::models::TokenCost` 一致。
+///
+/// `requests.cost_json` 为 NULL 表示该请求未定价（旧记录或缺价格／usage）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CostSnapshot {
+    pub input: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+    pub output: f64,
+}
+
+impl CostSnapshot {
+    pub fn total(&self) -> f64 {
+        self.input + self.cache_read + self.cache_write + self.output
+    }
+}
+
+/// 采集时匹配到的费率（USD／百万 token）；`cache_write` 缺失表示该费率没有独立写入价。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct RateSnapshot {
+    pub input: f64,
+    pub cached_input: f64,
+    pub cache_write: Option<f64>,
+    pub output: f64,
+}
+
+/// 采集时的计价依据：请求结束时读一次 `models.yml` 与内置表，之后只写快照。
+///
+/// `pricing` 为 `None` 表示模型配置无法解析：与旧行为一致，此时既不计价也不记录费率。
+pub(crate) struct Rates {
+    pricing: Option<ModelPricing>,
+}
+
+impl Rates {
+    pub fn load(models_path: &Path) -> Self {
+        let pricing = match pp_config::models::load_models(models_path) {
+            Ok(providers) => Some(ModelPricing::from_providers(&providers)),
+            // 没有 models.yml 时只保留内置价格表。
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Some(ModelPricing::default())
+            }
+            Err(_) => None,
+        };
+        Self { pricing }
+    }
+
+    /// 返回 `(费用, 费率)`：命中费率而 usage 不全时只记录费率，未命中费率时两者皆空。
+    pub fn snapshot(
+        &self,
+        reference: &str,
+        model: &str,
+        input: Option<i64>,
+        output: Option<i64>,
+        cached: Option<i64>,
+        written: Option<i64>,
+    ) -> (Option<CostSnapshot>, Option<RateSnapshot>) {
+        let Some(price) = self
+            .pricing
+            .as_ref()
+            .and_then(|pricing| pricing.rate(reference, model))
+        else {
+            return (None, None);
+        };
+        let rate = RateSnapshot {
+            input: price.input,
+            cached_input: price.cache_read,
+            cache_write: price.cache_write,
+            output: price.output,
+        };
+        (calculate(price, input, output, cached, written), Some(rate))
+    }
+}
+
+/// 与 `pp_config::models::ModelCost::calculate` 共享严格规则：未知缓存读不补零。
+fn calculate(
+    price: ModelCost,
+    input: Option<i64>,
+    output: Option<i64>,
+    cached: Option<i64>,
+    written: Option<i64>,
+) -> Option<CostSnapshot> {
+    let usage = pp_core::context::TokenUsage {
+        input_tokens: input?.try_into().ok()?,
+        output_tokens: output?.try_into().ok()?,
+        cached_tokens: Some(cached?.try_into().ok()?),
+        // 写入量未知时保留 None，由费率决定能否计价。
+        cache_write_tokens: written.map(u64::try_from).transpose().ok()?,
+    };
+    price.calculate(usage).map(|cost| CostSnapshot {
+        input: cost.input,
+        cache_read: cost.cache_read,
+        cache_write: cost.cache_write,
+        output: cost.output,
+    })
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct RequestRow {
     pub id: i64,
@@ -123,9 +224,15 @@ pub(crate) struct RequestRow {
     pub status: String,
     pub stop_reason: Option<String>,
     pub error_message: Option<String>,
+    /// 采集时记录的费用快照；旧行没有快照时保持未定价。
+    #[serde(skip)]
+    pub cost: Option<CostSnapshot>,
+    /// 采集时记录的费率快照，供概览的模型费率面板读取。
+    #[serde(skip)]
+    pub rates: Option<RateSnapshot>,
 }
 
-const COLUMNS: &str = "id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,entry_id,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens";
+const COLUMNS: &str = "id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,entry_id,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens,cost_json,rate_json";
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
     Ok(RequestRow {
         id: r.get(0)?,
@@ -149,7 +256,38 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
         stop_reason: r.get(18)?,
         error_message: r.get(19)?,
         cache_write_tokens: r.get(20)?,
+        // 单行快照损坏只按未定价处理，不让整页查询失败。
+        cost: r
+            .get::<_, Option<String>>(21)?
+            .and_then(|json| serde_json::from_str(&json).ok()),
+        rates: r
+            .get::<_, Option<String>>(22)?
+            .and_then(|json| serde_json::from_str(&json).ok()),
     })
+}
+
+impl RequestRow {
+    pub fn cost(&self) -> Option<CostSnapshot> {
+        self.cost.clone()
+    }
+    pub fn rates(&self) -> Option<RateSnapshot> {
+        self.rates.clone()
+    }
+    /// 列表与详情共用的请求 JSON：`cost` 为快照总额，`cost_components` 为四分量。
+    pub fn value(&self) -> Result<Value> {
+        let mut value = serde_json::to_value(self)?;
+        let cost = self.cost();
+        value["cost"] = json!(cost.as_ref().map(CostSnapshot::total));
+        value["cost_components"] = json!(cost);
+        Ok(value)
+    }
+}
+
+/// 列表查询的 SQL；最后一列是 `has_context`（是否已采集原始请求 JSON）。
+fn latest_sql() -> String {
+    format!(
+        "SELECT {COLUMNS},EXISTS(SELECT 1 FROM request_payloads WHERE request_id=requests.id AND request_json IS NOT NULL) FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC LIMIT ?3"
+    )
 }
 
 /// 工具执行的采集状态；错误与耗时只在 runtime 实际执行工具后写入。
@@ -194,7 +332,10 @@ pub fn database_path() -> Result<PathBuf> {
         .join("stats/stats.db"))
 }
 
-/// 按当前费率回算已关联到根会话及其子 Agent 的请求。
+/// 汇总已关联到根会话及其子 Agent 的请求所记录的费用。
+///
+/// 缺费用快照的旧记录只把 [`pp_config::task_status::HistoricalCost::incomplete`] 置真，
+/// 不按当前配置回算。旧库不存在时不建库。
 pub fn session_cost(session: &Path) -> Result<pp_config::task_status::HistoricalCost> {
     let path = database_path()?;
     match fs::symlink_metadata(&path) {
@@ -203,6 +344,44 @@ pub fn session_cost(session: &Path) -> Result<pp_config::task_status::Historical
         Err(error) => return Err(error.into()),
     }
     Store::open(&path)?.session_cost(session)
+}
+
+/// 根会话与其专属子 Agent 目录的索引范围。
+///
+/// `upper` 是 `prefix` 的字典序上界（取末字符加一个码点），因此 `[prefix, upper)` 恰好覆盖
+/// `<root>.subagents/sessions/` 下的文件，而 `sessions-other/` 等相邻目录不在区间内。
+pub(crate) struct SessionScope {
+    pub root: String,
+    pub prefix: String,
+    pub upper: String,
+}
+
+impl SessionScope {
+    pub(crate) fn new(root: String, prefix: String) -> Result<Self> {
+        let last = prefix
+            .chars()
+            .next_back()
+            .context("session prefix must not be empty")?;
+        let next = char::from_u32(u32::from(last) + 1)
+            .context("session prefix must end with a character that has a successor")?;
+        let mut upper = prefix.clone();
+        upper.pop();
+        upper.push(next);
+        Ok(Self {
+            root,
+            prefix,
+            upper,
+        })
+    }
+}
+
+/// 根会话与子 Agent 目录的两段 `UNION ALL`；参数固定为 `?1`=root、`?2`=prefix、`?3`=upper。
+pub(crate) fn session_requests_sql(columns: &str) -> String {
+    format!(
+        "SELECT {columns} FROM requests WHERE session_file=?1 \
+         UNION ALL \
+         SELECT {columns} FROM requests WHERE session_file>=?2 AND session_file<?3"
+    )
 }
 
 /// Returns (total requests before cleanup, removed), counted in the same transaction.
@@ -233,31 +412,151 @@ pub fn gc(cutoff: i64) -> Result<(u64, u64)> {
     Ok((total, removed))
 }
 
+/// 建表、补列、建索引并在结构发生变化时刷新 planner 统计。
+///
+/// 不读写 `PRAGMA user_version`：旧库按缺列／缺索引幂等补齐，历史行保持不变；
+/// 结构齐全时只做几次廉价查询，不执行 `ANALYZE`。
+fn ensure_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS requests (
+            id INTEGER PRIMARY KEY, request_key TEXT NOT NULL UNIQUE, timestamp INTEGER NOT NULL,
+            model TEXT NOT NULL, provider TEXT NOT NULL, model_reference TEXT NOT NULL, api TEXT NOT NULL,
+            project TEXT NOT NULL, cwd TEXT NOT NULL, purpose TEXT NOT NULL,
+            session_file TEXT, entry_id TEXT, duration_ms REAL NOT NULL, ttft_ms REAL,
+            input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER,
+            status TEXT NOT NULL CHECK(status IN ('ok','failed','aborted')), stop_reason TEXT, error_message TEXT,
+            cache_write_tokens INTEGER, cost_json TEXT, rate_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS request_payloads (
+            request_id INTEGER PRIMARY KEY REFERENCES requests(id), output_json TEXT NOT NULL,
+            session_entry_json TEXT, request_json TEXT, skills_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS tool_calls (
+            id INTEGER PRIMARY KEY, request_key TEXT, session_file TEXT NOT NULL, call_id TEXT NOT NULL,
+            tool TEXT NOT NULL, timestamp INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('ok','error','cancelled')),
+            error_message TEXT, duration_ms REAL NOT NULL, UNIQUE(session_file, call_id)
+        );",
+    )?;
+    let mut changed = false;
+    for (name, ddl) in [
+        (
+            "requests_time",
+            "CREATE INDEX IF NOT EXISTS requests_time ON requests(timestamp DESC,id DESC)",
+        ),
+        (
+            "requests_failed_time",
+            "CREATE INDEX IF NOT EXISTS requests_failed_time ON requests(timestamp DESC,id DESC) WHERE status='failed'",
+        ),
+        (
+            "requests_session",
+            "CREATE INDEX IF NOT EXISTS requests_session ON requests(session_file)",
+        ),
+        (
+            "tool_calls_time",
+            "CREATE INDEX IF NOT EXISTS tool_calls_time ON tool_calls(timestamp DESC,id DESC)",
+        ),
+        (
+            "tool_calls_error_time",
+            "CREATE INDEX IF NOT EXISTS tool_calls_error_time ON tool_calls(timestamp DESC,id DESC) WHERE status='error'",
+        ),
+    ] {
+        changed |= !index_exists(&tx, name)?;
+        tx.execute_batch(ddl)?;
+    }
+    let mut requests = table_columns(&tx, "requests")?;
+    let mut payloads = table_columns(&tx, "request_payloads")?;
+    changed |= ensure_column(
+        &tx,
+        "requests",
+        &mut requests,
+        "cache_write_tokens",
+        "INTEGER",
+    )?;
+    changed |= ensure_column(&tx, "requests", &mut requests, "cost_json", "TEXT")?;
+    changed |= ensure_column(&tx, "requests", &mut requests, "rate_json", "TEXT")?;
+    changed |= ensure_column(
+        &tx,
+        "request_payloads",
+        &mut payloads,
+        "request_json",
+        "TEXT",
+    )?;
+    changed |= ensure_column(
+        &tx,
+        "request_payloads",
+        &mut payloads,
+        "skills_json",
+        "TEXT",
+    )?;
+    if changed {
+        // 只在新结构第一次出现时给 planner 补统计，之后每次打开不写库。
+        tx.execute_batch("ANALYZE requests; ANALYZE tool_calls;")?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn index_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
+        [name],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|found| found.is_some())
+}
+
+fn table_columns(conn: &Connection, table: &str) -> rusqlite::Result<Vec<String>> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(columns)
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    columns: &mut Vec<String>,
+    column: &str,
+    kind: &str,
+) -> rusqlite::Result<bool> {
+    if columns.iter().any(|name| name == column) {
+        return Ok(false);
+    }
+    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+    columns.push(column.to_owned());
+    Ok(true)
+}
+
 pub(crate) struct Store {
     pub conn: Connection,
     models_path: PathBuf,
 }
 impl Store {
     fn session_cost(&self, session: &Path) -> Result<pp_config::task_status::HistoricalCost> {
-        let pricing = analytics::Pricing::load(self);
-        let children = session.with_extension("subagents").join("sessions");
-        let children = format!("{}/", children.display());
-        let mut statement = self.conn.prepare(
-            "SELECT model_reference, model, input_tokens, output_tokens, cached_tokens, cache_write_tokens
-             FROM requests WHERE session_file = ?1 OR substr(session_file, 1, length(?2)) = ?2",
+        let scope = SessionScope::new(
+            session.to_string_lossy().into_owned(),
+            format!(
+                "{}/",
+                session
+                    .with_extension("subagents")
+                    .join("sessions")
+                    .display()
+            ),
         )?;
-        let mut rows = statement.query(params![session.to_string_lossy(), children])?;
+        let mut statement = self.conn.prepare(&session_requests_sql("cost_json"))?;
+        let mut rows = statement.query(params![scope.root, scope.prefix, scope.upper])?;
         let mut result = pp_config::task_status::HistoricalCost::default();
         while let Some(row) = rows.next()? {
-            let reference: String = row.get(0)?;
-            let model: String = row.get(1)?;
-            let cost = if let Some(price) = pricing.rate(&reference, &model) {
-                analytics::calculate(price, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)
-            } else {
-                None
-            };
-            match cost.map(|cost| result.usd.unwrap_or(0.0) + cost.total()) {
-                Some(total) if total.is_finite() => result.usd = Some(total),
+            let cost: Option<String> = row.get(0)?;
+            match cost.as_deref().map(serde_json::from_str::<CostSnapshot>) {
+                Some(Ok(cost)) if cost.total().is_finite() => {
+                    result.usd = Some(result.usd.unwrap_or(0.0) + cost.total());
+                }
+                // NULL 或损坏的快照：只标记覆盖不完整，不臆造金额。
                 _ => result.incomplete = true,
             }
         }
@@ -290,59 +589,9 @@ impl Store {
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_millis(250))?;
-        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 5, "unsupported statistics database version");
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        if version < 4 {
-            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-            // 另一个连接可能已把库迁移到最新版本，事务内以它为准；各分支按事务内版本
-            // 判断，重复进入只会做幂等 DDL，不能因为外层读到旧版本而失败。
-            ensure!(version <= 5, "unsupported statistics database version");
-            if version == 0 {
-                tx.execute_batch("CREATE TABLE IF NOT EXISTS requests (
-                id INTEGER PRIMARY KEY, request_key TEXT NOT NULL UNIQUE, timestamp INTEGER NOT NULL,
-                model TEXT NOT NULL, provider TEXT NOT NULL, model_reference TEXT NOT NULL, api TEXT NOT NULL,
-                project TEXT NOT NULL, cwd TEXT NOT NULL, purpose TEXT NOT NULL,
-                session_file TEXT, entry_id TEXT, duration_ms REAL NOT NULL, ttft_ms REAL,
-                input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER,
-                status TEXT NOT NULL CHECK(status IN ('ok','failed','aborted')), stop_reason TEXT, error_message TEXT
-            );
-            CREATE INDEX IF NOT EXISTS requests_time ON requests(timestamp DESC,id DESC);
-            CREATE TABLE IF NOT EXISTS request_payloads (
-                request_id INTEGER PRIMARY KEY REFERENCES requests(id), output_json TEXT NOT NULL,
-                session_entry_json TEXT
-            );
-            PRAGMA user_version=1;")?;
-            }
-            if version < 2 {
-                tx.execute_batch("ALTER TABLE requests ADD COLUMN cache_write_tokens INTEGER; PRAGMA user_version=2;")?;
-            }
-            if version < 3 {
-                tx.execute_batch("CREATE INDEX IF NOT EXISTS requests_failed_time ON requests(timestamp DESC,id DESC) WHERE status='failed'; PRAGMA user_version=3;")?;
-            }
-            if version < 4 {
-                tx.execute_batch("ALTER TABLE request_payloads ADD COLUMN request_json TEXT; ALTER TABLE request_payloads ADD COLUMN skills_json TEXT; PRAGMA user_version=4;")?;
-            }
-            tx.commit()?;
-        }
-        if version < 5 {
-            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-            ensure!(version <= 5, "unsupported statistics database version");
-            tx.execute_batch(
-                "CREATE TABLE IF NOT EXISTS tool_calls (
-                id INTEGER PRIMARY KEY, request_key TEXT, session_file TEXT NOT NULL, call_id TEXT NOT NULL,
-                tool TEXT NOT NULL, timestamp INTEGER NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('ok','error','cancelled')),
-                error_message TEXT, duration_ms REAL NOT NULL, UNIQUE(session_file, call_id)
-            );
-            CREATE INDEX IF NOT EXISTS tool_calls_time ON tool_calls(timestamp DESC,id DESC);
-            PRAGMA user_version=5;",
-            )?;
-            tx.commit()?;
-        }
+        ensure_schema(&mut conn)?;
         Ok(Self { conn, models_path })
     }
     #[cfg(test)]
@@ -355,8 +604,18 @@ impl Store {
         output: &Value,
         context: Option<&RequestSnapshot>,
     ) -> Result<()> {
+        let cost_json = record
+            .cost
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let rate_json = record
+            .rates
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let tx = self.conn.transaction()?;
-        let inserted = tx.execute("INSERT INTO requests (request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19) ON CONFLICT(request_key) DO NOTHING",params![record.request_key,record.timestamp,record.model,record.provider,record.model_reference,record.api,record.project,record.cwd,record.purpose,record.session_file,record.duration_ms,record.ttft_ms,record.input_tokens,record.output_tokens,record.cached_tokens,record.status,record.stop_reason,record.error_message,record.cache_write_tokens])?;
+        let inserted = tx.execute("INSERT INTO requests (request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens,cost_json,rate_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) ON CONFLICT(request_key) DO NOTHING",params![record.request_key,record.timestamp,record.model,record.provider,record.model_reference,record.api,record.project,record.cwd,record.purpose,record.session_file,record.duration_ms,record.ttft_ms,record.input_tokens,record.output_tokens,record.cached_tokens,record.status,record.stop_reason,record.error_message,record.cache_write_tokens,cost_json,rate_json])?;
         if inserted != 0 {
             tx.execute(
                 "INSERT INTO request_payloads(request_id,output_json,request_json,skills_json) VALUES (?1,?2,?3,?4)",
@@ -411,8 +670,13 @@ impl Store {
         until: i64,
         limit: usize,
     ) -> Result<Vec<(RequestRow, bool)>> {
-        Ok(self.conn.prepare(&format!("SELECT {COLUMNS},EXISTS(SELECT 1 FROM request_payloads WHERE request_id=requests.id AND request_json IS NOT NULL) FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC LIMIT ?3"))?
-            .query_map(params![since,until,limit as i64], |r| Ok((row(r)?, r.get(21)?)))?.collect::<rusqlite::Result<_>>()?)
+        Ok(self
+            .conn
+            .prepare(&latest_sql())?
+            .query_map(params![since, until, limit as i64], |r| {
+                Ok((row(r)?, r.get(23)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?)
     }
     pub fn detail(&self, id: i64) -> Result<Option<Value>> {
         let record = self
@@ -443,16 +707,15 @@ impl Store {
             })
             .transpose()?;
         Ok(Some(
-            json!({"request":analytics::Pricing::load(self).request(&record)?,"output_message":serde_json::from_str::<Value>(&output)?,"session_entry":entry.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,"request_context":request_context}),
+            json!({"request":record.value()?,"output_message":serde_json::from_str::<Value>(&output)?,"session_entry":entry.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,"request_context":request_context}),
         ))
     }
     pub fn overview(&self, range: Range, now: i64) -> Result<Value> {
-        let pricing = analytics::Pricing::load(self);
-        let mut value = self.analytics(range, now, &pricing)?;
+        let mut value = self.analytics(range, now)?;
         value["latest"] = json!(
             self.latest(range.since(now), now, 12)?
                 .iter()
-                .map(|r| pricing.request(r))
+                .map(|r| r.value())
                 .collect::<Result<Vec<_>>>()?
         );
         Ok(value)
@@ -534,7 +797,7 @@ pub fn save(
         } else {
             "failed"
         };
-        let record = RequestRow {
+        let mut record = RequestRow {
             id: 0,
             request_key: key.clone(),
             timestamp: observation.timestamp,
@@ -583,13 +846,23 @@ pub fn save(
             status: status.into(),
             stop_reason: observation.stop_reason,
             error_message: outcome.as_ref().err().map(|e| format!("{e:#}")),
+            cost: None,
+            rates: None,
         };
         let output = json!({"native":observation.output,"text":observation.text,"thinking":observation.thinking,"partial":outcome.is_err()});
-        Store::open(&context.database)?.insert_with_context(
-            &record,
-            &output,
-            observation.request_context.as_ref(),
-        )?;
+        let mut store = Store::open(&context.database)?;
+        // 费用与费率在采集时按当次模型配置固定下来，读取路径不再回算。
+        let (cost, rates) = Rates::load(&store.models_path).snapshot(
+            &record.model_reference,
+            &record.model,
+            record.input_tokens,
+            record.output_tokens,
+            record.cached_tokens,
+            record.cache_write_tokens,
+        );
+        record.cost = cost;
+        record.rates = rates;
+        store.insert_with_context(&record, &output, observation.request_context.as_ref())?;
         if let Some(unlinked) = &context.unlinked_requests
             && context.session_file.is_none()
         {
@@ -655,48 +928,72 @@ mod tests {
             status: "ok".into(),
             stop_reason: Some("stop".into()),
             error_message: None,
+            cost: None,
+            rates: None,
         }
     }
+    /// 按给定费率写入采集时会写入的费用／费率快照。
+    fn snapshot_for(rates: &Rates, record: &mut RequestRow) {
+        let (cost, rate) = rates.snapshot(
+            &record.model_reference,
+            &record.model,
+            record.input_tokens,
+            record.output_tokens,
+            record.cached_tokens,
+            record.cache_write_tokens,
+        );
+        record.cost = cost;
+        record.rates = rate;
+    }
     #[test]
-    fn session_cost_uses_root_and_child_records_and_current_pricing() {
+    fn session_cost_uses_root_and_child_records_and_recorded_snapshots() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        fs::write(
+            &store.models_path,
+            models_with_cost(json!({"input":2,"cacheRead":0.2,"output":8})),
+        )
+        .unwrap();
+        let rates = Rates::load(&store.models_path);
         let root = dir.path().join("root.jsonl");
         let child = dir.path().join("root.subagents/sessions/child.jsonl");
         let other = dir.path().join("root.subagents/sessions-other/child.jsonl");
-        for (key, file, usage_known) in [
-            ("root", &root, true),
-            ("child", &child, true),
-            ("missing-usage", &root, false),
-            ("other", &other, true),
-        ] {
+        for (key, file) in [("root", &root), ("child", &child), ("other", &other)] {
             let mut record = fixture(key, 1000);
-            record.model = "gateway/OpenAI/GPT-5.4".into();
             record.session_file = Some(file.to_string_lossy().into_owned());
-            if !usage_known {
-                record.input_tokens = None;
-            }
+            snapshot_for(&rates, &mut record);
+            assert!(record.cost.is_some());
             store.insert(&record, &Value::Null).unwrap();
         }
+        // root 与 child 各 20 未缓存输入 + 80 缓存读 + 20 输出；sessions-other 不计入。
         let history = store.session_cost(&root).unwrap();
-        assert!(history.incomplete);
-        assert!((history.usd.unwrap() - 0.00074).abs() < 1e-12);
+        assert!(!history.incomplete);
+        assert!((history.usd.unwrap() - 0.000432).abs() < 1e-12);
 
-        fs::write(&store.models_path, "providers: {fixture: {api_key: fixture, models: {primary: {model: changed, cost: {input: 0, cacheRead: 0, output: 0}}}}}").unwrap();
+        // 没有费用快照的旧记录只标记覆盖不完整，金额不变。
+        let mut legacy = fixture("legacy", 1001);
+        legacy.session_file = Some(root.to_string_lossy().into_owned());
+        store.insert(&legacy, &Value::Null).unwrap();
         let history = store.session_cost(&root).unwrap();
-        assert_eq!(history.usd, Some(0.0));
         assert!(history.incomplete);
+        assert!((history.usd.unwrap() - 0.000432).abs() < 1e-12);
+
+        // 改写 models.yml 不重算历史金额。
+        fs::write(
+            &store.models_path,
+            models_with_cost(json!({"input":0,"cacheRead":0,"output":0})),
+        )
+        .unwrap();
+        let history = store.session_cost(&root).unwrap();
+        assert!(history.incomplete);
+        assert!((history.usd.unwrap() - 0.000432).abs() < 1e-12);
+
         assert_eq!(
             store
                 .session_cost(&dir.path().join("missing.jsonl"))
                 .unwrap(),
             Default::default()
         );
-
-        fs::write(&store.models_path, "invalid: [").unwrap();
-        let history = store.session_cost(&root).unwrap();
-        assert!(history.usd.is_none());
-        assert!(history.incomplete);
     }
 
     #[test]
@@ -747,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn stats_context_v3_upgrade_roundtrips_snapshots_and_deduplicates_atomically() {
+    fn stats_payload_columns_restore_and_snapshots_deduplicate_atomically() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stats.db");
         let mut store = open_store(&path).unwrap();
@@ -762,18 +1059,13 @@ mod tests {
                 &[json!({"id":"retained-entry"})],
             )
             .unwrap();
-        store.conn.execute_batch("ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json; PRAGMA user_version=3;").unwrap();
+        store.conn.execute_batch("ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json;").unwrap();
         drop(store);
         let mut store = open_store(&path).unwrap();
         let old = store.detail(1).unwrap().unwrap();
         assert_eq!(old["output_message"]["text"], "old output");
         assert_eq!(old["session_entry"], json!([{"id":"retained-entry"}]));
         assert!(old["request_context"].is_null());
-        let version: i64 = store
-            .conn
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, 5);
         let snapshot = RequestSnapshot {
             request: json!({"instructions":"full\n\t<script>&</script>","input":[{"type":"input_image","image_url":"data:image/png;base64,AAAA","future_field":{"nested":[1,null]}}],"tools":[{"type":"function","name":"read","parameters":{"additionalProperties":false}}],"unknown":{"preserved":true}}),
             skills: vec![pp_config::skills::SkillHeader {
@@ -830,29 +1122,41 @@ providers:
         )
         .unwrap();
         let now = 1_800_000_000_000;
+        let rates = Rates::load(&store.models_path);
         for n in 0..2005 {
-            store
-                .insert(&fixture(&format!("priced-{n}"), now), &Value::Null)
-                .unwrap();
+            let mut record = fixture(&format!("priced-{n}"), now);
+            snapshot_for(&rates, &mut record);
+            store.insert(&record, &Value::Null).unwrap();
         }
         let mut other = fixture("other", now - 86_400_000);
         other.provider = "other".into();
         other.model_reference = "other/primary".into();
         other.status = "failed".into();
+        snapshot_for(&rates, &mut other);
         store.insert(&other, &Value::Null).unwrap();
         let mut unknown = fixture("unknown", now);
         unknown.cached_tokens = None;
         unknown.ttft_ms = None;
         unknown.status = "aborted".into();
+        snapshot_for(&rates, &mut unknown);
+        assert!(unknown.cost.is_none());
+        assert!(unknown.rates.is_some());
         store.insert(&unknown, &Value::Null).unwrap();
         store
             .insert(&fixture("outside", now + 1), &Value::Null)
             .unwrap();
-        let pricing = analytics::Pricing::load(&store);
-        let mut unpriced_alias = fixture("alias", now);
-        unpriced_alias.model_reference = "fixture/unpriced".into();
-        assert!(pricing.cost(&unpriced_alias).is_none());
-        let result = store.analytics(Range::Day, now, &pricing).unwrap();
+        // 配置引用了没有价格的 model 时既无费用也无费率快照。
+        let (alias_cost, alias_rate) = rates.snapshot(
+            "fixture/unpriced",
+            "fixture-model",
+            Some(100),
+            Some(20),
+            Some(80),
+            Some(0),
+        );
+        assert!(alias_cost.is_none());
+        assert!(alias_rate.is_none());
+        let result = store.analytics(Range::Day, now).unwrap();
         let s = &result["summary"];
         assert_eq!(s["requests"], 2007);
         assert_eq!(s["priced"], 2006);
@@ -884,7 +1188,7 @@ providers:
         assert_eq!(result["models"][0]["buckets"][0]["tokens_per_second"], 10.0);
     }
     #[test]
-    fn stats_cache_write_migrates_v1_without_inventing_history() {
+    fn stats_cache_write_column_restore_does_not_invent_history() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stats.db");
         let mut store = open_store(&path).unwrap();
@@ -903,7 +1207,7 @@ providers:
         store
             .conn
             .execute_batch(
-                "DROP INDEX requests_failed_time; ALTER TABLE requests DROP COLUMN cache_write_tokens; ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json; PRAGMA user_version=1;",
+                "DROP INDEX requests_failed_time; ALTER TABLE requests DROP COLUMN cache_write_tokens; ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json;",
             )
             .unwrap();
         drop(store);
@@ -915,9 +1219,7 @@ providers:
         assert_eq!(old["request"]["status"], "failed");
         assert_eq!(old["request"]["entry_id"], "old-entry");
         assert_eq!(old["session_entry"], json!([snapshot]));
-        let errors = store
-            .errors(Range::All, 2000, 500, &analytics::Pricing::default())
-            .unwrap();
+        let errors = store.errors(Range::All, 2000, 500).unwrap();
         assert_eq!(errors["summary"]["requests"], 1);
         assert_eq!(errors["requests"][0]["error_message"], "retained failure");
         let mut new = fixture("new", 1001);
@@ -932,7 +1234,7 @@ providers:
     }
 
     #[test]
-    fn stats_failed_index_upgrade_preserves_error_history() {
+    fn stats_failed_index_restore_preserves_error_history() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stats.db");
         let mut store = open_store(&path).unwrap();
@@ -950,21 +1252,17 @@ providers:
                 .unwrap();
         }
         store.link("failed-one", Path::new("/missing/session.jsonl"), &[json!({"id":"entry","type":"message","message":{"role":"assistant","content":"retained snapshot"}})]).unwrap();
-        let pricing = analytics::Pricing::default();
-        let errors = store.errors(Range::All, 2000, 500, &pricing).unwrap();
+        let errors = store.errors(Range::All, 2000, 500).unwrap();
         assert_eq!(errors["summary"]["requests"], 2);
         let latest = serde_json::to_value(store.latest(0, 2000, 500).unwrap()).unwrap();
         let details = (1..=4)
             .map(|id| store.detail(id).unwrap().unwrap())
             .collect::<Vec<_>>();
-        store.conn.execute_batch("DROP INDEX requests_failed_time; ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json; PRAGMA user_version=2;").unwrap();
+        store.conn.execute_batch("DROP INDEX requests_failed_time; ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json;").unwrap();
         drop(store);
         for _ in 0..2 {
             let store = open_store(&path).unwrap();
-            assert_eq!(
-                store.errors(Range::All, 2000, 500, &pricing).unwrap(),
-                errors
-            );
+            assert_eq!(store.errors(Range::All, 2000, 500).unwrap(), errors);
             assert_eq!(
                 serde_json::to_value(store.latest(0, 2000, 500).unwrap()).unwrap(),
                 latest
@@ -985,25 +1283,47 @@ providers:
             models_with_cost(json!({"input":2,"cacheRead":0.2,"cacheWrite":2.5,"output":8})),
         )
         .unwrap();
-        let pricing = analytics::Pricing::load(&store);
+        let rates = Rates::load(&path);
         let mut record = fixture("written", 1000);
         record.cache_write_tokens = Some(10);
-        let cost = pricing.request(&record).unwrap();
-        assert_eq!(cost["cost_components"]["cache_write"], 0.000025);
-        assert!((cost["cost"].as_f64().unwrap() - 0.000221).abs() < 1e-10);
+        let (cost, rate) = rates.snapshot(
+            "fixture/primary",
+            "fixture-model",
+            Some(100),
+            Some(20),
+            Some(80),
+            Some(10),
+        );
+        let cost = cost.unwrap();
+        assert_eq!(cost.cache_write, 0.000025);
+        assert!((cost.total() - 0.000221).abs() < 1e-10);
+        assert_eq!(rate.as_ref().unwrap().cache_write, Some(2.5));
+        record.cost = Some(cost);
+        record.rates = rate;
         store.insert(&record, &Value::Null).unwrap();
         record.request_key = "zero".into();
         record.cache_write_tokens = Some(0);
+        snapshot_for(&rates, &mut record);
         store.insert(&record, &Value::Null).unwrap();
         record.request_key = "unknown".into();
         record.cache_write_tokens = None;
+        snapshot_for(&rates, &mut record);
+        assert!(record.cost.is_none());
+        assert!(record.rates.is_some());
         store.insert(&record, &Value::Null).unwrap();
-        assert!(pricing.cost(&record).is_none());
         for written in [-1, 21, i64::MAX] {
-            record.cache_write_tokens = Some(written);
-            assert!(pricing.cost(&record).is_none());
+            let (cost, rate) = rates.snapshot(
+                "fixture/primary",
+                "fixture-model",
+                Some(100),
+                Some(20),
+                Some(80),
+                Some(written),
+            );
+            assert!(cost.is_none(), "{written}");
+            assert!(rate.is_some(), "{written}");
         }
-        let result = store.analytics(Range::All, 2000, &pricing).unwrap();
+        let result = store.analytics(Range::All, 2000).unwrap();
         for group in [
             result["summary"].clone(),
             result["models"][0].clone(),
@@ -1025,41 +1345,72 @@ providers:
             models_with_cost(json!({"input":2,"cacheRead":0.2,"output":8})),
         )
         .unwrap();
-        let pricing = analytics::Pricing::load(&store);
-        record.cache_write_tokens = Some(10);
-        assert!(pricing.cost(&record).is_none());
-        record.cache_write_tokens = Some(0);
-        assert!(pricing.cost(&record).is_some());
+        let rates = Rates::load(&path);
+        let snapshot = |written: Option<i64>| {
+            rates.snapshot(
+                "fixture/primary",
+                "fixture-model",
+                Some(100),
+                Some(20),
+                Some(80),
+                written,
+            )
+        };
+        assert!(snapshot(Some(10)).0.is_none());
+        assert!(snapshot(Some(0)).0.is_some());
         // 费率没有写入价时，写入量未知不影响总价，不能整条请求记为未定价。
-        record.cache_write_tokens = None;
-        assert!((pricing.cost(&record).unwrap().total() - 0.000216).abs() < 1e-10);
+        assert!((snapshot(None).0.unwrap().total() - 0.000216).abs() < 1e-10);
         fs::write(
             &path,
             models_with_cost(json!({"input":0,"cacheRead":0,"cacheWrite":0,"output":0})),
         )
         .unwrap();
-        record.cache_write_tokens = Some(10);
-        assert_eq!(
-            analytics::Pricing::load(&store).request(&record).unwrap()["cost"],
-            0.0
+        let rates = Rates::load(&path);
+        let (cost, _) = rates.snapshot(
+            "fixture/primary",
+            "fixture-model",
+            Some(100),
+            Some(20),
+            Some(80),
+            Some(10),
         );
-        let empty = store.analytics(Range::Hour, 10_000_000, &pricing).unwrap();
+        record.cost = cost;
+        assert_eq!(record.value().unwrap()["cost"], 0.0);
+        let empty = store.analytics(Range::Hour, 10_000_000).unwrap();
         assert_eq!(empty["summary"]["cache_write_tokens"], 0);
     }
 
     #[test]
-    fn stats_pricing_preserves_unknown_and_reloads_validated_rates() {
+    fn stats_rates_preserve_unknown_and_reject_invalid_config() {
         let dir = tempfile::tempdir().unwrap();
         let store = open_store(&dir.path().join("stats.db")).unwrap();
-        let mut record = fixture("one", 1000);
-        assert!(analytics::Pricing::load(&store).cost(&record).is_none());
-        fs::write(
-            dir.path().join("pricing.json"),
-            r#"{"fixture/primary":{"input":0,"cached_input":0,"output":0}}"#,
-        )
-        .unwrap();
-        assert!(analytics::Pricing::load(&store).cost(&record).is_none());
         let path = dir.path().join("models.yml");
+        let unpriced = |rates: &Rates| {
+            rates.snapshot(
+                "fixture/primary",
+                "fixture-model",
+                Some(100),
+                Some(20),
+                Some(80),
+                Some(0),
+            )
+        };
+        // 没有 models.yml 时只保留内置价格表。
+        let rates = Rates::load(&path);
+        assert!(unpriced(&rates).0.is_none());
+        assert!(unpriced(&rates).1.is_none());
+        let (cost, rate) = rates.snapshot(
+            "openai/gpt-5.5",
+            "openai/gpt-5.5",
+            Some(1_000_000),
+            Some(0),
+            Some(0),
+            Some(0),
+        );
+        assert_eq!(rate.unwrap().input, 5.0);
+        assert!((cost.unwrap().total() - 5.0).abs() < 1e-12);
+
+        // 配置无法解析时完全不计价，连内置价格表也不用。
         for invalid in [
             models_with_cost(json!({"input":-1,"cacheRead":0,"output":1})),
             models_with_cost(json!({"input":1,"output":1})),
@@ -1067,42 +1418,57 @@ providers:
             "invalid secret-marker".into(),
         ] {
             fs::write(&path, invalid).unwrap();
-            let pricing = analytics::Pricing::load(&store);
-            assert!(pricing.error.is_some());
-            assert!(!pricing.error.unwrap().contains("secret-marker"));
-            assert!(pricing.cost(&record).is_none());
+            let rates = Rates::load(&path);
+            assert_eq!(unpriced(&rates), (None, None));
+            assert_eq!(
+                rates.snapshot(
+                    "openai/gpt-5.5",
+                    "openai/gpt-5.5",
+                    Some(1_000_000),
+                    Some(0),
+                    Some(0),
+                    Some(0),
+                ),
+                (None, None)
+            );
             assert!(store.overview(Range::All, 2000).is_ok());
         }
+
         fs::write(
             &path,
             models_with_cost(json!({"input":2,"cacheRead":0.2,"output":8})),
         )
         .unwrap();
-        let priced = store.overview(Range::All, 2000).unwrap();
-        assert!(priced["pricing_error"].is_null());
-        assert!(
-            (analytics::Pricing::load(&store).request(&record).unwrap()["cost"]
-                .as_f64()
-                .unwrap()
-                - 0.000216)
-                .abs()
-                < 1e-10
-        );
+        let rates = Rates::load(&path);
+        let (cost, rate) = unpriced(&rates);
+        assert!((cost.unwrap().total() - 0.000216).abs() < 1e-10);
+        assert_eq!(rate.unwrap().cached_input, 0.2);
+
         fs::write(
             &path,
             models_with_cost(json!({"input":0,"cacheRead":0,"output":0})),
         )
         .unwrap();
-        let pricing = analytics::Pricing::load(&store);
-        assert_eq!(pricing.request(&record).unwrap()["cost"], 0.0);
-        record.cached_tokens = Some(101);
-        assert!(pricing.cost(&record).is_none());
-        record.cached_tokens = None;
-        assert!(pricing.cost(&record).is_none());
-        record.cached_tokens = Some(80);
-        record.output_tokens = None;
-        assert!(pricing.cost(&record).is_none());
-        let empty = store.analytics(Range::All, 2000, &pricing).unwrap();
+        let rates = Rates::load(&path);
+        assert_eq!(unpriced(&rates).0.unwrap().total(), 0.0);
+        // 缓存读超过输入、缓存读未知、输出未知都不能按零计价。
+        for (input, output, cached) in [
+            (Some(100), Some(20), Some(101)),
+            (Some(100), Some(20), None),
+            (Some(100), None, Some(80)),
+        ] {
+            let (cost, rate) = rates.snapshot(
+                "fixture/primary",
+                "fixture-model",
+                input,
+                output,
+                cached,
+                Some(0),
+            );
+            assert!(cost.is_none());
+            assert!(rate.is_some());
+        }
+        let empty = store.analytics(Range::All, 2000).unwrap();
         assert_eq!(empty["summary"]["cost"], 0.0);
         assert_eq!(empty["summary"]["unpriced"], 0);
         assert_eq!(empty["summary"]["tokens"], 0);
@@ -1159,11 +1525,8 @@ providers:
                 })
                 .unwrap();
         }
-        let pricing = analytics::Pricing::default();
         let titles = HashMap::from([("root", "修复 traces 会话标题")]);
-        let traces = store
-            .traces(Range::Hour, now, 500, &pricing, &titles)
-            .unwrap();
+        let traces = store.traces(Range::Hour, now, 500, &titles).unwrap();
         assert_eq!(traces["total"], 1);
         let session = &traces["sessions"][0];
         assert_eq!(session["session_file"], root_file);
@@ -1172,11 +1535,11 @@ providers:
         assert_eq!(session["agents"], 1);
         assert_eq!(session["tool_calls"], 2);
         let untitled = store
-            .traces(Range::Hour, now, 500, &pricing, &HashMap::new())
+            .traces(Range::Hour, now, 500, &HashMap::new())
             .unwrap();
         assert!(untitled["sessions"][0].get("title").is_none());
         let id = session["id"].as_i64().unwrap();
-        let trace = store.trace(id, now, &pricing, &titles).unwrap().unwrap();
+        let trace = store.trace(id, now, &titles).unwrap().unwrap();
         assert_eq!(trace["title"], "修复 traces 会话标题");
         assert_eq!(trace["session_file"], root_file);
         assert_eq!(trace["summary"]["requests"], 3);
@@ -1236,8 +1599,7 @@ providers:
         store
             .insert(&fixture("future", now + 1), &Value::Null)
             .unwrap();
-        let pricing = analytics::Pricing::default();
-        let errors = store.errors(Range::Day, now, 500, &pricing).unwrap();
+        let errors = store.errors(Range::Day, now, 500).unwrap();
         assert_eq!(errors["summary"]["requests"], 502);
         assert_eq!(errors["signatures"].as_array().unwrap().len(), 1);
         assert_eq!(errors["signatures"][0]["requests"], 502);
@@ -1245,15 +1607,12 @@ providers:
         assert_eq!(errors["has_more"], true);
         assert!(!errors.to_string().contains("private-output"));
         let traces = store
-            .traces(Range::Hour, now, 500, &pricing, &HashMap::new())
+            .traces(Range::Hour, now, 500, &HashMap::new())
             .unwrap();
         assert_eq!(traces["total"], 502);
         assert_eq!(traces["sessions"][0]["requests"], 1);
         let id = traces["sessions"][0]["id"].as_i64().unwrap();
-        let trace = store
-            .trace(id, now, &pricing, &HashMap::new())
-            .unwrap()
-            .unwrap();
+        let trace = store.trace(id, now, &HashMap::new()).unwrap().unwrap();
         assert_eq!(trace["summary"]["requests"], 2);
         assert_eq!(trace["requests"][0]["id"], 1);
         assert_eq!(trace["summary"]["wall_ms"], 7_202_000.0);
@@ -1263,17 +1622,9 @@ providers:
             store.detail(1).unwrap().unwrap()["output_message"]["text"],
             "private-output"
         );
-        assert!(
-            store
-                .trace(9999, now, &pricing, &HashMap::new())
-                .unwrap()
-                .is_none()
-        );
+        assert!(store.trace(9999, now, &HashMap::new()).unwrap().is_none());
         assert_eq!(
-            store
-                .trace(2, now, &pricing, &HashMap::new())
-                .unwrap()
-                .unwrap()["summary"]["requests"],
+            store.trace(2, now, &HashMap::new()).unwrap().unwrap()["summary"]["requests"],
             1
         );
         let since = Range::Day.since(now);
@@ -1291,7 +1642,7 @@ providers:
             record.error_message = failed.error_message.clone();
             store.insert(&record, &Value::Null).unwrap();
         }
-        let complete = store.errors(Range::Day, now, 2000, &pricing).unwrap();
+        let complete = store.errors(Range::Day, now, 2000).unwrap();
         let keys = complete["requests"]
             .as_array()
             .unwrap()
@@ -1305,7 +1656,7 @@ providers:
             .collect::<Vec<_>>();
         assert_eq!(keys, expected);
         assert_eq!(complete["summary"]["requests"], 505);
-        let limited = store.errors(Range::Day, now, 500, &pricing).unwrap();
+        let limited = store.errors(Range::Day, now, 500).unwrap();
         for field in ["summary", "signatures", "models"] {
             assert_eq!(limited[field], complete[field]);
         }
@@ -1356,12 +1707,14 @@ providers:
         .unwrap();
         let mut store = open_store(&dir.path().join("stats.db")).unwrap();
         let now = chrono::Utc::now().timestamp_millis();
+        let rates = Rates::load(&store.models_path);
         let completion = json!({"native":{"tool_calls":[
             {"function":{"name":"read","arguments":"private-arguments"}},
             {"function":{"name":"bash","arguments":"{}"}}
         ]},"text":"private-output"});
         let mut first = fixture("one", now - 1000);
         first.session_file = Some("/missing/session.jsonl".into());
+        snapshot_for(&rates, &mut first);
         store.insert(&first, &completion).unwrap();
         store
             .link(
@@ -1382,10 +1735,12 @@ providers:
             r.input_tokens = None;
             r.output_tokens = None;
             r.cached_tokens = None;
+            snapshot_for(&rates, &mut r);
             store.insert(&r, &responses).unwrap();
         }
         let mut failed = fixture("failed", now);
         failed.status = "aborted".into();
+        snapshot_for(&rates, &mut failed);
         store.insert(&failed, &json!({"native":{"output":[{"type":"function_call","name":"rg","arguments":"中😀"}]}})).unwrap();
         store
             .insert(&fixture("future", now + 1), &responses)
@@ -1393,8 +1748,7 @@ providers:
         store
             .insert(&fixture("old", now - 3_600_001), &responses)
             .unwrap();
-        let pricing = analytics::Pricing::load(&store);
-        let tools = store.tools(Range::Hour, now, &pricing).unwrap();
+        let tools = store.tools(Range::Hour, now).unwrap();
         assert_eq!(tools["summary"]["calls"], 504);
         assert_eq!(tools["requests_with_tools"], 503);
         assert_eq!(tools["partial_requests"], 1);
@@ -1414,7 +1768,7 @@ providers:
         assert!(tools["summary"]["errors"].is_null());
         assert!(!tools.to_string().contains("private-arguments"));
         assert!(!tools.to_string().contains("private-output"));
-        let projects = store.projects(Range::Hour, now, &pricing).unwrap();
+        let projects = store.projects(Range::Hour, now).unwrap();
         assert_eq!(projects["summary"]["requests"], 503);
         assert_eq!(projects["projects"].as_array().unwrap().len(), 2);
         let p = projects["projects"]
@@ -1427,13 +1781,13 @@ providers:
         assert_eq!(p["requests_without_session"], 1);
         assert_eq!(p["requests"], 2);
         assert!(!projects.to_string().contains("private-output"));
-        let empty = store.tools(Range::Hour, now - 7_200_000, &pricing).unwrap();
+        let empty = store.tools(Range::Hour, now - 7_200_000).unwrap();
         assert_eq!(empty["summary"]["cost"], 0.0);
         assert_eq!(empty["summary"]["tokens"], 0.0);
         assert!(empty["tools"].as_array().unwrap().is_empty());
     }
     #[test]
-    fn stats_tool_executions_record_errors_survive_v4_upgrade_and_stay_in_range() {
+    fn stats_tool_executions_record_errors_survive_table_rebuild_and_stay_in_range() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stats.db");
         let mut store = open_store(&path).unwrap();
@@ -1540,8 +1894,7 @@ providers:
             })
             .unwrap();
 
-        let pricing = analytics::Pricing::default();
-        let errors = store.errors(Range::Day, now, 500, &pricing).unwrap();
+        let errors = store.errors(Range::Day, now, 500).unwrap();
         assert_eq!(errors["tool_summary"]["failures"], 2);
         assert_eq!(errors["tool_summary"]["tools"], 2);
         assert_eq!(errors["tool_signatures"].as_array().unwrap().len(), 2);
@@ -1557,15 +1910,13 @@ providers:
             errors["tool_signatures"][0]["signature"],
             "read: No such file: /tmp/x"
         );
-        let shifted = store
-            .errors(Range::Day, now - 3_600_000, 500, &pricing)
-            .unwrap();
+        let shifted = store.errors(Range::Day, now - 3_600_000, 500).unwrap();
         // 上界之后的主记录被排除；未关联请求的执行仍计入工具错误。
         assert_eq!(shifted["tool_summary"]["failures"], 1);
         assert_eq!(shifted["tool_failures"][0]["call_id"], "old");
         assert!(shifted["tool_failures"][0]["request_id"].is_null());
 
-        let tools = store.tools(Range::Day, now, &pricing).unwrap();
+        let tools = store.tools(Range::Day, now).unwrap();
         assert_eq!(tools["summary"]["executions"], 4);
         assert_eq!(tools["summary"]["errors"], 2);
         assert_eq!(tools["summary"]["cancelled"], 1);
@@ -1593,29 +1944,28 @@ providers:
         assert_eq!(read["avg_duration_ms"], 7.5);
         assert!(!tools.to_string().contains("/tmp/x"));
 
-        let version: i64 = store
-            .conn
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, 5);
-        store
-            .conn
-            .execute_batch("DROP TABLE tool_calls; PRAGMA user_version=4;")
-            .unwrap();
+        store.conn.execute_batch("DROP TABLE tool_calls;").unwrap();
         drop(store);
         let store = open_store(&path).unwrap();
-        let version: i64 = store
-            .conn
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, 5);
         let count: i64 = store
             .conn
             .query_row("SELECT COUNT(*) FROM tool_calls", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+        // 重开后表与索引按幂等 schema 重建。
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('tool_calls_time','tool_calls_error_time')",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
         assert_eq!(store.latest(0, now + 1, 10).unwrap().len(), 1);
-        let empty = store.errors(Range::All, now, 500, &pricing).unwrap();
+        let empty = store.errors(Range::All, now, 500).unwrap();
         assert_eq!(empty["tool_summary"]["failures"], 0);
         assert!(empty["tool_failures"].as_array().unwrap().is_empty());
     }
@@ -1817,15 +2167,301 @@ providers:
         );
     }
     #[test]
-    fn stats_future_schema_and_symlinks_are_rejected() {
+    fn stats_symlinks_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stats.db");
-        let store = open_store(&path).unwrap();
-        store.conn.pragma_update(None, "user_version", 999).unwrap();
-        drop(store);
-        assert!(open_store(&path).is_err());
+        open_store(&path).unwrap();
         let link = dir.path().join("link.db");
         std::os::unix::fs::symlink(&path, &link).unwrap();
         assert!(open_store(&link).is_err());
+    }
+
+    #[test]
+    fn stats_schema_is_ensured_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.db");
+        let mut store = open_store(&path).unwrap();
+        let mut priced = fixture("priced", 1000);
+        priced.cost = Some(CostSnapshot {
+            input: 0.25,
+            cache_read: 0.25,
+            cache_write: 0.25,
+            output: 0.25,
+        });
+        priced.rates = Some(RateSnapshot {
+            input: 2.0,
+            cached_input: 0.2,
+            cache_write: None,
+            output: 8.0,
+        });
+        store.insert(&priced, &Value::Null).unwrap();
+        store
+            .insert(&fixture("legacy", 1001), &Value::Null)
+            .unwrap();
+        // 采集时写入的快照可被列表与详情读取。
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM requests WHERE cost_json IS NOT NULL AND rate_json IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        let detail = store.detail(1).unwrap().unwrap();
+        assert_eq!(detail["request"]["cost"], 1.0);
+        assert_eq!(detail["request"]["cost_components"]["cache_write"], 0.25);
+        assert_eq!(
+            store.latest(0, 1000, 1).unwrap()[0].rates().unwrap().input,
+            2.0
+        );
+        let session = dir.path().join("session.jsonl");
+        store
+            .tool(&ToolCall {
+                request_key: Some("priced"),
+                session_file: &session,
+                call_id: "call-1",
+                tool: "bash",
+                status: ToolStatus::Error,
+                error_message: Some("boom"),
+                timestamp: 1000,
+                duration_ms: 5.0,
+            })
+            .unwrap();
+        // 模拟旧库：新索引与费用快照列都不存在。
+        store
+            .conn
+            .execute_batch(
+                "DROP INDEX requests_session; DROP INDEX tool_calls_error_time;
+                 ALTER TABLE requests DROP COLUMN cost_json; ALTER TABLE requests DROP COLUMN rate_json;",
+            )
+            .unwrap();
+        drop(store);
+
+        let store = open_store(&path).unwrap();
+        let indexes = |table: &str| -> Vec<String> {
+            let mut statement = store
+                .conn
+                .prepare(&format!("PRAGMA index_list({table})"))
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert!(indexes("requests").contains(&"requests_session".to_owned()));
+        assert!(indexes("requests").contains(&"requests_time".to_owned()));
+        assert!(
+            indexes("tool_calls").contains(&"tool_calls_error_time".to_owned()),
+            "重开必须重建部分索引"
+        );
+        assert!(indexes("tool_calls").contains(&"tool_calls_time".to_owned()));
+        let columns = table_columns(&store.conn, "requests").unwrap();
+        assert!(columns.iter().any(|name| name == "cost_json"));
+        assert!(columns.iter().any(|name| name == "rate_json"));
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM requests", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        // 历史行保留；补列后旧行的费用快照全为 NULL，按未定价统计。
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM requests", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM requests WHERE cost_json IS NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        let summary = store.analytics(Range::All, 2000).unwrap();
+        assert_eq!(summary["summary"]["requests"], 2);
+        assert_eq!(summary["summary"]["priced"], 0);
+        assert_eq!(summary["summary"]["unpriced"], 2);
+        assert!(summary["summary"]["cost"].is_null());
+        // 补齐结构的那次 open 会给 planner 补统计。
+        for table in ["requests", "tool_calls"] {
+            assert!(
+                store
+                    .conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_stat1 WHERE tbl=?1",
+                        [table],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap()
+                    > 0,
+                "{table} 缺少 ANALYZE 统计"
+            );
+        }
+        // 版本号不再被读写。
+        assert_eq!(
+            store
+                .conn
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let structure = |store: &Store| -> Vec<String> {
+            let mut statement = store
+                .conn
+                .prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name")
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok(format!(
+                        "{}:{}:{}",
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?.unwrap_or_default()
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        let before = structure(&store);
+        drop(store);
+        let store = open_store(&path).unwrap();
+        // 结构齐全时再次 open 不改变 schema。
+        assert_eq!(structure(&store), before);
+    }
+
+    /// 取 `EXPLAIN QUERY PLAN` 的计划文本（`detail` 列）。
+    fn query_plan(conn: &Connection, sql: &str, parameters: impl rusqlite::Params) -> String {
+        let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        statement
+            .query_map(parameters, |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join("\n")
+    }
+
+    #[test]
+    fn stats_query_plans_use_indexes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let now = 1_800_000_000_000;
+        let root = "root.jsonl";
+        let child = "root.subagents/sessions/child.jsonl";
+        for n in 0..200 {
+            let mut record = fixture(&format!("request-{n}"), now - n * 60_000);
+            // 真实库中一个会话只占少数行；根会话与子 Agent 各保留几条，其余归入其它会话。
+            record.session_file = Some(match n {
+                0..=3 => root.to_owned(),
+                4..=7 => child.to_owned(),
+                _ => format!("other-{n}.jsonl"),
+            });
+            if n % 20 == 0 {
+                record.status = "failed".into();
+                record.error_message = Some("HTTP 500".into());
+            }
+            store.insert(&record, &Value::Null).unwrap();
+        }
+        for n in 0..100 {
+            let call_id = format!("call-{n}");
+            let session = match n {
+                0..=3 => root.to_owned(),
+                4..=7 => child.to_owned(),
+                _ => format!("other-{n}.jsonl"),
+            };
+            store
+                .tool(&ToolCall {
+                    request_key: Some("request-0"),
+                    session_file: Path::new(&session),
+                    call_id: &call_id,
+                    tool: "bash",
+                    status: if n % 10 == 0 {
+                        ToolStatus::Error
+                    } else {
+                        ToolStatus::Ok
+                    },
+                    error_message: None,
+                    timestamp: now - n * 60_000,
+                    duration_ms: 12.0,
+                })
+                .unwrap();
+        }
+        store
+            .conn
+            .execute_batch("ANALYZE requests; ANALYZE tool_calls;")
+            .unwrap();
+        let scope =
+            SessionScope::new(root.to_owned(), "root.subagents/sessions/".to_owned()).unwrap();
+        let since = Range::Day.since(now);
+
+        let latest = query_plan(&store.conn, &latest_sql(), params![since, now, 12_i64]);
+        assert!(latest.contains("requests_time"), "{latest}");
+        assert!(!latest.contains("SCAN requests"), "{latest}");
+
+        let session = query_plan(
+            &store.conn,
+            &session_requests_sql(COLUMNS),
+            params![scope.root, scope.prefix, scope.upper],
+        );
+        assert!(session.contains("requests_session"), "{session}");
+        assert!(!session.contains("SCAN requests"), "{session}");
+
+        let failed = query_plan(
+            &store.conn,
+            &activity::failed_requests_sql(),
+            params![since, now],
+        );
+        assert!(failed.contains("requests_failed_time"), "{failed}");
+        assert!(!failed.contains("SCAN requests"), "{failed}");
+
+        let tools = query_plan(
+            &store.conn,
+            &activity::tool_failures_sql(),
+            params![since, now],
+        );
+        assert!(tools.contains("tool_calls_error_time"), "{tools}");
+        assert!(!tools.contains("SCAN tool_calls"), "{tools}");
+
+        let trace_tools = query_plan(
+            &store.conn,
+            &activity::trace_tools_sql(),
+            params![scope.root, scope.prefix, scope.upper],
+        );
+        assert!(
+            trace_tools.contains("sqlite_autoindex_tool_calls_1"),
+            "{trace_tools}"
+        );
+        assert!(!trace_tools.contains("SCAN tool_calls"), "{trace_tools}");
+
+        // `range=all` 从时间下界 0 开始；记录实际计划，由报告说明是否退化为全表读取。
+        for (name, plan) in [
+            (
+                "latest",
+                query_plan(&store.conn, &latest_sql(), params![0_i64, now, 12_i64]),
+            ),
+            (
+                "failed",
+                query_plan(
+                    &store.conn,
+                    &activity::failed_requests_sql(),
+                    params![0_i64, now],
+                ),
+            ),
+        ] {
+            eprintln!("range=all {name} plan:\n{plan}");
+        }
     }
 }

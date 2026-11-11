@@ -1,100 +1,9 @@
-use super::{COLUMNS, Range, RequestRow, Store, row};
+use super::{COLUMNS, CostSnapshot, Range, RateSnapshot, RequestRow, Store, row};
 use anyhow::Result;
 use chrono::{Local, TimeZone, Timelike};
-use pp_config::models::{ModelCost, ModelPricing};
 use rusqlite::params;
-use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-
-#[derive(Clone, Serialize)]
-struct Price {
-    input: f64,
-    cached_input: f64,
-    cache_write: Option<f64>,
-    output: f64,
-}
-
-impl From<ModelCost> for Price {
-    fn from(cost: ModelCost) -> Self {
-        Self {
-            input: cost.input,
-            cached_input: cost.cache_read,
-            cache_write: cost.cache_write,
-            output: cost.output,
-        }
-    }
-}
-
-#[derive(Default)]
-pub(super) struct Pricing {
-    rates: ModelPricing,
-    pub error: Option<&'static str>,
-}
-impl Pricing {
-    pub fn load(store: &Store) -> Self {
-        match pp_config::models::load_models(&store.models_path) {
-            Ok(providers) => Self {
-                rates: ModelPricing::from_providers(&providers),
-                error: None,
-            },
-            Err(error)
-                if error
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                Self::default()
-            }
-            Err(_) => Self {
-                error: Some(
-                    "Unable to read pricing from ~/.pp/agent/models.yml: check the model configuration and the cost.input, cost.cacheRead, cost.cacheWrite, and cost.output rates (USD per million tokens).",
-                ),
-                ..Self::default()
-            },
-        }
-    }
-
-    pub(super) fn rate(&self, reference: &str, model: &str) -> Option<ModelCost> {
-        self.error
-            .is_none()
-            .then(|| self.rates.rate(reference, model))
-            .flatten()
-    }
-
-    pub fn cost(&self, r: &RequestRow) -> Option<Cost> {
-        calculate(
-            self.rate(&r.model_reference, &r.model)?,
-            r.input_tokens,
-            r.output_tokens,
-            r.cached_tokens,
-            r.cache_write_tokens,
-        )
-    }
-
-    pub fn request(&self, r: &RequestRow) -> Result<Value> {
-        let mut value = serde_json::to_value(r)?;
-        let cost = self.cost(r);
-        value["cost"] = json!(cost.as_ref().map(Cost::total));
-        value["cost_components"] = json!(cost);
-        Ok(value)
-    }
-}
-pub(super) use pp_config::models::TokenCost as Cost;
-pub(super) fn calculate(
-    price: ModelCost,
-    input: Option<i64>,
-    output: Option<i64>,
-    cached: Option<i64>,
-    written: Option<i64>,
-) -> Option<Cost> {
-    price.calculate(pp_core::context::TokenUsage {
-        input_tokens: input?.try_into().ok()?,
-        output_tokens: output?.try_into().ok()?,
-        cached_tokens: Some(cached?.try_into().ok()?),
-        // 写入量未知时保留 None，由费率决定能否计价。
-        cache_write_tokens: written.map(u64::try_from).transpose().ok()?,
-    })
-}
 
 #[derive(Default)]
 pub(super) struct Aggregate {
@@ -119,7 +28,7 @@ pub(super) struct Aggregate {
     speed_count: u64,
     first: Option<i64>,
     last: Option<i64>,
-    components: Cost,
+    components: CostSnapshot,
 }
 fn add(total: &mut Option<i64>, value: Option<i64>) {
     if let Some(v) = value {
@@ -127,7 +36,7 @@ fn add(total: &mut Option<i64>, value: Option<i64>) {
     }
 }
 impl Aggregate {
-    pub(super) fn push(&mut self, r: &RequestRow, cost: Option<&Cost>) {
+    pub(super) fn push(&mut self, r: &RequestRow, cost: Option<&CostSnapshot>) {
         self.requests += 1;
         self.ok += u64::from(r.status == "ok");
         self.failed += u64::from(r.status == "failed");
@@ -220,7 +129,14 @@ impl Group {
         );
         value
     }
-    fn push(&mut self, r: &RequestRow, cost: Option<&Cost>, bucket: i64, day: i64, hour: u32) {
+    fn push(
+        &mut self,
+        r: &RequestRow,
+        cost: Option<&CostSnapshot>,
+        bucket: i64,
+        day: i64,
+        hour: u32,
+    ) {
         self.totals.push(r, cost);
         self.buckets.entry(bucket).or_default().push(r, cost);
         self.daily.entry(day).or_default().push(r, cost);
@@ -242,14 +158,14 @@ fn series(buckets: &BTreeMap<i64, Aggregate>) -> Value {
     )
 }
 impl Store {
-    pub(super) fn analytics(&self, range: Range, now: i64, pricing: &Pricing) -> Result<Value> {
+    pub(super) fn analytics(&self, range: Range, now: i64) -> Result<Value> {
         let mut statement = self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp,id"))?;
         let rows = statement.query_map(params![range.since(now), now], row)?;
         let mut all = Group::default();
         let mut models = BTreeMap::<String, Group>::new();
         let mut providers = BTreeMap::<String, Group>::new();
         let mut names = BTreeMap::new();
-        let mut model_rates = BTreeMap::new();
+        let mut model_rates = BTreeMap::<String, Option<RateSnapshot>>::new();
         for r in rows {
             let r = r?;
             let local = Local
@@ -267,7 +183,7 @@ impl Store {
                     .map(|d| d.timestamp_millis())
                     .ok_or_else(|| anyhow::anyhow!("invalid local date"))?,
             };
-            let cost = pricing.cost(&r);
+            let cost = r.cost();
             all.push(&r, cost.as_ref(), bucket, day, local.hour());
             models.entry(r.model_reference.clone()).or_default().push(
                 &r,
@@ -283,8 +199,8 @@ impl Store {
                 day,
                 local.hour(),
             );
-            let rate = pricing.rate(&r.model_reference, &r.model);
-            // 同一配置引用可能在历史上指向不同实际模型，仅显示一致的费率。
+            let rate = r.rates();
+            // 同一配置引用可能在历史上指向不同实际模型或缺少费率快照，仅显示一致的费率。
             model_rates
                 .entry(r.model_reference.clone())
                 .and_modify(|previous| {
@@ -303,7 +219,7 @@ impl Store {
                 v["key"] = json!(key);
                 v["model"] = json!(model);
                 v["provider"] = json!(provider);
-                v["rates"] = json!(model_rates[key].map(Price::from));
+                v["rates"] = json!(model_rates[key]);
                 v
             })
             .collect();
@@ -317,7 +233,109 @@ impl Store {
             })
             .collect();
         Ok(
-            json!({"summary":all.totals.value(),"buckets":series(&all.buckets),"daily":series(&all.daily),"hours":all.value()["hours"],"models":model_values,"providers":provider_values,"active_days":all.daily.len(),"pricing_error":pricing.error,"pricing_source":"~/.pp/agent/models.yml overrides built-in rates · USD per million tokens","range":range.label(),"updated_at":now}),
+            json!({"summary":all.totals.value(),"buckets":series(&all.buckets),"daily":series(&all.daily),"hours":all.value()["hours"],"models":model_values,"providers":provider_values,"active_days":all.daily.len(),"range":range.label(),"updated_at":now}),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CostSnapshot, Range, RequestRow, ensure_schema};
+    use rusqlite::Connection;
+    use std::path::PathBuf;
+
+    fn record(
+        key: &str,
+        reference: &str,
+        cost: Option<CostSnapshot>,
+        rates: Option<RateSnapshot>,
+    ) -> RequestRow {
+        RequestRow {
+            id: 0,
+            request_key: key.to_owned(),
+            timestamp: 1_000,
+            model: "fixture-model".to_owned(),
+            provider: "fixture".to_owned(),
+            model_reference: reference.to_owned(),
+            api: "openai".to_owned(),
+            project: "project".to_owned(),
+            cwd: "/tmp".to_owned(),
+            purpose: "chat".to_owned(),
+            session_file: None,
+            entry_id: None,
+            duration_ms: 1.0,
+            ttft_ms: None,
+            input_tokens: Some(10),
+            output_tokens: Some(5),
+            cached_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            status: "ok".to_owned(),
+            stop_reason: None,
+            error_message: None,
+            cost,
+            rates,
+        }
+    }
+
+    /// 模型费率取范围内记录的快照：一致时展示四个费率字段，缺失或漂移即为 null。
+    #[test]
+    fn model_rates_show_recorded_snapshots_only_when_consistent() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&mut conn).unwrap();
+        let mut store = Store {
+            conn,
+            models_path: PathBuf::from("/nonexistent/models.yml"),
+        };
+        let rate = RateSnapshot {
+            input: 2.0,
+            cached_input: 0.2,
+            cache_write: None,
+            output: 8.0,
+        };
+        let cost = CostSnapshot {
+            input: 1.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            output: 2.0,
+        };
+        for (key, reference, rate) in [
+            ("a", "fixture/primary", Some(rate.clone())),
+            ("b", "fixture/primary", Some(rate.clone())),
+            ("c", "fixture/missing", None),
+            ("d", "fixture/drift", Some(rate.clone())),
+            (
+                "e",
+                "fixture/drift",
+                Some(RateSnapshot {
+                    input: 3.0,
+                    ..rate.clone()
+                }),
+            ),
+        ] {
+            let cost = (key != "c").then(|| cost.clone());
+            store
+                .insert(&record(key, reference, cost, rate), &Value::Null)
+                .unwrap();
+        }
+        let value = store.analytics(Range::All, 10_000).unwrap();
+        assert!(value.get("pricing_error").is_none());
+        assert!(value.get("pricing_source").is_none());
+        assert_eq!(value["summary"]["priced"], 4);
+        assert_eq!(value["summary"]["unpriced"], 1);
+        assert!((value["summary"]["cost"].as_f64().unwrap() - 12.0).abs() < 1e-12);
+        assert_eq!(
+            value["summary"]["cost_components"],
+            json!({"input":4.0,"cache_read":0.0,"cache_write":0.0,"output":8.0})
+        );
+        let models = value["models"].as_array().unwrap();
+        let rates =
+            |key: &str| models.iter().find(|model| model["key"] == key).unwrap()["rates"].clone();
+        assert_eq!(
+            rates("fixture/primary"),
+            json!({"input":2.0,"cached_input":0.2,"cache_write":null,"output":8.0})
+        );
+        assert!(rates("fixture/missing").is_null());
+        assert!(rates("fixture/drift").is_null());
     }
 }
