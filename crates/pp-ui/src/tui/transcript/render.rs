@@ -39,7 +39,10 @@ impl Transcript {
             entry.display = display;
             entry.layout = None;
         }
-        let padding = if compact || entry.is_file_read() || entry.kind == EntryKind::Error {
+        let padding = if compact
+            || entry.is_file_read()
+            || matches!(entry.kind, EntryKind::Error | EntryKind::Notice)
+        {
             0
         } else if matches!(entry.kind, EntryKind::Bash | EntryKind::Read) || entry.is_search() {
             4
@@ -179,7 +182,8 @@ impl Transcript {
                 let read = entry.kind == EntryKind::Read;
                 let edit = entry.is_edit();
                 let file_read = entry.is_file_read();
-                let error = entry.kind == EntryKind::Error;
+                // 自带完整外框的条目：不再叠加左侧竖线，也不缩进正文。
+                let framed = matches!(entry.kind, EntryKind::Error | EntryKind::Notice);
                 let search = entry.is_search();
                 let think = entry.kind == EntryKind::Think;
                 let background = if bash {
@@ -352,7 +356,7 @@ impl Transcript {
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
                     } else if !think
-                        && !error
+                        && !framed
                         && entry.kind != EntryKind::Activity
                         && background.is_none()
                         && !entry.is_wait_card()
@@ -366,7 +370,7 @@ impl Transcript {
                             .render(Rect::new(area.x, row, 1, 1), buffer);
                     }
                 }
-                let padding = if compact || file_read || error {
+                let padding = if compact || file_read || framed {
                     0
                 } else if bash
                     || search
@@ -385,7 +389,7 @@ impl Transcript {
                 {
                     let target = Rect::new(
                         area.x
-                            + if file_read || error {
+                            + if file_read || framed {
                                 0
                             } else if edit
                                 && !compact

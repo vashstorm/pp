@@ -86,16 +86,7 @@ pub enum ModelSource {
 }
 
 impl ModelSource {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Override => "override",
-            Self::Role => "role",
-            Self::Fallback => "fallback",
-        }
-    }
-
-    /// 状态栏与 CLI 使用的说明文案。
+    /// CLI／内容栏使用的说明文案。
     pub fn describe(self) -> &'static str {
         match self {
             Self::Default => "config default",

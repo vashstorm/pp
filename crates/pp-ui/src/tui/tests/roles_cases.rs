@@ -181,8 +181,10 @@ fn model_switch_report_is_not_overwritten_by_an_older_worker_snapshot() {
     app.receive();
     assert_eq!(app.think_level, ThinkLevel::High);
     let screen = draw(&mut app, 130, 30);
+    // 手动覆盖不再尾随状态栏；显示仍保持新模型。
+    let status = screen.lines().last().unwrap();
     assert!(
-        screen.lines().last().unwrap().contains(" · override"),
+        !status.contains("override") && status.contains("gateway/team/Beta"),
         "{screen}"
     );
 }

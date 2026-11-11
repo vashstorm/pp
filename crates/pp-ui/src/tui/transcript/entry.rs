@@ -20,6 +20,7 @@ impl EntryKind {
             Self::Lsp => palette::ACCENT,
             Self::Data => Color::Reset,
             Self::Error => palette::ERROR_BORDER,
+            Self::Notice => palette::ACCENT,
         }
     }
 
@@ -641,12 +642,32 @@ impl TranscriptEntry {
             }));
             return;
         }
-        if self.kind == EntryKind::Error {
-            let border_style = Style::default().fg(palette::ERROR_BORDER);
+        if matches!(self.kind, EntryKind::Error | EntryKind::Notice) {
+            // 错误与运行时提示共用同一幅框卡：只有边框色、标题与正文色不同。
+            let notice = self.kind == EntryKind::Notice;
+            let border_style = Style::default().fg(if notice {
+                palette::ACCENT
+            } else {
+                palette::ERROR_BORDER
+            });
+            let text_style = if notice {
+                Style::default().fg(palette::TEXT)
+            } else {
+                Style::default()
+            };
+            let label = if notice {
+                format!(" {} ", self.title)
+            } else {
+                " Error ".to_owned()
+            };
             let mut rows = Vec::new();
             // 极窄窗口优先保留正文；空间恢复后重新生成完整外框。
             if width >= 6 {
-                let title = if width >= 9 { " Error " } else { "" };
+                let title = if usize::from(width) >= label.len() + 2 {
+                    label.as_str()
+                } else {
+                    ""
+                };
                 rows.push(Line::styled(
                     format!(
                         "╭{title}{}╮",
@@ -656,7 +677,7 @@ impl TranscriptEntry {
                 ));
             }
             let inner = if width >= 6 { width - 4 } else { width };
-            for mut line in wrap_block(block_line(self.text.clone(), Style::default()), inner, "") {
+            for mut line in wrap_block(block_line(self.text.clone(), text_style), inner, "") {
                 if width >= 6 {
                     let padding = usize::from(inner).saturating_sub(line.width());
                     line.spans.insert(0, Span::styled("│ ", border_style));

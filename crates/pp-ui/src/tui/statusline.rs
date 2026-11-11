@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use pp_config::config::ModelChoice;
 use pp_core::context::ContextUsage;
-use pp_core::model::ModelSource;
 use pp_core::model::ThinkLevel;
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -695,11 +694,10 @@ fn compact(text: &str, width: usize, keep_end: bool) -> String {
 
 // 放不下时依次降级：缩短 cwd → 隐藏 git → 缩短模型 → 仅显示模型前缀。
 // Plan 模式标签由调用方按预算决定：不足时先压缩其它字段，再缩为单字母，最后只留模式。
-// 来源标记（override/fallback）拼进模型字段参与同一套宽度预算；`Default` 不加噪声。
+// 模型字段只放配置引用：切换来源由内容栏的提示行交代，不挤占状态栏宽度。
 fn status_line(
     model: &str,
     think_level: ThinkLevel,
-    source: Option<ModelSource>,
     mode: Option<&'static str>,
     context: &StatusContext,
     width: usize,
@@ -731,13 +729,7 @@ fn status_line(
     let workdir_full = Line::from(context.workdir.as_str()).width();
     let git = context.git.as_ref().map(|git| git.label());
 
-    let marker = source
-        .filter(|source| *source != ModelSource::Default)
-        .map(ModelSource::label);
-    let model_display = match marker {
-        Some(marker) => format!("{model} · {marker}"),
-        None => model.to_owned(),
-    };
+    let model_display = model.to_owned();
     let mut model_text = model_display.clone();
     let mut git_text = git.clone();
     let mut workdir_text = context.workdir.clone();
@@ -822,7 +814,6 @@ fn status_line(
 pub(super) fn primary(
     model: Option<&ModelChoice>,
     think_level: ThinkLevel,
-    source: Option<ModelSource>,
     mode: pp_core::plan::WorkMode,
     context: &StatusContext,
     width: u16,
@@ -847,7 +838,6 @@ pub(super) fn primary(
     status_line(
         model,
         think_level,
-        source,
         (!mode_text.is_empty()).then_some(mode_text),
         context,
         budget,
@@ -867,7 +857,7 @@ pub(super) fn subagent_status(
     };
     // 与 primary 的 budget_total 同口径：扣除前导空白与纸飞机图标列。
     let budget = usize::from(width).saturating_sub(1 + ICON_WIDTH);
-    status_line(model, think, None, None, &context, budget)
+    status_line(model, think, None, &context, budget)
 }
 
 #[cfg(test)]
@@ -1108,7 +1098,6 @@ mod tests {
             let text = line_text(&primary(
                 Some(&choice),
                 ThinkLevel::None,
-                None,
                 pp_core::plan::WorkMode::Execute,
                 &StatusContext::default(),
                 100,
@@ -1122,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_shows_only_non_default_model_sources() {
+    fn primary_model_field_has_no_switch_source_suffix() {
         let choice = ModelChoice {
             reference: "ark/glm-5.3".into(),
             model: "glm-5.3-flash".into(),
@@ -1130,40 +1119,26 @@ mod tests {
             thinking: pp_config::models::ModelThinking::default(),
             context_window: None,
         };
-        for (source, expected) in [
-            (None, None),
-            (Some(ModelSource::Default), None),
-            (Some(ModelSource::Override), Some(" · override")),
-            (Some(ModelSource::Fallback), Some(" · fallback")),
-        ] {
+        let text = line_text(&primary(
+            Some(&choice),
+            ThinkLevel::None,
+            pp_core::plan::WorkMode::Execute,
+            &StatusContext::default(),
+            100,
+        ));
+        for word in ["override", "fallback", "role", "default"] {
+            assert!(!text.contains(word), "{word} 不应出现在状态栏: {text}");
+        }
+        // 窄屏仍守同一套宽度预算。
+        for width in [20, 32, 48] {
             let line = primary(
                 Some(&choice),
-                ThinkLevel::None,
-                source,
-                pp_core::plan::WorkMode::Execute,
+                ThinkLevel::High,
+                pp_core::plan::WorkMode::Plan,
                 &StatusContext::default(),
-                100,
+                width,
             );
-            let text = line_text(&line);
-            match expected {
-                Some(marker) => assert!(text.contains(marker), "{text}"),
-                None => assert!(
-                    !text.contains("override") && !text.contains("fallback"),
-                    "{text}"
-                ),
-            }
-            // 来源标记计入同一套宽度预算，窄屏不得溢出。
-            for width in [20, 32, 48] {
-                let line = primary(
-                    Some(&choice),
-                    ThinkLevel::High,
-                    source,
-                    pp_core::plan::WorkMode::Plan,
-                    &StatusContext::default(),
-                    width,
-                );
-                assert!(line.width() <= usize::from(width), "{width}: {line:?}");
-            }
+            assert!(line.width() <= usize::from(width), "{width}: {line:?}");
         }
     }
 

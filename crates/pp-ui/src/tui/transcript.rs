@@ -74,6 +74,8 @@ pub(super) enum EntryKind {
     Ask,
     Data,
     Error,
+    /// 醒目提示卡片：黄色边框，用于会改变后续请求的运行时切换（如备用模型）。
+    Notice,
     Activity,
     /// LSP 专用卡片：内联工具结果或迟到的独立诊断。
     Lsp,
@@ -327,6 +329,20 @@ impl Transcript {
         self.entries.push(TranscriptEntry::new(
             EntryKind::Error,
             "Error".into(),
+            text.into(),
+            None,
+        ));
+    }
+
+    /// 需要用户立刻注意的运行时提示：卡片形式，不进入模型消息。
+    pub(super) fn append_notice(&mut self, title: &str, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        self.read_groups_key = None;
+        self.entries.push(TranscriptEntry::new(
+            EntryKind::Notice,
+            title.into(),
             text.into(),
             None,
         ));
@@ -718,8 +734,25 @@ impl Transcript {
                 }
                 self.append_error(&text);
             }
-            AgentEvent::ModelRouteChanged { model, source, .. } => {
-                self.append("Note", &format!("{}: {model}", source.describe()));
+            AgentEvent::ModelRouteChanged {
+                model,
+                effort,
+                source,
+                ..
+            } => {
+                // 切到备用模型意味着当前请求已失败或降级，必须显式告知；
+                // 其余来源（手动、默认、角色）的切换只记一行普通说明。
+                if source.is_fallback() {
+                    self.append_notice(
+                        "Fallback",
+                        &format!(
+                            "Primary model failed.\nUsing the fallback model.\nModel: {model} (effort {})\nApplies to the rest of this task;\nthe next task uses the primary again.",
+                            effort.as_str()
+                        ),
+                    );
+                } else {
+                    self.append("Note", &format!("{}: {model}", source.describe()));
+                }
             }
             AgentEvent::AssistantStarted => self.finish_markdown_streams(),
             AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } => {

@@ -185,7 +185,6 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
-                    self.current_source,
                     self.workflow.mode,
                     context,
                     area.width,
@@ -211,7 +210,6 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
-                    self.current_source,
                     self.workflow.mode,
                     context,
                     area.width,
@@ -238,7 +236,6 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
-                    self.current_source,
                     self.workflow.mode,
                     context,
                     area.width,
@@ -276,7 +273,6 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
-                    self.current_source,
                     self.workflow.mode,
                     context,
                     area.width,
@@ -297,7 +293,6 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
-                    self.current_source,
                     self.workflow.mode,
                     context,
                     area.width,
@@ -486,7 +481,6 @@ impl App {
                 statusline::primary(
                     self.current_model.as_ref(),
                     self.think_level,
-                    self.current_source,
                     self.workflow.mode,
                     context,
                     status.width,

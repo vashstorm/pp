@@ -1510,7 +1510,7 @@ fn model_picker_submits_override_with_effective_default_effort() {
 }
 
 #[test]
-fn statusline_shows_override_and_fallback_sources_but_not_default() {
+fn statusline_never_marks_the_model_source_but_fallback_switch_is_announced() {
     let mut app = app();
     app.current_model = Some(ModelChoice {
         reference: "fixture/one".into(),
@@ -1520,25 +1520,36 @@ fn statusline_shows_override_and_fallback_sources_but_not_default() {
         context_window: None,
     });
     app.think_level = ThinkLevel::None;
-    for (source, marker) in [
-        (None, None),
-        (Some(ModelSource::Default), None),
-        (Some(ModelSource::Override), Some(" · override")),
-        (Some(ModelSource::Fallback), Some(" · fallback")),
-        (Some(ModelSource::Role), Some(" · role")),
+    for source in [
+        None,
+        Some(ModelSource::Default),
+        Some(ModelSource::Override),
+        Some(ModelSource::Fallback),
+        Some(ModelSource::Role),
     ] {
         app.current_source = source;
         let screen = draw(&mut app, 130, 30);
         let status = screen.lines().last().unwrap();
-        match marker {
-            Some(marker) => assert!(status.contains(marker), "{status}"),
-            None => assert!(
-                !status.contains("override")
-                    && !status.contains("fallback")
-                    && !status.contains(" · role"),
-                "{status}"
-            ),
-        }
+        assert!(
+            !status.contains("override")
+                && !status.contains("fallback")
+                && !status.contains(" · role"),
+            "{status}"
+        );
         assert!(status.contains("fixture/one"), "{status}");
     }
+
+    // 切到备用模型时，内容栏出现醒目卡片，而不是只靠状态栏一个词。
+    app.receive_event_for_test(WorkerEvent::Progress(AgentEvent::ModelRouteChanged {
+        model: "fixture/two".into(),
+        effort: ThinkLevel::Low,
+        source: ModelSource::Fallback,
+        temporary: false,
+    }));
+    let screen = draw(&mut app, 130, 30);
+    assert!(screen.contains("Fallback"), "{screen}");
+    assert!(screen.contains("Using the fallback model."), "{screen}");
+    assert!(screen.contains("fixture/two"), "{screen}");
+    let status = screen.lines().last().unwrap();
+    assert!(!status.contains("fallback"), "{status}");
 }
