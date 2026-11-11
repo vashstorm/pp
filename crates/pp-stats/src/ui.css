@@ -410,6 +410,10 @@ kbd {
   animation: x-rise var(--dur-3) var(--ease-out) backwards;
   animation-delay: calc(var(--i, 0) * var(--stagger));
 }
+/* 页内交互与定时刷新只更新内容，不重播进入动画，避免展开行、切换指标或刷新时整页闪烁。 */
+#page[data-enter="false"] .x-rise {
+  animation: none;
+}
 .x-spin {
   animation: 0.9s linear infinite x-spin;
 }

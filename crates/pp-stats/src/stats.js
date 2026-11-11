@@ -247,6 +247,8 @@ let page = "overview",
   returnFocus = null,
   lastUpdated = null,
   gTime = 0,
+  renderedPage = null,
+  renderedRange = null,
   toastTimer;
 let theme = "system";
 try {
@@ -1489,6 +1491,10 @@ function requests() {
     )}</div></div></div>${requestTable(rows)}<div class="table-footer">${Math.min(visible, rows.length)} of ${number(rows.length)}${visible < rows.length ? '<button class="outline-button" data-more>Show more</button>' : ""}</div></section>${requestData.has_more ? `<div class="load-note"><span>Showing the latest ${number(all.length)} requests, back to ${h(localTime(oldest))}. Older requests in the ${descriptions[range]} are not loaded.</span>${limit === 500 ? '<button class="outline-button" data-load>Load latest 2,000</button>' : ""}</div>` : ""}${pricingNotice(requestData)}`;
 }
 function render() {
+  // 进入动画只在切页或切时间范围时播放；页内交互与定时刷新直接更新内容。
+  const enter = page !== renderedPage || range !== renderedRange;
+  renderedPage = page;
+  renderedRange = range;
   const focused = document.activeElement;
   const focusedSection = focused?.closest("details[data-trace-section]")
     ?.dataset.traceSection;
@@ -1532,6 +1538,7 @@ function render() {
     cell.parentElement.rowIndex,
     cell.cellIndex,
   ];
+  $("page").dataset.enter = enter ? "true" : "false";
   $("page").innerHTML =
     page === "overview"
       ? overview()
