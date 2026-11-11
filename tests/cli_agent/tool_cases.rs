@@ -58,6 +58,58 @@ fn dependent_batch_and_cross_turn_memory() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn temp_directory_write_and_edit_accept_both_spellings() {
+    // 启动目录外写入 /tmp 与 /private/tmp：两种拼写命中同一个文件。
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
+    let name = temp
+        .path()
+        .strip_prefix("/tmp")
+        .expect("tempdir lies under /tmp");
+    let aliased = std::path::Path::new("/tmp")
+        .join(name)
+        .join("nested/probe.mjs");
+    let real = std::path::Path::new("/private/tmp")
+        .join(name)
+        .join("nested/probe.mjs");
+    let cli = Cli::start(&server, dir.path(), Some("write a temp probe"));
+    let (request, _) = receive(&server);
+    calls_reply(
+        request,
+        json!([
+            call(
+                "w",
+                "write",
+                json!({"path":aliased,"content":"export default 1;\n"})
+            ),
+            call(
+                "e",
+                "edit",
+                json!({"path":real,"edits":[{"oldText":"1","newText":"2"}]})
+            )
+        ]),
+    );
+    let (request, body) = receive(&server);
+    assert_eq!(result(&body["messages"][3], "w")["ok"], true);
+    assert_eq!(result(&body["messages"][4], "e")["ok"], true);
+    // 父目录由写入创建，两种拼写最终落在同一个真实文件上。
+    assert_eq!(
+        std::fs::read_to_string(&real).unwrap(),
+        "export default 2;\n"
+    );
+    final_reply(request, "temp probe written");
+    let output = cli.finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"temp probe written\n");
+}
+
+#[test]
 fn tool_errors_allow_correction_and_pair_all_ids() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();

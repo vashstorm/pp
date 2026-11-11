@@ -1214,10 +1214,7 @@ pub(super) fn run(
             }
             continue;
         }
-        let key = workspace
-            .components(&file.target.path)
-            .ok()
-            .map(|c| c.into_iter().collect::<PathBuf>());
+        let key = workspace.key(&file.target.path).ok();
         let editable = if mode == EditMode::Hashline {
             match (&key, &file.bytes) {
                 (Some(k), Some(raw))

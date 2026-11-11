@@ -120,3 +120,70 @@ fn write_and_both_edit_modes_reject_external_and_symlink_paths() {
     }
     assert_eq!(fs::read(&path).unwrap(), b"original\n");
 }
+
+#[test]
+#[cfg(target_os = "macos")]
+fn temp_directory_is_writable_through_both_spellings() {
+    // 启动目录外也能写 `/tmp` 与 `/private/tmp`：两种拼写命中同一个文件，
+    // 变更视图与撤销使用同一个真实绝对路径作为键。
+    let dir = tempfile::tempdir().unwrap();
+    let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
+    let name = temp
+        .path()
+        .strip_prefix("/tmp")
+        .expect("tempdir lies under /tmp");
+    let aliased = Path::new("/tmp").join(name).join("probe.mjs");
+    let real = Path::new("/private/tmp").join(name).join("probe.mjs");
+    for (path, content) in [(&aliased, "one\n"), (&real, "two\n")] {
+        assert_eq!(
+            execute(&tools, "write", json!({"path":path,"content":content}))["ok"],
+            true,
+            "{path:?}"
+        );
+        assert_eq!(fs::read_to_string(&real).unwrap(), content);
+    }
+    assert_eq!(
+        execute(
+            &tools,
+            "edit",
+            json!({"path":aliased,"edits":[{"oldText":"two","newText":"three"}]})
+        )["ok"],
+        true
+    );
+    assert_eq!(fs::read_to_string(&real).unwrap(), "three\n");
+    let view = tools.changes_view();
+    assert_eq!(view.files.len(), 1);
+    assert_eq!(view.files[0].path, real);
+    let undo = view.files[0].undo.as_ref().expect("undo stays available");
+    tools.undo_file(undo).expect("undo resolves the temp key");
+    assert!(!real.exists(), "first baseline was a missing file");
+    // hashline 模式用同一个真实绝对路径作为快照键：读完再改同一个文件。
+    let tools = Tools::new(dir.path().into(), EditMode::Hashline).unwrap();
+    assert_eq!(
+        execute(
+            &tools,
+            "write",
+            json!({"path":aliased,"content":"one\ntwo\n"})
+        )["ok"],
+        true
+    );
+    let (content, _) = read_content(&tools, aliased.to_str().unwrap());
+    assert!(
+        content
+            .lines()
+            .next()
+            .unwrap()
+            .contains(real.to_str().unwrap()),
+        "{content}"
+    );
+    assert_eq!(
+        execute(
+            &tools,
+            "edit",
+            hashline_args(&content, "PUT 1.=1:\n+edited")
+        )["ok"],
+        true
+    );
+    assert_eq!(fs::read_to_string(&real).unwrap(), "edited\ntwo\n");
+}

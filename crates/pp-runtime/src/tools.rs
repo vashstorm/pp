@@ -1053,11 +1053,7 @@ impl Tools {
                 let path = request.path().to_owned();
                 ensure!(!path.starts_with("artifact://"), "artifacts are read-only");
                 let target = self.workspace.target(Path::new(&path), false)?;
-                let normalized_path = self
-                    .workspace
-                    .components(Path::new(&path))?
-                    .into_iter()
-                    .collect::<PathBuf>();
+                let normalized_path = self.workspace.key(Path::new(&path))?;
                 let registry = self.lsp_save_registry();
                 let absolute = registry
                     .map(|registry| registry.cwd().join(&normalized_path))
@@ -1138,11 +1134,7 @@ impl Tools {
                 );
                 ensure!(!args.path.trim().is_empty(), "path must not be blank");
                 let target = self.workspace.target(Path::new(&args.path), true)?;
-                let normalized_path = self
-                    .workspace
-                    .components(Path::new(&args.path))?
-                    .into_iter()
-                    .collect::<PathBuf>();
+                let normalized_path = self.workspace.key(Path::new(&args.path))?;
                 let registry = self.lsp_save_registry();
                 let absolute = registry
                     .map(|registry| registry.cwd().join(&normalized_path))

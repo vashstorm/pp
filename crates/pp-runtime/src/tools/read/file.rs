@@ -100,10 +100,7 @@ impl Read for FileReader {
         {
             let safe_target = workspace.target(Path::new(&target.source), false);
             if let Ok(safe_target) = safe_target {
-                let key: PathBuf = workspace
-                    .components(Path::new(&target.source))?
-                    .into_iter()
-                    .collect();
+                let key: PathBuf = workspace.key(Path::new(&target.source))?;
                 let bytes = safe_target.read_bounded(crate::tools::hashline::MAX_FILE_BYTES)?;
                 if bytes.len() <= crate::tools::hashline::MAX_FILE_BYTES {
                     if let Ok(source) = std::str::from_utf8(&bytes) {

@@ -15,10 +15,35 @@ use std::{
     time::SystemTime,
 };
 
+/// 保存层的工作区句柄：启动目录是主受管根，临时目录（`/tmp` 与其真实
+/// 路径）是唯一额外的受管根。两者都用 NOFOLLOW 逐级打开的目录 fd 承接
+/// 写入，符号链接与逃逸路径仍一律拒绝。
 pub(crate) struct Workspace {
     root: File,
     pub(crate) path: PathBuf,
-    original: PathBuf,
+    temp: Option<TempRoot>,
+}
+
+/// 临时目录受管根：`canonicalize` 后的真实路径加目录 fd。
+struct TempRoot {
+    root: File,
+    path: PathBuf,
+}
+
+/// 受管根：启动目录本身，或临时目录。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Anchor {
+    Workspace,
+    Temp,
+}
+
+/// 一次路径解析的结果：路径归属哪个受管根、该根的目录 fd 与真实路径，
+/// 以及相对该根的分量。
+struct Location<'a> {
+    anchor: Anchor,
+    root: &'a File,
+    base: &'a Path,
+    parts: Vec<OsString>,
 }
 
 pub(crate) struct Target {
@@ -72,9 +97,9 @@ pub(crate) struct ResourceTarget {
     mode: Option<Mode>,
 }
 
-/// `/tmp` 的真实前缀：macOS 的 `/tmp` 指向该目录，路径判断把两种拼写
-/// 归一后再与工作区根比对，且无论工作区根在哪里都只影响 `/tmp` 前缀。
-const TMP_REAL_ROOT: &str = "/private/tmp";
+/// 临时目录的公开拼写：macOS 上它是 `/private/tmp` 的符号链接，Linux 上
+/// 通常就是真实目录；两种拼写都归入同一受管根。
+const TEMP_ALIAS: &str = "/tmp";
 
 impl Workspace {
     pub(crate) fn open(path: &Path) -> Result<Self> {
@@ -91,80 +116,79 @@ impl Workspace {
             root.metadata()?.is_dir(),
             "startup path must be a directory"
         );
-        // macOS：`/tmp` 是符号链接，canonical 化后落在 `/private/tmp`。
-        // `components` 把 `/tmp/...` 拼写替换成真实前缀后归入同一根，
-        // 路径判断不再因根的两种拼写分叉误判。
         Ok(Self {
             root,
             path,
-            original,
+            temp: TempRoot::open(),
         })
     }
 
-    /// 把 `/tmp/...` 别名拼写替换成真实前缀；纯值变换，不访问文件系统。
-    /// 折返的是前缀本身：`/tmp/a` 变 `/private/tmp/a`，再与工作区根做
-    /// 前缀判断。无别名或前缀不匹配时原样返回。
-    fn demote_alias(&self, path: &Path) -> PathBuf {
-        match path.strip_prefix("/tmp") {
-            Ok(relative) => {
-                let mut demoted = PathBuf::from(TMP_REAL_ROOT);
-                demoted.push(relative);
-                demoted
-            }
-            Err(_) => path.to_path_buf(),
+    /// 把 `/tmp/...` 折叠成临时根的真实前缀；其他拼写原样返回。纯值变换，
+    /// 不访问文件系统，`/tmp/a` 与 `/private/tmp/a` 因此得到同一路径。
+    fn fold_temp(&self, path: &Path) -> PathBuf {
+        match (&self.temp, path.strip_prefix(TEMP_ALIAS)) {
+            (Some(temp), Ok(relative)) => temp.path.join(relative),
+            _ => path.to_path_buf(),
         }
     }
 
-    pub(crate) fn components(&self, path: &Path) -> Result<Vec<OsString>> {
-        let path = self.demote_alias(path);
-        let relative = if path.is_absolute() {
-            path.strip_prefix(&self.original)
-                .or_else(|_| path.strip_prefix(&self.path))
-                .context("write/edit path must stay inside startup directory")?
+    /// 工作区根内的相对路径；绝对路径落在工作区之外时返回 `None`。
+    fn workspace_relative<'a>(&self, folded: &'a Path) -> Option<&'a Path> {
+        if folded.is_absolute() {
+            folded.strip_prefix(&self.path).ok()
         } else {
-            path.as_path()
-        };
-        let mut parts = Vec::new();
-        for component in relative.components() {
-            match component {
-                Component::Normal(name) => parts.push(name.to_owned()),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    ensure!(
-                        parts.pop().is_some(),
-                        "write/edit path escapes startup directory"
-                    );
-                }
-                _ => anyhow::bail!("invalid write/edit path"),
-            }
+            Some(folded)
         }
-        Ok(parts)
+    }
+
+    /// 解析受管路径：工作区根优先，其次临时根；两者之外一律拒绝。相对路径
+    /// 始终留在工作区，不因临时根存在而改变含义。
+    fn resolve(&self, path: &Path) -> Result<Location<'_>> {
+        let folded = self.fold_temp(path);
+        if let Some(relative) = self.workspace_relative(&folded) {
+            return Ok(Location {
+                anchor: Anchor::Workspace,
+                root: &self.root,
+                base: &self.path,
+                parts: split_parts(relative)?,
+            });
+        }
+        if let Some(temp) = &self.temp
+            && let Ok(relative) = folded.strip_prefix(&temp.path)
+        {
+            return Ok(Location {
+                anchor: Anchor::Temp,
+                root: &temp.root,
+                base: &temp.path,
+                parts: split_parts(relative)?,
+            });
+        }
+        anyhow::bail!("path must stay inside the startup directory or /tmp")
+    }
+
+    /// 只接受工作区根内的路径分量。Plan 与 LSP 的结构校验用它，临时根路径
+    /// 不会被误当作工作区相对路径。
+    pub(crate) fn components(&self, path: &Path) -> Result<Vec<OsString>> {
+        let folded = self.fold_temp(path);
+        let relative = self
+            .workspace_relative(&folded)
+            .context("path must stay inside the startup directory")?;
+        split_parts(relative)
+    }
+
+    /// 变更、撤销与 hashline 快照使用的规范键：工作区根内是相对路径，临时
+    /// 根内是真实绝对路径，`/tmp/a` 与 `/private/tmp/a` 因此落到同一个键。
+    pub(crate) fn key(&self, path: &Path) -> Result<PathBuf> {
+        let location = self.resolve(path)?;
+        let relative = location.parts.iter().collect::<PathBuf>();
+        Ok(match location.anchor {
+            Anchor::Workspace => relative,
+            Anchor::Temp => location.base.join(relative),
+        })
     }
 
     pub(crate) fn directory(&self, parts: &[OsString], create: bool) -> Result<File> {
-        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let mut parent = self.root.try_clone()?;
-        for part in parts {
-            let next = match fs::openat(&parent, part, flags, Mode::empty()) {
-                Ok(fd) => File::from(fd),
-                Err(Errno::NOENT) if create => {
-                    match fs::mkdirat(&parent, part, Mode::from_raw_mode(0o777)) {
-                        Ok(()) | Err(Errno::EXIST) => {}
-                        Err(error) => return Err(error).context("creating parent directory"),
-                    }
-                    File::from(
-                        fs::openat(&parent, part, flags, Mode::empty())
-                            .context("opening created directory without symlinks")?,
-                    )
-                }
-                Err(error) => {
-                    return Err(error)
-                        .context("opening parent directory (symlink paths are forbidden)");
-                }
-            };
-            parent = next;
-        }
-        Ok(parent)
+        open_contained_directory(&self.root, parts, create)
     }
 
     /// 计划生命周期搬迁的第一步：核对源普通文件与精确字节后，用 `linkat`
@@ -273,9 +297,11 @@ impl Workspace {
     }
 
     pub(crate) fn target(&self, path: &Path, create_parents: bool) -> Result<Target> {
-        let mut parts = self.components(path)?;
+        let Location {
+            root, mut parts, ..
+        } = self.resolve(path)?;
         let name = parts.pop().context("write/edit requires a file path")?;
-        let parent = self.directory(&parts, create_parents)?;
+        let parent = open_contained_directory(root, &parts, create_parents)?;
         let mode = match fs::statat(&parent, &name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) => {
                 ensure!(
@@ -298,9 +324,11 @@ impl Workspace {
         path: &Path,
         create: bool,
     ) -> Result<Option<ResourceTarget>> {
-        let mut parts = self.components(path)?;
+        let Location {
+            root, mut parts, ..
+        } = self.resolve(path)?;
         let name = parts.pop().context("resource path requires a file name")?;
-        let parent = match self.directory(&parts, create) {
+        let parent = match open_contained_directory(root, &parts, create) {
             Ok(parent) => parent,
             Err(error) if !create && is_missing(&error) => return Ok(None),
             Err(error) => return Err(error),
@@ -351,6 +379,65 @@ impl Workspace {
         )?;
         Ok(entries)
     }
+}
+
+impl TempRoot {
+    /// `canonicalize` 把 `/tmp` 解析成真实目录（macOS 为 `/private/tmp`）。
+    /// 缺失或不是目录时不提供临时根，`/tmp` 写入回退为越界拒绝。
+    fn open() -> Option<Self> {
+        let path = Path::new(TEMP_ALIAS).canonicalize().ok()?;
+        let root = File::open(&path).ok()?;
+        root.metadata()
+            .ok()?
+            .is_dir()
+            .then_some(Self { root, path })
+    }
+}
+
+/// 从给定受管根逐级以 NOFOLLOW 打开目录，`create` 时建出缺失的一级。
+fn open_contained_directory(root: &File, parts: &[OsString], create: bool) -> Result<File> {
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut parent = root.try_clone()?;
+    for part in parts {
+        let next = match fs::openat(&parent, part, flags, Mode::empty()) {
+            Ok(fd) => File::from(fd),
+            Err(Errno::NOENT) if create => {
+                match fs::mkdirat(&parent, part, Mode::from_raw_mode(0o777)) {
+                    Ok(()) | Err(Errno::EXIST) => {}
+                    Err(error) => return Err(error).context("creating parent directory"),
+                }
+                File::from(
+                    fs::openat(&parent, part, flags, Mode::empty())
+                        .context("opening created directory without symlinks")?,
+                )
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("opening parent directory (symlink paths are forbidden)");
+            }
+        };
+        parent = next;
+    }
+    Ok(parent)
+}
+
+/// 把相对路径拆成普通分量；`..` 只能弹回已有分量，绝不越过受管根。
+fn split_parts(relative: &Path) -> Result<Vec<OsString>> {
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(name) => parts.push(name.to_owned()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                ensure!(
+                    parts.pop().is_some(),
+                    "write/edit path escapes startup directory"
+                );
+            }
+            _ => anyhow::bail!("invalid write/edit path"),
+        }
+    }
+    Ok(parts)
 }
 
 /// 递归快照的公用遍历：调用方已经用 NOFOLLOW 打开目录句柄。

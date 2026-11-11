@@ -476,9 +476,49 @@ fn macos_tmp_alias_spelling_is_accepted_inside_a_private_tmp_workspace() {
         .expect("directory target has no file path")
         .to_string();
     assert_eq!(root_missing_file, "write/edit requires a file path");
-    // 外部 /tmp 兄弟目录仍然拒绝。
+    // 工作区在临时根内：兄弟目录同属临时根，可写，且键是真实绝对路径而不是
+    // 工作区相对路径。
     let sibling = tempfile::tempdir_in("/tmp").unwrap();
-    assert!(workspace.target(sibling.path(), false).is_err());
+    workspace
+        .target(&sibling.path().join("peer"), true)
+        .unwrap()
+        .save(b"peer")
+        .unwrap();
+    assert_eq!(std::fs::read(sibling.path().join("peer")).unwrap(), b"peer");
+    assert_eq!(
+        workspace.key(&sibling.path().join("peer")).unwrap(),
+        sibling.path().canonicalize().unwrap().join("peer")
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_temp_directory_is_writable_from_a_workspace_outside_it() {
+    // 启动目录不在临时目录内时，`/tmp` 与 `/private/tmp` 两种拼写仍是同一受管
+    // 根、同一个规范键；临时根与工作区根之外的路径仍拒绝。
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = Workspace::open(dir.path()).unwrap();
+    let outside = tempfile::tempdir_in("/tmp").unwrap();
+    let name = outside
+        .path()
+        .strip_prefix("/tmp")
+        .expect("tempdir lies under /tmp");
+    let aliased = Path::new("/tmp").join(name).join("probe.txt");
+    let real = Path::new("/private/tmp").join(name).join("probe.txt");
+    assert_eq!(
+        workspace.key(&aliased).unwrap(),
+        workspace.key(&real).unwrap()
+    );
+    assert_eq!(workspace.key(&aliased).unwrap(), real);
+    workspace
+        .target(&aliased, true)
+        .unwrap()
+        .save(b"probe")
+        .unwrap();
+    assert_eq!(std::fs::read(&real).unwrap(), b"probe");
+    // 临时根之外的绝对路径与越出工作区的相对路径都不能写入。
+    assert!(workspace.key(Path::new("/etc/hosts")).is_err());
+    assert!(workspace.target(Path::new("../escape"), true).is_err());
 }
 #[test]
 fn read_optional_returns_none_only_for_missing_target() {
