@@ -443,7 +443,11 @@ function onRoute() {
   resetInsights();
   expandedGroups.clear();
   hiddenSeries.clear();
-  peakProvider = "";
+  providerPeak = "";
+  providerMetric = "tokens";
+  providerSort = { key: "tokens", dir: "desc" };
+  providerSelected = null;
+  providerShown = PROVIDER_LIMIT;
   performanceModes = {};
   closeDrawer();
   shell();
@@ -627,12 +631,23 @@ const colors = [
   "var(--red)",
   "var(--muted)",
 ];
+const PROVIDER_TOP = 6,
+  PROVIDER_LIMIT = 12,
+  PROVIDER_MIX = [
+    ["uncached_tokens", "Uncached input", "#5b8cff"],
+    ["cached_tokens", "Cache read", "var(--chart-primary)"],
+    ["cache_write_tokens", "Cache write", "#f5b54a"],
+    ["output_tokens", "Output", "var(--chart-secondary)"],
+  ];
 let expandedGroups = new Set(),
   hiddenSeries = new Set(),
   shareMode = "share",
-  burnMode = "tokens",
   costMode = "model",
-  peakProvider = "",
+  providerMetric = "tokens",
+  providerPeak = "",
+  providerSort = { key: "tokens", dir: "desc" },
+  providerSelected = null,
+  providerShown = PROVIDER_LIMIT,
   performanceModes = {};
 const averageSpeed = (n) => (n == null ? "—" : n.toFixed(1));
 const cacheRate = (g) =>
@@ -920,80 +935,383 @@ function modelsPage() {
       .join(""),
   )}</section>${pricingNotice()}`;
 }
-function peakChart() {
-  const g = data.providers.find((p) => p.key === peakProvider),
-    hours = g?.hours || data.hours,
-    max = Math.max(...hours.map((b) => b.tokens ?? 0), 1);
-  return `<div class="chart peak-chart"><svg viewBox="0 0 900 220" preserveAspectRatio="none" role="img" aria-label="Tokens by local hour of day">${hours.map((b, i) => `<rect x="${42 + i * 35}" y="${185 - ((b.tokens ?? 0) / max) * 165}" width="23" height="${((b.tokens ?? 0) / max) * 165}" fill="var(--accent)"/>${chartHit(36 + i * 35, 20, 35, 165, `${g?.provider || "All providers"}\n${String(i).padStart(2, "0")}:00 · ${number(b.tokens)} tokens`)}${i % 2 === 0 ? `<text x="${54 + i * 35}" y="210" text-anchor="middle">${i}:00</text>` : ""}`).join("")}</svg></div>`;
+// Providers 页复刻 omp stats 的 ProvidersRoute：指标、按 provider 的总表、堆叠燃烧图与本地小时峰值。
+// 图表/表格原语（toolCard、toolChart 等）与 Tools 页共用，定义在 insights.js。
+const providerPad = (value) => String(value).padStart(2, "0");
+const providerBucketMs = () =>
+  range === "1h" ? 300000 : range === "24h" ? 3600000 : 86400000;
+const providerBucketUnit = () =>
+  range === "1h" ? "5 minutes" : range === "24h" ? "hour" : "day";
+/** 颜色按总 tokens 降序固定分配，排序与筛选不改变色带。 */
+function providerColors(groups) {
+  return new Map(
+    [...groups]
+      .sort((a, b) => (b.tokens ?? 0) - (a.tokens ?? 0) || a.provider.localeCompare(b.provider))
+      .map((group, index) => [
+        group.provider,
+        TOOL_SERIES_COLORS[index % TOOL_SERIES_COLORS.length],
+      ]),
+  );
+}
+function providerSpark(field) {
+  return fillBuckets(data.buckets).map((bucket) => bucket[field] ?? 0);
+}
+function providerStatGrid(groups) {
+  const s = data.summary,
+    unpriced = s.unpriced ?? 0,
+    top = groups.reduce(
+      (best, group) => (best === null || (group.tokens ?? 0) > (best.tokens ?? 0) ? group : best),
+      null,
+    );
+  return `<div class="x-stat-grid x-rise" style="--stat-min:190px">${toolStat(
+    "Providers",
+    number(groups.length),
+    top ? `Most tokens: ${top.provider}` : undefined,
+  )}${toolStat("Requests", number(s.requests), `${number(s.failed)} failed`, {
+    spark: providerSpark("requests"),
+  })}${toolStat("Tokens", short(s.tokens), undefined, {
+    title: "Uncached input + cache reads + cache writes + output",
+    spark: providerSpark("tokens"),
+  })}${toolStat(
+    "API-equivalent cost",
+    toolEstimatedCost(s.cost, unpriced),
+    unpriced > 0 ? `${number(unpriced)} unpriced` : undefined,
+    {
+      title: "What this usage would cost at public API rates",
+      spark: providerSpark("cost"),
+      sparkColor: "var(--chart-secondary)",
+    },
+  )}${toolStat(
+    "Error rate",
+    toolErrorRate(s.requests ? s.failed / s.requests : 0),
+    `${number(s.requests - s.failed)} succeeded`,
+  )}</div>`;
+}
+function providerErrorCell(group) {
+  const rate = group.requests > 0 ? (group.failed ?? 0) / group.requests : 0;
+  const tone = (group.failed ?? 0) > 0 ? toolErrorTone(rate) : "neutral";
+  return `<span class="x-row" style="gap:8px;justify-content:flex-end"><span class="x-num x-dim">${number(group.failed)}</span><span class="x-badge" data-tone="${tone}" data-mono="true">${toolErrorRate(rate)}</span></span>`;
+}
+function providerColumns(groups, colors) {
+  const maxRequests = Math.max(0, ...groups.map((group) => group.requests ?? 0)),
+    maxTokens = Math.max(0, ...groups.map((group) => group.tokens ?? 0)),
+    totalRequests = sum(groups.map((group) => group.requests)),
+    totalTokens = sum(groups.map((group) => group.tokens));
+  return [
+    {
+      key: "provider",
+      header: "Provider",
+      sort: (group) => group.provider,
+      render: (group) =>
+        `<span class="x-row" style="gap:8px"><span class="x-swatch" style="background:${colors.get(group.provider) ?? TOOL_OTHER_COLOR}"></span><span class="x-mono x-cell-primary">${h(group.provider)}</span></span>`,
+    },
+    {
+      key: "requests",
+      header: "Requests",
+      align: "right",
+      sort: (group) => group.requests ?? 0,
+      render: (group) =>
+        `<span title="${toolPercent(totalRequests > 0 ? (group.requests ?? 0) / totalRequests : 0)} of all requests">${toolMeter(group.requests ?? 0, maxRequests, number(group.requests))}</span>`,
+    },
+    {
+      key: "errors",
+      header: "Error rate",
+      align: "right",
+      sort: (group) => (group.requests > 0 ? (group.failed ?? 0) / group.requests : 0),
+      render: (group) => providerErrorCell(group),
+    },
+    {
+      key: "models",
+      header: "Models",
+      title: "Distinct models used through this provider",
+      align: "right",
+      sort: (group) => group.models ?? 0,
+      render: (group) => `<span class="x-num">${number(group.models)}</span>`,
+    },
+    {
+      key: "tokens",
+      header: "Tokens",
+      title: "Uncached input + cache reads + cache writes + output",
+      align: "right",
+      sort: (group) => group.tokens ?? 0,
+      render: (group) =>
+        toolMeter(
+          group.tokens ?? 0,
+          maxTokens,
+          short(group.tokens),
+          colors.get(group.provider) ?? TOOL_OTHER_COLOR,
+        ),
+    },
+    {
+      key: "share",
+      header: "Share",
+      title: "Fraction of all tokens in range",
+      align: "right",
+      sort: (group) => group.tokens ?? 0,
+      render: (group) =>
+        `<span class="x-num x-muted">${toolPercent(totalTokens > 0 ? (group.tokens ?? 0) / totalTokens : 0)}</span>`,
+    },
+    {
+      key: "cost",
+      header: "Cost",
+      title: "API-equivalent estimate",
+      align: "right",
+      sort: (group) => group.cost ?? -1,
+      render: (group) =>
+        `<span class="x-num"${(group.unpriced ?? 0) > 0 ? ` title="${number(group.unpriced)} unpriced"` : ""}>${toolEstimatedCost(group.cost, group.unpriced ?? 0)}</span>`,
+    },
+    {
+      key: "tps",
+      header: "Tokens/s",
+      title: "Average output throughput",
+      align: "right",
+      sort: (group) => group.tokens_per_second ?? -1,
+      render: (group) => `<span class="x-num">${averageSpeed(group.tokens_per_second)}</span>`,
+    },
+    {
+      // pp 不采集订阅倍数单位，缺失值不补零。
+      key: "premium",
+      header: "Premium",
+      title: "Premium requests (subscription multiplier units)",
+      align: "right",
+      sort: () => 0,
+      render: () =>
+        '<span class="x-num x-dim" title="Premium request units are not recorded by pp">—</span>',
+    },
+  ];
+}
+function providerSortHeader(column) {
+  const sorted = providerSort.key === column.key ? providerSort.dir : undefined;
+  const arrow = sorted === "asc" ? TOOL_ARROW_UP : sorted === "desc" ? TOOL_ARROW_DOWN : "";
+  return `<th data-align="${column.align || "left"}" data-sortable="${Boolean(column.sort)}"${sorted ? ` data-sorted="${sorted}" aria-sort="${sorted === "asc" ? "ascending" : "descending"}"` : ""}${column.title ? ` title="${h(column.title)}"` : ""}${column.sort ? ` data-provider-sort="${column.key}" data-provider-align="${column.align || "left"}" data-provider-focus="sort-${column.key}"` : ""}>${h(column.header)}${arrow ? `<span class="x-sort-arrow">${arrow}</span>` : ""}</th>`;
+}
+function providerSortedRows(rows, columns) {
+  const column = columns.find((item) => item.key === providerSort.key && item.sort);
+  if (!column) return rows;
+  const direction = providerSort.dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const left = column.sort(a),
+      right = column.sort(b);
+    const delta =
+      typeof left === "number" && typeof right === "number"
+        ? left - right
+        : String(left).localeCompare(String(right));
+    return delta * direction;
+  });
+}
+function providerMix(group) {
+  const known = sum(PROVIDER_MIX.map(([key]) => group[key] ?? 0)) ?? 0;
+  const segments = PROVIDER_MIX.filter(([key]) => (group[key] ?? 0) > 0)
+    .map(
+      ([key, label, color]) =>
+        `<div class="x-share-bar-seg" style="flex-grow:${(group[key] ?? 0) / known};background:${color}" title="${h(label)}: ${((100 * (group[key] ?? 0)) / known).toFixed(1)}%"></div>`,
+    )
+    .join("");
+  const items = PROVIDER_MIX.map(
+    ([key, label, color]) =>
+      `<span class="x-legend-item" title="${h(label)}"><span class="x-swatch" style="background:${color}"></span><span class="x-truncate">${h(label)}</span><span class="x-legend-value">${short(group[key])} · ${(group.tokens ?? 0) > 0 ? toolPercent((group[key] ?? 0) / group.tokens, 0) : "–"}</span></span>`,
+  ).join("");
+  return `<div class="x-providers-mix"><div class="x-share-bar" style="height:8px" role="img">${segments}</div><div class="x-legend">${items}</div></div>`;
+}
+function providerTableMore(total, shown) {
+  if (total <= PROVIDER_LIMIT) return "";
+  return `<div class="x-table-more"><span class="x-micro">${number(shown)} of ${number(total)}</span>${total > shown ? `<button type="button" class="x-btn" data-size="sm" data-variant="ghost" data-providerpage="more" data-provider-focus="more">Show more</button>` : ""}${shown > PROVIDER_LIMIT ? `<button type="button" class="x-btn" data-size="sm" data-variant="ghost" data-providerpage="less" data-provider-focus="less">Show fewer</button>` : ""}</div>`;
+}
+function providerTable(groups, colors) {
+  if (!groups.length) return toolEmpty("No requests in this range");
+  const columns = providerColumns(groups, colors),
+    rows = providerSortedRows(groups, columns),
+    shown = rows.slice(0, providerShown);
+  const head = columns.map(providerSortHeader).join("");
+  const body = shown
+    .map((group) => {
+      const open = group.provider === providerSelected;
+      const cells = columns
+        .map(
+          (column) =>
+            `<td data-align="${column.align || "left"}" data-wrap="false">${column.render(group)}</td>`,
+        )
+        .join("");
+      const detail = open
+        ? `<tr><td colspan="${columns.length}" data-wrap="true" style="padding:0">${providerMix(group)}</td></tr>`
+        : "";
+      return `<tr data-clickable="true" data-selected="${open}" data-provider-row="${h(group.provider)}" data-provider-focus="row-${h(group.provider)}" tabindex="0">${cells}</tr>${detail}`;
+    })
+    .join("");
+  return `<div class="x-table-wrap"><table class="x-table" data-dense="false"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${providerTableMore(rows.length, shown.length)}`;
+}
+function providerMetricSegmented() {
+  return `<div class="x-segmented" data-size="sm" role="radiogroup" aria-label="Provider burn metric"><span class="x-segmented-thumb"></span>${[
+    ["tokens", "Tokens"],
+    ["cost", "Cost", "API-equivalent estimate"],
+    ["requests", "Requests"],
+  ]
+    .map(
+      ([value, label, title]) =>
+        `<button type="button" class="x-segmented-option" role="radio" aria-checked="${providerMetric === value}" data-active="${providerMetric === value}"${title ? ` title="${h(title)}"` : ""} data-provider-metric="${value}" data-provider-focus="metric-${value}">${h(label)}</button>`,
+    )
+    .join("")}</div>`;
+}
+function providerBurn(groups, colors) {
+  const buckets = fillBuckets(data.buckets).map((bucket) => bucket.timestamp);
+  const points = groups.flatMap((group) =>
+    group.buckets.map((bucket) => ({
+      timestamp: bucket.timestamp,
+      provider: group.provider,
+      value: bucket[providerMetric] ?? 0,
+    })),
+  );
+  const series = toolPivot(points, buckets, PROVIDER_TOP, colors, (point) => point.provider).map(
+    (item) => ({ ...item, values: item.values.map((value) => value || null) }),
+  );
+  return { buckets, series };
+}
+function providerBurnCard(groups, colors) {
+  const burn = providerBurn(groups, colors),
+    cost = providerMetric === "cost",
+    unpriced = data.summary.unpriced ?? 0,
+    format = cost ? money : short;
+  const description =
+    cost && unpriced > 0
+      ? `API-equivalent estimate per ${providerBucketUnit()}; excludes unpriced subscription requests`
+      : `Per ${providerBucketUnit()}, top ${PROVIDER_TOP} providers stacked`;
+  const chart = toolChart(
+    { buckets: burn.buckets, bucketMs: providerBucketMs() },
+    burn.series,
+    "No provider activity in this range",
+    { format, formatTooltip: cost ? money : number },
+  );
+  return toolCard(
+    2,
+    "Burn by provider",
+    description,
+    providerMetricSegmented(),
+    `<div class="x-stack" style="gap:12px">${chart}${toolLegend(burn.series, format)}</div>`,
+  );
+}
+function providerPeakHours(groups) {
+  const selected = groups.some((group) => group.provider === providerPeak) ? providerPeak : "";
+  const tokens = Array.from({ length: 24 }, () => 0),
+    output = Array.from({ length: 24 }, () => 0),
+    requests = Array.from({ length: 24 }, () => 0);
+  for (const group of groups) {
+    if (selected && group.provider !== selected) continue;
+    for (const bucket of group.hours ?? []) {
+      const hour = bucket.hour;
+      if (!(hour >= 0 && hour < 24)) continue;
+      tokens[hour] += bucket.tokens ?? 0;
+      output[hour] += bucket.output_tokens ?? 0;
+      requests[hour] += bucket.requests ?? 0;
+    }
+  }
+  let peak = 0;
+  for (let hour = 1; hour < 24; hour++) if (tokens[hour] > tokens[peak]) peak = hour;
+  return { selected, tokens, output, requests, peak, hasData: tokens[peak] > 0 };
+}
+function providerPeakCard(groups) {
+  const peak = providerPeakHours(groups);
+  const series = [
+    {
+      key: "tokens",
+      label: "Tokens",
+      color: "var(--chart-primary)",
+      values: peak.tokens.map((value, hour) => (peak.hasData && hour === peak.peak ? null : value)),
+    },
+    {
+      key: "peak",
+      label: "Tokens (peak hour)",
+      color: "var(--chart-secondary)",
+      values: peak.tokens.map((value, hour) => (peak.hasData && hour === peak.peak ? value : null)),
+    },
+  ];
+  const chart = toolChart(
+    { buckets: Array.from({ length: 24 }, (_, hour) => hour) },
+    series,
+    "No activity in this range",
+    {
+      format: short,
+      formatTooltip: number,
+      showTotal: false,
+      tickLabel: (hour) => providerPad(hour),
+      tooltipTitle: (hour) => `${providerPad(hour)}:00–${providerPad((hour + 1) % 24)}:00`,
+      extraRows: (hour) =>
+        `<div class="x-chart-tooltip-row"><span class="x-chart-tooltip-label">Output</span><span class="x-chart-tooltip-value">${number(peak.output[hour])}</span></div><div class="x-chart-tooltip-row"><span class="x-chart-tooltip-label">Requests</span><span class="x-chart-tooltip-value">${number(peak.requests[hour])}</span></div>`,
+    },
+  );
+  const select = `<select class="x-input x-providers-select" id="provider-peak" aria-label="Provider"><option value="">All providers</option>${groups.map((group) => `<option value="${h(group.provider)}"${group.provider === peak.selected ? " selected" : ""}>${h(group.provider)}</option>`).join("")}</select>`;
+  return toolCard(
+    3,
+    "Peak burn hours",
+    peak.hasData
+      ? `Tokens by local hour of day; peak at ${providerPad(peak.peak)}:00`
+      : "Tokens by local hour of day",
+    select,
+    chart,
+  );
 }
 function providersPage() {
   if (!data) return '<div class="loading">Loading statistics…</div>';
+  toolChartModels = new Map();
+  toolChartSeq = 0;
   const groups = [...data.providers].sort(
-      (a, b) => (b.tokens ?? 0) - (a.tokens ?? 0),
-    ),
-    s = data.summary,
-    series = topSeries(groups, (g) => g.provider);
-  return `<h1>Providers</h1><p class="subtitle">Usage, reliability and estimated cost per provider over the ${descriptions[range]}.</p><div class="panel metrics">${metric("Providers", number(groups.length), groups.length ? `Most tokens: ${groups[0].provider}` : "")}${metric("Requests", number(s.requests), `${number(s.failed)} failed`)}${metric("Tokens", short(s.tokens))}${metric("API-equivalent cost", money(s.cost), costNote(s))}${metric("Error rate", s.requests ? percent(s.failed, s.requests) : "0.0%", `${number(s.ok)} succeeded`)}</div><section class="panel analytics-panel"><div class="requests-heading"><h2>Provider totals</h2><p class="panel-description">Select a row for its token mix and model breakdown.</p></div>${analyticsTable(
-    [
-      "Provider",
-      "Requests",
-      "Error rate",
-      "Models",
-      "Tokens",
-      "Share",
-      "Cost",
-      "Tokens/s",
-    ],
-    groups
-      .map((g) =>
-        groupRow(
-          g,
-          "provider",
-          numericCells([
-            number(g.requests),
-            percent(g.failed, g.requests),
-            number(g.models),
-            detailed(g.tokens),
-            percent(g.tokens, s.tokens),
-            detailed(g.cost, money(g.cost), " USD"),
-            averageSpeed(g.tokens_per_second),
-          ]),
-          () =>
-            `<div class="group-details">${tokenMix(g)}${detailsGrid([
-              ["Avg duration", duration(g.avg_duration_ms)],
-              ["Avg TTFT", duration(g.avg_ttft_ms)],
-              ["Pricing coverage", costNote(g)],
-              ["Aborted", number(g.aborted)],
-            ])}${analyticsTable(
-              ["Model", "Requests", "Tokens", "Cost"],
-              data.models
-                .filter((m) => m.provider === g.provider)
-                .sort((a, b) => b.requests - a.requests)
-                .map(
-                  (m) =>
-                    `<tr><td>${h(m.model)}<div class="provider">${h(m.key)}</div></td>${numericCells([number(m.requests), detailed(m.tokens), detailed(m.cost, money(m.cost), " USD")])}</tr>`,
-                )
-                .join(""),
-            )}</div>`,
-          8,
-        ),
-      )
-      .join(""),
-  )}</section>${chartPanel(
-    "Burn by provider",
-    "Top 6 providers and remaining usage stacked over time",
-    stackedChart(series, burnMode) + seriesLegend(series, burnMode),
-    segmentControls(
-      "burn",
-      [
-        ["tokens", "Tokens"],
-        ["cost", "Cost"],
-        ["requests", "Requests"],
-      ],
-      burnMode,
-      "Provider burn metric",
-    ),
-  )}${chartPanel("Peak burn hours", "Tokens by local hour of day", peakChart(), `<select id="peak-provider" aria-label="Peak burn provider"><option value="">All providers</option>${groups.map((g) => `<option value="${h(g.key)}"${g.key === peakProvider ? " selected" : ""}>${h(g.provider)}</option>`).join("")}</select>`)}${pricingNotice()}`;
+    (a, b) => (b.tokens ?? 0) - (a.tokens ?? 0) || a.provider.localeCompare(b.provider),
+  );
+  const colors = providerColors(groups),
+    unpriced = data.summary.unpriced ?? 0;
+  const description =
+    unpriced > 0
+      ? `Cost is an API-equivalent estimate and excludes ${number(unpriced)} unpriced subscription request${unpriced === 1 ? "" : "s"}. Select a row for its token mix.`
+      : "Cost is an API-equivalent estimate. Select a row for its token mix.";
+  return `<div class="x-page"><header class="x-page-header x-rise"><div><h1 class="x-page-title">Providers</h1><p class="x-page-description">Burn, reliability and subscription headroom per provider over ${h(rangeWindows[range])}.</p></div></header>${providerStatGrid(groups)}${toolCard(1, "Provider totals", description, "", providerTable(groups, colors), true)}<div class="x-grid x-grid-main-side">${providerBurnCard(groups, colors)}${providerPeakCard(groups)}</div></div>`;
+}
+function providersClick(e) {
+  const metric = e.target.closest("[data-provider-metric]");
+  if (metric) {
+    providerMetric = metric.dataset.providerMetric;
+    render();
+    return true;
+  }
+  const header = e.target.closest("[data-provider-sort]");
+  if (header) {
+    const key = header.dataset.providerSort;
+    providerSort = {
+      key,
+      dir:
+        providerSort.key === key
+          ? providerSort.dir === "asc"
+            ? "desc"
+            : "asc"
+          : header.dataset.providerAlign === "right"
+            ? "desc"
+            : "asc",
+    };
+    render();
+    return true;
+  }
+  const row = e.target.closest("[data-provider-row]");
+  if (row) {
+    const key = row.dataset.providerRow;
+    providerSelected = providerSelected === key ? null : key;
+    render();
+    return true;
+  }
+  const pageButton = e.target.closest("[data-providerpage]");
+  if (pageButton) {
+    providerShown =
+      pageButton.dataset.providerpage === "more"
+        ? providerShown + PROVIDER_LIMIT * 4
+        : PROVIDER_LIMIT;
+    render();
+    return true;
+  }
+  return false;
+}
+function providersChange(e) {
+  if (e.target.id !== "provider-peak") return false;
+  providerPeak = e.target.value;
+  render();
+  $("provider-peak")?.focus({ preventScroll: true });
+  return true;
 }
 function costsPage() {
   if (!data) return '<div class="loading">Loading statistics…</div>';
@@ -1193,15 +1511,15 @@ function render() {
     ? [focused.selectionStart, focused.selectionEnd]
     : null;
   const focusedId = focused?.dataset?.id;
-  const peakFocused = focused?.id === "peak-provider";
+  const providerSelectFocused = focused?.id === "provider-peak";
   const insightFocused = ["tool-filter", "insight-sort"].includes(focused?.id) ? focused.id : null;
   const focusedStatus = focused?.dataset?.status;
   const focusedExpand = focused?.closest("[data-expand]")?.dataset.expand;
   const toolsFocus = focused?.dataset?.toolsFocus;
+  const providerFocus = focused?.dataset?.providerFocus;
   const focusControl = [
     "performance",
     "share",
-    "burn",
     "costSplit",
     "series",
   ].find((k) => focused?.dataset?.[k]);
@@ -1234,8 +1552,9 @@ function render() {
               : `<h1>${h(label)}</h1><p class="subtitle">${h(label)} across your sessions in the ${descriptions[range]}.</p><section class="panel placeholder"><div class="empty">${h(label)} is coming soon.</div></section>`;
   if (page !== "tools") prepareDetails();
   syncSegmented();
-  if (page === "tools" && typeof wireToolsCharts === "function")
-    wireToolsCharts();
+  if (page === "tools" || page === "providers") {
+    if (typeof wireToolsCharts === "function") wireToolsCharts();
+  }
   if (cellPosition) {
     const [table, row, column] = cellPosition;
     $("page").querySelectorAll("table")[table]?.rows[row]?.cells[column]
@@ -1253,10 +1572,14 @@ function render() {
     $("page")
       .querySelector(`[data-tools-focus="${CSS.escape(toolsFocus)}"]`)
       ?.focus({ preventScroll: true });
+  } else if (providerFocus) {
+    $("page")
+      .querySelector(`[data-provider-focus="${CSS.escape(providerFocus)}"]`)
+      ?.focus({ preventScroll: true });
   } else if (insightFocused) {
     $(insightFocused)?.focus({ preventScroll: true });
-  } else if (peakFocused) {
-    $("peak-provider")?.focus({ preventScroll: true });
+  } else if (providerSelectFocused) {
+    $("provider-peak")?.focus({ preventScroll: true });
   } else if (focusControl) {
     [...$("page").querySelectorAll("button")]
       .find(
@@ -1298,6 +1621,7 @@ $("page").addEventListener("click", (e) => {
     return;
   }
   if (insightsClick(e)) return;
+  if (providersClick(e)) return;
   if (activityClick(e)) return;
   const expand = e.target.closest("[data-expand]");
   if (expand) {
@@ -1310,13 +1634,12 @@ $("page").addEventListener("click", (e) => {
   const control = e.target.closest("button");
   if (
     control &&
-    ["share", "burn", "costSplit", "performance", "series"].some(
+    ["share", "costSplit", "performance", "series"].some(
       (k) => control.dataset[k],
     )
   ) {
     const d = control.dataset;
     if (d.share) shareMode = d.share;
-    if (d.burn) burnMode = d.burn;
     if (d.costSplit) costMode = d.costSplit;
     if (d.performance) performanceModes[d.performance] = d.mode;
     if (d.series) {
@@ -1357,7 +1680,7 @@ $("page").addEventListener("click", (e) => {
   }
 });
 $("page").addEventListener("keydown", (e) => {
-  const action = e.target.closest("th[data-sort],tr[data-id],tr[data-expand],tr[data-error-signature],tr[data-trace],th[data-toolsort],tr[data-toolselect]");
+  const action = e.target.closest("th[data-sort],tr[data-id],tr[data-expand],tr[data-error-signature],tr[data-trace],th[data-toolsort],tr[data-toolselect],th[data-provider-sort],tr[data-provider-row]");
   if (
     (e.key === "Enter" || e.key === " ") &&
     action && !e.target.closest("button,a,input,select,textarea")
@@ -1378,11 +1701,7 @@ $("page").addEventListener(
 );
 $("page").addEventListener("change", (e) => {
   if (insightsChange(e)) return;
-  if (e.target.id === "peak-provider") {
-    peakProvider = e.target.value;
-    render();
-    $("peak-provider")?.focus({ preventScroll: true });
-  }
+  if (providersChange(e)) return;
 });
 function detailsGrid(items) {
   return `<dl class="detail-grid">${items.map(([key, value]) => `<div><dt>${h(key)}</dt><dd>${h(value)}</dd></div>`).join("")}</dl>`;

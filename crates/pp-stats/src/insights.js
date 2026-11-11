@@ -112,16 +112,17 @@ function toolColorLookup(rows) {
   );
 }
 
-function toolPivot(points, buckets, limit, colors) {
+function toolPivot(points, buckets, limit, colors, keyOf = (point) => point.tool) {
   const index = new Map(buckets.map((timestamp, i) => [timestamp, i]));
   const byKey = new Map();
   for (const point of points) {
     const i = index.get(point.timestamp);
     if (i === undefined) continue;
-    let values = byKey.get(point.tool);
+    const key = keyOf(point);
+    let values = byKey.get(key);
     if (!values) {
       values = Array.from({ length: buckets.length }, () => 0);
-      byKey.set(point.tool, values);
+      byKey.set(key, values);
     }
     values[i] += point.value;
   }
@@ -431,23 +432,25 @@ function toolMetricSegmented() {
 let toolChartModels = new Map();
 let toolChartSeq = 0;
 
-function toolChart(view, series, emptyLabel) {
+function toolChart(view, series, emptyLabel, options = {}) {
   const id = `tool-chart-${++toolChartSeq}`;
-  toolChartModels.set(id, {
+  const model = {
     series,
     buckets: view.buckets,
-    bucketMs: toolRangeMeta().bucketMs,
+    bucketMs: view.bucketMs ?? toolRangeMeta().bucketMs,
     height: 260,
     emptyLabel,
-  });
-  return `<div class="x-chart" data-chart-id="${id}" style="height:260px"></div>`;
+    ...options,
+  };
+  toolChartModels.set(id, model);
+  return `<div class="x-chart" data-chart-id="${id}" style="height:${model.height}px"></div>`;
 }
 
-function toolLegend(series) {
+function toolLegend(series, format = toolCompact) {
   return `<div class="x-legend">${series
     .map(
       (item) =>
-        `<button type="button" class="x-legend-item" data-series="${h(item.key)}" data-off="${hiddenSeries.has(item.key)}" aria-pressed="${!hiddenSeries.has(item.key)}" data-tools-focus="legend-${encodeURIComponent(item.key)}" title="${h(item.label)}"><span class="x-swatch" style="background:${item.color}"></span><span class="x-truncate">${h(item.label)}</span><span class="x-legend-value">${toolCompact(item.values.reduce((sum, value) => sum + (value ?? 0), 0))}</span></button>`,
+        `<button type="button" class="x-legend-item" data-series="${h(item.key)}" data-off="${hiddenSeries.has(item.key)}" aria-pressed="${!hiddenSeries.has(item.key)}" data-tools-focus="legend-${encodeURIComponent(item.key)}" title="${h(item.label)}"><span class="x-swatch" style="background:${item.color}"></span><span class="x-truncate">${h(item.label)}</span><span class="x-legend-value">${format(item.values.reduce((sum, value) => sum + (value ?? 0), 0))}</span></button>`,
     )
     .join("")}</div>`;
 }
@@ -486,9 +489,9 @@ function toolEmpty(title, hint) {
   return `<div class="x-empty">${TOOL_INBOX}<div class="x-empty-title">${h(title)}</div>${hint ? `<div class="x-empty-hint">${hint}</div>` : ""}</div>`;
 }
 
-function toolMeter(value, max, display) {
+function toolMeter(value, max, display, color) {
   const width = max > 0 ? Math.min(100, (value / max) * 100) : 0;
-  return `<div class="x-meter-cell"><span class="x-num">${display}</span><div class="x-meter"><div class="x-meter-fill" style="width:${width}%"></div></div></div>`;
+  return `<div class="x-meter-cell"><span class="x-num">${display}</span><div class="x-meter"><div class="x-meter-fill" style="width:${width}%${color ? `;background:${color}` : ""}"></div></div></div>`;
 }
 
 function toolErrorsCell(row) {
@@ -762,7 +765,10 @@ function toolChartSvg(model, width) {
   }
   const scale = toolNiceScale(leftMax, leftMin);
   const y = (value) => padTop + plotH - ((value - scale.min) / (scale.max - scale.min)) * plotH;
-  const labels = scale.ticks.map((tick) => toolCompact(tick));
+  const format = model.format || toolCompact;
+  const tickLabel =
+    model.tickLabel || ((index) => toolTickLabel(model.buckets[index], model.bucketMs));
+  const labels = scale.ticks.map((tick) => format(tick));
   const labelWidth = labels.reduce((max, label) => Math.max(max, label.length * 6.3), 0);
   const padLeft = Math.max(28, labelWidth + 12);
   const padRight = 8;
@@ -783,7 +789,7 @@ function toolChartSvg(model, width) {
   });
   for (let i = 0; i < slots; i++) {
     if (i % tickEvery !== 0) continue;
-    svg += `<text x="${cx(i)}" y="${height - 6}" text-anchor="middle">${h(toolTickLabel(model.buckets[i], model.bucketMs))}</text>`;
+    svg += `<text x="${cx(i)}" y="${height - 6}" text-anchor="middle">${h(tickLabel(i))}</text>`;
   }
   svg += "</g>";
   svg += `<rect class="x-chart-cursor" x="${padLeft}" y="${padTop}" width="${slotW}" height="${plotH}" style="display:none"/>`;
@@ -851,14 +857,19 @@ function toolChartHover(root, geometry, hover) {
   }
   const rows = toolChartTooltipRows(geometry.visible, hover);
   const total = rows.reduce((sum, row) => sum + row.value, 0);
-  tooltip.innerHTML = `<div class="x-chart-tooltip-title">${h(toolBucketLabel(geometry.model.buckets[hover], geometry.model.bucketMs))}</div>${rows
+  const model = geometry.model;
+  const formatValue = model.formatTooltip || toolInteger;
+  const title = model.tooltipTitle
+    ? model.tooltipTitle(hover)
+    : toolBucketLabel(model.buckets[hover], model.bucketMs);
+  tooltip.innerHTML = `<div class="x-chart-tooltip-title">${h(title)}</div>${rows
     .map(
       (row) =>
-        `<div class="x-chart-tooltip-row"><span class="x-swatch" style="background:${row.series.color}"></span><span class="x-chart-tooltip-label">${h(row.series.label)}</span><span class="x-chart-tooltip-value">${toolInteger(row.value)}</span></div>`,
+        `<div class="x-chart-tooltip-row"><span class="x-swatch" style="background:${row.series.color}"></span><span class="x-chart-tooltip-label">${h(row.series.label)}</span><span class="x-chart-tooltip-value">${formatValue(row.value)}</span></div>`,
     )
     .join(
       "",
-    )}${rows.length > 1 ? `<div class="x-chart-tooltip-row x-chart-tooltip-total"><span class="x-chart-tooltip-label">Total</span><span class="x-chart-tooltip-value">${toolInteger(total)}</span></div>` : ""}`;
+    )}${rows.length > 1 && model.showTotal !== false ? `<div class="x-chart-tooltip-row x-chart-tooltip-total"><span class="x-chart-tooltip-label">Total</span><span class="x-chart-tooltip-value">${formatValue(total)}</span></div>` : ""}${model.extraRows ? model.extraRows(hover) : ""}`;
   tooltip.hidden = false;
   const cx = geometry.cx(hover);
   if (cx > geometry.width / 2) {
