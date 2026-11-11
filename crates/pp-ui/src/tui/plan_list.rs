@@ -699,7 +699,8 @@ impl Panel {
         self.searching.then_some((input.x + width as u16, input.y))
     }
 
-    /// 居中确认删除框：完整相对路径、固定提示与默认 Cancel 按钮行。
+    /// 居中确认删除框：先清空框内区域再画边框，避免背后的列表行透出；
+    /// 内容为完整相对路径、固定提示与默认 Cancel 按钮行。
     fn draw_confirmation(&mut self, frame: &mut Frame, area: Rect) {
         if area.width < 28 || area.height < 9 {
             return;
@@ -712,6 +713,9 @@ impl Panel {
             width,
             height,
         };
+        // 列表行在同一帧中先绘制，Block 只画边框、正文只占实际列宽，
+        // 不先清理会让行内容透到框内空白行与正文尾部。
+        frame.render_widget(Clear, area);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(REMOVED))
@@ -1448,5 +1452,51 @@ mod tests {
         let mut loading = Panel::new();
         assert!(matches!(loading.key(key(KeyCode::Char('n'))), Action::None));
         assert!(matches!(loading.key(key(KeyCode::Esc)), Action::Close));
+    }
+
+    #[test]
+    fn delete_confirmation_is_opaque_over_rows_behind_it() {
+        // 100×12 的屏幕里列表行占 3..=10；确认框宽 min(96, 72) = 72、高 7、
+        // 居中于 (14, 2)，正好压在行 3..=8 上，框内区域为 x 15..85、y 3..=7。
+        // 标题用长串 Z 铺满 78 列，背后行只要有一格残留就会被抓到。
+        let title = "Z".repeat(90);
+        let mut panel = ready_panel(
+            (0..5)
+                .map(|index| {
+                    entry(
+                        &format!("id{index}"),
+                        &format!("plan-{index}.md"),
+                        PlanLocation::Drafts,
+                        &title,
+                        0,
+                        1,
+                    )
+                })
+                .collect(),
+        );
+        panel.key(key(KeyCode::Char('d')));
+        assert!(panel.confirm.is_some());
+        let terminal = draw(&mut panel, 100);
+        let buffer = terminal.backend().buffer();
+        let inside = |row: u16| -> String { (15..85).map(|x| buffer[(x, row)].symbol()).collect() };
+        // 框内空白行不得留下列表行的时间、标题或分类标记。
+        for row in 5..=6 {
+            assert_eq!(inside(row), " ".repeat(70), "row {row}: {}", inside(row));
+        }
+        // 正文行与按钮行两侧也不得透出背后标题。
+        for row in 3..=7 {
+            assert!(!inside(row).contains('Z'), "row {row}: {}", inside(row));
+        }
+        // 清理范围只限对话框：同一行框外照常显示列表标题与分类标记。
+        let behind: String = (86..100).map(|x| buffer[(x, 3)].symbol()).collect();
+        assert!(behind.contains('Z'), "{behind}");
+        // 对话框自身内容照常渲染。
+        assert!(row_text(buffer, 3).contains("Path: .pp/drafts/plan-0.md"));
+        assert!(row_text(buffer, 4).contains("Delete the plan file only"));
+        let buttons = row_text(buffer, 7);
+        assert!(
+            buttons.contains(" Cancel ") && buttons.contains(" Delete "),
+            "{buttons}"
+        );
     }
 }
