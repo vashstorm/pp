@@ -199,6 +199,63 @@ fn main() -> ExitCode {
     }
 }
 
+/// Traces 列表的会话标题取自 history.db 的派生索引；`pp stats` 只读摘要。
+/// TUI 只在打开会话选择器时增量同步索引，所以首次取标题时补一次同步，
+/// 否则最新会话没有摘要可显示；同步失败不阻止服务，已索引的摘要仍可用。
+fn session_titles() -> impl FnMut() -> Vec<(String, String)> {
+    let mut store: Option<pp_runtime::history::Store> = None;
+    let mut unavailable = false;
+    move || {
+        let Ok(dir) = config::global_dir() else {
+            return Vec::new();
+        };
+        let path = dir.join("history.db");
+        if store.is_none() {
+            if !std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
+                return Vec::new();
+            }
+            let opened = pp_runtime::history::Store::open(&path).map(|mut opened| {
+                if opened
+                    .sync_sessions(
+                        &dir.join("sessions"),
+                        &cancellation::CancellationToken::new(),
+                    )
+                    .is_err()
+                {
+                    tracing::warn!(event = "stats_session_titles_sync_failed");
+                }
+                opened
+            });
+            match opened {
+                Ok(opened) => store = Some(opened),
+                Err(_) => {
+                    if !unavailable {
+                        unavailable = true;
+                        tracing::warn!(event = "stats_session_titles_unavailable");
+                    }
+                    return Vec::new();
+                }
+            }
+        }
+        let Some(store) = store.as_ref() else {
+            return Vec::new();
+        };
+        match store.search_sessions(None, "") {
+            Ok(sessions) => sessions
+                .into_iter()
+                .map(|session| (session.id, session.summary))
+                .collect(),
+            Err(_) => {
+                if !unavailable {
+                    unavailable = true;
+                    tracing::warn!(event = "stats_session_titles_unavailable");
+                }
+                Vec::new()
+            }
+        }
+    }
+}
+
 fn run_gc(days: u32) -> Result<()> {
     let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
     let (requests_total, requests_removed) =
@@ -235,7 +292,7 @@ fn run(args: Args) -> Result<()> {
                 host,
                 port,
                 no_open,
-            } => stats::server::run(host, port, !no_open),
+            } => stats::server::run(host, port, !no_open, session_titles()),
         };
     }
     // 位置参数按单空格拼回一条斜杠命令；参数校验先于配置与网络，脚本能立即拿到失败。

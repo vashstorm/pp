@@ -1,0 +1,525 @@
+/* Traces 页：会话列表 + 单会话时间线阅读器。颜色一律取自 ui.css 令牌。 */
+
+/* 列表 */
+.traces-page .search,
+.traces-view .search {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+}
+.traces-page .search svg,
+.traces-view .search svg {
+  position: absolute;
+  left: 9px;
+  color: var(--ink-3);
+  pointer-events: none;
+}
+.traces-page .search .x-input[type="search"],
+.traces-view .search .x-input[type="search"] {
+  height: 30px;
+  padding: 0 10px 0 30px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-control);
+  background: var(--card);
+  font-size: 13px;
+  width: 240px;
+}
+.traces-page .search .x-input[type="search"]:hover,
+.traces-view .search .x-input[type="search"]:hover {
+  border-color: var(--line-3);
+}
+.traces-page .search .x-input[type="search"]:focus,
+.traces-view .search .x-input[type="search"]:focus {
+  outline: none;
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+}
+.traces-models {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  min-width: 0;
+  color: var(--ink-2);
+}
+.traces-title {
+  display: block;
+  max-width: 720px;
+}
+.traces-sessions tbody tr td:first-child {
+  max-width: 420px;
+}
+.traces-spin {
+  animation: traces-spin 900ms linear infinite;
+}
+@keyframes traces-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 工具栏 */
+.traces-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.traces-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+  user-select: none;
+}
+.traces-check input {
+  accent-color: var(--brand);
+  margin: 0;
+}
+.traces-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.traces-match-count {
+  font-size: 12px;
+  min-width: 36px;
+  text-align: center;
+}
+.traces-chevron-left svg {
+  transform: rotate(180deg);
+}
+.traces-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.traces-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.traces-legend .x-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+/* 概览条 */
+.traces-minimap {
+  width: 100%;
+  display: block;
+  cursor: crosshair;
+  border-radius: var(--r-chip);
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  touch-action: none;
+}
+
+/* 火焰图：DOM 左侧轨道 + canvas */
+.traces-timeline {
+  position: relative;
+  display: flex;
+  max-height: 560px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-top: 1px solid var(--line-1);
+}
+.traces-gutter {
+  width: 200px;
+  flex-shrink: 0;
+  position: relative;
+}
+.traces-gutter-header {
+  position: absolute;
+  right: 8px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.traces-gutter-track {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-1);
+  flex-shrink: 0;
+  max-width: 110px;
+}
+.traces-gutter-model {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.traces-gutter-lane {
+  position: absolute;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  line-height: 18px;
+}
+.traces-chevron {
+  display: inline-flex;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ink-3);
+  border-radius: 4px;
+}
+.traces-chevron:hover {
+  color: var(--ink-1);
+}
+.traces-chevron:focus-visible {
+  outline: 2px solid var(--focus);
+}
+.traces-chevron-gap {
+  width: 12px;
+  flex-shrink: 0;
+}
+.traces-canvas {
+  cursor: grab;
+  outline: none;
+  touch-action: none;
+  display: block;
+}
+.traces-canvas:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+  border-radius: var(--r-chip);
+}
+.traces-canvas:active {
+  cursor: grabbing;
+}
+.traces-canvas-stack {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.traces-canvas-stack > canvas {
+  display: block;
+}
+.traces-canvas-hover,
+.traces-canvas-selection {
+  position: absolute;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.traces-canvas-hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 3px;
+}
+.traces-canvas-selection {
+  border: 1.5px solid;
+  border-radius: 3px;
+}
+
+/* 悬浮提示 */
+.traces-tooltip {
+  position: fixed;
+  z-index: 90;
+  max-width: 300px;
+  pointer-events: none;
+  background: var(--overlay);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--line-3);
+  border-radius: var(--r-control);
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: var(--shadow-2);
+}
+.traces-tooltip-title {
+  font-weight: 500;
+  color: var(--ink-1);
+}
+.traces-tooltip-detail {
+  color: var(--ink-2);
+  word-break: break-word;
+}
+
+/* 转录列表（固定 28px 行，按窗口渲染） */
+.traces-list {
+  height: 340px;
+  overflow-y: auto;
+}
+.traces-list-spacer {
+  position: relative;
+}
+.traces-list-window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+.traces-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 28px;
+  width: 100%;
+  padding: 0 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line-1);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+.traces-row:hover {
+  background: var(--hover);
+}
+.traces-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.traces-row[data-selected="true"] {
+  background: var(--selected);
+  box-shadow: inset 2px 0 0 var(--brand);
+}
+.traces-row[data-static="true"] {
+  cursor: default;
+}
+.traces-row[data-static="true"]:hover {
+  background: transparent;
+}
+.traces-kind {
+  flex-shrink: 0;
+  width: 72px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: var(--r-chip);
+  padding: 1px 0;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-1);
+  background: color-mix(in srgb, var(--traces-kind-color) 18%, transparent);
+  box-shadow: inset 2px 0 0 var(--traces-kind-color);
+}
+.traces-row-track {
+  flex-shrink: 0;
+  max-width: 110px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.traces-row-label {
+  font-size: 12.5px;
+  color: var(--ink-1);
+  min-width: 0;
+  flex-shrink: 1;
+}
+.traces-row-detail {
+  font-size: 12px;
+  color: var(--ink-3);
+  min-width: 0;
+  flex: 1;
+}
+.traces-row-meta {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  gap: 12px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.traces-error-tag {
+  color: var(--bad);
+}
+
+/* span 抽屉 */
+.trace-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.5);
+  animation: trace-fade var(--dur-2) var(--ease) both;
+}
+.trace-sheet {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  width: min(560px, calc(100vw - 16px));
+  z-index: 61;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-panel);
+  border: 1px solid var(--line-2);
+  background: var(--overlay);
+  backdrop-filter: blur(20px) saturate(170%);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+  box-shadow: var(--shadow-3);
+  animation: trace-sheet-in var(--dur-3) var(--ease-out) both;
+  overflow: hidden;
+}
+@keyframes trace-fade {
+  0% {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes trace-sheet-in {
+  0% {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.trace-sheet-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 16px 12px 20px;
+  border-bottom: 1px solid var(--line-1);
+}
+.trace-sheet-titles {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.trace-sheet-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.trace-sheet-subtitle {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+.trace-sheet-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.traces-drawer {
+  gap: 16px;
+}
+.kv {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px 16px;
+}
+.kv-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.kv-key {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.kv-value {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink-1);
+  overflow-wrap: anywhere;
+}
+.section-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-3);
+  margin-bottom: 8px;
+}
+.section-label.tone-bad {
+  color: var(--bad);
+}
+.code-block {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--line-1);
+  background: var(--card);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  overflow: auto;
+  max-height: 480px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.traces-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.traces-pre[data-scroll="true"] {
+  max-height: 360px;
+  overflow-y: auto;
+}
+.traces-json {
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  background: transparent;
+  padding: 0;
+}
+.traces-json > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  user-select: none;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-control);
+  padding: 4px 10px;
+}
+.traces-json > summary:hover {
+  color: var(--ink-1);
+  border-color: var(--line-3);
+}
+.traces-json > pre {
+  margin-top: 8px;
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-control);
+  background: var(--card);
+  padding: 10px 12px;
+  color: var(--ink-2);
+  max-height: 360px;
+}
+.traces-note {
+  font-size: 12.5px;
+}
+.traces-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--bad);
+  font-size: 12.5px;
+}
+.x-skeleton {
+  border-radius: 8px;
+  background: var(--raised);
+  animation: trace-pulse 1.4s var(--ease) infinite;
+}
+@keyframes trace-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}

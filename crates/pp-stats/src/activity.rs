@@ -7,7 +7,17 @@ use super::{
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// 会话标题由调用方从 history.db 的派生索引注入；键为会话 ID（会话文件名去扩展名），
+/// 空摘要不覆盖会话 ID。
+fn title<'a>(titles: &HashMap<&str, &'a str>, stem: Option<&str>) -> Option<&'a str> {
+    let id = stem.and_then(|stem| stem.rsplit(['/', '\\']).next())?;
+    titles
+        .get(id)
+        .copied()
+        .filter(|title| !title.trim().is_empty())
+}
 
 fn signature(message: &str) -> String {
     let mut result = String::new();
@@ -47,6 +57,15 @@ fn signature(message: &str) -> String {
     }
     flush(&mut token, &mut result);
     result.trim().to_owned()
+}
+
+/// 会话文件去掉 `.jsonl` 后的 stem；子 Agent 文件 `<root>.subagents/sessions/<id>.jsonl`
+/// 归到根会话，与 `session_cost` 的目录约定一致。
+fn session_stem(file: &str) -> &str {
+    match file.find(".subagents/sessions/") {
+        Some(index) => &file[..index],
+        None => file.strip_suffix(".jsonl").unwrap_or(file),
+    }
 }
 
 fn summary(rows: &[&RequestRow], pricing: &Pricing) -> Value {
@@ -227,29 +246,54 @@ impl Store {
         now: i64,
         limit: usize,
         pricing: &Pricing,
+        titles: &HashMap<&str, &str>,
     ) -> Result<Value> {
         let rows = self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC"))?
             .query_map(params![range.since(now), now], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-        // 未记录会话的请求各自成组，不能将所有摘要请求合成一个会话。
+        // 子 Agent 请求折叠进根会话；未记录会话的请求各自成组，不能合并成一个会话。
+        let mut tools = BTreeMap::<String, i64>::new();
+        {
+            let mut statement = self.conn.prepare("SELECT session_file,COUNT(*) FROM tool_calls WHERE timestamp>=?1 AND timestamp<=?2 GROUP BY session_file")?;
+            let mut query = statement.query(params![range.since(now), now])?;
+            while let Some(row) = query.next()? {
+                let file: String = row.get(0)?;
+                *tools.entry(session_stem(&file).to_owned()).or_default() +=
+                    row.get::<_, i64>(1)?;
+            }
+        }
         let mut sessions = BTreeMap::<(Option<&str>, i64), Vec<&RequestRow>>::new();
         for r in &rows {
             sessions
                 .entry((
-                    r.session_file.as_deref(),
+                    r.session_file.as_deref().map(session_stem),
                     if r.session_file.is_none() { r.id } else { 0 },
                 ))
                 .or_default()
                 .push(r);
         }
         let mut groups = sessions
-            .values()
-            .map(|group| {
+            .iter()
+            .map(|((stem, _), group)| {
+                let stem = *stem;
                 let mut value = summary(group, pricing);
                 let r = group[0];
+                let root = stem.map(|stem| format!("{stem}.jsonl"));
+                let agents = group
+                    .iter()
+                    .filter_map(|r| r.session_file.as_deref())
+                    .filter(|file| root.as_deref() != Some(*file))
+                    .collect::<BTreeSet<_>>()
+                    .len();
                 value["id"] = json!(r.id);
-                value["session_file"] = json!(r.session_file);
+                if let Some(title) = title(titles, stem) {
+                    value["title"] = json!(title);
+                }
+                value["session_file"] = json!(root);
                 value["project"] = json!(r.project);
                 value["cwd"] = json!(r.cwd);
+                value["tool_calls"] =
+                    json!(stem.and_then(|stem| tools.get(stem)).copied().unwrap_or(0));
+                value["agents"] = json!(agents);
                 value
             })
             .collect::<Vec<_>>();
@@ -266,7 +310,13 @@ impl Store {
         )
     }
 
-    pub(super) fn trace(&self, id: i64, now: i64, pricing: &Pricing) -> Result<Option<Value>> {
+    pub(super) fn trace(
+        &self,
+        id: i64,
+        now: i64,
+        pricing: &Pricing,
+        titles: &HashMap<&str, &str>,
+    ) -> Result<Option<Value>> {
         let session: Option<Option<String>> = self
             .conn
             .query_row("SELECT session_file FROM requests WHERE id=?1", [id], |r| {
@@ -276,15 +326,88 @@ impl Store {
         let Some(session) = session else {
             return Ok(None);
         };
-        let rows = self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE (?1 IS NOT NULL AND session_file=?1) OR (?1 IS NULL AND id=?2) ORDER BY timestamp,id"))?
-            .query_map(params![session,id],row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let stem = session.as_deref().map(session_stem);
+        let root = stem.map(|stem| format!("{stem}.jsonl"));
+        let children = stem.map(|stem| format!("{stem}.subagents/sessions/"));
+        let (rows, tools) = match (&root, &children) {
+            (Some(root), Some(children)) => {
+                let rows = self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE session_file=?1 OR substr(session_file,1,length(?2))=?2 ORDER BY timestamp,id"))?
+                    .query_map(params![root, children], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let tools = self.conn.prepare("SELECT t.id,t.request_key,t.session_file,t.call_id,t.tool,t.timestamp,t.duration_ms,t.status,t.error_message,r.id
+                     FROM tool_calls t LEFT JOIN requests r ON r.request_key=t.request_key
+                     WHERE t.session_file=?1 OR substr(t.session_file,1,length(?2))=?2 ORDER BY t.timestamp,t.id")?
+                    .query_map(params![root, children], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?,
+                            r.get::<_, f64>(6)?, r.get::<_, String>(7)?, r.get::<_, Option<String>>(8)?,
+                            r.get::<_, Option<i64>>(9)?))
+                    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+                (rows, tools)
+            }
+            _ => (
+                self.conn
+                    .prepare(&format!(
+                        "SELECT {COLUMNS} FROM requests WHERE id=?1 ORDER BY timestamp,id"
+                    ))?
+                    .query_map(params![id], row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+                Vec::new(),
+            ),
+        };
         let requests = rows
             .iter()
             .map(|r| pricing.request(r))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Some(
-            json!({"id":id,"session_file":session,"project":rows[0].project,"cwd":rows[0].cwd,"summary":summary(&rows.iter().collect::<Vec<_>>(),pricing),"requests":requests,"updated_at":now,"pricing_error":pricing.error}),
-        ))
+        let mut tool_stats = BTreeMap::<&str, (usize, usize, f64, f64)>::new();
+        for (_, _, _, _, tool, _, duration_ms, status, _, _) in &tools {
+            let entry = tool_stats.entry(tool).or_default();
+            entry.0 += 1;
+            entry.1 += usize::from(status.as_str() == "error");
+            entry.2 += *duration_ms;
+            entry.3 = entry.3.max(*duration_ms);
+        }
+        let tool_stats = {
+            let mut values = tool_stats
+                .iter()
+                .map(|(tool, (calls, errors, total_ms, max_ms))| {
+                    json!({"tool":tool,"calls":calls,"errors":errors,"total_ms":total_ms,"max_ms":max_ms})
+                })
+                .collect::<Vec<_>>();
+            values.sort_by(|a, b| {
+                b["total_ms"]
+                    .as_f64()
+                    .unwrap_or(0.0)
+                    .total_cmp(&a["total_ms"].as_f64().unwrap_or(0.0))
+            });
+            values
+        };
+        let tool_calls = tools
+            .iter()
+            .map(|(id, request_key, session_file, call_id, tool, timestamp, duration_ms, status, error_message, request_id)| {
+                json!({"id":id,"request_key":request_key,"session_file":session_file,"call_id":call_id,
+                    "tool":tool,"timestamp":timestamp,"duration_ms":duration_ms,"status":status,
+                    "error_message":error_message,"request_id":request_id})
+            })
+            .collect::<Vec<_>>();
+        let mut summary = summary(&rows.iter().collect::<Vec<_>>(), pricing);
+        let wall_ms = summary["wall_ms"].as_f64().unwrap_or(0.0);
+        let model_ms = summary["model_ms"].as_f64().unwrap_or(0.0);
+        let tool_ms = tools.iter().map(|tool| tool.6).sum::<f64>();
+        let agents = rows
+            .iter()
+            .filter_map(|r| r.session_file.as_deref())
+            .filter(|file| root.as_deref() != Some(*file))
+            .collect::<BTreeSet<_>>()
+            .len();
+        summary["tool_ms"] = json!(tool_ms);
+        summary["tool_calls"] = json!(tools.len());
+        summary["idle_ms"] = json!((wall_ms - model_ms - tool_ms).max(0.0));
+        summary["agents"] = json!(agents);
+        let mut value = json!({"id":id,"session_file":root,"project":rows[0].project,"cwd":rows[0].cwd,"summary":summary,"requests":requests,"tool_calls":tool_calls,"tool_stats":tool_stats,"updated_at":now,"pricing_error":pricing.error});
+        if let Some(title) = title(titles, stem) {
+            value["title"] = json!(title);
+        }
+        Ok(Some(value))
     }
 }
 

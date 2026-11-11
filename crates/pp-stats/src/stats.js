@@ -35,6 +35,10 @@ const paths = {
   moon: "M21 13A9 9 0 0 1 11 3a9 9 0 1 0 10 10",
   system: "M3 3h18v13H3z M12 16v5 M8 21h8",
   flag: "M5 21V4 M5 4h12l-3 4 3 4H5",
+  refresh: "M21 12a9 9 0 1 1-2.6-6.4 M21 3v6h-6",
+  alert: "M12 9v4 M12 17h.01 M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
+  check: "m20 6-11 11-5-5",
+  inbox: "M22 12h-6l-2 3h-4l-2-3H2 M5.5 5h13l3.5 7v7H2v-7z",
 };
 const icon = (name, size = 15) =>
   `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name] || paths.traces}"/></svg>`;
@@ -385,27 +389,18 @@ async function refresh() {
       controller.signal,
     );
     if (token !== generation) return;
+    const signature = page === "traces" ? traceSignature(result) : null;
     if (page !== "requests") data = result;
     else requestData = result;
-    if (page === "traces" && traceRequest && traceFocusPending) {
-      visible = Math.max(
-        visible,
-        result.requests.findIndex((r) => r.id === Number(traceRequest)) + 1,
-      );
-    }
     lastUpdated = result.updated_at;
     $("error").hidden = true;
     $("live").classList.remove("error");
-    render();
-    if (page === "traces" && traceRequest) {
-      if (traceFocusPending) {
-        $(`trace-request-${traceRequest}`)?.scrollIntoView({
-          block: "nearest",
-        });
-        traceFocusPending = false;
-      }
-      for (const id of traceExpanded) loadTraceRequest(id);
+    // Traces 页保留画布视口、抽屉与滚动位置：数据未变时只刷新 Live 计数，不重绘。
+    if (page === "traces" && signature === traceRenderedSignature) {
+      updateLive();
+      return;
     }
+    render();
   } catch (error) {
     if (error.name === "AbortError" || token !== generation) return;
     $("error").textContent = `${error.message} Click Live to retry.`;
@@ -441,7 +436,8 @@ function onRoute() {
   sortDirection = -1;
   data = null;
   requestData = null;
-  resetActivity(url);
+  resetActivity();
+  resetTraces(url);
   resetInsights();
   expandedGroups.clear();
   hiddenSeries.clear();
@@ -1496,22 +1492,6 @@ function render() {
   renderedPage = page;
   renderedRange = range;
   const focused = document.activeElement;
-  const focusedSection = focused?.closest("details[data-trace-section]")
-    ?.dataset.traceSection;
-  const activityFocus = [
-    "errorSignature",
-    "errorModel",
-    "clearErrors",
-    "trace",
-    "sessions",
-    "traceRequest",
-    "timelineRequest",
-    "expandTrace",
-    "collapseTrace",
-    "retryTrace",
-    "refreshTrace",
-  ].find((k) => focused?.dataset?.[k] !== undefined);
-  const activityValue = activityFocus && focused.dataset[activityFocus];
   const searchFocused = focused?.id === "search";
   const selection = searchFocused
     ? [focused.selectionStart, focused.selectionEnd]
@@ -1566,15 +1546,6 @@ function render() {
     const [table, row, column] = cellPosition;
     $("page").querySelectorAll("table")[table]?.rows[row]?.cells[column]
       ?.focus({ preventScroll: true });
-  } else if (focusedSection) {
-    [...$("page").querySelectorAll("details[data-trace-section]")]
-      .find((el) => el.dataset.traceSection === focusedSection)
-      ?.querySelector("summary")
-      ?.focus({ preventScroll: true });
-  } else if (activityFocus) {
-    [...$("page").querySelectorAll("button,tr")]
-      .find((el) => el.dataset[activityFocus] === activityValue)
-      ?.focus({ preventScroll: true });
   } else if (toolsFocus) {
     $("page")
       .querySelector(`[data-tools-focus="${CSS.escape(toolsFocus)}"]`)
@@ -1613,6 +1584,8 @@ function render() {
       .querySelector(`[data-status="${focusedStatus}"]`)
       ?.focus({ preventScroll: true });
   }
+  if (page === "traces") wireTraces();
+  else traceRemoveDrawer();
 }
 $("page").addEventListener("input", (e) => {
   if (e.target.id === "search") {
@@ -1622,11 +1595,7 @@ $("page").addEventListener("input", (e) => {
   }
 });
 $("page").addEventListener("click", (e) => {
-  const context = e.target.closest("[data-context-id]");
-  if (context) {
-    openContextReader(traceCache.get(Number(context.dataset.contextId)), context);
-    return;
-  }
+  if (tracesClick(e)) return;
   if (insightsClick(e)) return;
   if (providersClick(e)) return;
   if (activityClick(e)) return;
@@ -1696,16 +1665,6 @@ $("page").addEventListener("keydown", (e) => {
     action.click();
   }
 });
-$("page").addEventListener(
-  "toggle",
-  (e) => {
-    const key = e.target.dataset.traceSection;
-    if (!key || !e.target.isConnected) return;
-    if (e.target.open) traceSections.add(key);
-    else traceSections.delete(key);
-  },
-  true,
-);
 $("page").addEventListener("change", (e) => {
   if (insightsChange(e)) return;
   if (providersChange(e)) return;

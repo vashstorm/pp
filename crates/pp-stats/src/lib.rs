@@ -623,6 +623,7 @@ pub fn tool(database: &Path, call: &ToolCall<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     fn open_store(path: &Path) -> Result<Store> {
         Store::open_with_models(path, path.with_file_name("models.yml"))
     }
@@ -713,7 +714,7 @@ mod tests {
             .unwrap();
         store.insert(&fixture("later", 1001), &Value::Null).unwrap();
         store.insert(&fixture("legacy", 900), &Value::Null).unwrap();
-        let (status, _, body) = server::dispatch(&store, "/api/stats/requests?range=all");
+        let (status, _, body) = server::dispatch(&store, "/api/stats/requests?range=all", &[]);
         assert_eq!(status, 200);
         let list: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
@@ -797,7 +798,7 @@ mod tests {
             serde_json::to_value(&snapshot).unwrap()
         );
         assert_eq!(detail["output_message"]["text"], "new output");
-        let (status, _, body) = server::dispatch(&store, "/api/stats/requests?range=all");
+        let (status, _, body) = server::dispatch(&store, "/api/stats/requests?range=all", &[]);
         assert_eq!(status, 200);
         assert!(!body.contains("request_context"));
         assert!(!body.contains("future_field"));
@@ -1107,6 +1108,111 @@ providers:
         assert_eq!(empty["summary"]["tokens"], 0);
     }
     #[test]
+    fn stats_traces_fold_subagents_and_aggregate_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let now = 10_000_000;
+        let root = dir.path().join("root.jsonl");
+        let child = dir.path().join("root.subagents/sessions/child.jsonl");
+        let root_file = root.to_string_lossy().into_owned();
+        let child_file = child.to_string_lossy().into_owned();
+        for (key, file, timestamp, duration_ms) in [
+            ("root-1", &root_file, now - 10_000, 2_000.0),
+            ("child-1", &child_file, now - 5_000, 1_000.0),
+            ("root-2", &root_file, now - 2_000, 3_000.0),
+        ] {
+            let mut record = fixture(key, timestamp);
+            record.session_file = Some(file.clone());
+            record.duration_ms = duration_ms;
+            store.insert(&record, &Value::Null).unwrap();
+        }
+        for (request_key, file, call_id, status, error, timestamp, duration_ms) in [
+            (
+                "root-1",
+                &root,
+                "call-1",
+                ToolStatus::Ok,
+                None,
+                now - 9_500,
+                500.0,
+            ),
+            (
+                "child-1",
+                &child,
+                "call-2",
+                ToolStatus::Error,
+                Some("boom"),
+                now - 4_500,
+                250.0,
+            ),
+        ] {
+            store
+                .tool(&ToolCall {
+                    request_key: Some(request_key),
+                    session_file: file,
+                    call_id,
+                    tool: "bash",
+                    status,
+                    error_message: error,
+                    timestamp,
+                    duration_ms,
+                })
+                .unwrap();
+        }
+        let pricing = analytics::Pricing::default();
+        let titles = HashMap::from([("root", "修复 traces 会话标题")]);
+        let traces = store
+            .traces(Range::Hour, now, 500, &pricing, &titles)
+            .unwrap();
+        assert_eq!(traces["total"], 1);
+        let session = &traces["sessions"][0];
+        assert_eq!(session["session_file"], root_file);
+        assert_eq!(session["title"], "修复 traces 会话标题");
+        assert_eq!(session["requests"], 3);
+        assert_eq!(session["agents"], 1);
+        assert_eq!(session["tool_calls"], 2);
+        let untitled = store
+            .traces(Range::Hour, now, 500, &pricing, &HashMap::new())
+            .unwrap();
+        assert!(untitled["sessions"][0].get("title").is_none());
+        let id = session["id"].as_i64().unwrap();
+        let trace = store.trace(id, now, &pricing, &titles).unwrap().unwrap();
+        assert_eq!(trace["title"], "修复 traces 会话标题");
+        assert_eq!(trace["session_file"], root_file);
+        assert_eq!(trace["summary"]["requests"], 3);
+        assert_eq!(trace["summary"]["agents"], 1);
+        assert_eq!(trace["summary"]["tool_calls"], 2);
+        assert_eq!(trace["summary"]["model_ms"], 6_000.0);
+        assert_eq!(trace["summary"]["tool_ms"], 750.0);
+        assert_eq!(trace["summary"]["wall_ms"], 11_000.0);
+        assert_eq!(trace["summary"]["idle_ms"], 4_250.0);
+        assert_eq!(trace["requests"].as_array().unwrap().len(), 3);
+        assert_eq!(trace["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(trace["tool_stats"][0]["tool"], "bash");
+        assert_eq!(trace["tool_stats"][0]["calls"], 2);
+        assert_eq!(trace["tool_stats"][0]["errors"], 1);
+        assert_eq!(trace["tool_stats"][0]["total_ms"], 750.0);
+        assert_eq!(trace["tool_stats"][0]["max_ms"], 500.0);
+        assert_eq!(
+            trace["tool_calls"][1]["request_id"],
+            trace["requests"][1]["id"]
+        );
+    }
+    #[test]
+    fn stats_server_serves_traces_assets() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir.path().join("stats.db")).unwrap();
+        for (path, kind) in [
+            ("/traces.js", "text/javascript"),
+            ("/traces.css", "text/css"),
+        ] {
+            let (status, content_type, body) = server::dispatch(&store, path, &[]);
+            assert_eq!(status, 200, "{path}");
+            assert_eq!(content_type, kind, "{path}");
+            assert!(!body.is_empty(), "{path}");
+        }
+    }
+    #[test]
     fn stats_activity_uses_complete_ranges_and_full_session_traces() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = open_store(&dir.path().join("stats.db")).unwrap();
@@ -1138,11 +1244,16 @@ providers:
         assert_eq!(errors["requests"].as_array().unwrap().len(), 500);
         assert_eq!(errors["has_more"], true);
         assert!(!errors.to_string().contains("private-output"));
-        let traces = store.traces(Range::Hour, now, 500, &pricing).unwrap();
+        let traces = store
+            .traces(Range::Hour, now, 500, &pricing, &HashMap::new())
+            .unwrap();
         assert_eq!(traces["total"], 502);
         assert_eq!(traces["sessions"][0]["requests"], 1);
         let id = traces["sessions"][0]["id"].as_i64().unwrap();
-        let trace = store.trace(id, now, &pricing).unwrap().unwrap();
+        let trace = store
+            .trace(id, now, &pricing, &HashMap::new())
+            .unwrap()
+            .unwrap();
         assert_eq!(trace["summary"]["requests"], 2);
         assert_eq!(trace["requests"][0]["id"], 1);
         assert_eq!(trace["summary"]["wall_ms"], 7_202_000.0);
@@ -1152,9 +1263,17 @@ providers:
             store.detail(1).unwrap().unwrap()["output_message"]["text"],
             "private-output"
         );
-        assert!(store.trace(9999, now, &pricing).unwrap().is_none());
+        assert!(
+            store
+                .trace(9999, now, &pricing, &HashMap::new())
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
-            store.trace(2, now, &pricing).unwrap().unwrap()["summary"]["requests"],
+            store
+                .trace(2, now, &pricing, &HashMap::new())
+                .unwrap()
+                .unwrap()["summary"]["requests"],
             1
         );
         let since = Range::Day.since(now);
@@ -1203,23 +1322,27 @@ providers:
                 "unexpected=1",
             ] {
                 assert_eq!(
-                    server::dispatch(&store, &format!("/api/stats/{endpoint}?{query}")).0,
+                    server::dispatch(&store, &format!("/api/stats/{endpoint}?{query}"), &[]).0,
                     400
                 );
             }
             assert_eq!(
                 server::dispatch(
                     &store,
-                    &format!("/api/stats/{endpoint}?range=all&limit=2000")
+                    &format!("/api/stats/{endpoint}?range=all&limit=2000"),
+                    &[]
                 )
                 .0,
                 200
             );
         }
-        assert_eq!(server::dispatch(&store, "/api/stats/traces/99999").0, 404);
-        assert_eq!(server::dispatch(&store, "/api/stats/traces/0").0, 400);
         assert_eq!(
-            server::dispatch(&store, "/api/stats/traces/1?file=/tmp/private").0,
+            server::dispatch(&store, "/api/stats/traces/99999", &[]).0,
+            404
+        );
+        assert_eq!(server::dispatch(&store, "/api/stats/traces/0", &[]).0, 400);
+        assert_eq!(
+            server::dispatch(&store, "/api/stats/traces/1?file=/tmp/private", &[]).0,
             400
         );
     }
@@ -1509,7 +1632,7 @@ providers:
         for endpoint in ["models", "providers", "costs", "projects", "tools"] {
             for range in ["1h", "24h", "7d", "30d", "90d", "all"] {
                 let (code, _, body) =
-                    server::dispatch(&store, &format!("/api/stats/{endpoint}?range={range}"));
+                    server::dispatch(&store, &format!("/api/stats/{endpoint}?range={range}"), &[]);
                 assert_eq!(code, 200);
                 assert!(!body.contains("private-output"));
                 if endpoint != "projects" {
@@ -1532,7 +1655,7 @@ providers:
                 "unexpected=1",
             ] {
                 assert_eq!(
-                    server::dispatch(&store, &format!("/api/stats/{endpoint}?{query}")).0,
+                    server::dispatch(&store, &format!("/api/stats/{endpoint}?{query}"), &[]).0,
                     400
                 );
             }
@@ -1673,19 +1796,22 @@ providers:
             "/api/stats/requests/not-a-number",
             "/api/stats/requests?foo=bar",
         ] {
-            assert_eq!(server::dispatch(&store, path).0, 400, "{path}");
+            assert_eq!(server::dispatch(&store, path, &[]).0, 400, "{path}");
         }
         for path in [
             "/api/stats/overview?range=all",
             "/api/stats/requests?range=all&limit=500",
         ] {
-            let (status, _, body) = server::dispatch(&store, path);
+            let (status, _, body) = server::dispatch(&store, path, &[]);
             assert_eq!(status, 200);
             assert!(!body.contains("private output"));
         }
-        assert_eq!(server::dispatch(&store, "/api/stats/requests/999").0, 404);
+        assert_eq!(
+            server::dispatch(&store, "/api/stats/requests/999", &[]).0,
+            404
+        );
         assert!(
-            server::dispatch(&store, "/api/stats/requests/1")
+            server::dispatch(&store, "/api/stats/requests/1", &[])
                 .2
                 .contains("private output")
         );

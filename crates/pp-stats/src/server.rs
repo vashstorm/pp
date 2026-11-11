@@ -5,7 +5,12 @@ use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
-pub fn run(host: std::net::IpAddr, port: u16, open: bool) -> Result<()> {
+pub fn run(
+    host: std::net::IpAddr,
+    port: u16,
+    open: bool,
+    mut session_titles: impl FnMut() -> Vec<(String, String)>,
+) -> Result<()> {
     ensure!(
         !host.is_unspecified(),
         "stats host must be a specific IP address, not an unspecified address"
@@ -61,7 +66,12 @@ pub fn run(host: std::net::IpAddr, port: u16, open: bool) -> Result<()> {
         } else if request.url() == "/fonts/InterVariable.woff2" {
             (200, "font/woff2", String::new())
         } else {
-            dispatch(&store, request.url())
+            let titles = if request.url().starts_with("/api/stats/traces") {
+                session_titles()
+            } else {
+                Vec::new()
+            };
+            dispatch(&store, request.url(), &titles)
         };
         let body = if kind == "font/woff2" {
             include_bytes!("fonts/InterVariable.woff2").to_vec()
@@ -102,19 +112,25 @@ fn open_browser(url: String) {
     }
 }
 
-pub(super) fn dispatch(store: &Store, path: &str) -> (u16, &'static str, String) {
+pub(super) fn dispatch(
+    store: &Store,
+    path: &str,
+    titles: &[(String, String)],
+) -> (u16, &'static str, String) {
     match path {
         "/" | "/index.html" => return (200, "text/html", include_str!("index.html").into()),
         "/stats.css" => return (200, "text/css", include_str!("stats.css").into()),
         "/ui.css" => return (200, "text/css", include_str!("ui.css").into()),
+        "/traces.css" => return (200, "text/css", include_str!("traces.css").into()),
         "/stats.js" => return (200, "text/javascript", include_str!("stats.js").into()),
         "/activity.js" => return (200, "text/javascript", include_str!("activity.js").into()),
         "/insights.js" => return (200, "text/javascript", include_str!("insights.js").into()),
+        "/traces.js" => return (200, "text/javascript", include_str!("traces.js").into()),
         "/context.js" => return (200, "text/javascript", include_str!("context.js").into()),
         "/icon.svg" => return (200, "image/svg+xml", include_str!("icon.svg").into()),
         _ => {}
     }
-    match api(store, path) {
+    match api(store, path, titles) {
         Ok(Some(value)) => (200, "application/json", value.to_string()),
         Ok(None) => (
             404,
@@ -140,7 +156,17 @@ enum ApiError {
     Invalid,
     Database,
 }
-fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError> {
+fn api(
+    store: &Store,
+    path: &str,
+    session_titles: &[(String, String)],
+) -> std::result::Result<Option<Value>, ApiError> {
+    let titles = || {
+        session_titles
+            .iter()
+            .map(|(id, title)| (id.as_str(), title.as_str()))
+            .collect::<std::collections::HashMap<_, _>>()
+    };
     let url =
         reqwest::Url::parse(&format!("http://localhost{path}")).map_err(|_| ApiError::Invalid)?;
     if let Some(id) = url.path().strip_prefix("/api/stats/traces/") {
@@ -157,6 +183,7 @@ fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError
                 id,
                 chrono::Utc::now().timestamp_millis(),
                 &super::analytics::Pricing::load(store),
+                &titles(),
             )
             .map_err(|_| ApiError::Database);
     }
@@ -227,7 +254,7 @@ fn api(store: &Store, path: &str) -> std::result::Result<Option<Value>, ApiError
     }
     if url.path() == "/api/stats/traces" {
         return store
-            .traces(range, now, limit, &pricing)
+            .traces(range, now, limit, &pricing, &titles())
             .map(Some)
             .map_err(|_| ApiError::Database);
     }
