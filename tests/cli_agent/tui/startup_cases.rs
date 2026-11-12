@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn tui_stats_slash_opens_browser_and_recovers_from_browser_failure() {
+    let home = tempfile::tempdir().unwrap();
+    let bin = crate::stats::stats_browser_fixture(home.path());
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
+    command.cwd(home.path());
+    command.env("HOME", home.path());
+    command.env("PATH", bin);
+    command.env("PP_STATS_OPEN_EXIT", "23");
+    command.arg("/stats --port 0");
+    let mut pty = Pty::spawn(command);
+    pty.text("could not open browser");
+    let opened = std::fs::read_to_string(home.path().join("opened-url")).unwrap();
+    let url = opened.lines().nth(1).unwrap();
+    let address = url
+        .strip_prefix("http://")
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap();
+    assert_eq!(crate::stats::http(address, "/", address).0, 200);
+    pty.input("\x03");
+    pty.finish();
+    assert!(std::net::TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn tui_stats_slash_serves_without_models_and_preserves_interaction() {
+    let home = tempfile::tempdir().unwrap();
+    let mut pty = Pty::start_with_existing_files(home.path());
+    pty.input("/stats --port 0 --no-open\r");
+    pty.text("pp stats: http://");
+    let contents = pty.parser.screen().contents();
+    let address = contents
+        .split("pp stats: http://")
+        .nth(1)
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap()
+        .trim();
+    assert_eq!(crate::stats::http(address, "/", address).0, 200);
+    pty.input("still editable");
+    pty.draft("still editable");
+    assert!(!home.path().join(".pp/agent/sessions").exists());
+    pty.input("\x03");
+    pty.finish();
+    assert!(std::net::TcpStream::connect(address).is_err());
+}
+
+#[test]
 fn tui_startup_terminal_replies_never_become_input() {
     let fixture = server();
     let home = tempfile::tempdir().unwrap();
@@ -369,6 +419,7 @@ const TIPS_COMMANDS: &[&str] = &[
     "/resume",
     "/Roles",
     "/skills",
+    "/stats",
     "/subagents",
     "/test-ask",
     "/test-bash",

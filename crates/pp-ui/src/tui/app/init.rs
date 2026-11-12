@@ -42,6 +42,7 @@ impl App {
             override_selection: None,
             pending_think: None,
             auth_worker: super::super::auth::Worker::new()?,
+            stats_worker: None,
             auth_panel: None,
             auth_cancellation: None,
             auth_pending: false,

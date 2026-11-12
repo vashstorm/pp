@@ -3,6 +3,7 @@ use crate::tui::{
     SHORTCUTS_TAIL, STEERING_HINT, State, WARNING, WorkerCommand, ask, commands, editor, files,
     model, sessions, skills,
 };
+use anyhow::Context;
 
 impl App {
     pub(in crate::tui) fn show_help(&mut self) {
@@ -371,6 +372,25 @@ impl App {
                 self.clear_input();
                 return false;
             }
+            Some(Command::Stats(arguments)) => {
+                let result = (|| -> Result<()> {
+                    if self.stats_worker.is_none() {
+                        self.stats_worker = Some(crate::stats::Worker::new()?);
+                    }
+                    self.stats_worker
+                        .as_ref()
+                        .context("statistics launcher unavailable")?
+                        .open(arguments)
+                })();
+                match result {
+                    Ok(()) => {
+                        self.remember_input();
+                        self.clear_input();
+                    }
+                    Err(error) => self.notify(Level::Error, format!("{error:#}")),
+                }
+                return false;
+            }
             _ => {}
         }
         if let Some(Command::Shell(command)) = &command {
@@ -570,6 +590,7 @@ impl App {
                 Some(
                     Command::Help
                     | Command::Tips
+                    | Command::Stats(_)
                     | Command::Quit
                     | Command::Skills(_)
                     | Command::Mcp(_)

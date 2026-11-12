@@ -994,6 +994,7 @@ pub fn run_line_mode(
         Err(error) => return stop_cli_lsp(agent.as_ref().ok(), Err(error)),
     };
     let mut initial = initial_command;
+    let mut stats = None;
     let mut prompt_shown = false;
     loop {
         // 启动命令只合成一行：不打印提示符，执行后继续等待真实 stdin。
@@ -1195,6 +1196,24 @@ pub fn run_line_mode(
                 writeln!(stderr, "{}", tips::text())?;
                 continue;
             }
+            Some(commands::Command::Stats(arguments)) => {
+                let result = (|| -> Result<String> {
+                    if stats.is_none() {
+                        stats = Some(crate::stats::Worker::new()?);
+                    }
+                    let worker = stats.as_ref().context("statistics launcher unavailable")?;
+                    worker.open(arguments)?;
+                    worker
+                        .replies
+                        .recv()
+                        .context("statistics launcher stopped")?
+                })();
+                match result {
+                    Ok(message) => writeln!(stderr, "{message}")?,
+                    Err(error) => writeln!(stderr, "error: {error:#}")?,
+                }
+                continue;
+            }
             // 行模式没有会话选择界面；按 ID 恢复仍用启动参数。
             Some(commands::Command::Resume) => {
                 writeln!(
@@ -1333,6 +1352,7 @@ pub fn run_line_mode(
             Some(
                 commands::Command::Help
                 | commands::Command::Tips
+                | commands::Command::Stats(_)
                 | commands::Command::Quit
                 | commands::Command::Skills(_)
                 | commands::Command::Mcp(_)

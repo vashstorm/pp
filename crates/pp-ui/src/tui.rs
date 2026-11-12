@@ -793,6 +793,7 @@ struct App {
     // 切档不是 worker 命令，因此这里的变化绝不同步改写 `state`。
     pending_think: Option<(u64, ThinkLevel)>,
     auth_worker: auth::Worker,
+    stats_worker: Option<crate::stats::Worker>,
     auth_panel: Option<auth::Panel>,
     auth_cancellation: Option<CancellationToken>,
     auth_pending: bool,

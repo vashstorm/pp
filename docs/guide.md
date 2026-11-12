@@ -252,6 +252,7 @@ chmod 600 ~/.pp/agent/models.yml
 | 命令 | 用途 | 模式 |
 |---|---|---|
 | `/help`、`/tips` | 查看完整帮助或全部操作提示 | TUI / 行模式 |
+| `/stats [--host IP] [--port PORT] [--no-open]` | 后台启动本地统计服务并打开浏览器，等同于 `pp stats` | TUI / 行模式 |
 | `/model [provider/model]` | 选择模型，保留历史 | TUI / 行模式 |
 | `/Roles`（或 `/roles`） | 独立配置七个模型 Role 的 model 和 effort，不改变当前模型 | 仅 TUI |
 | `/effort [none\|low\|medium\|high\|xhigh\|max]` | 查看或切换当前模型允许的思考档位，`/think` 为别名 | TUI / 行模式 |
@@ -992,6 +993,8 @@ pp stats
 pp stats --port 4000
 pp stats --host 192.168.1.20
 ```
+
+在已经启动的 pp 中，输入 `/stats` 可在后台启动同一服务并打开浏览器，继续使用当前会话。支持相同的 `--host`、`--port` 和 `--no-open` 参数；重复执行相同命令会复用服务，改变参数则重启。退出 pp 时服务随之停止。TUI 和行模式均支持，无需模型配置，不发送模型请求，也不写入会话正文。
 
 默认访问 [http://127.0.0.1:3848/#/overview?range=24h](http://127.0.0.1:3848/#/overview?range=24h)。服务在前台运行，打印网址；仅在交互终端自动使用默认浏览器打开页面，输出被重定向或非终端环境（脚本、CI、agent shell）只打印网址、不打开浏览器，Ctrl + C 退出；无需模型配置。使用 `pp stats --no-open` 可在交互终端也仅启动服务。macOS 使用 `open`，Linux 使用 `xdg-open`；打开失败时提示手动访问，服务继续运行。`stats` 与 `-p`、`--resume`、`--continue` 互斥，`--port 0` 可让系统分配可用端口，自动打开的网址使用实际端口。`--host <IP>` 可指定本机的 IPv4 或 IPv6 地址；默认仅监听 `127.0.0.1`，不接受 `0.0.0.0` 或 `::` 通配地址。需要局域网访问时，将命令示例中的 `192.168.1.20` 替换为本机实际局域网 IP，其他设备访问终端打印的网址。Host／Origin 校验仅接受绑定的地址；服务没有认证，能够访问该地址的用户均可读取统计与请求详情，请仅在可信网络中使用。
 

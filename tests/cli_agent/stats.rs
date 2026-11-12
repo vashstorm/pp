@@ -2,6 +2,54 @@ use super::*;
 use rusqlite::Connection;
 use std::fs;
 
+#[test]
+fn stats_slash_starts_reuses_and_stops_server_without_models() {
+    use super::streaming::{LiveCli, Pipe};
+    let home = tempfile::tempdir().unwrap();
+    let bin = stats_browser_fixture(home.path());
+    let mut cli = LiveCli::new(Cli::start_env(
+        home.path(),
+        home.path(),
+        &[],
+        &[("PATH", bin.to_str().unwrap())],
+    ));
+    cli.wait_for(Pipe::Stderr, "Configuration unavailable");
+    cli.input("/stats --port 65536 --no-open\n");
+    cli.wait_for(Pipe::Stderr, "could not start pp stats");
+    cli.input("/stats --port 0\n");
+    cli.wait_for(Pipe::Stderr, "/#/overview?range=24h");
+    let text = cli.text(Pipe::Stderr);
+    let url = format!(
+        "http://{}",
+        text.split("pp stats: http://")
+            .nth(1)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+    );
+    let address = url
+        .strip_prefix("http://")
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap();
+    let (status, body) = http(address, "/api/stats/overview?range=24h", address);
+    assert_eq!(status, 200);
+    assert!(serde_json::from_str::<Value>(&body).is_ok());
+    assert_eq!(http(address, "/", address).0, 200);
+    cli.input("/stats --port 0\n/help\n");
+    cli.wait_for(Pipe::Stderr, "Open the local statistics page");
+    assert_eq!(cli.text(Pipe::Stderr).matches(&url).count(), 2);
+    assert!(!home.path().join(".pp/agent/sessions").exists());
+    assert!(!home.path().join("opened-url").exists());
+    cli.input("/quit\n");
+    let output = cli.finish();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(std::net::TcpStream::connect(address).is_err());
+}
+
 pub(super) fn database(home: &std::path::Path) -> Connection {
     Connection::open(home.join(".pp/stats/stats.db")).unwrap()
 }
@@ -802,7 +850,7 @@ fn stats_server_address(mut cli: Cli) -> (Cli, String) {
 }
 
 #[cfg(unix)]
-fn stats_browser_fixture(dir: &std::path::Path) -> std::path::PathBuf {
+pub(super) fn stats_browser_fixture(dir: &std::path::Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = dir.join("bin");
     std::fs::create_dir(&bin).unwrap();

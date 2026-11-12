@@ -146,6 +146,7 @@ All 13 `/test-*` commands use an embedded loopback-only Mock AI Server in dev/te
 
 | Command | Purpose |
 | --- | --- |
+| `/stats [--host IP] [--port PORT] [--no-open]` | Open the local statistics page, using the same server as `pp stats` |
 | `/model` (`/models`), `/effort` | Switch models and reasoning levels while keeping history |
 | `/init` | Create or update the current project's `AGENTS.md` |
 | `/plan [prompt]` | Toggle Plan mode standby; view the plan or send a planning task immediately; execute after approval (TUI only) |
@@ -211,6 +212,8 @@ Sessions are saved automatically in `~/.pp/agent/sessions/`. `pp -r` opens the r
 pp -r [SESSION_ID]
 pp stats
 ```
+
+Within an interactive session, `/stats` starts the same server in the background and opens the page in your browser. It accepts `--host`, `--port`, and `--no-open`. Repeating the same command reuses the server; changing its options restarts it. The server stops when you exit pp. This command also works without model configuration.
 
 `pp stats` automatically opens the statistics page in your default browser, served at [127.0.0.1:3848](http://127.0.0.1:3848) by default; piped or non-terminal contexts (scripts, CI, agent shells) only print the URL. Use `pp stats --no-open` to only start the server. To allow LAN access, explicitly bind a local LAN address with `pp stats --host 192.168.1.20`; replace the example with your own address. The server has no authentication, so anyone who can reach it can read statistics and request details; use it only on trusted networks. No model configuration, Node, or CDN is required at runtime. Each active session is held exclusively by one pp process through `~/.pp/run/sessions/SESSION_ID.lock`, including while waiting for input. Run `pp gc [DAYS]` to manually remove logs, statistics, and unused session lock files older than the given number of days (default 90); original sessions and configuration are kept.
 

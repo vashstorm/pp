@@ -74,6 +74,17 @@ impl App {
         changed |= self.poll_history();
         changed |= self.poll_model_control();
         changed |= self.receive_auth();
+        while let Some(reply) = self
+            .stats_worker
+            .as_ref()
+            .and_then(|worker| worker.replies.try_recv().ok())
+        {
+            match reply {
+                Ok(message) => self.append("Stats", &message),
+                Err(error) => self.notify(Level::Error, format!("{error:#}")),
+            }
+            changed = true;
+        }
         while let Ok(reply) = self.skill_worker.replies.try_recv() {
             self.skills_pending = false;
             match reply.result {

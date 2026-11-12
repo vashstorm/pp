@@ -44,6 +44,11 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Show startup tips without recording session history",
     },
     CommandSpec {
+        name: "/stats",
+        usage: "/stats [--host IP] [--port PORT] [--no-open]",
+        description: "Open the local statistics page (same as pp stats)",
+    },
+    CommandSpec {
         name: "/login",
         usage: "/login",
         description: "Log in to a subscription provider (TUI)",
@@ -223,6 +228,7 @@ pub(crate) enum SkillCommand<'a> {
 pub(crate) enum Command<'a> {
     Help,
     Tips,
+    Stats(&'a str),
     New,
     Compact,
     Resume,
@@ -271,6 +277,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
     let command = match name {
         "/help" => Command::Help,
         "/tips" => Command::Tips,
+        "/stats" => return Ok(Some(Command::Stats(argument))),
         "/new" => Command::New,
         "/init" => Command::Prompt(pp_runtime::project_instructions::INIT_PROMPT.to_owned()),
         "/compact" => Command::Compact,
@@ -531,6 +538,11 @@ mod tests {
         for (input, expected) in [
             (" /help \n", Command::Help),
             (" /tips ", Command::Tips),
+            (" /stats ", Command::Stats("")),
+            (
+                "/stats --port 0 --no-open",
+                Command::Stats("--port 0 --no-open"),
+            ),
             ("\t/new ", Command::New),
             (" /compact ", Command::Compact),
             (
