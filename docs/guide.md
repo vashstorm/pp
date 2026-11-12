@@ -769,6 +769,42 @@ cargo nextest run --locked --workspace -E 'test(mcp_) | test(slash_mcp)'
 
 `lsp` 是语义信息源，提供 `definition`、`type_definition`、`implementation`、`references`、`hover`、`symbols`、`diagnostics`、`rename`、`rename_file`、`code_actions`、`format`、`status`、`reload`、`capabilities`。AI 获取建议后重新读取文件，用 edit/write 执行文本修改，用 bash 移动文件或运行检查，再查询诊断验证。
 
+按任务选择动作。下表为 `lsp` 工具的 JSON 参数示例，路径、行号和符号须替换为实际代码中的值；导航位置可从符号结果或文件读取中获得。
+
+| 使用场景 | 调用示例 |
+| --- | --- |
+| 只知道符号名，查找所在文件 | `{"action":"symbols","file":"*","query":"ModelCatalog"}` |
+| 查看某个文件的符号大纲 | `{"action":"symbols","file":"src/main.rs"}` |
+| 从调用位置跳到声明 | `{"action":"definition","file":"src/main.rs","line":42,"symbol":"run"}` |
+| 修改接口前检查引用和影响范围 | `{"action":"references","file":"src/main.rs","line":42,"symbol":"run"}` |
+| 查看变量或表达式的类型定义 | `{"action":"type_definition","file":"src/main.rs","line":42,"symbol":"agent"}` |
+| 查找 trait／接口的实现 | `{"action":"implementation","file":"src/lib.rs","line":10,"symbol":"Service"}` |
+| 查看类型签名或 API 文档 | `{"action":"hover","file":"src/main.rs","line":42,"symbol":"run"}` |
+| 排查或验证局部修改的诊断 | `{"action":"diagnostics","file":"src/**/*.rs"}` |
+| 获取符号重命名建议 | `{"action":"rename","file":"src/main.rs","line":42,"symbol":"run","new_name":"run_agent"}` |
+| 获取移动文件后的引用更新建议 | `{"action":"rename_file","file":"src/old.rs","new_name":"src/new.rs"}` |
+| 列出当前位置的快速修复 | `{"action":"code_actions","file":"src/main.rs","line":42,"query":"quickfix"}` |
+| 选择并解析刚才列表中的第一个建议 | `{"action":"code_actions","file":"src/main.rs","line":42,"query":"quickfix","selection":"0"}` |
+| 获取文件格式化建议 | `{"action":"format","file":"src/main.rs"}` |
+| 排查服务器发现与连接状态 | `{"action":"status"}` |
+| 查询覆盖某个文件的服务器能力 | `{"action":"capabilities","file":"src/main.rs"}` |
+| 修复配置或服务器故障后重新连接 | `{"action":"reload","file":"src/main.rs"}` |
+
+工具参数说明：
+
+| 参数 | 含义与适用范围 |
+| --- | --- |
+| `action` | 必填，选择上述动作。导航、诊断与修改建议均只返回信息；`reload` 管理服务器连接。 |
+| `file` | 文件路径默认相对启动目录，也接受绝对路径。导航、符号、诊断和修改建议动作必须提供。`symbols` 的 `"*"` 表示工作区符号搜索，必须同时提供非空 `query`；具体文件表示完整大纲，不按 `query` 筛选。`diagnostics` 接受具体文件或有界 glob（最多 20 个文件），拒绝 `"*"`。`rename_file` 接受现有文件或目录。`capabilities`／`reload` 可用具体文件筛选服务器，省略或传 `"*"` 时覆盖所有已发现服务器；`status` 无需此参数。 |
+| `line` | 从 1 开始的源码行号，用于导航、符号重命名和 code action；省略时为 1，实际查询应提供已核对的行号。 |
+| `symbol` | 在指定行定位目标文本，不是全工作区搜索。`run#2` 表示该行第二次出现的 `run`，出现次数从 1 开始。位置查询应同时提供 `line` 和 `symbol`；项目感知的 Rust 定义／引用／重命名查询在显式传入 `line` 时要求 `symbol`。省略时取该行首个非空白字符。 |
+| `query` | `symbols` 工作区搜索的非空查询词；或 `code_actions` 的动作类型筛选，如 `quickfix`、`refactor`、`source.organizeImports`。按建议标题选择应使用 `selection`。 |
+| `new_name` | `rename` 的新符号名，或 `rename_file` 的目标文件／目录路径；目标路径相对启动目录，也可使用绝对路径。建议仍需经过普通工具执行。 |
+| `selection` | 仅用于 `code_actions`，传字符串形式的从 0 开始的序号（如 `"0"`），或标题子串。省略时列出建议；选择时保持原来的文件、行、符号与类型筛选一致。 |
+| `timeout` | 可选，总调用等待预算，单位秒，范围 5..=300，包含服务器启动／索引等待。省略时普通动作使用至少 20 秒的预算，diagnostics 使用配置的 `requestTimeout`。 |
+
+代码探索遵循项目与技能的工具选择规则：适用的专业 MCP 优先，之后优先使用 LSP 处理语义问题；字面文本与路径发现用 `rg`／`glob`。LSP 报告不可用或覆盖不足时，说明原因后使用搜索和读取补齐。首次实际查询会按需启动服务器，`status` 中的 `not started` 是懒启动的正常状态，无需先 `reload`；`capabilities` 会启动服务器以检查能力。Plan／Review 可以查询建议，只有 Execute 可以 `reload`，修改操作仍受原有工具门禁约束。
+
 行为设置在 `~/.pp/agent/settings.yml`：
 
 ```yaml
