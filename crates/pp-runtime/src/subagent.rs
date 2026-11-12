@@ -75,6 +75,21 @@ where
         .map(Some)
         .map_err(D::Error::custom)
 }
+
+/// 子 Agent 每次已结算请求累加到 run 费用上。
+///
+/// 计价只走 [`pp_config::models::ModelCost::calculate`]：未知缓存、缺费率或非有限金额
+/// 一律让整段金额保持未知，不按零补齐。
+fn accumulate_cost(
+    total: Option<f64>,
+    price: Option<pp_config::models::ModelCost>,
+    usage: pp_core::context::TokenUsage,
+) -> Option<f64> {
+    let cost = price?.calculate(usage)?.total();
+    let total = total? + cost;
+    total.is_finite().then_some(total)
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Record {
     pub id: String,
@@ -1790,26 +1805,7 @@ fn worker(
                             .agents
                             .get(&record.id)
                             .and_then(|r| r.spec.cost);
-                        cost = cost.zip(current_price).and_then(|(total, price)| {
-                            let cached = usage.cached_tokens?;
-                            let written = usage.cache_write_tokens.unwrap_or(0);
-                            let uncached = usage
-                                .input_tokens
-                                .checked_sub(cached)?
-                                .checked_sub(written)?;
-                            Some(
-                                total
-                                    + (uncached as f64 * price.input
-                                        + cached as f64 * price.cache_read
-                                        + if written == 0 {
-                                            0.0
-                                        } else {
-                                            written as f64 * price.cache_write?
-                                        }
-                                        + usage.output_tokens as f64 * price.output)
-                                        / 1e6,
-                            )
-                        });
+                        cost = accumulate_cost(cost, current_price, *usage);
                     }
                     AgentEvent::ModelRequestFinished { usage: None, .. } => cost = None,
                     _ => {}

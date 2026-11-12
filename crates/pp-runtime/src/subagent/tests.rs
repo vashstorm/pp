@@ -1394,3 +1394,76 @@ fn persisted_cost_omits_unknown_cache_write_and_round_trips() {
         2.5
     );
 }
+
+#[test]
+fn run_cost_follows_the_authoritative_unknown_cache_rules() {
+    use pp_core::context::TokenUsage;
+    let priced = pp_config::models::ModelCost {
+        input: 2.0,
+        cache_read: 0.2,
+        cache_write: Some(3.0),
+        output: 8.0,
+    };
+    let no_write_price = pp_config::models::ModelCost {
+        cache_write: None,
+        ..priced
+    };
+    let usage = TokenUsage {
+        input_tokens: 1000,
+        output_tokens: 100,
+        cached_tokens: Some(200),
+        cache_write_tokens: Some(100),
+    };
+    // 700 未缓存 + 200 缓存读 + 100 缓存写 + 100 输出。
+    let total = accumulate_cost(Some(0.001), Some(priced), usage).unwrap();
+    assert!((total - 0.00354).abs() < 1e-12);
+    // 未知缓存读、缺费率、已未知的小计都不能被补零。
+    assert!(
+        accumulate_cost(
+            Some(0.0),
+            Some(priced),
+            TokenUsage {
+                cached_tokens: None,
+                ..usage
+            }
+        )
+        .is_none()
+    );
+    assert!(accumulate_cost(Some(0.0), None, usage).is_none());
+    assert!(accumulate_cost(None, Some(priced), usage).is_none());
+    // 有独立写入价时未知写入量仍未定价；无写入价的费率把写入并入输入价。
+    assert!(
+        accumulate_cost(
+            Some(0.0),
+            Some(priced),
+            TokenUsage {
+                cache_write_tokens: None,
+                ..usage
+            }
+        )
+        .is_none()
+    );
+    // 无写入价时未知写入量按 0 计：其余 800 输入按输入价与缓存读价计算。
+    let merged = accumulate_cost(
+        Some(0.0),
+        Some(no_write_price),
+        TokenUsage {
+            cache_write_tokens: None,
+            ..usage
+        },
+    )
+    .unwrap();
+    assert!((merged - 0.00244).abs() < 1e-12);
+    // 缓存读写超过总输入时检查溢出，不产生负数金额。
+    assert!(
+        accumulate_cost(
+            Some(0.0),
+            Some(priced),
+            TokenUsage {
+                input_tokens: 10,
+                ..usage
+            }
+        )
+        .is_none()
+    );
+}
