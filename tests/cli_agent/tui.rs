@@ -728,7 +728,7 @@ fn notification_bounds(
 }
 
 const USER_BACKGROUND: vt100::Color = vt100::Color::Rgb(48, 42, 63);
-const ASSISTANT_BACKGROUND: vt100::Color = vt100::Color::Rgb(35, 39, 50);
+const ASSISTANT_BACKGROUND: vt100::Color = vt100::Color::Rgb(40, 42, 53);
 
 fn background_color(screen: &vt100::Screen, text: &str) -> vt100::Color {
     for row in 0..100 {

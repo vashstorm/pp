@@ -710,7 +710,7 @@ fn thinking_and_assistant_share_background_but_not_foreground() {
     });
 
     let buffer = render(&mut transcript, 60, 4);
-    assert_eq!(buffer[(2, 0)].fg, palette::TEXT);
+    assert_eq!(buffer[(2, 0)].fg, palette::MD_TEXT);
     assert_eq!(buffer[(2, 0)].bg, ASSISTANT_BACKGROUND);
     assert_eq!(buffer[(2, 2)].fg, MUTED_TEXT);
     assert_eq!(buffer[(2, 2)].bg, ASSISTANT_BACKGROUND);
@@ -1297,13 +1297,13 @@ fn thinking_renders_markdown_with_muted_base_and_semantic_highlights() {
     let plain = cell_of("plain");
     assert_eq!(buffer[plain].fg, MUTED_TEXT);
     assert_eq!(buffer[plain].bg, ASSISTANT_BACKGROUND);
-    // 粗体叠加 BOLD modifier 与 ADDED 绿色语义高亮。
+    // 粗体叠加 BOLD modifier 与紫色语义高亮。
     let bold = cell_of("bold");
-    assert_eq!(buffer[bold].fg, palette::ADDED);
+    assert_eq!(buffer[bold].fg, palette::MD_STRONG);
     assert!(buffer[bold].modifier.contains(Modifier::BOLD));
-    // 行内代码与粗体一样使用 ADDED 绿色语义高亮。
+    // 行内代码使用独立的绿色语义高亮。
     let code = cell_of("code");
-    assert_eq!(buffer[code].fg, palette::ADDED);
+    assert_eq!(buffer[code].fg, palette::MD_CODE);
     assert_eq!(buffer[code].bg, ASSISTANT_BACKGROUND);
     // 围栏代码块按 syntect 语义高亮，`let` 为 keyword 色。思考正文的行级灰
     // 基调被语义 span 覆盖，与粗体/行内代码的约定一致。
@@ -1343,7 +1343,7 @@ fn thinking_markdown_reparses_across_streaming_deltas() {
         .expect("bold rendered");
     let column = line.find("bold").expect("bold rendered") as u16;
     let row = row as u16;
-    assert_eq!(buffer[(column, row)].fg, palette::ADDED);
+    assert_eq!(buffer[(column, row)].fg, palette::MD_STRONG);
     assert!(buffer[(column, row)].modifier.contains(Modifier::BOLD));
     assert!(text.contains("tail"));
 }

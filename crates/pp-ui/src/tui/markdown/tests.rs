@@ -36,14 +36,14 @@ fn span_fg(line: &Line<'_>, needle: &str) -> Option<Color> {
 }
 
 #[test]
-fn heading_strips_marker_and_uses_accent_bold() {
+fn heading_strips_marker_and_uses_yellow_bold() {
     let ls = layout("# Title", 40);
     assert_eq!(texts(&ls), vec!["Title"]);
-    assert_eq!(fg(&ls[0], 0), Some(ACCENT));
+    assert_eq!(fg(&ls[0], 0), Some(MD_HEADING));
     assert!(has_modifier(&ls[0], 0, Modifier::BOLD));
     let setext = layout("Title\n=====", 40);
     assert_eq!(texts(&setext), vec!["Title"]);
-    assert_eq!(fg(&setext[0], 0), Some(ACCENT));
+    assert_eq!(fg(&setext[0], 0), Some(MD_HEADING));
 }
 
 #[test]
@@ -87,11 +87,11 @@ fn inline_styles_use_modifiers_and_palette() {
         vec!["bold", " and ", "em", " and ", "gone", " and ", "code"]
     );
     assert!(has_modifier(&ls[0], 0, Modifier::BOLD));
-    assert_eq!(fg(&ls[0], 0), Some(ADDED));
+    assert_eq!(fg(&ls[0], 0), Some(MD_STRONG));
     assert!(has_modifier(&ls[0], 2, Modifier::ITALIC));
     assert!(has_modifier(&ls[0], 4, Modifier::CROSSED_OUT));
-    // 行内代码与粗体同色（ADDED 绿），但不叠加 BOLD modifier。
-    assert_eq!(fg(&ls[0], 6), Some(ADDED));
+    // 行内代码为绿色，粗体为紫色，两者分别突出。
+    assert_eq!(fg(&ls[0], 6), Some(MD_CODE));
     assert_eq!(fg(&ls[0], 1), None);
 }
 
@@ -242,7 +242,7 @@ fn soft_break_joins_with_space_hard_break_splits() {
 fn unordered_list_marker_with_hanging_indent() {
     let ls = layout("- alpha beta gamma\n- next", 12);
     assert_eq!(texts(&ls), vec!["• alpha beta", "  gamma", "• next"]);
-    assert_eq!(fg(&ls[0], 0), Some(MUTED));
+    assert_eq!(fg(&ls[0], 0), Some(MD_BULLET));
     assert_eq!(ls[0].spans[0].content, "• ");
     assert_eq!(ls[1].spans[0].content, "  ");
 }
@@ -259,8 +259,8 @@ fn ordered_list_uses_source_numbers_and_hangs() {
 fn task_list_markers() {
     let ls = layout("- [x] done\n- [ ] todo", 20);
     assert_eq!(texts(&ls), vec!["☑ done", "☐ todo"]);
-    assert_eq!(fg(&ls[0], 0), Some(MUTED));
-    assert_eq!(fg(&ls[1], 0), Some(MUTED));
+    assert_eq!(fg(&ls[0], 0), Some(MD_BULLET));
+    assert_eq!(fg(&ls[1], 0), Some(MD_BULLET));
 }
 
 #[test]
@@ -356,19 +356,25 @@ fn streaming_table_defers_only_the_unterminated_tail() {
 
 #[test]
 fn tables_shrink_before_vertical_fallback_and_keep_all_cells() {
-    let lines = layout("| aaaa | bbbb |\n|---|---|\n| cccc | dddd |", 10);
-    assert!(lines.iter().all(|line| line.width() <= 10));
-    let rows = texts(&lines);
-    assert_eq!(rows[0].trim_end(), "aaa │ bbbb");
-    assert!(rows[1].starts_with('a'));
-    assert!(rows.iter().any(|row| row.contains('┼')));
-    assert!(rows.iter().any(|row| row.starts_with("ccc │ dddd")));
-    assert!(rows.last().unwrap().starts_with('c'));
+    let lines = layout("| aaaa | bbbb |\n|---|---|\n| cccc | dddd |", 14);
+    assert!(lines.iter().all(|line| line.width() == 14));
+    assert_eq!(
+        texts(&lines),
+        vec![
+            "┌─────┬──────┐",
+            "│ aaa │ bbbb │",
+            "│ a   │      │",
+            "├─────┼──────┤",
+            "│ ccc │ dddd │",
+            "│ c   │      │",
+            "└─────┴──────┘",
+        ]
+    );
 }
 
 #[test]
 fn vertical_tables_keep_long_headers_empty_cells_and_unicode_at_narrow_widths() {
-    for width in 1..9 {
+    for width in 1..13 {
         let lines = layout("| | 中文 |\n|---|---|\n| | é🙂 |", width);
         assert!(
             lines
@@ -387,10 +393,56 @@ fn vertical_tables_keep_long_headers_empty_cells_and_unicode_at_narrow_widths() 
 #[test]
 fn tables_align_cells_without_changing_their_content() {
     let lines = layout("| a | b |\n|:---:|---:|\n| x | y |", 40);
+    assert_eq!(
+        texts(&lines),
+        vec![
+            "┌─────┬─────┐",
+            "│  a  │   b │",
+            "├─────┼─────┤",
+            "│  x  │   y │",
+            "└─────┴─────┘",
+        ]
+    );
+    assert!(lines.iter().all(|line| line.width() == 13));
+    assert_eq!(span_fg(&lines[1], "a"), Some(MD_HEADING));
+    assert_eq!(span_fg(&lines[1], "b"), Some(MD_HEADING));
+    assert_eq!(span_fg(&lines[1], "│"), Some(MD_BORDER));
+    assert_eq!(span_fg(&lines[2], "┼"), Some(MD_BORDER));
+    assert_eq!(span_fg(&lines[3], "x"), None);
+}
+
+#[test]
+fn tables_frame_every_row_and_keep_unicode_and_inline_styles_when_wrapping() {
+    let source = "| 方案 | 做法 |\n|---|---|\n| **推荐** | `todo`中文é🙂 |\n| B | 下一行 |";
+    let lines = layout(source, 15);
+    assert!(lines.iter().all(|line| line.width() == 15));
     let rows = texts(&lines);
-    assert!(rows[0].starts_with(" a ") && rows[0].ends_with("  b"));
-    assert!(rows[2].starts_with(" x ") && rows[2].ends_with("  y"));
-    assert!(lines.iter().all(|line| line.width() == 9));
+    assert_eq!(rows.first().unwrap(), "┌──────┬──────┐");
+    assert_eq!(rows.last().unwrap(), "└──────┴──────┘");
+    assert_eq!(rows.iter().filter(|line| line.starts_with('├')).count(), 2);
+    for line in rows.iter().filter(|line| line.starts_with('│')) {
+        assert!(line.ends_with('│'));
+        assert_eq!(line.matches('│').count(), 3);
+    }
+    let content: String = rows
+        .iter()
+        .filter(|line| line.starts_with('│'))
+        .map(|line| line.replace(['│', ' '], ""))
+        .collect();
+    assert_eq!(content, "方案做法推荐todo中文é🙂B下一行");
+    assert!(
+        lines
+            .iter()
+            .any(|line| span_fg(line, "推荐") == Some(MD_STRONG))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| span_fg(line, "todo") == Some(MD_CODE))
+    );
+
+    let header_only = texts(&layout("| A |\n|---|", 7));
+    assert_eq!(header_only, ["┌─────┐", "│ A   │", "└─────┘"]);
 }
 
 #[test]

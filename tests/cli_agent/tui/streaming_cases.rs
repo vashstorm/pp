@@ -51,7 +51,7 @@ fn thinking_and_bash_cards_stream_with_default_style_and_expand_without_editing_
         );
         assert_eq!(
             pty.parser.screen().cell(row, 2).unwrap().bgcolor(),
-            vt100::Color::Rgb(35, 39, 50)
+            vt100::Color::Rgb(40, 42, 53)
         );
         if protocol == "completion" {
             streaming_delta(&mut stream, protocol, "inspected");

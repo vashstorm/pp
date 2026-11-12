@@ -103,7 +103,7 @@ fn tui_exit_keeps_conversation_on_normal_screen() {
         pty.text("retained-answer");
         assert_eq!(
             label_color(pty.parser.screen(), "retained-answer"),
-            vt100::Color::Rgb(250, 250, 250)
+            vt100::Color::Rgb(248, 248, 243)
         );
         pty.ready();
         let id = resume_boundary_session_ids(dir.path()).pop().unwrap();

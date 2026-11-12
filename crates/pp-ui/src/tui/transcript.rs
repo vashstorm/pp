@@ -60,7 +60,7 @@ const BASH_BACKGROUND: Color = palette::TOOL_BG;
 const BASH_BORDER: Color = palette::TOOL_BORDER;
 const MUTED_TEXT: Color = Color::Rgb(110, 117, 129);
 const USER_BACKGROUND: Color = Color::Rgb(48, 42, 63);
-const ASSISTANT_BACKGROUND: Color = Color::Rgb(35, 39, 50);
+const ASSISTANT_BACKGROUND: Color = palette::MD_BG;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EntryKind {

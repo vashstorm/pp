@@ -403,8 +403,13 @@ impl Transcript {
                         area.width - padding,
                         height,
                     );
+                    let text_color = if entry.kind == EntryKind::Assistant {
+                        palette::MD_TEXT
+                    } else {
+                        palette::TEXT
+                    };
                     let paragraph =
-                        Paragraph::new(entry.line(line)).style(Style::default().fg(palette::TEXT));
+                        Paragraph::new(entry.line(line)).style(Style::default().fg(text_color));
                     let paragraph = if matches!(line.content, LayoutContent::Source { .. }) {
                         paragraph.wrap(Wrap { trim: false })
                     } else {

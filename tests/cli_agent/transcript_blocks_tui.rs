@@ -169,10 +169,14 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
                     });
                     let screen = pty.parser.screen();
                     assert!(markdown_blocks_bold(screen, "bold word"));
-                    // 行内代码与粗体同色：ADDED 绿。
+                    assert_eq!(
+                        markdown_blocks_fg(screen, "bold word", 0),
+                        vt100::Color::Rgb(174, 72, 182)
+                    );
+                    // 行内代码使用截图中的绿色，与紫色粗体区分。
                     assert_eq!(
                         markdown_blocks_fg(screen, "inline code", 0),
-                        vt100::Color::Rgb(137, 210, 129)
+                        vt100::Color::Rgb(86, 185, 127)
                     );
                     assert_eq!(
                         markdown_blocks_fg(screen, "let x = 1;", 0),
@@ -186,6 +190,14 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
                             && text.contains("quoted text") && text.contains("─┼─")
                     });
                     assert!(markdown_blocks_bold(pty.parser.screen(), "cell bold"));
+                    assert_eq!(
+                        markdown_blocks_fg(pty.parser.screen(), "Name", 0),
+                        vt100::Color::Rgb(229, 229, 77)
+                    );
+                    assert_eq!(
+                        markdown_blocks_fg(pty.parser.screen(), "─┼─", 0),
+                        vt100::Color::Rgb(248, 248, 243)
+                    );
                 }
             }
         }
@@ -263,6 +275,10 @@ fn transcript_blocks_markdown_streams_staged_blocks_and_styles() {
         {
             let screen = pty.parser.screen();
             assert!(markdown_blocks_bold(screen, "Fixture Title"));
+            assert_eq!(
+                markdown_blocks_fg(screen, "Fixture Title", 0),
+                vt100::Color::Rgb(229, 229, 77)
+            );
             // 未闭合的 ** 按字面呈现，不加粗。
             assert!(!markdown_blocks_bold(screen, "**bold"));
         }

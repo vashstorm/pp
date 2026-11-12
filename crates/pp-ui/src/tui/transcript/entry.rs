@@ -11,7 +11,7 @@ impl EntryKind {
     pub(super) fn color(self) -> Color {
         match self {
             Self::User => Color::Blue,
-            Self::Assistant => Color::Reset,
+            Self::Assistant => palette::MD_TEXT,
             Self::Bash => Color::Yellow,
             Self::Think | Self::Activity => MUTED_TEXT,
             Self::Rg => Color::Cyan,

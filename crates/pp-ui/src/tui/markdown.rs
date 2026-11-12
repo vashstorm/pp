@@ -20,12 +20,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::transcript_style::ACCENT;
-use super::transcript_style::ADDED;
 use super::transcript_style::CODE_BLOCK;
 use super::transcript_style::DIM;
 use super::transcript_style::LINK;
 use super::transcript_style::MUTED;
+use super::transcript_style::{MD_BORDER, MD_BULLET, MD_CODE, MD_HEADING, MD_STRONG};
 use pp_core::text::display_text;
 
 mod highlight;
@@ -40,8 +39,6 @@ pub(super) fn highlight_context(id: u64, epoch: u64) {
 
 const TAB_STOP: usize = 4;
 const CELL_MIN_WIDTH: usize = 3;
-const CELL_SEPARATOR: &str = " │ ";
-const CELL_SEPARATOR_WIDTH: usize = 3;
 
 pub(super) struct MarkdownDocument {
     blocks: Vec<Block>,
@@ -385,6 +382,7 @@ struct Builder<'a> {
     item_states: Vec<(Option<Span<'static>>, bool)>,
     code: Option<CodeState>,
     table: Option<TableState>,
+    table_head: bool,
     in_cell: bool,
     cell: Cell,
     html: Option<Vec<String>>,
@@ -415,6 +413,7 @@ impl<'a> Builder<'a> {
             item_states: Vec::new(),
             code: None,
             table: None,
+            table_head: false,
             in_cell: false,
             cell: Vec::new(),
             html: None,
@@ -437,12 +436,18 @@ impl<'a> Builder<'a> {
                 st.fg(super::transcript_style::READ_ACCENT)
                     .add_modifier(Modifier::UNDERLINED)
             } else {
-                st.fg(ACCENT).add_modifier(Modifier::BOLD)
+                st.fg(MD_HEADING).add_modifier(Modifier::BOLD)
             };
+        } else if self.table_head {
+            st = st.fg(if self.instruction {
+                super::transcript_style::READ_ACCENT
+            } else {
+                MD_HEADING
+            });
         }
         if self.strong > 0 {
             st = st.add_modifier(Modifier::BOLD);
-            if let Some(fg) = self.emphasis_fg() {
+            if let Some(fg) = self.emphasis_fg(MD_STRONG) {
                 st = st.fg(fg);
             }
         }
@@ -458,23 +463,21 @@ impl<'a> Builder<'a> {
         st
     }
 
-    /// `<strong>` 与内嵌代码共用的强调前景：指令卡片用 READ_ACCENT，标题沿用标题
-    /// 色（`None`），普通正文用 ADDED 绿。
-    fn emphasis_fg(&self) -> Option<Color> {
+    /// 指令卡片沿用 READ_ACCENT；标题与表头保留黄色，正文区分粗体和代码。
+    fn emphasis_fg(&self, color: Color) -> Option<Color> {
         if self.instruction {
             Some(super::transcript_style::READ_ACCENT)
-        } else if self.heading {
+        } else if self.heading || self.table_head {
             None
         } else {
-            Some(ADDED)
+            Some(color)
         }
     }
 
-    /// 内嵌代码沿用上下文的内联样式，但使用与粗体一致的强调前景，避免行内代码
-    /// 在思考／正文里退回普通文字色。
+    /// 内嵌代码使用绿色，保留上下文的修饰符与标题色。
     fn code_style(&self) -> Style {
         let mut st = self.inline_style();
-        if let Some(fg) = self.emphasis_fg() {
+        if let Some(fg) = self.emphasis_fg(MD_CODE) {
             st = st.fg(fg);
         }
         st
@@ -640,9 +643,9 @@ impl<'a> Builder<'a> {
             Some(frame) if frame.ordered => {
                 let m = format!("{}. ", frame.next);
                 frame.next += 1;
-                Span::styled(m, Style::new().fg(MUTED))
+                Span::styled(m, Style::new().fg(MD_BULLET))
             }
-            _ => Span::styled("• ", Style::new().fg(MUTED)),
+            _ => Span::styled("• ", Style::new().fg(MD_BULLET)),
         };
         self.marker = Some(marker);
         self.marker_used = false;
@@ -657,7 +660,7 @@ impl<'a> Builder<'a> {
 
     fn on_task_marker(&mut self, checked: bool) {
         let glyph = if checked { "☑ " } else { "☐ " };
-        self.marker = Some(Span::styled(glyph, Style::new().fg(MUTED)));
+        self.marker = Some(Span::styled(glyph, Style::new().fg(MD_BULLET)));
     }
 
     fn start_code(&mut self, kind: CodeBlockKind<'_>, start: usize) {
@@ -811,7 +814,6 @@ impl<'a> Builder<'a> {
             self.push_text(text, style);
             return;
         }
-        // 内嵌代码与粗体同色（普通正文 ADDED 绿）。
         self.push_text(text, self.code_style());
     }
 
@@ -906,12 +908,14 @@ impl<'a> Builder<'a> {
     }
 
     fn start_table_head(&mut self) {
+        self.table_head = true;
         if let Some(t) = self.table.as_mut() {
             t.row.clear();
         }
     }
 
     fn end_table_head(&mut self) {
+        self.table_head = false;
         if let Some(t) = self.table.as_mut() {
             t.header = std::mem::take(&mut t.row);
         }
@@ -1121,7 +1125,8 @@ fn layout_table(tb: &TableBlock, width: usize, out: &mut Vec<Line<'static>>) {
     if n == 0 {
         return;
     }
-    let sep_total = CELL_SEPARATOR_WIDTH * (n - 1);
+    // 每列左右各留一格，列间与外框各占一格。
+    let frame_width = 3 * n + 1;
     let mut widths = vec![CELL_MIN_WIDTH; n];
     for (i, cell) in tb.header.iter().enumerate().take(n) {
         widths[i] = widths[i].max(spans_width(cell).max(CELL_MIN_WIDTH));
@@ -1131,11 +1136,11 @@ fn layout_table(tb: &TableBlock, width: usize, out: &mut Vec<Line<'static>>) {
             widths[i] = widths[i].max(spans_width(cell).max(CELL_MIN_WIDTH));
         }
     }
-    if CELL_MIN_WIDTH * n + sep_total > width {
+    if CELL_MIN_WIDTH * n + frame_width > width {
         table_vertical_fallback(tb, n, width, out);
         return;
     }
-    let mut excess = (widths.iter().sum::<usize>() + sep_total).saturating_sub(width);
+    let mut excess = (widths.iter().sum::<usize>() + frame_width).saturating_sub(width);
     while excess > 0 {
         let Some(max) = widths.iter().copied().max().filter(|m| *m > CELL_MIN_WIDTH) else {
             break;
@@ -1163,18 +1168,25 @@ fn layout_table(tb: &TableBlock, width: usize, out: &mut Vec<Line<'static>>) {
             excess = 0;
         }
     }
+    out.push(table_border(&widths, '┌', '┬', '┐'));
     render_table_row(&tb.header, &widths, &tb.aligns, out);
-    let mut divider = Vec::new();
-    for (i, w) in widths.iter().enumerate() {
-        if i > 0 {
-            divider.push(Span::styled("─┼─", Style::new().fg(DIM)));
-        }
-        divider.push(Span::styled("─".repeat(*w), Style::new().fg(DIM)));
-    }
-    out.push(Line::from(divider));
     for row in &tb.rows {
+        out.push(table_border(&widths, '├', '┼', '┤'));
         render_table_row(row, &widths, &tb.aligns, out);
     }
+    out.push(table_border(&widths, '└', '┴', '┘'));
+}
+
+fn table_border(widths: &[usize], left: char, middle: char, right: char) -> Line<'static> {
+    let mut border = String::from(left);
+    for (i, width) in widths.iter().enumerate() {
+        if i > 0 {
+            border.push(middle);
+        }
+        border.push_str(&"─".repeat(width + 2));
+    }
+    border.push(right);
+    Line::from(Span::styled(border, Style::new().fg(MD_BORDER)))
 }
 
 fn render_table_row(
@@ -1193,11 +1205,9 @@ fn render_table_row(
         .collect();
     let height = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
     for r in 0..height {
-        let mut spans = Vec::new();
+        let mut spans = vec![Span::styled("│", Style::new().fg(MD_BORDER))];
         for (i, w) in widths.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled(CELL_SEPARATOR, Style::new().fg(DIM)));
-            }
+            spans.push(Span::raw(" "));
             let mut line = wrapped[i].get(r).cloned().unwrap_or_default();
             apply_align(
                 &mut line,
@@ -1205,6 +1215,8 @@ fn render_table_row(
                 aligns.get(i).copied().unwrap_or(Alignment::None),
             );
             spans.append(&mut line);
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled("│", Style::new().fg(MD_BORDER)));
         }
         out.push(Line::from(spans));
     }
@@ -1233,9 +1245,8 @@ fn apply_align(spans: &mut Vec<Span<'static>>, width: usize, align: Alignment) {
     }
 }
 
-/// When even minimal three-cell columns plus separators do not fit, render
-/// each data row as one `header: value` line per column; empty headers become
-/// `Column N`.
+/// 连最小列宽、边距与完整外框都放不下时，按 `header: value` 竖排；
+/// 空表头使用 `Column N`。
 fn table_vertical_fallback(tb: &TableBlock, n: usize, width: usize, out: &mut Vec<Line<'static>>) {
     let labels: Vec<String> = (0..n)
         .map(|i| {
@@ -1259,7 +1270,7 @@ fn table_vertical_fallback(tb: &TableBlock, n: usize, width: usize, out: &mut Ve
         for (ci, cell) in row.iter().enumerate().take(n) {
             let mut content = vec![Span::styled(
                 format!("{}: ", labels[ci]),
-                Style::new().fg(MUTED),
+                Style::new().fg(MD_HEADING),
             )];
             let prefix_width = spans_width(&content);
             content.extend(cell.iter().cloned());

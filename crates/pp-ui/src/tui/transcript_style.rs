@@ -10,6 +10,14 @@ pub(super) const CODE: Color = Color::Rgb(229, 193, 255);
 pub(super) const CODE_BLOCK: Color = Color::Rgb(156, 220, 254);
 pub(super) const LINK: Color = Color::Rgb(0, 136, 250);
 pub(super) const ADDED: Color = Color::Rgb(137, 210, 129);
+// 按 OMP 参考截图取色，Markdown 语义色独立于工具和 diff 配色。
+pub(super) const MD_BG: Color = Color::Rgb(40, 42, 53);
+pub(super) const MD_TEXT: Color = Color::Rgb(248, 248, 243);
+pub(super) const MD_HEADING: Color = Color::Rgb(229, 229, 77);
+pub(super) const MD_CODE: Color = Color::Rgb(86, 185, 127);
+pub(super) const MD_STRONG: Color = Color::Rgb(174, 72, 182);
+pub(super) const MD_BULLET: Color = Color::Rgb(244, 191, 84);
+pub(super) const MD_BORDER: Color = MD_TEXT;
 pub(super) const TODO_ACTIVE: Color = Color::Rgb(255, 230, 109);
 pub(super) const ERROR_BORDER: Color = Color::Rgb(224, 108, 117);
 pub(super) const REMOVED: Color = Color::Rgb(252, 58, 75);
