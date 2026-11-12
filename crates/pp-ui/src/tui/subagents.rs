@@ -2407,15 +2407,44 @@ mod tests {
     fn detail_input_metrics_and_status_bar_reuse_main_styles() {
         let mut drafts = Drafts::default();
         let mut panel = usage_detail();
+        panel.apply(Reply::Detail {
+            epoch: 1,
+            view: 1,
+            agent: "a1".into(),
+            history: super::worker::DetailHistory {
+                page: pp_runtime::subagent::EventPage {
+                    entries: vec![entry(
+                        0,
+                        "r1",
+                        AgentEvent::ModelRequestFinished {
+                            elapsed_ms: 2_000,
+                            usage: Some(TokenUsage {
+                                input_tokens: 100,
+                                output_tokens: 123,
+                                cached_tokens: None,
+                                cache_write_tokens: None,
+                            }),
+                            success: true,
+                        },
+                    )],
+                    cursor: None,
+                    reset: false,
+                    has_more: false,
+                    warnings: vec![],
+                },
+                runs: vec![run("r1", "a1", "completed", "child work")],
+                settled: std::collections::BTreeSet::from(["r1".into()]),
+            },
+        });
         let buffer = render_cells(&mut panel, &mut drafts, &Default::default(), 120, 30);
         let screen = rows(&buffer, 120, 30);
         let banner = screen
             .iter()
             .position(|line| line.contains("subagent"))
             .unwrap_or_else(|| panic!("{screen:#?}"));
-        // 顶边框行：标识、ctx、io 对与费用；左侧边框字符保留。
+        // 顶边框行：标识、速度、ctx、io 对与费用；左侧边框字符保留。
         assert!(screen[banner].starts_with('─'), "{}", screen[banner]);
-        for expected in ["subagent", "12.3K/45.7K", "0.012"] {
+        for expected in ["subagent", "61.5 tok/s", "12.3K/45.7K", "0.012"] {
             assert!(
                 screen[banner].contains(expected),
                 "{expected}: {}",

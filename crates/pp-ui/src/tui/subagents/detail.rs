@@ -46,6 +46,7 @@ pub(super) struct Detail {
     pub agent: String,
     pub view: u64,
     transcript: Transcript,
+    token_speed: statusline::TokenSpeed,
     /// run -> 首个 user 卡片条目索引。
     by_run: BTreeMap<String, usize>,
     /// 源行起始偏移 -> 条目索引。
@@ -102,6 +103,7 @@ impl Detail {
             agent: agent.to_owned(),
             view,
             transcript,
+            token_speed: Default::default(),
             by_run: BTreeMap::new(),
             by_offset: BTreeMap::new(),
             by_tool: BTreeMap::new(),
@@ -130,7 +132,8 @@ impl Detail {
     }
 
     pub(super) fn tick(&mut self, now: std::time::Instant) -> bool {
-        self.transcript.tick(now)
+        let speed_changed = self.token_speed.tick(now);
+        self.transcript.tick(now) || speed_changed
     }
 
     /// settled 是 worker 读页前冻结的终态；只有读完本页历史后才可用它补齐。
@@ -186,6 +189,7 @@ impl Detail {
                 self.apply_terminal(&previous.id, &previous.status, None);
             }
             self.active_run = Some(run.clone());
+            self.token_speed.clear();
             self.transcript
                 .begin_recorded_run("Requesting model", None, now_ms, now);
         }
@@ -213,6 +217,33 @@ impl Detail {
                 self.by_offset.insert(entry.start_offset, index);
             }
             (Some(event), _) => {
+                // 按事件时间回放采样，避免把历史分页读取的速度误当成模型速度。
+                let recorded_at = record
+                    .timestamp_ms
+                    .and_then(|timestamp| {
+                        now.checked_sub(std::time::Duration::from_millis(
+                            now_ms.saturating_sub(timestamp),
+                        ))
+                    })
+                    .unwrap_or(now);
+                match event {
+                    AgentEvent::ModelRequestStarted => self.token_speed.start(recorded_at),
+                    AgentEvent::ModelOutputProgress { output_bytes } => {
+                        self.token_speed.progress(*output_bytes, recorded_at);
+                        self.token_speed.tick(recorded_at);
+                    }
+                    AgentEvent::ModelRequestFinished {
+                        elapsed_ms,
+                        usage,
+                        success,
+                    } => self.token_speed.finish(
+                        *elapsed_ms,
+                        usage.map(|usage| usage.output_tokens),
+                        *success,
+                    ),
+                    AgentEvent::CompactionFinished { .. } => self.token_speed.clear(),
+                    _ => {}
+                }
                 let before = self.transcript.entry_count();
                 self.transcript
                     .progress_recorded(event.clone(), record.timestamp_ms, now_ms, now);
@@ -262,6 +293,9 @@ impl Detail {
             },
         );
         if self.active_run.as_deref() == Some(run) {
+            if self.token_speed.is_active() {
+                self.token_speed.clear();
+            }
             match status {
                 "cancelled" => self.transcript.stop_recorded_run(true),
                 "failed" | "interrupted" => self.transcript.stop_recorded_run(false),
@@ -573,6 +607,7 @@ impl Detail {
             // 指标行写在顶边框行右侧，必须在边框之后覆盖，左侧边框字符保留。
             let metrics = statusline::subagent_metrics(
                 statusline::SubagentUsage {
+                    speed: self.token_speed.value().map(|(rate, _)| rate),
                     usage: view.context.as_ref(),
                     tokens: view.tokens,
                     cost: view.cost,

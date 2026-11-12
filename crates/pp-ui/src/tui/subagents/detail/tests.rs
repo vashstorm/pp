@@ -9,6 +9,114 @@ use pp_runtime::subagent::ObservedRecord;
 use ratatui::{Terminal as TestTerminal, backend::TestBackend, buffer::Buffer};
 use serde_json::json;
 use std::time::{Duration, Instant};
+
+#[test]
+fn detail_speed_replays_event_timing_and_settles_with_server_usage() {
+    let mut detail = Detail::new("a1", 1, Transcript::new());
+    let runs = [run("r1", "running")];
+    let timed = |offset, timestamp, value| {
+        let mut entry = event(offset, "r1", value);
+        entry.record.timestamp_ms = Some(timestamp);
+        entry
+    };
+    let first = page(
+        vec![
+            timed(0, 1_000, AgentEvent::ModelRequestStarted),
+            timed(
+                1,
+                2_000,
+                AgentEvent::ModelOutputProgress { output_bytes: 300 },
+            ),
+            timed(
+                2,
+                3_000,
+                AgentEvent::ModelOutputProgress { output_bytes: 600 },
+            ),
+        ],
+        true,
+    );
+    detail.ingest(&first, &runs, &BTreeSet::new(), 10_000);
+    let (rate, estimated) = detail.token_speed.value().unwrap();
+    assert!(
+        (rate - 200.0).abs() < 0.01,
+        "按日志中的一秒输出窗口估速: {rate}"
+    );
+    assert!(estimated);
+    // 重复页不能重复累计或重置采样。
+    detail.ingest(&first, &runs, &BTreeSet::new(), 10_000);
+    assert_eq!(detail.token_speed.value(), Some((rate, true)));
+    detail.ingest(
+        &page(
+            vec![timed(
+                3,
+                5_000,
+                AgentEvent::ModelRequestFinished {
+                    elapsed_ms: 4_000,
+                    usage: Some(pp_core::context::TokenUsage {
+                        input_tokens: 100,
+                        output_tokens: 200,
+                        cached_tokens: None,
+                        cache_write_tokens: None,
+                    }),
+                    success: true,
+                },
+            )],
+            false,
+        ),
+        &runs,
+        &BTreeSet::new(),
+        10_000,
+    );
+    assert_eq!(detail.token_speed.value(), Some((50.0, false)));
+    detail.ingest(
+        &page(vec![state(4, "r1", "completed", Some(5_000))], false),
+        &[run("r1", "completed")],
+        &BTreeSet::new(),
+        10_000,
+    );
+    assert_eq!(detail.token_speed.value(), Some((50.0, false)));
+    detail.rebuild();
+    assert!(detail.token_speed.value().is_none());
+}
+
+#[test]
+fn detail_speed_ticks_live_output_and_clears_on_failed_or_cancelled_requests() {
+    for status in ["cancelled", "failed", "interrupted"] {
+        let mut detail = Detail::new("a1", 1, Transcript::new());
+        detail.ingest(
+            &page(
+                vec![
+                    event(0, "r1", AgentEvent::ModelRequestStarted),
+                    event(
+                        1,
+                        "r1",
+                        AgentEvent::ModelOutputProgress { output_bytes: 300 },
+                    ),
+                ],
+                false,
+            ),
+            &[run("r1", "running")],
+            &BTreeSet::new(),
+            10_000,
+        );
+        assert!(detail.tick(Instant::now() + Duration::from_millis(500)));
+        assert!(
+            detail
+                .token_speed
+                .value()
+                .is_some_and(|(rate, estimated)| rate > 0.0 && estimated)
+        );
+        detail.ingest(
+            &page(vec![state(2, "r1", status, None)], false),
+            &[run("r1", status)],
+            &BTreeSet::new(),
+            10_000,
+        );
+        assert!(!detail.token_speed.is_active());
+        assert!(detail.token_speed.value().is_none());
+    }
+}
+
 #[test]
 fn detail_bash_task_poll_anchors_reuse_the_original_card_across_pages() {
     let mut detail = Detail::new("a1", 1, Transcript::new());

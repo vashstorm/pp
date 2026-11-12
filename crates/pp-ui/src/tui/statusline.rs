@@ -285,8 +285,10 @@ pub(super) fn metric_fields(
     line
 }
 
-/// 子 Agent 详情指标簇的输入：上下文用量、token 总量回退、费用与耗时。
+/// 子 Agent 详情指标簇的输入：速度、上下文用量、token 总量回退、费用与耗时。
 pub(super) struct SubagentUsage<'a> {
+    /// 当前请求的估速或最近一次成功请求的结算速度。
+    pub speed: Option<f64>,
     /// 有 `ContextUpdated` 时按主状态栏口径显示 ctx、io 与缓存。
     pub usage: Option<&'a ContextUsage>,
     /// 缺少上下文用量时退回单个 token 总量字段。
@@ -301,7 +303,7 @@ pub(super) struct SubagentUsage<'a> {
 }
 
 /// 子 Agent 详情输入框顶边框的指标簇：簇首琥珀色 `subagent` 标识永不隐藏，
-/// 其余字段沿用主状态栏的构造与配色，宽度不足时按 cache → io → 费用 → 耗时 → ctx
+/// 其余字段沿用主状态栏的构造与配色，宽度不足时按 cache → io → speed → 费用 → 耗时 → ctx
 /// 整组隐藏，任何宽度下返回行宽都不超过 `width`。
 pub(super) fn subagent_metrics(
     usage: SubagentUsage<'_>,
@@ -310,21 +312,28 @@ pub(super) fn subagent_metrics(
 ) -> Line<'static> {
     let width = usize::from(width);
     let count = |value: Option<u64>| value.map_or_else(|| "—".into(), abbreviate_tokens);
-    let mut fields: [Option<Line<'static>>; 6] =
-        [Some(subagent_badge()), None, None, None, None, None];
+    let mut fields = [
+        Some(subagent_badge()),
+        Some(speed_field(usage.speed, 0)),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ];
     if let Some(context) = usage.usage {
         let last = context.last_request;
         // 与主状态栏一致：最近请求和会话累计都为空时右侧显示 —，而不是 0。
         let output = (last.is_some() || context.session_output_tokens > 0)
             .then_some(context.session_output_tokens);
-        fields[1] = Some(context_field(context));
-        fields[2] = Some(pair_field(
+        fields[2] = Some(context_field(context));
+        fields[3] = Some(pair_field(
             IO_ICON,
             count(last.map(|request| request.input_tokens)),
             count(output),
             (INPUT, OUTPUT),
         ));
-        fields[3] = Some(pair_field(
+        fields[4] = Some(pair_field(
             CACHE_ICON,
             count(last.and_then(|request| request.cached_tokens)),
             count(last.and_then(|request| request.cache_write_tokens)),
@@ -333,9 +342,9 @@ pub(super) fn subagent_metrics(
     } else if let Some(tokens) = usage.tokens {
         // 旧日志没有 ContextUpdated 时保留原先摘要里的 token 总量；它替代
         // ctx/io/cache 三个字段，因此在降级顺序里与 ctx 同位（最后隐藏）。
-        fields[1] = Some(token_total_field(tokens));
+        fields[2] = Some(token_total_field(tokens));
     }
-    fields[4] = usage.cost.and_then(|usd| {
+    fields[5] = usage.cost.and_then(|usd| {
         amount_field(usd, display).map(|mut line| {
             if usage.measured < usage.runs {
                 line.spans.push(Span::styled(
@@ -346,12 +355,12 @@ pub(super) fn subagent_metrics(
             line
         })
     });
-    fields[5] = usage
+    fields[6] = usage
         .time_ms
         .map(|ms| field(TIMER_ICON, duration_text(ms), Color::White));
 
     let mut line = join_fields(&fields);
-    for remove in [3, 2, 4, 5, 1] {
+    for remove in [4, 3, 1, 5, 6, 2] {
         if line.width() <= width {
             break;
         }
@@ -1611,6 +1620,7 @@ mod tests {
         let usage = status_usage();
         let line = subagent_metrics(
             SubagentUsage {
+                speed: Some(61.5),
                 usage: Some(&usage),
                 tokens: Some(12_300),
                 cost: Some(0.012),
@@ -1624,7 +1634,7 @@ mod tests {
         assert_eq!(
             line_text(&line),
             format!(
-                " {SUBAGENT_ONE_ICON} subagent · {CONTEXT_ICON} 81.6%/500K · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.012 · {TIMER_ICON} 1m25s "
+                " {SUBAGENT_ONE_ICON} subagent · {SPEED_MEDIUM_ICON} 61.5 tok/s · {CONTEXT_ICON} 81.6%/500K · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.012 · {TIMER_ICON} 1m25s "
             )
         );
         let badge = line
@@ -1634,6 +1644,7 @@ mod tests {
             .unwrap();
         assert!(badge.style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(fg_at(line.clone(), 240, "subagent"), SUBAGENTS);
+        assert_eq!(fg_at(line.clone(), 240, "61.5 tok/s"), SPEED);
         assert_eq!(fg_at(line.clone(), 240, "81.6%/500K"), Color::White);
         assert_eq!(fg_at(line.clone(), 240, "12.3K"), INPUT);
         assert_eq!(fg_at(line.clone(), 240, "45.7K"), OUTPUT);
@@ -1648,6 +1659,7 @@ mod tests {
         let usage = status_usage();
         let partial = subagent_metrics(
             SubagentUsage {
+                speed: Some(61.5),
                 usage: Some(&usage),
                 tokens: None,
                 cost: Some(0.012),
@@ -1672,6 +1684,7 @@ mod tests {
         // 已计量次数与总次数一致时不追加后缀。
         let settled = subagent_metrics(
             SubagentUsage {
+                speed: Some(61.5),
                 usage: Some(&usage),
                 tokens: None,
                 cost: Some(0.012),
@@ -1687,6 +1700,7 @@ mod tests {
         // 没有 ContextUpdated：用单个 token 总量字段替代 ctx/io/cache。
         let fallback = subagent_metrics(
             SubagentUsage {
+                speed: Some(61.5),
                 usage: None,
                 tokens: Some(12_300),
                 cost: Some(0.5),
@@ -1700,11 +1714,11 @@ mod tests {
         assert_eq!(
             line_text(&fallback),
             format!(
-                " {SUBAGENT_ONE_ICON} subagent · 12.3K tok · {COST_ICON} 0.500 · {TIMER_ICON} 1s "
+                " {SUBAGENT_ONE_ICON} subagent · {SPEED_MEDIUM_ICON} 61.5 tok/s · 12.3K tok · {COST_ICON} 0.500 · {TIMER_ICON} 1s "
             )
         );
         assert_eq!(fg_at(fallback.clone(), 240, "12.3K"), INPUT);
-        assert_eq!(fg_at(fallback, 240, " tok"), Color::DarkGray);
+        assert_eq!(fg_at_offset(fallback, 240, "12.3K tok", 5), Color::DarkGray);
     }
 
     #[test]
@@ -1713,6 +1727,7 @@ mod tests {
         let render = |width: u16| {
             subagent_metrics(
                 SubagentUsage {
+                    speed: Some(61.5),
                     usage: Some(&usage),
                     tokens: None,
                     cost: Some(0.012),
@@ -1727,7 +1742,14 @@ mod tests {
         let full = render(240);
         let full_width = u16::try_from(full.width()).unwrap();
         assert_eq!(line_text(&render(full_width)), line_text(&full));
-        let removal_order = [CACHE_ICON, IO_ICON, COST_ICON, TIMER_ICON, CONTEXT_ICON];
+        let removal_order = [
+            CACHE_ICON,
+            IO_ICON,
+            SPEED_MEDIUM_ICON,
+            COST_ICON,
+            TIMER_ICON,
+            CONTEXT_ICON,
+        ];
         let mut previous = 0;
         for width in (0..=full_width).rev() {
             let line = render(width);
